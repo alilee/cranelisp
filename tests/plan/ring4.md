@@ -1078,6 +1078,45 @@ Approximate counts: 7 negative-coverage tests for prior-ring promotion.
 | G.16 re-triage | 0 | 0 (analysis only; FIXME if needed) | Two carried failures re-triaged |
 | **Sprint 58 total planned** | **18 unit (10 typecheck + 1 int + 7 backend/runtime)** | **~32 integration + 13 pinned flip-greens** | Baseline before: 1679/17. Target after: ≥1692/≤4. |
 
+### G.18. Sprint 58 Wave 5 + Wave 6 outcomes (close-time bookkeeping)
+
+Bookkeeping for wave outcomes carried to close per `/qa` connectivity-stall recovery (Wave 5 commit `8791319` was committed partial; Wave 6 follow-on landed Defect 1 + Defect 2 fixes).
+
+**Wave 5 (`/qa` parallel) — landed in `8791319`**:
+- `tests/e2e.rs` Cranelisp.toml E2E suite (G.13 (iii)) — 5 tests covering: lib-dirs resolves modules, overrides CRANELISP_LIB env, missing config falls through, malformed TOML emits diagnostic, env var override (sanity). `spec/08-modules.md §8.11.4` annotation promoted to `[Tested]` with the 5 test names pinned.
+- `tests/e2e.rs` `/mem` E2E suite (G.13 — Sprint 57 carry) — 4 tests covering: snapshot emits `; live:` and `; allocs:` lines, delta runs expr and shows signed deltas, baseline counters zero at start, alias `/m` works. `repl/spec.md §3.7` annotation promoted to `[Tested]` with the 4 test names pinned.
+- `tests/ring1.rs` match exhaustiveness negatives (G.15) — 2 tests: `neg_match_empty_arms_rejected`, `neg_match_non_adt_scrut_with_adt_constructor_rejected`. `spec/06-pattern-matching.md §6.5.2` annotation promoted to `[Tested+Neg]`.
+- `io.rs:28` regression tests (G.14): owned by `/backend`; not landed in this sprint — remains a Wave-5 follow-on alongside the FIXME(/backend) at `crates/cranelisp-runtime/src/io.rs:28` (one-deferral-permitted policy invoked per `/arch` Condition 6).
+
+**Wave 6 narrow-repro tests — landed in `528c14a` (`tests/wave6_demo_repros.rs`)**:
+Five failing integration tests as durable records for demo-surfaced defects (per defect-handoff principle codified in `dea17b1`):
+- `repl_dep_load_no_race_with_persistent_workers` (Defect 1 → `/int`) — RESOLVED in Wave 6 follow-on `a9e174e` (REPL dep-load race fix at 5 sites in `src/session_v4.rs::compile_dep_inline` + `src/worker.rs`); test now passes.
+- `stdlib_seq_lazy_imports_resolve_nil_cons` (Defect 2 → `/stdlib`) — RESOLVED in Wave 6 follow-on `98bf4ef` (added explicit imports `[collections.list [Cons Nil]]` + `[fn.option [Some None]]` to `stdlib/seq/lazy.cl`); test now passes.
+- `display_defn_with_docstring_uses_dash_separator` (Defect 3 → `/int`) — DEFERRED post-Sprint-58. Failing test as durable record. Spec: `repl/spec.md §1.1` (DASH separator mandate) vs `src/session_v4.rs::append_docstring_comment` emitting SEMICOLON.
+- `run_tests_batched_invocation_no_crash` (Defects 4+5 collapsed → `/backend`) — DEFERRED post-Sprint-58. Failing test as durable record. Symptom: `/run-tests html` exits 1 with "in-memory codegen incomplete for 'html'" + "No test-* functions found"; the deeper SIGSEGV/SIGTRAP is gated by an upstream codegen path issue.
+- `exemplar_solver_does_not_stack_overflow_on_small_puzzle` (Defects 6+7 collapsed → `/backend`/`/port`) — DEFERRED post-Sprint-58. Failing test as durable record. Sprint 19 stack-overflow on 81-cell puzzles; once `/backend` resolves, `/port` re-enables the 3 puzzle tests in `exemplar/solver.cl`.
+
+**Wave 3d Decision 31 reclaim tests — landed in `d348bca` (`tests/v4_jit_reclaim.rs`)**:
+5 tests covering Decision 31 Scenario 1 (REPL-eval JIT reclaim) and Scenario 2 (per-redefinition JIT reclaim) plus Linker-coexistence companion. All 5 passing. `tests/plan/ring4.md §G.12` annotations updated inline at landing.
+
+**Wave 6 follow-on (Defect 1 + Defect 2) — landed in `a9e174e` + `98bf4ef`**:
+- Defect 1 fix: `/int` published `dep_sexps` to `shared.module_sexps` BEFORE `scheduler.register_module` at 5 sites in `src/session_v4.rs::compile_dep_inline` to close the persistent-worker race window.
+- Defect 2 fix: `/stdlib` added missing explicit imports to `stdlib/seq/lazy.cl` so the module typechecks under the null-prelude-import discipline.
+- `spec/08-modules.md §8.11.4` + `§8.2.3` annotation cleanups landed in `d6fa3ad` reflecting the new test coverage.
+
+**Re-triage of 6 baseline failures (close-time per §G.16)**:
+
+| Test | Owning skill | Disposition |
+|---|---|---|
+| `sketch_port::sketch_run_tests_pass_fn_called` (line 1603) | `/int` (likely IO-trampoline interaction with `bind` over `(IO TestResult)`) | Pre-existing; carried Sprint 56→57→58. Step 5b refactor did not clear it. Hypothesis 2 confirmed (latent IO-trampoline). FIXME(/int) deferred to a stabilisation sprint after persistence + scheduling work converges; minimal repro per `feedback_qa_reproduction.md` to be reduced before handoff. |
+| `sprint23::cache_repl_loads_on_startup` (line 1119) | `/int` | Pre-existing; documented in `tests/sprint23.rs:1126` FIXME(/int) ("Sprint 58 Wave 2c — second REPL run reports `undefined variable: +`"). Dual-path persistence structural debt — track in a future stabilisation sprint focused on collapsing dual-path session-restore. |
+| `sprint23::persist_import_survives_restart` | `/int` | Pre-existing; documented in `tests/sprint23.rs:1307` FIXME(/int) ("second REPL session does not see the imported symbol"). Same dual-path persistence root cause as `cache_repl_loads_on_startup`. Track in same stabilisation sprint. |
+| `wave6_demo_repros::display_defn_with_docstring_uses_dash_separator` | `/int` (Defect 3) | Demo-surfaced Sprint 58 Wave 6; FIXME(/int) inline at the test (line 254). Format-string fix in `src/session_v4.rs::append_docstring_comment`. |
+| `wave6_demo_repros::run_tests_batched_invocation_no_crash` | `/backend` (Defects 4+5) | Demo-surfaced Sprint 58 Wave 6; FIXME(/backend) or FIXME(/int) inline at the test (line 304). Codegen-incomplete path for `html` exemplar module + likely RC/last-use issue across consecutive `run_test_by_name` invocations. |
+| `wave6_demo_repros::exemplar_solver_does_not_stack_overflow_on_small_puzzle` | `/backend` + `/port` (Defects 6+7) | Pre-existing per `exemplar/CLAUDE.md` "Known Issues"; FIXME(/backend) + FIXME(/port) inline at the test (lines 405, 409). Sprint 19 stack-overflow on full 81-cell puzzles. `/port` re-enables 3 puzzle tests in `exemplar/solver.cl` once `/backend` lands the fix. |
+
+All 6 failures have failing-test durable records with `// spec:` anchors and `FIXME(/owning-skill)` annotations either at the test or in the related source (`tests/sprint23.rs:343`, `:1126`, `:1307` for the sprint23 cluster; `tests/v4_pipeline.rs:602` for the related v4 cache-hit issue). No untracked failures remain.
+
 ### Wave 5 (`/qa` parallel work) sequencing
 
 Per SPRINT.md Wave 5 framing: integration tests authored in parallel to Waves 2/3/4 implementation; pinned flip-greens validated as their owning wave lands.
@@ -1093,24 +1132,14 @@ Per SPRINT.md Wave 5 framing: integration tests authored in parallel to Waves 2/
 
 ## Known issues / deferred
 
-<!-- FIXME(/qa) — Sprint 58 Wave 6 /repl audit finding: docstring separator divergence.
-     repl/spec.md §1.1 mandates `; {classification} - {docstring}` (DASH separator).
-     `src/session_v4.rs::append_docstring_comment` emits `; {classification} ; {docstring}`
-     (SEMICOLON separator). Affects every `defn`/`deftype`/`deftrait`/`defmacro` display
-     line that carries a docstring — visible in ring4p.demo Wave 6 playback (`pick`
-     line shows `; defn ; Pick first arg` where spec requires `; defn - Pick first arg`).
-     Pre-existing (not a Sprint 58 regression). Add E2E test asserting the dash
-     separator and file FIXME(/int) for the format fix. -->
-
-<!-- FIXME(/qa) — Sprint 58 Wave 6 /repl audit finding: stdlib REPL auto-import broken.
-     repl/showcase ring4i fails on `(import [seq.lazy [...]])` and `(import [num.int [...]])`
-     with "no parsed sexps for module 'seq.lazy'" (worker.rs:3325). Both modules exist
-     under stdlib/; batch invocation of the same import surfaces a content typecheck
-     error instead of the worker's no-sexps error, which suggests a REPL-only
-     auto-load path defect (likely fresh-session module-discovery vs cache-state
-     ordering). Pre-existing — not introduced by Sprint 58, but exposed by the
-     Wave 6 demo regression sweep. Add a minimal E2E test reproducing the gap and
-     file FIXME(/int) once the failure mode is confirmed. -->
+<!-- Both FIXME(/qa) Wave 6 audit findings (docstring separator divergence + stdlib REPL auto-import)
+     were ACTIONED in Wave 6 narrow-repro tests `tests/wave6_demo_repros.rs`:
+     - Docstring-separator defect → `display_defn_with_docstring_uses_dash_separator` (failing
+       durable record; FIXME(/int) inline at test); deferred post-Sprint-58.
+     - Stdlib REPL auto-import defect → `repl_dep_load_no_race_with_persistent_workers`
+       (Defect 1, RESOLVED Wave 6 follow-on `a9e174e`) + `stdlib_seq_lazy_imports_resolve_nil_cons`
+       (Defect 2, RESOLVED Wave 6 follow-on `98bf4ef`).
+     See §G.18 above for full bookkeeping. -->
 
 - **I-1 (MonoDefn dead-carrier fields)** — `MonoDefn.resolutions`, `MonoDefn.expr_types` are typecheck-internal dead carriers kept from Phase 1 (Sprint 56). Retained as dead state per `/review` Wave 2 I-1 + user approval; deferred to Sprint 58 Phase 5 cleanup. Cross-reference: `design/typecheck/ast-annotation.md` §10.3.
 - **`v4_cache_hit_dependency`** — cross-module cache restore still fails; Phase-5-dependent. Not targeted by Wave 3. Stays in the 14-failure baseline.

@@ -678,16 +678,51 @@ Depends on Waves 2 + 3 + 4.
 
 ## Outcome
 
-{Filled in when sprint closes.}
+Pass-2 close-time audit complete. `cargo nextest --max-fail=15` baseline preserved at **1760 / 1754 passed / 6 failed** (matches the documented Sprint 58 baseline). All 6 failures have failing-test durable records with `// spec:` anchors and `FIXME(/owning-skill)` annotations. No untracked failures. FIXME-after-close gate met: 0 unaccounted source-tree FIXMEs (1 in-source FIXME(/backend) at `crates/cranelisp-runtime/src/io.rs:28` deferred under one-deferral-permitted policy per `/arch` Condition 6, with named regression-test symptoms in `tests/plan/ring4.md §G.14`). Every Sprint 58 in-scope requirement has a passing test or a documented disposition.
 
 ### Delivered
 
-{...}
+- **Phase 5 v4 convergence COMPLETE** — Steps 5a + 5b + 5c + 5d + 5e all landed (commits `094c183` through `d6fa3ad`).
+  - Step 5a: structural decls (`imports`/`exports`/`platforms`/`submodules`) on `SymbolTable`; `ModuleStructure` dissolved.
+  - Step 5b: `.meta.json` IS a serialised `SymbolTable<(), ()>` with `CACHE_SCHEMA_VERSION = 1` envelope; `CodegenInput` stashing path deleted; 12 of 13 pinned cache failures cleared (Wave 2).
+  - Step 5c: `SymbolTable<C, L>` generics activated; `Code` enum (`Jit { Arc<Jit>, ptr }` + `Linker { Arc<Linker>, ptr }`) at integration layer; `kept_jits` + `kept_linkers` dissolved.
+  - Step 5d: 3 carried `/int` items landed — private-submodule import enforcement (i), multi-sig REPL bare-symbol display (ii), Cranelisp.toml lookup (iii).
+  - Step 5e: sprint-close auto-bump policy added to close checklist; applied at audit (no bumps warranted by Sprint 58 work alone — see §Findings).
+- **Decision 31 Scenario 2 ACTIVE** — per-redefinition JIT reclaim verified by `tests/v4_jit_reclaim.rs::decision31_scenario2_per_redefinition_jit_pages_reclaimed` (positive) + `_repeated_redefinition_no_unbounded_growth` (negative; pre-Step-5c gap would have grown ~50x).
+- **9 architectural decisions added/updated** — Decisions 23 (UPDATED — two-GOT framing), 25 (UPDATED — corrected cache-restore wording), 31 (Scenario 2 footnote tightening), 32 (`CodeStore`/`LinkerStore` empty marker traits), 33 (structural decls on SymbolTable), 34 (`schema_version: u32`), 35 (`Code` enum + CP1 arbitration Layer 2 Option B), 36 (function symbol naming + linkage policy), 37 (cache-hit integration into `register_module`).
+- **Defect-handoff principle codified** (commit `dea17b1`) — root `CLAUDE.md` + 6 user-proxy skill defs (`/repl`, `/port`, `/stdlib`, `/examples`, `/docs`, `/platform`) updated: user-proxy skills filing failing tests as durable records is the correct closure for demo-discovered defects (not documentation alone).
+- **50+ new integration tests across 6 waves** — see `tests/plan/ring4.md` §G.10–§G.18. Headline additions: 5 `tests/v4_jit_reclaim.rs` reclaim tests (Wave 3d); 5 `tests/e2e.rs` Cranelisp.toml tests (Wave 5); 4 `tests/e2e.rs` `/mem` tests (Wave 5); 2 `tests/ring1.rs` match-exhaustiveness negs (Wave 5); 5 `tests/wave6_demo_repros.rs` defect-record tests (Wave 6).
+- **Spec annotation promotions** — `spec/08-modules.md §8.2.3` → `[Tested+Neg]`; `§8.11.4` → `[Tested]`; `repl/spec.md §3.7` → `[Tested]`; `spec/06-pattern-matching.md §6.5.1` + `§6.5.2` → `[Tested+Neg]`.
+- **Two Sprint 57 carries closed** — `tests/ring2.rs::neg_private_submodule_not_importable_from_peer` (Step 5d (i)) and `tests/repl_experience.rs::display_overloaded_fn_shows_all_variants` (Step 5d (ii)) both flip green and confirmed at close.
 
 ### Deferred
 
-{...}
+**Six baseline failures** (all properly tracked with failing tests + FIXMEs):
+
+| Test | Owning skill | Disposition |
+|---|---|---|
+| `sketch_port::sketch_run_tests_pass_fn_called` | `/int` | Pre-existing; latent IO-trampoline interaction with `bind` over `(IO TestResult)` confirmed; defer to a stabilisation sprint with minimal repro per `feedback_qa_reproduction.md`. |
+| `sprint23::cache_repl_loads_on_startup` | `/int` | Pre-existing; FIXME(/int) at `tests/sprint23.rs:1126` — dual-path persistence structural debt; future stabilisation sprint. |
+| `sprint23::persist_import_survives_restart` | `/int` | Pre-existing; FIXME(/int) at `tests/sprint23.rs:1307` — same dual-path persistence root cause; future stabilisation sprint. |
+| `wave6_demo_repros::display_defn_with_docstring_uses_dash_separator` | `/int` (Defect 3) | Demo-surfaced Wave 6; format-string fix in `src/session_v4.rs::append_docstring_comment`. |
+| `wave6_demo_repros::run_tests_batched_invocation_no_crash` | `/backend` (Defects 4+5) | Demo-surfaced Wave 6; codegen-incomplete path for `html` exemplar + RC/last-use issue. |
+| `wave6_demo_repros::exemplar_solver_does_not_stack_overflow_on_small_puzzle` | `/backend` + `/port` (Defects 6+7) | Pre-existing Sprint 19 stack-overflow; once `/backend` resolves, `/port` re-enables 3 puzzle tests in `exemplar/solver.cl`. |
+
+**Other deferred work (named future sprints)**:
+- **`crates/cranelisp-runtime/src/io.rs:28` RC residual** (FIXME(/backend)) — one-deferral-permitted invoked per `/arch` Condition 6; regression-test symptoms named in `tests/plan/ring4.md §G.14`; deferred to a `/backend` RC stabilisation sprint.
+- **`v4_cache_hit_dependency`** — Wave 2 partial close; cross-module cache restore residual; carry to a backend cache stabilisation sprint.
+- **Dual-path persistence collapse (Option B)** — 3 sprint23 cache/link FIXMEs name this as the structural debt; dedicated sprint when prioritised.
+- **Decision 25 + Decision 31 Scenario 2 footnote tightening** — `/arch` cosmetic; can land in any sprint after Sprint 58 close.
+- **`design/arch/sequence-diagram/v4-target.svg/.png` regeneration** — `/arch` cosmetic, carried Wave 6.
+- **`design/int/persistent-workers.md:375` REPL eval-latency measurement** (FIXME(/repl)) — forward-pointer measurement task; defer with rationale.
+- **Multiple design-doc forward FIXMEs** — `design/int/symbol-table-cache.md`, `design/int/cranelisp-toml.md`, `design/backend/ring2-rc.md`, `design/typecheck/ast-annotation.md`, `design/platform/platform-registry-removal.md`, `design/int/concurrent-workers.md`, `design/int/persistent-workers.md` — all are properly addressed forward-pointers (named owning skills, named follow-on actions, none unaccounted).
 
 ### Findings
 
-{...}
+- **Defect-handoff principle codification was the structural lesson of Wave 6**. User-proxy skills (`/repl`, `/port`, `/stdlib`, `/examples`, `/docs`, `/platform`) discovering defects in demos is normal and expected; filing failing integration tests as durable records (not just FIXME comments) is the correct closure shape. This pattern was added to root `CLAUDE.md` + 6 skill defs in `dea17b1` so future user-proxy work can apply it without ambiguity.
+- **The race shape (Defect 1) lived at 5 sites, not 1**. `/int`'s diagnosis (`compile_dep_inline` registered with scheduler before publishing sexps) was correct but localised; the actual fix in `a9e174e` had to apply the publish-before-register reordering at 5 sites in `src/session_v4.rs` + `src/worker.rs`. The race window was structural in the persistent-worker model, not incidental — supports the broader Decision-37 cache-hit-integration discipline that `register_module`'s recursion is the single correct shape.
+- **Dual-path persistence is the next structural debt**. Three pre-existing failures (`cache_repl_loads_on_startup`, `persist_import_survives_restart`, plus the resolved `cache_repl_writes_on_import` cluster behaviour) all trace to dual-path persistence between in-process REPL state and `.cranelisp-cache/` artifacts. A dedicated stabilisation sprint focused on collapsing the dual paths into a single path (Option B per the existing FIXMEs) is warranted before Ring 4 release.
+- **Step 5e auto-bump policy works as designed but applies sparingly**. The procedural change is correct; in practice the §heading bump triggers only when the FINAL untested child gets covered, which is rare per-sprint. Sprint 58's promotions (§8.2.3, §8.11.4, §6.5.1, §6.5.2, §3.7) all sat under headings whose other children were already tested at the same level — no auto-bump warranted this sprint. The policy will fire on future sprints as remaining gaps close.
+- **Generics-blind backend works as designed (Decision 32)**. The Step 5c migration (~182 call-site touches) had zero observable backend-signature churn; backend reads `SymbolTable` (i.e. `SymbolTable<(), ()>`) everywhere. The integration-layer `Code` enum stays localised to `src/`. CP1 Layer 2 Option B arbitration was the correct call.
+- **`/int` burden was VERY HEAVY but tractable** (per Phase 2 scope assessment). The 5-stage migration ordering with cargo-check checkpoints kept the build green throughout. No automatic deferral was needed; user-direction "no descope" held.
+- **The 1755 vs 1754 parallel-run flake** (`sprint23::persist_import_survives_restart` sometimes passes under heavy nextest parallelism, sometimes fails) is itself a signal that the dual-path persistence has a heisenbug shape — worth investigating during the dual-path-collapse stabilisation sprint.
