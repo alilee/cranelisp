@@ -67,19 +67,7 @@ After extraction, the submodule is indistinguishable from one created manually. 
 
 In the REPL, an inline `(mod name ...)` writes the backing file and loads the submodule via the standard file-based path.
 
-### 8.2.3 Private Submodule Declaration [Tested+Neg tests/ring2.rs::neg_private_submodule_not_importable_from_peer — FAILING: /int gap, `(mod- ...)` protection not enforced cross-module]
-
-<!-- FIXME(/spec): Sprint 58 Wave 4 Step 5d (i) closed the /int gap. The test
-     `tests/ring2.rs::neg_private_submodule_not_importable_from_peer` now PASSES;
-     the import resolver emits the spec-mandated error
-     "cannot import from private submodule '...': declared private by '...' via
-     (mod- internal); importer '...' is not within the '...' subtree (spec §8.2.3)".
-     ring4p.demo Wave 6 plays the rejection live. Drop the FAILING tag and keep
-     the [Tested+Neg ...] annotation with the test name. Filed by /repl during
-     Sprint 58 Wave 6 audit. -->
-
-<!-- FIXME(/int): Private submodule enforcement (§8.2.3 MUST NOT) is not yet implemented — `tests/ring2.rs::neg_private_submodule_not_importable_from_peer` asserts that a peer module importing from a `(mod- internal)` declaration MUST fail compilation, but the import currently succeeds (compilation is Ok where it must be Err). Visibility check lives in the import resolver; the path-based `(mod- ...)` marker is parsed but not propagated to the module's visibility flag. Filed by /qa during Sprint 57 Wave 5. -->
-
+### 8.2.3 Private Submodule Declaration [Tested+Neg tests/ring2.rs::neg_private_submodule_not_importable_from_peer]
 
 ```clojure
 (mod- internal)
@@ -645,17 +633,14 @@ The file extension `.{ext}` is platform-dependent (`.dylib` on macOS, `.so` on L
 
 Platform resolution mirrors module resolution: project root is checked first, then lib directories in order. This means a project can ship platform DLLs alongside its source (`myproject/platforms/custom-io.dylib`), and a standard library can ship platforms alongside its modules (`stdlib/platforms/stdio.dylib`).
 
-### 8.11.4 Lib Directory Configuration [Tested tests/e2e.rs::e2e_cranelisp_lib_env_overrides_stdlib (env var); project-config file NOT YET IMPLEMENTED — see FIXME(/int) below]
+### 8.11.4 Lib Directory Configuration [Tested tests/e2e.rs::e2e_cranelisp_lib_env_overrides_stdlib, tests/e2e.rs::e2e_cranelisp_toml_lib_dirs_resolves_modules, tests/e2e.rs::e2e_cranelisp_toml_overrides_cranelisp_lib_env, tests/e2e.rs::e2e_cranelisp_toml_missing_falls_through_to_env, tests/e2e.rs::e2e_cranelisp_toml_malformed_errors_helpfully]
 
 Lib directory locations are assembled from the following sources, in precedence order:
 
 1. **Explicit programmatic additions** -- the implementation MUST support adding lib directories in code (e.g., via a session API). These take highest precedence and are appended to the list.
-2. **Project configuration file** (e.g., `Cranelisp.toml`) MAY specify a lib directory list. When present, this takes precedence over environment and defaults.
+2. **Project configuration file** (`Cranelisp.toml` in the project root) MAY specify a lib directory list under the TOML key `lib-dirs` (a list of path strings). When present, this takes precedence over `CRANELISP_LIB` and the default fallback. Paths are resolved relative to the directory containing `Cranelisp.toml`. A malformed `Cranelisp.toml` MUST produce a diagnostic identifying the file path and the parse error.
 3. **`CRANELISP_LIB` environment variable**, if set. A colon-separated list of directory paths. When set (even to empty), it fully controls the default lib directory list — no fallback is applied.
 4. **Default fallback**: When neither a project configuration file nor `CRANELISP_LIB` is present, the implementation SHOULD use `{project_root}/stdlib/` as the sole default lib directory, if that directory exists.
-
-<!-- FIXME(/int): Cranelisp.toml project configuration (§8.11.4 item 2) is spec-documented but not implemented — `src/session.rs::assemble_lib_dirs` only consults `CRANELISP_LIB` and `{project_root}/stdlib/`. A `Cranelisp.toml` in the project root is silently ignored. Either implement the loader (look for `Cranelisp.toml`, parse `lib-dirs` key, prepend to resolution list) or downgrade the spec language to "MAY" in future work. Filed by /qa during Sprint 57 Wave 5 while resolving a /qa traceability FIXME on §8.11. -->
-
 
 If no sources yield any lib directories, the lib directory list is empty. No lib modules (including `prelude` and `core`) will be found. The language still functions — primitives and special forms remain available — but no standard library names are in scope.
 
