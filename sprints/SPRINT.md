@@ -605,7 +605,7 @@ Depends on Wave 2. Largest mechanical wave (~182 call-site touches). Headline be
 | /int | 5 unit tests per `tests/plan/ring4.md §G.12` (concrete-type choice, kept_jits dissolution, Code enum coexistence) | pending | |
 | /typecheck | 3 unit tests per `tests/plan/ring4.md §G.12` (default-`()` propagation, marker trait blanket impl) | pending | |
 | /qa | 4 reclaim integration tests + 1 enum-coexistence test per `tests/plan/ring4.md §G.12` | pending | Decision 31 Scenario 1 (per-eval reclaim) + Scenario 2 (per-redefinition reclaim). Positive + negative-no-unbounded-growth. |
-| /review | Review Wave 3 code | pending | Focus: no `<C, L>` leakage upward; `kept_jits`/`kept_linkers` dissolution complete; Decision 31 safety invariant preserved. |
+| /review | Review Wave 3 code | done | PASS with 4 Importants — see `design/review/sprint58-wave3-review.md`. Decision 31 Scenario 2 per-redefinition reclaim verified; per-crate clippy clean (0 new warnings). I-1 (carry-forward regression test) + I-2 (Decision 32 Clone super-bound doc) recommended before sprint close. |
 
 **Gate criterion**: `SymbolTable<C, L>` parameterised; `Code` enum placed per Decision 35; `kept_jits` + `kept_linkers` dissolved; per-redefinition JIT reclaim verified; baseline preserved or improved; `cargo clippy` clean per-crate; test count ≥ Wave 2 baseline.
 
