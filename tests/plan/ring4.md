@@ -1090,7 +1090,7 @@ Bookkeeping for wave outcomes carried to close per `/qa` connectivity-stall reco
 
 **Wave 6 narrow-repro tests — landed in `528c14a` (`tests/wave6_demo_repros.rs`)**:
 Five failing integration tests as durable records for demo-surfaced defects (per defect-handoff principle codified in `dea17b1`):
-- `repl_dep_load_no_race_with_persistent_workers` (Defect 1 → `/int`) — RESOLVED in Wave 6 follow-on `a9e174e` (REPL dep-load race fix at 5 sites in `src/session_v4.rs::compile_dep_inline` + `src/worker.rs`); test now passes.
+- `repl_dep_load_no_race_with_persistent_workers` (Defect 1 → `/int`) — RESOLVED in Wave 6 follow-on `a9e194c` (REPL dep-load race fix at 5 sites in `src/session_v4.rs::compile_dep_inline` + `src/worker.rs`); test now passes.
 - `stdlib_seq_lazy_imports_resolve_nil_cons` (Defect 2 → `/stdlib`) — RESOLVED in Wave 6 follow-on `98bf4ef` (added explicit imports `[collections.list [Cons Nil]]` + `[fn.option [Some None]]` to `stdlib/seq/lazy.cl`); test now passes.
 - `display_defn_with_docstring_uses_dash_separator` (Defect 3 → `/int`) — DEFERRED post-Sprint-58. Failing test as durable record. Spec: `repl/spec.md §1.1` (DASH separator mandate) vs `src/session_v4.rs::append_docstring_comment` emitting SEMICOLON.
 - `run_tests_batched_invocation_no_crash` (Defects 4+5 collapsed → `/backend`) — DEFERRED post-Sprint-58. Failing test as durable record. Symptom: `/run-tests html` exits 1 with "in-memory codegen incomplete for 'html'" + "No test-* functions found"; the deeper SIGSEGV/SIGTRAP is gated by an upstream codegen path issue.
@@ -1099,7 +1099,7 @@ Five failing integration tests as durable records for demo-surfaced defects (per
 **Wave 3d Decision 31 reclaim tests — landed in `d348bca` (`tests/v4_jit_reclaim.rs`)**:
 5 tests covering Decision 31 Scenario 1 (REPL-eval JIT reclaim) and Scenario 2 (per-redefinition JIT reclaim) plus Linker-coexistence companion. All 5 passing. `tests/plan/ring4.md §G.12` annotations updated inline at landing.
 
-**Wave 6 follow-on (Defect 1 + Defect 2) — landed in `a9e174e` + `98bf4ef`**:
+**Wave 6 follow-on (Defect 1 + Defect 2) — landed in `a9e194c` + `98bf4ef`**:
 - Defect 1 fix: `/int` published `dep_sexps` to `shared.module_sexps` BEFORE `scheduler.register_module` at 5 sites in `src/session_v4.rs::compile_dep_inline` to close the persistent-worker race window.
 - Defect 2 fix: `/stdlib` added missing explicit imports to `stdlib/seq/lazy.cl` so the module typechecks under the null-prelude-import discipline.
 - `spec/08-modules.md §8.11.4` + `§8.2.3` annotation cleanups landed in `d6fa3ad` reflecting the new test coverage.
@@ -1137,7 +1137,7 @@ Per SPRINT.md Wave 5 framing: integration tests authored in parallel to Waves 2/
      - Docstring-separator defect → `display_defn_with_docstring_uses_dash_separator` (failing
        durable record; FIXME(/int) inline at test); deferred post-Sprint-58.
      - Stdlib REPL auto-import defect → `repl_dep_load_no_race_with_persistent_workers`
-       (Defect 1, RESOLVED Wave 6 follow-on `a9e174e`) + `stdlib_seq_lazy_imports_resolve_nil_cons`
+       (Defect 1, RESOLVED Wave 6 follow-on `a9e194c`) + `stdlib_seq_lazy_imports_resolve_nil_cons`
        (Defect 2, RESOLVED Wave 6 follow-on `98bf4ef`).
      See §G.18 above for full bookkeeping. -->
 
