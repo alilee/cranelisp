@@ -5,9 +5,10 @@
 //   Lazily discovers dependencies (imports, prelude, platform) in Step 5.
 // `inline_jit_codegen_for_module` — unified JIT codegen entry point that
 //   calls `cranelisp_backend::compile_to_module` (Sprint 56 Wave 2).
-// `priority_worker_loop` — dispatches work items from the scheduler.
+// `priority_worker_loop_shared` — dispatches work items from the scheduler;
+//   runs on each spawned persistent priority worker thread. Sprint 59
+//   Workstream A collapsed the inline variant onto this one.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
@@ -1244,46 +1245,25 @@ fn handle_import(
             continue;
         }
 
-        // Read and parse source.
-        let source = std::fs::read_to_string(&dep_file).map_err(|e| {
+        // Run the shared per-dep prologue (read source, parse, record
+        // source hash, stash source text, update file_to_module, publish
+        // dep_sexps). Sprint 59 Workstream A §7 Step 1/2.
+        let dep_file_for_err = dep_file.clone();
+        let dep_clone_for_err = dep.clone();
+        let spec_span = spec.span;
+        let dep_sexps = register_dep(ctx, dep, &dep_file, |e| {
             CranelispError::ModuleError {
                 message: format!(
                     "cannot read module '{}' from '{}': {}",
-                    dep,
-                    dep_file.display(),
+                    dep_clone_for_err,
+                    dep_file_for_err.display(),
                     e
                 ),
-                file: Some(dep_file.clone()),
-                span: spec.span,
+                file: Some(dep_file_for_err.clone()),
+                span: spec_span,
             }
         })?;
-        let dep_sexps = cranelisp_frontend::parse(&source)?;
 
-        // Record source hash in CacheState for manifest generation.
-        if let Some(shared) = ctx.shared_state {
-            let hash = cranelisp_backend::cache::hash_source(&source);
-            let mut cs_guard = shared.cache_state.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(cs) = cs_guard.as_mut() {
-                cs.source_hashes_mut().insert(dep.clone(), hash);
-            }
-            drop(cs_guard);
-        }
-
-        // Store source text on typecheck product for /source introspection (--repl).
-        if ctx.introspection.is_some() {
-            ensure_typecheck_product(ctx.typecheck_products, dep);
-            if let Some(mut tp) = ctx.typecheck_products.get_mut(dep) {
-                tp.source_text = Some(source);
-            }
-        }
-
-        // Publish dep_sexps to shared.module_sexps BEFORE register_module so
-        // any persistent priority worker that wakes on the scheduler notify
-        // finds the sexps ready and does not emit "no parsed sexps for
-        // module '<dep>'". The caller (handle_typecheck_work_shared) also
-        // re-publishes when the Blocked result is processed, but by then a
-        // worker may already have raced. Sprint 58 Wave 6 Defect 1.
-        publish_dep_sexps(ctx, dep, &dep_sexps);
         // Register dep with scheduler (idempotent — skips if already registered).
         ctx.scheduler.register_module(dep.clone(), true);
 
@@ -1321,6 +1301,73 @@ fn publish_dep_sexps(
             .unwrap_or_else(|e| e.into_inner());
         map.entry(dep.clone()).or_insert_with(|| dep_sexps.to_vec());
     }
+}
+
+/// Run the per-dep prologue that every persistent-worker form handler
+/// (handle_import, handle_export, handle_mod, inject_prelude_if_needed)
+/// used to inline before calling `scheduler.register_module`:
+///
+///   1. read source from dep_file
+///   2. parse to sexps
+///   3. record source hash in CacheState
+///   4. stash source text on the typecheck product for /source
+///   5. update file_to_module for the file watcher
+///   6. publish dep_sexps to `shared.module_sexps` (Sprint 58 W6 Defect 1
+///      publish-before-register ordering).
+///
+/// Does NOT call `scheduler.register_module` or `block_for_typecheck` —
+/// the caller does that, so the shim is reusable regardless of whether
+/// the caller intends to block. Returns the parsed sexps so the caller
+/// can forward them through `ProcessResult::Blocked` / `BlockAction::Block`.
+///
+/// Sprint 59 Workstream A §7 Step 1 — collapse the 5 publish-before-register
+/// sites (Sprint 58 W6 Defect 1) onto a single prologue. The caller-specific
+/// error framing (span / message wording) is produced by `prologue_err`,
+/// because each form handler has a slightly different error message shape.
+fn register_dep(
+    ctx: &mut ModuleCompiler,
+    dep: &ModuleFullPath,
+    dep_file: &Path,
+    prologue_err: impl FnOnce(std::io::Error) -> CranelispError,
+) -> Result<Vec<Sexp>, CranelispError> {
+    // file_to_module mapping for the file watcher (Step 14).
+    if let Some(shared) = ctx.shared_state
+        && let Ok(canonical) = dep_file.canonicalize()
+    {
+        shared
+            .file_to_module
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(canonical, dep.clone());
+    }
+
+    // 1. read source.
+    let source = std::fs::read_to_string(dep_file).map_err(prologue_err)?;
+    // 2. parse.
+    let dep_sexps = cranelisp_frontend::parse(&source)?;
+
+    // 3. record source hash in CacheState for manifest generation.
+    if let Some(shared) = ctx.shared_state {
+        let hash = cranelisp_backend::cache::hash_source(&source);
+        let mut cs_guard = shared.cache_state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(cs) = cs_guard.as_mut() {
+            cs.source_hashes_mut().insert(dep.clone(), hash);
+        }
+        drop(cs_guard);
+    }
+
+    // 4. store source text for /source introspection (--repl).
+    if ctx.introspection.is_some() {
+        ensure_typecheck_product(ctx.typecheck_products, dep);
+        if let Some(mut tp) = ctx.typecheck_products.get_mut(dep) {
+            tp.source_text = Some(source);
+        }
+    }
+
+    // 5. publish BEFORE scheduler notify (Sprint 58 W6 Defect 1 ordering).
+    publish_dep_sexps(ctx, dep, &dep_sexps);
+
+    Ok(dep_sexps)
 }
 
 /// Attempt to load a module from the disk cache, skipping typecheck.
@@ -1587,6 +1634,16 @@ fn register_transitive_cached_imports(
         if try_cache_hit_load(ctx, transitive_dep, &dep_file) {
             continue;
         }
+        // FIXME(/int) — Sprint 59 /review I-2: this cache-miss branch does NOT
+        // route through the new `register_dep` shim (worker.rs:1326). It's the
+        // 6th per-dep prologue site that Workstream A missed — 5 sites were
+        // consolidated through `register_dep`, this one stayed inlined. The
+        // publish-before-register ordering is preserved here by line order, so
+        // no active symptom, but the shim consolidation is incomplete. Also see
+        // /review I-3: the deleted unit guard `compile_dep_inline_publishes_sexps_before_register`
+        // is only fully redundant once this 6th site also routes through the shim.
+        // `design/int/dual-path-persistence-collapse.md` §9 Risk 1 predicted this.
+        // `design/review/sprint-59-wave-1.md` records the finding. Carry to S60.
         // Cache miss — register for fresh build. Read source, parse, and
         // stash sexps so the worker loop can drive typecheck.
         let Ok(source) = std::fs::read_to_string(&dep_file) else {
@@ -1677,30 +1734,23 @@ fn handle_export(
             continue;
         }
 
-        // Read and parse source.
-        let source = std::fs::read_to_string(&dep_file).map_err(|e| {
+        // Run the shared per-dep prologue (read source, parse, record
+        // source hash, stash source text, update file_to_module, publish
+        // dep_sexps). Sprint 59 Workstream A §7 Step 1/2.
+        let dep_file_for_err = dep_file.clone();
+        let dep_clone_for_err = dep.clone();
+        let spec_span = spec.span;
+        let dep_sexps = register_dep(ctx, dep, &dep_file, |e| {
             CranelispError::ModuleError {
                 message: format!(
                     "cannot read module '{}' from '{}': {}",
-                    dep, dep_file.display(), e
+                    dep_clone_for_err, dep_file_for_err.display(), e
                 ),
-                file: Some(dep_file.clone()),
-                span: spec.span,
+                file: Some(dep_file_for_err.clone()),
+                span: spec_span,
             }
         })?;
-        let dep_sexps = cranelisp_frontend::parse(&source)?;
 
-        // Store source text for /source introspection (--repl).
-        if ctx.introspection.is_some() {
-            ensure_typecheck_product(ctx.typecheck_products, dep);
-            if let Some(mut tp) = ctx.typecheck_products.get_mut(dep) {
-                tp.source_text = Some(source);
-            }
-        }
-
-        // Publish dep_sexps before scheduler notify wakes persistent workers
-        // (Sprint 58 Wave 6 Defect 1).
-        publish_dep_sexps(ctx, dep, &dep_sexps);
         // Register dep with scheduler and block.
         ctx.scheduler.register_module(dep.clone(), true);
         ctx.scheduler.block_for_typecheck(module, dep, &Symbol::from("*"))?;
@@ -1765,42 +1815,25 @@ fn handle_mod(
         return Ok(BlockAction::Continue);
     }
 
-    // Read and parse source.
-    let source = std::fs::read_to_string(&dep_file).map_err(|e| {
+    // Run the shared per-dep prologue (read source, parse, record source
+    // hash, stash source text, update file_to_module, publish dep_sexps).
+    // Sprint 59 Workstream A §7 Step 1/2.
+    let dep_file_for_err = dep_file.clone();
+    let sub_path_for_err = sub_path.clone();
+    let decl_span = decl.span;
+    let dep_sexps = register_dep(ctx, &sub_path, &dep_file, |e| {
         CranelispError::ModuleError {
             message: format!(
                 "cannot read submodule '{}' from '{}': {}",
-                sub_path,
-                dep_file.display(),
+                sub_path_for_err,
+                dep_file_for_err.display(),
                 e
             ),
-            file: Some(dep_file.clone()),
-            span: decl.span,
+            file: Some(dep_file_for_err.clone()),
+            span: decl_span,
         }
     })?;
-    let dep_sexps = cranelisp_frontend::parse(&source)?;
 
-    // Record source hash in CacheState for manifest generation.
-    if let Some(shared) = ctx.shared_state {
-        let hash = cranelisp_backend::cache::hash_source(&source);
-        let mut cs_guard = shared.cache_state.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(cs) = cs_guard.as_mut() {
-            cs.source_hashes_mut().insert(sub_path.clone(), hash);
-        }
-        drop(cs_guard);
-    }
-
-    // Store source text for /source introspection (--repl).
-    if ctx.introspection.is_some() {
-        ensure_typecheck_product(ctx.typecheck_products, &sub_path);
-        if let Some(mut tp) = ctx.typecheck_products.get_mut(&sub_path) {
-            tp.source_text = Some(source);
-        }
-    }
-
-    // Publish dep_sexps before scheduler notify wakes persistent workers
-    // (Sprint 58 Wave 6 Defect 1).
-    publish_dep_sexps(ctx, &sub_path, &dep_sexps);
     // Register dep with scheduler and block for typecheck.
     ctx.scheduler.register_module(sub_path.clone(), true);
     ctx.scheduler.block_for_typecheck(
@@ -2264,55 +2297,32 @@ fn inject_prelude_if_needed(
         if let Some(prelude_file) = prelude_file {
             // Cache check: try to load prelude from disk cache.
             if try_cache_hit_load(ctx, &prelude_path, &prelude_file) {
-                // Prelude loaded from cache — inject implicit import and continue.
+                let prelude_spec = ImportSpec {
+                    module_path: prelude_path,
+                    alias: None,
+                    names: ImportNames::Glob,
+                    span: Span::SYNTHETIC,
+                };
+                cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).register_imports(&mut ctx.check_state,&[prelude_spec])?;
                 return Ok(None);
             }
 
-            let source = std::fs::read_to_string(&prelude_file).map_err(|e| {
+            // Run the shared per-dep prologue (read source, parse, record
+            // source hash, stash source text, update file_to_module, publish
+            // dep_sexps). Sprint 59 Workstream A §7 Step 1/2.
+            let prelude_file_for_err = prelude_file.clone();
+            let prelude_sexps = register_dep(ctx, &prelude_path, &prelude_file, |e| {
                 CranelispError::ModuleError {
                     message: format!(
                         "cannot read prelude '{}': {}",
-                        prelude_file.display(),
+                        prelude_file_for_err.display(),
                         e
                     ),
-                    file: Some(prelude_file.clone()),
+                    file: Some(prelude_file_for_err.clone()),
                     span: Span::SYNTHETIC,
                 }
             })?;
-            let prelude_sexps = cranelisp_frontend::parse(&source)?;
 
-            // Record source hash in CacheState for manifest generation.
-            if let Some(shared) = ctx.shared_state {
-                let hash = cranelisp_backend::cache::hash_source(&source);
-                let mut cs_guard = shared.cache_state.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(cs) = cs_guard.as_mut() {
-                    cs.source_hashes_mut().insert(prelude_path.clone(), hash);
-                }
-                drop(cs_guard);
-            }
-
-            // Store source text for /source introspection (--repl).
-            if ctx.introspection.is_some() {
-                ensure_typecheck_product(ctx.typecheck_products, &prelude_path);
-                if let Some(mut tp) = ctx.typecheck_products.get_mut(&prelude_path) {
-                    tp.source_text = Some(source);
-                }
-            }
-
-            // Populate file_to_module mapping for file watcher.
-            if let Some(shared) = ctx.shared_state {
-                if let Ok(canonical) = prelude_file.canonicalize() {
-                    shared
-                        .file_to_module
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .insert(canonical, prelude_path.clone());
-                }
-            }
-
-            // Publish prelude sexps before scheduler notify wakes persistent
-            // workers (Sprint 58 Wave 6 Defect 1).
-            publish_dep_sexps(ctx, &prelude_path, &prelude_sexps);
             ctx.scheduler.register_module(prelude_path.clone(), true);
             ctx.scheduler.block_for_typecheck(
                 module,
@@ -3184,110 +3194,16 @@ pub struct ModuleSuspendState {
     pub pass1_done: bool,
 }
 
-/// Main worker loop: pull work from the scheduler and process it.
-///
-/// Returns when `take_priority_work` returns None (all work done or shutdown).
-/// After typecheck, performs a codegen sweep (W2 approach).
-///
-/// `module_sexps` grows dynamically as dependencies are discovered (G-2).
-pub fn priority_worker_loop(
-    ctx: &mut ModuleCompiler,
-    module_sexps: &mut HashMap<ModuleFullPath, Vec<Sexp>>,
-) -> Result<(), CranelispError> {
-    let mut suspend_states: HashMap<ModuleFullPath, ModuleSuspendState> = HashMap::new();
-
-    loop {
-        let work = ctx.scheduler.take_priority_work();
-        match work {
-            Some(PriorityWork::Typecheck(module)) => {
-                let start_idx = ctx.scheduler.module_resume_from_form(&module)
-                    .flatten()
-                    .unwrap_or(0);
-
-                // Clone sexps (don't remove — needed on resume).
-                // If no sexps are available for this module, skip it —
-                // the module may be managed externally (e.g., REPL driving
-                // the user module directly). The scheduler unblocked it
-                // when a dependency completed, but the REPL retry loop
-                // will re-process it.
-                let sexps = match module_sexps.get(&module) {
-                    Some(s) => s.clone(),
-                    None => continue,
-                };
-
-                // Get or create suspend state for this module.
-                let state = suspend_states
-                    .entry(module.clone())
-                    .or_insert_with(|| ModuleSuspendState {
-                        accumulator: ModuleCheckAccumulator::new(),
-                        expanded_program: Vec::new(),
-                        pass1_done: false,
-                    });
-
-                match process_module_forms(
-                    ctx, &module, &sexps, start_idx,
-                    state,
-                    ModuleStrategy::Replace,
-                ) {
-                    Ok(ProcessResult::Complete { check_result: _, program }) => {
-                        // Unified JIT codegen via compile_to_module (Sprint 56 Wave 2).
-                        inline_jit_codegen_for_module(
-                            ctx.scheduler,
-                            &module,
-                            &program,
-                            ctx.symbol_tables,
-                            None,
-                            &[],
-                            ctx.shared_state,
-                        )?;
-
-                        // Sprint 58 Step 5b: nice workers walk
-                        // `symbol_tables[module].defined_symbols()` directly;
-                        // no `codegen_programs` stash anymore. The `program`
-                        // result from `process_module_forms` is consumed only
-                        // by the inline JIT codegen above.
-                        let _ = program;
-                        ctx.scheduler.notify_typecheck_done(&module);
-
-                        // Clean up — module is done.
-                        module_sexps.remove(&module);
-                        suspend_states.remove(&module);
-                    }
-                    Ok(ProcessResult::Blocked {
-                        form_index,
-                        dep_module,
-                        dep_sexps,
-                    }) => {
-                        // Save resume state in scheduler.
-                        ctx.scheduler.set_resume_from_form(&module, form_index);
-                        // Store dep sexps for the worker loop to pick up.
-                        module_sexps.entry(dep_module.clone())
-                            .or_insert(dep_sexps);
-                        // block_for_typecheck was already called inside
-                        // handle_import/prelude injection before returning Blocked.
-                    }
-                    Err(e) => {
-                        ctx.scheduler.notify_module_failed(&module, e);
-                        // Clean up on failure.
-                        module_sexps.remove(&module);
-                        suspend_states.remove(&module);
-                    }
-                }
-            }
-            Some(PriorityWork::BlockingJitCodegen(module, _symbol))
-            | Some(PriorityWork::JitCodegen(module, _symbol)) => {
-                // Cache-hit module: load entire .o via Linker (batch load).
-                // Non-cached modules have their codegen done inline after typecheck.
-                let _ = handle_cached_codegen(
-                    &module, ctx.shared_state,
-                    ctx.scheduler,
-                );
-            }
-            None => break,
-        }
-    }
-    Ok(())
-}
+// `priority_worker_loop` — deleted Sprint 59 Workstream A §7 Step 5.
+//
+// This was the inline-variant worker loop used exclusively by
+// `CompilerSession::compile_dep_inline` to run a session-side parallel
+// orchestrator on the REPL eval thread. Its only caller is gone, so the
+// function itself retires — `priority_worker_loop_shared` below is the
+// single worker loop for every persistence entry point now.
+//
+// The header doc comment at the top of this file has been updated to
+// reflect the single-worker-loop shape.
 
 // ---------------------------------------------------------------------------
 // Persistent priority worker loop (Sprint 57 Wave 4 G9)

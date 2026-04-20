@@ -1,6 +1,6 @@
 # Sprint 59: Stabilisation + Dual-Path Persistence Collapse
 
-**Status**: ACTIVE
+**Status**: COMPLETE
 **Ring**: 4 (Effects — stabilisation)
 **Goal**: Collapse the dual-path persistence structural debt surfaced at Sprint 58 close into a single `register_module` recursion path, and clear the Sprint 58-carried demo-surfaced defects (3, 4, 5, 6, 7). After this sprint, the six carried failing tests at Sprint 58 close are green or explicitly re-triaged, and the Ring 4 acceptance-criterion gaps on cache/link/exemplar narrow to the measurement-and-polish items that are coherent with a post-convergence hardening sprint.
 
@@ -19,7 +19,9 @@ Five workstreams:
   - **Defect 7** (`/port`, unblocked by Defect 6): once `/backend` closes Defect 6, `/port` re-enables 3 puzzle tests in `exemplar/solver.cl`. Small.
   - **Defect 8** (`/int` primary; `/backend` confirms diagnosis) — `sketch_port::sketch_run_tests_pass_fn_called`: **Phase 3a repro reduction falsified Sprint 58's "IO-trampoline" hypothesis**. Actual root cause: `program_uses_test_forms` at `src/session_v4.rs:1778-1787` scans only `TopLevel::Expr`, ignoring `TopLevel::Defn` bodies — a `defn` whose body lexically references `run-test` / `discover-tests` slips through and the extern isn't added to `codegen_extra_symbols`, so JIT `finalize_definitions` fails with `can't resolve symbol run-test`. Localised fix in `src/session_v4.rs`. /arch Condition 2 does NOT trigger (invariants guard the trampoline path, which is never reached). Latent parallel bug in `program_needs_trace` (same file ~:1824) — same shape; fold into this fix. Repro notes at `design/backend/defect-8-repro-notes.md`.
 
-- **Workstream C — `/backend` RC residual** (primary, `/backend`): `crates/cranelisp-runtime/src/io.rs:28` string-literal lifetime through `print` — Sprint 57 Wave 3 carry, Sprint 58 deferred under one-deferral-permitted policy (Condition 6). This is the **second-deferral threshold** per the `/sprint` deferral escalation policy — it ships this sprint unless the user explicitly approves a third deferral. Named regression-test symptoms in `tests/plan/ring4.md §G.14`.
+- **Workstream C — `/backend` residuals** (primary, `/backend`): two /backend-local fixes:
+  - **C-i** — `crates/cranelisp-runtime/src/io.rs:28` string-literal lifetime through `print` — Sprint 57 Wave 3 carry, Sprint 58 deferred under one-deferral-permitted policy (Condition 6). This is the **second-deferral threshold** per the `/sprint` deferral escalation policy — it ships this sprint unless the user explicitly approves a third deferral. Named regression-test symptoms in `tests/plan/ring4.md §G.14`.
+  - **C-ii** — `crates/cranelisp-backend/src/cache/linker.rs:325` `ensure_got_slot` local-symbol lookup gap (Classification D per `design/backend/cache-repl-loads-triage.md`). Added Wave 1 after /int Workstream A revealed that `cache_repl_loads_on_startup` was **misattributed** to dual-path persistence — actual root cause is linker GOT slot-allocator not searching `local_symbols` when resolving `.L*` labels (Cranelift-emitted local data symbols). Sprint 58 Decision 23 regression-guard window. Effort: S (~2 hrs). Flips `tests/sprint23.rs::cache_repl_loads_on_startup` green + extends the Decision-23 guard to cover `.L*` locals.
 
 - **Workstream D — Prior-ring coverage gaps (`/qa`)**: module-boundary negative tests flagged by the Phase 1 audit.
   - `spec §8.3.7` super-in-top-level-module MUST-error neg test (`/qa` integration test in `tests/ring2.rs`).
@@ -58,7 +60,7 @@ Sprint 58 closed at **1760 passed / 6 failed / 0 skipped**. Sprint 59 target cle
 
 | Failure | Owner | Workstream | Expected clearance |
 |---|---|---|---|
-| `sprint23::cache_repl_loads_on_startup` | `/int` | A | Yes |
+| `sprint23::cache_repl_loads_on_startup` | `/backend` (re-attributed Wave 1) | C-ii | Yes — linker GOT slot-allocator local-symbol fix |
 | `sprint23::persist_import_survives_restart` | `/int` | A | Yes |
 | `wave6_demo_repros::display_defn_with_docstring_uses_dash_separator` | `/int` | B (D3) | Yes |
 | `wave6_demo_repros::run_tests_batched_invocation_no_crash` | `/backend` | B (D4/D5) | Target |
@@ -315,12 +317,89 @@ Mandatory showcase wave per `/sprint` archetype. Every user-proxy skill exposes 
 
 **S59 milestone**: First post-convergence sprint to target **0 carried failing tests**. If Workstream B Defect 8 repro reveals an IO-trampoline redesign that cannot land in-sprint, `/sprint` re-scopes with user approval (per the `Defect 8` note in Workstream B). Otherwise the baseline at close is 0 pre-existing + 0 new carries.
 
+**FIXME(/arch + /backend) for S60 — CRITICAL: JIT vs object codegen divergence is an architectural red flag.** Sprint 59 Wave 1 `/backend` RC-underflow fix (`protect_return_value`) flipped REPL-entered defns green 5/5 — but the SAME source, imported from a module (object-file path), still fails ~75%. Two code paths producing different behavior for identical source is a fundamental architectural violation: JIT finalization and object-file emission should produce **byte-identical code**, differing only in the fixup mechanism (JIT direct-finalize-then-invoke vs `.o`-relocations + link-loading). The divergence points at one of: (a) codegen context state that leaks between the two paths (e.g., context-dependent optimization decisions), (b) different compilation *sessions* producing different monomorphisations, (c) `.o`-serialization-roundtrip dropping metadata needed by link-loading, (d) Decision 31 JIT-page reclaim interacting with captured `func_addr` values in a way the `.o` path doesn't exercise. **S60 work**: /arch-driven audit to confirm the invariant (same source → same code bytes, only fixup mechanism differs), then root-cause the divergence. This is likely the root cause of the 5 remaining S59 carries (Defects 4/5/6 + `d45_solution_cell_single_call_no_rc_underflow` + new d45_html_min). Candidate S60 primary workstream.
+
+**FIXME(/backend) for S60 consideration — object-file build marker for cache invalidation across compiler rebuilds.** Today's debugging cost hours to paths that were ultimately driven by repeated cache interactions. Current `.meta.json` carries `schema_version: u32` (Decision 34) but only guards metadata layout; it does NOT auto-invalidate when the `cranelisp` binary itself is rebuilt (codegen evolution, RC convention change, GOT layout change, new relocation types). Proposal: embed a build marker in every `.o` / `.meta.json` — simplest is exe mtime (cheap, local-dev good), more reliable is an `env!("CARGO_PKG_VERSION")` + `option_env!("GIT_SHA")` from `build.rs` compile-time constant, checked on cache load. Mismatch → recompile the affected module. ~50 LOC of `build.rs` + 2-3 lines at cache-load site. Defensive against a bug class that's expensive to diagnose and costs zero to prevent. Candidate for a backend-stabilisation sprint alongside the CLIF-dump infrastructure FIXME.
+
+**Wave 1 /int finding — cache_repl_loads_on_startup is not a dual-path defect** (filed 2026-04-20 during Workstream A implementation): The FIXME at `tests/sprint23.rs:1126-1131` attributed this failure to the Sprint 58 dual-path persistence root cause, and it was listed in the Workstream A clearance table. Phase 3 design doc §8 also predicted this test would flip at Step 4. In fact, the session-2 failure mode is a backend cache-linker error — `module 'prelude' failed: codegen error at 0..0: GOT_LOAD relocation: unresolved symbol '.Ldata0' (cannot allocate slot for unknown address)` at `crates/cranelisp-backend/src/cache/linker.rs:148` — which reproduces *identically* on the baseline (pre-my-changes) binary. Confirmed via `git stash` + rebuild + manual REPL repro: first session populates the cache, second session fails loading prelude from `.o` with an unresolved `.Ldata0` symbol. This is /backend territory (cache-loading Linker integration), not /int dual-path persistence. The other two Workstream A target tests (`persist_import_survives_restart`, `v4_cache_hit_dependency`) flipped green as predicted, the heisenbug parallel-run stress (`cache_repl_loads_heisenbug_parallel_stress`) passes rock-solid, and the Sprint 58 W6 Defect 1 end-to-end guard (`repl_dep_load_no_race_with_persistent_workers`) remains green — so Workstream A's actual scope landed successfully. FIXME(/backend) should be filed at `crates/cranelisp-backend/src/cache/linker.rs` for the `.Ldata0` relocation; FIXME(/int) at `tests/sprint23.rs:1126-1131` to re-attribute the comment.
+
 ## Outcome
 
-*To be filled at Phase 6.*
+**Closed 2026-04-21. Baseline: 1801 tests total; 5 expected carries (pre-existing defect cluster), 0 new regressions.**
 
 ### Delivered
 
+- **Workstream A — Dual-path persistence collapse** — `register_dep` shim consolidates 5 previously-duplicated per-dep prologue sites in `src/worker.rs` + `src/session_v4.rs`. New `wait_module_inmem_complete_blocking` scheduler primitive avoids whole-world-wait deadlock. 3 target failing tests flipped green: `sprint23::persist_import_survives_restart`, `v4_pipeline::v4_cache_hit_dependency`, `sprint23::cache_repl_loads_heisenbug_parallel_stress` (new 20-iter stress test, rock-solid). Decision 31 Scenario 2 carry-forward invariant preserved. See `design/int/dual-path-persistence-collapse.md` for the approved design + 7-step migration plan.
+- **Cache-hit prelude glob-import parity** (late-discovered /int follow-on, same workstream scope) — `inject_prelude_if_needed` cache-hit arm now calls `register_imports(prelude_spec)` to match the else arm. Flips `sprint23::cache_repl_loads_on_startup` + 2 new `tests/sprint59_cache_repro.rs` tests green (single-function prelude survives session restart).
+- **Defect 3** — docstring separator in `src/session_v4.rs::append_docstring_comment` uses `-` per `repl/spec.md §1.1`. `wave6_demo_repros::display_defn_with_docstring_uses_dash_separator` green.
+- **Defect 8** — `program_uses_test_forms` + `program_needs_trace` AST scans now walk `TopLevel::Defn` bodies (not just `TopLevel::Expr`) via a shared `any_expr_in_program` helper. Plus a `needs_test_state` transitivity fix. `sketch_port::sketch_run_tests_pass_fn_called` + new `sprint59_neg::defn_body_with_trace_triggers_extern_registration_neg` green.
+- **Workstream C-i** (RC residual) — `CLHeap::into_owned_consuming` trait method added; `platforms/stdio` + `platforms/test-capture` externs migrated off the leaky `CLString::own()` pattern. FIXME at `io.rs:28` cleared. 3 new unit tests in `cranelisp-platform`. Fix is extern-shell-side; Decision 24 Scope Clause 1 not invoked. `design/backend/ring2-rc.md §3.3` audit table updated.
+- **Workstream C-ii** (linker GOT local-symbol) — `Linker::ensure_got_slot` signature extended to accept caller-supplied address; `.L*` Cranelift-emitted local data symbols now allocate slots correctly. Originally scoped by triage to flip `sprint23::cache_repl_loads_on_startup` green — that turned out to be a layered-bug case (C-ii was real but the user-visible test flip needed the cache-hit prelude parity fix above).
+- **`protect_return_value` RC-underflow fix** — `/backend` narrowed the "has heap bindings" predicate in `crates/cranelisp-backend/src/compiler/mod.rs:1123-1139` to exclude `borrowed_vars` and `consumed_vars` so the protective inc only fires when scope cleanup will actually dec. CLIF-confirmed: REPL-entered defns pass 5/5 after the fix. Does not resolve the module-imported failure class — see §Findings.
+- **Workstream D — Module-boundary negative coverage** — 4 new neg tests in `tests/sprint59_neg.rs` all green. Spec promotions to `[Tested+Neg ...]`: `§8.3.1`, `§8.3.7`, `§8.3.9`, `§4.12`.
+- **Workstream E — Sprint-opening cleanups** — `design/arch/CLAUDE.md` Decision 25 + Decision 31 Sc.2 footnote tightening; `design/arch/sequence-diagram/v4-target.svg`/`.png` regenerated from updated `.mmd`; `stdlib/plan-stdlib.md §15` audit reconciliation (count locked at 35, I-2 closed); `spec/08-modules.md §8.11.5` restructured to parallel §8.11.4.
+- **Phase 1 discipline codification (root `CLAUDE.md` + 2 new memory entries)** — three new paragraphs in §"Usability Findings and Defects": (a) cross-skill defect handoff requires minimal repro before handoff; (b) reproduced defects join the test suite permanently; (c) keep reductions small to enable CLIF-by-eye inspection. Memory files: `feedback_cross_skill_minimal_repro.md`, `feedback_repros_join_suite.md`. These disciplines paid for themselves in-sprint twice over (discovered layered bugs in cache_repl_loads_on_startup + identified JIT/object divergence as the root finding for Defects 4/5/6).
+- **Phase 5b showcase**: `repl/demos/ring4q.demo` (49 LOC) authored; 25 prior demos replayed green; `/repl` validated; stdlib/platform/port/docs demos current.
+
+**Test metrics (close)**:
+- Total runnable tests: ~1801
+- Sprint 59 new tests: 13+ (6 /qa Phase 3a + 7+ defect-repro reductions committed during fix attempts)
+- Passing flips this sprint: 8 (3 Workstream A + Defect 3 + Defect 8 + C-ii + cache-hit parity × 2)
+- Failing carries to S60: 5 (Defects 4/5 html, Defect 6 solver, `d45_solution_cell_single_call_no_rc_underflow`, `d45_html_min_v1`, `d6_exemplar_propagate_only`)
+- Regression sentinels: 6/6 green
+
 ### Deferred
 
+**5 failing tests carried to S60** — all trace to the same underlying issue (see §Findings — JIT/object divergence):
+- `wave6_demo_repros::exemplar_solver_does_not_stack_overflow_on_small_puzzle`
+- `wave6_demo_repros::run_tests_batched_invocation_no_crash`
+- `sprint59_defects456_repro::d45_html_min_v1_no_crash`
+- `sprint59_defects456_repro::d6_exemplar_propagate_only_does_not_segv`
+- `sprint59_defects456_repro::d45_solution_cell_single_call_no_rc_underflow`
+
+**/port Defect 7 carried** (blocked on Defect 6): re-enable 3 puzzle tests in `exemplar/solver.cl` once /backend resolves the JIT/object divergence.
+
+**3 Wave-1 /review Importants (first-time defer; FIXME'd + `design/review/sprint-59-wave-1.md` recorded)**:
+- **I-1** — `register_dep_for_eval` passes `delays_other=false`; worker-side sites pass `true`. FIXME at `src/session_v4.rs:1307`.
+- **I-2** — `recurse_into_transitive_deps` at `src/worker.rs:~1637` is a 6th per-dep prologue site the collapse missed. FIXME at that site.
+- **I-3** — deleted unit guard `compile_dep_inline_publishes_sexps_before_register` — folded into I-2 FIXME.
+
+**S60 /arch + /backend FIXMEs filed in this SPRINT.md**:
+- **JIT vs object codegen divergence** (CRITICAL) — architectural invariant audit; likely root cause of the 5 carries.
+- **Object-file build marker for cache invalidation** — defensive against cache-staleness across compiler rebuilds.
+- **CLIF-dump infrastructure** (`CRANELISP_CODEGEN_TRACE=1`) — captured at `design/backend/defects-456-reduction.md` §Phase 2.
+- **`cache_repl_loads_on_startup` original misattribution** — the FIXME at `tests/sprint23.rs:1126-1131` has now been updated in-sprint (resolution text) but was documented during Wave 1.
+
+**Observations recorded (not S59-scope)**:
+- **Examples `--run` path broken since Sprint 1** — 27 `.cl` files in `examples/` use bare primitive names (`add-i64`, `eq-i64`, etc.) not exposed by the stdlib prelude re-export shell; `tests/examples.rs` green via test-fixture prelude path. `cranelisp --run examples/FOO.cl` fails. S60 examples-focused sprint candidate.
+- **`/sig` docstring display gap** — `/sig add` on a docstring'd defn shows `:(Fn [Int Int] Int) add ; defn` (dash + docstring omitted); `repl/spec.md §1.1` mandates universal format. Separate from Defect 3 (which fixed the defn-confirmation-line separator). Candidate for a `/repl` compliance audit.
+- **FIXME(/docs)** at `user/plan-docs.md:218-232` — docstring example format uses old `; <doc>` pattern. Planning artefact drift, no user-facing gap.
+- **`cargo nextest list` hung twice post-compile during Wave 2** — transient; not a defect yet; worth watching.
+
 ### Findings
+
+**Structural — JIT vs object codegen divergence** (load-bearing for S60 scope):
+
+After the `protect_return_value` RC-underflow fix landed, REPL-entered defns pass 5/5 deterministically but module-imported defns still fail ~75% with raw SIGTRAP (no stderr, no Rust panic). **Same source, same mechanism should produce same code bytes — only the fixup mechanism should differ** (JIT direct-finalize-then-invoke vs `.o`-relocations + link-loading). The observed divergence is an invariant violation, not just a specific bug symptom. This finding is named as an S60 /arch + /backend audit: confirm the invariant, then root-cause the divergence. Likely the single root cause for all 5 remaining carries.
+
+Three sub-hypotheses for the divergence (from `design/backend/defects-456-reduction.md §"Still to resolve"`):
+1. Monomorphised defn codegen context divergence across module boundaries
+2. Auto-curry closure-over-polymorphic-dispatch RC contract mismatch between paths
+3. Cross-module GOT drop-glue `func_addr` interacting with Decision 31 JIT-page reclaim
+
+The raw-trap-no-stderr signature (vs a Rust `debug_assert!` which flushes stderr) implicates (3).
+
+**Process — minimal-repro discipline paid for itself, multiple times**:
+
+Sprint 59 codified three new rules (cross-skill handoff needs minimal repro; repros join the suite for eternity; keep reductions small for CLIF-by-eye inspection). Each rule was exercised in-sprint and returned value:
+- Cross-skill minimal-repro discipline caught the layered-bug case in `cache_repl_loads_on_startup` (C-ii linker fix was real but didn't flip the test; the second bug was in /int cache-hit prelude parity). Without discipline, we'd have thought C-ii "fixed" it and missed the parity bug entirely.
+- Repros-join-the-suite converted 20+ reduction tests into durable guards. The 39-LOC Defects 4/5 minimal repro and the single-call `(solution-cell g g 0)` repro would have been thrown away in the prior workflow.
+- Keep-reductions-small made CLIF inspection tractable and surfaced the double-inc pattern in `protect_return_value` (a real bug, now fixed).
+
+**Process — scope re-assessment happened twice mid-sprint, both times correctly**:
+1. /int's Workstream A reported `cache_repl_loads_on_startup` as "not dual-path, looks like /backend linker". /sprint correctly spawned a 30-min /backend triage before committing scope (user-directed Option 3). Triage recommended fold; fold landed; layered-bug structure surfaced; /int parity fix completed it.
+2. /backend's TCO-scope-cleanup fix didn't flip the minimal repros but didn't regress either. /sprint asked user for disposition; user authorized further reduction; reduction yielded the unified JIT/object-divergence finding.
+
+**Sketch lesson**: In both mid-sprint re-scopes, the project's own rule ("reduce before handoff; repros join the suite") was the discipline that made the decisions tractable. Honor it in S60 and beyond.
+
+**Sprint burden**: /int HEAVY (Workstream A + Defect 3 + Defect 8 + cache-hit parity + /review I-1/I-2 FIXMEs); /backend HEAVY (C-i + C-ii + `protect_return_value` + reduction agent work + Defects 4/5/6 triage + diagnostic CLIF capture). User-proxy skills LIGHT (showcase + demo replay). Actual /int burden matched the scope assessment ("HEAVY — but narrower than Sprint 58"). Actual /backend burden was higher than planned due to the defect-reduction cycles.

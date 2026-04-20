@@ -1,0 +1,53 @@
+; Cranelisp Ring 4Q — Sprint 59: Stabilisation + dual-path persistence collapse
+
+; Sprint 59 clears the Sprint 58 carried failures and collapses the divergent
+; cache-restore and fresh-compile paths onto one `register_module` recursion.
+; Highlights: docstring separator fix, AST test-form scan, restart persistence.
+
+; Defect 3 — /sig output for a defn with a docstring now uses `-` (dash) per
+; repl/spec.md §1.1, joining classification and docstring on the universal
+; line. Before S59 the separator was `;` (an internal field collision).
+
+(defn add "Add two integers." [:Int x :Int y] (+ x y))
+
+/sig add
+
+; Defect 8 — test-form scanning now walks `defn` bodies. Before S59,
+; `program_uses_test_forms` at src/session_v4.rs scanned only TopLevel::Expr;
+; a defn lexically referencing `trace` / `run-test` slipped past, and the
+; extern was never added to codegen_extra_symbols — JIT finalize failed with
+; "can't resolve symbol". After S59 the extern registers and the defn compiles.
+
+(defn inspect-sum "Traces a small sum so the body references the trace extern." [] (trace (+ 1 2)))
+
+/sig inspect-sum
+
+(inspect-sum)
+
+; Workstream A — dual-path persistence collapse. The `.cranelisp-cache/`
+; restore path and the fresh-compile path now share one register_module
+; recursion. Imports persist across REPL restarts via user.cl + cache.
+; First session: create a helper module and import it.
+
+/sh printf '(defn helper-val [] 99)\n' > helper.cl
+
+(import [helper [helper-val]])
+
+(helper-val)
+
+/quit
+
+; Restart — the fresh REPL restores user.cl (which now carries the import)
+; and rehydrates the helper module through the single register_module path.
+; Before S59: either "undefined variable: +" on prelude restore, or
+; `helper-val` unresolved. After S59: both work on the first prompt.
+
+(+ 40 2)
+
+(helper-val)
+
+/sh ls .cranelisp-cache | head -4
+
+; Sprint 59 lands 0 carried failures on the docstring, test-form, and
+; persistence axes — one code path for cache and fresh compile, one
+; separator in display output, one AST traversal for test-form detection.

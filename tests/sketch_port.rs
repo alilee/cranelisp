@@ -1631,7 +1631,7 @@ fn sketch_run_tests_pass_fn_called() {
     repl_eval(
         &mut s,
         "(defn my-run-tests []
-           (bind (discover-tests \"\") (fn [names] (count-passes 0 names))))");
+           (bind (discover-tests) (fn [names] (count-passes 0 names))))");
 
     // Run the user-defined test runner and check the display output.
     let display = repl_eval_display(&mut s, "(my-run-tests)");

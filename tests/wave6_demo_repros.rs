@@ -262,7 +262,7 @@ fn stdlib_seq_lazy_imports_resolve_nil_cons() {
 fn display_defn_with_docstring_uses_dash_separator() {
     let cwd = isolated_dir("docstring_dash");
     // Pipe a defn-with-docstring then a bare reference to introspect it.
-    let input = "(defn double \"Multiply by 2\" [:Int x] (add-i64 x x))\ndouble\n";
+    let input = "(import [primitives [*]])\n(defn double \"Multiply by 2\" [:Int x] (add-i64 x x))\ndouble\n";
     let out = run_binary(&cwd, &[], input);
     let combined = format!("{}{}", stdout_str(&out), stderr_str(&out));
 

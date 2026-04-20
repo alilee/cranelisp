@@ -880,6 +880,43 @@ impl CompileScheduler {
         Ok(())
     }
 
+    /// Block until a single module reaches inmem_done (or is Complete).
+    ///
+    /// Used by REPL dep-discovery (Sprint 59 Workstream A): the eval
+    /// thread calls this after the form handler suspended the user
+    /// module in TypecheckBlocked, to wait for just the dep (not every
+    /// registered module — user itself is blocked and must be resumed
+    /// by the eval thread via its retry loop). Returns Ok when the
+    /// target module has inmem_done. Returns Err on module failure or
+    /// if the target module isn't registered.
+    pub fn wait_module_inmem_complete_blocking(
+        &self,
+        target: &ModuleFullPath,
+    ) -> Result<(), SchedulerError> {
+        let mut state = self.lock();
+        loop {
+            let ms = state.modules.get(target).ok_or_else(|| {
+                SchedulerError::InmemIncomplete { module: target.clone() }
+            })?;
+            if ms.pool == ModulePool::Failed {
+                return Err(SchedulerError::ModuleFailed {
+                    module: target.clone(),
+                    message: ms.error.as_ref()
+                        .map(|e| e.to_string())
+                        .unwrap_or_else(|| "unknown error".to_string()),
+                });
+            }
+            if ms.inmem_done || ms.pool == ModulePool::Complete {
+                return Ok(());
+            }
+            if state.shutdown {
+                return Ok(());
+            }
+            state = self.completion.wait(state)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
     /// Block until all registered modules have inmem_done set.
     ///
     /// Parks on the `completion` condvar, woken by `notify_inmem_codegen_complete`,

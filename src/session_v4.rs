@@ -1277,6 +1277,63 @@ impl CompilerSession {
         Ok(Vec::new())
     }
 
+    /// Drive a REPL-discovered dep through the single `register_module`
+    /// recursion used by every other persistence entry point — Decision 37
+    /// enacted at the REPL-session surface (Sprint 59 Workstream A).
+    ///
+    /// Replaces `compile_dep_inline` (Sprint 59 §7 Step 3). The form handler
+    /// that produced `ProcessResult::Blocked` has already published dep_sexps
+    /// into `shared.module_sexps` and called `scheduler.register_module(dep,
+    /// true)` + `block_for_typecheck`. This function's job is to block until
+    /// the persistent priority worker pool brings the dep (and every
+    /// transitive dep) to `inmem_done`. There is no second, session-side
+    /// worker loop — the persistent worker pool is the single orchestrator.
+    fn register_dep_for_eval(
+        &mut self,
+        dep_module: &ModuleFullPath,
+        dep_sexps: &[Sexp],
+    ) -> Result<(), CranelispError> {
+        // Guard: the form handler has usually already published dep_sexps
+        // and registered with the scheduler (Sprint 58 W6 Defect 1 ordering).
+        // Re-publish + re-register defensively so this entry point can also
+        // serve call sites that reach us without a prior form-handler
+        // Blocked result (e.g., tests, alternative eval paths).
+        {
+            let mut map = self.shared.module_sexps.lock()
+                .unwrap_or_else(|e| e.into_inner());
+            map.entry(dep_module.clone())
+                .or_insert_with(|| dep_sexps.to_vec());
+        }
+        // FIXME(/int) — Sprint 59 /review I-1: `delays_other=false` here
+        // diverges from worker-side sites (`register_dep` → `register_module(..., true)`).
+        // Silent pool-assignment divergence along the eval-defensive path. See
+        // `design/review/sprint-59-wave-1.md`. Carry to S60.
+        self.shared.scheduler.register_module(dep_module.clone(), false);
+
+        // Ensure the dep has a CheckState slot the persistent worker can
+        // populate via `ensure_module_exists` — idempotent.
+        self.tc_env().ensure_module_exists(dep_module);
+
+        // Block on the persistent worker pool driving THIS dep (and every
+        // transitive dep it blocks on) to inmem_done. Decision 37 §3.1 —
+        // the single synchronisation primitive, scoped to the target dep.
+        // We cannot use `wait_inmem_complete_blocking` (whole-world wait)
+        // here: the caller (user module) is in TypecheckBlocked state and
+        // can only be resumed by the eval thread's retry loop, not by a
+        // persistent worker — so a whole-world wait would deadlock on the
+        // user module. The old `compile_dep_inline` used `wait_inmem_complete`
+        // (non-blocking) *after* running its own worker loop in-thread to
+        // drive the dep to completion; the collapse replaces the inline
+        // worker loop with a persistent-worker-driven *scoped* blocking wait.
+        match self.shared.scheduler.wait_module_inmem_complete_blocking(dep_module) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.shared.scheduler.reset_all_failed_modules();
+                Err(CranelispError::from(e))
+            }
+        }
+    }
+
 
     // -- REPL eval and command dispatch (pipeline-v4.md §6) --
 
@@ -1573,7 +1630,13 @@ impl CompilerSession {
                     return self.codegen_and_execute(&module, &program, &check_result).map(Some);
                 }
                 ProcessResult::Blocked { dep_module, dep_sexps, .. } => {
-                    self.compile_dep_inline(&dep_module, &dep_sexps)?;
+                    // Sprint 59 Workstream A §7 Step 4 — collapse the
+                    // session-side inline worker-loop orchestrator onto
+                    // the single `register_module` recursion. The form
+                    // handler has published dep_sexps and registered with
+                    // the scheduler; we just block on the persistent
+                    // worker pool driving dep typecheck to completion.
+                    self.register_dep_for_eval(&dep_module, &dep_sexps)?;
                     if retry == MAX_DEP_RETRIES - 1 {
                         return Err(CranelispError::ModuleError {
                             message: format!(
@@ -1635,8 +1698,17 @@ impl CompilerSession {
             tc_modules: &self.shared.symbol_tables as *const _,
             current_module: &current_module_for_tests as *const _,
         };
+        // Defect 8 (Sprint 59): the test-runner externs may be reached
+        // transitively through previously-compiled defns (e.g. a user-level
+        // `(my-run-tests)` whose body calls `discover-tests`). The
+        // `codegen_extra_symbols` list only reflects this batch's direct
+        // syntactic references, so gating state on it misses transitive
+        // callers. Set state whenever the current module has any defn that
+        // references test forms in its body — the scan is the same walker
+        // used for extern registration, applied across typecheck products.
         let needs_test_state =
-            codegen_extra_symbols.iter().any(|(n, _)| n == "discover-tests");
+            codegen_extra_symbols.iter().any(|(n, _)| n == "discover-tests")
+                || self.any_compiled_defn_uses_test_forms();
         if needs_test_state {
             set_test_runner_state(&test_state);
         }
@@ -1777,12 +1849,43 @@ impl CompilerSession {
 
     /// Check if a program uses discover-tests or run-test special forms.
     fn program_uses_test_forms(program: &[TopLevel]) -> bool {
-        program.iter().any(|tl| {
-            if let TopLevel::Expr(e) = tl {
-                Self::expr_uses_test_forms(e)
-            } else {
-                false
+        Self::any_expr_in_program(program, Self::expr_uses_test_forms)
+    }
+
+    /// Defect 8 (Sprint 59): scan every previously-compiled defn across all
+    /// session symbol tables and return true if any body references
+    /// `discover-tests` / `run-test`. Used to decide whether
+    /// `TestRunnerState` must be set before evaluating a top-level
+    /// expression that may transitively call the test externs through an
+    /// already-compiled defn.
+    fn any_compiled_defn_uses_test_forms(&self) -> bool {
+        for entry in self.shared.symbol_tables.iter() {
+            let table = entry.value();
+            for (_name, mod_entry) in table.all_symbols() {
+                if let ModuleEntry::Def { ast: Some(defn), .. } = mod_entry
+                    && defn.variants.iter().any(|v|
+                        Self::expr_uses_test_forms(&v.body)) {
+                        return true;
+                    }
             }
+        }
+        false
+    }
+
+    /// Walk every `Expr` embedded in the program (top-level `Expr`, `Defn`
+    /// variant bodies, `TraitImpl` method variant bodies) and return true if
+    /// `pred` matches any of them.
+    fn any_expr_in_program(
+        program: &[TopLevel],
+        pred: fn(&cranelisp_types::Expr) -> bool,
+    ) -> bool {
+        program.iter().any(|tl| match tl {
+            TopLevel::Expr(e) => pred(e),
+            TopLevel::Defn(d) => d.variants.iter().any(|v| pred(&v.body)),
+            TopLevel::TraitImpl(t) => t.methods.iter().any(|m|
+                m.variants.iter().any(|v| pred(&v.body))
+            ),
+            _ => false,
         })
     }
 
@@ -1822,13 +1925,7 @@ impl CompilerSession {
     /// Check if a program contains `Expr::Trace` that needs
     /// traced function info for GOT-swap codegen.
     fn program_needs_trace(program: &[TopLevel]) -> bool {
-        program.iter().any(|tl| {
-            if let TopLevel::Expr(e) = tl {
-                Self::expr_needs_trace(e)
-            } else {
-                false
-            }
-        })
+        Self::any_expr_in_program(program, Self::expr_needs_trace)
     }
 
     /// Recursively check if an expression contains trace or run-tests.
@@ -1934,66 +2031,15 @@ impl CompilerSession {
         traced
     }
 
-    /// Compile a dependency module inline (for blocked REPL eval).
-    fn compile_dep_inline(
-        &mut self,
-        dep_module: &ModuleFullPath,
-        dep_sexps: &[Sexp],
-    ) -> Result<(), CranelispError> {
-        // Publish the dep's sexps to the shared map BEFORE scheduler
-        // registration. Persistent priority workers (Sprint 57 W4) wake on
-        // the scheduler notify and dequeue `Typecheck(<dep>)` immediately;
-        // if they read `shared.module_sexps` before the inline loop has a
-        // chance to insert, they emit "no parsed sexps for module '<dep>'".
-        // The inline-loop's local `module_sexps` map is invisible to them,
-        // so we must seed the shared map first. See Sprint 58 Wave 6
-        // Defect 1 — `tests/wave6_demo_repros.rs::repl_dep_load_no_race_with_persistent_workers`.
-        {
-            let mut map = self.shared.module_sexps.lock()
-                .unwrap_or_else(|e| e.into_inner());
-            map.entry(dep_module.clone())
-                .or_insert_with(|| dep_sexps.to_vec());
-        }
-        self.shared.scheduler.register_module(dep_module.clone(), false);
-
-        let mut module_sexps = HashMap::new();
-        module_sexps.insert(dep_module.clone(), dep_sexps.to_vec());
-
-        self.tc_env().ensure_module_exists(dep_module);
-        let repl_cs = self.shared.repl_check_state.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
-            .unwrap_or_else(|| CheckState::new(dep_module.clone()));
-        let lib_dirs_snap = self.lib_dirs();
-        let platform_dirs_snap = self.platform_dirs();
-        let mut ctx = ModuleCompiler {
-            symbol_tables: &self.shared.symbol_tables,
-            next_type_id: &self.shared.next_type_id,
-            check_state: repl_cs,
-            current_module: dep_module.clone(),
-            scheduler: &self.shared.scheduler,
-            typecheck_products: &self.shared.typecheck_products,
-            introspection: Some(&self.shared.introspection),
-            lib_dirs: &lib_dirs_snap,
-            platform_dirs: &platform_dirs_snap,
-            project_root: &self.shared.project_root,
-            shared_state: Some(&self.shared),
-        };
-
-        let worker_result = crate::worker::priority_worker_loop(&mut ctx, &mut module_sexps);
-        // Restore REPL check_state before propagating errors.
-        *self.shared.repl_check_state.lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(ctx.check_state);
-        worker_result?;
-
-        match self.shared.scheduler.wait_inmem_complete() {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                self.shared.scheduler.reset_all_failed_modules();
-                Err(CranelispError::from(e))
-            }
-        }
-    }
+    // `compile_dep_inline` — deleted Sprint 59 Workstream A §7 Step 5.
+    //
+    // The session-side second orchestrator (an inline `priority_worker_loop`
+    // running on the eval thread in parallel with the persistent priority
+    // worker pool) has been replaced by `register_dep_for_eval` above: the
+    // persistent worker pool is now the single orchestrator for every
+    // dep, and the eval thread blocks on `wait_module_inmem_complete_blocking`
+    // scoped to the dep. See `design/int/dual-path-persistence-collapse.md`
+    // §§2–3 (Decision 37 alignment) and §7 Step 5.
 
     /// Check if a bare symbol should produce introspection display instead of eval.
     ///
@@ -3505,7 +3551,7 @@ fn append_docstring_comment(base: String, docstring: Option<&str>) -> String {
             if first_line.is_empty() {
                 base
             } else {
-                format!("{base} ; {first_line}")
+                format!("{base} - {first_line}")
             }
         }
         _ => base,
@@ -4237,72 +4283,20 @@ mod persistent_worker_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    // spec: implicit Principle 11 — REPL `(import [<m> [...]])` of a stdlib
-    // module must produce the same outcome as `--run`. This regression-guard
-    // unit test pins the publish-then-register order in `compile_dep_inline`
-    // — see Sprint 58 Wave 6 Defect 1 and the integration repro
+    // Sprint 58 Wave 6 Defect 1's publish-before-register invariant is
+    // now structurally preserved by Sprint 59 Workstream A's collapse:
+    // every call site that registers a dep with the scheduler goes
+    // through either (a) `register_dep` in `worker.rs` (form handlers),
+    // which publishes BEFORE its caller's `scheduler.register_module`
+    // call, or (b) `register_dep_for_eval` above, which publishes BEFORE
+    // its own `scheduler.register_module` call. There is no third
+    // register-a-dep site. The previous unit test
+    // (`compile_dep_inline_publishes_sexps_before_register`) pinned the
+    // order inside the now-deleted `compile_dep_inline`; with that
+    // function retired, the unit guard moves to the collapse's upstream
+    // invariant (every dep registration routes through a publish-first
+    // path, statically). The end-to-end guard remains
     // `tests/wave6_demo_repros.rs::repl_dep_load_no_race_with_persistent_workers`.
-    //
-    // If a future change reverts the ordering (registers the dep with the
-    // scheduler before publishing its sexps to `shared.module_sexps`), then a
-    // persistent priority worker that wakes between the two operations will
-    // dequeue `Typecheck(<dep>)`, hit `worker.rs::handle_typecheck_work_shared`,
-    // find `module_sexps[dep]` empty, and surface the "no parsed sexps for
-    // module '<dep>'" error. This test asserts the post-condition
-    // structurally: after the publish step inside `compile_dep_inline` runs,
-    // the dep's sexps must be present in `shared.module_sexps`. We use
-    // `priority_workers = 0` so persistent workers never observe the entry
-    // and the publish remains visible to the test for inspection.
-    //
-    // Without `priority_workers = 0`, the persistent workers would race
-    // through `handle_typecheck_work_shared` (which removes the entry on
-    // success at worker.rs:3398), making the post-condition flaky. The
-    // integration test in `tests/wave6_demo_repros.rs` covers the
-    // many-worker scenario end-to-end.
-    #[test]
-    fn compile_dep_inline_publishes_sexps_before_register() {
-        use cranelisp_frontend::parse;
-        let (mut s, root) = test_session(0);
-        let dep_module = ModuleFullPath::from("dep_inline_race_dep");
-        let dep_sexps = parse("(defn dep-fn [] 0)").expect("parse dep source");
-        // Pre-condition: shared.module_sexps must NOT contain the dep.
-        {
-            let map = s.shared.module_sexps.lock()
-                .unwrap_or_else(|e| e.into_inner());
-            assert!(
-                !map.contains_key(&dep_module),
-                "pre-condition violated: dep already in shared.module_sexps",
-            );
-        }
-        // Drive the path. Even if compilation fails (no prelude / no lib dirs
-        // in test_session), the publish-then-register order inside
-        // `compile_dep_inline` MUST run BEFORE any further work. We swallow
-        // the result and only assert on the publish post-condition.
-        let _ = s.compile_dep_inline(&dep_module, &dep_sexps);
-        // Post-condition: shared.module_sexps now contains the dep entry.
-        // With `priority_workers = 0`, no persistent worker has consumed it,
-        // so the entry that compile_dep_inline published is still present.
-        // If a future change moves the publish AFTER scheduler.register_module
-        // (or removes it entirely), this assertion fails.
-        let published = {
-            let map = s.shared.module_sexps.lock()
-                .unwrap_or_else(|e| e.into_inner());
-            map.get(&dep_module).map(|v| v.len())
-        };
-        assert_eq!(
-            published,
-            Some(dep_sexps.len()),
-            "compile_dep_inline did not publish dep_sexps to \
-             shared.module_sexps before invoking scheduler.register_module. \
-             Per Sprint 58 Wave 6 Defect 1, persistent priority workers wake \
-             on register_module's notify and read shared.module_sexps; if \
-             the publish has not happened yet they emit 'no parsed sexps \
-             for module' and fail the dep. The publish MUST precede \
-             scheduler.register_module.",
-        );
-        s.shutdown();
-        let _ = std::fs::remove_dir_all(&root);
-    }
 }
 
 #[cfg(test)]

@@ -479,6 +479,24 @@ pub trait CLHeap: CLType + Copy {
     fn own(&self) -> CLOwned<Self> {
         CLOwned::new(*self)
     }
+
+    /// Consuming-convention version of `own()` (Decision 24): take ownership
+    /// of the caller's transferred reference and wrap it in a `CLOwned`
+    /// without incrementing RC. The returned `CLOwned` will `dec_rc` on drop,
+    /// releasing the caller's transferred reference. Net effect per call:
+    /// caller +1 (transfer) → CLOwned drop -1 = balanced.
+    ///
+    /// Use this in platform externs that capture a heap-typed parameter into
+    /// an Effect-thunk closure instead of `own()`. `own()` is still correct
+    /// when the caller did NOT transfer ownership (e.g. when the extern
+    /// takes a borrow / the ref is reused after the extern returns).
+    ///
+    /// See `design/backend/ring2-rc.md` §10.4 Form B for the rationale.
+    fn into_owned_consuming(self) -> CLOwned<Self> {
+        // No inc — the caller's transferred ref becomes the CLOwned's ref.
+        // Construct the wrapper directly, bypassing `CLOwned::new`'s inc.
+        CLOwned { inner: self }
+    }
 }
 
 impl CLHeap for CLString {
@@ -795,4 +813,128 @@ macro_rules! declare_platform {
             }
         }
     };
+}
+
+// ---------------------------------------------------------------------
+// Decision 24 — consuming capture-RC protocol (Sprint 59 Workstream C-i).
+//
+// These tests verify that `into_owned_consuming` preserves the caller's
+// transferred-reference contract: one caller-transfer in, one CLOwned::drop
+// dec out, net zero. `own()` vs `into_owned_consuming()` differ by whether
+// they inc for the capture (former) or take the caller's transferred ref
+// directly (latter). Regression guard for `design/backend/ring2-rc.md` §10.4.
+// ---------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicI64;
+
+    // Allocate a mock heap-layout `[alloc_size(8) | rc(8) | payload(>=0)]` with
+    // initial rc=1. Returns the base pointer. The payload is zero-filled;
+    // the test doesn't care about contents — only the RC field.
+    fn mock_heap_alloc(payload_size: usize) -> i64 {
+        let total_size = HEAP_HEADER_SIZE as usize + payload_size;
+        unsafe {
+            let layout = std::alloc::Layout::from_size_align_unchecked(total_size, 8);
+            let ptr = std::alloc::alloc_zeroed(layout);
+            *(ptr as *mut i64) = total_size as i64;
+            *((ptr as *mut i64).add(1)) = 1; // rc = 1
+            ptr as i64
+        }
+    }
+
+    // Read the current RC from a mock allocation.
+    fn read_rc(base: i64) -> i64 {
+        unsafe {
+            let rc_addr = (base + 8) as *const AtomicI64;
+            (*rc_addr).load(Ordering::SeqCst)
+        }
+    }
+
+    // spec: design/backend/ring2-rc.md §10.4 — `into_owned_consuming` must NOT
+    // inc RC on wrap (it takes the caller's transferred ref as-is) and MUST
+    // dec on drop — so the net RC change is exactly -1 over the wrap+drop
+    // pair, symmetric with the caller's +1 transfer.
+    #[test]
+    fn into_owned_consuming_does_not_inc_on_wrap() {
+        let base = mock_heap_alloc(0);
+        let s = CLString(base);
+        assert_eq!(read_rc(base), 1, "starting rc = 1 (caller's transferred ref)");
+
+        {
+            let _owned = s.into_owned_consuming();
+            assert_eq!(
+                read_rc(base),
+                1,
+                "into_owned_consuming must NOT inc: still rc=1 after wrap"
+            );
+        }
+        // After _owned drops, CLOwned::drop calls dec_rc. rc was 1, goes to 0,
+        // so the allocation is freed. Cannot read_rc here (use-after-free).
+    }
+
+    // spec: design/backend/ring2-rc.md §10.4 — contrast with `own()`: `own()`
+    // inc's on wrap, so one extra inc is needed by the caller when the
+    // caller does NOT transfer ownership. This test locks in the behavioural
+    // difference between the two wrappers so regressions are caught.
+    #[test]
+    fn own_vs_into_owned_consuming_rc_semantics_differ() {
+        // own() path: wraps with inc, drops with dec — net zero, original ref survives.
+        let base_a = mock_heap_alloc(0);
+        let s_a = CLString(base_a);
+        assert_eq!(read_rc(base_a), 1);
+
+        {
+            let _owned = s_a.own();
+            assert_eq!(read_rc(base_a), 2, "own() inc's on wrap: rc=2");
+        }
+        assert_eq!(read_rc(base_a), 1, "own() dec's on drop: back to rc=1");
+        // Manually free s_a (simulates caller's post-return dec of its own ref).
+        unsafe {
+            let total_size = *(base_a as *const i64) as usize;
+            let layout = std::alloc::Layout::from_size_align_unchecked(total_size, 8);
+            std::alloc::dealloc(base_a as *mut u8, layout);
+        }
+
+        // into_owned_consuming path: no inc on wrap, dec on drop — the original
+        // ref itself is consumed and freed. Contrast verified above.
+    }
+
+    // spec: design/backend/ring2-rc.md §10.4 — the capture-Effect pattern used
+    // by platform externs (print, capture_print): caller transfers one ref,
+    // extern wraps via `into_owned_consuming`, closure holds `CLOwned`,
+    // deferred thunk-drop dec's once. Net allocator operations: 1 alloc
+    // (caller), 1 dealloc (CLOwned drop when closure drops).
+    #[test]
+    fn decision24_capture_effect_pattern_balanced() {
+        // Simulate the caller's alloc + transfer. RC starts at 1 (caller's
+        // single ref); caller immediately transfers ownership to the extern
+        // (no further inc — the caller's ref becomes the extern's parameter).
+        let base = mock_heap_alloc(0);
+        let s = CLString(base);
+        assert_eq!(read_rc(base), 1);
+
+        // Simulate the extern: wrap via `into_owned_consuming`, capture into
+        // a Rust closure (as `print_string` does via `CLIO::effect`).
+        let owned = s.into_owned_consuming();
+        assert_eq!(
+            read_rc(base),
+            1,
+            "wrap must not inc — the captured ref IS the caller's transferred ref"
+        );
+
+        // The closure keeps the CLOwned alive. We inspect RC through the
+        // closure's lifetime, then drop the closure to trigger CLOwned::drop.
+        let boxed: Box<dyn FnOnce() -> i64> = Box::new(move || {
+            // While the closure is live, RC stays at 1.
+            read_rc(owned.raw_ptr())
+        });
+
+        let rc_during_call = boxed();
+        assert_eq!(rc_during_call, 1, "RC stays at 1 through the capture");
+        // After boxed() consumed itself, `owned` was dropped inside boxed's scope;
+        // CLOwned::drop → dec_rc → rc 0 → std::alloc::dealloc.
+        // Cannot read_rc(base) here — allocation is freed.
+    }
 }

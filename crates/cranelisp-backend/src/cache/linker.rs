@@ -134,22 +134,14 @@ impl Linker {
     /// patches code to ADRP+LDR the slot address (not the symbol address);
     /// the LDR pulls the symbol value out of the slot at run time. This is
     /// the standard system-linker GOT mechanism reproduced in-process.
-    fn ensure_got_slot(&mut self, target_name: &str) -> Result<usize, CranelispError> {
+    fn ensure_got_slot(
+        &mut self,
+        target_name: &str,
+        symbol_addr: usize,
+    ) -> Result<usize, CranelispError> {
         if let Some(&addr) = self.got_slots.get(target_name) {
             return Ok(addr);
         }
-        let symbol_addr = self
-            .defined_symbols
-            .get(target_name)
-            .or_else(|| self.symbols.get(target_name))
-            .copied()
-            .ok_or_else(|| CranelispError::CodegenError {
-                message: format!(
-                    "GOT_LOAD relocation: unresolved symbol '{target_name}' \
-                     (cannot allocate slot for unknown address)"
-                ),
-                span: Span::SYNTHETIC,
-            })?;
 
         // Allocate a fresh page for slots if the current page is full or none
         // exists. 4096 bytes / 8 bytes per slot = 512 slots per page; far more
@@ -322,7 +314,7 @@ impl Linker {
                     if r_type == macho_arm64::ARM64_RELOC_GOT_LOAD_PAGE21
                         || r_type == macho_arm64::ARM64_RELOC_GOT_LOAD_PAGEOFF12 =>
                 {
-                    self.ensure_got_slot(&target_name)?
+                    self.ensure_got_slot(&target_name, raw_target_addr)?
                 }
                 _ => raw_target_addr,
             };
@@ -798,6 +790,55 @@ mod tests {
         );
 
         // Keep `stable` alive until after the assertion (drop runs at end of fn).
+        drop(stable);
+    }
+
+    // spec: design/backend/cache-repl-loads-triage.md — Sprint 59 Wave 1 C-ii
+    // regression guard. Cranelift emits `ARM64_RELOC_GOT_LOAD_*` relocations
+    // not only against `Linkage::Import` data symbols but also against local
+    // `.L*` data labels it synthesises for string-literal constants
+    // (e.g. panic messages in trait-method dispatchers). Those local symbols
+    // live in the per-object `local_symbols` map — not in `self.defined_symbols`
+    // or `self.symbols`. `ensure_got_slot` must accept the pre-resolved address
+    // from its caller rather than re-looking-up the symbol by name, so that
+    // GOT-slot allocation succeeds for local data labels too. Extends the
+    // Decision-23 regression-guard coverage to `.L*` locals.
+    #[test]
+    fn ensure_got_slot_accepts_preresolved_local_symbol_address() {
+        let mut linker = Linker::new().unwrap();
+        // Simulate a `.L`-local data symbol's address resolved by the outer
+        // relocation loop from a per-object `local_symbols` map. The symbol
+        // is NOT registered via `register_symbol` and is NOT in
+        // `defined_symbols` — exactly the condition that caused the
+        // pre-fix `undefined symbol` error.
+        let stable: Box<u64> = Box::new(0xFEED_FACE_DEAD_BEEFu64);
+        let stable_ptr: *const u64 = &*stable;
+        let pre_resolved_addr = stable_ptr as usize;
+
+        assert!(
+            !linker.defined_symbols.contains_key(".Ldata0"),
+            "precondition: .Ldata0 must not be pre-registered (that's the whole bug shape)"
+        );
+        assert!(
+            !linker.symbols.contains_key(".Ldata0"),
+            "precondition: .Ldata0 must not be in the external-symbol table either"
+        );
+
+        let slot_addr = linker
+            .ensure_got_slot(".Ldata0", pre_resolved_addr)
+            .expect("ensure_got_slot must accept a pre-resolved local symbol address");
+        let stored = unsafe { *(slot_addr as *const u64) };
+        assert_eq!(
+            stored, pre_resolved_addr as u64,
+            "GOT slot must hold the caller-supplied address"
+        );
+
+        // Second call for the same symbol returns the same slot (idempotent).
+        let slot_addr2 = linker
+            .ensure_got_slot(".Ldata0", pre_resolved_addr)
+            .expect("second call must return cached slot");
+        assert_eq!(slot_addr, slot_addr2, "repeat calls return the same slot");
+
         drop(stable);
     }
 }

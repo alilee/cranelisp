@@ -1123,12 +1123,9 @@ fn cache_repl_writes_on_import() {
 
 // spec: design/int/repl-lifecycle.md §4.2 — cache load on startup
 //
-// FIXME(/int): Sprint 58 Wave 2c — second REPL run reports `undefined variable: +`
-// after the prelude was supposedly loaded from cache, which means the cache-hit
-// re-derive path is not restoring prelude bindings into the new session.
-// The `tests/cache.rs` migration to the new `cache::write_meta` /
-// `cache::load_meta` API (Decision 33+34) does not change this — the bug is in
-// `/int`'s cache-hit prelude restoration in `src/session_v4.rs`.
+// Resolved S59 Wave 1: cache-hit arm of `inject_prelude_if_needed` now calls
+// `register_imports` on the user module's check state with an
+// `ImportNames::Glob` spec for `prelude`, matching the fresh-compile arm.
 #[test]
 fn cache_repl_loads_on_startup() {
     // Start REPL twice with a local prelude. First run populates cache,

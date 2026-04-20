@@ -13,11 +13,12 @@ static HOST: HostContext = HostContext::new();
 
 /// Print a string followed by a newline. Returns a deferred IO Effect.
 ///
-/// Uses the capture-RC protocol: `s.own()` increments RC so the string
-/// remains valid when the trampoline forces the Effect later.
+/// Uses the consuming capture-RC protocol (Decision 24): `into_owned_consuming`
+/// takes ownership of the caller's transferred reference and releases it on
+/// drop when the Effect thunk runs. See `design/backend/ring2-rc.md` §10.4.
 #[unsafe(export_name = "cranelisp_print")]
 pub extern "C" fn print_string(s: CLString) -> CLIO<CLInt> {
-    let owned = s.own();
+    let owned = s.into_owned_consuming();
     CLIO::effect(move || {
         println!("{}", owned.as_str());
         CLInt::from(0i64)

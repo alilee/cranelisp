@@ -1206,6 +1206,30 @@ Target: 4 new passing neg tests; promote `[Tested]` → `[Tested+Neg]` on `spec/
 
 **Close-time acceptance**: 6 of 6 carried failures + Defect 8 parallel-guard all green; 4 Workstream D neg tests all green; heisenbug stress test 20/20 green under nextest parallelism. `[Tested+Neg]` promotions landed on §8.3.1 / §8.3.7 / §8.3.9 headings.
 
+### G.19.5 Close-time Outcome (Wave 2, sprint-close verification)
+
+| Test | Status | Notes |
+|---|---|---|
+| `sprint23::cache_repl_loads_on_startup` | PASS | Workstream A landed; persistence-dual collapsed. |
+| `sprint23::persist_import_survives_restart` | PASS | Workstream A landed. |
+| `sprint23::cache_repl_loads_heisenbug_parallel_stress` | PASS | Single-run verification; stress loop rock-solid post-collapse. |
+| `v4_pipeline::v4_cache_hit_dependency` | PASS | Cross-module cache-hit residual resolved by Workstream A. |
+| `wave6_demo_repros::display_defn_with_docstring_uses_dash_separator` | PASS | Defect 3 fix (Workstream B). |
+| `sketch_port::sketch_run_tests_pass_fn_called` | PASS | Defect 8 fix (Workstream B). |
+| `sprint59_neg::import_of_non_existent_name_errors_neg` | PASS | §8.3.1 neg coverage. |
+| `sprint59_neg::super_import_at_repl_prompt_rejected_neg` | PASS | §8.3.7 neg coverage. |
+| `sprint59_neg::import_inside_let_rejected_neg` | PASS | §8.3.9 neg coverage. |
+| `sprint59_neg::import_below_use_still_available_before_definitions` | PASS | §8.3.9 positive-of-negative. |
+| `sprint59_neg::defn_body_with_trace_triggers_extern_registration_neg` | PASS | §4.12 Defect-8 parallel-guard. |
+| `v4_jit_reclaim::decision31_scenario2_per_redefinition_jit_pages_reclaimed` | PASS | Regression sentinel — carry-forward invariant preserved. |
+| `wave6_demo_repros::run_tests_batched_invocation_no_crash` | FAIL | Carry to S60 (Defects 4+5; SIGSEGV/SIGTRAP batched `/run-tests`). |
+| `wave6_demo_repros::exemplar_solver_does_not_stack_overflow_on_small_puzzle` | FAIL | Carry to S60 (Defect 6; solver SO). |
+| `sprint59_defects456_repro::d45_html_min_v1_no_crash` | FAIL | Carry to S60 (Defect 4/5 reduced repro; killed by signal). |
+| `sprint59_defects456_repro::d6_exemplar_propagate_only_does_not_segv` | FAIL | Carry to S60 (Defect 6 reduced repro; killed by signal). |
+| `sprint59_defects456_repro::d45_solution_cell_single_call_no_rc_underflow` | FAIL | Carry to S60 (Defect 4/5 reduced repro; killed by signal). |
+
+Wave-2 verification used 8 targeted `cargo nextest` invocations; no full-suite run. Carry rationale recorded in Sprint 59 SPRINT.md §Outcome (sprint-close).
+
 ## Known issues / deferred
 
 <!-- Both FIXME(/qa) Wave 6 audit findings (docstring separator divergence + stdlib REPL auto-import)

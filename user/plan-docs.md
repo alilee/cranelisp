@@ -217,6 +217,14 @@ The REPL includes docstrings in output for types, builtins, constructors, and sp
 
 **Format**: docstring appears after a semicolon on the same line.
 
+<!-- FIXME(/docs): S59 Defect 3 formalised the canonical REPL introspection format
+     as `:Type {value|name} ; {classification} - {docstring}` per `repl/spec.md §1.1`
+     line 159 (classification word + dash separator). The examples below predate
+     that convergence — they show `; <doc>` only, without classification or dash.
+     Update to match current output, e.g.:
+       primitives/Int ; type - Integer numbers between -100 billion and 100 billion
+     Confirm against `src/session_v4.rs::append_docstring_comment` output. -->
+
 ```
 user> Int
 primitives/Int ; Integer numbers between -100 billion and 100 billion

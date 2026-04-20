@@ -217,9 +217,13 @@ The authoritative per-extern table is:
 | `cranelisp_trace_first_child_nanos` | runtime/trace.rs | `trace` | No | No | **DONE**: Int return — no inc; `drop::consume_trace_call` on the Trace. |
 | `cranelisp_run_io` | runtime/io.rs | `io_ast` (IO ADT) | No | No (evaluates to completion) | **TOP-LEVEL DONE**: after `run_io_trampoline` returns the final value, `drop::consume_io_tree(io_ptr)` releases the whole tree (tag-dispatched: Pure/Effect are leaves, Bind recurses into inner + consumes the continuation closure, Par walks all branches). **INTERNAL-LOOP OPEN (Sprint 57 Phase 4 G8 fix)**: intermediate Pure/Effect/Bind/Par nodes produced or replaced during the trampoline walk, and continuation closures popped from `cont_stack` and invoked, are leaked. See §3.5. |
 | IVar intrinsics | runtime/ivar.rs | various | varies | varies | separately reviewed — IVar code already has RC management for its specific semantics |
-| Platform DLL functions | cranelisp-platform/src/lib.rs | varies per DLL | varies | varies | see platform CLAUDE.md; platform fns are consuming per Decision 24, most already use CLString::own() pattern |
+| `print_string` (stdio) | `platforms/stdio/src/lib.rs` | `s: CLString` | No (returns `IO Int`) | Yes (captured into Effect thunk) | **DONE (Sprint 59 Workstream C-i)**: uses `CLHeap::into_owned_consuming` (Form B) — takes the caller's transferred ref directly into a `CLOwned` without inc'ing; the `CLOwned` dec's on closure drop, matching Decision 24's per-call balance. |
+| `capture_print` (test-capture) | `platforms/test-capture/src/lib.rs` | `s: CLString` | No (returns `IO Int`) | Yes (captured into Effect thunk) | **DONE (Sprint 59 Workstream C-i)**: uses `CLHeap::into_owned_consuming` (Form B) — same pattern as `print_string`. |
+| `read_line` / `scripted_read_line` | `platforms/{stdio,test-capture}/src/lib.rs` | none | — | — | no heap arg |
+| `commutative_*`, `resource_serial_noop` (test-capture) | `platforms/test-capture/src/lib.rs` | none (CLInt args) | — | — | no heap arg |
+| Other platform DLL functions | `cranelisp-platform/src/lib.rs` | varies per DLL | varies | varies | default rule: any new extern that captures a heap param into an Effect thunk MUST use `into_owned_consuming` (not `own()`). See §10.4 Form B. Platform-author checklist in `crates/cranelisp-platform/CLAUDE.md`. |
 
-**Full migration complete**: all 36 externs consume correctly under Decision 24 (Sprint 56 Step 2c). Caller-side inc runs via `compile_consuming_arg_list` (apply.rs) for every heap-typed Var argument. Callee-side dec runs via:
+**Full migration complete**: all externs consume correctly under Decision 24 (Sprint 56 Step 2c; platform-DLL capture-Effect pattern closed Sprint 59 Workstream C-i). Caller-side inc runs via `compile_consuming_arg_list` (apply.rs) for every heap-typed Var argument. Callee-side dec runs via:
 
 - `rc::consume_shallow` — simple-heap externs whose heap args have no heap sub-refs (all 14 string externs + `parse-int`).
 - `drop::consume_slist` / `consume_sexp` — SList/Sexp runtime marshaling (`sconcat`, `quote-sexp`).

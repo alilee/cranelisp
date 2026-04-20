@@ -25,19 +25,6 @@ const FIELD_1_OFFSET: isize = FIELD_0_OFFSET + 8; // 32
 /// Closure layout: [header(16) | code_ptr(8) | drop_glue_ptr(8) | captures...]
 const CLOSURE_CODE_PTR_OFFSET: isize = HeapHeader::SIZE as isize; // 16
 
-// FIXME(/backend): String-literal lifetime through `print` does not fully
-// reclaim. Observable via REPL-compiled `(print "a")` through the trampoline
-// — the string allocation leaks. Root cause hypothesis: codegen emits
-// string-literal heap alloc for the argument to Effect-thunk construction
-// but the thunk's consume-on-call discipline is not propagated to the
-// captured string. Evidence: `/qa`'s Wave-3 Condition-6 test
-// (`g8_io_trampoline_rc_balanced`) switched to Pure/bind-only chains to
-// isolate the trampoline's fresh-node release path. The `dec_shallow_io`
-// fix (Decision 29, Wave 3) is correct and balances; this leak is a
-// separate code path. Investigate first in /backend; if the defect proves
-// runtime-side, re-route to /runtime (platform DLL test-capture's `print`
-// argument-consumption contract). See sprint57-wave3-review.md §Focus 3.
-
 /// Force an IO task tree to completion (extern "C" entry point).
 ///
 /// Takes a base pointer to a heap-allocated IO node (Pure/Effect/Bind/Par).

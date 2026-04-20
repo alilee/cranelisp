@@ -127,7 +127,7 @@ names_list   = '[' name+ ']'                     ; specific names
 member_glob  = symbol '.*'                       ; e.g. Display.*
 ```
 
-### 8.3.1 Specific Name Import
+### 8.3.1 Specific Name Import [Tested+Neg tests/ring2::import_specific_names, tests/sprint59_neg::import_of_non_existent_name_errors_neg]
 
 ```clojure
 (import [core.option [Some None]])
@@ -177,7 +177,7 @@ Registers `opt` as an alias for `core.option` without importing any bare names. 
 
 Imports nothing and does not trigger module loading or resolution. Useful to suppress the implicit prelude import (§8.8.1) — an explicit `(import [prelude []])` replaces the implicit glob without loading the prelude module.
 
-### 8.3.7 Super Import
+### 8.3.7 Super Import [Tested+Neg tests/modules::super_import_at_root_is_rejected_neg, tests/sprint59_neg::super_import_at_repl_prompt_rejected_neg]
 
 ```clojure
 (import [super [*]])
@@ -210,7 +210,7 @@ Multiple modules MAY be imported in a single `import` form:
 
 Module-names-list pairs are processed left to right.
 
-### 8.3.9 Placement
+### 8.3.9 Placement [Tested+Neg tests/sprint59_neg::import_below_use_still_available_before_definitions, tests/sprint59_neg::import_inside_let_rejected_neg]
 
 `import` forms MUST appear as top-level forms. They are extracted from the raw S-expression stream before macro expansion. An implementation MUST process `import` before compiling definitions in the same module, so that imported names are available during type checking and code generation.
 
