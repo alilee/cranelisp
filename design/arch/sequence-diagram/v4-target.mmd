@@ -7,11 +7,10 @@
 %%
 %% Unchanged sequences use no background.
 %%
-%% FIXME(/arch): regenerate v4-target.svg and v4-target.png after the
-%% 2026-04-19 Decision 31 reconciliation (per-batch JIT with custom
-%% Drop → unsafe free_memory). The REPL trailing-expression block
-%% (around line 210) has been updated in this .mmd; the .svg/.png are
-%% stale until someone with mermaid tooling regenerates them.
+%% SVG/PNG regenerated 2026-04-20 (Sprint 59 Workstream E) against this .mmd
+%% after the 2026-04-19 Decision 31 reconciliation (per-batch JIT with custom
+%% Drop → unsafe free_memory). Re-run `mmdc -i v4-target.mmd -o v4-target.svg`
+%% (and `.png`) after any future change to this file.
 
 sequenceDiagram
     participant main as main.rs
@@ -221,7 +220,7 @@ sequenceDiagram
 
                             session->>jit: compile closure on fresh eval JIT (Jit wrapper)
                             session->>jit: call closure → (i64 value, Type)
-                            Note right of jit: Jit wrapper dropped after result<br/>consumed; custom Drop calls<br/>unsafe JITModule::free_memory()<br/>to reclaim __expr pages.
+                            Note right of jit: Jit wrapper dropped after result consumed<br/>custom Drop reclaims __expr pages
                         end
                     end
                 end

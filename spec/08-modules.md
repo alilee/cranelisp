@@ -651,11 +651,13 @@ If no sources yield any lib directories, the lib directory list is empty. No lib
 
 ### 8.11.5 Platform Directory Configuration
 
-Additional platform-specific search directories are assembled from:
+Additional platform-specific search directories are assembled from the following sources, in precedence order. This list mirrors §8.11.4; the same precedence and diagnostic requirements apply, with `platform-dirs` in place of `lib-dirs` and `CRANELISP_PLATFORM_PATH` in place of `CRANELISP_LIB`.
 
-1. **Explicit programmatic additions** -- the implementation MUST support adding platform directories in code.
-2. **Project configuration file** MAY specify a platform directory list.
+1. **Explicit programmatic additions** -- the implementation MUST support adding platform directories in code (e.g., via a session API). These take highest precedence and are appended to the list.
+2. **Project configuration file** (`Cranelisp.toml` in the project root) MAY specify a platform directory list under the TOML key `platform-dirs` (a list of path strings). When present, this takes precedence over `CRANELISP_PLATFORM_PATH`. Paths are resolved relative to the directory containing `Cranelisp.toml`. A malformed `Cranelisp.toml` MUST produce a diagnostic identifying the file path and the parse error (same requirement as §8.11.4).
 3. **`CRANELISP_PLATFORM_PATH` environment variable**, if set. A colon-separated list of directory paths.
+
+There is no default fallback tier: unlike lib directories (§8.11.4, tier 4), platform DLLs bundled with the standard library are already reached via §8.11.3 tier 2 (`{lib_dir}/platforms/`). If none of the sources above yield any entries, the additional platform directory list is empty and only project-root and lib-directory `platforms/` subdirectories are searched.
 
 These directories are searched after project root and lib directories (§8.11.3, tier 3). They are intended for platform DLLs that are not co-located with source modules — for example, system-wide installations or Cargo build output during development.
 

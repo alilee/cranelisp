@@ -1130,6 +1130,82 @@ Per SPRINT.md Wave 5 framing: integration tests authored in parallel to Waves 2/
 | Wave 5 (parallel — runs throughout Waves 2/3/4) | Author G.14 io.rs:28 regression tests; author G.15 prior-ring negative-coverage tests. |
 | Wave 6 (close) | Coverage audit: every Sprint 58 in-scope requirement has a passing test or a documented `[Tested+Neg]` annotation; re-pin any residual failing tests (Step 5e auto-bump applies). |
 
+## G.19 — Sprint 59 test plan (dual-path persistence collapse + demo-defect clearance + module-boundary neg coverage)
+
+Authored Phase 3a; test cases derived from the approved design artefacts:
+
+- Workstream A: `design/int/dual-path-persistence-collapse.md` (APPROVED)
+- Workstream B Defect 8: `design/backend/defect-8-repro-notes.md` (APPROVED — localised fix, no design doc)
+- Workstream B Defects 3/4/5/6/7: `sprints/archive/sprint-58.md` §Wave 6 + `tests/wave6_demo_repros.rs` (durable records exist)
+- Workstream D: `spec/08-modules.md §8.3.1` / §8.3.7 / §8.3.9 (Phase 1 gap audit)
+
+### G.19.1 Workstream A — dual-path persistence collapse
+
+Target: 3 carried failing tests flip green when `/int` lands the collapse (design doc §7 step 4), plus 1 new stress-test regression guard for the heisenbug shape (§7 step 7).
+
+| Test | File:line | Spec anchor | Failure shape | Owner | Status |
+|---|---|---|---|---|---|
+| `cache_repl_loads_on_startup` | `tests/sprint23.rs:1133` | `design/int/repl-lifecycle.md §4.2` | Second REPL run reports `undefined variable: +` after cache hit — prelude bindings not restored on cache-hit session initialisation. Root cause: session-side `compile_dep_inline` and scheduler-side `register_module` race on prelude dep installation. | `/int` (Workstream A) | exists; flip green at design doc §7 step 4 |
+| `persist_import_survives_restart` | `tests/sprint23.rs:1314` | `repl/spec.md §15.2` | Session 2 does not see the imported symbol from session 1's persisted `user.cl`. Same dual-path root cause as `cache_repl_loads_on_startup`. | `/int` (Workstream A) | exists; flip green at design doc §7 step 4 |
+| `v4_cache_hit_dependency` | `tests/v4_pipeline.rs:609` | `design/arch/CLAUDE.md` Decision 37 | Cross-module cache-hit residual — transitive dep restore divergence between cache-hit and fresh-build paths. Sprint 58 Wave 2 partial close; design doc §7 step 4 names this among the headline flip-green set. | `/int` (Workstream A) | exists; flip green at design doc §7 step 4 |
+| `cache_repl_loads_heisenbug_parallel_stress` | `tests/sprint23.rs` (NEW) | `design/int/dual-path-persistence-collapse.md §7 step 7` + `§8` heisenbug | Repeats `persist_import_survives_restart` 20 times under nextest parallelism. Under the collapsed path this must be rock solid; flake ⇒ §9 Risk 1 (sixth surface missed). | `/int` (Workstream A) | NEW — authored Phase 3a; expected failing or flaky until Workstream A lands |
+
+**Regression guards** (must stay green across the collapse, per design doc Conditions 1b + 1c):
+
+| Test | File | Guards |
+|---|---|---|
+| `v4_jit_reclaim::decision31_scenario2_per_redefinition_jit_pages_reclaimed` | `tests/v4_jit_reclaim.rs` | Decision 31 Scenario 2 carry-forward invariant at `program.rs:2184-2232` — the collapsed path MUST NOT disturb the upsert (Condition 1c). |
+| `persist_user_cl_created` + related prelude-startup e2e | `tests/sprint23.rs`, `tests/e2e.rs` | Condition 1b — prelude loading under the collapsed path enters through `register_module` with no REPL-startup shortcut (Sprint 49 regression surface). |
+
+**Design doc §7 migration checkpoints** — `/qa` verifies one test subset at each migration step:
+- Step 2 (form-handler shim): `tests::sprint23 cache_*` + `persist_*` still fail — shim preserves behaviour
+- Step 4 (rewire `compile_dep_inline` call sites): headline flip — 3 failures above MUST go green
+- Step 5 (delete `compile_dep_inline`): full suite green modulo Workstream B/C orthogonal failures
+- Step 7 (heisenbug loop): `cache_repl_loads_heisenbug_parallel_stress` rock solid
+
+### G.19.2 Workstream B — demo-surfaced defect cluster + Defect 8
+
+Target: 4 of 4 remaining carried failing tests flip green (or explicitly re-triage). All existing — no new test code in Phase 3a unless otherwise noted.
+
+| Test | File:line | Spec anchor | Failure shape | Owner | Status |
+|---|---|---|---|---|---|
+| `display_defn_with_docstring_uses_dash_separator` | `tests/wave6_demo_repros.rs:254` | `repl/spec.md §1.1` | `/sig` / display output uses `;` not ` - ` between name and docstring; format-string defect in `src/session_v4.rs::append_docstring_comment`. | `/int` (Defect 3) | exists; small format fix |
+| `run_tests_batched_invocation_no_crash` | `tests/wave6_demo_repros.rs:304` | `spec/12-runtime.md` (run-tests) | Exit 139 (html) + 133 (form) from batched `/run-tests`; codegen-incomplete path + RC/last-use issue. Repro reduction required per `feedback_qa_reproduction.md`. | `/backend` (Defects 4+5) | exists |
+| `exemplar_solver_does_not_stack_overflow_on_small_puzzle` | `tests/wave6_demo_repros.rs:405` | pre-existing Sprint 19 known issue | Stack overflow on small puzzle — likely TCO or codegen-depth issue. | `/backend` (Defect 6) | exists; `/port` re-enables 3 puzzle tests after fix (Defect 7) |
+| `sketch_run_tests_pass_fn_called` | `tests/sketch_port.rs:1603` | `spec/04-expressions.md §4.11` | JIT `finalize_definitions` panics "can't resolve symbol run-test" — `program_uses_test_forms` scans only `TopLevel::Expr`, missing `TopLevel::Defn` bodies. Localised fix in `src/session_v4.rs:1778-1787`. | `/int` (Defect 8 primary); `/backend` (confirms) | exists; flip green at fix landing |
+| `defn_body_with_trace_triggers_extern_registration_neg` | `tests/sprint59_neg.rs` (NEW) | `design/backend/defect-8-repro-notes.md` §"Out-of-scope observations" item 1 | Parallel latent gap in `program_needs_trace` (same scan-gap shape as `program_uses_test_forms`). A `defn` body referencing `trace` fails JIT finalize with "can't resolve symbol trace". Guards the widening of BOTH predicates in the Defect 8 single-commit fix. | `/int` (Defect 8 widening) | NEW — authored Phase 3a; expected failing before Defect 8 fix |
+
+**Re-triage note**: The Sprint 58 close-time "IO-trampoline / `bind` over `(IO TestResult)`" hypothesis is falsified by the Phase 3a repro (JIT finalize panic fires BEFORE any IO tree construction — stack trace is dispositive). /arch Condition 2 invariants do NOT trigger; no design artefact required.
+
+### G.19.3 Workstream D — module-boundary negative tests (`/qa`)
+
+Target: 4 new passing neg tests; promote `[Tested]` → `[Tested+Neg]` on `spec/08-modules.md §8.3.1`, §8.3.7, §8.3.9 headings once the tests pass.
+
+| Test | File | Spec anchor | Failure shape (if implementation is wrong) | Owner | Status |
+|---|---|---|---|---|---|
+| `import_of_non_existent_name_errors_neg` | `tests/sprint59_neg.rs` (NEW) | `spec/08-modules.md §8.3.1` | Distinct from private-name (§8.7.3) neg — the imported name does not exist at all. MUST produce a compile-time error naming the missing symbol. | `/qa` (author), implementation by `/int` if needed | NEW — authored Phase 3a; expected passing if compiler already diagnoses |
+| `super_import_at_repl_prompt_rejected_neg` | `tests/sprint59_neg.rs` (NEW) | `spec/08-modules.md §8.3.7` | REPL prompt sits in top-level `user` module. `(import [super [*]])` MUST reject with the same error as batch mode. Reinforces existing batch-mode neg test `tests/modules.rs::super_import_at_root_is_rejected_neg`. | `/qa` (author) | NEW — authored Phase 3a |
+| `import_inside_let_rejected_neg` | `tests/sprint59_neg.rs` (NEW) | `spec/08-modules.md §8.3.9` | `(import …)` inside a `let` body MUST be rejected (imports MUST be top-level). Negative assertion: error diagnoses placement, not silently "unknown name". | `/qa` (author), possible `/int` / `/frontend` resolver | NEW — authored Phase 3a; expected failing if extractor admits non-top-level imports |
+| `import_below_use_still_available_before_definitions` | `tests/sprint59_neg.rs` (NEW) | `spec/08-modules.md §8.3.9` | Positive-of-negative: imports are extracted before compilation, so a `defn` textually ABOVE its matching import MUST still see the imported name. Fails iff compilation is strictly source-order-sensitive. | `/qa` (author) | NEW — authored Phase 3a |
+
+**Ignored-vs-failing disposition**: All 4 Workstream D tests + Defect 8 latent-gap test + heisenbug stress test committed as **legitimate failing tests** (no `#[ignore]`) per `memory/feedback_failing_not_ignored.md`. Rationale: each test exercises spec-violating behaviour that should already reproduce in current code (for the negative-coverage ones: either the compiler correctly diagnoses and they pass, or it doesn't and they fail visibly — both are valid signals). The heisenbug stress test is expected flaky pre-collapse, rock-solid post-collapse — flake-as-fail is the correct signal.
+
+### G.19.4 Sprint 59 delta summary
+
+| Workstream | Existing failing tests (expected to flip) | New tests authored Phase 3a |
+|---|---|---|
+| A (dual-path persistence collapse) | 3 (`cache_repl_loads_on_startup`, `persist_import_survives_restart`, `v4_cache_hit_dependency`) | 1 (`cache_repl_loads_heisenbug_parallel_stress`) |
+| B Defect 3 (docstring separator) | 1 (`display_defn_with_docstring_uses_dash_separator`) | 0 |
+| B Defects 4+5 (batched run-tests crash) | 1 (`run_tests_batched_invocation_no_crash`) | 0 |
+| B Defect 6 + Defect 7 (solver SO + puzzle re-enable) | 1 (`exemplar_solver_does_not_stack_overflow_on_small_puzzle`) | 0 (Defect 7 re-enables existing tests in `exemplar/solver.cl`) |
+| B Defect 8 (run-tests extern gating) | 1 (`sketch_run_tests_pass_fn_called`) | 1 (`defn_body_with_trace_triggers_extern_registration_neg` — parallel latent-gap guard) |
+| C (io.rs:28 RC residual) | 0 (regression guards live in `tests/plan/ring4.md §G.14`) | 0 |
+| D (module-boundary neg tests) | 0 | 4 (`import_of_non_existent_name_errors_neg`, `super_import_at_repl_prompt_rejected_neg`, `import_inside_let_rejected_neg`, `import_below_use_still_available_before_definitions`) |
+
+**Totals**: 6 existing failing tests flip green; 6 new tests authored (1 Workstream A stress, 1 Defect 8 parallel-guard, 4 Workstream D neg). 0 tests committed as `#[ignore]`.
+
+**Close-time acceptance**: 6 of 6 carried failures + Defect 8 parallel-guard all green; 4 Workstream D neg tests all green; heisenbug stress test 20/20 green under nextest parallelism. `[Tested+Neg]` promotions landed on §8.3.1 / §8.3.7 / §8.3.9 headings.
+
 ## Known issues / deferred
 
 <!-- Both FIXME(/qa) Wave 6 audit findings (docstring separator divergence + stdlib REPL auto-import)

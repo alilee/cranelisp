@@ -1100,6 +1100,78 @@ The `sconcat` function has an additional constraint: it is referenced by quasiqu
 
 ---
 
+## 15. Sprint 59 Audit Reconciliation — `(import [prelude []])` Null-Import Surface
+
+Closes Sprint 58 Wave 6 /review Important finding **I-2** (stdlib audit count drift).
+
+### Authoritative count
+
+**35 `.cl` source files** carry `(import [prelude []])`. Sprint 58 commit `98bf4ef`
+reported 32 — an undercount of 3. (A 36th match is in `stdlib/CLAUDE.md`, which is
+documentation citing the convention, not a source file.)
+
+### Enumerated audit surface (35 files)
+
+Root-level modules (14):
+- `stdlib/collections.cl`, `stdlib/compare.cl`, `stdlib/control.cl`, `stdlib/core.cl`
+- `stdlib/default.cl`, `stdlib/defs.cl`, `stdlib/derive.cl`, `stdlib/fn.cl`
+- `stdlib/io.cl`, `stdlib/num.cl`, `stdlib/seq.cl`, `stdlib/testing.cl`
+- `stdlib/text.cl`
+- (note: `stdlib/prelude.cl` is the re-export shell and does NOT carry `(import [prelude []])` — it IS the prelude)
+
+Submodules (21):
+- `collections/`: `either.cl`, `list.cl`, `pair.cl`, `vec.cl`
+- `compare/`: `eq.cl`, `ord.cl`
+- `core/`: `io.cl`, `syntax.cl`, `trace.cl`
+- `fn/`: `compose.cl`, `option.cl`, `result.cl`, `threading.cl`
+- `io/`: `monad.cl`
+- `num/`: `float.cl`, `int.cl`, `num.cl`
+- `seq/`: `lazy.cl` (Defect 2 resolved in 98bf4ef)
+- `testing/`: `assertions.cl`, `runner.cl`
+- `text/`: `display.cl`, `string.cl`
+
+### Spot-check: the 3 files missed by the Sprint 58 audit
+
+The three files most likely to have been missed — per the Sprint 58 /review
+finding — are `stdlib/derive.cl`, `stdlib/defs.cl`, `stdlib/default.cl`. Each
+re-checked against the `seq/lazy.cl` defect pattern: **bare identifiers
+referenced without explicit imports, masked by an earlier dep-load race and
+surfaced only after /int's Defect 1 fix**.
+
+| File | Explicit imports | Bare identifiers used | Verdict |
+|---|---|---|---|
+| `stdlib/derive.cl` | `primitives [*]`, `macros [*]`, `core.syntax [sfold sreverse sempty? slist]` | All bare names (`SNil`, `SCons`, `SexpSym`, `SexpList`, `SexpBracket`, `SexpStr`, `add-i64`, `str-concat`, etc.) resolve via the three wildcard/explicit imports | **CLEAN** |
+| `stdlib/defs.cl` | `primitives [*]` | Qualified references only (`primitives/quote-sexp`, `macros/SexpSym`, `macros/SexpList`, `macros/SCons`, `macros/SNil`, `primitives/str-concat`). No bare unqualified names outside macro local bindings | **CLEAN** |
+| `stdlib/default.cl` | `fn.option [Option None]` | `Int`, `Float`, `Bool`, `String` — these are compiler-seeded primitive types (not symbols that need import) resolved by the typechecker's builtin type table. `None` is explicitly imported. No other bare names | **CLEAN** |
+
+No analogous defect to `seq/lazy.cl` exists in these three files. The
+Sprint 58 conclusion ("`seq/lazy.cl` was the only at-risk file") holds after
+the count correction.
+
+### Fixes applied
+
+None. All three spot-checked files resolve their identifiers correctly under
+the null-prelude-import regime. No source changes required; no FIXMEs filed.
+
+### Demo status
+
+`repl/demos/stdlib-progress.demo` (Ring 3, owned by `/repl`) exercises the
+prelude surface: trait-dispatched operators (`+`, `=`, `<`, `show`),
+constrained polymorphism, `Option`/`Result` pattern matching, `str` macro,
+string primitives (`to-upper`, `split`, `join`, `replace`, `trim`, `contains?`),
+compose/pipeline. Static read confirms the demo references only names that
+the current prelude re-export shell provides (per `stdlib/CLAUDE.md`'s
+"Prelude re-exports" list). No drift detected between the demo and current
+stdlib API shape.
+
+### I-2 closure
+
+Authoritative count locked at 35. Audit surface fully enumerated. Three
+spot-checked files clean. Sprint 58 Wave 6 /review Important finding I-2
+resolved.
+
+---
+
 ## Next Skills
 
 - `/arch` — Confirm the builtin-to-trait transition strategy. Validate that cross-module trait impls work (trait in module A, type in module B, impl in module B). Review Map/Set implementation strategy.

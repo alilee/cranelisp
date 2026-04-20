@@ -2116,3 +2116,76 @@ fn batch_main_nonzero_exit_code() {
         "exit code should be the Int return value of main"
     );
 }
+
+// spec: design/int/dual-path-persistence-collapse.md §7 step 7 + §8 heisenbug repro
+//
+// FIXME(/int): Sprint 59 Workstream A — the dual-path persistence collapse
+// design explicitly names the ~1755/1754 heisenbug observed at Sprint 58
+// close (Sprint 58 §Findings) as the structural symptom of two orchestrators
+// working on the same module simultaneously. Per the design doc migration
+// plan step 7, under the collapsed path this loop MUST be 50/50 green
+// (heisenbug source eliminated). Before the collapse lands, this test is
+// expected to flake; after the collapse lands, it MUST be rock solid.
+//
+// Design ref: design/int/dual-path-persistence-collapse.md §7 step 7
+// (50-loop repro), §3 target shape (single persistent-worker pool + one
+// waiter), §9 Risk 1 (sixth surface discovery trigger).
+#[test]
+fn cache_repl_loads_heisenbug_parallel_stress() {
+    // Repeat the persist_import_survives_restart sequence N times in a loop,
+    // relying on nextest's own --test-threads parallelism to apply scheduling
+    // pressure to the scheduler-side vs session-side dep-registration paths.
+    //
+    // Under the collapsed path (Sprint 59 Workstream A), there is ONE
+    // orchestrator per module, so this loop is correct-by-construction. If
+    // this test flakes after the collapse lands, §9 Risk 1 is active: a sixth
+    // collapse surface has been missed.
+    //
+    // N is 20 rather than 50 to respect the /qa <30s test runtime budget.
+    // The heisenbug observed at Sprint 58 close was ~1 flake per 1755 runs;
+    // 20 iterations under nextest pressure is enough to catch a structural
+    // re-opening (not a true 1-in-1755 race — those stay as user-triggered
+    // repros via the design doc's migration-step-7 manual loop).
+    const STRESS_ITERATIONS: usize = 20;
+
+    for iteration in 0..STRESS_ITERATIONS {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+
+        std::fs::write(
+            dir.path().join("helper.cl"),
+            "(defn helper-val [] 99)",
+        )
+        .unwrap();
+
+        // Session 1: import the helper module and quit
+        let input1 = "\
+(import [helper [helper-val]])
+(helper-val)
+/quit
+";
+        let output1 = run_repl_in_with_test_prelude(dir.path(), input1);
+        let out1 = stdout_str(&output1);
+        assert!(
+            out1.contains("99"),
+            "iteration {iteration}: session 1 should successfully import and call helper-val: {out1}"
+        );
+
+        // Delete cache so session 2 must recompile from user.cl
+        let cache_dir = dir.path().join(".cranelisp-cache");
+        if cache_dir.exists() {
+            std::fs::remove_dir_all(&cache_dir).expect("failed to delete .cranelisp-cache");
+        }
+
+        // Session 2: restart, the import should be persisted in user.cl
+        let input2 = "\
+(helper-val)
+/quit
+";
+        let output2 = run_repl_in_with_test_prelude(dir.path(), input2);
+        let out2 = stdout_str(&output2);
+        assert!(
+            out2.contains("99"),
+            "iteration {iteration}: session 2 should find helper-val via persisted import in user.cl: {out2}"
+        );
+    }
+}
