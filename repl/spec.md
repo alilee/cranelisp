@@ -371,7 +371,7 @@ Slash commands provide introspection and navigation. All commands start with `/`
 
 ### 3.1 Command Inventory
 
-Per-row annotations below indicate test coverage for each command. Ring 4 introspection commands (`/mem`, `/disasm`, `/time`, `/mod`, `/reload`) are legitimately pending.
+Per-row annotations below indicate test coverage for each command. Ring 4 introspection commands (`/disasm`, `/time`, `/mod`, `/reload`) are legitimately pending. (`/mem` E2E coverage landed Sprint 58 Wave 5.)
 
 | Command | Aliases | Description | Ring | Test |
 |---|---|---|---|---|
@@ -391,7 +391,7 @@ Per-row annotations below indicate test coverage for each command. Ring 4 intros
 | `/mod [name]` | — | Switch module namespace | 2 | [R4 S10] |
 | `/imports [module]` | — | Show imports and special forms; filter by source module | 0 | [Tested tests/e2e::e2e_s3_4_imports_special_forms, tests/e2e::e2e_s3_4_imports_empty] |
 | `/exports <module>` | — | List a module's importable public symbols | 2 | [Tested tests/e2e::e2e_s3_5_exports_lists_symbols, tests/e2e::e2e_s3_5_exports_no_arg_usage] |
-| `/mem [expr]` | `/m` | Show allocation statistics (see §3.7) | 4 | [R4 S57] |
+| `/mem [expr]` | `/m` | Show allocation statistics (see §3.7) | 4 | [Tested tests/e2e::mem_command_snapshot_emits_live_and_allocs, tests/e2e::mem_command_delta_runs_expr_and_shows_signed_deltas, tests/e2e::mem_command_baseline_counters_zero_at_start, tests/e2e::mem_command_alias_m_works] |
 | `/run-tests [module]` | `/rt` | Discover and run test functions (see §16) | 4 | [R4] |
 | `/run-all-tests` | — | Run all tests in project (see §16) | 4 | [R4] |
 | `/sh <cmd>` | — | Run a shell command (see §13) | 4 | [R4 S52] |
@@ -541,7 +541,7 @@ Categories follow the same order as `/list`: Modules, Macros, Traits, Types, Fns
 
 For overloaded functions, all variants MUST be listed. For constrained functions, specializations MUST be shown.
 
-### 3.7 `/mem` — Allocation Statistics [R4 S57]
+### 3.7 `/mem` — Allocation Statistics [Tested]
 
 `/mem` reports the runtime allocation counters maintained by `cranelisp-runtime`: total allocations observed, total deallocations, and bytes currently live. The command has two shapes — a **snapshot** (no argument) and a **delta** (with an expression argument). Both are comment lines (`;`-prefixed), consistent with the self-documentation convention in §1.5.
 
@@ -577,10 +577,11 @@ Evaluation errors MUST still emit the delta line — observation is the point, a
 
 | Requirement | Test |
 |---|---|
-| snapshot emits live + totals | [R4 S57] |
-| delta prints result then delta line | [R4 S57] |
-| signed `bytes` and `live` deltas | [R4 S57] |
-| baseline counters at process start are zero | [R4 S57] |
+| snapshot emits live + totals | [Tested tests/e2e::mem_command_snapshot_emits_live_and_allocs] |
+| delta prints result then delta line | [Tested tests/e2e::mem_command_delta_runs_expr_and_shows_signed_deltas] |
+| signed `bytes` and `live` deltas | [Tested tests/e2e::mem_command_delta_runs_expr_and_shows_signed_deltas] |
+| baseline counters at process start are zero | [Tested tests/e2e::mem_command_baseline_counters_zero_at_start] |
+| `/m` short alias produces snapshot | [Tested tests/e2e::mem_command_alias_m_works] |
 
 ## 4. Self-Documentation Contract
 

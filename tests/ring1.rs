@@ -1928,6 +1928,94 @@ fn match_non_adt_bool_wildcard() {
 // Limitations (spec: 06-pattern-matching §6.6)
 // =============================================================================
 
+// =============================================================================
+// Sprint 58 Wave 5 — §6.5 negative coverage (non-exhaustive ADT match;
+// non-ADT scrutinee must include wildcard or variable pattern). Promotes
+// §6.5.1 and §6.5.2 from `[Tested]` to `[Tested+Neg]`.
+// =============================================================================
+
+// spec: 06-pattern-matching §6.5.1 — non-exhaustive ADT match MUST be a
+// compile-time error naming the type and listing the uncovered constructors.
+#[test]
+fn neg_exhaustive_match_missing_constructor_compile_error() {
+    let src = "
+        (deftype Color Red Green Blue)
+        (defn pick [c]
+          (match c [Red 1 Green 2]))
+        (defn main [] (pick Blue))
+    ";
+    let result = helpers::batch_run(src);
+    assert!(
+        result.is_err(),
+        "non-exhaustive ADT match MUST be rejected at compile time per §6.5.1"
+    );
+    let err = result.unwrap_err().to_string();
+    // Spec: error MUST name the type and list missing constructor(s).
+    assert!(
+        err.contains("Color"),
+        "exhaustiveness error MUST name the ADT type 'Color', got: {err}"
+    );
+    assert!(
+        err.contains("Blue"),
+        "exhaustiveness error MUST list missing constructor 'Blue', got: {err}"
+    );
+}
+
+// spec: 06-pattern-matching §6.5.1 — non-exhaustive ADT match with single
+// arm rejected; error lists ALL missing constructors (not just one).
+#[test]
+fn neg_exhaustive_match_single_arm_lists_all_missing() {
+    let src = "
+        (deftype Color Red Green Blue)
+        (defn pick [c] (match c [Red 1]))
+        (defn main [] (pick Green))
+    ";
+    let result = helpers::batch_run(src);
+    assert!(
+        result.is_err(),
+        "single-arm match on multi-ctor ADT MUST be rejected per §6.5.1"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("Green") && err.contains("Blue"),
+        "exhaustiveness error MUST list ALL missing constructors (Green, Blue), got: {err}"
+    );
+}
+
+// spec: 06-pattern-matching §6.5.2 — non-ADT scrutinee with no arms is a
+// compile-time error. Match cannot be exhaustive on `Int` / `Bool` /
+// `String` etc. without a wildcard or variable pattern.
+#[test]
+fn neg_match_empty_arms_rejected() {
+    let src = "
+        (defn pick [b] (match b []))
+        (defn main [] (pick true))
+    ";
+    let result = helpers::batch_run(src);
+    assert!(
+        result.is_err(),
+        "match with empty arms MUST be rejected at compile time per §6.5.2"
+    );
+}
+
+// spec: 06-pattern-matching §6.5.2 — non-ADT scrutinee MUST NOT accept
+// constructor patterns from a different ADT. Type-mismatch enforces the
+// "wildcard or variable required" rule indirectly: only those patterns
+// type-check against `Int` / `Bool` / `String` / function / type variable.
+#[test]
+fn neg_match_non_adt_scrut_with_adt_constructor_rejected() {
+    let src = "
+        (deftype (Option a) None (Some [:a val]))
+        (defn pick [n] (match n [None 1 (Some _) 2]))
+        (defn main [] (pick 5))
+    ";
+    let result = helpers::batch_run(src);
+    assert!(
+        result.is_err(),
+        "constructor patterns on non-ADT scrutinee MUST be rejected per §6.5.2"
+    );
+}
+
 // spec: 06-pattern-matching §6.6.1 — no nested patterns (error)
 #[test]
 fn error_nested_pattern() {

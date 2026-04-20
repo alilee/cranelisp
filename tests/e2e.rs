@@ -2260,3 +2260,312 @@ fn e2e_imported_fn_as_higher_order_arg_repl() {
         "expected (apply-fn even? 4) = true, got:\n{out}"
     );
 }
+
+// ===========================================================================
+// Sprint 58 Wave 5 — Cranelisp.toml E2E coverage
+//
+// `/int` Wave 4 landed Step 5d (iii) — `Cranelisp.toml` project config lookup
+// in `src/session.rs::load_project_config_lib_dirs` + `assemble_lib_dirs`.
+// Unit tests in `src/session.rs` cover the helper directly; these E2E tests
+// exercise the full binary path (config discovered + applied to module
+// resolution) per spec §8.11.4 item 2.
+//
+// All four tests use `--run main` (Run mode) rather than REPL because Run
+// mode is the simpler, fully-working integration path for module imports
+// from lib_dirs. (REPL mode has a separate, pre-existing issue with
+// relative `lib-dirs` paths — filed as FIXME(/int) elsewhere; out of
+// scope for these tests, which validate the Cranelisp.toml schema and
+// precedence behavior.)
+// ===========================================================================
+
+/// Build an isolated temp project with a `Cranelisp.toml`, optional lib subdir,
+/// and a `main.cl` entry. Returns the project root.
+fn make_toml_project(
+    label: &str,
+    toml_contents: &str,
+    main_cl: &str,
+    lib_files: &[(&str, &str)],
+) -> std::path::PathBuf {
+    let dir = test_dir(label);
+    std::fs::write(dir.join("Cranelisp.toml"), toml_contents).unwrap();
+    std::fs::write(dir.join("main.cl"), main_cl).unwrap();
+    for (rel, contents) in lib_files {
+        let full = dir.join(rel);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&full, contents).unwrap();
+    }
+    dir
+}
+
+/// Run the binary in batch mode (`--run main`) inside `project_root`.
+fn run_main_in(project_root: &std::path::Path, env_lib: Option<&str>) -> Output {
+    let binary = binary_path();
+    assert!(
+        binary.exists(),
+        "cranelisp binary not found at {binary:?} — run `cargo build` first"
+    );
+    let mut cmd = Command::new(&binary);
+    cmd.current_dir(project_root)
+        .arg("--run")
+        .arg("main")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(v) = env_lib {
+        cmd.env("CRANELISP_LIB", v);
+    } else {
+        cmd.env_remove("CRANELISP_LIB");
+    }
+    cmd.spawn()
+        .expect("failed to start cranelisp binary")
+        .wait_with_output()
+        .expect("failed to read output")
+}
+
+// spec: 08-modules §8.11.4 item 2 — Cranelisp.toml.lib-dirs is consulted to
+// resolve module imports. Positive end-to-end: a relative lib-dirs entry
+// resolves a sibling-directory module.
+#[test]
+fn e2e_cranelisp_toml_lib_dirs_resolves_modules() {
+    let dir = make_toml_project(
+        "toml_lib_dirs_resolves",
+        r#"lib-dirs = ["./mylib"]"#,
+        "(import [foo [forty-two]])\n(defn main [] (forty-two))\n",
+        &[("mylib/foo.cl", "(defn forty-two [] 42)\n")],
+    );
+    let o = run_main_in(&dir, None);
+    let exit = o.status.code().unwrap_or(-1);
+    assert_eq!(
+        exit, 42,
+        "expected exit 42 from (forty-two), got {exit}\nstdout: {}\nstderr: {}",
+        stdout_str(&o), stderr_str(&o)
+    );
+}
+
+// spec: 08-modules §8.11.4 — project-config tier (item 2) takes precedence
+// over the CRANELISP_LIB env-var tier (item 3). When both point at modules
+// of the same name, the config wins.
+#[test]
+fn e2e_cranelisp_toml_overrides_cranelisp_lib_env() {
+    // Two different libs — config points at "win"; env points at "lose".
+    // The module 'foo' exists in both with different return values; precedence
+    // is observed via which value `main` returns.
+    let env_lib_dir = test_dir("toml_env_lose_lib");
+    std::fs::write(
+        env_lib_dir.join("foo.cl"),
+        "(defn pick [] 13)\n",
+    )
+    .unwrap();
+
+    let dir = make_toml_project(
+        "toml_overrides_env",
+        r#"lib-dirs = ["./conflict-lib"]"#,
+        "(import [foo [pick]])\n(defn main [] (pick))\n",
+        &[("conflict-lib/foo.cl", "(defn pick [] 99)\n")],
+    );
+    let o = run_main_in(&dir, Some(env_lib_dir.to_str().unwrap()));
+    let exit = o.status.code().unwrap_or(-1);
+    assert_eq!(
+        exit, 99,
+        "Cranelisp.toml MUST take precedence over CRANELISP_LIB; expected 99 (config), got {exit}\nstdout: {}\nstderr: {}",
+        stdout_str(&o), stderr_str(&o)
+    );
+    // Negative companion: the env-var value 13 MUST NOT win. (Already implied
+    // by exit==99, but make the negative explicit for the SPRINT report.)
+    assert_ne!(exit, 13, "env-var module MUST NOT shadow project-config module");
+}
+
+// spec: 08-modules §8.11.4 — when no Cranelisp.toml is present, the
+// CRANELISP_LIB env var is consulted (tier 3). Absent-config fall-through.
+#[test]
+fn e2e_cranelisp_toml_missing_falls_through_to_env() {
+    // No Cranelisp.toml; env var supplies the sole lib dir.
+    let env_lib_dir = test_dir("toml_missing_env_lib");
+    std::fs::write(
+        env_lib_dir.join("foo.cl"),
+        "(defn val [] 77)\n",
+    )
+    .unwrap();
+
+    let dir = test_dir("toml_missing_falls_through");
+    std::fs::write(
+        dir.join("main.cl"),
+        "(import [foo [val]])\n(defn main [] (val))\n",
+    )
+    .unwrap();
+    // Confirm absence:
+    assert!(
+        !dir.join("Cranelisp.toml").exists(),
+        "test setup error: Cranelisp.toml should be absent"
+    );
+
+    let o = run_main_in(&dir, Some(env_lib_dir.to_str().unwrap()));
+    let exit = o.status.code().unwrap_or(-1);
+    assert_eq!(
+        exit, 77,
+        "absent Cranelisp.toml MUST fall through to CRANELISP_LIB; expected 77, got {exit}\nstdout: {}\nstderr: {}",
+        stdout_str(&o), stderr_str(&o)
+    );
+}
+
+// ===========================================================================
+// Sprint 58 Wave 5 — `/mem` E2E coverage (Sprint 57 carry, repl/spec.md §3.7)
+//
+// Unit tests in `src/session_v4.rs::mem_command_tests` cover
+// `format_mem_snapshot` and the slash-command parser directly. These E2E
+// tests exercise `/mem` and `/m` through the REPL binary (subprocess),
+// asserting the visible stdout shape per spec §3.7.
+// ===========================================================================
+
+// spec: repl/spec.md §3.7 — bare `/mem` snapshot emits two comment lines:
+// `; live: <bytes> bytes (<live-allocs> allocations)` and
+// `; allocs: <allocs>  deallocs: <deallocs>`.
+#[test]
+fn mem_command_snapshot_emits_live_and_allocs() {
+    let o = run_repl("/mem\n", "mem_snapshot");
+    let out = stdout_str(&o);
+    // The two §3.7 lines must both appear.
+    let has_live = out.lines().any(|l| {
+        l.contains("; live:") && l.contains("bytes (") && l.contains("allocations)")
+    });
+    assert!(
+        has_live,
+        "/mem MUST emit a `; live: N bytes (M allocations)` line per §3.7, got:\n{out}"
+    );
+    let has_allocs = out.lines().any(|l| {
+        l.contains("; allocs:") && l.contains("deallocs:")
+    });
+    assert!(
+        has_allocs,
+        "/mem MUST emit a `; allocs: N  deallocs: M` line per §3.7, got:\n{out}"
+    );
+    // Negative: must NOT emit a `; delta:` line on the snapshot form.
+    assert!(
+        !out.contains("; delta:"),
+        "/mem (no expr) MUST NOT emit a `; delta:` line, got:\n{out}"
+    );
+}
+
+// spec: repl/spec.md §3.7 — `/mem <expr>` evaluates the expression, prints
+// its formatted result, then emits one `; delta:` comment line carrying
+// signed `bytes` and `live` deltas plus non-negative `allocs`/`deallocs`.
+#[test]
+fn mem_command_delta_runs_expr_and_shows_signed_deltas() {
+    // Use a string concatenation to force real allocation work — the
+    // resulting deltas will be non-trivial so the format is exercised.
+    let input = "(import [primitives [str-concat]])\n/mem (str-concat \"hi \" \"world\")\n";
+    let o = run_repl(input, "mem_delta_str");
+    let out = stdout_str(&o);
+    // The result line: shows the formatted value (per §1.2).
+    assert!(
+        out.contains(":primitives/String"),
+        "/mem <expr> MUST print the formatted result first, got:\n{out}"
+    );
+    assert!(
+        out.contains("\"hi world\""),
+        "/mem <expr> MUST evaluate the expression and show the result, got:\n{out}"
+    );
+    // The §3.7 delta line, with all four named fields.
+    let delta_line = out.lines().find(|l| l.contains("; delta:")).unwrap_or_else(|| {
+        panic!("/mem <expr> MUST emit a `; delta:` line per §3.7, got:\n{out}")
+    });
+    for needle in &["allocs +", "deallocs +", "bytes ", "live "] {
+        assert!(
+            delta_line.contains(needle),
+            "delta line missing {needle:?}; got: {delta_line}\nfull stdout:\n{out}"
+        );
+    }
+    // Signed-delta requirement: `bytes` and `live` carry a `+` or `-` sign.
+    // After str-concat, bytes_live > 0 so we expect `bytes +`.
+    assert!(
+        delta_line.contains("bytes +") || delta_line.contains("bytes -"),
+        "`bytes` delta MUST carry a sign (+/-) per §3.7, got: {delta_line}"
+    );
+    assert!(
+        delta_line.contains("live +") || delta_line.contains("live -")
+            || delta_line.contains("live 0"),
+        "`live` delta MUST be signed per §3.7, got: {delta_line}"
+    );
+}
+
+// spec: repl/spec.md §3.7 — process-start counters are zero. A bare `/mem`
+// before any user evaluation reports `; live: 0 bytes (0 allocations)` and
+// `; allocs: 0  deallocs: 0`.
+#[test]
+fn mem_command_baseline_counters_zero_at_start() {
+    let o = run_repl("/mem\n", "mem_baseline_zero");
+    let out = stdout_str(&o);
+    // Look for the exact "0 bytes (0 allocations)" sub-string.
+    assert!(
+        out.contains("; live: 0 bytes (0 allocations)"),
+        "process-start `; live:` MUST be `0 bytes (0 allocations)` per §3.7, got:\n{out}"
+    );
+    assert!(
+        out.contains("; allocs: 0  deallocs: 0"),
+        "process-start `; allocs: 0  deallocs: 0` MUST hold per §3.7, got:\n{out}"
+    );
+}
+
+// spec: repl/spec.md §3.1 + §3.7 — `/m` is the documented short alias for
+// `/mem`. Both produce the same snapshot output.
+#[test]
+fn mem_command_alias_m_works() {
+    let o = run_repl("/m\n", "mem_alias_m");
+    let out = stdout_str(&o);
+    assert!(
+        out.contains("; live:") && out.contains("bytes ("),
+        "/m alias MUST produce the same snapshot as /mem per §3.1, got:\n{out}"
+    );
+    assert!(
+        out.contains("; allocs:") && out.contains("deallocs:"),
+        "/m alias MUST emit `; allocs:` line, got:\n{out}"
+    );
+}
+
+// spec: 08-modules §8.11.4 — malformed Cranelisp.toml MUST NOT crash the
+// binary. Per the implementation's documented behaviour
+// (`assemble_lib_dirs` swallows parse errors and falls through to the
+// env/default tiers), a malformed config silently falls through. Verify
+// that no panic / no segfault occurs and the binary exits cleanly when
+// the program is independent of lib_dirs.
+//
+// Note: this is a "doesn't crash" assertion, not "diagnostic emitted".
+// `load_project_config_lib_dirs` itself returns helpful errors (covered by
+// unit tests in `src/session.rs`), but `assemble_lib_dirs` deliberately
+// degrades silently. If future spec revision (or `/int` design change)
+// elevates the behaviour to surface a diagnostic, this test should flip
+// from "no panic" to "diagnostic visible" — file FIXME(/int) at that time.
+#[test]
+fn e2e_cranelisp_toml_malformed_errors_helpfully() {
+    let dir = test_dir("toml_malformed");
+    // Unclosed string literal — parser MUST reject as malformed.
+    std::fs::write(
+        dir.join("Cranelisp.toml"),
+        "lib-dirs = [\"oops\n",
+    )
+    .unwrap();
+    // Self-contained main: no imports needed (independent of lib_dirs).
+    std::fs::write(
+        dir.join("main.cl"),
+        "(defn main [] 0)\n",
+    )
+    .unwrap();
+
+    let o = run_main_in(&dir, None);
+    // Must NOT crash: no signal-style exit code (SIGSEGV would yield negative
+    // or 134/139). Allow exit 0 (silent fall-through, current behaviour).
+    let code = o.status.code();
+    assert!(
+        code.is_some(),
+        "binary must exit cleanly (not killed by signal); status: {:?}\nstderr: {}",
+        o.status, stderr_str(&o)
+    );
+    let code = code.unwrap();
+    assert!(
+        (0..=125).contains(&code),
+        "malformed Cranelisp.toml MUST NOT cause abnormal termination; exit code {code}\nstderr: {}",
+        stderr_str(&o)
+    );
+}

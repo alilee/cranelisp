@@ -201,7 +201,7 @@ The type of a `match` expression is the unified type of all arm bodies. The type
 
 Every `match` expression MUST be statically guaranteed to handle all possible values of the scrutinee type. The exhaustiveness rules depend on whether the scrutinee type is a concrete ADT or not.
 
-### 6.5.1 ADT Scrutinee Types [Tested tests/ring1::exhaustive_match_all_constructors, tests/ring1::exhaustive_match_with_wildcard, tests/ring1::exhaustive_match_with_var_pattern, tests/ring1::exhaustive_product_type, tests/ring1::match_three_constructors, tests/repl_experience::match_all_constructors]
+### 6.5.1 ADT Scrutinee Types [Tested+Neg tests/ring1::exhaustive_match_all_constructors, tests/ring1::exhaustive_match_with_wildcard, tests/ring1::exhaustive_match_with_var_pattern, tests/ring1::exhaustive_product_type, tests/ring1::match_three_constructors, tests/repl_experience::match_all_constructors, tests/ring1::neg_exhaustive_match_missing_constructor_compile_error, tests/ring1::neg_exhaustive_match_single_arm_lists_all_missing]
 
 When the scrutinee type resolves to a concrete ADT (a type defined via `deftype`), a `match` expression MUST be **exhaustive**: either every constructor of the ADT appears as a constructor pattern in at least one arm, or at least one arm uses a wildcard or variable pattern (which covers all remaining cases).
 
@@ -222,7 +222,7 @@ A non-exhaustive match on a concrete ADT type is a **compile-time error**. The e
 (match c [Red 1 Green 2])
 ```
 
-### 6.5.2 Non-ADT Scrutinee Types [Tested tests/ring1.rs::match_non_adt_int_var_pattern, tests/ring1.rs::match_non_adt_bool_wildcard]
+### 6.5.2 Non-ADT Scrutinee Types [Tested+Neg tests/ring1.rs::match_non_adt_int_var_pattern, tests/ring1.rs::match_non_adt_bool_wildcard, tests/ring1.rs::neg_match_empty_arms_rejected, tests/ring1.rs::neg_match_non_adt_scrut_with_adt_constructor_rejected]
 
 When the scrutinee type is not a concrete ADT — i.e., it is `Int`, `Bool`, `Float`, `String`, a function type, or a type variable — the type has no finite set of constructors that could be enumerated. In this case, a `match` expression MUST include at least one **wildcard pattern** (`_`) or **variable pattern** as a catch-all arm. A `match` on a non-ADT scrutinee type without a wildcard or variable pattern is a **compile-time error**.
 
