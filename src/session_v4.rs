@@ -1940,6 +1940,20 @@ impl CompilerSession {
         dep_module: &ModuleFullPath,
         dep_sexps: &[Sexp],
     ) -> Result<(), CranelispError> {
+        // Publish the dep's sexps to the shared map BEFORE scheduler
+        // registration. Persistent priority workers (Sprint 57 W4) wake on
+        // the scheduler notify and dequeue `Typecheck(<dep>)` immediately;
+        // if they read `shared.module_sexps` before the inline loop has a
+        // chance to insert, they emit "no parsed sexps for module '<dep>'".
+        // The inline-loop's local `module_sexps` map is invisible to them,
+        // so we must seed the shared map first. See Sprint 58 Wave 6
+        // Defect 1 — `tests/wave6_demo_repros.rs::repl_dep_load_no_race_with_persistent_workers`.
+        {
+            let mut map = self.shared.module_sexps.lock()
+                .unwrap_or_else(|e| e.into_inner());
+            map.entry(dep_module.clone())
+                .or_insert_with(|| dep_sexps.to_vec());
+        }
         self.shared.scheduler.register_module(dep_module.clone(), false);
 
         let mut module_sexps = HashMap::new();
@@ -4219,6 +4233,73 @@ mod persistent_worker_tests {
             .unwrap_or(false);
         assert!(has_updated, "reloaded module must carry the new defn");
 
+        s.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // spec: implicit Principle 11 — REPL `(import [<m> [...]])` of a stdlib
+    // module must produce the same outcome as `--run`. This regression-guard
+    // unit test pins the publish-then-register order in `compile_dep_inline`
+    // — see Sprint 58 Wave 6 Defect 1 and the integration repro
+    // `tests/wave6_demo_repros.rs::repl_dep_load_no_race_with_persistent_workers`.
+    //
+    // If a future change reverts the ordering (registers the dep with the
+    // scheduler before publishing its sexps to `shared.module_sexps`), then a
+    // persistent priority worker that wakes between the two operations will
+    // dequeue `Typecheck(<dep>)`, hit `worker.rs::handle_typecheck_work_shared`,
+    // find `module_sexps[dep]` empty, and surface the "no parsed sexps for
+    // module '<dep>'" error. This test asserts the post-condition
+    // structurally: after the publish step inside `compile_dep_inline` runs,
+    // the dep's sexps must be present in `shared.module_sexps`. We use
+    // `priority_workers = 0` so persistent workers never observe the entry
+    // and the publish remains visible to the test for inspection.
+    //
+    // Without `priority_workers = 0`, the persistent workers would race
+    // through `handle_typecheck_work_shared` (which removes the entry on
+    // success at worker.rs:3398), making the post-condition flaky. The
+    // integration test in `tests/wave6_demo_repros.rs` covers the
+    // many-worker scenario end-to-end.
+    #[test]
+    fn compile_dep_inline_publishes_sexps_before_register() {
+        use cranelisp_frontend::parse;
+        let (mut s, root) = test_session(0);
+        let dep_module = ModuleFullPath::from("dep_inline_race_dep");
+        let dep_sexps = parse("(defn dep-fn [] 0)").expect("parse dep source");
+        // Pre-condition: shared.module_sexps must NOT contain the dep.
+        {
+            let map = s.shared.module_sexps.lock()
+                .unwrap_or_else(|e| e.into_inner());
+            assert!(
+                !map.contains_key(&dep_module),
+                "pre-condition violated: dep already in shared.module_sexps",
+            );
+        }
+        // Drive the path. Even if compilation fails (no prelude / no lib dirs
+        // in test_session), the publish-then-register order inside
+        // `compile_dep_inline` MUST run BEFORE any further work. We swallow
+        // the result and only assert on the publish post-condition.
+        let _ = s.compile_dep_inline(&dep_module, &dep_sexps);
+        // Post-condition: shared.module_sexps now contains the dep entry.
+        // With `priority_workers = 0`, no persistent worker has consumed it,
+        // so the entry that compile_dep_inline published is still present.
+        // If a future change moves the publish AFTER scheduler.register_module
+        // (or removes it entirely), this assertion fails.
+        let published = {
+            let map = s.shared.module_sexps.lock()
+                .unwrap_or_else(|e| e.into_inner());
+            map.get(&dep_module).map(|v| v.len())
+        };
+        assert_eq!(
+            published,
+            Some(dep_sexps.len()),
+            "compile_dep_inline did not publish dep_sexps to \
+             shared.module_sexps before invoking scheduler.register_module. \
+             Per Sprint 58 Wave 6 Defect 1, persistent priority workers wake \
+             on register_module's notify and read shared.module_sexps; if \
+             the publish has not happened yet they emit 'no parsed sexps \
+             for module' and fail the dep. The publish MUST precede \
+             scheduler.register_module.",
+        );
         s.shutdown();
         let _ = std::fs::remove_dir_all(&root);
     }

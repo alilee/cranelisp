@@ -1277,6 +1277,13 @@ fn handle_import(
             }
         }
 
+        // Publish dep_sexps to shared.module_sexps BEFORE register_module so
+        // any persistent priority worker that wakes on the scheduler notify
+        // finds the sexps ready and does not emit "no parsed sexps for
+        // module '<dep>'". The caller (handle_typecheck_work_shared) also
+        // re-publishes when the Blocked result is processed, but by then a
+        // worker may already have raced. Sprint 58 Wave 6 Defect 1.
+        publish_dep_sexps(ctx, dep, &dep_sexps);
         // Register dep with scheduler (idempotent — skips if already registered).
         ctx.scheduler.register_module(dep.clone(), true);
 
@@ -1294,6 +1301,26 @@ fn handle_import(
     }
 
     Ok(BlockAction::Continue)
+}
+
+/// Publish a dep's parsed sexps into `shared.module_sexps` if shared state is
+/// available. No-op for REPL contexts that don't use SharedState.
+///
+/// MUST be called BEFORE `scheduler.register_module(dep, ...)` so that any
+/// persistent priority worker that wakes on the scheduler notify finds the
+/// sexps already published. See Sprint 58 Wave 6 Defect 1 — the integration
+/// repro is `tests/wave6_demo_repros.rs::repl_dep_load_no_race_with_persistent_workers`,
+/// and the unit guard is `session_v4.rs::persistent_worker_tests::compile_dep_inline_publishes_sexps_before_register`.
+fn publish_dep_sexps(
+    ctx: &ModuleCompiler,
+    dep: &ModuleFullPath,
+    dep_sexps: &[Sexp],
+) {
+    if let Some(shared) = ctx.shared_state {
+        let mut map = shared.module_sexps.lock()
+            .unwrap_or_else(|e| e.into_inner());
+        map.entry(dep.clone()).or_insert_with(|| dep_sexps.to_vec());
+    }
 }
 
 /// Attempt to load a module from the disk cache, skipping typecheck.
@@ -1671,6 +1698,9 @@ fn handle_export(
             }
         }
 
+        // Publish dep_sexps before scheduler notify wakes persistent workers
+        // (Sprint 58 Wave 6 Defect 1).
+        publish_dep_sexps(ctx, dep, &dep_sexps);
         // Register dep with scheduler and block.
         ctx.scheduler.register_module(dep.clone(), true);
         ctx.scheduler.block_for_typecheck(module, dep, &Symbol::from("*"))?;
@@ -1768,6 +1798,9 @@ fn handle_mod(
         }
     }
 
+    // Publish dep_sexps before scheduler notify wakes persistent workers
+    // (Sprint 58 Wave 6 Defect 1).
+    publish_dep_sexps(ctx, &sub_path, &dep_sexps);
     // Register dep with scheduler and block for typecheck.
     ctx.scheduler.register_module(sub_path.clone(), true);
     ctx.scheduler.block_for_typecheck(
@@ -2277,6 +2310,9 @@ fn inject_prelude_if_needed(
                 }
             }
 
+            // Publish prelude sexps before scheduler notify wakes persistent
+            // workers (Sprint 58 Wave 6 Defect 1).
+            publish_dep_sexps(ctx, &prelude_path, &prelude_sexps);
             ctx.scheduler.register_module(prelude_path.clone(), true);
             ctx.scheduler.block_for_typecheck(
                 module,
