@@ -47,6 +47,19 @@ version = "0.8"
 [dependencies.notify]
 version = "7"
 
+# Sprint 58 Wave 4 Step 5d (iii): Cranelisp.toml project configuration
+# parser (`src/session.rs::load_project_config_lib_dirs`). Spec
+# §8.11.4 item 2 — closes inline FIXME(/int) at spec/08-modules.md:639,648.
+[dependencies.toml]
+version = "0.8"
+
+# Required by `toml::from_str` for Deserialize derives in
+# `src/session.rs::ProjectConfig`. (Already a transitive dep through
+# cranelisp-types.)
+[dependencies.serde]
+version = "1"
+features = ["derive"]
+
 [[bin]]
 name = "cranelisp"
 path = "src/main.rs"

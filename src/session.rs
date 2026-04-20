@@ -140,14 +140,102 @@ impl CacheState {
 // Free functions: lib dirs, prelude, exit code
 // ---------------------------------------------------------------------------
 
+/// Project configuration file schema (Sprint 58 Wave 4 Step 5d (iii)).
+///
+/// Read from `{project_root}/Cranelisp.toml` by `load_project_config_lib_dirs`.
+/// All fields are optional; absent fields default to empty values per
+/// `serde(default)`.
+///
+/// See `design/int/cranelisp-toml.md` for the schema rationale.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+struct ProjectConfig {
+    /// Lib directory list. Paths are relative to the project root or
+    /// absolute. When `Cranelisp.toml` is present, the resolved list
+    /// fully replaces the env/default tiers per spec §8.11.4 item 2.
+    #[serde(default, rename = "lib-dirs")]
+    lib_dirs: Vec<PathBuf>,
+}
+
+/// Read `{project_root}/Cranelisp.toml` and return its `lib-dirs` resolved
+/// against `project_root`.
+///
+/// Returns:
+/// - `Ok(None)` if the file does not exist (callers fall through to env/default tiers).
+/// - `Ok(Some(dirs))` if the file is present and parsed successfully (may be empty).
+/// - `Err(...)` if the file exists but is unreadable or malformed (caller surfaces).
+///
+/// Path resolution: relative paths are joined onto `project_root`; absolute
+/// paths are used unchanged. No tilde expansion (spec hand-edit format).
+///
+/// Spec: 08-modules.md §8.11.4 item 2.
+pub fn load_project_config_lib_dirs(
+    project_root: &Path,
+) -> Result<Option<Vec<PathBuf>>, CranelispError> {
+    let candidate = project_root.join("Cranelisp.toml");
+    if !candidate.is_file() {
+        return Ok(None);
+    }
+    let contents = std::fs::read_to_string(&candidate).map_err(|e| {
+        CranelispError::ModuleError {
+            message: format!(
+                "cannot read project config '{}': {}",
+                candidate.display(),
+                e
+            ),
+            file: Some(candidate.clone()),
+            span: Span::SYNTHETIC,
+        }
+    })?;
+    let config: ProjectConfig = toml::from_str(&contents).map_err(|e| {
+        CranelispError::ModuleError {
+            message: format!(
+                "malformed project config '{}': {} (spec §8.11.4)",
+                candidate.display(),
+                e
+            ),
+            file: Some(candidate.clone()),
+            span: Span::SYNTHETIC,
+        }
+    })?;
+    let resolved: Vec<PathBuf> = config
+        .lib_dirs
+        .iter()
+        .map(|p| {
+            if p.is_absolute() {
+                p.clone()
+            } else {
+                project_root.join(p)
+            }
+        })
+        .collect();
+    Ok(Some(resolved))
+}
+
 /// Assemble the list of library directories for module resolution.
 ///
-/// Per spec section 8.11.2, lib directory locations are specified by:
-/// 1. `CRANELISP_LIB` environment variable (colon-separated list of paths)
-/// 2. Fallback: `{project_root}/stdlib/` if it exists and `CRANELISP_LIB` is not set
+/// Per spec section 8.11.4, lib directory locations are assembled from
+/// (in precedence order; first hit fully controls):
+/// 1. **Project configuration file** (`Cranelisp.toml`): when present,
+///    its `lib-dirs` fully replaces the lower tiers. Spec §8.11.4 item 2.
+/// 2. `CRANELISP_LIB` environment variable (colon-separated list of paths).
+///    Spec §8.11.4 item 3.
+/// 3. Fallback: `{project_root}/stdlib/` if it exists. Spec §8.11.4 item 4.
+///
+/// Tier 1 (explicit programmatic additions) is layered on top by callers
+/// via `SharedState.lib_dirs` setters; this function returns the
+/// configuration-derived baseline only.
+///
+/// On project-config parse error: returns the env/default tiers and
+/// silently ignores the malformed file. Callers that want the parse
+/// error surfaced should call `load_project_config_lib_dirs` directly.
 pub fn assemble_lib_dirs(project_root: &Path) -> Vec<PathBuf> {
+    // Tier 2 (highest non-programmatic): project config file.
+    if let Ok(Some(dirs)) = load_project_config_lib_dirs(project_root) {
+        return dirs;
+    }
+
+    // Tier 3: CRANELISP_LIB environment variable.
     if let Ok(env_val) = std::env::var("CRANELISP_LIB") {
-        // CRANELISP_LIB is set: split on ':' and collect non-empty paths.
         return env_val
             .split(':')
             .filter(|s| !s.is_empty())
@@ -155,7 +243,7 @@ pub fn assemble_lib_dirs(project_root: &Path) -> Vec<PathBuf> {
             .collect();
     }
 
-    // Fallback: {project_root}/stdlib/ if it exists.
+    // Tier 4: {project_root}/stdlib/ if it exists.
     let candidate = project_root.join("stdlib");
     if candidate.is_dir() {
         vec![candidate]
@@ -278,5 +366,178 @@ pub(crate) fn apply_bind_chain_analysis(
             }
             TopLevel::TraitDecl(_) | TopLevel::TypeDef { .. } | TopLevel::Expr(_) => {}
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 58 Wave 4 Step 5d (iii) — Cranelisp.toml project configuration tests.
+// spec: 08-modules.md §8.11.4 item 2.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod project_config_tests {
+    use super::*;
+    use serial_test::serial;
+
+    fn write_project_config(dir: &Path, contents: &str) {
+        std::fs::write(dir.join("Cranelisp.toml"), contents).unwrap();
+    }
+
+    // spec: 08-modules.md §8.11.4 item 2 — Cranelisp.toml.lib-dirs is read.
+    #[test]
+    fn project_config_reads_lib_dirs_relative_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_project_config(tmp.path(), r#"lib-dirs = ["vendor", "shared"]"#);
+
+        let dirs = load_project_config_lib_dirs(tmp.path()).unwrap().unwrap();
+        assert_eq!(dirs.len(), 2);
+        assert_eq!(dirs[0], tmp.path().join("vendor"));
+        assert_eq!(dirs[1], tmp.path().join("shared"));
+    }
+
+    // spec: 08-modules.md §8.11.4 item 2 — absolute paths bypass project_root.
+    #[test]
+    fn project_config_preserves_absolute_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_project_config(
+            tmp.path(),
+            r#"lib-dirs = ["/usr/local/share/cranelisp"]"#,
+        );
+
+        let dirs = load_project_config_lib_dirs(tmp.path()).unwrap().unwrap();
+        assert_eq!(dirs.len(), 1);
+        assert_eq!(dirs[0], PathBuf::from("/usr/local/share/cranelisp"));
+    }
+
+    // Missing-config: returns Ok(None) so caller falls through to env/default.
+    #[test]
+    fn project_config_absent_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Don't create the file.
+        let result = load_project_config_lib_dirs(tmp.path()).unwrap();
+        assert!(result.is_none(), "absent config must return Ok(None)");
+    }
+
+    // Malformed TOML: surfaces a helpful error citing the file path + spec.
+    #[test]
+    fn project_config_malformed_emits_helpful_diagnostic() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_project_config(tmp.path(), "lib-dirs = [\"oops");
+        let result = load_project_config_lib_dirs(tmp.path());
+        match result {
+            Err(CranelispError::ModuleError { message, file, .. }) => {
+                assert!(
+                    message.contains("malformed project config"),
+                    "error must self-identify as project-config parse failure: {message}"
+                );
+                assert!(
+                    message.contains("§8.11.4"),
+                    "error must cite spec §8.11.4: {message}"
+                );
+                assert!(
+                    file.is_some(),
+                    "error must carry the file path for IDE diagnostics"
+                );
+            }
+            other => panic!("expected ModuleError, got {other:?}"),
+        }
+    }
+
+    // Empty lib-dirs key: returns Ok(Some(empty)) — a valid config-driven
+    // "no lib dirs" choice. (Matches CRANELISP_LIB="" semantics per spec.)
+    #[test]
+    fn project_config_empty_lib_dirs_returns_empty_vec() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_project_config(tmp.path(), r#"lib-dirs = []"#);
+        let dirs = load_project_config_lib_dirs(tmp.path()).unwrap().unwrap();
+        assert!(dirs.is_empty(), "explicit empty list must round-trip as empty");
+    }
+
+    // Missing lib-dirs key entirely: serde(default) yields an empty vec —
+    // treated as "config file says no lib dirs" (same as `lib-dirs = []`).
+    #[test]
+    fn project_config_missing_lib_dirs_key_returns_empty_vec() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_project_config(tmp.path(), "# config with no lib-dirs key\n");
+        let dirs = load_project_config_lib_dirs(tmp.path()).unwrap().unwrap();
+        assert!(
+            dirs.is_empty(),
+            "missing lib-dirs key reads as empty per serde(default)"
+        );
+    }
+
+    // Precedence: project config takes precedence over CRANELISP_LIB.
+    // Marked #[serial] because it manipulates the process-global CRANELISP_LIB.
+    #[test]
+    #[serial]
+    fn assemble_lib_dirs_project_config_overrides_env_var() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_project_config(tmp.path(), r#"lib-dirs = ["vendor"]"#);
+
+        // Save and restore CRANELISP_LIB. SAFETY: the test is `#[serial]`
+        // so no concurrent test reads/writes the env var.
+        let prev = std::env::var("CRANELISP_LIB").ok();
+        // SAFETY: serial_test serializes env mutations; no race with
+        // other Rust threads observing CRANELISP_LIB during this test.
+        unsafe {
+            std::env::set_var("CRANELISP_LIB", "/should/be/overridden");
+        }
+        let dirs = assemble_lib_dirs(tmp.path());
+        // Restore (and only after capturing dirs).
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("CRANELISP_LIB", v),
+                None => std::env::remove_var("CRANELISP_LIB"),
+            }
+        }
+        assert_eq!(dirs.len(), 1, "project config must fully replace env tier");
+        assert_eq!(
+            dirs[0],
+            tmp.path().join("vendor"),
+            "project-config dir must win over CRANELISP_LIB"
+        );
+    }
+
+    // Precedence: when no config file, CRANELISP_LIB still works (regression).
+    #[test]
+    #[serial]
+    fn assemble_lib_dirs_env_var_still_consulted_when_no_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No Cranelisp.toml created.
+
+        let prev = std::env::var("CRANELISP_LIB").ok();
+        unsafe {
+            std::env::set_var("CRANELISP_LIB", "/from/env/var");
+        }
+        let dirs = assemble_lib_dirs(tmp.path());
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("CRANELISP_LIB", v),
+                None => std::env::remove_var("CRANELISP_LIB"),
+            }
+        }
+        assert_eq!(dirs.len(), 1);
+        assert_eq!(dirs[0], PathBuf::from("/from/env/var"));
+    }
+
+    // Precedence: when no config and no env var, falls through to {root}/stdlib.
+    #[test]
+    #[serial]
+    fn assemble_lib_dirs_default_stdlib_when_no_config_and_no_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stdlib = tmp.path().join("stdlib");
+        std::fs::create_dir_all(&stdlib).unwrap();
+
+        let prev = std::env::var("CRANELISP_LIB").ok();
+        unsafe {
+            std::env::remove_var("CRANELISP_LIB");
+        }
+        let dirs = assemble_lib_dirs(tmp.path());
+        unsafe {
+            if let Some(v) = prev {
+                std::env::set_var("CRANELISP_LIB", v);
+            }
+        }
+        assert_eq!(dirs.len(), 1);
+        assert_eq!(dirs[0], stdlib);
     }
 }

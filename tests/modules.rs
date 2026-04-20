@@ -106,7 +106,7 @@ fn project_root_shadows_stdlib() {
     // Project root file should take precedence over stdlib.
     let (value, _ty) = helpers::batch_run_file(
         &dir.path().join("main.cl"),
-        &[stdlib_dir.clone()],
+        std::slice::from_ref(&stdlib_dir),
     )
     .unwrap();
     assert_eq!(
@@ -129,7 +129,7 @@ fn stdlib_module_compiles_and_runs() {
 
     let (value, _ty) = helpers::batch_run_file(
         &dir.path().join("main.cl"),
-        &[stdlib_dir.clone()],
+        std::slice::from_ref(&stdlib_dir),
     )
     .unwrap();
     assert_eq!(value, 55);

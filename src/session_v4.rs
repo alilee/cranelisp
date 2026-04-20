@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use cranelisp_types::{
     CheckResult, CodegenBehaviour, CranelispError,
     DefKind, FQSymbol, MacroClauseInfo, MacroParam, ModuleEntry, ModuleFullPath,
-    ModuleStrategy, Sexp, Span, Symbol, TopLevel,
+    ModuleStrategy, OverloadVariant, Sexp, Span, Symbol, TopLevel,
     TraitName, Type, TypeName, Warning,
 };
 
@@ -342,7 +342,15 @@ fn format_mem_snapshot() -> String {
 /// Format a module entry signature for /sig display.
 fn format_entry_sig(entry: &ModuleEntry<Code>, name: &str) -> String {
     match entry {
-        ModuleEntry::Def { scheme, kind, .. } => {
+        ModuleEntry::Def { scheme, kind, docstring, .. } => {
+            // Multi-sig: emit one line per variant per repl/spec.md §4.1.1.
+            // The /sig output uses the bare name (no module prefix) to match
+            // the rest of this formatter's behaviour.
+            if let DefKind::Overloaded { variants } = kind.as_ref()
+                && !variants.is_empty()
+            {
+                return format_overloaded_variants_bare(name, variants, docstring.as_deref());
+            }
             let classification = match kind.as_ref() {
                 DefKind::SpecialForm { description } => {
                     return format!("{name} ; special form - {description}");
@@ -372,6 +380,56 @@ fn format_entry_sig(entry: &ModuleEntry<Code>, name: &str) -> String {
         }
         _ => name.to_string(),
     }
+}
+
+/// Format an overloaded (multi-sig) function as one line per variant, with
+/// fully-qualified `module/name` per spec §4.1.1. Used by bare-symbol display
+/// (`format_def_entry`).
+///
+/// First line carries the `; defn` classification + optional docstring; subsequent
+/// variant lines carry only the type and qualified name. See repl/spec.md §1.3
+/// + §4.1.1 and design/int/multi-sig-introspection.md.
+fn format_overloaded_variants(
+    name: &str,
+    module: &ModuleFullPath,
+    variants: &[OverloadVariant],
+    docstring: Option<&str>,
+) -> String {
+    let mut lines = Vec::with_capacity(variants.len());
+    for (i, v) in variants.iter().enumerate() {
+        let fn_ty = Type::Fn(v.param_types.clone(), Box::new(v.ret_type.clone()));
+        let type_str = format_type_qualified(&fn_ty);
+        let line = if i == 0 {
+            let base = format!(":{type_str} {module}/{name} ; defn");
+            append_docstring_comment(base, docstring)
+        } else {
+            format!(":{type_str} {module}/{name}")
+        };
+        lines.push(line);
+    }
+    lines.join("\n")
+}
+
+/// /sig variant of `format_overloaded_variants` — bare name (no module prefix)
+/// to match the rest of `format_entry_sig`'s output. One line per variant.
+fn format_overloaded_variants_bare(
+    name: &str,
+    variants: &[OverloadVariant],
+    docstring: Option<&str>,
+) -> String {
+    let mut lines = Vec::with_capacity(variants.len());
+    for (i, v) in variants.iter().enumerate() {
+        let fn_ty = Type::Fn(v.param_types.clone(), Box::new(v.ret_type.clone()));
+        let type_str = format_type_qualified(&fn_ty);
+        let line = if i == 0 {
+            let base = format!(":{type_str} {name} ; defn");
+            append_docstring_comment(base, docstring)
+        } else {
+            format!(":{type_str} {name}")
+        };
+        lines.push(line);
+    }
+    lines.join("\n")
 }
 
 /// Check if parentheses are balanced in input (for multi-line continuation).
@@ -3169,6 +3227,19 @@ impl CompilerSession {
                 if let DefKind::SpecialForm { description } = kind.as_ref() {
                     return format_special_form_display(name, description);
                 }
+                // Multi-sig: emit one line per variant per repl/spec.md
+                // §1.3 + §4.1.1. Defensive fallback to single-line shape
+                // when `variants` is empty (typecheck invariant: an
+                // Overloaded entry should always have ≥1 variant; the
+                // empty case would be a typecheck bug, not a display
+                // failure).
+                if let DefKind::Overloaded { variants } = kind.as_ref()
+                    && !variants.is_empty()
+                {
+                    return format_overloaded_variants(
+                        name, module, variants, docstring.as_deref(),
+                    );
+                }
                 let base = if !scheme.constraints.is_empty() {
                     format_scheme_display(name, scheme, module)
                 } else {
@@ -4202,5 +4273,132 @@ mod mem_command_tests {
             out.chars().any(|c| c.is_ascii_digit()),
             "snapshot must contain at least one number: {out}",
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 58 Wave 4 Step 5d (ii): multi-sig REPL bare-symbol display.
+// spec: repl/spec.md §1.3 + §4.1.1 — overloaded fn shows all variant
+// signatures, one per line.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod overloaded_display_tests {
+    use super::*;
+
+    fn variant(params: Vec<Type>, ret: Type, mangled: &str) -> OverloadVariant {
+        OverloadVariant {
+            param_types: params,
+            ret_type: ret,
+            mangled_name: Symbol::from(mangled),
+        }
+    }
+
+    // spec: repl/spec.md §1.3 + §4.1.1 — multi-sig display emits ≥2 lines.
+    #[test]
+    fn overloaded_display_emits_one_line_per_variant() {
+        let module = ModuleFullPath::from("user");
+        let variants = vec![
+            variant(vec![Type::Int], Type::Int, "pick$Int"),
+            variant(vec![Type::Int, Type::Int], Type::Int, "pick$Int+Int"),
+        ];
+        let out = format_overloaded_variants("pick", &module, &variants, None);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(
+            lines.len(),
+            2,
+            "two variants must produce two lines, got: {out}"
+        );
+        // Both lines mention the qualified name.
+        for line in &lines {
+            assert!(
+                line.contains("user/pick"),
+                "each variant line must include qualified name, got: {line}"
+            );
+        }
+        // First variant's parameter shape: `[primitives/Int]`.
+        assert!(
+            lines[0].contains("[primitives/Int]"),
+            "first line must show 1-arg signature, got: {}",
+            lines[0]
+        );
+        // Second variant's parameter shape: `[primitives/Int primitives/Int]`.
+        assert!(
+            lines[1].contains("[primitives/Int primitives/Int]"),
+            "second line must show 2-arg signature, got: {}",
+            lines[1]
+        );
+        // Only the first line carries the `; defn` classification.
+        assert!(
+            lines[0].contains("; defn"),
+            "first line must carry `; defn` classification, got: {}",
+            lines[0]
+        );
+        assert!(
+            !lines[1].contains("; defn"),
+            "second line MUST NOT repeat `; defn` classification, got: {}",
+            lines[1]
+        );
+    }
+
+    // spec: repl/spec.md §4.1.1 — first variant carries the docstring; later
+    // variants do not.
+    #[test]
+    fn overloaded_display_attaches_docstring_to_first_variant_only() {
+        let module = ModuleFullPath::from("user");
+        let variants = vec![
+            variant(vec![Type::Int], Type::Int, "pick$Int"),
+            variant(vec![Type::Int, Type::Int], Type::Int, "pick$Int+Int"),
+        ];
+        let out = format_overloaded_variants(
+            "pick", &module, &variants, Some("Pick one or sum two"),
+        );
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(
+            lines[0].contains("Pick one or sum two"),
+            "first line must include the docstring, got: {}",
+            lines[0]
+        );
+        assert!(
+            !lines[1].contains("Pick one or sum two"),
+            "second line MUST NOT repeat the docstring, got: {}",
+            lines[1]
+        );
+    }
+
+    // spec: repl/spec.md §4.1.1 — single-variant degenerate case is correct
+    // (one line, no duplication).
+    #[test]
+    fn overloaded_display_single_variant_emits_one_line() {
+        let module = ModuleFullPath::from("user");
+        let variants = vec![variant(vec![Type::Int], Type::Int, "id$Int")];
+        let out = format_overloaded_variants("id", &module, &variants, None);
+        assert_eq!(
+            out.lines().count(),
+            1,
+            "single-variant Overloaded must emit one line, got: {out}"
+        );
+    }
+
+    // /sig path uses bare names per `format_entry_sig` convention; make sure
+    // bare variant of the helper drops the module prefix.
+    #[test]
+    fn overloaded_display_bare_omits_module_prefix() {
+        let variants = vec![
+            variant(vec![Type::Int], Type::Int, "pick$Int"),
+            variant(vec![Type::Int, Type::Int], Type::Int, "pick$Int+Int"),
+        ];
+        let out = format_overloaded_variants_bare("pick", &variants, None);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 2);
+        for line in &lines {
+            assert!(
+                !line.contains("user/pick"),
+                "bare variant must NOT include module prefix, got: {line}"
+            );
+            assert!(
+                line.contains(" pick"),
+                "bare variant must include the bare name, got: {line}"
+            );
+        }
     }
 }

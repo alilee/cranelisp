@@ -1107,6 +1107,81 @@ fn process_regular_form(
 // Import handling (Step 5)
 // ---------------------------------------------------------------------------
 
+/// Test whether an import of `dep` from `importer` is allowed by spec
+/// §8.2.3 private-submodule visibility rules.
+///
+/// Spec: a `(mod- name)` declaration in module P makes `P.name` private —
+/// accessible only within P itself or any descendant of P. Peer modules
+/// (siblings of P, the root, anything outside P's subtree) MUST NOT
+/// import names from `P.name`.
+///
+/// Algorithm:
+/// 1. Compute `parent_path` = `dep` minus its trailing component.
+/// 2. If `parent_path` is not loaded, the check is deferred (returns Ok).
+///    Spec §8.2.3 enforcement requires the parent's structural decls; if
+///    we don't have them yet, fall through to the existing
+///    register-and-block flow (which loads the parent transitively).
+/// 3. Look up the trailing component in `parent_path.submodules`. If found
+///    with `is_private == true`, check whether `importer` is within
+///    `parent_path`'s subtree (`importer == parent_path` or
+///    `importer` starts with `parent_path + "."`). If not, reject.
+///
+/// Returns `Ok(())` when the import is allowed, `Err(ModuleError ...)` when
+/// it must be rejected. Spec citation in the error message.
+fn check_private_submodule_import(
+    ctx: &ModuleCompiler,
+    importer: &ModuleFullPath,
+    dep: &ModuleFullPath,
+    spec_span: Span,
+) -> Result<(), CranelispError> {
+    // Compute parent_path: drop trailing `.component` from `dep`.
+    let dep_str: &str = dep.as_ref();
+    let (parent_str, trailing) = match dep_str.rsplit_once('.') {
+        Some((p, t)) => (p, t),
+        // No `.` in path → top-level module, no parent → no privacy
+        // check at this layer (top-level modules are never private
+        // submodules of anything).
+        None => return Ok(()),
+    };
+    let parent_path = ModuleFullPath::from(parent_str);
+
+    // If parent isn't loaded yet, we cannot consult its `submodules`.
+    // Defer to the regular load flow — which will block on the parent
+    // transitively. The privacy check fires on the next visit (after
+    // parent has been typechecked).
+    let parent_table = match ctx.symbol_tables.get(&parent_path) {
+        Some(t) => t,
+        None => return Ok(()),
+    };
+
+    // Look for a matching ModDecl in the parent's structural decls.
+    let private_decl = parent_table
+        .submodules
+        .iter()
+        .find(|d| d.name.as_ref() == trailing && d.is_private);
+    let Some(_decl) = private_decl else {
+        return Ok(());
+    };
+
+    // Subtree containment check: importer must be the parent itself
+    // or a descendant.
+    let importer_str: &str = importer.as_ref();
+    let prefix_with_dot = format!("{parent_str}.");
+    if importer_str == parent_str || importer_str.starts_with(&prefix_with_dot) {
+        return Ok(());
+    }
+
+    Err(CranelispError::ModuleError {
+        message: format!(
+            "cannot import from private submodule '{dep}': declared private \
+             by '{parent_path}' via (mod- {trailing}); importer '{importer}' \
+             is not within the '{parent_path}' subtree (spec §8.2.3)"
+        ),
+        file: None,
+        span: spec_span,
+    })
+}
+
 /// Handle import forms: discover deps, register with scheduler, block if needed.
 ///
 /// For each import spec:
@@ -1128,6 +1203,13 @@ fn handle_import(
         if matches!(&spec.names, ImportNames::None) {
             continue;
         }
+
+        // §8.2.3 — reject imports of private submodules from outside the
+        // declaring parent's subtree. Done before file resolution so a
+        // peer cannot trigger a load of a private module's source. The
+        // check is a no-op when the parent isn't loaded yet (deferred to
+        // the next visit on resume).
+        check_private_submodule_import(ctx, module, dep, spec.span)?;
 
         // Already loaded — register the import and continue.
         if ctx.symbol_tables.contains_key(dep) {
@@ -4190,8 +4272,8 @@ mod tests {
             span: Span::new(30, 40),
         };
 
-        record_imports_on_symbol_table(&ctx, &module, &[import_a.clone()]);
-        record_imports_on_symbol_table(&ctx, &module, &[import_b.clone()]);
+        record_imports_on_symbol_table(&ctx, &module, std::slice::from_ref(&import_a));
+        record_imports_on_symbol_table(&ctx, &module, std::slice::from_ref(&import_b));
 
         let st = symbol_tables.get(&module).expect("symbol table present");
         assert_eq!(st.imports.len(), 2, "both imports must be recorded");
@@ -4242,7 +4324,7 @@ mod tests {
             names: ImportNames::Glob,
             span: Span::new(0, 30),
         };
-        record_imports_on_symbol_table(&ctx, &module, &[user_import.clone()]);
+        record_imports_on_symbol_table(&ctx, &module, std::slice::from_ref(&user_import));
 
         // Implicit prelude `ImportSpec` — the same shape as
         // `inject_prelude_if_needed` constructs (`module_path = "prelude"`,
@@ -4664,5 +4746,225 @@ mod tests {
                  under Decision 36 — backend declares only bare names"
             );
         }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Sprint 58 Wave 4 Step 5d (i): private-submodule import enforcement.
+    // spec: 08-modules §8.2.3 — private submodules MUST NOT be importable
+    // by peers outside the declaring parent's subtree.
+    // ──────────────────────────────────────────────────────────────────────
+
+    /// Helper: build an empty SymbolTable with one private-submodule decl.
+    fn st_with_private_submodule(
+        path: &str,
+        sub_name: &str,
+    ) -> crate::code::SessionSymbolTable {
+        use cranelisp_types::ModDecl;
+        let mut st = crate::code::SessionSymbolTable::new_with_params(
+            ModuleFullPath::from(path),
+        );
+        st.submodules.push(ModDecl {
+            name: sub_name.into(),
+            is_private: true,
+            inline_body: None,
+            span: Span::SYNTHETIC,
+        });
+        st
+    }
+
+    /// Helper: build an empty SymbolTable with one public-submodule decl.
+    fn st_with_public_submodule(
+        path: &str,
+        sub_name: &str,
+    ) -> crate::code::SessionSymbolTable {
+        use cranelisp_types::ModDecl;
+        let mut st = crate::code::SessionSymbolTable::new_with_params(
+            ModuleFullPath::from(path),
+        );
+        st.submodules.push(ModDecl {
+            name: sub_name.into(),
+            is_private: false,
+            inline_body: None,
+            span: Span::SYNTHETIC,
+        });
+        st
+    }
+
+    // spec: 08-modules §8.2.3 — peer module MUST NOT import a private submodule.
+    #[test]
+    fn private_submodule_import_rejected_from_peer() {
+        // Parent: main.host. Private submodule: main.host.internal.
+        // Peer: main.consumer (sibling of host, NOT in host's subtree).
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        symbol_tables.insert(
+            ModuleFullPath::from("main.host"),
+            st_with_private_submodule("main.host", "internal"),
+        );
+        let next_type_id = std::sync::atomic::AtomicU32::new(0);
+        let scheduler = CompileScheduler::new();
+        let typecheck_products = dashmap::DashMap::new();
+        let module = ModuleFullPath::from("main.consumer");
+        let ctx = mk_writer_test_ctx(
+            &symbol_tables, &next_type_id, &scheduler, &typecheck_products,
+            module.clone(),
+        );
+
+        let dep = ModuleFullPath::from("main.host.internal");
+        let result = check_private_submodule_import(
+            &ctx, &module, &dep, Span::SYNTHETIC,
+        );
+        assert!(
+            result.is_err(),
+            "peer 'main.consumer' MUST NOT import private 'main.host.internal'"
+        );
+        if let Err(CranelispError::ModuleError { message, .. }) = result {
+            assert!(
+                message.contains("private submodule"),
+                "error must self-identify as private-submodule rejection: {message}"
+            );
+            assert!(
+                message.contains("§8.2.3"),
+                "error must cite spec §8.2.3: {message}"
+            );
+        }
+    }
+
+    // spec: 08-modules §8.2.3 — parent itself MAY import its own private submodule.
+    #[test]
+    fn private_submodule_import_allowed_from_parent() {
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        symbol_tables.insert(
+            ModuleFullPath::from("main.host"),
+            st_with_private_submodule("main.host", "internal"),
+        );
+        let next_type_id = std::sync::atomic::AtomicU32::new(0);
+        let scheduler = CompileScheduler::new();
+        let typecheck_products = dashmap::DashMap::new();
+        let module = ModuleFullPath::from("main.host"); // parent itself
+        let ctx = mk_writer_test_ctx(
+            &symbol_tables, &next_type_id, &scheduler, &typecheck_products,
+            module.clone(),
+        );
+
+        let dep = ModuleFullPath::from("main.host.internal");
+        let result = check_private_submodule_import(
+            &ctx, &module, &dep, Span::SYNTHETIC,
+        );
+        assert!(
+            result.is_ok(),
+            "parent 'main.host' MUST be allowed to import its own private submodule"
+        );
+    }
+
+    // spec: 08-modules §8.2.3 — descendant of parent MAY import a private submodule.
+    #[test]
+    fn private_submodule_import_allowed_from_descendant() {
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        symbol_tables.insert(
+            ModuleFullPath::from("main.host"),
+            st_with_private_submodule("main.host", "internal"),
+        );
+        let next_type_id = std::sync::atomic::AtomicU32::new(0);
+        let scheduler = CompileScheduler::new();
+        let typecheck_products = dashmap::DashMap::new();
+        let module = ModuleFullPath::from("main.host.other"); // descendant
+        let ctx = mk_writer_test_ctx(
+            &symbol_tables, &next_type_id, &scheduler, &typecheck_products,
+            module.clone(),
+        );
+
+        let dep = ModuleFullPath::from("main.host.internal");
+        let result = check_private_submodule_import(
+            &ctx, &module, &dep, Span::SYNTHETIC,
+        );
+        assert!(
+            result.is_ok(),
+            "descendant 'main.host.other' MUST be allowed to import sibling private submodule"
+        );
+    }
+
+    // spec: 08-modules §8.2.3 — public submodule (no `mod-`) is importable everywhere.
+    #[test]
+    fn public_submodule_import_allowed_from_peer() {
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        symbol_tables.insert(
+            ModuleFullPath::from("main.host"),
+            st_with_public_submodule("main.host", "shared"),
+        );
+        let next_type_id = std::sync::atomic::AtomicU32::new(0);
+        let scheduler = CompileScheduler::new();
+        let typecheck_products = dashmap::DashMap::new();
+        let module = ModuleFullPath::from("main.consumer"); // peer
+        let ctx = mk_writer_test_ctx(
+            &symbol_tables, &next_type_id, &scheduler, &typecheck_products,
+            module.clone(),
+        );
+
+        let dep = ModuleFullPath::from("main.host.shared");
+        let result = check_private_submodule_import(
+            &ctx, &module, &dep, Span::SYNTHETIC,
+        );
+        assert!(
+            result.is_ok(),
+            "public submodule (mod, not mod-) MUST be importable from peers"
+        );
+    }
+
+    // spec: 08-modules §8.2.3 — root-level peer MUST NOT import a private submodule.
+    #[test]
+    fn private_submodule_import_rejected_from_root() {
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        symbol_tables.insert(
+            ModuleFullPath::from("main.host"),
+            st_with_private_submodule("main.host", "internal"),
+        );
+        let next_type_id = std::sync::atomic::AtomicU32::new(0);
+        let scheduler = CompileScheduler::new();
+        let typecheck_products = dashmap::DashMap::new();
+        let module = ModuleFullPath::from("main"); // root, peer of host
+        let ctx = mk_writer_test_ctx(
+            &symbol_tables, &next_type_id, &scheduler, &typecheck_products,
+            module.clone(),
+        );
+
+        let dep = ModuleFullPath::from("main.host.internal");
+        let result = check_private_submodule_import(
+            &ctx, &module, &dep, Span::SYNTHETIC,
+        );
+        assert!(
+            result.is_err(),
+            "root 'main' MUST NOT be able to import 'main.host.internal' — \
+             root is peer of host, not within host's subtree"
+        );
+    }
+
+    // spec: 08-modules §8.2.3 — top-level (parent-less) module is never private.
+    #[test]
+    fn top_level_module_import_unaffected_by_private_check() {
+        // No `.` in dep → no parent → check is a no-op (returns Ok).
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        let next_type_id = std::sync::atomic::AtomicU32::new(0);
+        let scheduler = CompileScheduler::new();
+        let typecheck_products = dashmap::DashMap::new();
+        let module = ModuleFullPath::from("main");
+        let ctx = mk_writer_test_ctx(
+            &symbol_tables, &next_type_id, &scheduler, &typecheck_products,
+            module.clone(),
+        );
+
+        let dep = ModuleFullPath::from("toplevel");
+        let result = check_private_submodule_import(
+            &ctx, &module, &dep, Span::SYNTHETIC,
+        );
+        assert!(
+            result.is_ok(),
+            "top-level module 'toplevel' has no parent — privacy check is a no-op"
+        );
     }
 }
