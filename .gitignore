@@ -27,4 +27,5 @@ tests/sprint23/.runs/
 tests/v4_pipeline/.runs/
 tests/v4_repl_eval/.runs/
 tests/wave6_demo_repros/.runs/
+tests/sprint59/.runs/
 __pycache__/
