@@ -1213,7 +1213,22 @@ fn handle_import(
         check_private_submodule_import(ctx, module, dep, spec.span)?;
 
         // Already loaded — register the import and continue.
-        if ctx.symbol_tables.contains_key(dep) {
+        //
+        // Sprint 60 Wave 2 Round 4 fix (publish-vs-flag race). Before the
+        // fix this fast path tested only `contains_key(dep)`. But
+        // `ensure_module_exists` (called from `register_dep_for_eval` and
+        // from the worker's `handle_typecheck_work_shared` at entry) inserts
+        // an empty seeded `SymbolTable` into `ctx.symbol_tables` BEFORE the
+        // module's Defs are populated. A REPL retry that observes
+        // `contains_key=true` but pool=`TypecheckWorking`/`TypecheckBlocked`
+        // would jump to `register_imports`, whose `source_table.get(name)`
+        // finds no entry and raises "'name' not found in module 'dep'"
+        // — the signature of the Round 4 heisenbug. Require a terminal
+        // typecheck state via `scheduler.is_typechecked(dep)` so the fast
+        // path only fires when `dep`'s SymbolTable is fully populated.
+        if ctx.symbol_tables.contains_key(dep)
+            && ctx.scheduler.is_typechecked(dep)
+        {
             cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).register_imports(&mut ctx.check_state,std::slice::from_ref(spec))?;
             continue;
         }

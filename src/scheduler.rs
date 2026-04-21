@@ -989,6 +989,38 @@ impl CompileScheduler {
             .is_some_and(|ms| ms.pool == ModulePool::Failed)
     }
 
+    /// Check whether a module's typecheck is complete — i.e., its SymbolTable
+    /// is fully populated with every Def the module will ever expose.
+    ///
+    /// Returns true only when the scheduler has observed the module reach a
+    /// terminal typecheck state (`TypecheckDone` or `Complete`) OR the module
+    /// is not in the scheduler at all (never registered — e.g. compiler-seeded
+    /// synthetic modules like `primitives`, `macros`).
+    ///
+    /// Returns false while the module is still being processed
+    /// (`TypecheckNext`, `TypecheckWorking`, `TypecheckBlocked`) — in those
+    /// states `symbol_tables[module]` may exist (seeded by
+    /// `ensure_module_exists`) but not yet contain the module's Defs.
+    ///
+    /// Sprint 60 Wave 2 Round 4 fix (publish-vs-flag race, import fast path).
+    /// Used by `handle_import` to distinguish "symbol_tables entry exists AND
+    /// is fully populated" from "symbol_tables entry exists BUT module
+    /// typecheck is still in flight". See `design/backend/defects-456-reduction.md
+    /// §"Sprint 60 Wave 2 Round 4"`.
+    pub fn is_typechecked(&self, module: &ModuleFullPath) -> bool {
+        let state = self.lock();
+        match state.modules.get(module) {
+            Some(ms) => matches!(
+                ms.pool,
+                ModulePool::TypecheckDone | ModulePool::Complete,
+            ),
+            // Not in scheduler — compiler-seeded synthetic module or a module
+            // that was registered and then removed (Failed reset). Treat as
+            // typechecked; the symbol table is the source of truth.
+            None => true,
+        }
+    }
+
     /// Reset a module from Failed back to an unregistered state.
     ///
     /// Used by the REPL after a failed dependency compilation. Removes
