@@ -425,6 +425,26 @@ impl Linker {
             let section_index = section.index();
 
             // Register symbols from this data section.
+            //
+            // Sprint 60 Wave 2 Step A.3 (single-GOT convergence): data symbols
+            // whose name matches `__cranelisp_got_{M}` are NOT registered as
+            // defined symbols here. The `.o` file continues to emit them as
+            // `Linkage::Export` data (for `--link` mode where the system
+            // linker consumes them), but at in-process Cache-Linker load time
+            // the authoritative GOT slab base is the one on
+            // `SymbolTable[M].got`, pre-registered into `self.symbols` by the
+            // session (see `src/worker.rs::load_cached_module_via_linker`
+            // around line 3135). If we registered the `.o`'s own data-section
+            // address here, `self.defined_symbols` would shadow `self.symbols`
+            // (the resolution chain prefers `defined_symbols`), and loaded
+            // code would read its function-pointer slots from an un-relocated
+            // data region (zero bytes where addresses should be) rather than
+            // from the SymbolTable GOT that the fresh-JIT path populates.
+            // That dual-GOT breach is the Decision-23 convergence violation
+            // reproduced by `tests/sprint60_reduction.rs`. Skipping the
+            // registration funnels every GOT_LOAD resolution for
+            // `__cranelisp_got_{M}` through `self.symbols` → the one and only
+            // GOT slab the REPL can update (Decision 31 Scenario 2).
             for sym in obj.symbols() {
                 if sym.kind() != SymbolKind::Data {
                     continue;
@@ -440,6 +460,12 @@ impl Linker {
                     let addr = data_base + offset;
                     if clean_name.starts_with(".L") {
                         local_symbols.insert(clean_name.to_string(), addr);
+                    } else if clean_name.starts_with("__cranelisp_got_") {
+                        // Single-GOT convergence: see comment above. The `.o`
+                        // exports this data symbol for `--link` compat, but at
+                        // in-process load time we rely on `self.symbols` (the
+                        // SymbolTable GOT) being the sole resolver.
+                        continue;
                     } else {
                         self.defined_symbols.insert(clean_name.to_string(), addr);
                     }
@@ -840,5 +866,106 @@ mod tests {
         assert_eq!(slot_addr, slot_addr2, "repeat calls return the same slot");
 
         drop(stable);
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 23 + Sprint 60 Wave 2 Step A.3
+    // (single-GOT convergence). When a cached `.o` file is loaded,
+    // `load_data_sections` must NOT register the `.o`'s own
+    // `__cranelisp_got_{M}` export into `self.defined_symbols` — the
+    // authoritative GOT slab base is the in-process `SymbolTable[M].got`
+    // registered externally via `register_symbol`. Allowing the `.o`'s own
+    // data address to shadow the externally-registered symbol is the
+    // dual-GOT breach reproduced by `tests/sprint60_reduction.rs`. This
+    // unit test synthesises an `.o` whose data section exports
+    // `__cranelisp_got_imported`, loads it alongside an external
+    // registration, and asserts that the GOT slot is initialised to the
+    // externally-registered address — not to the `.o`'s own data section.
+    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+    #[test]
+    fn loaded_object_does_not_shadow_externally_registered_got_symbol() {
+        use cranelift::codegen::Context;
+        use cranelift::codegen::ir::{Function, UserFuncName, types};
+        use cranelift::prelude::{
+            AbiParam, FunctionBuilder, FunctionBuilderContext, InstBuilder, Signature,
+        };
+        use cranelift_module::{DataDescription, Linkage, Module};
+        use cranelift_object::{ObjectBuilder, ObjectModule};
+
+        let isa = crate::cache::object::build_isa(true).unwrap();
+        let call_conv = isa.default_call_conv();
+        let builder = ObjectBuilder::new(
+            isa,
+            "got_convergence_test",
+            cranelift_module::default_libcall_names(),
+        )
+        .unwrap();
+        let mut module = ObjectModule::new(builder);
+
+        // Define the GOT data symbol as Export (the shape a compiled
+        // `.o` file has for its own-module GOT — the `--link` path needs
+        // this symbol exported so the system linker can resolve it).
+        let got_data = module
+            .declare_data("__cranelisp_got_imported", Linkage::Export, false, false)
+            .unwrap();
+        let mut desc = DataDescription::new();
+        // 16 bytes = 2 slots, zero-filled (no relocations) — simulates
+        // the worst case where the `.o`'s own data section is never
+        // relocated (if we trust it we segfault on indirect call).
+        desc.define(vec![0u8; 16].into_boxed_slice());
+        module.define_data(got_data, &desc).unwrap();
+
+        // A tiny function so the `.o` is non-empty.
+        let mut sig = Signature::new(call_conv);
+        sig.returns.push(AbiParam::new(types::I64));
+        let func_id = module
+            .declare_function("unused", Linkage::Export, &sig)
+            .unwrap();
+        let mut func = Function::with_name_signature(UserFuncName::user(0, 0), sig.clone());
+        let mut fbc = FunctionBuilderContext::new();
+        {
+            let mut fb = FunctionBuilder::new(&mut func, &mut fbc);
+            let entry = fb.create_block();
+            fb.switch_to_block(entry);
+            fb.seal_block(entry);
+            let zero = fb.ins().iconst(types::I64, 0);
+            fb.ins().return_(&[zero]);
+            fb.finalize();
+        }
+        let mut ctx = Context::for_function(func);
+        module.define_function(func_id, &mut ctx).unwrap();
+
+        let bytes = module.finish().emit().unwrap();
+
+        // Register the authoritative GOT base externally FIRST, just as
+        // `src/worker.rs::load_cached_module_via_linker` does.
+        let authoritative: Box<[u64; 2]> = Box::new([0xAAAA_AAAA_AAAA_AAAA, 0xBBBB_BBBB_BBBB_BBBB]);
+        let authoritative_ptr = authoritative.as_ptr() as *const u8;
+        let mut linker = Linker::new().unwrap();
+        linker.register_symbol("__cranelisp_got_imported", authoritative_ptr);
+
+        linker
+            .load_object("got_convergence_test", &bytes)
+            .expect("linker must accept the .o");
+
+        // Convergence invariant: the loaded `.o`'s own
+        // `__cranelisp_got_imported` data-section address must NOT
+        // shadow the externally-registered authoritative GOT base.
+        assert!(
+            !linker
+                .defined_symbols
+                .contains_key("__cranelisp_got_imported"),
+            "loading a .o must NOT insert __cranelisp_got_* into \
+             defined_symbols; the externally-registered SymbolTable.got \
+             base is the sole authoritative resolver (single-GOT)"
+        );
+        // `get_symbol` must return the externally-registered address.
+        assert_eq!(
+            linker.get_symbol("__cranelisp_got_imported"),
+            Some(authoritative_ptr),
+            "get_symbol for __cranelisp_got_* must return the \
+             externally-registered SymbolTable GOT base"
+        );
+
+        drop(authoritative);
     }
 }
