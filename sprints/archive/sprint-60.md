@@ -1,6 +1,6 @@
 # Sprint 60: Clean & Green — JIT/Object Codegen Convergence + FIXME Drawdown
 
-**Status**: ACTIVE
+**Status**: COMPLETE
 **Ring**: 4 (Effects — stabilisation)
 **Goal**: Zero carried failing tests + FIXME drawdown. Close the JIT vs object codegen divergence as the architectural root cause of the S59 carry cluster, resolve the S59 /review Importants, and clear the priority FIXMEs blocking observability and developer ergonomics. Success opens the path for Sprint 61's FQTypeName migration.
 
@@ -455,4 +455,125 @@ Each owning skill cleans its own files during Wave 1. Treated as mechanical clea
 
 ## Outcome
 
-*To be filled at sprint close.*
+**Closed 2026-04-21. Baseline: 1837 tests; ~1835/2 intermittent (2 races at ~30% rate under full-suite pressure).** Sprint 61 opens as a dedicated stabilisation sprint to close the 2 races. FQTypeName migration slides to Sprint 62.
+
+### Delivered
+
+**Wave 1 — observability, infrastructure, FIXME drawdown (commit `999121f`):**
+- `/backend` Workstream B — `CRANELISP_CODEGEN_DUMP=*|module|module::symbol` env var for CLIF dumps. ~137 LOC + 6 unit + 4 integration tests.
+- `/backend` Workstream C — compile-time build-id in `.meta.json`, cache auto-invalidates across compiler rebuilds. ~271 LOC + 6 unit + 3 integration tests.
+- `/int` Workstream E — 3 S59 /review Importants RESOLVED: `register_transitive_cached_imports` migrated to `register_dep` shim, `delays_other` reconciled to `true`, deleted unit guard re-sited as 2 structural tests + debug_asserts.
+- `/int` Workstream G — `/sig` docstring format fix per `repl/spec.md §1.1` (dash separator + docstring).
+- `/stdlib` Workstream F — 30 primitive names re-exported in `stdlib/prelude.cl`.
+- `/examples` Workstream F rescoped — `examples/Cranelisp.toml` + `examples/lib/prelude.cl` make examples free-standing per root CLAUDE.md §"Stdlib separation". All 27 examples run under `--run` without env var.
+- `/qa` — +9 integration tests across 4 new test files; 1 `[Tested+Neg]` promotion (§12.5 TCO); Workstream W (crate-wide unused-import/dead-code cleanup) across /qa + /int + /typecheck.
+
+**Wave 2 — JIT/object codegen convergence (commits `7e59df0`, `162b342`, `fd718c9`, `113bc34`, `bc60aec`, `2ca520a`, `749c35d`):**
+- A.1 silent-skip-holes fix in `inline_jit_codegen_for_names` per Decision 37 "no swallowed failures" (+81 LOC).
+- A.2 CLIF audit — 95k lines of CLIF captured, H3 mechanism confirmed pervasive, second correctness defect identified.
+- A.3b defensive `emit_standalone_field_decs` fix matching `emit_field_decs` discipline (~30 LOC).
+- Reduction pass to 5-LOC deterministic repro — identified dual-GOT convergence breach.
+- **Single-GOT fix** (commit `162b342`) — cache Linker filters `__cranelisp_got_` out of `load_data_sections`; all relocations route through the SymbolTable GOT. +127 LOC. **Closed 8 of 13 A-cluster failures.**
+- Zero `.o` data-section GOT bytes on load per user directive 2026-04-21 (~30 LOC).
+- Drop-glue reduction from ~500 LOC to 14 LOC deterministic repro (6 new tests).
+- **Capture-types fix** (commit `113bc34`) — `compile_lambda_body` now copies `variable_types` from enclosing scope; sparkability-thunk RC-underflow closed (+14 LOC). **Closed remaining A-cluster failures.** TTY-dependence of the flakiness removed (was RC underflow, not layout).
+- Round 3 reduction — 19-LOC deterministic repro for "H5 REPL persistence" defect (previously mis-dispositioned "pre-existing"). 5 new tests.
+- Round 4 isolation — "heisenbug" is a real race, not flaky. 78% fail rate under full-suite pressure in S60 Round 4 stress.
+- Round 5 fixes — `regenerate_backing_file` republishes sexps to `SharedState::module_sexps`; `is_typechecked` predicate gates the fast path instead of `contains_key` (+155 LOC). Verified 5/5 full-suite runs 1837/0 at commit time.
+
+**Wave 3 — dependent fixes + coverage audit (commits `f78adf3`, `4f6221b`):**
+- `/port` re-enabled 3 puzzle tests in `exemplar/solver.cl`. 2/3 pass via weak `count-determined == 81` predicate. `test-unsolvable` fails — Wave 2 fixes unmasked an algorithmic correctness gap in the solver. Documented inline as FIXME(/qa) + FIXME(/backend).
+- `/qa` authored `tests/plan/baseline.md` ledger discipline per user directive. 1 entry at Wave 3 (exemplar-gap).
+- 2 more `[Tested+Neg]` promotions (§4.4 if-branch unification, repl §1.1 docstring separator). **Workstream H total: 3 promotions landed + 3 pre-existing + 2 deferred.**
+
+**Wave 4 — showcase (commit `d270a36`):**
+- `/repl` authored `repl/demos/ring4r.demo` (56 lines). 26 prior demos replayed green.
+- `/stdlib` `stdlib-progress.demo` refreshed with Sprint 60 section (+14 lines).
+- `/port` `exemplar-progress.demo` unchanged (scope orthogonal).
+- `/docs` `user/getting-started.md` updated for examples-run-without-env-var.
+- `/platform` currency check clean.
+- `/examples` subprocess sweep — 27/27 examples pass expected exit codes.
+
+**Methodology artefacts landed:**
+- `tests/plan/baseline.md` — failing-test ledger with enforceable discipline. No `flaky`, no `pre-existing`, no `timing-sensitive`. SHA + signature + owner + target sprint required per entry. Close-time verification protocol.
+- Multiple reductions committed as permanent regression guards per `memory/feedback_repros_join_suite.md`.
+
+### Deferred (Sprint 61 and beyond)
+
+**Two races — Sprint 61 primary workstream:**
+
+1. `sprint23::cache_repl_loads_heisenbug_parallel_stress` — ~30% fail rate under full-suite pressure. Round 5 fix reduced but did not eliminate. See `design/backend/defects-456-reduction.md §"Wave 2 Round 4"`. Owner `/int`.
+
+2. `examples_run::every_example_file_runs_under_examples_prelude` — `21-hello-io.cl` exits 201 intermittently. Surfaced at close under 8-run stress. Owner `/backend` or `/platform` — investigation needed.
+
+**Exemplar correctness gap — Sprint 61+ `/port` + `/qa`:**
+
+- `test-unsolvable` in `exemplar/solver.cl` — `eliminate` doesn't detect same-value Given peer conflicts. Patch to eliminate breaks valid propagation; suggests set-cell COW / closure captures / Vec state sharing interaction rather than pure algorithmic logic. `FIXME(/qa)` + `FIXME(/backend)` filed inline at lines 380–406.
+
+**FIXMEs surfaced (queued for Sprint 61+):**
+
+- `FIXME(/int)` — bare-primitive-name at REPL prompt errors `undefined variable: add-i64` while `/sig add-i64` and `(add-i64 2 3)` both resolve. Value-expression path diverges from introspection + call paths. Surfaced during `/stdlib` demo refresh.
+
+**Sprint 60 scope that slid:**
+
+- **FQTypeName migration** — originally Sprint 61 primary. Now slides to Sprint 62 because Sprint 61 takes stabilisation; FQTypeName precondition is "0 carried failing tests" and that was not honestly achieved.
+
+### Findings
+
+**Structural — "Clean and green" requires stress-verification, not single-pass:**
+
+Sprint 60 repeatedly claimed baselines (1837/0 after each Wave 2 commit, after Wave 3 /qa sweep, after Wave 4). Every single-run verification passed. Only 8-run close-time stress surfaced the ~30% races. `/int`'s Round 5 "5/5 runs all green" report was environmental luck, not robustness. **Takeaway**: baseline verification protocol MUST include multi-run stress (~8+ consecutive full-suite runs, or better: some CI equivalent of sustained load). Single-run "clean" is insufficient.
+
+**Process — "Pre-existing" disposition is structurally fragile:**
+
+Sprint 59 dispositioned `run_tests_batched_invocation_no_crash` as "pre-existing, unrelated" based on `git stash` + rebuild verification. That verification silently benefited from polluted cwd (`user.cl` persisting in the exemplar's working directory between runs). Sprint 60 Round 3 reduced it in a fresh tempdir and got 100% deterministic reproduction of a distinct H5 defect. `/qa`'s Wave 3 `tests/plan/baseline.md` now enforces: no "pre-existing" disposition, SHA + signature + owner + target sprint required for every failing test. **Takeaway codified.**
+
+**Process — "Flaky" is not a local-test disposition:**
+
+`sprint23::cache_repl_loads_heisenbug_parallel_stress` was dispositioned flaky. Round 4 isolation proved it was a real publish-vs-flag race at 78% fire rate under pressure. The ~30% rate post-Round-5 fix means the race is still real, not "flaky." `tests/plan/baseline.md` now enforces: `flaky`, `timing-sensitive`, `documented race` are all banned dispositions. Every failing test is either under investigation with a named owner and target sprint, or deleted. **Takeaway codified.**
+
+**Process — Fresh-TempDir-per-test not yet enforced:**
+
+Sprint 60 Round 3 found that tests using `project_root()` or working against the real `exemplar/` tree accumulate cross-test state (e.g., `user.cl` persistence). The mis-disposition of Round 3's failure stemmed from this. **Pending Sprint 61**: audit all tests for `project_root()` usage; replace with `tempfile::TempDir` helpers where the test writes to checked-in paths. Grep-check or lint enforcement in CI.
+
+**Process — Reduction discipline paid off, again and again:**
+
+Each reduction pass this sprint (dual-GOT → 5 LOC; drop-glue → 14 LOC; H5 → 19 LOC) identified a root cause that prior hypothesis-driven analysis missed. The H4 GOT-NULL-sink hypothesis was refuted by A.1; the H3 drop-glue + Decision-31-reclaim hypothesis was refuted by A.3b; the β "auto-curry for direct-arity call" hypothesis was refuted by CLIF inspection. Only the reductions nailed the real causes. **Takeaway reinforced.**
+
+**Methodology — Sprint 60 close teaches the next close:**
+
+The ledger pattern, the fresh-TempDir rule, and the stress-verification requirement all landed BECAUSE Sprint 60's single-run claims were falsified at close-time. Sprint 61 opens with the discipline in place; every close from here forward should run the baseline ledger verification protocol. **Takeaway codified in `tests/plan/baseline.md §"Close-time Verification Protocol"`.**
+
+### Commits
+
+```
+d270a36 wave 4: phase 5b showcase — demos + user docs refresh
+4f6221b wave 3 qa: baseline ledger + 2 [Tested+Neg] promotions
+f78adf3 wave 3: /port re-enable 3 puzzle tests (Defect 7)
+749c35d wave 2 round 5: fix H5 REPL persistence + publish-vs-flag race
+2ca520a wave 2 round 4: isolate heisenbug — publish-vs-flag race
+bc60aec wave 2 round 3: isolate run_tests_batched failure — H5 REPL persistence
+113bc34 wave 2 A.3 complete: capture types in lambda body closes cluster
+fd718c9 wave 2 A.3 follow-on: zero .o GOT + drop-glue reduction
+162b342 wave 2 A.3: single-GOT fix — dual-GOT convergence breach closed
+7e59df0 wave 2 A.1+A.2+A.3b: diagnostic work + root-cause reduction
+999121f wave 1: observability + FIXME drawdown + free-standing examples
+```
+
+### Test deltas
+
+- Tests added: +24 (+ various unit tests in backend/int crates not counted)
+  - `tests/sprint60_observability.rs` (4)
+  - `tests/sprint60_cache_build_marker.rs` (3)
+  - `tests/examples_run.rs` (1 — cross-example sweep)
+  - `tests/e2e.rs` extension (1 — /sig docstring smoke)
+  - `tests/sprint60_reduction.rs` (17)
+  - `tests/sprint60_run_tests_reduction.rs` (5 — including 4 failing reductions, per `feedback_repros_join_suite.md`)
+- `[Tested+Neg]` promotions: 3 (§12.5 TCO, §4.4 If, repl §1.1)
+- Baseline: was 1801/5 → 1837/2 at close (2 under `under-investigation (sprint 61)`)
+
+### Notes for Sprint 61 opening
+
+- Sprint 61 is a **stabilisation sprint** dedicated to the two races + the exemplar correctness gap + the bare-primitive-name REPL defect.
+- FQTypeName migration is the Sprint 62 primary; precondition is honest 0 carries verified via multi-run stress.
+- Methodology additions to land in Sprint 61 Wave 1: fresh-TempDir rule in `tests/CLAUDE.md`; stress-verification requirement in `.claude/commands/sprint.md` archetype Phase 6 close checklist.

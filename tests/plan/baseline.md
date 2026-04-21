@@ -30,11 +30,33 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
-## Current Entries (as of 2026-04-21, sprint 60 wave 3, SHA `f78adf3`)
+## Current Entries (as of 2026-04-21, sprint 60 close, SHA `d270a36`)
+
+> **Sprint 60 close update (2026-04-21)**: under full-suite pressure (multiple consecutive `cargo nextest run --no-fail-fast`), two races fire intermittently at ~30% rate. Single-run verification showed 1837/0 and `/qa` originally recorded only the exemplar entry below. 8-run stress verification under close revealed the races. Per user directive "flaky is not a thing in local tests," these are recorded as real races under `under-investigation (sprint 61)` and a dedicated stabilisation sprint opens next. FQTypeName migration slides to Sprint 62.
 
 ### Cargo test suite
 
-**None.** `cargo nextest run --no-fail-fast` reports **1837 passed / 0 failed / 0 skipped** in ~30s at SHA `f78adf3`.
+| Field | Value |
+|---|---|
+| Test name | `sprint23::cache_repl_loads_heisenbug_parallel_stress` |
+| SHA | `d270a36` |
+| Stderr / observable signature | `iteration N: session 1 should successfully import and call helper-val: ... Error: type error at 9..28: 'helper-val' not found in module 'helper'` + `Error: type error at 1..11: undefined variable: helper-val` |
+| Owning skill | `/int` (scheduler + worker publish/flag ordering) |
+| Target sprint | Sprint 61 (stabilisation) |
+| Disposition | `under-investigation (sprint 61)` |
+| Rationale | Sprint 60 Round 5 attempted fix at `src/scheduler.rs::is_typechecked` + `worker.rs` gate reduced the rate but did NOT eliminate the race. Under full-suite pressure the symbol-table-seeded-before-populated window still opens. ~30% fail rate on 8-run stress at close. Documented in `design/backend/defects-456-reduction.md §"Wave 2 Round 4 — heisenbug stress isolation"`. Sprint 61 re-opens the investigation; candidates: (a) strengthen `is_typechecked` to include symbol-table-non-empty check, (b) move symbol publication into the critical section that sets the pool state, (c) invert the typecheck-worker loop so pool transitions fire AFTER symbol publication. |
+
+| Field | Value |
+|---|---|
+| Test name | `examples_run::every_example_file_runs_under_examples_prelude` |
+| SHA | `d270a36` |
+| Stderr / observable signature | `21-hello-io.cl: exit=201 (allowed [101, 133, 141])` — an IO-using example exits with a code NOT in the expected-or-signal-artefact accept list. Exit 201 (= 0xC9) is neither SIGTRAP (133), SIGPIPE (141), nor the example's nominal exit (101). |
+| Owning skill | `/backend` (suspected) or `/platform` (stdio DLL under pressure) — investigation needed |
+| Target sprint | Sprint 61 (stabilisation) |
+| Disposition | `under-investigation (sprint 61)` |
+| Rationale | Surfaced during 8-run close-time stress. Passes reliably in isolation (5/5); fails intermittently under full-suite pressure. Distinct shape from the heisenbug race — involves the platform IO path and possibly a subprocess-stdin race with `read-line`. Sprint 61 should reduce the repro (replicate under pressure with a 1-test load), then diagnose. Candidates: (a) stdio DLL buffer ordering under concurrent subprocess loads, (b) IO trampoline continuation-state leak under concurrent evals, (c) nextest-level subprocess-environment crosstalk. |
+
+### Exemplar-level tests (non-cargo)
 
 ### Exemplar-level tests (non-cargo)
 
