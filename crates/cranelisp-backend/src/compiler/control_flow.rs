@@ -954,6 +954,20 @@ where
         );
 
         // Bind captured variables from the environment.
+        //
+        // Record each capture's type in the inner compiler's `variable_types`
+        // so that consuming calling convention inside the body emits the
+        // required `rc_inc` on captured heap values before passing them to
+        // consuming callees. Captures are NOT pushed onto `scope_stack` —
+        // they are borrowed references whose release is the closure env's
+        // drop-glue responsibility, not the body scope's.
+        //
+        // Prior bug (S60 Wave 2 Round 2 α): captures had no type recorded,
+        // so `compile_consuming_arg_list` skipped the caller-side inc.
+        // Consuming callees (e.g., `(cell-at g 0)` inside a spark thunk)
+        // then dec'd the capture at their scope exit, underflowing the
+        // captured value's RC. When the thunk's drop-glue ran afterwards,
+        // the same capture was dec'd a second time → double-free.
         for (i, cap_name) in captures.iter().enumerate() {
             let cap_val = heap::heap_load(
                 &mut inner_compiler.builder,
@@ -964,6 +978,13 @@ where
             inner_compiler.builder.declare_var(var, types::I64);
             inner_compiler.builder.def_var(var, cap_val);
             inner_compiler.variables.insert(cap_name.clone(), var);
+            // Copy the capture's type from the enclosing scope so the body
+            // can correctly RC-inc captured heap values for consuming calls.
+            if let Some(ty) = self.variable_types.get(cap_name) {
+                inner_compiler
+                    .variable_types
+                    .insert(cap_name.clone(), ty.clone());
+            }
         }
 
         // Look up the lambda's inferred type to get parameter types.
