@@ -290,6 +290,41 @@ For the convergence invariant to hold, drop-glue references from module A to mod
 
 The CLIF-dump (Workstream B) is required to determine which shape the current codegen emits. That determines whether the fix is small (option (a) is already emitted, one closure-layout change) or larger (switch from (c) to (a) across every closure-consuming site).
 
+### 5.4 Wave 2 A.2 audit result (CLIF evidence)
+
+Audited 2026-04-21 using `CRANELISP_CODEGEN_DUMP=*` against `tests/sprint59_defects456_repro::d6_exemplar_propagate_only_does_not_segv` (smallest propagate-focused repro). Dump: 95,027 lines, 320 functions, captured to `/tmp/s60_a2_clif.log`. Full findings at `design/backend/defects-456-reduction.md §"Sprint 60 A.2 audit findings"`; summary here in situ with §5's prediction.
+
+**§5.2 audit question resolved — current codegen emits pattern (c), not (a).**
+
+Three concrete sites where drop-glue code pointers flow as *raw* values, not GOT-indexed:
+
+1. **Closure `drop_glue_ptr` slot** (`control_flow.rs:579`): `func_addr.i64 fn_glue_id` baked into the closure layout at construction; torn down via `call_indirect drop_glue_ptr` at `compiler/mod.rs:1256`. Drop glue declared `Linkage::Local` at line 850. This is /arch's Phase-3a Q2 finding, confirmed by CLIF.
+
+2. **Vec element-dec function pointer passed as a COW helper argument** (observed in `grid::set-cell` lines 73217, and in 15+ other grid/solver sites):
+   ```
+   fn0 = colocated u0:103 sig0   ; runtime/vec_elem_dec_Cell (Linkage::Local, vec_codegen.rs:711)
+   v11 = func_addr.i64 fn0       ; raw address
+   v29 = call fn2(v10, v4, v5, v11)   ; passed as 4th arg to COW helper
+   ```
+   The COW helper dispatches via `call_indirect` on the raw address. Same retention shape as closure drop glue.
+
+3. **Inline ADT drop-glue dispatch** (`heap.rs:285-288`):
+   ```rust
+   if let Some(glue_id) = drop_glue_id {
+       let glue_ref = module.declare_func_in_func(glue_id, builder.func);
+       builder.ins().call(glue_ref, &[ptr]);   // direct CLIF call, NOT call_indirect, NOT GOT
+   }
+   ```
+   Drop glue is a `Linkage::Local` symbol; Cranelift's JIT finalize bakes either an absolute address or a relative branch. Cross-batch: not routed through `__cranelisp_got_{M}`. Observable in CLIF as `call fnN(...)` against `u0:1` / `u0:101` / `u0:103` references in propagate blocks 17-20, block 23-28.
+
+**Per-batch replication confirmed.** The dedup at `vec_codegen.rs:694-698` deduplicates within one `Module` compile unit but not across batches. Each importing batch that needs `runtime/vec_elem_dec_Cell` emits its own local copy. The cross-batch `func_addr` values are therefore distinct addresses pointing to distinct page copies of the same CLIF — each address anchored to its own `Arc<Jit>`.
+
+**Cross-reference with §1.1**. §1.1 requires: "Drop-glue code pointers … referenced through GOT-indirected dispatch." Sites (1)(2)(3) above all **violate** this. The convergence invariant is breached at the drop-glue layer regardless of whether the d6 repro's specific crash traces to it.
+
+**Refinement of §5.3's specified discipline.** Option (a) is the correct direction, but scope extends beyond closures — the Vec COW helper's element-dec parameter and the heap.rs inline drop-glue dispatch both need GOT-routing too. Estimated scope 180-280 LOC, reconciling with §9.1's lower bound for H3 (150-250 LOC) and pushing toward the upper bound of the combined estimate.
+
+**H3 causality for d6 specifically — partial.** H3's prediction requires a cross-eval reclaim event (Decision 31 Scenario 2) to invalidate a baked address. The d6 repro crashes on a single-shot `--run` invocation with one batch and no redefinition. No reclaim has fired. The crash therefore has a **second root cause** — a correctness bug in the inlined drop-glue emission (likely per-field dec pairing for `Grid (Vec Cell)` where Cell is a multi-variant Mixed ADT). Both fixes are needed; H3 closes the invariant breach; the drop-glue correctness fix closes the d6 symptom. See `defects-456-reduction.md §"Sprint 60 A.2 audit findings"` for the A.3 decomposition.
+
 ---
 
 ## §6 GOT-slot population audit (H4)

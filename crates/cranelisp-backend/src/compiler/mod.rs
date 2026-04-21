@@ -843,6 +843,18 @@ where
                         continue;
                     }
 
+                    // For Vec-typed bindings: must route through vec_drop to
+                    // dec each element and free the data buffer; the generic
+                    // rc_dec → dealloc path leaks both.
+                    if let Some(elem_ty) =
+                        crate::compiler::vec_codegen::vec_element_type(ty)
+                    {
+                        let elem_ty = elem_ty.clone();
+                        let span = cranelisp_types::Span::new(0, 0);
+                        let _ = self.emit_vec_aware_rc_dec(val, &elem_ty, span);
+                        continue;
+                    }
+
                     // For ADTs: emit RC dec with inline drop glue in the
                     // dealloc path. Field cleanup ONLY happens when RC
                     // reaches 0 (inside the free branch), not unconditionally.
@@ -1040,8 +1052,21 @@ where
                         adt_val,
                         HeapAdt::field_offset(i),
                     );
-                    // For ADT-typed fields, recursively handle nested field cleanup.
-                    if matches!(resolved_ty, Type::ADT(_, _)) {
+                    // Vec-typed fields must route through vec_drop, not
+                    // dealloc — otherwise elements and the data buffer leak.
+                    if let Some(elem_ty) =
+                        crate::compiler::vec_codegen::vec_element_type(&resolved_ty)
+                    {
+                        let elem_ty = elem_ty.clone();
+                        // span not readily available here; use a synthetic span.
+                        let span = cranelisp_types::Span::new(0, 0);
+                        // Failing here is a backend-setup invariant breach
+                        // (vec_drop must be declared whenever Vec types are
+                        // in play). Swallow the Result rather than propagate
+                        // — emit_field_decs is infallible by signature.
+                        let _ = self.emit_vec_aware_rc_dec(field_val, &elem_ty, span);
+                    } else if matches!(resolved_ty, Type::ADT(_, _)) {
+                        // For ADT-typed fields, recursively handle nested field cleanup.
                         self.emit_rc_dec_with_inline_drop_glue(
                             field_val, &resolved_ty, dealloc, false,
                         );

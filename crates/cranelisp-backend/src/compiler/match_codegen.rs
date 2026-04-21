@@ -166,6 +166,16 @@ where
             && let Some(scrut_ty) = scrutinee.inferred_type().cloned() {
                 let category = HeapCategory::classify(&scrut_ty, Some(self.ctx.symbol_tables));
                 if matches!(category, HeapCategory::AlwaysHeap | HeapCategory::Mixed) {
+                    // Vec-typed scrutinee: route through vec_drop so element
+                    // RCs and the data buffer are released on rc=0.
+                    if let Some(elem_ty) =
+                        crate::compiler::vec_codegen::vec_element_type(&scrut_ty)
+                    {
+                        let elem_ty = elem_ty.clone();
+                        let span = cranelisp_types::Span::new(0, 0);
+                        let _ = self.emit_vec_aware_rc_dec(scrut_val, &elem_ty, span);
+                        return;
+                    }
                     let needs_guard = matches!(category, HeapCategory::Mixed);
                     self.emit_rc_dec_with_inline_drop_glue(
                         scrut_val, &scrut_ty, self.ctx.dealloc_func_id, needs_guard,

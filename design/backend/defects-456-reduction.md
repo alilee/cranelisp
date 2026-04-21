@@ -469,3 +469,279 @@ None of (1)–(3) is disproved by the existing evidence. Each needs CLIF inspect
 | Active time | ~2.5 hours |
 | Unit tests added | 2 (both passing) |
 | Regressions introduced | 0 |
+
+---
+
+## Sprint 60 A.2 audit findings (Wave 2 — /backend, CLIF evidence)
+
+**Status**: H3 **PARTIALLY CONFIRMED** — the `func_addr`-bake-into-data pattern is pervasive and matches the /arch Phase-3a answer exactly, but the specific cross-module retention race is **not uniquely responsible** for the d6 repro; a second structural breach compounds it. Audit was diagnostic (Step A.2); no fix applied.
+
+### Repro chosen and observed behaviour
+
+`tests/sprint59_defects456_repro::d6_exemplar_propagate_only_does_not_segv` — one call to `(propagate g)` on the real grid/solver, no backtracking. Runs via the `--run` path, not the REPL.
+
+- **Observed**: `cargo nextest run -E 'test(d6_exemplar_propagate_only_does_not_segv)'` → EXIT 100 (test failure, process killed by signal). Consistent with prior observations of raw SIGSEGV/SIGTRAP; no Rust panic backtrace reaches stderr.
+- **CLIF captured**: `CRANELISP_CODEGEN_DUMP=*` produced 95,027 lines of CLIF spanning 320 function emissions (every builtin trait impl, every stdlib fn, plus `grid::*`, `solver::*`, and the generated `d6_propagate_only::main`). Written to `/tmp/s60_a2_clif.log`.
+
+### CLIF evidence — drop-glue-value pattern (two distinct sites)
+
+**Site 1 — Vec element-dec function address baked into a parameter**, `grid::set-cell` (lines 73213-73252 of dump):
+
+```
+        fn0 = colocated u0:103 sig0   ; (i64) -> i64  — runtime/vec_elem_dec_Cell (synthetic, Linkage::Local)
+        fn2 = u0:25 sig2              ; (i64,i64,i64,i64) -> i64  — Vec COW helper
+        ...
+        v11 = func_addr.i64 fn0       ; BAKE address of local drop-dispatch fn as i64
+        ...
+        v29 = call fn2(v10, v4, v5, v11)   ; pass baked address as 4th arg
+```
+
+The `runtime/vec_elem_dec_{suffix}{type_suffix}` (`vec_codegen.rs:691`) and the ADT drop-glue `runtime/drop_glue_{fqtn}` (`vec_codegen.rs:817`) are **both declared `Linkage::Local`** (lines 711, 831). The `func_addr` instruction resolves at finalize to a **raw i64 pointer into the emitting batch's JIT pages**. That i64 flows into the Vec COW helper where it is dispatched via `call_indirect`. This is H3's exact signature for *non-closure* call sites: a `func_addr`-valued pointer into JIT pages, stored in a data word, later dispatched indirectly.
+
+**Site 2 — inline ADT drop-glue called as Cranelift direct `call` against `Linkage::Local`**, `heap.rs:285-288`:
+
+```rust
+if let Some(glue_id) = drop_glue_id {
+    let glue_ref = module.declare_func_in_func(glue_id, builder.func);
+    builder.ins().call(glue_ref, &[ptr]);   // NOT call_indirect; NOT GOT-routed
+}
+```
+
+CLIF from `solver::propagate` (lines 82871-82971) confirms user-defn cross-module calls DO route through the GOT explicitly:
+```
+        v6 = global_value.i64 gv0      ; gv0 = symbol userextname0 — imported module GOT
+        v7 = iadd_imm v6, 24           ; slot 3
+        v8 = load.i64 notrap aligned v7
+        v9 = call_indirect sig0, v8(v1, v5)    ; GOT-indirect call to grid::propagate-pass-helper
+```
+
+But **the drop-glue call path at blocks 17-20 uses direct `call fn2(v57)` / `call fn5(v82)`** — Cranelift-resolved against a `UserExternalName`, which at JIT finalize is baked as either (a) an absolute address (external `Linkage::Local`) or (b) a relative branch if the target is co-emitted in the same batch. Either way, it is **not** indirected through the `__cranelisp_got_{M}` GOT mechanism.
+
+### Multi-batch replication observation
+
+Counting `func_addr` instances per batch in the single compile run: grid=18, solver=8, collections.vec=6, text.string=4, collections.list=3. `colocated u0:*` refs for `runtime/vec_elem_dec_Cell` and `runtime/drop_glue_Cell` appear in **both** `grid::*` functions (u0:101, u0:103) and `solver::*` functions (u0:95, u0:88) — **confirming each importing batch emits its own local copies** of per-type drop infrastructure when needed. The `get_name` dedup at `vec_codegen.rs:694-698` only dedupes within one `Module` (one batch); across batches each re-emits.
+
+### H3 verdict — PARTIALLY CONFIRMED
+
+- The **mechanism** named in H3 — `func_addr`-valued pointers into JIT pages, dispatched later via `call_indirect` or via baked direct `call` against `Linkage::Local` — is **present and pervasive**: closure `drop_glue_ptr` (`control_flow.rs:579`), Vec element-dec parameter baking (`grid::set-cell` et al.), inline ADT drop-glue dispatch (`heap.rs:287`).
+- The **specific cross-module race** named in H3's prediction (module A's code holds a baked address into module B's reclaimed pages) is **architecturally possible** for the `func_addr`-valued Vec-COW helper parameter — if a closure constructed in module A captures a COW helper argument that embeds module B's `runtime/vec_elem_dec_Cell`, and module B's `Arc<Jit>` reclaims, the captured value dangles.
+- But the d6 repro hits the crash on the **first** call to `(propagate g)` within a single `--run` invocation — *before* any REPL-redefinition or batch-reclaim has had the opportunity to fire. Decision 31 Scenario 2 (per-eval reclaim) does not apply on a single-shot `--run`. This refutes H3 as the **sole** explanation for this specific repro.
+- The drop-glue dispatch from `heap.rs:287` uses direct `call glue_ref` NOT routed through the GOT. This **violates Decision 36's "Why all-GOT calling"** discipline, which §1.1 of the convergence invariant extends to "Drop-glue code pointers… must route through the GOT or through an Arc-rooted allocation that outlives every caller." The convergence invariant is **breached** regardless of whether the d6 crash traces to this specific line.
+
+### What IS the root cause of the d6 single-run crash? (hypothesis from the evidence)
+
+Not H3 directly. Most likely a correctness bug in the **inlined ADT drop-glue emission** for `Grid`'s `(Vec Cell)` field, interacting with the tail-recursive `propagate` loop. Evidence:
+
+1. `d6_propagate_only::main` only does `(make-grid "..." → Some g → (propagate g) → ...)` ONE time. Crash reproduces. No redefinition, no reclaim.
+2. `grid::cell-at` (line 73080 of dump) and `grid::set-cell` (73174) — the two functions called repeatedly inside propagate's fixpoint loop — both emit drop-glue via `runtime/drop_glue_Cell` (declared as `Linkage::Local`, called as direct CLIF `call`). The per-iteration RC dec on the old Grid chains into the Vec<Cell> drop, which chains into per-Cell drop-glue (`Given`/`Solved`/`Candidates`). An off-by-one or double-dec in that chain crashes on first fully-populated grid.
+3. The S59 Pass-2 RC trace "alloc 0xb91c6d340 rc=1 / free 0xb91c6d320 / dec 0xb91c6d340 rc=1 / free 0xb91c6d340 / alloc 0xb91c6d340 rc=1 / dec 0xb91c6d140 / dec 0xb91c6d300 rc=2" is allocator-slot reuse colliding with a stale pointer **held somewhere between the drop-glue dispatch and the per-field dec**. Consistent with: the drop-glue fn reads the Grid's field pointer BEFORE the scope that holds the Grid has released, but the per-field dec closure over that pointer runs AFTER the Grid has been freed and reallocated.
+
+### A.3 fix direction
+
+Two distinct fixes are now clearly scoped:
+
+**(a) H3 structural fix — route drop-glue through GOT** (per §5.3 option (a), /arch Phase-3a answer):
+- Emit `runtime/drop_glue_{fqtn}` and `runtime/vec_elem_dec_*` as `Linkage::Export` in their *originating* batch; emit `Linkage::Import` declarations in every batch that needs them; allocate a GOT slot for each; dispatch via `call_indirect` on the GOT-loaded pointer.
+- Change closure `drop_glue_ptr` layout from raw `*const u8` to a `(owning_got_base: i64, slot_index: i32)` pair; the tear-down at `compiler/mod.rs:1256` computes the address at call time.
+- Estimated LOC: **180-280** (slightly above the §9 estimate because it extends to Vec COW helpers, not just closures). Primary files: `crates/cranelisp-backend/src/heap.rs` (~30 LOC), `control_flow.rs` (~40 LOC), `vec_codegen.rs` (~80 LOC), `compiler/mod.rs` (~60 LOC), plus boundary updates for slot registration.
+- **Fits within existing decisions**: Decision 23 (two-GOT model) + Decision 31 (safety invariant extended to function-pointer data) + Decision 36 (all-GOT calling generalised). No new Decision needed pre-implementation; a Decision 38 will capture the final closure-layout shape post-validation, as /arch noted at `jit-object-convergence.md:518`.
+
+**(b) Drop-glue correctness fix — independent of H3, narrower**:
+- Audit `emit_standalone_field_decs` and `build_adt_drop_glue_fn` (`vec_codegen.rs:756+`) for the Grid/(Vec Cell) path. Specifically: when a data constructor has a `(Vec T)` field where T is another ADT (Cell), the generated drop-glue must (i) dec the Vec, which triggers its own element-dec; (ii) the element-dec for a Cell-typed element must recursively dec-and-drop the Cell *including* handling the Mixed category (Cells can be nullary `Given`/`Solved`/`Candidates` data variants).
+- Estimated LOC: **40-100** in vec_codegen.rs; exact shape depends on whether the bug is in the guard for Mixed-heap elements, in the inc/dec pairing for the Vec's length header, or in the per-variant dispatch in multi-ctor drop glue.
+- **Risk area**: this fix may be load-bearing for the d6 repro even after the H3 fix lands. The H3 fix prevents *stale pointers to freed pages*; it does NOT prevent *double-dec on a valid allocation*. The Pass-2 RC trace pattern is the latter.
+
+**A.3 recommendation**: Land (a) first (it is the invariant-restoring structural fix; the convergence invariant is non-negotiable). Then re-run the five A-cluster tests. If `d6_exemplar_propagate_only_does_not_segv` still crashes, apply (b). If H3 fix alone flips all five, (b) becomes S61's concern.
+
+### Decision 31 carry-forward invariant cross-reference
+
+Per `jit-object-convergence.md §4.3`, the carry-forward at `program.rs:2184-2232` protects the `code` field through typecheck-layer upsert, but does NOT protect against the wholesale replacement of `symbol_tables[M].got`'s `Arc<GotTable>` when `restore_cached_module` runs. The d6 repro hits **before** any such reclaim, so §4.3's fix is not load-bearing for THIS defect. But the §4.3 breach remains open and is its own carry-forward risk.
+
+### FIXME(/arch) filed — NONE
+
+The audit surfaced no questions only /arch can answer. The two /arch Phase-3a answers embedded in `jit-object-convergence.md` (SymbolTable.got is already `Arc<GotTable>`; closure layout change to GOT-base+slot-index pair is authorised) cover the structural design space. A.3 implementation can proceed on the authority of those answers. If implementation uncovers a boundary-type change not already covered, FIXME(/arch) will be filed at that point.
+
+### Budget used (A.2)
+
+| Resource | Usage |
+|---|---|
+| `cargo nextest run` | 1 (`d6_exemplar_propagate_only_does_not_segv` with `CRANELISP_CODEGEN_DUMP=*`) |
+| CLIF capture size | 95,027 lines / 320 functions / ~2.3 MB |
+| Active time | ~40 minutes |
+| Design docs updated | 2 (`defects-456-reduction.md` — this section; `jit-object-convergence.md §5` — "Wave 2 A.2 audit result" subsection) |
+
+---
+
+## Sprint 60 Reduction Pass — cache-reuse crash isolated to 5 LOC (`/backend`, committed as `tests/sprint60_reduction.rs`)
+
+**Status**: A.3b's uncommitted "cache-reuse crashes deterministically" finding is now
+committed as a test file with **8 failing reductions + 3 passing negative controls**.
+The minimal crashing shape is **5 lines of Cranelisp across two files** — no heap,
+no ADT, no recursion, no `let`. The bug is an invariant-layer breach in the
+cache-hit load path, NOT an RC or drop-glue mechanism.
+
+### Test file added
+
+`tests/sprint60_reduction.rs` — 11 tests total:
+
+| Test | Outcome | LOC source | What it pins |
+|---|---|---|---|
+| `s60_cache_reuse_exemplar_shaped_no_crash` | FAIL (SIGSEGV) | ~14 | A.3b baseline: Cell ADT + Grid + tail-recursive `build-helper` |
+| `s60_cache_reuse_no_cell_adt_no_crash` | FAIL | ~10 | Cell ADT NOT load-bearing |
+| `s60_cache_reuse_no_wrapper_adt_no_crash` | FAIL | ~8 | Grid wrapper ADT NOT load-bearing |
+| `s60_cache_reuse_non_recursive_helper_no_crash` | FAIL | ~6 | Self-recursion NOT load-bearing |
+| `s60_cache_reuse_nullary_helper_no_crash` | FAIL | ~5 | Helper arity NOT load-bearing |
+| `s60_cache_reuse_empty_vec_helper_no_crash` | FAIL | ~5 | `vec-push` NOT load-bearing |
+| `s60_cache_reuse_int_helper_no_heap_no_crash` | FAIL | ~5 | **HEAP NOT load-bearing** (kills RC/drop-glue hypotheses) |
+| `s60_cache_reuse_minimal_5_loc_no_crash` | FAIL | **5** | MINIMAL — no `let`, literal Int return |
+| `s60_control_single_file_no_crash` | PASS | n/a | Cross-module IS load-bearing |
+| `s60_control_no_intra_module_call_no_crash` | PASS | n/a | Intra-module call IS load-bearing |
+| `s60_control_direct_helper_call_no_crash` | PASS | n/a | Import of a WRAPPER that calls a same-module helper IS the specific shape |
+
+### Minimal crashing source (5 LOC)
+
+```lisp
+;; grid.cl
+(import [primitives [*]])
+(defn build-helper [] 42)
+(defn make-grid [] (build-helper))
+
+;; program.cl
+(import [grid [make-grid]])
+(defn main [] (make-grid))
+```
+
+- First `cranelisp --run program.cl` exits 42 (correct — main returns 42).
+- Second `cranelisp --run program.cl` in the same tempdir — cache-hit — SIGSEGV (exit 139) **deterministically** (10/10 trials).
+
+### CLIF evidence
+
+Dumped with `CRANELISP_CODEGEN_DUMP='*'` on both runs:
+
+**First run** (fresh build, exit 42): emits ~81,100 lines of CLIF including:
+```
+; grid::build-helper
+block1:
+    v0 = iconst.i64 42
+    return v0
+
+; grid::make-grid
+    gv0 = symbol userextname0
+    ...
+    v0 = global_value.i64 gv0       ; __cranelisp_got_grid base
+    v1 = iadd_imm v0, 0              ; slot 0 = build-helper
+    v2 = load.i64 notrap aligned v1
+    v3 = call_indirect sig0, v2()
+    return v3
+
+; program::main
+    gv0 = symbol userextname0
+    ...
+    v0 = global_value.i64 gv0       ; __cranelisp_got_grid base
+    v1 = iadd_imm v0, 8              ; slot 1 = make-grid
+    v2 = load.i64 notrap aligned v1
+    v3 = call_indirect sig0, v2()
+    return v3
+```
+
+**Second run** (cache-hit, SIGSEGV): emits only **32 lines** — just `program::main`
+(repeated twice, already a red flag — duplicate emission). All other modules
+(grid, control, defs, prelude deps) are loaded from cache without CLIF.
+
+### `nm` / `otool` evidence
+
+```
+grid.o symbols:
+  000000000000002c S ___cranelisp_got_grid   ; Linkage::Export, 16 bytes (2 slots)
+  0000000000000024 t _build-helper
+  0000000000000000 t _make-grid
+
+program.o symbols:
+                   U ___cranelisp_got_grid   ; Linkage::Import (undefined)
+  0000000000000024 S ___cranelisp_got_program
+  0000000000000000 t _main
+```
+
+`grid.o`'s `__DATA,__const` section has 2 relocation entries patching the two
+GOT slots to point at `_make-grid` and `_build-helper` respectively, consistent
+with the fresh-build CLIF.
+
+### Root cause hypothesis (post-reduction)
+
+Neither H3 (drop-glue × reclaim) nor A.3b's closure-env leak — **there are no
+closures, no drop glue, no heap values at all** in the minimal repro.
+
+**New hypothesis**: the JIT/object convergence invariant is breached in a more
+fundamental way. On cache-hit:
+
+- `grid.o` is loaded by `cache::Linker::load_object`, which mmap's its `.text`
+  and `.__DATA,__const` sections, resolves the data-section relocations so the
+  embedded `__cranelisp_got_grid` data contains real addresses for `make-grid`
+  and `build-helper`.
+- `program.cl` is freshly JIT-compiled: `inline_jit_codegen_for_names` runs
+  against `symbol_tables[grid].got.base_ptr()` (NOT the linker's mmap'd GOT),
+  registering that pointer with `JITBuilder::symbol("__cranelisp_got_grid", ...)`.
+- `load_cached_module_via_linker` populates `symbol_tables[grid].got.slot[0]`
+  and `slot[1]` with the linker-loaded function addresses (line 3180 of
+  `src/worker.rs`).
+- BUT `grid::make-grid`'s loaded code — compiled as an object — resolves its
+  own `__cranelisp_got_grid` reference through `ARM64_RELOC_GOT_LOAD_*` against
+  the LINKER's `got_slots` indirection (`cache/linker.rs:312-319`) — **a
+  different `__cranelisp_got_grid` instance from the one program sees**.
+- Both GOT instances *should* have the same contents. If a single slot in
+  EITHER instance is unpopulated or stale, a call through it lands on garbage.
+
+**Candidate narrow hypothesis**: the `ensure_got_slot(&target_name, raw_target_addr)`
+path (linker.rs:317) is keyed on `target_name` — one slot per unique symbol
+name across all `.o` loads. When grid.o's own code references `__cranelisp_got_grid`,
+the `raw_target_addr` is the address of grid.o's own 16-byte data section
+(offset 0x2c). BUT the linker's `ensure_got_slot` returns an *indirection slot*
+whose contents are `raw_target_addr`. If that indirection slot was allocated
+before grid.o's data relocations were applied, the slot may point to grid.o's
+still-unrelocated (zero-filled) data. First-call miss, crash.
+
+Alternatively the issue could be inside grid.o's own `.text` for `make-grid`:
+the `call_indirect` loads slot 0 from `__cranelisp_got_grid` (grid.o's own
+data section). If the relocation to populate grid.o's data section WITH
+`build-helper`'s address was not applied (or applied with the wrong target),
+that slot remains zero and calling it segfaults at address 0.
+
+The 5-LOC repro means this is now inspectable at the instruction level. The
+next /backend wave should:
+
+1. Add a probe in `load_cached_object` that dumps each `.o`'s data-section
+   contents AFTER relocations are applied, verifying each GOT slot is non-zero.
+2. Compare against `symbol_tables[M].got.slot[i]` for each `i`, asserting byte-
+   equality.
+3. If the linker-loaded GOT has non-zero slots but the `symbol_tables` GOT has
+   zero (or vice-versa), THAT is the breach.
+
+### "Is the fix obvious" — NOT YET
+
+The minimal repro is small enough to step through with a debugger, but the
+exact codegen-vs-linker divergence needs one of: (a) the dual-GOT assertion
+test above, (b) lldb on the minimal repro (a single instruction trace through
+`program::main`'s `call_indirect` would show whether the crash is at the
+first load (reading slot 1 of program's GOT, returns `make-grid`'s address),
+the call (reaching `make-grid`'s entry), or the nested load inside `make-grid`
+(reading slot 0 via grid.o's data section). My best guess at the fix direction:
+the `load_cached_module_via_linker` path populates `symbol_tables[M].got` but
+NOT the linker's in-process GOT slab for the same `__cranelisp_got_{M}`
+symbol, OR vice-versa. A two-line fix if found; a larger restructure if the
+two GOTs need to be unified to a single `Arc<GotTable>` shared between
+linker and `symbol_tables`.
+
+### Files added/modified (S60 reduction pass)
+
+- `tests/sprint60_reduction.rs` — NEW FILE, 11 tests per table above.
+- `design/backend/defects-456-reduction.md` — this section.
+
+### Budget used (S60 reduction pass)
+
+| Resource | Usage |
+|---|---|
+| `cargo nextest run --test sprint60_reduction` | 2 runs (parallel discovery + serial confirm) |
+| Subprocess trials outside nextest | ~50 short `--run` invocations for bisection |
+| Active time | ~90 minutes |
+| New tests committed | 11 (8 failing regression guards + 3 negative controls) |
+| Design docs updated | 1 (this section) |

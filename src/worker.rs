@@ -2887,15 +2887,62 @@ pub fn inline_jit_codegen_for_names(
         // Sprint 58 Wave 2 / Decision 36: `result.code_ptrs` and
         // `result.func_ids` are keyed by bare symbol names uniformly
         // across every module.
+        //
+        // Sprint 60 Wave 2 Step A.1 (Decision 37 §"No swallowed failures",
+        // H4 audit surface): each of the three lookups below used to be a
+        // silent skip / `else { continue }`. Per §6.1 of
+        // `design/backend/jit-object-convergence.md`, those are Decision 37
+        // breaches: a name in `names` for which `code_ptrs` lacks an entry,
+        // or for which the GOT slot lookup fails, or for which the symbol
+        // table entry has disappeared, is an invariant violation. We MUST
+        // return a hard error rather than leave a GOT slot NULL while
+        // reporting `Ok(())` to the scheduler (the latter was Bug A's
+        // signature on the cache-hit path, closed S58 Wave 2 at line 3087
+        // — this mirrors that discipline onto the fresh-build path).
         let Some(code_ptr) = result.code_ptrs.get(name).copied() else {
-            continue;
+            return Err(CranelispError::ModuleError {
+                message: format!(
+                    "fresh-build codegen invariant violation: backend did not \
+                     produce a code pointer for '{module}/{name}' (present in \
+                     `names` batch but absent from `CompilationResult.code_ptrs`). \
+                     This indicates a `/backend` contract breach — \
+                     `compile_to_module` must emit a code pointer for every \
+                     name in the input batch."
+                ),
+                file: None,
+                span: Span::SYNTHETIC,
+            });
         };
 
         // Store in pre-assigned GOT slot (Wave 0 invariant: every compilable
         // symbol carries a `got_slot`).
-        if let Some(slot) = lookup_got_slot(tc_modules, module, name)
-            && let Some(st) = tc_modules.get(module)
+        let Some(slot) = lookup_got_slot(tc_modules, module, name) else {
+            return Err(CranelispError::ModuleError {
+                message: format!(
+                    "fresh-build codegen invariant violation: no GOT slot \
+                     assigned for '{module}/{name}' at codegen time. Decision 37 \
+                     (`design/arch/CLAUDE.md`) pins GOT slot assignment at the \
+                     typecheck phase before any codegen runs; a missing slot \
+                     here indicates a typecheck-to-codegen handoff contract breach."
+                ),
+                file: None,
+                span: Span::SYNTHETIC,
+            });
+        };
         {
+            let Some(st) = tc_modules.get(module) else {
+                return Err(CranelispError::ModuleError {
+                    message: format!(
+                        "fresh-build codegen invariant violation: symbol table \
+                         for module '{module}' disappeared during codegen while \
+                         storing GOT slot for '{name}'. The caller of \
+                         `inline_jit_codegen_for_names` must ensure \
+                         `tc_modules[module]` is live for the duration of the call."
+                    ),
+                    file: None,
+                    span: Span::SYNTHETIC,
+                });
+            };
             st.got.store_slot(slot, code_ptr);
         }
 
@@ -2904,15 +2951,49 @@ pub fn inline_jit_codegen_for_names(
         // entry is replaced (REPL redefinition), the clone drops, and
         // when the last clone in the table drops, the underlying Jit
         // reclaims its pages.
-        if let Some(mut st) = tc_modules.get_mut(module)
-            && let Some(entry) = st.symbols.get_mut(name.as_ref())
-            && let cranelisp_types::ModuleEntry::Def { code, .. } = entry
-        {
-            *code = Some(crate::code::Code::jit(
-                std::sync::Arc::clone(&jit_arc),
-                code_ptr,
-            ));
-        }
+        let Some(mut st) = tc_modules.get_mut(module) else {
+            return Err(CranelispError::ModuleError {
+                message: format!(
+                    "fresh-build codegen invariant violation: symbol table \
+                     for module '{module}' disappeared during codegen while \
+                     writing Code::Jit for '{name}'."
+                ),
+                file: None,
+                span: Span::SYNTHETIC,
+            });
+        };
+        let Some(entry) = st.symbols.get_mut(name.as_ref()) else {
+            return Err(CranelispError::ModuleError {
+                message: format!(
+                    "fresh-build codegen invariant violation: symbol table entry \
+                     for '{module}/{name}' missing at Code::Jit write time \
+                     (present in `names` batch; GOT slot stored successfully \
+                     above; entry vanished between the slot store and the \
+                     Code::Jit write). Indicates concurrent mutation of \
+                     `tc_modules[module].symbols` during codegen, which \
+                     violates Decision 37's scheduler discipline."
+                ),
+                file: None,
+                span: Span::SYNTHETIC,
+            });
+        };
+        let cranelisp_types::ModuleEntry::Def { code, .. } = entry else {
+            return Err(CranelispError::ModuleError {
+                message: format!(
+                    "fresh-build codegen invariant violation: symbol table entry \
+                     for '{module}/{name}' is not a `ModuleEntry::Def` variant \
+                     at Code::Jit write time. Only Def entries have codegen \
+                     products; a name reaching this loop without a Def entry \
+                     indicates a typecheck-to-codegen handoff contract breach."
+                ),
+                file: None,
+                span: Span::SYNTHETIC,
+            });
+        };
+        *code = Some(crate::code::Code::jit(
+            std::sync::Arc::clone(&jit_arc),
+            code_ptr,
+        ));
     }
 
     // 7. Route per-symbol artifacts into introspection (REPL-only).
