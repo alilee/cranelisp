@@ -1176,3 +1176,252 @@ did not cover.
   All five tests in `tests/sprint60_run_tests_reduction.rs` + the
   original `tests/wave6_demo_repros::run_tests_batched_invocation_no_crash`
   flip to PASS when the fix lands.
+
+---
+
+## Sprint 60 Wave 2 Round 4 — heisenbug stress isolation
+
+User directive at round open: "pre-existing doesn't matter. Clean and
+green." Task for `/backend`: isolate and understand
+`tests/sprint23::cache_repl_loads_heisenbug_parallel_stress`, the one
+remaining flaky failure in Sprint 60. Diagnosis only — no fix this
+turn.
+
+### Method
+
+Three measurement passes, no code changes:
+
+1. **Isolated loop** — 20 × `cargo nextest run -E
+   'test(cache_repl_loads_heisenbug_parallel_stress)' --no-fail-fast`.
+2. **Full-suite runs** — 9 × `cargo nextest run --no-fail-fast` total
+   (3 summary-only runs + 4 detail-capture runs + 2 reference runs),
+   scoring pass/fail for the target test and capturing the panic body
+   on fail.
+3. **Spawn-pressure subset** — `cargo nextest run -E
+   'test(cache_repl_loads_heisenbug_parallel_stress) + binary(e2e) +
+   binary(examples_run) + binary(sprint60_run_tests_reduction)'` to
+   check whether *any* many-binary-spawning subset reproduces the
+   flake (153-test subset, no).
+
+### Baseline flakiness
+
+| Scenario | Fail rate | Evidence |
+|---|---|---|
+| Isolated single-test nextest, 20 iterations | **0/20 (0%)** | `PASS [2.5–3.0s]` every run |
+| Full suite nextest, unfiltered, 9 runs | **7/9 (~78%)** | runs 1,3,4,6,7,8,9 FAIL; runs 2,5 PASS (PASS time ~8.0s; FAIL time 0.079s–6.621s) |
+| 153-test spawn-heavy subset (e2e + examples_run + sprint60_run_tests_reduction) | 0/1 (one trial) | heisenbug PASSED [2.573s], other 4 pre-existing fails |
+
+The test is NOT flaky in isolation. It IS flaky under full-suite load,
+very frequently (~78%). Spawn-volume alone is not sufficient — the
+full suite involves more than just subprocess-spawning tests.
+
+### Failure shape
+
+The original panic-body capture (run 1 of detail-capture batch, full
+suite):
+
+```text
+thread 'cache_repl_loads_heisenbug_parallel_stress' (3512254) panicked at tests/sprint23.rs:2165:9:
+iteration 14: session 1 should successfully import and call helper-val: cranelisp REPL — type /help for help
+0+0ms; user> Error: type error at 9..28: 'helper-val' not found in module 'helper'
+10+0ms; user> Error: type error at 1..11: undefined variable: helper-val
+0+0ms; user>
+```
+
+Four consecutive detail-capture runs: **all four failed**, at
+iterations 14, 12, 13, 13 respectively — all session 1, all with the
+same two-line error pair (`'helper-val' not found in module 'helper'`
+followed by `undefined variable: helper-val`).
+
+**Characteristics:**
+
+- The REPL subprocess is **healthy** — it prints the banner, draws
+  prompts, consumes `/quit`, exits cleanly. The subprocess does NOT
+  crash or hang.
+- Failing iterations cluster near end-of-loop (12–14), not at
+  iteration 0. **Early iterations pass**; the race gets exercised
+  over the 20-loop window. This rules out subprocess-spawn-startup
+  theories (incomplete-binary-on-test-start, linker racing with
+  execve, etc.) — those would fail at iteration 0.
+- `helper.cl` is written to the fresh tempdir *before* the REPL
+  subprocess spawns, via synchronous `std::fs::write(...)`. The file
+  is on disk by the time the binary starts. The REPL successfully
+  resolves `helper` as a module path (no "module not found" error) —
+  the problem is purely that `helper-val` is absent from module
+  `helper`'s symbol table at the moment the importing typecheck
+  consults it.
+- Each iteration uses `tempfile::tempdir()` — a fresh unique path
+  per iteration. No shared filesystem state across iterations.
+- `grep` of `tests/*.rs` for `std::env::set_current_dir` and
+  `std::env::set_var` returned zero hits — no test mutates
+  process-global state that could leak to other concurrent tests.
+- The 0.079s fast-fail observed on one full-suite run was NOT a
+  subprocess-spawn failure (misleading symptom). It was a run in
+  which iteration 0 happened to hit the race immediately — the
+  subprocess still ran 79ms (banner + two errors + quit), fast
+  because there was no 99 to print.
+
+### Diagnosis — (b) real race condition
+
+This is **not** test crosstalk (no shared state, no isolation
+failure), **not** false-alarm over-stressing (20 isolated iterations
+passed cleanly, and the 20-iteration loop is a reasonable thing to
+stress the scheduler with), and **not** the Sprint 58 heisenbug it
+was written to guard (that was 1-in-1755; this is 7-in-9).
+
+This is a **real race condition** in the REPL dep-discovery path,
+specifically around **module symbol publication ordering**. Under
+full-suite CPU pressure:
+
+- The REPL eval thread processes `(import [helper [helper-val]])`.
+- The dep-discovery logic registers `helper` with the scheduler and
+  waits (via `scheduler::wait_module_inmem_complete_blocking`, the
+  Sprint 59 Workstream A primitive).
+- A scheduler worker thread picks up `helper`, parses `(defn
+  helper-val [] 99)`, typechecks it, and at some point signals
+  `inmem_done = true` and publishes `helper-val` into helper's
+  SymbolTable.
+- **Under CPU pressure these two operations appear to race**: the
+  `inmem_done` flag is visible to the eval thread BEFORE
+  `helper-val`'s publication is visible, OR the dep-registration
+  path has a fast-path that skips the wait entirely when a stale
+  signal appears.
+
+The importing typecheck then looks up `helper-val` in helper's
+SymbolTable, finds nothing, and reports `'helper-val' not found in
+module 'helper'`.
+
+### Why it is NOT the Sprint 58 heisenbug
+
+The Sprint 58 heisenbug was observed at ~1-in-1755 under
+`--max-fail=15` nextest parallelism — a rare race. Sprint 59
+Workstream A collapsed 5 dep-registration sites to a single
+`register_dep` + `wait_module_inmem_complete_blocking` primitive.
+At Sprint 59 close, the 20-iter stress test passed rock-solid.
+
+The current failure (7-in-9) is a DIFFERENT defect — it emerged
+after Sprint 59 close (or is a publication-ordering race that was
+already present but unexercised until something between Sprint 59
+close and Sprint 60 Round 4 exposed it). It is NOT a sixth-surface
+collapse-missed case; it is a distinct post-collapse publication
+defect.
+
+Candidate triggers since Sprint 59 close (not verified):
+
+- `bc60aec` — sprint 60 Wave 2 Round 3: isolate run_tests_batched
+  failure (adds spawn-heavy tests to the suite — increases suite
+  pressure).
+- `113bc34`, `fd718c9`, `162b342`, `7e59df0` — Sprint 60 Wave 2 A.3
+  lambda-body / single-GOT / drop-glue work (unlikely to affect
+  scheduler but touches codegen).
+- `999121f` — observability + FIXME drawdown (possible).
+
+A `git bisect` on these commits against the heisenbug failure rate
+under full suite would settle which commit regressed this.
+
+### Fix sketch (NOT applied this round)
+
+The race is between the scheduler's `inmem_done` signal and the
+symbol publication. `scheduler.rs::wait_module_inmem_complete_blocking`
+(src/scheduler.rs:892) reads `ms.inmem_done` under the scheduler
+lock and returns `Ok(())` immediately. If `helper`'s SymbolTable
+publish happens AFTER `inmem_done` is set but BEFORE the eval
+thread proceeds, the eval thread observes a SymbolTable that does
+not yet contain `helper-val`.
+
+**Option 1 — invert publish/flag ordering.** In the worker path
+that completes a module's typecheck (wherever `inmem_done` is set
+true), make the SymbolTable publish strictly PRECEDE the
+`inmem_done = true` assignment, both under the same lock, so that
+any thread that sees `inmem_done = true` is GUARANTEED to also see
+the published `helper-val`. If the publish is already on the same
+lock as the flag, the issue may be that the publish updates a
+per-module SymbolTable NOT held under the scheduler lock — then it
+is memory-ordering between two distinct mutex-protected stores.
+
+**Option 2 — wait on symbol presence, not module flag.** Change
+the import-resolver path to block until `helper`'s SymbolTable
+contains `helper-val` specifically (not just
+`module.inmem_done`). Slower on happy path, but eliminates the
+publish-vs-flag race.
+
+**Option 3 — re-check after wake.** Have the import-resolver
+observe `inmem_done`, then re-acquire the module's SymbolTable
+lock and re-check symbol presence; if absent, brief re-wait. This
+papers over the race without fixing it, not recommended.
+
+`/int` is the owning skill for the dep-discovery path
+(`src/worker.rs::register_transitive_cached_imports`,
+`src/session_v4.rs` dep handling) and
+`scheduler::wait_module_inmem_complete_blocking`
+(src/scheduler.rs:892). Recommend Option 1 — inspect
+`notify_inmem_codegen_complete` for publish-vs-flag ordering and
+tighten it under a single critical section.
+
+### Tests
+
+**Existing regression guard is sufficient.**
+`tests/sprint23.rs::cache_repl_loads_heisenbug_parallel_stress` is
+the failing test at the stabilisation gate. It fails reliably under
+full-suite load (~78%) and passes in isolation. It is the minimal
+shape that exercises the race: one helper module, two sessions,
+20 iterations.
+
+**No new sub-reduction test committed this round.** A
+single-iteration reduction would document the minimal SHAPE but
+would be unreliable as a regression guard (per-iteration failure
+probability is low; the 20-iter wrapper's value is its 20
+independent race-triggering attempts). The failing 20-iter test
+stays, un-ignored, as the failing-not-ignored trigger for `/int`'s
+fix.
+
+**Source reduction not performed.** The source shape is already
+minimal: 2 files (one defining `helper-val`, one importing it),
+3 lines total of Cranelisp. Further reduction (removing the
+helper-val fn entirely, for example) removes the defect. The
+reduction floor is the existing test's shape.
+
+### Files modified (Round 4)
+
+- `design/backend/defects-456-reduction.md` — this section appended
+
+### Budget used (Round 4)
+
+| Resource | Usage |
+|---|---|
+| Isolated nextest runs | 20 iterations × 1 binary = 20 |
+| Full-suite nextest runs | 9 |
+| Spawn-subset nextest runs | 1 |
+| Source-shape bisection trials | 0 (source is already minimal) |
+| Active time | ~45 minutes |
+| New tests committed | 0 (existing 20-iter test is the guard) |
+
+### Recommendation to `/sprint`
+
+**Answer: (b) — real race condition.**
+
+- **Trigger**: full-suite CPU + scheduling pressure (~78% under
+  nextest default parallelism, 9 of my 9 full-suite runs).
+- **Location**: REPL dep-discovery path,
+  `scheduler::wait_module_inmem_complete_blocking` +
+  worker-side publication sequence.
+- **Evidence**: captured panic-body showing the REPL runs
+  healthily but observes an empty helper-module SymbolTable.
+- **Fix owner**: `/int` (owner of
+  `src/worker.rs::register_transitive_cached_imports` and
+  `src/scheduler.rs::wait_module_inmem_complete_blocking`).
+- **Fix sketch**: Option 1 (invert publish/flag ordering).
+- **Test**: `tests/sprint23.rs::cache_repl_loads_heisenbug_parallel_stress`
+  already fails — no new test needed. When /int lands the fix, the
+  existing failing test flips green; stabilisation gate clears.
+
+### Next skill
+
+- `/int` — pick up this diagnosis, investigate the
+  publish-vs-`inmem_done` ordering race in
+  `notify_inmem_codegen_complete` (or equivalent worker-completion
+  path), and apply Option 1 under full-suite nextest pressure. The
+  acceptance gate: `cargo nextest run --no-fail-fast` run 3 times
+  back-to-back with
+  `cache_repl_loads_heisenbug_parallel_stress` passing all three.
+
