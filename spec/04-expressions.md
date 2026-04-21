@@ -177,7 +177,7 @@ Bindings go out of scope after `body` is evaluated. Any heap-allocated values bo
 
 The binding list MUST contain an even number of forms -- alternating names and expressions. An odd number is a compile-time error.
 
-## 4.4 If Expression [Tested tests/ring0::nested_if, tests/ring0::repl_if_expression, tests/ring0::error_type_mismatch_if_branches, tests/ring0::error_if_condition_not_bool, tests/e2e::e2e_ring0_conditional]
+## 4.4 If Expression [Tested+Neg tests/ring0::nested_if, tests/ring0::repl_if_expression, tests/ring0::error_type_mismatch_if_branches, tests/ring0::error_if_condition_not_bool, tests/e2e::e2e_ring0_conditional]
 
 ```clojure
 (if cond then-expr else-expr)

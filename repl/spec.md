@@ -151,7 +151,7 @@ Output uses the `:Type value` format — the same colon-prefixed type annotation
 
 ## 1. Display Format
 
-### 1.1 Universal Output Format [Tested tests/repl_experience::defn_reports_function_type]
+### 1.1 Universal Output Format [Tested+Neg tests/repl_experience::defn_reports_function_type, tests/wave6_demo_repros::display_defn_with_docstring_uses_dash_separator]
 
 All REPL output uses a unified format that mirrors Cranelisp type annotation syntax. The primary line is always:
 
