@@ -370,36 +370,65 @@
 
 ;; --- Solver tests ---
 ;;
-;; The full-puzzle tests below are commented out: `propagate`/`solve`
-;; currently segfault on full 81-cell grids due to deep recursion (see
-;; CLAUDE.md "Known Issues"). The structural shape (test-* fn returning
-;; Option String) is preserved so these tests can be re-enabled by
-;; un-commenting the bodies once the runtime issue is resolved.
+;; Full-puzzle tests re-enabled Sprint 60 Wave 3 (Defect 7 close): the
+;; underlying drop-glue / dual-GOT / captures defects (Defects 4-6, Sprint 59)
+;; have been resolved. Two of three pass (easy, hard via the weak
+;; `count-determined == 81` predicate). `test-unsolvable` FAILS — the
+;; solver returns `Success` on a grid with two `5`s in row 0 where it
+;; should return `Unsolvable`.
 ;;
-;; (defn test-easy-puzzle []
-;;   (match (make-grid "003020600900305001001806400008102900700000008006708200002609500800203009005010300")
-;;     [(Some g)
-;;        (match (solve g)
-;;          [(Success solution)
-;;             (if (eq-i64 (count-determined solution) 81) None
-;;               (Some "easy puzzle should be fully determined"))
-;;           Unsolvable (Some "easy puzzle should be solvable")])
-;;      None (Some "make-grid should accept the easy puzzle string")]))
+;; FIXME(/qa) — narrow integration test for the algorithmic correctness
+;; gap exposed by test-unsolvable. Minimal repro (see investigation notes
+;; below):
 ;;
-;; (defn test-hard-puzzle []
-;;   (match (make-grid "800000000003600000070090200050007000000045700000100030001000068008500010090000400")
-;;     [(Some g)
-;;        (match (solve g)
-;;          [(Success solution)
-;;             (if (eq-i64 (count-determined solution) 81) None
-;;               (Some "hard puzzle should be fully determined"))
-;;           Unsolvable (Some "hard puzzle should be solvable")])
-;;      None (Some "make-grid should accept the hard puzzle string")]))
+;;   (eliminate g idx d) on a cell that is already (Given v) or (Solved v)
+;;   with v == d returns `(Some g)` — a no-op. It should return `None`
+;;   (contradiction) because two peers cannot hold the same value. With
+;;   the no-op behaviour, peer propagation silently allows conflicting
+;;   Givens to coexist, so the solver returns `Success` on provably
+;;   unsolvable puzzles. The observable symptom in the `--run` main for
+;;   the easy puzzle is a "Solution" board with duplicate values in row 0
+;;   (e.g. `4 5 3 | 9 2 1 | 6 7 7`), further evidence that the elimination
+;;   pass is not enforcing uniqueness.
 ;;
-;; (defn test-unsolvable []
-;;   (match (make-grid "550000000000000000000000000000000000000000000000000000000000000000000000000000000")
-;;     [(Some g)
-;;        (match (solve g)
-;;          [(Success _) (Some "puzzle with two 5s in row 0 should be unsolvable")
-;;           Unsolvable None])
-;;      None (Some "make-grid should accept the malformed puzzle string")]))
+;;   However, when `eliminate` is patched to return `None` on same-value
+;;   Given/Solved cells, propagation returns `None` even for valid
+;;   puzzles (including a one-cell-from-solved test grid). That rules out
+;;   a pure algorithmic fix at the eliminate level — something below
+;;   (likely in peers iteration, set-cell Vec COW, or match arm state
+;;   sharing across recursive `try-digits` branches) is causing spurious
+;;   peer conflicts. This suggests an RC or codegen-level interaction
+;;   rather than a pure logic error.
+;;
+;; FIXME(/backend) — once /qa has the narrow repro, investigate whether
+;; the propagation-returns-None-on-valid-puzzle behaviour is driven by
+;; set-cell COW, closure captures inside eliminate-from-peers-helper, or
+;; Vec state sharing across recursive solve/try-digits calls.
+
+(defn test-easy-puzzle []
+  (match (make-grid "003020600900305001001806400008102900700000008006708200002609500800203009005010300")
+    [(Some g)
+       (match (solve g)
+         [(Success solution)
+            (if (eq-i64 (count-determined solution) 81) None
+              (Some "easy puzzle should be fully determined"))
+          Unsolvable (Some "easy puzzle should be solvable")])
+     None (Some "make-grid should accept the easy puzzle string")]))
+
+(defn test-hard-puzzle []
+  (match (make-grid "800000000003600000070090200050007000000045700000100030001000068008500010090000400")
+    [(Some g)
+       (match (solve g)
+         [(Success solution)
+            (if (eq-i64 (count-determined solution) 81) None
+              (Some "hard puzzle should be fully determined"))
+          Unsolvable (Some "hard puzzle should be solvable")])
+     None (Some "make-grid should accept the hard puzzle string")]))
+
+(defn test-unsolvable []
+  (match (make-grid "550000000000000000000000000000000000000000000000000000000000000000000000000000000")
+    [(Some g)
+       (match (solve g)
+         [(Success _) (Some "puzzle with two 5s in row 0 should be unsolvable")
+          Unsolvable None])
+     None (Some "make-grid should accept the malformed puzzle string")]))
