@@ -48,6 +48,15 @@ pub enum CacheStale {
         found: u32,
         expected: u32,
     },
+    /// `build_id` on disk did not match the compile-time `BUILD_ID`
+    /// (Sprint 60 Workstream C). Additional invalidation trigger on top of
+    /// `SchemaMismatch`; catches silent cache staleness when the compiler
+    /// binary is rebuilt without a manual `CACHE_SCHEMA_VERSION` bump.
+    BuildIdMismatch {
+        path: std::path::PathBuf,
+        found: String,
+        expected: String,
+    },
     /// I/O failure reading the file (permissions, disk error, etc.).
     Io {
         path: std::path::PathBuf,
@@ -74,6 +83,7 @@ impl CacheStale {
         match self {
             CacheStale::Missing { .. } => "missing",
             CacheStale::SchemaMismatch { .. } => "schema_mismatch",
+            CacheStale::BuildIdMismatch { .. } => "build_id_mismatch",
             CacheStale::Io { .. } => "io",
             CacheStale::Deserialise { .. } => "deserialise",
             CacheStale::PathMismatch { .. } => "path_mismatch",
@@ -94,6 +104,15 @@ impl std::fmt::Display for CacheStale {
             } => write!(
                 f,
                 "cache schema mismatch at {}: found {found}, expected {expected}",
+                path.display()
+            ),
+            CacheStale::BuildIdMismatch {
+                path,
+                found,
+                expected,
+            } => write!(
+                f,
+                "cache build-id mismatch at {}: found {found:?}, expected {expected:?}",
                 path.display()
             ),
             CacheStale::Io { path, message } => {
@@ -139,9 +158,39 @@ where
     C: cranelisp_types::CodeStore + Clone,
     L: cranelisp_types::LinkerStore + Clone,
 {
+    serialise_meta_with_build_id(table, schema_version, super::BUILD_ID)
+}
+
+/// Serialise a `SymbolTable` with an explicit `build_id` (Sprint 60 W/S C).
+///
+/// Separated from `serialise_meta` so tests can stamp synthetic build-ids
+/// without shelling out to the compile-time `BUILD_ID` constant.
+pub(crate) fn serialise_meta_with_build_id<C, L>(
+    table: &SymbolTable<C, L>,
+    schema_version: u32,
+    build_id: &str,
+) -> Result<Vec<u8>, CranelispError>
+where
+    C: cranelisp_types::CodeStore + Clone,
+    L: cranelisp_types::LinkerStore + Clone,
+{
     let mut stamped = table.clone();
     stamped.schema_version = schema_version;
-    serde_json::to_vec_pretty(&stamped).map_err(|e| CranelispError::CodegenError {
+    let mut value = serde_json::to_value(&stamped).map_err(|e| CranelispError::CodegenError {
+        message: format!("failed to serialise SymbolTable for cache: {e}"),
+        span: Span::SYNTHETIC,
+    })?;
+    // Insert `build_id` as a sibling of `schema_version` at the JSON root.
+    // This keeps `.meta.json` shape-identical to pre-Sprint-60 except for
+    // the added field (which pre-Sprint-60 loaders would have ignored;
+    // post-Sprint-60 loaders check it and invalidate on mismatch).
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "build_id".to_string(),
+            serde_json::Value::String(build_id.to_string()),
+        );
+    }
+    serde_json::to_vec_pretty(&value).map_err(|e| CranelispError::CodegenError {
         message: format!("failed to serialise SymbolTable for cache: {e}"),
         span: Span::SYNTHETIC,
     })
@@ -161,8 +210,40 @@ pub fn deserialise_meta(
     expected_schema_version: u32,
     path: &Path,
 ) -> Result<SymbolTable, CacheStale> {
-    let table: SymbolTable =
+    deserialise_meta_with_build_id(bytes, expected_schema_version, super::BUILD_ID, path)
+}
+
+/// Deserialise with an explicit expected `build_id` (Sprint 60 W/S C).
+///
+/// Check order: parse → schema_version → build_id. Schema mismatch shadows
+/// build-id mismatch (a shape change strictly subsumes a build-id change),
+/// but both flow through `CacheStale` so the caller routes identically.
+///
+/// Pre-Sprint-60 caches lack the `build_id` field; `#[serde(default)]` on
+/// the capture struct yields `""` which never matches a non-empty compile-time
+/// `BUILD_ID`, producing `CacheStale::BuildIdMismatch` → fresh build.
+pub(crate) fn deserialise_meta_with_build_id(
+    bytes: &[u8],
+    expected_schema_version: u32,
+    expected_build_id: &str,
+    path: &Path,
+) -> Result<SymbolTable, CacheStale> {
+    // First: pull the `build_id` sibling off the JSON root before letting
+    // serde derive the SymbolTable (SymbolTable has no `build_id` field,
+    // but serde is lenient with unknown keys by default, so deserialise
+    // succeeds and we only inspect the sidecar field for the version check).
+    let value: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|e| CacheStale::Deserialise {
+            path: path.to_path_buf(),
+            message: e.to_string(),
+        })?;
+    let found_build_id = value
+        .get("build_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let table: SymbolTable =
+        serde_json::from_value(value).map_err(|e| CacheStale::Deserialise {
             path: path.to_path_buf(),
             message: e.to_string(),
         })?;
@@ -171,6 +252,13 @@ pub fn deserialise_meta(
             path: path.to_path_buf(),
             found: table.schema_version,
             expected: expected_schema_version,
+        });
+    }
+    if found_build_id != expected_build_id {
+        return Err(CacheStale::BuildIdMismatch {
+            path: path.to_path_buf(),
+            found: found_build_id,
+            expected: expected_build_id.to_string(),
         });
     }
     Ok(table)
@@ -526,5 +614,121 @@ mod tests {
     fn deprecated_read_nonexistent_returns_error() {
         let result = read_cached_metadata(Path::new("/nonexistent/path/test.meta.json"));
         assert!(result.is_err());
+    }
+
+    // -- Sprint 60 Workstream C: compile-time build-id gate --
+
+    /// The compile-time `BUILD_ID` const is emitted by `build.rs` as
+    /// `<pkg_version>+<git_sha>`. It MUST be non-empty so that pre-Sprint-60
+    /// caches (which carry `""` via `#[serde(default)]`) always invalidate.
+    // spec: sprints/SPRINT.md §Workstream C
+    #[test]
+    fn build_id_const_is_nonempty_and_well_formed() {
+        let id = super::super::BUILD_ID;
+        assert!(!id.is_empty(), "BUILD_ID must not be empty");
+        assert!(id.contains('+'), "BUILD_ID must be <pkg_version>+<sha>: {id}");
+    }
+
+    /// Fresh-build round-trip: the current `BUILD_ID` stamps in, load succeeds.
+    // spec: sprints/SPRINT.md §Workstream C
+    #[test]
+    fn build_id_round_trip_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta_path = dir.path().join("user.meta.json");
+        let table = SymbolTable::new(ModuleFullPath::from("user"));
+        write_meta(&meta_path, &table, super::super::CACHE_SCHEMA_VERSION).unwrap();
+        let loaded = load_meta(&meta_path).expect("fresh-build cache must load");
+        assert_eq!(loaded.path, table.path);
+    }
+
+    /// Pre-Sprint-60 caches lack the `build_id` field — they deserialise
+    /// with `""` and MUST be rejected as `BuildIdMismatch`.
+    // spec: sprints/SPRINT.md §Workstream C
+    #[test]
+    fn missing_build_id_field_routes_cache_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta_path = dir.path().join("legacy.meta.json");
+
+        // Emit a .meta.json shaped like a pre-Sprint-60 cache: serialise
+        // the SymbolTable directly (no `build_id` sibling field).
+        let mut table = SymbolTable::new(ModuleFullPath::from("legacy"));
+        table.schema_version = super::super::CACHE_SCHEMA_VERSION;
+        let bytes = serde_json::to_vec_pretty(&table).unwrap();
+        super::super::atomic_write(&meta_path, &bytes).unwrap();
+
+        let err = load_meta(&meta_path).expect_err("pre-S60 cache must be stale");
+        match err {
+            CacheStale::BuildIdMismatch { found, .. } => {
+                assert_eq!(found, "", "legacy cache produces empty build_id");
+            }
+            other => panic!("expected BuildIdMismatch, got {other:?}"),
+        }
+    }
+
+    /// Build-id mismatch (cache written by a different compiler build) is
+    /// reported as `BuildIdMismatch`, not `SchemaMismatch` or `Deserialise`.
+    // spec: sprints/SPRINT.md §Workstream C
+    #[test]
+    fn stale_build_id_produces_build_id_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta_path = dir.path().join("old.meta.json");
+        let table = SymbolTable::new(ModuleFullPath::from("old"));
+
+        // Write with a synthetic build-id that will never match live `BUILD_ID`.
+        let bytes = serialise_meta_with_build_id(
+            &table,
+            super::super::CACHE_SCHEMA_VERSION,
+            "0.0.0+deadbeef0000",
+        )
+        .unwrap();
+        super::super::atomic_write(&meta_path, &bytes).unwrap();
+
+        let err = load_meta(&meta_path).expect_err("stale-build-id cache must be stale");
+        match err {
+            CacheStale::BuildIdMismatch { found, expected, .. } => {
+                assert_eq!(found, "0.0.0+deadbeef0000");
+                assert_eq!(expected, super::super::BUILD_ID);
+            }
+            other => panic!("expected BuildIdMismatch, got {other:?}"),
+        }
+    }
+
+    /// Schema mismatch takes precedence over build-id mismatch — a shape
+    /// change strictly subsumes a compiler-binary change, and the schema
+    /// check runs first.
+    // spec: sprints/SPRINT.md §Workstream C (check-order discipline)
+    #[test]
+    fn schema_mismatch_shadows_build_id_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta_path = dir.path().join("both-stale.meta.json");
+        let table = SymbolTable::new(ModuleFullPath::from("both"));
+
+        // Both wrong schema AND wrong build-id. Caller should see
+        // `SchemaMismatch` (the shape-safety check is primary).
+        let bytes = serialise_meta_with_build_id(&table, 99_999, "0.0.0+deadbeef0000").unwrap();
+        super::super::atomic_write(&meta_path, &bytes).unwrap();
+
+        let err = load_meta(&meta_path).expect_err("schema mismatch must invalidate");
+        assert!(
+            matches!(err, CacheStale::SchemaMismatch { .. }),
+            "schema check must fire before build-id check; got {err:?}"
+        );
+    }
+
+    /// `BuildIdMismatch` exposes a stable diagnostic reason string so
+    /// callers can log / branch on it without matching the variant.
+    // spec: sprints/SPRINT.md §Workstream C
+    #[test]
+    fn build_id_mismatch_has_diagnostic_reason() {
+        let err = CacheStale::BuildIdMismatch {
+            path: std::path::PathBuf::from("/tmp/x.meta.json"),
+            found: "a".to_string(),
+            expected: "b".to_string(),
+        };
+        assert_eq!(err.reason(), "build_id_mismatch");
+        // Display trail exposes both ids for operator diagnosis.
+        let msg = format!("{err}");
+        assert!(msg.contains("\"a\""), "display includes found: {msg}");
+        assert!(msg.contains("\"b\""), "display includes expected: {msg}");
     }
 }

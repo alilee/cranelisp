@@ -433,6 +433,36 @@ fn e2e_s3_1_sig() {
     );
 }
 
+// spec: repl/spec.md §1.1 — universal output format `; {classification} - {docstring}`.
+// spec: tests/plan/ring4.md §G.20.7 — Workstream G /sig docstring integration smoke.
+//
+// Guards the REPL-dispatch wiring of the `format_entry_sig` docstring branch
+// (unit tests in `src/session_v4.rs::format_entry_sig_tests` cover the
+// formatter itself; this test proves /sig actually reaches that formatter
+// end-to-end under a subprocess REPL).
+#[test]
+fn e2e_s3_1_sig_displays_docstring_after_dash() {
+    let o = run_repl(
+        &format!(
+            "{PRIMS}(defn add \"Add two ints\" [a b] (add-i64 a b))\n/sig add\n"
+        ),
+        "s3_sig_docstring",
+    );
+    let s = stdout_str(&o);
+    // Positive: the universal format appends ` ; defn - <docstring>`.
+    assert!(
+        s.contains("; defn - Add two ints"),
+        "expected `; defn - Add two ints` in /sig output per repl/spec.md §1.1\n---\n{s}"
+    );
+    // Negative: no stray `; defn` without the dash-docstring suffix should
+    // appear for this entry — confirms the two-line drawer (older format
+    // `; defn` then blank docstring) is not leaking.
+    assert!(
+        !s.contains("; defn\n"),
+        "output must not emit `; defn` without docstring suffix\n---\n{s}"
+    );
+}
+
 // spec: repl/spec.md §3.4 — /info slash command
 #[test]
 fn e2e_s3_4_info() {

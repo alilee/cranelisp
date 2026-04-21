@@ -2818,15 +2818,10 @@ mod tests {
     use super::*;
     use crate::checker::TestFixture;
     use cranelisp_types::{
-        CompileContext, DefnVariant, Expr, FQSymbol, FQTypeName, ImportNames, ImportSpec,
+        CompileContext, DefnVariant, Expr, FQTypeName, ImportNames, ImportSpec,
         ModuleFullPath, Symbol,
         TraitDecl, TraitImpl, TraitMethodSig, TraitName, TypeExpr, TypeName, Visibility,
     };
-
-    /// Test helper: create an FQTypeName in the "user" module (default for TestFixture::new()).
-    fn user_fqtn(name: &str) -> FQTypeName {
-        FQTypeName::new(ModuleFullPath::from("user"), TypeName::from(name))
-    }
 
     /// Test helper: create an FQTypeName in the "test" module (used by tc_with_prims()).
     fn test_fqtn(name: &str) -> FQTypeName {

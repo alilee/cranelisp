@@ -216,6 +216,286 @@ Under the collapsed shape, the v4 pipeline reaches the sketch's shape in the rel
 
 No sketch-side divergence is being introduced; if anything, this workstream converges v4 toward the sketch's single-orchestrator property that got lost during the v3→v4 concurrency migration.
 
+## 8. Sprint 60 Workstream E follow-ons
+
+Sprint 59 Wave 1 /review (`design/review/sprint-59-wave-1.md`) raised three Importants against the Workstream A landing. All three are structural-completeness items: the §7 collapse is load-bearingly correct, but its "every dep registration routes through publish-first, statically" invariant has one unguarded site and one silent pool-assignment divergence, and the unit guard that pinned the invariant was deleted before both were closed. Sprint 60 Workstream E closes the three of them together.
+
+The fixes are small and strictly additive to the §7 collapse — no collapse-era assumptions change. Framing them here (rather than in a new design doc) keeps the collapse's invariant statement in one place: future readers looking for "where is every dep registration consolidated?" find §6 (the 5-site enumeration), §7 (the shim), and §8 (the 6th site + the unit guard re-site).
+
+### 8.1 E-1 — `register_transitive_cached_imports` is the 6th prologue site
+
+**Location**: `src/worker.rs::register_transitive_cached_imports`, cache-miss branch at lines 1637–1684 (the SPRINT.md label "`recurse_into_transitive_deps` at ~1637" names this function colloquially; the actual name is `register_transitive_cached_imports`, introduced in Sprint 58 Wave 2c for transitive cache-hit recursion).
+
+**Why it was missed in S59.** §6 enumerated the 5 sites from Sprint 58 Wave 6 Defect 1 (which pinned the publish-before-register race). Those 5 are the *form-handler* prologues. `register_transitive_cached_imports` is NOT a form handler — it is called from `try_cache_hit_load` (`worker.rs:1581`) when a cache-hit install needs to eagerly register a cache-miss transitive import for fresh build before the outer cache-hit can return. It was introduced in a later sprint (58 Wave 2c) for a different motivation (transitive cache-hit recursion) and was not in the Sprint 58 Wave 6 "5 publish-before-register sites" enumeration that §6 inherited. §9 Risk 1 predicted *exactly* this class ("a `handle_*` variant whose dep-registration bypasses both paths"); the prediction held.
+
+**Call-path context.** A cache-hit load of module A discovers A's import B in A's serialised symbol table. If B is also cached → recurse (cache-hit). If B is NOT cached → register B for fresh build so a later worker processes it. The outer module A is mid-install (mid cache-hit recursion) and is NOT waiting on B synchronously — it has already installed A's own SymbolTable and returned to its caller. B's registration is therefore "fire-and-forget from A's perspective": no outer waiter.
+
+**Does it need `delays_other=true` or `false`?** The current code passes `true` (line 1684). This is the right value, but the rationale is different from the form-handler sites: in the form-handler case the outer module IS blocked on B (`block_for_typecheck`) and must be prioritised; here, the outer module has already finished. The reason `true` is still correct is that any OTHER module that imports B will block on B's typecheck (via normal form-handler import-blocking), so prioritising B's typecheck is the right default regardless of whether the originating caller is waiting. `true` is the correct value for all dep-registration sites in the worker; see §8.2 below for the reconciliation.
+
+**Migration approach.** Route the cache-miss branch (lines 1647–1684) through the existing `register_dep` shim (`worker.rs:1327`). The shim already performs steps 1–6 of the prologue (source read, parse, source-hash record, source-text stash, file_to_module update, publish_dep_sexps). The cache-miss branch currently inlines steps 1, 2, 3, 5 (no source-text stash; no file_to_module update above the inline). After migration:
+
+```rust
+// Replace lines 1647–1684 with:
+let dep_sexps = match register_dep(ctx, transitive_dep, &dep_file, |e| CranelispError::ModuleError {
+    message: format!("failed to read transitive dep '{}': {}", transitive_dep, e),
+    file: Some(dep_file.clone()),
+    span: Span::SYNTHETIC,
+}) {
+    Ok(s) => s,
+    Err(_) => continue,   // preserve current silent-continue behaviour
+                          // (cache-hit recursion is best-effort; regular
+                          // import resolution will re-surface a hard error).
+};
+let _ = dep_sexps;        // ignore returned sexps — `register_dep` has
+                          // published them into shared.module_sexps.
+ctx.scheduler.register_module(transitive_dep.clone(), true);
+```
+
+This is a structural refactor: net-zero behaviour change in the success case (the shim does the same steps, in the same order, with the same publish-before-register discipline). The surface-observable effect is that source-text stash and file_to_module update now happen in this site too — both are strictly additive (no call site reads them in a way that `register_transitive_cached_imports` would regress). The `continue`-on-error pattern preserves the current "best-effort eager registration" stance of the function.
+
+**LOC impact**: −38, +10 (worker.rs only).
+
+**Side-property gained**: after E-1 lands, *every* publish-then-register sequence in the codebase routes through either `register_dep` (worker-side) or `register_dep_for_eval` (session-side, which in turn delegates to the same scheduler surface). The static invariant E-3 re-asserts becomes defensible.
+
+### 8.2 E-2 — `register_dep_for_eval` passes `delays_other=false`, diverging from every other worker-side site
+
+**Location**: `src/session_v4.rs:1311`.
+
+**What `delays_other` controls.** `scheduler.register_module(module, delays_other: bool)` at `src/scheduler.rs:296` routes the newly-registered module into `ModulePool::TypecheckFirst` if `true`, `ModulePool::TypecheckNext` if `false`. TypecheckFirst is the prioritised queue (`scheduler.rs:487-498`): workers pull from it before TypecheckNext. The semantic distinction is "is some other module currently blocked on this module's typecheck completing?" — if yes, prioritise.
+
+**Worker-side sites.** All five worker-side call sites (`worker.rs:1268`, `1684`, `1755`, `1838`, `2326`) pass `true`. In four of the five the outer module is in `TypecheckBlocked` state on this dep (via `block_for_typecheck`) and `true` is structurally correct. In the fifth (`1684` — the E-1 site) the outer module has already finished, but `true` is still correct (see §8.1 rationale: other modules transitively importing this dep will block). The worker-side consensus is `true` always.
+
+**Session-side `register_module_with_source` (line 1268) and `reload_module` (line 1199)** pass `false`. In both cases the module being registered IS the entry module — the eval thread is the single caller and is itself blocked on `wait_inmem_complete_blocking()`. `false` is correct at the entry-module surface because there is no *other* module currently waiting: the eval thread owns the whole-world wait.
+
+**`register_dep_for_eval` (line 1311)** passes `false`. This is the divergence. The function is called from eval's retry loop (`session_v4.rs:1639`), *after* a `ProcessResult::Blocked` return from the form handler. The form handler that produced `Blocked` has already called `scheduler.register_module(dep, true)` — so the dep IS in TypecheckFirst already, and the `register_dep_for_eval` call is an idempotent no-op by the scheduler's `contains_key` guard (`scheduler.rs:304`). **Today, `false` has no observable effect.**
+
+**Why it matters anyway.** The docstring on `register_dep_for_eval` says it defensively serves call sites "without a prior form-handler registration (tests, alternative eval paths)". Along that speculative path — which the `/review` Suggestion 1 correctly flags as speculative — the dep lands in TypecheckNext, not TypecheckFirst. That is a silent pool-assignment divergence from the worker-side consensus (`true` everywhere a dep is registered on behalf of someone blocked on it). The caller (`eval` retry loop) IS blocked on this dep via `wait_module_inmem_complete_blocking` (line 1328) — so by the `delays_other` contract, the right value is `true`.
+
+**Reconciliation.** Change `false` → `true` at line 1311. Low-risk:
+- Hot path: form handler already registered with `true`; the change is no-op under the idempotency guard.
+- Speculative path: silently upgrades the dep to TypecheckFirst, matching worker-side consensus.
+- No test is known to observe the `false` value — /review characterised it as "silent".
+
+**ONE value is correct for ALL worker-side and session-side dep-registration sites: `true`.** The entry-module sites (`register_module_with_source:1268`, `reload_module:1199`) are genuinely different: they are the single caller on the whole-world wait, and `false` reflects "no other module is waiting on this." Those two sites stay `false`. The `register_dep_for_eval` site is NOT an entry-module site — it is a dep-registration site — and therefore should match worker-side dep-registration sites.
+
+**LOC impact**: 1 line.
+
+**Follow-on tidying (bundle-scale, per SPRINT.md §FIXME Debt "bundled into E")**: the FIXME comment at `tests/sprint23.rs:1126-1131` (Sprint 59 Wave 1 misattribution finding) — remove / rewrite per /review wave 1's note. Read the FIXME text before rewriting to preserve any load-bearing signal.
+
+### 8.3 E-3 — Re-site the deleted unit guard `compile_dep_inline_publishes_sexps_before_register`
+
+**What the deleted test guarded.** The original test lived in `session_v4.rs::persistent_worker_tests` (referenced at `worker.rs:1293` in the `publish_dep_sexps` docstring). It pinned the *within-`compile_dep_inline`-ordering* invariant: that `compile_dep_inline` published dep_sexps to `shared.module_sexps` BEFORE calling `scheduler.register_module(dep, true)`. The concrete failure it caught was a codegen-regression that swapped the two operations, exposing the Sprint 58 Wave 6 Defect 1 race.
+
+After §7 Step 5 deleted `compile_dep_inline`, the function no longer exists; the unit test was deleted with its subject. The /review argument for its deletion was "invariant is now structurally preserved" — which is true *in aggregate* across all dep-registration sites, but /review I-3 correctly observed the structural argument is only sound once E-1 lands (otherwise `register_transitive_cached_imports` is a counterexample to the "every dep registration routes through the shim" structural claim).
+
+**Post-E-1 structural invariant (to be guarded).** Every dep registration reaches `scheduler.register_module(dep, _)` via a call path that, immediately upstream, called `publish_dep_sexps` (directly or via `register_dep`'s body). The causal order is:
+
+```
+publish_dep_sexps(..., dep, sexps)   //  happens-before
+    ↓
+scheduler.register_module(dep, _)
+```
+
+under *every* execution — not just the paths /review happened to re-read.
+
+**How to re-express under the shim.** Two complementary test shapes, both in `session_v4.rs::persistent_worker_tests` (beside where the deleted test lived):
+
+**Test A — `register_dep_shim_publishes_before_caller_registers` (unit, direct)**. Call `register_dep` on a minimal `ModuleCompiler` fixture, observe that on return: (a) `shared.module_sexps` contains an entry for the dep, (b) the entry value equals the parsed sexps of the input source. The caller of `register_dep` (form handler) then calls `scheduler.register_module` — so the shim's contract is "publish THEN return; caller registers AFTER." The test asserts the publication precondition is established at return-time.
+
+```rust
+// Pseudocode / Rust signature shape:
+#[test]
+fn register_dep_shim_publishes_before_caller_registers() {
+    // Fixture: minimal ModuleCompiler wrapping a fresh SharedState with empty
+    // module_sexps + a test scheduler. Write a 1-form dep source to a tempfile.
+    let shared = test_shared_state_empty();
+    let dep = ModuleFullPath::from("test_dep");
+    let dep_file = write_tempfile("(defn x [] 1)");
+    let mut ctx = test_module_compiler(&shared, ...);
+
+    // Act: invoke the shim (no caller-level scheduler.register_module yet).
+    let _sexps = register_dep(&mut ctx, &dep, &dep_file, |e| panic!("{e}"))
+        .expect("register_dep should succeed");
+
+    // Assert: dep_sexps are published BEFORE the caller gets a chance to
+    // call scheduler.register_module. If a future refactor moves the publish
+    // below the return, this assertion fails.
+    assert!(shared.module_sexps.lock().unwrap().contains_key(&dep),
+        "register_dep MUST publish dep_sexps into shared.module_sexps before returning");
+
+    // Additionally: scheduler MUST NOT yet know about the dep — the shim
+    // is publish-only; caller is responsible for register_module.
+    assert!(!shared.scheduler.is_registered(&dep),
+        "register_dep MUST NOT call scheduler.register_module — caller does that");
+}
+```
+
+**Test B — `register_dep_for_eval_publishes_before_registering` (unit, session-side)**. The session-side equivalent for `register_dep_for_eval`: assert that when called with a dep not yet in `shared.module_sexps`, on the scheduler-register call-path (the function's body) the publish precedes the register.
+
+Because `register_dep_for_eval` internally runs `publish` then `scheduler.register_module`, the natural guard is a sequencing test: install a test hook / observable into `scheduler.register_module` that records `shared.module_sexps.contains_key(dep)` at the call-moment; assert it returns `true`. If the test hook infrastructure is heavier than the guard is worth, an alternative is a **grep-style structural test** that scans `register_dep_for_eval`'s source for the order of calls (similar to the "no bare `scheduler.register_module` without prior `publish_dep_sexps`" structural pattern /review Suggestion 1 hinted at):
+
+```rust
+#[test]
+fn register_dep_for_eval_body_orders_publish_before_register() {
+    // Read the session_v4.rs source, locate register_dep_for_eval's body,
+    // assert the first occurrence of "module_sexps.lock" precedes the first
+    // occurrence of "scheduler.register_module" within the function's span.
+    // Coarse but sufficient as a regression guard against accidental reordering.
+}
+```
+
+`/int` judgement: pick Test A unconditionally (direct, fast, no source-grep fragility); pick Test B only if the `register_dep_for_eval`-specific fixture is trivial to construct. If it isn't, rely on Test A plus a single assertion inside `register_dep_for_eval` (`debug_assert!(self.shared.module_sexps.lock()...contains_key(dep_module))` immediately before the `scheduler.register_module` call) as the release-debug guard. /review's Suggestion 1 already hinted at this debug-assert shape; E-3 adopts it.
+
+**LOC impact**: +25–40 (one unit test, one debug-assert).
+
+### 8.4 Test plan
+
+Existing tests flipped / new regression guards:
+
+| Behaviour | Shape | Location |
+|---|---|---|
+| `register_dep_shim_publishes_before_caller_registers` | New unit (Test A above) | `src/session_v4.rs::persistent_worker_tests` |
+| `register_dep_for_eval_publishes_before_registering` OR `debug_assert!` precondition | Unit OR inline debug-assert | `src/session_v4.rs::register_dep_for_eval` + tests module |
+| `register_transitive_cached_imports_routes_through_shim` | New unit — call the function with a cache-miss dep; verify the `register_dep` shim's postconditions (sexps published, source stashed, file_to_module updated) | `src/worker.rs::tests` |
+| `register_dep_for_eval_uses_delays_other_true` | New unit — observable via scheduler state after call: pool is TypecheckFirst not TypecheckNext | `src/session_v4.rs::persistent_worker_tests` |
+
+No `tests/*.rs` integration test is authored for E by `/int`; `/qa` derives integration coverage from this section if needed. The unit tests above live beside the code they guard (per user preference `feedback_unit_tests_with_dev.md`).
+
+**Tests expected to FLIP behaviour**: none. E-1 is structural (same behaviour, one call path). E-2's visible behaviour is a no-op on the hot path (form handler already registered with `true`). E-3 is additive tests. No existing failing test flips green or red. That is by design — E is hygiene, not defect repair.
+
+**Regression guards that would catch re-emergence**:
+- E-1 regression (a new 7th inlined prologue site): caught by `register_transitive_cached_imports_routes_through_shim` via the missing source-stash / file_to_module-update assertion.
+- E-2 regression (someone writes another `register_module(_, false)` for a non-entry-module site): caught by `register_dep_for_eval_uses_delays_other_true` (scheduler-pool observation).
+- E-3 regression (the publish-before-register race re-opens inside `register_dep` or `register_dep_for_eval`): caught by Test A's publish-before-return assertion and/or the debug-assert.
+
+### 8.5 Scope estimate
+
+- E-1: ~50 LOC net (−38 inline, +10 shim call, +2 reshuffled imports), one unit test ~30 LOC.
+- E-2: 1 LOC change, one unit test ~20 LOC, one docstring update ~5 lines.
+- E-3: ~40 LOC unit test + optional debug-assert (~3 LOC). Test A alone is ~30 LOC.
+
+**Combined**: ~170–200 LOC across `src/worker.rs` and `src/session_v4.rs`; **~0.5 day** of implementation. No interface changes. No crate-boundary touches. Isolated to `/int`'s crate. Falls well under the Condition 2 (SPRINT.md §Architecture Review §Condition 2) scope threshold for rescope; no /arch escalation required.
+
+Wave placement: parallel-safe with Workstream A audit (per SPRINT.md §Phase 3b disposition — E is explicitly named as safe to launch in parallel with A).
+
+## 9. Sprint 60 Workstream G — `/sig` docstring format fix
+
+Workstream G (SPRINT.md §Workstreams, row G) is a 1-line format fix in `/int`'s introspection path. It is scoped here rather than a dedicated design doc because (a) it is a single-function edit, (b) the spec reference is unambiguous, (c) the fix shape is mechanically obvious from comparison with an adjacent function that does the right thing.
+
+### 9.1 Current vs. spec-required output
+
+**Spec reference** — `repl/spec.md §1.1 Universal Output Format` (verbatim from line 156–167):
+
+> All REPL output uses a unified format that mirrors Cranelisp type annotation syntax. The primary line is always:
+>
+> ```
+> :Type {value|name} ; {classification} - {docstring first line}
+> ```
+>
+> […]
+> - `; {classification} - {docstring}` — optional comment suffix. The classification is the name of the defining special form (`defn`, `deftype`, `deftrait`, `defmacro`, `special form`, `impl`) […]. The docstring is the first line of the symbol's documentation. If the symbol has no docstring, only the classification appears. […]
+
+Spec example (line 185):
+
+```
+user> double
+:(Fn [primitives/Int] primitives/Int) user/double ; defn - Multiply by 2
+```
+
+**Current output** for `/sig add` on `(defn add "Add two ints" [:Int a :Int b] (+ a b))`:
+
+```
+:(Fn [Int Int] Int) add ; defn
+```
+
+The dash `-` and the docstring first line are omitted. The classification is correct; the trailing `- <doc>` field is missing.
+
+### 9.2 Location
+
+`src/session_v4.rs::format_entry_sig`, line 361 (the single-sig `Def { scheme, kind, docstring, .. }` arm):
+
+```rust
+format!(":{} {} ; {}", scheme.ty, name, classification)
+```
+
+The bug: `docstring` is destructured from the pattern (line 345) but never used in the format call. The multi-sig branch (`format_overloaded_variants_bare`, line 425–426) correctly calls `append_docstring_comment(base, docstring)`; the single-sig branch does not.
+
+The helper `append_docstring_comment` (line 3547) already implements the spec-compliant " - {first_line}" append with a correct empty-docstring fallthrough. It is the exact helper used by `format_overloaded_variants_bare`; reusing it ensures both paths produce identical formatting.
+
+### 9.3 Proposed fix
+
+2 lines (1-line behavioural + style reformat for readability):
+
+```rust
+// Before (line 361):
+format!(":{} {} ; {}", scheme.ty, name, classification)
+
+// After:
+let base = format!(":{} {} ; {}", scheme.ty, name, classification);
+append_docstring_comment(base, docstring.as_deref())
+```
+
+`docstring` is typed `Option<String>` in `ModuleEntry::Def`; `append_docstring_comment` takes `Option<&str>`; `.as_deref()` bridges.
+
+No other /sig / introspection paths need change — all already call `append_docstring_comment` or have no docstring field (e.g., `Constructor`, `TypeDef`, `TraitDecl` — those use their own formats that /repl spec distinguishes).
+
+### 9.4 Regression guard
+
+One unit test in `src/session_v4.rs::format_entry_sig_tests` (or similar) asserting the exact spec-expected string shape for:
+
+- (a) a `Def` with a docstring — expect trailing ` - <doc>`.
+- (b) a `Def` without a docstring — expect no trailing dash, classification is last token.
+- (c) a `Def` with a multi-line docstring — expect only first line appended (delegated to `append_docstring_comment`, but cover the caller's wiring).
+
+Test shape:
+
+```rust
+#[test]
+fn format_entry_sig_defn_includes_docstring_after_dash() {
+    // spec: repl/spec.md §1.1 — universal format mandates "; classification - docstring"
+    let entry = make_def_entry(
+        "(Fn [Int Int] Int)",
+        Some("Add two ints".to_string()),
+        DefKind::Defn { ... },
+    );
+    let out = format_entry_sig(&entry, "add");
+    assert_eq!(out, ":(Fn [Int Int] Int) add ; defn - Add two ints");
+}
+
+#[test]
+fn format_entry_sig_defn_without_docstring_omits_dash() {
+    // spec: repl/spec.md §1.1 — "If the symbol has no docstring, only the classification appears."
+    let entry = make_def_entry("(Fn [Int] Int)", None, ...);
+    assert_eq!(format_entry_sig(&entry, "id"), ":(Fn [Int] Int) id ; defn");
+}
+
+#[test]
+fn format_entry_sig_defn_docstring_uses_first_line_only() {
+    // spec: repl/spec.md §1.1 — "The docstring is the first line of the symbol's documentation."
+    let entry = make_def_entry("(Fn [Int] Int)", Some("First line\nSecond line".into()), ...);
+    let out = format_entry_sig(&entry, "f");
+    assert!(out.contains(" - First line"));
+    assert!(!out.contains("Second line"));
+}
+```
+
+LOC: ~2 source lines + ~40 test lines. Co-located with the existing `format_entry_sig` unit tests, if any; if none, introduce a small `#[cfg(test)] mod format_entry_sig_tests` block. Per /int scope discipline (`src/CLAUDE.md` §Testing), unit tests live beside the code.
+
+### 9.5 `/repl` spec-audit touchpoint
+
+Workstream G's SPRINT.md framing names `/repl` as spec-auditor and `/int` as implementor. `/int`'s reading of `repl/spec.md §1.1` here is sufficient for the fix; no FIXME(/repl) is filed because the spec is unambiguous on format and the example at line 185 is directly actionable. If `/repl` has a concern about the test shape (e.g., wants the test to assert against a canonical fixture rather than a hand-written expected string), that is a review-time adjustment, not a blocking design concern.
+
+### 9.6 Unit-vs-integration coverage layering (resolving `tests/plan/ring4.md §G.20.10` FIXME)
+
+The three §9.4 unit tests and `/qa`'s proposed integration smoke (`sig_slash_command_displays_docstring_after_dash` in `tests/plan/ring4.md §G.20.7`) are **complementary, not redundant**. They guard different layers:
+
+- **Unit layer (`/int`, §9.4)** — `format_entry_sig` invoked directly on hand-constructed `ModuleEntry::Def` values. Guards the formatter: the `" - <first-line>"` append, the empty-docstring fallthrough, the multi-line-first-only policy. Isolated from parsing, typecheck, REPL dispatch, and module-qualification path construction.
+- **Integration layer (`/qa`, §G.20.7)** — live REPL session issues `/sig add` and the output string is asserted end-to-end. Guards the REPL dispatch chain: input line → slash-command parser → handler lookup → symbol resolution → `format_entry_sig` call → stdout. A regression in any of those layers (e.g., the slash-command router returns early without calling the formatter, or module-qualification rewrites the Fn type before display) passes the unit tests and fails the integration smoke.
+
+The integration smoke is authored **regardless of** unit coverage: unit-passing + integration-failing is a documented failure shape this pair discriminates, and its value is precisely that it can catch REPL-dispatch regressions the unit tests structurally cannot see.
+
+This confirms `/qa`'s recommendation in `tests/plan/ring4.md §G.20.10`. No change to §9.4; `/qa` proceeds with `sig_slash_command_displays_docstring_after_dash` as planned.
+
 ## Cross-references
 
 - `design/arch/CLAUDE.md` Decision 37 — cache-hit integration lives inside `register_module`'s recursive flow (the precedent for this collapse).

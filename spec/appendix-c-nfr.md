@@ -125,7 +125,7 @@ The compiler MUST perform independence analysis on `bind!` chains and insert par
 
 **Activation**: Ring 4 (IO and platform infrastructure).
 
-### C.3.3 Tail Call Optimization [Tested tests/ring0.rs::tco_deep_countdown]
+### C.3.3 Tail Call Optimization [Tested+Neg tests/ring0.rs::tco_deep_countdown]
 
 An implementation SHOULD optimize self-recursive tail calls into loops. This is normatively specified in [§12.5](12-runtime.md#125-tail-call-optimization).
 

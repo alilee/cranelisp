@@ -37,3 +37,16 @@
 (export [io.monad     [pure do bind!]])
 (export [control      [when unless cond case]])
 (export [defs         [const const- def def-]])
+
+;; ── Primitive re-exports ─────────────────────────────────────────────
+;;
+;; Ring 0/1 named primitives are re-exported through the prelude so that
+;; `cargo run -- --run examples/FOO.cl` matches the REPL user surface.
+;; These coexist with the trait-dispatched operators above (e.g. + and
+;; add-i64 both work). See design/stdlib/examples-run-path.md for the
+;; decision rationale.
+
+(export [primitives [add-i64 sub-i64 mul-i64 div-i64 eq-i64 lt-i64 gt-i64 le-i64 ge-i64 not eq-bool]])
+(export [primitives [add-f64 sub-f64 mul-f64 div-f64 eq-f64 lt-f64 gt-f64 le-f64 ge-f64]])
+(export [primitives [str-concat str-eq str-len char-at int-to-string float-to-string bool-to-string]])
+(export [primitives [vec-len vec-get vec-set vec-push]])

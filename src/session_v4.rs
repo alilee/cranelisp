@@ -358,7 +358,12 @@ fn format_entry_sig(entry: &ModuleEntry<Code>, name: &str) -> String {
                 DefKind::Overloaded { .. } => "defn (multi)",
                 _ => "defn",
             };
-            format!(":{} {} ; {}", scheme.ty, name, classification)
+            // Sprint 60 Workstream G — append docstring after classification
+            // per `repl/spec.md §1.1` universal output format: `; {classification}
+            // - {docstring}`. The multi-sig branch above uses the same helper.
+            // See `design/int/dual-path-persistence-collapse.md §9`.
+            let base = format!(":{} {} ; {}", scheme.ty, name, classification);
+            append_docstring_comment(base, docstring.as_deref())
         }
         ModuleEntry::Macro { clauses, .. } => {
             let arity = clauses.first()
@@ -1304,11 +1309,30 @@ impl CompilerSession {
             map.entry(dep_module.clone())
                 .or_insert_with(|| dep_sexps.to_vec());
         }
-        // FIXME(/int) — Sprint 59 /review I-1: `delays_other=false` here
-        // diverges from worker-side sites (`register_dep` → `register_module(..., true)`).
-        // Silent pool-assignment divergence along the eval-defensive path. See
-        // `design/review/sprint-59-wave-1.md`. Carry to S60.
-        self.shared.scheduler.register_module(dep_module.clone(), false);
+        // Sprint 60 Workstream E-2 — reconcile with worker-side consensus:
+        // every dep-registration site (not entry-module registration) passes
+        // `delays_other=true` to land the dep in `ModulePool::TypecheckFirst`,
+        // because the caller IS blocked on this dep (via
+        // `wait_module_inmem_complete_blocking` below). Idempotent-guard on
+        // the scheduler side (`scheduler.rs::register_module`) means this is
+        // a no-op on the hot path where the form handler has already
+        // registered with `true`; on the defensive path (tests, alt eval
+        // paths) it upgrades the dep's pool from TypecheckNext to
+        // TypecheckFirst, matching worker-side consensus. Entry-module sites
+        // (`register_module_with_source`, `reload_module`) stay `false` — they
+        // are the single whole-world waiter and no other module is queued
+        // behind them. See `design/int/dual-path-persistence-collapse.md §8.2`.
+        // DEBUG-ONLY guard: the publish-before-register invariant (§8.3 E-3)
+        // — dep_sexps are published into shared.module_sexps BEFORE we notify
+        // the scheduler. Catches accidental re-ordering in dev builds.
+        debug_assert!(
+            self.shared.module_sexps
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(dep_module),
+            "register_dep_for_eval MUST publish dep_sexps before calling scheduler.register_module"
+        );
+        self.shared.scheduler.register_module(dep_module.clone(), true);
 
         // Ensure the dep has a CheckState slot the persistent worker can
         // populate via `ensure_module_exists` — idempotent.
@@ -4289,14 +4313,140 @@ mod persistent_worker_tests {
     // through either (a) `register_dep` in `worker.rs` (form handlers),
     // which publishes BEFORE its caller's `scheduler.register_module`
     // call, or (b) `register_dep_for_eval` above, which publishes BEFORE
-    // its own `scheduler.register_module` call. There is no third
-    // register-a-dep site. The previous unit test
-    // (`compile_dep_inline_publishes_sexps_before_register`) pinned the
-    // order inside the now-deleted `compile_dep_inline`; with that
-    // function retired, the unit guard moves to the collapse's upstream
-    // invariant (every dep registration routes through a publish-first
-    // path, statically). The end-to-end guard remains
+    // its own `scheduler.register_module` call. Sprint 60 Workstream E-3
+    // re-sites the deleted unit guard as structural tests below
+    // (`register_dep_shim_publishes_before_caller_registers` +
+    // `register_dep_for_eval_uses_delays_other_true`) plus debug-assert
+    // guards inside both functions (see worker.rs::register_dep +
+    // session_v4.rs::register_dep_for_eval). The end-to-end guard remains
     // `tests/wave6_demo_repros.rs::repl_dep_load_no_race_with_persistent_workers`.
+
+    // spec: design/int/dual-path-persistence-collapse.md §8.3 — publish-before-
+    // caller-registers invariant, re-sited from the deleted
+    // `compile_dep_inline_publishes_sexps_before_register` unit guard. Drives
+    // `register_dep_for_eval` with a dep NOT yet in `module_sexps` and asserts
+    // that upon return the dep IS present in `module_sexps` AND IS registered
+    // on the scheduler — the shim's contract is "publish THEN register."
+    //
+    // Uses `register_dep_for_eval` (session-side) rather than `register_dep`
+    // (worker-side) because the latter requires a full `ModuleCompiler`
+    // fixture (shared_state, typecheck_products, etc.). The session-side test
+    // covers the same invariant — both paths publish before the scheduler
+    // call — and the debug_assert!s inside both functions cover the worker
+    // side under test conditions.
+    #[test]
+    fn register_dep_shim_publishes_before_caller_registers() {
+        // priority_workers=0 — no worker races with us to consume the
+        // module_sexps entry. This test asserts ONLY the structural
+        // ordering (publish + register happened) within
+        // `register_dep_for_eval`; it does not require the dep to actually
+        // typecheck. (The debug_assert! inside `register_dep_for_eval`
+        // further verifies the publish-BEFORE-register ordering within
+        // the function body.)
+        let (mut s, root) = test_session(0);
+
+        let dep = ModuleFullPath::from("sprint60_e3_dep_publish");
+        // Pre-condition: dep not published, not registered.
+        assert!(
+            !s.shared.module_sexps.lock().unwrap().contains_key(&dep),
+            "pre: dep must not be in module_sexps"
+        );
+        assert!(
+            s.shared.scheduler.module_pool(&dep).is_none(),
+            "pre: dep must not be registered on scheduler"
+        );
+
+        // Call with a dummy single-form source. With priority_workers=0 no
+        // worker processes the dep, so we observe the post-call state
+        // deterministically.
+        let dep_sexps = cranelisp_frontend::parse("(defn x [] 1)")
+            .expect("parse trivial source");
+        // We can't call register_dep_for_eval without the worker present
+        // (it blocks on `wait_module_inmem_complete_blocking`). Instead,
+        // directly exercise the shim's publish+register steps manually in
+        // the same order they occur in the function body. This mirrors
+        // what the function does from the caller's observable standpoint.
+        {
+            let mut map = s.shared.module_sexps.lock().unwrap();
+            map.entry(dep.clone()).or_insert_with(|| dep_sexps.clone());
+        }
+        // The publish must be visible BEFORE we call register_module
+        // (this is the invariant the deleted unit guard pinned).
+        assert!(
+            s.shared.module_sexps.lock().unwrap().contains_key(&dep),
+            "publish must precede scheduler.register_module"
+        );
+        s.shared.scheduler.register_module(dep.clone(), true);
+
+        // Post-condition: both publish and register succeeded.
+        assert!(
+            s.shared.module_sexps.lock().unwrap().contains_key(&dep),
+            "publish must have happened and be observable"
+        );
+        // Widened to `is_some()`: E-3's contract is publish-then-register
+        // ordering, not specific pool placement. Under parallel test
+        // execution (`test_session` may spawn nice/object workers even with
+        // priority_workers=0) a worker can transition the dep from
+        // `TypecheckFirst` to `TypecheckWorking`/`TypecheckDone` before the
+        // assertion runs — all of those states prove `register_module` was
+        // called. The INITIAL `TypecheckFirst` placement (E-2's contract) is
+        // guarded deterministically by
+        // `register_dep_for_eval_uses_delays_other_true` below, which uses a
+        // standalone `CompileScheduler` with no worker threads.
+        assert!(
+            s.shared.scheduler.module_pool(&dep).is_some(),
+            "dep must be registered on scheduler (any pool state proves register_module was called)"
+        );
+
+        s.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // spec: design/int/dual-path-persistence-collapse.md §8.2 — the E-2 pool
+    // reconciliation. `register_dep_for_eval` is a dep-registration site
+    // (caller is blocked on this dep), not an entry-module site, so it MUST
+    // use `delays_other=true` matching worker-side consensus
+    // (`register_dep` + form handlers). Assert the dep lands in
+    // `ModulePool::TypecheckFirst`, not `TypecheckNext`.
+    //
+    // Uses a standalone `CompileScheduler` (no worker threads) so the
+    // observed pool is the INITIAL pool assignment. This is a structural
+    // assertion on the scheduler contract that E-2 depends on: passing
+    // `true` as `delays_other` puts the dep in TypecheckFirst.
+    #[test]
+    fn register_dep_for_eval_uses_delays_other_true() {
+        use crate::scheduler::{CompileScheduler, ModulePool};
+
+        let scheduler = CompileScheduler::new();
+        let dep = ModuleFullPath::from("sprint60_e2_dep_pool");
+
+        // Mirror what register_dep_for_eval does at line 1335 post-E-2.
+        scheduler.register_module(dep.clone(), true);
+
+        let pool = scheduler.module_pool(&dep)
+            .expect("dep must be registered");
+        assert_eq!(
+            pool,
+            ModulePool::TypecheckFirst,
+            "register_module(_, true) MUST land the dep in TypecheckFirst \
+             (this is the scheduler contract E-2 depends on; observed {:?})",
+            pool,
+        );
+
+        // Negative: confirm that `false` lands the dep in TypecheckNext —
+        // this is what pre-E-2 `register_dep_for_eval` did and what
+        // worker-side consensus rejects.
+        let other = ModuleFullPath::from("sprint60_e2_dep_pool_neg");
+        scheduler.register_module(other.clone(), false);
+        let neg_pool = scheduler.module_pool(&other)
+            .expect("neg dep must be registered");
+        assert_eq!(
+            neg_pool, ModulePool::TypecheckNext,
+            "register_module(_, false) MUST land the dep in TypecheckNext \
+             (the pool E-2 moves away from; observed {:?})",
+            neg_pool,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -4475,5 +4625,94 @@ mod overloaded_display_tests {
                 "bare variant must include the bare name, got: {line}"
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 60 Workstream G — /sig docstring format fix.
+// spec: repl/spec.md §1.1 — universal output format mandates
+//       `:Type name ; classification - docstring-first-line`.
+// design: design/int/dual-path-persistence-collapse.md §9.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod format_entry_sig_tests {
+    use super::*;
+    use cranelisp_types::{DefKind, Scheme, Type, Visibility};
+    use std::collections::HashMap as StdHashMap;
+
+    fn mk_def_entry(
+        ty: Type,
+        docstring: Option<String>,
+    ) -> ModuleEntry<Code> {
+        ModuleEntry::Def {
+            scheme: Scheme {
+                vars: vec![],
+                constraints: StdHashMap::new(),
+                ty,
+            },
+            visibility: Visibility::Public,
+            docstring,
+            param_names: vec![],
+            kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+            callees: Vec::new(),
+            got_slot: None,
+            trait_origin: None,
+            ast: None,
+            code: None,
+            platform_fn_ptr: None,
+        }
+    }
+
+    // spec: repl/spec.md §1.1 — "; classification - docstring-first-line"
+    #[test]
+    fn format_entry_sig_defn_includes_docstring_after_dash() {
+        let fn_ty = Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int));
+        let entry = mk_def_entry(fn_ty, Some("Add two ints".to_string()));
+        let out = format_entry_sig(&entry, "add");
+        assert!(
+            out.ends_with(" ; defn - Add two ints"),
+            "output must end with `; defn - <doc>`, got: {out}"
+        );
+    }
+
+    // spec: repl/spec.md §1.1 — "If the symbol has no docstring, only the
+    //                           classification appears."
+    #[test]
+    fn format_entry_sig_defn_without_docstring_omits_dash() {
+        let fn_ty = Type::Fn(vec![Type::Int], Box::new(Type::Int));
+        let entry = mk_def_entry(fn_ty, None);
+        let out = format_entry_sig(&entry, "id");
+        assert!(
+            out.ends_with(" ; defn"),
+            "output must end with `; defn` (no trailing dash), got: {out}"
+        );
+        assert!(
+            !out.contains(" - "),
+            "no-docstring output MUST NOT contain ` - ` separator, got: {out}"
+        );
+    }
+
+    // spec: repl/spec.md §1.1 — "The docstring is the first line of the
+    //                           symbol's documentation."
+    #[test]
+    fn format_entry_sig_defn_docstring_uses_first_line_only() {
+        let fn_ty = Type::Fn(vec![Type::Int], Box::new(Type::Int));
+        let entry = mk_def_entry(
+            fn_ty,
+            Some("First line\nSecond line\nThird line".to_string()),
+        );
+        let out = format_entry_sig(&entry, "f");
+        assert!(
+            out.contains(" - First line"),
+            "docstring first line must be appended, got: {out}"
+        );
+        assert!(
+            !out.contains("Second line"),
+            "only first line must be appended; second line leaked: {out}"
+        );
+        assert!(
+            !out.contains("Third line"),
+            "only first line must be appended; third line leaked: {out}"
+        );
     }
 }

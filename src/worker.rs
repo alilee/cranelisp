@@ -1367,6 +1367,22 @@ fn register_dep(
     // 5. publish BEFORE scheduler notify (Sprint 58 W6 Defect 1 ordering).
     publish_dep_sexps(ctx, dep, &dep_sexps);
 
+    // Sprint 60 Workstream E-3 — debug-only structural guard: when shared
+    // state is available, the publish above MUST have succeeded before we
+    // return so the caller's subsequent `scheduler.register_module(dep, _)`
+    // finds sexps ready in shared.module_sexps. Catches accidental reordering
+    // in dev builds. See `design/int/dual-path-persistence-collapse.md §8.3`.
+    debug_assert!(
+        ctx.shared_state.is_none()
+            || ctx.shared_state.unwrap()
+                .module_sexps
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(dep),
+        "register_dep MUST publish dep_sexps to shared.module_sexps before returning \
+         so the caller's scheduler.register_module call cannot race persistent workers"
+    );
+
     Ok(dep_sexps)
 }
 
@@ -1634,53 +1650,37 @@ fn register_transitive_cached_imports(
         if try_cache_hit_load(ctx, transitive_dep, &dep_file) {
             continue;
         }
-        // FIXME(/int) — Sprint 59 /review I-2: this cache-miss branch does NOT
-        // route through the new `register_dep` shim (worker.rs:1326). It's the
-        // 6th per-dep prologue site that Workstream A missed — 5 sites were
-        // consolidated through `register_dep`, this one stayed inlined. The
-        // publish-before-register ordering is preserved here by line order, so
-        // no active symptom, but the shim consolidation is incomplete. Also see
-        // /review I-3: the deleted unit guard `compile_dep_inline_publishes_sexps_before_register`
-        // is only fully redundant once this 6th site also routes through the shim.
-        // `design/int/dual-path-persistence-collapse.md` §9 Risk 1 predicted this.
-        // `design/review/sprint-59-wave-1.md` records the finding. Carry to S60.
-        // Cache miss — register for fresh build. Read source, parse, and
-        // stash sexps so the worker loop can drive typecheck.
-        let Ok(source) = std::fs::read_to_string(&dep_file) else {
-            continue;
-        };
-        let Ok(dep_sexps) = cranelisp_frontend::parse(&source) else {
-            continue;
-        };
-        // Record source hash for downstream cache validation.
-        if let Some(shared) = ctx.shared_state {
-            let hash = cranelisp_backend::cache::hash_source(&source);
-            let mut cs_guard = shared.cache_state.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(cs) = cs_guard.as_mut() {
-                cs.source_hashes_mut().insert(transitive_dep.clone(), hash);
+        // Sprint 60 Workstream E-1 — route the cache-miss branch through the
+        // `register_dep` shim (worker.rs:1327), closing the 6th per-dep
+        // prologue site. See `design/int/dual-path-persistence-collapse.md §8.1`.
+        // The shim publishes dep_sexps BEFORE returning (Sprint 58 W6 Defect 1
+        // ordering), stashes source_text for /source introspection, records the
+        // source hash, and updates file_to_module. Silent-continue-on-error is
+        // preserved: cache-hit transitive recursion is best-effort; if we can't
+        // read/parse the dep file here, the regular import handler will surface
+        // a proper error when it reaches the dep.
+        let dep_file_ref = dep_file.clone();
+        let dep_for_err = transitive_dep.clone();
+        let dep_sexps = match register_dep(ctx, transitive_dep, &dep_file, |e| {
+            CranelispError::ModuleError {
+                message: format!(
+                    "failed to read transitive dep '{}' from '{}': {}",
+                    dep_for_err, dep_file_ref.display(), e
+                ),
+                file: Some(dep_file_ref.clone()),
+                span: Span::SYNTHETIC,
             }
-            drop(cs_guard);
-            // Stash sexps for the worker loop. The persistent worker reads
-            // from `shared.module_sexps`; the inline worker reads from its
-            // local `module_sexps` map. We populate the shared map so the
-            // persistent worker path picks it up; the inline path also
-            // checks the shared map's entries via its caller context.
-            let mut map = shared.module_sexps.lock()
-                .unwrap_or_else(|e| e.into_inner());
-            map.entry(transitive_dep.clone()).or_insert(dep_sexps);
-        }
-        if let Ok(canonical) = dep_file.canonicalize()
-            && let Some(shared) = ctx.shared_state
-        {
-            shared.file_to_module.lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(canonical, transitive_dep.clone());
-        }
+        }) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let _ = dep_sexps; // already published into shared.module_sexps by the shim.
         // Register with scheduler — the worker loop processes this dep's
         // typecheck and eventually marks it `inmem_done`. We do NOT block
         // here (we are inside the outer module's typecheck); the outer
         // module either already typechecked or its own normal import-block
-        // chain handles its dependency on this dep.
+        // chain handles its dependency on this dep. `delays_other=true`
+        // matches worker-side consensus (see §8.2 rationale).
         ctx.scheduler.register_module(transitive_dep.clone(), true);
     }
 }

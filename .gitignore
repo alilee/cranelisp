@@ -28,4 +28,8 @@ tests/v4_pipeline/.runs/
 tests/v4_repl_eval/.runs/
 tests/wave6_demo_repros/.runs/
 tests/sprint59/.runs/
+tests/sprint60/.runs/
+tests/sprint60_observability/.runs/
+tests/sprint60_cache_build_marker/.runs/
+tests/examples_run/.runs/
 __pycache__/

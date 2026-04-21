@@ -18,7 +18,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use cranelisp::session_v4::{EvalResult, format_result_value};
+use cranelisp::session_v4::EvalResult;
 use cranelisp_backend::display::format_result;
 use cranelisp_types::{CranelispError, FQTypeName, ModuleFullPath, Span, Type, TypeName};
 use helpers::*;

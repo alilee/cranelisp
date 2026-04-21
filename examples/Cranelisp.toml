@@ -1,0 +1,18 @@
+# examples/Cranelisp.toml — project configuration for the learning sequence.
+#
+# Per root CLAUDE.md §"Stdlib separation", the examples/ directory MUST be
+# free-standing: it cannot depend on stdlib/. This config puts `./lib` on
+# the library search path so `cargo run -- --run examples/FOO.cl` discovers
+# `examples/lib/prelude.cl` — a tiny, standalone prelude that re-exports
+# just the 30 Ring-0/1 primitives the examples use, with zero reference to
+# stdlib/.
+#
+# Spec: 08-modules.md §8.11.4 item 2 — lib-dirs fully replaces the env and
+# default tiers when present, so this config isolates examples from
+# `{project_root}/stdlib/` even though that directory exists at the repo
+# root.
+#
+# See also: design/stdlib/examples-run-path.md (sprint 60 Workstream F
+# decision record).
+
+lib-dirs = ["./lib"]

@@ -27,7 +27,7 @@ fn dummy_error(msg: &str) -> CranelispError {
 // spec: design/arch/concurrent-pipeline.md §2 — register_module default pool
 #[test]
 fn test_register_module_starts_in_typecheck_next() {
-    let mut scheduler = CompileScheduler::new();
+    let scheduler = CompileScheduler::new();
     let module = ModuleFullPath::from("test_module");
 
     scheduler.register_module(module.clone(), false);
@@ -47,7 +47,7 @@ fn test_register_module_starts_in_typecheck_next() {
 // spec: design/arch/concurrent-pipeline.md §2.1 — TypecheckFirst priority
 #[test]
 fn test_register_module_with_delays_starts_in_typecheck_first() {
-    let mut scheduler = CompileScheduler::new();
+    let scheduler = CompileScheduler::new();
     let module = ModuleFullPath::from("dep_module");
 
     scheduler.register_module(module.clone(), true);
@@ -67,7 +67,7 @@ fn test_register_module_with_delays_starts_in_typecheck_first() {
 // spec: design/arch/concurrent-pipeline.md §2.1 — TypecheckFirst drained before TypecheckNext
 #[test]
 fn test_typecheck_first_before_typecheck_next() {
-    let mut scheduler = CompileScheduler::new();
+    let scheduler = CompileScheduler::new();
     let first_mod = ModuleFullPath::from("first_mod");
     let next_mod = ModuleFullPath::from("next_mod");
 
@@ -95,7 +95,7 @@ fn test_typecheck_first_before_typecheck_next() {
 // spec: design/arch/concurrent-pipeline.md §8.1 — register_module_cached
 #[test]
 fn test_register_module_cached_enters_typecheck_done() {
-    let mut scheduler = CompileScheduler::new();
+    let scheduler = CompileScheduler::new();
     let module = ModuleFullPath::from("cached_mod");
 
     let symbols = [Symbol::from("foo"), Symbol::from("bar")]
@@ -121,7 +121,7 @@ fn test_register_module_cached_enters_typecheck_done() {
 // spec: design/arch/concurrent-pipeline.md §2 — TypecheckWorking → TypecheckDone
 #[test]
 fn test_notify_typecheck_done_moves_to_done() {
-    let mut scheduler = CompileScheduler::new();
+    let scheduler = CompileScheduler::new();
     let module = ModuleFullPath::from("mod_a");
 
     scheduler.register_module(module.clone(), false);
@@ -158,7 +158,7 @@ fn test_notify_typecheck_done_moves_to_done() {
 // spec: design/arch/concurrent-pipeline.md §4 — block_for_macro_codegen populates priority queue
 #[test]
 fn test_block_for_macro_codegen_adds_priority_entry() {
-    let mut scheduler = CompileScheduler::new();
+    let scheduler = CompileScheduler::new();
     let module_a = ModuleFullPath::from("mod_a");
     let module_b = ModuleFullPath::from("mod_b");
 
@@ -194,7 +194,7 @@ fn test_block_for_macro_codegen_adds_priority_entry() {
 // spec: design/arch/concurrent-pipeline.md §4.3 — priority codegen completion unblocks module
 #[test]
 fn test_priority_codegen_complete_unblocks() {
-    let mut scheduler = CompileScheduler::new();
+    let scheduler = CompileScheduler::new();
     let module_a = ModuleFullPath::from("mod_a");
     let module_b = ModuleFullPath::from("mod_b");
 
@@ -241,7 +241,7 @@ fn test_priority_codegen_complete_unblocks() {
 // spec: design/arch/concurrent-pipeline.md §6.2 — block_for_typecheck
 #[test]
 fn test_block_for_typecheck_blocks_module() {
-    let mut scheduler = CompileScheduler::new();
+    let scheduler = CompileScheduler::new();
     let module_a = ModuleFullPath::from("mod_a");
     let module_b = ModuleFullPath::from("mod_b");
 
@@ -271,7 +271,7 @@ fn test_block_for_typecheck_blocks_module() {
 // spec: design/arch/concurrent-pipeline.md §6.2 — notify_symbol_typechecked unblocks waiter
 #[test]
 fn test_notify_symbol_typechecked_unblocks() {
-    let mut scheduler = CompileScheduler::new();
+    let scheduler = CompileScheduler::new();
     let module_a = ModuleFullPath::from("mod_a");
     let module_b = ModuleFullPath::from("mod_b");
 
@@ -312,7 +312,7 @@ fn test_notify_symbol_typechecked_unblocks() {
 // spec: design/arch/concurrent-pipeline.md §2.3 — cascade failure to waiters
 #[test]
 fn test_module_failed_cascades_to_waiters() {
-    let mut scheduler = CompileScheduler::new();
+    let scheduler = CompileScheduler::new();
     let module_a = ModuleFullPath::from("mod_a");
     let module_b = ModuleFullPath::from("mod_b");
 
@@ -340,7 +340,7 @@ fn test_module_failed_cascades_to_waiters() {
 // spec: design/arch/concurrent-pipeline.md §6.5 — wait_inmem_complete returns Err on failure
 #[test]
 fn test_wait_inmem_complete_returns_err_on_failure() {
-    let mut scheduler = CompileScheduler::new();
+    let scheduler = CompileScheduler::new();
     let module = ModuleFullPath::from("failing_mod");
 
     scheduler.register_module(module.clone(), false);
@@ -363,7 +363,7 @@ fn test_wait_inmem_complete_returns_err_on_failure() {
 // spec: design/arch/concurrent-pipeline.md §2.2 — inmem codegen completes module
 #[test]
 fn test_inmem_codegen_complete_moves_to_complete() {
-    let mut scheduler = CompileScheduler::new();
+    let scheduler = CompileScheduler::new();
     let module = ModuleFullPath::from("mod_x");
 
     scheduler.register_module(module.clone(), false);
@@ -386,7 +386,7 @@ fn test_inmem_codegen_complete_moves_to_complete() {
 // spec: design/arch/concurrent-pipeline.md §2, §6.5 — full lifecycle
 #[test]
 fn test_wait_inmem_complete_ok_when_all_complete() {
-    let mut scheduler = CompileScheduler::new();
+    let scheduler = CompileScheduler::new();
     let mod_a = ModuleFullPath::from("mod_a");
     let mod_b = ModuleFullPath::from("mod_b");
 
@@ -421,7 +421,7 @@ fn test_wait_inmem_complete_ok_when_all_complete() {
 // spec: design/arch/concurrent-pipeline.md §10.3 — empty scheduler returns None
 #[test]
 fn test_take_priority_work_returns_none_when_empty() {
-    let mut scheduler = CompileScheduler::new();
+    let scheduler = CompileScheduler::new();
 
     // No modules registered — should return None immediately (no blocking).
     let work = scheduler.take_priority_work();
@@ -435,7 +435,7 @@ fn test_take_priority_work_returns_none_when_empty() {
 // spec: design/arch/concurrent-pipeline.md §6.5 — shutdown
 #[test]
 fn test_shutdown_flag() {
-    let mut scheduler = CompileScheduler::new();
+    let scheduler = CompileScheduler::new();
     let module = ModuleFullPath::from("mod_s");
 
     scheduler.register_module(module.clone(), false);
@@ -458,7 +458,7 @@ fn test_shutdown_flag() {
 // spec: design/arch/concurrent-pipeline.md §6.5 — wait_inmem_complete with no modules
 #[test]
 fn test_wait_inmem_complete_ok_when_no_modules() {
-    let mut scheduler = CompileScheduler::new();
+    let scheduler = CompileScheduler::new();
 
     // No modules registered — vacuously complete.
     let result = scheduler.wait_inmem_complete();
@@ -471,7 +471,7 @@ fn test_wait_inmem_complete_ok_when_no_modules() {
 // spec: design/arch/concurrent-pipeline.md §2.1 — multiple TypecheckFirst maintains FIFO
 #[test]
 fn test_typecheck_first_fifo_ordering() {
-    let mut scheduler = CompileScheduler::new();
+    let scheduler = CompileScheduler::new();
     let mod_a = ModuleFullPath::from("first_a");
     let mod_b = ModuleFullPath::from("first_b");
 
@@ -496,7 +496,7 @@ fn test_typecheck_first_fifo_ordering() {
 // spec: design/arch/concurrent-pipeline.md §4.2 — priority queue deduplication
 #[test]
 fn test_priority_queue_deduplicates_symbols() {
-    let mut scheduler = CompileScheduler::new();
+    let scheduler = CompileScheduler::new();
     let mod_a = ModuleFullPath::from("mod_a");
     let mod_b = ModuleFullPath::from("mod_b");
     let mod_c = ModuleFullPath::from("mod_c");

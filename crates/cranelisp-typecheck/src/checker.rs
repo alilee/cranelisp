@@ -1761,16 +1761,6 @@ impl TestFixture {
         self.env().method_to_trait(method_name)
     }
 
-    /// Get impls for type (test convenience).
-    pub fn get_impls_for_type(&self, type_name: &TypeName) -> Vec<TraitName> {
-        self.env().get_impls_for_type(type_name)
-    }
-
-    /// Get implementing types (test convenience).
-    pub fn get_implementing_types(&self, trait_name: &TraitName) -> Vec<TypeName> {
-        self.env().get_implementing_types(trait_name)
-    }
-
     /// Bind local (test convenience).
     pub fn bind_local_self(&mut self, name: Symbol, scheme: Scheme) {
         self.state.env.bind(name, scheme);

@@ -1230,6 +1230,142 @@ Target: 4 new passing neg tests; promote `[Tested]` → `[Tested+Neg]` on `spec/
 
 Wave-2 verification used 8 targeted `cargo nextest` invocations; no full-suite run. Carry rationale recorded in Sprint 59 SPRINT.md §Outcome (sprint-close).
 
+## G.20 — Sprint 60 test plan (JIT/object convergence + FIXME drawdown)
+
+Authored Phase 3b; test cases derived from the approved design artefacts:
+
+- Workstream A: `design/backend/jit-object-convergence.md` (APPROVED — Phase 3a gate cleared)
+- Workstream B: CLIF-dump infrastructure — named in `design/backend/defects-456-reduction.md` §Phase 2 as load-bearing observability
+- Workstream C: cache build-marker — `design/arch/CLAUDE.md` Decision 34 extension
+- Workstream E: `design/int/dual-path-persistence-collapse.md §8` (E-1/E-2/E-3 — unit tests with /int, integration coverage none required)
+- Workstream F: `design/stdlib/examples-run-path.md §4.3` (two regression guards named)
+- Workstream G: `design/int/dual-path-persistence-collapse.md §9.4` (unit tests with /int) + one integration smoke for /qa
+- Workstream H: prior-ring `[Tested+Neg]` promotions (coverage audit; 3–5 promotions this sprint)
+
+### G.20.1 Workstream A — JIT/object convergence
+
+**Existing carried failing tests (already in-tree; flip green as acceptance of A)**: no new authoring for the five headline carries — they ARE the acceptance test.
+
+| Test | File:line | Hypothesis (per design doc §8.1) |
+|---|---|---|
+| `sprint59_defects456_repro::d45_solution_cell_single_call_no_rc_underflow` | `tests/sprint59_defects456_repro.rs` | H3 |
+| `sprint59_defects456_repro::d45_html_min_v1_no_crash` | `tests/sprint59_defects456_repro.rs` | H3 + §6.1 |
+| `sprint59_defects456_repro::d6_exemplar_propagate_only_does_not_segv` | `tests/sprint59_defects456_repro.rs` | H3 |
+| `wave6_demo_repros::exemplar_solver_does_not_stack_overflow_on_small_puzzle` | `tests/wave6_demo_repros.rs` | H3 (primary) + §4.3 restore_cached_module merge (if triggered) |
+| `wave6_demo_repros::run_tests_batched_invocation_no_crash` | `tests/wave6_demo_repros.rs` | H3 + §6.1 |
+
+**New regression guards (authored Phase 3b; committed failing or ignored with pending marker until A fix lands)** — per design doc §8.2. All four land in a new integration file `tests/sprint60_convergence.rs`:
+
+| Test (NEW) | File | Spec anchor (design §) | Guards |
+|---|---|---|---|
+| `same_source_produces_same_clif_for_jit_and_object` | `tests/sprint60_convergence.rs` (NEW) | jit-object-convergence.md §1.1 | The invariant: CLIF bytes for `compile_to_module<JITModule>` vs `<ObjectModule>` on an identical typed-input tuple are byte-identical (modulo normalised names). Falsifies H1 structurally. |
+| `fresh_build_and_cache_hit_produce_matching_got_slot_contents` | `tests/sprint60_convergence.rs` (NEW) | jit-object-convergence.md §1.3 | For a module compiled fresh vs restored from cache, `symbol_tables[M].got.load_slot(i)` resolves to behaviourally-equivalent code (call both, same output). Guards §4.3 carry-forward. |
+| `cross_module_drop_glue_routes_through_got_not_direct_func_addr` | `tests/sprint60_convergence.rs` (NEW) | jit-object-convergence.md §5.3 | CLIF inspection: every `emit_rc_dec` site dec'ing an imported ADT value emits `call_indirect` through the owning module's `__cranelisp_got_{M}`, NOT a direct `func_addr` constant. The permanent H3 guard. |
+| `fresh_build_codegen_fails_loudly_if_any_slot_is_unpopulated` | `tests/sprint60_convergence.rs` (NEW) | jit-object-convergence.md §6.1 | Force a codegen path where `result.code_ptrs` is missing a symbol in `names` — assert `inline_jit_codegen_for_names` returns `Err(CranelispError::ModuleError)` and scheduler does NOT receive `notify_inmem_codegen_batch_complete` for the module. Guards H4 / Decision 37 "No swallowed failures". |
+
+**Pre-fix disposition**: these 4 tests land `#[ignore = "pending Workstream A Wave 1 fix"]` during Phase 3b authoring and are un-ignored as each fix lands (per /arch Phase 3a disposition). Any `#[ignore]` that survives sprint close is a carry — target is 0 carried.
+
+### G.20.2 Workstream B — CLIF-dump observability
+
+Minimal integration test — exercises the env-var-gated dump path to prove the observability infrastructure works end-to-end. Unit coverage for the dump helper itself lives with `/backend` per "unit tests with dev" rule.
+
+| Test (NEW) | File | Shape |
+|---|---|---|
+| `codegen_dump_env_var_emits_human_readable_clif` | `tests/sprint60_observability.rs` (NEW) | Set `CRANELISP_CODEGEN_DUMP=<mod>:<fn>`, compile a trivial module (`(defn id [:Int x] :Int x)`), capture stderr (or the configured dump file), assert output contains `function u0:0(` (CLIF signature marker) and an `iconst` or `return` op. Confirms the dump is wired and human-readable. |
+| `codegen_dump_unset_emits_nothing` | `tests/sprint60_observability.rs` (NEW) | Compile the same module with env var UNSET; stderr must NOT contain CLIF signature markers. Negative guard — dump path is silent by default. |
+
+### G.20.3 Workstream C — object-file build marker
+
+Cache invalidation test — proves the build-id extension actually rejects stale caches on compiler rebuild. Unit coverage for the `build.rs`-generated constant lives with `/backend`.
+
+| Test (NEW) | File | Shape |
+|---|---|---|
+| `cache_rejects_object_with_mismatched_build_id` | `tests/sprint60_cache_build_marker.rs` (NEW) | (a) Compile module M → `.o` + `.meta.json` written with current build-id. (b) Patch the `.meta.json`'s `build_id` field to a fake value. (c) Re-load M — cache MUST reject (miss), triggering fresh build. (d) Re-load again — cache MUST hit (build-id now matches). Negative guard: confirm the build-id is checked BEFORE the `.o` is mmap'd. |
+| `cache_hit_when_build_id_matches` | `tests/sprint60_cache_build_marker.rs` (NEW) | Positive complement: two back-to-back cache-hit loads of M with stable build-id return the same linker-resolved symbol addresses. |
+
+Commit-message discipline test (per SPRINT.md Architecture Review Condition 3) is a review-time check, not a test: confirm the `cache/mod.rs` comment states the build-id is additive to `CACHE_SCHEMA_VERSION`, not a substitute.
+
+### G.20.4 Workstream D — Defect 7 re-enable
+
+**No new /qa tests.** The 3 puzzle tests in `exemplar/solver.cl` are already in-tree; `/port` re-enables them once Workstream A closes Defect 6. `/qa` verifies at sprint-close that they pass — no authoring work this sprint.
+
+### G.20.5 Workstream E — /int Importants
+
+Per `design/int/dual-path-persistence-collapse.md §8.3` and §8.4, the three E tests (Test A `register_dep_shim_publishes_before_caller_registers`, Test B `register_dep_for_eval_publishes_before_registering`, E-1 structural guard `register_transitive_cached_imports_routes_through_shim`) are **unit tests owned by `/int` inside `src/session_v4.rs` and `src/worker.rs`** — per `memory/feedback_unit_tests_with_dev.md`. `/qa` authors **no integration tests** for Workstream E this sprint. Verification: `/qa` audits that these unit tests land and pass at close.
+
+### G.20.6 Workstream F — examples `--run` path
+
+Per `design/stdlib/examples-run-path.md §4.3`, two integration regression guards land in a new file `tests/examples_run.rs`:
+
+| Test (NEW) | File | Spec anchor | Shape |
+|---|---|---|---|
+| `every_example_file_runs_under_stdlib_prelude` | `tests/examples_run.rs` (NEW) | examples/ — Ring 4 AC "`--run` works on every example file using the production stdlib prelude (no test-fixture preamble)" | Binary subprocess (Layer 4): for each `.cl` in `examples/`, invoke `CARGO_BIN_EXE_cranelisp --run <file>`, assert exit code 0. Shape per design doc §4.3. Currently expected PASS after /stdlib's prelude re-export lands. |
+| `prelude_re_exports_primitive_surface_examples_need` | `tests/examples_run.rs` (NEW) | design/stdlib/examples-run-path.md §1.3 | Per-primitive localised regression guard: for each of the 30 enumerated primitive names, compile a trivial `(defn t [] (NAME ...))` in a bare session with only stdlib prelude loaded; assert success. Negative complement (primitive removal from prelude localises the failure to the specific name). |
+
+**Disposition**: Both land un-ignored. The 30-primitive list is frozen in `tests/examples_run.rs` constants at authoring time, matching `design/stdlib/examples-run-path.md §1.3` exactly.
+
+**Test-helper note**: `tests/examples.rs` currently uses `compile_and_run_simple` (which injects `tests/fixtures/preamble_primitives.cl`). The new `tests/examples_run.rs` MUST NOT use that helper — per the design doc §4.3 the whole point is to validate the user-surface `--run` path, not the test-fixture harness. Co-locating these as separate test files keeps the two surfaces distinct.
+
+### G.20.7 Workstream G — /sig docstring format
+
+`/int` authors three unit tests in `src/session_v4.rs::format_entry_sig_tests` per `design/int/dual-path-persistence-collapse.md §9.4` (with-docstring, without-docstring, multi-line-first-only). `/qa` adds ONE integration smoke test for the end-to-end REPL surface:
+
+| Test (NEW) | File | Spec anchor | Shape |
+|---|---|---|---|
+| `sig_slash_command_displays_docstring_after_dash` | `tests/repl_experience.rs` (EXTENSION) or `tests/repl_slash.rs` (NEW — if file does not exist) | repl/spec.md §1.1 Universal Output Format | REPL session: `(defn add "Add two ints" [:Int a :Int b] (+ a b))`, then `/sig add`, assert output matches `:(Fn [primitives/Int primitives/Int] primitives/Int) user/add ; defn - Add two ints` (modulo any fully-qualified-name policy still in flight pre-FQTypeName). If FQTN is not yet migrated (S61), accept unqualified form but MUST contain trailing ` - Add two ints`. |
+
+/qa authoring choice: add to `tests/repl_experience.rs` (existing file) to minimise sprawl. If existing conventions in that file discourage extension, create `tests/repl_slash.rs` fresh.
+
+### G.20.8 Workstream H — `[Tested+Neg]` promotion candidates
+
+Three-to-five promotions targeted this sprint. Candidates ranked easy-to-hard (easiest: negative test already exists and just needs spec annotation; hardest: negative test must be authored):
+
+| # | Spec section | MUST/MUST NOT statement | Existing neg test? | Effort | Recommended this sprint |
+|---|---|---|---|---|---|
+| 1 | `spec/08-modules.md §8.3.9` (multiple imports accumulate + placement) | "`import` MUST be top-level" / "imports are extracted before compilation" | YES — `tests/sprint59_neg.rs::import_inside_let_rejected_neg`, `import_below_use_still_available_before_definitions` (S59 authored). §8.3.9 already has `[Tested]` for positive. | **S** — annotation edit only | ✅ YES (easiest win) |
+| 2 | `spec/08-modules.md §8.3.1` (import of non-existent name) | "import of undefined name MUST error with missing-symbol diagnostic" | YES — `tests/sprint59_neg.rs::import_of_non_existent_name_errors_neg` (S59 authored). | **S** — annotation edit only | ✅ YES |
+| 3 | `spec/08-modules.md §8.3.7` (super import) | "super at top-level `user` MUST be rejected" | YES — `tests/sprint59_neg.rs::super_import_at_repl_prompt_rejected_neg` + `tests/modules.rs::super_import_at_root_is_rejected_neg`. | **S** — annotation edit only | ✅ YES |
+| 4 | `spec/12-runtime.md §12.3.1` item 2 ("Freed memory MUST NOT be accessed after deallocation") | Already marked `[Tested tests/rc.rs::rc_string_in_let_scope]` — positive. Negative: verify trace has NO post-free read. | PARTIAL — `tests/rc.rs` RC-trace tests implicitly verify no use-after-free via `LIVE_ALLOCS`, but no test is named as the explicit "no-use-after-free" neg guard. | **M** — audit existing rc.rs tests + annotate or author a named neg test | ⚠️ CANDIDATE — include if time permits |
+| 5 | `spec/09-macros.md §9.1` (SList/Sexp types) | "types are immutable and not user-modifiable" — implicit MUST NOT for user reassignment | UNKNOWN — need audit whether a neg test rejects `(defn redefine-SCons [] ...)` or similar. | **M** — audit + possibly author | Defer (low priority vs. module-boundary promotions) |
+| 6 | `spec/04-expressions.md §4.4` (If expression — branches must unify) | `error_type_mismatch_if_branches` — positive error test exists under `[Tested]`. Negative: verify if-branch type mismatch does NOT produce silent coercion. | PARTIAL — positive error path already cited; the "no silent coercion" neg shape is the same test viewed from absence. | **S** — annotation upgrade IF re-reading the existing test confirms it asserts absence (not just error presence). | ⚠️ CANDIDATE — requires 5-min audit of the cited test |
+| 7 | `spec/12-runtime.md §12.5` (TCO — stack MUST NOT grow) | `[Tested tests/ring0.rs::tco_deep_countdown]` — positive. Negative: confirm no stack-depth regression (implicit in the 100K depth but not named). | YES (structurally) — `tco_deep_countdown` is itself a negative-style guard (100K depth would overflow absent TCO). | **S** — annotation upgrade | ✅ YES if sprint bandwidth allows |
+| 8 | `spec/08-modules.md §8.8` (Prelude) | "explicit `(import [prelude ...])` MUST suppress the implicit glob" | YES — `tests/stdlib::prelude_loads_without_errors` is positive; negative complement would assert that an explicit `(import [prelude [+]])` does NOT pull `-`, `*`, etc. | **L** — likely needs new neg test | Defer |
+
+**Recommendation (top 5 for this sprint)**: #1, #2, #3 (all S-effort, annotation-only, module-boundary coverage already authored in S59), plus #7 (S-effort annotation upgrade on TCO) and #4 or #6 as the fourth/fifth (M-effort audit). Target minimum 3 (commitments #1/#2/#3); stretch 5 (add #7 and #4 or #6).
+
+Note: Workstream H's promotion work is annotation-only on spec files. Per `memory/feedback_target_state_first.md` and the root `CLAUDE.md` §Requirements/Test Traceability convention, the test side already carries `// spec:` comments from S59 authoring; this sprint's work is the reciprocal spec-side `[Tested+Neg tests/...]` annotation upgrade. `/spec` actions these at Workstream H handoff.
+
+### G.20.9 Sprint 60 delta summary
+
+| Workstream | Existing failing tests (expected to flip) | New integration tests authored by `/qa` | New test files |
+|---|---|---|---|
+| A (JIT/object convergence) | 5 (the carries from S59) | 4 (§8.2 regression guards, pre-fix `#[ignore]`) | `tests/sprint60_convergence.rs` (NEW) |
+| B (CLIF-dump) | 0 | 2 (positive dump + negative silent-by-default) | `tests/sprint60_observability.rs` (NEW) |
+| C (build marker) | 0 | 2 (cache reject + cache hit) | `tests/sprint60_cache_build_marker.rs` (NEW) |
+| D (Defect 7 re-enable) | 3 (puzzle tests in `exemplar/solver.cl` — owned by /port) | 0 | — |
+| E (/int Importants) | 0 | 0 (/qa integration coverage none; /int owns unit tests) | — |
+| F (examples --run) | 27 example files currently failing under `--run` — become passing via /stdlib's prelude edit | 2 (full sweep + per-primitive) | `tests/examples_run.rs` (NEW) |
+| G (/sig docstring) | 1 (`display_defn_with_docstring_uses_dash_separator`) | 1 (integration smoke) | `tests/repl_experience.rs` (EXTENSION) OR `tests/repl_slash.rs` (NEW — /qa choice) |
+| H (`[Tested+Neg]` promotions) | 0 | 0 | (annotation edits on `spec/` files; FIXME(/spec) handoff) |
+
+**Totals**:
+- **9 new integration test functions** (4 A + 2 B + 2 C + 2 F + 1 G) — excluding the /qa integration smoke for G which could be 1 or 0 depending on file-extension choice.
+- **4 new integration test files** — worst case: `sprint60_convergence.rs`, `sprint60_observability.rs`, `sprint60_cache_build_marker.rs`, `examples_run.rs`. `repl_slash.rs` is conditional on existing-file triage.
+- **3–5 spec `[Tested+Neg]` annotation promotions** (Workstream H).
+
+**Close-time acceptance**:
+- 5 A carries green; 3 /port puzzle tests green; `display_defn_with_docstring_uses_dash_separator` green.
+- 9 new tests all green (pre-fix `#[ignore]` on A's four lifted as fixes land; no `#[ignore]` at close).
+- 27 example files green under `cargo run -- --run`.
+- 3–5 `[Tested+Neg]` annotations landed on spec.
+
+### G.20.10 Open questions / FIXMEs for design-doc authors
+
+No FIXME(/skill) required at authoring time — the three design docs (`jit-object-convergence.md`, `dual-path-persistence-collapse.md §8-§9`, `examples-run-path.md`) give test-derivation enough specificity. Two minor judgement calls flagged for sprint-manager awareness:
+
+- **Resolved (was FIXME(/backend))** — `same_source_produces_same_clif_for_jit_and_object` compares **pre-relocation CLIF text**; rationale and harness boundary documented at `design/backend/jit-object-convergence.md §8.2.1`.
+- **Resolved (was FIXME(/int))** — `/int` confirms /qa's recommendation: the §9.4 unit tests (formatter layer) and /qa's integration smoke (REPL-dispatch layer) are complementary, not redundant. Rationale and layer boundaries documented at `design/int/dual-path-persistence-collapse.md §9.6`.
+
 ## Known issues / deferred
 
 <!-- Both FIXME(/qa) Wave 6 audit findings (docstring separator divergence + stdlib REPL auto-import)

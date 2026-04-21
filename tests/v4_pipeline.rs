@@ -4,8 +4,11 @@
 //! These are Layer 4 (E2E) tests: they invoke the binary as a subprocess and
 //! assert on stdout content and exit code. No Rust APIs.
 //!
-//! Note: `run_old` is kept as an alias for `run_v4` — the old pipeline was
-//! deleted in sprint 49. Parity tests now verify the single pipeline works.
+//! Sprint 60 Workstream W: the pre-Sprint-49 dual-pipeline aliases
+//! (`run_old`, `run_old_project`) and the unused `assert_v4_runs` exit-code
+//! helper were deleted — call sites now use `run_v4`/`run_v4_project`
+//! directly and exit-code assertions go through `assert_exit_code` +
+//! `run_v4`. This test file is a single-pipeline file.
 
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
@@ -86,12 +89,6 @@ fn platform_dll_dir() -> String {
         .to_str()
         .unwrap()
         .to_string()
-}
-
-/// Alias for `run_v4` — the old pipeline was deleted in sprint 49.
-/// Kept so parity test call sites don't need rewriting.
-fn run_old(source: &str, label: &str) -> Output {
-    run_v4(source, label)
 }
 
 fn stdout_of(o: &Output) -> String {
@@ -227,13 +224,6 @@ fn test_v4_falls_back_for_operators() {
 // ===========================================================================
 // Macro expansion
 // ===========================================================================
-
-/// Helper: run source, assert exit code matches expected Int value.
-/// For programs returning Int, exit code == the value (spec §12.6).
-fn assert_v4_runs(source: &str, expected_exit: i32, label: &str) {
-    let out = run_v4(source, label);
-    assert_exit_code(&out, expected_exit, label);
-}
 
 /// Filter out non-blocking `nice-worker` warnings from stderr.
 /// These are benign `.o` compilation warnings that don't affect execution.
@@ -451,11 +441,6 @@ fn run_v4_project(files: &[(&str, &str)], entry: &str, label: &str) -> Output {
         .stderr(Stdio::piped())
         .output()
         .expect("failed to run cranelisp")
-}
-
-/// Alias for `run_v4_project` — old pipeline deleted in sprint 49.
-fn run_old_project(files: &[(&str, &str)], entry: &str, label: &str) -> Output {
-    run_v4_project(files, entry, label)
 }
 
 /// Run a multi-file project, assert compilation succeeds (no error on stderr).

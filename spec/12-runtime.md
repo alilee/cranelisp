@@ -150,7 +150,7 @@ A binding is independent if its free variables do not include any name bound ear
 
 Lenient evaluation is semantically transparent — programs MUST NOT depend on whether any particular binding is parallelized. An implementation MAY provide an opt-out mechanism (e.g., an environment variable) for debugging purposes.
 
-## 12.5 Tail Call Optimization [Tested tests/ring0.rs::tco_deep_countdown]
+## 12.5 Tail Call Optimization [Tested+Neg tests/ring0.rs::tco_deep_countdown]
 
 Implementations SHOULD optimize self-recursive tail calls into loops. A tail call is a function call in tail position — the last operation before the function returns.
 

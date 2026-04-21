@@ -1181,7 +1181,9 @@ fn cache_pipeline_hit_second_compile() {
 
     let entry_meta = cache_dir.join("main.meta.json");
     assert!(entry_meta.exists(), "cache meta should exist after first compile");
-    let mtime1 = std::fs::metadata(&entry_meta).unwrap().modified().unwrap();
+    // Capture mtime to make the 50ms sleep below meaningful (any rewrite
+    // would bump mtime past this point).
+    let _mtime1 = std::fs::metadata(&entry_meta).unwrap().modified().unwrap();
 
     // Brief sleep to ensure mtime would differ if file is rewritten
     std::thread::sleep(std::time::Duration::from_millis(50));

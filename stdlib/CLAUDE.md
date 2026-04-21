@@ -104,6 +104,7 @@ Traits: Eq, Ord, Num, Display (with =, !=, <, >, <=, >=, +, -, *, /, show)
 Types: Option (None, Some), Result (Ok, Err), List (Nil, Cons, empty?)
 Functions: pure, str-eq
 Macros: ->, ->>, vec, when, unless, const, const-, do, cond, list, str, case, def, def-, bind!
+Primitives (30, re-exported from `primitives` for `--run` parity with the REPL surface — see design/stdlib/examples-run-path.md): add-i64, sub-i64, mul-i64, div-i64, eq-i64, lt-i64, gt-i64, le-i64, ge-i64, not, eq-bool, add-f64, sub-f64, mul-f64, div-f64, eq-f64, lt-f64, gt-f64, le-f64, ge-f64, str-concat, str-eq, str-len, char-at, int-to-string, float-to-string, bool-to-string, vec-len, vec-get, vec-set, vec-push
 
 ## Conventions
 

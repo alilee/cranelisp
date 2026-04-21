@@ -52,6 +52,28 @@ pub use linker::Linker;
 /// value do NOT require a bump.
 pub const CACHE_SCHEMA_VERSION: u32 = 1;
 
+/// Compile-time build identifier (Sprint 60 Workstream C).
+///
+/// Emitted by `build.rs` as `<pkg_version>+<git_sha>` (e.g. `0.1.0+3b2df720fe63`),
+/// stamped onto `.meta.json` next to `schema_version`, and compared on cache-load.
+/// Mismatch routes through the same `CacheStale` fall-through as a schema-version
+/// bump or a source-mtime change.
+///
+/// **This is an ADDITIONAL cache-invalidation trigger, not a substitute for the
+/// manual `CACHE_SCHEMA_VERSION` bump that Decision 34 requires on explicit
+/// serialised-shape changes.** The build-id catches the "I rebuilt the compiler
+/// and forgot the cache was keyed on the old shape" class of mystery; it does
+/// NOT replace the discipline of bumping `CACHE_SCHEMA_VERSION` whenever a
+/// `SymbolTable` / `ModuleEntry` field is deleted, retyped, or renamed. Both
+/// triggers coexist: shape changes that also rebuild the compiler hit the
+/// build-id gate first; shape changes that land without a compiler-side rebuild
+/// (cross-branch cache reuse) are caught only by the schema-version gate.
+///
+/// Pre-Sprint-60 `.meta.json` files lack the `build_id` field; they deserialise
+/// with the `#[serde(default)]` empty string, which never matches a non-empty
+/// `BUILD_ID` and routes through the same fall-through path.
+pub const BUILD_ID: &str = env!("CRANELISP_BUILD_ID");
+
 /// **SUPERSEDED (Sprint 58 §14.2)**: renamed to `CACHE_SCHEMA_VERSION` so
 /// `/int`'s `symbol-table-cache.md` and Decision 34 use one term. The semantic
 /// is unchanged. Kept as an alias so `tests/cache.rs` (owned by `/qa`)

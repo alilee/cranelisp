@@ -1840,9 +1840,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::checker::{CheckState, TestFixture, TypeCheckEnv};
+    use crate::checker::TestFixture;
     use cranelisp_types::{
-        Defn, DefnVariant, FQSymbol, ImportNames, ImportSpec, ModuleEntry, ModuleFullPath,
+        Defn, DefnVariant, ImportNames, ImportSpec, ModuleEntry, ModuleFullPath,
         Sexp, Span, TraitDecl, TraitImpl, TraitMethodSig, TypeExpr, Visibility,
     };
 

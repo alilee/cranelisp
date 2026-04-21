@@ -40,6 +40,60 @@ use cranelift_module::Module;
 use crate::compiler::{CompileContext, FnCompiler};
 use crate::jit::declare_intrinsics_generic;
 
+// --- CLIF dump observability (Sprint 60 Workstream B) --------------------
+//
+// `CRANELISP_CODEGEN_DUMP` selects which freshly-codegen'd CLIF is written
+// to stderr during `compile_to_module`. This is load-bearing for diagnosing
+// JIT/object divergence and codegen-layer bugs (drop glue, RC, GOT) where
+// source-level reduction plateaus and only the emitted IR distinguishes
+// correct vs broken output. Cache-hit paths do NOT re-codegen and so have
+// nothing to dump; for those, use `/clif <name>` from the REPL to view the
+// stored `FunctionArtifacts.clif_ir`.
+//
+// Filter grammar (value of `CRANELISP_CODEGEN_DUMP`):
+//   unset/empty → disabled (no dump)
+//   `*`         → dump every function in every module
+//   `<module>`  → dump every function in that module (match on the
+//                 `ModuleFullPath` string, e.g. `user`, `exemplar.solver`)
+//   `<module>::<symbol>` → dump only that exact function
+//
+// Output: stderr, framed with `; === CLIF <module>::<symbol> ===` so it is
+// greppable in test output. Shape mirrors what `/clif` prints in the REPL.
+
+/// Decide whether to dump CLIF for a given (module, symbol) pair given the
+/// current value of `CRANELISP_CODEGEN_DUMP`.
+///
+/// Pulled out as a pure function so unit tests can exercise the filter
+/// grammar without any codegen side-effects.
+fn clif_dump_matches(filter: Option<&str>, module_path: &str, symbol: &str) -> bool {
+    let Some(filter) = filter.filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    if filter == "*" {
+        return true;
+    }
+    if let Some((m, s)) = filter.split_once("::") {
+        return m == module_path && s == symbol;
+    }
+    filter == module_path
+}
+
+/// Print a CLIF dump header + body to the provided writer. Extracted from the
+/// call site so tests can capture output without intercepting stderr.
+fn write_clif_dump(
+    out: &mut dyn std::io::Write,
+    module_path: &str,
+    symbol: &str,
+    clif_ir: &str,
+) -> std::io::Result<()> {
+    writeln!(out, "; === CLIF {module_path}::{symbol} ===")?;
+    out.write_all(clif_ir.as_bytes())?;
+    if !clif_ir.ends_with('\n') {
+        writeln!(out)?;
+    }
+    writeln!(out, "; === end CLIF {module_path}::{symbol} ===")
+}
+
 /// Per-symbol codegen byproducts captured during `compile_to_module`.
 ///
 /// Populated during the same `FnCompiler` pass that defines each function.
@@ -454,6 +508,11 @@ where
     let mut func_ctx = FunctionBuilderContext::new();
     let mut artifacts: HashMap<Symbol, FunctionArtifacts> = HashMap::new();
 
+    // Read CLIF dump filter once per compile_to_module invocation — the env
+    // var value is stable for the process lifetime and this loop may iterate
+    // many times.
+    let clif_dump_filter: Option<String> = std::env::var("CRANELISP_CODEGEN_DUMP").ok();
+
     for defn in &defns {
         let compile_ctx = CompileContext {
             func_ids: &func_ids,
@@ -474,6 +533,16 @@ where
             vec_drop_func_id: intrinsic_ids.vec_drop,
         };
         let art = compile_defn_in_module(defn, module, &mut func_ctx, &func_ids, compile_ctx)?;
+        if clif_dump_matches(clif_dump_filter.as_deref(), module_path.as_ref(), defn.name.as_ref()) {
+            // Write directly to stderr; ignore I/O errors (stderr failure is
+            // not worth poisoning a codegen result over).
+            let _ = write_clif_dump(
+                &mut std::io::stderr(),
+                module_path.as_ref(),
+                defn.name.as_ref(),
+                &art.clif_ir,
+            );
+        }
         artifacts.insert(defn.name.clone(), art);
     }
 
@@ -649,6 +718,74 @@ where
         disasm,
         code_size,
     })
+}
+
+
+#[cfg(test)]
+mod clif_dump_tests {
+    //! Unit tests for Sprint 60 Workstream B (CLIF dump observability).
+    //!
+    //! These exercise the env-var filter grammar and the output formatter
+    //! in isolation from codegen — the integration test (exercising the
+    //! wired-up env var end-to-end via a subprocess) lives with `/qa` in
+    //! `tests/sprint60_observability.rs`.
+    use super::{clif_dump_matches, write_clif_dump};
+
+    #[test]
+    fn filter_unset_or_empty_never_matches() {
+        assert!(!clif_dump_matches(None, "user", "foo"));
+        assert!(!clif_dump_matches(Some(""), "user", "foo"));
+    }
+
+    #[test]
+    fn filter_wildcard_matches_every_function() {
+        assert!(clif_dump_matches(Some("*"), "user", "foo"));
+        assert!(clif_dump_matches(Some("*"), "exemplar.solver", "cell-at$grid.Cell"));
+        assert!(clif_dump_matches(Some("*"), "", ""));
+    }
+
+    #[test]
+    fn filter_module_only_matches_any_symbol_in_that_module() {
+        assert!(clif_dump_matches(Some("user"), "user", "foo"));
+        assert!(clif_dump_matches(Some("user"), "user", "bar"));
+        assert!(!clif_dump_matches(Some("user"), "main", "foo"));
+        // Dotted module paths are matched literally, not as prefixes.
+        assert!(clif_dump_matches(Some("exemplar.solver"), "exemplar.solver", "go"));
+        assert!(!clif_dump_matches(Some("exemplar"), "exemplar.solver", "go"));
+    }
+
+    #[test]
+    fn filter_module_colon_symbol_matches_that_exact_function() {
+        let filter = Some("grid::cell-at$grid.Cell");
+        assert!(clif_dump_matches(filter, "grid", "cell-at$grid.Cell"));
+        // Wrong module — reject.
+        assert!(!clif_dump_matches(filter, "html", "cell-at$grid.Cell"));
+        // Wrong symbol — reject.
+        assert!(!clif_dump_matches(filter, "grid", "cell-at"));
+    }
+
+    #[test]
+    fn write_clif_dump_frames_header_and_trailer() {
+        let mut buf = Vec::<u8>::new();
+        write_clif_dump(&mut buf, "user", "foo", "function %foo() -> i64 {\n}\n").unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.starts_with("; === CLIF user::foo ===\n"), "output: {out}");
+        assert!(out.contains("function %foo() -> i64 {"), "body missing: {out}");
+        assert!(out.trim_end().ends_with("; === end CLIF user::foo ==="), "trailer missing: {out}");
+    }
+
+    #[test]
+    fn write_clif_dump_adds_trailing_newline_when_body_lacks_one() {
+        // Body without trailing newline — formatter should insert one so the
+        // "end" trailer appears on its own line.
+        let mut buf = Vec::<u8>::new();
+        write_clif_dump(&mut buf, "m", "s", "noeol").unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], "; === CLIF m::s ===");
+        assert_eq!(lines[1], "noeol");
+        assert_eq!(lines[2], "; === end CLIF m::s ===");
+    }
 }
 
 

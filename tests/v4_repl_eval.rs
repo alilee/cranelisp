@@ -134,16 +134,6 @@ fn assert_result(o: &Output, expected: &str) {
     );
 }
 
-fn assert_stdout_contains(o: &Output, needle: &str) {
-    let s = stdout_str(o);
-    assert!(
-        s.contains(needle),
-        "stdout missing {:?}\n---\n{}",
-        needle,
-        s
-    );
-}
-
 // ===========================================================================
 // Test 1: Simple expression evaluates and displays result
 // ===========================================================================
