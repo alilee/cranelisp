@@ -445,6 +445,16 @@ impl Linker {
             // registration funnels every GOT_LOAD resolution for
             // `__cranelisp_got_{M}` through `self.symbols` → the one and only
             // GOT slab the REPL can update (Decision 31 Scenario 2).
+            //
+            // Sprint 60 Wave 2 Step A.3 (defense-in-depth): record the byte
+            // range of any `__cranelisp_got_{M}` symbol in this section so we
+            // can zero it after registration. Per user ruling 2026-04-21: the
+            // `.o`'s data-section GOT is consumed only by `--link` mode's
+            // system linker; at in-process load time it's unused. Zeroing
+            // ensures any accidental read (e.g., if a future relocation path
+            // slipped past our filter) traps loudly on a NULL indirect call
+            // rather than work-by-accident against stale pointer values.
+            let mut got_ranges_to_zero: Vec<(usize, usize)> = Vec::new();
             for sym in obj.symbols() {
                 if sym.kind() != SymbolKind::Data {
                     continue;
@@ -465,11 +475,39 @@ impl Linker {
                         // exports this data symbol for `--link` compat, but at
                         // in-process load time we rely on `self.symbols` (the
                         // SymbolTable GOT) being the sole resolver.
+                        let sym_size = sym.size() as usize;
+                        if sym_size > 0 {
+                            got_ranges_to_zero.push((offset, sym_size));
+                        }
                         continue;
                     } else {
                         self.defined_symbols.insert(clean_name.to_string(), addr);
                     }
                 }
+            }
+
+            // Defense-in-depth per user ruling 2026-04-21: the .o's
+            // data-section GOT is consumed only by `--link` mode's system
+            // linker; at in-process load time it's unused. Zeroing ensures
+            // any accidental read traps loudly. Must run BEFORE pushing the
+            // DataRegion so the mmap is still accessible through `data_mmap`.
+            for (offset, size) in &got_ranges_to_zero {
+                // SAFETY: `data_mmap` is a freshly mmap'd, still-mutable
+                // MmapMut we own exclusively; `offset + size` is within
+                // `section_data.len()` because it came from the section's
+                // own symbol table.
+                unsafe {
+                    std::ptr::write_bytes(
+                        data_mmap.as_mut_ptr().add(*offset),
+                        0,
+                        *size,
+                    );
+                }
+                debug_assert!(
+                    data_mmap[*offset..*offset + *size].iter().all(|&b| b == 0),
+                    "defense-in-depth zeroing of __cranelisp_got_ bytes \
+                     at offset {offset} (size {size}) failed"
+                );
             }
 
             self.data_regions.push(DataRegion {

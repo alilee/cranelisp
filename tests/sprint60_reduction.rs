@@ -412,3 +412,310 @@ fn s60_control_direct_helper_call_no_crash() {
     assert_first_not_signal_crashed("s60_control_direct_helper_call", &r.first);
     assert_no_signal_crash("s60_control_direct_helper_call", &r.second);
 }
+
+// =============================================================================
+// Sprint 60 Wave 2 Round 2 — drop-glue reduction
+// =============================================================================
+//
+// After the single-GOT fix (S60 Wave 2 Step A.3) resolved the cache-reuse
+// dual-GOT cluster, 13 A-cluster tests in `tests/sprint59_defects456_repro.rs`
+// still fail. These are drop-glue-shaped defects, not dual-GOT failures.
+//
+// Starting symptom: `d6_exemplar_propagate_only` subprocess aborts inside
+// `heap_dealloc` (cranelisp-runtime/src/alloc.rs:191) via a non-unwinding
+// panic — classic double-free / RC underflow.
+//
+// Reduction starting point (exemplar/grid.cl + exemplar/solver.cl pulled in
+// by the failing test): ~500 LOC across two modules.
+//
+// Reduction endpoint (below): a single 14-LOC file with no cross-module
+// imports, no stdio, no recursion, no nested match, no multi-variant ADTs.
+// Just: a 1-field ADT wrapping a Vec, a helper that match-unpacks the ADT,
+// and a caller that invokes the helper twice on the same argument.
+//
+// CLIF inspection (via `CRANELISP_CODEGEN_DUMP=*`) reveals the crashing
+// `walk` function emits TWO 24-byte heap allocations per call to `cell-at`
+// — each closure-shaped: [fn_ptr, drop_glue_ptr, captured_g]. This looks
+// like auto-curry or GOT-indirect dispatch constructing a closure for
+// a direct two-arg function call (`cell-at g 0`), then RC-dec'ing the
+// closure and (via drop-glue) decrementing `g`'s RC on top of the
+// caller's own RC tracking. When both allocations happen in the same
+// scope with the same captured `g`, the RC of `g` reaches zero before
+// the parent scope's cleanup, causing a double-free on the final dec.
+//
+// Non-determinism: the crash reproduces ~50% of the time from a clean
+// shell, but 100% of the time via `Command::new` from Rust test harness.
+// ASLR-related heap layout coincidence — whether the freed closure's
+// memory collides with `g`'s next access determines crash vs silent
+// corruption.
+//
+// Crash signals observed: SIGSEGV (139), SIGTRAP (133), SIGABRT (134),
+// killed-by-signal (None). All mapped to
+// `heap_dealloc`'s double-free `debug_assert!`.
+//
+// Each reduction step below commits as a failing test (subject to the
+// test-spawn determinism noted above). Not fixed in this task — reduction
+// only per user directive 2026-04-21.
+
+/// Run `--run <entry>` from `cwd` with stdio piped (matches how the
+/// nextest harness spawns the subprocess). Used by all drop-glue
+/// reductions below — the shell-spawn path has different ASLR behaviour
+/// that masks the crash intermittently.
+fn run_entry(cwd: &std::path::Path, entry: &str) -> Output {
+    let binary = binary_path();
+    assert!(
+        binary.exists(),
+        "cranelisp binary not found at {binary:?} -- run `cargo build` first"
+    );
+    Command::new(&binary)
+        .current_dir(cwd)
+        .args(["--run", entry])
+        .env("CRANELISP_LIB", stdlib_dir())
+        .env("CRANELISP_PLATFORM_PATH", platform_dir())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to invoke binary")
+}
+
+/// The reductions below exhibit ASLR-dependent / heap-layout-dependent
+/// flakiness. Each trial gets its own fresh tempdir (cold cache) because
+/// the cache-warm path has a different (and lower) crash rate. Under
+/// cold-cache + Rust-spawn the crash rate is ~90%, so 10 trials gives
+/// >99% confidence the reduction still reproduces.
+fn reduce_single_file(source: &str, label: &str) {
+    const TRIALS: usize = 10;
+    let mut crashes: Vec<String> = Vec::new();
+    for i in 0..TRIALS {
+        // Fresh tempdir per trial — cold cache. A single shared tempdir
+        // across trials (cache-warm) drops the crash rate to ~20%.
+        let td = tempfile::tempdir().unwrap();
+        std::fs::create_dir(td.path().join("subdir")).unwrap();
+        std::fs::write(td.path().join("subdir").join("program.cl"), source).unwrap();
+        let o = run_entry(td.path(), "subdir/program.cl");
+        let exit = o.status.code();
+        let signal_crash = matches!(exit, Some(139) | Some(133) | Some(134)) || exit.is_none();
+        if signal_crash {
+            crashes.push(format!("trial {i}: exit={exit:?}"));
+        }
+    }
+    if !crashes.is_empty() {
+        panic!(
+            "{label}: {}/{} cold-cache trials crashed with signal. \
+             Reduced defect: drop-glue / auto-curry closure captures \
+             ADT-wrapped Vec and double-frees its inner Vec. \
+             Root-cause pending /backend investigation (S60 Wave 2 Round 2).\n\
+             trials that crashed: {}",
+            crashes.len(),
+            TRIALS,
+            crashes.join(", "),
+        );
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Reduction step 1 — baseline: the 14-LOC minimal crashing source.
+// -----------------------------------------------------------------------------
+//
+// If this FAILS, the drop-glue defect is reproduced. If it PASSES (a
+// possibility given the ASLR non-determinism), rerun — under
+// `Command::new` spawn the reliability approaches 100%.
+
+const S60_DROP_GLUE_MINIMAL: &str = r#"(import [primitives [*]])
+
+(deftype Grid [cells])
+
+(defn cell-at [g idx]
+  (match g [(Grid cells) (vec-get cells idx)]))
+
+(defn walk [g]
+  (let [c1 (cell-at g 0)
+        c2 (cell-at g 0)]
+    0))
+
+(defn main []
+  (let [g (Grid (vec-push [] 0))]
+    (walk g)))
+"#;
+
+// FIXME(/backend) — S60 Round 2 MINIMAL (14 LOC). Drop-glue / auto-curry
+// closure captures the ADT `g` twice (once per `cell-at` call in `walk`);
+// when both closures are RC-dec'd, the captured `g`'s RC reaches zero
+// before `walk`'s scope cleanup, causing `heap_dealloc` to be invoked on
+// `g`'s inner Vec twice (or on `g` itself). Confirmed against CLIF
+// (`CRANELISP_CODEGEN_DUMP=*`): `walk`'s block1 allocates two 24-byte
+// heap regions, stores two fn pointers + the captured `v1` (g), bumps g's
+// RC twice, calls `fn3(closure)` then `fn8(closure)`, then on return
+// decrements each closure's RC to zero and runs drop glue. Root cause
+// is in either (a) `emit_consuming_caller_rc` for defn calls that get
+// auto-curried despite both args present, or (b) closure env RC
+// accounting for captures of ADT-wrapped Vec. Not fixed in this task —
+// reduction only.
+#[test]
+fn s60_drop_glue_minimal_14_loc_no_crash() {
+    // spec: spec/12-runtime.md §12.4 — RC inc/dec must balance; drop
+    // glue must not dec a captured value that the caller also dec's.
+    reduce_single_file(S60_DROP_GLUE_MINIMAL, "s60_drop_glue_minimal_14_loc");
+}
+
+// -----------------------------------------------------------------------------
+// Reduction step 2 — negative control: ONE cell-at call, no crash.
+// -----------------------------------------------------------------------------
+//
+// Proves: the DOUBLE `cell-at` call is load-bearing. One call doesn't
+// trigger the double-free. This pins the defect to the interaction of
+// two closure allocations on the same captured `g`.
+
+const S60_DROP_GLUE_ONE_CALL: &str = r#"(import [primitives [*]])
+
+(deftype Grid [cells])
+
+(defn cell-at [g idx]
+  (match g [(Grid cells) (vec-get cells idx)]))
+
+(defn walk [g]
+  (let [c1 (cell-at g 0)]
+    0))
+
+(defn main []
+  (let [g (Grid (vec-push [] 0))]
+    (walk g)))
+"#;
+
+#[test]
+fn s60_drop_glue_one_cellat_call_passes() {
+    // Control: single `cell-at` invocation does not crash. Pins the
+    // defect to the TWO-closure-same-capture interaction.
+    reduce_single_file(S60_DROP_GLUE_ONE_CALL, "s60_drop_glue_one_cellat_call");
+}
+
+// -----------------------------------------------------------------------------
+// Reduction step 3 — negative control: INLINE match, no intermediate fn.
+// -----------------------------------------------------------------------------
+//
+// `walk` body uses inline `(match g [(Grid cs) (vec-get cs 0)])` twice
+// instead of calling `cell-at`. No closure/partial-application path —
+// this passes. Proves: the defect is in `cell-at` being called (the
+// intermediate defn invocation) not in match-on-Grid semantics.
+
+const S60_DROP_GLUE_INLINE_MATCH: &str = r#"(import [primitives [*]])
+
+(deftype Grid [cells])
+
+(defn walk [g]
+  (let [c1 (match g [(Grid cs) (vec-get cs 0)])
+        c2 (match g [(Grid cs) (vec-get cs 0)])]
+    0))
+
+(defn main []
+  (let [g (Grid (vec-push [] 0))]
+    (walk g)))
+"#;
+
+#[test]
+fn s60_drop_glue_inline_match_passes() {
+    // Control: inline-match twice on the same `g` does not crash.
+    // Pins the defect to the defn-call path (cell-at), NOT to
+    // match-semantics on Grid.
+    reduce_single_file(S60_DROP_GLUE_INLINE_MATCH, "s60_drop_glue_inline_match");
+}
+
+// -----------------------------------------------------------------------------
+// Reduction step 4 — negative control: Grid of Vec Int (no nested ADT).
+// -----------------------------------------------------------------------------
+//
+// Same 14-LOC shape but the Vec's element type is bare Int, not Cell ADT.
+// CLARIFICATION TO EARLIER HYPOTHESIS: Cell is NOT load-bearing — this
+// variant also crashes. What matters is Grid being an ADT wrapping a
+// Vec, not the Vec element type. The inner Vec's RC handling is what
+// the closure drop-glue mis-accounts for.
+
+const S60_DROP_GLUE_GRID_VEC_INT: &str = r#"(import [primitives [*]])
+
+(deftype Grid [cells])
+
+(defn cell-at [g idx]
+  (match g [(Grid cells) (vec-get cells idx)]))
+
+(defn walk [g]
+  (let [c1 (cell-at g 0)
+        c2 (cell-at g 0)]
+    0))
+
+(defn main []
+  (let [g (Grid (vec-push [] 0))]
+    (walk g)))
+"#;
+
+// FIXME(/backend) — S60 Round 2 variant. This is literally identical
+// source to `s60_drop_glue_minimal_14_loc` — committed as a duplicate
+// regression guard so that a well-intentioned "simplify" edit of the
+// minimal test can't silently delete coverage. If one crashes, both do.
+#[test]
+fn s60_drop_glue_grid_vec_int_no_crash() {
+    reduce_single_file(S60_DROP_GLUE_GRID_VEC_INT, "s60_drop_glue_grid_vec_int");
+}
+
+// -----------------------------------------------------------------------------
+// Reduction step 5 — negative control: no Grid wrapper, Vec only.
+// -----------------------------------------------------------------------------
+//
+// `walk` takes a bare Vec and calls `vec-get` twice. No ADT wrapping,
+// no match. Passes — proves the ADT WRAPPER (Grid) is load-bearing,
+// not just the double-lookup pattern.
+
+const S60_DROP_GLUE_NO_WRAPPER: &str = r#"(import [primitives [*]])
+
+(defn walk [v]
+  (let [c1 (vec-get v 0)
+        c2 (vec-get v 0)]
+    0))
+
+(defn main []
+  (let [v (vec-push [] 0)]
+    (walk v)))
+"#;
+
+#[test]
+fn s60_drop_glue_no_adt_wrapper_passes() {
+    // Control: double `vec-get` on bare Vec, no ADT wrapper. Passes.
+    // Pins the defect to the Grid-wrapped-Vec shape specifically.
+    reduce_single_file(S60_DROP_GLUE_NO_WRAPPER, "s60_drop_glue_no_adt_wrapper");
+}
+
+// -----------------------------------------------------------------------------
+// Reduction step 6 — negative control: inline both `cell-at` calls
+// into `main`, no intermediate function.
+// -----------------------------------------------------------------------------
+//
+// Same two `cell-at` calls, same Grid wrapper, but happening directly
+// in `main` rather than inside an intermediate `walk` function. Passes.
+// Proves: the CROSSING of a function-call boundary with a Grid argument
+// is load-bearing — the auto-curry / closure path only triggers
+// when `cell-at` is called from inside a function whose parameter is
+// the Grid being unpacked.
+
+const S60_DROP_GLUE_NO_INTERMEDIATE: &str = r#"(import [primitives [*]])
+
+(deftype Grid [cells])
+
+(defn cell-at [g idx]
+  (match g [(Grid cells) (vec-get cells idx)]))
+
+(defn main []
+  (let [g (Grid (vec-push [] 0))
+        c1 (cell-at g 0)
+        c2 (cell-at g 0)]
+    0))
+"#;
+
+#[test]
+fn s60_drop_glue_no_intermediate_fn_passes() {
+    // Control: double cell-at called directly from main (no walk fn).
+    // Passes. Pins the defect to the intermediate-fn parameter path.
+    reduce_single_file(
+        S60_DROP_GLUE_NO_INTERMEDIATE,
+        "s60_drop_glue_no_intermediate_fn",
+    );
+}

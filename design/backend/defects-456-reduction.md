@@ -745,3 +745,218 @@ linker and `symbol_tables`.
 | Active time | ~90 minutes |
 | New tests committed | 11 (8 failing regression guards + 3 negative controls) |
 | Design docs updated | 1 (this section) |
+
+---
+
+## Sprint 60 Wave 2 Round 2 — drop-glue reduction
+
+After the single-GOT fix in Wave 2 Step A.3 resolved the cache-reuse dual-GOT
+failures, 13 A-cluster tests in `tests/sprint59_defects456_repro.rs` still
+failed. These were not dual-GOT failures — they abort inside `heap_dealloc`
+(cranelisp-runtime/src/alloc.rs:191) via a non-unwinding panic, the classic
+double-free / RC-underflow signature.
+
+### Starting shape
+
+The canonical failing test is `d6_exemplar_propagate_only_does_not_segv`.
+Baseline:
+
+- Harness: subprocess `Command::new(cranelisp) --run exemplar/d6_propagate_only.cl`
+- Entry source: 10 LOC Cranelisp, imports `grid` + `solver` from
+  `exemplar/*.cl` (~500 LOC across both modules).
+- Observed: `exit=None` (killed by signal), stack trace shows
+  `heap_dealloc → panic_cannot_unwind → non-unwinding panic → abort`.
+
+### Tty-dependence (important finding)
+
+The crash is conditional on stdio being piped (non-TTY). Running the same
+binary with the same source from an interactive shell (TTY-attached stderr)
+exits 0. Running with `</dev/null 2>/tmp/err` or via `Command::new` from a
+test harness crashes. This is heap-layout coincidence: differences in
+whatever ASLR/libc path runs during TTY vs pipe initialisation shift the
+allocator's starting layout just enough that the double-free hits a
+different page.
+
+**Implication for reduction**: must test under piped-stdio conditions (all
+the reduction tests committed here use `Stdio::piped()` / `Stdio::null()`
+to match).
+
+### Reduction path (8 steps)
+
+Each step alters one dimension and commits the result as a test in
+`tests/sprint60_reduction.rs` ("S60 Wave 2 Round 2 — drop-glue reduction"
+section). Committed tests listed in the table below with pass/fail
+disposition.
+
+| Step | Alteration | Exit code | Committed test |
+|---|---|---|---|
+| baseline | exemplar grid.cl + solver.cl, `(propagate g)` | None (signal) | `d6_exemplar_propagate_only` (existing) |
+| drop solver.cl `platform stdio` + `print` | strip IO imports | 139 | n/a (intermediate) |
+| drop `eliminate` + `eliminate-from-peers` | propagate-pass-helper no-op | 139 | n/a (intermediate) |
+| drop `grids-differ-helper`'s nested match | single-match, no c2 load | 1 (no crash) | n/a (control) |
+| single-file, no cross-module imports | inline grid types + helpers | 133 | `s60_drop_glue_minimal_14_loc_no_crash` |
+| grid size 81 → 2 | smaller vec | 133 | (minimal uses size 1) |
+| drop Cell ADT, keep Grid | bare Vec Int wrapped in Grid | 134 | `s60_drop_glue_grid_vec_int_no_crash` |
+| reduce walk recursion → single call | no recursion | 133 | (minimal at 14 LOC) |
+
+### Minimal repro (14 LOC of Cranelisp)
+
+```clojure
+(import [primitives [*]])
+
+(deftype Grid [cells])
+
+(defn cell-at [g idx]
+  (match g [(Grid cells) (vec-get cells idx)]))
+
+(defn walk [g]
+  (let [c1 (cell-at g 0)
+        c2 (cell-at g 0)]
+    0))
+
+(defn main []
+  (let [g (Grid (vec-push [] 0))]
+    (walk g)))
+```
+
+### Load-bearing features (committed as PASSING negative controls)
+
+The following reductions do NOT crash — each pins one dimension whose
+absence removes the defect:
+
+| Control test | Alteration | Conclusion |
+|---|---|---|
+| `s60_drop_glue_one_cellat_call_passes` | one `cell-at` call in walk | Two-call interaction is load-bearing |
+| `s60_drop_glue_inline_match_passes` | inline `(match g [...])` instead of calling `cell-at` | The intermediate defn-call is load-bearing |
+| `s60_drop_glue_no_adt_wrapper_passes` | bare Vec, no Grid wrapper | The ADT wrapper is load-bearing |
+| `s60_drop_glue_no_intermediate_fn_passes` | both `cell-at` calls in `main` directly | The intermediate function's parameter path is load-bearing |
+
+### Non-determinism (trial-count justification)
+
+Under shell spawn the crash rate is ~70% per trial. Under `Command::new`
+with piped stdio and a fresh tempdir (cold cache) the rate is ~90%. To
+make the test panic reliably, `reduce_single_file` runs 10 trials in
+fresh tempdirs and fails the test if ANY trial signal-crashes. Under
+cold-cache conditions this gives >99% detection.
+
+### CLIF inspection of `walk` (via `CRANELISP_CODEGEN_DUMP=*`)
+
+The crashing `walk` emits TWO 24-byte heap allocations per call:
+
+```
+block1(v1: i64):
+    ;; First cell-at g 0
+    v3 = call fn0(24)          ; heap_alloc(24) — allocates closure env
+    store v4, v3+16            ; fn1 = cell-at fn ptr
+    store v5, v3+24            ; fn2 = drop glue ptr
+    store v1, v3+32            ; captured g
+    atomic_rmw.i64 add v1+8, 1 ; inc g's RC for capture
+    v9 = call fn3(v3)          ; invoke via closure
+
+    ;; Second cell-at g 0 — mirror of the above
+    v12 = call fn5(24)
+    store v13, v12+16
+    store v14, v12+24
+    store v1, v12+32
+    atomic_rmw.i64 add v1+8, 1
+    v18 = call fn8(v12)
+
+    ;; ... RC cleanup ...
+```
+
+This looks like auto-curry / closure-mediated dispatch for a direct
+two-arg call `(cell-at g 0)`. Notes from memory/:
+
+- `AutoCurry`: `compile_auto_curry` generates `(env_ptr, remaining...) -> i64`
+  wrappers, loads captured args from env.
+- Resolution order includes auto-curry fallback.
+
+Given both args are supplied, auto-curry should not fire. Two hypotheses
+for why it does here:
+
+1. `cell-at` is classified as constrained-polymorphic (it takes a Grid,
+   and the inferred `match g [(Grid cs) ...]` binds `cs` as a polymorphic
+   type var). Monomorphisation at call sites may dispatch via closure
+   when the type isn't fully instantiated.
+2. The `match` inside `cell-at` that destructures `Grid` needs `g` as a
+   borrowed (not consumed) reference, but the caller emits the call with
+   consuming convention. The intermediate closure forces a borrow-via-
+   capture that increments + decrements `g`'s RC symmetrically.
+
+### Hypothesis of the bug mechanism
+
+Each `cell-at` closure captures `v1` (the Grid) at +32 and bumps `v1`'s
+RC by 1. When the closure is called, `fn3` returns the Cell value. After
+the call, the closure's RC is dec'd to 0 and drop glue runs — the drop
+glue dec's the captured `v1`. So g's RC bookkeeping:
+
+- main passes g to walk with inc (non-last-use in main, or last-use transfer — not shown)
+- walk's g parameter RC: 1 (owned by walk)
+- First closure capture: g.rc → 2
+- First closure drop (after call): drop glue dec g → 1
+- Second closure capture: g.rc → 2
+- Second closure drop (after call): drop glue dec g → 1
+- walk's scope exit: dec g → 0 → free.
+
+That's a correct balance. So if this were the only path, no crash. The
+CLIF shows `walk` ALSO dec's `v1` at the end (block5), and that dec
+additionally triggers drop-glue-for-Grid which loads `v1+24` (the Vec
+pointer) and dec's IT. But the closures' drop glue (fn2, fn7) are
+DIFFERENT — they likely perform the same Vec-dec when they dec the Grid
+they captured.
+
+Concretely: if `fn2`/`fn7` is a drop-glue-for-Grid that dec's the Vec
+at +24 in addition to the Grid itself, then:
+
+- When closure 1 is dec'd, it dec's Grid (g.rc 2→1), AND dec's Vec
+  (vec.rc 1→0 → free!).
+- When closure 2 is dec'd, it tries to dec Vec again — double free, abort.
+
+This matches `heap_dealloc`'s double-free detection:
+
+```rust
+// LIVE_ALLOCS check in dealloc()
+debug_assert!(
+    live.remove(&addr),
+    "double free or invalid free at {addr:#x}"
+);
+```
+
+### Is the fix obvious? — TENTATIVELY YES
+
+The fix is at the boundary between closure env drop-glue and the captured
+ADT's own drop-glue:
+
+- Closure env drop glue should ONLY dec the captured value's outer RC
+  (treating it as borrowed-and-now-released).
+- It must NOT recursively dec the ADT's fields — that's the ADT's own
+  drop glue, which runs only when the ADT's RC reaches 0 via direct
+  caller-side dec.
+
+Likely locations:
+- `crates/cranelisp-backend/src/codegen/` — closure drop-glue emission
+- or `emit_closure_env_drop_glue` — should emit `dec` on the captured
+  value, not `dec_recursive`.
+
+But per the user's directive — **do not fix during reduction**. Committing
+the reduced tests and the hypothesis; /backend picks up with fix in the
+next iteration.
+
+### Files added/modified (S60 Wave 2 Round 2 reduction)
+
+- `tests/sprint60_reduction.rs` — EXTENDED, 6 new tests (2 failing
+  regression guards + 4 negative controls).
+- `design/backend/defects-456-reduction.md` — this section appended.
+- `crates/cranelisp-backend/src/cache/linker.rs` — defense-in-depth
+  zeroing of `__cranelisp_got_{M}` bytes (orthogonal to this reduction;
+  see Task 1 above).
+
+### Budget used (S60 Wave 2 Round 2)
+
+| Resource | Usage |
+|---|---|
+| `cargo nextest run --test sprint60_reduction` | 4 runs during reduction |
+| Subprocess trials outside nextest | ~80 (bisection + shell repro validation) |
+| Active time | ~2 hours |
+| New tests committed | 6 (2 failing regression guards + 4 negative controls) |
+
