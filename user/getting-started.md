@@ -1999,7 +1999,11 @@ The `do` macro handles the bind chaining for you. The `pure` function (lowercase
 
    This prints `3`, `2`, `1`, `go!` on separate lines.
 
-For more IO examples, see `examples/21-hello-io.cl` through `examples/24-io-echo.cl` in the repository.
+For more IO examples, see `examples/21-hello-io.cl` through `examples/24-io-echo.cl` in the repository. These can be run directly from any working directory without setting `CRANELISP_LIB`, because the `examples/` tree ships its own `Cranelisp.toml` pointing at the in-tree library:
+
+```
+cargo run -- --run examples/21-hello-io.cl
+```
 
 ### IO Summary
 

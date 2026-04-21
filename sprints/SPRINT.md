@@ -451,6 +451,8 @@ FIXME filed in `design/stdlib/examples-run-path.md §4.4 step 4` with three reso
 
 Each owning skill cleans its own files during Wave 1. Treated as mechanical cleanup — no design review required for pure removal / `_`-prefix / `#[allow]` disposition. File a FIXME(/skill) only if the "dead" code is actually about to be used by Wave 2 (e.g., `user_fqtn` in /typecheck may be called from the upcoming FQTypeName migration — assess before deletion).
 
+**Wave 4 finding — bare primitive at REPL prompt fails codegen** (2026-04-21, `/stdlib` demo refresh). With Sprint 60 Wave 1's `(export [primitives [...]])` re-exports in `stdlib/prelude.cl`, `/sig add-i64`, `/info add-i64`, and `(add-i64 2 3)` all resolve correctly. BUT typing bare `add-i64` at the prompt errors: `codegen error at 0..7: undefined variable: add-i64` — introspection (`/sig`) sees it, call form sees it, bare-value form does not. Trait-dispatched names like `+` and user-bound names resolve fine as bare values. Re-exported `primitives` names behave specially at the prompt's bare-name-value path. Not fixed in demo scope — demo uses `/sig add-i64` instead. FIXME(/int) filed via this note — investigate whether `(export [primitives [...]])` populates the value-expression path in `CompilerSession` the same way it populates the call/introspection paths.
+
 ## Outcome
 
 *To be filled at sprint close.*

@@ -1,0 +1,57 @@
+; Cranelisp Ring 4R — Sprint 60: Clean & Green — JIT/object convergence + observability
+
+; Sprint 60 frames five S59 carries under one invariant: same source MUST
+; produce the same code bytes across JIT direct-finalize and .o-relocation
+; paths. Closing that divergence cleared the carry cluster; alongside it a
+; handful of high-value FIXMEs landed — CLIF dump, cache build marker,
+; /sig docstring format, and captured-variable RC contract.
+
+; Workstream G — /sig for a docstring'd defn now renders the universal
+; spec §1.1 line: `:Type name ; classification - docstring`. Prior to S60
+; the dash and docstring were omitted on the /sig path.
+
+(defn double "Double an integer." [:Int x] (+ x x))
+
+/sig double
+
+; Workstream A — JIT/object convergence. The S59 carries bundled a family
+; of defects where a captured heap value or polymorphic dispatch compiled
+; one way under JIT finalize and a different way under .o + relocation.
+; The most visible shape was a lambda closing over a let-bound value,
+; called inside the same let body. Now one code path, one RC contract.
+
+(let [factor 10] (let [scale (fn [:Int x] (* x factor))] (scale 7)))
+
+; Workstream B — CLIF-dump observability. `/clif <name>` prints the
+; Cranelift IR for a defn so the shrunk repro can be inspected by eye —
+; load-bearing during S60 root-causing, and now permanent.
+
+/clif double
+
+; Workstream C — object-file build marker. The cache `manifest.json` now
+; carries a `compiler_mtime` derived at build time; a rebuilt compiler
+; rejects stale `.o` artefacts automatically. No more mystery staleness
+; after a `cargo build`.
+
+/sh printf '(defn triple [:Int x] (+ x (+ x x)))\n' > mathlib.cl
+
+(import [mathlib [triple]])
+
+(triple 14)
+
+/quit
+
+; Restart — the fresh session restores user.cl, rehydrates `mathlib`
+; from cache, and the cross-module call (JIT path + .o-relocation path
+; share one register_module recursion per S59) returns in one prompt.
+; The cache manifest, flushed on session end, now carries `compiler_mtime`.
+
+/sh grep compiler_mtime .cranelisp-cache/manifest.json
+
+(triple 100)
+
+; Sprint 60 closes: 5 carry failures flipped green, one invariant
+; ("same source → same code bytes") restored across JIT and object
+; codegen, CLIF dump permanent, cache build-marker in place, /sig
+; format conforms to repl/spec.md §1.1. Path clear for Sprint 61's
+; FQTypeName migration.

@@ -34,7 +34,9 @@
 (str "2 + 3 = " (+ 2 3))
 
 ; === String primitives — text manipulation ===
+; Text ops live in the primitives module; import them explicitly.
 
+(import [primitives [to-upper split join replace trim contains?]])
 (to-upper "hello cranelisp")
 (split "alice,bob,carol" ",")
 (join " and " (split "alice,bob,carol" ","))
@@ -50,3 +52,14 @@
 (let [inc-then-double (compose double inc)] (inc-then-double 5))
 (-> 5 inc double inc)
 (join ", " (-> "hello world" (split " ")))
+
+; === Sprint 60: named primitives in the prelude ===
+; 30 Ring 0/1 primitives now ride the prelude alongside traits,
+; so REPL and --run share one user surface.
+
+/sig add-i64
+(add-i64 2 3)
+(mul-i64 6 7)
+(str-concat "cranelisp " "lives")
+(int-to-string 42)
+(vec-len (vec 10 20 30))
