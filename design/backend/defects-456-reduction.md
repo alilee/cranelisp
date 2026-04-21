@@ -960,3 +960,219 @@ next iteration.
 | Active time | ~2 hours |
 | New tests committed | 6 (2 failing regression guards + 4 negative controls) |
 
+
+---
+
+## Sprint 60 Wave 2 Round 3 — run-tests batched reduction
+
+### Starting failure
+
+`tests/wave6_demo_repros::run_tests_batched_invocation_no_crash` (the sole
+non-flaky remaining S60 failure after the Wave-2 α-fix landed). The test
+writes `""` to `exemplar/user.cl`, pipes `(import [html [test-wrap-tag]])\n/run-tests html\n`
+to the REPL, and asserts that the ten html tests run AND the process exits
+cleanly.
+
+### Crash signature (not a crash)
+
+- Exit code: **1** (not a signal). Never SIGSEGV, never SIGTRAP.
+- Determinism: **100% in a fresh dir**. The earlier "pre-existing, unrelated"
+  disposition was based on a dir that still had `.cranelisp-cache` + populated
+  `user.cl` from a prior test run — second invocations exit 0 because the
+  entry module parses non-empty on startup.
+- stderr tail:
+  ```
+  error: module error at 0..0: module 'user' failed: module error at 0..0:
+  no parsed sexps for module 'user'
+  ```
+- RUST_BACKTRACE adds nothing (the panic is the nextest assert, not a
+  runtime crash — the binary already exited 1 before the test harness
+  inspected it).
+
+### Reduction chain
+
+Five reductions committed in `tests/sprint60_run_tests_reduction.rs`:
+
+| # | Test name | Shape | Status |
+|---|---|---|---|
+| 1 | `..._1_exemplar_batched_failing` | Original wave6 shape | FAIL |
+| 2 | `..._2_repl_import_empty_user_failing` | 1 defn + REPL import (19 LOC total) | FAIL |
+| 3 | `..._3_quit_variant_failing` | Same as 2 but /quit instead of EOF | FAIL |
+| 4 | `..._4_second_form_variant_failing` | Same as 2 but a 2nd form before EOF | FAIL |
+| 5 | `..._5_import_in_file_passes_control` | Import in user.cl (not REPL) | PASS |
+
+Reduction steps that moved the understanding:
+
+1. **/run-tests + exemplar + html removed.** The 10 html tests actually
+   PASS (`10 passed in 7.21ms`) before the failure-tail is emitted. The
+   test runner, discover-tests builtin, run-test builtin, and html.cl
+   tests are OFF the hot path.
+2. **Reduced to a single defn + single REPL import** (test 2 — 19 LOC
+   across two files). Same failure tail, same exit 1.
+3. **EOF not the trigger** (test 3). /quit breaks from the loop via
+   `CommandResult::Quit`, EOF breaks via `line = Err(_) => break`. Both
+   reach `wait_object_complete()?` in `src/main.rs:180`. Both fail.
+4. **"One more iteration" does not save** (test 4). Even if the REPL
+   runs one more `eval + sync_watcher + poll_and_reload` cycle between
+   the import and shutdown, the user-module scheduler state stays
+   broken.
+5. **REPL-specific** (test 5 — negative control). The identical
+   symbolic operation (`user` imports `tiny.answer`) works cleanly when
+   placed in `user.cl` ahead of session start. So the bug is specifically
+   in how the REPL path transitions `user`'s scheduler state after an
+   import is evaluated at the prompt.
+
+### Minimal repro source
+
+Two files in a fresh tempdir:
+```
+tiny.cl:   (defn answer [] 42)
+user.cl:   [MISSING — or empty]
+```
+One line of REPL input:
+```
+(import [tiny [answer]])
+```
+Any termination (EOF, /quit, subsequent form) → exit 1 with
+`no parsed sexps for module 'user'`.
+
+### Root cause hypothesis
+
+**NEW hypothesis H5** — not H1/H2/H3/H4 from the task brief.
+
+The defect is a **persistence-collapse residue** in the REPL-eval path's
+interaction with the module scheduler:
+
+1. At session startup, `register_entry_module("user")` reads `user.cl`
+   (missing → `source = ""`), parses to an empty `Vec<Sexp>`, publishes
+   the empty vec into `SharedState::module_sexps`, and registers `user`
+   with the scheduler. User reaches `inmem_done = true` immediately
+   (empty program typechecks trivially).
+2. REPL reads `(import [tiny [answer]])` and calls
+   `session_v4::process_single_form` → `worker::process_module_forms`
+   with user's module path + the single sexp. Import processing (worker.rs
+   handle_import around line 1268-1275) publishes `tiny`'s sexps,
+   registers tiny with the scheduler with `delays_other = true`, AND calls
+   `scheduler.block_for_typecheck(user, tiny, '*')` which transitions
+   user to `ModulePool::TypecheckBlocked`. `process_module_forms` returns
+   `ProcessResult::Blocked{ dep_module: tiny, dep_sexps }`.
+3. `register_dep_for_eval(tiny, ...)` drives tiny to `inmem_done`. The
+   retry loop iterates. Second call to `process_module_forms` on user
+   — this time the import resolves (tiny is ready) — returns
+   `ProcessResult::Complete { program: [] }` (import form adds to the
+   symbol table but emits no program). `eval_one_form` returns `Ok(None)`.
+4. `main.rs` sees `Ok(None)` and calls `regenerate_backing_file()`.
+   That function writes `user.cl` with `(import [tiny [answer]])` and
+   updates the watcher content-hash — but critically DOES NOT republish
+   user's updated sexps into `SharedState::module_sexps`. User's entry
+   there is still the empty `Vec<Sexp>` from session start.
+5. `sync_watcher + poll_and_reload` may fire a `reload_module(user)`,
+   which would publish the new sexps. But in the minimal repro this
+   either doesn't fire in time or fires but converges under different
+   race conditions than the EOF path. Empirically: the failure is 100%
+   deterministic regardless.
+6. On shutdown (EOF or /quit), `wait_object_complete()` inspects every
+   registered module. User is in `Failed` state (a persistent worker
+   has popped `Typecheck(user)` at some point between steps 3 and 6,
+   found `module_sexps[user]` is an empty Vec, and marked the module
+   failed with the "no parsed sexps for module" message).
+
+Wait — module_sexps HAS the empty Vec; it wouldn't emit the "not found"
+error. Let me refine: the empty Vec IS there, but the second typecheck
+attempt of user (after tiny completes) tries to re-process with a non-zero
+start_idx (from `module_resume_from_form`) against an empty sexp list,
+or a worker running `handle_typecheck_work_shared` path somehow sees the
+map entry removed. The exact race between `poll_and_reload`
+(`reload_module` calls `typecheck_products.remove(user)` + sexps insert
++ re_register) and a persistent worker popping Typecheck(user) with
+the old sexps and a start_idx mid-way through the worker sequence
+could leave user's sexp entry absent.
+
+### CLIF evidence
+
+None — this is NOT a codegen defect. The 10 html tests compile and
+execute correctly (the test bodies themselves pass). The failure is
+entirely in session/scheduler orchestration. `CRANELISP_CODEGEN_TRACE=1`
+produces no useful output because no misbehaving CLIF is emitted.
+
+### Is the fix obvious?
+
+**Mostly.** Two candidate surgical fixes (do NOT implement this turn —
+diagnosis only per user directive):
+
+1. **`regenerate_backing_file` should republish** the current module's
+   updated sexps into `SharedState::module_sexps` at the same time it
+   writes `user.cl`. The watcher's self-write suppression works by
+   content-hash, but it doesn't close the "scheduler sees stale empty
+   sexps" window. Publish the freshly-parsed sexps synchronously so any
+   subsequent worker wake observes the current source.
+2. **`wait_object_complete` should tolerate `user` having no typecheck
+   work pending** in REPL mode — user isn't really a compilation unit
+   in the REPL sense; it's a view of accumulated definitions. A path
+   that inspects user's scheduler state after shutdown-initiation and
+   clears Failed → Complete for the entry REPL module would paper over
+   the symptom without fixing the ordering bug.
+
+Option 1 is the correct fix. It matches the Sprint 58 Wave 6 Defect 1
+pattern (`/int` FIXME: publish before register); this is the mirror
+case for REPL-time entry-module updates.
+
+### Owning skill
+
+**FIXME(/int)** — `session_v4::regenerate_backing_file` or the enclosing
+REPL-eval path is the right site. This belongs to `/int` (session and
+REPL orchestration), not `/backend` (codegen). The dual-path-persistence
+collapse doc (`design/int/dual-path-persistence-collapse.md`) already
+names this class of bug; this is a residual site the Sprint 59 collapse
+did not cover.
+
+### Surprises
+
+- **The 10 html tests actually pass.** The earlier framing of the defect
+  as "/run-tests html crashes with SIGSEGV" (Defect 4) was based on a
+  state of the world where html was even loadable; after S59 and S60
+  α-fixes the html tests load and run cleanly — they surface a wholly
+  different shutdown-path bug whose signature happens to tick the test's
+  `load_failed` flag (which looks for "no parsed sexps for module").
+- **The failure is NOT flaky and NOT related to /run-tests.** The
+  wave6 test's assertion predicates conflate three unrelated failure
+  modes (signal_crash, no_tests_found, load_failed). The test is green
+  iff `test_ran && !load_failed && !signal_crash && !no_tests_found`.
+  Today: `test_ran=true, signal_crash=false, no_tests_found=false,
+  load_failed=true` — so the test fails only on the last predicate.
+- **`/quit` doesn't save the failure.** Earlier shell testing in a
+  polluted cwd (user.cl from a previous run) gave false-positive exit
+  0 results. Fresh tempdir testing shows the failure is deterministic
+  regardless of how the REPL loop terminates.
+- **The test's docstring is now partly misleading.** Defect 4 (html
+  SIGSEGV) and Defect 5 (form SIGTRAP) are no longer reproducible as
+  stated — /repl observed them in Wave 6 but subsequent backend fixes
+  resolved those signal-crashes. The test's assertion only fires now
+  because of the residual shutdown-path defect. Update the test's
+  comment to reflect the S60-current reality is on /repl's plate, not
+  mine.
+
+### Files added (S60 Wave 2 Round 3)
+
+- `tests/sprint60_run_tests_reduction.rs` — NEW, 5 reductions (4
+  failing regression guards + 1 passing negative control)
+- `design/backend/defects-456-reduction.md` — this section appended
+
+### Budget used (S60 Wave 2 Round 3)
+
+| Resource | Usage |
+|---|---|
+| `cargo nextest run --test sprint60_run_tests_reduction` | 2 runs |
+| `cargo nextest run --test wave6_demo_repros` (original) | 2 runs |
+| Shell subprocess bisection trials | ~25 |
+| Active time | ~1 hour |
+| New tests committed | 5 (4 failing + 1 passing control) |
+
+### Next skill
+
+- `/int` — pick up the FIXME in `session_v4::regenerate_backing_file`
+  (or wherever the REPL-eval path decides to publish updated sexps).
+  Option 1 in §"Is the fix obvious?" above is the recommended fix.
+  All five tests in `tests/sprint60_run_tests_reduction.rs` + the
+  original `tests/wave6_demo_repros::run_tests_batched_invocation_no_crash`
+  flip to PASS when the fix lands.
