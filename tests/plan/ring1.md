@@ -55,6 +55,41 @@
 - ADT drop glue for nested heap types (e.g., `(Some "hello")` — drops both the Some and the String)
 - Closure environment RC (captured heap values freed when closure is freed)
 
+### Inline-ADT-arg class [added Sprint 61 Slice 5 J, 2026-04-22]
+
+Sprint 61 Slice 2 Layer 3 surfaced a codegen defect in the inline
+ADT construction + argument-passing interaction: `(f (Ctor [heap-val]))`
+under consuming convention double-drops the inner heap value through
+the consuming-arg RC path. Pre-Slice-2 test coverage lacked a
+property-level assertion for this shape.
+
+**Property**: for every primitive and heap field type `T` and every
+single-field ADT constructor `Ctor`:
+
+```
+(f (Ctor [v]))  ≡  (let [x (Ctor [v])] (f x))
+```
+
+in terms of: final computed value, `alloc_count` / `dealloc_count`
+balance, `bytes_current` equality before/after, and no SIGSEGV /
+SIGTRAP / runtime panic.
+
+**Parameter domain (minimum)**: `T` ∈ `{Int, Bool, String, (Vec Int),
+(Vec String), (Option Int), (Option String)}`. One representative `f`
+per `T` that `match`es the ADT and returns or operates on the inner
+value.
+
+**Rationale**: pinning the equivalence property covers the codegen
+regression shape that Slice 2 Layer 3 exposed (`design/backend/ring2-rc.md
+§5.5 borrowed_vars rule`). The shape is specific to inline
+construction — `let`-bound construction works, which is why the bug
+escaped previous test coverage entirely.
+
+**Reference**: `tests/plan/sprint-61-plan-gap-retro.md`.
+
+**Schedule**: NOT authored in Sprint 61. Plan row reserved for S62
+RC-property / concurrency audit or later scheduling.
+
 ## Acceptance Gate
 
 - `CRANELISP_RC_TRACE=1` shows balanced inc/dec for all tests

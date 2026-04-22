@@ -1,0 +1,78 @@
+; Cranelisp Ring 4S — Sprint 61: Bare-primitive echo, observability, IO closure fix
+
+; Sprint 61 delivered three user-visible wins: re-exported primitives now
+; display a spec-conforming introspection card at the bare-value path;
+; two new env-var-gated event logs (scheduler + IO) make concurrency
+; bugs diagnosable instead of heisenbugs; and an IO-trampoline /
+; closure-capture double-free (the `(fn [_] b)` / `bind` idiom) is
+; now stable — the shape used in every `then`-style combinator.
+
+; Slice 1 — bare-primitive name echo. Before S61, typing a re-exported
+; primitive at the prompt errored "undefined variable: add-i64". The
+; /int fix aligns three paths (bare value, /sig introspection, call)
+; on the same terminal `primitives/add-i64` attribution per
+; spec/08-modules.md §8.9. Type the name and the REPL answers
+; per repl/spec.md §1.1: `:Type name ; classification - docstring`.
+
+add-i64
+
+/sig add-i64
+
+(add-i64 2 3)
+
+; A handful more — the fix generalises across the re-exported
+; primitive surface (arithmetic, comparison, logical, string).
+
+mul-i64
+
+not
+
+str-concat
+
+; Slice 4 — capture-return-inc fix. The `(fn [_] b)` idiom at the heart
+; of every `then`-style IO combinator previously double-freed the
+; captured IO value: the closure returned `b` directly, the closure's
+; drop-glue then dec'd `b`, and the outer trampoline read a poisoned
+; tag. Surface symptoms ranged over exit codes 101, 133, 201, and
+; SIGABRT — one root cause. The backend-side `emit_capture_return_inc`
+; in control_flow.rs now balances the drop. The 7-line repro runs clean.
+
+(import [primitives [Pure bind add-i64]])
+
+(defn then [a b] (bind a (fn [_] b)))
+
+(defn test-then [] (bind (then (Pure 999) (Pure 42)) (fn [x] (Pure (add-i64 x 8)))))
+
+(test-then)
+
+; Slice 0 — observability. Two env-var-gated event logs landed this
+; sprint: CRANELISP_SCHEDULER_TRACE and CRANELISP_IO_TRACE. Each
+; writes a merge-sortable dump to stderr at process exit — empty by
+; default, zero-cost when unset. These logs were load-bearing during
+; S61 Slice 3 root-causing (H4/H5/H6 race closures) and are now
+; permanent instrumentation. See tests/CLAUDE.md §"Diagnostic Logging".
+
+/sh printf 'CRANELISP_SCHEDULER_TRACE=1\nCRANELISP_IO_TRACE=1\n'
+
+; Sample output (from sprint61 race-evidence logs) — one event per
+; line, `(timestamp, thread_ord_id)`-sorted, per-thread ring buffers
+; merged at process exit:
+;
+;   [SCH] ts=20007333 thr=ThreadId(2)/1 SymbolTableEnsure module=helper outcome=Created
+;   [SCH] ts=20016083 thr=ThreadId(2)/1 SymbolTableEnsure module=helper outcome=AlreadyPresent
+;   [SCH] ts=20024500 thr=ThreadId(1)/0 SymbolTableEnsure module=helper outcome=AlreadyPresent
+;
+; The "exactly one Created, all subsequent AlreadyPresent" pattern is
+; the H6 atomicity invariant. Scheduler trace made this visible.
+
+; Slice 3 — heisenbug race closures (infrastructure). Three scheduler
+; races closed this sprint (H4 publish-vs-flag ordering, H5 REPL-eval
+; thread starvation, H6 non-atomic ensure_module_exists). The fixes are
+; not directly demoable from the prompt — but the new trace above is
+; the tooling that made them tractable. Same source, same code bytes,
+; now across JIT finalize and .o relocation, and now across concurrent
+; module-registration windows.
+
+; Sprint 61 closes: 1 bare-primitive path convergence, 2 trace event
+; streams, 3 race closures, 1 IO-closure double-free repaired. Path
+; clear for Sprint 62's FQTypeName migration.

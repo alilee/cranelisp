@@ -4624,7 +4624,7 @@ mod persistent_worker_tests {
     // call, or (b) `register_dep_for_eval` above, which publishes BEFORE
     // its own `scheduler.register_module` call. Sprint 60 Workstream E-3
     // re-sites the deleted unit guard as structural tests below
-    // (`register_dep_shim_publishes_before_caller_registers` +
+    // (`register_dep_for_eval_publish_then_register_is_observable_to_downstream` +
     // `register_dep_for_eval_uses_delays_other_true`) plus debug-assert
     // guards inside both functions (see worker.rs::register_dep +
     // session_v4.rs::register_dep_for_eval). The end-to-end guard remains
@@ -4644,7 +4644,7 @@ mod persistent_worker_tests {
     // call — and the debug_assert!s inside both functions cover the worker
     // side under test conditions.
     #[test]
-    fn register_dep_shim_publishes_before_caller_registers() {
+    fn register_dep_for_eval_publish_then_register_is_observable_to_downstream() {
         // priority_workers=0 — no worker races with us to consume the
         // module_sexps entry. This test asserts ONLY the structural
         // ordering (publish + register happened) within

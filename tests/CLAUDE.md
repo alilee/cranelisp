@@ -164,6 +164,58 @@ Some older E2E tests define traits inline using constants (`NUM_TRAIT_PRELUDE`, 
 - **No test is silently dropped.** Every prototype test gets a disposition in the ring plans.
 - **Negative tests verify absence, not just presence.** For any MUST requirement that constrains what appears, write a companion test that verifies wrong things are absent. See below.
 
+### Fresh Temp Directory per Test
+
+**Rule**: Tests that write to the filesystem MUST use a fresh
+`tempfile::TempDir` per test. Tests MUST NOT write to checked-in paths
+(`exemplar/`, `examples/`, `stdlib/`, `tests/fixtures/`, `src/`, …) or
+to `project_root()`.
+
+**Why**: Sprint 60 Round 3 discovered that `user.cl` persistence in
+the exemplar's working directory accumulated across test runs,
+masking a defect's disposition (the "pre-existing" claim was
+environmental luck, not truth). Cross-test state pollution also masks
+races that fire only under specific filesystem preconditions.
+
+**How to apply**:
+
+- If a test needs a Cranelisp project directory (for `Cranelisp.toml`,
+  a module tree, `user.cl`, …), copy the minimal fixture into a fresh
+  `TempDir` at the start of the test. See
+  `tests/helpers/mod.rs::tempdir_project_from_fixture` for the shared
+  helper, or inline a recursive `copy_dir` when the set of source
+  files is variable (see `tests/sprint59_defects456_repro.rs::copy_exemplar_tree`).
+- If a test is genuinely read-only on checked-in paths, `project_root()`
+  is acceptable for locating the binary (`target/debug/cranelisp`),
+  the stdlib directory (for `CRANELISP_LIB`), or test fixtures under
+  `tests/fixtures/`. When used this way, the callsite MUST carry a
+  `// read-only on project_root` comment so future audits can
+  distinguish intentional from accidental usage.
+- Writes under `tests/{suite}/.runs/{RUN_TS}/{n_label}/` (the
+  `e2e.rs::test_dir()` pattern, now also in `tests/helpers/mod.rs::runs_dir`)
+  are permitted: the `.runs/` tree is `.gitignore`'d and per-test
+  labels provide isolation. Any new suite adopting this pattern MUST
+  also add its `.runs/` path to `.gitignore`.
+- `tempfile::TempDir` MUST be bound to a variable that lives for the
+  duration of the test (`let td = tempfile::tempdir().unwrap();` or
+  stored on a helper struct). Dropping the handle before the test ends
+  triggers eager cleanup and causes spurious failures under
+  concurrent runs.
+
+**Exception**: the `tests/*/.runs/{RUN_TS}/{n_label}/` pattern
+(`tests/e2e.rs::test_dir`, `tests/helpers/mod.rs::runs_dir`) is
+permitted. It uses `project_root()` to locate the suite's `.runs/`
+parent, then allocates an isolated per-test directory under
+`.gitignore`. When adopting this pattern in a new test suite, also add
+the corresponding `.runs/` path to `.gitignore`.
+
+**CI lint candidate**: a pre-commit check that greps for
+`project_root` + `fs::write|fs::create|File::create|Command::.*current_dir`
+in the same file, absent the `// read-only` annotation. Sprint 61
+Slice 5 E-1 audit found this lint would have flagged `d45_*`, `d6_*`,
+`d7_*`, `s60_run_tests_reduction_1_*`, and the default
+`ReplSessionBuilder` path — all of which are now converted.
+
 ## Negative Test Convention
 
 Positive tests verify correct behavior. Negative tests verify **incorrect behavior does not occur**. Both are required for full coverage — a test suite that only checks "the right thing appears" will pass green while the system also does wrong things.

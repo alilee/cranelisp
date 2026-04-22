@@ -412,6 +412,70 @@ fn type_error_does_not_corrupt_definitions() {
     assert_eq!(repl_eval(&mut session, "(inc 10)"), 11);
 }
 
+// Sprint 61 Slice 5 H (neg-coverage promotion #2).
+// spec: repl/spec.md §5.2 — Session state (defined functions, types,
+// modules) MUST NOT be corrupted by an error. The NEGATIVE face: an
+// erroring `(defn ...)` MUST NOT leave a half-installed entry — calling
+// the failed name after the error reports "undefined", not a
+// half-formed signature, and previously-defined symbols remain intact.
+//
+// This installs a regression guard for the "dual-path persistence
+// collapse" anti-pattern (Sprint 59/60 defect class) — where an error
+// partway through defn installation could leak an inconsistent entry
+// into the symbol table.
+#[test]
+fn type_error_does_not_corrupt_state_neg_failed_defn_absent() {
+    let mut session = repl_session();
+
+    // Baseline: install a known-good defn.
+    session.eval("(defn inc [x] (add-i64 x 1))").unwrap();
+    assert_eq!(repl_eval(&mut session, "(inc 5)"), 6);
+
+    // Try to install a broken defn: body references `add-i64` with a
+    // Bool — type error at the body-check stage, so the defn MUST NOT
+    // be installed.
+    let err = session.eval("(defn broken [x] (add-i64 x true))");
+    assert!(
+        err.is_err(),
+        "`(defn broken [x] (add-i64 x true))` MUST surface a type error"
+    );
+
+    // Negative assertion (primary): `broken` MUST NOT be resolvable —
+    // the failed defn left no half-installed entry in the symbol table.
+    // We call it like a function; the compiler should report an
+    // undefined-variable error (or refuse to resolve the name), not
+    // succeed silently and not produce a signature-mismatch error on a
+    // half-installed entry.
+    let call_broken = session.eval("(broken 5)");
+    assert!(
+        call_broken.is_err(),
+        "Calling the failed defn `broken` MUST produce an error — the \
+         failed defn MUST NOT leave a callable half-installed entry."
+    );
+    // The error message should surface `broken` as undefined (the spec
+    // §5.2 "state MUST NOT be corrupted" implies the failed name is
+    // absent, not half-present). We check the error mentions `broken`
+    // or `undefined` to confirm it's an undefined-name style error and
+    // not a type-mismatch against a partially-installed signature.
+    let msg = match call_broken {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("call to failed defn unexpectedly succeeded"),
+    };
+    assert!(
+        msg.contains("broken") || msg.contains("undefined") || msg.contains("not found"),
+        "Error calling failed defn should name the undefined symbol; \
+         got: {msg}"
+    );
+
+    // Negative assertion (secondary): the PRE-error baseline defn MUST
+    // still work — state is preserved.
+    assert_eq!(
+        repl_eval(&mut session, "(inc 10)"),
+        11,
+        "Baseline `inc` MUST survive the type error (spec §5.2)."
+    );
+}
+
 // spec: repl/spec.md §5.2 — parse error does not corrupt state
 #[test]
 fn parse_error_does_not_corrupt_definitions() {

@@ -20,21 +20,43 @@ use cranelisp_types::{CranelispError, ModuleFullPath, Type};
 ///
 /// Provides the same API that integration tests expect (new, new_with_prelude,
 /// eval returning EvalResult) but routes through the unified pipeline.
+///
+/// Sprint 61 Slice 5 E-1: `ReplSession` now owns a `tempfile::TempDir` for
+/// `register_module_with_source` writes. The session's `project_root`
+/// continues to point at `tests/fixtures/` so that the QA-owned test prelude
+/// (`tests/fixtures/prelude.cl`) is auto-discovered by `resolve_prelude`
+/// (spec §8.11.1 tier 1) — without that, any test calling `batch_run` on
+/// `(Pure ...)` / `(bind ...)` fails with "undefined variable: Pure".
+/// Before Wave 5, `install_def` wrote `{name}.cl` into `tests/fixtures/`
+/// directly, scattering `.cl` files across the checked-in fixture tree.
+/// The new arrangement preserves prelude discovery while isolating
+/// install_def writes per session. See `tests/CLAUDE.md §"Fresh Temp
+/// Directory per Test"`.
 pub struct ReplSession {
     pub session: CompilerSession,
+    /// TempDir for `register_module_with_source` writes — kept alive for the
+    /// session's lifetime so the backing `.cl` files don't vanish mid-test.
+    /// `None` for sessions constructed via `new_with_prelude` / `new_for_file`
+    /// where the caller owns `project_root` and write-target discipline.
+    _install_dir: Option<tempfile::TempDir>,
 }
 
 impl ReplSession {
-    /// Create a bare session (no prelude, no stdlib).
-    ///
-    /// Uses a temp dir as project_root so that assemble_lib_dirs
-    /// doesn't find the repo's stdlib/ and accidentally load prelude.
+    /// Create a bare session (no stdlib). `project_root` points at
+    /// `tests/fixtures/` so the QA-owned test prelude is auto-discovered
+    /// via `resolve_prelude` tier 1 (spec §8.11.1). A fresh `tempfile::TempDir`
+    /// backs `register_module_with_source` writes — previously these
+    /// scattered `.cl` files through `tests/fixtures/`; the TempDir isolates
+    /// them per session. See `tests/CLAUDE.md §"Fresh Temp Directory per Test"`.
     pub fn new() -> Self {
-        // Use CARGO_MANIFEST_DIR/tests/fixtures as project_root —
-        // it exists but has no stdlib/ child, so no prelude is found.
+        // Keep project_root = tests/fixtures/ — `resolve_prelude` tier 1 picks
+        // up `tests/fixtures/prelude.cl` as the auto-discovered prelude for
+        // `batch_run` / `ReplSession::new`-based tests that reference `Pure` /
+        // `bind` / `Option` / trait operators.
         let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
             .join("fixtures");
+        let td = tempfile::tempdir().expect("TempDir creation for ReplSession::new");
         let settings = SessionSettings {
             no_color: true,
             no_cache: true,
@@ -46,7 +68,10 @@ impl ReplSession {
         // Ensure no lib_dirs that might contain a prelude.
         // Sprint 57 Wave 4 G9: lib_dirs moved to SharedState; use setter.
         session.set_lib_dirs(vec![]);
-        ReplSession { session }
+        ReplSession {
+            session,
+            _install_dir: Some(td),
+        }
     }
 
     /// Create a session with prelude loaded from lib_dirs.
@@ -74,7 +99,10 @@ impl ReplSession {
         // inject_prelude_if_needed in the worker loop.
         session.register_module("user")?;
 
-        Ok(ReplSession { session })
+        Ok(ReplSession {
+            session,
+            _install_dir: None,
+        })
     }
 
     /// Evaluate source text, returning the result.
@@ -155,7 +183,10 @@ impl ReplSession {
         let mut session = CompilerSession::new(settings, project_root);
         // Sprint 57 Wave 4 G9: lib_dirs moved to SharedState; use setter.
         session.set_lib_dirs(all_lib_dirs);
-        Ok(ReplSession { session })
+        Ok(ReplSession {
+            session,
+            _install_dir: None,
+        })
     }
 
     /// Register a module by name (resolves to file via lib_dirs).
@@ -163,14 +194,21 @@ impl ReplSession {
         self.session.register_module(name)
     }
 
-    /// Register a module with explicit source text.
+    /// Register a module with explicit source text. When a session-scoped
+    /// TempDir is present (default `ReplSession::new()` path), the backing
+    /// `{name}.cl` is written into the TempDir rather than `project_root` —
+    /// so checked-in fixture trees are never mutated by test runs. See
+    /// `tests/CLAUDE.md §"Fresh Temp Directory per Test"`.
     pub fn register_module_with_source(
         &mut self,
         name: &str,
         source: &str,
     ) -> Result<(), CranelispError> {
-        // Sprint 57 Wave 4 G9: project_root moved to SharedState; use accessor.
-        let path = self.session.project_root().join(format!("{name}.cl"));
+        let path = match &self._install_dir {
+            Some(td) => td.path().join(format!("{name}.cl")),
+            // Sprint 57 Wave 4 G9: project_root moved to SharedState; use accessor.
+            None => self.session.project_root().join(format!("{name}.cl")),
+        };
         self.session.register_module_with_source(name, source, &path)?;
         Ok(())
     }
@@ -298,7 +336,10 @@ pub fn batch_run_file_cached(
     let mut session = cranelisp::session_v4::CompilerSession::new(settings, project_root);
     // Sprint 57 Wave 4 G9: lib_dirs moved to SharedState; use setter.
     session.set_lib_dirs(all_lib_dirs);
-    let mut s = ReplSession { session };
+    let mut s = ReplSession {
+        session,
+        _install_dir: None,
+    };
 
     let module_name = entry_path
         .file_stem()
@@ -720,4 +761,128 @@ pub fn repl_eval_display(session: &mut ReplSession, src: &str) -> String {
         .eval(src)
         .unwrap_or_else(|e| panic!("repl_eval_display failed on '{src}': {e}"));
     session.session.format_eval_result(&result)
+}
+
+// =============================================================================
+// Shared subprocess harness helpers (Sprint 61 Slice 5 K consolidation).
+//
+// These helpers replace inline duplications of `project_root()`/`binary_path()`/
+// `test_dir()`/`run_repl_with_stdlib()` patterns across integration tests.
+// They follow the Fresh-TempDir-per-test rule in `tests/CLAUDE.md §"Test Standards"`.
+// =============================================================================
+
+use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Project root (repository root). Use only for read-only lookups of the
+/// `cranelisp` binary, `stdlib/`, `target/debug/` platform DLLs, or
+/// `tests/fixtures/` fixtures. MUST NOT be used as a working directory for
+/// writes (see `tests/CLAUDE.md §"Fresh Temp Directory per Test"`).
+pub fn project_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// Location of the `cranelisp` binary produced by `cargo build`.
+pub fn binary_path() -> std::path::PathBuf {
+    project_root().join("target").join("debug").join("cranelisp")
+}
+
+/// Location of the workspace stdlib (`stdlib/`). Passed as `CRANELISP_LIB`
+/// so subprocess REPLs load prelude.
+pub fn stdlib_dir() -> std::path::PathBuf {
+    project_root().join("stdlib")
+}
+
+/// Location of the platform DLL search dir (`target/debug/`).
+pub fn platform_dir() -> std::path::PathBuf {
+    project_root().join("target").join("debug")
+}
+
+static SHARED_TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+/// Build a per-suite, per-run subdirectory under `tests/<suite>/.runs/<RUN_TS>/`
+/// for a subprocess test. The `.runs/` tree is git-ignored. Each call produces
+/// a fresh label-qualified directory; cross-test pollution is bounded by the
+/// per-test label.
+///
+/// See `tests/CLAUDE.md §"Fresh Temp Directory per Test"` Exception clause —
+/// this is the `tests/e2e.rs::test_dir()` pattern, generalised.
+pub fn runs_dir(suite: &str, label: &str) -> std::path::PathBuf {
+    use std::sync::LazyLock;
+    use std::time::SystemTime;
+    static RUN_TS: LazyLock<String> = LazyLock::new(|| {
+        let d = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap();
+        format!("{}", d.as_secs())
+    });
+    let n = SHARED_TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = project_root()
+        .join("tests")
+        .join(suite)
+        .join(".runs")
+        .join(&*RUN_TS)
+        .join(format!("{n}_{label}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Drive the REPL binary with piped stdin in an isolated `.runs/` directory,
+/// with `CRANELISP_LIB` pointing at the workspace stdlib so prelude loads.
+/// The subprocess's current directory is the per-test `.runs/` subdir
+/// (fresh per test, no pollution of checked-in paths).
+///
+/// `suite` is the test-file name without extension (e.g. `"sprint61_bare_primitive"`);
+/// used to root the `.runs/` tree. `label` disambiguates tests within the suite.
+pub fn run_repl_with_stdlib(input: &str, suite: &str, label: &str) -> Output {
+    let binary = binary_path();
+    assert!(
+        binary.exists(),
+        "cranelisp binary not found at {binary:?} — run `cargo build` first"
+    );
+    let dir = runs_dir(suite, label);
+    let stdlib = stdlib_dir();
+
+    let mut child = Command::new(&binary)
+        .current_dir(&dir)
+        .env("CRANELISP_LIB", stdlib.as_os_str())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to start cranelisp binary");
+
+    {
+        use std::io::Write;
+        let stdin = child.stdin.as_mut().expect("failed to open stdin");
+        stdin
+            .write_all(input.as_bytes())
+            .expect("failed to write input");
+    }
+    child.wait_with_output().expect("failed to read output")
+}
+
+/// Create a fresh `tempfile::TempDir` and copy named fixture files (relative
+/// to the given fixture-root directory) into it. Returns the TempDir handle
+/// (MUST be kept alive for the test duration) and the fresh working directory
+/// path.
+///
+/// Per `tests/CLAUDE.md §"Fresh Temp Directory per Test"` — use this helper
+/// when a test needs a Cranelisp project directory for subprocess drive.
+pub fn tempdir_project_from_fixture(
+    fixture_root: &std::path::Path,
+    files: &[&str],
+) -> (tempfile::TempDir, std::path::PathBuf) {
+    let td = tempfile::tempdir().expect("TempDir creation");
+    let dst = td.path().to_path_buf();
+    for name in files {
+        let src = fixture_root.join(name);
+        let dst_file = dst.join(name);
+        if let Some(parent) = dst_file.parent() {
+            std::fs::create_dir_all(parent).expect("create_dir_all for fixture copy");
+        }
+        std::fs::copy(&src, &dst_file)
+            .unwrap_or_else(|e| panic!("copy fixture '{}' into tempdir: {e}", src.display()));
+    }
+    (td, dst)
 }

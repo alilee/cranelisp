@@ -237,6 +237,28 @@ the cheapest/highest-value subset after /review feedback.
 Candidates #6 and #7 are fresh annotations / moderate value — defer
 unless /review requests broader coverage.
 
+## Wave 5 landed (2026-04-22, Sprint 61 Slice 5 H)
+
+All 3 recommended candidates landed; annotations promoted from `[Tested]`
+to `[Tested+Neg]` in `repl/spec.md`.
+
+| # | Candidate | Test | Status |
+|---|---|---|---|
+| 1 | errors-on-stdout / stderr-empty | `tests/e2e::e2e_s5_1_errors_on_stdout_neg_stderr_empty` | PASS |
+| 2 | error-recovery, no half-installed defn | `tests/repl_experience::type_error_does_not_corrupt_state_neg_failed_defn_absent` | PASS |
+| 3 | `/imports` fresh-session no-primitives-leak | `tests/e2e::e2e_s3_4_imports_empty_neg_no_primitives_leak` | PASS |
+
+Stretch candidates (#4, #5): not authored Wave 5 — at /qa discretion,
+budget was consumed by helper consolidation (K) and repro-handoff
+migration (I). Candidates #4, #5, #6, #7 remain pending for S62 or a
+later sprint.
+
+Annotation updates landed in `repl/spec.md`:
+- §5.1 line 816 — `[Tested]` → `[Tested+Neg ..., ..._neg_stderr_empty]`
+- §5.2 line 825 — `[Tested]` → `[Tested+Neg tests/repl_experience::type_error_does_not_corrupt_definitions, tests/repl_experience::type_error_does_not_corrupt_state_neg_failed_defn_absent]`
+- §3.4 line 502 — `[Tested]` → `[Tested+Neg ..., ..._neg_no_primitives_leak]`
+- §3.1 `/imports` row (line 392) — `[Tested]` → `[Tested+Neg ...]` (row-level)
+
 ## Authoring protocol (Wave 2)
 
 For each chosen candidate:

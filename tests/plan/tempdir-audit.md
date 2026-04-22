@@ -263,3 +263,55 @@ new test suite, also add the corresponding `.runs/` path to
    Standards".
 5. Verify via re-run of the audit greps — the `CONVERT` row count
    should drop to zero (or to a consciously-annotated allowlist).
+
+## Wave 5 implementation status (2026-04-22, Sprint 61 Slice 5 E-1)
+
+Landed (all CONVERT rows addressed):
+
+- **`tests/helpers/mod.rs::ReplSession::new()`** — default project_root now a
+  fresh `tempfile::TempDir` held on the `ReplSession` struct (lifetime-bound).
+  `register_module_with_source` writes `.cl` files into the TempDir rather
+  than `tests/fixtures/`. Rows #33 satisfied.
+- **`tests/sprint60_run_tests_reduction.rs::s60_run_tests_reduction_1_exemplar_batched_failing`** —
+  copies exemplar tree into fresh TempDir via `copy_dir_recursive`, writes
+  empty `user.cl` into the TempDir. Row #9 satisfied.
+- **`tests/wave6_demo_repros.rs::run_tests_batched_invocation_no_crash`** and
+  **`tests/wave6_demo_repros.rs::exemplar_solver_does_not_stack_overflow_on_small_puzzle`** —
+  both copy the exemplar tree into a fresh TempDir via `copy_dir_recursive`
+  and drive the subprocess from the TempDir cwd. Rows #11 + #12 satisfied.
+- **`tests/sprint59_defects456_repro.rs::d45_real_exemplar_html_*` (2 tests)** —
+  copy exemplar tree via `copy_exemplar_tree`, write empty user.cl in TempDir.
+  Rows #14 + #15 satisfied.
+- **`tests/sprint59_defects456_repro.rs::d6_exemplar_*` (6 tests)** — each
+  copies the exemplar tree into a fresh `td.path().join("exemplar")` and
+  writes its repro `.cl` into the TempDir. Replaces the previous
+  `Cleanup(PathBuf); impl Drop` scope guards. Rows #16–#19 satisfied.
+- **`tests/helpers/mod.rs`** — added shared helpers
+  `project_root()`, `binary_path()`, `stdlib_dir()`, `platform_dir()`,
+  `runs_dir(suite, label)`, `run_repl_with_stdlib(input, suite, label)`,
+  and `tempdir_project_from_fixture(fixture_root, files)`. Slice 5 K
+  folded in here (the 3 inline helpers from
+  `tests/sprint61_bare_primitive.rs` now use the shared shapes).
+- **`tests/CLAUDE.md §"Fresh Temp Directory per Test"`** — staged rule text
+  inserted ahead of the Negative Test Convention section.
+
+Deferred / out-of-scope for this Wave:
+
+- **`tests/examples_run.rs::every_example_file_runs_under_examples_prelude`** (Row #21) —
+  deliberately left unconverted in Wave 5. The test's scope is the
+  real `examples/` tree (cache at `examples/.cranelisp-cache/`
+  populated by subprocess) and the `CRANELISP_CACHE_DIR` env var
+  indirection to a TempDir would require co-ordination with
+  `/examples`'s own cache-path assumptions. Audit row retained;
+  tracked for a future sweep — not close-blocking (the pollution is
+  a cache, not source code, and is already `.gitignore`'d).
+- **`tests/exemplar_solver_correctness.rs`** — the `.cl` fixtures
+  `exemplar/repro-slice2.cl` + `exemplar/test-eliminate-contract.cl`
+  migrated into the test file as string literals per
+  `memory/feedback_repro_handoff.md` (Slice 5 Item I), tempdir-copy
+  pattern used for the `grid.cl`/`solver.cl` subset the T-S2-1 test
+  imports. No checked-in `exemplar/` writes remain from this suite.
+
+**Effect**: the `CONVERT` row count for Wave 5 is 10/10 addressed. Row
+#21 (`examples_run`) is the single deferred candidate and is not
+close-blocking.

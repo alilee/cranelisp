@@ -103,6 +103,9 @@ The REPL process `chdir`s into this directory, so `.cache` artifacts and any oth
 | `ring4n.demo` | 4N | Sprint 56 — multi-sig JIT dispatch (arity and type), /sig/info/list for multi-sig, /clif on mangled variants ($Int, $Int+Int) |
 | `ring4o.demo` | 4O | Sprint 57 — Phase 3+4 convergence: platform fn via symbol table (/sig, /info), cross-module /clif + /disasm, /mem snapshot + delta, persistent workers keeping compile paths warm |
 | `ring4p.demo` | 4P | Sprint 58 — Phase 5 SymbolTable convergence: Decision 31 Scenario 2 per-redefinition JIT reclaim (HEADLINE), multi-sig bare-symbol display, Cranelisp.toml lib-dirs, private-submodule import rejection, cache-hit fast restart |
+| `ring4q.demo` | 4Q | Sprint 59 — /sig docstring dash separator, test-form AST scan for trace extern, dual-path persistence collapse (cache restore + fresh compile share one register_module recursion) |
+| `ring4r.demo` | 4R | Sprint 60 — Clean & Green: JIT/object convergence (one code path, one RC contract for captured values + .o relocation), /sig docstring format conformance, /clif permanent, manifest.json compiler_mtime build marker |
+| `ring4s.demo` | 4S | Sprint 61 — bare-primitive name echo at prompt (re-exported primitives resolve through user → prelude → primitives per §8.9), scheduler + IO trace env vars (CRANELISP_SCHEDULER_TRACE / CRANELISP_IO_TRACE merge-sortable event logs), capture-return-inc fix for `(fn [_] b)` / `bind` closures |
 | `v4a.demo` | — | Pipeline v4 skeleton — --v4 delegates to old pipeline, identical results |
 | `v4b.demo` | — | Pipeline v4 scheduler — primitive-only programs compile through scheduler-driven path |
 | `v4c.demo` | — | Pipeline v4 robust — error recovery (type error + undefined var), platform IO (print, bind), PlatformRegistry |

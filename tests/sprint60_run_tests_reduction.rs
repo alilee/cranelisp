@@ -132,6 +132,31 @@ fn combined_out(o: &Output) -> String {
     )
 }
 
+/// Recursively copy a directory tree. Skips entries matching
+/// `.cranelisp-cache` and hidden files that would differ between runs.
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        let name = entry.file_name();
+        // Skip cache trees and hidden dotfiles (e.g. `.cranelisp-cache`).
+        if let Some(s) = name.to_str()
+            && s.starts_with('.')
+        {
+            continue;
+        }
+        let from = entry.path();
+        let to = dst.join(&name);
+        if ft.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else if ft.is_file() {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
 // spec: repl/spec.md §16.3 + root CLAUDE.md "Defects" — /run-tests on a
 // module with N test functions MUST exit cleanly. Starting shape from
 // tests/wave6_demo_repros.rs — reproduces to confirm the failure signature
@@ -140,17 +165,23 @@ fn combined_out(o: &Output) -> String {
 // STATUS: FAILING (exit 1, "no parsed sexps for module 'user'" at shutdown).
 #[test]
 fn s60_run_tests_reduction_1_exemplar_batched_failing() {
-    let exemplar_dir = project_root().join("exemplar");
-    if !exemplar_dir.exists() {
+    // Sprint 61 Slice 5 E-1: was writing to `exemplar/user.cl` (checked-in
+    // path). Copy the exemplar tree into a fresh TempDir and drive from
+    // there so the test can never pollute the checked-in exemplar. See
+    // `tests/CLAUDE.md §"Fresh Temp Directory per Test"`.
+    let exemplar_src = project_root().join("exemplar");
+    if !exemplar_src.exists() {
         eprintln!("exemplar/ missing — skipping this reduction");
         return;
     }
-    // Empty user.cl (same as wave6 test).
-    let user_cl = exemplar_dir.join("user.cl");
-    std::fs::write(&user_cl, "").unwrap();
+    let td = tempfile::tempdir().expect("tempdir for exemplar copy");
+    copy_dir_recursive(&exemplar_src, td.path()).expect("copy exemplar tree");
+    // Empty user.cl matches the original shape (wave6 test) — the defect
+    // triggers only when user.cl is empty at session start.
+    std::fs::write(td.path().join("user.cl"), "").unwrap();
 
     let input = "(import [html [test-wrap-tag]])\n/run-tests html\n";
-    let out = run_repl_in(&exemplar_dir, input);
+    let out = run_repl_in(td.path(), input);
     let exit = out.status.code();
     let combined = combined_out(&out);
 

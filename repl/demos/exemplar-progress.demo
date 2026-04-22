@@ -1,5 +1,12 @@
-; Cranelisp Exemplar — 4x4 Sudoku Solver
-; Backtracking constraint solver in pure Cranelisp
+; Cranelisp Exemplar — 4x4 Sudoku Solver (Sprint 61 close)
+; Backtracking constraint solver in pure Cranelisp. This demo runs a
+; self-contained 4x4 sibling of the 9x9 exemplar (exemplar/solver.cl).
+; Sprint 61 closed three exemplar-adjacent defects: the Layer 1
+; algorithmic hole in `eliminate` (test-unsolvable now correctly
+; returns Unsolvable); the Layer 2 ensure_module_exists race that
+; destabilised backtracking; and the Layer 3 inline-ADT-arg Vec
+; capture bug that surfaced during reduction. Regression guards in
+; tests/exemplar_solver_correctness.rs.
 
 ; === Domain types — ADTs model the problem ===
 
@@ -22,6 +29,9 @@
 (defn no-conflict [board pos val i] (if (= i 16) true (if (= i pos) (no-conflict board pos val (+ i 1)) (if (= (vec-get board i) 0) (no-conflict board pos val (+ i 1)) (let [same-row (= (row4 i) (row4 pos)) same-col (= (col4 i) (col4 pos)) same-box (= (box4 i) (box4 pos))] (if (if same-row true (if same-col true same-box)) (if (= (vec-get board i) val) false (no-conflict board pos val (+ i 1))) (no-conflict board pos val (+ i 1))))))))
 
 ; === Backtracking solver — try digits, recurse, backtrack on failure ===
+; The Sprint 61 Layer 2+3 fixes made this recursion reliable: prior to
+; Wave 3 + Wave 4, concurrent module scheduling and inline-ADT-arg
+; capture could corrupt grid state mid-recursion.
 
 (defn solve [board pos guess] (if (= pos 16) board (if (not (= (vec-get board pos) 0)) (solve board (+ pos 1) 1) (if (> guess 4) [] (if (no-conflict board pos guess 0) (let [result (solve (vec-set board pos guess) (+ pos 1) 1)] (if (= (vec-len result) 0) (solve board pos (+ guess 1)) result)) (solve board pos (+ guess 1)))))))
 
@@ -36,3 +46,14 @@
 (fmt-grid [0 2 0 0 0 0 0 3 4 0 0 0 0 0 1 0] 0 "")
 (let [s (solve [0 2 0 0 0 0 0 3 4 0 0 0 0 0 1 0] 0 1)] (fmt-grid s 0 ""))
 (let [s (solve [1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 4] 0 1)] (fmt-grid s 0 ""))
+
+; === Unsolvable detection (Sprint 61 Layer 1) ===
+; Two 1s in row 0 of an otherwise empty 4x4 grid: solver exhausts its
+; candidates and returns []. Pre-S61 the 9x9 `eliminate` accepted a
+; same-value elimination on a Given cell as a no-op, masking this
+; contradiction. The 4x4 solver here never had that bug — it uses
+; `no-conflict` which checks equality directly — but the Layer 1
+; narrative is now the same shape: a fixed cell rejects a peer
+; asking for the same value.
+
+(let [s (solve [1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0] 0 1)] (if (= (vec-len s) 0) "unsolvable" (fmt-grid s 0 "")))

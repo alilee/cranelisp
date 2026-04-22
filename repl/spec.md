@@ -389,7 +389,7 @@ Per-row annotations below indicate test coverage for each command. Ring 4 intros
 | `/time <expr>` | — | Evaluate with timing breakdown | 0 | [Tested tests/e2e::e2e_s3_1_time] |
 | `/expand <form>` | `/e` | Macro-expand a form | 3 | [R3 S16] |
 | `/mod [name]` | — | Switch module namespace | 2 | [R4 S10] |
-| `/imports [module]` | — | Show imports and special forms; filter by source module | 0 | [Tested tests/e2e::e2e_s3_4_imports_special_forms, tests/e2e::e2e_s3_4_imports_empty] |
+| `/imports [module]` | — | Show imports and special forms; filter by source module | 0 | [Tested+Neg tests/e2e::e2e_s3_4_imports_special_forms, tests/e2e::e2e_s3_4_imports_empty, tests/e2e::e2e_s3_4_imports_empty_neg_no_primitives_leak] |
 | `/exports <module>` | — | List a module's importable public symbols | 2 | [Tested tests/e2e::e2e_s3_5_exports_lists_symbols, tests/e2e::e2e_s3_5_exports_no_arg_usage] |
 | `/mem [expr]` | `/m` | Show allocation statistics (see §3.7) | 4 | [Tested tests/e2e::mem_command_snapshot_emits_live_and_allocs, tests/e2e::mem_command_delta_runs_expr_and_shows_signed_deltas, tests/e2e::mem_command_baseline_counters_zero_at_start, tests/e2e::mem_command_alias_m_works] |
 | `/run-tests [module]` | `/rt` | Discover and run test functions (see §16) | 4 | [R4] |
@@ -499,7 +499,7 @@ From prelude:
 
 **Implicit prelude import (Ring 3+):** The compiler injects an implicit `(import [prelude [*]])` for all non-prelude modules (spec §8.8.1). This implicit import IS visible in `/imports` — the user needs to discover what the prelude provides.
 
-**No imports:** In a fresh session with no explicit `(import ...)` and no prelude, `/imports` MUST show only Special forms. [Tested tests/e2e::e2e_s3_4_imports_empty] The `primitives` module's implicit availability is via the module resolution fallback, NOT via import — so primitives do not appear in `/imports` unless explicitly imported.
+**No imports:** In a fresh session with no explicit `(import ...)` and no prelude, `/imports` MUST show only Special forms. [Tested+Neg tests/e2e::e2e_s3_4_imports_empty, tests/e2e::e2e_s3_4_imports_empty_neg_no_primitives_leak] The `primitives` module's implicit availability is via the module resolution fallback, NOT via import — so primitives do not appear in `/imports` unless explicitly imported.
 
 **Error cases:**
 - `/imports nonexistent` — no imports from that module; silent re-prompt (not an error) [Tested+Neg tests/e2e::e2e_s3_4_neg_imports_nonexistent_not_error, tests/e2e::e2e_s3_4_neg_imports_nonexistent_silent]
@@ -813,7 +813,7 @@ All errors MUST display:
 2. The source location (file/line/column or character span) [Tested tests/repl_experience::error_has_source_span]
 3. A human-readable message [Tested tests/repl_experience::error_has_human_readable_message]
 
-Errors MUST be written to stdout (as part of the REPL conversation flow, visible in piped output and the showcase). Stderr is reserved for traces and diagnostic output. Errors MUST NOT crash the REPL session — the user MUST be able to continue entering expressions after any error. [Tested tests/e2e::e2e_s5_1_errors_on_stdout]
+Errors MUST be written to stdout (as part of the REPL conversation flow, visible in piped output and the showcase). Stderr is reserved for traces and diagnostic output. Errors MUST NOT crash the REPL session — the user MUST be able to continue entering expressions after any error. [Tested+Neg tests/e2e::e2e_s5_1_errors_on_stdout, tests/e2e::e2e_s5_1_errors_on_stdout_neg_stderr_empty]
 
 ### 5.2 Error Recovery [Tested]
 
@@ -822,7 +822,7 @@ After any error (parse, type, runtime), the REPL MUST:
 - Reset input state (clear any partial multi-line input)
 - Present the prompt for new input
 
-The session state (defined functions, types, modules) MUST NOT be corrupted by an error in a subsequent expression. [Tested tests/repl_experience::type_error_does_not_corrupt_state]
+The session state (defined functions, types, modules) MUST NOT be corrupted by an error in a subsequent expression. [Tested+Neg tests/repl_experience::type_error_does_not_corrupt_definitions, tests/repl_experience::type_error_does_not_corrupt_state_neg_failed_defn_absent]
 
 ### 5.3 Type Error Quality [Tested]
 

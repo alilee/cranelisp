@@ -25,71 +25,13 @@ mod helpers;
 
 use helpers::*;
 
-use std::path::PathBuf;
-use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::process::Output;
 
-// ---------------------------------------------------------------------------
-// Subprocess harness (mirrors tests/e2e.rs `run_repl`). Used only for T-S1-4
-// to exercise end-to-end stderr routing on unknown names; in-process tests
-// cover the happy-path output-shape assertions.
-// ---------------------------------------------------------------------------
+// Sprint 61 Slice 5 K (Wave 2 /review I-1): consolidated helpers —
+// `project_root`, `binary_path`, `runs_dir`, `run_repl_with_stdlib` now live
+// in `tests/helpers/mod.rs`. This file calls them as `helpers::...` re-exports.
 
-static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn project_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-fn binary_path() -> PathBuf {
-    project_root().join("target").join("debug").join("cranelisp")
-}
-
-fn test_dir(label: &str) -> PathBuf {
-    use std::sync::LazyLock;
-    use std::time::SystemTime;
-    static RUN_TS: LazyLock<String> = LazyLock::new(|| {
-        let d = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
-        format!("{}", d.as_secs())
-    });
-    let n = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = project_root()
-        .join("tests")
-        .join("sprint61_bare_primitive")
-        .join(".runs")
-        .join(&*RUN_TS)
-        .join(format!("{n}_{label}"));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-/// Run the REPL binary with piped stdin in an isolated directory, optionally
-/// with `CRANELISP_LIB` pointing at the repo's real stdlib so prelude loads.
-fn run_repl_with_stdlib(input: &str, label: &str) -> Output {
-    let binary = binary_path();
-    assert!(
-        binary.exists(),
-        "cranelisp binary not found at {binary:?} — run `cargo build` first"
-    );
-    let dir = test_dir(label);
-    let stdlib = project_root().join("stdlib");
-
-    let mut child = Command::new(&binary)
-        .current_dir(&dir)
-        .env("CRANELISP_LIB", stdlib.as_os_str())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to start cranelisp binary");
-
-    {
-        use std::io::Write;
-        let stdin = child.stdin.as_mut().expect("failed to open stdin");
-        stdin.write_all(input.as_bytes()).expect("failed to write input");
-    }
-    child.wait_with_output().expect("failed to read output")
-}
+const SUITE: &str = "sprint61_bare_primitive";
 
 fn stdout_str(o: &Output) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
@@ -229,7 +171,7 @@ fn bare_primitive_surface_resolves_identically_across_five_plus_symbols() {
 #[test]
 fn bare_primitive_unknown_name_produces_undefined_error_neg() {
     // Subprocess variant ensures stderr routing is validated end-to-end.
-    let o = run_repl_with_stdlib("unknown-primitive-name-zzzz\n", "unknown_primitive");
+    let o = run_repl_with_stdlib("unknown-primitive-name-zzzz\n", SUITE, "unknown_primitive");
     let out = stdout_str(&o);
     let err = stderr_str(&o);
     let combined = format!("{out}\n{err}");
@@ -282,7 +224,7 @@ fn bare_primitive_unknown_name_produces_undefined_error_neg() {
 //       spec/08-modules.md §8.9 — re-export chain transitivity
 #[test]
 fn bare_primitive_two_hop_reexport_chain_lands_on_terminal_def() {
-    let o = run_repl_with_stdlib("add-i64\n", "two_hop_reexport");
+    let o = run_repl_with_stdlib("add-i64\n", SUITE, "two_hop_reexport");
     let out = stdout_str(&o);
 
     // The resolver MUST walk user → prelude → primitives and produce the

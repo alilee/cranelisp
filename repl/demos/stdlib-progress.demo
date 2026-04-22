@@ -63,3 +63,11 @@
 (str-concat "cranelisp " "lives")
 (int-to-string 42)
 (vec-len (vec 10 20 30))
+
+; === Sprint 61: bare-name echo at the prompt ===
+; Typing a re-exported primitive now echoes like any other Fn —
+; prompt / /sig / call-site all speak the same language (spec §8.9).
+
+add-i64
+str-concat
+not

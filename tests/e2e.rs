@@ -736,6 +736,54 @@ fn e2e_s5_1_errors_on_stdout() {
     );
 }
 
+// Sprint 61 Slice 5 H (neg-coverage promotion #1).
+// spec: repl/spec.md §5.1 — Errors MUST be written to stdout (as part of
+// REPL conversation flow); stderr is reserved for traces. Errors MUST NOT
+// crash the REPL session — subsequent input is accepted.
+//
+// This is the NEGATIVE companion to `e2e_s5_1_errors_on_stdout`:
+//   (a) stderr is empty (or at worst contains no error body — all error
+//       content is on stdout);
+//   (b) the REPL accepts a subsequent valid expression after the error.
+// Together with the positive test above, this installs a `[Tested+Neg]`
+// regression guard against errors leaking to stderr or crashing the
+// session.
+#[test]
+fn e2e_s5_1_errors_on_stdout_neg_stderr_empty() {
+    // First expr errors (type mismatch); second expr is valid (should succeed).
+    let o = run_repl(
+        &format!("{PRIMS}(add-i64 2 true)\n(add-i64 1 2)\n"),
+        "s5_1_stdout_neg_stderr_empty",
+    );
+    let out = stdout_str(&o);
+    let err = stderr_str(&o);
+
+    // Negative assertion (a): error body MUST NOT appear on stderr.
+    // The error is identified by the word "type mismatch" (spec §5.3).
+    // Stderr may carry trace/diagnostic content per §5.1 — we assert the
+    // error BODY is not there.
+    assert!(
+        !err.contains("type mismatch"),
+        "Error body leaked to stderr — spec §5.1 MUST error→stdout. \
+         stderr: {err:?}\nstdout: {out:?}"
+    );
+    // Additionally: no "Error:" prefix on stderr.
+    assert!(
+        !err.contains("Error:"),
+        "`Error:` prefix leaked to stderr — spec §5.1 reserves stderr for \
+         traces. stderr: {err:?}\nstdout: {out:?}"
+    );
+
+    // Negative assertion (b): session survives the error and processes
+    // the subsequent valid expression. `(add-i64 1 2)` = 3.
+    assert!(
+        out.contains(":primitives/Int 3"),
+        "Session MUST NOT crash on error — spec §5.1 last clause. \
+         Expected `:primitives/Int 3` in stdout after error recovery.\n\
+         stdout: {out}\nstderr: {err}"
+    );
+}
+
 // spec: repl/spec.md §5.1 — error category and source location
 #[test]
 fn e2e_s5_1_error_contains_category_and_location() {
@@ -1414,6 +1462,58 @@ fn e2e_s3_4_imports_empty() {
         !out.contains("Error:"),
         "/imports should not error on empty session, got:\n{out}"
     );
+}
+
+// Sprint 61 Slice 5 H (neg-coverage promotion #3).
+// spec: repl/spec.md §3.4 — In a fresh session with no explicit
+// `(import ...)` and no prelude, `/imports` MUST show only Special forms.
+// Primitives are implicitly available via module resolution fallback, NOT
+// via import — so `primitives/add-i64` etc. MUST NOT appear in `/imports`.
+//
+// This is the NEGATIVE companion to `e2e_s3_4_imports_empty`: the positive
+// test asserts `/imports` does not error; this one asserts the module
+// boundary — primitives do NOT leak into `/imports` output on a fresh
+// no-prelude session. Exactly the shape `qa.md §"Negative Test Guidance"`
+// calls out ("Primitives are in `primitives` module … `user/add-i64` does
+// NOT appear").
+//
+// Ties directly to Slice 1's bare-primitive fix: closing that defect
+// expanded the resolver's reach into `primitives/`, and this neg test
+// pins that the expansion did NOT accidentally promote primitives to
+// import-visible status.
+#[test]
+fn e2e_s3_4_imports_empty_neg_no_primitives_leak() {
+    // Fresh session, NO prelude, NO explicit imports. `run_repl` does not
+    // set `CRANELISP_LIB` so the prelude path is empty.
+    let input = "/imports\n";
+    let o = run_repl(input, "imports_empty_neg_no_primitives");
+    assert_success(&o);
+    let out = stdout_str(&o);
+
+    // Negative assertions: well-known primitives MUST NOT appear in
+    // /imports output on a fresh session. The `primitives` module is
+    // implicitly available via fallback, not via import.
+    for leaked in ["add-i64", "eq-i64", "sub-i64", "mul-i64", "primitives/"] {
+        assert!(
+            !out.contains(leaked),
+            "`/imports` on fresh no-prelude session MUST NOT show \
+             `{leaked}` — per spec §3.4, primitives reach user code via \
+             module resolution fallback, not via import. \
+             Leaked in stdout:\n{out}"
+        );
+    }
+
+    // Further negative: no `Fns:` / `Types:` / `Traits:` / `Macros:`
+    // category header should appear — only Special forms are expected.
+    // (The category labels are case-sensitive per repl/spec.md §3.4.)
+    for category in ["Fns:", "Types:", "Traits:", "Macros:"] {
+        assert!(
+            !out.contains(category),
+            "`/imports` on fresh no-prelude session MUST NOT render a \
+             `{category}` category — only `Special forms` applies per \
+             spec §3.4. Got stdout:\n{out}"
+        );
+    }
 }
 
 // spec: repl/spec.md §3.4 — /imports after explicit import

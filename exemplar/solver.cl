@@ -370,39 +370,48 @@
 
 ;; --- Solver tests ---
 ;;
-;; Slice 2 closure 2026-04-22 — Sudoku solver correctness.
+;; Slice 2 + Slice 4 closure 2026-04-22 — three-layer Sudoku correctness
+;; defect, fully resolved in Sprint 61.
 ;;
-;; Investigation: /port worked the 4-candidate hypothesis list from SPRINT.md
-;; cheapest-first. Candidates 1, 2, 4 (peers-includes-self, post-make-grid
-;; state, peer-helper instrumentation) cleared without finding a defect.
-;; Candidate 3 (eliminate match arms) was a partial hit: the `Given _` and
-;; `Solved _` arms returned `(Some g)` unconditionally, silently allowing
-;; two peers to hold the same value. That was a real algorithmic hole
-;; (Layer 1). Applying the obvious fix (return None when v == d) regressed
-;; every valid puzzle — propagation returned None where it should not
-;; (Layer 2). Reduction produced a non-Sudoku repro at
-;; `exemplar/repro-slice2.cl` — an inline ADT constructor wrapping a Vec,
-;; passed as an argument, read a corrupt length on the callee side
-;; (Layer 3).
+;;   Layer 1 — algorithmic hole in `eliminate` (landed Wave 2). The
+;;     `(Given v)` / `(Solved v)` match arms returned `(Some g)`
+;;     unconditionally, silently allowing two peers to hold the same value.
+;;     Fix: return `None` when `v == d` (applied above in this file).
 ;;
-;; Resolution: Layer 3 is a consuming-convention RC bug in
-;; `crates/cranelisp-backend/src/compiler/mod.rs::is_last_use` — borrowed
-;; vars were eligible for last-use transfer. /backend closed it with a
-;; 14-line gate; see `design/backend/ring2-rc.md §5.5` for the rule.
-;; Layer 2 bundles into Layer 3 by construction (same RC path, different
-;; caller shape). Layer 1 (the two-line eliminate fix) is applied in this
-;; file — the `Given v` / `Solved v` arms now return `None` when `v == d`.
+;;   Layer 2 — Sudoku backtracking regression unmasked by the Layer 1 fix
+;;     (resolved Wave 3). Root cause: H6 `ensure_module_exists` atomicity
+;;     race in `crates/cranelisp-typecheck/src/checker.rs` — concurrent
+;;     module registration could skip the publish step, leaving the
+;;     backtracker with a torn module view. Fix: atomic
+;;     check-then-create-then-publish transaction. See
+;;     `design/int/heisenbug-race-closure.md`.
 ;;
-;; Regression guards:
+;;   Layer 3 — inline-ADT-arg-wrapping-Vec codegen bug (resolved Wave 4).
+;;     An inline ADT constructor holding a Vec, passed as a function
+;;     argument, read a corrupt length on the callee side because the
+;;     captured inner Vec was freed before the callee returned. Fix:
+;;     H(4-1'') `emit_capture_return_inc` codegen helper. See
+;;     `design/backend/slice-4-21-hello-io-investigation.md` and
+;;     `design/backend/ring2-rc.md §5.6`.
+;;
+;; Regression guards (inline repros, no exemplar dependency):
 ;;   - `tests/exemplar_solver_correctness.rs::eliminate_on_same_value_given_returns_none`
 ;;     (T-S2-1) — Layer 1 contract.
 ;;   - `tests/exemplar_solver_correctness.rs::inline_adt_arg_wrapping_vec_preserves_len`
 ;;     (T-S2-2) — Layer 3 minimal repro.
 ;;
-;; Repro-file migration: `exemplar/repro-slice2.cl` and
-;; `exemplar/test-eliminate-contract.cl` are pending relocation to the
-;; `tests/` tree per user directive 2026-04-22 — tracked as Slice 5 I
-;; (/qa Wave 5).
+;; Repro-handoff migration (Slice 5 I, Wave 5): the two `.cl` repro files
+;; that previously lived in `exemplar/` (`repro-slice2.cl`,
+;; `test-eliminate-contract.cl`) have been inlined into the Rust
+;; regression tests above per `memory/feedback_repro_handoff.md` and
+;; deleted from `exemplar/`. Compiler regression guards no longer
+;; depend on the showcase tree.
+;;
+;; Pre-existing issue (unresolved, carried):
+;;   - Full 81-cell solve stack-overflows in deep recursive Grid/Vec
+;;     copying. Ledgered in `tests/plan/baseline.md`; target S62. The
+;;     IO and formatting path works end-to-end; only the inner solve
+;;     recursion is affected.
 
 (defn test-easy-puzzle []
   (match (make-grid "003020600900305001001806400008102900700000008006708200002609500800203009005010300")

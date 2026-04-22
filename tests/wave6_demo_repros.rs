@@ -53,6 +53,31 @@ fn stdlib_dir() -> PathBuf {
     project_root().join("stdlib")
 }
 
+/// Recursively copy a directory tree (Sprint 61 Slice 5 E-1 helper).
+/// Skips entries starting with `.` (e.g. `.cranelisp-cache`) to avoid
+/// bringing stale cache state into the fresh TempDir.
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        let name = entry.file_name();
+        if let Some(s) = name.to_str()
+            && s.starts_with('.')
+        {
+            continue;
+        }
+        let from = entry.path();
+        let to = dst.join(&name);
+        if ft.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else if ft.is_file() {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
 /// Allocate an isolated working directory for one subprocess test under
 /// `tests/wave6_demo_repros/.runs/{timestamp}/`.
 fn isolated_dir(label: &str) -> PathBuf {
@@ -326,19 +351,26 @@ fn run_tests_batched_invocation_no_crash() {
     // becomes visible. This assertion treats BOTH the race-symptom error
     // AND the signal-crash exit codes as failure modes — the spec
     // requires the tests to run and complete.
-    let exemplar_dir = project_root().join("exemplar");
-    if !exemplar_dir.exists() {
+    // Sprint 61 Slice 5 E-1: was writing to checked-in `exemplar/user.cl`.
+    // Copy exemplar tree into a fresh TempDir so the test cannot pollute
+    // the checked-in path. See `tests/CLAUDE.md §"Fresh Temp Directory
+    // per Test"`.
+    let exemplar_src = project_root().join("exemplar");
+    if !exemplar_src.exists() {
         panic!("exemplar/ directory missing; cannot reproduce /port Wave 6 finding");
     }
-    // Empty user.cl avoids stale REPL session state polluting the run.
-    let user_cl = exemplar_dir.join("user.cl");
-    std::fs::write(&user_cl, "").unwrap();
+    let td = tempfile::tempdir().expect("tempdir for exemplar copy");
+    copy_dir_recursive(&exemplar_src, td.path()).expect("copy exemplar tree");
+    // Empty user.cl matches the original shape — required to reproduce
+    // the /run-tests failure mode.
+    std::fs::write(td.path().join("user.cl"), "").unwrap();
+    let exemplar_dir = td.path();
 
     let input = "(import [html [test-wrap-tag]])\n/run-tests html\n";
     let binary = binary_path();
     assert!(binary.exists(), "cranelisp binary not built");
     let out = Command::new(&binary)
-        .current_dir(&exemplar_dir)
+        .current_dir(exemplar_dir)
         .env("CRANELISP_LIB", project_root().join("stdlib"))
         .env("CRANELISP_PLATFORM_PATH", project_root().join("target/debug"))
         .stdin(Stdio::piped())
@@ -415,19 +447,18 @@ fn run_tests_batched_invocation_no_crash() {
 // not segfault the process
 #[test]
 fn exemplar_solver_does_not_stack_overflow_on_small_puzzle() {
-    // Use a subprocess so a SIGSEGV in the JIT'd solver crashes only
-    // the child. We invoke `cranelisp --run exemplar/solver.cl` from the
-    // project root: solver.cl's main attempts to solve an easy puzzle.
-    // A graceful exit (status 0 or any non-signal exit) means the solver
-    // returned a result; a SIGSEGV (139) or signal-kill (None) means
-    // Defect 6 is unresolved.
-    let cwd = project_root();
-    let solver_path = cwd.join("exemplar").join("solver.cl");
+    // Sprint 61 Slice 5 E-1: was using `project_root` as cwd and writing
+    // `.cranelisp-cache/` there. Copy exemplar into a TempDir so the
+    // subprocess's cache + any transient `.cl` mutations stay isolated.
+    let exemplar_src = project_root().join("exemplar");
+    let solver_path = exemplar_src.join("solver.cl");
     if !solver_path.exists() {
-        // Defensive — if the exemplar layout changes, surface a clear
-        // diagnostic rather than a misleading pass.
         panic!("exemplar/solver.cl not found at {solver_path:?}");
     }
+    let td = tempfile::tempdir().expect("tempdir for exemplar copy");
+    copy_dir_recursive(&exemplar_src, &td.path().join("exemplar"))
+        .expect("copy exemplar tree");
+    let cwd = td.path().to_path_buf();
 
     // Use --run with the entry pointing to solver.cl. The CRANELISP_LIB
     // env var points to the workspace stdlib so prelude resolves.
@@ -436,8 +467,11 @@ fn exemplar_solver_does_not_stack_overflow_on_small_puzzle() {
     let out = Command::new(&binary)
         .current_dir(&cwd)
         .args(["--run", "exemplar/solver.cl"])
-        .env("CRANELISP_LIB", "stdlib")
-        .env("CRANELISP_PLATFORM_PATH", "target/debug")
+        .env("CRANELISP_LIB", project_root().join("stdlib"))
+        .env(
+            "CRANELISP_PLATFORM_PATH",
+            project_root().join("target/debug"),
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

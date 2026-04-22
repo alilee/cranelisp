@@ -55,6 +55,31 @@ fn module_dir(files: &[(&str, &str)]) -> tempfile::TempDir {
     td
 }
 
+/// Recursively copy `src` into `dst`, creating `dst` if needed. Skips
+/// `.cranelisp-cache`/dotfiles. Used by Sprint 61 Slice 5 E-1 to replace
+/// in-place writes of repro `.cl` files under `exemplar/`.
+fn copy_exemplar_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if let Some(s) = name.to_str()
+            && s.starts_with('.')
+        {
+            continue;
+        }
+        let from = entry.path();
+        let to = dst.join(&name);
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            copy_exemplar_tree(&from, &to)?;
+        } else if ft.is_file() {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
 /// Drive the REPL with piped stdin. `cwd` is the project root (where the
 /// user is "in"). `lib_dirs` on CRANELISP_LIB points to stdlib so prelude
 /// resolves.
@@ -306,14 +331,18 @@ fn d45_form_shaped_body_run_tests_no_crash() {
 // is the axis.
 #[test]
 fn d45_real_exemplar_html_run_tests_no_crash() {
-    let exemplar = project_root().join("exemplar");
-    let user_cl = exemplar.join("user.cl");
-    // Empty user.cl so REPL starts clean.
-    std::fs::write(&user_cl, "").unwrap();
+    // Sprint 61 Slice 5 E-1: was writing `exemplar/user.cl` (checked-in
+    // path). Copy exemplar tree into a fresh TempDir so the test cannot
+    // pollute the checked-in source. See `tests/CLAUDE.md §"Fresh Temp
+    // Directory per Test"`.
+    let exemplar_src = project_root().join("exemplar");
+    let td = tempfile::tempdir().expect("tempdir");
+    copy_exemplar_tree(&exemplar_src, td.path()).expect("copy exemplar");
+    std::fs::write(td.path().join("user.cl"), "").unwrap();
     // Pull in html's first test via import, then run /run-tests html
     // (triggers batch dispatch of ALL html test-* fns).
     let input = "(import [html [test-wrap-tag]])\n/run-tests html\n";
-    let out = drive_repl(&exemplar, input);
+    let out = drive_repl(td.path(), input);
     assert_no_signal_crash("d45_real_exemplar_html", &out);
 }
 
@@ -329,12 +358,14 @@ fn d45_real_exemplar_html_run_tests_no_crash() {
 // (narrower).
 #[test]
 fn d45_real_exemplar_html_single_run_test_no_crash() {
-    let exemplar = project_root().join("exemplar");
-    let user_cl = exemplar.join("user.cl");
-    std::fs::write(&user_cl, "").unwrap();
+    // Sprint 61 Slice 5 E-1: fresh TempDir copy of exemplar tree.
+    let exemplar_src = project_root().join("exemplar");
+    let td = tempfile::tempdir().expect("tempdir");
+    copy_exemplar_tree(&exemplar_src, td.path()).expect("copy exemplar");
+    std::fs::write(td.path().join("user.cl"), "").unwrap();
     // Single (run-test) call — not /run-tests batch.
     let input = "(import [html [test-wrap-tag]])\n(run-test \"html/test-wrap-tag\")\n";
-    let out = drive_repl(&exemplar, input);
+    let out = drive_repl(td.path(), input);
     assert_no_signal_crash("d45_real_exemplar_html_single", &out);
 }
 
@@ -533,21 +564,14 @@ fn d6_solve_recursive_adt_does_not_segv() {
 // pure main.
 #[test]
 fn d6_exemplar_solve_minimal_puzzle_no_io_does_not_segv() {
-    // Write a new .cl file in the exemplar dir that re-uses grid.cl +
-    // solver.cl (no platform stdio, pure Int return). Use project_root
-    // as the cwd so modules are discovered via the exemplar layout.
-    //
-    // A dedicated file keeps solver.cl's IO main intact while giving us a
-    // control surface: if solve() itself is the crash culprit, the
-    // no-IO version will still segv — isolating the defect away from
-    // the IO trampoline.
-    let repro_file = project_root().join("exemplar").join("d6_repro_no_io.cl");
+    // Sprint 61 Slice 5 E-1: was writing `exemplar/d6_repro_no_io.cl`
+    // with a best-effort Drop cleanup (loses on panic). Copy exemplar
+    // tree into TempDir and place the repro inside. See `tests/CLAUDE.md
+    // §"Fresh Temp Directory per Test"`.
+    let td = tempfile::tempdir().expect("tempdir");
+    copy_exemplar_tree(&project_root().join("exemplar"), &td.path().join("exemplar"))
+        .expect("copy exemplar");
     let repro_source = r#";; D6 reduction — solve without IO. Returns determined-cell count.
-;;
-;; This file exists solely as a repro for Sprint 59 Defect 6: if solve()
-;; segfaults in the no-IO path, the defect is in propagate/solve, not the
-;; IO trampoline. Safe to delete once Defect 6 is fixed and /port re-enables
-;; the puzzle tests.
 (import [primitives [*]])
 (import [grid [Grid Cell Given Solved Candidates SolveResult Success Unsolvable
                make-grid cell-at cell-determined?]])
@@ -567,17 +591,9 @@ fn d6_exemplar_solve_minimal_puzzle_no_io_does_not_segv() {
          [(Success sol) (count-determined-helper sol 0 0)
           Unsolvable 0])]))
 "#;
-    std::fs::write(&repro_file, repro_source).unwrap();
-    // scope guard: best-effort cleanup
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-    let _cleanup = Cleanup(repro_file.clone());
-
-    let out = run_file(&project_root(), "exemplar/d6_repro_no_io.cl");
+    std::fs::write(td.path().join("exemplar").join("d6_repro_no_io.cl"), repro_source)
+        .unwrap();
+    let out = run_file(td.path(), "exemplar/d6_repro_no_io.cl");
     assert_no_signal_crash("d6_exemplar_solve_minimal_puzzle_no_io", &out);
 }
 
@@ -587,7 +603,10 @@ fn d6_exemplar_solve_minimal_puzzle_no_io_does_not_segv() {
 // try-digits/solve recursion.
 #[test]
 fn d6_exemplar_propagate_only_does_not_segv() {
-    let repro_file = project_root().join("exemplar").join("d6_propagate_only.cl");
+    // Sprint 61 Slice 5 E-1: fresh-TempDir exemplar copy.
+    let td = tempfile::tempdir().expect("tempdir");
+    copy_exemplar_tree(&project_root().join("exemplar"), &td.path().join("exemplar"))
+        .expect("copy exemplar");
     let repro_source = r#";; D6 reduction — propagate once, no backtracking.
 (import [primitives [*]])
 (import [grid [Grid Cell Given Solved Candidates make-grid]])
@@ -601,16 +620,12 @@ fn d6_exemplar_propagate_only_does_not_segv() {
          [None 0
           (Some _) 1])]))
 "#;
-    std::fs::write(&repro_file, repro_source).unwrap();
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-    let _cleanup = Cleanup(repro_file.clone());
-
-    let out = run_file(&project_root(), "exemplar/d6_propagate_only.cl");
+    std::fs::write(
+        td.path().join("exemplar").join("d6_propagate_only.cl"),
+        repro_source,
+    )
+    .unwrap();
+    let out = run_file(td.path(), "exemplar/d6_propagate_only.cl");
     assert_no_signal_crash("d6_exemplar_propagate_only", &out);
 }
 
@@ -619,7 +634,10 @@ fn d6_exemplar_propagate_only_does_not_segv() {
 // grid converges fast.
 #[test]
 fn d6_exemplar_solve_all_dots_does_not_segv() {
-    let repro_file = project_root().join("exemplar").join("d6_all_dots.cl");
+    // Sprint 61 Slice 5 E-1: fresh-TempDir exemplar copy.
+    let td = tempfile::tempdir().expect("tempdir");
+    copy_exemplar_tree(&project_root().join("exemplar"), &td.path().join("exemplar"))
+        .expect("copy exemplar");
     let repro_source = r#";; D6 reduction — solve on an all-dots (empty) puzzle.
 (import [primitives [*]])
 (import [grid [Grid Cell Given Solved Candidates SolveResult Success Unsolvable
@@ -634,16 +652,8 @@ fn d6_exemplar_solve_all_dots_does_not_segv() {
          [(Success _) 1
           Unsolvable 0])]))
 "#;
-    std::fs::write(&repro_file, repro_source).unwrap();
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-    let _cleanup = Cleanup(repro_file.clone());
-
-    let out = run_file(&project_root(), "exemplar/d6_all_dots.cl");
+    std::fs::write(td.path().join("exemplar").join("d6_all_dots.cl"), repro_source).unwrap();
+    let out = run_file(td.path(), "exemplar/d6_all_dots.cl");
     assert_no_signal_crash("d6_exemplar_solve_all_dots", &out);
 }
 
@@ -656,7 +666,10 @@ fn d6_exemplar_solve_all_dots_does_not_segv() {
 // which it does (it's a top-level defn at line 73).
 #[test]
 fn d6_exemplar_propagate_single_pass_does_not_segv() {
-    let repro_file = project_root().join("exemplar").join("d6_one_pass.cl");
+    // Sprint 61 Slice 5 E-1: fresh-TempDir exemplar copy.
+    let td = tempfile::tempdir().expect("tempdir");
+    copy_exemplar_tree(&project_root().join("exemplar"), &td.path().join("exemplar"))
+        .expect("copy exemplar");
     let repro_source = r#";; D6 reduction — one call to propagate-pass-helper, no fixpoint loop.
 (import [primitives [*]])
 (import [grid [Grid Cell Given Solved Candidates make-grid]])
@@ -670,16 +683,8 @@ fn d6_exemplar_propagate_single_pass_does_not_segv() {
          [None 0
           (Some _) 1])]))
 "#;
-    std::fs::write(&repro_file, repro_source).unwrap();
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-    let _cleanup = Cleanup(repro_file.clone());
-
-    let out = run_file(&project_root(), "exemplar/d6_one_pass.cl");
+    std::fs::write(td.path().join("exemplar").join("d6_one_pass.cl"), repro_source).unwrap();
+    let out = run_file(td.path(), "exemplar/d6_one_pass.cl");
     assert_no_signal_crash("d6_exemplar_propagate_single_pass", &out);
 }
 
@@ -690,7 +695,10 @@ fn d6_exemplar_propagate_single_pass_does_not_segv() {
 // invocation with a concrete puzzle — the smallest trigger.
 #[test]
 fn d6_exemplar_eliminate_from_peers_does_not_segv() {
-    let repro_file = project_root().join("exemplar").join("d6_elim_peers.cl");
+    // Sprint 61 Slice 5 E-1: fresh-TempDir exemplar copy.
+    let td = tempfile::tempdir().expect("tempdir");
+    copy_exemplar_tree(&project_root().join("exemplar"), &td.path().join("exemplar"))
+        .expect("copy exemplar");
     let repro_source = r#";; D6 reduction — one eliminate-from-peers call on cell 0.
 (import [primitives [*]])
 (import [grid [Grid Cell Given Solved Candidates make-grid]])
@@ -704,16 +712,8 @@ fn d6_exemplar_eliminate_from_peers_does_not_segv() {
          [None 0
           (Some _) 1])]))
 "#;
-    std::fs::write(&repro_file, repro_source).unwrap();
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-    let _cleanup = Cleanup(repro_file.clone());
-
-    let out = run_file(&project_root(), "exemplar/d6_elim_peers.cl");
+    std::fs::write(td.path().join("exemplar").join("d6_elim_peers.cl"), repro_source).unwrap();
+    let out = run_file(td.path(), "exemplar/d6_elim_peers.cl");
     assert_no_signal_crash("d6_exemplar_eliminate_from_peers", &out);
 }
 
@@ -722,7 +722,10 @@ fn d6_exemplar_eliminate_from_peers_does_not_segv() {
 // the defect is in the initial grid construction not the solver.
 #[test]
 fn d6_exemplar_make_grid_only_does_not_segv() {
-    let repro_file = project_root().join("exemplar").join("d6_make_grid.cl");
+    // Sprint 61 Slice 5 E-1: fresh-TempDir exemplar copy.
+    let td = tempfile::tempdir().expect("tempdir");
+    copy_exemplar_tree(&project_root().join("exemplar"), &td.path().join("exemplar"))
+        .expect("copy exemplar");
     let repro_source = r#";; D6 reduction — construct a Grid via make-grid, return None/Some discriminant.
 (import [primitives [*]])
 (import [grid [Grid make-grid]])
@@ -732,16 +735,8 @@ fn d6_exemplar_make_grid_only_does_not_segv() {
     [None 0
      (Some _) 1]))
 "#;
-    std::fs::write(&repro_file, repro_source).unwrap();
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-    let _cleanup = Cleanup(repro_file.clone());
-
-    let out = run_file(&project_root(), "exemplar/d6_make_grid.cl");
+    std::fs::write(td.path().join("exemplar").join("d6_make_grid.cl"), repro_source).unwrap();
+    let out = run_file(td.path(), "exemplar/d6_make_grid.cl");
     assert_no_signal_crash("d6_exemplar_make_grid_only", &out);
 }
 
