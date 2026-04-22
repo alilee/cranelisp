@@ -1,0 +1,58 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+────────────
+ Nextest run ID 90348c4b-fa30-4ed4-a65f-6a58c8edf48b with nextest profile: default
+    Starting 1 test across 1 binary (58 tests skipped)
+       START (1/1) cranelisp::sprint23 heisenbug_race_reduced_concurrent_import_pairs
+
+running 1 test
+
+thread 'heisenbug_race_reduced_concurrent_import_pairs' (6568057) panicked at tests/sprint23.rs:2364:5:
+reduced heisenbug repro fired across 10 trials (1 failure(s)): [trial 7] t3 i1 session 1: import+call failed (heisenbug signature if stdout/stderr contains 'helper-val' not found in module 'helper'):
+stdout: cranelisp REPL — type /help for help
+0+0ms; user> Error: type error at 9..28: 'helper-val' not found in module 'helper'
+1+0ms; user> Error: type error at 1..11: undefined variable: helper-val
+0+0ms; user> 
+
+stderr: === CRANELISP_SCHEDULER_TRACE DUMP ===
+[SCH] ts=0 thr=ThreadId(1)/0 RegisterModuleRegister	module=user
+[SCH] ts=17584 thr=ThreadId(2)/1 ModuleStateTypechecking	module=user
+[SCH] ts=399500 thr=ThreadId(2)/1 RegisterDepPublish	module=prelude
+[SCH] ts=400834 thr=ThreadId(2)/1 RegisterModuleRegister	module=prelude
+[SCH] ts=402334 thr=ThreadId(2)/1 ModuleStateBlocked	module=user
+[SCH] ts=420875 thr=ThreadId(2)/1 ModuleStateTypechecking	module=prelude
+[SCH] ts=478917 thr=ThreadId(2)/1 IsTypecheckedHit	module=primitives pool=255
+[SCH] ts=479209 thr=ThreadId(2)/1 RegisterImportsLookup	module=primitives
+[SCH] ts=11167667 thr=ThreadId(2)/1 ModuleStateTypechecked	module=prelude
+[SCH] ts=11173959 thr=ThreadId(2)/1 ModuleStateUnblocked	module=user
+[SCH] ts=11230792 thr=ThreadId(2)/1 ModuleStateTypechecking	module=user
+[SCH] ts=11403209 thr=ThreadId(2)/1 ModuleStateTypechecked	module=user
+[SCH] ts=13712042 thr=ThreadId(1)/0 RegisterDepPublish	module=helper
+[SCH] ts=13713417 thr=ThreadId(1)/0 RegisterModuleRegister	module=helper
+[SCH] ts=13717000 thr=ThreadId(1)/0 ModuleStateBlocked	module=user
+[SCH] ts=13725334 thr=ThreadId(2)/1 ModuleStateTypechecking	module=helper
+[SCH] ts=13756167 thr=ThreadId(1)/0 RepublishFromSymbolTable	module=user
+[SCH] ts=14470875 thr=ThreadId(2)/1 ModuleStateTypechecked	module=helper
+[SCH] ts=14473917 thr=ThreadId(2)/1 ModuleStateUnblocked	module=user
+[SCH] ts=14477417 thr=ThreadId(2)/1 ModuleStateTypechecking	module=user
+[SCH] ts=14554125 thr=ThreadId(2)/1 IsTypecheckedHit	module=helper pool=4
+[SCH] ts=14554417 thr=ThreadId(2)/1 RegisterImportsLookup	module=helper
+[SCH] ts=14565917 thr=ThreadId(2)/1 ModuleStateTypechecked	module=user
+[SCH] ts=14609250 thr=ThreadId(1)/0 IsTypecheckedHit	module=helper pool=4
+[SCH] ts=14609542 thr=ThreadId(1)/0 RegisterImportsLookup	module=helper
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test heisenbug_race_reduced_concurrent_import_pairs ... FAILED
+
+failures:
+
+failures:
+    heisenbug_race_reduced_concurrent_import_pairs
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 58 filtered out; finished in 4.18s
+
+        FAIL [   4.190s] (1/1) cranelisp::sprint23 heisenbug_race_reduced_concurrent_import_pairs
+  Cancelling due to test failure: 
+────────────
+     Summary [   4.191s] 1 test run: 0 passed, 1 failed, 58 skipped
+        FAIL [   4.190s] (1/1) cranelisp::sprint23 heisenbug_race_reduced_concurrent_import_pairs
+error: test run failed

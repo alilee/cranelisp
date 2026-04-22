@@ -1536,6 +1536,21 @@ The design doc is a SKELETON — §4 names three candidate hypotheses (H1/H2/H3)
 
 **Authoring cadence**: T-S3-1 already present. T-S3-2 + T-S3-3 authored in Wave 2 after `/int` commits evidence artefacts. T-S3-H{1|2|3} (pick one) and T-S3-4 authored in Wave 2 after `/int`'s §8 hypothesis selection.
 
+#### Sprint 61 Wave 3 step 3f — H5 regression guards (2026-04-22, SHA `35062ca`)
+
+The evidence-gated discipline settled on H5 (not H1/H2/H3 nor H4 — see `design/int/heisenbug-race-closure.md §7.7/§7.8` for the hypothesis trajectory). H5's mechanism: `try_unblock_locked(user)` inside `notify_typecheck_done(helper)` pushes `user` into `typecheck_first`; a persistent worker pops and typechecks `user` concurrently with the REPL-eval thread's retry after `wait_module_inmem_complete_blocking`. Fix: `eval_in_flight: bool` on `ModuleState` + `EvalInFlightGuard` RAII in `register_dep_for_eval` — the flag suppresses the queue push under `try_unblock_locked`, preserving the observability emission (per /arch §3d' condition 4).
+
+Two integration regression tests authored by `/qa` per /arch §3d' "Test authoring (step 3f) requirements":
+
+| # | Test | Shape | Spec/design anchor | Negative? | Status |
+|---|---|---|---|---|---|
+| T-S3-H5-1 | `sprint23::h5_gate_typechecking_user_fires_only_on_repl_thread` | Subprocess with `CRANELISP_SCHEDULER_TRACE=1` drives `(import [helper [helper-val]])\n(helper-val)\n/quit`. Parse the stderr `[SCH]` dump; for every `ModuleStateBlocked module=user` on the REPL-eval thread (`ThreadId(1)/0`), find the matching `ModuleStateUnblocked module=user` on a worker thread, and assert no subsequent `ModuleStateTypechecking module=user` fires on that worker thread before a new `Blocked` cycle resets or the dump ends. Pre-fix (no `eval_in_flight`): the worker claims the unblocked caller and fires `Typechecking` — test fails with the exact H5 signature. Post-fix: the gate suppresses the push; the event stream shows `Unblocked` on the worker then nothing. | `heisenbug-race-closure.md §7.7/§7.8`, `/arch §3d' test 1` | Invariant (asserts absence of forbidden event on worker thread) | Passing 5/5 at HEAD. |
+| T-S3-H5-4 | `sprint23::h5_normal_completion_does_not_starve_repl_eval_thread` | Subprocess drives the same import+call scenario on the NORMAL (non-racing) path with no trace env var, **15-second** wall-clock ceiling. Asserts the subprocess returns a successful `helper-val` result within the timeout. Guards against `EvalInFlightGuard` Drop semantics breaking — if the flag leaks, `try_unblock_locked(caller)` suppresses the typecheck push indefinitely and the eval thread hangs. Ceiling widened Sprint 61 Wave 3 step 3f (2→15 s) after /int §3e'' reported a 9/10 full-suite failure rate tied to subprocess-cold-start latency under heavy nextest concurrency, not a starvation regression — the real failure mode (leaked flag → infinite block) is distinguished from contended-machine wall-clock at any ceiling ≫ typical; 15 s is ~30x typical worst-case observed and 0.5x the tests/CLAUDE.md per-test cap. Disposition (a) "tighten test" per /qa Sprint 61 Wave 3 step 3f investigation; precedent: `tests/plan/baseline.md §"Sprint 61 Wave 1 — Harness robustness concern"`. | `heisenbug-race-closure.md §3d' "RAII guard starvation safety"`, `/arch §3d' test 4` | Negative (absence of starvation under normal completion) | Passing 12/12 whole-workspace post-fix at SHA (working tree) — previously 5/5 isolation, 9/10 full-workspace pre-fix. |
+
+Unit tests 2 + 3 (`set_eval_in_flight` flag-state invariant and RAII guard panic-unwind) are authored by `/int` inside `src/scheduler.rs` + `src/session_v4.rs` per unit-vs-integration split (`memory/feedback_unit_tests_with_dev.md`) and are out of scope for `/qa`.
+
+**H6 carry**: the reduced harness `sprint23::heisenbug_race_reduced_concurrent_import_pairs` (authored step 3a) now fires at ~80% with the H6 data-plane residue signature — `symbol_tables[helper]` partial visibility across the condvar wake boundary. Ledgered in `tests/plan/baseline.md` under "Cargo test suite" at SHA `35062ca`, owner `/int`, target Sprint 62 per /arch §3d' H6 disposition ¶3.
+
 ---
 
 ### Slice 4: 21-hello-io exit 201 (design TBD at Slice 4 readout)

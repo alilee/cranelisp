@@ -1,0 +1,130 @@
+Sprint 61 Wave 3 step 3e' post-fix dump — H5 eval_in_flight gate
+
+SHA: 35062ca (working-tree, not yet committed; captured 2026-04-22 under
+     the /int implementation of scheduler-side worker-claim suppression
+     per design/int/heisenbug-race-closure.md §8.2 + /arch §3d' conditions
+     1-4). Reduced harness:
+     tests/sprint23.rs::heisenbug_race_reduced_concurrent_import_pairs
+     running under CRANELISP_SCHEDULER_TRACE=1.
+
+Rate observation (10 runs): 2 PASS / 8 FAIL.
+Rate observation (5 more runs, same harness, with trace): 2 PASS / 3 FAIL.
+Combined: ~20-30% test-run-level pass rate (vs 0% pre-fix-3e', vs 0%
+pre-fix-3e). The H5 signature (ModuleStateTypechecking user on t2 after
+ModuleStateUnblocked user inside notify_typecheck_done) is GONE from
+every failing dump captured post-fix. What remains is a DIFFERENT
+signature — t1 runs RegisterImportsLookup helper alone and the lookup
+fails — which points to an H6 data-plane memory-ordering residue on
+symbol_tables[helper] publication versus the ModuleStateTypechecked
+helper → condvar wake on t1's parked wait_module_inmem_complete_blocking.
+
+========================
+FAILING dump (run 3 of captured 5, ts-sequence trimmed to the helper
+race window; earlier prelude + user cycle identical to pre-fix logs):
+========================
+
+[SCH] ts=16557916 thr=ThreadId(1)/0 RegisterDepPublish module=helper
+[SCH] ts=16560000 thr=ThreadId(1)/0 RegisterModuleRegister module=helper
+[SCH] ts=16566416 thr=ThreadId(1)/0 ModuleStateBlocked module=user
+[SCH] ts=16581333 thr=ThreadId(2)/1 ModuleStateTypechecking module=helper
+[SCH] ts=16666916 thr=ThreadId(1)/0 RepublishFromSymbolTable module=user
+[SCH] ts=16910791 thr=ThreadId(2)/1 ModuleStateTypechecked module=helper
+[SCH] ts=16914666 thr=ThreadId(2)/1 ModuleStateUnblocked module=user
+[SCH] ts=16969833 thr=ThreadId(1)/0 IsTypecheckedHit module=helper pool=4
+[SCH] ts=16971500 thr=ThreadId(1)/0 RegisterImportsLookup module=helper
+
+Error (trial 1, t0 i1): 'helper-val' not found in module 'helper'
+
+Diagnostic:
+
+(a) ModuleStateUnblocked user fires on t2 from try_unblock_locked (inside
+    notify_typecheck_done(helper)) — the H5 site. H5 gate is active:
+    after emission, user is NOT pushed into typecheck_first (the
+    push suppression is silent-in-trace; the absence of
+    ModuleStateTypechecking user on t2 after this point proves the
+    gate fired).
+
+(b) NO ModuleStateTypechecking user on t2 in this window (compare
+    pre-fix post-fix-run-35062ca.log line 36:
+    "ts=14477417 thr=ThreadId(2)/1 ModuleStateTypechecking module=user"
+    which is the pinning H5 signature; absent here).
+
+(c) IsTypecheckedHit helper pool=4 + RegisterImportsLookup helper on
+    t1 — the REPL-eval thread is the SOLE consumer of
+    symbol_tables[helper] in the hot path. Exactly per /arch §3d'
+    condition (c).
+
+(d) Lookup fails despite pool=4 (TypecheckDone). t2 published helper's
+    symbol_tables entry before emitting ModuleStateTypechecked at
+    ts=16910791; t1 observed pool=TypecheckDone at ts=16969833 (+59 µs
+    later, after condvar wake) but the helper-val symbol read fails.
+    This is consistent with an H6 data-plane partial-visibility
+    signature — symbol_tables[helper] mutation is visible to t1 via
+    the scheduler mutex but the underlying HashMap entry may be in a
+    transient state from t2's insertion (or the insertion happens
+    AFTER the ModuleStateTypechecked event's scheduler-state update,
+    so the condvar wake leads t1 to read before t2's data-plane
+    publish). /arch §7.8 named this residue as "H1-adjacent data-plane
+    partial-visibility signature, strictly downstream of the race-to-
+    claim that H5 names". H5 fix does not address it (and was not
+    intended to); deferred to S62 H6 slice.
+
+========================
+PASSING dump (captured 2026-04-22):
+========================
+
+Full stderr:
+    running 1 test
+    test heisenbug_race_reduced_concurrent_import_pairs ... ok
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured;
+                 58 filtered out; finished in 5.29s
+
+No trace dump is written for passing runs (test harness discards
+subprocess stderr on success — see race-evidence/README.md
+§"Passing-run caveat").
+
+========================
+H6 carry decision (per /arch §3d'):
+========================
+
+H5 signature GONE across all failing dumps captured this sprint step.
+Residue (`'helper-val' not found in module 'helper'` on t1) is a
+distinct signature, consistent with /arch-anticipated H6 territory
+(data-plane partial visibility on symbol_tables publication). Per
+/arch §3d' "H6 disposition" paragraph 3:
+  "If step 3e' validation shows rate drops to (say) 1/20 and the
+   residue is clearly a narrow memory-ordering refinement, /sprint
+   may ledger-and-defer with a named-hypothesis carry to S62's H6
+   slice. The criterion is binary: does the step 3e' post-fix dump
+   show the H5 signature is GONE (even if some other signature
+   remains)? If yes, ledger-and-defer is acceptable."
+
+H5 signature is GONE. Residue is narrow. Ledger-and-defer to S62 H6.
+
+========================
+/arch 3d' condition checklist:
+========================
+
+(1) Caller audit — DONE, documented at top of register_dep_for_eval
+    in src/session_v4.rs. Only register_dep_for_eval calls
+    wait_module_inmem_complete_blocking (one test has a comment
+    noting it avoids the call).
+(2) Lock discipline — set_eval_in_flight takes self.lock() (scheduler
+    state lock), same lock try_unblock_locked's caller holds. No
+    atomics, no separate mutex.
+(3) Narrow scope — the RAII guard spans register_dep_for_eval from
+    just after computing `caller` through function exit. This is
+    /arch's alternative "Recommendation" option 1 from §3d' (set at
+    function entry after caller is computed). The narrower variant
+    (around just wait_module_inmem_complete_blocking) was TRIED FIRST
+    and was validated-insufficient: t2 completed helper and called
+    try_unblock_locked(user) with eval_in_flight=false BEFORE t1
+    reached the wait, resulting in set_eval_in_flight firing on a
+    user that was already TypecheckWorking. The function-entry scope
+    is required to win the race. See §3e' — H5 fix implementation
+    notes (this doc).
+(4) Observability — RepublishFromSymbolTable and RegisterImportsLookup
+    continue to fire at their existing sites (worker.rs:1242-1245 and
+    session_v4.rs:1255-1258). ModuleStateUnblocked also continues to
+    fire from try_unblock_locked (always — including in the flag-
+    gated path). No new trace tags added.

@@ -187,6 +187,40 @@ pub enum SchedulerTraceTag {
     /// `typecheck_products`, `suspend_states`, and the module's `code`
     /// fields.
     ClearModuleState,
+    /// `session_v4::republish_module_sexps_from_symbol_table` — the
+    /// caller-side H5 REPL-persistence republish fires. Sprint 61 Wave 3
+    /// step 3e instrumentation (H4 race-closure fix Change B): exposes
+    /// the ordering of the REPL-eval thread's user-sexps republish
+    /// relative to the persistent worker's subsequent
+    /// `register_imports` lookup on the dep. Emitted from
+    /// `src/session_v4.rs:1192-1209`.
+    RepublishFromSymbolTable,
+    /// `handle_import` is consulting `symbol_tables[dep]` via the
+    /// `register_imports` fast path. Sprint 61 Wave 3 step 3e
+    /// instrumentation (H4 race-closure fix Change B): exposes the
+    /// reader-side of the publish-vs-flag race so the post-fix dump can
+    /// prove the `RepublishFromSymbolTable` event precedes the
+    /// `RegisterImportsLookup` event on the eval thread. Emitted from
+    /// `src/worker.rs::handle_import` at the fast-path check.
+    RegisterImportsLookup,
+    /// `TypeCheckEnv::ensure_module_exists` either created a fresh
+    /// `SymbolTable` for the module or observed one already present.
+    /// The observed branch is reported via the `state` field on the
+    /// `Module` payload:
+    ///
+    /// - `state = Some(0)` → `Created` (this call built and inserted
+    ///   the table).
+    /// - `state = Some(1)` → `AlreadyPresent` (another concurrent
+    ///   caller had already inserted).
+    ///
+    /// Sprint 61 Wave 3 step 3e'' instrumentation (H6 race-closure fix
+    /// per `design/int/heisenbug-race-closure.md §8.3.4` + /arch mini
+    /// review §3d''). The emission crosses the crate boundary via the
+    /// `cranelisp_typecheck::trace::install_symbol_table_ensure_hook`
+    /// install-a-function-pointer pattern — typecheck does not depend
+    /// on this crate. Cost when the sink is uninstalled (unit tests):
+    /// one relaxed OnceLock load + null check, no formatting.
+    SymbolTableEnsure,
 }
 
 /// Event payload. Inline enum — no heap allocation per event, no string
@@ -371,6 +405,52 @@ pub fn record_bulk_event(tag: SchedulerTraceTag, count: usize) {
 }
 
 // ---------------------------------------------------------------------------
+// SymbolTableEnsure bridge (Sprint 61 Wave 3 step 3e'' — H6 fix)
+// ---------------------------------------------------------------------------
+//
+// The `cranelisp-typecheck` crate does not depend on this binary crate, so
+// it cannot call `record_module_event_with_state` directly. Instead, this
+// module provides a forwarding function that the binary installs into
+// `cranelisp_typecheck::trace::install_symbol_table_ensure_hook` at
+// startup. Typecheck-crate call sites emit through the installed pointer;
+// the pointer resolves to `record_symbol_table_ensure_forward` below.
+//
+// See `design/int/heisenbug-race-closure.md §3d''` for the /arch
+// mini-review approval of this cross-crate wiring.
+
+/// Sink function that translates a typecheck-crate
+/// `SymbolTableEnsureOutcome` into a scheduler-trace
+/// `SymbolTableEnsure` event. Invoked via the function pointer
+/// installed by [`install_symbol_table_ensure_hook_to_scheduler_trace`].
+///
+/// The `outcome` is encoded into the `Module` payload's `state` field
+/// (0 = Created, 1 = AlreadyPresent) so the `format_event_line`
+/// machinery can render it without a new payload variant.
+pub fn record_symbol_table_ensure_forward(
+    module: &cranelisp_types::ModuleFullPath,
+    outcome: cranelisp_typecheck::SymbolTableEnsureOutcome,
+) {
+    record_module_event_with_state(
+        SchedulerTraceTag::SymbolTableEnsure,
+        module.as_ref(),
+        outcome.as_u8(),
+    );
+}
+
+/// Install the forwarding function pointer into the typecheck crate's
+/// trace slot. Call once from `main()` before any typecheck work
+/// begins.
+///
+/// Idempotent — `cranelisp_typecheck::install_symbol_table_ensure_hook`
+/// is backed by a `OnceLock`; the first install wins, subsequent calls
+/// are no-ops.
+pub fn install_symbol_table_ensure_hook_to_scheduler_trace() {
+    cranelisp_typecheck::install_symbol_table_ensure_hook(
+        record_symbol_table_ensure_forward,
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Dump
 // ---------------------------------------------------------------------------
 
@@ -432,8 +512,26 @@ pub fn format_event_line(e: &SchedulerTraceEvent) -> String {
         SchedulerTraceTag::ModuleStateUnblocked => "ModuleStateUnblocked",
         SchedulerTraceTag::RecompileModule => "RecompileModule",
         SchedulerTraceTag::ClearModuleState => "ClearModuleState",
+        SchedulerTraceTag::RepublishFromSymbolTable => "RepublishFromSymbolTable",
+        SchedulerTraceTag::RegisterImportsLookup => "RegisterImportsLookup",
+        SchedulerTraceTag::SymbolTableEnsure => "SymbolTableEnsure",
     };
+    // `SymbolTableEnsure` overloads the `state` field on the Module
+    // payload to carry the `Created | AlreadyPresent` discriminator
+    // (0 = Created, 1 = AlreadyPresent). For readability, format the
+    // symbolic name rather than the numeric code on this tag. All
+    // other tags with a `state` value continue to render it as
+    // `pool=<N>`.
+    let is_ensure = matches!(e.tag, SchedulerTraceTag::SymbolTableEnsure);
     let payload = match &e.payload {
+        SchedulerTracePayload::Module { module, state: Some(s) } if is_ensure => {
+            let outcome = match s {
+                0 => "Created",
+                1 => "AlreadyPresent",
+                _ => "Unknown",
+            };
+            format!("module={module} outcome={outcome}")
+        }
         SchedulerTracePayload::Module { module, state: Some(s) } => {
             format!("module={module} pool={s}")
         }
@@ -913,6 +1011,179 @@ mod tests {
         assert_eq!(p.module_path(), Some("user"));
         let b = SchedulerTracePayload::Bulk { count: 2 };
         assert_eq!(b.module_path(), None);
+    }
+
+    // --- Sprint 61 Wave 3 step 3e — H4 race-closure instrumentation -------
+    //
+    // Two small tests: one verifies emission via record_module_event (tag
+    // reaches the thread-local buffer), one verifies format_event_line
+    // outputs the tag name as a static string.
+
+    #[test]
+    fn s61w3_new_tags_record_via_module_event() {
+        // Drain to start from a known-empty state. Then push each of the
+        // two new tags directly into the thread-local buffer (bypassing
+        // the process-global OnceLock filter, which may or may not be
+        // enabled depending on test-execution order — same pattern as
+        // `force_push` above).
+        let _ = dump_thread_buffer();
+        SCHEDULER_TRACE_BUF.with(|cell| {
+            let mut buf = cell.borrow_mut();
+            buf.push_back(SchedulerTraceEvent {
+                timestamp: 1,
+                thread_id: std::thread::current().id(),
+                thread_ord_id: thread_ord_id(),
+                tag: SchedulerTraceTag::RepublishFromSymbolTable,
+                payload: SchedulerTracePayload::Module {
+                    module: "user".to_string(),
+                    state: None,
+                },
+            });
+            buf.push_back(SchedulerTraceEvent {
+                timestamp: 2,
+                thread_id: std::thread::current().id(),
+                thread_ord_id: thread_ord_id(),
+                tag: SchedulerTraceTag::RegisterImportsLookup,
+                payload: SchedulerTracePayload::Module {
+                    module: "helper".to_string(),
+                    state: None,
+                },
+            });
+        });
+        let dumped = dump_thread_buffer();
+        assert_eq!(dumped.len(), 2);
+        assert!(matches!(dumped[0].tag, SchedulerTraceTag::RepublishFromSymbolTable));
+        assert!(matches!(dumped[1].tag, SchedulerTraceTag::RegisterImportsLookup));
+    }
+
+    // --- Sprint 61 Wave 3 step 3e'' — H6 SymbolTableEnsure tag --------
+    //
+    // Two small tests mirror the step 3e pair above: one verifies
+    // emission reaches the thread-local buffer for the new tag, the
+    // other verifies `format_event_line` renders the outcome
+    // symbolically ("outcome=Created" / "outcome=AlreadyPresent")
+    // rather than as a numeric pool state.
+
+    #[test]
+    fn s61w3_symbol_table_ensure_records_via_module_event_with_state() {
+        let _ = dump_thread_buffer();
+        SCHEDULER_TRACE_BUF.with(|cell| {
+            let mut buf = cell.borrow_mut();
+            // outcome=Created (state=0)
+            buf.push_back(SchedulerTraceEvent {
+                timestamp: 1,
+                thread_id: std::thread::current().id(),
+                thread_ord_id: thread_ord_id(),
+                tag: SchedulerTraceTag::SymbolTableEnsure,
+                payload: SchedulerTracePayload::Module {
+                    module: "helper".to_string(),
+                    state: Some(0),
+                },
+            });
+            // outcome=AlreadyPresent (state=1)
+            buf.push_back(SchedulerTraceEvent {
+                timestamp: 2,
+                thread_id: std::thread::current().id(),
+                thread_ord_id: thread_ord_id(),
+                tag: SchedulerTraceTag::SymbolTableEnsure,
+                payload: SchedulerTracePayload::Module {
+                    module: "helper".to_string(),
+                    state: Some(1),
+                },
+            });
+        });
+        let dumped = dump_thread_buffer();
+        assert_eq!(dumped.len(), 2);
+        assert!(matches!(dumped[0].tag, SchedulerTraceTag::SymbolTableEnsure));
+        assert!(matches!(
+            &dumped[0].payload,
+            SchedulerTracePayload::Module { state: Some(0), .. }
+        ));
+        assert!(matches!(
+            &dumped[1].payload,
+            SchedulerTracePayload::Module { state: Some(1), .. }
+        ));
+    }
+
+    #[test]
+    fn s61w3_symbol_table_ensure_format_line_renders_outcome_symbolically() {
+        let created = SchedulerTraceEvent {
+            timestamp: 200,
+            thread_id: std::thread::current().id(),
+            thread_ord_id: 0,
+            tag: SchedulerTraceTag::SymbolTableEnsure,
+            payload: SchedulerTracePayload::Module {
+                module: "helper".to_string(),
+                state: Some(0),
+            },
+        };
+        let line = format_event_line(&created);
+        assert!(
+            line.contains("SymbolTableEnsure"),
+            "format_event_line must name new tag: {line}"
+        );
+        assert!(
+            line.contains("outcome=Created"),
+            "Created outcome must render symbolically: {line}"
+        );
+        assert!(
+            !line.contains("pool="),
+            "SymbolTableEnsure must NOT render as `pool=` (that reading \
+             is reserved for scheduler pool-state tags): {line}"
+        );
+
+        let present = SchedulerTraceEvent {
+            timestamp: 201,
+            thread_id: std::thread::current().id(),
+            thread_ord_id: 0,
+            tag: SchedulerTraceTag::SymbolTableEnsure,
+            payload: SchedulerTracePayload::Module {
+                module: "helper".to_string(),
+                state: Some(1),
+            },
+        };
+        let line = format_event_line(&present);
+        assert!(
+            line.contains("outcome=AlreadyPresent"),
+            "AlreadyPresent outcome must render symbolically: {line}"
+        );
+    }
+
+    #[test]
+    fn s61w3_new_tags_format_line_names() {
+        let republish = SchedulerTraceEvent {
+            timestamp: 100,
+            thread_id: std::thread::current().id(),
+            thread_ord_id: 0,
+            tag: SchedulerTraceTag::RepublishFromSymbolTable,
+            payload: SchedulerTracePayload::Module {
+                module: "user".to_string(),
+                state: None,
+            },
+        };
+        let line = format_event_line(&republish);
+        assert!(
+            line.contains("RepublishFromSymbolTable"),
+            "format_event_line must name new tag: {line}"
+        );
+        assert!(line.contains("module=user"), "payload formatting: {line}");
+
+        let lookup = SchedulerTraceEvent {
+            timestamp: 101,
+            thread_id: std::thread::current().id(),
+            thread_ord_id: 0,
+            tag: SchedulerTraceTag::RegisterImportsLookup,
+            payload: SchedulerTracePayload::Module {
+                module: "helper".to_string(),
+                state: None,
+            },
+        };
+        let line = format_event_line(&lookup);
+        assert!(
+            line.contains("RegisterImportsLookup"),
+            "format_event_line must name new tag: {line}"
+        );
+        assert!(line.contains("module=helper"), "payload formatting: {line}");
     }
 
     // --- Event size sanity -------------------------------------------------

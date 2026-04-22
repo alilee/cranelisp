@@ -1229,6 +1229,20 @@ fn handle_import(
         if ctx.symbol_tables.contains_key(dep)
             && ctx.scheduler.is_typechecked(dep)
         {
+            // Sprint 61 Wave 3 step 3e — H4 race closure (Change B).
+            // Emit the reader-side trace tag immediately before
+            // `register_imports` consumes `symbol_tables[dep]`. This is
+            // the data-plane lookup the failing-run dump's ordering
+            // analysis (§7.4) implicates as the race site — emitting
+            // here (after the `is_typechecked` gate, before the lookup)
+            // makes the post-fix dump show the invariant directly:
+            // `RepublishFromSymbolTable user` must precede
+            // `RegisterImportsLookup helper` on any successful eval.
+            // See `design/int/heisenbug-race-closure.md §8.2`.
+            crate::observability::record_module_event(
+                crate::observability::SchedulerTraceTag::RegisterImportsLookup,
+                dep.as_ref(),
+            );
             cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).register_imports(&mut ctx.check_state,std::slice::from_ref(spec))?;
             continue;
         }

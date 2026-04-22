@@ -1,0 +1,177 @@
+Sprint 61 Wave 3 step 3e'' post-fix dump — H6 atomic ensure_module_exists
+
+SHA: 35062ca (working-tree, H6 fix NOT yet committed; captured 2026-04-22
+     under the /int implementation per /arch mini-review conditions 1-4
+     in design/int/heisenbug-race-closure.md §3d'').
+
+Rate observation (step 3e'' acceptance gate per §8.3.6(a)):
+    Reduced harness `heisenbug_race_reduced_concurrent_import_pairs`:
+        10 / 10 PASS consecutive runs (pre-fix: 2 / 10 PASS).
+    Full `--test sprint23` suite:
+        61 / 61 PASS on a clean run.
+        Across 10 consecutive full-suite runs: 9 / 10 PASS; 1 run had
+        `h5_normal_completion_does_not_starve_repl_eval_thread` time
+        out on the 2-second tail (pre-existing flake — passes 5/5 in
+        isolation, unrelated to H6). The `heisenbug_race_reduced_*`
+        test itself was 10/10 PASS across all 10 full-suite runs.
+    Observability tests (cranelisp observability):
+        29 / 29 PASS (2 new tests for SymbolTableEnsure + retained suite).
+    Typecheck unit tests (cranelisp-typecheck):
+        318 + 8 = 326 / 326 PASS (includes 3 new
+        `ensure_module_exists_*` tests and the `trace` module tests).
+
+========================
+POST-FIX dump — representative single-subprocess run with
+CRANELISP_SCHEDULER_TRACE=1. The reduced harness invokes the binary
+as subprocesses; the dump below is the scheduler trace for one
+representative subprocess running the exact harness input shape
+(helper.cl + `(import [helper [helper-val]]) (helper-val) /quit`).
+The full race window trimmed to the segments bracketing the helper
+ensure sequence.
+========================
+
+[SCH] ts=41        thr=ThreadId(1)/0 SymbolTableEnsure      module=macros    outcome=Created
+[SCH] ts=126625    thr=ThreadId(1)/0 SymbolTableEnsure      module=primitives outcome=AlreadyPresent
+[SCH] ts=164666    thr=ThreadId(1)/0 SymbolTableEnsure      module=primitives outcome=AlreadyPresent
+[SCH] ts=218875    thr=ThreadId(1)/0 SymbolTableEnsure      module=primitives outcome=AlreadyPresent
+[SCH] ts=314125    thr=ThreadId(1)/0 SymbolTableEnsure      module=primitives outcome=AlreadyPresent
+[SCH] ts=559583    thr=ThreadId(2)/1 SymbolTableEnsure      module=user      outcome=AlreadyPresent
+[SCH] ts=573666    thr=ThreadId(2)/1 SymbolTableEnsure      module=user      outcome=AlreadyPresent
+[SCH] ts=1235041   thr=ThreadId(2)/1 SymbolTableEnsure      module=prelude   outcome=Created
+[SCH] ts=1243166   thr=ThreadId(2)/1 SymbolTableEnsure      module=prelude   outcome=AlreadyPresent
+[SCH] ts=17105833  thr=ThreadId(2)/1 ModuleStateTypechecked module=prelude
+[SCH] ts=17182875  thr=ThreadId(2)/1 SymbolTableEnsure      module=user      outcome=AlreadyPresent
+[SCH] ts=17190416  thr=ThreadId(2)/1 SymbolTableEnsure      module=user      outcome=AlreadyPresent
+[SCH] ts=17390000  thr=ThreadId(2)/1 ModuleStateTypechecked module=user
+[SCH] ts=19590750  thr=ThreadId(1)/0 SymbolTableEnsure      module=user      outcome=AlreadyPresent
+[SCH] ts=19603250  thr=ThreadId(1)/0 SymbolTableEnsure      module=user      outcome=AlreadyPresent
+[SCH] ts=19963166  thr=ThreadId(1)/0 RegisterDepPublish     module=helper
+[SCH] ts=19963958  thr=ThreadId(1)/0 RegisterModuleRegister module=helper
+[SCH] ts=19975000  thr=ThreadId(2)/1 ModuleStateTypechecking module=helper
+[SCH] ts=20007333  thr=ThreadId(2)/1 SymbolTableEnsure      module=helper    outcome=Created          ← DECISIVE: exactly ONE Created for helper
+[SCH] ts=20016083  thr=ThreadId(2)/1 SymbolTableEnsure      module=helper    outcome=AlreadyPresent   ← t2's subsequent idempotent re-ensure (worker pre-typecheck path)
+[SCH] ts=20024500  thr=ThreadId(1)/0 SymbolTableEnsure      module=helper    outcome=AlreadyPresent   ← t1's register_dep_for_eval pre-wait ensure — sees the table already built
+[SCH] ts=20765500  thr=ThreadId(2)/1 ModuleStateTypechecked module=helper
+[SCH] ts=20769250  thr=ThreadId(2)/1 ModuleStateUnblocked   module=user
+[SCH] ts=20785000  thr=ThreadId(1)/0 SymbolTableEnsure      module=user      outcome=AlreadyPresent
+[SCH] ts=20796208  thr=ThreadId(1)/0 SymbolTableEnsure      module=user      outcome=AlreadyPresent
+[SCH] ts=20800375  thr=ThreadId(1)/0 IsTypecheckedHit       module=helper    pool=4
+[SCH] ts=20800583  thr=ThreadId(1)/0 RegisterImportsLookup  module=helper    ← lookup SUCCEEDS; stdout shows :primitives/Int 99
+
+Acceptance evidence against §8.3.6 / /arch §3d'' condition 4:
+
+(a) Rate: 10/10 PASS reduced harness (gate: ≥10/10 this step;
+    ≥20/20 is the sprint-close gate at Wave 5). PASS.
+
+(b) Exactly one `SymbolTableEnsure module=helper outcome=Created`
+    at ts=20007333, on t2 (the priority worker). The subsequent
+    emissions on `helper` are both `AlreadyPresent` — one on t2
+    (the worker's pre-typecheck re-ensure at
+    `src/worker.rs:3417`), one on t1 (the REPL-eval's pre-wait
+    ensure at `src/session_v4.rs:1594`). Never two Createds. This
+    is the exact shape /arch §3d'' required: "EXACTLY ONE
+    `SymbolTableEnsure helper Created` (either on t1 or t2) and
+    EXACTLY ONE `SymbolTableEnsure helper AlreadyPresent` (on the
+    other thread)". PASS. (Note: the helper gets TWO
+    AlreadyPresent emissions because the worker also does an
+    internal pre-typecheck ensure on the same thread — that is
+    the pre-existing `handle_typecheck_work_shared` wrapper, not
+    a race; it simply adds one extra AlreadyPresent event beyond
+    /arch's minimum expectation.)
+
+(c) No `'helper-val' not found` errors across 10 consecutive
+    reduced-harness runs. Pre-fix signature GONE. PASS.
+
+(d) `ModuleStateTypechecking user` still fires on t1 only (H5
+    invariant retained — no regression from H5 fix). PASS.
+
+(e) `cargo check --workspace` clean. PASS.
+
+(f) `cargo clippy -p cranelisp-typecheck --all-targets` no new
+    warnings (3 pre-existing warnings in builtins.rs/program.rs/
+    traits.rs, untouched by this change). PASS.
+
+(g) `cargo clippy -p cranelisp --all-targets` no new warnings
+    (pre-existing warnings only, none in observability.rs or
+    main.rs). PASS.
+
+========================
+Caller audit for `ensure_module_exists` (per /arch §3e'' dump
+expectation):
+========================
+
+Internal-to-typecheck callers (5 sites — single-threaded per check_form):
+    crates/cranelisp-typecheck/src/builtins.rs:444    macros seed
+    crates/cranelisp-typecheck/src/builtins.rs:632    primitives seed
+    crates/cranelisp-typecheck/src/builtins.rs:694    primitives TypeDef seed
+    crates/cranelisp-typecheck/src/builtins.rs:876    primitives primitive-seed
+    crates/cranelisp-typecheck/src/builtins.rs:1031   primitives trait-impl seed
+    crates/cranelisp-typecheck/src/program.rs:1202    check() entry
+    crates/cranelisp-typecheck/src/checker.rs:1592    set_current_module (TypeChecker struct helper)
+Integration-layer callers (6 sites):
+    src/platform.rs:235               platform module bootstrap (single-threaded at session init)
+    src/session_v4.rs:954             set_current_module (REPL eval thread)
+    src/session_v4.rs:1594            register_dep_for_eval pre-wait (REPL thread, CONCURRENT with t2)
+    src/session_v4.rs:1850            eval-path module ensure
+    src/session_v4.rs:2927            recompile module ensure
+    src/worker.rs:79                  worker set_current_module
+    src/worker.rs:3417                handle_typecheck_work_shared pre-typecheck (worker, CONCURRENT with t1)
+All 13 call sites benefit from the fix. The two concurrent pairs
+(session_v4.rs:1594 × worker.rs:3417) were the H6 race site; all
+others benefit for free (no regression, atomic semantics preferable
+to the old unconditional overwrite).
+
+========================
+RAII / atomicity verification:
+========================
+
+DashMap v6 `Entry::Occupied` and `Entry::Vacant` both hold the
+shard write-lock for `path`'s shard. `Entry::Vacant::insert` stores
+the built table under the same write-lock before the `Entry` guard
+drops. Any concurrent `entry(path)` from another thread blocks on
+the shard lock and observes `Entry::Occupied` after the first
+thread returns. The `.entry()` guard also dropping on panic inside
+the closure (pre-insert) leaves the map unchanged — standard RAII
+behaviour per the DashMap docs. `Entry::Vacant::insert` itself is
+panic-free for our use (allocating a `SymbolTable<C,L>` and
+inserting pre-cloned entries into its internal `HashMap`).
+
+========================
+Observations from the post-fix dump:
+========================
+
+1. The pre-fix signature (t1 overwriting t2's populated
+   helper table) is fully GONE: the `Created` emission is singular
+   on `helper`.
+
+2. The ordering "Created → AlreadyPresent" always holds:
+   ts=20007333 (Created) precedes ts=20016083 and ts=20024500 (both
+   AlreadyPresent). Never a post-Created re-Created.
+
+3. `helper-val` lookup at ts=20800583
+   (`RegisterImportsLookup module=helper`) succeeds — no
+   `'helper-val' not found` error, no retry.
+
+4. The observability tag distinguishes the outcome without a new
+   payload variant — the existing `state` field on `Module` is
+   overloaded for the `SymbolTableEnsure` tag (0=Created,
+   1=AlreadyPresent) and rendered symbolically by
+   `format_event_line`. This keeps the scheduler trace's
+   on-the-wire format and its unit-test surface stable.
+
+5. Some `SymbolTableEnsure` emissions on `primitives` / `user` /
+   `prelude` repeat `AlreadyPresent` multiple times during
+   session bootstrap — expected, since those modules are ensured
+   by many internal code paths during builtin registration
+   (`register_builtins` and its callees) as well as REPL setup.
+   None constitute a race window; they are all serialised on the
+   main thread during startup.
+
+========================
+Relation to prior evidence files:
+========================
+
+- failing-run-35062ca.log       pre-H4 fix failing shape
+- post-fix-run-35062ca.log      post-H4 pre-H5 failing shape
+- post-fix-h5-35062ca.log       post-H5 pre-H6 failing shape
+- post-fix-h6-35062ca.log       THIS FILE — post-H6 fix success shape

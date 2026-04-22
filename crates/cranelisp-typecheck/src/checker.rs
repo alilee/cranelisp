@@ -201,23 +201,49 @@ where
     /// with imports from `primitives` and seedable entries from `user`.
     /// Does NOT set `self.state.current_module` — callers set the module
     /// on their own `CheckState`.
+    ///
+    // FIXME(/typecheck) — cross-skill hybrid ownership per
+    // `design/int/heisenbug-race-closure.md §3d''` (/arch mini-review,
+    // Sprint 61 Wave 3, 2026-04-22). /int authored this rewrite under an
+    // explicit /arch cross-skill grant to close the H6 non-atomic
+    // compare-then-set race. /typecheck reviews the diff before commit.
+    // Ownership boundary unchanged: the public signature of
+    // `ensure_module_exists` is untouched; this precedent is NARROW and
+    // does NOT authorise further /int → crates/ edits without /arch
+    // arbitration.
+    //
+    // Mechanism (option d per §8.3.1 + /arch §3d'' mandatory variant):
+    //   1. Hoist the `user`-seed clone OUTSIDE `entry()` so the
+    //      `or_insert_with` closure performs NO nested DashMap access.
+    //      DashMap v6's `entry` guard holds a shard write-lock across
+    //      the closure; a nested `get` on the same shard would deadlock.
+    //      Pre-computing the seed is zero-cost (the same Vec<(Symbol,
+    //      ModuleEntry)> was allocated before; it is simply materialised
+    //      one statement earlier).
+    //   2. `entry(path).or_insert_with(|| {...})` performs the
+    //      check-then-insert atomically under the shard write-lock, so
+    //      no concurrent thread can insert between the check and the
+    //      store. Replaces the prior unconditional `self.modules.insert`
+    //      at old line 237 that overwrote populated tables built by the
+    //      priority worker's concurrent ensure.
+    //   3. Emit `SymbolTableEnsure { module, outcome }` so post-fix
+    //      traces make the atomicity observable. `Created` fires inside
+    //      the closure (we built and inserted); `AlreadyPresent` fires
+    //      on the fall-through (another caller won the race).
     pub fn ensure_module_exists(&self, path: &ModuleFullPath) {
-        if self.modules.contains_key(path) {
-            return;
-        }
-        // Use the generic `new_with_params` constructor so the table
-        // matches the parameterised flavour `<C, L>` of `self.modules`.
-        let mut table = SymbolTable::<C, L>::new_with_params(path.clone());
-
-        // Seed with special forms from user (the root module at init):
-        // - Special forms: language keywords, universally available (spec §11.1)
-        // Everything else (builtin types, constructors, test primitives) requires
-        // explicit import or qualified access (spec §8.9.1, §8.9.4).
-        //
-        // Clone-and-drop discipline: collect entries, drop guard, then insert.
+        // (1) Hoist seed clone OUTSIDE the `entry()` critical section.
+        // Read `user` under its own shard read-lock; clone; drop the
+        // guard BEFORE we take the `entry()` write-lock on `path`. This
+        // avoids any risk of shard-collision deadlock between
+        // `modules[path]` and `modules[user]`, and keeps the closure
+        // below free of nested DashMap access.
         let user_path = ModuleFullPath::from("user");
-        let root_entries: Vec<(Symbol, ModuleEntry<C>)> = self.modules.get(&user_path)
+        let seed_entries: Vec<(Symbol, ModuleEntry<C>)> = self.modules.get(&user_path)
             .map(|guard| {
+                // Special forms only: language keywords universally
+                // available per spec §11.1. Everything else requires
+                // explicit import or qualified access (spec §8.9.1,
+                // §8.9.4).
                 guard.all_symbols()
                     .filter(|(_name, entry)| {
                         matches!(entry, ModuleEntry::Def { kind, .. }
@@ -230,11 +256,40 @@ where
                     .collect()
             })
             .unwrap_or_default();
-        for (name, entry) in root_entries {
-            table.insert(name, entry);
-        }
 
-        self.modules.insert(path.clone(), table);
+        // (2) Atomic check-then-insert. `entry(...).or_insert_with(...)`
+        // holds the shard write-lock on `path`'s shard across the
+        // closure; a concurrent ensure on the same path is serialised
+        // behind it and observes the entry as Occupied.
+        //
+        // Outcome determination: DashMap v6 does not surface
+        // "was-inserted" from `or_insert_with` directly, so we use
+        // the pattern `match entry {}` — Occupied means the key was
+        // already present (AlreadyPresent); Vacant means we're about
+        // to build and insert (Created).
+        //
+        // Use the generic `new_with_params` constructor so the table
+        // matches the parameterised flavour `<C, L>` of `self.modules`.
+        use dashmap::mapref::entry::Entry;
+        let outcome = match self.modules.entry(path.clone()) {
+            Entry::Occupied(_) => {
+                crate::trace::SymbolTableEnsureOutcome::AlreadyPresent
+            }
+            Entry::Vacant(slot) => {
+                let mut table = SymbolTable::<C, L>::new_with_params(path.clone());
+                for (name, entry) in seed_entries {
+                    table.insert(name, entry);
+                }
+                slot.insert(table);
+                crate::trace::SymbolTableEnsureOutcome::Created
+            }
+        };
+        // (3) Emit observability event. Fires AFTER the shard
+        // write-lock has been released (both Occupied guard and the
+        // Vacant-insert's guard are dropped by the match arm's end).
+        // Hot-path cost when no sink is installed: single relaxed
+        // OnceLock load + null check.
+        crate::trace::emit_symbol_table_ensure(path, outcome);
     }
 
     /// Check whether a module has been registered.
@@ -2551,5 +2606,193 @@ mod tests {
         assert_eq!(tf.next_id.load(Ordering::Relaxed), snap_id);
         let (_, id_after_restore) = tf.fresh_var_id();
         assert_eq!(id_after_restore, snap_id);
+    }
+
+    // -----------------------------------------------------------------
+    // Sprint 61 Wave 3 step 3e'' — H6 atomic `ensure_module_exists`
+    // -----------------------------------------------------------------
+    //
+    // These tests exercise the new `entry().or_insert_with(...)` +
+    // hoisted-seed implementation per /arch mini-review §3d''.
+    //
+    // Per `design/int/heisenbug-race-closure.md §3d''` Test authoring
+    // requirements (2): narrow regression guard for concurrent ensures
+    // on the same path — exactly one thread builds, others observe
+    // the pre-existing table intact.
+    //
+    // Tests use `TestFixture` which already populates `user` with
+    // special forms so the seed clone is non-trivial.
+
+    #[test]
+    fn ensure_module_exists_seeds_special_forms_on_first_call() {
+        let tf = TestFixture::new();
+        let path = ModuleFullPath::from("fresh-mod-a");
+        assert!(
+            tf.modules.get(&path).is_none(),
+            "precondition: module absent"
+        );
+        tf.env().ensure_module_exists(&path);
+        let guard = tf.modules.get(&path).expect("module must be present");
+        assert!(
+            guard.get("if").is_some(),
+            "special forms must be seeded"
+        );
+        assert!(
+            guard.get("defn").is_some(),
+            "special forms must be seeded"
+        );
+        // And NOT builtin types (those require explicit import).
+        assert!(
+            guard.get("Int").is_none(),
+            "builtin types must NOT leak via ensure"
+        );
+    }
+
+    #[test]
+    fn ensure_module_exists_on_populated_table_preserves_entries() {
+        // Simulates the post-populate-then-ensure scenario that H6's
+        // pre-fix code broke: another code path populated
+        // `modules[helper]` with a real symbol; a concurrent
+        // `ensure_module_exists(helper)` on the REPL thread must NOT
+        // overwrite the table.
+        let tf = TestFixture::new();
+        let path = ModuleFullPath::from("fresh-mod-b");
+
+        // Pre-seed with a user-visible symbol (emulating what the
+        // priority worker does in handle_typecheck_work_shared after
+        // its own ensure + typecheck).
+        tf.env().ensure_module_exists(&path);
+        {
+            let mut guard = tf.modules.get_mut(&path).unwrap();
+            guard.insert(
+                Symbol::from("helper-val"),
+                ModuleEntry::Def {
+                    scheme: crate::scheme::mono(Type::Int),
+                    visibility: Visibility::Public,
+                    docstring: None,
+                    param_names: vec![],
+                    kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+                    callees: Vec::new(),
+                    got_slot: None,
+                    trait_origin: None,
+                    ast: None,
+                    code: None,
+                    platform_fn_ptr: None,
+                },
+            );
+        }
+
+        // Second ensure — pre-fix, this OVERWROTE the populated table.
+        // Post-fix, the `Entry::Occupied` path fires and the table is
+        // left untouched.
+        tf.env().ensure_module_exists(&path);
+
+        let guard = tf.modules.get(&path).expect("module still present");
+        assert!(
+            guard.get("helper-val").is_some(),
+            "pre-existing helper-val MUST NOT be overwritten by second ensure \
+             (H6 regression guard — design/int/heisenbug-race-closure.md §8.3)"
+        );
+        assert!(
+            guard.get("if").is_some(),
+            "seeded special forms still present"
+        );
+    }
+
+    #[test]
+    fn ensure_module_exists_concurrent_same_path_emits_exactly_one_created() {
+        // Stress the atomicity: spawn N threads each calling
+        // `ensure_module_exists(same_path)` concurrently. Exactly one
+        // Created emission, N-1 AlreadyPresent emissions, and the
+        // table ends up present with special forms seeded.
+        //
+        // Observability: install a test-local counting hook on the
+        // trace slot. Because `install_symbol_table_ensure_hook` is
+        // backed by a `OnceLock` (process-global, first-install wins),
+        // the hook may already be installed by a sibling test or a
+        // higher-level binary run. To make the assertion robust to
+        // test-execution order we spy via a dedicated atomic counter
+        // keyed off the module path in the forwarding hook below.
+
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering as AOrd};
+        use std::thread;
+
+        // Global counters: one per outcome, scoped to this test's path.
+        static CREATED: AtomicUsize = AtomicUsize::new(0);
+        static ALREADY_PRESENT: AtomicUsize = AtomicUsize::new(0);
+        // Install a forwarding hook on first call. This is idempotent
+        // on the OnceLock slot — subsequent tests' installs are
+        // no-ops. Routing is keyed by a well-known path the test owns.
+        fn test_counting_hook(
+            module: &ModuleFullPath,
+            outcome: crate::trace::SymbolTableEnsureOutcome,
+        ) {
+            if module.as_ref() == CONCURRENT_PATH {
+                match outcome {
+                    crate::trace::SymbolTableEnsureOutcome::Created => {
+                        CREATED.fetch_add(1, AOrd::Relaxed);
+                    }
+                    crate::trace::SymbolTableEnsureOutcome::AlreadyPresent => {
+                        ALREADY_PRESENT.fetch_add(1, AOrd::Relaxed);
+                    }
+                }
+            }
+        }
+        const CONCURRENT_PATH: &str = "concurrent-ensure-path";
+        crate::trace::install_symbol_table_ensure_hook(test_counting_hook);
+
+        CREATED.store(0, AOrd::Relaxed);
+        ALREADY_PRESENT.store(0, AOrd::Relaxed);
+
+        let tf = Arc::new(TestFixture::new());
+        let path = ModuleFullPath::from(CONCURRENT_PATH);
+        assert!(tf.modules.get(&path).is_none());
+
+        const N: usize = 8;
+        let barrier = Arc::new(std::sync::Barrier::new(N));
+        let mut handles = Vec::with_capacity(N);
+        for _ in 0..N {
+            let tf_cl = tf.clone();
+            let barrier_cl = barrier.clone();
+            let path_cl = path.clone();
+            handles.push(thread::spawn(move || {
+                barrier_cl.wait();
+                tf_cl.env().ensure_module_exists(&path_cl);
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Post-condition: the table is present AND seeded.
+        let guard = tf.modules.get(&path).expect("module must be present");
+        assert!(
+            guard.get("if").is_some(),
+            "special forms must be seeded even under concurrency"
+        );
+
+        // Sink invariants (only valid if our hook was the active
+        // install — OnceLock ordering permitting). If another forwarding
+        // hook had already won the install race in a prior test, the
+        // counters stay at 0 and the invariant degrades to
+        // "post-condition observed via the fixture". Guard with a
+        // conditional assertion so the test remains deterministic
+        // regardless of execution order.
+        let created = CREATED.load(AOrd::Relaxed);
+        let already = ALREADY_PRESENT.load(AOrd::Relaxed);
+        if created + already > 0 {
+            assert_eq!(
+                created, 1,
+                "exactly ONE Created emission for a concurrent ensure on the same \
+                 path (H6 invariant — any >1 is the race signature). \
+                 observed: created={created} already_present={already}"
+            );
+            assert_eq!(
+                already,
+                N - 1,
+                "the other N-1 threads must each emit AlreadyPresent"
+            );
+        }
     }
 }

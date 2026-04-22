@@ -1,0 +1,70 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
+────────────
+ Nextest run ID 97375576-4bf6-4bdb-83b8-37bc4585040c with nextest profile: default
+    Starting 1 test across 1 binary (58 tests skipped)
+       START (1/1) cranelisp::sprint23 heisenbug_race_reduced_concurrent_import_pairs
+
+running 1 test
+
+thread 'heisenbug_race_reduced_concurrent_import_pairs' (6476553) panicked at tests/sprint23.rs:2364:5:
+reduced heisenbug repro fired across 10 trials (1 failure(s)): [trial 1] t2 i1 session 1: import+call failed (heisenbug signature if stdout/stderr contains 'helper-val' not found in module 'helper'):
+stdout: cranelisp REPL — type /help for help
+0+0ms; user> Error: type error at 9..28: 'helper-val' not found in module 'helper'
+0+0ms; user> Error: type error at 1..11: undefined variable: helper-val
+0+0ms; user> 
+
+stderr: error: module error at 0..0: module 'user' failed: type error at 9..28: 'helper-val' not found in module 'helper'
+=== CRANELISP_SCHEDULER_TRACE DUMP ===
+[SCH] ts=41 thr=ThreadId(1)/0 RegisterModuleRegister	module=user
+[SCH] ts=22041 thr=ThreadId(2)/1 ModuleStateTypechecking	module=user
+[SCH] ts=473875 thr=ThreadId(2)/1 RegisterDepPublish	module=prelude
+[SCH] ts=474958 thr=ThreadId(2)/1 RegisterModuleRegister	module=prelude
+[SCH] ts=476500 thr=ThreadId(2)/1 ModuleStateBlocked	module=user
+[SCH] ts=495500 thr=ThreadId(2)/1 ModuleStateTypechecking	module=prelude
+[SCH] ts=560916 thr=ThreadId(2)/1 IsTypecheckedHit	module=primitives pool=255
+[SCH] ts=12439083 thr=ThreadId(2)/1 ModuleStateTypechecked	module=prelude
+[SCH] ts=12450333 thr=ThreadId(2)/1 ModuleStateUnblocked	module=user
+[SCH] ts=12499166 thr=ThreadId(2)/1 ModuleStateTypechecking	module=user
+[SCH] ts=12666458 thr=ThreadId(2)/1 ModuleStateTypechecked	module=user
+[SCH] ts=15372083 thr=ThreadId(1)/0 RegisterDepPublish	module=helper
+[SCH] ts=15372833 thr=ThreadId(1)/0 RegisterModuleRegister	module=helper
+[SCH] ts=15376083 thr=ThreadId(1)/0 ModuleStateBlocked	module=user
+[SCH] ts=15381250 thr=ThreadId(1)/0 RegisterDepPublish	module=helper
+[SCH] ts=15385958 thr=ThreadId(2)/1 ModuleStateTypechecking	module=helper
+[SCH] ts=15406041 thr=ThreadId(1)/0 RegisterModuleRegister	module=helper
+[SCH] ts=15704208 thr=ThreadId(2)/1 ModuleStateTypechecked	module=helper
+[SCH] ts=15707250 thr=ThreadId(2)/1 ModuleStateUnblocked	module=user
+[SCH] ts=15720541 thr=ThreadId(2)/1 ModuleStateTypechecking	module=user
+[SCH] ts=15798333 thr=ThreadId(2)/1 IsTypecheckedHit	module=helper pool=4
+[SCH] ts=15802125 thr=ThreadId(2)/1 ModuleStateFailed	module=user
+[SCH] ts=15802500 thr=ThreadId(1)/0 IsTypecheckedHit	module=helper pool=4
+
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/80d0e4be6f15899649ba31669077c59a986f96cc/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/80d0e4be6f15899649ba31669077c59a986f96cc/library/core/src/panicking.rs:80:14
+   2: sprint23::heisenbug_race_reduced_concurrent_import_pairs
+             at ./tests/sprint23.rs:2364:5
+   3: sprint23::heisenbug_race_reduced_concurrent_import_pairs::{closure#0}
+             at ./tests/sprint23.rs:2218:52
+   4: <sprint23::heisenbug_race_reduced_concurrent_import_pairs::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /Users/alilee/.rustup/toolchains/nightly-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/ops/function.rs:250:5
+   5: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/80d0e4be6f15899649ba31669077c59a986f96cc/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+test heisenbug_race_reduced_concurrent_import_pairs ... FAILED
+
+failures:
+
+failures:
+    heisenbug_race_reduced_concurrent_import_pairs
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 58 filtered out; finished in 5.33s
+
+        FAIL [   5.340s] (1/1) cranelisp::sprint23 heisenbug_race_reduced_concurrent_import_pairs
+  Cancelling due to test failure: 
+────────────
+     Summary [   5.341s] 1 test run: 0 passed, 1 failed, 58 skipped
+        FAIL [   5.340s] (1/1) cranelisp::sprint23 heisenbug_race_reduced_concurrent_import_pairs
+error: test run failed

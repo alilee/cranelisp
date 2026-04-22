@@ -22,6 +22,7 @@ mod program;
 mod resolve;
 mod scheme;
 mod scope;
+pub mod trace;
 mod traits;
 mod unify;
 
@@ -29,6 +30,9 @@ mod unify;
 pub use builtins::register_builtins;
 pub use checker::{CheckState, TypeCheckEnv};
 pub use program::{CheckPass, FormCheckResult, ModuleCheckAccumulator};
+pub use trace::{
+    SymbolTableEnsureHook, SymbolTableEnsureOutcome, install_symbol_table_ensure_hook,
+};
 
 // Re-export boundary types that callers need
 pub use cranelisp_types::{

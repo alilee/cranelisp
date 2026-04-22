@@ -685,6 +685,55 @@ fn resolve_priority_worker_count(requested: usize) -> usize {
     }
 }
 
+// ---------------------------------------------------------------------------
+// EvalInFlightGuard — Sprint 61 Wave 3 step 3e' (H5 race closure)
+// ---------------------------------------------------------------------------
+
+/// RAII guard for the `ModuleState::eval_in_flight` flag.
+///
+/// Set the flag on construction and clear it on `Drop` (including on
+/// panic-unwind). Used exclusively by `register_dep_for_eval` to
+/// suppress worker claims of the caller module across the whole
+/// `register_dep_for_eval` invocation: if the flag is set when
+/// `try_unblock_locked(caller)` fires (from `notify_typecheck_done`
+/// on a dep's completion), the caller is not pushed into
+/// `typecheck_first`; the REPL-eval thread drives the retry.
+///
+/// Scope discipline (per /arch §3d' "RAII guard correctness"
+/// paragraph 1, alternative option): the guard scope spans
+/// register_dep_for_eval from immediately-after `caller` is
+/// computed through function exit (normal + panic-unwind). The
+/// narrower scope around `wait_module_inmem_complete_blocking` only
+/// was TRIED FIRST per /arch §3d' condition 3 and found
+/// insufficient — the race window opens at `block_for_typecheck`
+/// inside `handle_import` (BEFORE register_dep_for_eval is called),
+/// so the flag must be set before the function's own body executes.
+/// See `design/int/heisenbug-race-closure.md §3e'` for the
+/// scope-selection validation.
+///
+/// Lock discipline (per /arch §3d' condition 2): both the set (here)
+/// and the read (inside `try_unblock_locked`) take the scheduler state
+/// lock, linearising the set/read pair. No atomics, no separate mutex.
+///
+/// See `design/int/heisenbug-race-closure.md §7.7 + §8.2 + §3e'`.
+struct EvalInFlightGuard<'a> {
+    scheduler: &'a CompileScheduler,
+    module: ModuleFullPath,
+}
+
+impl<'a> EvalInFlightGuard<'a> {
+    fn new(scheduler: &'a CompileScheduler, module: ModuleFullPath) -> Self {
+        scheduler.set_eval_in_flight(&module, true);
+        Self { scheduler, module }
+    }
+}
+
+impl Drop for EvalInFlightGuard<'_> {
+    fn drop(&mut self) {
+        self.scheduler.set_eval_in_flight(&self.module, false);
+    }
+}
+
 /// The compiler session — scheduler-driven concurrent compilation.
 ///
 /// One session per process. Owns the TypeChecker, codegen state, and
@@ -1205,6 +1254,17 @@ impl CompilerSession {
             let mut map = self.shared.module_sexps.lock()
                 .unwrap_or_else(|e| e.into_inner());
             map.insert(module.clone(), sexps);
+            // Sprint 61 Wave 3 step 3e — H4 race closure (Change B).
+            // Fires exactly when the republish succeeds (symbol table
+            // present, source non-empty, parse ok). Post-fix dumps use
+            // this to prove the caller-side republish precedes the
+            // priority worker's `RegisterImportsLookup dep` on the
+            // subsequent user-retry. See
+            // `design/int/heisenbug-race-closure.md §8.1 Change B`.
+            crate::observability::record_module_event(
+                crate::observability::SchedulerTraceTag::RepublishFromSymbolTable,
+                module.as_ref(),
+            );
         }
     }
 
@@ -1373,21 +1433,88 @@ impl CompilerSession {
         dep_module: &ModuleFullPath,
         dep_sexps: &[Sexp],
     ) -> Result<(), CranelispError> {
+        // Sprint 61 Wave 3 step 3e' — H5 race closure.
+        //
+        // Caller audit per /arch §3d' condition 1:
+        // `grep 'wait_module_inmem_complete_blocking' src/` → 6 matches:
+        // the definition at `scheduler.rs:943`; three comment-only references
+        // (`scheduler.rs:1113`, `session_v4.rs:1473`, `session_v4.rs:2232`);
+        // a doc comment in a test at `session_v4.rs:4587` that explicitly
+        // AVOIDS calling the function (manually replays publish+register
+        // instead). That leaves `register_dep_for_eval` as the SOLE caller
+        // driving post-unblock retries.
+        //
+        // Scope: /arch §3d' offers two scopes for the guard — (i) narrow
+        // around `wait_module_inmem_complete_blocking` only, or (ii) whole
+        // function after `caller` is computed. /arch preferred (i) as
+        // "minimally pessimistic". However, validation with CRANELISP_
+        // SCHEDULER_TRACE revealed that by the time t1 reaches
+        // `wait_module_inmem_complete_blocking`, t2 has frequently already
+        // (a) popped `helper` from `typecheck_first`, (b) typechecked it,
+        // (c) called `notify_typecheck_done(helper)` → `try_unblock_locked(
+        // user)` with `eval_in_flight=false`, and (d) begun typechecking
+        // `user`. The race window opens at `block_for_typecheck(user, helper)`
+        // inside `handle_import` (worker.rs:1300), BEFORE register_dep_for_eval
+        // is called, and persists until t1 sets the flag. Narrow scope is
+        // therefore insufficient.
+        //
+        // Fix: set the flag at the top of register_dep_for_eval (option (ii),
+        // /arch's own "Recommendation" alternative). This is still narrower
+        // than "whole eval function" — the guard scope spans ONLY
+        // register_dep_for_eval's body, and the guard drops at function
+        // return (normal or panic). Per /arch §3d' condition 2, the set
+        // takes the scheduler state lock so the set/read pair with
+        // try_unblock_locked is linearised. Per condition 4, existing
+        // trace tags continue to fire.
+        let caller = self.current_module_path();
+        let _eval_guard = EvalInFlightGuard::new(
+            &self.shared.scheduler,
+            caller.clone(),
+        );
+
         // Guard: the form handler has usually already published dep_sexps
         // and registered with the scheduler (Sprint 58 W6 Defect 1 ordering).
         // Re-publish + re-register defensively so this entry point can also
         // serve call sites that reach us without a prior form-handler
         // Blocked result (e.g., tests, alternative eval paths).
-        {
-            let mut map = self.shared.module_sexps.lock()
-                .unwrap_or_else(|e| e.into_inner());
-            map.entry(dep_module.clone())
-                .or_insert_with(|| dep_sexps.to_vec());
+        //
+        // Sprint 61 Wave 3 step 3e — H4 race closure (Change A).
+        //
+        // On the hot path (REPL eval → handle_import → form-handler
+        // `register_dep` + `scheduler.register_module(dep, true)` →
+        // BlockAction::Block → here), the dep is ALREADY published into
+        // `shared.module_sexps` AND registered with the scheduler. Emitting
+        // a second publish+register here races with the priority worker
+        // popping the dep from `typecheck_first` — see
+        // `design/int/heisenbug-race-closure.md §7` for the failing-run dump
+        // interleaving, and §8 for the fix rationale. Skip the defensive
+        // pair when both conditions hold (published AND registered — per
+        // /arch §3d condition 4, never on published alone so that failure
+        // cleanup cannot trap a blocking waiter in this function).
+        //
+        // The caller-sexps republish at `republish_module_sexps_from_symbol_table`
+        // below stays UNCONDITIONAL (per /arch §3d condition 3 — it is the
+        // H5 REPL-persistence fix from Sprint 60 Wave 2 Round 3 and is
+        // caller-side, not dep-side).
+        let already_published = self.shared.module_sexps
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(dep_module);
+        let already_registered = self.shared.scheduler.is_registered(dep_module);
+        let skip_defensive_pair = already_published && already_registered;
+
+        if !skip_defensive_pair {
+            {
+                let mut map = self.shared.module_sexps.lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                map.entry(dep_module.clone())
+                    .or_insert_with(|| dep_sexps.to_vec());
+            }
+            crate::observability::record_module_event(
+                crate::observability::SchedulerTraceTag::RegisterDepPublish,
+                dep_module.as_ref(),
+            );
         }
-        crate::observability::record_module_event(
-            crate::observability::SchedulerTraceTag::RegisterDepPublish,
-            dep_module.as_ref(),
-        );
 
         // Sprint 60 Wave 2 Round 3 fix (H5 — REPL persistence residue).
         //
@@ -1423,7 +1550,6 @@ impl CompilerSession {
         // applied to the REPL-time entry-module update path (here the
         // "register" is transitively the caller-module requeue triggered by
         // tiny's completion in `try_unblock_locked`).
-        let caller = self.current_module_path();
         if caller != *dep_module {
             self.republish_module_sexps_from_symbol_table(&caller);
         }
@@ -1450,7 +1576,18 @@ impl CompilerSession {
                 .contains_key(dep_module),
             "register_dep_for_eval MUST publish dep_sexps before calling scheduler.register_module"
         );
-        self.shared.scheduler.register_module(dep_module.clone(), true);
+        // Sprint 61 Wave 3 step 3e (H4 race closure, Change A): gate the
+        // defensive `register_module` call on the same "already published
+        // AND already registered" flag computed above. Emitting a second
+        // register here is what wakes the priority worker into the racing
+        // window (see `design/int/heisenbug-race-closure.md §7.4`).
+        // Idempotency inside `scheduler.register_module` suppresses the
+        // state mutation, but the wake at `scheduler.rs:345` fires
+        // unconditionally — so skipping the whole call on the hot path is
+        // required for the fix.
+        if !skip_defensive_pair {
+            self.shared.scheduler.register_module(dep_module.clone(), true);
+        }
 
         // Ensure the dep has a CheckState slot the persistent worker can
         // populate via `ensure_module_exists` — idempotent.
@@ -5140,5 +5277,141 @@ mod bare_primitive_value_path_tests {
 
         s.shutdown();
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 61 Wave 3 step 3f — H5 race closure: EvalInFlightGuard panic-unwind
+// leak test.
+//
+// Per /arch §3d' "Test authoring (step 3f) requirements" test 3 (/int unit
+// test): `EvalInFlightGuard::drop` clears `eval_in_flight = false` even
+// when the enclosing scope panics. Guards against a future refactor
+// accidentally breaking Drop semantics (which would re-open the H5 race
+// on any panic inside `register_dep_for_eval`).
+//
+// See `design/int/heisenbug-race-closure.md §3d' + §3e'` and the guard
+// definition at `src/session_v4.rs` (EvalInFlightGuard RAII struct).
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod eval_in_flight_guard_tests {
+    use super::*;
+    use crate::scheduler::{CompileScheduler, ModulePool};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    /// Minimal setup: register a module so its `ModuleState` exists and
+    /// the set/clear calls find it. Return the scheduler + module path.
+    fn sched_with_module(name: &str) -> (CompileScheduler, ModuleFullPath) {
+        let sched = CompileScheduler::new();
+        let m = ModuleFullPath::from(name);
+        sched.register_module(m.clone(), false);
+        (sched, m)
+    }
+
+    // spec: design/int/heisenbug-race-closure.md §3d' test 3 — RAII guard
+    // Drop fires on normal exit.
+    #[test]
+    fn guard_drop_clears_flag_on_normal_exit() {
+        let (sched, m) = sched_with_module("user");
+
+        // Pre-condition: flag not set.
+        assert!(!sched.eval_in_flight_for_test(&m));
+
+        {
+            let _guard = EvalInFlightGuard::new(&sched, m.clone());
+            assert!(
+                sched.eval_in_flight_for_test(&m),
+                "flag must be set inside guard scope",
+            );
+        } // guard dropped here
+
+        assert!(
+            !sched.eval_in_flight_for_test(&m),
+            "flag must be cleared after normal guard drop",
+        );
+    }
+
+    // spec: design/int/heisenbug-race-closure.md §3d' test 3 — primary
+    // invariant. Drop MUST fire on panic-unwind so the flag does not
+    // leak, preventing permanent H5-gate suppression of a caller module
+    // after a panic in `register_dep_for_eval`.
+    #[test]
+    fn guard_drop_clears_flag_on_panic_unwind() {
+        let (sched, m) = sched_with_module("user");
+
+        // Pre-condition.
+        assert!(!sched.eval_in_flight_for_test(&m));
+
+        // Wrap the scheduler borrow in AssertUnwindSafe because
+        // CompileScheduler contains Mutex/Condvar which are not
+        // UnwindSafe by default. The assertion is sound here: the test
+        // inspects state only via the `eval_in_flight_for_test` path
+        // AFTER the catch — never re-entering any mid-operation method
+        // on the scheduler from the unwound frame itself.
+        let sched_ref = &sched;
+        let m_clone = m.clone();
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = EvalInFlightGuard::new(sched_ref, m_clone.clone());
+            // Inside-scope invariant.
+            assert!(
+                sched_ref.eval_in_flight_for_test(&m_clone),
+                "flag must be set inside guard scope before panic",
+            );
+            // Trigger a panic while the guard is live. Rust unwinding
+            // MUST run the guard's Drop on the way out.
+            panic!("intentional test panic to exercise guard drop");
+        }));
+
+        assert!(
+            result.is_err(),
+            "closure must have panicked; catch_unwind returned Ok",
+        );
+
+        // Post-condition: the primary invariant. Drop ran during unwind,
+        // clearing the flag. If this assertion fails, a future refactor
+        // has broken panic-safety of the guard and the H5 gate can leak
+        // indefinitely.
+        assert!(
+            !sched.eval_in_flight_for_test(&m),
+            "EvalInFlightGuard::drop MUST clear eval_in_flight even when \
+             the enclosing scope panics — H5 race-closure invariant. \
+             Leaking the flag would permanently suppress \
+             try_unblock_locked pushes for this module.",
+        );
+    }
+
+    // spec: design/int/heisenbug-race-closure.md §3d' test 3 addendum —
+    // re-entry after panic-unwind restores normal operation. A subsequent
+    // `try_unblock_locked` on the (still-blocked) module pushes normally,
+    // proving the cleanup is observable through the scheduler's primary
+    // gate path, not just through the backing-field read.
+    #[test]
+    fn guard_drop_on_panic_restores_try_unblock_push_path() {
+        let (sched, m) = sched_with_module("user");
+
+        // Drive module into TypecheckBlocked for the try_unblock test.
+        sched.force_typecheck_blocked_for_test(&m);
+
+        let sched_ref = &sched;
+        let m_clone = m.clone();
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = EvalInFlightGuard::new(sched_ref, m_clone.clone());
+            panic!("intentional test panic");
+        }));
+
+        // Post-unwind, the flag is cleared and `try_unblock_locked` must
+        // push the module out of TypecheckBlocked. If the Drop leaked
+        // the flag, the gate would still suppress and this assertion
+        // would fail.
+        sched.try_unblock_for_test(&m);
+        let pool = sched.module_pool_for_test(&m).expect("module registered");
+        assert_ne!(
+            pool,
+            ModulePool::TypecheckBlocked,
+            "after guard's panic-unwind Drop, try_unblock_locked must \
+             push (not suppress) — the gate must be disarmed. If this \
+             fails, the guard leaked eval_in_flight through the panic \
+             path and the H5 fix is compromised.",
+        );
     }
 }

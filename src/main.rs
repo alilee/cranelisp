@@ -44,6 +44,13 @@ fn main() {
     // `design/int/observability.md §7.1` for the wiring rationale.
     cranelisp_runtime::io_trace_install_panic_hook();
     observability::install_panic_hook();
+    // Wire the typecheck-crate `SymbolTableEnsure` trace hook through
+    // to this crate's scheduler-trace sink. Cross-crate install: the
+    // typecheck crate cannot depend on this binary, so the forwarding
+    // function pointer is installed here. See
+    // `design/int/heisenbug-race-closure.md §3d''` (Sprint 61 Wave 3,
+    // H6 race-closure fix).
+    observability::install_symbol_table_ensure_hook_to_scheduler_trace();
     let _io_flush = cranelisp_runtime::IoTraceFlushGuard::new();
     let _sched_flush = observability::SchedulerTraceFlushGuard::new();
 

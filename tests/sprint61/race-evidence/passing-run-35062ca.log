@@ -1,0 +1,60 @@
+=== PART 1: NEXTEST PASSING-TEST FRAMING ============================
+(captured via `CRANELISP_SCHEDULER_TRACE=1 RUST_BACKTRACE=1 cargo nextest run \
+ --test sprint23 heisenbug_race_reduced_concurrent_import_pairs --no-capture`,
+ attempt 12 of 25 — per-test pass rate ~5% under `CRANELISP_SCHEDULER_TRACE=1`
+ enabled. See README.md for capture methodology + limitations.)
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
+────────────
+ Nextest run ID f4ace165-b231-4ff4-8d37-9c21d82ead32 with nextest profile: default
+    Starting 1 test across 1 binary (58 tests skipped)
+       START (1/1) cranelisp::sprint23 heisenbug_race_reduced_concurrent_import_pairs
+
+running 1 test
+test heisenbug_race_reduced_concurrent_import_pairs ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 58 filtered out; finished in 5.72s
+
+        PASS [   5.724s] (1/1) cranelisp::sprint23 heisenbug_race_reduced_concurrent_import_pairs
+────────────
+     Summary [   5.724s] 1 test run: 1 passed, 58 skipped
+
+=== PART 2: REPRESENTATIVE PASSING-SUBPROCESS SCHEDULER TRACE =======
+(The nextest harness captures subprocess stderr into the test's `stderr1`/`stderr2`
+ fields and only surfaces it in the FAILING code path — on test pass, all 24
+ subprocesses' stderrs are discarded. To obtain a passing-subprocess trace
+ of the same shape as the failing-run's captured one, the harness's
+ session-1 invocation was replayed by hand, SIX-way concurrent,
+ against fresh `tempfile::TempDir`s. All six subprocesses succeeded
+ (exit=0, stdout contains `99`). The trace below is subprocess 1 of 6 —
+ the other five are byte-for-byte identical in event set though their
+ timestamps differ. Full per-subprocess logs are under
+ `/tmp/heisenbug-capture/parallel-passing/` (not committed; regenerate
+ via the recipe in README.md §Reproduction if needed).)
+
+--- subprocess 1 of 6 (passing, concurrent pressure) ---
+=== CRANELISP_SCHEDULER_TRACE DUMP ===
+[SCH] ts=83 thr=ThreadId(1)/0 RegisterModuleRegister	module=user
+[SCH] ts=26125 thr=ThreadId(2)/1 ModuleStateTypechecking	module=user
+[SCH] ts=536542 thr=ThreadId(2)/1 RegisterDepPublish	module=prelude
+[SCH] ts=538000 thr=ThreadId(2)/1 RegisterModuleRegister	module=prelude
+[SCH] ts=540000 thr=ThreadId(2)/1 ModuleStateBlocked	module=user
+[SCH] ts=561792 thr=ThreadId(2)/1 ModuleStateTypechecking	module=prelude
+[SCH] ts=632125 thr=ThreadId(2)/1 IsTypecheckedHit	module=primitives pool=255
+[SCH] ts=14269750 thr=ThreadId(2)/1 ModuleStateTypechecked	module=prelude
+[SCH] ts=14274083 thr=ThreadId(2)/1 ModuleStateUnblocked	module=user
+[SCH] ts=14326792 thr=ThreadId(2)/1 ModuleStateTypechecking	module=user
+[SCH] ts=14515417 thr=ThreadId(2)/1 ModuleStateTypechecked	module=user
+[SCH] ts=17286750 thr=ThreadId(1)/0 RegisterDepPublish	module=helper
+[SCH] ts=17288625 thr=ThreadId(1)/0 RegisterModuleRegister	module=helper
+[SCH] ts=17293792 thr=ThreadId(1)/0 ModuleStateBlocked	module=user
+[SCH] ts=17301250 thr=ThreadId(1)/0 RegisterDepPublish	module=helper
+[SCH] ts=17337042 thr=ThreadId(1)/0 RegisterModuleRegister	module=helper
+[SCH] ts=17376208 thr=ThreadId(2)/1 ModuleStateTypechecking	module=helper
+[SCH] ts=18172125 thr=ThreadId(2)/1 ModuleStateTypechecked	module=helper
+[SCH] ts=18175417 thr=ThreadId(2)/1 ModuleStateUnblocked	module=user
+[SCH] ts=18179208 thr=ThreadId(2)/1 ModuleStateTypechecking	module=user
+[SCH] ts=18261042 thr=ThreadId(2)/1 IsTypecheckedHit	module=helper pool=4
+[SCH] ts=18288250 thr=ThreadId(1)/0 IsTypecheckedHit	module=helper pool=4
+[SCH] ts=18425542 thr=ThreadId(2)/1 ModuleStateTypechecked	module=user
+--- end of subprocess 1 trace ---
