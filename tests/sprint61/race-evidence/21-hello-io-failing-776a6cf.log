@@ -1,0 +1,121 @@
+[IO] ts=42 thr=ThreadId(1)/0 TrampolineEnter	io_ptr=0xa56c58f00
+[IO] ts=10834 thr=ThreadId(1)/0 BindEnter	inner=0xa56c58f30 cont=0xa56c89480 fresh=false
+[IO] ts=11417 thr=ThreadId(1)/0 ContPush	cont=0xa56c89480 fresh=false depth=1
+[IO] ts=11542 thr=ThreadId(1)/0 BindEnter	inner=0xa56c89360 cont=0xa56c894a0 fresh=false
+[IO] ts=11667 thr=ThreadId(1)/0 ContPush	cont=0xa56c894a0 fresh=false depth=2
+[IO] ts=11875 thr=ThreadId(1)/0 PureStep	value=42 fresh=false
+[IO] ts=12209 thr=ThreadId(1)/0 ContPop	cont=0xa56c894a0 fresh=false depth=1
+[IO] ts=13167 thr=ThreadId(1)/0 BindExit	new_current=0xa56c882a0
+[IO] ts=13292 thr=ThreadId(1)/0 PureStep	value=42 fresh=true
+[IO] ts=13375 thr=ThreadId(1)/0 ContPop	cont=0xa56c89480 fresh=false depth=0
+[IO] ts=18500 thr=ThreadId(1)/0 BindExit	new_current=0xa56c59530
+[IO] ts=18625 thr=ThreadId(1)/0 BindEnter	inner=0xa56c58f60 cont=0xa56c58ed0 fresh=true
+[IO] ts=18709 thr=ThreadId(1)/0 ContPush	cont=0xa56c58ed0 fresh=true depth=1
+[IO] ts=19125 thr=ThreadId(1)/0 BindEnter	inner=0xa56c882a0 cont=0xa56c89460 fresh=true
+[IO] ts=19209 thr=ThreadId(1)/0 ContPush	cont=0xa56c89460 fresh=true depth=2
+[IO] ts=19584 thr=ThreadId(1)/0 PureStep	value=1 fresh=true
+[IO] ts=19667 thr=ThreadId(1)/0 ContPop	cont=0xa56c89460 fresh=true depth=1
+[IO] ts=20584 thr=ThreadId(1)/0 BindExit	new_current=0xa56c882a0
+[IO] ts=20667 thr=ThreadId(1)/0 PureStep	value=1 fresh=true
+[IO] ts=20750 thr=ThreadId(1)/0 ContPop	cont=0xa56c58ed0 fresh=true depth=0
+[IO] ts=22584 thr=ThreadId(1)/0 BindExit	new_current=0xa56c599e0
+[IO] ts=22667 thr=ThreadId(1)/0 BindEnter	inner=0xa56c58f60 cont=0xa56c59530 fresh=true
+[IO] ts=22750 thr=ThreadId(1)/0 ContPush	cont=0xa56c59530 fresh=true depth=1
+[IO] ts=23125 thr=ThreadId(1)/0 BindEnter	inner=0xa56c882a0 cont=0xa56c89460 fresh=true
+[IO] ts=23209 thr=ThreadId(1)/0 ContPush	cont=0xa56c89460 fresh=true depth=2
+[IO] ts=23542 thr=ThreadId(1)/0 PureStep	value=10 fresh=true
+[IO] ts=23625 thr=ThreadId(1)/0 ContPop	cont=0xa56c89460 fresh=true depth=1
+[IO] ts=24542 thr=ThreadId(1)/0 BindExit	new_current=0xa56c882a0
+[IO] ts=24625 thr=ThreadId(1)/0 PureStep	value=15 fresh=true
+[IO] ts=24709 thr=ThreadId(1)/0 ContPop	cont=0xa56c59530 fresh=true depth=0
+[IO] ts=26584 thr=ThreadId(1)/0 BindExit	new_current=0xa56c599e0
+[IO] ts=26667 thr=ThreadId(1)/0 BindEnter	inner=0xa56c58f60 cont=0xa5700c640 fresh=true
+[IO] ts=26750 thr=ThreadId(1)/0 ContPush	cont=0xa5700c640 fresh=true depth=1
+[IO] ts=27125 thr=ThreadId(1)/0 BindEnter	inner=0xa56c882a0 cont=0xa56c89460 fresh=true
+[IO] ts=27209 thr=ThreadId(1)/0 ContPush	cont=0xa56c89460 fresh=true depth=2
+[IO] ts=27542 thr=ThreadId(1)/0 PureStep	value=1 fresh=true
+[IO] ts=27625 thr=ThreadId(1)/0 ContPop	cont=0xa56c89460 fresh=true depth=1
+[IO] ts=29000 thr=ThreadId(1)/0 BindExit	new_current=0xa56c58f60
+[IO] ts=29084 thr=ThreadId(1)/0 BindEnter	inner=0xa56c882a0 cont=0xa56c89440 fresh=true
+[IO] ts=29167 thr=ThreadId(1)/0 ContPush	cont=0xa56c89440 fresh=true depth=2
+[IO] ts=29542 thr=ThreadId(1)/0 PureStep	value=11 fresh=true
+[IO] ts=29584 thr=ThreadId(1)/0 ContPop	cont=0xa56c89440 fresh=true depth=1
+[IO] ts=30500 thr=ThreadId(1)/0 BindExit	new_current=0xa56c882a0
+[IO] ts=30584 thr=ThreadId(1)/0 PureStep	value=111 fresh=true
+[IO] ts=30667 thr=ThreadId(1)/0 ContPop	cont=0xa5700c640 fresh=true depth=0
+[IO] ts=32625 thr=ThreadId(1)/0 BindExit	new_current=0xa56c599e0
+[IO] ts=32709 thr=ThreadId(1)/0 BindEnter	inner=0xa56c58f60 cont=0xa5700c900 fresh=true
+[IO] ts=32792 thr=ThreadId(1)/0 ContPush	cont=0xa5700c900 fresh=true depth=1
+[IO] ts=33209 thr=ThreadId(1)/0 BindEnter	inner=0xa56c882a0 cont=0xa56c89440 fresh=true
+[IO] ts=33292 thr=ThreadId(1)/0 ContPush	cont=0xa56c89440 fresh=true depth=2
+[IO] ts=33709 thr=ThreadId(1)/0 PureStep	value=1 fresh=true
+[IO] ts=33750 thr=ThreadId(1)/0 ContPop	cont=0xa56c89440 fresh=true depth=1
+[IO] ts=35167 thr=ThreadId(1)/0 BindExit	new_current=0xa56c58e10
+[IO] ts=35250 thr=ThreadId(1)/0 BindEnter	inner=0xa56c882a0 cont=0xa56c58f60 fresh=true
+[IO] ts=35334 thr=ThreadId(1)/0 ContPush	cont=0xa56c58f60 fresh=true depth=2
+[IO] ts=35709 thr=ThreadId(1)/0 PureStep	value=2 fresh=true
+[IO] ts=35792 thr=ThreadId(1)/0 ContPop	cont=0xa56c58f60 fresh=true depth=1
+[IO] ts=37209 thr=ThreadId(1)/0 BindExit	new_current=0xa56c59530
+[IO] ts=37292 thr=ThreadId(1)/0 BindEnter	inner=0xa56c882a0 cont=0xa56c58e10 fresh=true
+[IO] ts=37375 thr=ThreadId(1)/0 ContPush	cont=0xa56c58e10 fresh=true depth=2
+[IO] ts=37750 thr=ThreadId(1)/0 PureStep	value=3 fresh=true
+[IO] ts=37834 thr=ThreadId(1)/0 ContPop	cont=0xa56c58e10 fresh=true depth=1
+[IO] ts=38709 thr=ThreadId(1)/0 BindExit	new_current=0xa56c882a0
+[IO] ts=38792 thr=ThreadId(1)/0 PureStep	value=6 fresh=true
+[IO] ts=38875 thr=ThreadId(1)/0 ContPop	cont=0xa5700c900 fresh=true depth=0
+[IO] ts=40834 thr=ThreadId(1)/0 BindExit	new_current=0xa56c59530
+[IO] ts=40917 thr=ThreadId(1)/0 BindEnter	inner=0xa56c58e10 cont=0xa56d5ac60 fresh=true
+[IO] ts=41000 thr=ThreadId(1)/0 ContPush	cont=0xa56d5ac60 fresh=true depth=1
+[IO] ts=41417 thr=ThreadId(1)/0 BindEnter	inner=0xa56c882a0 cont=0xa56c89400 fresh=true
+[IO] ts=41459 thr=ThreadId(1)/0 ContPush	cont=0xa56c89400 fresh=true depth=2
+[IO] ts=41875 thr=ThreadId(1)/0 PureStep	value=10 fresh=true
+[IO] ts=41959 thr=ThreadId(1)/0 ContPop	cont=0xa56c89400 fresh=true depth=1
+[IO] ts=42917 thr=ThreadId(1)/0 BindExit	new_current=0xa56c882a0
+[IO] ts=43000 thr=ThreadId(1)/0 PureStep	value=110 fresh=true
+[IO] ts=43084 thr=ThreadId(1)/0 ContPop	cont=0xa56d5ac60 fresh=true depth=0
+[IO] ts=45250 thr=ThreadId(1)/0 BindExit	new_current=0xa56c599e0
+[IO] ts=45334 thr=ThreadId(1)/0 BindEnter	inner=0xa56c58e10 cont=0xa56d5a670 fresh=true
+[IO] ts=45417 thr=ThreadId(1)/0 ContPush	cont=0xa56d5a670 fresh=true depth=1
+[IO] ts=45792 thr=ThreadId(1)/0 BindEnter	inner=0xa56c892e0 cont=0xa56c89280 fresh=true
+[IO] ts=45875 thr=ThreadId(1)/0 ContPush	cont=0xa56c89280 fresh=true depth=2
+[IO] ts=46250 thr=ThreadId(1)/0 PureStep	value=7 fresh=true
+[IO] ts=46334 thr=ThreadId(1)/0 ContPop	cont=0xa56c89280 fresh=true depth=1
+[IO] ts=47875 thr=ThreadId(1)/0 BindExit	new_current=0xa56c58e10
+[IO] ts=47959 thr=ThreadId(1)/0 BindEnter	inner=0xa56c892e0 cont=0xa56c89260 fresh=true
+[IO] ts=48000 thr=ThreadId(1)/0 ContPush	cont=0xa56c89260 fresh=true depth=2
+[IO] ts=48375 thr=ThreadId(1)/0 PureStep	value=10 fresh=true
+[IO] ts=48459 thr=ThreadId(1)/0 ContPop	cont=0xa56c89260 fresh=true depth=1
+[IO] ts=49375 thr=ThreadId(1)/0 BindExit	new_current=0xa56c892e0
+[IO] ts=49459 thr=ThreadId(1)/0 PureStep	value=11 fresh=true
+[IO] ts=49542 thr=ThreadId(1)/0 ContPop	cont=0xa56d5a670 fresh=true depth=0
+[IO] ts=52375 thr=ThreadId(1)/0 BindExit	new_current=0xa56c58f60
+[IO] ts=52459 thr=ThreadId(1)/0 BindEnter	inner=0xa56c599e0 cont=0xa57080f60 fresh=true
+[IO] ts=52542 thr=ThreadId(1)/0 ContPush	cont=0xa57080f60 fresh=true depth=1
+[IO] ts=52959 thr=ThreadId(1)/0 BindEnter	inner=0xa56c596b0 cont=0xa56c89240 fresh=true
+[IO] ts=53000 thr=ThreadId(1)/0 ContPush	cont=0xa56c89240 fresh=true depth=2
+[IO] ts=53417 thr=ThreadId(1)/0 BindEnter	inner=0xa56c892e0 cont=0xa56c58e10 fresh=true
+[IO] ts=53500 thr=ThreadId(1)/0 ContPush	cont=0xa56c58e10 fresh=true depth=3
+[IO] ts=53584 thr=ThreadId(1)/0 PureStep	value=999 fresh=true
+[IO] ts=53667 thr=ThreadId(1)/0 ContPop	cont=0xa56c58e10 fresh=true depth=2
+[IO] ts=54667 thr=ThreadId(1)/0 BindExit	new_current=0xa56c89260
+
+thread 'main' (8122069) panicked at crates/cranelisp-runtime/src/io.rs:326:17:
+cranelisp_run_io: unknown IO tag 435744236914
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/80d0e4be6f15899649ba31669077c59a986f96cc/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/80d0e4be6f15899649ba31669077c59a986f96cc/library/core/src/panicking.rs:80:14
+   2: cranelisp_runtime::io::run_io_trampoline_inner
+             at /Users/alilee/Projects.nosync/rust/cranelisp/crates/cranelisp-runtime/src/io.rs:326:17
+   3: cranelisp_runtime::io::run_io_trampoline
+             at /Users/alilee/Projects.nosync/rust/cranelisp/crates/cranelisp-runtime/src/io.rs:97:18
+   4: <cranelisp::session_v4::CompilerSession>::trampoline
+             at /Users/alilee/Projects.nosync/rust/cranelisp/src/session_v4.rs:3193:31
+   5: cranelisp::run
+             at /Users/alilee/Projects.nosync/rust/cranelisp/src/main.rs:106:33
+   6: cranelisp::main
+             at /Users/alilee/Projects.nosync/rust/cranelisp/src/main.rs:60:21
+   7: <fn() as core::ops::function::FnOnce<()>>::call_once
+             at /Users/alilee/.rustup/toolchains/nightly-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.

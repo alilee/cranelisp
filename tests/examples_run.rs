@@ -89,12 +89,19 @@ fn expected_exits() -> Vec<(&'static str, &'static [i32])> {
         ("18-macros.cl", &[89]),
         ("19-threading.cl", &[130]),
         ("20-adt-traits.cl", &[39]),
-        // 21, 24: IO examples that read from stdin. Under the harness
+        // 21: hello-io prints but does not read stdin. Main returns the
+        // sum of sub-test pass counts: 457 (Part 1-6) + 42 (Part 7) = 499.
+        // Process exit code is i32 truncated to u8 → 499 & 0xFF = 243.
+        // Post-Slice-4 fix (capture-return inc, design/backend/ring2-rc.md),
+        // this is deterministic; the prior tolerance of [101, 133, 141]
+        // accepted the H(4-1'') double-free crash signatures and is now
+        // tightened per /arch's §4d recommendation.
+        ("21-hello-io.cl", &[243]),
+        // 24: IO examples that read from stdin. Under the harness
         // `Stdio::null()` stdin is closed, which causes `read-line` to
         // panic/trap (SIGTRAP → exit 133). Accept either the direct-invocation
         // value (per /examples' report) or 133/141 (SIGTRAP/SIGPIPE) as a
         // harness-pipe artefact.
-        ("21-hello-io.cl", &[101, 133, 141]),
         ("22-io-hello.cl", &[11]),
         ("23-io-sequence.cl", &[178]),
         ("24-io-echo.cl", &[20, 133, 141]),

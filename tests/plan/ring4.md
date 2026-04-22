@@ -1573,6 +1573,32 @@ Pre-readout the following placeholder tests are anticipated; authoring deferred:
 
 **No Wave-2 authoring for Slice 4 until the IO trace evidence lands. Baseline ledger entry persists throughout Slice 3 and opens of Slice 4.**
 
+#### Sprint 61 Wave 4 step 4f — Slice 4 closure (2026-04-22, post-fix SHA `776a6cf`)
+
+Slice 4 readout settled on **H(4-1'')** — a coordinated trampoline/closure-drop-glue defect where a lambda of the shape `(fn [_] b)` returning a captured heap-typed IO value could double-free that value when the trampoline's `current_is_fresh` path and the closure's drop-glue both fired on the same step. Per `/arch` at step 4d, the fix is backend-only: a new `emit_capture_return_inc` helper in `crates/cranelisp-backend/src/compiler/control_flow.rs` emits `rc_inc` on the returned capture before `return`, balancing the drop-glue's subsequent dec. Runtime `io.rs` is unchanged; the `consume_closure` + `current_is_fresh` protocol stays as specified. The new rule is documented in `design/backend/ring2-rc.md §5.6 Capture-return inc` (sibling to §5.5's borrowed_vars discipline).
+
+Full investigation: `design/backend/slice-4-21-hello-io-investigation.md` (step 4a reduction + step 4b evidence + step 4c hypothesis weighting + step 4d /arch verdict + step 4e fix implementation notes).
+
+**Tests now passing** (4 baseline ledger entries resolved, moved to `tests/plan/baseline.md §"Sprint 61 Wave 4 — Slice 4 21-hello-io closure capture double-free"`):
+
+| Test | Prior state | Post-fix |
+|---|---|---|
+| `examples_run::every_example_file_runs_under_examples_prelude` | S60 carry; `21-hello-io.cl` exit variants 101/133/201 accepted | PASSING; accepted-exit list tightened from `[101, 133, 141]` → `[243]` (spec-correct `499 & 0xFF`) |
+| `sprint61_observability_io::io_trace_hello_io_emits_full_trampoline_sequence` | SIGABRT truncated the stream before `TrampolineExit` | PASSING; `TrampolineEnter ... TrampolineExit result=51` pair emitted cleanly |
+| `sprint61_observability_io::io_trace_hello_io_observes_core_sequential_event_types` | Truncated stream lacked `PlatformEffect`/`BindEnter`/`ContPush`/`ContPop` | PASSING; full taxonomy observable |
+| `sprint61_observability_io::io_trace_platformeffect_carries_scheduling_class_byte` | Aborted before platform effect event emission | PASSING; `PlatformEffect` with `scheduling_class: u8` reaches stderr |
+
+**New regression guard authored at step 4f** (`/qa`, per `/arch` §4d test authoring requirement):
+
+| # | Test | Home | Shape |
+|---|---|---|---|
+| T-S4-H(4-1'')-1 | `sprint61_io_closure_regression::io_trampoline_then_combinator_does_not_double_free_capture` | `tests/sprint61_io_closure_regression.rs` NEW | Layer 4 subprocess test. Writes the 7-line minimum repro from the investigation doc to a fresh TempDir, invokes `cranelisp --run` on it, asserts exit=51 (= 1 + (999 → discarded via `(fn [_] b)` → 42 → +8 = 50) = 51), no Rust panic in stderr, no `unknown IO tag` signature. Discriminates against pre-fix surface exits 101 (panic) / 133 (SIGTRAP) / 134 (SIGABRT) / 201 (abort-trunc) individually for pointed diagnostics. |
+| T-S4-H(4-1'')-2 | `sprint61_io_closure_regression::io_trampoline_then_combinator_trace_shows_clean_trampoline_exit` | `tests/sprint61_io_closure_regression.rs` NEW | Layer 4 subprocess test with `CRANELISP_IO_TRACE=1`. Asserts the trace dump contains `TrampolineEnter` and `TrampolineExit` with `result=51`. Complements T-1: stronger observable evidence that the trampoline reached its normal exit path (pre-fix the process aborted between the two events). |
+
+Companion unit test `cranelisp-backend::tests::lambda_return_captured_heap_var_emits_inc` (in `crates/cranelisp-backend/src/lib.rs`) is `/backend`-owned per `memory/feedback_unit_tests_with_dev.md`; verified red → green by toggling the helper call site.
+
+5/5 consecutive passes verified at step 4f. `cargo check --tests` clean; `cargo clippy --test sprint61_io_closure_regression` zero new warnings. Seven baseline-ledger entries remain (H6 residue + 5 `d6_exemplar_*`/`wave6_demo_repros` escaped carries + 1 harness robustness concern).
+
 ---
 
 ### Cross-cutting: Slice 5 methodology test-case references

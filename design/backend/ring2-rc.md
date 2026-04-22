@@ -478,6 +478,20 @@ Three rules modify scope cleanup behavior:
 
 - **Last-use analysis** (`compute_last_uses`): Walks the expression tree in pre-order to determine the final use of each variable. The last use of a variable reference is a candidate for ownership transfer (skip the inc at the call site because the callee gets the caller's last reference). Currently used by Vec COW to determine mutate-in-place eligibility, but the general mechanism is available for future optimization. Must be gated on both `captured_vars` and `borrowed_vars` — neither owns the value, so neither may transfer ownership.
 
+### 5.6 Capture-return inc
+
+**Rule (Slice 4, Sprint 61 Wave 4 — LANDED 2026-04-21).** When a lambda body's return expression resolves to a captured heap variable (i.e. `Expr::Var { name: cap }` where `cap ∈ captured_vars` and the capture's type is `AlwaysHeap` or `Mixed`), the body MUST emit `rc_inc` on the returned value before `return`.
+
+This is structurally sibling to §5.5's rules — all three arise from the same discipline that `scope_stack` tracks owning references only, and that captured/borrowed variables live outside that discipline. The prior rules handle cleanup (no dec on exit for borrowed; no last-use transfer for either). This rule handles the mirror case: the *return value* must be inc'd when it originates outside the scope frame, because the closure's drop-glue WILL dec the capture after the body returns.
+
+**Why `protect_return_value` does not cover this case.** The gate in `protect_return_value` examines `scope_stack` for heap-typed cleanup targets and emits an inc only when at least one is present. Captures are deliberately absent from `scope_stack` (their release is the closure env's responsibility, handled by the drop-glue emitted in `build_closure_drop_glue`). For a `(fn [_] b)` where `_` is non-heap and `b` is a heap capture, `scope_stack.last() = [_]` — no heap-typed targets, no inc emitted. The returned value then flows out at the rc it came in with, the drop-glue runs on closure consumption and dec's the capture to zero, and the caller is left with a pointer to freed memory.
+
+**Why captures are consumed after return.** One-shot closure call sites (the IO trampoline's `consume_closure`; analogous fresh-closure paths) dec the closure after invocation. The closure's drop-glue iterates its heap captures and dec's each. That dec is structurally correct (the closure env owns its captures), and this rule does not change it. Instead, we ensure that when the returned value IS one of those captures, the ownership transfer to the caller is balanced by an inc inside the body.
+
+**Implementation.** Helper `emit_capture_return_inc` in `crates/cranelisp-backend/src/compiler/control_flow.rs`, called from `compile_lambda_body` between `protect_return_value` and `pop_scope_with_cleanup`. The helper is a no-op unless (a) the body is `Expr::Var`, (b) the name is in `captured_vars`, and (c) the capture's type (from `variable_types`, seeded from the enclosing scope) is heap-categorised. This preserves `protect_return_value`'s existing semantics for all other return shapes.
+
+**Regression history.** Sprint 61 Slice 4 (`tests/sprint61/race-evidence/21-hello-io-failing-min-776a6cf.log`). A 7-line repro exercising `(defn then [a b] (bind a (fn [_] b)))` + a second user-defined `bind` layer consuming `then`'s output via the IO trampoline reproduced at 100% as `cranelisp_run_io: unknown IO tag ...` (a pointer read from freed memory that happened to dereference mid-object, yielding a garbage tag byte). H(4-1'') ruling by /arch at `design/backend/slice-4-21-hello-io-investigation.md §4d`: backend-only fix, trampoline (`consume_closure` + `current_is_fresh`) protocol unchanged. Unit test: `cranelisp-backend::tests::lambda_return_captured_heap_var_emits_inc`. Integration test: authored by `/qa` at step 4f against the 7-line minimum repro.
+
 ## 6. Invariants
 
 These invariants must hold at all times. Violation indicates a bug.

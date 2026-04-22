@@ -1,0 +1,36 @@
+[IO] ts=0 thr=ThreadId(1)/0 TrampolineEnter	io_ptr=0xb0f01d4a0
+[IO] ts=11375 thr=ThreadId(1)/0 BindEnter	inner=0xb0f0ac1c0 cont=0xb0f0ad040 fresh=false
+[IO] ts=11875 thr=ThreadId(1)/0 ContPush	cont=0xb0f0ad040 fresh=false depth=1
+[IO] ts=12125 thr=ThreadId(1)/0 PureStep	value=1 fresh=false
+[IO] ts=12333 thr=ThreadId(1)/0 ContPop	cont=0xb0f0ad040 fresh=false depth=0
+[IO] ts=17500 thr=ThreadId(1)/0 BindExit	new_current=0xb0f01d650
+[IO] ts=17583 thr=ThreadId(1)/0 BindEnter	inner=0xb0f01d530 cont=0xb0f01d680 fresh=true
+[IO] ts=17667 thr=ThreadId(1)/0 ContPush	cont=0xb0f01d680 fresh=true depth=1
+[IO] ts=18625 thr=ThreadId(1)/0 BindEnter	inner=0xb0f01d440 cont=0xb0f0acf40 fresh=true
+[IO] ts=18667 thr=ThreadId(1)/0 ContPush	cont=0xb0f0acf40 fresh=true depth=2
+[IO] ts=19125 thr=ThreadId(1)/0 BindEnter	inner=0xb0f0acfc0 cont=0xb0f01d470 fresh=true
+[IO] ts=19208 thr=ThreadId(1)/0 ContPush	cont=0xb0f01d470 fresh=true depth=3
+[IO] ts=19292 thr=ThreadId(1)/0 PureStep	value=999 fresh=true
+[IO] ts=19375 thr=ThreadId(1)/0 ContPop	cont=0xb0f01d470 fresh=true depth=2
+[IO] ts=20583 thr=ThreadId(1)/0 BindExit	new_current=0xb0f0acf60
+
+thread 'main' (8123858) panicked at crates/cranelisp-runtime/src/io.rs:326:17:
+cranelisp_run_io: unknown IO tag 6578533
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/80d0e4be6f15899649ba31669077c59a986f96cc/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/80d0e4be6f15899649ba31669077c59a986f96cc/library/core/src/panicking.rs:80:14
+   2: cranelisp_runtime::io::run_io_trampoline_inner
+             at /Users/alilee/Projects.nosync/rust/cranelisp/crates/cranelisp-runtime/src/io.rs:326:17
+   3: cranelisp_runtime::io::run_io_trampoline
+             at /Users/alilee/Projects.nosync/rust/cranelisp/crates/cranelisp-runtime/src/io.rs:97:18
+   4: <cranelisp::session_v4::CompilerSession>::trampoline
+             at /Users/alilee/Projects.nosync/rust/cranelisp/src/session_v4.rs:3193:31
+   5: cranelisp::run
+             at /Users/alilee/Projects.nosync/rust/cranelisp/src/main.rs:106:33
+   6: cranelisp::main
+             at /Users/alilee/Projects.nosync/rust/cranelisp/src/main.rs:60:21
+   7: <fn() as core::ops::function::FnOnce<()>>::call_once
+             at /Users/alilee/.rustup/toolchains/nightly-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.

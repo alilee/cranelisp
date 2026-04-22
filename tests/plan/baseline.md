@@ -30,13 +30,15 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
-## Current Entries (as of 2026-04-22, sprint 61 Wave 3 step 3f, SHA `35062ca`)
+## Current Entries (as of 2026-04-22, sprint 61 Wave 4 step 4f, SHA `776a6cf`)
 
 > **Sprint 60 close update (2026-04-21)**: under full-suite pressure (multiple consecutive `cargo nextest run --no-fail-fast`), two races fire intermittently at ~30% rate. Single-run verification showed 1837/0 and `/qa` originally recorded only the exemplar entry below. 8-run stress verification under close revealed the races. Per user directive "flaky is not a thing in local tests," these are recorded as real races under `under-investigation (sprint 61)` and a dedicated stabilisation sprint opens next. FQTypeName migration slides to Sprint 62.
 
 > **Sprint 61 Phase 3a coverage note (2026-04-22)**: Wave-2 test-plan coverage for both carried cargo-test failures has been derived in `tests/plan/ring4.md §"Sprint 61 — Stabilisation test cases"`. The heisenbug race entry maps to §Slice 3 (T-S3-{1..H3}, 5 test cases). The `21-hello-io.cl` exit 201 entry maps to §Slice 4 (T-S4-* placeholders; most deferred until the Slice 4 readout selects among H4-1/H4-2/H4-3 per `design/backend/io-trampoline-trace.md §10`). Entries are NOT removed — fixes have not landed. Removal happens at Sprint 61 close per the close-time verification protocol below.
 
 > **Sprint 61 Wave 1 close update (2026-04-22, SHA `a9028c0`)**: Slice 0 observability infrastructure landed (/int scheduler trace + /backend IO trampoline trace, 25 + 18 unit tests, panic-hook flush wiring in `src/main.rs`). `/qa` authored 19 Slice-0 integration tests. 16 pass; 3 IO tests fail because they depend on `examples/21-hello-io.cl` completing cleanly — the Slice 4 defect blocks trampoline-event emission before the SIGABRT. These three are ledgered below and flip green at Slice 4 close. A fourth test (`io_trace_off_path_subprocess_completes_within_generous_ceiling`) passes in isolation but fires under concurrent nextest load — ledgered as a harness robustness concern, NOT flaky, owner `/qa`, to be fixed in Wave 5 or carried to S62. S60 carries (`sprint23::cache_repl_loads_heisenbug_parallel_stress`, `examples_run::every_example_file_runs_under_examples_prelude`) remain current — Slice 3 and Slice 4 have not yet run.
+
+> **Sprint 61 Wave 4 step 4f update (2026-04-22, SHA `776a6cf`)**: Slice 4 closed. /backend's H(4-1'') fix (capture-return inc in `crates/cranelisp-backend/src/compiler/control_flow.rs::emit_capture_return_inc` — new rule in `design/backend/ring2-rc.md §5.6`) resolved four ledger entries: `examples_run::every_example_file_runs_under_examples_prelude` (S60 carry) and the three Wave-1 Slice-4-dependent `sprint61_observability_io::*` entries. All four moved to §"Resolved this sprint → Sprint 61 Wave 4" below. New regression guard authored at `tests/sprint61_io_closure_regression.rs` (2 tests covering the 7-line minimum repro from the investigation doc; 5/5 consecutive pass rate). Seven ledger entries remain: 1 heisenbug H6 residue (S62 concurrency audit), 5 escaped `d6_exemplar_*` + `wave6_demo_repros` carries (S62 /port + /backend), 1 harness robustness concern (`io_trace_off_path_subprocess_completes_within_generous_ceiling`, Wave 5 or S62).
 
 ### Cargo test suite
 
@@ -53,50 +55,6 @@ A failing test without all six fields is treated as a sprint-blocking issue. `/s
 #### Resolved mid-sprint (Wave 3 step 3e')
 
 - **`sprint23::cache_repl_loads_heisenbug_parallel_stress`** (S60 carry, SHA `d270a36`) — **RESOLVED**. Passes 58/59 in full sprint23 suite at SHA `35062ca`. Resolved by H5 fix (`eval_in_flight` scheduler-side worker-claim suppression landed in Wave 3 step 3e' per `design/int/heisenbug-race-closure.md §3e'`); the reduced harness `sprint23::heisenbug_race_reduced_concurrent_import_pairs` (authored step 3a) replaces it as the active regression surface, now targeting the H6 data-plane residue carried to S62.
-
-| Field | Value |
-|---|---|
-| Test name | `examples_run::every_example_file_runs_under_examples_prelude` |
-| SHA | `d270a36` |
-| Stderr / observable signature | `21-hello-io.cl: exit=201 (allowed [101, 133, 141])` — an IO-using example exits with a code NOT in the expected-or-signal-artefact accept list. Exit 201 (= 0xC9) is neither SIGTRAP (133), SIGPIPE (141), nor the example's nominal exit (101). |
-| Owning skill | `/backend` (suspected) or `/platform` (stdio DLL under pressure) — investigation needed |
-| Target sprint | Sprint 61 (stabilisation) |
-| Disposition | `under-investigation (sprint 61)` |
-| Rationale | Surfaced during 8-run close-time stress. Passes reliably in isolation (5/5); fails intermittently under full-suite pressure. Distinct shape from the heisenbug race — involves the platform IO path and possibly a subprocess-stdin race with `read-line`. Sprint 61 should reduce the repro (replicate under pressure with a 1-test load), then diagnose. Candidates: (a) stdio DLL buffer ordering under concurrent subprocess loads, (b) IO trampoline continuation-state leak under concurrent evals, (c) nextest-level subprocess-environment crosstalk. |
-
-#### Sprint 61 Wave 1 — Slice-4-dependent failures
-
-The following three tests were authored in Wave 1 as part of the Slice-0 observability integration suite (`tests/sprint61_observability_io.rs`). Each drives `examples/21-hello-io.cl` with `CRANELISP_IO_TRACE=1` and asserts properties of the emitted trampoline event stream. All three fail because the example itself aborts (Slice 4 defect — the `examples_run::every_example_file_runs_under_examples_prelude` entry above) before a clean trampoline exit sequence can be produced. They flip green automatically when Slice 4 closes; no independent fix is required.
-
-| Field | Value |
-|---|---|
-| Test name | `sprint61_observability_io::io_trace_hello_io_emits_full_trampoline_sequence` |
-| SHA | `a9028c0` |
-| Stderr / observable signature | Subprocess running `examples/21-hello-io.cl` with `CRANELISP_IO_TRACE=1` exits with SIGABRT (exit 134 / signal 6) before emitting a matched `TrampolineEnter ... TrampolineExit` pair. Assertion fails on absent `TrampolineExit` event in the captured stderr trace dump. |
-| Owning skill | TBD at Slice 4 readout (`/backend` or `/platform` per `sprints/SPRINT.md §Wave 4`) |
-| Target sprint | Sprint 61 Slice 4 |
-| Disposition | `under-investigation (sprint 61 Slice 4)` |
-| Rationale | Test is correctly authored against `design/backend/io-trampoline-trace.md §3` (TrampolineEnter/Exit pairing). The failure is a dependency on the Slice 4 `21-hello-io.cl` exit-201/abort defect — the trampoline cannot emit `TrampolineExit` because the process aborts mid-execution. Flips green when Slice 4 closes per `sprints/SPRINT.md §Wave 4 close`. |
-
-| Field | Value |
-|---|---|
-| Test name | `sprint61_observability_io::io_trace_hello_io_observes_core_sequential_event_types` |
-| SHA | `a9028c0` |
-| Stderr / observable signature | Same subprocess SIGABRT on `examples/21-hello-io.cl` with `CRANELISP_IO_TRACE=1`; assertion fails because the truncated trace dump does not contain the expected taxonomy coverage (`TrampolineEnter`, `BindEnter`, `PlatformEffect`, `TrampolineExit` at minimum). |
-| Owning skill | TBD at Slice 4 readout (`/backend` or `/platform`) |
-| Target sprint | Sprint 61 Slice 4 |
-| Disposition | `under-investigation (sprint 61 Slice 4)` |
-| Rationale | Same Slice 4 dependency as above. Test validates `design/backend/io-trampoline-trace.md §3` taxonomy; the abort truncates the event stream before the full sequential taxonomy is exercised. Flips green when Slice 4 closes. |
-
-| Field | Value |
-|---|---|
-| Test name | `sprint61_observability_io::io_trace_platformeffect_carries_scheduling_class_byte` |
-| SHA | `a9028c0` |
-| Stderr / observable signature | Same subprocess SIGABRT on `examples/21-hello-io.cl` with `CRANELISP_IO_TRACE=1`; assertion fails because no `PlatformEffect` event with a populated `scheduling_class: u8` payload reaches stderr before the abort. |
-| Owning skill | TBD at Slice 4 readout (`/backend` or `/platform`) |
-| Target sprint | Sprint 61 Slice 4 |
-| Disposition | `under-investigation (sprint 61 Slice 4)` |
-| Rationale | Same Slice 4 dependency. Test validates `design/backend/io-trampoline-trace.md §3 PlatformEffect payload` + Decision 26 (`scheduling_class` byte). The abort truncates the trace before a `PlatformEffect` for the stdio print call can be observed. Flips green when Slice 4 closes. |
 
 #### Sprint 61 Wave 1 — Harness robustness concern
 
@@ -177,6 +135,15 @@ Per §Close-time Verification Protocol item 3 — entries removed from the ledge
 - **`sprint61_wave2::exemplar_solver_correctness::eliminate_on_same_value_given_returns_none`** (T-S2-1) — PASSING 5/5. Resolved by /port's Layer 1 fix in `exemplar/solver.cl::eliminate` (handle `(Given v)`/`(Solved v)` same-value cells by returning `None`) combined with /backend's Layer 3 fix at `crates/cranelisp-backend/src/compiler/mod.rs::is_last_use` which unblocked the naive Layer 1 patch from regressing valid puzzles.
 - **`sprint61_wave2::exemplar_solver_correctness::inline_adt_arg_wrapping_vec_preserves_len`** (T-S2-2) — PASSING 5/5. Resolved by /backend's Layer 3 fix at `crates/cranelisp-backend/src/compiler/mod.rs::is_last_use` (consuming-arg RC emission for inline ADT constructors wrapping a Vec no longer drops the inner Vec's length before callee match-unwrap).
 - **`exemplar/solver.cl::test-unsolvable`** (S60 carry, exemplar-level non-cargo) — superseded and closed. Root cause was a two-layer defect: Layer 1 algorithmic hole in `eliminate` (/port) plus Layer 3 compiler bug in consuming-arg RC (/backend) that regressed the naive Layer 1 fix. Both fixes landed in Wave 2 (`crates/cranelisp-backend/src/compiler/mod.rs::is_last_use` + `exemplar/solver.cl::eliminate`). The two cargo tests above now serve as the durable regression record; the exemplar-level test remains in `exemplar/solver.cl` but is no longer the authoritative failure record.
+
+### Sprint 61 Wave 4 — Slice 4 21-hello-io closure capture double-free (2026-04-22, post-fix SHA `776a6cf`)
+
+Four entries resolved by the H(4-1'') fix landed in Wave 4 step 4e — a new backend helper `emit_capture_return_inc` in `crates/cranelisp-backend/src/compiler/control_flow.rs` that inc's a lambda body's returned-capture heap value before `return`, balancing the closure drop-glue's subsequent dec. The rule is documented in `design/backend/ring2-rc.md §5.6 Capture-return inc` (sibling to the §5.5 borrowed_vars discipline). Investigation and verdict in `design/backend/slice-4-21-hello-io-investigation.md §4d-§4e`. New regression guard authored in Wave 4 step 4f: `tests/sprint61_io_closure_regression.rs` (7-line minimum repro, 2 tests, 5/5 consecutive passes).
+
+- **`examples_run::every_example_file_runs_under_examples_prelude`** (S60 carry, SHA `d270a36`) — PASSING post-fix. The intermittent `21-hello-io.cl exit=201` under full-suite pressure and the 101/133/SIGABRT surface variants observed during Wave 1 were all surface faces of the same capture-return double-free. Accepted-exit list for `21-hello-io.cl` tightened from `[101, 133, 141]` to `[243]` (the spec-correct `499 & 0xFF`).
+- **`sprint61_observability_io::io_trace_hello_io_emits_full_trampoline_sequence`** (Wave 1 Slice-4-dependent, SHA `a9028c0`) — PASSING post-fix. `TrampolineEnter ... TrampolineExit` pair now emitted cleanly; trace matches `design/backend/io-trampoline-trace.md §3` taxonomy.
+- **`sprint61_observability_io::io_trace_hello_io_observes_core_sequential_event_types`** (Wave 1 Slice-4-dependent, SHA `a9028c0`) — PASSING post-fix. Full sequential taxonomy (`TrampolineEnter`, `TrampolineExit`, `PlatformEffect`, `BindEnter`, `ContPush`, `ContPop`) observable.
+- **`sprint61_observability_io::io_trace_platformeffect_carries_scheduling_class_byte`** (Wave 1 Slice-4-dependent, SHA `a9028c0`) — PASSING post-fix. `PlatformEffect` event with `scheduling_class: u8` now reaches stderr before process exit.
 
 ## Close-time Verification Protocol
 

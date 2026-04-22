@@ -910,6 +910,68 @@ where
         Ok(Some(glue_func_id))
     }
 
+    /// Emit `rc_inc` on the lambda body's return value when that value is a
+    /// bare reference to a captured heap variable.
+    ///
+    /// See `design/backend/slice-4-21-hello-io-investigation.md §4d/§4e` for
+    /// the investigation history, and `design/backend/ring2-rc.md` (new
+    /// **capture-return inc** rule, sibling of §5.5) for the normative
+    /// description.
+    ///
+    /// ## Invariant
+    ///
+    /// A captured heap variable returned as the lambda body value requires
+    /// an explicit `rc_inc` before `return`, because:
+    ///
+    /// 1. The `scope_stack` deliberately excludes captures (see
+    ///    `compile_lambda_body` where captures are bound WITHOUT being
+    ///    pushed onto the scope frame — captures are the closure env's
+    ///    responsibility, not the body scope's).
+    /// 2. `protect_return_value` guards its inc-on-return behind
+    ///    `has_cleanup_targets`, which examines `scope_stack` only. For a
+    ///    `(fn [_] b)` shape where `_` is non-heap and `b` is a capture,
+    ///    `has_cleanup_targets` is false and `protect_return_value` emits
+    ///    no inc.
+    /// 3. The closure's drop-glue (see `build_closure_drop_glue`) WILL dec
+    ///    the capture after the body returns, because a fresh one-shot
+    ///    closure is consumed via `consume_closure` by the IO trampoline
+    ///    (and other fresh-closure call sites) after invocation.
+    ///
+    /// Without the inc, the value returned to the caller points at a node
+    /// the drop-glue is about to dec to zero, producing a use-after-free
+    /// in whatever the caller does next (in the observed case, the IO
+    /// trampoline reads the pointer as the new `current` frame and
+    /// dereferences freed memory).
+    ///
+    /// This helper is additive: `protect_return_value`'s scope-stack logic
+    /// is unchanged for all other callers and all other return paths
+    /// within lambda bodies. Only the `Var{captured_heap}` shape triggers
+    /// this new inc.
+    fn emit_capture_return_inc(&mut self, body: &Expr, body_val: Value) {
+        // Only trigger for a direct reference to a captured variable.
+        let Expr::Var { name, .. } = body else {
+            return;
+        };
+        if !self.captured_vars.contains(name) {
+            return;
+        }
+        // Look up the capture's type (seeded by `compile_lambda_body` from
+        // the enclosing scope). Non-heap captures need no inc.
+        let Some(ty) = self.variable_types.get(name).cloned() else {
+            return;
+        };
+        let category = HeapCategory::classify(&ty, Some(self.ctx.symbol_tables));
+        match category {
+            HeapCategory::AlwaysHeap => {
+                heap::emit_rc_inc(&mut self.builder, body_val);
+            }
+            HeapCategory::Mixed => {
+                heap::emit_rc_inc_guarded(&mut self.builder, body_val);
+            }
+            HeapCategory::NeverHeap => {}
+        }
+    }
+
     /// Compile the body of a lambda as a separate JIT function.
     ///
     /// The inner function has signature (env_ptr, params...) -> i64.
@@ -1038,6 +1100,15 @@ where
         let skip_var = Self::return_var_in_scope(body, inner_compiler.scope_stack.last());
         let result = inner_compiler.compile_expr(body)?;
         inner_compiler.protect_return_value(&skip_var, result, body);
+        // Capture-return inc (Slice 4 / ring2-rc.md "capture-return inc"
+        // rule — sibling of §5.5 borrowed_vars). When the lambda body
+        // returns a captured heap variable directly (e.g. `(fn [_] b)`
+        // where `b` is a heap-typed capture), emit `rc_inc` on the
+        // returned value so the closure's drop-glue dec (run by the
+        // trampoline's `consume_closure`) is balanced and the caller
+        // receives a live reference. `protect_return_value` does NOT
+        // cover this case because captures are not on `scope_stack`.
+        inner_compiler.emit_capture_return_inc(body, result);
         inner_compiler.pop_scope_with_cleanup(skip_var.as_ref());
 
         inner_compiler.builder.ins().return_(&[result]);

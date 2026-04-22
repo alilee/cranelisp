@@ -1,0 +1,68 @@
+[IO] ts=42 thr=ThreadId(1)/0 TrampolineEnter	io_ptr=0x79ed58030
+[IO] ts=10959 thr=ThreadId(1)/0 BindEnter	inner=0x79ed58000 cont=0x79ed4c040 fresh=false
+[IO] ts=11459 thr=ThreadId(1)/0 ContPush	cont=0x79ed4c040 fresh=false depth=1
+[IO] ts=11584 thr=ThreadId(1)/0 BindEnter	inner=0x79ed4c000 cont=0x79ed4c020 fresh=false
+[IO] ts=11667 thr=ThreadId(1)/0 ContPush	cont=0x79ed4c020 fresh=false depth=2
+[IO] ts=11875 thr=ThreadId(1)/0 PureStep	value=42 fresh=false
+[IO] ts=12084 thr=ThreadId(1)/0 ContPop	cont=0x79ed4c020 fresh=false depth=1
+[IO] ts=12667 thr=ThreadId(1)/0 BindExit	new_current=0x79ed4c060
+[IO] ts=12792 thr=ThreadId(1)/0 PureStep	value=42 fresh=true
+[IO] ts=12875 thr=ThreadId(1)/0 ContPop	cont=0x79ed4c040 fresh=false depth=0
+[IO] ts=16875 thr=ThreadId(1)/0 BindExit	new_current=0x79ed580c0
+[IO] ts=17000 thr=ThreadId(1)/0 BindEnter	inner=0x79ed58060 cont=0x79ed58090 fresh=true
+[IO] ts=17084 thr=ThreadId(1)/0 ContPush	cont=0x79ed58090 fresh=true depth=1
+[IO] ts=17500 thr=ThreadId(1)/0 BindEnter	inner=0x79ed4c060 cont=0x79ed4c080 fresh=true
+[IO] ts=17584 thr=ThreadId(1)/0 ContPush	cont=0x79ed4c080 fresh=true depth=2
+[IO] ts=17959 thr=ThreadId(1)/0 PureStep	value=1 fresh=true
+[IO] ts=18042 thr=ThreadId(1)/0 ContPop	cont=0x79ed4c080 fresh=true depth=1
+[IO] ts=19084 thr=ThreadId(1)/0 BindExit	new_current=0x79ed4c060
+[IO] ts=19167 thr=ThreadId(1)/0 PureStep	value=1 fresh=true
+[IO] ts=19250 thr=ThreadId(1)/0 ContPop	cont=0x79ed58090 fresh=true depth=0
+[IO] ts=21209 thr=ThreadId(1)/0 BindExit	new_current=0x79ed580f0
+[IO] ts=21334 thr=ThreadId(1)/0 BindEnter	inner=0x79ed58060 cont=0x79ed580c0 fresh=true
+[IO] ts=21417 thr=ThreadId(1)/0 ContPush	cont=0x79ed580c0 fresh=true depth=1
+[IO] ts=21792 thr=ThreadId(1)/0 BindEnter	inner=0x79ed4c060 cont=0x79ed4c080 fresh=true
+[IO] ts=21875 thr=ThreadId(1)/0 ContPush	cont=0x79ed4c080 fresh=true depth=2
+[IO] ts=22250 thr=ThreadId(1)/0 PureStep	value=10 fresh=true
+[IO] ts=22334 thr=ThreadId(1)/0 ContPop	cont=0x79ed4c080 fresh=true depth=1
+[IO] ts=23250 thr=ThreadId(1)/0 BindExit	new_current=0x79ed4c060
+[IO] ts=23334 thr=ThreadId(1)/0 PureStep	value=15 fresh=true
+[IO] ts=23375 thr=ThreadId(1)/0 ContPop	cont=0x79ed580c0 fresh=true depth=0
+[IO] ts=25459 thr=ThreadId(1)/0 BindExit	new_current=0x79ed580f0
+[IO] ts=25542 thr=ThreadId(1)/0 BindEnter	inner=0x79ed58060 cont=0x79ec0cb80 fresh=true
+[IO] ts=25584 thr=ThreadId(1)/0 ContPush	cont=0x79ec0cb80 fresh=true depth=1
+[IO] ts=26000 thr=ThreadId(1)/0 BindEnter	inner=0x79ed4c060 cont=0x79ed4c080 fresh=true
+[IO] ts=26084 thr=ThreadId(1)/0 ContPush	cont=0x79ed4c080 fresh=true depth=2
+[IO] ts=26417 thr=ThreadId(1)/0 PureStep	value=1 fresh=true
+[IO] ts=26500 thr=ThreadId(1)/0 ContPop	cont=0x79ed4c080 fresh=true depth=1
+[IO] ts=27959 thr=ThreadId(1)/0 BindExit	new_current=0x79ed58060
+[IO] ts=28042 thr=ThreadId(1)/0 BindEnter	inner=0x79ed4c060 cont=0x79ed4c100 fresh=true
+[IO] ts=28125 thr=ThreadId(1)/0 ContPush	cont=0x79ed4c100 fresh=true depth=2
+[IO] ts=28500 thr=ThreadId(1)/0 PureStep	value=11 fresh=true
+[IO] ts=28584 thr=ThreadId(1)/0 ContPop	cont=0x79ed4c100 fresh=true depth=1
+[IO] ts=29459 thr=ThreadId(1)/0 BindExit	new_current=0x79ed4c060
+[IO] ts=29542 thr=ThreadId(1)/0 PureStep	value=111 fresh=true
+[IO] ts=29625 thr=ThreadId(1)/0 ContPop	cont=0x79ec0cb80 fresh=true depth=0
+[IO] ts=31584 thr=ThreadId(1)/0 BindExit	new_current=0x79ed580f0
+[IO] ts=31667 thr=ThreadId(1)/0 BindEnter	inner=0x79ed58060 cont=0x79ec0cbc0 fresh=true
+[IO] ts=31750 thr=ThreadId(1)/0 ContPush	cont=0x79ec0cbc0 fresh=true depth=1
+[IO] ts=32084 thr=ThreadId(1)/0 BindEnter	inner=0x79ed4c060 cont=0x79ed4c100 fresh=true
+[IO] ts=32167 thr=ThreadId(1)/0 ContPush	cont=0x79ed4c100 fresh=true depth=2
+[IO] ts=32500 thr=ThreadId(1)/0 PureStep	value=1 fresh=true
+[IO] ts=32584 thr=ThreadId(1)/0 ContPop	cont=0x79ed4c100 fresh=true depth=1
+[IO] ts=34042 thr=ThreadId(1)/0 BindExit	new_current=0x79ed580c0
+[IO] ts=34084 thr=ThreadId(1)/0 BindEnter	inner=0x79ed4c060 cont=0x79ed580f0 fresh=true
+[IO] ts=34167 thr=ThreadId(1)/0 ContPush	cont=0x79ed580f0 fresh=true depth=2
+[IO] ts=34542 thr=ThreadId(1)/0 PureStep	value=2 fresh=true
+[IO] ts=34625 thr=ThreadId(1)/0 ContPop	cont=0x79ed580f0 fresh=true depth=1
+[IO] ts=36125 thr=ThreadId(1)/0 BindExit	new_current=0x79ed58120
+[IO] ts=36209 thr=ThreadId(1)/0 BindEnter	inner=0x79ed4c060 cont=0x79ed58090 fresh=true
+[IO] ts=36292 thr=ThreadId(1)/0 ContPush	cont=0x79ed58090 fresh=true depth=2
+[IO] ts=36667 thr=ThreadId(1)/0 PureStep	value=3 fresh=true
+[IO] ts=36750 thr=ThreadId(1)/0 ContPop	cont=0x79ed58090 fresh=true depth=1
+[IO] ts=37667 thr=ThreadId(1)/0 BindExit	new_current=0x79ed4c060
+[IO] ts=37750 thr=ThreadId(1)/0 PureStep	value=6 fresh=true
+[IO] ts=37834 thr=ThreadId(1)/0 ContPop	cont=0x79ec0cbc0 fresh=true depth=0
+[IO] ts=38750 thr=ThreadId(1)/0 BindExit	new_current=0x79ed4c060
+[IO] ts=38834 thr=ThreadId(1)/0 PureStep	value=175 fresh=true
+[IO] ts=39500 thr=ThreadId(1)/0 TrampolineExit	result=175

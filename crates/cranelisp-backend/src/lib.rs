@@ -1627,6 +1627,115 @@ mod tests {
         assert_eq!(result.unwrap(), 15, "5 + 10 = 15");
     }
 
+    // spec: design/backend/ring2-rc.md "capture-return inc" (sibling of §5.5)
+    // spec: design/backend/slice-4-21-hello-io-investigation.md §4d/§4e
+    //
+    // Regression guard for Slice 4 defect. A lambda body whose return
+    // expression is a bare reference to a captured heap variable MUST
+    // emit `rc_inc` on the return value before `return`, so the
+    // closure's drop-glue dec (fired by one-shot consume_closure paths
+    // like the IO trampoline) does not free the value out from under
+    // the caller.
+    //
+    // Test shape: `(let [s "hello"] ((fn [_] s) 0))`. The inner
+    // closure captures `s` (heap-typed String) and returns it when
+    // called with a dummy Int arg. Without `emit_capture_return_inc`,
+    // the closure's drop glue would dec `s` after the body returns,
+    // the outer `let` scope cleanup would dec `s` again (via its own
+    // scope-stack dec), and at least one of those decs lands on a
+    // freed node — corrupting the returned pointer and/or
+    // double-freeing.
+    //
+    // Post-fix: the returned pointer is still live and reads back as
+    // "hello"; `test_compile_lambda_closure` above (non-capture-return
+    // shape) is unaffected, confirming the fix is additive.
+    //
+    // NB: this test sits in `lib.rs #[cfg(test)] mod tests` rather
+    // than a new module in `control_flow.rs` because the
+    // `test_compile_and_run` helper + `TestCheckResult` scaffolding is
+    // local to `lib.rs` and re-exporting it would duplicate the entire
+    // compile pipeline bridge. Per /arch §4d the placement discipline
+    // is "wherever existing control_flow tests live" — the three
+    // existing closure/lambda backend tests
+    // (`test_compile_lambda_closure`, others) all live here.
+    #[test]
+    fn lambda_return_captured_heap_var_emits_inc() {
+        // AST: (let [s "hello"] ((fn [_] s) 0))
+        //
+        // Explicit `inferred_type` on the String literal so the let's
+        // `variable_types` picks up `s: String`; that's what
+        // `emit_capture_return_inc` reads from the enclosing scope when
+        // the lambda body is compiled.
+        let string_ty = Type::String;
+        let s_span = Span::new(5, 12);
+        let lam_body_span = Span::new(20, 21);
+        let expr = Expr::Let {
+            bindings: vec![(
+                Symbol::from("s"),
+                Expr::StringLit {
+                    value: "hello".to_string(),
+                    span: s_span,
+                    inferred_type: Some(Box::new(string_ty.clone())),
+                },
+            )],
+            body: Box::new(Expr::Apply {
+                callee: Box::new(Expr::Lambda {
+                    params: vec![Symbol::from("_")],
+                    param_annotations: vec![],
+                    body: Box::new(Expr::Var {
+                        name: Symbol::from("s"),
+                        span: lam_body_span,
+                        inferred_type: Some(Box::new(string_ty.clone())),
+                    }),
+                    span: Span::new(15, 22),
+                    inferred_type: None,
+                }),
+                args: vec![Expr::IntLit {
+                    value: 0,
+                    span: Span::new(24, 25),
+                    inferred_type: None,
+                }],
+                span: Span::new(14, 26),
+                resolved_call: None,
+                inferred_type: None,
+            }),
+            span: Span::new(0, 27),
+            inferred_type: None,
+        };
+
+        let check = empty_check();
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
+        assert!(
+            result.is_ok(),
+            "captured-heap-return should compile and run: {result:?}"
+        );
+        let ptr = result.unwrap();
+        // Heap pointer (> NULLARY_TAG_THRESHOLD).
+        assert!(ptr > 1024, "expected heap pointer, got {ptr}");
+
+        // Key post-fix assertion: the returned pointer is STILL LIVE
+        // after return — `emit_capture_return_inc` incremented its RC
+        // so the drop-glue dec did not free it. Pre-fix, `is_live`
+        // would be false here (or the read-back would show corruption).
+        #[cfg(debug_assertions)]
+        assert!(
+            cranelisp_runtime::alloc::is_live(ptr as usize),
+            "returned string pointer must still be live after lambda return; \
+             this is the capture-return inc invariant"
+        );
+
+        // Readable round-trip — proves the contents survived the
+        // drop-glue dec that would otherwise have corrupted or freed
+        // the heap block.
+        let s = unsafe { cranelisp_runtime::read_string_as_str(ptr) };
+        assert_eq!(s, "hello", "captured string must round-trip");
+
+        // Balance the one remaining caller-side reference (we, the
+        // test, are the caller). Normal runtime would emit the dec at
+        // the caller's scope exit; here we dec manually.
+        cranelisp_runtime::heap_dealloc(ptr);
+    }
+
     // --- Vec codegen tests ---
 
     // spec: 04-expressions §4.10 — empty Vec literal codegen
