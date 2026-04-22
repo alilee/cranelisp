@@ -11,6 +11,7 @@ use cranelisp_platform::{IO_TAG_BIND, IO_TAG_EFFECT, IO_TAG_PAR, IO_TAG_PURE};
 use cranelisp_types::HeapHeader;
 
 use crate::alloc_with_rc;
+use crate::io_trace::{self, IoTracePayload, IoTraceTag};
 
 /// Byte offset of the tag field from the base pointer.
 const TAG_OFFSET: isize = HeapHeader::SIZE as isize; // 16
@@ -89,6 +90,21 @@ pub extern "C" fn cranelisp_run_io(io_ptr: i64) -> i64 {
 /// captured from a fresh Bind are consumed; closures from the caller's
 /// tree are left alone.
 pub fn run_io_trampoline(io_ptr: i64) -> i64 {
+    io_trace::record_event(
+        IoTraceTag::TrampolineEnter,
+        IoTracePayload::TrampolineEnter { io_ptr },
+    );
+    let result = run_io_trampoline_inner(io_ptr);
+    io_trace::record_event(
+        IoTraceTag::TrampolineExit,
+        IoTracePayload::TrampolineExit { result },
+    );
+    result
+}
+
+/// Inner loop — all state-machine instrumentation lives here; the outer
+/// `run_io_trampoline` wraps it solely to emit enter/exit bookends.
+fn run_io_trampoline_inner(io_ptr: i64) -> i64 {
     let mut cont_stack: Vec<(i64, bool)> = Vec::new(); // (cont_ptr, is_fresh)
     let mut current: i64 = io_ptr;
     let mut current_is_fresh: bool = false;
@@ -99,8 +115,20 @@ pub fn run_io_trampoline(io_ptr: i64) -> i64 {
         match tag {
             t if t == IO_TAG_PURE => {
                 let val = unsafe { *((current as isize + FIELD_0_OFFSET) as *const i64) };
+                io_trace::record_event(
+                    IoTraceTag::PureStep,
+                    IoTracePayload::PureStep { value: val, is_fresh: current_is_fresh },
+                );
                 match cont_stack.pop() {
                     Some((cont_ptr, cont_is_fresh)) => {
+                        io_trace::record_event(
+                            IoTraceTag::ContPop,
+                            IoTracePayload::Cont {
+                                cont_ptr,
+                                is_fresh: cont_is_fresh,
+                                new_depth: cont_stack.len() as u32,
+                            },
+                        );
                         // Releasing this Pure node: shallow-dec it if we
                         // produced it ourselves (fresh subtree). If it was
                         // part of the caller's tree, leave it to the
@@ -111,6 +139,10 @@ pub fn run_io_trampoline(io_ptr: i64) -> i64 {
                         // Same rule for the closure we're about to invoke:
                         // consume it only if it was part of a fresh Bind.
                         let new_io = call_continuation(cont_ptr, val, cont_is_fresh);
+                        io_trace::record_event(
+                            IoTraceTag::BindExit,
+                            IoTracePayload::BindExit { new_current: new_io },
+                        );
                         current = new_io;
                         current_is_fresh = true;
                     }
@@ -126,13 +158,50 @@ pub fn run_io_trampoline(io_ptr: i64) -> i64 {
             t if t == IO_TAG_EFFECT => {
                 let thunk_ptr =
                     unsafe { *((current as isize + FIELD_0_OFFSET) as *const i64) };
+                let resource_token =
+                    unsafe { *((current as isize + FIELD_1_OFFSET) as *const i64) };
+                // Scheduling class is not currently stored on Effect
+                // nodes at runtime — the class attaches to platform
+                // symbols at registration time (see
+                // `cranelisp-platform::SchedulingClass` and
+                // `PlatformFn.scheduling_class`). At the trampoline site
+                // we do not have a back-reference to the symbol. Emit 0
+                // as a placeholder; Slice 4 can either plumb the class
+                // through Effect construction or consume it via /int's
+                // scheduler trace.
+                //
+                // FIXME(/backend): consider threading SchedulingClass
+                // into the Effect node payload (extra field) so trampoline
+                // events carry the real class without needing a
+                // cross-trace correlation. Deferred pending Slice 4
+                // evidence.
+                io_trace::record_event(
+                    IoTraceTag::PlatformEffect,
+                    IoTracePayload::PlatformEffect {
+                        thunk_ptr,
+                        resource_token,
+                        scheduling_class: 0,
+                    },
+                );
                 let result = unsafe { cranelisp_platform::call_effect_thunk(thunk_ptr) };
                 match cont_stack.pop() {
                     Some((cont_ptr, cont_is_fresh)) => {
+                        io_trace::record_event(
+                            IoTraceTag::ContPop,
+                            IoTracePayload::Cont {
+                                cont_ptr,
+                                is_fresh: cont_is_fresh,
+                                new_depth: cont_stack.len() as u32,
+                            },
+                        );
                         if current_is_fresh {
                             crate::drop::dec_shallow_io(current);
                         }
                         let new_io = call_continuation(cont_ptr, result, cont_is_fresh);
+                        io_trace::record_event(
+                            IoTraceTag::BindExit,
+                            IoTracePayload::BindExit { new_current: new_io },
+                        );
                         current = new_io;
                         current_is_fresh = true;
                     }
@@ -147,11 +216,27 @@ pub fn run_io_trampoline(io_ptr: i64) -> i64 {
             t if t == IO_TAG_BIND => {
                 let inner = unsafe { *((current as isize + FIELD_0_OFFSET) as *const i64) };
                 let cont = unsafe { *((current as isize + FIELD_1_OFFSET) as *const i64) };
+                io_trace::record_event(
+                    IoTraceTag::BindEnter,
+                    IoTracePayload::BindEnter {
+                        inner_ptr: inner,
+                        cont_ptr: cont,
+                        is_fresh: current_is_fresh,
+                    },
+                );
                 // The Bind's cont pointer inherits the freshness of the
                 // Bind node: caller-tree Binds hold caller-tree conts;
                 // fresh Binds (produced by an outer continuation) hold
                 // fresh conts.
                 cont_stack.push((cont, current_is_fresh));
+                io_trace::record_event(
+                    IoTraceTag::ContPush,
+                    IoTracePayload::Cont {
+                        cont_ptr: cont,
+                        is_fresh: current_is_fresh,
+                        new_depth: cont_stack.len() as u32,
+                    },
+                );
                 if current_is_fresh {
                     // Fresh Bind: shallow-dec the outer Bind alloc; inner
                     // ownership transfers to `current` and remains fresh.
@@ -185,7 +270,15 @@ pub fn run_io_trampoline(io_ptr: i64) -> i64 {
                 // post-fix refinement; for now we treat branches as owned
                 // by their enclosing Par node and let consume_io_tree or
                 // the fresh-Par dec at this level release them.
-                let results = dispatch_par_branches(&branch_ptrs);
+                let parent_ptr = current;
+                let results = dispatch_par_branches_with_trace(&branch_ptrs, parent_ptr);
+                io_trace::record_event(
+                    IoTraceTag::ParJoin,
+                    IoTracePayload::ParJoin {
+                        parent_ptr,
+                        count: count as u32,
+                    },
+                );
 
                 // Allocate results buffer via alloc_with_rc so the continuation
                 // can dec it when done. Results stored at FIELD_0_OFFSET + i*8
@@ -202,10 +295,22 @@ pub fn run_io_trampoline(io_ptr: i64) -> i64 {
                 // Pop continuation and call with results array pointer
                 match cont_stack.pop() {
                     Some((cont_ptr, cont_is_fresh)) => {
+                        io_trace::record_event(
+                            IoTraceTag::ContPop,
+                            IoTracePayload::Cont {
+                                cont_ptr,
+                                is_fresh: cont_is_fresh,
+                                new_depth: cont_stack.len() as u32,
+                            },
+                        );
                         if current_is_fresh {
                             crate::drop::dec_shallow_io(current);
                         }
                         let new_io = call_continuation(cont_ptr, results_ptr, cont_is_fresh);
+                        io_trace::record_event(
+                            IoTraceTag::BindExit,
+                            IoTracePayload::BindExit { new_current: new_io },
+                        );
                         current = new_io;
                         current_is_fresh = true;
                     }
@@ -280,7 +385,18 @@ enum WorkItem {
 /// - Results are placed in original binding order
 ///
 /// See design/backend/io-scheduling.md §5.2 for the algorithm.
+///
+/// The `_with_trace` variant used by the trampoline emits `ParSpark` /
+/// `ParSerialGroupEnter` events at dispatch time. The original
+/// `dispatch_par_branches` remains for any direct callers who prefer not
+/// to correlate with a parent node (currently unused in production
+/// code).
+#[allow(dead_code)]
 fn dispatch_par_branches(branch_ptrs: &[i64]) -> Vec<i64> {
+    dispatch_par_branches_with_trace(branch_ptrs, 0)
+}
+
+fn dispatch_par_branches_with_trace(branch_ptrs: &[i64], parent_ptr: i64) -> Vec<i64> {
     use rayon::prelude::*;
     use std::collections::HashMap;
 
@@ -297,10 +413,35 @@ fn dispatch_par_branches(branch_ptrs: &[i64]) -> Vec<i64> {
         if token == 0 {
             // Each unrestricted branch is independent.
             for &(idx, io_ptr) in entries {
+                io_trace::record_event(
+                    IoTraceTag::ParSpark,
+                    IoTracePayload::ParSpark {
+                        parent_ptr,
+                        branch_idx: idx as u32,
+                        token,
+                    },
+                );
                 work_items.push(WorkItem::Single(idx, io_ptr));
             }
         } else {
             // Same non-zero token: run sequentially as one work item.
+            io_trace::record_event(
+                IoTraceTag::ParSerialGroupEnter,
+                IoTracePayload::ParSerialGroupEnter {
+                    token,
+                    branch_count: entries.len() as u32,
+                },
+            );
+            for &(idx, _io_ptr) in entries {
+                io_trace::record_event(
+                    IoTraceTag::ParSpark,
+                    IoTracePayload::ParSpark {
+                        parent_ptr,
+                        branch_idx: idx as u32,
+                        token,
+                    },
+                );
+            }
             work_items.push(WorkItem::SerialGroup(entries.clone()));
         }
     }

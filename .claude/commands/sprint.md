@@ -226,6 +226,7 @@ Every sprint MUST produce a new demo file (`repl/demos/{ring}{letter}.demo`) bef
     - [ ] `/stdlib` demo is current — shows available stdlib functionality
     - [ ] All examples compile and run (`cargo run -- --run examples/*.cl`)
     - [ ] All tests pass (`cargo test`) — 0 failures
+    - [ ] **Stress-verification gate**: baseline verified across **20 consecutive `cargo nextest run --no-fail-fast` passes** at 0 failures (full-suite close gate). Intermediate per-slice gates use tiered thresholds — typically 5 consecutive runs for deterministic defects, 10 for race/concurrency defects. Document the stress results in the sprint report §Stress Verification. Single-run "clean" is insufficient (Sprint 60 lesson — races fire at ~30% under pressure but pass reliably in isolation).
     - [ ] Ignored test count is 0 for in-scope features (ignored tests for future-ring features are acceptable with justification)
     - [ ] `/qa` confirms spec-surface coverage: every spec requirement in sprint scope has a passing test (not just "all tests pass" but "all requirements are tested")
     - [ ] FIXME scan clean (all resolved or explicitly deferred with rationale)

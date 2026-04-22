@@ -30,9 +30,13 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
-## Current Entries (as of 2026-04-21, sprint 60 close, SHA `d270a36`)
+## Current Entries (as of 2026-04-22, sprint 61 Wave 1 close, SHA `a9028c0`)
 
 > **Sprint 60 close update (2026-04-21)**: under full-suite pressure (multiple consecutive `cargo nextest run --no-fail-fast`), two races fire intermittently at ~30% rate. Single-run verification showed 1837/0 and `/qa` originally recorded only the exemplar entry below. 8-run stress verification under close revealed the races. Per user directive "flaky is not a thing in local tests," these are recorded as real races under `under-investigation (sprint 61)` and a dedicated stabilisation sprint opens next. FQTypeName migration slides to Sprint 62.
+
+> **Sprint 61 Phase 3a coverage note (2026-04-22)**: Wave-2 test-plan coverage for both carried cargo-test failures has been derived in `tests/plan/ring4.md §"Sprint 61 — Stabilisation test cases"`. The heisenbug race entry maps to §Slice 3 (T-S3-{1..H3}, 5 test cases). The `21-hello-io.cl` exit 201 entry maps to §Slice 4 (T-S4-* placeholders; most deferred until the Slice 4 readout selects among H4-1/H4-2/H4-3 per `design/backend/io-trampoline-trace.md §10`). Entries are NOT removed — fixes have not landed. Removal happens at Sprint 61 close per the close-time verification protocol below.
+
+> **Sprint 61 Wave 1 close update (2026-04-22, SHA `a9028c0`)**: Slice 0 observability infrastructure landed (/int scheduler trace + /backend IO trampoline trace, 25 + 18 unit tests, panic-hook flush wiring in `src/main.rs`). `/qa` authored 19 Slice-0 integration tests. 16 pass; 3 IO tests fail because they depend on `examples/21-hello-io.cl` completing cleanly — the Slice 4 defect blocks trampoline-event emission before the SIGABRT. These three are ledgered below and flip green at Slice 4 close. A fourth test (`io_trace_off_path_subprocess_completes_within_generous_ceiling`) passes in isolation but fires under concurrent nextest load — ledgered as a harness robustness concern, NOT flaky, owner `/qa`, to be fixed in Wave 5 or carried to S62. S60 carries (`sprint23::cache_repl_loads_heisenbug_parallel_stress`, `examples_run::every_example_file_runs_under_examples_prelude`) remain current — Slice 3 and Slice 4 have not yet run.
 
 ### Cargo test suite
 
@@ -55,6 +59,52 @@ A failing test without all six fields is treated as a sprint-blocking issue. `/s
 | Target sprint | Sprint 61 (stabilisation) |
 | Disposition | `under-investigation (sprint 61)` |
 | Rationale | Surfaced during 8-run close-time stress. Passes reliably in isolation (5/5); fails intermittently under full-suite pressure. Distinct shape from the heisenbug race — involves the platform IO path and possibly a subprocess-stdin race with `read-line`. Sprint 61 should reduce the repro (replicate under pressure with a 1-test load), then diagnose. Candidates: (a) stdio DLL buffer ordering under concurrent subprocess loads, (b) IO trampoline continuation-state leak under concurrent evals, (c) nextest-level subprocess-environment crosstalk. |
+
+#### Sprint 61 Wave 1 — Slice-4-dependent failures
+
+The following three tests were authored in Wave 1 as part of the Slice-0 observability integration suite (`tests/sprint61_observability_io.rs`). Each drives `examples/21-hello-io.cl` with `CRANELISP_IO_TRACE=1` and asserts properties of the emitted trampoline event stream. All three fail because the example itself aborts (Slice 4 defect — the `examples_run::every_example_file_runs_under_examples_prelude` entry above) before a clean trampoline exit sequence can be produced. They flip green automatically when Slice 4 closes; no independent fix is required.
+
+| Field | Value |
+|---|---|
+| Test name | `sprint61_observability_io::io_trace_hello_io_emits_full_trampoline_sequence` |
+| SHA | `a9028c0` |
+| Stderr / observable signature | Subprocess running `examples/21-hello-io.cl` with `CRANELISP_IO_TRACE=1` exits with SIGABRT (exit 134 / signal 6) before emitting a matched `TrampolineEnter ... TrampolineExit` pair. Assertion fails on absent `TrampolineExit` event in the captured stderr trace dump. |
+| Owning skill | TBD at Slice 4 readout (`/backend` or `/platform` per `sprints/SPRINT.md §Wave 4`) |
+| Target sprint | Sprint 61 Slice 4 |
+| Disposition | `under-investigation (sprint 61 Slice 4)` |
+| Rationale | Test is correctly authored against `design/backend/io-trampoline-trace.md §3` (TrampolineEnter/Exit pairing). The failure is a dependency on the Slice 4 `21-hello-io.cl` exit-201/abort defect — the trampoline cannot emit `TrampolineExit` because the process aborts mid-execution. Flips green when Slice 4 closes per `sprints/SPRINT.md §Wave 4 close`. |
+
+| Field | Value |
+|---|---|
+| Test name | `sprint61_observability_io::io_trace_hello_io_observes_core_sequential_event_types` |
+| SHA | `a9028c0` |
+| Stderr / observable signature | Same subprocess SIGABRT on `examples/21-hello-io.cl` with `CRANELISP_IO_TRACE=1`; assertion fails because the truncated trace dump does not contain the expected taxonomy coverage (`TrampolineEnter`, `BindEnter`, `PlatformEffect`, `TrampolineExit` at minimum). |
+| Owning skill | TBD at Slice 4 readout (`/backend` or `/platform`) |
+| Target sprint | Sprint 61 Slice 4 |
+| Disposition | `under-investigation (sprint 61 Slice 4)` |
+| Rationale | Same Slice 4 dependency as above. Test validates `design/backend/io-trampoline-trace.md §3` taxonomy; the abort truncates the event stream before the full sequential taxonomy is exercised. Flips green when Slice 4 closes. |
+
+| Field | Value |
+|---|---|
+| Test name | `sprint61_observability_io::io_trace_platformeffect_carries_scheduling_class_byte` |
+| SHA | `a9028c0` |
+| Stderr / observable signature | Same subprocess SIGABRT on `examples/21-hello-io.cl` with `CRANELISP_IO_TRACE=1`; assertion fails because no `PlatformEffect` event with a populated `scheduling_class: u8` payload reaches stderr before the abort. |
+| Owning skill | TBD at Slice 4 readout (`/backend` or `/platform`) |
+| Target sprint | Sprint 61 Slice 4 |
+| Disposition | `under-investigation (sprint 61 Slice 4)` |
+| Rationale | Same Slice 4 dependency. Test validates `design/backend/io-trampoline-trace.md §3 PlatformEffect payload` + Decision 26 (`scheduling_class` byte). The abort truncates the trace before a `PlatformEffect` for the stdio print call can be observed. Flips green when Slice 4 closes. |
+
+#### Sprint 61 Wave 1 — Harness robustness concern
+
+| Field | Value |
+|---|---|
+| Test name | `sprint61_observability_io::io_trace_off_path_subprocess_completes_within_generous_ceiling` |
+| SHA | `a9028c0` |
+| Stderr / observable signature | Subprocess wall-clock exceeds the 5-second off-path ceiling defined in the test (assertion: `elapsed < Duration::from_secs(5)`). Fires only under concurrent `cargo nextest run` load — multiple parallel subprocess-invoking tests contend on stdio DLL load + JIT warmup and push tail latency past 5s. Isolation runs complete well under 500 ms. |
+| Owning skill | `/qa` |
+| Target sprint | Sprint 61 Wave 5 (preferred) or Sprint 62 |
+| Disposition | `under-investigation (sprint 61 Wave 5 or S62)` |
+| Rationale | NOT flaky per `memory/feedback_repros_join_suite.md` and user directive 2026-04-21: the test is measuring subprocess completion time under an off-path (no-trace) ceiling, and concurrent nextest load genuinely exceeds that ceiling — this is a harness-robustness issue, not a compiler race. Two fix candidates: (a) widen the ceiling to a value that survives worst-case concurrent load while still catching real trace-overhead regressions (requires microbenchmark calibration per `design/backend/io-trampoline-trace.md §9 AC 2`), or (b) move the test into a nextest `serial` test group or rewrite using `assert_example_ran_cleanly` helper so concurrent load does not perturb the measurement. `/qa` investigates in Wave 5 if the slot is available; otherwise ledgered to S62. |
 
 ### Exemplar-level tests (non-cargo)
 

@@ -22,6 +22,7 @@
 pub mod alloc;
 pub mod drop;
 pub mod io;
+pub mod io_trace;
 pub mod ivar;
 pub mod rc;
 pub mod string;
@@ -68,6 +69,22 @@ pub use marshal::{sconcat, quote_sexp};
 // run_io_trampoline for direct Rust calls from REPL loop)
 pub use io::cranelisp_run_io;
 pub use io::run_io_trampoline;
+
+// IO trampoline event log (Sprint 61 Slice 0 observability). The
+// `trace_instant_anchor` function is shared with /int's scheduler trace
+// so both logs share a single monotonic-ns origin and are merge-sortable.
+// See `design/backend/io-trampoline-trace.md` + `design/int/observability.md`.
+pub use io_trace::{
+    dump_all_buffers as io_trace_dump_all_buffers,
+    dump_thread_buffer as io_trace_dump_thread_buffer,
+    flush_to_stderr as io_trace_flush_to_stderr,
+    install_panic_hook as io_trace_install_panic_hook,
+    publish_thread_buffer as io_trace_publish_thread_buffer,
+    record_event as io_trace_record_event,
+    trace_instant_anchor,
+    FlushGuard as IoTraceFlushGuard,
+    IoTraceEvent, IoTracePayload, IoTraceTag, TraceFilter,
+};
 
 // IVar intrinsics for lenient evaluation (registered as cranelisp_ivar_*)
 pub use ivar::{ivar_create, ivar_spark, ivar_force};

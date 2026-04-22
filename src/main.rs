@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use cranelisp_types::{CodegenBehaviour, CranelispError, Span};
 
+use cranelisp::observability;
 use cranelisp::session_v4::{CommandResult, CompilerSession, SessionSettings};
 
 // ---------------------------------------------------------------------------
@@ -35,13 +36,34 @@ impl Action {
 // ---------------------------------------------------------------------------
 
 fn main() {
+    // Observability — flush scheduler + IO traces on normal exit AND panic.
+    // Guards fire on `main()` return (Drop); panic hook fires on unwind.
+    // NOTE: `std::process::exit` below bypasses Drop — the matching
+    // `flush_traces()` call is invoked explicitly before every such call
+    // site (Run-mode exit-code escape + early-error paths). See
+    // `design/int/observability.md §7.1` for the wiring rationale.
+    cranelisp_runtime::io_trace_install_panic_hook();
+    observability::install_panic_hook();
+    let _io_flush = cranelisp_runtime::IoTraceFlushGuard::new();
+    let _sched_flush = observability::SchedulerTraceFlushGuard::new();
+
     let (action, project_root, entry_module, settings) = parse_args();
     cranelisp::style::init_color(settings.no_color);
 
     if let Err(e) = run(action, &project_root, &entry_module, settings) {
         eprintln!("error: {e}");
+        flush_traces();
         process::exit(1);
     }
+}
+
+/// Explicitly drain both observability traces to stderr. Must be called
+/// immediately before any `std::process::exit` site that would otherwise
+/// bypass the RAII guards held in `main()`. Safe to call when the traces
+/// are disabled — each `flush_to_stderr` short-circuits on the filter.
+fn flush_traces() {
+    observability::flush_to_stderr();
+    cranelisp_runtime::io_trace_flush_to_stderr();
 }
 
 // ---------------------------------------------------------------------------
@@ -82,6 +104,9 @@ fn run(
             } else {
                 0
             };
+            // Observability: drain traces before `process::exit` bypasses
+            // the RAII guards held in `main()` (design/int/observability.md §7.1).
+            flush_traces();
             process::exit(exit_code);
         }
         // §8: Link mode.

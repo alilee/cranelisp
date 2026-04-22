@@ -9,6 +9,7 @@ pub mod code;
 pub mod exe;
 pub mod expander;
 pub mod marshal;
+pub mod observability;
 pub mod session;
 pub mod session_v4;
 pub mod pipeline;

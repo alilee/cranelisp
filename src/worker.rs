@@ -1381,6 +1381,10 @@ fn register_dep(
 
     // 5. publish BEFORE scheduler notify (Sprint 58 W6 Defect 1 ordering).
     publish_dep_sexps(ctx, dep, &dep_sexps);
+    crate::observability::record_module_event(
+        crate::observability::SchedulerTraceTag::RegisterDepPublish,
+        dep.as_ref(),
+    );
 
     // Sprint 60 Workstream E-3 — debug-only structural guard: when shared
     // state is available, the publish above MUST have succeeded before we
@@ -3347,6 +3351,11 @@ pub fn priority_worker_loop_shared(shared: &crate::session_v4::SharedState) {
             None => break, // Shutdown or all work done.
         }
     }
+    // Observability: publish this worker thread's scheduler-trace ring
+    // buffer so main-thread `flush_to_stderr` can merge-sort worker
+    // events into the dump (design/int/observability.md §7). No-op when
+    // the filter is disabled.
+    crate::observability::publish_thread_buffer();
 }
 
 /// Handle a Typecheck work item on a persistent priority worker.

@@ -1221,6 +1221,10 @@ impl CompilerSession {
         module_path: &ModuleFullPath,
         file_path: &Path,
     ) -> Result<(), CranelispError> {
+        crate::observability::record_module_event(
+            crate::observability::SchedulerTraceTag::RecompileModule,
+            module_path.as_ref(),
+        );
         let source = std::fs::read_to_string(file_path).map_err(|e| {
             CranelispError::ModuleError {
                 message: format!("cannot read {}: {e}", file_path.display()),
@@ -1237,6 +1241,10 @@ impl CompilerSession {
         // mmap'd pages alive until the session ends (preserves the Phase-2
         // redefinition policy of "old code stays callable for in-flight
         // calls" — same behaviour as before, just via a different store).
+        crate::observability::record_module_event(
+            crate::observability::SchedulerTraceTag::ClearModuleState,
+            module_path.as_ref(),
+        );
         self.shared.typecheck_products.remove(module_path);
         // Clear any stale suspend state from a prior compile of this module.
         {
@@ -1376,6 +1384,10 @@ impl CompilerSession {
             map.entry(dep_module.clone())
                 .or_insert_with(|| dep_sexps.to_vec());
         }
+        crate::observability::record_module_event(
+            crate::observability::SchedulerTraceTag::RegisterDepPublish,
+            dep_module.as_ref(),
+        );
 
         // Sprint 60 Wave 2 Round 3 fix (H5 — REPL persistence residue).
         //
@@ -3788,7 +3800,14 @@ fn nice_worker_loop(shared: &SharedState) {
         // is available, or shutdown is signaled.
         let module = match shared.scheduler.take_object_codegen() {
             Some(m) => m,
-            None => return, // Shutdown signaled.
+            None => {
+                // Observability: publish this nice-worker thread's
+                // scheduler-trace ring buffer so the main thread's
+                // `flush_to_stderr` can merge it into the dump
+                // (design/int/observability.md §7). No-op when disabled.
+                crate::observability::publish_thread_buffer();
+                return; // Shutdown signaled.
+            }
         };
 
         // Attempt .o compilation if caching is enabled.

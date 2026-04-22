@@ -10,9 +10,28 @@ use std::sync::{Condvar, Mutex, MutexGuard};
 
 use cranelisp_types::{CranelispError, ModuleFullPath, Span, Symbol};
 
+use crate::observability::{
+    self, SchedulerTraceTag,
+};
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
+
+/// Map a `ModulePool` to a stable `u8` discriminant for observability
+/// payloads. Kept here (rather than `#[repr(u8)]` on the enum) so the
+/// enum shape stays unconstrained.
+fn pool_discriminant(pool: ModulePool) -> u8 {
+    match pool {
+        ModulePool::TypecheckFirst => 0,
+        ModulePool::TypecheckNext => 1,
+        ModulePool::TypecheckWorking => 2,
+        ModulePool::TypecheckBlocked => 3,
+        ModulePool::TypecheckDone => 4,
+        ModulePool::Failed => 5,
+        ModulePool::Complete => 6,
+    }
+}
 
 /// Which pool a module is in. A module is in exactly one pool at any time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -298,6 +317,10 @@ impl CompileScheduler {
         module: ModuleFullPath,
         delays_other: bool,
     ) {
+        observability::record_module_event(
+            SchedulerTraceTag::RegisterModuleRegister,
+            module.as_ref(),
+        );
         let mut state = self.lock();
 
         // Idempotent: skip if already registered.
@@ -331,6 +354,10 @@ impl CompileScheduler {
         module: ModuleFullPath,
         symbols: HashSet<Symbol>,
     ) {
+        observability::record_module_event(
+            SchedulerTraceTag::RegisterModuleCached,
+            module.as_ref(),
+        );
         let mut state = self.lock();
 
         // Idempotency guard (F-1): if the module is already registered
@@ -366,6 +393,10 @@ impl CompileScheduler {
     ///
     /// Returns true if the module was re-registered, false if skipped.
     pub fn re_register_module(&self, module: &ModuleFullPath) -> bool {
+        observability::record_module_event(
+            SchedulerTraceTag::ReRegisterModule,
+            module.as_ref(),
+        );
         let mut state = self.lock();
         let ms = match state.modules.get(module) {
             Some(ms) => ms,
@@ -487,6 +518,10 @@ impl CompileScheduler {
         // Level 1: TypecheckFirst
         if let Some(module) = state.typecheck_first.pop_front() {
             Self::set_pool_locked(state, &module, ModulePool::TypecheckWorking);
+            observability::record_module_event(
+                SchedulerTraceTag::ModuleStateTypechecking,
+                module.as_ref(),
+            );
             return Some(PriorityWork::Typecheck(module));
         }
 
@@ -498,6 +533,10 @@ impl CompileScheduler {
         // Level 3: TypecheckNext
         if let Some(module) = state.typecheck_next.pop_front() {
             Self::set_pool_locked(state, &module, ModulePool::TypecheckWorking);
+            observability::record_module_event(
+                SchedulerTraceTag::ModuleStateTypechecking,
+                module.as_ref(),
+            );
             return Some(PriorityWork::Typecheck(module));
         }
 
@@ -566,6 +605,10 @@ impl CompileScheduler {
         needed_module: &ModuleFullPath,
         needed_symbol: &Symbol,
     ) -> Result<(), CranelispError> {
+        observability::record_module_event(
+            SchedulerTraceTag::ModuleStateBlocked,
+            module.as_ref(),
+        );
         let mut state = self.lock();
         Self::set_pool_locked(&mut state, module, ModulePool::TypecheckBlocked);
 
@@ -612,6 +655,10 @@ impl CompileScheduler {
         module: &ModuleFullPath,
         needed: Vec<(ModuleFullPath, Symbol)>,
     ) {
+        observability::record_module_event(
+            SchedulerTraceTag::ModuleStateBlocked,
+            module.as_ref(),
+        );
         let mut state = self.lock();
         Self::set_pool_locked(&mut state, module, ModulePool::TypecheckBlocked);
 
@@ -639,6 +686,10 @@ impl CompileScheduler {
     /// and unblocks them. This handles glob imports where the waiter
     /// blocked on "*" and needs the whole module done.
     pub fn notify_typecheck_done(&self, module: &ModuleFullPath) {
+        observability::record_module_event(
+            SchedulerTraceTag::ModuleStateTypechecked,
+            module.as_ref(),
+        );
         let mut state = self.lock();
 
         // Skip modules not registered with the scheduler (e.g., the REPL
@@ -1009,16 +1060,37 @@ impl CompileScheduler {
     /// §"Sprint 60 Wave 2 Round 4"`.
     pub fn is_typechecked(&self, module: &ModuleFullPath) -> bool {
         let state = self.lock();
-        match state.modules.get(module) {
-            Some(ms) => matches!(
-                ms.pool,
-                ModulePool::TypecheckDone | ModulePool::Complete,
+        let result = match state.modules.get(module) {
+            Some(ms) => (
+                matches!(
+                    ms.pool,
+                    ModulePool::TypecheckDone | ModulePool::Complete,
+                ),
+                Some(ms.pool),
             ),
             // Not in scheduler — compiler-seeded synthetic module or a module
             // that was registered and then removed (Failed reset). Treat as
             // typechecked; the symbol table is the source of truth.
-            None => true,
+            None => (true, None),
+        };
+        // Drop the lock before recording to keep the critical section
+        // tight. Instrumentation must not hold scheduler state.
+        drop(state);
+        let pool_tag = result.1.map(pool_discriminant).unwrap_or(u8::MAX);
+        if result.0 {
+            observability::record_module_event_with_state(
+                SchedulerTraceTag::IsTypecheckedHit,
+                module.as_ref(),
+                pool_tag,
+            );
+        } else {
+            observability::record_module_event_with_state(
+                SchedulerTraceTag::IsTypecheckedMiss,
+                module.as_ref(),
+                pool_tag,
+            );
         }
+        result.0
     }
 
     /// Reset a module from Failed back to an unregistered state.
@@ -1036,6 +1108,10 @@ impl CompileScheduler {
     /// - Module is removed from all deques.
     /// - Any priority queue entries for this module are removed.
     pub fn reset_module(&self, module: &ModuleFullPath) {
+        observability::record_module_event(
+            SchedulerTraceTag::ResetModule,
+            module.as_ref(),
+        );
         let mut state = self.lock();
         let Some(ms) = state.modules.get(module) else { return };
         if ms.pool != ModulePool::Failed {
@@ -1065,6 +1141,10 @@ impl CompileScheduler {
             .filter(|(_, ms)| ms.pool == ModulePool::Failed)
             .map(|(path, _)| path.clone())
             .collect();
+        observability::record_bulk_event(
+            SchedulerTraceTag::ResetAllFailed,
+            failed.len(),
+        );
         for m in failed {
             // Inline the reset logic to avoid re-locking.
             state.modules.remove(&m);
@@ -1285,6 +1365,10 @@ impl CompileScheduler {
             Self::set_pool_locked(state, module, ModulePool::TypecheckNext);
             state.typecheck_next.push_back(module.clone());
         }
+        observability::record_module_event(
+            SchedulerTraceTag::ModuleStateUnblocked,
+            module.as_ref(),
+        );
     }
 
     /// A module has failed — locked internal version.
@@ -1293,6 +1377,10 @@ impl CompileScheduler {
         module: &ModuleFullPath,
         error: CranelispError,
     ) {
+        observability::record_module_event(
+            SchedulerTraceTag::ModuleStateFailed,
+            module.as_ref(),
+        );
         Self::set_pool_locked(state, module, ModulePool::Failed);
         if let Some(ms) = state.modules.get_mut(module) {
             ms.error = Some(error);

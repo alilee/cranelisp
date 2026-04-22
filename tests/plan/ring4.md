@@ -1402,3 +1402,182 @@ No FIXME(/skill) required at authoring time — the three design docs (`jit-obje
 - Example programs run correctly
 - `cargo clippy` clean across all crates
 - `/review` approves Ring 4
+
+## Sprint 61 — Stabilisation test cases (derived 2026-04-22 from Phase 3 design docs)
+
+Sprint 61 Phase 3a test-case derivation. Covers four Phase 3 design docs:
+
+1. `design/int/observability.md` — scheduler/worker event log (Slice 0, `/int`)
+2. `design/backend/io-trampoline-trace.md` — IO trampoline event log (Slice 0, `/backend`)
+3. `design/int/bare-primitive-value-path.md` — Slice 1 bare-primitive fix (`/int`)
+4. `design/int/heisenbug-race-closure.md` — Slice 3 heisenbug race skeleton (`/int`)
+
+Plus Slice 2 handoff (exemplar) branch (b) contingency and Slice 4 (21-hello-io) deferred-until-evidence.
+
+All test cases below are /qa-owned integration tests (Layer 3 or Layer 4) landing in `tests/`. Unit tests for scheduler/runtime internals — `OnceLock` parse-once, ring-buffer bounded-capacity, `Send + Sync` compile-time checks, filter-match semantics — belong in each owning crate per `memory/feedback_unit_tests_with_dev.md` and are NOT enumerated here.
+
+Test authoring happens in Wave 2. Per `memory/feedback_failing_not_ignored.md`: every test whose spec surface is unimplemented at authoring time lands FAILING, not `#[ignore]`'d. The flip-to-green moment is the fix commit.
+
+### Slice 0: Observability infrastructure
+
+#### S0-A. Scheduler/worker event log (design/int/observability.md)
+
+**Integration tests** (owner: `/qa`, home: `tests/sprint61_observability_scheduler.rs` NEW; Layer 3 where Rust-API inspection is viable, Layer 4 where env-var invocation is required).
+
+| # | Test | Shape | Spec/design anchor | Negative? | Wave-2 disposition |
+|---|---|---|---|---|---|
+| T-S0A-1 | `scheduler_trace_all_emits_events_across_threads_for_stress_harness` | Set `CRANELISP_SCHEDULER_TRACE=1`; invoke `sprint23::cache_repl_loads_heisenbug_parallel_stress` shape via a dedicated harness binary OR re-use the existing stress harness; capture stderr; parse the `=== CRANELISP_SCHEDULER_TRACE DUMP ===` marker; assert dump contains events from ≥2 distinct `tid` values. | `observability.md §3.1`, §7 ("Dumped on test failure, merge-sortable across threads") | — | Pass once Slice 0 lands. |
+| T-S0A-2 | `scheduler_trace_events_have_monotonic_timestamps_within_each_thread` | Invariant test: partition parsed events by `tid`; for each thread, assert `timestamp` sequence is non-decreasing (ns-monotonic per `observability.md §6`). | `observability.md §6` — "Why monotonic ns: merge-sort across threads must be stable" | Invariant | Pass once Slice 0 lands. |
+| T-S0A-3 | `scheduler_trace_filter_by_module_name_emits_only_that_module` | Set `CRANELISP_SCHEDULER_TRACE=user`; run a small multi-module repro (`user` + `helper`); assert every emitted event's `module` payload equals `user`. | `observability.md §3.1` — Filter values | — | Pass once Slice 0 lands. |
+| T-S0A-4 | `scheduler_trace_filter_by_module_name_neg_other_modules_absent` | Companion negative for T-S0A-3: same setup; assert no event carries `module = helper` or any other non-`user` module path. | `observability.md §3.1` — filter semantics (implicit MUST-NOT) | NEGATIVE | Pass once Slice 0 lands. |
+| T-S0A-5 | `scheduler_trace_captures_module_state_transitions` | Parse dump; assert that at least one event tag equals `ModuleState::TypecheckWorking → TypecheckDone` for each module compiled during the run (enumerate expected modules from the harness). | `observability.md §3.1` — event taxonomy (pool transitions) | — | Pass once Slice 0 lands. |
+| T-S0A-6 | `scheduler_trace_off_path_performance_regression_under_1pct` | Run `cargo nextest run --no-fail-fast` three times with `CRANELISP_SCHEDULER_TRACE` unset; record wall-clock median M0. Re-run three times post-Slice-0 (trace code present but env unset); record M1. Assert `(M1 - M0) / M0 < 0.01`. | `observability.md §9`, AC 4 | — | Pass once Slice 0 lands. Slow-tier; gate at Ring 4 close, not every CI run. |
+| T-S0A-7 | `scheduler_trace_unset_means_zero_events_emitted` | Negative: run the same harness with `CRANELISP_SCHEDULER_TRACE` unset; assert stderr contains NO `=== CRANELISP_SCHEDULER_TRACE DUMP ===` marker and no event-shaped lines. | `observability.md §5` — "Zero-cost when off" | NEGATIVE | Pass once Slice 0 lands. |
+| T-S0A-8 | `scheduler_trace_filter_parsed_once_not_per_event` | Observability property: set `CRANELISP_SCHEDULER_TRACE=user`, then programmatically mutate the process env (via `std::env::set_var`) to `helper` mid-run; assert subsequent events still filter on `user`, confirming parse-once. | `observability.md §5` — `OnceLock<TraceFilter>` parse-once | Invariant | Pass once Slice 0 lands. |
+
+#### S0-B. IO trampoline event log (design/backend/io-trampoline-trace.md)
+
+**Integration tests** (owner: `/qa`, home: `tests/sprint61_observability_io.rs` NEW; Layer 4 subprocess tests for the full flag pipeline).
+
+| # | Test | Shape | Spec/design anchor | Negative? | Wave-2 disposition |
+|---|---|---|---|---|---|
+| T-S0B-1 | `io_trace_hello_io_emits_full_trampoline_sequence` | `CRANELISP_IO_TRACE=1 cargo run -- --run examples/21-hello-io.cl`; capture stderr; parse one line per event; assert sequence contains at minimum: `TrampolineEnter`, ≥1 `PlatformEffect`, `TrampolineExit` with `exit_cause=Ok`. | `io-trampoline-trace.md §9` AC 1; `§3` event taxonomy | — | Pass once Slice 0 lands. |
+| T-S0B-2 | `io_trace_events_carry_monotonic_timestamps_and_thread_id` | Invariant: parse events; assert `(timestamp_ns, thread_id)` pairs form a total merge-sort order; within each `thread_id`, timestamps are non-decreasing. | `io-trampoline-trace.md §4`; §9 AC 3 | Invariant | Pass once Slice 0 lands. |
+| T-S0B-3 | `io_trace_contpush_contpop_are_balanced_within_trampoline_span` | Invariant: between each `TrampolineEnter` and matching `TrampolineExit`, count `ContPush` vs `ContPop`; assert balanced (difference = 0) for a well-formed `--run` of `21-hello-io.cl`. | `io-trampoline-trace.md §3` — ContPush/ContPop payload | Invariant | Pass once Slice 0 lands. Flips green WITH the Slice 4 fix if H1 (continuation leak) is the root cause. |
+| T-S0B-4 | `io_trace_off_path_performance_regression_under_1pct` | Same shape as T-S0A-6 but with `CRANELISP_IO_TRACE` unset. Target: `(M1 - M0) / M0 < 0.01`. | `io-trampoline-trace.md §7`, §9 AC 2 | — | Pass once Slice 0 lands. Slow-tier. |
+| T-S0B-5 | `io_trace_unset_means_no_output_to_stderr` | Negative: run `cargo run -- --run examples/21-hello-io.cl` with `CRANELISP_IO_TRACE` unset; assert stderr contains no event-shaped lines (`[ns=…, tid=…, tag=…]`). | `io-trampoline-trace.md §2` — "Unset: zero overhead" | NEGATIVE | Pass once Slice 0 lands. |
+| T-S0B-6 | `io_trace_platformeffect_carries_scheduling_class_byte` | `CRANELISP_IO_TRACE=1 cargo run -- --run examples/21-hello-io.cl`; parse `PlatformEffect` events; assert `scheduling_class` field is present and is a u8 value in the spec-allowed set. | `io-trampoline-trace.md §3` — PlatformEffect payload | — | Pass once Slice 0 lands. |
+| T-S0B-7 | `io_trace_event_types_absent_from_cache_meta_json` | Negative (boundary-type hygiene): after running `cargo run -- --run examples/21-hello-io.cl` with `CRANELISP_IO_TRACE=1`, read `examples/.cranelisp-cache/**/*.meta.json`; assert no field name resembles `io_trace`, `IoTraceEvent`, `IoTraceTag`, etc. | `io-trampoline-trace.md §5` — "Events MUST NOT appear in any serialised format" | NEGATIVE | Pass once Slice 0 lands. Guard against architectural drift. |
+
+#### S0-X. Cross-log invariants (shared between scheduler and IO traces)
+
+**Integration tests** (owner: `/qa`, home: `tests/sprint61_observability_shared.rs` NEW).
+
+| # | Test | Shape | Design anchor | Negative? | Wave-2 disposition |
+|---|---|---|---|---|---|
+| T-S0X-1 | `scheduler_and_io_trace_share_timestamp_domain` | Run a harness that exercises BOTH traces simultaneously (`CRANELISP_SCHEDULER_TRACE=1 CRANELISP_IO_TRACE=1 cargo run -- --run examples/21-hello-io.cl`); parse both dumps; assert timestamps from the two logs interleave correctly when sorted — i.e., no impossible ordering (IO event BEFORE the scheduler event that schedules its typecheck, etc.). Concrete check: min/max ns range of the scheduler dump overlaps or borders the IO dump range consistently with process timeline. | `io-trampoline-trace.md §9` AC 3 — "shared `Instant` anchor"; `observability.md §6` | Invariant | Pass once Slice 0 lands. |
+| T-S0X-2 | `trace_event_types_do_not_appear_in_boundary_crates_neg` | Structural/lint-level test: scan `crates/cranelisp-shared/src/` and `crates/cranelisp-types/src/` source files (via `grep` or `ripgrep` wrapper in a test-helper); assert no occurrences of `SchedulerTraceEvent`, `IoTraceEvent`, or their tag types. | `observability.md §4` — "Neither log appears in any boundary type"; `io-trampoline-trace.md §5` | NEGATIVE (boundary hygiene) | Pass once Slice 0 lands. Durable architectural guard. |
+| T-S0X-3 | `trace_events_do_not_allocate_on_cranelisp_heap_neg` | Run with BOTH `CRANELISP_RC_TRACE=1` and `CRANELISP_SCHEDULER_TRACE=1 CRANELISP_IO_TRACE=1`; parse the RC trace; assert no `alloc` events with the event-struct type name appear. Confirms event buffers use the host allocator. | `observability.md §4` — "Neither log allocates on the Cranelisp heap"; `io-trampoline-trace.md §5` | NEGATIVE | Pass once Slice 0 lands. Serial test (RC trace requires `--test-threads=1`). |
+
+---
+
+### Slice 1: Bare-primitive-name at REPL (design/int/bare-primitive-value-path.md)
+
+**Integration tests** (owner: `/qa`, home: `tests/sprint61_bare_primitive.rs` NEW; Layer 3 preferred via `repl_session()` subprocess harness, Layer 4 for the stdout-shape assertion).
+
+| # | Test | Shape | Spec/design anchor | Negative? | Wave-2 disposition |
+|---|---|---|---|---|---|
+| T-S1-1 | `bare_primitive_add_i64_at_prompt_displays_type_and_fqn` | REPL session: input `add-i64\n`; assert stdout contains `:(Fn [Int Int] Int) primitives/add-i64` AND `; primitive - ` (classification + dash-separator per universal format). | `bare-primitive-value-path.md §5`; `repl/spec.md §1.1` | — | Author FAILING in Wave 2; flips green with Slice 1 fix. |
+| T-S1-2 | `bare_primitive_parallel_paths_converge_on_same_attribution` | Three-assertion test: (a) input `/sig add-i64` — capture output A. (b) input `add-i64` (bare) — capture output B. (c) input `(add-i64 2 3)` — capture output C (= `5`, succeeds). Assert A and B have matching type component (`(Fn [Int Int] Int)`) and matching qualified-name component (`primitives/add-i64`) — independent of any slash-command prefix differences. | `bare-primitive-value-path.md §2`, §5; `design/int/dual-path-persistence-collapse.md` (dual-path anti-pattern generalisation) | Convergence | Author FAILING in Wave 2. |
+| T-S1-3 | `bare_primitive_surface_five_symbols_resolve_identically` | Parametric: for each of `add-i64`, `eq-i64`, `mul-i64`, `sub-i64`, `not` — type bare name at prompt; assert each produces a `:Type primitives/NAME ; primitive - …` line with no "undefined variable" error. | `bare-primitive-value-path.md §7` — sample surface | — | Author FAILING in Wave 2. Covers the re-export-from-primitives generalisation. |
+| T-S1-4 | `bare_primitive_unknown_name_produces_undefined_error_neg` | Negative: input `unknown-primitive-name-zzzz` at the prompt; assert stdout/stderr contains "undefined" or "not found" error AND does NOT silently resolve to a nearby symbol (no `add-i64`, no `not`, no partial suggestion text that could be mistaken for success). | `repl/spec.md §1.1` — negative complement; `spec/08-modules.md §8.9` (re-export scope) | NEGATIVE | Author as new test in Wave 2 — likely passes pre-fix; guards against over-broad fix in Slice 1. |
+| T-S1-5 | `bare_primitive_type_is_qualified_not_bare_neg` | Negative (display-format guard): at prompt, input `add-i64`; assert output contains `primitives/Int` (qualified) NOT a bare `Int`. Guards against regression if Slice 1 fix inadvertently strips qualification. | `repl/spec.md §1.1`; pending FQTypeName but current spec expects qualification | NEGATIVE | Author in Wave 2. May be conditioned on FQTypeName status (Sprint 62) — if currently unqualified, record as FAILING or gate on S62. |
+| T-S1-6 | `bare_primitive_vs_call_position_spec_divergence_sentinel` | Gated test: if Slice 1 isolation confirms a spec-level divergence between value-position and call-position semantics for re-exported names (per `bare-primitive-value-path.md §8`), this test asserts the divergence with `// FIXME(/spec): spec/08-modules.md §8.9 lacks value-vs-call distinction`. If isolation shows pure implementation gap, this test is dropped. | `bare-primitive-value-path.md §8`; `spec/08-modules.md §8.9` | Conditional | Author ONLY IF Slice 1 §8 condition fires. Otherwise omit. |
+
+---
+
+### Slice 2: Exemplar `test-unsolvable` — branch (b) only (SPRINT.md §Skill Plans → /port)
+
+Branches (a) algorithm bug in `solver.cl` and (c) no-reduction-carry are `/port`-owned. Only branch (b) — a non-Sudoku compiler-bug repro — triggers /qa test authoring.
+
+**Integration tests — AUTHORED IF AND ONLY IF branch (b) fires** (owner: `/qa` on handoff from `/port`; home: `tests/exemplar_solver_correctness.rs` NEW).
+
+| # | Test | Shape | Spec/design anchor | Negative? | Wave-2 disposition |
+|---|---|---|---|---|---|
+| T-S2-B-1 | `exemplar_solver_compiler_bug_repro` (name pending) | Minimal non-Sudoku Cranelisp program (< 20 LOC, per SPRINT.md §Skill Plans → /port "Test shape for (b)") committed as a failing integration test. Likely shape: small ADT with one value-bearing variant, a `Vec` of those, a recursive fold that pattern-matches and conditionally returns `Option`, exercised such that observable output diverges from expected. Name, `// spec:` annotation, and `FIXME(/owning-compiler-skill)` (likely `/backend`) assigned when handoff happens. | Design anchor = `/port` reduction notes filed in SPRINT.md §Notes at the Slice 2 readout. `// spec:` pins to the specific spec section the reduction isolates (likely `spec/06-values.md` §Vec semantics OR `spec/07-match.md` field sharing). | Possibly positive (the reduction demonstrates wrong output directly) | Author FAILING per `feedback_failing_not_ignored.md` **only if** `/port` produces a repro. Stays failing until owning compiler skill lands the fix. |
+
+**If branch (a) fires**: no new /qa tests. `test-unsolvable` + 3 puzzle tests in `exemplar/solver.cl` are already in-tree (re-enabled Sprint 60 Wave 3 commit `f78adf3`); `/qa` verifies they pass at close.
+
+**If branch (c) fires**: no new /qa tests. Baseline ledger entry persists; `/port` stays as owner per SPRINT.md §5 architecture review.
+
+---
+
+### Slice 3: Heisenbug race (design/int/heisenbug-race-closure.md)
+
+**Integration tests** (owner: `/qa`, home: extend `tests/sprint23.rs` for the existing stress harness; new `tests/sprint61_race_closure.rs` for additional invariant tests).
+
+The design doc is a SKELETON — §4 names three candidate hypotheses (H1/H2/H3) with fix sketches; §6 declares evidence-gated discipline: exactly ONE hypothesis is selected after Slice 0's scheduler trace produces evidence, and the design doc is updated BEFORE the fix commit. **Test authoring for H-specific invariants is therefore deferred to post-readout** (Wave 2 sub-phase). The cases below split into:
+- **T-S3-{1..3}**: pre-readout tests that land early (regression guard, evidence artefact, existing-stress gate).
+- **T-S3-H{1..3}**: one-of-three hypothesis-specific invariant tests; only the corresponding one is authored once §8 of the design doc names the chosen hypothesis.
+
+| # | Test | Shape | Spec/design anchor | Negative? | Wave-2 disposition |
+|---|---|---|---|---|---|
+| T-S3-1 | `sprint23::cache_repl_loads_heisenbug_parallel_stress` (EXISTING) | Already in-tree. Slice gate: 10 consecutive runs at 0 failures. Close gate: 20/20 under full-suite stress. | `heisenbug-race-closure.md §1`, §8 | — | Stays in suite per `feedback_repros_join_suite.md`. Flips to green at Slice 3 fix. |
+| T-S3-2 | `heisenbug_race_evidence_artefact_failing_dump_committed` | Low-effort test: assert `tests/sprint61/race-evidence/failing.trace` AND `passing.trace` exist, are non-empty, and contain at minimum `ModuleState::` and `register_dep publish` tokens. The artefacts are committed by `/int` post-readout per `heisenbug-race-closure.md §3 item 2` and §8. | `heisenbug-race-closure.md §3`, §8 ("Evidence artefact") | — | Author in Wave 2 AFTER `/int` commits the artefacts. Guards against regression signature drift. |
+| T-S3-3 | `heisenbug_race_scheduler_trace_evidence_reviewable` | Light-touch test: reads the committed evidence files; parses event timestamps; asserts the failing dump contains at least one `is_typechecked → true` event followed (by monotonic ns) by a reader-side `symbol_tables[...].get()` miss event OR equivalent observation. Serves as a "the evidence-gated discipline actually produced evidence" guard. | `heisenbug-race-closure.md §3 falsification rules`, §6 | Invariant | Author in Wave 2 after artefacts land. |
+| T-S3-H1 | `heisenbug_is_typechecked_implies_symbol_table_non_empty_invariant` (if H1 chosen) | Unit-level invariant test adapted for integration: using `repl_session()` driven through the reproducer shape, assert that any observation of `is_typechecked(module) == true` concurrent with a `symbol_tables[module].symbols.is_empty() == true` does NOT occur — measured by instrumenting the predicate via a test-only hook or by replaying events from `tests/sprint61/race-evidence/passing.trace`. | `heisenbug-race-closure.md §4 H1 fix` | Invariant | Author ONLY IF §8 names H1. Alternative: the /int-owned unit test inside `src/scheduler.rs::is_typechecked_tests` may be sufficient; `/qa` integration authorship is contingent on whether a cross-crate manifestation is visible. Revisit at readout. |
+| T-S3-H2 | `heisenbug_publish_precedes_pool_flip_invariant` (if H2 chosen) | Invariant test: parse the post-fix scheduler trace from the stress harness; for each module, assert that the last `symbol insertion` event precedes (in merge-sorted ns) the `ModuleState → TypecheckDone` event. Read directly from the event dump. | `heisenbug-race-closure.md §4 H2 fix` | Invariant | Author ONLY IF §8 names H2. |
+| T-S3-H3 | `heisenbug_symbol_publication_before_notify_typecheck_done_invariant` (if H3 chosen) | Invariant test: parse the post-fix scheduler trace; assert `insert_symbols` event precedes `notify_typecheck_done` event for every publication cycle, mirroring the publish-before-register discipline established for `register_dep`. | `heisenbug-race-closure.md §4 H3 fix`, §7 cross-ref to `src/worker.rs::register_dep` | Invariant | Author ONLY IF §8 names H3. |
+| T-S3-4 | `clear_module_state_and_recompile_module_do_not_partial_publish` | Edge case: exercise `clear_module_state` and `recompile_module` back-to-back (REPL session reloading a module); assert the post-reload state either shows `is_typechecked == false` OR shows complete symbol publication. No partial-publish window visible under the invariant chosen at §8. | `heisenbug-race-closure.md §4 — all hypotheses mention `clear_module_state`/`recompile_module`; `observability.md §3.1` event taxonomy | Invariant | Author in Wave 2. Runs irrespective of hypothesis choice. |
+
+**Authoring cadence**: T-S3-1 already present. T-S3-2 + T-S3-3 authored in Wave 2 after `/int` commits evidence artefacts. T-S3-H{1|2|3} (pick one) and T-S3-4 authored in Wave 2 after `/int`'s §8 hypothesis selection.
+
+---
+
+### Slice 4: 21-hello-io exit 201 (design TBD at Slice 4 readout)
+
+Per SPRINT.md §Slice 4 and `io-trampoline-trace.md §10` ("Slice 4 Outlook"), no design doc exists until the IO trace produces evidence naming the chosen hypothesis among:
+- **H4-1**: trampoline continuation-state leak (`/backend`)
+- **H4-2**: stdio DLL buffer ordering (`/platform`)
+- **H4-3**: nextest subprocess crosstalk (`/qa` + `/int`)
+
+**Test-case derivation deferred to Slice 4 readout.** The existing failing test `examples_run::every_example_file_runs_under_examples_prelude` stays failing per the baseline ledger until Slice 4 closes.
+
+Pre-readout the following placeholder tests are anticipated; authoring deferred:
+
+| # | Test (provisional name) | Shape (provisional) | Wave-2 disposition |
+|---|---|---|---|
+| T-S4-1 | `examples_run::every_example_file_runs_under_examples_prelude` (EXISTING) | 20 consecutive runs at 0 failures. Already in-tree and in baseline ledger. | Stays failing; flips at Slice 4 fix. |
+| T-S4-H4-1 | `hello_io_trampoline_contpush_contpop_balanced_under_stress` | IF H4-1 chosen: invariant on `CRANELISP_IO_TRACE=1` across 20 back-to-back `--run` invocations; assert every `TrampolineEnter`/`TrampolineExit` span is ContPush/ContPop-balanced. Overlaps with T-S0B-3 but scoped to the specific failing example under concurrent subprocess load. | Defer until Slice 4 readout names H4-1. |
+| T-S4-H4-2 | `hello_io_stdio_dll_write_line_under_concurrent_subprocesses_neg` | IF H4-2 chosen: author a multi-subprocess test spawning N concurrent `--run examples/21-hello-io.cl` invocations; assert none return exit 201. | Defer until Slice 4 readout names H4-2. |
+| T-S4-H4-3 | `hello_io_exit_201_disappears_with_isolated_cwd_or_env` | IF H4-3 chosen: parametric test showing the failure depends on shared `tests/fixtures` / `examples/.cranelisp-cache/` state; assert isolation (fresh TempDir per test per Slice 5 E-1) eliminates exit 201. | Defer until Slice 4 readout names H4-3. Would co-locate with Slice 5 E-1 conversion work. |
+
+**No Wave-2 authoring for Slice 4 until the IO trace evidence lands. Baseline ledger entry persists throughout Slice 3 and opens of Slice 4.**
+
+---
+
+### Cross-cutting: Slice 5 methodology test-case references
+
+Slice 5 items are methodology/cleanup, NOT new feature surfaces, so most do not produce new integration tests. Brief notes for traceability:
+
+- **E-1 (fresh-TempDir rule)**: Test-case scope = the audit catalogue itself (`tests/plan/tempdir-audit.md`). Conversion verification = `/review` inspection in Wave 2. No new /qa integration tests; ~10 existing tests are REWRITTEN (not added) to use `tempfile::TempDir` per the staged rule in `tempdir-audit.md §"Conversion pattern"`. The conversion ITSELF is verified by the existing tests continuing to pass post-conversion — no separate "did we convert them" test is authored.
+- **E-2, E-3 (sprint command + template)**: Not /qa scope. No test cases.
+- **F (.gitignore)**: ALREADY SATISFIED per SPRINT.md §5 (line 73). No test cases.
+- **G (test rename)**: `/int`-owned rename of existing unit test inside `src/session_v4.rs::persistent_worker_tests`. No new /qa integration test; verification = the renamed test continues to pass.
+- **H (`[Tested+Neg]` promotions)**: Three candidates named in `tests/plan/neg-coverage-candidates.md` (errors-on-stdout / stderr-empty; error-recovery-no-partial-install; `/imports` fresh-session no-primitives-leak). Wave 2 authors the three new negative integration tests directly at sites named in that file. Refer to `neg-coverage-candidates.md` for shape; test cases are not re-enumerated here.
+
+---
+
+### Sprint 61 test-case authoring summary
+
+| Slice | Files (NEW) | New integration tests (upper bound) | Authored FAILING at first commit? | Flip-to-green trigger |
+|---|---|---|---|---|
+| 0 (S0-A scheduler) | `tests/sprint61_observability_scheduler.rs` | 8 | YES (feature not yet implemented) | `/int` commits scheduler event-log infra |
+| 0 (S0-B IO) | `tests/sprint61_observability_io.rs` | 7 | YES | `/backend` commits IO event-log infra |
+| 0 (S0-X shared) | `tests/sprint61_observability_shared.rs` | 3 | YES | Both traces land + shared Instant anchor |
+| 1 (bare-primitive) | `tests/sprint61_bare_primitive.rs` | 5 (+1 conditional) | YES (T-S1-1, T-S1-2, T-S1-3); NEW but passing (T-S1-4, T-S1-5) | `/int` commits Slice 1 fix in `src/session_v4.rs::check_bare_symbol_introspection` |
+| 2 (exemplar branch b) | `tests/exemplar_solver_correctness.rs` | 1 (CONDITIONAL — only if branch b fires) | YES if authored | owning compiler skill (likely `/backend`) fixes underlying codegen |
+| 3 (heisenbug) | extend `tests/sprint23.rs`; `tests/sprint61_race_closure.rs` | 1 existing + 3 pre-readout + 1-of-3 hypothesis-specific + 1 edge case ≈ 5 | EXISTING fails; new ones land AFTER evidence artefacts + §8 hypothesis selection | `/int` commits Slice 3 fix |
+| 4 (21-hello-io) | TBD | 1 existing + 1 hypothesis-specific (deferred) | EXISTING fails; hypothesis test authored post-readout | owning skill commits Slice 4 fix |
+| 5 (methodology) | — | 0 /qa-new integration tests for E-1/E-2/E-3/F/G; 3 for H (per `neg-coverage-candidates.md`) | Mixed | N/A — annotation + conversion work |
+
+**Upper bound**: ~30–32 new /qa integration tests across Sprint 61 (≈24 Slice-0, 5 Slice-1, 0–1 Slice-2, 5 Slice-3, 0–1 Slice-4, 3 Slice-5-H). Actual authoring count depends on Slice 2 branch, Slice 3 hypothesis selection, Slice 4 readout, and Slice 1 §8 spec-divergence outcome.
+
+**Wave-2 authoring order recommendation** (for `/sprint` scheduling awareness):
+1. T-S0A-{1..8}, T-S0B-{1..7}, T-S0X-{1..3} land alongside Slice 0 implementation (implementation + tests commit together; tests author FAILING pre-commit of infra then flip green).
+2. T-S1-{1..5} author FAILING early in Wave 2; flip on Slice 1 fix.
+3. T-S3-{2, 3, 4} author after `/int` commits race-evidence artefacts; T-S3-H{n} after §8 hypothesis selection.
+4. T-S2-B-1 author only if `/port` produces branch (b) repro; otherwise Slice 2 closes with no new /qa test.
+5. T-S4-* deferred until readout.
+6. Slice 5 H tests per `neg-coverage-candidates.md` opportunistically.
+
+**Gaps the Phase 3 design docs left for Wave 2 to fill**:
+- **Slice 3 hypothesis-specific tests** are gated on `/int`'s §8 selection. If evidence surprises (hypothesis not H1/H2/H3 — a fourth mechanism surfaces), `/qa` authors additional tests at that time and files `FIXME(/arch)` on the design doc.
+- **Slice 4 test shapes** are entirely deferred pending IO-trace evidence. Wave 2 sizing for Slice 4 cannot be locked until readout.
+- **Slice 1 spec-vs-implementation** (T-S1-6) is conditional on the isolation step revealing a spec gap vs. pure implementation bug.
+- **T-S1-5 (qualified-type negative)** may need conditional disposition if FQTypeName migration has not landed — revisit at authoring time.
+
+**Cross-skill follow-ups (no FIXMEs filed yet — flagged for `/sprint` awareness)**:
+- If T-S0A-6 or T-S0B-4 fails the <1% regression budget, `/qa` files FIXME(/int) or FIXME(/backend) on the design doc naming the overhead source. The `.claude/commands/sprint.md` Phase 6 close gate includes "off-path regression < 1%" per `observability.md §9` and `io-trampoline-trace.md §9 AC 2`; a failure blocks close.
+- If T-S0X-2 (boundary-hygiene grep test) fires, file FIXME(/arch) — event types have leaked into a boundary crate, architectural drift.
+- If T-S1-4 (unknown-primitive negative) fails pre-fix (i.e., the existing compiler already silently resolves wrong symbols), file FIXME(/int) on the bare-primitive design doc; this would be a second defect distinct from Slice 1's scope.

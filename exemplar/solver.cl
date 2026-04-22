@@ -377,6 +377,21 @@
 ;; solver returns `Success` on a grid with two `5`s in row 0 where it
 ;; should return `Unsolvable`.
 ;;
+;; Sprint 61 Slice 2 — diagnostic stance (per /arch Phase 2 review §5):
+;;   Default position: exemplar bug until proven otherwise. /port owns
+;;   the investigation and fix unless reduction produces a non-Sudoku
+;;   repro that isolates a compiler-level bug. See SPRINT.md §Skill Plans
+;;   → /port for the hypothesis list (4 candidates, cheapest-check-first:
+;;   peers-includes-self, post-make-grid state, eliminate match arms,
+;;   peer-helper instrumentation) and the three exit branches.
+;;
+;; Escalation threshold: 2 days of /port effort. If all 4 candidates clear
+;; without either branch (a) algorithmic fix OR branch (b) non-solver
+;; compiler-bug repro, /port files readout in SPRINT.md §Notes and /sprint
+;; convenes mini-triage with /arch + /backend to decide between
+;; compiler-assisted reduction or accept branch (c) carry. Bounded
+;; investigation, not open-ended.
+;;
 ;; FIXME(/qa) — narrow integration test for the algorithmic correctness
 ;; gap exposed by test-unsolvable. Minimal repro (see investigation notes
 ;; below):
