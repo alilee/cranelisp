@@ -673,8 +673,100 @@ _Runtime log — filled as the sprint progresses._
 
 ## Outcome
 
-_Filled when sprint closes._
+**Closed 2026-04-22.** Five waves, five commits (`b140ec5`, `35062ca`, `776a6cf`, `e20a7fa`, `dbe4bac`). Workspace baseline 2853 tests passing / 5 pre-existing carries. All five per-wave /review reports PASS; sprint-final /review PASS. Methodology pivot landed mid-sprint (Wave 3 close) retired the stress-verification gate as insufficient proof of race closure.
 
 ### Delivered
+
+**Slice 0 — Foundational observability (Wave 1)**
+- `CRANELISP_SCHEDULER_TRACE=1|<module>|*` scheduler/worker event log in `src/observability.rs` (~970 LOC including 25 unit tests). 15 tag variants: RegisterDepPublish, RegisterModuleRegister, ModuleStateTypechecking/Typechecked/Failed/Blocked/Unblocked, IsTypecheckedHit/Miss, ClearModuleState, ReRegisterModule, ResetModule, ResetAllFailed, RecompileModule, RegisterModuleCached. Plus H5-specific RepublishFromSymbolTable + RegisterImportsLookup (Wave 3) and H6-specific SymbolTableEnsure (Wave 3 via typecheck-crate hook).
+- `CRANELISP_IO_TRACE=1|*` IO trampoline event log in `crates/cranelisp-runtime/src/io_trace.rs` (~825 LOC + 18 unit tests). 12 tag variants covering Pure/Bind/Par/PlatformEffect/Cont* transitions.
+- Shared `OnceLock<Instant>` anchor exported from `cranelisp-runtime`; merge-sortable across both logs.
+- Flush wiring: `IoTraceFlushGuard` + `SchedulerTraceFlushGuard` RAII + `install_panic_hook` chained idempotently, both consumed in `src/main.rs`.
+- 19 integration tests in `tests/sprint61_observability_{scheduler,io,shared}.rs` (18 passing post-fix; 3 originally covered 21-hello-io SIGABRT, flipped green after Wave 4).
+
+**Slice 1 — Bare-primitive name at REPL (Wave 2, /int)**
+- `src/session_v4.rs::resolve_entry_for_display` rewritten from single-hop to bounded-depth-32 recursive walk matching typechecker's `resolve_to_terminal_entry_owned` discipline.
+- Bare-value path threads `resolved_module` into `FQSymbol` so re-export provenance displays the defining module per spec §8.9.
+- Re-exported primitives (`add-i64`, `eq-i64`, `mul-i64`, `sub-i64`, `not`, `str-concat`, etc.) now render `:(Fn [...]) primitives/NAME ; primitive - <docstring>` at REPL prompt.
+- 5 integration tests in `tests/sprint61_bare_primitive.rs`, 25/25 stress green.
+
+**Slice 2 — Exemplar `test-unsolvable` (Wave 2, /port → /qa → /backend via branch (b))**
+- 3-layer finding: Layer 1 algorithmic hole in `eliminate` (Given/Solved arms now return `None` on same-value), Layer 2 Sudoku backtracking regression bundled by H6 fix, Layer 3 inline-ADT-arg-wrapping-Vec compiler bug isolated as a <30-LOC repro.
+- Per `memory/feedback_repro_handoff.md` (codified mid-sprint): minimal repros migrated to `tests/` (tests/exemplar_solver_correctness.rs now inlines both); `exemplar/repro-slice2.cl` + `exemplar/test-eliminate-contract.cl` deleted.
+
+**Slice 3 — Heisenbug race (Wave 3, /int — three evidence-gated hypothesis cycles)**
+- **H4 (narrow gate)** — `register_dep_for_eval` gates the defensive second publish+register pair when dep is already both published AND registered. Falsified by post-fix evidence; kept as defensive measure.
+- **H5 (scheduler-side push-gate)** — new `eval_in_flight: bool` on `ModuleState`; `EvalInFlightGuard` RAII brackets `wait_module_inmem_complete_blocking` in `register_dep_for_eval`; `try_unblock_locked` suppresses `typecheck_first` push when flag is set. Closed the H5 signature.
+- **H6 (non-atomic check-then-insert)** — `TypeCheckEnv::ensure_module_exists` rewritten from `contains_key + build + insert` (~30 LOC of construction opened a 10-20µs race window) to atomic `entry().or_insert_with()` with user-seed clone hoisted OUTSIDE to avoid DashMap shard-lock reentrancy deadlock. Landed under /arch §3d'' hybrid-ownership grant (/int into cranelisp-typecheck/); /typecheck pre-commit APPROVE.
+- Narrow cross-skill precedent for H6 bounded to the single function; future typecheck-crate work returns to /typecheck ownership by default. `crates/cranelisp-typecheck/src/trace.rs` module now /typecheck-owned.
+- Reduced harness `sprint23::heisenbug_race_reduced_concurrent_import_pairs` (86-91% fail standalone pre-fix → 10/10 pass light load / ~5-10% residual at 6-thread contention post-fix). Original S60-carried `sprint23::cache_repl_loads_heisenbug_parallel_stress` now passing; baseline ledger entry resolved.
+- Design-doc trajectory: `design/int/heisenbug-race-closure.md` §3a-§3e'' (reduction → evidence → H4 → falsification → H5 → H6) fully citation-grounded.
+
+**Slice 4 — 21-hello-io closure double-free (Wave 4, /backend)**
+- **NOT a concurrency issue.** 100% deterministic with a 7-line repro (`(fn [_] b)` / `bind` idiom inside outer `bind`'s continuation).
+- **H(4-1'')** — closure body returning a captured heap var emits no `rc_inc` (scope_stack deliberately excludes captures at `control_flow.rs:961-963`); `consume_closure`'s drop-glue later dec's the same capture — double-dec without matching inc.
+- Fix: new `emit_capture_return_inc` helper in `crates/cranelisp-backend/src/compiler/control_flow.rs` (+14 LOC), called from `compile_lambda_body`. Additive; preserves `protect_return_value`'s scope_stack discipline.
+- New rule at `design/backend/ring2-rc.md §5.6 "capture-return inc"` (additive sibling to §5.5 `borrowed_vars`).
+- Pre-fix: 7-line repro 10/10 exit=133 SIGTRAP. Post-fix: 10/10 exit=51 correct computed value.
+- 4 baseline ledger entries resolved (examples_run::every_example_file_runs_under_examples_prelude + 3× sprint61_observability_io::*).
+
+**Slice 5 — Methodology cleanup + showcase (Wave 5)**
+- Fresh-TempDir rule codified in `tests/CLAUDE.md`; 9 tests converted; helpers consolidated in `tests/helpers/mod.rs`.
+- 3 `[Tested+Neg]` promotions (errors-on-stdout stderr-empty; state-preserving error recovery; /imports no-primitives-leak).
+- Repro-handoff migration completed (tests/ and exemplar/ sides).
+- Phase 3a plan-gap retrospective at `tests/plan/sprint-61-plan-gap-retro.md`. Ring 1 + Ring 2 test plans gained inline-ADT-arg-wrapping-Vec coverage rows for future authoring.
+- `design/backend/ring2-rc.md §5.5` + §5.6 sketch-comparison addenda (finding: sketch had latent §5.6 bug).
+- Test rename (G): `register_dep_shim_publishes_before_caller_registers` → `register_dep_for_eval_publish_then_register_is_observable_to_downstream`.
+- Stale FIXME cleanup (M).
+- `repl/demos/ring4s.demo` authored; `exemplar-progress.demo` + `stdlib-progress.demo` refreshed; 28/28 demos replay clean.
+- 28/28 examples sweep clean.
+
+**Methodology pivot (mid-sprint, Wave 3 close, user directive 2026-04-22)**
+- Stress-run 0-of-N verification retired as primary proof of race closure. Low statistical power (5% true rate survives 20-run gate ~36%); contention geometry non-deterministic; post-hoc rather than interleaving-space enumeration.
+- Revised Wave 3 close criteria: three named mechanisms + evidence dumps + unit tests + integration regression guards + /arch approval + /review PASS + /typecheck narrow-precedent review.
+- S62 primary workstream replaced: FQTypeName → concurrency audit + `loom` + structured interleaving tests. FQTypeName slides to S63+.
+
 ### Deferred
+
+**To S62 (concurrency audit + loom + structured interleaving tests — primary workstream)**:
+- `sprint23::heisenbug_race_reduced_concurrent_import_pairs` — H6 residue ~5-10% under 6-thread contention. Disposition: `under-investigation (sprint 62 — concurrency audit)`.
+- `io_trace_off_path_subprocess_completes_within_generous_ceiling` — harness robustness concern (Wave 5 I-1 or S62).
+- `crates/cranelisp-typecheck/src/checker.rs::ensure_module_exists_concurrent_*` test hedges behind `counter_non_zero` (Wave 3 /review I-1) — natural fit for loom replacement.
+- **S62 should also** grep all `symbol_tables[module]` and `self.modules[...]` access sites across `crates/cranelisp-typecheck/` + `src/scheduler.rs` + `src/worker.rs` + `src/session_v4.rs` for the non-atomic-check-then-insert pattern and other shared-state races.
+
+**Escaped baseline carries (exemplar-gap, target Sprint 62+)**:
+- 4× `sprint59_defects456_repro::d6_exemplar_*` — 81-cell solver stack overflow; pre-existing per exemplar/CLAUDE.md Known Issues, now ledgered.
+- `wave6_demo_repros::exemplar_solver_does_not_stack_overflow_on_small_puzzle` — same underlying.
+
+**FQTypeName migration** — originally S62 primary; now S63+ pending methodology-pivot audit completion. FQTypeName is a boundary-type refactor with no concurrency dimension; no urgency dependency.
+
 ### Findings
+
+**Evidence-gated discipline scaled to three iterations** — Slice 3's H4→H5→H6 trajectory (H4 falsified, H5 closed but insufficient, H6 closed with residue) is the first Sprint where the discipline cycled three times on the same defect. Each cycle: reduction → evidence dump → hypothesis citation → /arch review → fix → post-fix evidence → new finding. Each hypothesis was explicitly falsified or partially validated by dump evidence. The methodology held; what it couldn't do is prove a race *closed* — only that specific scheduling windows were closed. That insufficiency drove the Wave 3 methodology pivot.
+
+**Narrow cross-skill precedent worked cleanly** — /arch §3d'' authorised /int to edit `crates/cranelisp-typecheck/src/checker.rs` under a bounded grant (single function, public API unchanged, implementer-authored-design). /typecheck pre-commit review APPROVE. Future typecheck-crate work returns to /typecheck ownership by default. First successful test of the hybrid-ownership pattern.
+
+**Repro-handoff protocol codified** — `memory/feedback_repro_handoff.md` (user directive 2026-04-22) now requires minimal compiler-bug repros live in `tests/`, never in `exemplar/` or `examples/`. Wave 5 migrated the two Slice 2 / Slice 4 repros out of `exemplar/`. /qa authoring tests in `exemplar/` (even as fixtures) was a boundary violation that surfaced mid-sprint; the memory entry prevents recurrence.
+
+**Stress-run verification unmasked as insufficient** — Slice 3 Wave 3 20-run-stress gate was aspirational (assumed Slice 4 would close before the gate fired; actually Slice 4 was still open). User-raised methodology question surfaced the statistical weakness: N-run 0-failures proves rate `<1/N` with ~63% confidence, not 0%. Wave 3 close criteria revised to reject stress verification as primary gate; S62 workstream pivots to audit + loom + structured interleaving.
+
+**Undocumented baseline carries discovered** — workspace stress (done to calibrate the stress gate) surfaced 5 failing tests not in `tests/plan/baseline.md`: 4× `d6_exemplar_*` + 1× `wave6_demo_repros::exemplar_solver_*`. All are pre-existing exemplar 81-cell stack overflow; documented in `exemplar/CLAUDE.md §Known Issues` but escaped the ledger in S59/S60 close. Ledgered in Wave 3 /qa sweep. Process lesson: workspace stress is the right check for ledger-completeness even if insufficient for race-closure proof.
+
+**Wave 2 Slice 2 branch (b) handoff shape validated** — /port reduced the exemplar Sudoku bug to Layer 3 `(consume (Box [0]))` — a <30-LOC non-solver repro. /qa wrapped as failing integration test. /backend fixed. Total time from /port readout to fix landed: within Wave 2. The `memory/feedback_cross_skill_minimal_repro.md` pattern worked end-to-end and produced a durable regression guard that didn't depend on Sudoku-specific machinery.
+
+**Observability infrastructure paid for itself** — Slice 0's scheduler trace + IO trace infrastructure produced usable evidence for Slice 3's three hypothesis cycles AND Slice 4's deterministic repro discovery. Without it, Slice 3 would have been stuck in stress-vs-hope territory. Investment amortised on first use.
+
+### Commits
+```
+dbe4bac sprint 61 wave 5: methodology cleanup + showcase
+e20a7fa sprint 61 wave 4 slice 4: capture-return inc — 21-hello-io closure double-free
+776a6cf sprint 61 wave 3 slice 3: three race mechanisms closed, methodology pivot
+35062ca sprint 61 wave 2 slices 1+2: bare-primitive REPL + sudoku solver correctness
+b140ec5 sprint 61 wave 1 slice 0: observability infrastructure
+```
+
+### Test deltas
+
+- Workspace: 1837 (S60 close) → 2853 (S61 close). Net +1016 tests, of which ~50 authored this sprint (19 observability integration + 5 bare-primitive + 2 exemplar correctness + 2 closure regression + 3 [Tested+Neg] promotions + 25 observability unit + 3 typecheck concurrent-ensure + 6 H5 unit + others). The remaining ~960-test delta is workspace-wide from non-sprint-61 changes since S60 or test accounting shifts.
+- Baseline ledger: 2 entries (S60 close) → 7 entries (S61 close). Additions: +5 escaped (d6_exemplar_* + wave6_demo_repros); +1 H6 residue (heisenbug_race_reduced); +1 harness ceiling concern. Resolutions: S60 heisenbug_parallel_stress; S60 examples_run; 3× sprint61_observability_io (all via Slice 4 fix).
+- [Tested+Neg] promotions: 3 landed.
