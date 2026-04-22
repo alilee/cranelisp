@@ -466,13 +466,17 @@ Match arms introduce their own scope frames:
 
 The scope cleanup per arm ensures that field bindings extracted in constructor patterns are properly released even when the arm body doesn't return them.
 
-### 5.5 Captured Variables and Last-Use
+### 5.5 Captured and Borrowed Variables and Last-Use
 
-Two rules modify scope cleanup behavior:
+Three rules modify scope cleanup behavior:
 
 - **Captured variables** (`captured_vars`): Variables closed over by a lambda are NEVER eligible for last-use transfer. The closure env holds its own inc'd reference, and the enclosing scope must dec its own reference at scope exit regardless.
 
-- **Last-use analysis** (`compute_last_uses`): Walks the expression tree in pre-order to determine the final use of each variable. The last use of a variable reference is a candidate for ownership transfer (skip the inc at the call site because the callee gets the caller's last reference). Currently used by Vec COW to determine mutate-in-place eligibility, but the general mechanism is available for future optimization.
+- **Borrowed variables** (`borrowed_vars`): Variables introduced by match-arm constructor-pattern field bindings (e.g. `v` in `(match b [(Box v) ...])`). These extract a field from the scrutinee and skip both inc (at extraction) and dec (at scope exit) — the scrutinee still owns the value. Consequently, borrowed variables are NEVER eligible for last-use transfer, structurally symmetric with `captured_vars`: neither owns the value, so neither may transfer ownership. Violating this rule causes Vec COW mutate-in-place on an aliased Vec, followed by use-after-free when the scrutinee's drop glue independently dec's the field.
+
+  **Regression history**: Sprint 61 Slice 2 Layer 3 (`exemplar/repro-slice2.cl`). `(consume (Box [0]))` where `consume` does `(match b [(Box v) (Box (vec-set v 0 1))])` read the inner Vec length as `0` instead of `1`. Root cause: `is_last_use` did not gate on `borrowed_vars`, so the textually-last reference to `v` in `(vec-set v 0 1)` was treated as an ownership transfer. Vec COW saw `is_last_use + rc==1` and mutated in place, aliasing the original Box's field. When inline `(Box [0])` reached rc=0 and its drop glue fired, the mutated Vec was double-dec'd. The Layer 2 Sudoku backtracking regression (`try-digits`/`solve` on valid puzzles under the Layer 1 eliminate fix) was the same root cause — the `(match g [(Grid v) ...])` pattern bound `v` and passed it to `vec-set`, triggering the same aliasing. Fix landed 2026-04-22 at `crates/cranelisp-backend/src/compiler/mod.rs:1204`.
+
+- **Last-use analysis** (`compute_last_uses`): Walks the expression tree in pre-order to determine the final use of each variable. The last use of a variable reference is a candidate for ownership transfer (skip the inc at the call site because the callee gets the caller's last reference). Currently used by Vec COW to determine mutate-in-place eligibility, but the general mechanism is available for future optimization. Must be gated on both `captured_vars` and `borrowed_vars` — neither owns the value, so neither may transfer ownership.
 
 ## 6. Invariants
 
@@ -510,6 +514,7 @@ These invariants must hold at all times. Violation indicates a bug.
 | Heap layout structs | `cranelisp-backend/src/heap.rs` | `HeapAdt`, `HeapClosure`, `HeapVec` |
 | RC emission | `cranelisp-backend/src/heap.rs` | `emit_rc_inc`, `emit_rc_inc_guarded`, `emit_rc_dec`, `emit_rc_dec_guarded` |
 | Last-use analysis | `cranelisp-backend/src/heap.rs` | `compute_last_uses` |
+| Last-use ownership gate | `cranelisp-backend/src/compiler/mod.rs` | `is_last_use` (gates on both `captured_vars` and `borrowed_vars`) |
 | Calling convention | `cranelisp-backend/src/compiler/apply.rs` | `compile_consuming_arg_list`, `compile_arg_list` (plain args; consuming dispatch applies uniformly — no caller-side `dec_temporary_args`) |
 | Scope cleanup | `cranelisp-backend/src/compiler/mod.rs` | `pop_scope_with_cleanup`, `return_var_in_scope`, `protect_return_value` |
 | Inline drop glue | `cranelisp-backend/src/compiler/mod.rs` | `emit_inline_drop_glue`, `emit_field_decs` |

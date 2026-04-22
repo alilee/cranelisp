@@ -1,8 +1,55 @@
 # Bare-primitive value path: Slice 1 of Sprint 61
 
 **Owner**: `/int`
-**Status**: DESIGN (Sprint 61 Phase 3, 2026-04-22)
+**Status**: IMPLEMENTED (Sprint 61 Wave 2, 2026-04-21)
 **Reviewers**: `/arch`
+
+## Post-implementation note (Sprint 61 Wave 2, 2026-04-21)
+
+**Diagnosis**: Candidate 2 held, with a mechanical twist not isolated in
+the pre-implementation design text. The bare-value path falls through
+`check_bare_symbol_introspection`'s outer match at `_ => None` for
+`Import`/`Reexport` variants — but only because the resolver itself
+(`resolve_entry_for_display`) did a **single hop** rather than walking
+the full chain. The three-module pattern the user observes is
+`user → prelude (Import) → primitives (Reexport) → primitives Def`.
+One hop from `user/add-i64` terminates on the `Reexport` entry sitting
+in `prelude`'s symbol table; the match then drops through `_ => None`
+and the bare-value path falls into `process_single_form`, where
+codegen emits `undefined variable: add-i64`.
+
+The typechecker's resolver (`TypeCheckEnv::resolve_to_terminal_entry_owned`,
+`crates/cranelisp-typecheck/src/checker.rs:537`) has always been
+recursive with an `IMPORT_CHAIN_DEPTH_LIMIT` guard, which is why the
+call path `(add-i64 2 3)` resolves correctly — it uses that walker.
+The display resolver in `session_v4.rs` was never aligned to that
+discipline, so re-exported primitives that pass through two or more
+hops land as intermediate `Reexport` entries on the introspection /
+bare-value paths but not on the call path. This is the "dual-path"
+anti-pattern pattern §6 calls out.
+
+**Fix**: `resolve_entry_for_display` is now a bounded-depth loop
+(`MAX_DEPTH = 32`, matching the intent of the typechecker's
+`IMPORT_CHAIN_DEPTH_LIMIT`) that walks `Import`/`Reexport` chains to a
+terminal non-alias entry. On a broken link it returns the last
+resolved pair so display remains best-effort. The bare-value path in
+`check_bare_symbol_introspection` additionally threads the resolved
+module into the returned `FQSymbol.module` (per spec §8.9 re-export
+provenance — introspection MUST display the original defining module).
+
+**Spec implication**: none. The spec correctly treats re-exports as
+first-class public names; the defect was a one-hop resolver in the
+display layer, not a spec gap. No `FIXME(/spec)` filed.
+
+**Out of scope** (deferred, not regressed by the fix):
+- `/sig add-i64` still prints `add-i64 ; imported from prelude/add-i64`
+  via `format_entry_sig`'s `ModuleEntry::Import` arm — that handler
+  does not consult `resolve_entry_for_display`. Fixing `/sig` to call
+  the recursive resolver is a follow-on alignment in the same file;
+  not required for Slice 1 acceptance (which was the bare-value path
+  specifically) but filed as a candidate for Sprint 62 polish if /repl
+  raises it. The call path `(add-i64 2 3)` and the bare-value path
+  both now produce the spec-conforming output.
 
 ## 1. Problem
 

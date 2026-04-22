@@ -1201,6 +1201,20 @@ where
             // Captured variables are NEVER eligible for last-use transfer.
             return false;
         }
+        if self.borrowed_vars.contains(name) {
+            // Borrowed variables (extracted from a match scrutinee's field)
+            // do NOT own the value — the scrutinee still holds it. A
+            // textually-last use of a borrowed var does not imply ownership
+            // transfer, so Vec COW mutate-in-place on such a binding would
+            // alias the scrutinee's field and cause a double-free once the
+            // scrutinee's drop glue dec's the field independently. See
+            // `design/backend/ring2-rc.md §3.1` (Decision 24 consuming
+            // convention) and §5.5 (captured_vars rule — the borrowed_vars
+            // rule is its structural twin: neither owns the value, so
+            // neither may transfer ownership via last-use).
+            // Regression: repro-slice2.cl — `(consume (Box [0]))` read len=0.
+            return false;
+        }
         self.last_uses
             .get(&(name.clone(), span))
             .copied()

@@ -1474,6 +1474,17 @@ Test authoring happens in Wave 2. Per `memory/feedback_failing_not_ignored.md`: 
 | T-S1-5 | `bare_primitive_type_is_qualified_not_bare_neg` | Negative (display-format guard): at prompt, input `add-i64`; assert output contains `primitives/Int` (qualified) NOT a bare `Int`. Guards against regression if Slice 1 fix inadvertently strips qualification. | `repl/spec.md §1.1`; pending FQTypeName but current spec expects qualification | NEGATIVE | Author in Wave 2. May be conditioned on FQTypeName status (Sprint 62) — if currently unqualified, record as FAILING or gate on S62. |
 | T-S1-6 | `bare_primitive_vs_call_position_spec_divergence_sentinel` | Gated test: if Slice 1 isolation confirms a spec-level divergence between value-position and call-position semantics for re-exported names (per `bare-primitive-value-path.md §8`), this test asserts the divergence with `// FIXME(/spec): spec/08-modules.md §8.9 lacks value-vs-call distinction`. If isolation shows pure implementation gap, this test is dropped. | `bare-primitive-value-path.md §8`; `spec/08-modules.md §8.9` | Conditional | Author ONLY IF Slice 1 §8 condition fires. Otherwise omit. |
 
+**Authored test-name map (Wave 2, 2026-04-22, SHA `b140ec5`)** — /int's Slice 1 fix landed in Wave 2 before authorship, so all five tests PASS at commit. They stand as regression guards for the three-path convergence restored by the fix.
+
+| Phase-3a plan ID | Actual authored test name | Status |
+|---|---|---|
+| T-S1-1 | `sprint61_bare_primitive::bare_primitive_add_i64_at_prompt_displays_type_and_fqn` | PASS |
+| T-S1-2 | `sprint61_bare_primitive::bare_primitive_parallel_paths_converge_on_same_attribution` | PASS |
+| T-S1-3 | `sprint61_bare_primitive::bare_primitive_surface_resolves_identically_across_five_plus_symbols` (6 primitives: add-i64, eq-i64, mul-i64, sub-i64, not, str-concat) | PASS |
+| T-S1-4 | `sprint61_bare_primitive::bare_primitive_unknown_name_produces_undefined_error_neg` | PASS (guards against over-broad fix; confirmed no silent-dispatch regression) |
+| T-S1-5 | `sprint61_bare_primitive::bare_primitive_two_hop_reexport_chain_lands_on_terminal_def` (T-S1-5 ring4 row scoped as qualified-type negative; authored as the two-hop transitivity test per /qa charter, WITH qualified-type negative assertion bundled in) | PASS — types ARE qualified (`primitives/Int` present); FQTypeName condition did not fire |
+| T-S1-6 | — (NOT authored; §8 spec-divergence condition did not fire per `design/int/bare-primitive-value-path.md` post-impl note §"Spec implication: none") | N/A |
+
 ---
 
 ### Slice 2: Exemplar `test-unsolvable` — branch (b) only (SPRINT.md §Skill Plans → /port)
@@ -1489,6 +1500,19 @@ Branches (a) algorithm bug in `solver.cl` and (c) no-reduction-carry are `/port`
 **If branch (a) fires**: no new /qa tests. `test-unsolvable` + 3 puzzle tests in `exemplar/solver.cl` are already in-tree (re-enabled Sprint 60 Wave 3 commit `f78adf3`); `/qa` verifies they pass at close.
 
 **If branch (c) fires**: no new /qa tests. Baseline ledger entry persists; `/port` stays as owner per SPRINT.md §5 architecture review.
+
+**Branch (b) outcome — authored 2026-04-22, Wave 2, SHA `b140ec5`**: branch (b) fired with a richer-than-scoped three-layer finding (`exemplar/solver.cl:370+` FIXME block). /qa authored TWO tests in `tests/exemplar_solver_correctness.rs` (not one), because the branch-(b) layering produced distinct reproducers requiring independent assertions:
+
+| # | Test | Layer covered | Owner | Flip-to-green trigger |
+|---|---|---|---|---|
+| T-S2-1 | `exemplar_solver_correctness::eliminate_on_same_value_given_returns_none` | Layer 1 algorithmic contract on `eliminate` (semantic hole in Given/Solved arms) | `/port` (applies one-line `(if (eq-i64 v d) None ...)` fix to `solver.cl`), underlying-owner `/backend` (Layer 2 regression blocker) | `/port` applies Layer 1 fix to `exemplar/solver.cl::eliminate` once /backend resolves Layer 2 |
+| T-S2-2 | `exemplar_solver_correctness::inline_adt_arg_wrapping_vec_preserves_len` | Layer 3 compiler bug (inline ADT constructor wrapping Vec corrupts length when passed as arg) | `/backend` | /backend fixes consuming-arg RC / match-unwrap codegen for inline ADT constructors wrapping Vec per `exemplar/repro-slice2.cl` |
+
+T-S2-1 is driven via a dedicated exemplar test fixture authored at `exemplar/test-eliminate-contract.cl` (< 50 LOC, exit-code protocol: 0 = pass, 1 = buggy `(Some _)`, 2 = setup failure). This fixture is a test-only artefact owned by /qa; /port retains ownership of `solver.cl` and `repro-slice2.cl`.
+
+T-S2-2 wraps /port's `exemplar/repro-slice2.cl` with a cargo-test assertion on the three-line stdout pattern (`direct-let: len=1` / `inline-arg: len=1` / `let-arg: len=1`). The repro file itself is unmodified.
+
+Both tests are in the baseline ledger (`tests/plan/baseline.md §"Sprint 61 Wave 2 — Slice 2 branch (b) narrow reproducers"`) with SHA `b140ec5` signatures. Layer 2 (backtracking regression — open question in /port readout) is NOT separately ledgered: it surfaces only when Layer 1 is applied; when T-S2-1 flips green, Layer 2 status will be known. If Layer 2 requires additional reproduction work, a new entry is filed at that point.
 
 ---
 
@@ -1555,8 +1579,8 @@ Slice 5 items are methodology/cleanup, NOT new feature surfaces, so most do not 
 | 0 (S0-A scheduler) | `tests/sprint61_observability_scheduler.rs` | 8 | YES (feature not yet implemented) | `/int` commits scheduler event-log infra |
 | 0 (S0-B IO) | `tests/sprint61_observability_io.rs` | 7 | YES | `/backend` commits IO event-log infra |
 | 0 (S0-X shared) | `tests/sprint61_observability_shared.rs` | 3 | YES | Both traces land + shared Instant anchor |
-| 1 (bare-primitive) | `tests/sprint61_bare_primitive.rs` | 5 (+1 conditional) | YES (T-S1-1, T-S1-2, T-S1-3); NEW but passing (T-S1-4, T-S1-5) | `/int` commits Slice 1 fix in `src/session_v4.rs::check_bare_symbol_introspection` |
-| 2 (exemplar branch b) | `tests/exemplar_solver_correctness.rs` | 1 (CONDITIONAL — only if branch b fires) | YES if authored | owning compiler skill (likely `/backend`) fixes underlying codegen |
+| 1 (bare-primitive) | `tests/sprint61_bare_primitive.rs` | 5 AUTHORED 2026-04-22 (Wave 2, SHA `b140ec5`); all 5/5 passing at authorship because /int Slice 1 fix landed first | NO — /int fix already in session_v4.rs; tests PASS at authorship and stand as regression guards | /int revert (hypothetical) would re-fail T-S1-1/T-S1-2/T-S1-3/T-S1-5 immediately; T-S1-4 is a guard against over-broad fix. T-S1-6 (spec divergence) was NOT triggered (§8 condition did not fire — the defect is a pure implementation divergence per design-doc post-impl note). |
+| 2 (exemplar branch b) | `tests/exemplar_solver_correctness.rs` + `exemplar/test-eliminate-contract.cl` fixture | 2 AUTHORED 2026-04-22 (branch b fired with 3-layer finding; T-S2-1 Layer-1 contract + T-S2-2 Layer-3 repro wrapper) | YES — both committed FAILING | T-S2-1: /port applies Layer 1 fix (gated on /backend Layer 2 resolution); T-S2-2: /backend fixes inline-ADT-arg-wrapping-Vec codegen |
 | 3 (heisenbug) | extend `tests/sprint23.rs`; `tests/sprint61_race_closure.rs` | 1 existing + 3 pre-readout + 1-of-3 hypothesis-specific + 1 edge case ≈ 5 | EXISTING fails; new ones land AFTER evidence artefacts + §8 hypothesis selection | `/int` commits Slice 3 fix |
 | 4 (21-hello-io) | TBD | 1 existing + 1 hypothesis-specific (deferred) | EXISTING fails; hypothesis test authored post-readout | owning skill commits Slice 4 fix |
 | 5 (methodology) | — | 0 /qa-new integration tests for E-1/E-2/E-3/F/G; 3 for H (per `neg-coverage-candidates.md`) | Mixed | N/A — annotation + conversion work |

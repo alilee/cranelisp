@@ -36,8 +36,8 @@
 (defn eliminate [g idx d]
   (let [cell (cell-at g idx)]
     (match cell
-      [(Given _) (Some g)
-       (Solved _) (Some g)
+      [(Given v)  (if (eq-i64 v d) None (Some g))
+       (Solved v) (if (eq-i64 v d) None (Some g))
        (Candidates mask)
          (if (not (bit-set? mask d))
            ;; Digit not in candidates, no change
@@ -370,55 +370,39 @@
 
 ;; --- Solver tests ---
 ;;
-;; Full-puzzle tests re-enabled Sprint 60 Wave 3 (Defect 7 close): the
-;; underlying drop-glue / dual-GOT / captures defects (Defects 4-6, Sprint 59)
-;; have been resolved. Two of three pass (easy, hard via the weak
-;; `count-determined == 81` predicate). `test-unsolvable` FAILS — the
-;; solver returns `Success` on a grid with two `5`s in row 0 where it
-;; should return `Unsolvable`.
+;; Slice 2 closure 2026-04-22 — Sudoku solver correctness.
 ;;
-;; Sprint 61 Slice 2 — diagnostic stance (per /arch Phase 2 review §5):
-;;   Default position: exemplar bug until proven otherwise. /port owns
-;;   the investigation and fix unless reduction produces a non-Sudoku
-;;   repro that isolates a compiler-level bug. See SPRINT.md §Skill Plans
-;;   → /port for the hypothesis list (4 candidates, cheapest-check-first:
-;;   peers-includes-self, post-make-grid state, eliminate match arms,
-;;   peer-helper instrumentation) and the three exit branches.
+;; Investigation: /port worked the 4-candidate hypothesis list from SPRINT.md
+;; cheapest-first. Candidates 1, 2, 4 (peers-includes-self, post-make-grid
+;; state, peer-helper instrumentation) cleared without finding a defect.
+;; Candidate 3 (eliminate match arms) was a partial hit: the `Given _` and
+;; `Solved _` arms returned `(Some g)` unconditionally, silently allowing
+;; two peers to hold the same value. That was a real algorithmic hole
+;; (Layer 1). Applying the obvious fix (return None when v == d) regressed
+;; every valid puzzle — propagation returned None where it should not
+;; (Layer 2). Reduction produced a non-Sudoku repro at
+;; `exemplar/repro-slice2.cl` — an inline ADT constructor wrapping a Vec,
+;; passed as an argument, read a corrupt length on the callee side
+;; (Layer 3).
 ;;
-;; Escalation threshold: 2 days of /port effort. If all 4 candidates clear
-;; without either branch (a) algorithmic fix OR branch (b) non-solver
-;; compiler-bug repro, /port files readout in SPRINT.md §Notes and /sprint
-;; convenes mini-triage with /arch + /backend to decide between
-;; compiler-assisted reduction or accept branch (c) carry. Bounded
-;; investigation, not open-ended.
+;; Resolution: Layer 3 is a consuming-convention RC bug in
+;; `crates/cranelisp-backend/src/compiler/mod.rs::is_last_use` — borrowed
+;; vars were eligible for last-use transfer. /backend closed it with a
+;; 14-line gate; see `design/backend/ring2-rc.md §5.5` for the rule.
+;; Layer 2 bundles into Layer 3 by construction (same RC path, different
+;; caller shape). Layer 1 (the two-line eliminate fix) is applied in this
+;; file — the `Given v` / `Solved v` arms now return `None` when `v == d`.
 ;;
-;; FIXME(/qa) — narrow integration test for the algorithmic correctness
-;; gap exposed by test-unsolvable. Minimal repro (see investigation notes
-;; below):
+;; Regression guards:
+;;   - `tests/exemplar_solver_correctness.rs::eliminate_on_same_value_given_returns_none`
+;;     (T-S2-1) — Layer 1 contract.
+;;   - `tests/exemplar_solver_correctness.rs::inline_adt_arg_wrapping_vec_preserves_len`
+;;     (T-S2-2) — Layer 3 minimal repro.
 ;;
-;;   (eliminate g idx d) on a cell that is already (Given v) or (Solved v)
-;;   with v == d returns `(Some g)` — a no-op. It should return `None`
-;;   (contradiction) because two peers cannot hold the same value. With
-;;   the no-op behaviour, peer propagation silently allows conflicting
-;;   Givens to coexist, so the solver returns `Success` on provably
-;;   unsolvable puzzles. The observable symptom in the `--run` main for
-;;   the easy puzzle is a "Solution" board with duplicate values in row 0
-;;   (e.g. `4 5 3 | 9 2 1 | 6 7 7`), further evidence that the elimination
-;;   pass is not enforcing uniqueness.
-;;
-;;   However, when `eliminate` is patched to return `None` on same-value
-;;   Given/Solved cells, propagation returns `None` even for valid
-;;   puzzles (including a one-cell-from-solved test grid). That rules out
-;;   a pure algorithmic fix at the eliminate level — something below
-;;   (likely in peers iteration, set-cell Vec COW, or match arm state
-;;   sharing across recursive `try-digits` branches) is causing spurious
-;;   peer conflicts. This suggests an RC or codegen-level interaction
-;;   rather than a pure logic error.
-;;
-;; FIXME(/backend) — once /qa has the narrow repro, investigate whether
-;; the propagation-returns-None-on-valid-puzzle behaviour is driven by
-;; set-cell COW, closure captures inside eliminate-from-peers-helper, or
-;; Vec state sharing across recursive solve/try-digits calls.
+;; Repro-file migration: `exemplar/repro-slice2.cl` and
+;; `exemplar/test-eliminate-contract.cl` are pending relocation to the
+;; `tests/` tree per user directive 2026-04-22 — tracked as Slice 5 I
+;; (/qa Wave 5).
 
 (defn test-easy-puzzle []
   (match (make-grid "003020600900305001001806400008102900700000008006708200002609500800203009005010300")

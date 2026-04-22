@@ -30,7 +30,7 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
-## Current Entries (as of 2026-04-22, sprint 61 Wave 1 close, SHA `a9028c0`)
+## Current Entries (as of 2026-04-22, sprint 61 Wave 2 close, SHA `b140ec5`)
 
 > **Sprint 60 close update (2026-04-21)**: under full-suite pressure (multiple consecutive `cargo nextest run --no-fail-fast`), two races fire intermittently at ~30% rate. Single-run verification showed 1837/0 and `/qa` originally recorded only the exemplar entry below. 8-run stress verification under close revealed the races. Per user directive "flaky is not a thing in local tests," these are recorded as real races under `under-investigation (sprint 61)` and a dedicated stabilisation sprint opens next. FQTypeName migration slides to Sprint 62.
 
@@ -108,17 +108,15 @@ The following three tests were authored in Wave 1 as part of the Slice-0 observa
 
 ### Exemplar-level tests (non-cargo)
 
-### Exemplar-level tests (non-cargo)
+*No current exemplar-level failing entries. The S60-carried `exemplar/solver.cl::test-unsolvable` was resolved in Sprint 61 Wave 2; see "Resolved this sprint" below.*
 
-| Field | Value |
-|---|---|
-| Test name | `exemplar/solver.cl::test-unsolvable` (run via `/run-tests` inside the exemplar, not a cargo test) |
-| SHA | `f78adf3` |
-| Stderr / observable signature | `(Some "puzzle with two 5s in row 0 should be unsolvable")` — solver returns `Success` on a grid with two `5`s in row 0 where it should return `Unsolvable`. Symptom in `--run` main: "Solution" board with duplicate values in row 0 (e.g. `4 5 3 \| 9 2 1 \| 6 7 7`). |
-| Owning skill | `/port` (repro authored), `/qa` (narrow integration test handoff pending), `/backend` (suspected underlying codegen/RC interaction) |
-| Target sprint | Sprint 61 |
-| Disposition | `exemplar-gap (owner=/port)` with `underlying-owner=/backend` |
-| Rationale | `test-unsolvable` was re-enabled in Wave 3 commit `f78adf3` after Defects 4–6 resolved. The solver's `eliminate` no-ops when called on a same-value `Given`/`Solved` cell; patching it to return `None` breaks valid puzzles, implicating peers iteration, Vec COW, or match-arm sharing rather than pure algorithmic logic. `FIXME(/qa)` and `FIXME(/backend)` are filed in `exemplar/solver.cl` lines 380–406 documenting the investigation notes. `/qa` will own narrowing this into a compile-time integration test once `/port` hands off minimal repro per `memory/feedback_cross_skill_minimal_repro.md`. |
+## Resolved this sprint (Sprint 61 Wave 2, 2026-04-22)
+
+Per §Close-time Verification Protocol item 3 — entries removed from the ledger because the tests now pass on HEAD (working tree at SHA `b140ec5`, pre-commit). Preserved here as a one-line rationale trail for the sprint close report.
+
+- **`sprint61_wave2::exemplar_solver_correctness::eliminate_on_same_value_given_returns_none`** (T-S2-1) — PASSING 5/5. Resolved by /port's Layer 1 fix in `exemplar/solver.cl::eliminate` (handle `(Given v)`/`(Solved v)` same-value cells by returning `None`) combined with /backend's Layer 3 fix at `crates/cranelisp-backend/src/compiler/mod.rs::is_last_use` which unblocked the naive Layer 1 patch from regressing valid puzzles.
+- **`sprint61_wave2::exemplar_solver_correctness::inline_adt_arg_wrapping_vec_preserves_len`** (T-S2-2) — PASSING 5/5. Resolved by /backend's Layer 3 fix at `crates/cranelisp-backend/src/compiler/mod.rs::is_last_use` (consuming-arg RC emission for inline ADT constructors wrapping a Vec no longer drops the inner Vec's length before callee match-unwrap).
+- **`exemplar/solver.cl::test-unsolvable`** (S60 carry, exemplar-level non-cargo) — superseded and closed. Root cause was a two-layer defect: Layer 1 algorithmic hole in `eliminate` (/port) plus Layer 3 compiler bug in consuming-arg RC (/backend) that regressed the naive Layer 1 fix. Both fixes landed in Wave 2 (`crates/cranelisp-backend/src/compiler/mod.rs::is_last_use` + `exemplar/solver.cl::eliminate`). The two cargo tests above now serve as the durable regression record; the exemplar-level test remains in `exemplar/solver.cl` but is no longer the authoritative failure record.
 
 ## Close-time Verification Protocol
 

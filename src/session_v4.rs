@@ -2216,9 +2216,21 @@ impl CompilerSession {
             guard.get(name)?.clone()
         };
 
-        // Resolve import/reexport chains.
+        // Resolve import/reexport chains fully. Sprint 61 Slice 1: the
+        // resolver now chases the full chain (user → prelude → primitives)
+        // so re-exported primitives land on a terminal `Def` here instead
+        // of an intermediate `Reexport` that the match below would drop
+        // through `_ => None`. See
+        // `design/int/bare-primitive-value-path.md` candidate 2.
         let module = self.current_module_path();
-        let (resolved_entry, _resolved_module) = self.resolve_entry_for_display(&entry, &module);
+        let (resolved_entry, resolved_module) = self.resolve_entry_for_display(&entry, &module);
+
+        // Use the resolved module for re-export provenance (spec §8.9:
+        // introspection MUST display the original defining module). The
+        // downstream `format_eval_result` re-resolves and relies on
+        // `format_def_entry`'s `module` parameter, so this is primarily
+        // for FQSymbol consumers that read the symbol metadata directly.
+        let fq_module = resolved_module;
 
         match &resolved_entry {
             ModuleEntry::Macro { clauses, .. } => {
@@ -2230,7 +2242,7 @@ impl CompilerSession {
                     return None;
                 }
                 Some(EvalResult::Def {
-                    symbol: FQSymbol { module, symbol: Symbol::from(name) },
+                    symbol: FQSymbol { module: fq_module, symbol: Symbol::from(name) },
                     ty: Type::Int,
                     warnings: Vec::new(),
                 })
@@ -2239,21 +2251,21 @@ impl CompilerSession {
                 // Special forms, primitives, and user functions all get
                 // introspection display per spec §4.1.1, §4.1.2.
                 Some(EvalResult::Def {
-                    symbol: FQSymbol { module, symbol: Symbol::from(name) },
+                    symbol: FQSymbol { module: fq_module, symbol: Symbol::from(name) },
                     ty: scheme.ty.clone(),
                     warnings: Vec::new(),
                 })
             }
             ModuleEntry::TypeDef { .. } => {
                 Some(EvalResult::Def {
-                    symbol: FQSymbol { module, symbol: Symbol::from(name) },
+                    symbol: FQSymbol { module: fq_module, symbol: Symbol::from(name) },
                     ty: Type::Int,
                     warnings: Vec::new(),
                 })
             }
             ModuleEntry::TraitDecl { .. } => {
                 Some(EvalResult::Def {
-                    symbol: FQSymbol { module, symbol: Symbol::from(name) },
+                    symbol: FQSymbol { module: fq_module, symbol: Symbol::from(name) },
                     ty: Type::Int,
                     warnings: Vec::new(),
                 })
@@ -2264,7 +2276,7 @@ impl CompilerSession {
                     None
                 } else {
                     Some(EvalResult::Def {
-                        symbol: FQSymbol { module, symbol: Symbol::from(name) },
+                        symbol: FQSymbol { module: fq_module, symbol: Symbol::from(name) },
                         ty: Type::Int,
                         warnings: Vec::new(),
                     })
@@ -3489,22 +3501,57 @@ impl CompilerSession {
     }
 
     /// Resolve Import/Reexport chains to the underlying definition entry.
+    ///
+    /// Walks the full chain (user → prelude → primitives → …) so that
+    /// bare-value, introspection, and call paths converge on the same
+    /// terminal `ModuleEntry::Def` regardless of how many re-exports sit
+    /// between the current module and the defining module. Depth-limited
+    /// to match the typechecker's `resolve_to_terminal_entry_owned`
+    /// (spec §8.6.2 IMPORT_CHAIN_DEPTH_LIMIT). On cycle / depth exhaustion
+    /// or a broken link, falls back to the last successfully resolved
+    /// entry + module.
+    ///
+    /// Fix site for Sprint 61 Slice 1 Defect 4 (bare-primitive-name
+    /// invisibility). See `design/int/bare-primitive-value-path.md`
+    /// candidate 2 — the match arms in `check_bare_symbol_introspection`
+    /// do not cover `Import`/`Reexport`, and the prior one-hop resolver
+    /// could terminate on a `Reexport` intermediate (user → prelude →
+    /// primitives), causing the bare-value path to fall through while
+    /// the call and introspection paths resolved via their own recursive
+    /// walks. Aligning on a single recursive resolver closes the
+    /// divergence.
     fn resolve_entry_for_display(
         &self,
         entry: &ModuleEntry<Code>,
         current_module: &ModuleFullPath,
     ) -> (ModuleEntry<Code>, ModuleFullPath) {
-        match entry {
-            ModuleEntry::Import { source }
-            | ModuleEntry::Reexport { source } => {
-                if let Some(module_table) = self.shared.symbol_tables.get(&source.module)
-                    && let Some(resolved) = module_table.get(source.symbol.as_ref()) {
-                        return (resolved.clone(), source.module.clone());
+        const MAX_DEPTH: usize = 32;
+        let mut cur_entry = entry.clone();
+        let mut cur_module = current_module.clone();
+        for _ in 0..MAX_DEPTH {
+            match &cur_entry {
+                ModuleEntry::Import { source }
+                | ModuleEntry::Reexport { source } => {
+                    match self.shared.symbol_tables.get(&source.module) {
+                        Some(module_table) => {
+                            match module_table.get(source.symbol.as_ref()) {
+                                Some(resolved) => {
+                                    let next = resolved.clone();
+                                    cur_module = source.module.clone();
+                                    cur_entry = next;
+                                    continue;
+                                }
+                                None => return (cur_entry, cur_module),
+                            }
+                        }
+                        None => return (cur_entry, cur_module),
                     }
-                (entry.clone(), current_module.clone())
+                }
+                _ => return (cur_entry, cur_module),
             }
-            _ => (entry.clone(), current_module.clone()),
         }
+        // Depth exhausted — return the last resolved entry/module.
+        (cur_entry, cur_module)
     }
 
     /// Format a user-defined type for display (spec §4.1.3).
@@ -4839,5 +4886,259 @@ mod format_entry_sig_tests {
             !out.contains("Third line"),
             "only first line must be appended; third line leaked: {out}"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 61 Slice 1 — bare-primitive-name value path (Defect 4)
+// ---------------------------------------------------------------------------
+//
+// Unit tests for the bare-value resolution path in
+// `check_bare_symbol_introspection` and `resolve_entry_for_display`.
+// The fix under test: the one-hop display resolver was replaced by a
+// bounded-depth recursive walk so user → prelude → primitives chains
+// terminate on the defining `ModuleEntry::Def` — matching the typechecker's
+// existing recursive `resolve_to_terminal_entry_owned`. See
+// `design/int/bare-primitive-value-path.md` (candidate 2).
+#[cfg(test)]
+mod bare_primitive_value_path_tests {
+    use super::*;
+    use cranelisp_types::{
+        DefKind, ModuleEntry, PrimitiveKind, Scheme, Symbol, Type, Visibility,
+    };
+    use std::collections::HashMap as StdHashMap;
+
+    /// Build a `ModuleEntry::Def` for a primitive (matches how
+    /// `register_builtins` seeds `primitives/add-i64`).
+    fn mk_primitive_def(ty: Type, docstring: Option<&str>) -> ModuleEntry<Code> {
+        ModuleEntry::Def {
+            scheme: Scheme {
+                vars: vec![],
+                constraints: StdHashMap::new(),
+                ty,
+            },
+            visibility: Visibility::Public,
+            docstring: docstring.map(String::from),
+            param_names: vec![],
+            kind: Box::new(DefKind::Primitive {
+                primitive_kind: PrimitiveKind::Inline,
+                jit_name: None,
+            }),
+            callees: Vec::new(),
+            got_slot: None,
+            trait_origin: None,
+            ast: None,
+            code: None,
+            platform_fn_ptr: None,
+        }
+    }
+
+    /// Fresh session with empty lib_dirs and a temp project_root so no
+    /// prelude.cl is auto-discovered. Caller populates `shared.symbol_tables`
+    /// to stage the chain under test.
+    fn isolated_session() -> (CompilerSession, PathBuf) {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let pid = std::process::id();
+        let tmp_root = std::env::temp_dir()
+            .join(format!("cranelisp-s61-slice1-{}-{}", pid, stamp));
+        std::fs::create_dir_all(&tmp_root).expect("create test project_root");
+        let settings = SessionSettings {
+            no_color: true,
+            no_cache: true,
+            codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+            priority_workers: 0,
+            nice_workers: 0,
+        };
+        let mut s = CompilerSession::new(settings, tmp_root.clone());
+        s.set_lib_dirs(vec![]);
+        (s, tmp_root)
+    }
+
+    fn stage_primitive_reexport_chain(
+        s: &CompilerSession,
+        primitive_name: &str,
+        primitive_ty: Type,
+        docstring: Option<&str>,
+    ) {
+        let primitives = ModuleFullPath::from("primitives");
+        let prelude = ModuleFullPath::from("prelude");
+        let user = ModuleFullPath::from("user");
+
+        // Ensure primitives table exists and holds the Def.
+        s.shared.symbol_tables.entry(primitives.clone())
+            .or_insert_with(|| SessionSymbolTable::new_with_params(primitives.clone()));
+        if let Some(mut st) = s.shared.symbol_tables.get_mut(&primitives) {
+            st.insert(
+                Symbol::from(primitive_name),
+                mk_primitive_def(primitive_ty, docstring),
+            );
+        }
+
+        // prelude: Reexport → primitives/<name>.
+        s.shared.symbol_tables.entry(prelude.clone())
+            .or_insert_with(|| SessionSymbolTable::new_with_params(prelude.clone()));
+        if let Some(mut st) = s.shared.symbol_tables.get_mut(&prelude) {
+            st.insert(
+                Symbol::from(primitive_name),
+                ModuleEntry::Reexport {
+                    source: FQSymbol {
+                        module: primitives.clone(),
+                        symbol: Symbol::from(primitive_name),
+                    },
+                },
+            );
+        }
+
+        // user: Import → prelude/<name> (implicit prelude glob effect).
+        if let Some(mut st) = s.shared.symbol_tables.get_mut(&user) {
+            st.insert(
+                Symbol::from(primitive_name),
+                ModuleEntry::Import {
+                    source: FQSymbol {
+                        module: prelude.clone(),
+                        symbol: Symbol::from(primitive_name),
+                    },
+                },
+            );
+        }
+    }
+
+    // spec: repl/spec.md §1.1 + spec/08-modules.md §8.9 — bare-value path
+    //       MUST resolve a re-exported primitive to its terminal Def and
+    //       echo the introspection card. Before the fix, the one-hop
+    //       resolver terminated on the `Reexport` intermediate and the
+    //       match dropped through `_ => None`.
+    #[test]
+    fn bare_reexported_primitive_resolves_to_terminal_def() {
+        let (mut s, root) = isolated_session();
+        let add_i64_ty = Type::Fn(
+            vec![Type::Int, Type::Int],
+            Box::new(Type::Int),
+        );
+        stage_primitive_reexport_chain(
+            &s,
+            "add-i64",
+            add_i64_ty.clone(),
+            Some("Add two i64 values."),
+        );
+
+        // Simulate the bare-value path: look up in user's table and
+        // resolve. This is the exact sequence performed inside
+        // `check_bare_symbol_introspection`.
+        let user = ModuleFullPath::from("user");
+        let entry = s.shared.symbol_tables.get(&user)
+            .and_then(|st| st.get("add-i64").cloned())
+            .expect("user module must carry Import for add-i64");
+        let (resolved_entry, resolved_module) =
+            s.resolve_entry_for_display(&entry, &user);
+
+        match &resolved_entry {
+            ModuleEntry::Def { scheme, kind, .. } => {
+                assert_eq!(
+                    scheme.ty, add_i64_ty,
+                    "terminal Def must carry the primitive's own type",
+                );
+                assert!(
+                    matches!(kind.as_ref(), DefKind::Primitive { .. }),
+                    "terminal entry must be a Primitive Def, got: {:?}", kind,
+                );
+            }
+            other => panic!(
+                "expected terminal ModuleEntry::Def after resolve, got: {:?}",
+                other,
+            ),
+        }
+        assert_eq!(
+            resolved_module,
+            ModuleFullPath::from("primitives"),
+            "resolved_module MUST be `primitives` (spec §8.9 re-export provenance)",
+        );
+
+        s.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // spec: repl/spec.md §1.1 — bare-value introspection output format
+    //       `:Type name ; classification - docstring`. The `format_eval_result`
+    //       pipeline must produce a qualified-module echo for a re-exported
+    //       primitive; this is the user-visible string the REPL prints.
+    #[test]
+    fn bare_reexported_primitive_formats_as_primitives_qualified() {
+        let (mut s, root) = isolated_session();
+        let add_i64_ty = Type::Fn(
+            vec![Type::Int, Type::Int],
+            Box::new(Type::Int),
+        );
+        stage_primitive_reexport_chain(
+            &s,
+            "add-i64",
+            add_i64_ty,
+            Some("Add two i64 values."),
+        );
+
+        // Drive the bare-value introspection handler directly.
+        let sexp = Sexp::Symbol("add-i64".to_string(), Span::SYNTHETIC);
+        let result = s.check_bare_symbol_introspection(&sexp)
+            .expect(
+                "re-exported primitive MUST resolve on the bare-value path \
+                 (S61 Slice 1 acceptance)",
+            );
+
+        let output = s.format_eval_result(&result);
+        assert!(
+            output.starts_with(":(Fn [primitives/Int primitives/Int] primitives/Int) primitives/add-i64"),
+            "bare-value echo must carry the full qualified type + \
+             `primitives/add-i64` name (spec §8.9 re-export provenance); got: {output}",
+        );
+        assert!(
+            output.contains("; primitive"),
+            "classification MUST be `; primitive` for a primitive Def \
+             (spec §4.1.1); got: {output}",
+        );
+        assert!(
+            output.contains(" - Add two i64 values."),
+            "docstring first line MUST follow ` - ` after classification \
+             (repl/spec.md §1.1); got: {output}",
+        );
+
+        s.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // spec: repl/spec.md §1.1 — genuinely unknown bare symbols MUST NOT
+    //       produce an introspection card. The bare-value path returns
+    //       None so the caller's fall-through (typecheck → codegen error)
+    //       produces the expected `undefined variable` diagnostic. This
+    //       is the negative case proving the fix didn't over-broaden the
+    //       match to swallow lookup failures.
+    #[test]
+    fn bare_unknown_symbol_returns_none_for_introspection() {
+        let (mut s, root) = isolated_session();
+        // Stage `add-i64` but NOT `unknown-primitive-xyz`.
+        stage_primitive_reexport_chain(
+            &s,
+            "add-i64",
+            Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
+            None,
+        );
+
+        let sexp = Sexp::Symbol(
+            "unknown-primitive-xyz".to_string(),
+            Span::SYNTHETIC,
+        );
+        let result = s.check_bare_symbol_introspection(&sexp);
+        assert!(
+            result.is_none(),
+            "unknown bare symbol MUST return None so the caller falls \
+             through to the normal `undefined variable` typecheck error \
+             (repl/spec.md §1.1 — no introspection card for unknown names); \
+             got: is_some={}", result.is_some(),
+        );
+
+        s.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
