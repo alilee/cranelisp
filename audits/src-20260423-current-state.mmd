@@ -1,0 +1,48 @@
+sequenceDiagram
+    autonumber
+    participant Caller as CLI / REPL / Tests
+    participant Main as main.rs
+    participant Session as session_v4.rs
+    participant Worker as worker.rs
+    participant Sched as scheduler.rs
+    participant Pipe as pipeline.rs
+    participant SessUtil as session.rs
+    participant Expand as expander.rs
+    participant FE as cranelisp-frontend
+    participant TC as cranelisp-typecheck
+    participant BE as cranelisp-backend
+    participant Cache as cache / linker / object paths
+
+    Caller->>Main: run / repl / link
+    Main->>Session: CompilerSession::new + run loop
+    Session->>SessUtil: lib dirs / cache state / prelude utilities
+    Session->>Sched: register module / wait / shutdown
+    Session->>FE: parse source for batch, REPL, reload, slash commands
+
+    alt REPL eval / single-form path
+        Session->>Session: process_single_form / register_dep_for_eval
+        Session->>Worker: process_module_forms(Additive)
+        Worker->>Expand: resolve + invoke macros
+        Worker->>FE: parse_defmacro / build_program / form parsing helpers
+        Worker->>TC: pass1 + pass2 checking
+        Session->>Worker: inline_jit_codegen_for_module
+        Worker->>BE: compile_to_module / JIT setup
+        Session->>Pipe: compile_and_execute_expr / IO unwrap
+    else batch / worker path
+        Sched->>Worker: priority_worker_loop_shared claims work
+        Worker->>FE: parse/build/classify module forms
+        Worker->>TC: process_module_forms(Replace)
+        Worker->>Worker: register_dep / publish_dep_sexps / cache-hit paths
+        Worker->>Sched: block/unblock / notify codegen complete
+        Worker->>BE: inline JIT codegen
+        Session->>Session: nice_worker_loop / compile_module_object
+        Session->>BE: ObjectModule compile
+        Session->>Cache: write .o / .meta / manifest
+    end
+
+    Note over Session,Worker: Integration policy is split across two god-files.
+    Note over Worker,Sched: Dependency publication + register/wait ordering is shared with scheduler coordination.
+    Note over Session,Worker: REPL/session and worker paths each carry part of the dependency protocol.
+    Note over Session,Pipe: REPL eval orchestration is split between session_v4.rs and pipeline.rs.
+    Note over Session: session_v4.rs also owns REPL UX, reload, trace/test extern setup, and nice-worker orchestration.
+    Note over Caller,Session: src/lib.rs exports many internal modules directly rather than presenting a narrow facade.

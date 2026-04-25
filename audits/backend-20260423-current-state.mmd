@@ -1,0 +1,30 @@
+sequenceDiagram
+    autonumber
+    participant Caller as Integration / Tests
+    participant Lib as lib.rs::compile_to_module
+    participant JitAPI as jit.rs APIs
+    participant Ctx1 as CompileContext builder in lib.rs
+    participant Ctx2 as CompileContext builder in jit.rs
+    participant ISA1 as cache::object::build_isa(is_pic)
+    participant ISA2 as jit.rs::build_isa()
+    participant FC as compiler::FnCompiler
+    participant Cache as cache/* facade + shims
+    participant Linker as cache/linker.rs
+    participant Tests as lib.rs test warehouse
+
+    alt Generic module path
+        Caller->>Lib: compile_to_module(...)
+        Lib->>Ctx1: build CompileContext inline
+        Lib->>FC: compile_body / compile_defn_in_module
+        Lib->>ISA1: object/JIT-adjacent ISA decisions
+    else JIT-specific path
+        Caller->>JitAPI: Jit::compile_defn(...)
+        JitAPI->>Ctx2: build CompileContext inline
+        JitAPI->>FC: compile_body
+        JitAPI->>ISA2: separate ISA helper
+    end
+
+    Caller->>Cache: cache load/write APIs
+    Cache->>Cache: authoritative API + deprecated shims
+    Cache->>Linker: object loading / relocations
+    Tests->>Lib: many backend behavior tests routed through crate root

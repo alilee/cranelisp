@@ -1,0 +1,106 @@
+flowchart TB
+    subgraph Legend[Legend]
+        L1[Low]
+        L2[Medium]
+        L3[High]
+        L4[Very High]
+    end
+
+    subgraph S1[CompileScheduler]
+        S1O[Owner: scheduler.rs]
+        S1R[Readers/Writers: session + priority workers + nice workers]
+        S1I[Interface: register / claim / block / notify / wait]
+        S1K[Risk: High]
+    end
+
+    subgraph S2[Dependency publication protocol]
+        S2O[Owner: currently split across session_v4.rs + worker.rs + scheduler.rs]
+        S2R[Readers/Writers: session thread + priority workers]
+        S2I[Interface: publish dep sexps / register / wait / resume]
+        S2K[Risk: Very High]
+    end
+
+    subgraph S3[SharedState.symbol_tables]
+        S3O[Owner intent: shared compiler state]
+        S3R[Readers/Writers: session + priority workers + nice workers]
+        S3I[Interface: DashMap entry read/write + publication by convention]
+        S3K[Risk: High]
+    end
+
+    subgraph S4[SharedState broad session data]
+        S4O[Owner: session_v4.rs]
+        S4R[Readers/Writers: mixed REPL and worker consumers]
+        S4I[Interface: broad direct field access]
+        S4K[Risk: High]
+    end
+
+    subgraph S5[Nice worker object path]
+        S5O[Owner: currently session_v4.rs]
+        S5R[Readers/Writers: nice workers + scheduler + cache state]
+        S5I[Interface: take_object_codegen / compile_module_object / notify]
+        S5K[Risk: Medium]
+    end
+
+    subgraph S6[Code publication: Code + GotTable + Arc JIT]
+        S6O[Owner intent: code.rs + got.rs + backend + symbol table entries]
+        S6R[Readers/Writers: codegen workers + runtime readers]
+        S6I[Interface: code entry carriers + atomic GOT slot swap]
+        S6K[Risk: High]
+    end
+
+    subgraph S7[Cache-hit loading]
+        S7O[Owner intent: worker.rs + scheduler cached registration]
+        S7R[Readers/Writers: priority workers + session invalidation paths]
+        S7I[Interface: try_cache_hit_load / register_module_cached / linker load]
+        S7K[Risk: Medium High]
+    end
+
+    subgraph S8[Platform DLL retention]
+        S8O[Owner: platform.rs + SharedState.kept_dlls]
+        S8R[Readers/Writers: loader writes, runtime dispatch reads]
+        S8I[Interface: load platform / retain handle / publish fn ptr]
+        S8K[Risk: Medium]
+    end
+
+    subgraph S9[Observability buffers]
+        S9O[Owner: observability.rs + io_trace.rs]
+        S9R[Readers/Writers: each thread writes local buffer, main thread flushes]
+        S9I[Interface: record / publish_thread_buffer / flush]
+        S9K[Risk: Low Medium]
+    end
+
+    subgraph S10[File watcher callback path]
+        S10O[Owner: watch.rs]
+        S10R[Readers/Writers: notify callback writes, REPL poll reads]
+        S10I[Interface: watch_file / poll_changes / update_content_hash]
+        S10K[Risk: Low Medium]
+    end
+
+    subgraph S11[Runtime IVars]
+        S11O[Owner: ivar.rs]
+        S11R[Readers/Writers: parallel runtime tasks]
+        S11I[Interface: ivar_create / ivar_spark / ivar_force]
+        S11K[Risk: Medium High]
+    end
+
+    subgraph S12[Atomic RC]
+        S12O[Owner: rc.rs + backend emission model]
+        S12R[Readers/Writers: runtime + generated code]
+        S12I[Interface: atomic RC ops + consuming helpers]
+        S12K[Risk: Medium]
+    end
+
+    S1 --> S2
+    S2 --> S3
+    S4 --> S3
+    S5 --> S4
+    S7 --> S3
+    S7 --> S1
+    S6 --> S3
+    S8 --> S3
+    S9 --> S1
+    S10 --> S4
+
+    RiskNote["Interpretation:\nredesign priority should focus first on structures\nwith high risk and weak ownership boundaries,\nnot just on adding more tests."]
+    RiskNote --- S2
+    RiskNote --- S4

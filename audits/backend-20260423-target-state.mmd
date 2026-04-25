@@ -1,0 +1,26 @@
+sequenceDiagram
+    autonumber
+    participant Caller as Integration / Tests
+    participant Facade as Thin backend facade
+    participant ISA as Single build_isa(is_pic)
+    participant Planner as Shared compile-plan / context builder
+    participant Core as Shared per-function compile primitive
+    participant FC as compiler::FnCompiler
+    participant Cache as Cache facade
+    participant CacheCore as Canonical cache API only
+    participant Tests as Local module tests + crate-level orchestration tests
+
+    Caller->>Facade: compile request (JIT or Object)
+    Facade->>ISA: build_isa(mode)
+    Facade->>Planner: build CompilePlan / CompileContext once
+    loop each defn
+        Planner->>Core: compile_defn(plan, defn)
+        Core->>FC: compile_body
+    end
+    Facade-->>Caller: artifacts / pointers / object output
+
+    Caller->>Cache: cache operations
+    Cache->>CacheCore: SymbolTable-direct canonical API
+
+    Tests->>FC: narrow unit tests near owning modules
+    Tests->>Facade: only crate-level orchestration / end-to-end coverage

@@ -1,0 +1,27 @@
+sequenceDiagram
+    autonumber
+    participant Worker as Worker subsystem
+    participant Pub as Publication service
+    participant ST as Symbol publication store
+    participant TP as Typecheck product store
+    participant Sched as CompileScheduler
+    participant Reader as Import / REPL / codegen reader
+
+    Note over Worker,Reader: Target state: publication is explicit and readiness changes happen only after the payload service commits.
+
+    Worker->>Pub: commit_typecheck_result(module, payload)
+    Pub->>ST: write complete symbol-table state
+    Pub->>TP: write typecheck product
+    Pub->>Sched: publish readiness transition
+
+    alt Reader wants symbols
+        Reader->>Sched: observe module ready
+        Sched-->>Reader: ready
+        Reader->>Pub: read_ready_module(module)
+        Pub->>ST: serve symbol-table view
+        Pub->>TP: serve typecheck product if needed
+    end
+
+    Note over Pub: One authority owns "payload complete" and "ready to observe".
+    Note over Reader: Readers no longer infer correctness by combining scheduler flags with ambient map reads on their own.
+    Note over Sched: Scheduler remains a coordination kernel, not a second publication authority.

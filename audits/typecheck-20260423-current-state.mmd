@@ -1,0 +1,56 @@
+sequenceDiagram
+    autonumber
+    participant Caller as Integration / Worker / Tests
+    participant Program as program.rs
+    participant Infer as infer.rs
+    participant Traits as traits.rs
+    participant Checker as checker.rs
+    participant Modules as DashMap<ModuleFullPath, SymbolTable>
+    participant Entry as Manual ModuleEntry::Def builders
+
+    alt Unified path (intended primary)
+        Caller->>Program: check() / check_form()
+        Program->>Checker: ensure_module_exists + shared state access
+        Program->>Infer: infer bodies
+        Infer->>Checker: lookup / generalize / instantiate
+    else Deprecated batch path still present
+        Caller->>Program: check_program()
+        Program->>Checker: separate registration/body passes
+        Program->>Infer: infer bodies again via legacy flow
+    else Deprecated REPL path still present
+        Caller->>Program: check_repl_input()
+        Program->>Infer: infer expr / defn via REPL-specific flow
+        Program->>Checker: build display / update state separately
+    end
+
+    par Expression-tree work repeated in multiple places
+        Program->>Program: apply_subst_to_expr()
+    and
+        Program->>Program: annotate_expr_from_maps()
+    and
+        Program->>Program: collect_constrained_calls()
+    and
+        Infer->>Infer: resolve_deferred_trait_calls()
+    end
+
+    alt Non-HKT impl method
+        Program->>Traits: register_trait_impl()
+        Traits->>Traits: check_impl_method_with_sig()
+        Traits->>Entry: build/write annotated Def entry
+    else HKT impl method
+        Program->>Traits: register_trait_impl()
+        Traits->>Traits: check_hkt_impl_method()
+        Traits->>Entry: build/write similar annotated Def entry again
+    end
+
+    loop Many lookups scan all loaded modules
+        Checker->>Modules: iter() for type defs / traits / impls / method origins
+        Traits->>Modules: iter() for HKT metadata lookup
+    end
+
+    loop New defs / placeholders / builtins / monos
+        Program->>Entry: manually construct ModuleEntry::Def
+        Traits->>Entry: manually construct ModuleEntry::Def
+        Program->>Modules: insert/update symbol table entry
+        Traits->>Modules: insert/update symbol table entry
+    end

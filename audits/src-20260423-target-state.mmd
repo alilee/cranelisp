@@ -1,0 +1,43 @@
+sequenceDiagram
+    autonumber
+    participant Caller as CLI / REPL / Tests
+    participant Main as main.rs
+    participant Facade as session facade
+    participant Repl as repl/eval module
+    participant Deps as dependency-registration service
+    participant Workers as worker subsystem
+    participant Sched as scheduler.rs
+    participant FE as frontend facade
+    participant TC as typecheck facade
+    participant BE as backend facade
+    participant Cache as cache/object service
+
+    Caller->>Main: run / repl / link
+    Main->>Facade: CompilerSession::new + action dispatch
+
+    alt REPL eval
+        Facade->>Repl: parse command / eval source / reload hooks
+        Repl->>FE: parse + expand + build
+        Repl->>Deps: ensure dependency published+registered once
+        Deps->>Sched: register / wait / unblock using one canonical protocol
+        Repl->>TC: check_form / finalize
+        Repl->>BE: compile/evaluate via canonical backend entrypoint
+    else batch / link
+        Facade->>Deps: register entry module once
+        Deps->>Sched: enqueue module work
+        Sched->>Workers: priority or object work item
+        Workers->>FE: parse/extract/build through facade only
+        Workers->>Deps: resolve discovered deps through same canonical service
+        Workers->>TC: check/check_form only
+        Workers->>BE: JIT or object compile through canonical backend entrypoint
+        Workers->>Cache: cache-hit load / object write through one cache service
+        Workers->>Sched: notify typecheck / codegen completion
+    end
+
+    Facade-->>Caller: values / diagnostics / link result
+
+    Note right of Facade: Session core stays thin after the split.
+    Note over Repl,Deps: REPL and dependency registration share one protocol.
+    Note right of Workers: Priority and nice workers live in one subsystem.
+    Note over FE,BE: Integration consumes narrow child crate facades.
+    Note over Caller,Facade: The public surface is small and stable.

@@ -1,0 +1,43 @@
+sequenceDiagram
+    autonumber
+    participant Caller as CLI / REPL / Tests
+    participant API as Thin frontend facade
+    participant Reader as reader.rs
+    participant Mod as module_extract.rs
+    participant Macro as macro pipeline facade
+    participant SexpKit as Shared synthetic Sexp builders
+    participant Classifier as Shared top-level classifier
+    participant Top as ast/top_level.rs
+    participant Expr as ast/expr.rs
+    participant Types as ast/types.rs + ast/patterns.rs
+    participant Docs as Frontend CLAUDE.md / design notes
+
+    Caller->>API: parse / expand / build request
+    API->>Reader: source -> Vec<Sexp>
+    API->>Docs: consult documented frontend invariants
+
+    opt module forms present
+        API->>Mod: extract declarations
+        Note over Mod: Boundary contract is documented, and super is normalized here.
+    end
+
+    opt macro-related forms present
+        API->>Macro: expand quasiquote / parse defmacro
+        Macro->>SexpKit: canonical constructors + match/list helpers
+    end
+
+    alt batch program
+        API->>Classifier: classify top-level form once
+        Classifier->>Top: build declaration form
+    else REPL input
+        API->>Classifier: classify top-level form once
+        Classifier->>Top: build declaration form when applicable
+        Classifier->>Expr: otherwise build expression form
+    end
+
+    Top->>Types: shared annotation + type parsing
+    Expr->>Types: shared annotation + pattern parsing
+
+    Note right of Classifier: One dispatch path serves both batch and REPL entry.
+    Note right of Top: ast_builder is split by subsystem, with smaller files and clearer ownership.
+    Note right of SexpKit: Canonical synthetic Sexp helpers reduce hidden coupling and agent traps.

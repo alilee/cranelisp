@@ -1,0 +1,46 @@
+stateDiagram-v2
+    [*] --> TypecheckFirst: register_module(delays_other=true)
+    [*] --> TypecheckNext: register_module(delays_other=false)
+    [*] --> TypecheckDone: register_module_cached
+
+    TypecheckFirst --> TypecheckWorking: take_priority_work_blocking
+    TypecheckNext --> TypecheckWorking: take_priority_work_blocking
+
+    TypecheckWorking --> TypecheckBlocked: block_for_typecheck / block_for_macro_codegen
+    TypecheckBlocked --> TypecheckFirst: unblock and still delays others
+    TypecheckBlocked --> TypecheckNext: unblock and no known waiters
+
+    TypecheckWorking --> TypecheckDone: notify_typecheck_done
+
+    TypecheckDone --> Complete: inmem_done && object_done
+    TypecheckDone --> Complete: object_done (ObjectOnly mode)
+
+    TypecheckFirst --> Failed: notify_module_failed
+    TypecheckNext --> Failed: notify_module_failed
+    TypecheckWorking --> Failed: notify_module_failed
+    TypecheckBlocked --> Failed: dependency failed / notify_module_failed
+    TypecheckDone --> Failed: late codegen / load failure
+
+    Failed --> TypecheckFirst: re_register_module / reset and retry
+    Complete --> TypecheckFirst: re_register_module
+    TypecheckDone --> TypecheckFirst: re_register_module
+
+    note right of TypecheckBlocked
+        Architectural risk:
+        correctness depends on unblock protocol
+        and dependency publication discipline.
+    end note
+
+    note right of TypecheckDone
+        Ready-state risk:
+        payload lives outside scheduler,
+        so readers rely on publication
+        happening before this transition
+        becomes observable.
+    end note
+
+    note right of Failed
+        Recovery path exists,
+        but repeated retries can hide
+        ownership / publication design issues.
+    end note

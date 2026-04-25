@@ -1,0 +1,72 @@
+flowchart LR
+    %% Current-state concurrency architecture in src/
+    subgraph Entry["Entry / User-facing layer"]
+        Main["main.rs\nCLI / REPL loop"]
+        Session["session_v4.rs\nCompilerSession + REPL eval + reload\n+ nice-worker loop + object compile"]
+    end
+
+    subgraph Kernel["Coordination kernel"]
+        Scheduler["scheduler.rs\nCompileScheduler\nqueues + waiters + condvars"]
+    end
+
+    subgraph Workers["Worker logic"]
+        PWorkers["worker.rs\npriority_worker_loop_shared"]
+        Process["process_module_forms\nhandle_import / register_dep\ntry_cache_hit_load"]
+        Codegen["inline_jit_codegen_for_*\nload_cached_module_via_linker"]
+    end
+
+    subgraph Shared["Shared mutable state"]
+        SharedState["SharedState\nDashMap + Mutex + Atomic fields"]
+        ModuleSexps["module_sexps\nsuspend_states\ncache_state\nfile_to_module"]
+        SymbolTables["symbol_tables\ntypecheck_products\nintrospection"]
+        ReplState["current_module\nrepl_check_state"]
+    end
+
+    subgraph Child["Child crates / runtime"]
+        Frontend["cranelisp-frontend"]
+        Typecheck["cranelisp-typecheck"]
+        Backend["cranelisp-backend"]
+        Runtime["cranelisp-runtime"]
+    end
+
+    Main --> Session
+    Session <--> Scheduler
+    Session <--> SharedState
+    Session --> Frontend
+    Session --> Backend
+    Session --> Runtime
+
+    Scheduler --> PWorkers
+    PWorkers --> Process
+    Process --> Frontend
+    Process --> Typecheck
+    Process --> ModuleSexps
+    Process --> SymbolTables
+    Process --> Scheduler
+    Process --> Session
+
+    PWorkers --> Codegen
+    Codegen --> Backend
+    Codegen --> SymbolTables
+    Codegen --> Scheduler
+
+    Session --> ReplState
+    ReplState --> SymbolTables
+
+    SharedState --> ModuleSexps
+    SharedState --> SymbolTables
+    SharedState --> ReplState
+
+    Session -. publish dep + register .-> Scheduler
+    Process -. publish dep + register .-> Scheduler
+
+    Note1["Risk: dependency publication / readiness protocol\nspans session_v4.rs + worker.rs + scheduler.rs"]
+    Note2["Risk: REPL-only and worker-visible state coexist\ninside one broad SharedState"]
+    Note3["Risk: worker ownership is split\npriority path in worker.rs, nice path in session_v4.rs"]
+
+    Note1 --- Session
+    Note1 --- Process
+    Note1 --- Scheduler
+    Note2 --- SharedState
+    Note3 --- Session
+    Note3 --- PWorkers

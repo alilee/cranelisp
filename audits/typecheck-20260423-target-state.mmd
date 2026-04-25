@@ -1,0 +1,36 @@
+sequenceDiagram
+    autonumber
+    participant Caller as Integration / Worker / Tests
+    participant Facade as program.rs thin facade
+    participant Pipeline as Single check() / check_form() pipeline
+    participant Walker as Shared Expr walker helpers
+    participant Traits as traits.rs front-end
+    participant ImplFinish as Shared impl-method finalizer
+    participant Index as Lookup facade over module tables
+    participant EntryFactory as Def entry constructors / builders
+    participant Modules as DashMap<ModuleFullPath, SymbolTable>
+
+    Caller->>Facade: typecheck request
+    Facade->>Pipeline: check() / check_form() only
+    Pipeline->>Index: type/trait/impl lookups via one facade
+    Index->>Modules: centralized scans / cached views
+
+    loop each form / body pass
+        Pipeline->>Walker: walk expr tree for annotation / deferred resolution / call collection
+        Walker-->>Pipeline: per-pass callbacks only
+    end
+
+    alt Standard impl method
+        Pipeline->>Traits: resolve method-specific types
+        Traits->>ImplFinish: finalize checked impl method
+    else HKT impl method
+        Pipeline->>Traits: resolve HKT-specific types
+        Traits->>ImplFinish: finalize checked impl method
+    end
+
+    ImplFinish->>Walker: annotate AST using shared traversal
+    ImplFinish->>EntryFactory: build/update Def entry through helpers
+    EntryFactory->>Modules: insert/update canonical symbol-table entry
+
+    Note over Facade,Pipeline: Deprecated check_program()/check_repl_input() removed or reduced to thin wrappers
+    Note over Walker,EntryFactory: New Expr variants and Def-entry fields updated in one place

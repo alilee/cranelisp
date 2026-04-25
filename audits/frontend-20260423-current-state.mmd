@@ -1,0 +1,46 @@
+sequenceDiagram
+    autonumber
+    participant Caller as CLI / REPL / Tests
+    participant API as cranelisp_frontend::lib
+    participant Reader as reader.rs
+    participant Mod as module_extract.rs
+    participant QQ as quasiquote.rs
+    participant DM as defmacro.rs
+    participant ASTB as ast_builder::build_top_level
+    participant ASTR as ast_builder::build_repl_input
+    participant Helpers as AST helper mini-frameworks
+    participant Synth as Manual synthetic Sexp builders
+
+    Caller->>API: parse / expand / build request
+    API->>Reader: source -> Vec<Sexp>
+    Note over Reader: Hand-written reader is clear locally, but token-shape knowledge lives here.
+
+    opt module forms present
+        API->>Mod: extract mod/import/export/platform
+        Note over Mod: super is rewritten eagerly here, so downstream code never sees a literal super import.
+    end
+
+    opt quasiquote present
+        API->>QQ: expand quasiquotes
+        QQ->>Synth: build synthetic macros/Sexp* forms
+    end
+
+    opt defmacro present
+        API->>DM: parse defmacro / flatten begin
+        DM->>Synth: synthesize match + constructor Sexps
+        Note over DM,ASTB: Synthesized Sexp must match AST builder syntax expectations exactly.
+    end
+
+    alt batch program
+        API->>ASTB: build_program / build_top_level
+        ASTB->>Helpers: classify head symbol
+        ASTB->>Helpers: parse annotations / params / types / patterns
+    else REPL input
+        API->>ASTR: build_repl_input(_from_sexps)
+        ASTR->>Helpers: repeat top-level classification
+        ASTR->>Helpers: parse annotations / params / types / patterns
+    end
+
+    Note right of ASTR: REPL and batch top-level dispatch are separate code paths, which invites drift.
+    Note right of Helpers: Large ast_builder.rs mixes top-level forms, expr lowering, trait and impl lowering, types, patterns, and special cases.
+    Note right of Synth: Synthetic Sexp construction exists in multiple local DSLs, increasing coupling and boilerplate.

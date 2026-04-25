@@ -1,0 +1,29 @@
+sequenceDiagram
+    autonumber
+    participant Worker as Priority worker
+    participant TC as TypeCheckEnv / finalize
+    participant ST as SharedState.symbol_tables
+    participant TP as SharedState.typecheck_products
+    participant Sched as CompileScheduler
+    participant Reader as Import fast path / REPL / codegen reader
+
+    Note over Worker,Reader: Current state: symbol publication and readiness are separate mechanisms coupled by convention.
+
+    Worker->>TC: check form / finalize module
+    TC->>ST: create or update symbol-table entries
+    Worker->>TP: insert typecheck product
+    Worker->>Sched: notify_typecheck_done(module)
+
+    alt Fast-path reader
+        Reader->>Sched: is_typechecked(module)?
+        Sched-->>Reader: yes
+        Reader->>ST: read symbol-table entries
+    else Nice/codegen reader
+        Reader->>Sched: take_object_codegen / claim ready module
+        Reader->>TP: read typecheck product
+        Reader->>ST: read symbol table for names / code
+    end
+
+    Note over ST,Sched: The scheduler does not own the payload, only the readiness flag/pool state.
+    Note over Worker,Reader: Correctness depends on the writer completing symbol publication before the scheduler transition becomes observable.
+    Note over ST: This is the core publish-then-read surface behind the observed import race.

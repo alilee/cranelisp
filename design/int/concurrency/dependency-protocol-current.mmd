@@ -1,0 +1,36 @@
+sequenceDiagram
+    autonumber
+    participant Session as REPL / session_v4.rs
+    participant Worker as worker.rs
+    participant MSexps as SharedState.module_sexps
+    participant ST as SharedState.symbol_tables
+    participant Sched as CompileScheduler
+
+    Note over Session,Worker: Current state: dependency publication / readiness protocol is split across session_v4.rs, worker.rs, and scheduler.rs.
+
+    alt Worker discovers dep during handle_import
+        Worker->>ST: read dep presence / import visibility
+        Worker->>MSexps: write dep sexps
+        Worker->>Sched: register_module(dep, delays_other=true)
+        Worker->>Sched: block_for_typecheck(caller, dep)
+        Sched-->>Worker: return Blocked
+    else REPL/session retries blocked dep
+        Session->>MSexps: maybe write dep sexps again
+        Session->>Sched: maybe register_module(dep, true) again
+        Session->>Sched: wait_module_inmem_complete_blocking(dep)
+    end
+
+    par Typecheck worker path
+        Worker->>ST: ensure_module_exists(dep)
+        Worker->>ST: populate symbol table entries
+        Worker->>Sched: notify_symbol_typechecked(...)
+        Worker->>Sched: notify_typecheck_done(dep)
+    and Reader fast path
+        Worker->>Sched: is_typechecked(dep)?
+        Sched-->>Worker: yes / no
+        Worker->>ST: register_imports from dep table
+    end
+
+    Note over Sched,ST: Reader correctness depends on publication discipline spanning scheduler readiness and symbol-table completeness.
+    Note over Session,MSexps: Session-side and worker-side paths each participate in publish-before-register.
+    Note over Worker,Sched: Known risk surface: observed H6 residue on import fast path.

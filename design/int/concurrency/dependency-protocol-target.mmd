@@ -1,0 +1,32 @@
+sequenceDiagram
+    autonumber
+    participant Session as REPL / session core
+    participant DepSvc as Dependency service
+    participant Packet as Dep work packet
+    participant Store as Compiler-owned publication store
+    participant Sched as CompileScheduler
+    participant Worker as Worker subsystem
+
+    Note over Session,Worker: Target state: one authority owns dependency publication, registration, wait, and resume.
+
+    alt Session or worker discovers dependency
+        Session->>DepSvc: ensure_dependency(dep)
+    else Worker->>DepSvc: ensure_dependency(dep)
+    end
+
+    DepSvc->>Store: publish dep payload once
+    DepSvc->>Packet: create dep work packet
+    DepSvc->>Sched: register or join existing dep work
+    DepSvc->>Sched: block/wait using one canonical protocol
+
+    Sched->>Worker: dispatch dep work packet
+    Worker->>Store: consume packet / read published dep payload
+    Worker->>Store: publish completed symbol/module state
+    Worker->>Sched: notify typecheck done / unblock waiters
+
+    Sched-->>DepSvc: dep ready
+    DepSvc-->>Session: resume caller
+
+    Note over DepSvc: Sole publish-before-register authority.
+    Note over Store,Sched: Publication barrier and readiness observation are coupled through one protocol, not mirrored paths.
+    Note over Worker: Workers consume packets rather than reconstructing the protocol from ambient shared maps.

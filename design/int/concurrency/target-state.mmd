@@ -1,0 +1,64 @@
+flowchart LR
+    %% Target-state concurrency architecture with stronger compartmentalisation
+    subgraph Entry["Entry / User-facing layer"]
+        Main["main.rs\nCLI / REPL loop"]
+        SessionCore["session core\nCompilerSession lifecycle\nsmall public facade"]
+        ReplUX["repl module\ncommands / formatting / prompts"]
+    end
+
+    subgraph Concurrency["Concurrency subsystem"]
+        DepService["dependency service\npublish -> register -> wait -> resume\nsole authority"]
+        Scheduler["scheduler kernel\nqueues + waiters + condvars\ncoordination only"]
+        WorkerSystem["worker subsystem\npriority + object workers\none ownership boundary"]
+        WorkPackets["narrow work packets\nmodule / symbol / dep work"]
+    end
+
+    subgraph State["Shared state with explicit owners"]
+        SessionState["session-owned state\nREPL-only / watcher / UI context"]
+        CompilerState["compiler-owned shared state\nsymbol tables / typecheck products\ncache + publication data"]
+        Retained["retention roots\nDLL handles / JIT & linker carriers"]
+    end
+
+    subgraph Child["Child crates via narrow facades"]
+        Frontend["frontend facade\nparse / expand / build"]
+        Typecheck["typecheck facade\ncheck / check_form"]
+        Backend["backend facade\ncompile / link / cache"]
+        Runtime["runtime facade\nIO / RC / diagnostics"]
+    end
+
+    Main --> SessionCore
+    SessionCore --> ReplUX
+    SessionCore --> SessionState
+    SessionCore --> DepService
+    SessionCore --> Runtime
+
+    ReplUX --> Frontend
+    ReplUX --> Typecheck
+    ReplUX --> Backend
+
+    DepService <--> Scheduler
+    DepService <--> CompilerState
+    DepService --> WorkPackets
+
+    Scheduler --> WorkerSystem
+    WorkerSystem --> WorkPackets
+    WorkerSystem --> Frontend
+    WorkerSystem --> Typecheck
+    WorkerSystem --> Backend
+    WorkerSystem --> CompilerState
+    WorkerSystem --> Retained
+    WorkerSystem --> Scheduler
+
+    CompilerState --> Retained
+
+    Note1["Goal: exactly one dependency publication / readiness protocol"]
+    Note2["Goal: REPL-only state separated from worker-visible compiler state"]
+    Note3["Goal: workers consume owned packets and narrow facades\nnot broad ambient SharedState"]
+    Note4["Goal: duplicate stores collapsed unless explicitly justified"]
+
+    Note1 --- DepService
+    Note2 --- SessionState
+    Note2 --- CompilerState
+    Note3 --- WorkerSystem
+    Note3 --- WorkPackets
+    Note4 --- CompilerState
