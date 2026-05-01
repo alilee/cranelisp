@@ -29,11 +29,15 @@ This repository is organized for the Cranelisp reimplementation:
 
 ## Sketch Oracle
 
-We have a prototype compiler as a sketch. 
+We have a prototype compiler as a sketch.
 
-> **Important** The sketch is a reference point only, not the destination. It's purpose is to de-risk the implementation by informing requirements, design decisions and technical risk assessments. At some point the sketch will be left behind and further development will be on the new system, so new work needs to stand on its own, start from a zero base and first principles - not copy the sketch.
+> **Important** The sketch is a reference point only, not the destination. Its purpose was to de-risk the reimplementation by informing requirements, design decisions, and technical risk assessments. The reimplementation has matured to the point where the sketch is no longer the default reference for design work — it is consulted **exceptionally**, not by default.
 
-> **Equally important** The sketch embodies hard-won design knowledge — solutions to problems that were discovered during prototyping. Before designing any subsystem, compiler skills MUST study the sketch's approach to the same problem, understand *why* it works that way, and explicitly decide whether to follow the same approach or diverge. Divergence is fine when justified (cleaner architecture, avoiding known sketch debts), but uninformed divergence — reimplementing from scratch without studying the sketch's solution — risks re-discovering problems the sketch already solved. Design docs MUST include a "Sketch comparison" section documenting: (a) how the sketch handles this, (b) whether the reimplementation follows or diverges, and (c) the rationale for divergence if any.
+> **When to consult the sketch.** When debugging an unexplained behaviour or design dead-end where a known-working precedent might inform the next move; when the spec is ambiguous and the sketch's behaviour is the available oracle; when an audit, defect, or `/review` finding explicitly cites a sketch comparison as the resolution. *Not* as a routine pre-reading step before design or implementation work — the reimplementation has its own design docs (`design/{crate}/`), facades (`design/arch/facades/`), and audits (`audits/`) that supersede the sketch as the working reference.
+
+> **If you do consult the sketch**, document the consultation in the design doc you're updating: what you looked at, what you took or rejected from it, and why. This keeps the consultation legible to future readers. A "Sketch comparison" section is not mandatory; include one only when the consultation was substantive.
+
+> **First-principles default.** New design work stands on its own — starts from spec + facade + audit + bounded-context statement, not from the sketch. Uninformed divergence from the sketch was a real risk in early reimplementation; routine consultation was the mitigation. That phase is past for most subsystems. Re-engage the sketch when the working materials don't suffice — that is the exception, not the rule.
 
 The prototype compiler lives in `sketch/`. Use it when the spec is ambiguous:
 
@@ -112,15 +116,40 @@ The distinction matters because defects without failing tests get lost. A FIXME 
 
 ## Cross-Skill Changes
 
-When a skill discovers that an upstream document (owned by another skill) needs updating, it MUST NOT silently edit that document. Instead, add a `FIXME(/skill-name)` HTML comment at the relevant location in the upstream file, describing the issue and proposed resolution. The owning skill picks up the FIXME on its next invocation, evaluates it, and actions it.
+When a skill discovers that an upstream document (owned by another skill) needs updating, it MUST NOT silently edit that document. Instead, file a FIXME as a numbered file in `design/arch/fixmes/NNNN-name.md`. The owning skill picks up the FIXME on its next invocation, evaluates it, actions it by editing its own files, and **deletes the FIXME file** with a commit message naming what was resolved. Git history is the audit trail.
 
-```html
-<!-- Example FIXME syntax (resolved FIXMEs are removed; see cross-skill protocol above) -->
+**File format** (per `sprints/METHOD.md` §3.3):
+
+```yaml
+---
+number: NNNN              # unique sequential — scan design/arch/fixmes/ for max+1
+target: /skill-name       # the owning skill that resolves
+filed_by: /skill-name     # the skill that filed
+filed_at: YYYY-MM-DD
+sprint_filed: NN
+refers_to: path/to/file.md §section, path/to/other.md   # specific anchors
+status: open
+---
+
+# Title — what needs to change
+
+## Issue
+...
+
+## Proposed resolution
+...
+
+## Operational implication / Context
+...
 ```
 
-This preserves ownership boundaries — each skill decides how to handle changes in its own files.
+Naming: `design/arch/fixmes/NNNN-short-name.md`. Filing skill scans for `max + 1`; `/sprint` resolves rare collisions at wave gate.
 
-**Wave gate**: Before `/sprint` advances to the next wave, it MUST scan for unresolved FIXMEs in all files touched by the current wave. Outstanding FIXMEs addressed to a skill in the current wave block advancement — they must be resolved or explicitly deferred with rationale.
+**Inline `FIXME(/skill)` HTML comments are the OLD protocol.** They were superseded in Sprint 63 (M7 — methodology pivot). Pre-S63 inline FIXMEs still scatter the project and are migrated by `/sprint` opportunistically. **Do not author new inline FIXMEs.** All new cross-skill change requests file as `design/arch/fixmes/NNNN-name.md`.
+
+This preserves ownership boundaries — each skill decides how to handle changes in its own files. Filing a FIXME is the ONE exception to file ownership (any skill may file targeting any other skill); editing in response remains the owning skill's prerogative.
+
+**Wave gate**: Before `/sprint` advances to the next wave, it scans `design/arch/fixmes/` for `target: /skill-in-wave` and `status: open`. Outstanding FIXMEs targeting a wave's skill block advancement — they must be resolved or explicitly deferred with rationale.
 
 ## Skill Handoff
 

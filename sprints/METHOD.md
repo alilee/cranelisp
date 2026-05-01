@@ -84,13 +84,13 @@ Every sprint follows seven phases. `/sprint` orchestrates by issuing skill invoc
 | 3 | Design | `/spec`, `/arch`, `/design` per crate touched, `/qa` | Updated spec / interface types / per-crate design docs / test plan reflecting sprint scope | `/arch` confirms public-API + interface set is complete; `/qa` has enough to draft failing tests; touched design docs current |
 | 4 | Wave organization | `/sprint` | Wave breakdown in `SPRINT.md`; `SPRINT.md` ACTIVE | Waves written |
 | 5 | Language phase | `/qa` first (sprint-wide: failing integration + e2e tests). Then per crate, parallel: D/D/R cycle (`/design` refines → `/dev` implements → `/review`). Iterate within crate as needed. | Passing integration + e2e tests; per crate: refined design, implementation, unit tests, change-set review findings, public-API diffs approved | `/sprint` (with user) takes the **authoritative judgment of what ships this sprint**. Subsequent phases take what is given. |
-| 6a | User-facing assessment | `/repl`, `/port`, `/stdlib`, `/examples`, `/docs`, `/sprint` | Plan for user-facing artifacts against what shipped; gap FIXMEs filed in `sprints/fixmes/` | Plan agreed; gap FIXMEs filed |
+| 6a | User-facing assessment | `/repl`, `/port`, `/stdlib`, `/examples`, `/docs`, `/sprint` | Plan for user-facing artifacts against what shipped; gap FIXMEs filed in `design/arch/fixmes/` | Plan agreed; gap FIXMEs filed |
 | 6b | User-facing action | `/repl`, `/port`, `/stdlib`, `/examples`, `/docs` | New sprint demo; exemplar update; stdlib / examples / docs updates; prior demos replayed green | All planned artifacts delivered; demos play green |
 | 7 | Close | `/sprint` (with user) | Outcome report; archive; ROADMAP update; FIXMEs forward | User approval of close |
 
 ### 2.2 Phase notes
 
-**Phase 1 — Scope.** `/sprint` scans open FIXMEs (`sprints/fixmes/`) + prior-sprint archive for carries. Proposes the next increment.
+**Phase 1 — Scope.** `/sprint` scans open FIXMEs (`design/arch/fixmes/`) + prior-sprint archive for carries. Proposes the next increment.
 
 **Phase 2 — Architecture review.** `/arch` reviews scope for technical coherence, interim-architecture risk, public-API impact. Updates `crates/cranelisp-types/` if new cross-crate interfaces are required.
 
@@ -104,11 +104,11 @@ Every sprint follows seven phases. `/sprint` orchestrates by issuing skill invoc
 
 **Phase 6b — User-facing action.** Execute the 6a plan against what shipped. Demos test reachability of the spec'd capability through user surfaces.
 
-**Phase 7 — Close.** `/sprint` authors outcome, archives `SPRINT.md`, updates ROADMAP. **User approves close explicitly** — `/sprint` does not close unilaterally.
+**Phase 7 — Close.** `/sprint` authors outcome, archives `SPRINT.md`, updates ROADMAP. **User approves close explicitly** — `/sprint` does not close unilaterally. Checkpoint on adequacy of arch's architectural principles.
 
 ### 2.3 FIXME flow within a sprint
 
-- Filed at any time as files in `sprints/fixmes/NNNN-name.md` (see §3.3).
+- Filed at any time as files in `design/arch/fixmes/NNNN-name.md` (see §3.3).
 - **Wave gate**: before `/sprint` advances to the next wave, scans for `target: /skill-in-wave` and `status: open`. Outstanding FIXMEs targeting a wave's skill block advancement.
 - **Phase 6 → next sprint**: gap FIXMEs flow forward to the next sprint as scope input. Phase 6 does not reopen Phase 5.
 
@@ -144,7 +144,7 @@ If `/sprint` is invoked mid-sprint: report status; recommend continue / re-scope
 | Roadmap | `sprints/ROADMAP.md` | `/sprint` | Sprint-by-sprint progress |
 | Current sprint plan | `sprints/SPRINT.md` | `/sprint` | Active sprint scope, waves, outcome |
 | Sprint archive | `sprints/archive/sprint-{id}.md` | `/sprint` | Completed sprint records |
-| FIXMEs | `sprints/fixmes/NNNN-name.md` | Filing skill until resolved | Cross-skill change requests |
+| FIXMEs | `design/arch/fixmes/NNNN-name.md` | Filing skill until resolved | Cross-skill change requests |
 
 ### 3.2 Reading order
 
@@ -156,13 +156,13 @@ For a new session on this project:
 4. `sprints/METHOD.md` (this) for the delivery method
 5. `design/arch/` and `design/{crate}/` for current design context
 6. Per-directory `CLAUDE.md` when entering a directory
-7. `sprints/fixmes/` for open requests targeting the current skill
+7. `design/arch/fixmes/` for open requests targeting the current skill
 
 ### 3.3 FIXME file protocol
 
-FIXMEs are files in `sprints/fixmes/`, not inline comments. One file per issue. Avoids file-ownership ambiguity and multi-skill edit conflicts.
+FIXMEs are files in `design/arch/fixmes/`, not inline comments. One file per issue. Avoids file-ownership ambiguity and multi-skill edit conflicts.
 
-**Naming**: `sprints/fixmes/NNNN-short-name.md`. NNNN is unique sequential. Filing skill scans for `max + 1`. `/sprint` resolves rare collisions at wave gate.
+**Naming**: `design/arch/fixmes/NNNN-short-name.md`. NNNN is unique sequential. Filing skill scans for `max + 1`. `/sprint` resolves rare collisions at wave gate.
 
 **Format**: frontmatter + body.
 
@@ -213,6 +213,6 @@ When a memory's content becomes durable, it migrates into the appropriate canoni
 - Per-crate design intent — `design/{crate}/{crate}.md`
 - Skill workflow detail — `.claude/commands/{skill}.md`
 - Active sprint — `sprints/SPRINT.md`
-- Open FIXMEs — `sprints/fixmes/`
+- Open FIXMEs — `design/arch/fixmes/`
 - Predecessor (consolidated current state, retained for reference) — `sprints/METHOD_OLD.md`
 - Working draft with deeper prose, migration plan, and worked rationale — `sprints/METHOD_PROPOSED.md`

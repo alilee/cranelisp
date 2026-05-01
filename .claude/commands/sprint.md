@@ -31,12 +31,12 @@ Specifically MUST NOT edit:
 - `sprints/SPRINT.md` — active sprint plan (moves to `archive/` at close)
 - `sprints/SPRINT_TEMPLATE.md` — starting form for a new sprint
 - `sprints/archive/sprint-{id}.md` — closed sprint records
-- `sprints/fixmes/NNNN-*.md` — cross-skill change requests. `/sprint` orchestrates; never deletes — only the targeted skill resolves and removes.
+- `design/arch/fixmes/NNNN-*.md` — cross-skill change requests. `/sprint` orchestrates; never deletes — only the targeted skill resolves and removes.
 
 ## First steps on invocation
 
 1. From the imported `SPRINT.md`, identify the current phase from the `Status` line.
-2. List `sprints/fixmes/` for open FIXMEs.
+2. List `design/arch/fixmes/` for open FIXMEs.
 3. Skim recent `sprints/archive/` only if context on prior carries is needed.
 4. Act per the phase-specific instructions in §The seven phases.
 
@@ -56,7 +56,7 @@ Phase definitions are normative in `METHOD §2`. Below: what `/sprint` specifica
 
 ### Phase 1 — Scope
 
-- Scan `sprints/fixmes/` for open carries; check 2× escalation status of each (`METHOD §2.4` — items deferred twice ship this sprint or require explicit user sign-off for a third deferral).
+- Scan `design/arch/fixmes/` for open carries; check 2× escalation status of each (`METHOD §2.4` — items deferred twice ship this sprint or require explicit user sign-off for a third deferral).
 - Read recent `sprints/archive/` for unresolved findings.
 - Propose the next coherent increment in `SPRINT.md` as `Status: PHASE 1 SCOPE DRAFT`.
 - Present scope to user. Do not advance until user approves.
@@ -87,7 +87,7 @@ Two stages.
 
 **Stage 2 — Per-crate D/D/R cycle, parallel across crates.** For each crate touched: spawn `/design` (narrow — refines design doc against the implementation problem), then `/dev` (narrow — implements + unit tests), then `/review` (narrow — change-set review against design intent + accumulated state). Iterate within each crate as needed.
 
-**Wave gate before any advance**: scan `sprints/fixmes/` for files matching `target: /skill-in-wave` AND `status: open`. Any match blocks. Either the targeted skill resolves (deletes the file) or it is explicitly deferred (`status: deferred` + rationale + target sprint, set by the targeted skill).
+**Wave gate before any advance**: scan `design/arch/fixmes/` for files matching `target: /skill-in-wave` AND `status: open`. Any match blocks. Either the targeted skill resolves (deletes the file) or it is explicitly deferred (`status: deferred` + rationale + target sprint, set by the targeted skill).
 
 **Phase 5 conclusion is `/sprint` + user — authoritative judgment of what ships this sprint.** Defects are addressed in Phase 5: fix, defer with explicit rationale (file FIXME), or close Phase 5 short. Speculative refactoring is deferred; emergent refactoring (third instance of a duplicate, function over budget, `mirror` comment) is mandatory in-sprint. Phase 6 takes what is given; Phase 6 does NOT retroactively reopen Phase 5.
 
@@ -96,7 +96,7 @@ Expected exit: `/qa` failing tests now pass; `cargo nextest run` green; no `#[ig
 ### Phase 6a — User-facing assessment
 
 - Issue `/repl`, `/port`, `/stdlib`, `/examples`, `/docs` narrow to their surfaces.
-- Each skill assesses what was *actually* delivered (not what was scoped) against spec; produces a 6b plan; files gap FIXMEs in `sprints/fixmes/` for next sprint.
+- Each skill assesses what was *actually* delivered (not what was scoped) against spec; produces a 6b plan; files gap FIXMEs in `design/arch/fixmes/` for next sprint.
 - Exit gate: each user-proxy has produced a plan; gap FIXMEs filed.
 
 ### Phase 6b — User-facing action
@@ -109,6 +109,7 @@ Expected exit: `/qa` failing tests now pass; `cargo nextest run` green; no `#[ig
 
 - Author the Outcome section in `SPRINT.md`: Delivered / Deferred (with rationale) / Findings.
 - Present outcome to user. **Do not archive or update ROADMAP until user approves close explicitly.**
+- Prompt to consider whether arch's architectural principles are adequately serving the sprint.
 - On approval: `git mv sprints/SPRINT.md sprints/archive/sprint-{id}.md`; update `sprints/ROADMAP.md`; commit.
 
 ## Mid-sprint adjustment
@@ -122,11 +123,11 @@ If invoked mid-sprint:
 
 ## FIXME orchestration
 
-FIXMEs are files in `sprints/fixmes/NNNN-name.md`. File format, frontmatter, and full lifecycle: `METHOD §3.3`.
+FIXMEs are files in `design/arch/fixmes/NNNN-name.md`. File format, frontmatter, and full lifecycle: `METHOD §3.3`.
 
 `/sprint` actions:
 
-- **Phase 1 scan**: list `sprints/fixmes/`; carry open items into scope as candidates.
+- **Phase 1 scan**: list `design/arch/fixmes/`; carry open items into scope as candidates.
 - **Wave gate scan**: before advancing each wave in Phase 5, look for files with `target: /skill-in-current-wave` AND `status: open`. Block advancement on any match.
 - **Phase 6 forward-flow**: gap FIXMEs filed during 6a/6b are scope input for the next sprint, not retroactive Phase 5 work.
 
