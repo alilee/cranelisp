@@ -15,8 +15,10 @@ The frontend boundary is four free functions used by `int`'s shared `process_for
 ```rust
 pub fn parse(source: &str) -> Result<Vec<Sexp>, CranelispError>;
 
-pub fn extract_module_declarations(forms: Vec<Sexp>)
-    -> Result<(StructuralDecls, Vec<Sexp>), CranelispError>;
+pub fn extract_module_declarations(
+    containing_module: &ModuleFullPath,
+    forms: Vec<Sexp>,
+) -> Result<(StructuralDecls, Vec<Sexp>), CranelispError>;
 
 pub fn build_ast(defn_sexp: &Sexp) -> Result<Defn, CranelispError>;
 
@@ -27,6 +29,10 @@ where
     C: CodeStore,
     L: LinkerStore;
 ```
+
+`extract_module_declarations` takes the containing module's path because BC §1 invariant 3 mandates `super` resolution at parse time — `ImportSpec.module_path` MUST never carry the literal `"super"` past the frontend boundary. Per spec §8.3.7, inside `a.b.c` the form `(import [super [...]])` resolves to `a.b`. The path is needed to do that rewrite.
+
+`parse_import_sexp` is intentionally NOT in the public surface (per Principle 2 — narrow interfaces). Its only caller is `extract_module_declarations` internally; the REPL `/import` slash command parses through `extract_module_declarations` with a single-form input. The internal helper exists in the implementation but is `pub(crate)`.
 
 `parse` produces a flat `Vec<Sexp>` — pure source-to-sexp lowering, no structural-decl harvesting. `extract_module_declarations` is the post-parse pass that walks the form vector once, peels off `(import …)` / `(export …)` / `(mod …)` / `(platform …)` declarations into a `StructuralDecls` bundle, and returns the residual non-structural form vector. The two-call shape lets parse stay reusable for non-orchestration consumers (REPL slash commands, comment-preserving variants — see `parse_preserving_comments` below) without forcing them to construct a structural-decl store they'll never use.
 
@@ -76,14 +82,9 @@ pub enum ExpansionError {
 }
 ```
 
-### Sub-parsers for structural forms (called from `parse` internally; exposed for direct callers)
+### Sub-parsers for structural forms — internal only
 
-```rust
-pub fn parse_import_sexp(sexp: &Sexp) -> Result<ImportSpec, CranelispError>;
-pub fn parse_export_sexp(sexp: &Sexp) -> Result<ExportSpec, CranelispError>;
-pub fn parse_mod_sexp(sexp: &Sexp) -> Result<ModDecl, CranelispError>;
-pub fn parse_platform_sexp(sexp: &Sexp) -> Result<PlatformSpec, CranelispError>;
-```
+The per-form sub-parsers (`parse_import_sexp`, `parse_export_sexp`, `parse_mod_sexp`, `parse_platform_sexp`) exist in the implementation as `pub(crate)` helpers consumed by `extract_module_declarations`. They are intentionally NOT in the public surface. Direct callers (REPL `/import`, etc.) route through `extract_module_declarations` with a single-form input.
 
 ### Synthetic span allocator (used by macro expansion to attribute generated forms)
 

@@ -569,6 +569,34 @@ pub enum LinkerError {
     /* future: RelocationFailure, AbiMismatch, etc. */
 }
 
+/// Cross-cutting "this dependency isn't ready yet" signal. Carried by both
+/// `ExpansionError::Gap` (frontend `expand`) and `CheckError::Gap` (typecheck
+/// `check_form`). The integration layer's `process_form` pattern-matches on
+/// the variant to decide what to wait on (typecheck for symbol typing, JIT
+/// for in-mem macro code, typecheck for an opaque type ref). Per FIXMEs 0092
+/// + 0093.
+#[non_exhaustive]
+pub enum ResolutionGap {
+    /// Symbol's typecheck not yet complete — wait for `notify_symbol_typechecked(fq)`.
+    SymbolTypechecked(FQSymbol),
+    /// Macro target needs in-mem JIT — typecheck first, then `priority_boost_jit(fq)` + `wait_for_inmem(fq)`.
+    MacroInMem(FQSymbol),
+    /// Type reference needs typecheck — wait for `notify_type_resolved(fq)`.
+    Type(FQTypeName),
+}
+
+/// Typecheck-side error type for `cranelisp_typecheck::check_form`. Mirrors
+/// the frontend-side `ExpansionError`'s shape — both carry `ResolutionGap`
+/// for the dependency-not-ready case, both surface domain errors with
+/// `ErrorLocation` per Decision 39. Per FIXME 0093.
+#[non_exhaustive]
+pub enum CheckError {
+    /// Dependency not yet ready — caller dispatches via int::process_form's handle_gap and retries.
+    Gap(ResolutionGap),
+    /// Type-inference or constraint failure — substantive typecheck rejection.
+    TypeError { message: String, location: ErrorLocation },
+}
+
 /// Platform-origin failures — DLL load, manifest parse, ABI mismatch, dispatch.
 /// Per Decision 42 — coordinates as data; `int`'s `Sess::format_error` consumes
 /// via `CranelispError::Platform(PlatformError)` and selects display strategy

@@ -20,7 +20,7 @@ sequenceDiagram
             create participant Frontend as Frontend facade<br/>cranelisp_frontend
             Sess ->> Frontend: cranelisp_frontend::parse(source: &str) -> Result[Vec[Sexp], CranelispError]
             Frontend -->> Sess: Ok(Vec[Sexp])
-            Sess ->> Frontend: cranelisp_frontend::extract_module_declarations(forms: Vec[Sexp]) -> Result[(StructuralDecls, Vec[Sexp]), CranelispError]
+            Sess ->> Frontend: cranelisp_frontend::extract_module_declarations(containing_module: &ModuleFullPath, forms: Vec[Sexp]) -> Result[(StructuralDecls, Vec[Sexp]), CranelispError]
             Frontend -->> Sess: Ok((StructuralDecls { imports, exports, platforms, submodules }, residual_forms: Vec[Sexp]))
             Sess ->> Shared: Sess.shared.symbol_tables.entry(module.clone()).or_default()
             Shared -->> Sess: RefMut[SymbolTable] (brief exclusive — entry write lock)
