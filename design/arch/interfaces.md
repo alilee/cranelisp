@@ -58,7 +58,7 @@ string_newtype!(ModuleFullPath);   // dotted path: "core.option", "user"
 string_newtype!(TraitName);        // trait name: "Num", "Display"
 string_newtype!(TypeName);         // type name: "Int", "Option"
 string_newtype!(ModuleName);       // single component: "option", "core"
-string_newtype!(JitSymbol);        // JIT linker name: "add$Int+Int"
+string_newtype!(LinkerSymbol);        // JIT linker name: "add$Int+Int"
 
 /// Fully qualified symbol: module path + local name.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -670,10 +670,10 @@ pub enum ResolvedCall {
         trait_name: TraitName,
         method_name: Symbol,
         impl_type: TypeName,
-        mangled_name: JitSymbol,
+        mangled_name: LinkerSymbol,
     },
     SigDispatch {
-        mangled_name: JitSymbol,
+        mangled_name: LinkerSymbol,
     },
     AutoCurry {
         target_name: Symbol,
@@ -1093,7 +1093,7 @@ pub enum DefKind {
     SpecialForm { description: String },
     Primitive {
         primitive_kind: PrimitiveKind,
-        jit_name: Option<JitSymbol>,
+        jit_name: Option<LinkerSymbol>,
     },
     UserFn {
         constrained_fn: Option<ConstrainedFn>,

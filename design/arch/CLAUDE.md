@@ -83,6 +83,9 @@ Each Decision is one file at `decisions/NNNN-{slug}.md`. Index:
 - [0037](decisions/0037-cache-hit-integration-inside-register-module.md) — Cache-hit integration lives inside `register_module`'s recursive flow (operative)
 - [0038](decisions/0038-sharedstate-formal-worker-shareable-subset.md) — `SharedState` is the formal worker-shareable subset of `CompilerSession` state (operative)
 - [0039](decisions/0039-per-defn-source-on-introspection.md) — Per-defn source lives on `Introspection.source`; `SymbolTable.defn_order: Vec<Symbol>` preserves canonical ordering (operative)
+- [0040](decisions/0040-runtime-trace-io-trace-relocate-to-int.md) — `trace.rs` and `io_trace.rs` relocate to int; runtime keeps `IoObserver` callback contract; BC §4 unchanged (operative)
+- [0041](decisions/0041-compile-to-module-per-symbol-jit-direct-writes.md) — `compile_to_module` per-symbol JIT cardinality; `Code` moves to `cranelisp-backend`; backend writes shared state directly; `Result<(), CompilationError>` (operative); amends Decisions 31, 35
+- [0042](decisions/0042-platform-error-adopts-error-location.md) — `PlatformError` is a `cranelisp-types`-hosted enum with `ErrorLocation` carriers per variant; surfaces via `CranelispError::Platform` (operative)
 
 ## Cross-References
 
@@ -113,7 +116,7 @@ Extracted to `principles.md` (S63). That file is the single canonical home and i
 | `TraitName` | Trait name (uppercase) | `"Num"`, `"Display"`, `"Eq"` |
 | `ModuleName` | Single module component (no dots) | `"core"`, `"option"`, `"math"` |
 | `ModuleFullPath` | Dotted module path | `"core.option"`, `"user"` |
-| `JitSymbol` | JIT linker name (mangled) | `"add$Int+Int"` |
+| `LinkerSymbol` | JIT linker name (mangled) | `"add$Int+Int"` |
 | `FQSymbol` | Fully qualified: module + symbol | `{ module: "core.option", symbol: "Some" }` |
 
 **When in doubt**: if a `String` field identifies something in the language (a name, a type, a module), it should be a newtype. The only bare `String` fields allowed are:
