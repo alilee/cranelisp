@@ -13,7 +13,6 @@ Each diagram makes one concurrency invariant visible. The actor grain is the *un
 | `concurrency-symbol-table-entry.svg` | A symbol-table entry has at most one writer per phase. Typecheck and codegen of the same entry never overlap. |
 | `concurrency-got-slot.svg` | A GOT slot is single-writer per slot, atomic-readable by many. The atomic store is the cross-thread publication primitive. |
 | `concurrency-dependency-service.svg` | The dependency service is the sole writer of dependency state. Workers do not poll or read shared state. |
-| `concurrency-repl-session.svg` | Session state is REPL-thread-exclusive. Workers reach in only via handoffs. |
 | `concurrency-watcher-channel.svg` | The watcher channel is single-writer (OS callback thread) and single-reader (REPL thread, at prompt boundary). |
 | `concurrency-jit-retention.svg` | JIT pages free only when no derivative code pointer is reachable. The Arc-wrapped Jit is the retention root; swap-before-drop ordering preserves safety. |
 

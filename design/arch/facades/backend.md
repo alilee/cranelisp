@@ -147,6 +147,26 @@ unsafe impl Sync for Linker {}
 
 Wrapped in `Arc<Linker>` by `load_object`; analogous lifecycle to `Jit`. `Arc<Linker>` lives on `ModuleEntry::Def.code = Code::Linker { linker, ptr }` for cache-hit modules.
 
+### GOT-population observation (extension point)
+
+NOT diagnostics — an extension point in the same shape as runtime's `IoObserver` (Decision 40). Backend defines the observation taxonomy and a registration API; `int` implements all observer state. The events fire from `compile_to_module`'s `write_code` site (where the data is in hand) and from `Linker::load_object`'s slot population. Production batch (no observer registered) pays one relaxed null-check load per call site.
+
+```rust
+pub enum GotEventTag { JitWrite, LinkerWrite, Redefinition, /* … */ }
+pub struct GotEvent {
+    pub module: ModuleFullPath,
+    pub symbol: Symbol,
+    pub slot: usize,
+    pub ptr: *const u8,
+    pub provenance: GotProvenance,           // Jit { jit_addr: usize } | Linker { linker_addr: usize }
+}
+pub type GotObserver = fn(GotEventTag, &GotEvent);
+
+pub fn register_got_observer(observer: Option<GotObserver>);
+```
+
+`GotEventTag` and `GotEvent` move with the API to backend — they ARE the callback's type contract; they belong where the GOT writes happen. `int`'s startup (REPL/trace mode OR `CRANELISP_GOT_TRACE=1`) calls `cranelisp_backend::register_got_observer(Some(int::got_trace::record))`. The observer state (per-thread `VecDeque` ring buffer, FIFO overflow, formatter, dump) lives in `src/got_trace/` parallel to `src/io_trace/` post-Decision-40 relocation. This is the third instance of the project's consistent observability pattern (alongside `io_trace` and `scheduler_trace`).
+
 ### Public consts
 
 None.
