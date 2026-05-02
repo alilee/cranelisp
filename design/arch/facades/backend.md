@@ -14,11 +14,12 @@ These are the entire backend boundary used by `int`'s priority workers (JIT path
 
 ```rust
 pub fn compile_to_module<M: Module>(
-    module: &ModuleFullPath,
+    scope: &ModuleFullPath,
     names: &[Symbol],
-    symbol_tables: &SymbolTables,
-    jit: &mut M,
-) -> Result<JitArtefact, CranelispError>;
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<Code, ()>>,
+    introspection: Option<&DashMap<FQSymbol, Introspection>>,
+    module: M,
+) -> Result<(), CompilationError>;
 
 pub fn load_object(
     module: &ModuleFullPath,
@@ -32,21 +33,19 @@ pub fn compile_to_object(
 ) -> Result<ObjectArtefact, CranelispError>;
 ```
 
-`compile_to_module` is the JIT-mode entry — used by `int`'s priority workers when typecheck-cache missed. Generic over `M: cranelift_module::Module` per Decision 23 — the same body emits byte-identical CLIF whether `M` is a `JITModule` or an `ObjectModule`; the mode is a property of which `Module` instance the integration layer constructs at finalize. (See "Object file contract" below.)
+`compile_to_module` is the codegen entry — used by `int`'s priority workers (JIT path) and nice workers (object path). Generic over `M: cranelift_module::Module` per Decision 23 — the same body emits byte-identical CLIF whether `M` is a `JITModule` or an `ObjectModule`; the mode is a property of which `Module` instance the caller passes. **Cardinality is determined by the `names` arity at the caller, NOT by mode** — JIT mode passes one symbol per call (per Decision 41 — true per-symbol JIT for per-redefinition reclaim); object mode passes the full module's defined symbols (per-module ObjectModule).
 
-`load_object` is the JIT-mode cache-hit entry — reads a `.o` produced by an earlier `compile_to_object` call (or by `--link` mode), runs the cache `Linker` to resolve each defined symbol's address, returns a `LinkerArtefact` that `int` writes into `ST[m].symbols[name].code` per Decision 35.
+Per Decision 41, backend writes each compiled symbol's `Code::Jit { jit, ptr }` directly into its entry via Decision 38's `write_code(&self, sym, code)` (interior mutable; no `&mut` flow needed). Backend also writes `Introspection { clif_ir, disasm, code_size, compile_duration }` into the introspection map iff `introspection.is_some()` — the `Option`'s `is_some()` IS Decision 38's mode discriminator, reaching backend directly via the parameter. There is no return tuple to unpack; `int`'s previous post-loop (worker.rs:2860-3018) collapses into the per-symbol call-site loop. Decision 37's "no swallowed failures" rule lands as a single `?` inside `compile_to_module` — the per-step cascade collapses; backend errors out at the first invariant breach with a typed `CompilationError` variant.
+
+`load_object` is the JIT-mode cache-hit entry — reads a `.o` produced by an earlier `compile_to_object` call (or by `--link` mode), runs the cache `Linker` to resolve each defined symbol's address, returns a `LinkerArtefact` that `int` writes into `ST[m].symbols[name].code` per Decision 35. Per-module cardinality (one Linker holds many symbols) is unchanged; the per-symbol direct-write pattern is for `compile_to_module` only.
 
 `compile_to_object` is the nice-worker object-codegen entry — produces the `.o` artefact + sidecar (`.meta.json` containing the serialised `SymbolTable<(), ()>`). Backend writes nothing to disk itself; `int`'s `ObjectCache::write` does the file IO.
 
 ### Return shapes
 
-```rust
-#[non_exhaustive]
-pub struct JitArtefact {
-    pub jit: Arc<Jit>,                                         // Decision 31 — the per-batch retention root, custom Drop reclaims via unsafe JITModule::free_memory()
-    pub ptrs: HashMap<Symbol, *const u8>,                      // per-symbol code addresses for `int` to wrap as Code::Jit { jit, ptr }
-}
+`compile_to_module` returns `Result<(), CompilationError>` — no artefact struct. Backend writes Code and Introspection directly into the passed-in stores per Decision 41.
 
+```rust
 #[non_exhaustive]
 pub struct LinkerArtefact {
     pub linker: Arc<Linker>,                                   // per-module retention root for cache-hit code — analogous to Jit for JIT mode
@@ -59,6 +58,49 @@ pub struct ObjectArtefact {
     pub sidecar: SymbolTable<(), ()>,                          // serialised SymbolTable for the cache .meta.json (no code, no linker)
 }
 ```
+
+### `Code` — the per-symbol code carrier (moved here from `src/` per Decision 41)
+
+```rust
+#[non_exhaustive]
+pub enum Code {
+    Jit { jit: Arc<Jit>, ptr: *const u8 },                     // fresh-build code; Arc<Jit> is the Decision-31 reclaim primitive
+    Linker { linker: Arc<Linker>, ptr: *const u8 },            // cache-hit code mapped from .o via load_object
+}
+
+impl Code {
+    pub fn ptr(&self) -> *const u8;                            // variant-uniform code-address accessor
+}
+
+unsafe impl Send for Code {}
+unsafe impl Sync for Code {}
+```
+
+`Code` is the integration layer's concrete `C` for `SymbolTable<C, L>`, but its definition lives in `cranelisp-backend` because both variants reference backend-owned types (`Jit`, `Linker`). Decision 35's Principle-3 protection (no `cranelisp-types → cranelisp-backend` dep) survives intact — `Code` does NOT live in `cranelisp-types`. Decision 35 Layer 2 Option B retracts: backend now constructs `Code` directly (per Decision 41), so the integration layer is no longer the sole crate that names `Code`.
+
+### Errors
+
+```rust
+#[non_exhaustive]
+pub enum CompilationError {
+    /// Per Decision 37 + §2.7 — a name passed in `names` does not resolve to a
+    /// compilable entry in the symbol table. Indicates either a stale caller
+    /// (the entry was evicted between `defined_symbols()` and the call) or a
+    /// contract violation (caller passed a name that was never compilable —
+    /// e.g., `kind == Overloaded` or `ast: None`).
+    SymbolNotCompilable { module: ModuleFullPath, symbol: Symbol },
+
+    /// Cranelift codegen failed for a defined symbol.
+    CodegenFailed { module: ModuleFullPath, symbol: Symbol, cause: String, location: ErrorLocation },
+
+    /// `JITModule::define_function` or `Module::declare_function` returned an error.
+    ModuleError { module: ModuleFullPath, symbol: Symbol, cause: String },
+
+    /* … */
+}
+```
+
+Per §2.7 — `SymbolNotCompilable` is the typed signal for the Decision-37 failure mode. Replaces ad-hoc `CranelispError::CodegenError { message: "..." }` strings at the boundary; callers can match on the variant rather than parse messages.
 
 ### `Jit` — the JIT retention newtype (Decision 31)
 
