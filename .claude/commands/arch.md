@@ -124,6 +124,33 @@ The facade is `lib.rs`. We groom `lib.rs` rather than introducing a separate `fa
 4. **Sealed traits** (private supertrait pattern) on every trait the types crate publishes for cross-crate impls — only `/arch` extends.
 5. **`cargo-public-api` tracked file per crate** — committed at `crates/{crate}/api.txt` (location convention; M4 confirms the tooling). Any diff requires `/arch` approval. (Setup is M4 in METHOD_PROPOSED §15.)
 
+## Sequence diagrams
+
+`design/arch/sequences/{flow}.{mmd,svg}` — first-class arch artefacts depicting flows in terms of the facade signatures they traverse. They are NOT illustrations or supporting context; they are normative architectural specifications, peers with `bounded-contexts.md`, the facade specs, and the Decision register. Two sets exist today: `exec-flow-*` (compile / link / run / repl / runtime) and `concurrency-*` (per-coordination-primitive). Both expand as the architecture's surface coverage grows.
+
+**Each diagram MUST reflect the facades it depicts**:
+
+- Every named participant is either a crate (frontend, typecheck, backend, runtime, platform), an integration-layer entity (Sess, Sched, Worker, ST_m1, …), or a stdlib/test consumer.
+- Every arrow between participants is a function call or return, named with the **exact** facade signature (free function name + argument types + return type) drawn from `design/arch/facades/{crate}.md`. No invented call shapes; no diagram-only convenience names.
+- Every Note over participants describes invariants or state transitions in terms the facade or BC can ground.
+
+**Lockstep maintenance rule.** Every facade change that alters a name, signature, parameter, return type, or call shape MUST trigger a sequence-diagram sweep in the same wave:
+
+1. Before redrafting a facade section, grep `design/arch/sequences/*.mmd` for every name about to change. The hit set IS the sequence-diagram impact list.
+2. As part of the facade redraft commit (or a paired commit immediately after), update each impacted diagram so its arrows reflect the new facade signatures. The Mermaid `.mmd` source is the canonical edit; the rendered `.svg` is regenerated.
+3. If a facade redraft introduces a new flow that no existing diagram depicts, evaluate whether a new diagram is warranted (typically yes when the flow crosses 2+ crates and has non-trivial ordering). File a sequence-diagram-pending FIXME `target: /arch` if a Decision lands ahead of the diagram.
+
+**Drift detection.** A facade signature that no sequence diagram exercises is suspect — either the facade entry is dead and should be removed, or a missing diagram is hiding a coordination assumption. A sequence-diagram arrow that no facade signature matches is a drift defect — the diagram or the facade is wrong, and `/arch` reconciles before the next sprint.
+
+**Owner discipline.** Sequence diagrams are `/arch`-owned: only `/arch` edits them. `/design` (per crate) and `/dev` (per crate) read them as input — they are part of the facade contract `/design` aligns to and `/dev` implements against. When `/design` notices drift between a facade and a diagram, it files a FIXME `target: /arch` rather than editing.
+
+**Authoring conventions.**
+
+- Mermaid format (`.mmd` source, `.svg` rendered).
+- Each diagram has a one-paragraph header note describing scope and entry condition.
+- Notes over multiple participants describe invariants; Notes over single participants describe local state.
+- For long-running flows, a single `loop` block with a Note explaining the iteration condition is preferred to multiple sequential repetitions.
+
 ## Decision log
 
 `design/arch/decisions/NNNN-name.md` — one file per architectural decision that crosses crate or skill boundaries. Each entry: status, context, decision, consequences. The decision log is `/arch`'s normative output for cross-crate choices. Per-crate design choices (within one bounded context) belong in `design/{crate}/{crate}.md` and are `/design`'s.
@@ -148,6 +175,7 @@ The facade is `lib.rs`. We groom `lib.rs` rather than introducing a separate `fa
 | `design/arch/fixmes/` | FIXMEs register; one file per FIXME (`design/arch/fixmes/NNNN-name.md`). |
 | `design/arch/bounded-contexts.md` | Per-surface bounded-context full statements. |
 | `design/arch/facades/{crate}.md` | Per-surface facade specs — as-designed public surface (free functions, re-exports, `pub`/`pub(crate)` decisions). One file per surface. |
+| `design/arch/sequences/` | Sequence diagrams (`.mmd` source + rendered `.svg`) — first-class arch artefacts. Each diagram depicts a flow in terms of the facade signatures it traverses. **MUST be kept in lockstep with the facades they reference**: every facade change that alters a name, signature, or call shape requires a corresponding update to every sequence diagram that references it. See §Sequence diagrams below. |
 | `design/arch/interfaces.md` | Narrative companion to `crates/cranelisp-types/`. |
 | `design/arch/roadmap.md` | Technical / architectural roadmap (delivery progress is `sprints/ROADMAP.md`, owned by `/sprint`). |
 | `design/arch/CLAUDE.md` | Local conventions for `design/arch/` and pointers to canonical docs. Per METHOD_PROPOSED §14.1: domain-local content only. |
