@@ -14,29 +14,16 @@ Per `sprints/METHOD_PROPOSED.md` §14.1, this `CLAUDE.md` carries domain-local c
 | `bounded-contexts.md` | Per-surface bounded-context full statements (Frontend, Typecheck, Backend, Runtime, Platform, Binary/int, plus types crate). |
 | `facades/{crate}.md` | Per-surface facade specs — as-designed public surface. One file per surface. |
 | `interfaces.md` | Narrative companion to `crates/cranelisp-types/`. |
-| `roadmap.md` | Technical / architectural roadmap (delivery progress is `sprints/ROADMAP.md`, owned by `/sprint`). |
 | `decisions/` | Decisions register; one file per Decision; index in this CLAUDE.md (see "## Decisions" below). |
 | `fixmes/` | FIXMEs register; one file per FIXME (`design/arch/fixmes/NNNN-name.md`). |
+| `sequences/` | Current target sequence diagrams (`.mmd` + rendered `.svg`). |
 
-## Working documents (active migrations)
+## Sorting buckets
 
-Each carries an explicit archive trigger. Archive when (a) the work closes AND (b) lessons fold into the canonical set AND (c) the canonical set cites the lesson directly or `archive/{file}.md` for historical context.
-
-| File | Status | Archive trigger |
-|---|---|---|
-| `pipeline-v4.md` | Active | Pipeline-v4 convergence Phases 1–5 complete + lessons folded into `overview.md` + relevant Decisions filed |
-| `pipeline-v4-roadmap.md` | Active | Pairs with `pipeline-v4.md` |
-| `pipeline-v4-sequences.{mmd,svg}` | Active | Pairs with `pipeline-v4.md` |
-| `concurrent-pipeline.md` | Active | Pairs with `pipeline-v4.md` |
-| `fqtypename.md` | Queued | Migration delivered |
-
-## Subsystem designs
-
-Feature-specific elaborations cited from `overview.md`; remain referenced indefinitely while the feature is part of the language.
-
-- `macro-resolver.md` — macro lookup architecture
-- `traitimpl-symbol-table.md` — trait impl as `ModuleEntry::TraitImpl`
-- `super-import-arbitration.md` — `super` rewrite location decision (could fold into `decisions/` once that directory exists)
+| Directory | Purpose |
+|---|---|
+| `legacy/` | Documents not part of the approved configuration but kept for reference. `/arch` and the per-crate `/design` skills pull back content (or re-author from it) when needed; otherwise files here are triaged into top-level (if they prove still load-bearing) or down to `archive/` (if confirmed superseded). Not a permanent home. |
+| `archive/` | Frozen historical content — superseded by canonical work, kept for context only. See "## Archive" below. |
 
 ## Archive (`archive/`)
 
