@@ -212,22 +212,18 @@ For any module `M`, the cache stores BOTH `M.meta.json` (sidecar) AND `M.o` (obj
 
 ---
 
-## Re-exports from `cranelisp-types`
+## Types originated here
 
-```rust
-pub use cranelisp_types::{
-    Symbol, ModuleFullPath, FQSymbol, SymbolTable, ModuleEntry, DefKind,
-    Type, Scheme, CranelispError,
-    GotTable, GOT_TABLE_SIZE,
-    ResolvedCall, MethodResolutions,
-    PrimitiveDef, PrimitiveKind, SchedulingClass,
-    HeapCategory, HeapHeader, NULLARY_TAG_THRESHOLD,
-    CallGraph, CallEdge, CompileContext, CompileResult,
-    TAG_SNIL, TAG_SCONS, TAG_SEXP_INT, TAG_SEXP_FLOAT, TAG_SEXP_BOOL, TAG_SEXP_STR, TAG_SEXP_SYM, TAG_SEXP_LIST, TAG_SEXP_BRACKET,
-};
-```
+Per Principle 15 — the following are backend-originated (only `int` consumes them downstream of backend) and live in `cranelisp-backend`:
 
-Backend re-exports types that flow through its API surface — return shapes, codegen-context types, marshaling tags consumed by emitted code.
+- `Code` (per Decision 41 — already moved here from `cranelisp-types`)
+- `CompilationError` (see §"Errors" above)
+- `GotEvent`, `GotEventTag`, `GotProvenance`, `GotObserver` (see §"GOT-population observation")
+- `register_got_observer` free function
+
+The multi-consumer types backend depends on (`SymbolTable`, `ModuleEntry`, `DefKind`, `Type`, `Scheme`, `Symbol`, `FQSymbol`, `ModuleFullPath`, `CranelispError`, `ResolvedCall`, `MethodResolutions`, `MonoDefn`, `OverloadVariant`, `ConstrainedFn`, `TypeDefInfo`, `ConstructorInfo`, `FieldInfo`, `Expr`, `Pattern`, `MatchArm`, `Defn`, `Span`, `Visibility`, `PrimitiveDef`, `PrimitiveKind`, `SchedulingClass`, `HeapCategory`, `HeapHeader`, `NULLARY_TAG_THRESHOLD`, `CallGraph`, `CallEdge`, `CompileContext`, `CompileResult`, `GotTable`, `GOT_TABLE_SIZE`, marshaling tags) live in `cranelisp-types`. Consumers import them from there directly.
+
+No re-exports of `cranelisp-types` items per Principle 15. Third-party re-exports (`cranelift_module`, `cranelift_object`, `cranelift::codegen::isa::TargetIsa`, `build_isa`) are out of scope of Principle 15 — they expose backend's chosen codegen toolchain; tracked separately if encapsulation becomes warranted.
 
 ---
 

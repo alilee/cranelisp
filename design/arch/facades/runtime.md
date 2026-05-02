@@ -132,15 +132,17 @@ The IO trampoline is the runtime's bridge into platform — `int`'s `Sess::tramp
 NOT diagnostics — an extension point in the same shape as `register_alloc_callback`. Runtime defines the observation taxonomy and a registration API; `int` implements all observer state. The IO trampoline emits events via the registered observer (with a relaxed-load null check; no-op if unregistered). All observer state — ring buffers, panic hook, formatter, dump, merge-sort — lives in `int`'s `src/io_trace/`. Production batch (`--link`, non-trace `--run`) does not register and pays one relaxed null-check load per call site (one conditional branch after optimisation).
 
 ```rust
-pub enum IoTraceTag { TrampolineEnter, PureStep, PlatformEffect, ContPop, /* … */ }
-pub enum IoTracePayload { /* per-variant payload — same variants as today, moved here */ }
-pub type IoObserver = fn(IoTraceTag, &IoTracePayload);
+#[non_exhaustive]
+pub enum IoEventTag { TrampolineEnter, PureStep, PlatformEffect, ContPop, /* … */ }
+#[non_exhaustive]
+pub struct IoEvent { /* per-variant payload — same variants as today's IoTracePayload, moved here */ }
+pub type IoObserver = fn(IoEventTag, &IoEvent);
 
 pub fn register_io_observer(observer: Option<IoObserver>);
 pub fn trace_anchor() -> &'static Instant;     // shared monotonic anchor (kept here so int's scheduler trace and the IO trace use the same origin)
 ```
 
-`IoTraceTag` and `IoTracePayload` move with the API to runtime — they ARE the callback's type contract; they belong where the trampoline lives. `int`'s session startup (REPL mode or `--run` with `CRANELISP_IO_TRACE=1`) calls `runtime::register_io_observer(Some(int::io_trace::record))`. Decision 40 closes the runtime BC drift by relocation: the orchestration of `(trace ...)` (GOT-swap, wrapper machinery, frame stack, slash-command handlers) and the consumer-side observer state both live in `int`; runtime keeps only this ~50-line extension-point API.
+`IoEventTag` and `IoEvent` move with the API to runtime — they ARE the callback's type contract; they belong where the trampoline lives. Naming parallels the GotObserver pattern in `facades/backend.md` (`GotEventTag` + `GotEvent` + `GotObserver`); existing implementation `io_trace::IoTraceTag`/`IoTracePayload` rename to `IoEventTag`/`IoEvent` as part of FIXME 0103's relocation work. `int`'s session startup (REPL mode or `--run` with `CRANELISP_IO_TRACE=1`) calls `runtime::register_io_observer(Some(int::io_trace::record))`. Decision 40 closes the runtime BC drift by relocation: the orchestration of `(trace ...)` (GOT-swap, wrapper machinery, frame stack, slash-command handlers) and the consumer-side observer state both live in `int`; runtime keeps only this ~50-line extension-point API.
 
 ### IVar primitives (lenient evaluation per spec §12.4.3)
 
@@ -169,20 +171,17 @@ None.
 
 ---
 
-## Re-exports from `cranelisp-types`
+## Types originated here
 
-The runtime re-exports the marshaling tags that flow through its API surface:
+Per Principle 15 — the following are runtime-originated and live in `cranelisp-runtime`:
 
-```rust
-pub use cranelisp_types::{
-    TAG_SNIL, TAG_SCONS,
-    TAG_SEXP_INT, TAG_SEXP_FLOAT, TAG_SEXP_BOOL, TAG_SEXP_STR,
-    TAG_SEXP_SYM, TAG_SEXP_LIST, TAG_SEXP_BRACKET,
-    SchedulingClass,
-};
-```
+- `HeapString`
+- `IoEvent`, `IoObserver`, `register_io_observer` (the IO observation contract per Decision 40)
+- `IoTraceFlushGuard`, `SchedulerTraceFlushGuard`
 
-No other re-exports.
+The multi-consumer types runtime depends on (`Span`, `CranelispError`, marshaling tags `TAG_SNIL`/`TAG_SCONS`/etc., `SchedulingClass`) live in `cranelisp-types`. Consumers (backend codegen names them in emitted code; `int` reads them when interpreting marshaled values) import directly.
+
+No re-exports of `cranelisp-types` items per Principle 15.
 
 ---
 
@@ -206,6 +205,8 @@ None implemented. Runtime does not implement traits from `cranelisp-types`.
 ## `#[non_exhaustive]` DTOs
 
 `HeapString`, `IoTraceFlushGuard`, `SchedulerTraceFlushGuard` are `#[non_exhaustive]`.
+
+No `#[repr(C)]` layout types currently surface from this crate — string and Sexp marshaling cross the FFI boundary as opaque `i64` tags + extern functions, not as layout-stable structs. If a future runtime extension publishes a `#[repr(C)]` DTO, Principle 14 applies: omit `#[non_exhaustive]` and govern evolution via an explicit version bump.
 
 ---
 

@@ -509,5 +509,5 @@ Considered looking up each platform function individually via `dlsym`. Rejected 
 - `sketch/src/platform.rs` -- Prototype platform path resolution
 - `sketch/src/jit.rs` -- Prototype DLL loading (lines 612-750)
 - `design/arch/interfaces.md` -- `PlatformEffect`, `PlatformDecl`, `ModuleDecls.platforms`
-- `design/platform/runtime.md` -- Runtime allocator, heap layout, base-pointer convention
+- `design/runtime/runtime.md` -- Runtime allocator, heap layout, base-pointer convention
 - `sprints/SPRINT.md` -- Architecture Review decisions and concerns #4, #6

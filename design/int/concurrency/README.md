@@ -1,100 +1,35 @@
-# Concurrency Diagrams
+# Int Concurrency Diagrams
 
-This directory contains Mermaid diagrams for the **current** and **target**
-concurrency architecture, plus focused protocol diagrams for the highest-risk
-surfaces.
+Per-crate diagrams for the integration layer's internal concurrency. The architectural-altitude story (cadences, handoffs, windows) lives in `design/arch/sequences/`; this directory carries the int-internal target structures, protocols, and the compilation-cadence-batch-run sequence.
+
+## Active diagrams (target shape)
+
+| File | What it shows |
+|---|---|
+| `target-state.svg` | High-level int-internal target architecture: smaller session core, single dependency service, unified worker subsystem, narrowed shared-state ownership. |
+| `concurrency-structure-matrix.svg` | Inventory view of the major concurrency structures inside int — owner, readers/writers, interface shape. |
+| `scheduler-lifecycle.svg` | State-machine view of module lifecycle inside the scheduler. Pool transitions, readiness publication points. |
+| `dependency-protocol-target.svg` | Proposed target dependency-publication / registration / wait / resume protocol with a single dependency service. |
+| `symbol-publication-target.svg` | Proposed target publication flow with one explicit publication authority. |
+| `compilation-cadence-batch-run.svg` | Sequence diagram of one compilation-cadence batch-run pass: scheduler ↔ priority workers ↔ nice workers ↔ symbol table. The int-internal counterpart to the architectural exec-flow diagrams in `design/arch/sequences/`. |
 
 ## Reading order
 
-If you are new to the concurrency design, read these in this order:
+1. `target-state.svg` — the structural picture of where things sit.
+2. `compilation-cadence-batch-run.svg` — sequence detail of how a batch run unfolds.
+3. `scheduler-lifecycle.svg` — state-machine view of a module's path through the scheduler.
+4. `dependency-protocol-target.svg` and `symbol-publication-target.svg` — protocol-level invariants for the two highest-risk surfaces.
+5. `concurrency-structure-matrix.svg` — inventory reference.
 
-1. **`current-state.svg`**
-   - High-level picture of the current concurrency architecture.
-   - Shows where coordination, worker logic, shared state, and child-crate
-     interfaces currently sit.
+## Archive
 
-2. **`target-state.svg`**
-   - High-level picture of the intended streamlined target architecture.
-   - Shows the desired compartmentalisation: smaller session core, one
-     dependency service, one worker subsystem, narrower shared-state ownership.
-
-3. **`concurrency-structure-matrix.svg`**
-   - Inventory-style view of the major concurrency structures.
-   - For each structure, shows owner, readers/writers, interface shape,
-     and current risk level.
-   - Best used to decide where design simplification should happen first.
-
-4. **`scheduler-lifecycle.svg`**
-   - State-machine view of module lifecycle inside the scheduler.
-   - Best for understanding pool transitions and where readiness/publication
-     risks attach.
-
-5. **`dependency-protocol-current.svg`**
-   - Current dependency publication / registration / wait / resume protocol.
-   - Most useful diagram for understanding the current design smell:
-     one concurrency protocol implemented across multiple authorities.
-
-6. **`dependency-protocol-target.svg`**
-   - Proposed target protocol with a single dependency service.
-   - Best used alongside the current version to reason about containment.
-
-7. **`symbol-publication-current.svg`**
-   - Current symbol publication and readiness-observation flow.
-   - Focuses on the publish-before-read contract between workers,
-     symbol tables, typecheck products, and scheduler readiness.
-
-8. **`symbol-publication-target.svg`**
-   - Proposed target publication flow with one explicit publication authority.
-   - Best used to discuss how to reduce the current publication-risk surface.
-
-## Which diagram answers which question?
-
-### “Where is concurrency architecturally justified?”
-Use:
-- `current-state.svg`
-- `concurrency-structure-matrix.svg`
-
-### “What is the scheduler doing?”
-Use:
-- `scheduler-lifecycle.svg`
-
-### “Why is dependency handling hard to reason about?”
-Use:
-- `dependency-protocol-current.svg`
-- then compare with `dependency-protocol-target.svg`
-
-### “Why is publish-before-read still risky?”
-Use:
-- `symbol-publication-current.svg`
-- then compare with `symbol-publication-target.svg`
-
-### “What should the target architecture feel like?”
-Use:
-- `target-state.svg`
-- supported by the two `*-target.svg` protocol diagrams
-
-## Design intent of this directory
-
-These diagrams are not intended to replace the prose docs.
-They are intended to make three things visible at a glance:
-
-1. **current ownership and coupling**
-2. **current protocol complexity**
-3. **how the target state reduces concurrency reasoning cost**
-
-The most important use of these diagrams is not just explanation.
-It is to help decide whether a concurrency issue should be solved by:
-- stronger tests,
-- a sharper invariant,
-- or a design change that removes or isolates the concurrent surface.
+`archive/` holds the pre-target snapshots — `current-state`, `dependency-protocol-current`, `symbol-publication-current`. They are kept for audit-trail value (showing the design defects the target shape closes); they are not the target architecture and should not be cited as design intent.
 
 ## Source files
 
-Each SVG is generated from the matching `.mmd` file in this directory.
-Regenerate with Mermaid CLI, e.g.:
+Each SVG is generated from its sibling `.mmd`. Regenerate:
 
 ```bash
-mmdc -i design/int/concurrency/current-state.mmd -o design/int/concurrency/current-state.svg
+cd design/int/concurrency
+for f in *.mmd; do mmdc -i "$f" -o "${f%.mmd}.svg"; done
 ```
-
-Or regenerate all diagrams in the directory with a small shell loop.

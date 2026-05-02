@@ -119,8 +119,8 @@ The facade spec is **target-stating**, full stop. It describes what the crate's 
 The facade is `lib.rs`. We groom `lib.rs` rather than introducing a separate `facade.rs`. The facade spec (above) states *what* the crate exposes; this section states *how* `lib.rs` carries it.
 
 1. **Top-of-file doc comment** — states the bounded context (1–3 paragraphs) and cites `design/arch/bounded-contexts.md` for the canonical statement. `/arch` approves changes to this doc comment.
-2. **Re-exports only** — `lib.rs` contains no logic. It `pub use`s items from internal modules. Internal modules default to `pub(crate)` (§Public-API discipline).
-3. **`#[non_exhaustive]` on every public DTO** — adding fields is non-breaking.
+2. **Re-exports only** — `lib.rs` contains no logic. It `pub use`s items from internal modules. Internal modules default to `pub(crate)` (§Public-API discipline). **No re-exports of `cranelisp-types` items** per Principle 15 — facade types live with their behavior; consumers import directly from each crate they need. **External-audience exception**: a facade whose external audience would not otherwise depend on `cranelisp-types` (e.g., `cranelisp-platform` for out-of-tree DLL authors) MAY re-export the upstream items its public API uses; the exception is justified inline in the facade spec.
+3. **`#[non_exhaustive]` on every public DTO** — adding fields is non-breaking. **Exemption**: DTOs carrying `#[repr(C)]` or `#[repr(transparent)]` do NOT also carry `#[non_exhaustive]`. They are layout contracts (consumed by JIT-emitted code or DLL hosts as raw bytes / raw bits), governed by an explicit `ABI_VERSION` bump, not by source-level evolution guards. See Principle 14.
 4. **Sealed traits** (private supertrait pattern) on every trait the types crate publishes for cross-crate impls — only `/arch` extends.
 5. **`cargo-public-api` tracked file per crate** — committed at `crates/{crate}/api.txt` (location convention; M4 confirms the tooling). Any diff requires `/arch` approval. (Setup is M4 in METHOD_PROPOSED §15.)
 

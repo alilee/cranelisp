@@ -6,7 +6,7 @@ This document is the **single source of design intent** for the typecheck crate.
 
 1. `design/arch/bounded-contexts.md` §2 — Typecheck (the bounded context — what the crate is responsible for)
 2. `design/arch/facades/typecheck.md` — the as-designed public surface
-3. `design/arch/CLAUDE.md` Decisions 1, 2, 6, 8, 14, 15, 17, 19, 21, 22, 30, 33, 38, 39 — cross-crate decisions binding typecheck
+3. `design/arch/CLAUDE.md` Decisions 30, 41 (active) and 1, 2, 6, 8, 9, 14, 19, 21, 22, 33, 38, 39 (legacy — embodied) — cross-crate decisions binding typecheck. Note: Decisions 15 and 17 have been retracted (per `design/arch/CLAUDE.md` Decisions section); their constraints are embodied in current code (Ring 0-1 builtin/trait coexistence in the resolution machinery; core traits live in `.cl` files, not in `register_builtins`)
 
 The document describes **how the crate fulfils that contract** — its internal architecture, mutation discipline, error model, and quality posture — and pins the implementation gaps where current source has not yet caught up to the contract. Where this doc and a subordinate doc disagree, this doc wins; subordinate docs are scoped elaborations.
 
@@ -59,11 +59,11 @@ The facade is **target-stating**; current source has not finished migrating to i
 | Facade item | Current source | Tracking |
 |---|---|---|
 | `check_form(node, &SymbolTable, &SymbolTables)` free function | Method `TypeCheckEnv::check_form(_module, form, pass, &mut state, &mut accumulator)` returning `FormCheckResult` | FIXME 0008 (mutability discipline + free-function shape) |
-| `register_builtins(&mut SymbolTable<Code, ()>)` taking one table | `register_builtins<C, L>(&DashMap<ModuleFullPath, SymbolTable<C, L>>, &AtomicU32)` taking the whole map plus the type-var allocator | FIXME 0008 (same pivot — once `check_form` is a free function, builtins follow); see also new FIXME 0093 below for the boundary-type prerequisites |
-| `CheckError`, `ResolutionGap` re-exported from `cranelisp-types` | Neither type exists in `cranelisp-types`; the crate returns `CranelispError` | **NEW FIXME 0093** — typecheck-side mirror of FIXME 0092 (frontend-side `ExpansionError`/`ResolutionGap`) |
+| `register_builtins(&mut SymbolTable<Code, ()>)` taking one table | `register_builtins<C, L>(&DashMap<ModuleFullPath, SymbolTable<C, L>>, &AtomicU32)` taking the whole map plus the type-var allocator | FIXME 0008 (same pivot — once `check_form` is a free function, builtins follow); see also FIXME 0098 Phase 3 for the boundary-type prerequisites |
+| `CheckError`, `ResolutionGap` re-exported from `cranelisp-types` | Neither type exists in `cranelisp-types`; the crate returns `CranelispError` | **FIXME 0098 Phase 3** — typecheck migration to `check_form`/`CheckError`/`ResolutionGap` typed returns (Phase 1 lands the boundary types in `cranelisp-types` first) |
 | `CheckResult` returned by `check_form` | `FormCheckResult` per call; `CheckResult` only at `check()` level after finalize | Rolls up under FIXME 0008's free-function migration |
-| `TypeCheckEnv<'a>` (no generics in facade) | `TypeCheckEnv<'a, C = (), L = ()>` (defaults work in practice) | FIXME 0002 (re-exports policy) covers the broader facade-vs-source generic discipline; specifically called out in §11 as a doc-clarity FIXME `target: /arch` |
-| Public surface in `lib.rs` re-exports the full type set per facade | `lib.rs` re-exports a small subset (`CheckResult, CranelispError, ReplSnapshot, TopLevel`) | Rolls up under FIXME 0002 (re-exports policy arbitration) once `/arch` decides the rule |
+| `TypeCheckEnv<'a>` (no generics in facade) | `TypeCheckEnv<'a, C = (), L = ()>` (defaults work in practice) | Generic-defaults convention; minor doc-clarity item, called out in §11 |
+| Public surface in `lib.rs` re-exports the full type set per facade | `lib.rs` re-exports a small subset (`CheckResult, CranelispError, ReplSnapshot, TopLevel`) | Per Principle 15 (S64) — implementation-crate facades do NOT re-export `cranelisp-types` items; the existing `pub use` block is removed by FIXME 0100 Phase 1 (which also relocates `CheckResult`/`CheckError`/`ResolutionGap`/`ReplSnapshot` from `cranelisp-types` into `cranelisp-typecheck`) |
 
 The drift items above are NOT design problems with the contract — they are implementation-not-yet-caught-up. Working through them is the next several waves of `/dev` work, sequenced behind the audit's six prioritised remediations (§5.1).
 
@@ -91,13 +91,13 @@ The two contract problems that DO need `/arch` arbitration are flagged in §11.
 
 Total production: ~20.4 KLOC (incl. co-located tests).
 
-### 3.2 Target shape (post FIXME 0008 + FIXME 0093 + the audit's six remediations)
+### 3.2 Target shape (post FIXME 0008 + FIXME 0098 Phase 3 + the audit's six remediations)
 
-The audit's target-state diagram (`audits/typecheck-20260423-target-state.{mmd,svg}`) pictures one `check()` / `check_form()` pipeline reading the symbol-table store via a centralised lookup facade (`Index`), shared `Expr` walker helpers, and a shared impl-method finalizer for the HKT / non-HKT trait paths. That diagram is **directionally correct** but predates Decisions 38/39 and FIXME 0008/0093. The refinements layered on top:
+The audit's target-state diagram (`audits/typecheck-20260423-target-state.{mmd,svg}`) pictures one `check()` / `check_form()` pipeline reading the symbol-table store via a centralised lookup facade (`Index`), shared `Expr` walker helpers, and a shared impl-method finalizer for the HKT / non-HKT trait paths. That diagram is **directionally correct** but predates Decisions 38/39 and FIXME 0008 / FIXME 0098 Phase 3. The refinements layered on top:
 
 1. **`check_form` consumes `&SymbolTable` not `&mut SymbolTable`** (FIXME 0008 / Decision 38). The audit's diagram does not name the mutability discipline; this design pins it.
 2. **Errors carry `ErrorLocation`, not bare `Span`** (Decision 39). Producer policy in §7.
-3. **`check_form` returns `Result<CheckResult, CheckError>` where `CheckError::Gap(ResolutionGap)` is one variant.** The current `FormCheckResult` is an internal stage product; what crosses the facade is the rolled-up `CheckResult`. FIXME 0093 names the boundary-type prerequisites.
+3. **`check_form` returns `Result<CheckResult, CheckError>` where `CheckError::Gap(ResolutionGap)` is one variant.** The current `FormCheckResult` is an internal stage product; what crosses the facade is the rolled-up `CheckResult`. FIXME 0098 Phase 3 names the typecheck-side migration; Phase 1 lands the boundary types.
 4. **`TypeCheckEnv` becomes a thin internal struct** — once `check_form` is a free function over `(&SymbolTable, &SymbolTables)`, `TypeCheckEnv`'s job is to wrap those two refs plus the per-call `CheckState`. The facade keeps it `#[non_exhaustive]` for callers that want finer-grained control, but it stops being the public API.
 
 The audit's six prioritised remediations are the maintenance roadmap. They land in the order the audit names — pipeline consolidation first, impl-method finalization second, shared `Expr` walker third, `ModuleEntry::Def` builders fourth, lookup facade fifth, test split sixth. The triad sequences these across waves; this design doc does not bind ordering tighter than the audit does.
@@ -179,7 +179,7 @@ The current `check()` method on `TypeCheckEnv` orchestrates all three passes for
 
 ### 5.1 The audit's six remediations — execution plan as enabling work
 
-The audit's prioritised remediations and how they relate to the facade migration (FIXME 0008, FIXME 0093):
+The audit's prioritised remediations and how they relate to the facade migration (FIXME 0008, FIXME 0098 Phase 3):
 
 | # | Remediation | Effect on facade migration |
 |---|---|---|
@@ -190,7 +190,7 @@ The audit's prioritised remediations and how they relate to the facade migration
 | 5 | Centralise "scan all modules" lookups behind `TypecheckIndexView` | Independent; centralises cross-module read patterns that FIXME 0008's `&SymbolTables` access will touch. |
 | 6 | Split heavyweight tests out of giant implementation files | Sequenced last, per the audit. |
 
-Sequencing #1 first is load-bearing for the FIXME 0008/0093 migration; the others are independent quality improvements that can interleave with the facade work.
+Sequencing #1 first is load-bearing for the FIXME 0008 / FIXME 0098 Phase 3 migration; the others are independent quality improvements that can interleave with the facade work.
 
 ---
 
@@ -267,9 +267,9 @@ Per the gap-return pattern (`facades/int.md` `process_form`):
 
 Typecheck asks for `SymbolTypechecked` (not `SymbolInMemory`) for value references — it needs the entry's `Scheme`, not its compiled code. This is what makes the gap-return cheap: typecheck does not block on codegen.
 
-The `MacroInMem` variant in the unified `ResolutionGap` enum is raised by frontend, not typecheck. §11 raises this as a doc-clarity FIXME (the variant is in the typecheck-re-exported enum, which forces typecheck consumers to handle a variant typecheck never produces).
+The `MacroInMem` variant in the unified `ResolutionGap` enum is raised by frontend, not typecheck. This is an **intentional contract**: `ResolutionGap` is the unified gap-return type spanning frontend + typecheck producers, and each producer raises only its applicable subset (Principle 7 — single source of truth: the gap enum is one shared vocabulary, even though each call site uses only part of it). §11 raises this as a doc-clarity FIXME asking `/arch` whether the rustdoc should pin which producer raises which variant.
 
-**Source status:** `CheckError` and `ResolutionGap` do not yet exist in `cranelisp-types`. FIXME 0093 escalates the boundary-type addition to `/arch`. Until that lands, the current source returns `CranelispError` and the Gap mechanism is implemented at the `int`-orchestration layer through ad-hoc dependency detection.
+**Source status:** `CheckError` and `ResolutionGap` do not yet exist in `cranelisp-types`. FIXME 0098 Phase 1 lands the boundary types in `cranelisp-types`; Phase 3 migrates typecheck to the typed returns. Until those land, the current source returns `CranelispError` and the Gap mechanism is implemented at the `int`-orchestration layer through ad-hoc dependency detection.
 
 ### 7.4 Snapshot / restore
 
@@ -368,9 +368,9 @@ The three flagged docs are not edited by this design pass (per the constraint). 
 
 These surfaced during this design pass. Two are filed as new FIXME files (numbered, in `design/arch/fixmes/`); the rest are noted here for the user to lift if intent.
 
-### Filed — `target: /arch`
+### Tracked — multi-crate migration
 
-**FIXME 0093** — `CheckError`, `ResolutionGap` not yet in `cranelisp-types`; `check_form` cannot conform to its facade signature without these boundary types. Mirror of FIXME 0092 (frontend-side). See file `design/arch/fixmes/0093-typecheck-checkerror-and-resolution-gap-types.md`.
+**FIXME 0098** — multi-crate migration covering `CheckError`/`ResolutionGap`/`ExpansionError` placement and `check_form` free-function shape. Phase 1 lands the boundary types in `cranelisp-types`; Phase 3 (typecheck) migrates `check_form` to the typed-return shape. See `design/arch/fixmes/0098-dev-frontend-typecheck-int-resolutiongap-checkerror-expansionerror-migration.md`.
 
 ### Proposed — `target: /arch`
 
@@ -388,7 +388,7 @@ These surfaced during this design pass. Two are filed as new FIXME files (number
 
 **Title:** `TypeCheckEnv` generic parameters in facade.
 
-**Issue.** The facade types `TypeCheckEnv<'a>` with no `<C, L>` parameters, but the as-built `TypeCheckEnv<'a, C = (), L = ()>` is generic. Recommend the facade pin `TypeCheckEnv<'a>` to mean `TypeCheckEnv<'a, (), ()>` explicitly (default-types convention) or expose the generics if integration layer code constructs a `TypeCheckEnv<'a, Code, ()>`. Today `int` does not appear to construct `TypeCheckEnv` directly (it calls `check_form`), so the default works — but spelling it in the facade prevents future surprise. Adjacent to FIXME 0002 (re-exports policy).
+**Issue.** The facade types `TypeCheckEnv<'a>` with no `<C, L>` parameters, but the as-built `TypeCheckEnv<'a, C = (), L = ()>` is generic. Recommend the facade pin `TypeCheckEnv<'a>` to mean `TypeCheckEnv<'a, (), ()>` explicitly (default-types convention) or expose the generics if integration layer code constructs a `TypeCheckEnv<'a, Code, ()>`. Today `int` does not appear to construct `TypeCheckEnv` directly (it calls `check_form`), so the default works — but spelling it in the facade prevents future surprise. Doc-clarity item; not blocking.
 
 ### Proposed — `target: /arch`
 
@@ -400,7 +400,7 @@ These surfaced during this design pass. Two are filed as new FIXME files (number
 
 **Title:** Test coverage for the gap-return contract from typecheck's side.
 
-**Issue.** The integration test surface exercises gap-then-retry through `int`'s orchestrator. There is no narrow unit test asserting that `check_form` raises `Gap(SymbolTypechecked(fq))` for an unresolved FQ value reference (vs `TypeError`) — this is the most likely place a future refactor could regress, because the gap path looks like an error path locally. Adding three or four narrow `check_form` unit tests (one per `ResolutionGap` variant typecheck can raise; one negative — confirm bare `Symbol` resolution does NOT raise Gap) would harden the contract once FIXME 0093 lands the types.
+**Issue.** The integration test surface exercises gap-then-retry through `int`'s orchestrator. There is no narrow unit test asserting that `check_form` raises `Gap(SymbolTypechecked(fq))` for an unresolved FQ value reference (vs `TypeError`) — this is the most likely place a future refactor could regress, because the gap path looks like an error path locally. Adding three or four narrow `check_form` unit tests (one per `ResolutionGap` variant typecheck can raise; one negative — confirm bare `Symbol` resolution does NOT raise Gap) would harden the contract once FIXME 0098 Phase 1+3 lands the types and the typed return.
 
 ### Proposed — `target: /design` (self — for next cycle)
 
@@ -412,24 +412,36 @@ These surfaced during this design pass. Two are filed as new FIXME files (number
 
 ## 12. Decision register (typecheck-relevant)
 
+Per `design/arch/CLAUDE.md`'s active-vs-legacy split: active Decisions carry forward-handoff or pre-implementation work; legacy Decisions are fully embodied in the architecture. Decisions 15 and 17 have been retracted (per `design/arch/CLAUDE.md` Decisions section); their constraints survive as embodied invariants in the resolution machinery and prelude loading, called out below.
+
+### Active
+
 | # | Decision | Takeaway for typecheck | Note |
 |---|---|---|---|
-| 1 | 7+1 crate DAG | typecheck is one crate, no leakage | stable |
-| 2 | `cranelisp-types` data-only | typecheck imports types from there, exports nothing of its own to the boundary | stable |
-| 6 | `Type::from_name()` | typecheck uses it for primitive type lookups | stable |
-| 8 | `MacroExpander` trait deleted | macros expanded before typecheck sees the AST | stable |
-| 9 | CompiledModule decomposition | RETRACTED in part — `TypecheckProduct` / `CodegenProduct` dissolved into `ModuleEntry::Def`; framing superseded by Decisions 22, 25, 38, 41 | superseded |
-| 14 | TC emits `TraitMethod`, backend maps | typecheck emits `ResolvedCall::TraitMethod` uniformly | binding |
-| 15 | Ring 0-1 BuiltinFn coexists with TraitMethod | both resolution paths live | binding |
-| 17 | Core traits in `.cl` files | `register_builtins` does NOT register `Num`/`Eq`/etc. — those load via the prelude | binding |
-| 19 | Constraint propagation in `generalize` | Scheme.constraints populated from active type vars | binding |
-| 21 | TC-sourced call graph on `ModuleEntry` | `CheckResult.callees` per-symbol; `int` writes onto `Def.callees` | binding |
-| 22 | `defined_symbols()` predicate | typecheck writes entries that satisfy/fail this predicate; no parallel store | binding |
-| 30 | Form-by-form scheduler; mutual-import deadlock | REFRAMED by Decision 38 — single-worker-per-module is now scheduler ordering, not lock safety | reframed |
-| 33 | Structural decls on `SymbolTable` fields | typecheck reads `imports`/`exports`/`platforms`/`submodules` from the symbol table itself; no `ModuleStructure` parallel store | binding |
-| 38 | `SharedState` formal definition; per-symbol mutability | `check_form` takes `&SymbolTable`; mutation flows through inner DashMap per-entry locks; `write_structural_decls` is the only `&mut` method | binding (post-S63 — supersedes earlier `&mut`-flavoured contracts) |
-| 39 | Per-defn source on `Introspection.source`; `defn_order: Vec<Symbol>` on `SymbolTable`; errors carry `ErrorLocation` | typecheck adds `defn_order` field, populates `ErrorLocation { fq, span, … }`, leaves `context` to formatter | binding (error shape & SymbolTable field addition) |
-| 41 | `compile_to_module` per-symbol; `Code` moves to `cranelisp-backend` | Indirect — typecheck doesn't reference `Code`; the facade's `SymbolTable<Code, ()>` parameter pin is a documentation contract that should clarify per §11 | binding (peripheral) |
+| 30 | Form-by-form scheduler; mutual-import deadlock | REFRAMED by Decision 38 — single-worker-per-module is now scheduler ordering, not lock safety | active (forward-handoff — single-worker invariant still in flight) |
+| 41 | `compile_to_module` per-symbol; `Code` moves to `cranelisp-backend` | Indirect — typecheck doesn't reference `Code`; the facade's `SymbolTable<Code, ()>` parameter pin is a documentation contract that should clarify per §11 | active (peripheral; pre-implementation amendment to 31 + 35) |
+
+### Legacy — embodied
+
+| # | Decision | Takeaway for typecheck |
+|---|---|---|
+| 1 (legacy — embodied) | 7+1 crate DAG | typecheck is one crate, no leakage |
+| 2 (legacy — embodied) | `cranelisp-types` data-only | typecheck imports types from there, exports nothing of its own to the boundary |
+| 6 (legacy — embodied) | `Type::from_name()` | typecheck uses it for primitive type lookups |
+| 8 (legacy — embodied) | `MacroExpander` trait deleted | macros expanded before typecheck sees the AST |
+| 9 (legacy — superseded) | CompiledModule decomposition | RETRACTED in part — `TypecheckProduct` / `CodegenProduct` dissolved into `ModuleEntry::Def`; framing superseded by Decisions 22, 25, 38, 41 |
+| 14 (legacy — embodied) | TC emits `TraitMethod`, backend maps | typecheck emits `ResolvedCall::TraitMethod` uniformly |
+| 19 (legacy — embodied) | Constraint propagation in `generalize` | Scheme.constraints populated from active type vars |
+| 21 (legacy — embodied) | TC-sourced call graph on `ModuleEntry` | `CheckResult.callees` per-symbol; `int` writes onto `Def.callees` |
+| 22 (legacy — embodied) | `defined_symbols()` predicate | typecheck writes entries that satisfy/fail this predicate; no parallel store |
+| 33 (legacy — embodied) | Structural decls on `SymbolTable` fields | typecheck reads `imports`/`exports`/`platforms`/`submodules` from the symbol table itself; no `ModuleStructure` parallel store |
+| 38 (legacy — embodied) | `SharedState` formal definition; per-symbol mutability | `check_form` takes `&SymbolTable`; mutation flows through inner DashMap per-entry locks; `write_structural_decls` is the only `&mut` method |
+| 39 (legacy — embodied) | Per-defn source on `Introspection.source`; `defn_order: Vec<Symbol>` on `SymbolTable`; errors carry `ErrorLocation` | typecheck adds `defn_order` field, populates `ErrorLocation { fq, span, … }`, leaves `context` to formatter |
+
+### Retracted — invariants preserved
+
+- **Decision 15 (retracted; outcome embodied)** — Ring 0-1 BuiltinFn coexists with TraitMethod. Both resolution paths still live in `resolve.rs` + `traits.rs`; the rationale is now embodied in the resolution machinery rather than tracked as an explicit Decision.
+- **Decision 17 (retracted; outcome embodied)** — Core traits in `.cl` files. `register_builtins` does NOT register `Num`/`Eq`/etc. — those load via the prelude. The constraint is enforced by the current shape of `register_builtins` (synthetic `primitives`/`macros` modules only) rather than by an explicit Decision.
 
 Decisions not listed (3, 4, 5, 7, 10–13, 16, 18, 20, 23–29, 31, 32, 34–37, 40, 42) bind cross-crate concerns (type IDs, span shape, RC discipline, GOT model, Code-enum placement, cache schema, function symbol naming, runtime/IO trampoline relocations, platform error shape) that typecheck doesn't surface directly.
 
@@ -437,7 +449,7 @@ Decisions not listed (3, 4, 5, 7, 10–13, 16, 18, 20, 23–29, 31, 32, 34–37,
 
 ## 13. Cross-references
 
-- `design/arch/CLAUDE.md` Decisions 38, 39 (NEW MODEL); 1, 2, 6, 8, 14, 15, 17, 19, 21, 22, 30 (READ THROUGH 38/39 lens), 33 (structural decls on SymbolTable), 41 (peripheral)
+- `design/arch/CLAUDE.md` Decisions 38, 39 (legacy — embodied; NEW MODEL framing); 1, 2, 6, 8, 14, 19, 21, 22, 30 (READ THROUGH 38/39 lens), 33 (structural decls on SymbolTable), 41 (active — peripheral). Decisions 15 and 17 retracted; their constraints embodied per §12 "Retracted — invariants preserved"
 - `design/arch/facades/typecheck.md` — public surface (normative)
 - `design/arch/facades/types.md` §"Symbol table — the single store" — `SymbolTable` shape consumed
 - `design/arch/facades/int.md` §"process_form" — caller of `check_form`; defines the gap-orchestration retry loop
@@ -447,7 +459,7 @@ Decisions not listed (3, 4, 5, 7, 10–13, 16, 18, 20, 23–29, 31, 32, 34–37,
 - `audits/typecheck-20260423.md` — current-state audit; HIGH/MEDIUM findings drive §4
 - `audits/typecheck-20260423-{current,target}-state.{mmd,svg}` — diagrams
 - `design/arch/fixmes/0008-typecheck-symboltable-per-symbol-mutability.md` — the operative target shape
-- `design/arch/fixmes/0093-typecheck-checkerror-and-resolution-gap-types.md` — boundary-type prerequisites for the gap-return mechanism
+- `design/arch/fixmes/0098-dev-frontend-typecheck-int-resolutiongap-checkerror-expansionerror-migration.md` — multi-crate migration covering boundary types (Phase 1) and typecheck's typed-return shape (Phase 3)
 - `design/arch/fixmes/0033-monodefn-redundant-side-maps.md` — open MonoDefn shape question
 - `design/arch/fixmes/0043-typecheck-resolved-call-autocurry-total-count.md` — open AutoCurry shape question
 - `crates/cranelisp-typecheck/src/lib.rs` — current public exports (subset of facade)

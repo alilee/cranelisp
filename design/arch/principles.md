@@ -21,3 +21,5 @@ Each Principle is one file at `principles/NN-{slug}.md`. Index:
 - [Principle 11](principles/11-single-pipeline-mode-parameters.md) — Single pipeline, mode parameters
 - [Principle 12](principles/12-design-for-full-spec-surface.md) — Design for the full spec surface
 - [Principle 13](principles/13-interfaces-md-is-auditable.md) — `interfaces.md` is auditable
+- [Principle 14](principles/14-ffi-layout-discipline.md) — FFI boundary types are governed by layout discipline
+- [Principle 15](principles/15-facade-types-live-with-behavior.md) — Facade types live with their behavior

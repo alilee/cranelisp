@@ -136,16 +136,13 @@ None.
 
 ---
 
-## Re-exports from `cranelisp-types`
+## Types originated here
 
-The frontend re-exports its alias types for caller ergonomics:
+Per Principle 15 — frontend's facade-originated types live here. None currently: `Sexp`, `Expr`, `TopLevel`, `Defn`, `Pattern`, `MatchArm`, `TypeExpr`, `Ast`, `Program`, `ImportSpec`, `ExportSpec`, `ImportNames`, `MacroClauseInfo`, `MacroParam`, `ModDecl`, `PlatformSpec`, `ResolutionGap`, etc. are all multi-consumer types (frontend produces; typecheck/backend/int consume) and live in `cranelisp-types`.
 
-```rust
-pub use cranelisp_types::{Sexp, TopLevel};                              // Ast = TopLevel
-pub type Ast = cranelisp_types::TopLevel;
-```
+Frontend is a pure transform from source text to AST: its public surface is the free functions (`parse`, `extract_module_declarations`, `expand`, `parse_preserving_comments`) plus `ExtractedDeclarations` and `StructuralDecls` (already frontend-originated; see `module_extract` module). No re-exports of `cranelisp-types` items per Principle 15 — consumers import boundary types directly from `cranelisp_types::*`.
 
-No other re-exports. Consumers import boundary types directly from `cranelisp_types::*`.
+(Optional ergonomic alias: `pub type Ast = cranelisp_types::TopLevel;` — a type alias, not a re-export, kept for readability at frontend call sites and consumer code.)
 
 ---
 

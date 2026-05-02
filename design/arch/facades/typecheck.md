@@ -78,18 +78,25 @@ None.
 
 ---
 
-## Re-exports from `cranelisp-types`
+## Types originated here
+
+Per Principle 15 — these types are typecheck-originated (only `int` consumes them downstream of typecheck) and live in `cranelisp-typecheck`, not `cranelisp-types`:
 
 ```rust
-pub use cranelisp_types::{
-    CheckResult, CheckError, ResolutionGap,
-    ConstructorInfo, DisplayInfo, FieldInfo, MethodResolutions, MonoDefn,
-    ReplSnapshot, ResolvedCall, TypeDefInfo,
-    Scheme, Subst, Type, TypeId,
-};
+pub struct CheckResult { /* … */ }                    // top-level per-form check result + diagnostics
+pub enum   CheckError { Gap(ResolutionGap), TypeError { … } }
+pub enum   ResolutionGap { SymbolTypechecked(FQSymbol), MacroInMem(FQSymbol), Type(FQTypeName) }
+pub struct FormCheckResult { /* … */ }                // per-form internal product (for fine-grained callers + tests)
+pub enum   CheckPass { Pass1Signatures, Pass2Bodies }
+pub struct CheckState { /* … */ }
+pub struct TypeCheckEnv<'a> { /* … */ }
+pub struct ModuleCheckAccumulator { /* … */ }
+pub struct ReplSnapshot { /* … */ }                   // typecheck snapshot/restore primitive for REPL eval rollback
 ```
 
-These are the types that flow OUT of `check_form` to `int` and `cranelisp-backend`. Re-exporting makes the public surface self-contained: a consumer importing `cranelisp_typecheck` gets everything needed to call and consume `check_form` without also importing `cranelisp_types`. (This is the one re-export pattern the workspace permits — types whose primary use is the facade's own return values.)
+The multi-consumer types these depend on (`Scheme`, `Subst`, `Type`, `TypeId`, `ResolvedCall`, `MethodResolutions`, `ConstructorInfo`, `FieldInfo`, `TypeDefInfo`, `DisplayInfo`, `MonoDefn`) live in `cranelisp-types` because backend codegen also consumes them — see Principle 15's placement heuristic. Consumers import them from there directly.
+
+No re-exports of `cranelisp-types` items per Principle 15 — `int` imports `Type`, `Scheme`, `Symbol`, etc. from `cranelisp-types` and `CheckResult`, `CheckError`, etc. from `cranelisp-typecheck`.
 
 ---
 

@@ -28,18 +28,18 @@ The BC's "what crosses the boundary" is uniformly value-passing — no windows. 
 |---|---|---|---|
 | `parse(source) -> Result<Vec<Sexp>, _>` | `lib.rs` | `lib.rs` (delegates to `reader::parse`) | conformant |
 | `parse_preserving_comments(source) -> Result<Vec<Sexp>, _>` | `lib.rs` | `lib.rs` (delegates to `reader::parse_preserving_comments`) | conformant |
-| `extract_module_declarations(forms) -> Result<(StructuralDecls, Vec<Sexp>), _>` | `module_extract.rs` re-exported via `lib.rs` | `module_extract.rs` (returns `ExtractedDeclarations`, not `StructuralDecls`; signature requires extra `path` parameter) | drift — see FIXME 0091 |
+| `extract_module_declarations(forms) -> Result<(StructuralDecls, Vec<Sexp>), _>` | `module_extract.rs` re-exported via `lib.rs` | `module_extract.rs` (returns `ExtractedDeclarations`, not `StructuralDecls`; signature requires extra `path` parameter) | drift — see FIXME 0098 (Phase 2 — frontend signature alignment) |
 | `build_ast(defn_sexp) -> Result<Defn, _>` and `build_expr(sexp) -> Result<Expr, _>` (per-form, no AST union) | `ast_builder.rs` | `ast_builder.rs` exposes `build_program` / `build_repl_input_from_sexps` / `build_repl_input` (whole-input shape; not per-form `Defn`/`Expr` split) | drift — facade per-form split is target-state |
-| `expand(sexp, &symbol_tables) -> Result<Sexp, ExpansionError>` | `lib.rs` (delegating into a frontend internal) | NOT IN FRONTEND — lives in `src/expander.rs` (integration layer) as `expand_sexp_recursive(&mut dyn MacroResolver)` | drift — see FIXME 0092 (largest single gap) |
-| `parse_import_sexp` / `parse_export_sexp` / `parse_mod_sexp` / `parse_platform_sexp` | re-exported from `module_extract.rs` | re-exported from `module_extract.rs` | conformant in shape, drift in `parse_import_sexp` arity (returns single `ImportSpec` per facade; source returns `Vec<ImportSpec>` and takes `containing_module`) — see FIXME 0091 |
+| `expand(sexp, &symbol_tables) -> Result<Sexp, ExpansionError>` | `lib.rs` (delegating into a frontend internal) | NOT IN FRONTEND — lives in `src/expander.rs` (integration layer) as `expand_sexp_recursive(&mut dyn MacroResolver)` | drift — see FIXME 0098 (Phase 2 — frontend `expand` migration; largest single gap) |
+| `parse_import_sexp` / `parse_export_sexp` / `parse_mod_sexp` / `parse_platform_sexp` | re-exported from `module_extract.rs` | re-exported from `module_extract.rs` | conformant in shape, drift in `parse_import_sexp` arity (returns single `ImportSpec` per facade; source returns `Vec<ImportSpec>` and takes `containing_module`) — see FIXME 0098 (Phase 2 — frontend signature alignment) |
 | `next_synthetic_span() -> Span` | `quasiquote.rs` (atomic counter) | `quasiquote.rs` (atomic `AtomicU32`, base 1_000_000, monotonic) | conformant |
 | `parse_defmacro(sexp) -> Result<DefmacroInfo, _>` and `synthesize_macro_clause_defn(info, idx) -> Defn` | `defmacro.rs` | `defmacro.rs` | conformant |
 | `is_defmacro` / `is_begin` / `flatten_begin` / `expand_quasiquotes` | `defmacro.rs` + `quasiquote.rs` | same | conformant |
 
-**Two real contract problems are filed** (do not paper over):
+**Real contract work tracked under FIXME 0098** (do not paper over). FIXME 0098 (`*-resolutiongap-checkerror-expansionerror-migration`) is the multi-crate migration covering both prior frontend issues:
 
-- FIXME 0091 — `extract_module_declarations` and `parse_import_sexp` facade signatures lack `containing_module`/`path` parameters, blocking BC §1 invariant 3 (`super` resolved at frontend) under the as-stated facade. Source takes the path; facade text needs to thread it.
-- FIXME 0092 — `expand`, `ExpansionError`, `ResolutionGap`, `StructuralDecls` are facade-specified but not yet in their target homes. The contract is internally coherent (frontend facade and int facade agree); the migration spans frontend + types + int and must be ordered (types first → frontend → int).
+- Phase 1 (types) — land `ResolutionGap`, `CheckError` enums in `cranelisp-types`. Prerequisite for the frontend-side migration.
+- Phase 2 (frontend) — migrate `expand`/`ExpansionError`/`MacroResolver`-retraction into `cranelisp-frontend`; align `extract_module_declarations` and `parse_import_sexp` signatures with the facade (thread `containing_module`/`path`). Together these close the BC §1 invariant 3 (`super` resolved at frontend) gap under the as-stated facade and the largest single gap (`expand` not yet in frontend). The contract is internally coherent (frontend facade and int facade agree); the migration must be ordered (types first → frontend → int).
 
 The `MacroExpander` trait dependency-inversion shape from earlier rings is **retracted by Decision 8**. Macro lookup happens directly against the symbol-tables map; `expand` is a free function, not a trait method.
 
@@ -58,7 +58,7 @@ The facade is small (≈15 free functions plus 3 DTOs); the source partitions cl
 | `lib.rs` | 72 | Public re-exports + thin `parse`/`build_program`/`build_repl_input` wrappers | None directly; carries the implicit contract that unexpanded macros reaching `build_ast` become generic applications and fail later |
 | `reader.rs` | 1646 | Hand-written recursive descent: source bytes → `Vec<Sexp>` (with optional comment preservation) | Documentation drift — predecessor `plan-frontend.md` names `peg`; reality is hand-written |
 | `ast_builder.rs` | 2915 | Sexp → AST: top-level dispatch, expression lowering, type-expression parsing, pattern lowering, trait/impl lowering, vec literal lowering | HIGH-1: too much policy in one file; HIGH-2: parallel batch + REPL classifiers |
-| `module_extract.rs` | 850 | Walks top-level forms, peels `mod`/`mod-`/`import`/`export`/`platform` into `ExtractedDeclarations`, normalises `super` against the parsing module's path | Source carries `path` parameter (correct for super-resolution); facade text drops it (FIXME 0091) |
+| `module_extract.rs` | 850 | Walks top-level forms, peels `mod`/`mod-`/`import`/`export`/`platform` into `ExtractedDeclarations`, normalises `super` against the parsing module's path | Source carries `path` parameter (correct for super-resolution); facade text drops it (FIXME 0098 Phase 2 — frontend signature alignment) |
 | `defmacro.rs` | 931 | Parses `(defmacro name [params] body)` shapes into `DefmacroInfo` + `MacroClause` lists; synthesises one ordinary `Defn` per clause for the integration layer to compile | HIGH-4: manual synthetic-Sexp construction parallel to `quasiquote.rs` |
 | `quasiquote.rs` | 680 | Sexp-level desugaring of `` ` ``/`~`/`~@` into calls into the synthetic `macros/` module's constructors; hosts the monotonic synthetic-span counter | HIGH-4 partner; constructor helpers duplicated with `defmacro.rs` |
 
@@ -68,9 +68,9 @@ Total: ~7.1k LOC, 234 unit tests passing.
 
 The audit's target-state diagram (`audits/frontend-20260423-target-state.mmd`) committed five structural moves that this design adopts. Each discharges a specific audit finding:
 
-1. **Thin `lib.rs` facade** — public-API surface stays minimal (per-form trio + structural sub-parsers + helpers + `next_synthetic_span`). No business logic in `lib.rs`. Status: largely held today; will need expansion when `expand` migrates in (FIXME 0092).
+1. **Thin `lib.rs` facade** — public-API surface stays minimal (per-form trio + structural sub-parsers + helpers + `next_synthetic_span`). No business logic in `lib.rs`. Status: largely held today; will need expansion when `expand` migrates in (FIXME 0098 Phase 2).
 2. **Reader unchanged in role**, documented as hand-written. Status: the current `reader.md` correctly says hand-written; the cross-cutting `plan-frontend.md` says `peg` and is stale (audit HIGH-5).
-3. **Module extract unchanged** — still rewrites `super` at the boundary. Status: source-level correct; facade-text gap on signature only (FIXME 0091).
+3. **Module extract unchanged** — still rewrites `super` at the boundary. Status: source-level correct; facade-text gap on signature only (FIXME 0098 Phase 2).
 4. **Macro pipeline facade** — `quasiquote.rs` + `defmacro.rs` share a canonical synthetic-Sexp toolkit (`SexpKit` in the diagram). Eliminates HIGH-4. Status: not yet implemented; `/dev`-narrow work for a future wave.
 5. **Shared top-level classifier** — one classifier consumed by both batch and REPL entry, with thin batch/REPL policy wrappers (REPL accepts bare expressions; batch rejects them). Eliminates HIGH-2. Status: not yet implemented; design intent committed here.
 6. **`ast_builder` split by subsystem** — `ast/top_level.rs`, `ast/expr.rs`, `ast/types.rs`, `ast/patterns.rs`, `ast/common.rs`. Eliminates HIGH-1. Status: not yet implemented; the current `ast_builder.rs` is a single 2915-LOC file. The split happens at `/dev`-narrow time; this design commits to it.
@@ -113,13 +113,13 @@ Per Decision 8 (`MacroExpander` trait deleted): expansion is a **free function**
 
 - **`quasiquote.rs`** desugars `` ` `` / `~` / `~@` into calls into the `macros` synthetic module's constructor functions (`macros/SexpSym`, `macros/SexpInt`, `macros/SCons`, etc.). It runs unconditionally on every form, before macro-call dispatch. It also handles `(quote ...)` (pure structural quotation, no unquote semantics).
 - **`defmacro.rs`** parses `(defmacro name [params] body)` shapes into `DefmacroInfo` (one entry per clause). Each clause is synthesised as an ordinary `Defn` via `synthesize_macro_clause_defn`. The integration layer compiles each clause defn through the normal pipeline and registers them under a `ModuleEntry::Macro` with `clauses: Vec<MacroClauseInfo>` (per Decision 21 cross-reference).
-- **`expand` (in target state, frontend; in current state, `src/expander.rs`)** runs the loop: recognise macro calls (resolve head symbol → `ModuleEntry::Macro` via `&symbol_tables`), invoke the matched clause via the JIT-loaded function pointer carried on the entry's `code: Option<C>`, marshal the result Sexp tree back, and recurse (re-expansion of the macro's output). Bare-symbol zero-arg macros are recognised and expanded the same way.
+- **`expand` (in target state, frontend; in current state, `src/expander.rs`)** runs the loop: recognise macro calls (resolve head symbol → `ModuleEntry::Macro` via `&symbol_tables`), invoke the matched clause via the JIT-loaded function pointer carried on the entry's `code: Option<C>`, marshal the result Sexp tree back, and recurse (re-expansion of the macro's output). Bare-symbol zero-arg macros are recognised and expanded the same way. (Migration tracked under FIXME 0098 Phase 2.)
 
 ### 5.2 Termination + recursion-depth
 
 The current implementation uses `EXPANSION_DEPTH_LIMIT = 100` (`src/expander.rs`). The facade invariant says termination is the macro author's responsibility ("no recursion-depth limit imposed by the frontend"). These differ: the depth limit is a defensive guard against infinite expansion, not a contract guarantee. The design intent reconciles them by treating the depth limit as a **diagnostic** — when reached, surface a `MacroError`-like variant; do not silently truncate. The contract remains that termination is the macro author's responsibility; the limit only fires on demonstrably-runaway expansion.
 
-When `expand` migrates into `cranelisp-frontend` (FIXME 0092), the depth limit comes with it. No spec change required.
+When `expand` migrates into `cranelisp-frontend` (FIXME 0098 Phase 2), the depth limit comes with it. No spec change required.
 
 ### 5.3 Dependency-not-yet-ready signals
 
@@ -143,7 +143,7 @@ The other `ExpansionError` variants (`Malformed`, `MacroAborted`, …) are genui
 
 The integration layer today defines a `MacroResolver` trait used by `expand_sexp_recursive` to abstract macro lookup. Worker.rs has a `SymbolTableMacroResolver` impl that compiles macro clauses on demand; `session_v4.rs` has a `ReadOnlyMacroResolver` impl for batch reads. Both depend on integration-layer types.
 
-The trait is fine as an integration-layer convenience while it remains there; it is **not the public boundary**. When `expand` migrates to the frontend (FIXME 0092), the trait is replaced by direct symbol-tables lookup — Decision 8's retraction. The on-demand-compile responsibility moves to the orchestrator: the `wait_for_inmem` call in `handle_gap` is the trigger, not a callback into the expander. This narrows the frontend's input contract from "&mut dyn MacroResolver" (which can mutate) to "&symbol_tables" (read-only) — Principle 1 (decoupling over convenience) and Principle 5 (testability is structural).
+The trait is fine as an integration-layer convenience while it remains there; it is **not the public boundary**. When `expand` migrates to the frontend (FIXME 0098 Phase 2), the trait is replaced by direct symbol-tables lookup — Decision 8's retraction. The on-demand-compile responsibility moves to the orchestrator: the `wait_for_inmem` call in `handle_gap` is the trigger, not a callback into the expander. This narrows the frontend's input contract from "&mut dyn MacroResolver" (which can mutate) to "&symbol_tables" (read-only) — Principle 1 (decoupling over convenience) and Principle 5 (testability is structural).
 
 ---
 
@@ -188,7 +188,7 @@ The 6-sprints-out-blast-radius test is the right lens. New language forms today 
 - **HIGH-5** (documentation drift — `peg` named in plan but reader is hand-written; `ast_builder.rs` header still claims "Ring 0, non-Ring-0 rejected" while the file handles traits/impls/strings/vec literals/trace forms) — stale design docs create false mental models. This master doc + the §9 staleness register is the partial remediation; the full fix requires `/design` follow-up sprints to refresh subordinate docs.
 - **MEDIUM-3** (hidden cross-file pipeline contracts) — must surface as crate-local `CLAUDE.md` content (audit item 3, owned by `/dev`-narrow). This master doc cannot edit `crates/cranelisp-frontend/CLAUDE.md`; instead, it commits to the target shape that makes each contract explicit.
 
-The two filed FIXMEs (0091, 0092) are also maintainability-relevant: a facade that drifts from source forces every reader to triangulate, and a facade-vs-source gap of the scale of FIXME 0092 is a sustained tax until resolved.
+FIXME 0098 (multi-crate `ResolutionGap`/`CheckError`/`ExpansionError`/`expand` migration) is also maintainability-relevant: a facade that drifts from source forces every reader to triangulate, and the facade-vs-source gap covered by Phase 2 (`expand` not yet in frontend) is a sustained tax until resolved.
 
 ### 7.3 Observability
 
@@ -208,7 +208,7 @@ The only shared mutable state owned by the frontend is the synthetic-span counte
 
 Multiple workers may call `expand` concurrently against the same `&symbol_tables`. Per Decision 38's per-symbol mutability discipline, each `SymbolTable`'s internal DashMap permits shard-read access without whole-module locking; `expand` runs from any worker without further synchronisation. There is no callback into the scheduler — gap returns surface dependencies as values.
 
-The migration in FIXME 0092 preserves these properties: `expand` becomes a `Send + Sync` free function; the symbol-tables type is generic in `<C: CodeStore, L: LinkerStore>` so frontend stays C/L-blind (per Decision 32's marker traits).
+The migration in FIXME 0098 Phase 2 preserves these properties: `expand` becomes a `Send + Sync` free function; the symbol-tables type is generic in `<C: CodeStore, L: LinkerStore>` so frontend stays C/L-blind (per Decision 32's marker traits).
 
 ### 7.5 Performance
 
@@ -227,25 +227,34 @@ The frontend already meets the structural testability bar: it can be unit-tested
 
 **Audit finding LOW-6** (test bulk inside production files makes file-scrolling expensive) — addressed by audit item 6: move large test blocks to `*_tests.rs` siblings while keeping `#[cfg(test)] mod tests` locality. This is `/dev`-narrow; the design endorses it.
 
-`expand`'s gap-return contract is independently testable: stub `symbol_tables` to lack the FQ macro entry, assert `Err(ExpansionError::Gap(MacroInMem(fq)))`. This is structural testability of the dependency-surfacing mechanism without needing a running scheduler. Today this test cannot exist at the frontend boundary because `expand` is in `src/`; FIXME 0092 unblocks it.
+`expand`'s gap-return contract is independently testable: stub `symbol_tables` to lack the FQ macro entry, assert `Err(ExpansionError::Gap(MacroInMem(fq)))`. This is structural testability of the dependency-surfacing mechanism without needing a running scheduler. Today this test cannot exist at the frontend boundary because `expand` is in `src/`; FIXME 0098 Phase 2 unblocks it.
 
 ---
 
 ## 8. Decision register (frontend-relevant)
 
+Per `design/arch/CLAUDE.md`'s active-vs-legacy split: active Decisions carry forward-handoff or pre-implementation work; legacy Decisions are fully embodied in the architecture and preserved for narrative continuity. Below split accordingly.
+
+### Active
+
 | # | Decision | Frontend takeaway |
 |---|---|---|
-| 1 | 7+1 crate DAG | Frontend is one crate; depends only on `cranelisp-types` |
-| 2 | `cranelisp-types` data-only | `Sexp`, `Expr`, `TopLevel`, `Defn`, `TypeExpr`, `ImportSpec`, `ExportSpec`, `ModDecl`, `PlatformSpec`, `MacroClauseInfo`, `MacroParam` (and target-state `ResolutionGap`, `StructuralDecls`) all live in types; frontend consumes them |
-| 6 | `Type::from_name` / `type_name` | Frontend uses `TypeName` (syntactic), never `Type`. Lift to `Type` happens in typecheck per the `TypeName → FQTypeName` boundary |
-| 8 | `MacroExpander` trait deleted | `expand` is a free function. The current `MacroResolver` trait in `src/expander.rs` is integration-layer-internal scaffolding and migrates out per FIXME 0092 |
-| 21 | TC-sourced call graph on `ModuleEntry` | Frontend extracts `MacroClauseInfo` shapes; integration layer + typecheck populate `callees` on the `ModuleEntry::Macro` entry. Frontend does NOT compute callees |
-| 23 | Uniform codegen; mode is a Module property; two-GOT model | Macro invocation goes through the GOT slot; frontend sees only `code: Some(_)` on the entry, never names `Jit` |
 | 30 | Form-by-form scheduler; mutual-import deadlock | Frontend's `expand` produces `Gap(MacroInMem(fq))` on unresolved FQ refs; orchestrator handles wait + retry. Frontend never blocks. No defmacro pre-pass |
-| 32 | `CodeStore` / `LinkerStore` marker traits | `expand`'s symbol-tables parameter is generic in `<C: CodeStore, L: LinkerStore>` so frontend stays C/L-blind |
-| 33 | Structural decls as fields on `SymbolTable` | `extract_module_declarations` returns the bundle that integration layer writes via `SymbolTable::write_structural_decls` at Phase 0 |
-| 38 | `SharedState`; per-symbol mutability discipline | `expand`'s `&symbol_tables` is the post-Phase-0 shared-read access shape — per-entry inner-DashMap locks, no whole-module write locks |
-| 39 | `ErrorLocation`; per-defn source on Introspection | Parse errors populate `ErrorLocation.context` directly; post-parse errors leave `context: None` and let the formatter resolve via introspection. `Span` always populated (synthetic spans use the monotonic allocator) |
+
+### Legacy — embodied
+
+| # | Decision | Frontend takeaway |
+|---|---|---|
+| 1 (legacy — embodied) | 7+1 crate DAG | Frontend is one crate; depends only on `cranelisp-types` |
+| 2 (legacy — embodied) | `cranelisp-types` data-only | `Sexp`, `Expr`, `TopLevel`, `Defn`, `TypeExpr`, `ImportSpec`, `ExportSpec`, `ModDecl`, `PlatformSpec`, `MacroClauseInfo`, `MacroParam` (and target-state `ResolutionGap`, `StructuralDecls`) all live in types; frontend consumes them |
+| 6 (legacy — embodied) | `Type::from_name` / `type_name` | Frontend uses `TypeName` (syntactic), never `Type`. Lift to `Type` happens in typecheck per the `TypeName → FQTypeName` boundary |
+| 8 (legacy — embodied) | `MacroExpander` trait deleted | `expand` is a free function. The current `MacroResolver` trait in `src/expander.rs` is integration-layer-internal scaffolding and migrates out per FIXME 0098 Phase 2 |
+| 21 (legacy — embodied) | TC-sourced call graph on `ModuleEntry` | Frontend extracts `MacroClauseInfo` shapes; integration layer + typecheck populate `callees` on the `ModuleEntry::Macro` entry. Frontend does NOT compute callees |
+| 23 (legacy — embodied) | Uniform codegen; mode is a Module property; two-GOT model | Macro invocation goes through the GOT slot; frontend sees only `code: Some(_)` on the entry, never names `Jit` |
+| 32 (legacy — embodied) | `CodeStore` / `LinkerStore` marker traits | `expand`'s symbol-tables parameter is generic in `<C: CodeStore, L: LinkerStore>` so frontend stays C/L-blind |
+| 33 (legacy — embodied) | Structural decls as fields on `SymbolTable` | `extract_module_declarations` returns the bundle that integration layer writes via `SymbolTable::write_structural_decls` at Phase 0 |
+| 38 (legacy — embodied) | `SharedState`; per-symbol mutability discipline | `expand`'s `&symbol_tables` is the post-Phase-0 shared-read access shape — per-entry inner-DashMap locks, no whole-module write locks |
+| 39 (legacy — embodied) | `ErrorLocation`; per-defn source on Introspection | Parse errors populate `ErrorLocation.context` directly; post-parse errors leave `context: None` and let the formatter resolve via introspection. `Span` always populated (synthetic spans use the monotonic allocator) |
 
 ---
 
@@ -259,14 +268,14 @@ This master doc does NOT edit the subordinate docs. The register below records e
 | AST builder | `design/frontend/ast-builder.md` | **Stale on ring-gating.** Claims "Ring 0, non-Ring-0 rejected" while the file handles traits, impls, strings, vec literals, trace forms (HIGH-5). Pre-dates the §3.2 target split |
 | Comment preservation | `design/frontend/comment-preservation.md` | **Current.** Describes `Sexp::Comment` variant and `parse_preserving_comments` entry point as implemented |
 | Macro plan | `design/frontend/macro-plan.md` | **Partially stale.** Multi-clause shape + marshalling + span-rewriting still accurate; the `MacroExpander` trait dependency-inversion framing is retracted by Decision 8 |
-| Macro resolver trait | `design/frontend/macro-resolver-trait.md` | **Stale (Sprint-50-era).** Documents a `MacroResolver` trait refactor that the wider Decision-8 retraction supersedes. Resolver lookup migrates back to direct `&symbol_tables` reads when FIXME 0092 lands |
+| Macro resolver trait | `design/frontend/macro-resolver-trait.md` | **Stale (Sprint-50-era).** Documents a `MacroResolver` trait refactor that the wider Decision-8 retraction supersedes. Resolver lookup migrates back to direct `&symbol_tables` reads when FIXME 0098 Phase 2 lands |
 | Modules | `design/frontend/modules.md` | **Partially stale.** Module-system concept accurate; specific function names + parallel-store framing predates Decisions 33 + 38. `super` rewrite at frontend boundary still correct |
 | Frontend plan | `crates/cranelisp-frontend/plan-frontend.md` | **Stale (architectural).** Names `peg` 0.8 as the parser; reality is hand-written. This is the highest-impact doc-drift item per audit HIGH-5 |
 
 Refresh order, in priority of audit blast radius:
 
 1. `crates/cranelisp-frontend/plan-frontend.md` — fully-stale architectural decision; refresh to "hand-written recursive descent"
-2. `macro-resolver-trait.md` — fully stale; archive or delete (Decision 8 retraction + FIXME 0092 migration)
+2. `macro-resolver-trait.md` — fully stale; archive or delete (Decision 8 retraction + FIXME 0098 Phase 2 migration)
 3. `ast-builder.md` — refresh against the §3.2 split shape (defer until §3.2 split lands)
 4. `macro-plan.md` — refresh against Decision 8; retain phases that still match
 5. `modules.md` — refresh against Decisions 33 + 38
@@ -282,12 +291,11 @@ The audit's recommended-remediation item 5 ("refresh or replace stale design doc
 - `design/arch/facades/int.md` §"`process_form` — the gap-orchestration retry loop" — orchestration partner contract
 - `design/arch/bounded-contexts.md` §1 — bounded context statement
 - `design/arch/principles.md` — principles cited above (1, 2, 3, 4, 5, 6)
-- `design/arch/CLAUDE.md` — Decisions 1, 2, 6, 8, 21, 23, 30, 32, 33, 38, 39 (frontend-relevant)
-- `design/arch/fixmes/0091-frontend-extract-module-declarations-needs-path.md` — facade signature contract problem
-- `design/arch/fixmes/0092-frontend-expand-and-resolution-gap-types-not-yet-in-types.md` — `expand` migration contract problem
+- `design/arch/CLAUDE.md` — Decisions 1, 2, 6, 8, 21, 23, 30, 32, 33, 38, 39 (frontend-relevant; 30 active, others legacy)
+- `design/arch/fixmes/0098-dev-frontend-typecheck-int-resolutiongap-checkerror-expansionerror-migration.md` — multi-crate migration covering `extract_module_declarations`/`parse_import_sexp` signatures (Phase 2) and `expand`/`ExpansionError`/`ResolutionGap` placement (Phase 1 types → Phase 2 frontend)
 - `audits/frontend-20260423.md` — current-state ground truth (point-in-time; supersession-marked)
 - `audits/frontend-20260423-current-state.mmd`, `audits/frontend-20260423-target-state.mmd` — current and target diagrams
 - `design/frontend/{ast-builder,reader,comment-preservation,macro-plan,macro-resolver-trait,modules}.md` — subordinate topic docs (staleness register §9)
 - `crates/cranelisp-frontend/src/{lib,reader,ast_builder,module_extract,quasiquote,defmacro}.rs` — implementation
 - `crates/cranelisp-frontend/plan-frontend.md` — pre-Ring-0 plan (architectural drift; staleness register item 1)
-- `src/expander.rs` — current home of `expand_sexp_recursive`; migrates per FIXME 0092
+- `src/expander.rs` — current home of `expand_sexp_recursive`; migrates per FIXME 0098 Phase 2

@@ -103,7 +103,7 @@ These deviations are observations *of the source*; they do not reflect a problem
 | `operators.rs` | 531 | Inline primitive lowering, `(TraitName, Symbol, TypeName) → PrimitiveOp` map |
 | `heap.rs` | 501 | Heap layout offsets, RC inc/dec emission, allocation helpers, last-use predicate |
 | `jit.rs` | 1241 | `Jit` newtype + custom `Drop`, `build_isa()` (HARDCODED, parallel to `cache/object.rs`), intrinsic registration, **second** `compile_defn` and `build_compile_context` |
-| `display.rs` | 831 | Value/type formatting (likely belongs in `int` per BC §6 ownership of REPL display, but historical) |
+| `display.rs` | 831 | Value/type formatting (belongs in `int` per BC §6 ownership of REPL display; relocation tracked by FIXME 0108) |
 | `exe.rs` | 231 | Startup-object generation for `--link` mode |
 | `cache/mod.rs` | 653 | Cache facade, paths, load helpers, **deprecated compatibility surface** |
 | `cache/manifest.rs` | 419 | Manifest hashing, freshness checks |
@@ -222,7 +222,7 @@ The mini-monolith condition is what makes feature work in `control_flow.rs` slow
 
 **Gap**: backend has no first-class log of GOT-slot population. The pre-S58 silent-NULL pattern in `worker.rs:2810-2823` — where `linker.get_symbol(name) == None` was silently treated as "skip this slot" — is the historical defect category Decision 37 addresses. The current `Linker::get_symbol(&self, name: &str) -> Option<*const u8>` method is `Option`-returning; the *defensive* error must be raised at the call site (in `int`), not in backend's API. Backend's facade is correct (expose `Option`, let the caller decide what's fatal); the safety invariant lives in the caller's discipline.
 
-The audit does not flag a positive log of "slot N for symbol s populated with ptr P" beyond `Introspection.code_size`. This is acceptable for now — the safety invariant (Decision 37) is the regression net — but a known gap for future incident response. **FIXME 0094 (filed below)** asks `/arch` to decide whether this is an `Introspection` extension or a separate trace flag; the surface impact is `int`'s, not backend's.
+The audit does not flag a positive log of "slot N for symbol s populated with ptr P" beyond `Introspection.code_size`. This is acceptable for now — the safety invariant (Decision 37) is the regression net — but a known gap for future incident response. **FIXME 0099** (`*-gotobserver-implementation.md`) tracks the resolution: `/arch` chose option B (ring buffer + observer callback paralleling Decision 40's `IoObserver`) over an `Introspection` extension. Backend exposes the `GotObserver` contract (`got_observer.rs`); `int` implements the ring-buffer state.
 
 This sprint did not introduce new observability surfaces. The crate's observability story is documented enough in the existing CLIF dump filter + Introspection field set; future work expands rather than replaces.
 
@@ -313,7 +313,7 @@ The cache-hit path is **not** a parallel codepath (Decision 37). It lives inside
 - For each defined symbol `s` in `symbol_tables[scope]`, `linker.get_symbol(bare_name(s))` resolves the address. Bare-name lookup per Decision 36; `Linkage::Local` symbols are still indexable from the in-process linker (it filters only `.L*`-style debug symbols).
 - Returns `LinkerArtefact { linker: Arc<Linker>, ptrs: HashMap<Symbol, *const u8> }` — `int` writes resolved ptrs into the SymbolTable GOT slots and constructs `Code::Linker { linker, ptr }` per symbol via `write_code`.
 
-**No swallowed failures (Decision 37)**. The facade exposes `Linker::get_symbol(&self, name: &LinkerSymbol) -> Result<*const u8, LinkerError>` (a typed `Result`, not the source's current `Option`). At facade-level the contract is: **callers MUST treat resolution failure as `CacheLoadError`, not silently push NULL**. The pre-Sprint-58 `worker.rs:2810-2823` regression came from the `Option` → silent-skip pattern; Decision 37 plus the typed `Result` shape closes the door. **FIXME 0095 (filed below)** asks `/arch` to pin the typed `Result` shape into the facade explicitly so `int`-side reviewers see the safety contract.
+**No swallowed failures (Decision 37)**. The facade exposes `Linker::get_symbol(&self, name: &LinkerSymbol) -> Result<*const u8, LinkerError>` (a typed `Result`, not the source's current `Option`). At facade-level the contract is: **callers MUST treat resolution failure as `CacheLoadError`, not silently push NULL**. The pre-Sprint-58 `worker.rs:2810-2823` regression came from the `Option` → silent-skip pattern; Decision 37 plus the typed `Result` shape closes the door. The typed-`Result` shape is now pinned in `facades/backend.md`; **FIXME 0100** (`*-relocate-single-consumer-types*`) Phase 2 covers placing `LinkerError` and the rest of backend's single-consumer types in `cranelisp-backend` per Principle 15.
 
 ### 6.3 Schema versioning (Decision 34)
 
@@ -331,25 +331,34 @@ Per facade §"Object file contract", the `.o` is **one file consumed by two read
 
 ## 7. Decision register
 
+Per `design/arch/CLAUDE.md`'s active-vs-legacy split: active Decisions carry forward-handoff or pre-implementation work; legacy Decisions are fully embodied in the architecture and preserved for narrative continuity.
+
+### Active
+
 | Decision | Backend takeaway |
 |---|---|
-| **22** — `defined_symbols()` predicate | One filter; `compile_to_module` trusts the contract or returns `CompilationError::SymbolNotCompilable` |
-| **23** — Uniform codegen, two-GOT model | One CLIF, two resolvers; mode is a property of the supplied `M`, not a parameter |
-| **24** — Uniform consuming calling convention | Caller transfers ownership of heap params; callee owns. No "borrowing" classification. RC discipline is uniform across user fns, traits, builtins, externs, and constructors. |
-| **25** — Code on `ModuleEntry::Def.code`; cache stores `.meta.json` + `.o` | Backend writes Code directly (per Decision 41 amend) into `ModuleEntry::Def.code`; cache-load reads both files paired |
-| **26** — Platform fn ptrs on `ModuleEntry::Def.platform_fn_ptr`; `scheduling_class` in variant | Backend reads platform ptrs from symbol-table import chains, not a side registry |
-| **31** — `Arc<Jit>` + custom `Drop` calls `unsafe free_memory()`; per-symbol JIT cardinality (per Decision 41 amend) | The `Jit` newtype; safety invariant relies on `int`'s GOT-swap discipline |
-| **32** — `CodeStore` / `LinkerStore` empty markers + `Clone` super-bound | Backend signatures use `SymbolTable<Code, ()>` (per Decision 41 amend; previously `<C, L>`-blind) |
-| **33** — Structural decls on `SymbolTable` | Backend reads imports/exports/etc. from symbol table directly |
-| **34** — `schema_version: u32` cache envelope | Backend owns `CACHE_SCHEMA_VERSION` constant; cache-load checks first |
-| **35** — `Code` enum (per Decision 41 amend, lives in `cranelisp-backend/src/code.rs`) | Backend constructs `Code` directly; integration layer also names it at session boundary; Principle 3 protected — `Code` does NOT enter `cranelisp-types` |
-| **36** — Bare names + `Linkage::Local` uniformly | No `user`/`main` special case; `--link` `_main` alias is `int`'s job |
-| **37** — Cache-hit lives inside `register_module`; codegen phase order-independent; defensive resolution | No `try_cache_hit_load` parallel path; `Linker::get_symbol` failure is `CacheLoadError`, never silent skip |
-| **38** — `SharedState` is the formal worker-shareable subset; per-symbol mutability via `&SymbolTable` interior mutability (`write_code(&self, sym, code)`) | Backend operates on read-only symbol-table view + interior-mutable `write_code` |
-| **39** — Per-defn source on `Introspection.source`; errors carry `ErrorLocation` | `CRANELISP_CODEGEN_TRACE=1` populates `clif_ir`/`disasm` on `Introspection`, not on `ModuleEntry::Def` |
-| **40** — `trace.rs`/`io_trace.rs` relocate to int; runtime keeps `IoObserver` callback contract | Backend unchanged — backend's observability surfaces (CLIF dump, RC trace) are codegen-side; runtime's observation contract is orthogonal |
-| **41** — `compile_to_module` per-symbol JIT cardinality; `Code` moves to `cranelisp-backend`; backend writes shared state directly; `Result<(), CompilationError>` | The single largest pending refactor against this design. Amends Decisions 31, 35. See §2.6 deviations table |
-| **42** — `PlatformError` adopts `ErrorLocation` per variant | Backend's platform-related codegen paths surface `CranelispError::Platform` with `ErrorLocation`-carrying variants when relevant |
+| **31** — `Arc<Jit>` + custom `Drop` calls `unsafe free_memory()`; per-symbol JIT cardinality (per Decision 41 amend) | The `Jit` newtype; safety invariant relies on `int`'s GOT-swap discipline (environmental — Cranelift `Memory::drop` evidence; amended S64) |
+| **35** — `Code` enum (per Decision 41 amend, lives in `cranelisp-backend/src/code.rs`) | Backend constructs `Code` directly; integration layer also names it at session boundary; Principle 3 protected — `Code` does NOT enter `cranelisp-types` (operative) |
+| **40** — `trace.rs`/`io_trace.rs` relocate to int; runtime keeps `IoObserver` callback contract | Backend unchanged — backend's observability surfaces (CLIF dump, RC trace) are codegen-side; runtime's observation contract is orthogonal (pre-implementation) |
+| **41** — `compile_to_module` per-symbol JIT cardinality; `Code` moves to `cranelisp-backend`; backend writes shared state directly; `Result<(), CompilationError>` | The single largest pending refactor against this design. Amends Decisions 31, 35. See §2.6 deviations table (pre-implementation) |
+| **42** — `PlatformError` adopts `ErrorLocation` per variant | Backend's platform-related codegen paths surface `CranelispError::Platform` with `ErrorLocation`-carrying variants when relevant (pre-implementation) |
+
+### Legacy — embodied
+
+| Decision | Backend takeaway |
+|---|---|
+| **22 (legacy — embodied)** — `defined_symbols()` predicate | One filter; `compile_to_module` trusts the contract or returns `CompilationError::SymbolNotCompilable` |
+| **23 (legacy — embodied)** — Uniform codegen, two-GOT model | One CLIF, two resolvers; mode is a property of the supplied `M`, not a parameter |
+| **24 (legacy — embodied)** — Uniform consuming calling convention | Caller transfers ownership of heap params; callee owns. No "borrowing" classification. RC discipline is uniform across user fns, traits, builtins, externs, and constructors. |
+| **25 (legacy — embodied)** — Code on `ModuleEntry::Def.code`; cache stores `.meta.json` + `.o` | Backend writes Code directly (per Decision 41 amend) into `ModuleEntry::Def.code`; cache-load reads both files paired |
+| **26 (legacy — embodied)** — Platform fn ptrs on `ModuleEntry::Def.platform_fn_ptr`; `scheduling_class` in variant | Backend reads platform ptrs from symbol-table import chains, not a side registry |
+| **32 (legacy — embodied)** — `CodeStore` / `LinkerStore` empty markers + `Clone` super-bound | Backend signatures use `SymbolTable<Code, ()>` (per Decision 41 amend; previously `<C, L>`-blind) |
+| **33 (legacy — embodied)** — Structural decls on `SymbolTable` | Backend reads imports/exports/etc. from symbol table directly |
+| **34 (legacy — embodied)** — `schema_version: u32` cache envelope | Backend owns `CACHE_SCHEMA_VERSION` constant; cache-load checks first |
+| **36 (legacy — embodied)** — Bare names + `Linkage::Local` uniformly | No `user`/`main` special case; `--link` `_main` alias is `int`'s job |
+| **37 (legacy — embodied)** — Cache-hit lives inside `register_module`; codegen phase order-independent; defensive resolution | No `try_cache_hit_load` parallel path; `Linker::get_symbol` failure is `CacheLoadError`, never silent skip |
+| **38 (legacy — embodied)** — `SharedState` is the formal worker-shareable subset; per-symbol mutability via `&SymbolTable` interior mutability (`write_code(&self, sym, code)`) | Backend operates on read-only symbol-table view + interior-mutable `write_code` |
+| **39 (legacy — embodied)** — Per-defn source on `Introspection.source`; errors carry `ErrorLocation` | `CRANELISP_CODEGEN_TRACE=1` populates `clif_ir`/`disasm` on `Introspection`, not on `ModuleEntry::Def` |
 
 Decisions not listed (1–9 cross-crate framing, 10 base-pointer ABI in interface-types territory, 27 G8-before-G9 orchestration, 28 retracted, 29–30 form-by-form scheduler in int) are either consumed orthogonally or not backend-shaped.
 
@@ -382,27 +391,31 @@ The 21 existing docs under `design/backend/` (this `backend.md` is the master) e
 | Defects 4/5/6 reduction | `defects-456-reduction.md` | **Stale as live design**. Sprint 59 W1 incident-debug residue |
 | Slice 4 / 21-hello-io | `slice-4-21-hello-io-investigation.md` | **Stale as live design**. Sprint 61 era closure double-free reduction; keep for repro |
 
-Six docs are flagged stale-as-design. They remain as references but should not be cited as authoritative design intent. **FIXME 0096 (filed below)** asks `/sprint` to schedule a 30-minute housekeeping pass that moves them to `design/backend/archive/` with a `README.md` indexing what each captured.
+Six docs are flagged stale-as-design. They remain as references but should not be cited as authoritative design intent. **FIXME 0096** (`*-design-backend-stale-subordinate-doc-archival.md`) asks `/sprint` to schedule a 30-minute housekeeping pass that moves them to `design/backend/archive/` with a `README.md` indexing what each captured.
 
 ---
 
-## 9. Open contract questions filed as FIXMEs
-
-This refresh surfaced three contract questions where the facade is silent or where the as-built deviation suggests the facade should pin a contract more tightly. All three are filed below as new FIXMEs in `design/arch/fixmes/` per `triad-shared.md` §FIXME protocol.
+## 9. Tracked FIXMEs
 
 The §2.6 deviations table is **not** filed as FIXME — those are open implementation work against the existing contract, not contract problems. The Decision-41 follow-through is already pending; this refresh confirms the contract is implementable simply once the implementation catches up.
 
-### FIXME 0094 — Observability gap: GOT-slot population log
+The contract questions surfaced by earlier refreshes have all been resolved into existing FIXMEs:
 
-`target: /arch`. The integration layer populates GOT slots after each batch's `compile_to_module` returns. There is no first-class log entry per slot population — `Introspection.code_size` records per-defn size but does not record GOT slot index, address, or `Arc<Jit>` identity. Future incident response on a GOT-slot bug would benefit from a structured log. `/arch` decides surface — `Introspection` extension vs. separate trace flag — and whichever it is, this design doc gains a §4.3 elaboration. Backend gains no new surface either way (the log is `int`-side, fed by data backend already returns).
+### FIXME 0099 — GotObserver implementation (was: GOT-slot population log gap)
 
-### FIXME 0095 — Pin `Linker::get_symbol` typed-Result shape in facade
+`target: /dev`. `/arch` chose option B (ring buffer + observer callback paralleling Decision 40's `IoObserver`) over an `Introspection` extension. Backend exposes the `GotObserver` contract (`crates/cranelisp-backend/src/got_observer.rs` — `GotEventTag`, `GotEvent`, `GotProvenance`, `GotObserver`, `register_got_observer`); `int` implements the ring-buffer state and env-var activation. See `design/arch/fixmes/0099-dev-backend-int-gotobserver-implementation.md`.
 
-`target: /arch`. Facade §"Linker — the cache-load retention newtype" says `pub fn get_symbol(&self, name: &LinkerSymbol) -> Result<*const u8, LinkerError>` (typed Result). The current source has `pub fn get_symbol(&self, name: &str) -> Option<*const u8>`. Decision 37's "no swallowed failures" rule lives at the call site (in `int`), not in backend's API — but the typed-Result shape makes the safety contract facade-visible. This is the closer of the door against the pre-S58 silent-NULL pattern. Confirm + define the `LinkerError` enum in `cranelisp-types` so callers can match.
+### FIXME 0100 — Relocate single-consumer types (was: pin `Linker::get_symbol` typed-Result shape)
+
+`target: /dev`. The typed-`Result` shape for `Linker::get_symbol(&self, name: &LinkerSymbol) -> Result<*const u8, LinkerError>` is now pinned in `facades/backend.md`. FIXME 0100 Phase 2 covers placing `LinkerError`, `CompilationError`, and the GOT observer types in `cranelisp-backend` per Principle 15 (facade types live with their behavior). See `design/arch/fixmes/0100-dev-relocate-single-consumer-types-to-originating-crates.md`.
 
 ### FIXME 0096 — Stale subordinate-doc archival pass
 
-`target: /sprint`. Six subordinate docs (named in §8 above) are incident-debug or pivot residue that no longer reflects live design intent. They are still useful as repro references but pollute the "what is the current design?" answer when a contributor scans `design/backend/`. Schedule a 30-minute housekeeping pass that moves them to `design/backend/archive/` with an `archive/README.md` indexing what each captured. Live docs in §8's table stay.
+`target: /sprint`. Six subordinate docs (named in §8 above) are incident-debug or pivot residue that no longer reflects live design intent. They are still useful as repro references but pollute the "what is the current design?" answer when a contributor scans `design/backend/`. Schedule a 30-minute housekeeping pass that moves them to `design/backend/archive/` with an `archive/README.md` indexing what each captured. Live docs in §8's table stay. See `design/arch/fixmes/0096-design-backend-stale-subordinate-doc-archival.md`.
+
+### FIXME 0108 — Relocate `display.rs` to `int`
+
+`target: /dev`. `crates/cranelisp-backend/src/display.rs` (831 LOC) implements REPL value/type formatting; per BC §6 this belongs in `int`, not `cranelisp-backend`. Mechanical relocation; bundle naturally with FIXME 0099 or FIXME 0100 (both are `/dev`-narrow to backend + int). See `design/arch/fixmes/0108-dev-relocate-backend-display-rs-to-int.md`.
 
 ---
 
@@ -412,7 +425,7 @@ The §2.6 deviations table is **not** filed as FIXME — those are open implemen
 - `design/arch/facades/types.md` — boundary types this crate consumes
 - `design/arch/bounded-contexts.md` §3 — bounded-context full statement
 - `design/arch/principles.md` and `design/arch/principles/NN-*.md` — principles cited above (1, 3, 4, 5, 6, 7, 11)
-- `design/arch/CLAUDE.md` Decisions 22, 23, 24, 25, 26, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42 — backend-relevant decisions
+- `design/arch/CLAUDE.md` Decisions 31, 35, 40, 41, 42 (active) and 22, 23, 24, 25, 26, 32, 33, 34, 36, 37, 38, 39 (legacy — embodied) — backend-relevant decisions
 - `audits/backend-20260423.md` — temporal snapshot of as-built state at audit date (NOT the target)
 - `audits/backend-20260423-{current,target}-state.{mmd,svg}` — diagrams (target diagram aligns with §3.2 above; current diagram is the audit-date snapshot)
 - `crates/cranelisp-backend/CLAUDE.md` — `/dev`-narrow code conventions

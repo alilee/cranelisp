@@ -78,7 +78,6 @@ impl CLString {
 ### Platform manifest and fn descriptor (DLL ABI — what every platform DLL exports)
 
 ```rust
-#[non_exhaustive]
 #[repr(C)]
 pub struct PlatformManifest {
     pub name: *const u8,                                                           // null-terminated C string
@@ -87,7 +86,6 @@ pub struct PlatformManifest {
     pub abi_version: u32,
 }
 
-#[non_exhaustive]
 #[repr(C)]
 pub struct PlatformFn {
     pub name: *const u8,                                                           // null-terminated, kebab-case (the user-visible name)
@@ -141,7 +139,6 @@ Platform-fn invocation is via direct GOT lookup, NOT a centralised dispatch wrap
 ### Host callbacks — what platform DLL code can call back into runtime
 
 ```rust
-#[non_exhaustive]
 #[repr(C)]
 pub struct HostCallbacks {
     pub alloc: extern "C" fn(size: usize) -> *mut u8,                              // → cranelisp_runtime::heap_alloc
@@ -198,13 +195,17 @@ pub const ABI_VERSION: u32;                                                     
 
 ---
 
-## Re-exports from `cranelisp-types`
+## Re-exports from `cranelisp-types` (external-audience exception per Principle 15)
 
 ```rust
 pub use cranelisp_types::SchedulingClass;
+pub use cranelisp_types::PlatformError;                                            // re-exported per Decision 42; surfaced via cranelisp-types so all crates can construct/match
 ```
 
-`SchedulingClass` lives in `cranelisp-types` because `ModuleEntry::Def` carries it inside `PrimitiveKind::PlatformEffect { scheduling_class }` per Decision 26. Re-exported here for DLL authors who don't otherwise need the types crate.
+Principle 15 forbids re-exports of `cranelisp-types` items from implementation-crate facades by default, but explicitly permits the **external-audience exception** for facades whose external consumers would not otherwise depend on `cranelisp-types`. `cranelisp-platform` qualifies: out-of-tree DLL author crates (`cranelisp-stdio`, `cranelisp-fs`, etc.) depend ONLY on `cranelisp-platform` and have no other reason to learn about `cranelisp-types`.
+
+- `SchedulingClass` lives in `cranelisp-types` because `ModuleEntry::Def` carries it inside `PrimitiveKind::PlatformEffect { scheduling_class }` per Decision 26 (multi-consumer per Principle 15's heuristic — typecheck, backend, platform, runtime all reference it). Re-exported here for DLL authors.
+- `PlatformError` lives in `cranelisp-types` per Decision 42 (`CranelispError::Platform(PlatformError)` is constructed by both platform and `int`'s error-formatting layer). Re-exported here for DLL authors who construct platform errors from their handler code.
 
 No other re-exports.
 
@@ -236,13 +237,15 @@ pub trait CLType: sealed::Sealed + Copy { /* … */ }
 
 ## `#[non_exhaustive]` DTOs
 
-All public structs and enums carry `#[non_exhaustive]`:
-- `CLInt`, `CLString`, `CLBool`, `CLFloat`, `CLIO<T>`, `CLOwned<T>`
-- `PlatformManifest`, `PlatformFn`, `OwnedPlatformFnDescriptor`
-- `HostCallbacks`
-- `PlatformError` (re-exported from `cranelisp-types` per Decision 42; `#[non_exhaustive]` set there)
+Per Principle 14 — FFI boundary types are governed by layout discipline (`ABI_VERSION`), not source-level evolution guards. `#[non_exhaustive]` applies to public DTOs EXCEPT those carrying `#[repr(C)]` or `#[repr(transparent)]`:
 
-The `#[repr(C)]` types (`PlatformManifest`, `PlatformFn`, `HostCallbacks`) carry both `#[non_exhaustive]` and `#[repr(C)]` per FIXME `sprints/fixmes/0001-non-exhaustive-repr-c-interaction.md` — `#[non_exhaustive]` guards source-level breakage; layout drift at the FFI boundary is governed by `ABI_VERSION` bumps and the `declare_platform!` macro contract.
+**Exempt (layout contracts; governed by `ABI_VERSION`):**
+- `#[repr(C)]`: `PlatformManifest`, `PlatformFn`, `HostCallbacks` — read by the platform-DLL loader and the IO trampoline via hard-coded byte offsets. Any field change is a breaking change requiring an `ABI_VERSION` bump (gated by `load_manifest`'s version check) and a coordinated `declare_platform!` macro contract update.
+- `#[repr(transparent)]`: `CLInt`, `CLString`, `CLBool`, `CLFloat`, `CLIO<T>`, `CLOwned<T>` — read by JIT-emitted code as raw `i64`. The wrapper's underlying type IS the ABI; an underlying-type swap is breaking and `#[non_exhaustive]` would not catch it. Direct construction (`CLInt(42)`) is preserved as part of the DLL-author API surface.
+
+**Carry `#[non_exhaustive]`:**
+- `OwnedPlatformFnDescriptor` — plain Rust struct (post-load owned form, not crossing the DLL ABI). The standard facade convention applies.
+- `PlatformError` — re-exported from `cranelisp-types` per Decision 42; `#[non_exhaustive]` set there.
 
 ---
 
