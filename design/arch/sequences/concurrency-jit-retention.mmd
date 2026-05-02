@@ -1,0 +1,34 @@
+sequenceDiagram
+    title Invariant — JIT pages free only when no derivative code pointer is reachable
+
+    participant PWa as Priority Worker (batch 1)
+    participant PWb as Priority Worker (batch 2 — redefinition)
+    participant Entry as ST[M].entries[foo]
+    participant Slot as GOT[M].slot[foo]
+    participant Jit1 as Jit batch 1 (Arc-wrapped)
+    participant Jit2 as Jit batch 2 (Arc-wrapped)
+    participant Caller as Runtime caller (in-flight)
+
+    Note over Jit1,Jit2: invariant — Drop on the Arc-wrapped Jit calls unsafe free_memory()<br/>only when no derivative ptr is reachable.<br/>The Arc retention root is Entry.code.
+
+    Note over Jit1: Phase 1 — initial codegen
+    PWa ->> Jit1: produce code (ptr1 inside Jit1's pages)
+    PWa ->> Entry: write code = (Arc to Jit1, ptr1)
+    PWa ->> Slot: atomic store(ptr1)
+
+    Caller ->> Slot: atomic load → ptr1
+    Caller ->> Jit1: call (in-flight)
+
+    Note over Jit2: Phase 2 — REPL redefinition (new batch)
+    PWb ->> Jit2: produce code (ptr2 inside Jit2's pages)
+    PWb ->> Slot: atomic store(ptr2)
+    Note over Slot,Jit2: swap-before-drop ordering —<br/>new ptr published BEFORE old Arc can drop
+    PWb ->> Entry: write code = (Arc to Jit2, ptr2)
+    Note over Entry,Jit1: old (Arc to Jit1, ptr1) replaced —<br/>Arc-to-Jit1 refcount decrements
+
+    Caller ->> Caller: in-flight call returns
+    Note over Caller: caller did NOT retain Arc-to-Jit1 —<br/>language fn values are heap closures via GOT,<br/>not raw code pointers
+
+    Note over Jit1: Arc-to-Jit1 refcount reaches 0
+    Jit1 ->> Jit1: custom Drop → unsafe free_memory()
+    Note over Jit1: safe — Slot now points at ptr2,<br/>no fn ptr derived from Jit1 is reachable

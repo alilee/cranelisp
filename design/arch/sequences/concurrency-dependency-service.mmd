@@ -1,0 +1,33 @@
+sequenceDiagram
+    title Invariant — CompileScheduler is the sole writer of per-symbol/per-module readiness state
+
+    participant PWa as Priority Worker A<br/>::worker::priority_worker_loop
+    participant PWb as Priority Worker B<br/>::worker::priority_worker_loop
+    participant PWc as Priority Worker C<br/>::worker::priority_worker_loop
+    participant Sched as CompileScheduler<br/>::scheduler::CompileScheduler<br/>(work dispatch + per-symbol/per-module readiness — sole coordination authority per facades/int.md BC §4)
+
+    Note over Sched: invariant: only Sched mutates readiness state.<br/>workers call wait_for_* and notify_* — never reach into the state directly.<br/>Per facades/int.md "Scheduler is sole coordination authority" — there is no separate DependencyService.
+
+    Note over Sched: Phase 1 — many workers wait for m/foo
+
+    PWb ->> Sched: CompileScheduler::wait_for_typecheck_symbol(fq: &FQSymbol) -> Result[(), SchedulerError]
+    Note over Sched: per-symbol readiness state[fq] = pending<br/>waiters[fq] += PWb
+    PWc ->> Sched: CompileScheduler::wait_for_typecheck_symbol(fq: &FQSymbol) -> Result[(), SchedulerError]
+    Note over Sched: waiters[fq] += PWc
+
+    Note over PWb,PWc: parked inside the scheduler's wait_for_* call —<br/>workers do not poll, do not read shared symbol-table state for readiness
+
+    Note over Sched: Phase 2 — PWa publishes m/foo
+
+    PWa ->> Sched: CompileScheduler::notify_symbol_typechecked(fq: &FQSymbol)
+    Note over Sched: exclusive write —<br/>readiness[fq] = ready<br/>waiters[fq] drained — wakes parked workers
+
+    Sched -->> PWb: Ok(()) — wait_for_typecheck_symbol returns
+    Sched -->> PWc: Ok(()) — wait_for_typecheck_symbol returns
+
+    Note over Sched: Phase 3 — late waiter sees ready immediately
+
+    PWb ->> Sched: CompileScheduler::wait_for_inmem(fq: &FQSymbol) -> Result[(), SchedulerError] [later, different dep]
+    Note over Sched: in-mem readiness[fq] = pending — PWb parked
+    PWa ->> Sched: CompileScheduler::notify_inmem_codegen_complete(fq: &FQSymbol)
+    Sched -->> PWb: Ok(()) — wait_for_inmem returns

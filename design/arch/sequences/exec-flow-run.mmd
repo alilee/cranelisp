@@ -1,0 +1,50 @@
+sequenceDiagram
+    title Execution flow — Run mode (--run)
+
+    participant Initiator as ::main (Action::Run)
+    participant User as User (terminal — stderr only)
+    participant Sess as Session<br/>::session_v4::CompilerSession
+
+    Note over Initiator, Sess: † marks proposed/target API not yet in current code.<br/>Receiver (&self / &mut self) is implicit in the lifeline.<br/>Compilation cadence delegated to exec-flow-compilation. Trampoline + IO walk delegated to exec-flow-runtime.
+
+    rect rgb(245, 230, 255)
+        Note over Initiator, Sess: STARTUP — parse cli args, construct session, register entry module, wait for in-mem code
+
+        Initiator ->> Initiator: ::main::parse_args() -> Result<(Action, ProjectTarget, SessionSettings), CliError>
+        Note over Initiator: matched Action::Run — settings.codegen_behaviour = CodegenBehaviour::InMemoryAndObject<br/>(workers JIT for the in-mem call AND write .o to cache for next run)
+
+        Initiator ->> Sess: CompilerSession::new(settings: SessionSettings, project_root: PathBuf) -> CompilerSession
+        Note over Sess: spawns priority + nice worker pools, opens cache directory, initialises empty SymbolTables<br/>(no watcher in Run mode)
+        Sess -->> Initiator: CompilerSession
+
+        Initiator ->> Sess: CompilerSession::register_module(entry_module: &ModuleFullPath) -> Result<(), CranelispError>
+        Note over Sess: see exec-flow-compilation — fire-and-forget, returns immediately. Transitive imports + prelude pulled in.
+        Sess -->> Initiator: Ok(())
+
+        Initiator ->> Sess: CompilerSession::wait_for_inmem_codegen() -> Result<(), CranelispError> †
+        Note over Sess: blocks until entry module + ALL transitively-loaded modules have in-mem code ready
+        Sess -->> Initiator: Ok(())
+    end
+
+    rect rgb(220, 235, 255)
+        Note over Initiator, Sess: TRAMPOLINE — look up main, call it, walk IO tree if needed (per repl/spec.md §0.2)
+
+        Initiator ->> Sess: CompilerSession::trampoline(module_name: &str) -> Result<(i64, Type), CranelispError>
+        Note over Sess: internally — look up main's code_ptr via SymbolTable[entry_module].get("main").code,<br/>look up main's return type via the same entry's scheme,<br/>call the lower-level trampoline(code_ptr, expected_type) shown in exec-flow-runtime.<br/>If main returns IO _, the IO trampoline walks the tree (Effect dispatch via HostContext, see exec-flow-runtime).
+        Sess -->> Initiator: Ok((value: i64, ty: Type))
+    end
+
+    rect rgb(255, 245, 220)
+        Note over Initiator, Sess: SHUTDOWN — wait for cache writes, terminate workers, exit with status code
+
+        Initiator ->> Sess: CompilerSession::wait_for_object_codegen() -> Result<(), CranelispError> †
+        Note over Sess: ensures all .o + sidecars are written to cache before exit — enables next --run to cache-hit (per Decision 25 / 37)
+        Sess -->> Initiator: Ok(())
+
+        Initiator ->> Sess: CompilerSession::shutdown()
+        Note over Sess: signals worker pools to drain + terminate, closes cache directory.<br/>drop(Sess) — Decision 31 reclaim chain — each ModuleEntry::Code drops, Arc<Jit> Drop calls unsafe JITModule::free_memory() per batch.
+
+        Note over Initiator: compute exit code per repl/spec.md §0.2 —<br/>if ty == Type::Int — value as i32 (the program's chosen status code)<br/>else (IO Unit, IO Bool, non-IO non-Int, ...) — 0
+
+        Initiator ->> User: std::process::exit(exit_code)
+    end

@@ -1,0 +1,29 @@
+sequenceDiagram
+    title Invariant — WatcherChannel is single-writer (OS callback) / single-reader (REPL at boundary)
+
+    participant FS as Filesystem
+    participant OS as OS Notify Callback Thread
+    participant Channel as WatcherChannel
+    participant REPL as REPL Thread
+    participant Sched as Compilation Scheduler
+
+    Note over Channel: invariant: OS thread is sole writer.<br/>REPL thread is sole reader.<br/>reads happen only at prompt boundary
+
+    FS ->> OS: file change event
+    OS ->> Channel: push(FileChange{path, mtime})
+    FS ->> OS: another file change
+    OS ->> Channel: push(FileChange{path2, mtime})
+
+    Note over OS,Channel: writes are serialized within the OS callback thread.<br/>OS may push at any time relative to REPL
+
+    Note over REPL: REPL is mid-input — does not read channel
+    Note over REPL: prompt boundary reached (between input and submit)
+
+    REPL ->> Channel: drain()
+    Channel -->> REPL: [FileChange1, FileChange2]
+
+    REPL ->> REPL: dedup vs known content hash<br/>(suppress self-writes from cache regeneration)
+
+    REPL ->> Sched: ReRegisterRequest for affected modules
+
+    Note over Channel: between drains, channel buffers events.<br/>REPL never polls inside an input-handling step

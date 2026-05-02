@@ -1,0 +1,48 @@
+sequenceDiagram
+    title Execution flow — Link mode (--link)
+
+    participant Initiator as ::main (Action::Link)
+    participant User as User (terminal — stderr only)
+    participant Sess as Session<br/>::session_v4::CompilerSession
+
+    Note over Initiator, Sess: † marks proposed/target API not yet in current code.<br/>Receiver (&self / &mut self) is implicit in the lifeline.<br/>Compilation cadence delegated to exec-flow-compilation. NO user code execution — link mode produces a standalone executable but does not run it.<br/>The runtime cadence inside the produced binary activates only when the binary is later launched (a separate process, not in scope here).
+
+    rect rgb(245, 230, 255)
+        Note over Initiator, Sess: STARTUP — parse cli args, construct session (object-only codegen), register entry module
+
+        Initiator ->> Initiator: ::main::parse_args() -> Result<(Action, ProjectTarget, SessionSettings), CliError>
+        Note over Initiator: matched Action::Link — settings.codegen_behaviour = CodegenBehaviour::ObjectOnly<br/>(workers SKIP the in-mem JIT phase entirely — straight from typecheck to object codegen.<br/>Per Decision 23, the same compile_to_module<M: Module> is invoked but with an ObjectModule instance, never a JITModule.)
+
+        Initiator ->> Sess: CompilerSession::new(settings: SessionSettings, project_root: PathBuf) -> CompilerSession
+        Note over Sess: spawns nice worker pool only (priority workers spawned but idle — no JIT work in ObjectOnly mode).<br/>opens cache directory, initialises empty SymbolTables. (no watcher in Link mode)
+        Sess -->> Initiator: CompilerSession
+
+        Initiator ->> Sess: CompilerSession::register_module(entry_module: &ModuleFullPath) -> Result<(), CranelispError>
+        Note over Sess: see exec-flow-compilation. Fire-and-forget. Transitive imports + prelude pulled in. Workers go directly to the OBJECT CODEGEN PHASE rect for each module — no JIT phase.
+        Sess -->> Initiator: Ok(())
+
+        Initiator ->> Sess: CompilerSession::wait_for_object_codegen() -> Result<(), CranelispError> †
+        Note over Sess: blocks until ALL transitively-loaded modules have their .o + sidecar written to cache
+        Sess -->> Initiator: Ok(())
+    end
+
+    rect rgb(220, 235, 255)
+        Note over Initiator, Sess: LINK — validate main, collect .o paths, invoke system linker
+
+        Initiator ->> Sess: CompilerSession::link_by_name(module_name: &str) -> Result<(), CranelispError>
+
+        Note over Sess: link_by_name internals —<br/>1. validate main exists in entry module's symbol table and has the expected signature (per repl/spec.md §0.2.1)<br/>2. read main's GOT slot index from SymbolTable[entry_module].symbols["main"].got_slot (per Decision 36)<br/>3. emit a small alias .o that exports _main and routes the system linker's _main import through the entry module's GOT slot (per Decision 23 — the .o data section GOT)<br/>4. collect all .o paths from cache for transitively-loaded modules<br/>5. spawn the system linker (ld on macOS / Linux, link.exe on Windows) with the collected .o files + the alias .o + cranelisp-runtime archive + any platform .dylib/.so files
+
+        Note over Sess: external system invocation — std::process::Command spawning ld/link.exe<br/>(NOT a Sess facade method per se — opaque to the diagram — exits with error code that link_by_name surfaces as CranelispError on failure)
+
+        Sess -->> Initiator: Ok(()) — standalone executable written to {project_root}/target/{entry_module} (or .exe on Windows)
+    end
+
+    rect rgb(255, 245, 220)
+        Note over Initiator, Sess: SHUTDOWN — terminate workers, exit
+
+        Initiator ->> Sess: CompilerSession::shutdown()
+        Note over Sess: signals worker pools to drain + terminate, closes cache directory.<br/>(no Decision 31 JIT reclaim — ObjectOnly mode never created an Arc<Jit>.)
+
+        Initiator ->> User: std::process::exit(0)
+    end

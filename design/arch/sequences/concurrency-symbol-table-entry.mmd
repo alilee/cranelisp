@@ -1,0 +1,125 @@
+sequenceDiagram
+    title Invariant — ST[m1].symbols["foo"] mutability is per-entry after Phase 0 setup
+
+    participant PWa as Priority Worker A<br/>(typechecks + JITs m1)
+    participant PWb as Priority Worker B<br/>(typechecks + JITs m2)
+    participant PWc as Priority Worker C<br/>(consumer — needs m1/foo)
+    participant Sched as CompileScheduler<br/>::scheduler::CompileScheduler
+    participant SessST as Session.symbol_tables<br/>DashMap[ModuleFullPath → SymbolTable]<br/>(outer container — per-module shard locks)
+    participant ST_m1 as ST[m1] — SymbolTable [generic C=Code, L=()]<br/>(value behind a SessST entry)
+    participant Entry_m1_foo as ST[m1].symbols [foo]<br/>(ModuleEntry value in inner DashMap)
+    participant ST_m2 as ST[m2] — SymbolTable [generic C=Code, L=()]
+    participant Slot as ST[m1].got.slot[foo_idx]<br/>(GotTable AtomicPtr — Release store / Acquire load)
+
+    Note over PWa, ST_m2: MUTATION DISCIPLINE — per-entry after setup —<br/>(0) PHASE 0 — Parse-time setup. Brief [&mut SymbolTable] via SessST entry write lock to call write_structural_decls.<br/>      Imports / exports / platforms / submodules (Decision 33 fields) populate in one shot. RefMut drops immediately.<br/>(1+) ALL SUBSEQUENT — [&SymbolTable] only. Mutation flows through per-entry methods (insert_or_update, write_code)<br/>      that acquire INNER DashMap per-key write locks. NEVER hold the outer entry RefMut across form work.
+
+    rect rgb(255, 220, 255)
+        Note over PWa, SessST: PHASE 0 — Parse-time structural-decls write (BRIEF [&mut SymbolTable])
+        PWa ->> SessST: Sess.symbol_tables.entry(m1.clone()).or_default()
+        activate SessST
+        Note right of SessST: RefMut[SymbolTable] (m1) — EXCLUSIVE<br/>held only across write_structural_decls<br/>(narrow bar — microseconds)
+        SessST -->> PWa: RefMut[SymbolTable] ≡ [&mut SymbolTable]
+        PWa ->> ST_m1: SymbolTable::write_structural_decls(decls: StructuralDecls)<br/>([&mut self] — imports / exports / platforms / submodules per Decision 33)
+        Note over PWa, SessST: RefMut DROPS at end of statement — Phase 0 over.<br/>From here ST[m1] is ONLY reached via .get(m1) shared shard locks.
+        deactivate SessST
+    end
+
+    rect rgb(220, 235, 255)
+        Note over PWa, Sched: TYPECHECK PHASE — per-symbol mutation
+        Sched -->> PWa: Some(PriorityWork::Typecheck(m1: ModuleFullPath))
+        Note over PWa, Sched: Decision 30 single-worker-per-module is now an ORDERING invariant only —<br/>not needed for lock safety (per-entry locks make multi-worker mutation safe in principle).
+
+        par PWa types m1
+            loop each form in m1 (source order)
+                PWa ->> SessST: Sess.symbol_tables.get(&m1)
+                activate SessST
+                Note right of SessST: Ref[SymbolTable] (m1) — SHARED<br/>(read lock — does not block PWb's get(&m2) shared lock,<br/>and does not block other readers of m1)
+                SessST -->> PWa: Some(Ref[SymbolTable]) ≡ [&SymbolTable]
+
+                Note over PWa, ST_m2: cranelisp_typecheck::check_form(ast, [&SymbolTable], [&SymbolTables])<br/>([&SymbolTable] for own module mutation via inner DashMap, [&SymbolTables] for cross-module reads)
+
+                rect rgb(255, 240, 200)
+                    Note over PWa, ST_m2: CROSS-MODULE READ — shared outer lock + inner DashMap lookup
+                    PWa ->> SessST: Sess.symbol_tables.get(&m2)
+                    activate SessST
+                    Note right of SessST: Ref[SymbolTable] (m2) — SHARED<br/>concurrent with PWb's own Ref(m2) — no contention<br/>(PWb mutates m2 via INNER DashMap per-entry locks, not outer write lock)
+                    SessST -->> PWa: Some(Ref[SymbolTable])
+                    PWa ->> ST_m2: SymbolTable::get(&Symbol("bar"))<br/>(inner DashMap shared lookup — may briefly contend on the per-entry lock if PWb is mid-insert on bar)
+                    alt bar already typechecked (entry exists)
+                        ST_m2 -->> PWa: Some(Ref[ModuleEntry]) — read scheme, callees (proceed with check_form)
+                    else bar not yet typechecked (entry missing)
+                        ST_m2 -->> PWa: None
+                        Note over PWa, Sched: check_form returns Err(CheckError::Gap(ResolutionGap::SymbolTypechecked(m2/bar))).<br/>Per-symbol gap is mechanically valid here — PWb does NOT hold a whole-module lock,<br/>so retry on wake-up will not contend on the outer SymbolTable.<br/>process_form returns Gap up the loop, all SessST Refs drop, PWa parks.<br/>(Park / wake / retry not drawn as a separate sequence — see Notes below.)
+                        PWa ->> Sched: wait_for_typecheck_symbol(&m2/bar: FQSymbol)
+                        Sched -->> PWa: Ok(()) — m2/bar typechecked, signalled by PWb's notify_symbol_typechecked.<br/>PWa restarts from top of form loop. Subsequent get(&m2).get(&bar) succeeds.
+                    end
+                    deactivate SessST
+                end
+
+                rect rgb(255, 220, 220)
+                    Note over PWa, Entry_m1_foo: PHASE 1 write — sole writer of m1/foo via INNER DashMap per-entry write lock<br/>insert_or_update is [&self] — outer ST_m1 lock stays SHARED throughout
+                    PWa ->> ST_m1: SymbolTable::insert_or_update(<br/>  sym: Symbol("foo"),<br/>  entry: ModuleEntry::Def {<br/>    name, kind, scheme: Some(_), ast: Some(_),<br/>    callees, got_slot, visibility, docstring,<br/>    platform_fn_ptr: None,<br/>    code: existing.as_ref().and_then(|e| e.code.clone()),  ← Decision 31 CARRY-FORWARD<br/>  })
+                    activate Entry_m1_foo
+                    Note right of Entry_m1_foo: per-entry write lock — held briefly across upsert<br/>(microseconds, not a per-form hold)<br/>REPL redefinition: clone existing.code forward (Decision 31 + Decision 32 Clone bound)
+                    deactivate Entry_m1_foo
+                end
+
+                PWa ->> Sched: notify_symbol_typechecked(m1/foo: FQSymbol)
+                Note over Sched: per-symbol release — wakes any PW parked on wait_for_typecheck_symbol(m1/foo).<br/>Mechanically sound — wake-then-retry will not encounter a whole-module write lock.
+                deactivate SessST
+            end
+            PWa ->> Sched: notify_typecheck_done(m1: ModuleFullPath)
+            Note over Sched: module-wide signal — for any consumer that wants whole-m1 readiness<br/>(e.g., bulk export inspection, cache write trigger).<br/>Per-symbol consumers already woke via notify_symbol_typechecked.
+
+        and PWb types m2 (concurrent — same shape)
+            Note over PWb, ST_m2: PWb runs the same Phase 0 + form loop on m2.<br/>Each form: shared get(&m2) Ref + per-entry inner-DashMap writes via insert_or_update.<br/>No outer write lock means PWa's get(&m2) coexists fine.
+            PWb ->> SessST: Sess.symbol_tables.get(&m2)
+            activate SessST
+            Note right of SessST: Ref[SymbolTable] (m2) — SHARED<br/>(stacks with PWa's also-shared get(&m2) — both readers OK)
+            SessST -->> PWb: Some(Ref[SymbolTable])
+            PWb ->> ST_m2: SymbolTable::insert_or_update(sym: "bar", entry: ModuleEntry::Def { ... })
+            PWb ->> Sched: notify_symbol_typechecked(m2/bar: FQSymbol)
+            deactivate SessST
+            PWb ->> Sched: notify_typecheck_done(m2)
+        end
+    end
+
+    rect rgb(245, 245, 245)
+        Note over PWc, Entry_m1_foo: PHASE 2 — established readers (post-typecheck consumers)<br/>identical access pattern — get(&m1) shared shard ref + inner DashMap entry ref
+        PWc ->> SessST: Sess.symbol_tables.get(&m1)
+        activate SessST
+        SessST -->> PWc: Some(Ref[SymbolTable])
+        PWc ->> ST_m1: SymbolTable::get(&Symbol("foo"))
+        ST_m1 -->> PWc: Some(Ref) — Entry_m1_foo
+        PWc ->> Entry_m1_foo: read scheme, callees, ast (for typecheck of consumer module)
+        deactivate SessST
+    end
+
+    Sched -->> PWa: Some(PriorityWork::Jit(m1/foo: FQSymbol))<br/>OR Some(PriorityWork::LoadObject(m1)) on cache-hit
+    Note over PWa, SessST: CODEGEN — same shared-outer + per-entry-inner discipline as typecheck<br/>multiple PWs may JIT different m1 symbols in parallel (different per-entry locks)
+    PWa ->> SessST: Sess.symbol_tables.get(&m1)
+    activate SessST
+    Note right of SessST: Ref[SymbolTable] (m1) — SHARED<br/>(other codegen workers may stack here)
+    SessST -->> PWa: Some(Ref[SymbolTable])
+    rect rgb(220, 255, 220)
+        Note over PWa, Slot: PHASE 3 write — sole writer of m1/foo's code field<br/>write_code is [&self] + INNER DashMap per-entry write lock<br/>(Decision 31 — GOT swap MUST precede any old-Arc[Jit] drop)
+        alt fresh JIT path (cache miss)
+            PWa ->> ST_m1: SymbolTable::write_code(<br/>  sym: &Symbol("foo"),<br/>  code: Code::Jit { jit: Arc[Jit], ptr })
+        else cache-hit path (Decision 35)
+            PWa ->> ST_m1: SymbolTable::write_code(<br/>  sym: &Symbol("foo"),<br/>  code: Code::Linker { linker: Arc[Linker], ptr })
+        end
+        activate Entry_m1_foo
+        Note right of Entry_m1_foo: write_code internals (atomic, in this order):<br/>1. inner DashMap shard write lock for "foo"<br/>2. mem::replace entry.code = Some(new_code) — old Code dropped LAST<br/>3. self.got.store_slot(entry.got_slot, new_code.ptr()) — Release<br/>4. inner shard write lock released<br/>5. old Arc[Jit] / Arc[Linker] drops, if refcount→0, custom Drop runs unsafe free_memory()
+        ST_m1 ->> Slot: GotTable::store_slot(slot=foo_idx, ptr=new_ptr)<br/>(Ordering::Release)
+        deactivate Entry_m1_foo
+    end
+    deactivate SessST
+    PWa ->> Sched: notify_inmem_codegen_complete(m1/foo: FQSymbol)
+    Note over Sched: per-symbol release — wakes wait_for_inmem(m1/foo) parkers<br/>(macro consumers, REPL eval awaiting the symbol)
+
+    rect rgb(245, 245, 245)
+        Note over Entry_m1_foo, Slot: PHASE 4 fully published — readers + GOT-call traffic
+        Note over Slot: JIT'd code emitted by /backend reads Slot directly:<br/>global_value against __cranelisp_got_{m1} → base + foo_idx*8 → load (Acquire)<br/>(Decision 23 two-GOT model — same CLIF resolves to either<br/>SymbolTable.got.base_ptr() in JIT mode or .o data section in --link mode)
+        PWc ->> Slot: GotTable::load_slot(foo_idx) — Acquire<br/>(rare — most readers go through emitted code, not the facade)
+        PWc ->> ST_m1: SymbolTable::get(&Symbol("foo")) — for /sig, /info, REPL introspection
+    end

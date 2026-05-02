@@ -1,0 +1,32 @@
+sequenceDiagram
+    title Invariant — SessionState is REPL-thread-exclusive — workers reach in only via handoffs
+
+    participant User as User
+    participant REPL as REPL Thread
+    participant Session as SessionState
+    participant Sched as Compilation Scheduler
+    participant PW as Priority Worker
+    participant ResultCh as Result Channel
+
+    Note over Session: invariant: only the REPL thread mutates SessionState<br/>(current_module, history, prompt context, repl_check_state)
+
+    User ->> REPL: input
+    REPL ->> Session: read current_module
+    REPL ->> Session: write history.append(input)
+    REPL ->> Session: snapshot repl_check_state (for rollback)
+
+    REPL ->> Sched: EvalSubmission(handoff value)
+    Note over Sched,PW: handoff value carries everything needed.<br/>worker does NOT read SessionState
+
+    Sched ->> PW: enqueue
+    PW ->> PW: typecheck + JIT-compile
+    PW ->> ResultCh: EvalResult (handoff value)
+
+    REPL ->> ResultCh: blocking recv
+    ResultCh -->> REPL: EvalResult
+
+    REPL ->> Session: write last_result
+    REPL ->> Session: commit / rollback repl_check_state
+    REPL ->> User: display
+
+    Note over Session: workers never touched Session.<br/>access containment IS concurrency containment

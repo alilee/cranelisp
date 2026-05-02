@@ -1,0 +1,215 @@
+sequenceDiagram
+    title Execution flow — Compilation cadence (precise Rust facade signatures)
+
+    participant Initiator as Initiator (cli / repl)<br/>::main, ::repl
+    participant Watcher as Watcher<br/>::watch (OS callback thread)
+    participant Sess as Session (CompilerSession)<br/>initiator-thread-only<br/>(watcher channel, REPL cursor, worker pool, warnings)
+    participant Shared as Sess.shared (Arc[SharedState])<br/>worker-shareable subset<br/>(symbol_tables, scheduler, cache, kept_dlls, introspection)<br/>per Decision 38 — workers hold Arc clones
+    participant Sched as Scheduler<br/>::scheduler::CompileScheduler<br/>(work dispatch + per-symbol/per-module readiness)
+    participant Cache as Object cache<br/>::cache::ObjectCache
+
+    Note over Initiator, Cache: † marks proposed/target API not yet in current code.<br/>Workers, facades, and STs introduced lazily at first use.<br/>All call signatures are the as-designed facade — translate directly to Rust source.<br/>Receiver (&self / &mut self) is implicit in the lifeline.<br/>SharedState is the Arc[T] every worker holds — initiator-side calls touch Sess, worker-side calls touch Shared.
+
+    rect rgb(245, 230, 255)
+        Note over Initiator, Sched: ENTRY — register_module runs Phase 0 SYNCHRONOUSLY (parse + structural decls), then dispatches<br/>Phase 0 is the only [&mut SymbolTable] hold (microseconds — entry write lock on the outer DashMap).<br/>After Phase 0 the SymbolTable is reachable only via shared .get() — workers run with [&SymbolTable] + per-entry inner locks.
+
+        alt fresh registration
+            Initiator ->> Sess: CompilerSession::register_module(module: &ModuleFullPath, source: Arc[str]) -> Result[(), CranelispError]
+
+            Note over Sess, Shared: PHASE 0 — synchronous setup before scheduler dispatch
+            create participant Frontend as Frontend facade<br/>cranelisp_frontend
+            Sess ->> Frontend: cranelisp_frontend::parse(source: &str) -> Result[Vec[Sexp], CranelispError]
+            Frontend -->> Sess: Ok(Vec[Sexp])
+            Sess ->> Frontend: cranelisp_frontend::extract_module_declarations(forms: Vec[Sexp]) -> Result[(StructuralDecls, Vec[Sexp]), CranelispError]
+            Frontend -->> Sess: Ok((StructuralDecls { imports, exports, platforms, submodules }, residual_forms: Vec[Sexp]))
+            Sess ->> Shared: Sess.shared.symbol_tables.entry(module.clone()).or_default()
+            Shared -->> Sess: RefMut[SymbolTable] (brief exclusive — entry write lock)
+            create participant ST_m1 as ST[m1]<br/>SymbolTable [generic C=Code, L=()]
+            Sess ->> ST_m1: SymbolTable::write_structural_decls(decls: StructuralDecls)<br/>(populates imports / exports / platforms / submodules + seeds defn_order per Decision 33 + Decision 39)
+            Note over Sess, Shared: RefMut DROPS — Phase 0 over.<br/>Workers will reach ST[m1] via shared Sess.shared.symbol_tables.get(m1) — no more [&mut SymbolTable].
+
+            Sess ->> Sched: CompileScheduler::register_module(module: ModuleFullPath)<br/>(now safe to dispatch PriorityWork::Typecheck — the SymbolTable exists and structural decls are written)
+            Sess -->> Initiator: Ok(())
+        else watcher re-registration (file changed for already-registered m1)
+            Watcher -->> Sess: notify::Event { kind: Modify, paths: [m1.cl] } (channel send, OS thread to Sess channel)
+            Note over Sess: watcher events suppressed during REPL eval+print —<br/>processed only while REPL is at prompt waiting for input<br/>(file changes during eval do not invalidate the in-flight evaluation)
+            Sess ->> Sched: CompileScheduler::re_register_module(module: &ModuleFullPath) -> bool
+            Note over Sched: clears m1 scheduler state,<br/>re-inserts at TypecheckFirst.<br/>(re-registration re-runs Phase 0 — parse the new source + write_structural_decls.)
+        end
+    end
+
+    Note over Initiator, Sched: Cli pre-exit affordances — block until ALL pending work of that kind completes:<br/>CompilerSession::wait_for_inmem_codegen — until all in-mem code is loaded<br/>CompilerSession::wait_for_object_codegen — until all .o + sidecars are on disk<br/>(REPL doesn't use these — it does its own per-eval coordination)
+
+    Initiator ->> Sess: CompilerSession::wait_for_inmem_codegen() -> Result<(), CranelispError> †
+    Sess ->> Sched: CompileScheduler::wait_inmem_complete() -> Result<(), SchedulerError>
+    Note over Initiator, Sched: blocked until in-mem complete signal fires (returns later — see below)
+
+    Note over Sched: Scheduler invariants —<br/>at most ONE worker per module during typecheck (ORDERING per Decision 30 — no longer required for lock safety).<br/>Per-symbol mutability via inner DashMap per-key locks (Decisions 25, 33, 38).<br/>Wait/release is per-symbol or per-module readiness.
+
+    rect rgb(220, 235, 255)
+        Note over Sched: TYPECHECK PHASE — workers operate on [&SymbolTable] via Sess.shared.symbol_tables.get(m1)<br/>opt cache hit (sidecar) skips the form-by-form loop entirely<br/>check_form takes [&SymbolTable] + [&SymbolTables] (cross-module reads via shared shard locks),<br/>per-symbol writes via SymbolTable::insert_or_update(&self, ...) under inner DashMap per-entry locks.
+
+        create participant PW as Priority Worker<br/>::worker::priority_worker_loop(Arc[SharedState])
+        Sched -->> PW: Some(PriorityWork::Typecheck(m1: ModuleFullPath))<br/>(returned from take_priority_work_blocking() the worker was parked in)
+
+        PW ->> Cache: ObjectCache::lookup_sidecar(module: &ModuleFullPath, source_hash: u64) -> CacheLookupResult
+
+        alt cache hit (.meta.json present, schema_version + source_hash match)
+            Cache -->> PW: CacheLookupResult::Hit(SymbolTable [generic C=Code, L=()]) — deserialised
+            Note over PW, Shared: install entries from cached sidecar — overwrite Sess.shared.symbol_tables[m1] with deserialised value<br/>(this is the one cache-hit case where Phase 0's seed value is replaced wholesale, brief entry write lock)
+            PW ->> Shared: Sess.shared.symbol_tables.insert(m1, deserialised_st)
+            PW ->> Sched: CompileScheduler::notify_typecheck_done_from_cache(module: &ModuleFullPath)
+            Note over Sched: dedicated cache-hit notification —<br/>Sched releases all m1/* typecheck waiters and enqueues PriorityWork::LoadObject(m1)<br/>(.o assumed paired with sidecar — no per-symbol Jit items, no separate ObjectCodegen pass)
+        else cache miss (no sidecar, version mismatch, or source changed)
+            Cache -->> PW: CacheLookupResult::Miss
+            Note over PW, ST_m1: Phase 0 already ran in register_module — structural decls + defn_order are present.<br/>Worker proceeds directly to the form loop with [&SymbolTable] via Sess.shared.symbol_tables.get(m1).
+
+            loop each form: Sexp in m1 (source order, from saved cursor on resume)
+                Note over PW, Sched: process_form(shared: &SharedState, form: Sexp, scope: &m1) — the orchestrator.<br/>Frontend and typecheck stay pure (no Sess / scheduler dependency, Principle 3) — they SURFACE dependencies as<br/>Err(ExpansionError::Gap(ResolutionGap)) / Err(CheckError::Gap(ResolutionGap)).<br/>process_form catches each gap, dispatches via handle_gap → ensure_registered + wait + (priority_boost + wait_for_inmem) — and RETRIES the call.<br/>Workers park inside scheduler wait_* — never inside library code. See facades/int.md "process_form — the gap-orchestration retry loop".
+
+                PW ->> Shared: Sess.shared.symbol_tables.get(&m1)<br/>(shared shard read lock — concurrent with other workers' shared reads)
+                Shared -->> PW: Some(Ref[SymbolTable]) ≡ [&SymbolTable]
+
+                PW ->> Frontend: cranelisp_frontend::expand(sexp: Sexp, symbol_tables: &SymbolTables) -> Result[Sexp, ExpansionError]
+
+                opt expand returns gap (any FQ ref the expander can't yet resolve — module unregistered, typecheck incomplete, or code missing for an as-yet-unknown macro)
+                    Frontend -->> PW: Err(ExpansionError::Gap(ResolutionGap::MacroInMem(m2/sym)))
+                    Note over PW, Sched: process_form's handle_gap dispatch on MacroInMem — uniform regardless of whether m2/sym turns out to be a macro or a fn:
+                    PW ->> Shared: ensure_registered(shared, &m2/sym.module) — calls register_module_internal if absent (Phase 0 runs synchronously)
+                    Shared -->> PW: Ok(())
+                    PW ->> Sched: CompileScheduler::wait_for_typecheck_symbol(fq: &FQSymbol) -> Result[(), SchedulerError]
+                    Note over PW, Sched: PW releases m1 and parks. Resumes when m2/sym typecheck-done (may be different priority worker on resume).
+                    Sched -->> PW: Ok(())
+                    Note over PW: Orchestrator-side macro-vs-fn discrimination — peek at the now-typechecked entry:
+                    opt entry.kind == DefKind::Macro AND entry.code.is_none() (macro that needs JIT)
+                        PW ->> Sched: CompileScheduler::priority_boost_jit(fq: &FQSymbol)
+                        PW ->> Sched: CompileScheduler::wait_for_inmem(fq: &FQSymbol) -> Result[(), SchedulerError]
+                        Note over PW, Sched: PW parks. Sched promotes Jit(m2/sym) to head of priority queue.<br/>Some worker JITs m2/sym — on completion Sched releases the wait.
+                        Sched -->> PW: Ok(()) — m2/sym jitted
+                    end
+                    Note over PW: If it turned out to be a fn (or macro with code already loaded) — no further wait. process_form retries expand. The opt block above repeats until expand returns Ok (or a non-gap error).
+                    PW ->> Frontend: cranelisp_frontend::expand(sexp: Sexp, symbol_tables: &SymbolTables) — retry
+                end
+
+                Frontend -->> PW: Ok(Sexp) — expanded
+
+                opt introspection enabled (REPL or trace mode)
+                    Note over PW, Shared: populate per-defn metadata at parse-time per Decision 38 + 39
+                    PW ->> Shared: Sess.shared.introspection.as_ref().map(|m| m.insert(fq, Introspection { source: ... slice from file Arc[str] ..., sexp: Some(expanded.clone()), ..Default::default() }))
+                end
+
+                PW ->> Frontend: cranelisp_frontend::build_ast(defn_sexp: &Sexp) -> Result[Defn, CranelispError]<br/>(or build_expr(sexp: &Sexp) -> Result[Expr, CranelispError] for trailing-expression forms — chosen at the call site, no AST union enum)
+                Frontend -->> PW: Ok(Defn) — untyped (build_ast / build_expr has no gaps — pure transform)
+
+                alt form is import [m2 ...] — known at build_ast, not gap-driven
+                    Note over PW, Sched: import is structurally classified at build_ast (not a gap-return) — process_form invokes scheduler explicitly to wait for m2 and update local bindings.
+                    PW ->> Shared: ensure_registered(shared, &m2.module)
+                    Shared -->> PW: Ok(())
+                    PW ->> Sched: CompileScheduler::wait_for_typecheck(module: &ModuleFullPath) -> Result[(), SchedulerError]
+                    Note over PW, Sched: PW releases m1 and parks until m2 typecheck-done<br/>(import must update local symbol table with FQ → bare bindings)
+                    Sched -->> PW: Ok(())
+                    PW ->> Shared: Sess.shared.symbol_tables.get(&m2)
+                    Shared -->> PW: Some(Ref[SymbolTable])
+                    create participant ST_m2 as ST[m2]<br/>SymbolTable [generic C=Code, L=()]
+                    PW ->> ST_m2: SymbolTable::public_symbols() -> Iterator[(&Symbol, &ModuleEntry[Code])]
+                    ST_m2 -->> PW: iterator over (&Symbol, &ModuleEntry[Code]) for each export
+                    PW ->> ST_m1: SymbolTable::install_import_bindings(from: &ModuleFullPath, names: ImportNames)<br/>([&self] — writes Import-variant entries via inner DashMap per-key locks)
+                else FQ form (the catch-all — defns, defmacros, deftypes, deftraits, impls, top-level exprs)
+                    create participant Typecheck as Typecheck facade<br/>cranelisp_typecheck
+                    PW ->> Typecheck: cranelisp_typecheck::check_form(node: Ast, table: &mut SymbolTable [generic C=Code, L=()], symbol_tables: &SymbolTables) -> Result[CheckResult, CheckError]
+
+                    opt check_form returns gap (FQ value/fn ref m2/foo needs typecheck — code not needed since macros are already expanded)
+                        Typecheck -->> PW: Err(CheckError::Gap(ResolutionGap::SymbolTypechecked(m2/foo)))
+                        Note over PW, Sched: process_form's handle_gap dispatch on SymbolTypechecked:
+                        PW ->> Shared: ensure_registered(shared, &m2/foo.module)
+                        Shared -->> PW: Ok(())
+                        PW ->> Sched: CompileScheduler::wait_for_typecheck_symbol(fq: &FQSymbol) -> Result[(), SchedulerError]
+                        Note over PW, Sched: PW releases m1 and parks at saved form cursor.<br/>(typecheck waits do NOT priority-boost — m2 typecheck progresses naturally)
+                        Sched -->> PW: Ok(())
+                        PW ->> Typecheck: cranelisp_typecheck::check_form(...) — retry
+                    end
+
+                    opt check_form returns gap (FQ type ref m2/SomeType needs typecheck)
+                        Typecheck -->> PW: Err(CheckError::Gap(ResolutionGap::Type(m2/SomeType)))
+                        Note over PW, Sched: process_form's handle_gap dispatch on Type:
+                        PW ->> Shared: ensure_registered(shared, &m2/SomeType.module)
+                        Shared -->> PW: Ok(())
+                        PW ->> Sched: CompileScheduler::wait_for_typecheck_type(fqt: &FQTypeName) -> Result[(), SchedulerError]
+                        Sched -->> PW: Ok(())
+                        PW ->> Typecheck: cranelisp_typecheck::check_form(...) — retry
+                    end
+
+                    Typecheck -->> PW: Ok(CheckResult { annotated_ast, scheme, callees, .. })
+                    PW ->> ST_m1: SymbolTable::insert_or_update(sym: Symbol, entry: ModuleEntry[Code])<br/>([&self] — inner DashMap per-entry write lock briefly. Decision 31 carry-forward of existing code field.)
+                end
+
+                PW ->> Sched: CompileScheduler::notify_symbol_typechecked(fq: &FQSymbol)
+                opt symbol needs JIT codegen
+                    PW ->> Sched: CompileScheduler::enqueue_jit(fq: FQSymbol)
+                end
+            end
+
+            PW ->> Sched: CompileScheduler::notify_typecheck_done(module: &ModuleFullPath)
+            Note over Sched: fresh-typecheck notification —<br/>per-symbol Jit items were already enqueued during the loop.<br/>After all in-mem code is ready, Sched enqueues NiceWork::ObjectCodegen(m1).
+        end
+    end
+
+    rect rgb(220, 255, 220)
+        Note over Sched, Cache: JIT CODEGEN PHASE — work item type determined by typecheck-phase cache outcome<br/>PriorityWork::LoadObject(m1) on cache-hit path (single batch) — PriorityWork::Jit(FQSymbol) on cache-miss path (per symbol)<br/>workers acquire shared Sess.shared.symbol_tables.get(m1) — concurrent codegen of different symbols allowed (per-entry write locks via inner DashMap)
+
+        alt PriorityWork::LoadObject(m1) — cache-hit path
+            Sched -->> PW: Some(PriorityWork::LoadObject(m1: ModuleFullPath))
+            PW ->> Cache: ObjectCache::load_object(module: &ModuleFullPath) -> Result[Vec[u8], CacheError]
+            Cache -->> PW: Ok(Vec[u8]) — .o bytes
+            create participant Backend as Backend facade<br/>cranelisp_backend
+            PW ->> Backend: cranelisp_backend::load_object(module: &ModuleFullPath, object: &[u8], symbol_tables: &SymbolTables) -> Result[LinkerArtefact, CranelispError]
+            Note over Backend, ST_m1: linker resolves each defined symbol of m1 by bare name (per Decision 36)
+            Backend ->> ST_m1: SymbolTable::write_code(sym: &Symbol, code: Code::Linker { linker: Arc[Linker], ptr }) — for each defined symbol
+            Backend -->> PW: Ok(LinkerArtefact { linker: Arc[Linker], ptrs: HashMap[Symbol, *const u8] })
+            PW ->> Sched: CompileScheduler::notify_inmem_codegen_batch_complete(module: &ModuleFullPath)
+            PW ->> Sched: CompileScheduler::notify_object_codegen_complete(module: &ModuleFullPath)
+            Note over Sched: cache-hit completes BOTH in-mem and object phases for m1 — object phase skipped
+        else PriorityWork::Jit(FQSymbol) — cache-miss path — per Decision 41 per-symbol JIT cardinality (one compile_to_module call per symbol, fresh JITModule per call for per-redefinition reclaim)
+            Sched -->> PW: Some(PriorityWork::Jit(fq: FQSymbol))
+            PW ->> Shared: Sess.shared.symbol_tables.get(&m1)
+            Shared -->> PW: Some(Ref[SymbolTable])
+            Note over PW, Backend: per-symbol JIT call site (Decision 41) — names is single-element [fq.symbol].<br/>Backend writes Code and Introspection directly into the passed-in stores via Decision 38's write_code(&self, sym, code) and the Option[&DashMap] introspection parameter.<br/>No artefact return — Result[(), CompilationError]. The previous int-side post-loop (worker.rs:2860-3018) collapses into this single call site.
+            PW ->> Backend: cranelisp_backend::compile_to_module[M: Module](scope: &ModuleFullPath, names: &[Symbol], symbol_tables: &DashMap[ModuleFullPath, SymbolTable[Code, ()]], introspection: Option[&DashMap[FQSymbol, Introspection]], module: M) -> Result[(), CompilationError]
+            Backend ->> ST_m1: SymbolTable::get(sym: &Symbol) -> Option[Ref[ModuleEntry[Code]]] — read ast, scheme, resolved calls
+            Backend ->> ST_m1: SymbolTable::write_code(sym: &Symbol, code: Code::Jit { jit: Arc[Jit], ptr })<br/>([&self] + inner DashMap per-key write lock, atomic GOT slot swap per Decision 31)
+            opt introspection.is_some() (REPL or trace mode — Decision 38 mode discriminator)
+                Note over Backend, Shared: backend writes Introspection directly per Decision 41 — int does no post-processing
+                Backend ->> Shared: introspection.unwrap().insert(fq, Introspection { clif_ir: Some(...), disasm: Some(...), code_size: Some(...), compile_duration: Some(...), .. })
+            end
+            Backend -->> PW: Ok(())
+            PW ->> Sched: CompileScheduler::notify_inmem_codegen_complete(fq: &FQSymbol)
+            Note over Sched: when all m1/sym in-mem complete: Sched enqueues NiceWork::ObjectCodegen(m1)
+        end
+    end
+
+    Note over Sched: when global in-mem complete fires (no pending in-mem work):
+    Sched -->> Sess: in-mem complete signal (releases wait_inmem_complete park)
+    Sess -->> Initiator: Ok(()) — wait_for_inmem_codegen returns
+
+    Note over Initiator: Initiator may now eval / call any function. To wait on object codegen pre-exit:
+
+    Initiator ->> Sess: CompilerSession::wait_for_object_codegen() -> Result<(), CranelispError> †
+    Sess ->> Sched: CompileScheduler::wait_object_complete() -> Result<(), SchedulerError>
+    Note over Initiator, Sched: blocked until object complete signal fires
+
+    rect rgb(255, 245, 220)
+        Note over Sched, Cache: OBJECT CODEGEN PHASE — only runs for cache-miss modules<br/>nice workers run in parallel across modules — never per-symbol within a module
+
+        create participant NW as Nice Worker<br/>::worker::nice_worker_loop(Arc[SharedState])
+        Sched -->> NW: Some(NiceWork::ObjectCodegen(m1: ModuleFullPath))<br/>(returned from take_object_codegen() the worker was parked in)
+        NW ->> Shared: Sess.shared.symbol_tables.get(&m1)
+        Shared -->> NW: Some(Ref[SymbolTable])
+        NW ->> Backend: cranelisp_backend::compile_to_object(module: &ModuleFullPath, symbol_tables: &SymbolTables) -> Result[ObjectArtefact, CranelispError]
+        Backend ->> ST_m1: SymbolTable::get(sym: &Symbol) — for each defined symbol of m1
+        Backend -->> NW: Ok(ObjectArtefact { object: Vec[u8], sidecar: SymbolTable [generic C=(), L=()] })
+        NW ->> Cache: ObjectCache::write(module: &ModuleFullPath, artefact: &ObjectArtefact) -> Result[(), CacheError]
+        NW ->> Sched: CompileScheduler::notify_object_codegen_complete(module: &ModuleFullPath)
+    end
+
+    Sched -->> Sess: object complete signal (releases wait_object_complete park)
+    Sess -->> Initiator: Ok(()) — wait_for_object_codegen returns

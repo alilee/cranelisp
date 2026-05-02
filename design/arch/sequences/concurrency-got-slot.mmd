@@ -1,0 +1,30 @@
+sequenceDiagram
+    title Invariant — GOT[M].slot[k] is single-writer per slot, atomic-readable by many
+
+    participant PWa as Priority Worker (codegen batch 1)
+    participant PWb as Priority Worker (codegen batch 2)
+    participant Slot as GOT[M].slot[foo]
+    participant Caller1 as Runtime caller A
+    participant Caller2 as Runtime caller B
+
+    Note over Slot: invariant: slot has one writer at a time.<br/>readers atomic-load and dispatch
+
+    Note over Slot: Phase 1 — initial codegen
+    PWa ->> Slot: atomic store(ptr1)
+    Note over Slot: ptr1 → batch-1 code
+
+    Caller1 ->> Slot: atomic load
+    Slot -->> Caller1: ptr1
+    Caller1 ->> Caller1: call (in-flight)
+
+    Note over Slot: Phase 2 — REPL redefines foo (new batch)
+    PWb ->> Slot: atomic store(ptr2)
+    Note over Slot: swap-before-drop ordering —<br/>new ptr written before any retention root drops<br/>(see concurrency-jit-retention)
+
+    Caller2 ->> Slot: atomic load
+    Slot -->> Caller2: ptr2
+    Caller2 ->> Caller2: call (sees new code)
+
+    Note over Caller1: Caller1's in-flight call returns.<br/>does NOT retain code address — language fn values<br/>are heap closures that go through GOT
+
+    Note over Slot: Phase 3 — old retention root unreferenced<br/>(reclaim is the JIT-retention invariant —<br/>see concurrency-jit-retention)
