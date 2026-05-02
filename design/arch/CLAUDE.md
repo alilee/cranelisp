@@ -44,45 +44,23 @@ Historical pipeline designs (v1, v2, v3) and superseded migration artefacts. Ref
 
 Each Decision is one file at `decisions/NNNN-{slug}.md`. Index:
 
-- [0001](decisions/0001-7-plus-1-crate-dag.md) — 7+1 crate DAG (operative)
-- [0002](decisions/0002-cranelisp-types-is-data-only.md) — `cranelisp-types` is data-only (operative)
-- [0003](decisions/0003-span-is-a-struct.md) — Span is a struct (operative)
-- [0004](decisions/0004-typeid-is-u32.md) — TypeId is u32 (operative)
-- [0005](decisions/0005-no-meta-option-symbolmeta.md) — No `meta: Option<SymbolMeta>` (operative)
-- [0006](decisions/0006-type-from-name-type-name.md) — `Type::from_name()` / `type_name()` (operative)
-- [0007](decisions/0007-compilemode-enum.md) — `CompileMode` enum (retracted)
-- [0008](decisions/0008-macroexpander-trait.md) — `MacroExpander` trait (retracted)
-- [0009](decisions/0009-compiledmodule-decomposed.md) — CompiledModule decomposed (superseded by 22, 25, 38, 39)
-- [0010](decisions/0010-base-pointer-abi.md) — Base-pointer ABI (operative)
-- [0011](decisions/0011-embedded-drop-glue-ptr-in-closures.md) — Embedded drop_glue_ptr in closures (operative)
-- [0012](decisions/0012-strings-opaque-to-backend.md) — Strings opaque to backend (operative)
-- [0013](decisions/0013-atomic-rc-from-ring-1.md) — Atomic RC from Ring 1 (operative)
+The active register holds Decisions whose outcome is NOT yet fully embodied in the architecture (facade + BC + sequence diagrams + Principles). Once a Decision's commitment lands fully into the architecture, the Decision becomes vestigial and moves to `legacy/decisions/` (or deletes if also retracted/superseded). The principle: re-derivation from the canonical set + Principles should be sufficient for fully-landed work; explicit Decisions persist only for environmental constraints, pre-implementation commitments, and forward handoffs.
+
+- [0008](decisions/0008-macroexpander-trait.md) — `MacroExpander` trait (retracted; cited from FIXME 0098 + frontend design)
+- [0010](decisions/0010-base-pointer-abi.md) — Base-pointer ABI (environmental — captures rejected interior-pointer alternative)
+- [0011](decisions/0011-embedded-drop-glue-ptr-in-closures.md) — Embedded drop_glue_ptr in closures (environmental — captures rejected side-table alternative + cross-module closure constraint)
 - [0016](decisions/0016-jit-mangling-trait-method-type.md) — JIT mangling: `Trait.method$Type` (operative)
 - [0018](decisions/0018-replcheckresult-gains-ring-2-fields.md) — `ReplCheckResult` gains Ring 2 fields (operative)
 - [0019](decisions/0019-constraint-propagation-in-generalize.md) — Constraint propagation in `generalize` (operative)
-- [0020](decisions/0020-split-calling-convention-for-rc.md) — Split calling convention for RC (superseded-by-0024)
-- [0021](decisions/0021-tc-sourced-call-graph.md) — TC-sourced call graph with per-symbol persistence on ModuleEntry (operative)
-- [0022](decisions/0022-defined-symbols-shared-predicate.md) — `defined_symbols()` is the shared codegen-compilable predicate (operative)
-- [0023](decisions/0023-uniform-codegen-mode-as-module-property.md) — Uniform codegen; mode is a Module property, not a compile_to_module parameter; two-GOT model (operative)
-- [0024](decisions/0024-uniform-consuming-calling-convention.md) — Uniform consuming calling convention across all call types (operative)
-- [0025](decisions/0025-compiled-code-on-moduleentry-def-code.md) — Compiled code lives on `ModuleEntry::Def.code` as a `#[serde(skip)]` field; cache stores both `.meta.json` and `.o` (operative)
-- [0026](decisions/0026-platform-fn-pointers-on-moduleentry-def.md) — Platform function pointers on `ModuleEntry::Def.platform_fn_ptr`; `scheduling_class` is a variant field (operative)
-- [0027](decisions/0027-g8-lands-before-g9.md) — G8 lands before G9 (platform-registry deletion before persistent workers) (operative)
-- [0028](decisions/0028-priority-worker-jit-per-worker.md) — Priority-worker JIT is per-worker, not per-session (G10) (superseded-by-0031)
-- [0029](decisions/0029-io-trampoline-shallow-dec-runtime-primitive.md) — IO trampoline shallow dec uses a `cranelisp-runtime` primitive (`rc::dec_shallow_io`) (operative)
-- [0030](decisions/0030-form-by-form-scheduler-mutual-imports.md) — Form-by-form scheduler deadlocks on mutual imports; `super` safe for non-mutual patterns (operative)
-- [0031](decisions/0031-one-jitmodule-per-compile-batch.md) — One `JITModule` per compile batch; `Arc<Jit>` on `ModuleEntry::Def.code`; custom `Drop` calls `unsafe free_memory()` (operative)
-- [0032](decisions/0032-codestore-and-linkerstore-empty-marker.md) — `CodeStore` and `LinkerStore` are empty marker traits in `cranelisp-types` (with `Clone` super-bound) (operative)
-- [0033](decisions/0033-structural-decls-on-symboltable.md) — Structural declarations live as fields on `SymbolTable`, not as a parallel `ModuleStructure` (operative)
-- [0034](decisions/0034-cache-schema-versioned.md) — Cache schema is versioned by an explicit `schema_version: u32` field (operative)
-- [0035](decisions/0035-code-enum-integration-layer.md) — `Code` enum lives in `src/` and unifies JIT-backed and Linker-backed compiled code (operative)
-- [0036](decisions/0036-function-symbol-naming-linkage.md) — Function symbol naming + linkage: bare names + `Linkage::Local` uniformly (operative)
-- [0037](decisions/0037-cache-hit-integration-inside-register-module.md) — Cache-hit integration lives inside `register_module`'s recursive flow (operative)
-- [0038](decisions/0038-sharedstate-formal-worker-shareable-subset.md) — `SharedState` is the formal worker-shareable subset of `CompilerSession` state (operative)
-- [0039](decisions/0039-per-defn-source-on-introspection.md) — Per-defn source lives on `Introspection.source`; `SymbolTable.defn_order: Vec<Symbol>` preserves canonical ordering (operative)
-- [0040](decisions/0040-runtime-trace-io-trace-relocate-to-int.md) — `trace.rs` and `io_trace.rs` relocate to int; runtime keeps `IoObserver` callback contract; BC §4 unchanged (operative)
-- [0041](decisions/0041-compile-to-module-per-symbol-jit-direct-writes.md) — `compile_to_module` per-symbol JIT cardinality; `Code` moves to `cranelisp-backend`; backend writes shared state directly; `Result<(), CompilationError>` (operative); amends Decisions 31, 35
-- [0042](decisions/0042-platform-error-adopts-error-location.md) — `PlatformError` is a `cranelisp-types`-hosted enum with `ErrorLocation` carriers per variant; surfaces via `CranelispError::Platform` (operative)
+- [0027](decisions/0027-g8-lands-before-g9.md) — G8 lands before G9 (environmental — borrow-checker sequencing rationale)
+- [0030](decisions/0030-form-by-form-scheduler-mutual-imports.md) — Form-by-form scheduler deadlocks on mutual imports (environmental — coordination constraint future readers will hit)
+- [0031](decisions/0031-one-jitmodule-per-compile-batch.md) — One `JITModule` per compile batch; `Arc<Jit>` on `ModuleEntry::Def.code`; custom `Drop` calls `unsafe free_memory()` (environmental — Cranelift `Memory::drop` evidence; amended Sprint 64 per Decision 41)
+- [0035](decisions/0035-code-enum-integration-layer.md) — `Code` enum location (operative; amended Sprint 64 per Decision 41 — Code now in `cranelisp-backend`)
+- [0040](decisions/0040-runtime-trace-io-trace-relocate-to-int.md) — `trace.rs` and `io_trace.rs` relocate to int; runtime keeps `IoObserver` callback contract; BC §4 unchanged (pre-implementation; tracked by FIXME 0098)
+- [0041](decisions/0041-compile-to-module-per-symbol-jit-direct-writes.md) — `compile_to_module` per-symbol JIT cardinality; `Code` moves to `cranelisp-backend`; backend writes shared state directly; `Result<(), CompilationError>` (pre-implementation; amends 31, 35)
+- [0042](decisions/0042-platform-error-adopts-error-location.md) — `PlatformError` is a `cranelisp-types`-hosted enum with `ErrorLocation` carriers per variant; surfaces via `CranelispError::Platform` (pre-implementation)
+
+Legacy Decisions (outcome fully embodied in architecture; preserved in `legacy/decisions/` for narrative continuity) — `0001`–`0006`, `0009`, `0012`–`0013`, `0021`–`0026`, `0029`, `0032`–`0034`, `0036`–`0039`. Retracted/superseded Decisions deleted (rely on git for history): `0007`, `0014`, `0015`, `0017`, `0020`, `0028`.
 
 ## Cross-References
 
