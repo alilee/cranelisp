@@ -1,5 +1,8 @@
 # cranelisp-typecheck audit — 2026-04-23
 
+> **Sprint 63 supersession note (2026-05-02).** This audit is a point-in-time assessment, NOT ongoing ground truth. Target-direction sections are superseded by Decisions 38, 39, 40, 41, 42 (see `design/arch/decisions/`). Current-state sections remain authoritative as historical observation of the codebase at the audit date. Per substance-scoping §1.5, audits are point-in-time opinions; `/review` is the continuous-audit role going forward, evaluating implementation against the post-Sprint-63 canonical set rather than against this audit's target-direction.
+
+
 ## Scope and method
 
 This audit reviews `crates/cranelisp-typecheck/src` for **clarity**, **simplicity**, and **avoidance of duplicated code / duplicated code-paths**, with the goal of assessing **maintainability** and **extensibility**.
