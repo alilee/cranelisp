@@ -70,3 +70,7 @@ The JIT-lifetime story unifies across three scenarios under one primitive:
 The exact host-callback names and signatures are out of scope for this forward commitment — they will be specified by `/platform` and `/spec` when the `Fn a b` row is added to §10.10.1.
 
 Canonical locations: `crates/cranelisp-backend/src/jit.rs` (the `Jit` wrapper + `Drop` impl — owned by `/backend`), `crates/cranelisp-types/src/module.rs` `ModuleEntry::Def.code` (serde-skip `Arc<Jit>`). Rationale: Principle 11 (single pipeline; one reclaim primitive across JIT and REPL) + Principle 7 (single source of truth — one rule, applied everywhere) + Principle 8 (per-batch IS the target; no interim persistent-worker JIT).
+
+## Amendment (Sprint 64, per Decision 41)
+
+The "per-batch JIT" cardinality applies to object mode only. JIT mode uses **per-symbol JIT cardinality** per Decision 41 — `compile_to_module` is called once per defined symbol with `names: &[symbol]` of length 1, creating one fresh `JITModule` per defn. Per-redefinition reclaim becomes truly per-symbol-immediate: redefine one defn → its `Code::Jit` clone in the table drops → the `Arc<Jit>` hits 0 → custom `Drop` calls `unsafe free_memory()` for that one defn's pages, immediately. The "all-or-nothing-per-batch" coarseness of the original framing is replaced by the per-symbol model. Object mode (`.o` per module) is unchanged. See Decision 41 for the full signature, the `Code` location move, and the direct-write pattern.
