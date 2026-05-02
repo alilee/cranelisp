@@ -534,6 +534,7 @@ pub enum CranelispError {
     LinkError     { message: String },                                          // process-level — no location
     CacheError    { message: String },                                          // process-level — no location
     RuntimeError  { message: String, location: Option<ErrorLocation> },         // location optional — runtime panics may originate from synthetic call sites
+    Platform(PlatformError),                                                    // per Decision 42 — structured platform-origin failures with location
     /* … */
 }
 
@@ -566,6 +567,22 @@ pub enum LinkerError {
     /// caller asked for (Decision 36 contract violation).
     SymbolNotFound { name: LinkerSymbol },
     /* future: RelocationFailure, AbiMismatch, etc. */
+}
+
+/// Platform-origin failures — DLL load, manifest parse, ABI mismatch, dispatch.
+/// Per Decision 42 — coordinates as data; `int`'s `Sess::format_error` consumes
+/// via `CranelispError::Platform(PlatformError)` and selects display strategy
+/// via Decision 39's mode-conditional source resolution.
+#[non_exhaustive]
+pub enum PlatformError {
+    /// DLL could not be loaded from the search path.
+    LoadFailed { dll: PathBuf, cause: String, location: ErrorLocation },
+    /// DLL was found but its manifest is missing or unreadable.
+    ManifestNotFound { dll: PathBuf, location: ErrorLocation },
+    /// DLL's declared ABI version does not match the runtime's expected version.
+    AbiVersionMismatch { dll: PathBuf, expected: u32, found: u32, location: ErrorLocation },
+    /// A platform-fn dispatch failed at runtime (e.g., null fn ptr, panic in callee).
+    DispatchError { fn_name: Symbol, cause: String, location: ErrorLocation },
 }
 ```
 
