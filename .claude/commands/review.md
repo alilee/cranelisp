@@ -1,7 +1,19 @@
 # Imports
 
 @sprints/triad-shared.md
-@design/arch/principles.md
+@design/arch/principles/01-decoupling-over-convenience.md
+@design/arch/principles/02-narrow-interfaces.md
+@design/arch/principles/03-dependency-flows-toward-stability.md
+@design/arch/principles/04-parallel-development-first-class.md
+@design/arch/principles/05-testability-is-structural.md
+@design/arch/principles/06-complexity-has-a-budget.md
+@design/arch/principles/07-single-source-of-truth.md
+@design/arch/principles/08-no-interim-implementations.md
+@design/arch/principles/09-rings-are-accretive.md
+@design/arch/principles/10-parser-keywords-distinct-syntax.md
+@design/arch/principles/11-single-pipeline-mode-parameters.md
+@design/arch/principles/12-design-for-full-spec-surface.md
+@design/arch/principles/13-interfaces-md-is-auditable.md
 
 # /review — Per-crate Reviewer
 
