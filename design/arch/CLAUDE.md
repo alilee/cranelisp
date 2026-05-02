@@ -46,12 +46,8 @@ Each Decision is one file at `decisions/NNNN-{slug}.md`. Index:
 
 The active register holds Decisions whose outcome is NOT yet fully embodied in the architecture (facade + BC + sequence diagrams + Principles). Once a Decision's commitment lands fully into the architecture, the Decision becomes vestigial and moves to `legacy/decisions/` (or deletes if also retracted/superseded). The principle: re-derivation from the canonical set + Principles should be sufficient for fully-landed work; explicit Decisions persist only for environmental constraints, pre-implementation commitments, and forward handoffs.
 
-- [0008](decisions/0008-macroexpander-trait.md) — `MacroExpander` trait (retracted; cited from FIXME 0098 + frontend design)
 - [0010](decisions/0010-base-pointer-abi.md) — Base-pointer ABI (environmental — captures rejected interior-pointer alternative)
 - [0011](decisions/0011-embedded-drop-glue-ptr-in-closures.md) — Embedded drop_glue_ptr in closures (environmental — captures rejected side-table alternative + cross-module closure constraint)
-- [0016](decisions/0016-jit-mangling-trait-method-type.md) — JIT mangling: `Trait.method$Type` (operative)
-- [0018](decisions/0018-replcheckresult-gains-ring-2-fields.md) — `ReplCheckResult` gains Ring 2 fields (operative)
-- [0019](decisions/0019-constraint-propagation-in-generalize.md) — Constraint propagation in `generalize` (operative)
 - [0027](decisions/0027-g8-lands-before-g9.md) — G8 lands before G9 (environmental — borrow-checker sequencing rationale)
 - [0030](decisions/0030-form-by-form-scheduler-mutual-imports.md) — Form-by-form scheduler deadlocks on mutual imports (environmental — coordination constraint future readers will hit)
 - [0031](decisions/0031-one-jitmodule-per-compile-batch.md) — One `JITModule` per compile batch; `Arc<Jit>` on `ModuleEntry::Def.code`; custom `Drop` calls `unsafe free_memory()` (environmental — Cranelift `Memory::drop` evidence; amended Sprint 64 per Decision 41)
@@ -60,7 +56,7 @@ The active register holds Decisions whose outcome is NOT yet fully embodied in t
 - [0041](decisions/0041-compile-to-module-per-symbol-jit-direct-writes.md) — `compile_to_module` per-symbol JIT cardinality; `Code` moves to `cranelisp-backend`; backend writes shared state directly; `Result<(), CompilationError>` (pre-implementation; amends 31, 35)
 - [0042](decisions/0042-platform-error-adopts-error-location.md) — `PlatformError` is a `cranelisp-types`-hosted enum with `ErrorLocation` carriers per variant; surfaces via `CranelispError::Platform` (pre-implementation)
 
-Legacy Decisions (outcome fully embodied in architecture; preserved in `legacy/decisions/` for narrative continuity) — `0001`–`0006`, `0009`, `0012`–`0013`, `0021`–`0026`, `0029`, `0032`–`0034`, `0036`–`0039`. Retracted/superseded Decisions deleted (rely on git for history): `0007`, `0014`, `0015`, `0017`, `0020`, `0028`.
+Legacy Decisions (outcome fully embodied in architecture; preserved in `legacy/decisions/` for narrative continuity) — `0001`–`0006`, `0008`–`0009`, `0012`–`0013`, `0016`, `0018`–`0019`, `0021`–`0026`, `0029`, `0032`–`0034`, `0036`–`0039`. Retracted/superseded Decisions deleted (rely on git for history): `0007`, `0014`, `0015`, `0017`, `0020`, `0028`.
 
 ## Cross-References
 
