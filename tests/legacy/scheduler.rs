@@ -1,3 +1,17 @@
+// QUARANTINED — Sprint 64 test-port. Not built or run by Cargo.
+// FIXME: design/arch/fixmes/0116-harvest-tests-legacy-scheduler.md
+// Owning crate: src/ (cranelisp binary; scheduler module post-FIXME-0109)
+// Owning skill: /int
+// Quarantined: 2026-05-03
+//
+// This file's assertions test Rust-internal state (CompileScheduler
+// direct construction + lifecycle observation) with no e2e equivalent.
+// Harvest into `#[cfg(test)]` unit tests inside the owning crate per
+// memory/feedback_unit_tests_with_dev.md and
+// memory/project_test_strategy.md. Source preserved verbatim;
+// translation may require dev-dependency adjustments and import
+// rewrites against the post-FIXME-0109 internal surface.
+
 // tests/scheduler.rs — Unit tests for CompileScheduler (pipeline v4 Step 2)
 //
 // These tests validate the scheduler's module lifecycle, priority queue,
