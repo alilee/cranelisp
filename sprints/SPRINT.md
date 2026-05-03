@@ -1,6 +1,6 @@
 # Sprint 64: Test-Port — `/qa` two-tier migration
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 3.5 audit complete + committed. Awaiting decision on Wave 4 + landing-time `// spec:` linter FIXME.
+**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 3.5 + 3.5b (linter) + 3.5c (maintainability) all committed. Awaiting decision on Wave 4 cadence + linter scope (audit-scope vs. full-tree).
 
 **Goal**: Transition `/qa` fully to the two-tier regime. Audit every test file for assertions that test language behaviour (carry forward as new e2e tests in the harness specified by `tests/plan/helpers.md`) vs. Rust-internal state (quarantine in `tests/legacy/` for FIXME-driven harvest into the owning crate's unit tests). Reorganise the new e2e suite for spec-coverage auditability. Delete the legacy scaffolding once the new suite is sound. **Parity in spec-relevant coverage**: every assertion that exercises spec behaviour survives the transition; defects surfaced during audit land as FIXMEs + failing tests, not fixes.
 
@@ -275,6 +275,14 @@ User confirms continuation, redirects ordering, or requests scope adjustment. `/
   - `cargo nextest run`: 1598 tests, 1588 pass, 10 fail (5 pre-existing + 1 FIXME 0121 + 4 FIXME 0122). 2 tests removed from `/reset` deletion. **Net 0 regressions.**
   - **Meta-finding**: the `/reset` slip-through survived `/qa` landing + `/sprint` Wave 2/3 review + the Wave 2→2.5 pivot. Single guard that caught it was a user reading the FIXME. Audit agent recommends a landing-time `// spec:` linter (one-evening Python script in `tests/plan/`) — durable mitigation against future invented assertions or mis-cited annotations.
   - `tests/plan/wave-3.5-audit.md` records full per-file findings.
+- 2026-05-04: Wave 3.5b + Wave 3.5c dispatched in parallel. User authorised building the linter NOW (not deferring) and fixing the maintainability findings NOW (not deferring to S65).
+- 2026-05-04: Wave 3.5b complete + committed (`6020c89`). Linter on disk at `tests/plan/spec_link_check.py` (Python 3, stdlib only). Recognises multiple citation forms (numeric/named/section-anchored), normalises shortform paths, handles multi-line continuations. `tests/CLAUDE.md` extended with linter section + audit history pointer. **Audit-scope (7 Wave-3.5 files) clean: 213/213 citations OK, EXIT 0.** Full-tree scan surfaced 76 pre-existing findings in older files (`sketch_port.rs`, `ring{0,1,2}.rs`, `v4_*.rs`, `sprint{23,60,61}*.rs`, `exemplar_solver_correctness.rs`, `wave6_demo_repros.rs`) — durable findings now visible for Wave 4+ cleanup. Linter agent also fixed 14 incidental mis-cites in `e2e.rs`, `cache.rs`, `build_confidence.rs` during verification (re-anchored `repl/spec.md §4.2`/`§4.3` to §4.1.5/§4.1.8; replaced `Cache directory layout` named anchor with `§10`; replaced non-existent `repl-lifecycle.md §"REPL boot"` and `build-pipeline.md` with valid citations).
+- 2026-05-04: Wave 3.5c complete + committed (`ba60d05`, `871b0a9`). Maintainability findings actioned:
+  - **REPL helper duplication factored** — option (a) chosen; added `Cranelisp::repl_capture(lines)` + `Cranelisp::repl_prims_capture(lines)` to `tests/helpers/e2e.rs`. ~24 LOC of duplicated stub collapsed across `repl_introspection.rs`, `repl_lifecycle.rs`, `repl_negative.rs`.
+  - **Contains-check tightening** — 9 sites tightened across the 3 repl files via two new `CrOutput` methods: `assert_stdout_contains_all(&[...])` (folds `&&`-conjoined contains) and `assert_stdout_does_not_contain(needle)` (negative-coverage counterpart).
+  - **ADT match-witness clarity** — 15-line header comment added to `tests/spec_11_stdlib.rs` explaining the pattern (anchors otherwise-unconstrained type vars; asserts a single deterministic `:Bool true` line). No per-test edits.
+  - `cargo nextest run`: 1588 pass, 10 fail (5 pre-existing + 1 FIXME 0121 + 4 FIXME 0122). Net 0 regressions.
+  - **Harness API additions** for Wave 4+ to adopt: `assert_stdout_contains_all`, `assert_stdout_does_not_contain`, `repl_capture`, `repl_prims_capture`. Need to land in `tests/plan/helpers-api.md` (Wave 3.5c agent deferred to avoid contention with Wave 3.5b's parallel docs work).
 
 ## Outcome (Phase 7)
 
