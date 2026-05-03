@@ -1,3 +1,19 @@
+// QUARANTINED — Sprint 64 test-port. Not built or run by Cargo.
+// FIXME: design/arch/fixmes/0124-harvest-tests-legacy-repl-experience.md
+// Owning crate: src/ (cranelisp binary; REPL session post-FIXME-0109)
+// Owning skill: /int (with /typecheck for symbol-table inspection paths;
+//                /backend for format_result function call paths)
+// Quarantined: 2026-05-03
+//
+// This file's assertions test Rust-internal state (ReplSession Rust API,
+// cranelisp_backend::display::format_result direct call, session.shared
+// inspection) with no e2e equivalent; the e2e carry-forward lives in
+// tests/repl_introspection.rs, tests/repl_lifecycle.rs, tests/repl_negative.rs.
+// Harvest into `#[cfg(test)]` unit tests inside the owning crate per
+// memory/feedback_unit_tests_with_dev.md and memory/project_test_strategy.md.
+// Source preserved verbatim; translation may require dev-dependency
+// adjustments and import rewrites against the post-FIXME-0109 internal surface.
+
 // REPL experience tests for Rings 0, 1, and 2A.
 //
 // These tests validate the REPL from the user's perspective, as specified in
