@@ -596,7 +596,7 @@ fn e2e_run_tests_ignores_non_test() {
 // §4  Self-documentation
 // ===========================================================================
 
-// spec: repl/spec.md §4.2 — special form self-documentation
+// spec: repl/spec.md §4.1.5 — special form self-documentation
 #[test]
 fn e2e_s4_2_special_form_feedback() {
     let o = run_repl("if\n", "s4_2_if");
@@ -612,7 +612,7 @@ fn e2e_s4_2_special_form_feedback() {
     );
 }
 
-// spec: repl/spec.md §4.2 — special form self-documentation (let)
+// spec: repl/spec.md §4.1.5 — special form self-documentation (let)
 #[test]
 fn e2e_s4_2_special_form_let() {
     let o = run_repl("let\n", "s4_2_let");
@@ -1140,7 +1140,7 @@ fn e2e_session_ring1_adt_workflow() {
 // §4.2  Special form feedback — fn, defn, deftype, match
 // ===========================================================================
 
-// spec: repl/spec.md §4.2 — special form self-documentation (fn)
+// spec: repl/spec.md §4.1.5 — special form self-documentation (fn)
 #[test]
 fn e2e_s4_2_special_form_fn() {
     let o = run_repl("fn\n", "s4_2_fn");
@@ -1155,7 +1155,7 @@ fn e2e_s4_2_special_form_fn() {
     );
 }
 
-// spec: repl/spec.md §4.2 — special form self-documentation (defn)
+// spec: repl/spec.md §4.1.5 — special form self-documentation (defn)
 #[test]
 fn e2e_s4_2_special_form_defn() {
     let o = run_repl("defn\n", "s4_2_defn");
@@ -1170,7 +1170,7 @@ fn e2e_s4_2_special_form_defn() {
     );
 }
 
-// spec: repl/spec.md §4.2 — special form self-documentation (deftype)
+// spec: repl/spec.md §4.1.5 — special form self-documentation (deftype)
 #[test]
 fn e2e_s4_2_special_form_deftype() {
     let o = run_repl("deftype\n", "s4_2_deftype");
@@ -1185,7 +1185,7 @@ fn e2e_s4_2_special_form_deftype() {
     );
 }
 
-// spec: repl/spec.md §4.2 — special form self-documentation (match)
+// spec: repl/spec.md §4.1.5 — special form self-documentation (match)
 #[test]
 fn e2e_s4_2_special_form_match() {
     let o = run_repl("match\n", "s4_2_match");
@@ -1204,7 +1204,7 @@ fn e2e_s4_2_special_form_match() {
 // §4.3  Operator feedback
 // ===========================================================================
 
-// spec: repl/spec.md §4.3 — bare + operator shows type
+// spec: repl/spec.md §4.1.8 — bare + operator shows type
 #[test]
 fn e2e_s4_3_operator_plus_feedback() {
     let input = format!("{PRIMS}{NUM_TRAIT_PRELUDE}+\n");
@@ -1220,7 +1220,7 @@ fn e2e_s4_3_operator_plus_feedback() {
     );
 }
 
-// spec: repl/spec.md §4.3 — bare = operator shows type
+// spec: repl/spec.md §4.1.8 — bare = operator shows type
 #[test]
 fn e2e_s4_3_operator_eq_feedback() {
     let input = format!("{PRIMS}{EQ_TRAIT_PRELUDE}=\n");
@@ -1236,7 +1236,7 @@ fn e2e_s4_3_operator_eq_feedback() {
     );
 }
 
-// spec: repl/spec.md §4.3 — bare < operator shows type
+// spec: repl/spec.md §4.1.8 — bare < operator shows type
 #[test]
 fn e2e_s4_3_operator_lt_feedback() {
     let input = format!("{PRIMS}{ORD_TRAIT_PRELUDE}<\n");
@@ -1579,7 +1579,7 @@ fn e2e_s9_9_4_runtime_error_during_expansion() {
     );
 }
 
-// spec: repl/spec.md §4.2 — bare 'defmacro' shows special form signature
+// spec: repl/spec.md §4.1.5 — bare 'defmacro' shows special form signature
 #[test]
 fn e2e_s4_2_special_form_defmacro() {
     let input = "defmacro\n";

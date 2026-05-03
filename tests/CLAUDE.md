@@ -45,6 +45,48 @@ API in `plan/helpers.md`. Existing integration-tier tests are
 rewritten as e2e on touch (typically when an internal-API change
 breaks them), not en masse.
 
+## Spec-traceability linter
+
+`tests/plan/spec_link_check.py` is a structural verifier for `// spec:`
+annotations. For every `// spec: <path> §<anchor>` in `tests/*.rs`, it
+opens the cited file and checks that the anchor matches a Markdown
+heading. Built in Sprint 64 Wave 3.5b in response to the 42 mis-cites
+the Wave 3.5 audit corrected; see `tests/plan/wave-3.5-audit.md` for
+the audit history that motivated it.
+
+What it checks:
+
+- **MIS-CITED** — file exists, anchor (`§X.Y` or `§"Named Section"`)
+  does not match any heading in the cited file.
+- **MALFORMED** — annotation cites a file path that does not exist on
+  disk (typo, renamed file, missing directory prefix).
+- Free-form notes (`// spec: (same anchor) — ...`) are skipped, not
+  flagged.
+
+Run it before `cargo nextest run` on any commit landing new tests:
+
+```bash
+python3 tests/plan/spec_link_check.py                  # scan everything
+python3 tests/plan/spec_link_check.py --scope foo.rs   # one file
+python3 tests/plan/spec_link_check.py --verbose        # show every OK
+```
+
+What it does NOT check: semantic match between the assertion and the
+spec promise. That is a human-review concern at audit time per
+`memory/feedback_validate_tests_against_spec.md`. The linter only
+verifies that the cited anchor structurally exists.
+
+Pre-commit / CI integration is a future commitment, not a Sprint 64
+deliverable. As of Sprint 64 close, the seven Wave-3.5-audited files
+(`cache.rs`, `spec_11_stdlib.rs`, `build_confidence.rs`,
+`repl_introspection.rs`, `repl_lifecycle.rs`, `repl_negative.rs`,
+`spec_10_io.rs`) plus newly-fixed `e2e.rs` / `cache.rs` /
+`build_confidence.rs` MIS-CITED hits all pass clean. ~76 pre-existing
+findings remain in older files (`sketch_port.rs`, `ring{0,1,2}.rs`,
+`v4_*`, `sprint23.rs`, `sprint60_*`, `sprint61_*`,
+`exemplar_solver_correctness.rs`, `wave6_demo_repros.rs`) — these are
+durable findings now visible for Wave 4+ cleanup.
+
 ## Diagnostic Requirements
 
 `/qa` specifies observability that compiler skills **must implement**. See `plan/strategy.md` §"Diagnostic Requirements" for full details.

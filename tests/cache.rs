@@ -60,8 +60,8 @@ fn nap_for_mtime() {
 // Cache directory layout — Phase 1 §2 seed (merged from cache_seed.rs)
 // =============================================================================
 
-/// spec: design/backend/module-caching.md §"Cache directory layout" —
-/// cache lives under project_root (= the per-test TempDir).
+/// spec: design/backend/module-caching.md §10 (Edge Cases — Prelude caching) —
+/// cache lives under project_root's `.cranelisp-cache/` (= the per-test TempDir).
 #[test]
 fn cache_lives_under_project_root() {
     let out = Cranelisp::new()

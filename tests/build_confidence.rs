@@ -28,8 +28,8 @@ use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
 // PART A — Smoke set (one per CLI surface)
 // =============================================================================
 
-// spec: design/int/repl-lifecycle.md §"REPL boot" — REPL emits a banner on
-// start and exits cleanly on stdin EOF.
+// spec: repl/spec.md §6.2 (Startup Banner) + §0.1 (REPL Mode) — REPL emits a
+// banner on start and exits cleanly on stdin EOF.
 #[test]
 fn smoke_binary_starts_repl_and_exits_on_eof() {
     Cranelisp::new()
@@ -51,9 +51,9 @@ fn smoke_run_zero_arg_main_exits_zero() {
         .assert_exit(0);
 }
 
-// spec: design/int/build-pipeline.md (link path) — `--link main.cl` emits
-// an executable next to the source; running it produces the same exit code
-// as `--run` would.
+// spec: design/backend/executable-generation.md §3 (End-to-End Flow) — `--link
+// main.cl` emits an executable next to the source; running it produces the
+// same exit code as `--run` would (per repl/spec.md §0.2.1 Link Mode).
 #[test]
 fn smoke_link_then_run_executable_matches_run_exit() {
     Cranelisp::new()
@@ -63,8 +63,8 @@ fn smoke_link_then_run_executable_matches_run_exit() {
         .assert_exit(42);
 }
 
-// spec: design/backend/module-caching.md §"Cache directory layout" — cache
-// directory exists under project root after a successful build.
+// spec: design/backend/module-caching.md §10 (Edge Cases — Prelude caching) —
+// cache directory exists under project root after a successful build.
 #[test]
 fn smoke_run_warms_project_root_cache() {
     let out = Cranelisp::new()

@@ -212,3 +212,53 @@ The `/reset` regression illustrates that **landing-time spec verification is not
 A second observation: the user-surfaced concern was the right level of skepticism. Two `/reset` tests that look reasonable (the assertions are well-formed; the FIXME is well-written) survived /qa landing, /sprint waves-2-vs-3 review, and a Wave 2 → 2.5 pivot. The single guard that caught it was a user reading the FIXME. **Wave 4+ work should bake user-surfaceable assertions into the audit at landing**, e.g., per-test `// spec:` cited and grep-verified, with the link rendered in the commit message for trivial post-hoc verification.
 
 The Wave 3.5 audit confirms the rest of Waves 1–3 is sound. No further INVENTED assertions found; FIXMEs 0121 and 0122 are real defects.
+
+## Wave 3.5b — Linter built and passing (durable mitigation)
+
+Per the recommendation in this file ("Add a `// spec:` annotation linter
+or pre-commit check"), `tests/plan/spec_link_check.py` was implemented
+in Wave 3.5b. The linter scans `tests/*.rs` for `// spec:` annotations,
+opens each cited file, and checks that the anchor matches a Markdown
+heading.
+
+**Audit-scope verification**:
+
+```bash
+python3 tests/plan/spec_link_check.py \
+  --scope cache.rs --scope spec_11_stdlib.rs --scope build_confidence.rs \
+  --scope repl_introspection.rs --scope repl_lifecycle.rs \
+  --scope repl_negative.rs --scope spec_10_io.rs
+```
+
+Result: **213 citations / 7 files / 0 MIS-CITED / 0 MALFORMED** (exit 0).
+The Wave 3.5 audit's clean-state claim is now mechanically verifiable
+and durable.
+
+**Additional findings surfaced** during the wider scan (full
+`tests/*.rs`, ~1396 citations) outside Wave 3.5's audit scope:
+
+- 4 MIS-CITED in Wave 3.5 audit-scope files were fixed in Wave 3.5b
+  before the audit-scope scan went green: `cache.rs:63` and
+  `build_confidence.rs:31,54,66` had cited section markers that exist
+  as bold inline labels (e.g. `**Cache directory layout**`) rather
+  than `#`-prefixed Markdown headings. Re-cited to existing
+  numbered sections.
+- 10 MIS-CITED in `e2e.rs` (`§4.2`, `§4.3` for special-form / operator
+  self-documentation) were fixed by re-citing to `repl/spec.md §4.1.5`
+  (Special Forms) and `§4.1.8` (Trait Methods). Out of Wave 3.5's audit
+  scope but trivially fixable; corrected here as opportunistic cleanup.
+- 11 MIS-CITED + 65 MALFORMED remain in pre-Wave-3.5 files
+  (`sketch_port.rs`, `ring{0,1,2}.rs`, `v4_*`, `sprint23.rs`,
+  `sprint60_*`, `sprint61_*`, `exemplar_solver_correctness.rs`,
+  `wave6_demo_repros.rs`). These are durable findings now visible to
+  Wave 4+ via the linter's full-scan mode (`exit 1`). Common patterns:
+  references to `spec/06-types.md` (renamed/split), `tests/plan/ring4.md`
+  (moved to `tests/plan/legacy/`), `bare-primitive-value-path.md`
+  (missing `design/int/` prefix), `spec/01-syntax.md` /
+  `spec/05-functions.md` (renamed). No spec violations — only
+  citation-text drift.
+
+The linter does NOT check semantic match between assertion and spec
+promise (per `memory/feedback_validate_tests_against_spec.md` that is
+a human-review concern). Author-time discipline + the linter together
+catch the structural slips Wave 3.5 manually corrected.
