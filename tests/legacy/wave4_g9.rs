@@ -1,3 +1,17 @@
+// QUARANTINED — Sprint 64 test-port. Not built or run by Cargo.
+// FIXME: design/arch/fixmes/0119-harvest-tests-legacy-wave4-g9.md
+// Owning crate: src/ (cranelisp binary; persistent-worker module post-FIXME-0109)
+// Owning skill: /int
+// Quarantined: 2026-05-03
+//
+// This file's assertions test Rust-internal state (persistent
+// priority-worker observations via CompilerSession Rust API) with no
+// e2e equivalent. Harvest into `#[cfg(test)]` unit tests inside the
+// owning crate per memory/feedback_unit_tests_with_dev.md and
+// memory/project_test_strategy.md. Source preserved verbatim;
+// translation may require dev-dependency adjustments and import
+// rewrites against the post-FIXME-0109 internal surface.
+
 //! Integration tests for Sprint 57 Wave 4 (G9 — Persistent Priority Workers).
 //!
 //! These are Layer 3 integration tests that observe Wave 4's user-visible
