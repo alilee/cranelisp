@@ -1,3 +1,24 @@
+// QUARANTINED — Sprint 64 test-port. Not built or run by Cargo.
+// FIXME: design/arch/fixmes/0130-harvest-tests-legacy-ring4-trace-taxonomy.md
+// Owning crate: cranelisp-typecheck (asserts on internal Type::ADT
+//                FQTypeName / Vec<Type> shapes via repl_eval_typed Rust API)
+//                + cranelisp-runtime (Trace ADT runtime layout + heap
+//                pointer observation)
+// Owning skill: /typecheck (with /runtime co-owner)
+// Quarantined: 2026-05-04
+//
+// This file's 31 tests use `repl_eval_typed` (Rust API) to extract a `Type`
+// value and assert against `Type::ADT(FQTypeName::new(ModuleFullPath, ...),
+// vec![...])`. The language-observable subset (`(trace expr)` returns a
+// Trace value displayed as `:primitives/Trace ...`; pattern match on
+// TraceCall extracts fields; /run-tests reports pass/fail counts) is
+// preserved as e2e tests in `tests/spec_12_runtime.rs`. The Type-shape
+// assertions belong as `#[cfg(test)]` unit tests inside cranelisp-typecheck
+// adjacent to the trace-form inference site, per
+// memory/feedback_unit_tests_with_dev.md and
+// memory/project_test_strategy.md. Some trace-related runtime concerns
+// (heap pointer non-zero on Trace value) belong in cranelisp-runtime.
+//
 // Ring 4 integration tests: trace special form (spec §4.12).
 //
 // Tests the `(trace expr)` special form which instruments function calls
