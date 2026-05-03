@@ -770,3 +770,301 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
     }
     Ok(())
 }
+
+// =============================================================================
+// Mode-equivalence helper — run one program through all six permutations
+// =============================================================================
+//
+// Per `tests/plan/PLAN.md §"Mode canonicalisation"` and
+// `tests/plan/helpers-api.md §"Mode-equivalence helper"`. Use ONLY for the
+// curated mode-equivalence subset in `tests/build_confidence.rs`. Bulk
+// language-conformance tests use REPL canonical directly via the `Cranelisp`
+// builder.
+
+/// Canonical observation for one mode×cache permutation.
+#[derive(Debug, Clone)]
+pub struct PermutationOutcome {
+    /// Mode + cache state label for diff messages.
+    pub label: &'static str,
+    /// Canonical Int observation. None on failure paths.
+    pub observed: Option<i32>,
+    /// Raw stdout.
+    pub stdout: String,
+    /// Raw stderr.
+    pub stderr: String,
+    /// Process / produced-binary exit code.
+    pub exit_code: Option<i32>,
+}
+
+impl PermutationOutcome {
+    fn diag(&self) -> String {
+        format!(
+            "[{}] observed={:?} exit={:?}\n  stdout: {}\n  stderr: {}",
+            self.label,
+            self.observed,
+            self.exit_code,
+            truncate(&self.stdout, 240),
+            truncate(&self.stderr, 240),
+        )
+    }
+}
+
+/// All six permutations' observations.
+#[derive(Debug)]
+pub struct AllModesResult {
+    pub repl_fresh: PermutationOutcome,
+    pub repl_cached: PermutationOutcome,
+    pub run_fresh: PermutationOutcome,
+    pub run_cached: PermutationOutcome,
+    pub link_fresh: PermutationOutcome,
+    pub link_cached: PermutationOutcome,
+}
+
+impl AllModesResult {
+    fn permutations(&self) -> [&PermutationOutcome; 6] {
+        [
+            &self.repl_fresh,
+            &self.repl_cached,
+            &self.run_fresh,
+            &self.run_cached,
+            &self.link_fresh,
+            &self.link_cached,
+        ]
+    }
+
+    /// Assert all six observations agree on the canonical Int. Panics
+    /// with a per-permutation diff when any path diverges.
+    pub fn assert_all_equivalent(self) -> Self {
+        let observations: Vec<Option<i32>> = self.permutations().iter().map(|p| p.observed).collect();
+        let baseline = observations[0];
+        let all_match = observations.iter().all(|o| *o == baseline);
+        if !all_match {
+            let diag = self
+                .permutations()
+                .iter()
+                .map(|p| p.diag())
+                .collect::<Vec<_>>()
+                .join("\n");
+            panic!(
+                "mode-equivalence divergence — six permutations did not agree\n{}",
+                diag
+            );
+        }
+        if baseline.is_none() {
+            let diag = self
+                .permutations()
+                .iter()
+                .map(|p| p.diag())
+                .collect::<Vec<_>>()
+                .join("\n");
+            panic!(
+                "mode-equivalence: all six permutations produced no canonical observation\n{}",
+                diag
+            );
+        }
+        self
+    }
+
+    /// Assert all six observations match the given expected Int.
+    pub fn assert_all_equal(self, expected: i32) -> Self {
+        let mut diverge = false;
+        for p in self.permutations() {
+            if p.observed != Some(expected) {
+                diverge = true;
+                break;
+            }
+        }
+        if diverge {
+            let diag = self
+                .permutations()
+                .iter()
+                .map(|p| p.diag())
+                .collect::<Vec<_>>()
+                .join("\n");
+            panic!(
+                "mode-equivalence: expected all permutations to observe {expected}\n{}",
+                diag
+            );
+        }
+        self
+    }
+}
+
+/// Run one program through all six mode×cache permutations.
+///
+/// Program shape: `(defn main [] expr-returning-Int)`. Use only for the
+/// mode-equivalence subset (`tests/build_confidence.rs`). Bulk
+/// language-conformance tests must NOT use this.
+///
+/// `prelude` selects the prelude variant; `PreludeVariant::TestStandard`
+/// is the typical choice (gives operators `+`, `-`, `=`, etc.).
+pub fn run_through_all_modes(program: &str, prelude: PreludeVariant) -> AllModesResult {
+    let repl_fresh = run_repl_observation(program, prelude, "repl_fresh", /* fresh = */ true);
+    let repl_cached = run_repl_observation(program, prelude, "repl_cached", /* fresh = */ false);
+    let run_fresh = run_run_observation(program, prelude, "run_fresh", /* fresh = */ true);
+    let run_cached = run_run_observation(program, prelude, "run_cached", /* fresh = */ false);
+    let link_fresh = run_link_observation(program, prelude, "link_fresh", /* fresh = */ true);
+    let link_cached = run_link_observation(program, prelude, "link_cached", /* fresh = */ false);
+
+    AllModesResult {
+        repl_fresh,
+        repl_cached,
+        run_fresh,
+        run_cached,
+        link_fresh,
+        link_cached,
+    }
+}
+
+// --- Per-mode permutation helpers -------------------------------------------
+
+fn run_repl_observation(
+    program: &str,
+    prelude: PreludeVariant,
+    label: &'static str,
+    fresh: bool,
+) -> PermutationOutcome {
+    // Stdin shape: pipe the program followed by `(main)` so the REPL prints
+    // `:primitives/Int N`, then EOF. The REPL auto-loads `user.cl` if present;
+    // for mode-equivalence we do NOT materialise `user.cl` and instead pipe the
+    // program directly so the observation is comparable to a freshly typed
+    // session.
+    let stdin = format!("{program}\n(main)\n");
+
+    let cr = Cranelisp::new()
+        .repl()
+        .with_prelude(prelude)
+        .stdin(&stdin);
+
+    let cr = if fresh {
+        cr
+    } else {
+        // Cached path: run once first to populate the cache.
+        let warm = cr.output();
+        // Discard warm observation; re-spawn with the same TempDir.
+        warm.run_again()
+            .repl()
+            .with_prelude_no_overwrite(prelude)
+            .stdin(&stdin)
+    };
+
+    let out = cr.output();
+    let observed = parse_repl_int(&out.stdout);
+    PermutationOutcome {
+        label,
+        observed,
+        stdout: out.stdout,
+        stderr: out.stderr,
+        exit_code: out.status.code(),
+    }
+}
+
+fn run_run_observation(
+    program: &str,
+    prelude: PreludeVariant,
+    label: &'static str,
+    fresh: bool,
+) -> PermutationOutcome {
+    let cr = Cranelisp::new()
+        .with_prelude(prelude)
+        .run("user.cl")
+        .user(program);
+
+    let cr = if fresh {
+        cr
+    } else {
+        let warm = cr.output();
+        warm.run_again()
+            .with_prelude_no_overwrite(prelude)
+            .run("user.cl")
+        // user.cl was already materialised by the warm builder; no need to re-write.
+    };
+
+    let out = cr.output();
+    let observed = out.status.code();
+    PermutationOutcome {
+        label,
+        observed,
+        stdout: out.stdout,
+        stderr: out.stderr,
+        exit_code: out.status.code(),
+    }
+}
+
+fn run_link_observation(
+    program: &str,
+    prelude: PreludeVariant,
+    label: &'static str,
+    fresh: bool,
+) -> PermutationOutcome {
+    let cr = Cranelisp::new()
+        .with_prelude(prelude)
+        .link_then_run("user.cl")
+        .user(program);
+
+    let cr = if fresh {
+        cr
+    } else {
+        let warm = cr.output();
+        warm.run_again()
+            .with_prelude_no_overwrite(prelude)
+            .link_then_run("user.cl")
+    };
+
+    let out = cr.output();
+    let observed = out.status.code();
+    PermutationOutcome {
+        label,
+        observed,
+        stdout: out.stdout,
+        stderr: out.stderr,
+        exit_code: out.status.code(),
+    }
+}
+
+// --- Internal parse + truncate helpers --------------------------------------
+
+/// Extract the last `:primitives/Int N` value from REPL stdout.
+fn parse_repl_int(stdout: &str) -> Option<i32> {
+    let mut last: Option<i32> = None;
+    for line in stdout.lines() {
+        if let Some(rest) = line.split(":primitives/Int ").nth(1) {
+            // Trim trailing prompt or whitespace.
+            let candidate = rest
+                .trim()
+                .split(|c: char| !c.is_ascii_digit() && c != '-')
+                .next()
+                .unwrap_or("");
+            if let Ok(n) = candidate.parse::<i32>() {
+                last = Some(n);
+            }
+        }
+    }
+    last
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}...<{} bytes truncated>", &s[..max], s.len() - max)
+    }
+}
+
+// --- Cranelisp builder extension for cached permutations --------------------
+
+impl Cranelisp {
+    /// Like `with_prelude` but treats an existing `prelude.cl` in the cwd
+    /// as authoritative — does not overwrite. Used by cached permutations
+    /// where the warm run already materialised the prelude file.
+    pub fn with_prelude_no_overwrite(self, variant: PreludeVariant) -> Self {
+        if variant.fixture_filename().is_none() {
+            return self;
+        }
+        let target = self.tmpdir.path().join("prelude.cl");
+        if target.exists() {
+            return self;
+        }
+        self.with_prelude(variant)
+    }
+}
