@@ -1,3 +1,22 @@
+// QUARANTINED — Sprint 64 test-port. Not built or run by Cargo.
+// FIXME: design/arch/fixmes/0131-harvest-tests-legacy-sprint60-observability.md
+// Owning crate: cranelisp-backend (CRANELISP_CODEGEN_DUMP env-var filter +
+//                CLIF-dump emitter live in crates/cranelisp-backend/src/lib.rs;
+//                unit tests for `clif_dump_matches` are already there)
+// Owning skill: /backend
+// Quarantined: 2026-05-04
+//
+// This file's 4 tests subprocess-launch `cranelisp --run` with
+// `CRANELISP_CODEGEN_DUMP=*|user|<unset>|<empty>` and assert on stderr CLIF
+// dump frames. The subject under test is the env-var filter, not a spec'd
+// language behaviour — `CRANELISP_*_TRACE` env vars are debugging aids per
+// `tests/CLAUDE.md` (stderr is for traces only). Harvest into the existing
+// `clif_dump_matches_*` and `write_clif_dump_*` `#[cfg(test)]` unit tests
+// inside `crates/cranelisp-backend/src/lib.rs`, extending them with the
+// subprocess-only `--run` integration concern (the env var actually plumbs
+// through to user-visible stderr) — likely as a single integration test
+// inside the backend crate that exec's the binary it just compiled.
+//
 //! Sprint 60 Workstream B — CLIF-dump observability (integration).
 //!
 //! Subprocess-level integration coverage for the `CRANELISP_CODEGEN_DUMP`
