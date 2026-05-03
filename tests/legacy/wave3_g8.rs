@@ -1,3 +1,17 @@
+// QUARANTINED — Sprint 64 test-port. Not built or run by Cargo.
+// FIXME: design/arch/fixmes/0118-harvest-tests-legacy-wave3-g8.md
+// Owning crate: cranelisp-backend
+// Owning skill: /backend
+// Quarantined: 2026-05-03
+//
+// This file's assertions test Rust-internal state (Layer-3 platform
+// registry removal observations on `ModuleEntry::Def`) with no e2e
+// equivalent. Harvest into `#[cfg(test)]` unit tests inside the owning
+// crate per memory/feedback_unit_tests_with_dev.md and
+// memory/project_test_strategy.md. Source preserved verbatim;
+// translation may require dev-dependency adjustments and import
+// rewrites against the post-FIXME-0109 internal surface.
+
 //! Integration tests for Sprint 57 Wave 3 (G8 — Platform on SymbolTable).
 //!
 //! These are Layer 3 integration tests. They exercise the platform-registry
