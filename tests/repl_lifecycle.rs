@@ -5,7 +5,8 @@
 // `v4_repl_eval.rs` (eval-cycle persistence + error recovery). Per
 // `tests/plan/PLAN.md §"Mode canonicalisation"`, canonical mode is REPL.
 //
-// Coverage (per `repl/spec.md §1, §2, §4`):
+// Coverage (per `repl/spec.md §0.1, §1.2, §1.3, §2.3, §3.1, §5.2, §6.2, §11.4, §15.2,
+// §15.6` and `spec/05-definitions.md §5.1, §5.2`, `spec/09-macros.md §9.2, §9.13`):
 //   - REPL boot / banner / clean exit on EOF
 //   - Multi-form sessions with definition persistence
 //   - Recursive function definition inside REPL
@@ -13,7 +14,6 @@
 //   - Type errors / parse errors / runtime errors do NOT corrupt the session
 //   - Redefinition cycles (defn replaces defn; callers see new value)
 //   - Macro persistence across evals
-//   - /reset semantics (clears state but session continues)
 //
 // What this file does NOT cover (lives elsewhere):
 //   - Slash-command introspection — `repl_introspection.rs`
@@ -41,38 +41,38 @@ fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
 }
 
 // =============================================================================
-// REPL boot — repl/spec.md §1.1
+// REPL boot — repl/spec.md §6.2 (Startup Banner) + §0.1 (REPL Mode)
 // =============================================================================
 
-// spec: repl/spec.md §1.1 — REPL emits banner on start
+// spec: repl/spec.md §6.2 — Startup Banner displays language name
 #[test]
 fn boot_shows_banner() {
     repl("").assert_stdout_contains("cranelisp REPL");
 }
 
-// spec: repl/spec.md §1.1 — REPL exits cleanly on stdin EOF
+// spec: repl/spec.md §0.1 — REPL Mode exits on EOF
 #[test]
 fn boot_exits_clean_on_eof() {
     repl("").assert_ok();
 }
 
-// spec: repl/spec.md §1.1 — banner mentions /help
+// spec: repl/spec.md §6.2 — Startup Banner mentions /help
 #[test]
 fn boot_banner_mentions_help() {
     repl("").assert_stdout_contains("/help");
 }
 
 // =============================================================================
-// Single-form evals — repl/spec.md §1.6
+// Single-form evals — repl/spec.md §1.2 (Expression Results) / §1.3 (Definition Results)
 // =============================================================================
 
-// spec: repl/spec.md §1.6 — single bare expression evaluates and displays
+// spec: repl/spec.md §1.2 — single bare expression evaluates and displays
 #[test]
 fn single_expr_evaluates() {
     repl_prims("(add-i64 2 3)\n").assert_stdout_contains(":primitives/Int 5");
 }
 
-// spec: repl/spec.md §1.6 — single defn registers and displays type
+// spec: repl/spec.md §1.3 — single defn registers and displays type
 #[test]
 fn single_defn_registers() {
     repl_prims("(defn square [x] (mul-i64 x x))\n")
@@ -80,10 +80,10 @@ fn single_defn_registers() {
 }
 
 // =============================================================================
-// Definition persistence — repl/spec.md §1.6
+// Definition persistence — repl/spec.md §15.2 (Session Restore) + §1.3
 // =============================================================================
 
-// spec: repl/spec.md §1.6 — defn persists across eval rounds
+// spec: repl/spec.md §15.2 — defns persist across eval rounds in a session
 #[test]
 fn defn_then_call_in_next_form() {
     repl_prims("(defn double [x] (mul-i64 x 2))
@@ -92,7 +92,7 @@ fn defn_then_call_in_next_form() {
     .assert_stdout_contains(":primitives/Int 42");
 }
 
-// spec: repl/spec.md §1.6 — multiple defns coexist
+// spec: repl/spec.md §15.2 — multiple defns coexist across eval rounds
 #[test]
 fn multiple_defns_coexist() {
     repl_prims("(defn one [] 1)
@@ -102,7 +102,7 @@ fn multiple_defns_coexist() {
     .assert_stdout_contains(":primitives/Int 3");
 }
 
-// spec: repl/spec.md §1.6 — recursive factorial works at REPL
+// spec: spec/05-definitions.md §5.1 — self-recursive defn at REPL (factorial)
 #[test]
 fn recursive_factorial() {
     repl_prims("(defn fact [n] (if (eq-i64 n 0) 1 (mul-i64 n (fact (sub-i64 n 1)))))
@@ -111,7 +111,7 @@ fn recursive_factorial() {
     .assert_stdout_contains(":primitives/Int 120");
 }
 
-// spec: repl/spec.md §1.6 — recursive Fibonacci works at REPL
+// spec: spec/05-definitions.md §5.1 — self-recursive defn at REPL (fibonacci)
 #[test]
 fn recursive_fibonacci() {
     repl_prims("(defn fib [n] (if (lt-i64 n 2) n (add-i64 (fib (sub-i64 n 1)) (fib (sub-i64 n 2)))))
@@ -121,10 +121,10 @@ fn recursive_fibonacci() {
 }
 
 // =============================================================================
-// ADT lifecycle — repl/spec.md §1.6
+// ADT lifecycle — spec/05-definitions.md §5.2 + spec/06-pattern-matching.md §6.1
 // =============================================================================
 
-// spec: repl/spec.md §1.6 — define ADT, then match in next form
+// spec: spec/05-definitions.md §5.2 — define ADT, then match in next form
 #[test]
 fn deftype_then_match() {
     repl_prims("(deftype Color Red Green Blue)
@@ -134,7 +134,7 @@ fn deftype_then_match() {
     .assert_stdout_contains(":primitives/Int 2");
 }
 
-// spec: repl/spec.md §1.6 — multiple ADTs coexist in session
+// spec: spec/05-definitions.md §5.2 — multiple ADTs coexist in REPL session
 #[test]
 fn multiple_adts_coexist() {
     repl_prims("(deftype Color Red Green Blue)
@@ -146,10 +146,10 @@ fn multiple_adts_coexist() {
 }
 
 // =============================================================================
-// Redefinition — repl/spec.md §1.7
+// Redefinition — repl/spec.md §15.6
 // =============================================================================
 
-// spec: repl/spec.md §1.7 — redefinition replaces previous defn
+// spec: repl/spec.md §15.6 — redefinition replaces previous defn
 #[test]
 fn redefinition_replaces_value() {
     repl_prims("(defn foo [] 1)
@@ -159,7 +159,7 @@ fn redefinition_replaces_value() {
     .assert_stdout_contains(":primitives/Int 2");
 }
 
-// spec: repl/spec.md §1.7 — redefinition with different body shape
+// spec: repl/spec.md §15.6 — redefinition with different body shape
 #[test]
 fn redefinition_different_body() {
     repl_prims("(defn calc [x] (add-i64 x 1))
@@ -169,7 +169,7 @@ fn redefinition_different_body() {
     .assert_stdout_contains(":primitives/Int 10");
 }
 
-// spec: repl/spec.md §1.7 — redefinition propagates through caller chain
+// spec: repl/spec.md §15.6 — redefinition propagates through caller chain
 #[test]
 fn redefinition_propagates_through_callers() {
     let out = repl_prims("(defn inner [] 10)
@@ -266,10 +266,10 @@ fn failed_redefn_preserves_original() {
 }
 
 // =============================================================================
-// Macro persistence — repl/spec.md §11
+// Macro persistence — spec/09-macros.md §9.13 (REPL Integration) + repl/spec.md §11.4
 // =============================================================================
 
-// spec: repl/spec.md §11 — defmacro persists across evals
+// spec: repl/spec.md §11.4 — defmacro persists across evals (Bare Macro Lookup)
 #[test]
 fn defmacro_persists_across_evals() {
     repl_prims("(defmacro double [x] `(mul-i64 ~x 2))
@@ -278,7 +278,7 @@ fn defmacro_persists_across_evals() {
     .assert_stdout_contains(":primitives/Int 42");
 }
 
-// spec: repl/spec.md §11 — multi-clause defmacro persists and dispatches
+// spec: spec/09-macros.md §9.2 — multi-clause defmacro dispatch (REPL persistence)
 #[test]
 fn multi_clause_defmacro_dispatches() {
     let out = repl_prims("(defmacro pick ([x] x) ([x y] y))
@@ -293,44 +293,10 @@ fn multi_clause_defmacro_dispatches() {
 }
 
 // =============================================================================
-// /reset — repl/spec.md §3
-// =============================================================================
-
-// spec: repl/spec.md §3 — /reset clears user definitions
-// FIXME(/int) — defect surfaced Sprint 64 Wave 3: `/reset` returns
-// "command not yet available in v4 REPL" instead of clearing state.
-// See `design/arch/fixmes/0123-int-reset-not-implemented.md`.
-#[test]
-fn reset_clears_user_defns() {
-    let out = repl_prims("(defn foo [] 42)
-/reset
-(foo)
-");
-    // After /reset, `foo` should be undefined → an error message appears.
-    assert!(
-        out.stdout.contains("undefined") || out.stdout.contains("Error"),
-        "/reset must clear user defns; got:\n{}",
-        out.stdout
-    );
-}
-
-// spec: repl/spec.md §3 — REPL session continues after /reset
-// (Even with `/reset` no-op'ing, the session must remain alive.)
-#[test]
-fn reset_session_continues() {
-    repl_prims("(defn foo [] 42)
-/reset
-(add-i64 1 2)
-")
-    .assert_ok()
-    .assert_stdout_contains(":primitives/Int 3");
-}
-
-// =============================================================================
 // Builds — sanity that the REPL handles longer transcripts
 // =============================================================================
 
-// spec: repl/spec.md §1.6 — many sequential evals don't degrade
+// spec: repl/spec.md §15.2 — many sequential evals don't degrade
 #[test]
 fn many_sequential_evals() {
     let mut input = String::new();
@@ -351,7 +317,7 @@ fn many_sequential_evals() {
     );
 }
 
-// spec: repl/spec.md §1.7 — redefining the same fn many times in a session
+// spec: repl/spec.md §15.6 — redefining the same fn many times in a session
 #[test]
 fn many_redefinitions_same_name() {
     let mut input = String::new();
@@ -366,7 +332,7 @@ fn many_redefinitions_same_name() {
 // Multi-form composition — repl/spec.md §1.6
 // =============================================================================
 
-// spec: repl/spec.md §1.6 — incremental program build-up
+// spec: repl/spec.md §15.2 — incremental program build-up
 #[test]
 fn incremental_build_up() {
     repl_prims("(defn pair-add [a b] (add-i64 a b))
@@ -376,7 +342,7 @@ fn incremental_build_up() {
     .assert_stdout_contains(":primitives/Int 6");
 }
 
-// spec: repl/spec.md §1.6 — interleaved defns and bare expressions
+// spec: repl/spec.md §15.2 — interleaved defns and bare expressions
 #[test]
 fn interleaved_defns_and_exprs() {
     let out = repl_prims("(defn x [] 5)
@@ -395,7 +361,7 @@ fn interleaved_defns_and_exprs() {
 // /mod — module switching — repl/spec.md §3
 // =============================================================================
 
-// spec: repl/spec.md §3 — /mod with no arg shows current module
+// spec: repl/spec.md §3.1 — /mod command (no-arg variant shows current module)
 #[test]
 fn mod_shows_current() {
     let out = repl("/mod\n").assert_ok();
@@ -411,7 +377,7 @@ fn mod_shows_current() {
 // Empty / blank input handling — repl/spec.md §1.5
 // =============================================================================
 
-// spec: repl/spec.md §1.5 — blank line is silent (no error, no result line)
+// spec: repl/spec.md §2.3 — blank line is silent (no error, no result line)
 #[test]
 fn blank_line_silent() {
     let out = repl("\n\n\n");

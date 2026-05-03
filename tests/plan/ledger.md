@@ -147,20 +147,12 @@ Sprint 64's parity rule (`sprints/SPRINT.md §Phase 2`) requires every spec-rele
 ### Sprint 64 Wave 3 — defects surfaced during e2e port (2026-05-03)
 
 Sprint 64 Wave 3 ported the REPL surface (Batch 7) and IO surface (Batch 4)
-to the e2e harness. The REPL port surfaced one defect: `/reset` returns
-"command not yet available in v4 REPL" instead of clearing user state per
-`repl/spec.md §3`. Per parity rule + `memory/feedback_repros_join_suite.md`,
-the failing test commits un-ignored as the durable repro + regression guard.
-
-| Field | Value |
-|---|---|
-| Test name | `repl_lifecycle::reset_clears_user_defns` |
-| SHA | uncommitted (Wave 3) |
-| Stderr / observable signature | REPL stdin pipes `(defn foo [] 42)\n/reset\n(foo)\n`. The REPL prints the defn display, then `command not yet available in v4 REPL` for `/reset`, then evaluates `(foo)` returning `:primitives/Int 42` — proving `/reset` did NOT clear `foo` from the symbol table. Test panics: `/reset must clear user defns; got: ...command not yet available in v4 REPL... :primitives/Int 42`. |
-| Owning skill | `/int` (`src/session_v4.rs::handle_command` ReplCommand::Reset arm — currently returns the literal "not yet available" string instead of clearing `self.shared.symbol_tables`) |
-| Target sprint | TBD — disposition open at S64 close pending `/sprint` decision |
-| Disposition | `out-of-scope (owner=/int)` |
-| Rationale | Defect surfaced during Sprint 64 Wave 3 Batch 7 audit. Tracked by FIXME 0123 (`design/arch/fixmes/0123-int-reset-not-implemented.md`). The integration-tier `repl_experience.rs` did not test `/reset` because `ReplSession::eval` does not parse slash commands — the defect was hidden behind the Rust-API boundary; the e2e port surfaces it. The companion test `reset_session_continues` already passes — the session remains alive across the `/reset` no-op — but `reset_clears_user_defns` must pass for `/reset` to be considered implemented per `repl/spec.md §3`. |
+to the e2e harness. The Wave-3 audit (Wave 3.5) determined that the only
+entry filed under this header — `repl_lifecycle::reset_clears_user_defns`
+targeting an alleged `/reset` defect — was an INVENTED assertion: `/reset`
+is NOT in the `repl/spec.md §3.1` Command Inventory. The test was deleted
+along with FIXME 0123. No other defects surfaced from Wave 3 ports. This
+section is preserved as audit trail; no current entries.
 
 ### Sprint 64 Wave 2.5 — `--link` mode divergence in mode-equivalence subset (2026-05-03)
 
