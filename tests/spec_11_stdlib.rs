@@ -1,0 +1,571 @@
+// spec_11_stdlib.rs — Stdlib conformance, REPL canonical
+// (Sprint 64 Wave 2 Batch 5; re-ported under REPL canonical in Wave 2.5).
+//
+// This file is the named exception to the no-stdlib rule (root CLAUDE.md
+// §"Design Principles" — Stdlib separation): it loads the workspace stdlib
+// via the `use_workspace_stdlib_for_stdlib_conformance_only()` gate. No
+// other test file may use that gate.
+//
+// Wave 2.5 architecture pivot (per `tests/plan/PLAN.md §"Mode
+// canonicalisation"`): bulk language-conformance tests run in REPL mode,
+// not `--run`. The REPL prints `:Type value` per top-level expression
+// (`repl/spec.md §1.2`); each test pipes one expression and asserts the
+// stdout contains the expected `:Type value` substring. This validates
+// BOTH the value AND the type in one assertion — closer to the legacy
+// integration-tier `(value, ty)` shape than the Wave 2 `--run` exit-code
+// witness was.
+//
+// The legacy `tests/stdlib.rs` integration-tier suite (54 tests) used
+// `ReplSession::eval(src) -> (i64, Type)`. The Wave 2 port packed each
+// assertion as `(defn main [] expr-or-Bool-witness)` returning Int via
+// the process exit code. Wave 2.5 retains every assertion's spec
+// coverage but routes through REPL canonical instead.
+
+#[path = "helpers/mod.rs"]
+mod helpers;
+
+use helpers::e2e::Cranelisp;
+
+// =============================================================================
+// Helpers — keep the per-test boilerplate small.
+// =============================================================================
+
+/// Pipe `expr` to a fresh REPL session under the workspace stdlib and assert
+/// stdout contains `expected` (typically `:Type value`).
+fn assert_repl_eval_contains(expr: &str, expected: &str) {
+    Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .repl()
+        .stdin(&format!("{expr}\n"))
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(expected);
+}
+
+/// Pipe `expr` to a fresh REPL session under the workspace stdlib and assert
+/// stdout contains EVERY substring in `expected`. Useful for multi-form
+/// scripts where each form's display matters.
+fn assert_repl_lines_contain(forms: &[&str], expected: &[&str]) {
+    let stdin = forms.join("\n") + "\n";
+    let out = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .repl()
+        .stdin(&stdin)
+        .output()
+        .assert_ok();
+    for needle in expected {
+        if !out.stdout.contains(needle) {
+            panic!(
+                "stdout missing '{}'\nstdout:\n{}",
+                needle, out.stdout
+            );
+        }
+    }
+}
+
+// =============================================================================
+// a. Prelude loads without errors
+// =============================================================================
+
+// spec: spec/09-macros.md §9.5 — prelude loads successfully (a trivial
+// arithmetic form succeeds at the REPL → prelude loaded).
+#[test]
+fn prelude_loads_without_errors() {
+    assert_repl_eval_contains("(+ 0 0)", ":primitives/Int 0");
+}
+
+// =============================================================================
+// b. Arithmetic operators (Num trait)
+// =============================================================================
+
+// spec: spec/07-traits.md §7.1 — Num trait: Int addition
+#[test]
+fn arithmetic_add_int() {
+    assert_repl_eval_contains("(+ 1 2)", ":primitives/Int 3");
+}
+
+// spec: spec/07-traits.md §7.1 — Num trait: Int subtraction
+#[test]
+fn arithmetic_sub_int() {
+    assert_repl_eval_contains("(- 5 3)", ":primitives/Int 2");
+}
+
+// spec: spec/07-traits.md §7.1 — Num trait: Int multiplication
+#[test]
+fn arithmetic_mul_int() {
+    assert_repl_eval_contains("(* 2 3)", ":primitives/Int 6");
+}
+
+// spec: spec/07-traits.md §7.1 — Num trait: Int division
+#[test]
+fn arithmetic_div_int() {
+    assert_repl_eval_contains("(/ 10 2)", ":primitives/Int 5");
+}
+
+// =============================================================================
+// c. Float arithmetic (canonical form: print `:primitives/Float 3`)
+// =============================================================================
+
+// spec: spec/07-traits.md §7.1 — Num trait: Float addition
+#[test]
+fn arithmetic_add_float() {
+    assert_repl_eval_contains("(+ 1.0 2.0)", ":primitives/Float 3");
+}
+
+// =============================================================================
+// d. Comparison operators (Eq / Ord)
+// =============================================================================
+
+// spec: spec/07-traits.md §7.1 — Eq trait: Int equality
+#[test]
+fn comparison_eq_int() {
+    assert_repl_eval_contains("(= 1 1)", ":primitives/Bool true");
+}
+
+// spec: spec/07-traits.md §7.1 — Ord trait: Int less-than
+#[test]
+fn comparison_lt_int() {
+    assert_repl_eval_contains("(< 1 2)", ":primitives/Bool true");
+}
+
+// spec: spec/07-traits.md §7.1 — Ord trait: Int greater-than
+#[test]
+fn comparison_gt_int() {
+    assert_repl_eval_contains("(> 2 1)", ":primitives/Bool true");
+}
+
+// =============================================================================
+// e. Boolean equality
+// =============================================================================
+
+// spec: spec/07-traits.md §7.1 — Eq trait: Bool equality
+#[test]
+fn comparison_eq_bool() {
+    assert_repl_eval_contains("(= true true)", ":primitives/Bool true");
+}
+
+// =============================================================================
+// f. String equality
+// =============================================================================
+
+// spec: spec/07-traits.md §7.1 — Eq trait: String equality
+#[test]
+fn comparison_eq_string() {
+    assert_repl_eval_contains(r#"(= "hi" "hi")"#, ":primitives/Bool true");
+}
+
+// =============================================================================
+// g. Display trait: show
+// =============================================================================
+
+// spec: spec/07-traits.md §7.1 — Display trait: show Int
+#[test]
+fn display_show_int() {
+    assert_repl_eval_contains("(show 42)", ":primitives/String \"42\"");
+}
+
+// =============================================================================
+// h. Option type
+// =============================================================================
+
+// spec: spec/06-adt.md §6.1 — Option Some constructor (witness via match)
+#[test]
+fn option_some_constructs() {
+    assert_repl_eval_contains(
+        "(match (Some 7) [(Some x) (= x 7) None false])",
+        ":primitives/Bool true",
+    );
+}
+
+// spec: spec/06-adt.md §6.1 — Option None constructor (witness: a fn body
+// pins Option's type variable via the Some arm; calling with None hits
+// the None arm).
+#[test]
+fn option_none_exists() {
+    assert_repl_lines_contain(
+        &[
+            "(defn unwrap-or-zero [opt] (match opt [(Some x) x None 0]))",
+            "(unwrap-or-zero None)",
+        ],
+        &[":primitives/Int 0"],
+    );
+}
+
+// =============================================================================
+// i. Macros: do, when
+// =============================================================================
+
+// spec: spec/10-io.md §10.4 — do macro sequences IO actions, returns last
+#[test]
+fn macro_do_returns_last() {
+    assert_repl_eval_contains(
+        "(import [primitives [Pure]]) (do (Pure 1) (Pure 2) (Pure 3))",
+        ":primitives/Int 3",
+    );
+}
+
+// spec: spec/09-macros.md §9.5 — when macro with true condition (returns Some)
+#[test]
+fn macro_when_true() {
+    assert_repl_eval_contains(
+        "(match (when true (Some 42)) [(Some x) (= x 42) None false])",
+        ":primitives/Bool true",
+    );
+}
+
+// =============================================================================
+// j. cond macro
+// =============================================================================
+
+// spec: spec/09-macros.md §9.5 — cond macro multi-way conditional fallthrough
+#[test]
+fn macro_cond_fallthrough() {
+    assert_repl_eval_contains(
+        "(cond (= 1 2) 0 1)",
+        ":primitives/Int 1",
+    );
+}
+
+// =============================================================================
+// k. Result type
+// =============================================================================
+
+// spec: spec/06-adt.md §6.1 — Result Ok constructor (Err arm with `_`
+// disambiguates the b type).
+#[test]
+fn result_ok_constructs() {
+    assert_repl_eval_contains(
+        r#"(match (Ok 42) [(Ok x) (= x 42) (Err _) false])"#,
+        ":primitives/Bool true",
+    );
+}
+
+// spec: spec/06-adt.md §6.1 — Result Err constructor (an Ok arm with `_`
+// disambiguates the a type via the body's Bool result; the actual
+// scrutinee is Err).
+#[test]
+fn result_err_constructs() {
+    assert_repl_eval_contains(
+        r#"(match (Err "oops") [(Ok _) false (Err _) true])"#,
+        ":primitives/Bool true",
+    );
+}
+
+// =============================================================================
+// l. Inequality operator
+// =============================================================================
+
+// spec: spec/07-traits.md §7.1 — Eq trait: != true case
+#[test]
+fn comparison_neq_int() {
+    assert_repl_eval_contains("(!= 1 2)", ":primitives/Bool true");
+}
+
+// spec: spec/07-traits.md §7.1 — Eq trait: != false case
+#[test]
+fn comparison_neq_int_false() {
+    assert_repl_eval_contains("(!= 1 1)", ":primitives/Bool false");
+}
+
+// =============================================================================
+// m. Ord operator coverage
+// =============================================================================
+
+// spec: spec/07-traits.md §7.1 — Ord trait: <= operator
+#[test]
+fn comparison_le_int() {
+    assert_repl_eval_contains("(<= 1 1)", ":primitives/Bool true");
+}
+
+// spec: spec/07-traits.md §7.1 — Ord trait: >= operator
+#[test]
+fn comparison_ge_int() {
+    assert_repl_eval_contains("(>= 2 1)", ":primitives/Bool true");
+}
+
+// spec: spec/07-traits.md §7.1 — Ord trait: Float less-than
+#[test]
+fn comparison_lt_float() {
+    assert_repl_eval_contains("(< 1.0 2.0)", ":primitives/Bool true");
+}
+
+// =============================================================================
+// n. Display trait coverage
+// =============================================================================
+
+// spec: spec/07-traits.md §7.1 — Display trait: show Bool
+#[test]
+fn display_show_bool() {
+    assert_repl_eval_contains("(show true)", ":primitives/String \"true\"");
+}
+
+// spec: spec/07-traits.md §7.1 — Display trait: show String
+#[test]
+fn display_show_string() {
+    assert_repl_eval_contains(r#"(show "hello")"#, ":primitives/String \"hello\"");
+}
+
+// =============================================================================
+// o. Multi-module loading (transitive prelude re-exports)
+// =============================================================================
+
+// spec: spec/08-modules.md §8.2 — prelude loads domain submodules
+#[test]
+fn domain_modules_traits_available() {
+    assert_repl_eval_contains("(+ (- 10 3) (* 2 3))", ":primitives/Int 13");
+}
+
+// =============================================================================
+// p. Prelude macros: cond
+// =============================================================================
+
+// spec: spec/09-macros.md §9.5 — cond first branch match
+#[test]
+fn macro_cond_first_match() {
+    assert_repl_eval_contains("(cond (= 1 1) 10 20)", ":primitives/Int 10");
+}
+
+// spec: spec/09-macros.md §9.5 — cond second branch match
+#[test]
+fn macro_cond_second_match() {
+    assert_repl_eval_contains(
+        "(cond (= 1 2) 10 (= 2 2) 20 30)",
+        ":primitives/Int 20",
+    );
+}
+
+// spec: spec/09-macros.md §9.5 — cond default (all conditions false)
+#[test]
+fn macro_cond_default() {
+    assert_repl_eval_contains(
+        "(cond (= 1 2) 10 (= 3 4) 20 99)",
+        ":primitives/Int 99",
+    );
+}
+
+// spec: spec/09-macros.md §9.5 — cond with comparison expression
+#[test]
+fn macro_cond_with_comparison() {
+    assert_repl_eval_contains(
+        "(cond (> 5 10) 1 (< 5 10) 2 3)",
+        ":primitives/Int 2",
+    );
+}
+
+// =============================================================================
+// q. Prelude macros: case
+// =============================================================================
+
+// spec: spec/09-macros.md §9.5 — case first match
+#[test]
+fn macro_case_first_match() {
+    assert_repl_eval_contains("(case 1 1 10 2 20 99)", ":primitives/Int 10");
+}
+
+// spec: spec/09-macros.md §9.5 — case second match
+#[test]
+fn macro_case_second_match() {
+    assert_repl_eval_contains("(case 2 1 10 2 20 99)", ":primitives/Int 20");
+}
+
+// spec: spec/09-macros.md §9.5 — case default fallthrough
+#[test]
+fn macro_case_default() {
+    assert_repl_eval_contains("(case 3 1 10 2 20 99)", ":primitives/Int 99");
+}
+
+// =============================================================================
+// r. Prelude macros: do (IO semantics)
+// =============================================================================
+
+// spec: spec/10-io.md §10.4 — do single expression passes through
+#[test]
+fn macro_do_single() {
+    assert_repl_eval_contains("(do 42)", ":primitives/Int 42");
+}
+
+// spec: spec/10-io.md §10.4 — do multi-expression sequences IO actions
+#[test]
+fn macro_do_multi() {
+    assert_repl_eval_contains(
+        "(import [primitives [Pure]]) (do (Pure 1) (Pure 2) (Pure 3) (Pure 42))",
+        ":primitives/Int 42",
+    );
+}
+
+// =============================================================================
+// s. Prelude macros: when
+// =============================================================================
+
+// spec: spec/09-macros.md §9.5 — when true returns body wrapped in Some
+#[test]
+fn macro_when_true_some() {
+    assert_repl_eval_contains(
+        "(match (when true (Some 42)) [(Some x) (= x 42) None false])",
+        ":primitives/Bool true",
+    );
+}
+
+// spec: spec/09-macros.md §9.5 — when false returns None
+#[test]
+fn macro_when_false_none() {
+    assert_repl_eval_contains(
+        "(match (when false (Some 42)) [(Some _) false None true])",
+        ":primitives/Bool true",
+    );
+}
+
+// =============================================================================
+// t. Prelude macros: vec
+// =============================================================================
+
+// spec: spec/09-macros.md §9.5 — vec macro creates vector (length witness)
+#[test]
+fn macro_vec_elements() {
+    assert_repl_eval_contains(
+        "(import [primitives [vec-len]]) (vec-len (vec 10 20 30))",
+        ":primitives/Int 3",
+    );
+}
+
+// spec: spec/09-macros.md §9.5 — vec macro empty vector (vec-len pins the
+// element type via inference).
+#[test]
+fn macro_vec_empty() {
+    assert_repl_eval_contains(
+        "(import [primitives [vec-len]]) (vec-len (vec))",
+        ":primitives/Int 0",
+    );
+}
+
+// spec: spec/09-macros.md §9.5 — vec macro element access
+#[test]
+fn macro_vec_access() {
+    assert_repl_eval_contains(
+        "(import [primitives [vec-get]]) (vec-get (vec 10 20 30) 1)",
+        ":primitives/Int 20",
+    );
+}
+
+// =============================================================================
+// u. Prelude macros: str
+// =============================================================================
+
+// spec: spec/09-macros.md §9.5 — str macro empty
+#[test]
+fn macro_str_empty() {
+    assert_repl_eval_contains(r#"(str)"#, ":primitives/String \"\"");
+}
+
+// spec: spec/09-macros.md §9.5 — str macro single argument
+#[test]
+fn macro_str_single() {
+    assert_repl_eval_contains(r#"(str "hello")"#, ":primitives/String \"hello\"");
+}
+
+// spec: spec/09-macros.md §9.5 — str macro concatenation
+#[test]
+fn macro_str_multi() {
+    assert_repl_eval_contains(
+        r#"(str "hello" " " "world")"#,
+        ":primitives/String \"hello world\"",
+    );
+}
+
+// =============================================================================
+// v. Prelude macros: const
+// =============================================================================
+
+// spec: spec/09-macros.md §9.5 — const defines bare-symbol macro
+#[test]
+fn macro_const_int() {
+    assert_repl_lines_contain(
+        &["(const MY-CONST 42)", "MY-CONST"],
+        &[":primitives/Int 42"],
+    );
+}
+
+// spec: spec/09-macros.md §9.5 — const with string value
+#[test]
+fn macro_const_string() {
+    assert_repl_lines_contain(
+        &[r#"(const GREETING "hi")"#, "GREETING"],
+        &[":primitives/String \"hi\""],
+    );
+}
+
+// =============================================================================
+// w. Prelude macros: def
+// =============================================================================
+
+// spec: spec/09-macros.md §9.5 — def creates named value
+#[test]
+fn macro_def_basic() {
+    assert_repl_lines_contain(
+        &["(def MY-VAL 42)", "MY-VAL"],
+        &[":primitives/Int 42"],
+    );
+}
+
+// spec: spec/09-macros.md §9.5 — def with expression
+#[test]
+fn macro_def_expression() {
+    assert_repl_lines_contain(
+        &[
+            "(import [primitives [add-i64]])",
+            "(def MY-SUM (add-i64 1 2))",
+            "MY-SUM",
+        ],
+        &[":primitives/Int 3"],
+    );
+}
+
+// =============================================================================
+// x. Prelude macros: -> (thread-first)
+// =============================================================================
+
+// spec: spec/09-macros.md §9.5 — thread-first single form: (-> 5 (+ 3)) => 8
+#[test]
+fn macro_thread_first_single() {
+    assert_repl_eval_contains("(-> 5 (+ 3))", ":primitives/Int 8");
+}
+
+// spec: spec/09-macros.md §9.5 — thread-first bare symbol: (-> 5 show) => "5"
+#[test]
+fn macro_thread_first_bare() {
+    assert_repl_eval_contains("(-> 5 show)", ":primitives/String \"5\"");
+}
+
+// spec: spec/09-macros.md §9.5 — thread-first multi-form: (-> 1 (+ 2) (* 3)) => 9
+#[test]
+fn macro_thread_first_multi() {
+    assert_repl_eval_contains(
+        "(-> 1 (+ 2) (* 3))",
+        ":primitives/Int 9",
+    );
+}
+
+// =============================================================================
+// y. Prelude macros: ->> (thread-last)
+// =============================================================================
+
+// spec: spec/09-macros.md §9.5 — thread-last single form: (->> 5 (+ 3)) => 8
+#[test]
+fn macro_thread_last_single() {
+    assert_repl_eval_contains("(->> 5 (+ 3))", ":primitives/Int 8");
+}
+
+// spec: spec/09-macros.md §9.5 — thread-last bare symbol: (->> 5 show) => "5"
+#[test]
+fn macro_thread_last_bare() {
+    assert_repl_eval_contains("(->> 5 show)", ":primitives/String \"5\"");
+}
+
+// spec: spec/09-macros.md §9.5 — thread-last multi-form: (->> 1 (+ 2) (* 3)) => 9
+#[test]
+fn macro_thread_last_multi() {
+    assert_repl_eval_contains(
+        "(->> 1 (+ 2) (* 3))",
+        ":primitives/Int 9",
+    );
+}
