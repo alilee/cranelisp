@@ -40,8 +40,13 @@ The plan is structured by spec section. For each spec requirement (down to MUST-
 - **Status annotation** — using the project's traceability convention from root `CLAUDE.md`:
   - `[Tested tests/{file}::{name}]` — positive path covered.
   - `[Tested+Neg tests/{file}::{name}]` — positive AND negative paths covered.
-  - `[R{N} S{M}]` — not yet tested, scheduled for sprint M.
-  - `[R{N} S{M} — tests/{file}::{name} IGNORED]` — test exists but `#[ignore]`'d, with reason.
+  - `[S{M}]` — not yet tested, scheduled for sprint M.
+  - `[S{M} — tests/{file}::{name} IGNORED]` — test exists but `#[ignore]`'d, with reason.
+
+  (The Ring axis `R{N}` is retired as of Sprint 64 — all ring-envisaged
+  functionality is delivered; the project is in maintenance/extension mode.
+  Sprint is the only scheduling axis. Ring annotations remaining in
+  `spec/*.md` headings are tracked for `/spec` removal under FIXME 0113.)
 - **Provenance** — for every entry, which document it derives from: spec section (always), and (where the test goes beyond raw spec coverage) the per-crate design doc invariant or interaction boundary it validates.
 
 A spec requirement with no row in the plan is invisible debt. A row with no test file is in-flight work. A test file with no row is drift — either the test is testing the wrong thing or the plan is stale.
@@ -50,7 +55,7 @@ A spec requirement with no row in the plan is invisible debt. A row with no test
 
 - **Phase 3 (Design)** — `/qa` reads the spec sections in scope, the updated per-crate design docs from `/design`, and the cross-crate type changes from `/arch`. Updates `baseline.md` with rows for every in-scope requirement. By Phase 3 close, `/qa` has enough rows to draft the failing tests Phase 5 will start with.
 - **Phase 5 (Language)** — `/qa` first across the entire solution: writes the failing integration + e2e tests the plan calls for, sprint-wide, BEFORE per-crate D/D/R cycles begin. The failing tests scope what the per-crate triads make pass.
-- **Phase 6/7** — `/qa` updates row statuses to reflect what shipped (`[Tested ...]`), what didn't (`[R{N} S{M+1}]`), and what was ignored with reason. The Phase 7 outcome cites baseline-ledger integrity.
+- **Phase 6/7** — `/qa` updates row statuses to reflect what shipped (`[Tested ...]`), what didn't (`[S{M+1}]`), and what was ignored with reason. The Phase 7 outcome cites baseline-ledger integrity.
 
 ### Plan vs tests
 
@@ -143,7 +148,7 @@ This is the single most load-bearing rule `/qa` enforces. A failing test is the 
 | In-scope, panics | Let it fail |
 | In-scope, API doesn't exist (won't compile) | Let it fail to compile |
 | Future-sprint requirement, not yet scheduled | `#[ignore = "spec ref + target sprint"]` |
-| Future-sprint requirement, scheduled but not yet active | Row in `tests/plan/baseline.md` with `[R{N} S{M}]`; do not write the test yet |
+| Future-sprint requirement, scheduled but not yet active | Row in `tests/plan/PLAN.md` with `[S{M}]`; do not write the test yet |
 
 References: `memory/feedback_failing_not_ignored.md`.
 

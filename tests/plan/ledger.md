@@ -1,6 +1,12 @@
-# Baseline Failure Ledger
+# Failure Ledger
 
 Owned by `/qa`. Verified at every sprint open and every sprint close.
+
+> **Renamed from `baseline.md` (2026-05-03)** — the file is a failure
+> ledger, not a baseline. The normative test plan (the spec → tests
+> bridge that `qa.md §"Test plan obligation"` calls for) lives at
+> `PLAN.md` in this directory; e2e helper design at `helpers.md`;
+> the superseded ring-era plans at `legacy/`.
 
 ## Discipline
 

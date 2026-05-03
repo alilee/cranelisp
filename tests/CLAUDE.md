@@ -2,47 +2,48 @@
 
 Test infrastructure for the Cranelisp reimplementation. Owned by `/qa`.
 
-## Test Book
+## Plan documents
 
-The test strategy, risk assessment, and per-ring test plans live in `tests/plan/`:
-
-| File | Contents |
+| File | Purpose |
 |---|---|
-| `plan/strategy.md` | Test strategy: quality model, test pyramid, diagnostic requirements, skill demands |
-| `plan/risks.md` | QA risk review: 10 ranked risks with mitigations, spec coverage gaps |
-| `plan/ring0.md` | Ring 0 test plan: core expressions, types, functions |
-| `plan/ring1.md` | Ring 1 test plan: heap, ADTs, closures, RC |
-| `plan/ring2.md` | Ring 2 test plan: traits, modules, constrained poly |
-| `plan/ring3.md` | Ring 3 test plan: macros, prelude, stdlib |
-| `plan/ring4.md` | Ring 4 test plan: IO, platforms, REPL, cache, perf |
+| `plan/PLAN.md` | **Normative**: spec → tests bridge. The plan obligation per `qa.md`. |
+| `plan/helpers.md` | E2E helper API design (`tests/helpers/`). |
+| `plan/ledger.md` | Failure ledger (renamed from `baseline.md` 2026-05-03). |
+| `plan/risks.md` | Qualitative risk register. |
+| `plan/coverage-gaps.md` | Per-crate coverage analysis. |
+| `plan/negative-coverage.md` | `[Tested]` → `[Tested+Neg]` upgrade register. |
+| `plan/legacy/` | Superseded plans (rings, four-layer strategy, S61 retros). Provenance only. |
 
-## Test Pyramid
+## Two tiers, no middle
 
-Four layers, from fastest/narrowest to slowest/broadest. See `plan/strategy.md` for full details.
+Cranelisp tests fall into exactly two tiers (strategy pinned 2026-05-03,
+recorded in `memory/project_test_strategy.md`):
 
-### Layer 1: Unit Tests (stage internals)
+1. **e2e tests** — `tests/`, owned by `/qa`. Run the `cranelisp` exe
+   directly: REPL via stdin, `--run file.cl`, or `--link` then run the
+   produced binary. Helpers are process-spawn + stdin/stdout capture +
+   isolated tmpdir + on-disk fixture files. See `plan/helpers.md` for
+   the harness API. **This is the release gate.**
 
-**Owned by**: each compiler skill. **Location**: `#[cfg(test)] mod tests` in source crates.
+2. **Unit tests** — `crates/{crate}/src/` `#[cfg(test)]` modules,
+   owned by `/dev` for that crate (per
+   `memory/feedback_unit_tests_with_dev.md`). `/qa` does not author
+   these.
 
-Tests internal algorithms in isolation. `/qa` specifies minimum coverage requirements per ring but does not write these tests. Every `Expr` variant, every error path, and every `debug_assert!` must have a companion unit test.
+There is **no middle integration tier.** Tests do NOT construct
+`Sess`, `SharedState`, `SymbolTable`, or any other internal session
+primitive. If a feature cannot be expressed e2e, that is a gap in the
+binary's testability surface — file an `/int` or `/arch` FIXME, do
+not bridge with an internal-API helper.
 
-### Layer 2: Boundary Tests (contract verification)
-
-**Owned by**: `/qa`. **Location**: `tests/boundary/`.
-
-Tests data crossing crate boundaries against `design/arch/interfaces.md`. Each test constructs input for one stage, runs that stage alone, and validates the output structure — without running the full pipeline. Catches interface misunderstandings between skills.
-
-### Layer 3: Integration Tests (pipeline verification)
-
-**Owned by**: `/qa`. **Location**: `tests/integration/`.
-
-Stages wired together via `compile_unit()`, from source text to execution result. Calls Rust APIs and can inspect intermediate state. Most prototype tests map here.
-
-### Layer 4: E2E Tests (black-box verification)
-
-**Owned by**: `/qa`. **Location**: `tests/e2e/`.
-
-The `cranelisp` binary invoked as a subprocess. No Rust APIs. Checks stdout, stderr, exit code. **This is the release gate.** E2E tests survive any internal restructuring — they verify the user experience, not the implementation.
+The earlier four-layer pyramid (unit → boundary → integration → e2e)
+is preserved at `plan/legacy/strategy.md` for provenance but is NOT
+authoritative. The current `tests/helpers/mod.rs::ReplSession` is a
+back-compat shim for ~30 pre-existing test files; it is **frozen**
+(no new methods, no new entry points). New tests use the e2e helper
+API in `plan/helpers.md`. Existing integration-tier tests are
+rewritten as e2e on touch (typically when an internal-API change
+breaks them), not en masse.
 
 ## Diagnostic Requirements
 
@@ -64,43 +65,34 @@ Controlled by environment variables, silent by default:
 | `CRANELISP_MODULE_TRACE=1` | Module discovery, compile order, cache hits |
 | `CRANELISP_MACRO_TRACE=1` | Macro expansion steps |
 
-## Test File Organization
+## Test file organisation (current shape)
 
 ```
 tests/
   CLAUDE.md              — this file
-  plan/                  — test book (strategy, risks, per-ring plans)
-  boundary/              — Layer 2: crate boundary contract tests
-    reader.rs            — Sexp output structure and spans
-    ast_builder.rs       — Expr/TopLevel from Sexp
-    typecheck.rs         — CheckResult from AST
-    codegen.rs           — compiled code from typed AST
-  integration/           — Layer 3: pipeline integration tests
-    ring0.rs             — core expressions, types, functions
-    ring1.rs             — ADTs, strings, closures, RC
-    ring2.rs             — traits, modules, constrained poly
-    ring3.rs             — macros, prelude, stdlib
-    ring4.rs             — IO, platforms, cache, REPL commands
-    rc.rs                — RC correctness tests (serial)
-    errors.rs            — error path tests across all rings
-  e2e/                   — Layer 4: black-box subprocess tests
-    runner.rs            — test runner (iterate cases, invoke binary, assert)
-    cases/               — one directory per test case
-      factorial/
-        input.cl
-        expected_stdout
-      repl_basic/
-        input.session
-        expected_output
-      type_error/
-        input.cl
-        expected_stderr
-        expected_exit
+  plan/                  — PLAN.md + helpers.md + ledger.md + risks/coverage/neg + legacy/
   helpers/
-    mod.rs               — shared test helpers
+    mod.rs               — shared helpers (ReplSession back-compat shim + subprocess primitives).
+                            New e2e helper surface lives here per plan/helpers.md.
   fixtures/
     prelude.cl           — QA-owned test prelude (Option, Result, Num, Eq, Ord)
+    preamble_primitives.cl — bare primitive imports
+    stdlib_project/      — read-only project fixture for stdlib conformance tests
+    user/, num/, num.cl, reload_target.cl — feature-specific fixtures
+  e2e.rs                 — original e2e tests (subprocess-driven; predates helpers.md API)
+  e2e/                   — per-suite .runs/ subdirectories (gitignored)
+  {topic}.rs             — feature-grouped tests (cache.rs, macros.rs, modules.rs, io.rs,
+                            rc.rs, repl_*.rs, stdlib.rs, scheduler.rs, …) — currently a mix of
+                            integration-tier (Rust API via ReplSession) and e2e-tier
+                            (subprocess); migration to e2e is opportunistic per plan/PLAN.md.
+  ring{0..4}.rs, sprint{NN}*.rs, wave{N}_*.rs — historical groupings carried forward
 ```
+
+The test directory contains both e2e-tier (subprocess-driven) and
+integration-tier (Rust-API via `ReplSession`) tests. The two-tier
+strategy applies going forward: new tests go in as e2e, integration-tier
+files migrate when touched. See `plan/PLAN.md §"Strategy — two tiers,
+no middle"`.
 
 ## Test Isolation Strategy (Prelude & Stdlib)
 
@@ -135,22 +127,27 @@ Some older E2E tests define traits inline using constants (`NUM_TRAIT_PRELUDE`, 
 
 ## Test Helpers
 
-| Helper | Layer | Description | Available from |
-|---|---|---|---|
-| `compile_and_run_simple(src)` | Integration | No macros. Full pipeline. | Ring 0 |
-| `compile_and_run(src)` | Integration | Shared prelude session with macros. | Ring 3 |
-| `compile_and_run_with_macros(src)` | Integration | Shared session + user defmacro. | Ring 3 |
-| `repl_session()` | Integration | Creates a bare REPL session (no prelude). | Ring 0 |
-| `repl_session_with_test_prelude()` | Integration | REPL session with test prelude (Option, traits). | Ring 3 |
-| `test_fixtures_dir()` | Both | Path to `tests/fixtures/` directory. | Ring 3 |
-| `compile_both(src)` | Integration | Batch + REPL, assert identical. | Ring 0 |
-| `assert_type_error(src, msg)` | Integration | Assert type error with substring. | Ring 0 |
-| `assert_parse_error(src, msg)` | Integration | Assert parse error with substring. | Ring 0 |
-| `assert_rc_balanced(src)` | Integration | Compile + run with RC tracing. | Ring 1 |
-| `run_repl(input, label)` | E2E | Invoke REPL binary with piped stdin (no prelude). | Ring 0 |
-| `run_repl_with_test_prelude(input, label)` | E2E | Invoke REPL binary with test prelude loaded. | Ring 3 |
-| `run_binary(args, stdin)` | E2E | Invoke `cranelisp` subprocess. | Ring 0 |
-| `assert_output(case_dir)` | E2E | Check stdout/stderr/exit against expected. | Ring 0 |
+| Helper | Layer | Description |
+|---|---|---|
+| `compile_and_run_simple(src)` | Integration | No macros. Full pipeline. |
+| `compile_and_run(src)` | Integration | Shared prelude session with macros. |
+| `compile_and_run_with_macros(src)` | Integration | Shared session + user defmacro. |
+| `repl_session()` | Integration | Creates a bare REPL session (no prelude). |
+| `repl_session_with_test_prelude()` | Integration | REPL session with test prelude (Option, traits). |
+| `test_fixtures_dir()` | Both | Path to `tests/fixtures/` directory. |
+| `compile_both(src)` | Integration | Batch + REPL, assert identical. |
+| `assert_type_error(src, msg)` | Integration | Assert type error with substring. |
+| `assert_parse_error(src, msg)` | Integration | Assert parse error with substring. |
+| `assert_rc_balanced(src)` | Integration | Compile + run with RC tracing. |
+| `run_repl(input, label)` | E2E | Invoke REPL binary with piped stdin (no prelude). |
+| `run_repl_with_test_prelude(input, label)` | E2E | Invoke REPL binary with test prelude loaded. |
+| `run_binary(args, stdin)` | E2E | Invoke `cranelisp` subprocess. |
+| `assert_output(case_dir)` | E2E | Check stdout/stderr/exit against expected. |
+
+The "Available from" Ring column is retired as of Sprint 64 — ring-based
+phasing is no longer the project model. The integration-tier helpers above
+will be superseded by the new `Cranelisp` builder per `tests/plan/helpers.md`
+on opportunistic migration (rewrite-on-touch).
 
 ## Test Standards
 
@@ -160,8 +157,7 @@ Some older E2E tests define traits inline using constants (`NUM_TRAIT_PRELUDE`, 
 - **Error tests use substring matching.** Not exact message comparison.
 - **Boundary tests test one stage at a time.** No full-pipeline invocations in boundary tests.
 - **E2E tests invoke the binary.** No Rust API calls. No internal state inspection.
-- **Each ring is a regression gate.** All prior-ring tests at all layers must pass before advancing.
-- **No test is silently dropped.** Every prototype test gets a disposition in the ring plans.
+- **No test is silently dropped.** Every test has a row in `tests/plan/PLAN.md` (or its predecessor `ledger.md`) tracing it to a spec section.
 - **Negative tests verify absence, not just presence.** For any MUST requirement that constrains what appears, write a companion test that verifies wrong things are absent. See below.
 
 ### Fresh Temp Directory per Test
