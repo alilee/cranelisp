@@ -20,6 +20,12 @@ into the owning crate's `#[cfg(test)]` unit tests.
 | `io_minimal.rs` | 120 | 5 | /int (Sprint 57 W6 reductions; with /backend) | 0127 | 2026-05-03 |
 | `sprint61_io_closure_regression.rs` | 215 | 2 | /backend (capture-return-inc; optional) | 0127 | 2026-05-03 |
 | `observability_io.rs` | 446 | 7 | /runtime (io_trace internals) | 0128 | 2026-05-03 |
+| `rc_alloc_trace.rs` | 1191 | 81 | /runtime (with /backend co-owner) | 0129 | 2026-05-04 |
+| `ring4_trace_taxonomy.rs` | 578 | 31 | /typecheck (with /runtime co-owner) | 0130 | 2026-05-04 |
+| `sprint60_observability.rs` | 182 | 4 | /backend | 0131 | 2026-05-04 |
+| `sprint61_observability_scheduler.rs` | 483 | 9 | /int (with /runtime co-owner) | 0132 | 2026-05-04 |
+| `sprint61_observability_shared.rs` | 251 | 3 | /int (with /runtime co-owner) | 0132 | 2026-05-04 |
+| `v4_jit_reclaim.rs` | 700 | 6 | /backend (with /runtime co-owner) | 0133 | 2026-05-04 |
 
 ## Discipline
 

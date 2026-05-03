@@ -1,3 +1,37 @@
+// QUARANTINED — Sprint 64 test-port. Not built or run by Cargo.
+// FIXME: design/arch/fixmes/0133-harvest-tests-legacy-v4-jit-reclaim.md
+// Owning crate: cranelisp-backend (`jit::jit_free_memory_call_count`,
+//                `Jit::drop`) + cranelisp-runtime (`bytes_current`,
+//                `alloc_count`, `dealloc_count`) + src/ (`Code` enum
+//                placement; `ReplSession::symbol_tables()` introspection
+//                — pre Decision 41 amendment)
+// Owning skill: /backend (primary — Decision 31 Scenario 2 contract is
+//                backend-side reclaim) with /runtime co-owner for the
+//                counter atomics surface
+// Quarantined: 2026-05-04
+//
+// This file's 6 tests assert on `cranelisp_runtime::*_count()` process-global
+// atomics, `cranelisp_backend::jit::jit_free_memory_call_count`, and
+// `cranelisp::code::Code` enum shapes via `ReplSession::symbol_tables()` —
+// pure Rust-API observations of internal reclaim invariants per Decision 31
+// Scenario 2.
+//
+// The user-visible reclaim contract IS observable through the `/mem` slash
+// command (per `repl/spec.md §3.7`), but the precision of these tests
+// (byte-level `bytes_live` deltas across redefine cycles) is finer than
+// `/mem` text output supports. A `/mem`-based smoke test (live bytes
+// non-monotonically-increasing across N redefinitions) would be a useful
+// e2e companion to add at harvest time, but the precise byte-counter
+// assertions belong as `#[cfg(test)]` unit tests inside cranelisp-backend
+// (where `Jit::drop` and `Arc<Jit>` reclaim live) and cranelisp-runtime
+// (where the atomic counters live). Per
+// memory/feedback_unit_tests_with_dev.md and
+// memory/project_test_strategy.md.
+//
+// Note: per Decision 41 (amending 31, 35), `Code` moves to cranelisp-backend
+// in S65+; the `cranelisp::code::Code` import path here will need updating
+// at harvest time.
+//
 //! Sprint 58 Wave 3 — Decision 31 reclaim integration tests.
 //!
 //! Validates the user-visible reclaim contract for both:
