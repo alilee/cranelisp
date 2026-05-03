@@ -1,3 +1,29 @@
+// QUARANTINED — Sprint 64 test-port. Not built or run by Cargo.
+// FIXME: design/arch/fixmes/0132-harvest-tests-legacy-sprint61-observability-scheduler.md
+// Owning crate: src/ (scheduler observability lives in `src/observability.rs`,
+//                `src/scheduler.rs`, `src/worker.rs`; per FIXMEs 0098/0103
+//                /0040, the trace module may relocate from cranelisp-runtime
+//                to src/ in S65+; harvest target follows the trace's home
+//                at the time of harvest)
+// Owning skill: /int (with /runtime if the trace module remains in
+//                cranelisp-runtime when harvested)
+// Quarantined: 2026-05-04
+//
+// This file's 9 tests directly exercise `cranelisp::observability::*` Rust
+// API: `parse_filter_from_env_value`, `record_module_event`,
+// `dump_thread_buffer`, `SchedulerTraceTag`, `SchedulerTracePayload`,
+// `TraceFilter`, `SCHEDULER_TRACE_BUFFER_CAPACITY`. Three subprocess tests
+// (`scheduler_trace_subprocess_dump_*`, `scheduler_trace_unset_*`) exercise
+// the env-var pipeline end-to-end via stderr. None of these have a direct
+// e2e analogue — `CRANELISP_SCHEDULER_TRACE` is a debugging aid, not a
+// spec'd language behaviour.
+//
+// Harvest into `#[cfg(test)]` unit tests adjacent to the observability code
+// in `src/observability.rs` (Rust-API cluster) and a single integration
+// test inside the `int` decomposition that subprocess-launches the binary
+// to validate the env-var pipeline (subprocess cluster). Per
+// memory/feedback_unit_tests_with_dev.md and memory/project_test_strategy.md.
+//
 //! Sprint 61 Slice 0 — Scheduler / worker event log integration tests.
 //!
 //! Derived in Phase 3a (`tests/plan/ring4.md §Sprint 61 → Slice 0 → S0-A`).

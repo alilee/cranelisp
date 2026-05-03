@@ -1,3 +1,36 @@
+// QUARANTINED — Sprint 64 test-port. Not built or run by Cargo.
+// FIXME: design/arch/fixmes/0132-harvest-tests-legacy-sprint61-observability-scheduler.md (shared with the scheduler companion above)
+// Owning crate: src/ (scheduler observability) + cranelisp-runtime
+//                (`trace_instant_anchor` + `io_trace`) — the file asserts
+//                cross-crate invariants between the two trace channels,
+//                so harvest spans two unit-test sites coupled by a shared
+//                anchor invariant; the BC §"Trace channel separation"
+//                rule (re: boundary-crate hygiene scan) lives in /arch
+//                principle space.
+// Owning skill: /int (with /runtime co-owner; the boundary-crate hygiene
+//                scan portion is /arch territory but tests trivially via
+//                a structural Rust-API check)
+// Quarantined: 2026-05-04
+//
+// This file's 3 tests test cross-cutting invariants:
+//   - `scheduler_and_io_trace_share_timestamp_domain` — `trace_instant_anchor()`
+//     returns the same `&'static Instant` across calls; both trace channels
+//     read from it.
+//   - `trace_event_types_do_not_appear_in_boundary_crate_sources` — recursive
+//     filesystem scan of `crates/cranelisp-{types,frontend,typecheck}/src/`
+//     for forbidden trace-type tokens.
+//   - `merge_across_both_logs_uses_shared_anchor_and_orderable_keys` —
+//     structural property: events project onto a `(u64, u64)` key space
+//     and merge-sort yields a monotonic timeline.
+//
+// All three are pure Rust-API observations with no e2e analogue. Harvest
+// the timestamp-domain + merge-sort invariants into unit tests adjacent
+// to the trace-anchor code in cranelisp-runtime. The boundary-crate
+// hygiene scan can move to a workspace-level lint test or live as a
+// `#[cfg(test)]` in cranelisp-runtime that walks the relevant crates'
+// `src/` trees. Per memory/feedback_unit_tests_with_dev.md and
+// memory/project_test_strategy.md.
+//
 //! Sprint 61 Slice 0 — Shared invariants across scheduler + IO traces.
 //!
 //! Derived in Phase 3a (`tests/plan/ring4.md §Sprint 61 → Slice 0 → S0-X`).
