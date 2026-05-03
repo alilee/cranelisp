@@ -1,6 +1,6 @@
 # Sprint 64: Test-Port — `/qa` two-tier migration
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 2 + Wave 2.5 complete (uncommitted). USER REVIEW CHECKPOINT before commit + Wave 3.
+**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 3 complete + committed. Awaiting decision on Wave 4 cadence.
 
 **Goal**: Transition `/qa` fully to the two-tier regime. Audit every test file for assertions that test language behaviour (carry forward as new e2e tests in the harness specified by `tests/plan/helpers.md`) vs. Rust-internal state (quarantine in `tests/legacy/` for FIXME-driven harvest into the owning crate's unit tests). Reorganise the new e2e suite for spec-coverage auditability. Delete the legacy scaffolding once the new suite is sound. **Parity in spec-relevant coverage**: every assertion that exercises spec behaviour survives the transition; defects surfaced during audit land as FIXMEs + failing tests, not fixes.
 
@@ -250,7 +250,22 @@ User confirms continuation, redirects ordering, or requests scope adjustment. `/
   - `cargo nextest run`: 1843/1853 pass. Failures: 5 pre-existing d6 cluster + 1 Wave-2 FIXME 0121 + 4 new Wave-2.5 FIXME 0122 parity-rule landings. **Net 0 regressions.**
   - **The mode-equivalence subset paid for itself on its first run.** The architecture pivot was correct.
 
-**USER REVIEW CHECKPOINT** — Wave 2 + Wave 2.5 complete; `/sprint` paused per user direction. Awaiting user sign-off on commit (7 commits across both waves) + advance to Wave 3.
+**USER REVIEW CHECKPOINT** — Wave 2 + Wave 2.5 complete. User approved (A) — keep methodology iteration in history; defer FIXMEs 0121/0122; proceed to Wave 3.
+- 2026-05-03: Wave 2 + Wave 2.5 committed in 5 commits (`04e9061` through `543dd08`). The "(A) keep 7 commits" preference reduced to 5 because Wave 2's superseded `spec_11_stdlib.rs` and `build_confidence.rs` versions were overwritten before reaching disk; methodology iteration preserved in commit messages + this notes section.
+- 2026-05-03: Wave 3 dispatched: Batch 7 (REPL surface, sub-batched) + Batch 4 (IO surface).
+- 2026-05-03: Wave 3 complete + committed (4 commits, `5bd7eeb` through `e3ec1db`):
+  - Batch 7 — REPL surface (5,429 LOC, 285 tests audited):
+    - `tests/repl_introspection.rs` (39 e2e tests — slash commands, /list, /info, /sig, /doc, /type, /help, /expand, defmacro display, /imports)
+    - `tests/repl_lifecycle.rs` (29 e2e tests — boot, eval persistence, recursion, ADT lifecycle, redefinition, error recovery, /reset, macro persistence, /mod)
+    - `tests/repl_negative.rs` (28 e2e tests — replaces in-place; old content preserved as `tests/legacy/repl_negative_old.rs`)
+    - 4 quarantines: `repl_experience.rs` (190 tests), `repl_negative_old.rs` (31 tests), `ring3_repl.rs` (50 tests, 16 stub placeholders), `v4_repl_eval.rs` (14 tests). FIXMEs 0124 → `/int`, 0125 → `/int`+`/typecheck`, 0126 → `/int`.
+  - Batch 4 — IO surface (2,141 LOC, 90 tests audited):
+    - `tests/spec_10_io.rs` (26 e2e tests — Pure/bind, IO type inference, REPL trampoline, --run exit code, capture-return-inc regression guard, IO branch consistency, match on IO)
+    - 4 quarantines: `io.rs` (76 tests), `io_minimal.rs` (5 tests), `sprint61_io_closure_regression.rs` (2 tests), `sprint61_observability_io.rs` (7 tests, renamed `observability_io.rs`). FIXMEs 0127 → `/int`+`/typecheck`+`/backend`+`/runtime`, 0128 → `/runtime`.
+  - **NEW DEFECT — FIXME 0123 → `/int`**: `/reset` slash command not implemented in v4 REPL. Returns "command not yet available in v4 REPL" rather than clearing user-defined symbols. Hidden behind ReplSession Rust-API boundary in legacy tests. THIRD defect surfaced by the test-port. Failing test `repl_lifecycle::reset_clears_user_defns` ledgered.
+  - **Harness-API surprises**: zero. The Wave 1 builder + Wave 2.5 helper covered every shape needed across both batches. The bespoke `result_lines` parser in `v4_repl_eval.rs` was strictly weaker than `assert_stdout_contains`.
+  - `cargo nextest run`: 1600/1600 ran, 1589 pass, 11 fail (5 pre-existing d6 cluster + 1 FIXME 0121 + 4 FIXME 0122 + 1 FIXME 0123). Net 0 regressions; total test count dropped from 1853 (Wave 2.5) to 1600 because 375 quarantined tests no longer compile + 122 new e2e tests landed (-253 net).
+  - **Implicit ledger resolution**: pre-existing entry `io_trace_off_path_subprocess_completes_within_generous_ceiling` resolves under the new harness — per-test TempDir isolation prevents the concurrent-load contention that fired the original failure. Resolution candidate for S65.
 
 ## Outcome (Phase 7)
 
