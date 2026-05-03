@@ -2,8 +2,16 @@
 //
 // These helpers wire the full pipeline (parse -> build -> typecheck -> codegen -> execute)
 // so integration tests only need to provide source text.
+//
+// Sprint 64 Wave 1: the new e2e harness lives in submodules `e2e` and
+// `regex`. The legacy `ReplSession` integration-tier shim below is frozen
+// (no new methods); it remains for the ~30 pre-existing test files until
+// Phase 3 deletion.
 
 #![allow(dead_code)]
+
+pub mod e2e;
+pub mod regex;
 
 use std::path::PathBuf;
 
