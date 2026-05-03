@@ -245,6 +245,131 @@ value puts it on the same shelf as `None`/`PrimitivesOnly`/`TestStandard`,
 inviting casual selection. A separately-named, verbosely-named method
 forces a deliberate decision and is greppable.
 
+## Mode-equivalence helper — `run_through_all_modes`
+
+Per `tests/plan/PLAN.md §"Mode canonicalisation"` and
+`helpers.md §"Mode-equivalence"`, a curated subset of tests runs one
+program through all six mode×cache permutations and asserts equivalent
+observable behaviour. The helper lives in `tests/helpers/e2e.rs`
+alongside `Cranelisp`.
+
+### Inputs and shape
+
+```rust
+/// One observation reduced to canonical form. The integer is the value
+/// `main` returned (or — for REPL paths — the integer `:primitives/Int N`
+/// printed when `(main)` was invoked). `None` means the permutation
+/// could not produce an observation (compilation error, link failure, …);
+/// callers may use this to assert all-fail-the-same-way for negative tests.
+#[derive(Debug, Clone)]
+pub struct PermutationOutcome {
+    /// The mode + cache state this outcome describes. Used by the
+    /// equivalence assertion's diff messages.
+    pub label: &'static str,
+    /// Canonical observation: the Int value `main` returned. None on
+    /// non-Int / failure paths.
+    pub observed: Option<i32>,
+    /// Raw stdout for diagnostics on failure.
+    pub stdout: String,
+    /// Raw stderr for diagnostics on failure.
+    pub stderr: String,
+    /// Process exit code (for --run / --link permutations) or REPL
+    /// driver exit code (typically 0 if EOF clean).
+    pub exit_code: Option<i32>,
+}
+
+/// All six permutations' observations.
+#[derive(Debug)]
+pub struct AllModesResult {
+    pub repl_fresh:  PermutationOutcome,
+    pub repl_cached: PermutationOutcome,
+    pub run_fresh:   PermutationOutcome,
+    pub run_cached:  PermutationOutcome,
+    pub link_fresh:  PermutationOutcome,
+    pub link_cached: PermutationOutcome,
+}
+
+impl AllModesResult {
+    /// Assert all six observations agree on the canonical Int. Panics
+    /// with a per-permutation diff when any path diverges.
+    pub fn assert_all_equivalent(self) -> Self;
+
+    /// Assert all six observations match the given expected Int.
+    /// Stronger than `assert_all_equivalent` — also pins the value.
+    pub fn assert_all_equal(self, expected: i32) -> Self;
+}
+
+/// Run one program through all six mode×cache permutations.
+///
+/// Program shape: `(defn main [] expr-returning-Int)`. The harness
+/// materialises the program in `user.cl` under one shared TempDir,
+/// runs each permutation in deterministic order (REPL fresh → REPL
+/// cached → --run fresh → --run cached → --link fresh → --link
+/// cached), and returns observations.
+///
+/// Use only for the mode-equivalence subset (per
+/// `tests/plan/PLAN.md §"Mode canonicalisation"`). Bulk language
+/// conformance MUST NOT use this helper — use REPL canonical directly.
+///
+/// `prelude` selects the prelude variant (typically `TestStandard`
+/// for tests that use operators). `PreludeVariant::None` is valid for
+/// programs that import primitives explicitly.
+pub fn run_through_all_modes(
+    program: &str,
+    prelude: PreludeVariant,
+) -> AllModesResult;
+```
+
+### Canonical observation form
+
+Each test's program is `(defn main [] expr)` returning Int. For each
+permutation:
+
+| Permutation | Raw observation | Canonical reduction |
+|---|---|---|
+| REPL fresh | stdin pipes `(main)` after `user.cl` is auto-imported (or after the program is piped); stdout substring `:primitives/Int N` | parse the last `:primitives/Int N` line → `N` |
+| REPL cached | re-spawn binary in same TempDir; replay stdin; observe again | same parse |
+| `--run` fresh | process exit code | exit code → `N` |
+| `--run` cached | re-spawn binary in same TempDir; observe exit | exit code → `N` |
+| `--link` fresh | link, then run produced binary; produced exit code | produced exit code → `N` |
+| `--link` cached | re-spawn link in same TempDir; produced exit | produced exit code → `N` |
+
+For REPL paths, the harness pipes (in order):
+
+```
+<program>
+(main)
+```
+
+— `user.cl` autoload is bypassed by piping the program directly into
+the REPL. (The TempDir does not contain a `user.cl` for REPL
+permutations; only `prelude.cl` if `prelude != None`.) For `--run` /
+`--link` permutations, `user.cl` is materialised in the TempDir.
+
+### Cached-permutation shape
+
+For each cached permutation, the harness:
+
+1. Runs the fresh permutation first to populate `.cranelisp-cache/`.
+2. Re-spawns the same mode invocation in the same TempDir,
+   transferring the on-disk state (`.cranelisp-cache/`, `user.cl`,
+   `prelude.cl`, link artefacts) from fresh-run to cached-run.
+3. Asserts the second run's observation equals the first.
+
+The TempDir is shared across all six permutations using a single
+`tempfile::TempDir` held by the helper for its full duration. Per the
+existing `Cranelisp::run_again()` pattern, the implementation transfers
+TempDir ownership through `CrOutput::run_again()` rather than
+constructing fresh TempDirs.
+
+### Why a separate helper, not a `Cranelisp` method
+
+The cross-mode harness needs to (a) reset stdin between REPL fresh and
+REPL cached, (b) decide per-mode whether to materialise `user.cl` or
+not, (c) parse stdout differently per permutation. A free function
+keeps the `Cranelisp` builder narrow (one invocation per builder) and
+makes the cross-mode orchestration explicit at the call site.
+
 ## `tests/helpers/regex.rs`
 
 ```rust

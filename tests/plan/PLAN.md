@@ -533,7 +533,7 @@ without forcing repros to colonise spec-section files.
 
 | Source file | LOC | Tests | Carry% | Quarantine% | Delete% | Defect% | Target file(s) | Quarantine FIXME | Defect-risk notes |
 |---|---:|---:|---:|---:|---:|---:|---|---|---|
-| `cache.rs` | 2073 | 55 | 25 | 70 | 5 | 5 | `cache.rs`, `legacy/cache.rs` | /backend (manifest serialise/round-trip, SymbolTable construction) | Cache-isolation Phase 1 §2 seed test seeds `cache.rs`. The 55 tests split sharply: cache-hit/cache-isolation/build-marker behaviours are e2e-observable; manifest-internals + direct `SymbolTable` construction quarantines. |
+| `cache.rs` | 2073 | 55 | 47 | 51 | 2 | 0 | `cache.rs` (S64 W2 ✓), `legacy/cache.rs` (S64 W2 ✓ FIXME 0120) | /backend (manifest serialise/round-trip, SymbolTable construction) | S64 Wave 2 Batch 1 landed: 24 e2e tests in new `tests/cache.rs` (cache-hit/miss equivalence, multi-module + transitive deps + prelude caching, mtime-preservation invariants, round-trip runtime parity). 55 tests preserved in `legacy/cache.rs` for /backend harvest under FIXME 0120 (direct cache::* / SymbolTable / serialize API). `cache_seed.rs` merged. |
 | `e2e.rs` | 2701 | 148 | 70 | 0 | 30 | 5 | `spec_04_*.rs`, `spec_05_*.rs`, `spec_07_*.rs`, `spec_appendix_a_builtins.rs`, `repl_introspection.rs`, `examples.rs` | — | Largest carry-forward win. Inline `NUM_/EQ_/ORD_TRAIT_PRELUDE` constants retire under `with_prelude(PreludeVariant::TestStandard)`. 30% delete: the file accreted across many sprints with significant overlap with `ring0/1/2`. The audit must dedupe before placing. |
 | `examples_run.rs` | 193 | 1 | 100 | 0 | 0 | 5 | `examples.rs` | — | Single test loops over every `examples/*.cl`. Maps to `Cranelisp::new().run(file).with_prelude(...)` in a loop in `examples.rs`. Defect risk: cache-hit interaction across examples in same TempDir. |
 | `examples.rs` | 132 | 15 | 100 | 0 | 0 | 0 | `examples.rs` | — | Examples-as-spec smoke tests; full carry-forward. |
@@ -567,7 +567,7 @@ without forcing repros to colonise spec-section files.
 | `sprint61_observability_io.rs` | 446 | 7 | 30 | 70 | 0 | 5 | `regression.rs`, `legacy/observability_io.rs` | /runtime (io_trace direct API) | Hybrid — subprocess part is e2e (carry); direct API quarantines. Three Slice-4-dependent tests resolved per ledger; preserve regression-guard rows. |
 | `sprint61_observability_scheduler.rs` | 483 | 9 | 5 | 95 | 0 | 0 | `regression.rs` (exit-code smoke only), `legacy/observability_scheduler.rs` | /int (post FIXME-0109 — observability lives where the scheduler lives) | Almost entirely Rust-API. |
 | `sprint61_observability_shared.rs` | 251 | 3 | 0 | 100 | 0 | 0 | — | /int, /runtime (`trace_instant_anchor` direct API) | Full quarantine. |
-| `stdlib.rs` | 699 | 54 | 100 | 0 | 0 | 5 | `spec_11_stdlib.rs` | — | The named exception. Ports onto `use_workspace_stdlib_for_stdlib_conformance_only()` — the single legitimate caller. |
+| `stdlib.rs` | 699 | 54 | 100 | 0 | 0 | 0 | `spec_11_stdlib.rs` (S64 W2 ✓) | — | S64 Wave 2 Batch 5 landed: 54 e2e tests in `tests/spec_11_stdlib.rs`, all passing. The named exception — single caller of `use_workspace_stdlib_for_stdlib_conformance_only()`. Each test encodes the assertion as `(defn main [] expr)` with i64 return = exit code; non-Int witnesses (Bool/String/ADT) wrapped via if/match returning 0 on success. Source `tests/stdlib.rs` deleted. |
 | `v4_jit_reclaim.rs` | 700 | 6 | 30 | 70 | 0 | 5 | `spec_12_runtime.rs` (`/mem`-based smoke), `legacy/v4_jit_reclaim.rs` | /backend (counter atomics), /int (`symbol_tables()` introspection) | Decision 31 reclaim contract observable through `/mem` — preserve as smoke. Precise byte-counts are runtime-process-global atomics — quarantine. |
 | `v4_pipeline.rs` | 1206 | 47 | 90 | 0 | 10 | 5 | `spec_05_definitions.rs`, `spec_08_modules.rs`, `repl_lifecycle.rs` | — | Already e2e-shaped; 10% delete is overlap with `e2e.rs` and `ring{0,1,2}.rs` carry-forward set. |
 | `v4_repl_eval.rs` | 567 | 14 | 100 | 0 | 0 | 5 | `repl_lifecycle.rs`, `spec_appendix_a_builtins.rs` | — | Replaces inline `PRIMS` const with `with_prelude(PreludeVariant::PrimitivesOnly)`. |
@@ -581,10 +581,162 @@ delete (mostly `ring*.rs` and `sketch_port.rs` deduplication against
 broad-surface ports), ~5% expected defects (~80–110 failing tests
 landing as ledger rows + FIXMEs).
 
-### Audit workflow specification
+### Mode canonicalisation — REPL is the canonical surface for language conformance
+
+**Decision (Sprint 64 Wave 2.5, 2026-05-03)**: bulk language-conformance
+tests run in **REPL mode only**. A small curated subset additionally
+runs through all six mode×cache permutations (REPL fresh / REPL cached
+/ `--run` fresh / `--run` cached / `--link` fresh / `--link` cached)
+to validate that the three CLI surfaces converge on equivalent
+observable behaviour. The mode-equivalence subset is the empirical
+validation of Principles 11–13 (single pipeline, design for full
+spec surface, `interfaces.md` is auditable) and Decisions 22, 25, 41
+(pipeline-v4 single code path).
+
+**Rationale.** The user's framing (2026-05-03):
+
+> "we want the language tests to run the same through each path. on
+> the other hand, we want to ensure that there is a single code path
+> through all of them, so it shouldn't matter, and we don't want to
+> provide assurance that three code paths are all working. the right
+> answer is probably to do all the language testing through one path
+> — maybe repl, and then establish additional tests that verify the
+> other modes use the same code"
+
+If three CLI surfaces are tested with three parallel test suites of
+the same shape, the test suite implicitly grants three independent
+implementations the same level of assurance — which is the opposite
+of Principle 11 ("single pipeline, mode parameters"). Wave 2's
+`spec_11_stdlib.rs` (54 tests through `--run` exit-code) and
+`build_confidence.rs` (7 hand-mixed) reproduced this anti-pattern.
+Wave 2.5 corrects it.
+
+#### Canonical mode for bulk language conformance: REPL
+
+**Why REPL, not `--run`:**
+
+1. **More code per test.** Each form fed to the REPL exercises the
+   form-by-form scheduler, the prompt loop, the per-form display
+   pipeline, the symbol-table updates between forms, and the lazy
+   prelude loading. `--run` executes one program through the batch
+   driver and observes only the exit code — a thinner observation.
+2. **Closer to dev-loop user experience.** The REPL is what users
+   touch most often; conformance tested through the REPL is
+   conformance under the same conditions as everyday use.
+3. **Form-by-form decomposability.** Conformance tests assert
+   per-form output (`:primitives/Int 3`, `:primitives/Bool true`)
+   rather than packaging each test as a `defn main` returning Int.
+   The encoded-as-Int wrapping (`(if cond 0 1)`) noise is gone.
+4. **Tighter feedback in the failure path.** A REPL test that fails
+   prints the offending form's stdout slice; `--run` prints only
+   the exit code, hiding which assertion fired.
+
+**Authoring pattern:**
+
+```rust
+Cranelisp::new()
+    .repl()
+    .with_prelude(PreludeVariant::TestStandard)
+    .stdin("(+ 1 2)\n")
+    .output()
+    .assert_stdout_contains(":primitives/Int 3");
+```
+
+The `assert_stdout_contains` shape is the canonical default. For
+multi-form sessions the test pipes additional lines and asserts each
+result substring is present.
+
+#### Mode-specific exceptions
+
+Tests legitimately authored against a non-REPL mode:
+
+| File / surface | Canonical mode | Why |
+|---|---|---|
+| `cache.rs` (cache hit/miss tests) | `--run` / `--link` | Cache materialisation is `--run`/`--link` semantics; the cache is what's under test, not language conformance. Cache assertions inspect tmpdir state (`tmp_exists`, `read_tmp`), exit code (does the cached build still run?), and `run_again()` parity. |
+| `examples.rs` | `--run` | The natural shape of "given this `examples/*.cl`, the program runs and exits cleanly". Examples are user-facing programs, not REPL transcripts. |
+| `exemplar.rs` | `--run` (or `--link`-then-run) | Same rationale as examples, plus exemplar exercises link-time bundling. |
+| `repl_introspection.rs`, `repl_lifecycle.rs`, `repl_negative.rs` | REPL | These ARE the REPL-specific tests — slash commands, multi-form sessions, prompt shape, error recovery. They exist outside the language-conformance bulk by definition. |
+| `build_confidence.rs` mode-equivalence subset | All 6 permutations | See below. The subset's job is to test that the modes converge. |
+| `build_confidence.rs` smoke set | Mixed (one per mode) | A handful of tests verify each mode boots at all (REPL banner, `--run` exit, `--link` produces an executable). One test per mode, not a coverage matrix. |
+
+A test file outside this list authored against `--run` or `--link` is
+drift; the audit corrects it during port.
+
+#### Mode-equivalence subset
+
+A curated set of ~10–20 tests authored once and run through six
+permutations:
+
+1. **REPL fresh** (no cache; `(main)` piped after defn)
+2. **REPL cached** (after first run completes, re-spawn the binary in
+   the same TempDir, replay the same stdin, observe equivalent output)
+3. **`--run` fresh** (no cache)
+4. **`--run` cached** (re-spawn `--run` in the populated TempDir)
+5. **`--link` fresh** (link, run produced binary; no cache)
+6. **`--link` cached** (re-spawn `--link` in the populated TempDir)
+
+**Inclusion criteria** (one test per language-feature class — the
+goal is class coverage, not per-test density):
+
+- arithmetic (operators, mixed types)
+- ADTs (Option, Result construction + match)
+- pattern match (nested patterns, wildcards)
+- traits (operator-as-method dispatch via Num/Eq/Ord)
+- modules (one entry + one helper module + import)
+- macros (a basic `defmacro` body that expands and runs)
+- IO (a `(print ...)` call returning Pure-wrapped value)
+- error path (a compilation error reaches the user identically across all 6)
+
+**Canonical observation form**: each test program is `(defn main [] expr)`
+returning an `Int`. The cross-mode equivalence is "main returns N → all
+6 paths produce N". For each permutation:
+
+| Permutation | Observation |
+|---|---|
+| REPL fresh | `(main)` piped after defn; stdout contains `:primitives/Int N` |
+| REPL cached | Same as REPL fresh after re-spawn in populated TempDir |
+| `--run` fresh | Process exit code = N |
+| `--run` cached | Process exit code = N after re-spawn in populated TempDir |
+| `--link` fresh | Produced binary exit code = N |
+| `--link` cached | Produced binary exit code = N after re-spawn |
+
+The canonical form is "extracted Int". The harness reduces each
+permutation's raw observation (REPL stdout substring; `--run` exit;
+binary exit) to this canonical form and asserts all 6 values match.
+A divergence in any permutation panics with a per-permutation diff.
+
+Tests where Int-encoding distorts the assertion (e.g., string equality
+checks) live in the bulk-conformance REPL suite, not the
+mode-equivalence subset.
+
+**Empirical validation of pipeline-v4.** The mode-equivalence subset
+is the active assertion that Decisions 22/25/41 have landed: cache vs.
+fresh-build does not branch behaviour (Decision 37 / Principle 11);
+REPL vs. `--run` vs. `--link` differ only in mode parameter (Principle
+11); all six paths share the same `compile_to_module` per-symbol
+codepath (Decision 41). When a permutation diverges, that's a parity
+defect — file a FIXME, ledger row, do not fix in-sprint (parity rule).
+
+#### Audit workflow specification
 
 The four-step pass is the unit of Phase 2 work. This section specifies
 how to perform it concretely.
+
+**Mode selection during audit pass.** During each file's audit:
+
+1. **Default canonical mode = REPL** for any assertion whose property
+   is language conformance. Port to the REPL pattern using
+   `assert_stdout_contains(":Type value")`.
+2. **Mode-specific exception** if the file is in the §"Mode-specific
+   exceptions" table above. Cache, examples, exemplar, REPL-specific,
+   build_confidence smoke, and the mode-equivalence subset are the
+   named exceptions; all other files port to REPL canonical.
+3. **Mode-equivalence inclusion check.** For each carried-forward
+   assertion, ask: "is this test the cleanest representative of its
+   language-feature class for the mode-equivalence subset?" If yes,
+   author the test in `build_confidence.rs` using
+   `run_through_all_modes()`; otherwise author in the spec-section
+   file using REPL canonical.
 
 #### What is a "language-behaviour assertion"?
 

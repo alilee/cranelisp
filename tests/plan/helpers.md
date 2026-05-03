@@ -20,6 +20,19 @@ implementation codes against. This document is the design intent;
    direction recorded in
    `memory/project_test_strategy.md` (2026-05-03).
 
+   **Canonical mode for language-conformance bulk = REPL.** Per the
+   Sprint 64 Wave 2.5 architecture decision recorded in
+   `tests/plan/PLAN.md §"Mode canonicalisation — REPL is the canonical
+   surface for language conformance"`: language-conformance tests run
+   through REPL, not `--run`. The mode-equivalence subset
+   (`build_confidence.rs`) additionally exercises a curated handful
+   through all six mode×cache permutations, asserting equivalent
+   observable behaviour — that's the empirical validation of single-
+   pipeline convergence (Principles 11–13; Decisions 22, 25, 41).
+   `--run` and `--link` remain in the harness surface for
+   mode-specific tests (cache, examples, exemplar, build_confidence
+   smoke) and the mode-equivalence permutations.
+
 2. **Isolated by construction.** Every test gets its own fresh
    `tempfile::TempDir`, used as the child's CWD. Because
    `project_root = std::env::current_dir()` (per
@@ -213,6 +226,30 @@ fn cross_module_import() {
         .assert_stdout_eq("42\n");
 }
 ```
+
+### Mode-equivalence (run one program through all six permutations)
+
+```rust
+#[test]
+fn mode_equiv_arithmetic() {
+    // spec: spec/07-traits.md §7.1 — Num operator dispatch
+    // The mode-equivalence subset asserts that REPL fresh / REPL cached /
+    // --run fresh / --run cached / --link fresh / --link cached all
+    // produce N=3 for `(defn main [] (+ 1 2))`. A divergence in any
+    // permutation panics with a per-permutation diff. Empirical
+    // validation of Principles 11–13 + Decisions 22/25/41.
+    run_through_all_modes(
+        "(defn main [] (+ 1 2))",
+        PreludeVariant::TestStandard,
+        /* expected_int = */ 3,
+    )
+    .assert_all_equivalent();
+}
+```
+
+The helper is for the mode-equivalence subset only. Bulk language
+conformance uses REPL canonical directly (see §"Canonical mode" usage
+above).
 
 ### Cache-hit equivalence (run binary twice in same TempDir)
 
