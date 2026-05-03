@@ -1,3 +1,17 @@
+// QUARANTINED — Sprint 64 test-port. Not built or run by Cargo.
+// FIXME: design/arch/fixmes/0127-harvest-tests-legacy-io.md (consolidated)
+// Owning crate: cranelisp-backend (capture-return-inc rule —
+//                design/backend/ring2-rc.md §5.6)
+// Owning skill: /backend
+// Quarantined: 2026-05-03
+//
+// This file's 2 tests are the Sprint 61 Wave 4 capture-return-inc
+// regression guard (the 7-line minimum repro from H(4-1'')). Already
+// e2e-shaped (subprocess invocation), but uses the bespoke
+// run_repro_with_env helper not the new Cranelisp builder. The
+// regression intent is preserved in
+// tests/spec_10_io.rs::capture_return_inc_does_not_double_free.
+
 //! Sprint 61 Wave 4 Slice 4 — regression guard for the IO trampoline /
 //! closure capture double-free bug (H(4-1'')).
 //!

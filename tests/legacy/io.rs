@@ -1,3 +1,20 @@
+// QUARANTINED — Sprint 64 test-port. Not built or run by Cargo.
+// FIXME: design/arch/fixmes/0127-harvest-tests-legacy-io.md
+// Owning crate: cranelisp-runtime (IO trampoline + Pure/Effect/Bind ABI)
+//                with cranelisp-typecheck (IO type inference)
+//                and cranelisp-backend (capture-return-inc codegen)
+// Owning skill: /int (with /typecheck, /backend, /runtime)
+// Quarantined: 2026-05-03
+//
+// This file's assertions test Rust-internal state (compile_and_run_typed,
+// batch_run, cranelisp_runtime::read_string_as_str + heap_dealloc direct
+// calls, Type::Int / Type::Bool checked through the Rust API) with no e2e
+// equivalent in this shape. The e2e carry-forward lives in
+// tests/spec_10_io.rs (Pure/bind/IO trampoline observable via REPL stdout
+// + --run exit code). Harvest into `#[cfg(test)]` unit tests inside the
+// owning crate per memory/feedback_unit_tests_with_dev.md and
+// memory/project_test_strategy.md.
+
 // IO integration tests: Pure constructor, bind primitive, internal constructor rejection,
 // IO type checking, and IO display format.
 //

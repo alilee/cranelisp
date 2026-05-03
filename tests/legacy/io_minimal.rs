@@ -1,3 +1,16 @@
+// QUARANTINED — Sprint 64 test-port. Not built or run by Cargo.
+// FIXME: design/arch/fixmes/0127-harvest-tests-legacy-io.md (consolidated)
+// Owning crate: cranelisp-backend (Sprint 57 Wave 6 JIT-drop regression),
+//                src/ (compile_and_execute_expr trampoline)
+// Owning skill: /int (with /backend)
+// Quarantined: 2026-05-03
+//
+// This file's 5 tests are the Sprint 57 Wave 6 SIGBUS reduction: minimal
+// repros that proved the per-eval JIT drop trampoline issue was fixed.
+// They use compile_and_run_typed / batch_run Rust API. The regression-
+// guard intent is preserved in tests/spec_10_io.rs::repl_pure_int_unwraps
+// + ::repl_bind_pure_lambda_no_double_free + ::capture_return_inc_does_not_double_free.
+
 // Minimal reduction of the Sprint 57 Wave 6 IO-path SIGBUS cluster.
 //
 // =============================================================================

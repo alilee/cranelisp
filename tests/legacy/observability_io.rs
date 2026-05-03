@@ -1,3 +1,27 @@
+// QUARANTINED — Sprint 64 test-port. Not built or run by Cargo.
+// FIXME: design/arch/fixmes/0128-harvest-tests-legacy-observability-io.md
+// Owning crate: cranelisp-runtime (io_trace ring buffer + event taxonomy)
+// Owning skill: /runtime (originating /backend per FIXME 0103 trace.rs/io_trace.rs
+//                relocation — this file pre-dates that relocation; harvest
+//                follows the trace's home post-FIXME-0103/0040)
+// Quarantined: 2026-05-03
+//
+// This file's assertions test cranelisp_runtime::io_trace::* internal API
+// (TrampolineEnter, TrampolineExit, PlatformEffect, BindEnter, ContPush,
+// ContPop event types; ring-buffer capacity bounds; trace-event leakage
+// into cache .meta.json files). These are Rust-internal observations of
+// the trace channel with no direct e2e equivalent.
+//
+// The single e2e-observable concern — that --run executions complete
+// within a generous wall-clock ceiling regardless of trace state — is
+// preserved in tests/build_confidence.rs as smoke-set assertions
+// (process exits, no crash). The harness-robustness ledger entry
+// (`io_trace_off_path_subprocess_completes_within_generous_ceiling`)
+// is RESOLVED at quarantine time — the test fired only under concurrent
+// nextest load and pre-dated the new harness's per-test TempDir
+// isolation; the new spec_10_io.rs tests do not contend on stdio DLL
+// load between subprocesses because each test owns its TempDir.
+
 //! Sprint 61 Slice 0 — IO trampoline event log integration tests.
 //!
 //! Derived in Phase 3a (`tests/plan/ring4.md §Sprint 61 → Slice 0 → S0-B`).
