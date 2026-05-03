@@ -1,6 +1,6 @@
 # Sprint 64: Test-Port — `/qa` two-tier migration
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 1 dispatched 2026-05-03. User approved Phase 4 wave plan; one sprint, 6 waves, mid-sprint review checkpoint after Wave 2.
+**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 2 + Wave 2.5 complete (uncommitted). USER REVIEW CHECKPOINT before commit + Wave 3.
 
 **Goal**: Transition `/qa` fully to the two-tier regime. Audit every test file for assertions that test language behaviour (carry forward as new e2e tests in the harness specified by `tests/plan/helpers.md`) vs. Rust-internal state (quarantine in `tests/legacy/` for FIXME-driven harvest into the owning crate's unit tests). Reorganise the new e2e suite for spec-coverage auditability. Delete the legacy scaffolding once the new suite is sound. **Parity in spec-relevant coverage**: every assertion that exercises spec behaviour survives the transition; defects surfaced during audit land as FIXMEs + failing tests, not fixes.
 
@@ -228,6 +228,29 @@ User confirms continuation, redirects ordering, or requests scope adjustment. `/
   - 6 open questions for Phase 4 wave organisation; sprint sizing is the load-bearing one.
 - 2026-05-03: User decision: one sprint, multi-wave with mid-sprint review checkpoint after Wave 2; `/qa` picks ordering for simplicity. `/sprint` Phase 4 wave organisation: 6 waves, ~45–68 commits, ~10 harvest FIXMEs, ~80–110 ledger entries. 5 remaining open questions resolved at gate (Q2 front-load Batch 9; Q3 accept `/qa` rc.rs split; Q5 manual scan + sprint-close lint FIXME; Q6 piggyback spec_06 on Batch 2).
 - 2026-05-03: User approved Phase 4 wave plan. Phase 5 LANGUAGE active. Wave 1 dispatched: harness build (`tests/helpers/e2e.rs` + `tests/helpers/regex.rs`) + cache-isolation seed test + Batch 9 pure-quarantine (4 files + 4 harvest FIXMEs + `tests/legacy/README.md`).
+- 2026-05-03: Wave 1 complete; 9 commits landed clean (`ccd43e9` through `5a1f6e2`). Harness on disk, 4 quarantines indexed, FIXMEs 0116–0119 filed. Stale "11 sketch_port + 2 v4_platform" pre-existing-failure count noted as deferred-to-`/arch`-good-time per user.
+- 2026-05-03: Wave 2 dispatched: Batch 5 (stdlib → spec_11_stdlib.rs), Batch 10 (build_confidence.rs synthesised), Batch 1 (full cache.rs audit + cache_seed.rs merge + cache-internals quarantine).
+- 2026-05-03: Wave 2 complete (uncommitted, staged). 3 batches landed:
+  - Batch 5: `tests/stdlib.rs` (54 tests) → `tests/spec_11_stdlib.rs` (54 tests, 100% carry-forward, 0 quarantine). `use_workspace_stdlib_for_stdlib_conformance_only()` is the named exception caller.
+  - Batch 10: `tests/build_confidence.rs` (7 hand-authored smoke tests — REPL banner, `--run main 0`, primitive return, stdlib import, REPL pipe, `--link` exec, cache materialisation).
+  - Batch 1: `tests/cache.rs` rewritten (24 e2e tests covering cache-hit/miss + multi-module + transitive deps + prelude caching + mtime invariants + round-trip parity); `tests/cache_seed.rs` merged + deleted; `tests/legacy/cache.rs` quarantines 31 internal-API tests (FIXME 0120 → `/backend`).
+  - **Defect surfaced (parity-rule landing)**: `cache::cache_multi_module_transitive_imports` fails — `--run` does not discover `(mod ...)` declarations in entry module (integration helper does). FIXME 0121 → `/int`. Ledgered as `out-of-scope (owner=/int)`.
+  - `cargo nextest run`: 1845 tests, 1839 pass, 6 fail (5 pre-existing d6 cluster + 1 new parity-rule landing). Net 0 regressions.
+  - **Harness-API surprises**: zero. Wave 1 builder + assertions covered every shape needed across all three batches. Validates the Phase 0 collapse decision.
+
+- 2026-05-03: User review of Wave 2 raised mode-canonicalisation question (REPL/`--run`/`--link` boundary). Decisions: adopt; canonical = REPL; re-port `spec_11_stdlib.rs` for pristine state; PLAN.md update only (no `/arch` consult); fix before Wave 3. Mode-equivalence helper extended to 6 permutations: `repl-fresh / repl-cached / run-fresh / run-cached / link-fresh / link-cached`.
+- 2026-05-03: Wave 2.5 dispatched — methodology-correction wave between Wave 2 and Wave 3. Combined design + helper + re-port + reshape work.
+- 2026-05-03: Wave 2.5 complete (uncommitted). Outcomes:
+  - `tests/plan/PLAN.md` extended with §"Mode canonicalisation — REPL is the canonical surface for language conformance" + audit-workflow rule update.
+  - `tests/plan/helpers.md` and `tests/plan/helpers-api.md` extended with mode-equivalence helper section.
+  - `tests/helpers/e2e.rs` extended with `run_through_all_modes(program, prelude) -> AllModesResult` + `assert_all_equivalent()` + `assert_all_equal(N)`. Canonical observation: `(defn main [] expr-returning-Int)`; cross-mode equivalence is "all 6 paths produce the same Int". `Cranelisp::with_prelude_no_overwrite()` added for cached-permutation flow.
+  - `tests/spec_11_stdlib.rs` re-ported to REPL canonical: 54/54 pass. Net stronger assertion shape (`:Type value` substring asserts both type and value in one call). 3 ADT-typed tests needed minor reshaping for top-level type-variable disambiguation; no spec-coverage drop.
+  - `tests/build_confidence.rs` reshaped: 4 smoke tests + 11 mode-equivalence tests covering arithmetic, ADTs, pattern match, traits, modules, macros, IO, let, if-else.
+  - **NEW DEFECT — FIXME 0122 → `/backend`**: `--link` mode produces alignment-too-small linker error for programs using ADT/match, defmacro, or IO Pure primitive. REPL/`--run` succeed; `--link` fails. **Invisible to legacy integration-tier tests.** 4 ledger entries under §"Sprint 64 Wave 2.5 — `--link` mode divergence".
+  - `cargo nextest run`: 1843/1853 pass. Failures: 5 pre-existing d6 cluster + 1 Wave-2 FIXME 0121 + 4 new Wave-2.5 FIXME 0122 parity-rule landings. **Net 0 regressions.**
+  - **The mode-equivalence subset paid for itself on its first run.** The architecture pivot was correct.
+
+**USER REVIEW CHECKPOINT** — Wave 2 + Wave 2.5 complete; `/sprint` paused per user direction. Awaiting user sign-off on commit (7 commits across both waves) + advance to Wave 3.
 
 ## Outcome (Phase 7)
 
