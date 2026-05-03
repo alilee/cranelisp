@@ -16,10 +16,11 @@
 //   - Pure constructor wraps Int/Bool/String (§10.2)
 //   - bind primitive forms IO chains (§10.3)
 //   - bind with identity continuation, with computation, polymorphic
-//   - Internal Bind constructor / pattern rejection (§10.3.5)
-//   - IO type inference (§10.4)
-//   - REPL eval unwraps Pure inline (§10.6 — eval contract)
-//   - --run mode: main returns IO, exit code from Pure / from bind chain
+//   - Internal Bind constructor / pattern rejection (§10.1 — Bind is internal,
+//     not user-invocable per the runtime representation)
+//   - IO type inference / propagation (§10.7)
+//   - REPL eval unwraps Pure inline (§10.6.2 — REPL Mode entry point)
+//   - --run mode: main returns IO, exit code from Pure / from bind chain (§10.6.1)
 //   - Closure-capture inc regression (Sprint 61 Wave 4 — `emit_capture_return_inc`)
 //   - bind! desugaring (§10.5 macro form)
 //
@@ -111,10 +112,10 @@ fn bind_named_defn_continuation() {
 }
 
 // =============================================================================
-// Internal Bind constructor / pattern rejection — spec/10-io.md §10.3.5
+// Internal Bind constructor / pattern rejection — spec/10-io.md §10.1 (Bind is internal, not user-invocable)
 // =============================================================================
 
-// spec: spec/10-io.md §10.3.5 — Bind cannot be constructed directly
+// spec: spec/10-io.md §10.1 (Bind is internal, not user-invocable) — Bind cannot be constructed directly
 #[test]
 fn bind_constructor_rejected() {
     let out = repl("(Bind (Pure 1) (fn [x] (Pure x)))\n");
@@ -126,7 +127,7 @@ fn bind_constructor_rejected() {
     );
 }
 
-// spec: spec/10-io.md §10.3.5 — Bind cannot be matched
+// spec: spec/10-io.md §10.1 (Bind is internal, not user-invocable) — Bind cannot be matched
 #[test]
 fn bind_pattern_rejected() {
     let out = repl("(match (Pure 1) [(Bind a b) 0 _ 99])\n");
@@ -146,10 +147,10 @@ fn pure_pattern_accepted() {
 }
 
 // =============================================================================
-// IO type inference — spec/10-io.md §10.4
+// IO type inference — spec/10-io.md §10.7 (Effect Tracking)
 // =============================================================================
 
-// spec: spec/10-io.md §10.4 — defn returning Pure has type with IO marker
+// spec: spec/10-io.md §10.7.1 — defn returning Pure has type with IO marker (propagation)
 #[test]
 fn defn_returning_pure_displays_fn_type() {
     let out = repl("(defn pure-int [] (Pure 42))\n");
@@ -161,7 +162,7 @@ fn defn_returning_pure_displays_fn_type() {
     );
 }
 
-// spec: spec/10-io.md §10.4 — bind result inferred as polymorphic
+// spec: spec/10-io.md §10.3 — bind result inferred as polymorphic
 #[test]
 fn bind_polymorphic_inference() {
     repl("(bind (Pure 99) (fn [x] (Pure x)))\n")
@@ -169,7 +170,7 @@ fn bind_polymorphic_inference() {
 }
 
 // =============================================================================
-// REPL eval inline trampoline — spec/10-io.md §10.6
+// REPL eval inline trampoline — spec/10-io.md §10.6.2
 // =============================================================================
 //
 // Sprint 57 Wave 6 + Sprint 61 Wave 4 fixes: REPL eval trampolines IO inline
@@ -178,14 +179,14 @@ fn bind_polymorphic_inference() {
 // (§5.6 "Capture-return inc") fix landed in S61 Wave 4 prevents the
 // double-free that surfaced as SIGBUS pre-fix.
 
-// spec: spec/10-io.md §10.6 — Pure(42) evaluates to Int 42 at REPL (regression
+// spec: spec/10-io.md §10.6.2 — Pure(42) evaluates to Int 42 at REPL (regression
 // guard for Sprint 57 Wave 6 SIGBUS cluster).
 #[test]
 fn repl_pure_int_unwraps() {
     repl("(Pure 42)\n").assert_stdout_contains(":primitives/Int 42");
 }
 
-// spec: spec/10-io.md §10.6 — bind+Pure regression guard
+// spec: spec/10-io.md §10.6.2 — bind+Pure regression guard
 // (Sprint 61 Wave 4 capture-return-inc: `emit_capture_return_inc` rule.)
 #[test]
 fn repl_bind_pure_lambda_no_double_free() {
@@ -203,7 +204,7 @@ fn repl_bind_pure_lambda_no_double_free() {
 // returns IO via the trampoline before exiting. These tests exercise that
 // path explicitly.
 
-// spec: spec/10-io.md §10.10 — main returning Pure: exit code = inner Int
+// spec: spec/10-io.md §10.6.1 (Exit Code) — main returning Pure: exit code = inner Int
 #[test]
 fn run_mode_main_returns_pure_exit_code() {
     Cranelisp::new()
@@ -214,7 +215,7 @@ fn run_mode_main_returns_pure_exit_code() {
         .assert_exit(42);
 }
 
-// spec: spec/10-io.md §10.10 — main returning Pure with non-zero exit code
+// spec: spec/10-io.md §10.6.1 (Exit Code) — main returning Pure with non-zero exit code
 #[test]
 fn run_mode_main_returns_pure_nonzero() {
     Cranelisp::new()
@@ -225,7 +226,7 @@ fn run_mode_main_returns_pure_nonzero() {
         .assert_exit(99);
 }
 
-// spec: spec/10-io.md §10.10 — main returning bind chain: exit code from final value
+// spec: spec/10-io.md §10.6.1 (Exit Code) — main returning bind chain: exit code from final value
 #[test]
 fn run_mode_main_returns_bind_exit_code() {
     Cranelisp::new()
@@ -236,7 +237,7 @@ fn run_mode_main_returns_bind_exit_code() {
         .assert_exit(42);
 }
 
-// spec: spec/10-io.md §10.10 — main returning Int directly (legacy non-IO main)
+// spec: spec/10-io.md §10.6.1 (Exit Code) — main returning Int directly (legacy non-IO main)
 #[test]
 fn run_mode_main_returns_int_exit_code() {
     Cranelisp::new()
@@ -248,17 +249,17 @@ fn run_mode_main_returns_int_exit_code() {
 }
 
 // =============================================================================
-// IO branch consistency — spec/10-io.md §10.4
+// IO branch consistency — spec/10-io.md §10.7.2
 // =============================================================================
 
-// spec: spec/10-io.md §10.4 — both branches IO
+// spec: spec/10-io.md §10.7.2 — both branches IO (branch consistency)
 #[test]
 fn if_both_branches_io() {
     repl("(if (eq-i64 1 1) (Pure 10) (Pure 20))\n")
         .assert_stdout_contains(":primitives/Int 10");
 }
 
-// spec: spec/10-io.md §10.4 — branch consistency (mixed Pure / non-Pure errors)
+// spec: spec/10-io.md §10.7.2 — branch consistency (mixed Pure / non-Pure errors)
 #[test]
 fn if_branch_consistency_neg_mixed() {
     let out = repl("(if (eq-i64 1 1) (Pure 10) 20)\n");
@@ -271,10 +272,10 @@ fn if_branch_consistency_neg_mixed() {
 }
 
 // =============================================================================
-// match on IO values — spec/10-io.md §10.4 / §6.x
+// match on IO values — spec/10-io.md §10.7.2 + spec/06-pattern-matching.md §6.1
 // =============================================================================
 
-// spec: spec/10-io.md §10.4 — match arms all IO (cover both Pure and Effect)
+// spec: spec/10-io.md §10.7.2 — match arms all IO (branch consistency)
 #[test]
 fn match_arms_all_io_pure() {
     repl("(match (Pure 1) [(Pure x) (Pure (add-i64 x 100)) (Effect e) (Pure 0)])\n")
@@ -282,10 +283,10 @@ fn match_arms_all_io_pure() {
 }
 
 // =============================================================================
-// IO let-binding — spec/10-io.md §10.5
+// IO let-binding — spec/10-io.md §10.7.1 (effect propagation)
 // =============================================================================
 
-// spec: spec/10-io.md §10.5 — let with IO body inherits IO type
+// spec: spec/10-io.md §10.7.1 — let with IO body inherits IO type (effect propagation)
 #[test]
 fn let_io_body() {
     repl("(let [x 5] (Pure x))\n").assert_stdout_contains(":primitives/Int 5");
@@ -315,7 +316,7 @@ fn capture_return_inc_does_not_double_free() {
 }
 
 // =============================================================================
-// bind! macro desugaring — spec/10-io.md §10.5
+// bind! macro desugaring — spec/10-io.md §10.5 (Monadic Bind Sugar)
 // =============================================================================
 //
 // `bind!` and `do` are stdlib macros (`stdlib/io.monad`). Tests MUST NOT
@@ -325,10 +326,10 @@ fn capture_return_inc_does_not_double_free() {
 // the underlying primitive `bind` shape that `bind!` desugars to.
 
 // =============================================================================
-// IO Effect isolation — spec/10-io.md §10.4
+// IO Effect isolation — spec/10-io.md §10.8.3 (Effect Isolation)
 // =============================================================================
 
-// spec: spec/10-io.md §10.4 — IO values are deferred data (not eager)
+// spec: spec/10-io.md §10.8 — IO values are deferred data (not eager)
 #[test]
 fn io_values_deferred() {
     // Defining a fn that returns Pure does not run any side effects.
@@ -339,10 +340,10 @@ fn io_values_deferred() {
 }
 
 // =============================================================================
-// IO + auto-curry — spec/10-io.md §10.4
+// IO + auto-curry — spec/04-expressions.md §4.7 (Multi-Signature Dispatch)
 // =============================================================================
 
-// spec: spec/10-io.md §10.4 + spec/05 — partial application of IO-returning fn
+// spec: spec/04-expressions.md §4.7 — partial application (auto-curry) of IO-returning fn
 #[test]
 fn auto_curry_io_returning_fn() {
     let out = repl("(defn add-pure [x y] (Pure (add-i64 x y)))

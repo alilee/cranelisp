@@ -198,10 +198,10 @@ fn constructor_wrong_arg_count_error() {
 }
 
 // =============================================================================
-// defmacro shape errors — repl/spec.md §11
+// defmacro shape errors — spec/09-macros.md §9.9 (Macro Errors)
 // =============================================================================
 
-// spec: repl/spec.md §11.1 — defmacro missing params is an error
+// spec: spec/09-macros.md §9.9 — defmacro missing params is an error
 #[test]
 fn defmacro_missing_params_error() {
     let out = repl("(defmacro double)\n");
@@ -212,7 +212,7 @@ fn defmacro_missing_params_error() {
     );
 }
 
-// spec: repl/spec.md §11.1 — defmacro with numeric name is an error
+// spec: spec/09-macros.md §9.9 — defmacro with numeric name is an error
 #[test]
 fn defmacro_numeric_name_error() {
     let out = repl("(defmacro 42 [] `42)\n");
@@ -223,7 +223,7 @@ fn defmacro_numeric_name_error() {
     );
 }
 
-// spec: repl/spec.md §11.1 — defmacro missing body is an error
+// spec: spec/09-macros.md §9.9 — defmacro missing body is an error
 #[test]
 fn defmacro_missing_body_error() {
     let out = repl("(defmacro foo [x])\n");
@@ -235,10 +235,10 @@ fn defmacro_missing_body_error() {
 }
 
 // =============================================================================
-// Macro call errors — repl/spec.md §11
+// Macro call errors — spec/09-macros.md §9.9
 // =============================================================================
 
-// spec: repl/spec.md §11 — macro call with wrong arity
+// spec: spec/09-macros.md §9.9 — macro call with wrong arity
 #[test]
 fn macro_wrong_arity_error() {
     let out = repl("(defmacro double [x] `(add-i64 ~x ~x))
@@ -376,19 +376,19 @@ fn unknown_slash_command_graceful() {
     );
 }
 
-// spec: repl/spec.md §3 — /sig of unknown name does not crash
+// spec: repl/spec.md §3.1 — /sig of unknown name does not crash
 #[test]
 fn sig_unknown_name_graceful() {
     repl("/sig nonexistent-name\n").assert_ok();
 }
 
-// spec: repl/spec.md §3 — /info of unknown name does not crash
+// spec: repl/spec.md §3.1 — /info of unknown name does not crash
 #[test]
 fn info_unknown_name_graceful() {
     repl("/info nonexistent-name\n").assert_ok();
 }
 
-// spec: repl/spec.md §3 — /doc of unknown name does not crash
+// spec: repl/spec.md §3.1 — /doc of unknown name does not crash
 #[test]
 fn doc_unknown_name_graceful() {
     repl("/doc nonexistent-name\n").assert_ok();

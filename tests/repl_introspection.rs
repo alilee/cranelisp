@@ -294,7 +294,7 @@ fn sig_shows_type_signature() {
     );
 }
 
-// spec: repl/spec.md §3.2 — /doc on un-documented fn says no docstring
+// spec: repl/spec.md §3.1 — /doc on un-documented fn says no docstring
 #[test]
 fn doc_no_docstring() {
     let out = repl_prims("(defn foo [] 42)
@@ -307,7 +307,7 @@ fn doc_no_docstring() {
     );
 }
 
-// spec: repl/spec.md §3.2 — /doc shows the docstring when present
+// spec: repl/spec.md §3.1 — /doc shows the docstring when present
 #[test]
 fn doc_shows_docstring() {
     let out = repl_prims(r#"(defn foo "increments by zero" [] 42)
@@ -321,7 +321,7 @@ fn doc_shows_docstring() {
     );
 }
 
-// spec: repl/spec.md §3.5 — /type shows the type without evaluating
+// spec: repl/spec.md §3.1 — /type shows the type without evaluating (per Command Inventory)
 #[test]
 fn type_shows_int_for_arithmetic() {
     let out = repl_prims("/type (add-i64 1 2)\n");
@@ -336,7 +336,7 @@ fn type_shows_int_for_arithmetic() {
 // /help — repl/spec.md §3
 // =============================================================================
 
-// spec: repl/spec.md §3 — /help lists the command catalogue
+// spec: repl/spec.md §3.2 — /help lists the command catalogue
 #[test]
 fn help_lists_commands() {
     let out = repl("/help\n");
@@ -448,10 +448,10 @@ fn list_neg_macros_not_in_functions() {
 }
 
 // =============================================================================
-// Multi-eval persistence — repl/spec.md §1.6
+// Multi-eval persistence — repl/spec.md §15.2
 // =============================================================================
 
-// spec: repl/spec.md §1.6 — defns persist across REPL eval rounds
+// spec: repl/spec.md §15.2 — defns persist across REPL eval rounds
 #[test]
 fn defn_persists_across_evals() {
     repl_prims("(defn double [x] (mul-i64 x 2))
@@ -460,7 +460,7 @@ fn defn_persists_across_evals() {
     .assert_stdout_contains(":primitives/Int 42");
 }
 
-// spec: repl/spec.md §1.6 — multiple defns coexist
+// spec: repl/spec.md §15.2 — multiple defns coexist
 #[test]
 fn multi_defn_coexist() {
     repl_prims("(defn one [] 1)
@@ -471,10 +471,10 @@ fn multi_defn_coexist() {
 }
 
 // =============================================================================
-// Empty / whitespace input — repl/spec.md §5
+// Empty / whitespace input — repl/spec.md §2.3
 // =============================================================================
 
-// spec: repl/spec.md §5 — empty input is silent (no error)
+// spec: repl/spec.md §2.3 — empty input is silent (no error)
 #[test]
 fn empty_input_silent() {
     let out = repl("\n");
@@ -485,7 +485,7 @@ fn empty_input_silent() {
     );
 }
 
-// spec: repl/spec.md §5 — comment-only input is silent
+// spec: repl/spec.md §2.3 — comment-only input is silent
 #[test]
 fn comment_only_silent() {
     let out = repl("; just a comment\n");

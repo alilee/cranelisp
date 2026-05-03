@@ -168,7 +168,7 @@ fn display_show_int() {
 // h. Option type
 // =============================================================================
 
-// spec: spec/06-adt.md §6.1 — Option Some constructor (witness via match)
+// spec: spec/05-definitions.md §5.2 (deftype) + spec/06-pattern-matching.md §6.1 — Option Some constructor (witness via match)
 #[test]
 fn option_some_constructs() {
     assert_repl_eval_contains(
@@ -177,7 +177,7 @@ fn option_some_constructs() {
     );
 }
 
-// spec: spec/06-adt.md §6.1 — Option None constructor (witness: a fn body
+// spec: spec/05-definitions.md §5.2 (deftype) + spec/06-pattern-matching.md §6.1 — Option None constructor (witness: a fn body
 // pins Option's type variable via the Some arm; calling with None hits
 // the None arm).
 #[test]
@@ -230,7 +230,7 @@ fn macro_cond_fallthrough() {
 // k. Result type
 // =============================================================================
 
-// spec: spec/06-adt.md §6.1 — Result Ok constructor (Err arm with `_`
+// spec: spec/05-definitions.md §5.2 (deftype) + spec/06-pattern-matching.md §6.1 — Result Ok constructor (Err arm with `_`
 // disambiguates the b type).
 #[test]
 fn result_ok_constructs() {
@@ -240,7 +240,7 @@ fn result_ok_constructs() {
     );
 }
 
-// spec: spec/06-adt.md §6.1 — Result Err constructor (an Ok arm with `_`
+// spec: spec/05-definitions.md §5.2 (deftype) + spec/06-pattern-matching.md §6.1 — Result Err constructor (an Ok arm with `_`
 // disambiguates the a type via the body's Bool result; the actual
 // scrutinee is Err).
 #[test]
