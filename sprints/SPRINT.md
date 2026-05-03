@@ -1,6 +1,6 @@
 # Sprint 64: Test-Port — `/qa` two-tier migration
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 3.5 + 3.5b (linter) + 3.5c (maintainability) all committed. Awaiting decision on Wave 4 cadence + linter scope (audit-scope vs. full-tree).
+**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 4 complete + committed. Awaiting Wave 5 dispatch (Conformance core — Batches 2 + 3, ~11,300 LOC, the heaviest dedupe).
 
 **Goal**: Transition `/qa` fully to the two-tier regime. Audit every test file for assertions that test language behaviour (carry forward as new e2e tests in the harness specified by `tests/plan/helpers.md`) vs. Rust-internal state (quarantine in `tests/legacy/` for FIXME-driven harvest into the owning crate's unit tests). Reorganise the new e2e suite for spec-coverage auditability. Delete the legacy scaffolding once the new suite is sound. **Parity in spec-relevant coverage**: every assertion that exercises spec behaviour survives the transition; defects surfaced during audit land as FIXMEs + failing tests, not fixes.
 
@@ -283,6 +283,17 @@ User confirms continuation, redirects ordering, or requests scope adjustment. `/
   - **ADT match-witness clarity** — 15-line header comment added to `tests/spec_11_stdlib.rs` explaining the pattern (anchors otherwise-unconstrained type vars; asserts a single deterministic `:Bool true` line). No per-test edits.
   - `cargo nextest run`: 1588 pass, 10 fail (5 pre-existing + 1 FIXME 0121 + 4 FIXME 0122). Net 0 regressions.
   - **Harness API additions** for Wave 4+ to adopt: `assert_stdout_contains_all`, `assert_stdout_does_not_contain`, `repl_capture`, `repl_prims_capture`. Need to land in `tests/plan/helpers-api.md` (Wave 3.5c agent deferred to avoid contention with Wave 3.5b's parallel docs work).
+- 2026-05-04: User decisions: (A) audit-scope linter policy; helpers-api.md refresh folded into Wave 4; proceed.
+- 2026-05-04: Wave 4 dispatched: Batch 6 (runtime quarantine — `rc.rs`, `ring4_trace.rs`, `sprint60/61_observability_*.rs`, `v4_jit_reclaim.rs`).
+- 2026-05-04: Wave 4 complete + committed (6 commits, `1e35bef` through `5b3577c`):
+  - `tests/plan/helpers-api.md` refreshed with the 4 Wave-3.5c methods (commit `1e35bef`).
+  - `tests/spec_12_runtime.rs` (19 tests covering RC heap-using bodies, Vec COW, `(trace ...)`, `/run-tests`).
+  - 6 quarantines under `tests/legacy/`: `rc_alloc_trace.rs` (1191 LOC, 81 tests), `ring4_trace_taxonomy.rs` (578 LOC, 31 tests), `sprint60_observability.rs` (182 LOC, 4 tests), `sprint61_observability_scheduler.rs` (483 LOC, 9 tests), `sprint61_observability_shared.rs` (251 LOC, 3 tests), `v4_jit_reclaim.rs` (700 LOC, 6 tests). Total ~3,385 LOC, 134 tests.
+  - 5 harvest FIXMEs (0129–0133); FIXME 0132 consolidates `sprint61_observability_scheduler.rs` + `sprint61_observability_shared.rs` (same `/int` skill timeline).
+  - **Linter clean** on `tests/spec_12_runtime.rs` (19/19 OK, EXIT 0). Audit-scope policy enforced.
+  - **No new defect FIXMEs surfaced.** All 19 new e2e tests pass. The Wave 3.5 spec-traceability discipline + the per-test `// spec:` linter run held — no INVENTED assertions, no MIS-CITED annotations.
+  - **Test count**: 1598 → 1483 (-115 net: 134 quarantined + 19 new). 1473 pass, 10 fail (5 pre-existing + 1 FIXME 0121 + 4 FIXME 0122). Net 0 regressions.
+  - **Findings noted but not actioned in-sprint** (per /qa report): (a) Stale `user.cl` in repo root auto-loaded by manually-launched REPL — environment hygiene issue, not a defect; possibly worth a future `/int` consideration about whether project-root user.cl auto-load should be opt-in. (b) `(None : (Option Int))` annotation syntax does not parse in current binary; tests anchor type via fn-body shape rather than annotation. Possibly grammar incomplete (`:` annotation may be local-binding-only) but not a spec violation; not filed.
 
 ## Outcome (Phase 7)
 
