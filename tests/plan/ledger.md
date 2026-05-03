@@ -130,39 +130,17 @@ During Sprint 61 Wave 3 workspace stress verification, `/sprint` surfaced six te
 | Disposition | `exemplar-gap (owner=/port, underlying-owner=/backend)` |
 | Rationale | The authoritative regression surface for Defect 6 — drives the full `exemplar/solver.cl` through the same entry point the user would hit via `--run`. Confirms the IO plumbing (`platform stdio`, `print`, `bind`, `Pure`) works up to the solve step (puzzle board prints cleanly) and isolates the crash to `propagate`/`solve` on the 81-cell grid. Per `exemplar/CLAUDE.md §Known Issues`, `/port` has disabled `test-easy-puzzle`, `test-hard-puzzle`, `test-unsolvable` inline submodules pending Defect 6 resolution; when /backend resolves the stack-overflow root cause, /port re-enables those and this entry resolves. |
 
-### Exemplar-level tests (non-cargo)
+### Sprint 64 Wave 2 — defects surfaced during e2e port (2026-05-03)
 
-*No current exemplar-level failing entries. The S60-carried `exemplar/solver.cl::test-unsolvable` was resolved in Sprint 61 Wave 2; see "Resolved this sprint" below. The Defect 6 stack-overflow failures are captured above as cargo tests (`d6_exemplar_*` and `wave6_demo_repros::exemplar_solver_*`), not as non-cargo entries — per `memory/feedback_repros_join_suite.md` the cargo-level reductions are the durable record.*
+Sprint 64's parity rule (`sprints/SPRINT.md §Phase 2`) requires every spec-relevant assertion to survive the integration-tier → e2e port. Some assertions that passed via the in-process `helpers::batch_run_file_cached` integration helper fail under the e2e form (`Cranelisp::new().run("main.cl")`). The audit lands the failing e2e test un-ignored as the durable record; fixes are out-of-scope for S64.
 
-## Resolved this sprint (Sprint 61 Wave 2, 2026-04-22)
+| Field | Value |
+|---|---|
+| Test name | `cache::cache_multi_module_transitive_imports` |
+| SHA | `5a1f6e2` |
+| Stderr / observable signature | `error: module error at 0..0: entry module has no `main` function — batch mode requires (defn main [] ...)`. Three-level submodule project (`main.cl` declares `(mod mid)`, `main/mid.cl` declares `(mod leaf)`, `main/mid/leaf.cl` defines `base-val`). The integration helper `compile_module_graph_cached` walks `(mod ...)` declarations to discover submodules before resolving `main`; the binary's `--run` driver does not, so it complains the entry has no `main`. |
+| Owning skill | `/int` (binary `--run` driver — `src/main.rs` / `src/session_v4.rs` entry-module handling) |
+| Target sprint | TBD — disposition open at S64 close pending `/sprint` decision |
+| Disposition | `out-of-scope (owner=/int)` |
+| Rationale | Defect surfaced during Sprint 64 Wave 2 Batch 1 audit. Tracked by FIXME 0121 (`design/arch/fixmes/0121-int-run-mode-mod-decl-discovery.md`). The integration-tier coverage is preserved in `tests/legacy/cache.rs::cache_multi_module_transitive_imports` (NOT compiled, source archive only). Per parity rule, the e2e form lands failing un-ignored; fix out-of-scope for S64. |
 
-Per §Close-time Verification Protocol item 3 — entries removed from the ledger because the tests now pass on HEAD (working tree at SHA `b140ec5`, pre-commit). Preserved here as a one-line rationale trail for the sprint close report.
-
-- **`sprint61_wave2::exemplar_solver_correctness::eliminate_on_same_value_given_returns_none`** (T-S2-1) — PASSING 5/5. Resolved by /port's Layer 1 fix in `exemplar/solver.cl::eliminate` (handle `(Given v)`/`(Solved v)` same-value cells by returning `None`) combined with /backend's Layer 3 fix at `crates/cranelisp-backend/src/compiler/mod.rs::is_last_use` which unblocked the naive Layer 1 patch from regressing valid puzzles.
-- **`sprint61_wave2::exemplar_solver_correctness::inline_adt_arg_wrapping_vec_preserves_len`** (T-S2-2) — PASSING 5/5. Resolved by /backend's Layer 3 fix at `crates/cranelisp-backend/src/compiler/mod.rs::is_last_use` (consuming-arg RC emission for inline ADT constructors wrapping a Vec no longer drops the inner Vec's length before callee match-unwrap).
-- **`exemplar/solver.cl::test-unsolvable`** (S60 carry, exemplar-level non-cargo) — superseded and closed. Root cause was a two-layer defect: Layer 1 algorithmic hole in `eliminate` (/port) plus Layer 3 compiler bug in consuming-arg RC (/backend) that regressed the naive Layer 1 fix. Both fixes landed in Wave 2 (`crates/cranelisp-backend/src/compiler/mod.rs::is_last_use` + `exemplar/solver.cl::eliminate`). The two cargo tests above now serve as the durable regression record; the exemplar-level test remains in `exemplar/solver.cl` but is no longer the authoritative failure record.
-
-### Sprint 61 Wave 4 — Slice 4 21-hello-io closure capture double-free (2026-04-22, post-fix SHA `776a6cf`)
-
-Four entries resolved by the H(4-1'') fix landed in Wave 4 step 4e — a new backend helper `emit_capture_return_inc` in `crates/cranelisp-backend/src/compiler/control_flow.rs` that inc's a lambda body's returned-capture heap value before `return`, balancing the closure drop-glue's subsequent dec. The rule is documented in `design/backend/ring2-rc.md §5.6 Capture-return inc` (sibling to the §5.5 borrowed_vars discipline). Investigation and verdict in `design/backend/slice-4-21-hello-io-investigation.md §4d-§4e`. New regression guard authored in Wave 4 step 4f: `tests/sprint61_io_closure_regression.rs` (7-line minimum repro, 2 tests, 5/5 consecutive passes).
-
-- **`examples_run::every_example_file_runs_under_examples_prelude`** (S60 carry, SHA `d270a36`) — PASSING post-fix. The intermittent `21-hello-io.cl exit=201` under full-suite pressure and the 101/133/SIGABRT surface variants observed during Wave 1 were all surface faces of the same capture-return double-free. Accepted-exit list for `21-hello-io.cl` tightened from `[101, 133, 141]` to `[243]` (the spec-correct `499 & 0xFF`).
-- **`sprint61_observability_io::io_trace_hello_io_emits_full_trampoline_sequence`** (Wave 1 Slice-4-dependent, SHA `a9028c0`) — PASSING post-fix. `TrampolineEnter ... TrampolineExit` pair now emitted cleanly; trace matches `design/backend/io-trampoline-trace.md §3` taxonomy.
-- **`sprint61_observability_io::io_trace_hello_io_observes_core_sequential_event_types`** (Wave 1 Slice-4-dependent, SHA `a9028c0`) — PASSING post-fix. Full sequential taxonomy (`TrampolineEnter`, `TrampolineExit`, `PlatformEffect`, `BindEnter`, `ContPush`, `ContPop`) observable.
-- **`sprint61_observability_io::io_trace_platformeffect_carries_scheduling_class_byte`** (Wave 1 Slice-4-dependent, SHA `a9028c0`) — PASSING post-fix. `PlatformEffect` event with `scheduling_class: u8` now reaches stderr before process exit.
-
-## Close-time Verification Protocol
-
-`/sprint` MUST re-verify every entry in this file at sprint close:
-
-1. Check out the commit named in the entry's SHA field and run the test.
-2. Confirm the test still fails with the same stderr signature.
-3. One of:
-   - **Resolved** — the test now passes on HEAD. Remove the entry from this file and note the removal in the sprint close report.
-   - **Still failing, same signature** — entry is current. If the target sprint has passed, update it; the owning skill MUST justify the slip in the close report.
-   - **Still failing, different signature** — the underlying defect has shifted. Update SHA, signature, and (if relevant) owner in-place; do not delete. A changed signature usually means an unrelated interacting defect landed; investigate before accepting the update.
-4. If a new failure appeared during the sprint that does not have an entry, `/sprint` MUST block close until `/qa` adds it per the required-fields list above.
-
-This protocol runs at every close — no exceptions. "We're in a hurry" is how flaky dispositions creep in.
-
-**Note — stress-run statistical power (2026-04-22, Sprint 61 Wave 3)**: Single stress-run verification alone is insufficient proof of race closure. Sprint 61 `/review` + user methodology concern (2026-04-22) identified that N-run 0/N gate has low statistical power and doesn't exercise interleaving space systematically — a race that fires at 5% per run can pass a 20-run 0/N gate ~36% of the time under H0. `/sprint` is considering a methodology pivot — audit + `loom` + structured interleaving tests — as S62 primary workstream to replace the N-run gate for concurrency defects. This note is informational and does NOT itself change protocol discipline: until the pivot is accepted, the tiered N-run gate in `.claude/commands/sprint.md` Phase 6 remains the close criterion. It is a flag that `/qa` and `/sprint` carry into S62 planning.

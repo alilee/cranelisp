@@ -7,6 +7,7 @@ into the owning crate's `#[cfg(test)]` unit tests.
 
 | File | LOC | Tests | Owning skill | FIXME | Quarantined |
 |---|---:|---:|---|---|---|
+| `cache.rs` | 2073 | 55 | /backend | 0120 | 2026-05-03 |
 | `scheduler.rs` | 571 | 18 | /int | 0116 | 2026-05-03 |
 | `wave2_g6.rs` | 370 | 9 | /typecheck | 0117 | 2026-05-03 |
 | `wave3_g8.rs` | 557 | 9 | /backend | 0118 | 2026-05-03 |
