@@ -20,6 +20,21 @@
 // assertion as `(defn main [] expr-or-Bool-witness)` returning Int via
 // the process exit code. Wave 2.5 retains every assertion's spec
 // coverage but routes through REPL canonical instead.
+//
+// ADT match-witness rationale (per Wave 3.5 audit, Part C §"Maintainability"):
+// Several Option/Result tests below use a `match` expression as the witness
+// (e.g., `(match (Some 7) [(Some x) (= x 7) None false])`) rather than
+// constructing the bare ADT and asserting on its display. This is deliberate
+// for two reasons:
+//   1. At top-level REPL, an unconstrained type variable in `(Some 7)` would
+//      need explicit annotation to fix the `b` in `Result a b` (or the unused
+//      None arm in Option). The match-arm body uses `=` / a pinned type to
+//      anchor the type variable, so no annotation is required at the surface.
+//   2. The test asserts `:primitives/Bool true` — a single deterministic
+//      output line — which keeps each test small and the assertion tight.
+// The shape looks more complex than it is; per-test comments explain the
+// witness arm where it is non-obvious. See also `tests/plan/PLAN.md
+// §"Mode canonicalisation"` for the broader Wave 2.5 decision.
 
 #[path = "helpers/mod.rs"]
 mod helpers;
