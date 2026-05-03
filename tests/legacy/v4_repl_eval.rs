@@ -1,3 +1,19 @@
+// QUARANTINED — Sprint 64 test-port. Not built or run by Cargo.
+// FIXME: design/arch/fixmes/0126-harvest-tests-legacy-v4-repl-eval.md
+// Owning crate: src/ (cranelisp binary; REPL session post-FIXME-0109)
+// Owning skill: /int (REPL eval-cycle persistence + error recovery internals)
+// Quarantined: 2026-05-03
+//
+// This file's assertions are mostly already e2e-shaped (subprocess invocation
+// + stdin pipe) but predate the new `Cranelisp` builder API in
+// `tests/helpers/e2e.rs`. The 14 carry-forward concerns are absorbed by
+// tests/repl_lifecycle.rs (eval persistence, error recovery) and
+// tests/repl_introspection.rs (defn display, type display). This file is
+// quarantined as the historical record; its bespoke `run_repl(input, label)`
+// helper and `result_lines` parsing are not duplicated in the new harness.
+// Harvest is OPTIONAL — the carry-forward is complete; quarantine is for
+// provenance.
+
 //! E2E tests for Sprint 44 Step 7: REPL eval via the v4 scheduler.
 //!
 //! These tests validate that the REPL eval path works correctly when

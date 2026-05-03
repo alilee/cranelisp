@@ -1,3 +1,17 @@
+// QUARANTINED — Sprint 64 test-port. Not built or run by Cargo.
+// FIXME: design/arch/fixmes/0125-harvest-tests-legacy-ring3-repl.md
+// Owning crate: src/ (cranelisp binary; REPL session post-FIXME-0109)
+// Owning skill: /int (with /typecheck for symbol-table inspection)
+// Quarantined: 2026-05-03
+//
+// This file's assertions test Rust-internal state (ReplSession Rust API +
+// `s.core.tc.symbol_table()` reach-throughs that 16 of 50 tests use as
+// stub placeholders pending an E2E binary form). The e2e carry-forward
+// for Ring 3 macro-introspection lives in tests/repl_introspection.rs.
+// Harvest the still-meaningful internal-state tests into `#[cfg(test)]`
+// unit tests inside the owning crate per memory/feedback_unit_tests_with_dev.md
+// and memory/project_test_strategy.md.
+
 // Ring 3 REPL experience tests: macro introspection, /expand, /imports, display.
 //
 // These tests validate the Ring 3 REPL features specified in repl/spec.md §11:
