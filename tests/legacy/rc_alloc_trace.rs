@@ -1,3 +1,26 @@
+// QUARANTINED — Sprint 64 test-port. Not built or run by Cargo.
+// FIXME: design/arch/fixmes/0129-harvest-tests-legacy-rc-alloc-trace.md
+// Owning crate: cranelisp-runtime (RC alloc/free counters via stderr trace
+//                channel) + cranelisp-backend (assert_rc_balanced parses
+//                CRANELISP_RC_TRACE=1 stderr output emitted from backend
+//                drop-glue + alloc emission)
+// Owning skill: /runtime (with /backend co-owner — RC-trace plumbing crosses
+//                the boundary; the spec property "alloc count == dealloc
+//                count" is best asserted at the runtime layer where the
+//                counters live)
+// Quarantined: 2026-05-04
+//
+// This file's 81 tests use `compile_and_run_simple` (Rust-API) for the value
+// witness or `assert_rc_balanced` (parses CRANELISP_RC_TRACE=1 stderr alloc
+// counters). The language-observable subset (program returns the expected
+// Int from heap-using bodies) is preserved as e2e tests in
+// `tests/spec_12_runtime.rs` (string alloc/drop, ADT product/sum match,
+// closure captures, Vec COW). The trace-counter portion — alloc/free
+// counter parity assertions via stderr trace parsing — quarantines for
+// /runtime + /backend harvest into `#[cfg(test)]` unit tests inside the
+// owning crates per memory/feedback_unit_tests_with_dev.md and
+// memory/project_test_strategy.md.
+//
 // RC correctness tests for Ring 1.
 //
 // These tests verify that reference counting is balanced: every allocation
