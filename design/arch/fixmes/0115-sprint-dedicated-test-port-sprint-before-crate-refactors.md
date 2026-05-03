@@ -26,22 +26,18 @@ Once Phases 1–3 complete, **then** crate-refactor sprints (FIXME 0109 — int 
 
 `/sprint` schedules:
 
-1. **Sprint N+1** (or whichever is next available): the test-port sprint. Three phases as above.
-2. **Sprint N+2 onward**: crate-refactor sprints (FIXME 0109 first; other refactors as scoped).
+1. **Sprint 64**: the test-port sprint. Three phases as above (Build / Port / Remove). All-`/qa`, no `/int` Phase 0.
+2. **Sprint 65 onward**: crate-refactor sprints (FIXME 0109 first; other refactors as scoped).
 
-`/sprint` confirms with user before sequencing. Estimate: the test-port sprint is likely 1–2 sprints (depends on `tests/` size — currently `tests/e2e.rs` alone is ~2,700 LOC; total `tests/` likely 10k+ LOC of test bodies).
+### Phase 0 collapse (Sprint 64 scoping conversation, 2026-05-03)
 
-The FIXMEs that must land BEFORE the test-port sprint can begin Phase 1 (`/int` work):
-- FIXME 0111 (trace channel separation) — required for `assert_stderr_traces_only` and the regex helper library's `compiler::trace_line()` discrimination.
-- FIXME 0112 (REPL ready sentinel) — required for stdin scripting reliability.
-- FIXME 0110 (Cranelisp.toml + CLI knobs for worker count, cache disable) — required for deterministic-ordering tests.
+The original framing required `/int` to land FIXMEs 0110 (toml/CLI knobs), 0111 (trace channel separation), 0112 (REPL ready sentinel) before Phase 1 could begin. **All three retired** during scope review (this sprint):
 
-Sequencing options for `/sprint`:
-- (a) Bundle FIXMEs 0110/0111/0112 into the test-port sprint's Phase 0.
-- (b) Land them in the prior sprint as preparatory `/int` work.
-- (c) A small `/int`-only sprint dedicated to the three FIXMEs, immediately preceding the test-port sprint.
+- **0111** retired — traces are debugging aids without spec basis. Trace-shaped assertions belong in `/dev` unit tests inside the owning crate, not in `/qa` e2e tests. Stderr discipline reduces to "no trace flag set → stderr empty / spec-error-only", which needs no channel tagging.
+- **0112** retired — pipe-all-stdin then parse-stdout-after-exit covers every realistic e2e need. The "send-then-wait-then-send" request/response pattern was speculative; no concrete test case requires it. Prompt-splitting via `compiler::repl_prompt()` regex separates form outputs in piped runs.
+- **0110** retired — fresh per-test `TempDir` (already harness discipline) means cache-hit testing is test orchestration (run binary twice in same tmpdir), not a binary knob. Worker-count knob was justified by scheduler-trace tests, which by 0111 belong in `/dev`. `[repl] show_times = false` was justified by byte-stable `assert_stdout_eq`; regex-based parsing absorbs prompt timing decoration without needing the knob.
 
-`/qa`'s soft preference: (b) or (c). The test-port sprint is large enough on its own; pre-landing the binary surface gives the port phase a stable target.
+Net: Sprint 64 is pure `/qa`. The harness builds against existing binary surface. Genuine `/int` blockers discovered during port (e.g., binary writes cache outside CWD breaking tmpdir isolation, if observed) file as new targeted FIXMEs.
 
 ## Operational implication / Context
 
