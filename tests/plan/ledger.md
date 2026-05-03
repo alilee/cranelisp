@@ -144,6 +144,24 @@ Sprint 64's parity rule (`sprints/SPRINT.md §Phase 2`) requires every spec-rele
 | Disposition | `out-of-scope (owner=/int)` |
 | Rationale | Defect surfaced during Sprint 64 Wave 2 Batch 1 audit. Tracked by FIXME 0121 (`design/arch/fixmes/0121-int-run-mode-mod-decl-discovery.md`). The integration-tier coverage is preserved in `tests/legacy/cache.rs::cache_multi_module_transitive_imports` (NOT compiled, source archive only). Per parity rule, the e2e form lands failing un-ignored; fix out-of-scope for S64. |
 
+### Sprint 64 Wave 3 — defects surfaced during e2e port (2026-05-03)
+
+Sprint 64 Wave 3 ported the REPL surface (Batch 7) and IO surface (Batch 4)
+to the e2e harness. The REPL port surfaced one defect: `/reset` returns
+"command not yet available in v4 REPL" instead of clearing user state per
+`repl/spec.md §3`. Per parity rule + `memory/feedback_repros_join_suite.md`,
+the failing test commits un-ignored as the durable repro + regression guard.
+
+| Field | Value |
+|---|---|
+| Test name | `repl_lifecycle::reset_clears_user_defns` |
+| SHA | uncommitted (Wave 3) |
+| Stderr / observable signature | REPL stdin pipes `(defn foo [] 42)\n/reset\n(foo)\n`. The REPL prints the defn display, then `command not yet available in v4 REPL` for `/reset`, then evaluates `(foo)` returning `:primitives/Int 42` — proving `/reset` did NOT clear `foo` from the symbol table. Test panics: `/reset must clear user defns; got: ...command not yet available in v4 REPL... :primitives/Int 42`. |
+| Owning skill | `/int` (`src/session_v4.rs::handle_command` ReplCommand::Reset arm — currently returns the literal "not yet available" string instead of clearing `self.shared.symbol_tables`) |
+| Target sprint | TBD — disposition open at S64 close pending `/sprint` decision |
+| Disposition | `out-of-scope (owner=/int)` |
+| Rationale | Defect surfaced during Sprint 64 Wave 3 Batch 7 audit. Tracked by FIXME 0123 (`design/arch/fixmes/0123-int-reset-not-implemented.md`). The integration-tier `repl_experience.rs` did not test `/reset` because `ReplSession::eval` does not parse slash commands — the defect was hidden behind the Rust-API boundary; the e2e port surfaces it. The companion test `reset_session_continues` already passes — the session remains alive across the `/reset` no-op — but `reset_clears_user_defns` must pass for `/reset` to be considered implemented per `repl/spec.md §3`. |
+
 ### Sprint 64 Wave 2.5 — `--link` mode divergence in mode-equivalence subset (2026-05-03)
 
 Wave 2.5 added the mode-equivalence subset (`tests/build_confidence.rs`) to validate that REPL / `--run` / `--link` converge on equivalent observable behaviour for representative language programs. Four representative programs surfaced a `--link`-mode divergence: REPL and `--run` produce the expected Int; `--link` fails with a linker error of the form `ld: warning: alignment (1) of atom '___cranelisp_got_user' ... is too small and may result in unaligned pointers`. All four entries below share the same root cause and FIXME (0122).
