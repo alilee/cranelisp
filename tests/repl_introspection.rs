@@ -31,25 +31,14 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, PreludeVariant};
+use helpers::e2e::Cranelisp;
 
-// =============================================================================
-// Helpers
-// =============================================================================
-
-/// Pipe `lines` to a fresh REPL (no prelude) and return the captured output.
-fn repl(lines: &str) -> helpers::e2e::CrOutput {
-    Cranelisp::new().repl().stdin(lines).output()
-}
-
-/// Pipe `lines` to a fresh REPL with PrimitivesOnly prelude.
-fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
-    Cranelisp::new()
-        .repl()
-        .with_prelude(PreludeVariant::PrimitivesOnly)
-        .stdin(lines)
-        .output()
-}
+// Test-authoring shortcuts: `Cranelisp::repl_capture(lines)` for bare REPL,
+// `Cranelisp::repl_prims_capture(lines)` for REPL with PrimitivesOnly prelude.
+// Both collapse `Cranelisp::new().repl()[.with_prelude(...)].stdin(lines).output()`
+// into one call. The local one-liners below keep call-sites short.
+fn repl(lines: &str) -> helpers::e2e::CrOutput { Cranelisp::repl_capture(lines) }
+fn repl_prims(lines: &str) -> helpers::e2e::CrOutput { Cranelisp::repl_prims_capture(lines) }
 
 // =============================================================================
 // Universal display format — repl/spec.md §1.2 / §4.1
@@ -143,19 +132,12 @@ fn defn_display_one_param() {
 // spec: repl/spec.md §1.3 — polymorphic defn shows type variables
 #[test]
 fn defn_display_polymorphic_id() {
-    let out = repl("(defn id [x] x)\n");
     // The type-var rendering is `(Fn [a] a)` — exact name not load-bearing,
     // but it MUST NOT contain `t0`/`t1`/internal vars.
-    assert!(
-        out.stdout.contains("user/id ; defn"),
-        "polymorphic id should display with `user/id ; defn` classification; got:\n{}",
-        out.stdout
-    );
-    assert!(
-        !out.stdout.contains("t0") && !out.stdout.contains("t1"),
-        "internal type vars must be normalized; got:\n{}",
-        out.stdout
-    );
+    repl("(defn id [x] x)\n")
+        .assert_stdout_contains("user/id ; defn")
+        .assert_stdout_does_not_contain("t0")
+        .assert_stdout_does_not_contain("t1");
 }
 
 // spec: repl/spec.md §1.3 — defn classification is `; defn`, not `closure`
@@ -183,12 +165,8 @@ fn deftype_display_enum() {
 // spec: repl/spec.md §1.3 — deftype enum lists constructors in match line
 #[test]
 fn deftype_display_lists_constructors() {
-    let out = repl("(deftype Color Red Green Blue)\n");
-    assert!(
-        out.stdout.contains("Red") && out.stdout.contains("Green") && out.stdout.contains("Blue"),
-        "deftype display must mention all constructors; got:\n{}",
-        out.stdout
-    );
+    repl("(deftype Color Red Green Blue)\n")
+        .assert_stdout_contains_all(&["Red", "Green", "Blue"]);
 }
 
 // spec: repl/spec.md §1.3 — constructor display tags type and name
@@ -213,14 +191,10 @@ fn list_empty_session() {
 // spec: repl/spec.md §3.3 — defn appears under Fns category
 #[test]
 fn list_shows_fn_after_defn() {
-    let out = repl_prims("(defn foo [] 42)
+    repl_prims("(defn foo [] 42)
 /list
-");
-    assert!(
-        out.stdout.contains("Fns:") && out.stdout.contains("foo"),
-        "/list must show 'Fns:' section containing 'foo' after defn; got:\n{}",
-        out.stdout
-    );
+")
+    .assert_stdout_contains_all(&["Fns:", "foo"]);
 }
 
 // spec: repl/spec.md §3.3 (negative) — /list does NOT show primitives in user module
@@ -339,12 +313,8 @@ fn type_shows_int_for_arithmetic() {
 // spec: repl/spec.md §3.2 — /help lists the command catalogue
 #[test]
 fn help_lists_commands() {
-    let out = repl("/help\n");
-    assert!(
-        out.stdout.contains("/help") && out.stdout.contains("/list") && out.stdout.contains("/sig"),
-        "/help must list /help, /list, /sig at minimum; got:\n{}",
-        out.stdout
-    );
+    repl("/help\n")
+        .assert_stdout_contains_all(&["/help", "/list", "/sig"]);
 }
 
 // =============================================================================

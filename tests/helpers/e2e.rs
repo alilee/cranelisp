@@ -609,6 +609,37 @@ impl CrOutput {
         self
     }
 
+    /// Assert stdout contains EVERY substring in `needles`. Tightens the
+    /// `out.stdout.contains(a) && out.stdout.contains(b)` pattern into a
+    /// single assertion with a uniform error message that names the missing
+    /// needle (vs. `assert!(... && ...)` which only reports the conjunction).
+    pub fn assert_stdout_contains_all(self, needles: &[&str]) -> Self {
+        for needle in needles {
+            if !self.stdout.contains(needle) {
+                panic!(
+                    "stdout missing expected substring '{}' (of {} needles: {:?})\nstdout:\n{}",
+                    needle,
+                    needles.len(),
+                    needles,
+                    self.stdout
+                );
+            }
+        }
+        self
+    }
+
+    /// Assert stdout does NOT contain the substring. Negative-coverage
+    /// counterpart to `assert_stdout_contains`.
+    pub fn assert_stdout_does_not_contain(self, needle: &str) -> Self {
+        if self.stdout.contains(needle) {
+            panic!(
+                "stdout unexpectedly contains '{}'\nstdout:\n{}",
+                needle, self.stdout
+            );
+        }
+        self
+    }
+
     /// Assert stdout matches the given pre-compiled regex.
     pub fn assert_stdout_matches(self, re: &Regex) -> Self {
         if !re.is_match(&self.stdout) {
@@ -1066,5 +1097,30 @@ impl Cranelisp {
             return self;
         }
         self.with_prelude(variant)
+    }
+}
+
+// --- Test-authoring shortcuts for piped-REPL captures ----------------------
+//
+// These collapse the recurring `Cranelisp::new().repl().stdin(lines).output()`
+// chain into a single call. Used by `tests/repl_*.rs` (introspection,
+// lifecycle, negative) where the file's tests overwhelmingly want one of two
+// shapes: bare REPL or REPL with PrimitivesOnly auto-prelude.
+
+impl Cranelisp {
+    /// Pipe `lines` to a fresh REPL (no prelude) and return the captured
+    /// output. Equivalent to `Cranelisp::new().repl().stdin(lines).output()`.
+    pub fn repl_capture(lines: &str) -> CrOutput {
+        Cranelisp::new().repl().stdin(lines).output()
+    }
+
+    /// Pipe `lines` to a fresh REPL with the `PrimitivesOnly` prelude variant
+    /// and return the captured output.
+    pub fn repl_prims_capture(lines: &str) -> CrOutput {
+        Cranelisp::new()
+            .repl()
+            .with_prelude(PreludeVariant::PrimitivesOnly)
+            .stdin(lines)
+            .output()
     }
 }

@@ -22,23 +22,12 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, PreludeVariant};
+use helpers::e2e::Cranelisp;
 
-// =============================================================================
-// Helpers
-// =============================================================================
-
-fn repl(lines: &str) -> helpers::e2e::CrOutput {
-    Cranelisp::new().repl().stdin(lines).output()
-}
-
-fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
-    Cranelisp::new()
-        .repl()
-        .with_prelude(PreludeVariant::PrimitivesOnly)
-        .stdin(lines)
-        .output()
-}
+// Test-authoring shortcuts: see `tests/helpers/e2e.rs`
+// `Cranelisp::repl_capture` / `repl_prims_capture`.
+fn repl(lines: &str) -> helpers::e2e::CrOutput { Cranelisp::repl_capture(lines) }
+fn repl_prims(lines: &str) -> helpers::e2e::CrOutput { Cranelisp::repl_prims_capture(lines) }
 
 // =============================================================================
 // REPL boot — repl/spec.md §6.2 (Startup Banner) + §0.1 (REPL Mode)
@@ -172,18 +161,14 @@ fn redefinition_different_body() {
 // spec: repl/spec.md §15.6 — redefinition propagates through caller chain
 #[test]
 fn redefinition_propagates_through_callers() {
-    let out = repl_prims("(defn inner [] 10)
+    // First call: 10*2=20; after redef inner→5: 5*2=10. Both must appear.
+    repl_prims("(defn inner [] 10)
 (defn outer [] (mul-i64 (inner) 2))
 (outer)
 (defn inner [] 5)
 (outer)
-");
-    // First call: 10*2=20; after redef inner→5: 5*2=10
-    assert!(
-        out.stdout.contains(":primitives/Int 20") && out.stdout.contains(":primitives/Int 10"),
-        "redefinition should propagate; got:\n{}",
-        out.stdout
-    );
+")
+    .assert_stdout_contains_all(&[":primitives/Int 20", ":primitives/Int 10"]);
 }
 
 // =============================================================================
@@ -239,15 +224,12 @@ fn multiple_errors_then_success() {
 #[test]
 fn failed_defn_does_not_pollute() {
     // A defn whose body has a type error should NOT register the symbol.
-    let out = repl_prims("(defn broken [x] (add-i64 x \"nope\"))
+    // `broken` should be undefined; the bare reference produces an error
+    // and the symbol must not appear in REPL output as a registered defn.
+    repl_prims("(defn broken [x] (add-i64 x \"nope\"))
 broken
-");
-    // `broken` should be undefined; `broken` reference produces an error.
-    assert!(
-        !out.stdout.contains("user/broken ; defn"),
-        "failed defn must NOT register; got:\n{}",
-        out.stdout
-    );
+")
+    .assert_stdout_does_not_contain("user/broken ; defn");
 }
 
 // spec: repl/spec.md §5.2 — failed redefn preserves original
@@ -281,15 +263,12 @@ fn defmacro_persists_across_evals() {
 // spec: spec/09-macros.md §9.2 — multi-clause defmacro dispatch (REPL persistence)
 #[test]
 fn multi_clause_defmacro_dispatches() {
-    let out = repl_prims("(defmacro pick ([x] x) ([x y] y))
+    // 1-arg clause returns x → :Int 1; 2-arg clause returns y → :Int 2.
+    repl_prims("(defmacro pick ([x] x) ([x y] y))
 (pick 1)
 (pick 1 2)
-");
-    assert!(
-        out.stdout.contains(":primitives/Int 1") && out.stdout.contains(":primitives/Int 2"),
-        "multi-clause defmacro must dispatch by arity; got:\n{}",
-        out.stdout
-    );
+")
+    .assert_stdout_contains_all(&[":primitives/Int 1", ":primitives/Int 2"]);
 }
 
 // =============================================================================
@@ -345,16 +324,12 @@ fn incremental_build_up() {
 // spec: repl/spec.md §15.2 — interleaved defns and bare expressions
 #[test]
 fn interleaved_defns_and_exprs() {
-    let out = repl_prims("(defn x [] 5)
+    repl_prims("(defn x [] 5)
 (x)
 (defn y [] 10)
 (add-i64 (x) (y))
-");
-    assert!(
-        out.stdout.contains(":primitives/Int 5") && out.stdout.contains(":primitives/Int 15"),
-        "interleaved defns + exprs must work; got:\n{}",
-        out.stdout
-    );
+")
+    .assert_stdout_contains_all(&[":primitives/Int 5", ":primitives/Int 15"]);
 }
 
 // =============================================================================

@@ -22,23 +22,12 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, PreludeVariant};
+use helpers::e2e::Cranelisp;
 
-// =============================================================================
-// Helpers
-// =============================================================================
-
-fn repl(lines: &str) -> helpers::e2e::CrOutput {
-    Cranelisp::new().repl().stdin(lines).output()
-}
-
-fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
-    Cranelisp::new()
-        .repl()
-        .with_prelude(PreludeVariant::PrimitivesOnly)
-        .stdin(lines)
-        .output()
-}
+// Test-authoring shortcuts: see `tests/helpers/e2e.rs`
+// `Cranelisp::repl_capture` / `repl_prims_capture`.
+fn repl(lines: &str) -> helpers::e2e::CrOutput { Cranelisp::repl_capture(lines) }
+fn repl_prims(lines: &str) -> helpers::e2e::CrOutput { Cranelisp::repl_prims_capture(lines) }
 
 // =============================================================================
 // Type errors — repl/spec.md §5.1
@@ -258,13 +247,10 @@ fn macro_wrong_arity_error() {
 // spec: repl/spec.md §3.3 (neg) — /list MUST NOT show primitives in user module
 #[test]
 fn list_neg_no_primitives_in_user() {
-    let out = repl("/list\n");
     // Empty user module — primitives belong in primitives module, not user.
-    assert!(
-        !out.stdout.contains("add-i64") && !out.stdout.contains("mul-i64"),
-        "/list MUST NOT show primitives like add-i64; got:\n{}",
-        out.stdout
-    );
+    repl("/list\n")
+        .assert_stdout_does_not_contain("add-i64")
+        .assert_stdout_does_not_contain("mul-i64");
 }
 
 // spec: repl/spec.md §3.3 (neg) — /list does NOT include the constructor in Fns
@@ -294,21 +280,12 @@ fn list_neg_constructors_not_in_fns() {
 // spec: repl/spec.md §1.2 (neg) — Bool display is a word, not a number
 #[test]
 fn display_neg_bool_not_numeric() {
-    let out = repl_prims("(eq-i64 1 1)\n");
-    // The display must contain "true" or "false" word, not "1"/"0".
-    assert!(
-        out.stdout.contains(":primitives/Bool true")
-            || out.stdout.contains(":primitives/Bool false"),
-        "Bool must display as word, not number; got:\n{}",
-        out.stdout
-    );
-    // Equally — it must NOT show `:primitives/Bool 1` or `:primitives/Bool 0`
-    // (the raw underlying representation).
-    assert!(
-        !out.stdout.contains(":primitives/Bool 1") && !out.stdout.contains(":primitives/Bool 0"),
-        "Bool display MUST NOT show raw 0/1; got:\n{}",
-        out.stdout
-    );
+    // The display must contain "true" word (this expression evaluates to true),
+    // and MUST NOT show raw `:primitives/Bool 1` or `:primitives/Bool 0`.
+    repl_prims("(eq-i64 1 1)\n")
+        .assert_stdout_contains(":primitives/Bool true")
+        .assert_stdout_does_not_contain(":primitives/Bool 1")
+        .assert_stdout_does_not_contain(":primitives/Bool 0");
 }
 
 // spec: repl/spec.md §1.3 (neg) — defn display does NOT say "closure"
@@ -325,13 +302,12 @@ fn display_neg_defn_not_closure() {
 // spec: repl/spec.md §1.3 (neg) — type vars are normalized (no t0/t1/etc.)
 #[test]
 fn display_neg_type_vars_normalized() {
-    let out = repl("(defn id [x] x)\n");
     // Internal type vars t0, t1, ... must NOT leak into display.
-    assert!(
-        !out.stdout.contains(" t0") && !out.stdout.contains(" t1"),
-        "internal type vars must be normalized in display; got:\n{}",
-        out.stdout
-    );
+    // Use space-prefixed needle to avoid false-match against words like
+    // `t01` if a future renderer used dense numbering.
+    repl("(defn id [x] x)\n")
+        .assert_stdout_does_not_contain(" t0")
+        .assert_stdout_does_not_contain(" t1");
 }
 
 // =============================================================================
