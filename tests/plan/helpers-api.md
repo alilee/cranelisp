@@ -120,6 +120,17 @@ impl Cranelisp {
 
     /// Non-panicking variant — returns the `CrError` instead.
     pub fn try_output(self) -> Result<CrOutput, CrError>;
+
+    // === REPL one-liner shortcuts ============================================
+
+    /// Pipe `lines` to a fresh REPL (no prelude) and return the captured
+    /// output. Equivalent to `Cranelisp::new().repl().stdin(lines).output()`.
+    pub fn repl_capture(lines: &str) -> CrOutput;
+
+    /// Pipe `lines` to a fresh REPL with the `PrimitivesOnly` prelude variant
+    /// and return the captured output. Equivalent to
+    /// `Cranelisp::new().repl().with_prelude(PreludeVariant::PrimitivesOnly).stdin(lines).output()`.
+    pub fn repl_prims_capture(lines: &str) -> CrOutput;
 }
 ```
 
@@ -174,6 +185,14 @@ impl CrOutput {
     pub fn assert_stdout_eq(self, expected: &str) -> Self;
     /// Assert stdout contains the literal substring.
     pub fn assert_stdout_contains(self, needle: &str) -> Self;
+    /// Assert stdout contains EVERY substring in `needles`. Folds the
+    /// `out.stdout.contains(a) && out.stdout.contains(b)` pattern into a
+    /// single assertion that names the first missing needle in the panic
+    /// message.
+    pub fn assert_stdout_contains_all(self, needles: &[&str]) -> Self;
+    /// Assert stdout does NOT contain the substring. Negative-coverage
+    /// counterpart to `assert_stdout_contains`.
+    pub fn assert_stdout_does_not_contain(self, needle: &str) -> Self;
     /// Assert stdout matches the given pre-compiled regex (use a helper from `regex::compiler`).
     pub fn assert_stdout_matches(self, re: &Regex) -> Self;
 
