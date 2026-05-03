@@ -328,6 +328,587 @@ implements; `/qa` consumes via the helper API in `helpers.md`.
   form). A stable ready-sentinel on stdout (the prompt line in a
   known shape) lets the harness drive the REPL request/response.
 
+## Sprint 64 port plan
+
+Per Sprint 64 §Phase 2 — for every test file in `tests/`, run a
+**four-step pass**: (1) audit each assertion, (2) port language-behaviour
+assertions forward into a reorganised e2e suite, (3) place them in the
+new shape (by spec section / language area), (4) quarantine the
+remainder in `tests/legacy/` for owning-crate harvest.
+
+Parity rule: every spec-relevant assertion survives the transition —
+either as a new e2e test, or via a FIXME-tracked harvest commitment with
+the source preserved in `tests/legacy/`. No silent coverage drops.
+Defects surfaced during port land as failing tests + FIXMEs (per
+`memory/feedback_failing_not_ignored.md`); no defect-fixing in-sprint.
+
+The user's four decisions (2026-05-03) shape this plan:
+1. `tests/legacy/` is the quarantine path. Cargo only auto-discovers
+   `tests/*.rs` at the top level — nested files under `tests/legacy/`
+   become a source archive: preserved, not built, not run. Owning
+   crates harvest into their own `#[cfg(test)]` unit tests in S65+.
+2. `/qa` does the audit-and-extract NOW, this sprint — for every
+   file, not just the awkward ones. No deferred coverage gap.
+3. The new e2e suite is reorganised during port, not a 1:1 file
+   rewrite. Reorganisation criterion: spec-coverage auditing reads
+   naturally; the file set stays manageable.
+4. Every file gets the four-step pass — even the previously
+   `clean`-classified mechanical-port files. Redundant assertions are
+   dropped; Rust-internal bits quarantined; language-behaviour bits
+   placed in the new shape.
+
+This expands Phase 2 from "mechanical port" to "audit, port, reorganise,
+quarantine" — four-step pass per file.
+
+### Per-file disposition framework
+
+The previous taxonomy (`clean` / `port-with-defect-likely` /
+`holdout-risk` / `delete`) is retired. It classified the file as a
+whole; the four-step pass classifies **assertions within the file**.
+
+Each file gets a per-file disposition with four numbers and three
+pointers:
+
+- **Carry-forward%** — fraction of assertions that become new e2e
+  tests in the reorganised suite. Approximate; the precise count comes
+  out of the audit pass itself.
+- **Quarantine%** — fraction that goes to `tests/legacy/<file>.rs`
+  for harvest into the owning crate's `#[cfg(test)]` unit tests.
+- **Delete%** — fraction that is redundant, covered elsewhere, or
+  obsolete (sprint-NN repros whose defect closed and whose
+  minimum-repro form is already captured by a sibling); dropped
+  outright.
+- **Defect%** — fraction expected to surface a defect under the new
+  e2e form (failing test + FIXME, no in-sprint fix).
+
+(The four numbers add to 100; "Defect%" is a subset of Carry-forward%
+that is expected to fail, surfaced separately because it determines
+ledger pressure.)
+
+- **Target file(s)** in the new suite — one or more files in the
+  reorganised shape (see §"Sprint 64 reorganisation strategy") that
+  receive the carried-forward assertions.
+- **Quarantine FIXME target** — the owning crate's `/dev` skill that
+  must harvest the quarantined assertions in S65+, named when
+  Quarantine% > 0.
+- **Defect-risk notes** — known shapes the new e2e port may surface
+  (e.g., concurrent-load tail-latency, prompt-shape stability,
+  cache-state leakage between `/reset` calls).
+
+### Sprint 64 reorganisation strategy
+
+**Chosen shape: spec-section-anchored with three pragmatic supplements.**
+
+Rationale: the user's framing — "we want to be able to assess
+spec-based test coverage at the end against a manageable set of
+high-quality tests" — names spec coverage as the auditing axis. A
+reviewer's question is "which spec section does this file cover?";
+the file name should answer it directly. The supplements
+(`repl/`, `regression/`, `build_confidence/`) cover behaviour that is
+not in the language spec proper but still must live as e2e: the REPL
+experience spec, durable defect repros, and the release gate.
+
+**Target file tree** (new e2e suite under `tests/`):
+
+```
+tests/
+  spec_03_types.rs               — Type system surface (primitives,
+                                    ADTs, deftype, parameterised types).
+                                    Covers spec/03-types.md.
+  spec_04_expressions.rs         — Expressions, special forms, pattern
+                                    binding, lenient evaluation.
+                                    Covers spec/04-expressions.md.
+  spec_05_definitions.rs         — defn/def/const, multi-clause defn,
+                                    constrained polymorphism.
+                                    Covers spec/05-definitions.md.
+  spec_06_pattern_matching.rs    — match expressions, exhaustiveness,
+                                    nested patterns, wildcards.
+                                    Covers spec/06-pattern-matching.md.
+  spec_07_traits.rs              — deftrait, impl, trait dispatch,
+                                    operator-as-trait-method.
+                                    Covers spec/07-traits.md.
+  spec_08_modules.rs             — Imports, exports, module graph,
+                                    cross-module resolution, qualified
+                                    refs. Covers spec/08-modules.md.
+  spec_09_macros.rs              — defmacro, multi-clause, quasiquote,
+                                    bracket destructuring, macro
+                                    hygiene. Covers spec/09-macros.md.
+  spec_10_io.rs                  — bind!, IO scheduling via Par,
+                                    capture-return-inc, IO trampoline.
+                                    Covers spec/10-io.md.
+  spec_11_stdlib.rs              — Stdlib conformance via the gated
+                                    `use_workspace_stdlib_for_stdlib_conformance_only()`
+                                    entry. Covers spec/11-stdlib.md.
+                                    The single legitimate caller of
+                                    the gated entry.
+  spec_12_runtime.rs             — Lifecycle, RC observable behaviour,
+                                    redefinition semantics, JIT
+                                    reclaim observable through /mem.
+                                    Covers spec/12-runtime.md.
+  spec_appendix_a_builtins.rs    — Primitive function surface
+                                    (add-i64, etc.) — bare-primitive
+                                    paths that don't fit a section
+                                    file. Covers
+                                    spec/appendix-a-builtins.md.
+  repl_introspection.rs          — Slash commands /list, /imports,
+                                    /exports, /sig, /doc, /info,
+                                    /source, /sexp, /ast, /clif,
+                                    /disasm, /type, /mod, /reload,
+                                    /help. Covers
+                                    repl/spec.md §3 (introspection).
+  repl_lifecycle.rs              — Module switching, prelude loading,
+                                    REPL session boot, /run-tests,
+                                    redefinition cycles. Covers
+                                    repl/spec.md §1, §2, §4.
+  repl_negative.rs               — Error paths for slash commands +
+                                    REPL forms (negative tests).
+                                    Covers repl/spec.md §5.
+  cache.rs                       — Cache-hit equivalence, cache
+                                    invalidation, cache-isolation
+                                    (Phase 1 §2 seed test lives here).
+                                    Covers
+                                    design/backend/module-caching.md.
+  examples.rs                    — Smoke runs every `examples/*.cl`.
+                                    Covers spec/appendix-b-examples.md
+                                    (worked examples).
+  exemplar.rs                    — Sudoku Solver showcase. Covers
+                                    end-to-end project-scale
+                                    behaviour. Open Defect-6 ledger
+                                    rows live here.
+  regression.rs                  — Defect-repro tests committed
+                                    forever per
+                                    `memory/feedback_repros_join_suite.md`.
+                                    Each test cites the originating
+                                    sprint + ledger row. The home for
+                                    sprint59/sprint60/sprint61/wave6
+                                    repro content that survives the
+                                    audit.
+  build_confidence.rs            — Release gate per
+                                    `qa.md §"Working build requirement"`:
+                                    binary builds, binary starts, smoke
+                                    set runs (a handful of representative
+                                    `--run` programs and a one-line REPL
+                                    transcript per surface). Authoritative
+                                    sprint-close gate.
+  legacy/                        — Quarantine archive (NOT auto-built).
+    README.md                    — Index: file → FIXME number →
+                                    owning crate → quarantine date.
+    cache.rs                     — Direct cache::* API tests
+                                    (FIXME → /backend).
+    scheduler.rs                 — Direct CompileScheduler API tests
+                                    (FIXME → /int).
+    observability_*.rs           — Direct observability/io_trace API
+                                    tests (FIXME → /int, /backend).
+    v4_jit_reclaim.rs            — Counter atomics + symbol_tables()
+                                    (FIXME → /backend, /int).
+    wave2_g6.rs, wave3_g8.rs,
+    wave4_g9.rs                  — Layer-3 internal-API observations
+                                    (FIXME → /typecheck, /backend, /int).
+    rc_alloc_trace.rs            — RC alloc/free balance assertions
+                                    via stderr trace parsing
+                                    (FIXME → /runtime via /backend).
+    ring4_trace_taxonomy.rs      — Trace event taxonomy assertions
+                                    (FIXME → /runtime, /backend).
+```
+
+**File-count estimate**: ~16 e2e top-level files + 1 `legacy/` dir
+with ~8–10 archive files. Down from 42 source files. Manageable.
+
+**Why not "by language area" alone?** Several files would still
+straddle (e.g., `macros.rs` covers spec/09 plus interactions with
+spec/08 modules; `io.rs` covers spec/10 plus spec/04 lenient `bind!`
+semantics). Spec-section-anchored gives the cleanest 1:1 read.
+Cross-cutting tests live in the supplement files (`regression.rs`,
+`repl_*.rs`, `cache.rs`, `build_confidence.rs`) where the spec axis
+doesn't naturally apply.
+
+**Why not retire `regression.rs` and inline each defect repro into
+its spec-section file?** Per `memory/feedback_repros_join_suite.md`,
+defect repros are committed forever and must be greppable as a
+cohort. A single `regression.rs` with `// spec:` comments naming the
+relevant section gives both axes (defect cohort + spec coverage)
+without forcing repros to colonise spec-section files.
+
+### Per-file disposition table
+
+| Source file | LOC | Tests | Carry% | Quarantine% | Delete% | Defect% | Target file(s) | Quarantine FIXME | Defect-risk notes |
+|---|---:|---:|---:|---:|---:|---:|---|---|---|
+| `cache.rs` | 2073 | 55 | 25 | 70 | 5 | 5 | `cache.rs`, `legacy/cache.rs` | /backend (manifest serialise/round-trip, SymbolTable construction) | Cache-isolation Phase 1 §2 seed test seeds `cache.rs`. The 55 tests split sharply: cache-hit/cache-isolation/build-marker behaviours are e2e-observable; manifest-internals + direct `SymbolTable` construction quarantines. |
+| `e2e.rs` | 2701 | 148 | 70 | 0 | 30 | 5 | `spec_04_*.rs`, `spec_05_*.rs`, `spec_07_*.rs`, `spec_appendix_a_builtins.rs`, `repl_introspection.rs`, `examples.rs` | — | Largest carry-forward win. Inline `NUM_/EQ_/ORD_TRAIT_PRELUDE` constants retire under `with_prelude(PreludeVariant::TestStandard)`. 30% delete: the file accreted across many sprints with significant overlap with `ring0/1/2`. The audit must dedupe before placing. |
+| `examples_run.rs` | 193 | 1 | 100 | 0 | 0 | 5 | `examples.rs` | — | Single test loops over every `examples/*.cl`. Maps to `Cranelisp::new().run(file).with_prelude(...)` in a loop in `examples.rs`. Defect risk: cache-hit interaction across examples in same TempDir. |
+| `examples.rs` | 132 | 15 | 100 | 0 | 0 | 0 | `examples.rs` | — | Examples-as-spec smoke tests; full carry-forward. |
+| `exemplar_solver_correctness.rs` | 302 | 2 | 100 | 0 | 0 | 50 | `exemplar.rs` | — | Defect-6 stack-overflow ledger row preserved. `fixture_tree("exemplar/...", "...")` covers setup. |
+| `exemplar.rs` | 78 | 3 | 100 | 0 | 0 | 0 | `exemplar.rs` | — | Mechanical port. |
+| `io_minimal.rs` | 120 | 5 | 100 | 0 | 0 | 5 | `spec_10_io.rs` | — | Maps cleanly. |
+| `io.rs` | 1360 | 76 | 75 | 15 | 10 | 20 | `spec_10_io.rs`, `legacy/rc_alloc_trace.rs` (partial) | /runtime (IO trace event taxonomy assertions where coverage shifts) | Largest IO surface. capture-return-inc fix from S61 recently landed; ports may resurface concurrent-load tail-latency. The 15% quarantine is `io_trace_*` direct-API patterns that bleed into IO observability. 10% delete is overlap with `io_minimal.rs`. |
+| `lenient.rs` | 289 | 16 | 100 | 0 | 0 | 0 | `spec_04_expressions.rs` | — | Lenient-evaluation path; spec-driven. |
+| `macros.rs` | 441 | 29 | 100 | 0 | 0 | 5 | `spec_09_macros.rs` | — | Multi-clause defmacro path; `with_prelude(PrimitivesOnly)` + user macros via `user.cl`. |
+| `modules.rs` | 530 | 19 | 95 | 0 | 5 | 5 | `spec_08_modules.rs` | — | Direct match to `file()` builder. 5% delete: trivial overlap with `spec_08_*.rs` rows that fall out of the broader audit. |
+| `rc.rs` | 1191 | 81 | 30 | 65 | 5 | 15 | `spec_12_runtime.rs`, `legacy/rc_alloc_trace.rs` | /runtime (alloc/free balance via direct counter inspection) | **Significant coverage shift.** RC e2e-observable properties (program completes, output correct, no leak detector fires) carry forward; alloc/free-balance assertions from `CRANELISP_RC_TRACE=1` stderr parsing quarantine for /runtime to harvest as crate unit tests in S65+. The audit must split each of the 81 tests carefully. |
+| `repl_experience.rs` | 3120 | 190 | 90 | 5 | 5 | 15 | `repl_introspection.rs`, `repl_lifecycle.rs`, `regression.rs` | /int (`/mem` byte-counts, redefinition cycle internals) | Largest single file. Tests every slash command. Defect risk: prompt-shape stability + cache-state leakage between repeated `/reset` calls; some divergences between in-process `ReplSession` and e2e subprocess for `/mem`/`/time`. Sub-batched in Phase 2. |
+| `repl_negative.rs` | 917 | 31 | 100 | 0 | 0 | 5 | `repl_negative.rs` | — | Negative-path tests for slash commands; mechanical mapping to `assert_stderr_contains` / `assert_stdout_contains`. |
+| `ring0.rs` | 1135 | 108 | 60 | 0 | 40 | 5 | `spec_03_types.rs`, `spec_04_expressions.rs`, `spec_05_definitions.rs`, `spec_appendix_a_builtins.rs` | — | Ring 0 conformance. **High delete% — overlaps heavily with `e2e.rs` and the ring boundaries no longer align with spec sections** (rings retired Sprint 64). The audit redistributes to the spec-section homes, dropping duplicates the broad-surface `e2e.rs` audit already covers. |
+| `ring1.rs` | 2253 | 190 | 65 | 0 | 35 | 5 | `spec_05_definitions.rs`, `spec_07_traits.rs`, `spec_08_modules.rs`, `spec_09_macros.rs` | — | Ring 1 conformance; same delete dynamic as `ring0`. The audit dedupes against `e2e.rs` carry-forward and per-feature files. |
+| `ring2.rs` | 2484 | 199 | 70 | 0 | 30 | 5 | `spec_05_definitions.rs`, `spec_06_pattern_matching.rs`, `spec_07_traits.rs`, `spec_12_runtime.rs` | — | Ring 2 conformance; ADTs, traits, polymorphic impls. Higher carry% than ring0/1 because spec/06 + spec/12 surface depends on ring2-tier features. |
+| `ring3_repl.rs` | 825 | 50 | 95 | 0 | 5 | 10 | `repl_introspection.rs`, `repl_lifecycle.rs` | — | REPL Ring-3 surface; co-batches with `repl_experience.rs` audit. |
+| `ring4_trace.rs` | 578 | 31 | 30 | 65 | 5 | 10 | `spec_12_runtime.rs`, `legacy/ring4_trace_taxonomy.rs` | /backend, /runtime (event taxonomy assertions) | Same trace-channel disposition as `rc.rs`. e2e-observable RC/scheduler behaviour carries; event taxonomy assertions quarantine. |
+| `scheduler.rs` | 571 | 18 | 0 | 100 | 0 | 0 | — | /int (entire file relocates as `#[cfg(test)]` inside scheduler crate post FIXME 0109 split) | All tests construct `cranelisp::scheduler::CompileScheduler` directly. Zero e2e analogue. Full quarantine. The scheduler's observable behaviour is covered indirectly by every other e2e test in the new suite. |
+| `sketch_port.rs` | 1886 | 148 | 50 | 0 | 50 | 30 | `spec_03_types.rs` thru `spec_12_runtime.rs` (distributed) | — | 11 known pre-existing failures. Aggressive delete% reflects: many sketch-port tests duplicate ring0/1/2 + e2e.rs coverage already; the audit drops duplicates. The ones that carry forward distribute by spec section. The 30% defect% is the pre-existing failure cluster preserved as ledger rows. |
+| `sprint23.rs` | 2744 | 61 | 80 | 5 | 15 | 25 | `regression.rs`, `repl_lifecycle.rs`, `spec_08_modules.rs` | /int (heisenbug-race race-related internals) | Includes `heisenbug_race_reduced_concurrent_import_pairs` ledger entry — preserves signature. Defect risk: H6 residue ratecard may shift under e2e cadence. 5% quarantine isolates internal-API observation; 15% delete is duplication with sibling sprint-NN files. |
+| `sprint59_cache_repro.rs` | 152 | 2 | 100 | 0 | 0 | 0 | `cache.rs`, `regression.rs` | — | Cache-hit prelude-restoration regression guard; maps to `output().run_again().output()`. |
+| `sprint59_defects456_repro.rs` | 1766 | 34 | 90 | 0 | 10 | 30 | `regression.rs`, `exemplar.rs` | — | Defects 4/5 closed; Defect 6 ledger entries present. Mechanical port using `fixture_tree`. 10% delete: duplicates with `wave6_demo_repros.rs`. |
+| `sprint59_neg.rs` | 271 | 5 | 100 | 0 | 0 | 5 | `spec_08_modules.rs`, `repl_negative.rs` | — | Module-boundary negative tests. |
+| `sprint60_cache_build_marker.rs` | 261 | 3 | 100 | 0 | 0 | 0 | `cache.rs`, `regression.rs` | — | Maps to `tmp_exists` / `read_tmp` on `.cranelisp-cache/`. |
+| `sprint60_observability.rs` | 182 | 4 | 30 | 65 | 5 | 5 | `spec_12_runtime.rs`, `legacy/observability_*.rs` | /backend (trace event observation) | Trace-channel inspection; same disposition as `rc.rs` / `ring4_trace.rs`. |
+| `sprint60_reduction.rs` | 721 | 17 | 95 | 0 | 5 | 5 | `regression.rs`, `cache.rs` | — | Cache-reuse crash reductions. |
+| `sprint60_run_tests_reduction.rs` | 325 | 5 | 100 | 0 | 0 | 5 | `regression.rs`, `repl_lifecycle.rs` | — | `/run-tests` reductions. |
+| `sprint61_bare_primitive.rs` | 267 | 5 | 100 | 0 | 0 | 0 | `regression.rs`, `spec_appendix_a_builtins.rs` | — | Bare-primitive-value-path regression guard. |
+| `sprint61_io_closure_regression.rs` | 215 | 2 | 100 | 0 | 0 | 0 | `regression.rs`, `spec_10_io.rs` | — | Capture-return-inc regression guard. |
+| `sprint61_observability_io.rs` | 446 | 7 | 30 | 70 | 0 | 5 | `regression.rs`, `legacy/observability_io.rs` | /runtime (io_trace direct API) | Hybrid — subprocess part is e2e (carry); direct API quarantines. Three Slice-4-dependent tests resolved per ledger; preserve regression-guard rows. |
+| `sprint61_observability_scheduler.rs` | 483 | 9 | 5 | 95 | 0 | 0 | `regression.rs` (exit-code smoke only), `legacy/observability_scheduler.rs` | /int (post FIXME-0109 — observability lives where the scheduler lives) | Almost entirely Rust-API. |
+| `sprint61_observability_shared.rs` | 251 | 3 | 0 | 100 | 0 | 0 | — | /int, /runtime (`trace_instant_anchor` direct API) | Full quarantine. |
+| `stdlib.rs` | 699 | 54 | 100 | 0 | 0 | 5 | `spec_11_stdlib.rs` | — | The named exception. Ports onto `use_workspace_stdlib_for_stdlib_conformance_only()` — the single legitimate caller. |
+| `v4_jit_reclaim.rs` | 700 | 6 | 30 | 70 | 0 | 5 | `spec_12_runtime.rs` (`/mem`-based smoke), `legacy/v4_jit_reclaim.rs` | /backend (counter atomics), /int (`symbol_tables()` introspection) | Decision 31 reclaim contract observable through `/mem` — preserve as smoke. Precise byte-counts are runtime-process-global atomics — quarantine. |
+| `v4_pipeline.rs` | 1206 | 47 | 90 | 0 | 10 | 5 | `spec_05_definitions.rs`, `spec_08_modules.rs`, `repl_lifecycle.rs` | — | Already e2e-shaped; 10% delete is overlap with `e2e.rs` and `ring{0,1,2}.rs` carry-forward set. |
+| `v4_repl_eval.rs` | 567 | 14 | 100 | 0 | 0 | 5 | `repl_lifecycle.rs`, `spec_appendix_a_builtins.rs` | — | Replaces inline `PRIMS` const with `with_prelude(PreludeVariant::PrimitivesOnly)`. |
+| `wave2_g6.rs` | 370 | 9 | 0 | 100 | 0 | 0 | — | /typecheck, /backend (Layer-3 `Code{ptr}` writes on `ModuleEntry::Def`) | Self-described "Layer 3 integration"; full quarantine. |
+| `wave3_g8.rs` | 557 | 9 | 0 | 100 | 0 | 0 | — | /backend (Layer-3 internal observations) | Full quarantine. |
+| `wave4_g9.rs` | 534 | 4 | 0 | 100 | 0 | 0 | — | /int (persistent-priority-worker observation) | Full quarantine. |
+| `wave6_demo_repros.rs` | 495 | 5 | 100 | 0 | 0 | 5 | `regression.rs`, `exemplar.rs` | — | Defect-6 demo-level reductions; ledger rows preserved. |
+
+**Aggregate** (rough): ~57% carry-forward, ~25% quarantine, ~13%
+delete (mostly `ring*.rs` and `sketch_port.rs` deduplication against
+broad-surface ports), ~5% expected defects (~80–110 failing tests
+landing as ledger rows + FIXMEs).
+
+### Audit workflow specification
+
+The four-step pass is the unit of Phase 2 work. This section specifies
+how to perform it concretely.
+
+#### What is a "language-behaviour assertion"?
+
+An assertion is **language-behaviour** if and only if the property it
+checks is observable from outside the binary: stdout, stderr, exit
+code, or a filesystem artefact under the per-test TempDir, while
+running `target/debug/cranelisp` as a subprocess.
+
+Anything that requires inspecting one of the following is
+**Rust-internal** and quarantines:
+
+- `cranelisp::*` types — `CompilerSession`, `SharedState`, `SymbolTable`,
+  `ModuleEntry`, `Code{ptr}`, `Sess` …
+- `ReplSession::*` private getters — `symbol_tables()`,
+  `show_entry(...)`, in-process module graph inspection.
+- Runtime counter atomics — `cranelisp_runtime::bytes_current()`,
+  `alloc_count()`, `dealloc_count()`, scheduler observability gauges.
+- Direct construction of session primitives, `CompileScheduler`,
+  `cranelisp_backend::cache::*`, `cranelisp_runtime::io_trace::*` ABIs.
+- Reading internal struct fields by name (manifest serialisation
+  shape, `CacheManifest::version`, etc.) when not also written through
+  the binary's CLI/file surface.
+
+#### Threshold rule for borderline assertions
+
+Some assertions check a property that is observable BOTH internally
+(e.g., "the type checker inferred `Int` for `x`") AND externally
+(e.g., "the REPL prints `:Int 3` for `x`"). The internal observation
+is more direct; the external observation is more durable.
+
+**Default rule: prefer carry-forward when both are possible.** The
+binary's observable surface is where the spec lives; if the property
+shows up there, the e2e test is the right home. The internal version
+is then redundant and quarantines or deletes.
+
+**Quarantine only when e2e cannot observe the property.** If carrying
+forward would require asserting on the absence of evidence (e.g.,
+"the optimiser elided this allocation" — observable only via RC trace
+output that the harness intentionally rejects, per `helpers.md`
+§"What the harness does NOT provide"), quarantine it.
+
+**Tie-breaker for "redundant"**: the test deletes only if a sibling
+test in the carry-forward set already checks the same spec property
+under at least one of the same input shapes. Otherwise carry forward.
+
+#### `tests/legacy/` mechanism
+
+Cargo's auto-discovery for integration tests scans `tests/*.rs` at
+the top level only. Files under `tests/legacy/` are NOT compiled
+into test binaries by `cargo test` / `cargo nextest run`. This is
+the load-bearing property: quarantined files are preserved as source
+archive without contributing to test runs.
+
+**Per-file header comment** (every `tests/legacy/*.rs` opens with):
+
+```rust
+// QUARANTINED — Sprint 64 test-port. Not built or run by Cargo.
+// FIXME: design/arch/fixmes/NNNN-harvest-tests-legacy-FILE.md
+// Owning crate: cranelisp-{backend,runtime,frontend,typecheck} (or src/)
+// Owning skill: /backend (or /runtime, /int, /typecheck, /frontend)
+// Quarantined: 2026-MM-DD
+//
+// This file's assertions test Rust-internal state with no e2e
+// equivalent. Harvest into `#[cfg(test)]` unit tests inside the
+// owning crate per memory/feedback_unit_tests_with_dev.md and
+// memory/project_test_strategy.md. Source preserved verbatim;
+// translation may require dev-dependency adjustments and import
+// rewrites against the post-FIXME-0109 internal surface.
+```
+
+**Index file** (`tests/legacy/README.md`):
+
+```markdown
+# tests/legacy/ — Quarantine archive
+
+Source archive of test files moved out of the e2e tier during the
+Sprint 64 test-port. Not built by Cargo (nested directory under
+`tests/` is not auto-discovered). Each file is awaiting harvest
+into the owning crate's `#[cfg(test)]` unit tests.
+
+| File | LOC | Tests | Owning skill | FIXME | Quarantined |
+|---|---:|---:|---|---|---|
+| `cache.rs` | ~1500 | ~38 | /backend | 0NNN | 2026-MM-DD |
+| `scheduler.rs` | 571 | 18 | /int | 0NNN | 2026-MM-DD |
+| ... | | | | | |
+
+## Discipline
+
+- Files here are NOT modified after quarantine. They are read-only
+  archive until the FIXME is actioned and the file is deleted.
+- Each FIXME is filed against the owning crate's `/dev` skill with
+  a `harvest:` prefix in the title (e.g.,
+  "harvest: tests/legacy/cache.rs into cranelisp-backend unit tests").
+- When a file is fully harvested, it is deleted (not blanked) and
+  its row removed from this README. Git history preserves
+  provenance.
+```
+
+#### FIXME format for harvest commitments
+
+Every quarantined file requires a FIXME under
+`design/arch/fixmes/NNNN-harvest-<file>.md`:
+
+```yaml
+---
+number: NNNN
+target: /backend         # or /runtime, /int, /typecheck, /frontend
+filed_by: /qa
+filed_at: 2026-MM-DD
+sprint_filed: 64
+refers_to: tests/legacy/<file>.rs
+status: open
+---
+
+# Harvest tests/legacy/<file>.rs into <crate> unit tests
+
+## Issue
+The Sprint 64 test-port quarantined this file because its assertions
+test Rust-internal state with no e2e equivalent (counter atomics,
+direct cache::* API, scheduler observability, …). Per the two-tier
+strategy (`memory/project_test_strategy.md`), these belong as
+`#[cfg(test)]` unit tests inside the owning crate.
+
+## Proposed resolution
+- Read each test in `tests/legacy/<file>.rs`.
+- Translate into `#[cfg(test)]` modules inside
+  `crates/<crate>/src/<module>.rs` adjacent to the code under test.
+- Use cranelisp-frontend's `parse` + `build_program` for AST input
+  per `tests/CLAUDE.md §"Isolating Cross-Crate Failures"` — do NOT
+  hand-construct AST.
+- When complete, delete `tests/legacy/<file>.rs` and remove its row
+  from `tests/legacy/README.md`. Git history preserves provenance.
+
+## Operational implication / Context
+This harvest is a coverage-preservation commitment from S64. Until
+it lands, the assertions are inert (the file is not compiled). The
+FIXME blocks no other work — but the longer it sits, the further
+the post-FIXME-0109 internal surface drifts from the quarantined
+shape and the more rewrite the harvest requires.
+```
+
+#### Per-file commit discipline
+
+**Recommendation: per-file commit.** Each source file's audit + carry-forward
+ports + quarantine + FIXME filing land as a single commit. Rationale:
+
+- The audit is the load-bearing creative work; a per-file commit
+  message is the audit trail (which assertions carried, which
+  quarantined, which deleted, why).
+- Failing tests landed during the audit pair with their `Ledger:`
+  trailer (per the lockstep mechanism below) at file granularity —
+  one commit, one ledger update, one diff to review.
+- Reverting an audit decision is a clean revert.
+
+Exception: trivial files with full carry-forward may batch by topic
+(e.g., `examples.rs` + `examples_run.rs` together; the three
+`sprint60_*.rs` cache files together). Default to per-file unless the
+batch is clearly mechanical and < ~5 commits-worth.
+
+### Phase 2 batches
+
+Batches are organised by **destination file in the new shape** rather
+than by source-file affinity. This makes the reorganisation visible at
+the batch level: each batch produces (or extends) a discrete set of
+target files, with the corresponding `tests/legacy/` quarantines and
+FIXMEs.
+
+Batch numbers are `/qa`'s proposal; Phase 4 finalises wave
+organisation.
+
+| Batch | Targets | Source files audited | Approx audited LOC | Notes |
+|---:|---|---|---:|---|
+| 1 | `cache.rs` + `legacy/cache.rs` (Phase 1 §2 seed) | `cache.rs`, `sprint59_cache_repro.rs`, `sprint60_cache_build_marker.rs` | 2,486 | Phase 1 §2 cache-isolation test seeds the new `cache.rs`. Cache-internals quarantine into `legacy/cache.rs`. Smallest batch by source-file count, large by audit volume — start here for momentum. |
+| 2 | `spec_03_types.rs`, `spec_04_expressions.rs`, `spec_05_definitions.rs`, `spec_06_pattern_matching.rs`, `spec_07_traits.rs`, `spec_appendix_a_builtins.rs` | `e2e.rs`, `ring0.rs`, `ring1.rs`, `ring2.rs`, `lenient.rs`, `sketch_port.rs` (partial) | ~10,000 | The bulk of conformance carry-forward. Significant dedupe pressure between `e2e.rs` and the ring files. Large batch — sub-batch internally by spec-section file. The audit must dedupe before placing; otherwise Carry%×4 source files pile up against the same target. |
+| 3 | `spec_08_modules.rs`, `spec_09_macros.rs` | `macros.rs`, `modules.rs`, `sprint59_neg.rs`, `ring1.rs` (partial), `e2e.rs` (partial), `sketch_port.rs` (partial) | ~1,300 (incremental) | Module + macro surface. `with_prelude(PrimitivesOnly)` + user-defined macros via `user.cl`. |
+| 4 | `spec_10_io.rs` + `legacy/observability_io.rs` (partial) + `legacy/rc_alloc_trace.rs` (partial) | `io.rs`, `io_minimal.rs`, `sprint61_io_closure_regression.rs`, `sprint61_observability_io.rs` | 2,141 | IO surface. capture-return-inc residues + trampoline trace observability. Trace-channel parsing migrates to `legacy/`. |
+| 5 | `spec_11_stdlib.rs` | `stdlib.rs` | 699 | Smallest batch. The `use_workspace_stdlib_for_stdlib_conformance_only()` named exception. |
+| 6 | `spec_12_runtime.rs` + `legacy/v4_jit_reclaim.rs` + `legacy/observability_*.rs` + `legacy/rc_alloc_trace.rs` (rest) + `legacy/ring4_trace_taxonomy.rs` | `rc.rs`, `ring4_trace.rs`, `sprint60_observability.rs`, `sprint61_observability_scheduler.rs`, `sprint61_observability_shared.rs`, `v4_jit_reclaim.rs` | 3,375 | Heaviest quarantine batch. RC alloc/free balance, JIT reclaim counter atomics, scheduler observability all migrate to `legacy/`. Per-file commits because each FIXME targets a different owning skill. |
+| 7 | `repl_introspection.rs`, `repl_lifecycle.rs`, `repl_negative.rs` | `repl_experience.rs`, `repl_negative.rs`, `ring3_repl.rs`, `v4_repl_eval.rs` | 5,429 | REPL experience surface. **Sub-batch `repl_experience.rs` to two commits** (introspection vs. lifecycle). Common defect risk: prompt stability + `/reset` cache-state. |
+| 8 | `examples.rs`, `exemplar.rs`, `regression.rs` (defect cluster) | `examples.rs`, `examples_run.rs`, `exemplar.rs`, `exemplar_solver_correctness.rs`, `sprint23.rs`, `sprint59_defects456_repro.rs`, `sprint60_reduction.rs`, `sprint60_run_tests_reduction.rs`, `sprint61_bare_primitive.rs`, `wave6_demo_repros.rs`, `v4_pipeline.rs` (lifecycle bits) | ~9,000 | The defect-repro cohort + examples + exemplar. Largest source-file count; mostly mechanical. |
+| 9 | `legacy/scheduler.rs`, `legacy/wave2_g6.rs`, `legacy/wave3_g8.rs`, `legacy/wave4_g9.rs` (full quarantine, no e2e carry) | `scheduler.rs`, `wave2_g6.rs`, `wave3_g8.rs`, `wave4_g9.rs` | 2,032 | Pure-quarantine batch. No e2e carry-forward. Files move under `legacy/` with header + FIXMEs. May land in parallel with earlier batches because the move is mechanical. |
+| 10 | `build_confidence.rs` | (synthesised — no source file maps directly) | — | The release gate per `qa.md §"Working build requirement"`. Hand-authored from the smoke-set definition; not a port. |
+
+**Volume estimate**: ~36,000 source LOC audited; ~57% carry-forward
+becomes ~1,500–2,000 e2e tests in the reorganised suite (the audit
+de-dupes against itself heavily for the ring/sketch/e2e overlap);
+~25% quarantines as ~10 `legacy/*.rs` archive files; ~13% deletes
+silently; ~80–110 failing tests land as ledger rows + FIXMEs.
+
+### Sprint sizing assessment — recommend two-sprint split
+
+**Honest read: the four-step pass per file is significantly more
+work than the previous "mechanical port" framing.** The previous
+plan estimated 8 batches as "one sprint of work" under
+classify-then-port. Under audit-then-port-then-reorganise-then-quarantine:
+
+- The audit step is creative work, not mechanical. Each file's tests
+  must be read, classified, and the fate of each assertion decided
+  against the threshold rule. For `repl_experience.rs` (190 tests),
+  that is ~4–6 hours of careful reading at minimum.
+- The reorganisation step routes carry-forward assertions across 16
+  destination files. Each routing decision is small but they
+  accumulate; for ~1,500 carried assertions, this is the long pole.
+- The dedupe pressure between `e2e.rs`, `ring0/1/2.rs`,
+  `sketch_port.rs`, and `v4_pipeline.rs` is real — these files
+  overlap heavily and the dedup decisions are the hardest part of
+  Batch 2. Mis-routing or under-dedup leaves the new suite with
+  duplicated coverage that defeats the manageability goal.
+- Failing tests landing during port consume ledger discipline budget;
+  the lockstep mechanism (below) is sound but each ledger entry is
+  ~10 minutes of authoring.
+
+**Proposed split** (`/qa` recommendation; user/`/sprint` decide at
+Phase 4 wave gate):
+
+- **Sprint 64**: Phase 1 (harness build + helpers.md trim +
+  cache-isolation seed test) + Phase 2 Batches 1, 5, 7, 9, 10.
+  Targets the smaller, more independent batches + the heavy REPL
+  surface + pure-quarantine cleanup + the build_confidence.rs gate.
+  Phase 3 (legacy-helper deletion) does NOT close in S64 because
+  Batches 2, 3, 4, 6, 8 are still on `ReplSession`.
+- **Sprint 65**: Phase 2 Batches 2, 3, 4, 6, 8 + Phase 3 (delete
+  `tests/helpers/mod.rs::ReplSession` and integration-tier helpers).
+  Crate-refactor sprints (FIXME 0109) follow S65, not S64.
+
+Alternative: **single-sprint compression** — accept that S64 is a
+3–4 week sprint by calendar time rather than the usual cadence. The
+user's framing ("the sprint is now bigger; that's accepted") reads
+as openness to this; the recommendation above is `/qa`'s judgment
+that the work decomposes cleanly at the natural midpoint of "REPL +
+small surfaces" vs. "broad conformance + IO + runtime quarantine".
+
+Either way, the test-port sprint precedes any crate-refactor sprint
+that touches `session_v4`/`worker` (FIXME 0115 lock-in is preserved).
+
+### Ledger lockstep mechanism
+
+Per Sprint 64 §Phase 2 (parity rule + failing-not-ignored), every batch
+that lands new failing tests MUST update `tests/plan/ledger.md` in the
+same commit. The mechanism:
+
+1. **Same-commit invariant.** Every PR landing one or more failing
+   tests includes a diff to `tests/plan/ledger.md` in the same commit.
+   Each newly-failing test is either added to the ledger as a new
+   entry (with all six required fields per `ledger.md §Discipline`)
+   or extends an existing entry's signature/SHA. Sprint 64 close
+   verification grep: for each test marked `// FIXME(/skill)` in the
+   batch's ported files, there exists a row in `ledger.md` whose test
+   name matches.
+
+2. **Commit-message citation.** Every Phase 2 commit message MUST
+   include a `Ledger:` trailer naming the entries it touched, or
+   `Ledger: no change` if all ports passed. Examples:
+
+   ```
+   port — Batch 5 RC + exemplar (commit 1/3)
+
+   Ledger: extends sprint59_defects456_repro::d6_exemplar_propagate_only_does_not_segv
+           (SHA refresh; signature unchanged)
+   ```
+
+   ```
+   port — Batch 1 Ring 1 (commit 2/4)
+
+   Ledger: no change
+   ```
+
+   The trailer is grep-able and forms the audit trail across the sprint.
+
+3. **Inline FIXME ↔ ledger row pairing (grep invariant).** The
+   discipline `memory/feedback_failing_not_ignored.md` requires
+   un-ignored failing tests; the ledger is the inventory of those
+   failures. For every `// FIXME(/skill)` annotation on a failing
+   test (the spec-side traceability), there MUST be a corresponding
+   ledger row naming the same skill as owner. Phase 4 may add a CI
+   lint that greps both files and asserts the bijection; Phase 3
+   specifies the discipline.
+
+This mechanism is the closure for `/arch` Finding 4 (Phase 2 cliff
+discipline). Phase 4's wave-gate check is a manual scan: for each
+batch, `/sprint` confirms commit messages carry the `Ledger:` trailer
+and that the `// FIXME(/skill)` ↔ ledger-row pairing holds for the
+batch's diff.
+
+### Open questions for Phase 4 wave organisation
+
+1. **Single sprint vs. two-sprint split** (see §"Sprint sizing
+   assessment" above). `/qa` recommends two-sprint split (S64 +
+   S65); the user's earlier framing accepts the bigger scope but
+   does not yet commit to either model. Phase 4 wave-gate is the
+   decision point.
+
+2. **Pure-quarantine Batch 9 sequencing.** The four files
+   (`scheduler.rs`, `wave2_g6.rs`, `wave3_g8.rs`, `wave4_g9.rs`)
+   move mechanically — they have zero carry-forward. Phase 4 decides
+   whether Batch 9 lands at the front (so the FIXMEs are in queue
+   ASAP for S65+ harvest planning) or at the end (so the e2e
+   reorganisation is visible in PR history first).
+
+3. **`rc.rs` trace-channel coverage shift.** Moving alloc/free-balance
+   assertions from e2e into `cranelisp-runtime` unit tests is a
+   real coverage shift, not a pure relocation — the unit tier
+   cannot observe what a full subprocess invocation does (e.g.,
+   no leak across `--run` + REPL boundary). The 30%/65%/5% split
+   on `rc.rs` is `/qa`'s estimate; Phase 4 decides whether to
+   coordinate a wider audit with `/runtime` `/dev` before
+   committing the split, or accept the estimate and harvest in S65.
+
+4. **Cache-isolation seed test** — placed in the new `cache.rs`
+   (Batch 1) per Phase 1 §2. Confirmed; no longer open.
+
+5. **Inline `// FIXME(/skill)` ↔ ledger row pairing** under the
+   wave-gate manual scan: with ~80–110 expected failing tests
+   across batches, the manual grep may not scale. Phase 4 decides
+   whether the bijection check becomes a CI lint immediately
+   (preferred) or a manual scan during S64/65 with a CI lint
+   committed as a sprint-close FIXME against `/qa` itself.
+
+6. **`spec_06_pattern_matching.rs` sourcing.** Pattern matching
+   coverage is currently spread across `ring2.rs` + `e2e.rs` +
+   `sketch_port.rs`. The audit's dedupe judgment is the load-bearing
+   step. Phase 4 decides whether this file gets a dedicated audit
+   sub-batch or piggybacks on Batch 2's sweep.
+
 ## What this plan deliberately does NOT do
 
 - **Does not enumerate every spec section today.** That work is the

@@ -8,6 +8,10 @@ cranelisp execution with controlled imports and preludes, in a few
 lines of Rust**. Helpers are process-spawn + I/O capture + tmpdir
 fixture machinery — never session builders.
 
+Companion: `helpers-api.md` — concrete Rust signatures the Phase 1
+implementation codes against. This document is the design intent;
+`helpers-api.md` is the contract.
+
 ## Design constraints
 
 1. **Subprocess only.** Every helper spawns `target/debug/cranelisp` as
@@ -15,48 +19,53 @@ fixture machinery — never session builders.
    `SharedState`, no internal-API construction. Per the strategy
    direction recorded in
    `memory/project_test_strategy.md` (2026-05-03).
+
 2. **Isolated by construction.** Every test gets its own fresh
-   tmpdir; no checked-in path is mutated. Reads from
-   `project_root()` are limited to `target/debug/cranelisp`,
-   `stdlib/`, `target/debug/*.so/.dylib/.dll` (platform DLLs),
-   and `tests/fixtures/` — and require a `// read-only` annotation
-   per `tests/CLAUDE.md §"Fresh Temp Directory per Test"`.
+   `tempfile::TempDir`, used as the child's CWD. Because
+   `project_root = std::env::current_dir()` (per
+   `design/int/repl-lifecycle.md §"Project root resolution"`), this
+   makes the TempDir the project root the binary sees — and per
+   `design/backend/module-caching.md §"Cache directory layout"` the
+   cache lives at `{project_root}/.cranelisp-cache/`, so cache state
+   is isolated to the per-test TempDir by construction. No
+   checked-in path is mutated. Reads from `project_root()` are
+   limited to `target/debug/cranelisp`, `stdlib/`, the platform DLLs
+   under `target/debug/`, and `tests/fixtures/` — and require a
+   `// read-only` annotation per
+   `tests/CLAUDE.md §"Fresh Temp Directory per Test"`.
+
 3. **Composable.** A test author should be able to specify "no
    prelude, this user.cl, these helper modules, this stdin" in a
    builder chain that reads as one expression. No manual file
    layout, no manual env-var assembly.
-4. **One small surface.** The whole API fits in one file
-   (`tests/helpers/e2e.rs`) and one struct family (`Cranelisp`,
-   `CrInvocation`, `CrOutput`). Existing
-   `tests/helpers/mod.rs::ReplSession` (the integration-tier wrapper)
-   stays for back-compat with the ~30 pre-existing test files but
-   is **frozen** — no new methods, no new entry points.
-5. **Determinism via test-side exclusion + binary configuration.** The
-   harness does NOT force a global "deterministic output mode" on the
-   binary. Two narrower mechanisms cover the actual need:
-   (a) Tests **exclude non-deterministic content** from golden / equality
-   comparisons via the regex helper library (§"Regex helper library").
-   `/time` output is matched by a named regex, not bytewise. Allocation
-   pointers in trace lines are matched by `compiler::alloc_addr()`, etc.
-   (b) Tests that depend on event **ordering** (scheduler trace, worker
-   interleaving, cache-hit races) configure the binary via
-   `Cranelisp.toml` and CLI flags (§"Configuration: Cranelisp.toml + CLI
-   options") — e.g., set worker count to 1 to serialise event emission,
-   pin scheduler quantum, etc. The harness exposes these as builder
-   methods.
-   The only universal "stable output" requirement is the REPL prompt
-   shape (FIXME 0112) — needed for stdin scripting, not for golden
-   determinism. The blanket `--deterministic` mode (the original FIXME
-   0110 framing) is rejected as overdone.
+
+4. **One small surface.** The whole API fits in two files:
+   `tests/helpers/e2e.rs` (`Cranelisp`, `CrInvocation`, `CrOutput`,
+   `PreludeVariant`) and `tests/helpers/regex.rs` (the named regex
+   library). The legacy `tests/helpers/mod.rs::ReplSession` is
+   retired in Phase 3.
+
+5. **Non-deterministic content is excluded by named regex helper, not
+   suppressed by binary mode.** The harness does NOT force a global
+   "deterministic output mode" on the binary. Tests **exclude
+   non-deterministic content** from golden / equality comparisons via
+   the regex helper library (§"Regex helper library"): `/time` output
+   is matched by a named regex, allocation pointers are masked by
+   `compiler::alloc_addr()`, etc. The golden-file machinery
+   (`assert_golden_masked`) takes a list of regex masks at the call
+   site. Per-test isolation (fresh TempDir as project root, hence
+   fresh `.cranelisp-cache/`) handles cache-state determinism without
+   needing any binary knob.
+
 6. **Fail loudly on environmental drift.** If the binary is missing,
    stdlib-relative path doesn't resolve, or the test prelude file
    isn't found, the harness panics with a clear diagnostic naming
    the missing path — not a silent fallback.
 
-## Surface — pseudocode sketch
+## Surface — design sketch
 
-The pseudocode below is illustrative; final names land in the
-implementation. Builder chains return `Self` to compose.
+The shapes below are illustrative. Final names and signatures are
+authored in `helpers-api.md`; this section conveys intent.
 
 ### Top-level entry: `Cranelisp::new()`
 
@@ -65,76 +74,25 @@ implementation. Builder chains return `Self` to compose.
 ///
 /// Defaults:
 ///  - mode: REPL (no `--run`, no `--link`)
-///  - prelude: NONE (auto-discovered prelude file is suppressed)
+///  - prelude: NONE (no prelude file dropped; binary's auto-discovery
+///    finds nothing in the fresh TempDir)
 ///  - stdin: empty
 ///  - lib_dirs: empty
-///  - env: deterministic-output ON, no trace flags
+///  - env: clean — no trace flags, no special vars
 ///  - cwd: a fresh per-test TempDir (held inside the builder)
 pub struct Cranelisp { /* ... */ }
-
-impl Cranelisp {
-    pub fn new() -> Self;
-
-    // === Mode selection (mutually exclusive) ===
-    pub fn repl(self) -> Self;          // default
-    pub fn run(self, file: &str) -> Self;     // --run <file>
-    pub fn link(self, file: &str) -> Self;    // --link <file>
-    pub fn link_then_run(self, file: &str) -> Self; // --link, then exec the produced binary
-
-    // === On-disk fixture composition ===
-    /// Drop a file into the per-test tmpdir at the given relative path.
-    /// Creates parent dirs. Path is interpreted relative to the cwd the
-    /// child will see.
-    pub fn file(self, rel_path: &str, contents: &str) -> Self;
-
-    /// Convenience: the entry file. Usually `user.cl` for REPL mode.
-    pub fn user(self, contents: &str) -> Self;        // file("user.cl", ...)
-
-    /// Convenience: a prelude file at `prelude.cl`.
-    pub fn prelude(self, contents: &str) -> Self;
-
-    /// Convenience: well-known reusable preludes from the test prelude
-    /// catalogue. See "Prelude variants" below.
-    pub fn with_prelude(self, variant: PreludeVariant) -> Self;
-
-    /// Copy a fixture file (or tree) from `tests/fixtures/<src>` into the
-    /// tmpdir at <dst>. Read-only on `tests/fixtures/`.
-    pub fn fixture(self, src: &str, dst: &str) -> Self;
-    pub fn fixture_tree(self, src_dir: &str, dst_dir: &str) -> Self;
-
-    // === Search-path & platform configuration ===
-    pub fn lib_dir(self, dir_under_tmpdir: &str) -> Self;   // adds to CRANELISP_LIB
-    pub fn use_workspace_stdlib(self) -> Self;              // CRANELISP_LIB=<root>/stdlib
-    pub fn use_workspace_platforms(self) -> Self;           // CRANELISP_PLATFORM_PATH=<root>/target/debug
-
-    // === Stdin ===
-    pub fn stdin(self, lines: &str) -> Self;
-    pub fn stdin_lines(self, lines: &[&str]) -> Self;       // joined with "\n"
-
-    // === Environment ===
-    pub fn env(self, key: &str, val: &str) -> Self;
-    pub fn trace(self, kind: TraceKind) -> Self;            // CRANELISP_RC_TRACE=1, etc.
-
-    // === Configuration: Cranelisp.toml + CLI options ===
-    /// Use a named toml variant from the catalogue. See "Variants" in
-    /// §"Configuration: Cranelisp.toml + CLI options".
-    pub fn with_toml(self, variant: TomlVariant) -> Self;
-    /// Drop a raw `Cranelisp.toml` into the tmpdir with the given
-    /// contents. Escape hatch for one-off configurations.
-    pub fn toml_raw(self, contents: &str) -> Self;
-    /// Append a raw CLI flag passed to the cranelisp binary. Escape
-    /// hatch — most tests use `.with_toml(...)`.
-    pub fn cli_flag(self, flag: &str) -> Self;
-
-    // === Timeouts ===
-    /// Default: 10s. Tests that genuinely need longer announce it.
-    pub fn timeout(self, d: Duration) -> Self;
-
-    // === Run ===
-    pub fn output(self) -> CrOutput;            // panics on spawn failure or timeout
-    pub fn try_output(self) -> Result<CrOutput, CrError>;
-}
 ```
+
+The full method set lives in `helpers-api.md`. Categories:
+
+- Mode: `repl()`, `run(file)`, `link(file)`, `link_then_run(file)`
+- Fixtures: `file(rel, contents)`, `user(contents)`, `prelude(contents)`,
+  `with_prelude(variant)`, `fixture(src, dst)`, `fixture_tree(src, dst)`
+- Search paths: `lib_dir(dir)`, `use_workspace_stdlib_for_stdlib_conformance_only()`,
+  `use_workspace_platforms()`
+- Stdin: `stdin(text)`, `stdin_lines(&[...])`
+- Environment & flags: `env(k, v)`, `cli_flag(s)`
+- Run: `output()`, `output_then_run_again()` (cache-hit pattern)
 
 ### Output: `CrOutput`
 
@@ -142,74 +100,28 @@ impl Cranelisp {
 /// Captured outcome of a Cranelisp child process.
 pub struct CrOutput {
     pub status: ExitStatus,
-    pub stdout: String,         // utf-8 lossy
+    pub stdout: String,        // utf-8 lossy
     pub stderr: String,
-    pub stderr_traces: Vec<TraceLine>,   // pre-parsed trace lines (FIXME 0111)
-    pub stderr_non_trace: String,        // stderr minus trace lines
     pub elapsed: Duration,
-    pub tmpdir: PathBuf,        // for inspecting cache, .o, etc.
+    pub tmpdir: PathBuf,       // for inspecting cache, .o, etc.
     // _td: held internally so it lives until CrOutput drops
 }
-
-impl CrOutput {
-    // === Exit-code shortcuts ===
-    pub fn assert_ok(self) -> Self;
-    pub fn assert_exit(self, code: i32) -> Self;
-    pub fn assert_signaled(self) -> Self;       // exit=None (e.g., SIGSEGV)
-
-    // === Stdout assertions ===
-    pub fn assert_stdout_eq(self, expected: &str) -> Self;
-    pub fn assert_stdout_contains(self, needle: &str) -> Self;
-    pub fn assert_stdout_matches(self, regex: &str) -> Self;
-
-    // === Stderr assertions ===
-    /// Asserts NO non-trace lines on stderr. The spec rule
-    /// (`repl/spec.md §5.1`) is "errors on stdout, stderr is for traces
-    /// only"; this is the negative companion.
-    pub fn assert_stderr_traces_only(self) -> Self;
-    pub fn assert_stderr_contains(self, needle: &str) -> Self;
-    pub fn assert_stderr_empty(self) -> Self;
-
-    // === Snapshot ===
-    /// Compare against a golden file under tests/fixtures/golden/<name>.txt;
-    /// updates with CRANELISP_TEST_UPDATE_GOLDENS=1.
-    pub fn assert_golden(self, name: &str) -> Self;
-
-    // === Tmpdir inspection ===
-    pub fn read_tmp(&self, rel_path: &str) -> String;
-    pub fn tmp_exists(&self, rel_path: &str) -> bool;
-}
 ```
 
-### Errors
+Assertion methods on `CrOutput`:
 
-```rust
-pub enum CrError {
-    BinaryNotFound(PathBuf),
-    SpawnFailed(io::Error),
-    Timeout(Duration),
-    StdinWriteFailed(io::Error),
-}
-```
+- Exit: `assert_ok`, `assert_exit(code)`, `assert_signaled`
+- Stdout: `assert_stdout_eq`, `assert_stdout_contains`, `assert_stdout_matches`
+- Stderr: `assert_stderr_empty`, `assert_stderr_contains`
+- Snapshot: `assert_golden(name)`, `assert_golden_masked(name, &[regex])`
+- Tmpdir: `read_tmp(rel)`, `tmp_exists(rel)`
 
-### Trace toggles
-
-```rust
-pub enum TraceKind {
-    Rc,        // CRANELISP_RC_TRACE=1
-    Infer,     // CRANELISP_INFER_TRACE=1
-    Codegen,   // CRANELISP_CODEGEN_TRACE=1
-    Module,    // CRANELISP_MODULE_TRACE=1
-    Macro,     // CRANELISP_MACRO_TRACE=1
-    Scheduler, // CRANELISP_SCHEDULER_TRACE=1 (Sprint 61 Slice 0)
-    IoTrampoline, // CRANELISP_IO_TRAMPOLINE_TRACE=1 (Sprint 61 Slice 0)
-}
-```
-
-`TraceLine` holds `kind: TraceKind`, `payload: String`, `raw: String`.
-Pre-parsing stderr trace lines into `stderr_traces` (and stripping them
-from `stderr_non_trace`) is what enables `assert_stderr_traces_only` —
-this depends on FIXME 0111 (binary tags trace output unambiguously).
+**`assert_stderr_empty` is the spec-correct check.** The spec
+(`repl/spec.md §5.1`) says "errors on stdout, stderr is for traces
+only". When no `CRANELISP_*_TRACE` env var is set (the harness default),
+stderr MUST be empty. Trace-channel parsing belongs to `/dev` unit
+tests inside the runtime/backend crates; the e2e harness asserts the
+empty-when-no-trace property, not the structure of trace output.
 
 ### Prelude variants
 
@@ -218,36 +130,34 @@ A small named catalogue of stable test preludes lives in
 
 ```rust
 pub enum PreludeVariant {
-    /// Empty file. Prelude resolution finds it and loads nothing.
-    /// Use to suppress auto-discovered `tests/fixtures/prelude.cl`
-    /// without leaving the prelude tier ambiguous.
-    Empty,
-
-    /// The current `tests/fixtures/prelude.cl` — Option, Result, Num,
-    /// Eq, Ord, basic impls. The default for tests that need
-    /// operators or ADT types.
-    TestStandard,
+    /// No prelude file dropped. Binary's auto-discovery finds nothing
+    /// in the fresh TempDir.
+    None,
 
     /// Just `(import [primitives [*]])`. For tests that want bare
     /// primitive names but no traits, ADTs, or operators.
     PrimitivesOnly,
 
-    /// The actual workspace stdlib (`stdlib/prelude.cl`). For
-    /// stdlib conformance tests in `tests/stdlib.rs` only.
-    WorkspaceStdlib,
+    /// The current `tests/fixtures/prelude.cl` — Option, Result, Num,
+    /// Eq, Ord, basic impls. The default for tests that need
+    /// operators or ADT types.
+    TestStandard,
 }
 ```
 
 A test that wants no prelude at all uses `Cranelisp::new()` without
-calling `with_prelude` — the harness defaults to "no prelude file,
-no auto-discovery". A test that wants a custom prelude uses
-`.prelude("(deftype ...)")` to drop a `prelude.cl` into the tmpdir
-and let prelude resolution pick it up.
+calling `with_prelude` — equivalent to `with_prelude(PreludeVariant::None)`.
+A test that wants a custom prelude uses `.prelude("(deftype ...)")` to
+drop a `prelude.cl` into the tmpdir and let prelude resolution pick it up.
+
+**Workspace stdlib is a separate, gated entry point.** Not a
+`PreludeVariant` value — it's `use_workspace_stdlib_for_stdlib_conformance_only()`,
+the only legitimate caller of which is `tests/stdlib.rs`. See
+`helpers-api.md` for the gating rationale.
 
 ## Usage examples
 
-The pseudocode below shows the intended call sites. These are spec
-illustrations, not committed tests.
+The pseudocode below shows the intended call sites.
 
 ### One-shot batch run
 
@@ -304,56 +214,41 @@ fn cross_module_import() {
 }
 ```
 
-### No prelude, bare language
+### Cache-hit equivalence (run binary twice in same TempDir)
 
 ```rust
 #[test]
-fn bare_primitive_in_repl() {
-    // spec: appendix-a-builtins — bare primitives load without prelude
-    Cranelisp::new()
-        .repl()
-        // no .with_prelude(..) — fully bare
-        .stdin("(primitives/add-i64 1 2)\n")
-        .output()
-        .assert_ok()
-        .assert_stdout_contains("3");
-}
-```
-
-### Trace assertion
-
-```rust
-#[test]
-fn rc_balanced_for_string_concat() {
-    // spec: 12-runtime §RC — alloc/dealloc balance for str-concat
-    let out = Cranelisp::new()
+fn cache_hit_produces_same_output() {
+    // spec: design/backend/module-caching.md §"Cache hit equivalence"
+    let first = Cranelisp::new()
         .run("user.cl")
-        .with_prelude(PreludeVariant::PrimitivesOnly)
-        .user(r#"(defn main [] (str-concat "a" "b"))"#)
-        .trace(TraceKind::Rc)
+        .user("(defn main [] (add-i64 1 2))")
         .output()
         .assert_ok();
-    let allocs = out.stderr_traces.iter().filter(|t| t.payload.contains("alloc")).count();
-    let frees  = out.stderr_traces.iter().filter(|t| t.payload.contains("free")).count();
-    assert_eq!(allocs, frees, "RC imbalance");
+    // Second invocation reuses the same TempDir → cache hit.
+    let second = first.run_again().output().assert_ok();
+    assert_eq!(first.stdout, second.stdout);
+    assert!(second.tmp_exists(".cranelisp-cache/user.meta.json"));
 }
 ```
 
-### Link-then-run (E2E for the executable-generation surface)
+### Cache lives under project root (the spec property)
 
 ```rust
 #[test]
-fn link_produces_runnable_binary() {
-    // spec: 12-runtime §linking — --link produces a standalone exe
-    Cranelisp::new()
-        .link_then_run("user.cl")
-        .user("(defn main [] 99)")
+fn cache_lives_under_project_root() {
+    // spec: design/backend/module-caching.md §"Cache directory layout"
+    let out = Cranelisp::new()
+        .run("user.cl")
+        .user("(defn main [] 0)")
         .output()
-        .assert_exit(99);
+        .assert_ok();
+    assert!(out.tmp_exists(".cranelisp-cache"),
+            "cache must materialise under project_root (= TempDir)");
 }
 ```
 
-### Snapshot / golden
+### Snapshot / golden with masked content
 
 ```rust
 #[test]
@@ -365,158 +260,35 @@ fn list_command_categorises_user_defs() {
         .stdin("(defn foo [] 1)\n/list\n")
         .output()
         .assert_ok()
-        .assert_golden("repl/list_after_one_defn");
+        .assert_golden_masked("repl/list_after_one_defn", &[
+            regex::compiler::alloc_addr(),
+            regex::compiler::time_line(),
+        ]);
 }
 ```
 
 ## Regex helper library
 
 Anything in compiler output (as opposed to user-program output) gets a
-named helper in `tests/helpers/regex.rs` (or a `regex` submodule).
-Tests reference the helper, never embed the raw pattern. If the
-compiler's output format changes, ONE place updates and every dependent
-test moves with it.
+named helper in `tests/helpers/regex.rs`. Tests reference the helper,
+never embed the raw pattern. If the compiler's output format changes,
+ONE place updates and every dependent test moves with it.
 
 **Discipline:** every check that matches compiler output uses a
 helper — even on first occurrence with a single caller. The first
 helper for a pattern can be narrowly fitted to its one use case;
-generalisation (parameterising, splitting, broadening) happens on the
-second and subsequent callers. The point is the indirection: tests
-never carry the literal regex, even when the helper is one-off,
-because the first time the format changes (S-many sprints from now)
-the search is `helpers/regex.rs`, not `git grep`.
+generalisation happens on the second and subsequent callers. The
+point is the indirection: the first time the format changes the
+search is `helpers/regex.rs`, not `git grep`.
 
-```rust
-// tests/helpers/regex.rs — illustrative
-pub mod compiler {
-    /// `/time` line: "elapsed: 1.234 ms" → captures unit
-    pub fn time_line() -> &'static Regex { /* ... */ }
-    /// REPL prompt: "<module> "
-    pub fn repl_prompt() -> &'static Regex { /* ... */ }
-    /// RC trace: "[rc] alloc 0x7f8a4c001000 len=24 type=String" → captures type+len
-    pub fn rc_alloc_line() -> &'static Regex { /* ... */ }
-    pub fn rc_free_line() -> &'static Regex { /* ... */ }
-    /// Allocation address (any hex pointer) — for masking out of golden cmps
-    pub fn alloc_addr() -> &'static Regex { /* ... */ }
-    /// Compiler error: "error: ... at file.cl:LINE:COL" → captures msg/file/line/col
-    pub fn error_line() -> &'static Regex { /* ... */ }
-    /// Trace tag: any "[trace:CHANNEL] ..." line (depends on FIXME 0111)
-    pub fn trace_line() -> &'static Regex { /* ... */ }
-    // … one helper per stable-shape compiler output format
-}
-```
+The full enumeration with capture groups lives in `helpers-api.md §"regex"`.
+Categories:
 
-Used through `CrOutput` masking and matching primitives:
-
-```rust
-// Mask non-deterministic content before golden comparison
-output.assert_golden_masked("repl/list_after_one_defn", &[
-    helpers::compiler::alloc_addr(),
-    helpers::compiler::time_line(),
-]);
-
-// Direct regex assertion via named helper
-output.assert_stderr_matches(helpers::compiler::error_line());
-
-// Filter trace lines from stderr (replaces force-determinise approach)
-let non_trace = helpers::compiler::strip_traces(&output.stderr);
-assert_eq!(non_trace.trim(), "");
-```
-
-(See "Discipline" above — every check uses a helper from first
-occurrence; the library accretes one-off entries that get generalised
-on second and subsequent uses. This is intentional: the library is the
-catalogue of every compiler-output shape any test depends on, not just
-the popular ones.)
-
-## Configuration: `Cranelisp.toml` + CLI options
-
-The binary reads `Cranelisp.toml` from its CWD (per
-`design/int/cranelisp-toml.md`). Tests use this to control behaviour
-that affects observable output — most importantly event ordering for
-scheduler/worker traces and prompt stability.
-
-### Variants — named toml configurations (mirror the prelude pattern)
-
-Like `PreludeVariant`, common toml setups live in a small named
-catalogue. Tests reference the variant; the harness materialises the
-right `Cranelisp.toml` content into the tmpdir.
-
-```rust
-pub enum TomlVariant {
-    /// No `Cranelisp.toml` file written. Binary uses its built-in
-    /// defaults. The default for tests that don't care about
-    /// configuration.
-    None,
-
-    /// `[scheduler] workers = 1` — single worker thread.
-    /// Use for any test that asserts on scheduler-trace ordering.
-    SerialWorkers,
-
-    /// `[cache] enabled = false` — disable on-disk module cache.
-    /// Use for tests exercising fresh-compile paths.
-    NoCache,
-
-    /// `[repl] show_times = false` — suppress prompt-timing display.
-    /// Use for any stdin-scripted REPL test using `assert_stdout_eq`
-    /// or `assert_golden` (the prompt shape must be byte-stable).
-    StablePrompt,
-
-    /// Combination: `SerialWorkers + NoCache + StablePrompt` — the
-    /// catch-all "scriptable e2e" variant. Most stdin-driven REPL
-    /// tests want this.
-    Scriptable,
-}
-```
-
-Stored in `tests/fixtures/tomls/` as named files (`serial-workers.toml`,
-`no-cache.toml`, `stable-prompt.toml`, `scriptable.toml`); the harness
-copies the right one into the tmpdir.
-
-### Builder methods
-
-```rust
-Cranelisp::new()
-    .with_toml(TomlVariant::Scriptable)   // serial workers + no cache + stable prompt
-    .repl()
-    .stdin_lines(&[ "(defn f [] 1)", "(f)" ])
-    .output()
-    .assert_ok()
-    .assert_stdout_eq("user> 1\nuser> ");
-
-// Targeted single-knob variant
-Cranelisp::new()
-    .with_toml(TomlVariant::SerialWorkers)
-    .trace(TraceKind::Scheduler)
-    .stdin("(defn f [] 1) (f)\n")
-    .output()
-    .assert_ok()
-    .assert_stderr_traces_only();
-```
-
-Add a new variant when a SECOND test wants the same combination —
-same discipline as the prelude catalogue and the regex helper library.
-First occurrence of a new combination can use `.toml_raw(contents)`
-inline; second occurrence triggers extraction to a named variant.
-
-### Escape hatches
-
-```rust
-// Arbitrary toml content for one-off configurations
-Cranelisp::new().toml_raw(r#"
-    [scheduler]
-    workers = 2
-    quantum_ms = 10
-"#);
-
-// Append a raw CLI flag
-Cranelisp::new().cli_flag("--no-cache");
-```
-
-The schema the binary recognises is owned by `/int`; harness named
-variants are the curated, expected-stable subset. Any flag the harness
-depends on contractually goes through a `/int` FIXME (per "Coupling to
-CLI surface" trade-off below).
+- `compiler::time_line()` — `/time` output line.
+- `compiler::repl_prompt()` — REPL prompt shape.
+- `compiler::error_line()` — compiler error line.
+- `compiler::alloc_addr()` — any hex pointer (for golden masking).
+- `mask_alloc_addrs(s)`, `mask_timing(s)` — convenience helpers.
 
 ## What the harness does NOT provide
 
@@ -540,33 +312,44 @@ These were considered and explicitly rejected:
   `e2e.rs::NUM_TRAIT_PRELUDE` / `EQ_TRAIT_PRELUDE` /
   `ORD_TRAIT_PRELUDE` are migration debt. Replace with
   `with_prelude(PreludeVariant::TestStandard)` (which already
-  defines Num/Eq/Ord) during the dedicated port sprint.
-
-- **Blanket `--deterministic` binary mode.** Test-side exclusion via
-  the regex helper library + toml/CLI configuration covers the actual
-  need. See §"Determinism" in design constraints (constraint 5).
+  defines Num/Eq/Ord) during this sprint's port.
+- **Trace-channel parsing on stderr.** No `stderr_traces` field, no
+  `assert_stderr_traces_only`, no `TraceKind` enum on the harness.
+  Trace channels are debugging aids without spec basis — `/dev`'s
+  concern, tested inside the owning crate (e.g.,
+  `cranelisp-runtime`'s unit tests for RC alloc/free balance). The
+  e2e harness only asserts `assert_stderr_empty` (the spec rule
+  when no trace flag is set).
 
 ## Implementation phasing
 
-This is the implementation roadmap; not part of the normative API.
-
-1. **Phase 1 — build**. Land `Cranelisp` / `CrOutput` / regex helper
-   library / toml + CLI configuration. Implement against existing
-   binary surface; FIXMEs 0111/0112 (trace channel separation, REPL
-   ready sentinel) are the load-bearing `/int` dependencies.
-2. **Phase 2 — port + coverage** (dedicated sprint). Port every test
-   in `tests/` from the integration-tier helpers (`compile_and_run*`,
-   `repl_session*`, etc.) into the e2e tier using `Cranelisp`. As each
-   test ports, add or update its row in `tests/plan/PLAN.md` so
-   coverage documentation builds in lockstep with the migration.
-3. **Phase 3 — remove legacy**. Delete `tests/helpers/mod.rs::ReplSession`
-   and the integration-tier helpers; delete or rewrite any tests that
-   resisted the port (with explicit rationale per holdout).
-4. **Phase 4 — crate refactors begin**. Only after Phase 3 is complete
-   does FIXME 0109 (int decomposition) and other crate refactor work
-   begin — by then the test suite is decoupled from internal session
-   shapes and the refactors can proceed freely without breaking tests
-   that reach into `session_v4`/`worker`.
+1. **Phase 1 — build** (this sprint).
+   1. Trim this document per the Phase 0 collapse — done as the first
+      Phase 1 deliverable so the harness is implemented against a
+      clean spec, not stale prose.
+   2. Author the cache-isolation regression test (`tests/cache_isolation.rs`
+      or extend `tests/cache.rs`) asserting the spec property
+      "`.cranelisp-cache/` lives under project_root" — first concrete
+      e2e test against the new harness contract; gates Phase 2.
+   3. Implement `tests/helpers/e2e.rs` and `tests/helpers/regex.rs`
+      per `helpers-api.md`. The new harness lives **alongside**
+      `tests/helpers/mod.rs::ReplSession` until Phase 3. `ReplSession`
+      remains frozen (no new methods) but green.
+2. **Phase 2 — port** (this sprint). Port every test in `tests/` from
+   the integration-tier helpers (`compile_and_run*`, `repl_session*`,
+   inline `const &str` trait preludes) into the e2e tier using
+   `Cranelisp`. As each test ports, add or update its row in
+   `tests/plan/PLAN.md` so coverage documentation builds in lockstep.
+   Defects surfaced during port land as failing tests with FIXMEs;
+   no defect-fixing in-sprint (parity rule).
+3. **Phase 3 — remove legacy** (this sprint). Delete
+   `tests/helpers/mod.rs::ReplSession` and the integration-tier
+   helpers; delete or rewrite any tests that resisted the port
+   (with explicit rationale per holdout).
+4. **Phase 4 — crate refactors begin** (next sprint). FIXME 0109
+   (`/int` decomposition) and other crate refactors that reshape
+   `session_v4`/`worker` proceed against an e2e-only test surface
+   that does not break under internal restructuring.
 
 This is a **dedicated migration sprint**, NOT opportunistic
 rewrite-on-touch. Decision: maintaining two test patterns side-by-side
@@ -590,5 +373,13 @@ FIXME 0115 (`/sprint` planning).
   the suspected crate, per
   `tests/CLAUDE.md §"Isolating Cross-Crate Failures"`.
 - **Coupling to CLI surface.** Every CLI flag the harness uses
-  (FIXMEs 0110/0111/0112; `--run`, `--link`, etc.) is a contract
-  with `/int`. Changes go through FIXME, not silent rename.
+  (`--run`, `--link`, etc.) is a contract with `/int`. Changes go
+  through FIXME, not silent rename. No new CLI surface is required
+  by this design — the harness rides on the existing binary
+  surface.
+- **Trace assertions belong inside crates, not at e2e.** The harness
+  cannot verify `[rc] alloc` / `[rc] free` balance on stderr — that
+  is a `cranelisp-runtime` unit-test concern. The e2e tier only
+  asserts the visible behavioural consequences (the program runs to
+  completion, produces the right output, leaves the cache in the
+  right state).
