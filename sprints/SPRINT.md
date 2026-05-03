@@ -1,6 +1,6 @@
 # Sprint 64: Test-Port — `/qa` two-tier migration
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 3 complete + committed. Awaiting decision on Wave 4 cadence.
+**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 3.5 audit complete + committed. Awaiting decision on Wave 4 + landing-time `// spec:` linter FIXME.
 
 **Goal**: Transition `/qa` fully to the two-tier regime. Audit every test file for assertions that test language behaviour (carry forward as new e2e tests in the harness specified by `tests/plan/helpers.md`) vs. Rust-internal state (quarantine in `tests/legacy/` for FIXME-driven harvest into the owning crate's unit tests). Reorganise the new e2e suite for spec-coverage auditability. Delete the legacy scaffolding once the new suite is sound. **Parity in spec-relevant coverage**: every assertion that exercises spec behaviour survives the transition; defects surfaced during audit land as FIXMEs + failing tests, not fixes.
 
@@ -266,6 +266,15 @@ User confirms continuation, redirects ordering, or requests scope adjustment. `/
   - **Harness-API surprises**: zero. The Wave 1 builder + Wave 2.5 helper covered every shape needed across both batches. The bespoke `result_lines` parser in `v4_repl_eval.rs` was strictly weaker than `assert_stdout_contains`.
   - `cargo nextest run`: 1600/1600 ran, 1589 pass, 11 fail (5 pre-existing d6 cluster + 1 FIXME 0121 + 4 FIXME 0122 + 1 FIXME 0123). Net 0 regressions; total test count dropped from 1853 (Wave 2.5) to 1600 because 375 quarantined tests no longer compile + 122 new e2e tests landed (-253 net).
   - **Implicit ledger resolution**: pre-existing entry `io_trace_off_path_subprocess_completes_within_generous_ceiling` resolves under the new harness — per-test TempDir isolation prevents the concurrent-load contention that fired the original failure. Resolution candidate for S65.
+- 2026-05-03: User pushback on Wave 3 close: `/reset` test asserts on a feature not in `repl/spec.md §3.1` Command Inventory (21 commands listed; no `/reset`). Raises systemic question — did `/qa` invent other non-spec assertions? Wave 3.5 audit dispatched.
+- 2026-05-03: Wave 3.5 audit complete + committed (3 commits, `017be46` through `2fe61fc`). Fresh `/qa` instance with audit-eye framing; reviewed 213 tests across 7 new e2e files + harness + plan docs.
+  - Spec-traceability findings: 2 INVENTED (both `/reset`-related, deleted: `repl_lifecycle::reset_clears_user_defns`, `repl_lifecycle::reset_session_continues`); 42 MIS-CITED annotations (all corrected); 0 OVER-SPECIFIED; 0 MISSING-ANNOTATION.
+  - Mis-cite clusters: §1.6/§1.7 cited for "session eval"/"redefinition" (do not exist; correct §15.2/§15.6); `spec/10-io.md` §10.4/§10.10/§10.3.5 mis-cited (correct §10.6.1/§10.7.1/§10.7.2/§10.8/§10.1); `spec/06-adt.md` cited (file does not exist; ADTs at `spec/05-definitions.md §5.2`).
+  - FIXME spec-validity: 0121 RETAIN ((mod ...) is normative per spec/08-modules.md §8.2.1); 0122 RETAIN (`--link` linkable-object production required per repl/spec.md §0.2.1 + design/backend/executable-generation.md); 0123 DELETED.
+  - Code review: organisation APPROVE; harness APPROVE; minor maintainability flagged for S65 (REPL helper stub duplicated 3× across `repl_*.rs`; some wider `contains`-checks; ADT match-witness reads complex but correct).
+  - `cargo nextest run`: 1598 tests, 1588 pass, 10 fail (5 pre-existing + 1 FIXME 0121 + 4 FIXME 0122). 2 tests removed from `/reset` deletion. **Net 0 regressions.**
+  - **Meta-finding**: the `/reset` slip-through survived `/qa` landing + `/sprint` Wave 2/3 review + the Wave 2→2.5 pivot. Single guard that caught it was a user reading the FIXME. Audit agent recommends a landing-time `// spec:` linter (one-evening Python script in `tests/plan/`) — durable mitigation against future invented assertions or mis-cited annotations.
+  - `tests/plan/wave-3.5-audit.md` records full per-file findings.
 
 ## Outcome (Phase 7)
 
