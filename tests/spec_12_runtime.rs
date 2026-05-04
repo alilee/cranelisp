@@ -345,3 +345,40 @@ fn string_utf8_source_encoding_accepted() {
     // bytes per the appendix-A definition (immutable UTF-8 byte sequence).
     repl_prims("(str-len \"héllo\")\n").assert_stdout_contains(":primitives/Int 6");
 }
+
+// =============================================================================
+// §12.4.3 Lenient evaluation — opt-out via CRANELISP_NO_LENIENT (Wave 5.6)
+//
+// Per §12.4.3: "An implementation MAY provide an opt-out mechanism (e.g., an
+// environment variable) for debugging purposes." The Cranelisp implementation
+// honours `CRANELISP_NO_LENIENT=1`. Lenient evaluation is semantically
+// transparent (independent let bindings produce the same result whether
+// sparked or sequential), so the spec assertion is *correctness* of the
+// result with the opt-out engaged.
+//
+// Mode-specific exception: this test uses `--run` mode (not REPL) because
+// `CRANELISP_NO_LENIENT=1` is set on the spawned binary's env, and `--run`
+// is the cleanest e2e form for a single-program env-var-conditioned check.
+// The exit code from `(defn main [] expr)` returning Int is the canonical
+// observation.
+// =============================================================================
+
+// spec: spec/12-runtime.md §12.4.3 — CRANELISP_NO_LENIENT=1 disables sparking;
+// the program still computes the correct result.
+// (carry: legacy/lenient.rs::test_lenient_no_lenient_env_var)
+#[test]
+fn lenient_no_lenient_env_var_preserves_correctness() {
+    // double(5) + triple(7) = 10 + 21 = 31. Use add-i64 / mul-i64 so the
+    // PrimitivesOnly prelude suffices — no operator dispatch needed.
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user(
+            "(defn double [x] (mul-i64 x 2))\n\
+             (defn triple [x] (mul-i64 x 3))\n\
+             (defn main [] (let [a (double 5) b (triple 7)] (add-i64 a b)))\n",
+        )
+        .env("CRANELISP_NO_LENIENT", "1")
+        .output()
+        .assert_exit(31);
+}

@@ -269,3 +269,109 @@ fn lenient_dependent_bindings_correct() {
     )
     .assert_stdout_contains(":primitives/Int 11");
 }
+
+// =============================================================================
+// Lenient evaluation — Wave 5.6 dedupe-recovery carries (cross-ref §12.4.3).
+//
+// These exercise corners that the two carries above (independent_bindings,
+// dependent_bindings) do not: the cheap-builtin / heterogeneous-binding /
+// nested-let / mixed-indep-dep boundaries, plus heap-typed results, closure
+// capture across a sparked binding, and all-literal bodies. Per spec §12.4.3
+// lenient evaluation is semantically transparent — the assertions check
+// correctness of the result regardless of which bindings are sparked.
+// =============================================================================
+
+// spec: spec/12-runtime.md §12.4.3 — pure-arithmetic bindings (cheap builtins
+// excluded from sparking by the cost heuristic) still produce the correct sum.
+// (carry: legacy/lenient.rs::test_lenient_cheap_builtins_not_sparked)
+#[test]
+fn let_independent_bindings_pure_arithmetic() {
+    // a=3, b=12, c=5; (+ a (+ b c)) = 20.
+    repl_std(
+        "(let [a (+ 1 2) b (* 3 4) c (- 10 5)] (+ a (+ b c)))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 20");
+}
+
+// spec: spec/12-runtime.md §12.4.3 — heterogeneous bindings (one call + one
+// literal) below the two-sparkable threshold still yield the correct result.
+// (carry: legacy/lenient.rs::test_lenient_min_two_sparkable)
+#[test]
+fn let_mixed_literal_and_call_binding() {
+    // double(5)=10, b=7, sum=17.
+    repl_std(
+        "(defn double [x] (* x 2))\n(let [a (double 5) b 7] (+ a b))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 17");
+}
+
+// spec: spec/12-runtime.md §12.4.3 — nested lets: the inner let's spark group
+// is independent of the outer let; both produce correct results.
+// (carry: legacy/lenient.rs::test_lenient_nested_lets)
+#[test]
+fn let_nested_inner_independent_spark_group() {
+    // a=10, b=triple(10)=30, c=double(10)=20, result=50.
+    repl_std(
+        "(defn double [x] (* x 2))\n\
+         (defn triple [x] (* x 3))\n\
+         (let [a (double 5)] (let [b (triple a) c (double a)] (+ b c)))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 50");
+}
+
+// spec: spec/12-runtime.md §12.4.3 — three-binding let where the last binding
+// depends on the first; independent prefix and dependent tail mix correctly.
+// (carry: legacy/lenient.rs::test_lenient_mixed_independent_dependent)
+#[test]
+fn let_three_bindings_last_depends_on_first() {
+    // a=10, b=21, c=a+1=11, result=b+c=32.
+    repl_std(
+        "(defn double [x] (* x 2))\n\
+         (defn triple [x] (* x 3))\n\
+         (let [a (double 5) b (triple 7) c (+ a 1)] (+ b c))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 32");
+}
+
+// spec: spec/12-runtime.md §12.4.3 — heap-typed results (Strings) survive
+// parallel evaluation: each binding owns its value, the body's str-concat
+// observes both fully-formed.
+// (carry: legacy/lenient.rs::test_lenient_heap_typed_results)
+#[test]
+fn let_heap_typed_results_string_concat() {
+    // greet("world") = "hello world", shout("hey") = "hey!"
+    // str-concat(a, b) = "hello worldhey!" — verify via str-eq.
+    repl_prims(
+        "(defn greet [name] (str-concat \"hello \" name))\n\
+         (defn shout [name] (str-concat name \"!\"))\n\
+         (let [a (greet \"world\") b (shout \"hey\")] \
+           (str-eq (str-concat a b) \"hello worldhey!\"))\n",
+    )
+    .assert_stdout_contains(":primitives/Bool true");
+}
+
+// spec: spec/04-expressions.md §4.5.1 — sparked thunks correctly capture
+// variables from the enclosing let scope (cross-ref §12.4.3 lenient eval).
+// (carry: legacy/lenient.rs::test_lenient_closures_with_captures)
+#[test]
+fn let_sparked_binding_captures_outer_let_scope() {
+    // base=10, a=add-n(10,5)=15, b=add-n(10,20)=30, sum=45.
+    repl_std(
+        "(defn add-n [n x] (+ n x))\n\
+         (let [base 10] (let [a (add-n base 5) b (add-n base 20)] (+ a b)))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 45");
+}
+
+// spec: spec/12-runtime.md §12.4.3 — all-literal/var bindings are not
+// sparkable per the cost heuristic; the let body still produces the correct
+// value. Negative-of-spark angle.
+// (carry: legacy/lenient.rs::test_lenient_neg_literals_not_sparkable)
+#[test]
+fn let_all_literal_bindings_correct() {
+    // a=42, b=true, c="hello"; body returns a.
+    repl_prims(
+        "(let [a 42 b true c \"hello\"] a)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 42");
+}
