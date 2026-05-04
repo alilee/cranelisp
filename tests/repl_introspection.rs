@@ -1047,3 +1047,509 @@ fn list_prefix_filter_matches_names() {
         out.stdout
     );
 }
+
+// =============================================================================
+// Wave 5.6 file 6 e2e.rs chunk-3 GAP-COVER carry-forwards (per
+// tests/plan/wave-5.6-e2e-reaudit.md chunk 3). Each carries a
+// `(carry: legacy/...)` provenance tag.
+// =============================================================================
+
+// spec: repl/spec.md §3.4 — neg: `/imports nonexistent` is silent AND the
+// REPL recovers — a subsequent expression evaluates normally. Distinct
+// from `imports_filter_neg_nonexistent_module_not_error` (which only
+// asserts the no-error angle): this preserves the recovery property
+// (session continuity after a slash-command argument-edge case).
+// (carry: legacy/e2e.rs::e2e_s3_4_neg_imports_nonexistent_silent)
+#[test]
+fn imports_filter_neg_nonexistent_silent_recovery() {
+    let out = repl("/imports nonexistent
+42
+")
+    .assert_ok();
+    assert!(
+        !out.stdout.contains("Error:"),
+        "/imports nonexistent MUST be silent (no Error); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 42"),
+        "REPL MUST recover and evaluate the next expression; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.5 — `/exports` with no argument MUST emit a usage hint.
+// (carry: legacy/e2e.rs::e2e_s3_5_exports_no_arg_usage)
+#[test]
+fn exports_no_arg_shows_usage() {
+    let out = repl("/exports\n");
+    let s = &out.stdout;
+    assert!(
+        s.contains("Usage:") || s.contains("usage:") || s.contains("/exports <module"),
+        "/exports with no arg MUST surface a usage hint; got:\n{}",
+        s
+    );
+}
+
+// spec: repl/spec.md §3.5 — `/exports <nonexistent>` MUST NOT crash and
+// MUST surface a graceful module-missing message.
+// (carry: legacy/e2e.rs::e2e_s3_5_exports_not_found)
+#[test]
+fn exports_neg_nonexistent_module_not_found() {
+    let out = repl("/exports nonexistent\n");
+    let s = &out.stdout;
+    assert!(
+        s.contains("not found") || s.contains("Module"),
+        "/exports nonexistent MUST surface a 'not found' / 'Module' diagnostic; got:\n{}",
+        s
+    );
+}
+
+// spec: repl/spec.md §3.5 — `/exports <mod>` lists the module's public
+// symbols. Define `bar` in `mymod`, switch back to `user`, then
+// `/exports mymod` MUST surface `bar`.
+// (carry: legacy/e2e.rs::e2e_s3_5_exports_lists_symbols)
+#[test]
+fn exports_lists_public_symbols_after_defn() {
+    let out = repl("/mod mymod
+(defn bar [x] x)
+/mod user
+/exports mymod
+");
+    assert!(
+        out.stdout.contains("bar"),
+        "/exports mymod MUST list the public symbol 'bar'; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §1.3 — deftype display includes a `; match:` section
+// header listing constructors. Distinct from
+// `deftype_display_lists_constructors` (which asserts the ctors-listed
+// angle without enforcing the section-header substring).
+// (carry: legacy/e2e.rs::e2e_s1_3_deftype_match_section)
+#[test]
+fn deftype_display_match_section_header() {
+    let out = repl("(deftype Color Red Green Blue)\n");
+    assert!(
+        out.stdout.contains("; match:"),
+        "deftype display MUST include a '; match:' section per §1.3; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("Red") && out.stdout.contains("Green") && out.stdout.contains("Blue"),
+        "deftype '; match:' section MUST list constructors; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §1.3 — deftrait display includes a `; deftrait`
+// classification AND a `; defn:` section header listing methods.
+// (carry: legacy/e2e.rs::e2e_s1_3_deftrait_defn_section)
+#[test]
+fn deftrait_display_defn_section_lists_methods() {
+    let out = repl("(deftrait (Sizeable a) (size [a] Int))\n");
+    assert!(
+        out.stdout.contains("; deftrait"),
+        "deftrait display MUST include '; deftrait' classification; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("; defn:"),
+        "deftrait display MUST include a '; defn:' section per §1.3; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("size"),
+        "deftrait '; defn:' section MUST list method 'size'; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §4.1.1 — bare fn lookup (after defn) shows `; defn`
+// classification on the lookup line. Distinct from `defn_display_one_param`
+// (which asserts the 1st-result line of the `defn` form): this asserts
+// the bare-symbol-lookup re-display path produces the same classification.
+// (carry: legacy/e2e.rs::e2e_s4_1_bare_fn_classification)
+#[test]
+fn bare_fn_lookup_after_defn_shows_defn_classification() {
+    let out = repl_prims("(defn inc [n] (add-i64 n 1))
+inc
+");
+    assert!(
+        out.stdout.contains("; defn"),
+        "bare fn lookup MUST surface '; defn' classification; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §4.1.3 — bare type lookup shows `; deftype` AND a
+// `; match:` section header. Distinct from `bare_user_defined_type_lookup_displays_type_info`
+// (which asserts only no-error + name presence): this enforces the
+// classification token + section header per the universal-format spec.
+// (carry: legacy/e2e.rs::e2e_s4_1_bare_type_match_section)
+#[test]
+fn bare_type_lookup_includes_match_section() {
+    let out = repl("(deftype Color Red Green Blue)
+Color
+");
+    assert!(
+        out.stdout.contains("; deftype"),
+        "bare type 'Color' MUST surface '; deftype' classification; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("; match:"),
+        "bare type 'Color' MUST surface '; match:' section per §4.1.3; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §4.1.4 — bare trait lookup shows `; deftrait`
+// classification AND a `; defn:` section listing methods.
+// (carry: legacy/e2e.rs::e2e_s4_1_bare_trait_defn_section)
+#[test]
+fn bare_trait_lookup_includes_defn_section() {
+    let out = repl("(deftrait (Sizeable a) (size [a] Int))
+Sizeable
+");
+    assert!(
+        out.stdout.contains("; deftrait"),
+        "bare trait 'Sizeable' MUST surface '; deftrait' classification; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("; defn:"),
+        "bare trait 'Sizeable' MUST surface '; defn:' section per §4.1.4; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("size"),
+        "bare trait '; defn:' section MUST list method 'size'; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §4.1.5 — bare special form `if` shows `; special form`
+// classification token. Strictly stronger than the bare-`if`/`let` self-doc
+// tests (which only assert no-error + Fn/Bool); this enforces the universal-
+// format classification token specifically.
+// (carry: legacy/e2e.rs::e2e_s4_1_bare_special_form_classification)
+#[test]
+fn bare_special_form_if_classification_token() {
+    let out = repl("if\n");
+    assert!(
+        out.stdout.contains("; special form"),
+        "bare 'if' MUST surface '; special form' classification per §4.1.5; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §4.1.6 — bare macro lookup shows `; defmacro`
+// classification AND clause signature `; [x] -> Sexp`.
+// (carry: legacy/e2e.rs::e2e_s4_1_bare_macro_defmacro)
+#[test]
+fn bare_macro_lookup_shows_clause_signature() {
+    let out = repl_prims("(defmacro inc [x] `(add-i64 ~x 1))
+inc
+");
+    assert!(
+        out.stdout.contains("; defmacro"),
+        "bare macro 'inc' MUST surface '; defmacro' classification; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("; [x] -> Sexp"),
+        "bare macro 'inc' MUST surface clause signature '; [x] -> Sexp' per §4.1.6; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §4.1.3 — bare builtin type `Int` shows `; type`
+// classification token AND the FQN `primitives/Int`. Distinct from
+// `bare_primitive_type_int_displays_type_info` (which only asserts no-error
+// + name presence).
+// (carry: legacy/e2e.rs::e2e_s4_1_bare_builtin_type)
+#[test]
+fn bare_builtin_type_int_shows_type_classification() {
+    let out = repl("Int\n");
+    assert!(
+        out.stdout.contains("; type"),
+        "bare 'Int' MUST surface '; type' classification per §4.1.3; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("primitives/Int"),
+        "bare 'Int' MUST surface FQN 'primitives/Int'; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.3 — neg: `/list` MUST NOT show `Fns:` category
+// when only deftype is defined. Distinct from
+// `list_neg_no_special_forms_category` and `list_neg_only_imports_shows_no_definitions`:
+// this is the category-boundary regression-guard that constructors are
+// classified as Types (not Fns).
+// (carry: legacy/e2e.rs::e2e_s3_3_list_neg_ctors_not_in_fns)
+#[test]
+fn list_neg_no_fns_category_when_only_types() {
+    let out = repl("(deftype Color Red Green Blue)
+/list
+");
+    assert!(
+        !out.stdout.contains("Fns:"),
+        "/list MUST NOT render 'Fns:' header when only deftype defined; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.1 (and spec/appendix-a-builtins.md §A.5) —
+// `/doc <builtin>` on a primitive MUST mention the primitive's name and
+// MUST NOT surface "unknown". Distinct from `doc_no_docstring`/
+// `doc_shows_docstring` (user-fn paths): builtin lookup is a separate
+// resolution path.
+// (carry: legacy/e2e.rs::e2e_s3_1_doc_builtin)
+#[test]
+fn doc_builtin_primitive_shows_name() {
+    let out = repl_prims("/doc add-i64\n");
+    assert!(
+        out.stdout.contains("add-i64"),
+        "/doc on builtin MUST mention the primitive name 'add-i64'; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("unknown"),
+        "/doc on builtin MUST NOT surface 'unknown'; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.1 — neg: `/doc` with no argument MUST surface a
+// usage hint.
+// (carry: legacy/e2e.rs::e2e_s3_1_doc_neg_no_arg)
+#[test]
+fn doc_no_arg_shows_usage() {
+    let out = repl("/doc\n");
+    let s = &out.stdout;
+    assert!(
+        s.contains("usage") || s.contains("/doc"),
+        "/doc with no arg MUST surface a usage hint; got:\n{}",
+        s
+    );
+}
+
+// spec: repl/spec.md §3.1 — `/source <name>` shows the original source
+// text of the named definition.
+// (carry: legacy/e2e.rs::e2e_s3_1_source_user_fn)
+#[test]
+fn source_user_fn_shows_original_text() {
+    let out = repl_prims("(defn double [x] (add-i64 x x))
+/source double
+");
+    let s = &out.stdout;
+    assert!(
+        s.contains("defn double") || s.contains("(defn double"),
+        "/source MUST surface original source text containing 'defn double'; got:\n{}",
+        s
+    );
+}
+
+// spec: repl/spec.md §3.1 — `/sexp <name>` shows the parsed S-expression
+// (not "unknown command") and references the definition name.
+// (carry: legacy/e2e.rs::e2e_s3_1_sexp_user_fn)
+#[test]
+fn sexp_user_fn_shows_parsed_form() {
+    let out = repl_prims("(defn double [x] (add-i64 x x))
+/sexp double
+");
+    let s = &out.stdout;
+    assert!(
+        !s.contains("unknown command"),
+        "/sexp MUST be a recognised command; got:\n{}",
+        s
+    );
+    assert!(
+        s.contains("double") || s.contains("defn"),
+        "/sexp output MUST reference the definition; got:\n{}",
+        s
+    );
+}
+
+// spec: repl/spec.md §3.1 — `/ast <name>` shows AST structure (not
+// "unknown command") and references the definition name.
+// (carry: legacy/e2e.rs::e2e_s3_1_ast_user_fn)
+#[test]
+fn ast_user_fn_shows_ast_structure() {
+    let out = repl_prims("(defn double [x] (add-i64 x x))
+/ast double
+");
+    let s = &out.stdout;
+    assert!(
+        !s.contains("unknown command"),
+        "/ast MUST be a recognised command; got:\n{}",
+        s
+    );
+    assert!(
+        s.contains("double") || s.contains("Defn") || s.contains("defn"),
+        "/ast output MUST reference the AST/definition; got:\n{}",
+        s
+    );
+}
+
+// spec: repl/spec.md §3.1 — `/clif <name>` shows Cranelift IR (not
+// "unknown command") and contains IR keywords (block / function / v).
+// (carry: legacy/e2e.rs::e2e_s3_1_clif_user_fn)
+#[test]
+fn clif_user_fn_shows_cranelift_ir() {
+    let out = repl_prims("(defn double [x] (add-i64 x x))
+/clif double
+");
+    let s = &out.stdout;
+    assert!(
+        !s.contains("unknown command"),
+        "/clif MUST be a recognised command; got:\n{}",
+        s
+    );
+    assert!(
+        s.contains("block") || s.contains("function") || s.contains("v"),
+        "/clif output MUST contain Cranelift IR keywords; got:\n{}",
+        s
+    );
+}
+
+// spec: repl/spec.md §3.1 — `/disasm <name>` is a recognised command.
+// Weak assertion preserved per chunk-3 audit: disasm output content is
+// platform-conditional (varies by arch) so only the recognised-command
+// check is portable across e2e environments.
+// (carry: legacy/e2e.rs::e2e_s3_1_disasm_user_fn)
+#[test]
+fn disasm_user_fn_recognized_command() {
+    let out = repl_prims("(defn double [x] (add-i64 x x))
+/disasm double
+");
+    assert!(
+        !out.stdout.contains("unknown command"),
+        "/disasm MUST be a recognised command; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.7 — bare `/mem` snapshot emits two lines:
+// `; live: <bytes> bytes (<live-allocs> allocations)` and
+// `; allocs: <allocs>  deallocs: <deallocs>`. Negative companion: the
+// snapshot form MUST NOT emit a `; delta:` line.
+// (carry: legacy/e2e.rs::mem_command_snapshot_emits_live_and_allocs)
+#[test]
+fn mem_snapshot_emits_live_and_allocs_neg_no_delta() {
+    let out = repl("/mem\n");
+    let has_live = out
+        .stdout
+        .lines()
+        .any(|l| l.contains("; live:") && l.contains("bytes (") && l.contains("allocations)"));
+    assert!(
+        has_live,
+        "/mem MUST emit '; live: N bytes (M allocations)' line per §3.7; got:\n{}",
+        out.stdout
+    );
+    let has_allocs = out
+        .stdout
+        .lines()
+        .any(|l| l.contains("; allocs:") && l.contains("deallocs:"));
+    assert!(
+        has_allocs,
+        "/mem MUST emit '; allocs: N  deallocs: M' line per §3.7; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("; delta:"),
+        "bare /mem (no expr) MUST NOT emit a '; delta:' line; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.7 — `/mem <expr>` evaluates the expression, prints
+// the formatted result, then emits one `; delta:` line carrying signed
+// `bytes` and `live` deltas plus `allocs` / `deallocs` fields.
+// (carry: legacy/e2e.rs::mem_command_delta_runs_expr_and_shows_signed_deltas)
+#[test]
+fn mem_with_expr_emits_signed_delta_line() {
+    let out = repl(
+        "(import [primitives [str-concat]])
+/mem (str-concat \"hi \" \"world\")
+",
+    );
+    assert!(
+        out.stdout.contains(":primitives/String"),
+        "/mem <expr> MUST print the formatted result first; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("\"hi world\""),
+        "/mem <expr> MUST evaluate the expression; got:\n{}",
+        out.stdout
+    );
+    let delta_line = out
+        .stdout
+        .lines()
+        .find(|l| l.contains("; delta:"))
+        .unwrap_or_else(|| {
+            panic!(
+                "/mem <expr> MUST emit a '; delta:' line per §3.7; got:\n{}",
+                out.stdout
+            )
+        });
+    for needle in &["allocs +", "deallocs +", "bytes ", "live "] {
+        assert!(
+            delta_line.contains(needle),
+            "delta line missing '{needle}'; got:\n{delta_line}\nfull stdout:\n{}",
+            out.stdout
+        );
+    }
+    assert!(
+        delta_line.contains("bytes +") || delta_line.contains("bytes -"),
+        "'bytes' delta MUST carry a signed prefix per §3.7; got:\n{delta_line}"
+    );
+    assert!(
+        delta_line.contains("live +")
+            || delta_line.contains("live -")
+            || delta_line.contains("live 0"),
+        "'live' delta MUST be signed per §3.7; got:\n{delta_line}"
+    );
+}
+
+// spec: repl/spec.md §3.7 — process-start counters are zero. Bare `/mem`
+// before any user evaluation reports `; live: 0 bytes (0 allocations)`
+// and `; allocs: 0  deallocs: 0`.
+// (carry: legacy/e2e.rs::mem_command_baseline_counters_zero_at_start)
+#[test]
+fn mem_baseline_zero_at_process_start() {
+    let out = repl("/mem\n");
+    assert!(
+        out.stdout.contains("; live: 0 bytes (0 allocations)"),
+        "process-start '; live:' MUST be '0 bytes (0 allocations)' per §3.7; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("; allocs: 0  deallocs: 0"),
+        "process-start '; allocs: 0  deallocs: 0' MUST hold per §3.7; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.1 + §3.7 — `/m` is the documented short alias
+// for `/mem`. Both produce the same snapshot output.
+// (carry: legacy/e2e.rs::mem_command_alias_m_works)
+#[test]
+fn mem_alias_m_equivalent_to_mem() {
+    let out = repl("/m\n");
+    assert!(
+        out.stdout.contains("; live:") && out.stdout.contains("bytes ("),
+        "/m alias MUST produce the same snapshot as /mem (live line); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("; allocs:") && out.stdout.contains("deallocs:"),
+        "/m alias MUST emit '; allocs:' line; got:\n{}",
+        out.stdout
+    );
+}

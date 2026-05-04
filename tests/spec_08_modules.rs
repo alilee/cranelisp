@@ -677,3 +677,40 @@ fn export_private_name_not_reexported_neg() {
         out.stderr
     );
 }
+
+// =============================================================================
+// Wave 5.6 file 6 e2e.rs chunk-3 GAP-COVER carry-forward (REGRESSION-GUARD).
+// =============================================================================
+
+// spec: spec/08-modules.md §8.3 — an imported (or REPL-defined) function
+// MUST be usable as a higher-order argument. Source comment from legacy
+// e2e: "Bug: REPL codegen fails with 'undefined variable' when an
+// imported function is passed as an argument to a higher-order function."
+// REGRESSION-GUARD: the legacy test defines `even?` inline (avoiding
+// module discovery in isolated e2e dirs); the imported-fn-as-value angle
+// in REPL mode is what's load-bearing.
+// (carry: legacy/e2e.rs::e2e_imported_fn_as_higher_order_arg_repl)
+#[test]
+fn imported_fn_as_higher_order_arg_in_repl_mode() {
+    let out = Cranelisp::new()
+        .repl()
+        .stdin(
+            "(import [primitives [eq-i64 sub-i64 mul-i64 div-i64]])
+(defn rem [:Int a :Int b] :Int (sub-i64 a (mul-i64 (div-i64 a b) b)))
+(defn even? [:Int x] :Bool (eq-i64 (rem x 2) 0))
+(defn apply-fn [f x] (f x))
+(apply-fn even? 4)
+",
+        )
+        .output();
+    assert!(
+        !out.stdout.contains("Error:") && !out.stdout.contains("error:"),
+        "fn passed as higher-order arg MUST NOT error in REPL per spec/08 §8.3; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("true"),
+        "(apply-fn even? 4) MUST evaluate to true; got:\n{}",
+        out.stdout
+    );
+}

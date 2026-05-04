@@ -294,3 +294,27 @@ fn perf_simple_eval_latency_under_2000ms() {
         out.elapsed.as_millis()
     );
 }
+
+// spec: repl/spec.md §7.4 — REPL SHOULD bound display output for large
+// values (Large Output, SHOULD-level). A 1000-element Vec literal MUST
+// NOT produce unbounded stdout; we assert a generous 64 KB ceiling.
+//
+// Per the chunk-3 audit and the legacy comment: full expansion of 1000
+// ints is ~4 KB (well under the ceiling); the assertion's purpose is to
+// catch a regression where output becomes truly unbounded (1M elements
+// would otherwise flood the terminal). Loose ceiling preserved as-is —
+// SHOULD-level coverage; failing-not-ignored discipline does not apply.
+// When /int adds truncation + indicator, this assertion can tighten.
+// (carry: legacy/e2e.rs::e2e_s7_4_large_vec_output_is_bounded)
+#[test]
+fn repl_large_vec_output_bounded_under_64kb() {
+    let nums: Vec<String> = (0..1000).map(|i| i.to_string()).collect();
+    let vec_lit = format!("[{}]\n", nums.join(" "));
+    let stdin = format!("(import [primitives [*]])\n{vec_lit}");
+    let out = Cranelisp::new().repl().stdin(&stdin).output();
+    assert!(
+        out.stdout.len() < 64 * 1024,
+        "repl/spec.md §7.4: REPL SHOULD bound large-output size; got {} bytes",
+        out.stdout.len()
+    );
+}

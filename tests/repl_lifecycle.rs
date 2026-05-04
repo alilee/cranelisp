@@ -501,3 +501,39 @@ fn two_independent_sessions_isolation_neg_no_state_leak() {
         combined
     );
 }
+
+// =============================================================================
+// Wave 5.6 file 6 e2e.rs chunk-3 GAP-COVER carry-forwards
+// (per tests/plan/wave-5.6-e2e-reaudit.md chunk 3).
+// =============================================================================
+
+// spec: repl/spec.md §8 — Scenario 1: `/mod math` switches the prompt
+// to `math>`. Distinct from `mod_shows_current` which exercises the
+// no-arg form (current module display).
+// (carry: legacy/e2e.rs::e2e_s8_mod_switch_namespace)
+#[test]
+fn mod_switch_to_named_module_changes_prompt() {
+    let out = repl("/mod math\n");
+    assert!(
+        out.stdout.contains("math>"),
+        "/mod math MUST switch the prompt to 'math>' per repl/spec.md §8 Scenario 1; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §8 — Scenario 2: `/mod math` then `/mod user`
+// performs a round-trip — both `math>` and `user>` prompts MUST appear.
+// Distinct from `mod_switch_to_named_module_changes_prompt` (single
+// switch): this asserts the round-trip path.
+// (carry: legacy/e2e.rs::e2e_s8_mod_switch_back)
+#[test]
+fn mod_switch_round_trip_math_to_user() {
+    let out = repl("/mod math
+/mod user
+");
+    assert!(
+        out.stdout.contains("math>") && out.stdout.contains("user>"),
+        "/mod round-trip MUST surface both 'math>' and 'user>' prompts per §8 Scenario 2; got:\n{}",
+        out.stdout
+    );
+}

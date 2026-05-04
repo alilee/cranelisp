@@ -422,6 +422,62 @@ deferred.
 | Disposition | resolved at chunk-2 close (clean carry-forward) |
 | Rationale | Per parity rule + `memory/feedback_repros_join_suite.md` the 17 carry-forwards are durable regression guards. The 2 REGRESSION-GUARD shapes (#9 cross-session isolation, #15 §9.9.4 runtime-error-during-expansion clean-report) preserve historic regression-naming patterns / known-defect repros even where the implementation now satisfies the spec property. The `/list <prefix>` filter assertion preserves the legacy positive-only shape; the implementation gap (no actual filtering) is out-of-scope for chunk-2 carry-forward. |
 
+### Sprint 64 Wave 5.6 — defects surfaced during e2e.rs chunk-3 carry-forward (2026-05-04)
+
+Wave 5.6 file 6 e2e.rs per-test re-audit chunk-3
+(`tests/plan/wave-5.6-e2e-reaudit.md` chunk 3, tests 101-148)
+identified 33 GAP-COVER findings (5 REGRESSION-GUARDs: imported-fn
+higher-order arg in REPL spec/08 §8.3 + 4 Cranelisp.toml E2E entries
+spec/08 §8.11.4). User approved all GAP-COVER carry-forwards
+(authoring as separate tests; no parametrisation). 33 carry-forward
+tests landed across 5 spec/repl files. This is chunk 3 of 3 — the
+final chunk for `tests/legacy/e2e.rs`.
+
+**Outcome**: all 33 carry-forwards land green on the current binary.
+The 5 REGRESSION-GUARDs (imported-fn-as-higher-order-arg, four
+Cranelisp.toml entries) all pass — the historic defect repros are
+preserved as durable regression guards per
+`memory/feedback_repros_join_suite.md`. The §7.4 SHOULD-level
+large-output bound (loose 64 KB ceiling) is preserved as-is per
+`/sprint` default; failing-not-ignored does not apply to SHOULD-level.
+Task #23 (`e2e_s3_3_list_neg_empty_categories_omitted` →
+`list_neg_no_types_traits_macros_when_only_fns`) was surfaced as
+COVERED-by-existing — the existing
+`repl_introspection.rs::list_neg_empty_categories_omitted` carry
+already asserts the same shape (no `Types:`/`Traits:`/`Macros:` when
+only fns); no duplicate authored.
+
+**No new defect FIXMEs filed.** Per
+`memory/feedback_validate_tests_against_spec.md` each candidate
+assertion was probed against the current binary before authoring; all
+33 active carries match the spec property and the implementation
+behaviour. Specific load-bearing observations:
+
+- All 5 REGRESSION-GUARDs pass on current binary — the historic
+  Sprint-attributed defects (REPL imported-fn higher-order;
+  Cranelisp.toml lib-dirs, precedence, fall-through, malformed-no-
+  crash) are now closed at the implementation. Carries land as
+  durable regression guards.
+- `/source`, `/sexp`, `/ast`, `/clif`, `/disasm` positive paths all
+  surface the expected content keywords; no slash-command defect
+  surfaced. The `/disasm` weak assertion preserved per audit
+  (platform-conditional content).
+- `/mem` cluster (snapshot + delta + zero-baseline + `/m` alias) all
+  pass with the spec-correct `; live:` / `; allocs:` / `; delta:`
+  format including signed deltas.
+- `/exports` cluster (no-arg usage + nonexistent + lists-symbols)
+  surfaces graceful behaviour.
+
+| Field | Value |
+|---|---|
+| Test names | 33 carry-forwards across 5 files: `tests/repl_introspection.rs` +25 (imports_filter_neg_nonexistent_silent_recovery; exports_no_arg_shows_usage; exports_neg_nonexistent_module_not_found; exports_lists_public_symbols_after_defn; deftype_display_match_section_header; deftrait_display_defn_section_lists_methods; bare_fn_lookup_after_defn_shows_defn_classification; bare_type_lookup_includes_match_section; bare_trait_lookup_includes_defn_section; bare_special_form_if_classification_token; bare_macro_lookup_shows_clause_signature; bare_builtin_type_int_shows_type_classification; list_neg_no_fns_category_when_only_types; doc_builtin_primitive_shows_name; doc_no_arg_shows_usage; source_user_fn_shows_original_text; sexp_user_fn_shows_parsed_form; ast_user_fn_shows_ast_structure; clif_user_fn_shows_cranelift_ir; disasm_user_fn_recognized_command; mem_snapshot_emits_live_and_allocs_neg_no_delta; mem_with_expr_emits_signed_delta_line; mem_baseline_zero_at_process_start; mem_alias_m_equivalent_to_mem); `tests/repl_lifecycle.rs` +2 (mod_switch_to_named_module_changes_prompt; mod_switch_round_trip_math_to_user); `tests/spec_08_modules.rs` +1 REGRESSION-GUARD (imported_fn_as_higher_order_arg_in_repl_mode); `tests/spec_platforms.rs` +4 REGRESSION-GUARDs (cranelisp_toml_lib_dirs_resolves_module; cranelisp_toml_takes_precedence_over_cranelisp_lib_env; cranelisp_toml_missing_falls_through_to_env_var; cranelisp_toml_malformed_does_not_crash); `tests/build_confidence.rs` +1 (repl_large_vec_output_bounded_under_64kb) |
+| SHA | uncommitted (Wave 5.6 file 6 chunk-3) |
+| Stderr / observable signature | 33/33 active carries pass |
+| Owning skill | n/a (no defect surfaced) |
+| Target sprint | n/a |
+| Disposition | resolved at chunk-3 close (clean carry-forward) |
+| Rationale | Per parity rule + `memory/feedback_repros_join_suite.md` the 33 carry-forwards are durable regression guards. The 5 REGRESSION-GUARD shapes (imported-fn-as-higher-order-arg per spec/08 §8.3; four Cranelisp.toml entries per spec/08 §8.11.4) preserve historic Sprint-attributed defect repros even where the implementation now satisfies the spec property. Cumulative across all three chunks: chunk-1 (17) + chunk-2 (17) + chunk-3 (33) = 67 carry-forwards from `tests/legacy/e2e.rs` (12 REGRESSION-GUARDs total). Wave 5.6 file 6 e2e.rs reauthoring complete. |
+
 ### Exemplar-level tests (non-cargo)
 
 *No current exemplar-level failing entries. The S60-carried `exemplar/solver.cl::test-unsolvable` was resolved in Sprint 61 Wave 2; see "Resolved this sprint" below. The Defect 6 stack-overflow failures are captured above as cargo tests (`d6_exemplar_*` and `wave6_demo_repros::exemplar_solver_*`), not as non-cargo entries — per `memory/feedback_repros_join_suite.md` the cargo-level reductions are the durable record.*
