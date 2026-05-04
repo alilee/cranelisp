@@ -661,6 +661,32 @@ fn run_tests_neg_ignores_non_test_prefixed_fns() {
     );
 }
 
+// =============================================================================
+// Wave 5.6 ring1.rs GAP-COVER carry-forward (chunk 2)
+// =============================================================================
+
+// spec: spec/12-runtime.md §12.5 — self-recursive HOF threading a
+// fn-typed parameter through each call: `(repeat-fn f n x) → (repeat-fn
+// f (sub-i64 n 1) (f x))`. Distinct from the deep-countdown TCO carries
+// (none pass a fn through self-recursion) and from the HOF carries (none
+// recurse). The combined shape exercises self-recursion correctness with
+// a fn-typed argument surviving across the loop-back jump. This carry
+// asserts the value is computed correctly at modest depth (5); it does
+// NOT require TCO (no stack-overflow test) — therefore is not gated on
+// FIXME 0141 unlike the deep TCO carries above.
+// (carry: legacy/ring1.rs::closure_recursive_with_higher_order)
+#[test]
+fn tco_self_recursion_with_fn_typed_parameter() {
+    repl_prims(
+        "(defn repeat-fn [f n x]\n\
+           (if (eq-i64 n 0)\n\
+             x\n\
+             (repeat-fn f (sub-i64 n 1) (f x))))\n\
+         (repeat-fn (fn [x] (add-i64 x 1)) 5 0)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 5");
+}
+
 // spec: spec/12-runtime.md §12.7.3 — `div-i64` of i64::MIN by -1 panics
 // (carry: legacy/ring0.rs::checked_div_min_neg1_panics)
 #[test]

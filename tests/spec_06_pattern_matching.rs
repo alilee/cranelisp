@@ -236,3 +236,26 @@ fn nested_match_in_arm_body() {
     )
     .assert_stdout_contains(":primitives/Int 2");
 }
+
+// =============================================================================
+// Wave 5.6 ring1.rs GAP-COVER carry-forwards (chunk 2)
+// =============================================================================
+
+// spec: spec/06-pattern-matching.md §6.1 — HOF that traverses an ADT with
+// internal pattern match: `(map-opt opt f) → (match opt [(Some x) (Some
+// (f x)) None None])`. The canonical Functor.fmap shape over Option.
+// Distinct from any covered HOF (none operate over an ADT-shaped value
+// with pattern matching internal) and from any covered match (none invoke
+// a fn-typed parameter inside an arm body).
+// (carry: legacy/ring1.rs::closure_capturing_int_returning_match_result)
+#[test]
+fn higher_order_fn_over_option_functor_map_shape() {
+    repl_prims(
+        "(deftype (Option a) None (Some [:a val]))\n\
+         (defn map-opt [opt f]\n\
+           (match opt [(Some x) (Some (f x)) None None]))\n\
+         (match (map-opt (Some 10) (fn [x] (mul-i64 x 2)))\n\
+           [(Some x) x None 0])\n",
+    )
+    .assert_stdout_contains(":primitives/Int 20");
+}

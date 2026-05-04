@@ -297,3 +297,107 @@ fn defns_mutual_forward_references() {
         .output()
         .assert_exit(18);
 }
+
+// =============================================================================
+// Wave 5.6 ring1.rs GAP-COVER carry-forwards (chunks 2-3)
+// =============================================================================
+
+// spec: spec/05-definitions.md §5.2.2 — closure-call result used as ctor
+// argument: `(Some (f 41))`. Exercises the eval-order of arg vs ctor
+// wrap, plus the heap-temp lifetime through the ctor wrap. Distinct from
+// `closure_returning_adt` where the closure body wraps in the ctor
+// (opposite ordering — here the ctor is OUTSIDE the closure body).
+// (carry: legacy/ring1.rs::adt_containing_closure_result)
+#[test]
+fn data_constructor_arg_from_closure_call_result() {
+    repl_prims(
+        "(deftype (Option a) None (Some [:a val]))\n\
+         (let [f (fn [x] (add-i64 x 1))]\n\
+           (match (Some (f 41)) [(Some x) x None 0]))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/05-definitions.md §5.2.7 — constructor arity rejection:
+// `(Point 1)` where Point expects two args. No prior spec_05 test
+// isolated ADT-constructor arity rejection; `defn_multi_clause_arity`
+// covers defn arity (positive). Ctor arity is a distinct lookup path.
+// (carry: legacy/ring1.rs::error_adt_constructor_wrong_arg_count)
+#[test]
+fn deftype_product_constructor_arity_mismatch_neg() {
+    let out = repl_prims(
+        "(deftype Point [:Int x :Int y])\n\
+         (Point 1)\n",
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.to_lowercase().contains("error")
+            || combined.to_lowercase().contains("arg")
+            || combined.to_lowercase().contains("arity")
+            || combined.to_lowercase().contains("expect"),
+        "(Point 1) with Point [:Int x :Int y] MUST produce an arity-mismatch \
+         diagnostic per §5.2.7; got stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/05-definitions.md §5.2.7 — constructor argument-type
+// rejection: `(Point true 2)` where the first slot expects Int. The
+// product-ctor-type-check angle is uncovered —
+// `deftype_product_construct_and_destructure` is positive only.
+// (carry: legacy/ring1.rs::error_adt_constructor_wrong_type)
+#[test]
+fn deftype_product_constructor_wrong_arg_type_neg() {
+    let out = repl_prims(
+        "(deftype Point [:Int x :Int y])\n\
+         (match (Point true 2) [(Point x y) x])\n",
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.contains("Bool")
+            || combined.contains("Int")
+            || combined.to_lowercase().contains("type")
+            || combined.to_lowercase().contains("error"),
+        "(Point true 2) MUST produce a type-mismatch diagnostic naming \
+         Bool / Int / type / error per §5.2.7; got stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/05-definitions.md §5.2 — undefined-constructor lookup:
+// `(Foo 1 2)` where Foo is never defined. Distinct from
+// `variable_reference_unbound_errors` (in spec_04) — constructor lookup
+// is a different code path (constructor table vs symbol table).
+// (carry: legacy/ring1.rs::error_undefined_constructor)
+#[test]
+fn data_constructor_undefined_lookup_neg() {
+    let out = repl_prims("(Foo 1 2)\n");
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.contains("Foo")
+            || combined.to_lowercase().contains("undefined")
+            || combined.to_lowercase().contains("unbound")
+            || combined.to_lowercase().contains("error"),
+        "(Foo 1 2) where Foo is never defined MUST produce a diagnostic \
+         naming Foo / undefined / unbound / error per §5.2; got stdout={} \
+         stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/05-definitions.md §5.2.2 — Vec containing ADT values:
+// `[(Some 1) None (Some 3)]`, vec-get + match. Heap-element vec with
+// mixed-tag ADTs. Distinct from all covered shapes — exercises ADT-in-vec
+// lifetime + dispatch through match after vec-get.
+// (carry: legacy/ring1.rs::vec_of_adts)
+#[test]
+fn vec_containing_adt_elements_get_and_match() {
+    repl_prims(
+        "(deftype (Option a) None (Some [:a val]))\n\
+         (match (vec-get [(Some 1) None (Some 3)] 0) [(Some x) x None 0])\n",
+    )
+    .assert_stdout_contains(":primitives/Int 1");
+}

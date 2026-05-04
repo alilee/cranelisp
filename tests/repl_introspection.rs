@@ -1553,3 +1553,55 @@ fn mem_alias_m_equivalent_to_mem() {
         out.stdout
     );
 }
+
+// =============================================================================
+// Wave 5.6 ring1.rs GAP-COVER carry-forwards (chunk 2)
+// =============================================================================
+
+// spec: repl/spec.md §1.5 — product ADT value display format. A product
+// constructor displays parenthesised, **without dot notation**:
+// `:user/Point (Point 3 4)`. Distinct from
+// `data_constructor_applied_dot_notation_display` which covers sum
+// constructor display `(Option.Some 42)` (dot notation). The
+// product-vs-sum display distinction is not isolated elsewhere.
+// (carry: legacy/ring1.rs::repl_adt_product)
+#[test]
+fn data_constructor_product_no_dot_notation_display() {
+    let out = repl(
+        "(deftype Point [:Int x :Int y])\n\
+         (Point 3 4)\n",
+    );
+    assert!(
+        out.stdout.contains("(Point 3 4)"),
+        "product ctor MUST display as `(Point 3 4)` per §1.5; got:\n{}",
+        out.stdout
+    );
+    // Negative: must NOT use dot notation `Point.Point` for the product
+    // constructor — that shape is reserved for sum-type constructor
+    // display (e.g., `Option.Some`).
+    assert!(
+        !out.stdout.contains("Point.Point"),
+        "product ctor MUST NOT use dot notation; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §1.2 — closure-as-value MUST display with the
+// `<closure>` token in the value position. Only the negative companion
+// `defn_display_neg_not_closure` exists (asserting top-level defns do
+// NOT show "closure"); the positive `<closure>` formatter assertion was
+// uncovered. The closure produced by `(make-adder 5)` returns a fn value,
+// which is the canonical positive `<closure>` shape.
+// (carry: legacy/ring1.rs::repl_closure_display)
+#[test]
+fn closure_value_display_shows_closure_token() {
+    let out = repl_prims(
+        "(defn make-adder [n] (fn [x] (add-i64 n x)))\n\
+         (make-adder 5)\n",
+    );
+    assert!(
+        out.stdout.contains("<closure>"),
+        "closure value MUST display with `<closure>` token per §1.2; got:\n{}",
+        out.stdout
+    );
+}

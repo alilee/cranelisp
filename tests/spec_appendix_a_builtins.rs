@@ -380,3 +380,87 @@ fn primitive_join_reassembles() {
     repl_prims("(str-eq (join \",\" (split \"a,b,c\" \",\")) \"a,b,c\")\n")
         .assert_stdout_contains(":primitives/Bool true");
 }
+
+// =============================================================================
+// Wave 5.6 ring1.rs GAP-COVER carry-forwards (chunks 1-3)
+// =============================================================================
+
+// spec: spec/appendix-a-builtins.md §A.3 — chained str-concat exercises
+// nested str-concat through two invocations: `(str-concat (str-concat "a"
+// "b") "c")` produces "abc". Distinct from `primitive_str_concat` (single
+// invocation) and `let_heap_typed_results_string_concat` in
+// spec_04_expressions.rs (let-bound composition through bindings).
+// (carry: legacy/ring1.rs::string_concat_chained)
+#[test]
+fn primitive_str_concat_chained_two_levels() {
+    repl_prims("(str-len (str-concat (str-concat \"a\" \"b\") \"c\"))\n")
+        .assert_stdout_contains(":primitives/Int 3");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — parse-int returns
+// `(Some n)` for a numeric string. Zero parse-int coverage existed
+// in any e2e file; parse-int is normatively a primitive returning
+// `(primitives/Option Int)`.
+// (carry: legacy/ring1.rs::parse_int_valid)
+#[test]
+fn primitive_parse_int_valid() {
+    // `parse-int` returns `primitives/Option`; the imported `Some`/`None`
+    // come from the PrimitivesOnly prelude and dispatch against the
+    // primitive Option variants directly (no user-defined `Option` here).
+    repl_prims(
+        "(match (parse-int \"42\") [(Some n) n None 0])\n",
+    )
+    .assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — parse-int returns `None`
+// for a non-numeric string. Negative companion to
+// `primitive_parse_int_valid`; the None-returning path is the
+// spec-mandated failure mode of a pure parse primitive.
+// (carry: legacy/ring1.rs::parse_int_invalid)
+#[test]
+fn primitive_parse_int_invalid() {
+    repl_prims(
+        "(match (parse-int \"not-a-number\") [(Some n) n None (sub-i64 0 1)])\n",
+    )
+    .assert_stdout_contains(":primitives/Int -1");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — vec-set leaves non-target
+// positions untouched. Distinct from `primitive_vec_set_preserves_len`
+// (length only) and from `vec_set_cow_preserves_original` in
+// spec_12_runtime.rs (asserts the ORIGINAL vec is untouched, not the
+// new vec's other positions). The other-positions-of-the-set-result
+// angle is a distinct positive shape.
+// (carry: legacy/ring1.rs::vec_set_preserves_other_elements)
+#[test]
+fn primitive_vec_set_other_positions_preserved() {
+    repl_prims(
+        "(let [v (vec-set [10 20 30] 1 99)] (add-i64 (vec-get v 0) (vec-get v 2)))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 40");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — vec-get returns the element
+// at a heap-typed-element vec position. `primitive_vec_get_first` uses
+// Int elements; the Vec-of-String shape exercises a distinct
+// RC-aware angle (the get must increment the String's RC and pass
+// ownership to the caller).
+// (carry: legacy/ring1.rs::vec_of_strings_get)
+#[test]
+fn primitive_vec_get_string_element() {
+    repl_prims("(str-len (vec-get [\"hello\" \"world\"] 0))\n")
+        .assert_stdout_contains(":primitives/Int 5");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — vec-get at a middle index.
+// `primitive_vec_get_first` covers index 0 only; the middle-vs-end
+// positional indexing is conventionally coverage-distinct (the
+// first/middle/last triple). Mild ambiguity per audit /sprint flag —
+// `/sprint` retained as GAP-COVER for the family-completeness shape.
+// (carry: legacy/ring1.rs::vec_get_middle)
+#[test]
+fn primitive_vec_get_middle_index() {
+    repl_prims("(vec-get [10 20 30] 1)\n")
+        .assert_stdout_contains(":primitives/Int 20");
+}

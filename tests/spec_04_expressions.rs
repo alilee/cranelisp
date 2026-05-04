@@ -468,3 +468,123 @@ fn let_all_literal_bindings_correct() {
     )
     .assert_stdout_contains(":primitives/Int 42");
 }
+
+// =============================================================================
+// Wave 5.6 ring1.rs GAP-COVER carry-forwards (chunks 1-3)
+// =============================================================================
+
+// spec: spec/04-expressions.md §4.4 — `if` returning a heap-typed (String)
+// result. Both branches return String constants; `str-len` consumes the
+// unified result. Distinct from the int-branch `if_*_branch` carries (Int
+// result), `if_neg_branch_type_mismatch` (negative — Int vs String), and
+// from `string_concat_chained` (which exercises chained str-concat without
+// `if`). The heap-typed positive-result if-unification shape is unique.
+// (carry: legacy/ring1.rs::string_in_if_branches)
+#[test]
+fn if_branches_heap_typed_string_result() {
+    repl_prims("(str-len (if true \"hello\" \"hi\"))\n")
+        .assert_stdout_contains(":primitives/Int 5");
+}
+
+// spec: spec/04-expressions.md §4.6 — HOF that invokes its fn-typed
+// parameter twice: `(apply-twice f x) → (f (f x))`. Distinct from
+// `lambda_passed_as_argument_invoked_inside_callee` (single application).
+// The double-call shape exercises closure-as-value invariance under
+// repeat invocation — no per-call cleanup in the HOF body must drop or
+// shadow the captured value.
+// (carry: legacy/ring1.rs::closure_apply_twice)
+#[test]
+fn lambda_passed_as_argument_invoked_twice_inside_callee() {
+    repl_prims(
+        "(defn apply-twice [f x] (f (f x)))\n\
+         (apply-twice (fn [x] (add-i64 x 1)) 0)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 2");
+}
+
+// spec: spec/04-expressions.md §4.5.1 — function composition
+// `(compose f g) → (fn [x] (f (g x)))` returns a closure that captures
+// **two fn-typed values**. Distinct from `lambda_closure_captures` (Int
+// capture) and the single-fn HOF tests; the multi-fn-typed-capture
+// angle is uncovered elsewhere.
+// (carry: legacy/ring1.rs::closure_compose)
+#[test]
+fn closure_composition_returns_capturing_two_fn_args() {
+    repl_prims(
+        "(defn compose [f g] (fn [x] (f (g x))))\n\
+         (defn inc [x] (add-i64 x 1))\n\
+         (defn double [x] (mul-i64 x 2))\n\
+         ((compose inc double) 5)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 11");
+}
+
+// spec: spec/04-expressions.md §4.5 — a named `defn` (not a lambda)
+// passed as a fn-typed value to a HOF. The codegen path for
+// defn-as-value may differ from lambda-as-value (direct code-pointer
+// vs closure trampoline), exercising a distinct reification path.
+// Distinct from `lambda_passed_as_argument_invoked_inside_callee`
+// (lambda-as-value).
+// (carry: legacy/ring1.rs::named_function_as_value_apply)
+#[test]
+fn named_defn_passed_as_value_to_higher_order_fn() {
+    repl_prims(
+        "(defn inc [x] (add-i64 x 1))\n\
+         (defn apply-fn [f x] (f x))\n\
+         (apply-fn inc 41)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/04-expressions.md §4.4 — `if` returning a closure value.
+// Both branches return closures of the same fn type. Heap-typed-if-result
+// for **closure** type — distinct from `if_branches_heap_typed_string_result`
+// (String result) and from `if_*_branch` (Int result). Closure-result
+// branches exercise closure-pointer unification at the if-result.
+// (carry: legacy/ring1.rs::closure_in_if_branch)
+#[test]
+fn if_branches_heap_typed_closure_result() {
+    repl_prims(
+        "(let [pick true]\n\
+           (let [f (if pick (fn [x] (add-i64 x 1)) (fn [x] (sub-i64 x 1)))]\n\
+             (f 10)))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 11");
+}
+
+// spec: spec/04-expressions.md §4.5 — closure-application arity rejection:
+// calling a one-arg closure with two arguments. Distinct from
+// `defn_multi_clause_arity` (defn arity, positive — dispatches between
+// clauses). The "calling closure with too many args" rejection path is
+// not isolated.
+// (carry: legacy/ring1.rs::error_closure_arity_mismatch)
+#[test]
+fn lambda_call_with_wrong_arg_count_neg() {
+    let out = repl_prims("(let [f (fn [x] x)] (f 1 2))\n");
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.to_lowercase().contains("error")
+            || combined.to_lowercase().contains("arity")
+            || combined.to_lowercase().contains("arg"),
+        "((fn [x] x) 1 2) MUST produce an arity-mismatch diagnostic per \
+         §4.5; got stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/04-expressions.md §4.5.1 — let-bound capturing closure
+// invoked twice with **independent args** (f(1) and f(2), not f(f(x))).
+// Distinct from `lambda_passed_as_argument_invoked_twice_inside_callee`
+// (f(f(x)) shape) and from `lambda_closure_captures` (single call). The
+// capture-invariance-under-independent-calls angle exercises that the
+// captured value is not consumed/dropped after the first call.
+// (carry: legacy/ring1.rs::let_bound_lambda_with_capture)
+#[test]
+fn let_bound_capturing_lambda_invoked_with_independent_args() {
+    repl_prims(
+        "(let [base 100 f (fn [x] (add-i64 base x))]\n\
+           (add-i64 (f 1) (f 2)))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 203");
+}

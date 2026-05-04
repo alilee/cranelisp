@@ -213,3 +213,75 @@ fn annotation_expression_neg_not_variable_lookup() {
         out.stdout
     );
 }
+
+// =============================================================================
+// Wave 5.6 ring1.rs GAP-COVER carry-forwards (chunk 3)
+// =============================================================================
+
+// spec: spec/03-types.md §3.5 — type-mismatch direction Int→String slot:
+// `(str-len 42)` passes Int where String is expected. Mirror direction of
+// `unification_int_vs_string_errors` (which is if-branches Int vs String).
+// The fn-arg-type-mismatch direction (Int passed to String slot) is not
+// isolated in any other carry — only the if-branches form is covered.
+// (carry: legacy/ring1.rs::error_int_where_string_expected)
+#[test]
+fn unification_int_passed_to_string_arg_errors_neg() {
+    let out = repl_prims("(str-len 42)\n");
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.contains("Int")
+            || combined.contains("String")
+            || combined.to_lowercase().contains("type")
+            || combined.to_lowercase().contains("error"),
+        "(str-len 42) MUST produce a type-mismatch diagnostic mentioning \
+         Int / String / type / error per §3.5; got stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/03-types.md §3.3 — polymorphic identity instantiated at
+// String. `polymorphic_identity_at_int`/`polymorphic_identity_at_bool`
+// cover scalar instantiations; String is the heap-typed counterpart with
+// a distinct codegen path (RC-aware). The poly-id-at-heap-type angle is
+// not isolated elsewhere.
+// (carry: legacy/ring1.rs::identity_on_string)
+#[test]
+fn polymorphic_identity_at_string() {
+    repl_prims(
+        "(defn id [x] x)\n\
+         (str-len (id \"hello\"))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 5");
+}
+
+// spec: spec/03-types.md §3.3 — polymorphic identity at a user-defined
+// ADT type. Distinct from `polymorphic_identity_at_string` (literal-driven
+// heap value) — ADT is ctor-driven heap. The user-defined-type
+// instantiation angle is uncovered elsewhere.
+// (carry: legacy/ring1.rs::identity_on_adt)
+#[test]
+fn polymorphic_identity_at_adt() {
+    repl_prims(
+        "(deftype (Option a) None (Some [:a val]))\n\
+         (defn id [x] x)\n\
+         (match (id (Some 42)) [(Some x) x None 0])\n",
+    )
+    .assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/03-types.md §3.3 — polymorphic HOF returning ADT. Composition
+// of poly-HOF + ADT-returning closure: `(apply-fn (fn [x] (Some x)) 42)`.
+// Distinct from any covered HOF (none return ADTs) and from any covered
+// ADT shape (none flow through the HOF return position). The
+// Functor.return-into-Option shape.
+// (carry: legacy/ring1.rs::higher_order_on_adt)
+#[test]
+fn polymorphic_higher_order_returning_adt() {
+    repl_prims(
+        "(deftype (Option a) None (Some [:a val]))\n\
+         (defn apply-fn [f x] (f x))\n\
+         (match (apply-fn (fn [x] (Some x)) 42) [(Some x) x None 0])\n",
+    )
+    .assert_stdout_contains(":primitives/Int 42");
+}
