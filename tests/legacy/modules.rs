@@ -1,3 +1,16 @@
+// QUARANTINED — Sprint 64 Wave 5 test-port. Not built or run by Cargo.
+// FIXME: design/arch/fixmes/0138-harvest-tests-legacy-modules.md
+// Owning crate: crates/cranelisp-frontend (module_extract)
+// Owning skill: /frontend (module discovery internals)
+// Quarantined: 2026-05-04
+//
+// This file's assertions test Rust-internal state with no clean e2e
+// equivalent (or the language-behaviour subset has been carried forward
+// into the spec-section files). Harvest into `#[cfg(test)]` unit tests
+// inside the owning crate per memory/feedback_unit_tests_with_dev.md and
+// memory/project_test_strategy.md. Source preserved verbatim; translation
+// may require dev-dependency adjustments and import rewrites.
+
 // Module discovery and cross-module import integration tests.
 //
 // These tests exercise the module graph discovery and compilation pipeline

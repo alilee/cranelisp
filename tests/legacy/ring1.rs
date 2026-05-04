@@ -1,3 +1,16 @@
+// QUARANTINED — Sprint 64 Wave 5 test-port. Not built or run by Cargo.
+// FIXME: design/arch/fixmes/0134-harvest-tests-legacy-ring1.md
+// Owning crate: src/ + crates/cranelisp-typecheck, cranelisp-backend
+// Owning skill: /typecheck (with /backend, /int)
+// Quarantined: 2026-05-04
+//
+// This file's assertions test Rust-internal state with no clean e2e
+// equivalent (or the language-behaviour subset has been carried forward
+// into the spec-section files). Harvest into `#[cfg(test)]` unit tests
+// inside the owning crate per memory/feedback_unit_tests_with_dev.md and
+// memory/project_test_strategy.md. Source preserved verbatim; translation
+// may require dev-dependency adjustments and import rewrites.
+
 // Ring 1 integration tests: strings, ADTs with fields, closures.
 //
 // Tests the full pipeline from source text to execution result.

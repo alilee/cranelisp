@@ -1,3 +1,16 @@
+// QUARANTINED — Sprint 64 Wave 5 test-port. Not built or run by Cargo.
+// FIXME: design/arch/fixmes/0137-harvest-tests-legacy-macros.md
+// Owning crate: crates/cranelisp-frontend, cranelisp-typecheck
+// Owning skill: /frontend (with /typecheck — macro pipeline internals)
+// Quarantined: 2026-05-04
+//
+// This file's assertions test Rust-internal state with no clean e2e
+// equivalent (or the language-behaviour subset has been carried forward
+// into the spec-section files). Harvest into `#[cfg(test)]` unit tests
+// inside the owning crate per memory/feedback_unit_tests_with_dev.md and
+// memory/project_test_strategy.md. Source preserved verbatim; translation
+// may require dev-dependency adjustments and import rewrites.
+
 // Integration tests for the macro pipeline (Phase 5).
 //
 // Tests that defmacro works in both REPL and batch modes, macro expansion

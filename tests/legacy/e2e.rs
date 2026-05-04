@@ -1,3 +1,16 @@
+// QUARANTINED — Sprint 64 Wave 5 test-port. Not built or run by Cargo.
+// FIXME: design/arch/fixmes/0134-harvest-tests-legacy-e2e.md
+// Owning crate: src/ + crates/cranelisp-frontend, cranelisp-typecheck, cranelisp-backend
+// Owning skill: /int (with /frontend, /typecheck, /backend)
+// Quarantined: 2026-05-04
+//
+// This file's assertions test Rust-internal state with no clean e2e
+// equivalent (or the language-behaviour subset has been carried forward
+// into the spec-section files). Harvest into `#[cfg(test)]` unit tests
+// inside the owning crate per memory/feedback_unit_tests_with_dev.md and
+// memory/project_test_strategy.md. Source preserved verbatim; translation
+// may require dev-dependency adjustments and import rewrites.
+
 //! Layer 4: E2E black-box tests.
 //!
 //! These tests invoke the `cranelisp` binary as a subprocess, pipe input to

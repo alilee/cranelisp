@@ -1,3 +1,16 @@
+// QUARANTINED — Sprint 64 Wave 5 test-port. Not built or run by Cargo.
+// FIXME: design/arch/fixmes/0139-harvest-tests-legacy-sprint59_neg.md
+// Owning crate: src/ (optional — carry-forward complete)
+// Owning skill: /int (optional)
+// Quarantined: 2026-05-04
+//
+// This file's assertions test Rust-internal state with no clean e2e
+// equivalent (or the language-behaviour subset has been carried forward
+// into the spec-section files). Harvest into `#[cfg(test)]` unit tests
+// inside the owning crate per memory/feedback_unit_tests_with_dev.md and
+// memory/project_test_strategy.md. Source preserved verbatim; translation
+// may require dev-dependency adjustments and import rewrites.
+
 //! Sprint 59 Workstream D — module-boundary negative tests + Defect 8 latent gap.
 //!
 //! This file authors the four negative tests commissioned by Sprint 59
