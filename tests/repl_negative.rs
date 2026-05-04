@@ -371,6 +371,49 @@ fn doc_unknown_name_graceful() {
 }
 
 // =============================================================================
+// Slash command nonexistent-name graceful handling — Wave 5.5 GAP-COVER
+//
+// Each of /source /sexp /ast /clif /disasm must handle nonexistent symbol
+// gracefully (no crash, no SIGILL). Coverage was previously held only in
+// tests/legacy/e2e.rs.
+// =============================================================================
+
+// spec: repl/spec.md §3.1 — /source of unknown name does not crash
+// (carry: legacy/e2e.rs::e2e_s3_1_source_neg_nonexistent)
+#[test]
+fn source_unknown_name_graceful() {
+    repl("/source nonexistent-name\n").assert_ok();
+}
+
+// spec: repl/spec.md §3.1 — /sexp of unknown name does not crash
+// (carry: legacy/e2e.rs::e2e_s3_1_sexp_neg_nonexistent)
+#[test]
+fn sexp_unknown_name_graceful() {
+    repl("/sexp nonexistent-name\n").assert_ok();
+}
+
+// spec: repl/spec.md §3.1 — /ast of unknown name does not crash
+// (carry: legacy/e2e.rs::e2e_s3_1_ast_neg_nonexistent)
+#[test]
+fn ast_unknown_name_graceful() {
+    repl("/ast nonexistent-name\n").assert_ok();
+}
+
+// spec: repl/spec.md §3.1 — /clif of unknown name does not crash
+// (carry: legacy/e2e.rs::e2e_s3_1_clif_neg_nonexistent)
+#[test]
+fn clif_unknown_name_graceful() {
+    repl("/clif nonexistent-name\n").assert_ok();
+}
+
+// spec: repl/spec.md §3.1 — /disasm of unknown name does not crash
+// (carry: legacy/e2e.rs::e2e_s3_1_disasm_neg_nonexistent)
+#[test]
+fn disasm_unknown_name_graceful() {
+    repl("/disasm nonexistent-name\n").assert_ok();
+}
+
+// =============================================================================
 // Failed defn must NOT register — repl/spec.md §5.2
 // =============================================================================
 

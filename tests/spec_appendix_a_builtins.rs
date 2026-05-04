@@ -198,3 +198,155 @@ fn primitive_vec_push_increases_len() {
 fn primitive_vec_set_preserves_len() {
     repl_prims("(vec-len (vec-set [1 2 3] 1 99))\n").assert_stdout_contains(":primitives/Int 3");
 }
+
+// =============================================================================
+// §A.3 String slicing / introspection — Wave 5.5 GAP-COVER
+//
+// These primitives are spec'd in `appendix-a-builtins §A.3` but had zero
+// e2e carry-forward after Wave 5 dedupe. Coverage was previously held
+// only in `tests/legacy/ring1.rs` (now quarantined).
+// =============================================================================
+
+// spec: spec/appendix-a-builtins.md §A.3 — substring extracts [start, end)
+// (carry: legacy/ring1.rs::string_substring_basic)
+#[test]
+fn primitive_substring_basic() {
+    repl_prims("(str-len (substring \"hello world\" 6 11))\n")
+        .assert_stdout_contains(":primitives/Int 5");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — substring clamps out-of-bounds end
+// (carry: legacy/ring1.rs::string_substring_clamps_end)
+#[test]
+fn primitive_substring_clamps_end() {
+    repl_prims("(str-len (substring \"hello\" 0 100))\n")
+        .assert_stdout_contains(":primitives/Int 5");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — char-at returns single-char string
+// (carry: legacy/ring1.rs::string_char_at_valid_index)
+#[test]
+fn primitive_char_at_valid() {
+    repl_prims("(str-eq (char-at \"hello\" 1) \"e\")\n")
+        .assert_stdout_contains(":primitives/Bool true");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — char-at OOB returns empty
+// (carry: legacy/ring1.rs::string_char_at_out_of_bounds_empty)
+#[test]
+fn primitive_char_at_out_of_bounds_empty() {
+    repl_prims("(str-len (char-at \"hello\" 100))\n")
+        .assert_stdout_contains(":primitives/Int 0");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — trim strips leading/trailing whitespace
+// (carry: legacy/ring1.rs::string_trim_whitespace)
+#[test]
+fn primitive_trim_whitespace() {
+    repl_prims("(str-eq (trim \"  hello  \") \"hello\")\n")
+        .assert_stdout_contains(":primitives/Bool true");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — trim preserves interior whitespace
+// (carry: legacy/ring1.rs::string_trim_interior_preserved)
+#[test]
+fn primitive_trim_interior_preserved() {
+    repl_prims("(str-len (trim \"  hi there  \"))\n")
+        .assert_stdout_contains(":primitives/Int 8");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — to-upper converts ASCII letters
+// (carry: legacy/ring1.rs::string_to_upper_ascii)
+#[test]
+fn primitive_to_upper_ascii() {
+    repl_prims("(str-eq (to-upper \"hello\") \"HELLO\")\n")
+        .assert_stdout_contains(":primitives/Bool true");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — to-lower converts ASCII letters
+// (carry: legacy/ring1.rs::string_to_lower_ascii)
+#[test]
+fn primitive_to_lower_ascii() {
+    repl_prims("(str-eq (to-lower \"HELLO\") \"hello\")\n")
+        .assert_stdout_contains(":primitives/Bool true");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — starts-with? prefix match
+// (carry: legacy/ring1.rs::string_starts_with_true)
+#[test]
+fn primitive_starts_with_true() {
+    repl_prims("(starts-with? \"hello world\" \"hello\")\n")
+        .assert_stdout_contains(":primitives/Bool true");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — starts-with? rejects non-prefix
+// (carry: legacy/ring1.rs::string_starts_with_false)
+#[test]
+fn primitive_starts_with_false() {
+    repl_prims("(starts-with? \"hello\" \"world\")\n")
+        .assert_stdout_contains(":primitives/Bool false");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — ends-with? suffix match
+// (carry: legacy/ring1.rs::string_ends_with_true)
+#[test]
+fn primitive_ends_with_true() {
+    repl_prims("(ends-with? \"hello world\" \"world\")\n")
+        .assert_stdout_contains(":primitives/Bool true");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — ends-with? rejects non-suffix
+// (carry: legacy/ring1.rs::string_ends_with_false)
+#[test]
+fn primitive_ends_with_false() {
+    repl_prims("(ends-with? \"hello\" \"world\")\n")
+        .assert_stdout_contains(":primitives/Bool false");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — contains? substring search
+// (carry: legacy/ring1.rs::string_contains_true)
+#[test]
+fn primitive_contains_true() {
+    repl_prims("(contains? \"hello world\" \"lo wo\")\n")
+        .assert_stdout_contains(":primitives/Bool true");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — contains? rejects absent substring
+// (carry: legacy/ring1.rs::string_contains_false)
+#[test]
+fn primitive_contains_false() {
+    repl_prims("(contains? \"hello\" \"xyz\")\n")
+        .assert_stdout_contains(":primitives/Bool false");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — replace substitutes occurrences
+// (carry: legacy/ring1.rs::string_replace_multiple)
+#[test]
+fn primitive_replace_multiple() {
+    repl_prims("(str-eq (replace \"foo bar foo\" \"foo\" \"baz\") \"baz bar baz\")\n")
+        .assert_stdout_contains(":primitives/Bool true");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — replace with absent needle is no-op
+// (carry: legacy/ring1.rs::string_replace_missing_needle)
+#[test]
+fn primitive_replace_missing_needle() {
+    repl_prims("(str-eq (replace \"hello\" \"xyz\" \"abc\") \"hello\")\n")
+        .assert_stdout_contains(":primitives/Bool true");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — split partitions by separator
+// (carry: legacy/ring1.rs::string_split_produces_parts)
+#[test]
+fn primitive_split_produces_parts() {
+    repl_prims("(vec-len (split \"a,b,c\" \",\"))\n")
+        .assert_stdout_contains(":primitives/Int 3");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — join inverse of split
+// (carry: legacy/ring1.rs::string_join_reassembles)
+#[test]
+fn primitive_join_reassembles() {
+    repl_prims("(str-eq (join \",\" (split \"a,b,c\" \",\")) \"a,b,c\")\n")
+        .assert_stdout_contains(":primitives/Bool true");
+}

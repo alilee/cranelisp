@@ -246,3 +246,61 @@ fn super_import_at_top_level_neg() {
         "REPL super-import should produce a diagnostic (spec §8.3); got: {combined}"
     );
 }
+
+// =============================================================================
+// §8.3.9 — import placement and ordering (Wave 5.5 GAP-COVER)
+//
+// These two tests carry forward sprint59_neg.rs assertions that were missed
+// by the Wave 5 dedupe.
+// =============================================================================
+
+// spec: spec/08-modules.md §8.3 — (import …) placed inside a let body MUST be
+// rejected: imports are top-level forms, extracted before macro expansion.
+// (carry: legacy/sprint59_neg.rs::import_inside_let_rejected_neg)
+#[test]
+fn import_inside_let_rejected_neg() {
+    let out = Cranelisp::new()
+        .file(
+            "main.cl",
+            "(defn main []\n  (let [x 1]\n    (import [util [helper]])\n    (helper)))",
+        )
+        .file("util.cl", "(defn helper [] 42)")
+        .run("main.cl")
+        .output();
+    assert!(
+        !out.status.success(),
+        "(import …) inside a let body MUST be rejected — spec §8.3 requires \
+         imports as top-level forms; stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/08-modules.md §8.3.9 — multiple `import` forms accumulate; effects
+// MUST be visible to all definitions regardless of source position.
+// Per §8.3.9: "An implementation MUST process `import` before compiling
+// definitions in the same module, so that imported names are available
+// during type checking and code generation."
+// (carry: legacy/sprint59_neg.rs::import_below_use_still_available_before_definitions)
+//
+// FIXME(/int): the integration-tier helper `batch_run_file` accepts this
+// program; the binary `--run` path rejects it with "entry module has no
+// `main` function". Spec parity gap between integration helper and binary
+// surface; defect is in `/int` orchestration. Failing-not-ignored per
+// `memory/feedback_failing_not_ignored.md`. Ledger entry added under
+// Wave 5.5.
+#[test]
+fn import_below_use_still_available_before_definitions() {
+    // The defn references `helper` BEFORE the import line — but per §8.3.9
+    // imports are extracted en bloc before compilation, so `main` MUST see
+    // `helper` at typecheck time.
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(defn main [] (helper))\n(import [util [helper]])",
+        )
+        .file("util.cl", "(defn helper [] 42)")
+        .run("main.cl")
+        .output()
+        .assert_exit(42);
+}

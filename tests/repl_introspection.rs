@@ -222,6 +222,55 @@ fn list_shows_types_category() {
     );
 }
 
+// spec: repl/spec.md §3.3 (negative) — /list omits empty categories
+// Only the populated category appears; absent ones don't render headers.
+// (carry: legacy/e2e.rs::e2e_s3_3_list_neg_empty_categories_omitted)
+#[test]
+fn list_neg_empty_categories_omitted() {
+    let out = repl("(defn foo [x] x)\n/list\n");
+    assert!(
+        !out.stdout.contains("Types:"),
+        "/list MUST NOT render 'Types:' header when no types defined; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("Traits:"),
+        "/list MUST NOT render 'Traits:' header when no traits defined; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("Macros:"),
+        "/list MUST NOT render 'Macros:' header when no macros defined; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.3 (negative) — /list does NOT show special forms
+// Special forms belong to /imports, not /list.
+// (carry: legacy/e2e.rs::e2e_s3_3_list_neg_no_special_forms)
+#[test]
+fn list_neg_no_special_forms_category() {
+    let out = repl("/list\n");
+    assert!(
+        !out.stdout.contains("Special forms"),
+        "/list MUST NOT include 'Special forms' (that's /imports' category); got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.3 (negative) — /list shows '(no definitions)' when
+// only imports were made — imports do not constitute user definitions.
+// (carry: legacy/e2e.rs::e2e_s3_3_list_neg_no_imports)
+#[test]
+fn list_neg_only_imports_shows_no_definitions() {
+    let out = repl("(import [primitives [add-i64]])\n/list\n");
+    assert!(
+        out.stdout.contains("(no definitions)"),
+        "/list MUST report '(no definitions)' when only imports exist; got:\n{}",
+        out.stdout
+    );
+}
+
 // =============================================================================
 // /imports — repl/spec.md §3.4
 // =============================================================================
@@ -249,6 +298,33 @@ fn imports_shows_imported_primitive() {
         "/imports must show imported primitive 'add-i64'; got:\n{}",
         out.stdout
     );
+}
+
+// spec: repl/spec.md §3.4 (negative) — /imports on a fresh no-prelude session
+// MUST NOT show primitives. Primitives reach user code via module-resolution
+// fallback, not via import. The Slice 1 bare-primitive fix expanded resolver
+// reach but MUST NOT promote primitives into the import-visible surface.
+// (carry: legacy/e2e.rs::e2e_s3_4_imports_empty_neg_no_primitives_leak)
+#[test]
+fn imports_neg_no_primitives_leak_on_fresh_session() {
+    let out = repl("/imports\n");
+    for leaked in ["add-i64", "eq-i64", "sub-i64", "mul-i64", "primitives/"] {
+        assert!(
+            !out.stdout.contains(leaked),
+            "/imports on fresh no-prelude session MUST NOT show `{leaked}` — \
+             primitives reach user code via fallback, not via import; got:\n{}",
+            out.stdout
+        );
+    }
+    // No category headers for empty domains.
+    for cat in ["Fns:", "Types:", "Traits:", "Macros:"] {
+        assert!(
+            !out.stdout.contains(cat),
+            "/imports on fresh no-prelude session MUST NOT render '{cat}' \
+             category — only Special forms applies; got:\n{}",
+            out.stdout
+        );
+    }
 }
 
 // =============================================================================

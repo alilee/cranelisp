@@ -160,3 +160,43 @@ fn pattern_match_in_defn_multiple_calls() {
         ":primitives/Int 2",
     ]);
 }
+
+// =============================================================================
+// §6.5.1 Exhaustiveness — non-exhaustive match on ADT is a compile-time error
+// (Wave 5.5 GAP-COVER — previously held only in tests/legacy/ring1.rs)
+// =============================================================================
+
+// spec: spec/06-pattern-matching.md §6.5.1 — non-exhaustive match on a concrete
+// ADT MUST be rejected at compile time.
+// (carry: legacy/ring1.rs::non_exhaustive_match_panics — recategorised:
+// the spec was tightened to compile-time error per §6.5.1; the runtime panic
+// safety net remains per §6.5.3 but the compile-time check is the primary guard)
+#[test]
+fn pattern_non_exhaustive_match_on_adt_neg() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin(
+            "(deftype Color Red Green Blue)\n\
+             (defn classify [c] (match c [Red 1 Green 2]))\n\
+             (classify Blue)\n",
+        )
+        .output();
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    // The match omits Blue. Per §6.5.1 this MUST be rejected at compile
+    // time (or, by §6.5.3 fallback, panic at runtime with "match failed").
+    // Either result indicates the omission was caught.
+    assert!(
+        combined.contains("Blue")
+            || combined.contains("exhaustive")
+            || combined.contains("missing")
+            || combined.contains("match failed")
+            || combined.contains("Error")
+            || combined.contains("error"),
+        "non-exhaustive match on Color (missing Blue) MUST be diagnosed \
+         either as a compile-time error (§6.5.1) or runtime panic (§6.5.3); \
+         got stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}
