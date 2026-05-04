@@ -1,6 +1,6 @@
 # Sprint 64: Test-Port — `/qa` two-tier migration
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 5.5 audit complete + committed. **25% GAP-COVER rate found** — Wave 5 silently lost discriminating tests; 34 recovered as new e2e + 1 defect surfaced (FIXME 0140). One wave remaining (Wave 6 — defects + Phase 3 close).
+**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 6 deferred. Wave 5.6 dispatched: full per-file dedupe-recovery audit applying Wave 5.5 discipline exhaustively. User principles: no exact duplicates; multi-angle on same spec preserved; repros presumptively discriminating.
 
 **Goal**: Transition `/qa` fully to the two-tier regime. Audit every test file for assertions that test language behaviour (carry forward as new e2e tests in the harness specified by `tests/plan/helpers.md`) vs. Rust-internal state (quarantine in `tests/legacy/` for FIXME-driven harvest into the owning crate's unit tests). Reorganise the new e2e suite for spec-coverage auditability. Delete the legacy scaffolding once the new suite is sound. **Parity in spec-relevant coverage**: every assertion that exercises spec behaviour survives the transition; defects surfaced during audit land as FIXMEs + failing tests, not fixes.
 
