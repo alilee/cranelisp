@@ -478,6 +478,54 @@ behaviour. Specific load-bearing observations:
 | Disposition | resolved at chunk-3 close (clean carry-forward) |
 | Rationale | Per parity rule + `memory/feedback_repros_join_suite.md` the 33 carry-forwards are durable regression guards. The 5 REGRESSION-GUARD shapes (imported-fn-as-higher-order-arg per spec/08 §8.3; four Cranelisp.toml entries per spec/08 §8.11.4) preserve historic Sprint-attributed defect repros even where the implementation now satisfies the spec property. Cumulative across all three chunks: chunk-1 (17) + chunk-2 (17) + chunk-3 (33) = 67 carry-forwards from `tests/legacy/e2e.rs` (12 REGRESSION-GUARDs total). Wave 5.6 file 6 e2e.rs reauthoring complete. |
 
+### Sprint 64 Wave 5.6 — defects surfaced during ring2.rs carry-forward (2026-05-04)
+
+Wave 5.6 file 8 ring2.rs per-test re-audit
+(`tests/plan/wave-5.6-ring2-reaudit.md`) identified 30 GAP-COVER
+findings (7 REGRESSION-GUARDs) across four chunks. User approved all
+~30 GAP-COVER carry-forwards (chunked authoring). This entry records
+chunks 1+2+3 (12 carry-forward tests, 3 REGRESSION-GUARDs); chunk 4
+(14 GAP-COVER + reclassification recs) lands in a subsequent commit.
+
+**Outcome**: all 12 carry-forwards land green on the current binary.
+The 3 REGRESSION-GUARDs (named-prim/trait-op coexistence per
+spec/07 §7.5 + spec/A §A.3; constrained-fn 1-param display inline
+notation per repl/spec.md §1.3 + spec/03 §3.4.1; constrained-fn
+2-param `:Num` repetition per spec/03 §3.4.1) all pass — the historic
+Sprint-attributed display + operator-transition defect repros are
+preserved as durable regression guards per
+`memory/feedback_repros_join_suite.md`.
+
+**No new defect FIXMEs filed.** Per
+`memory/feedback_validate_tests_against_spec.md` each candidate
+assertion was probed against the current binary at authoring time;
+all 12 active carries match the spec property and the implementation
+behaviour. Specific load-bearing observations:
+
+- Trait-dispatched operators inside recursive defn bodies
+  (`sum-to`/`fact`) plus tree-recursive constrained polymorphic
+  `fib` all dispatch correctly through Num/Eq monomorphisation.
+- The mixed named-primitive (`add-i64`) + trait-`+` coexistence in
+  the same scope resolves correctly; the Sprint-N
+  operator-transition regression remains closed.
+- Constrained-fn display surfaces `:(Fn [:Num a] a) user/double` and
+  `:(Fn [:Num a :Num a] a) user/add` exactly per spec §3.4.1's
+  "Multiple constraints on the same variable are listed consecutively
+  before the variable name."
+- Cross-module trait+impl dispatch (parent imports child's deftrait,
+  type, constructors, and method) works through `--run` mode; exit
+  code matches the dispatched arm value.
+
+| Field | Value |
+|---|---|
+| Test names | 12 carry-forwards across 2 files: `tests/spec_07_traits.rs` +9 (trait_operator_in_recursive_defn_literal_pinned; trait_operator_factorial_recursive_defn; constrained_polymorphic_fib_tree_recursion; constrained_polymorphic_abs_diff_if_arms; named_prim_and_trait_op_coexist_in_same_body_regression [REGRESSION-GUARD]; trait_op_composition_in_match_arm_body_with_product_adt; trait_eq_dispatch_inside_each_enum_match_arm; hof_with_lambda_using_trait_operator_in_body; trait_deftrait_impl_in_child_module_imported_dispatch_from_parent); `tests/repl_introspection.rs` +3 (constrained_fn_display_shows_inline_num_constraint [REGRESSION-GUARD]; constrained_fn_display_repeats_num_on_each_param_neg_no_elision [REGRESSION-GUARD]; impl_form_display_result_is_exactly_impl_trait_for_type) |
+| SHA | uncommitted (Wave 5.6 file 8 chunks 1-3) |
+| Stderr / observable signature | 12/12 active carries pass |
+| Owning skill | n/a (no defect surfaced) |
+| Target sprint | n/a |
+| Disposition | resolved at chunks 1-3 close (clean carry-forward); chunk 4 dispatches separately |
+| Rationale | Per parity rule + `memory/feedback_repros_join_suite.md` the 12 carry-forwards are durable regression guards. The 3 REGRESSION-GUARDs preserve historic Sprint-attributed display + operator-transition defect repros even where the implementation now satisfies the spec property. |
+
 ### Exemplar-level tests (non-cargo)
 
 *No current exemplar-level failing entries. The S60-carried `exemplar/solver.cl::test-unsolvable` was resolved in Sprint 61 Wave 2; see "Resolved this sprint" below. The Defect 6 stack-overflow failures are captured above as cargo tests (`d6_exemplar_*` and `wave6_demo_repros::exemplar_solver_*`), not as non-cargo entries — per `memory/feedback_repros_join_suite.md` the cargo-level reductions are the durable record.*

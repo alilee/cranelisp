@@ -1626,3 +1626,83 @@ fn vec_value_display_shows_element_content() {
         out.stdout
     );
 }
+
+// =============================================================================
+// Wave 5.6 ring2.rs GAP-COVER carry-forwards (chunk 3)
+// =============================================================================
+
+// spec: repl/spec.md §1.3 — constrained-fn display MUST use inline
+// constraint notation `:(Fn [:Num a] a) user/double` for a 1-param
+// constrained polymorphic defn. Distinct from `defn_display_polymorphic_id`
+// which exercises the UNCONSTRAINED `(Fn [a] a)` form. The inline
+// constraint syntax (`:Num a`) is unique to constrained fns and is not
+// exercised by any prior carry-forward.
+// Cross-ref: spec/03-types.md §3.4.1 — Constraint Syntax in Display.
+// (carry: legacy/ring2.rs::repl_constrained_fn_shows_constraints)
+#[test]
+fn constrained_fn_display_shows_inline_num_constraint() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(helpers::e2e::PreludeVariant::TestStandard)
+        .stdin("(defn double [x] (+ x x))\n")
+        .output();
+    assert!(
+        out.stdout.contains(":(Fn [:Num a] a) user/double"),
+        "constrained fn display MUST use inline constraint notation per §1.3 + §3.4.1; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("; defn"),
+        "constrained fn display MUST include '; defn' classification per §1.3; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: spec/03-types.md §3.4.1 — REGRESSION-GUARD: 2-param constrained-fn
+// display MUST repeat the `:Num` prefix on every constrained var
+// (`:(Fn [:Num a :Num a] a)`), NOT elided as `[:Num a a]` or `[:Num a :a]`.
+// Per spec/03-types.md §3.4.1: "Multiple constraints on the same variable
+// are listed consecutively before the variable name." The repeat-vs-elide
+// distinction is a Sprint-N display regression risk.
+// Cross-ref: repl/spec.md §1.3 — definition results.
+// (carry: legacy/ring2.rs::repl_constrained_fn_two_params_shows_subsequent_colon_var)
+#[test]
+fn constrained_fn_display_repeats_num_on_each_param_neg_no_elision() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(helpers::e2e::PreludeVariant::TestStandard)
+        .stdin("(defn add [x y] (+ x y))\n")
+        .output();
+    assert!(
+        out.stdout.contains(":(Fn [:Num a :Num a] a) user/add"),
+        "constrained fn display MUST repeat ':Num' on every constrained \
+         param per §3.4.1 (no elision to ':Num a a' or ':Num a :a'); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("; defn"),
+        "constrained fn display MUST include '; defn' classification per §1.3; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §1.3 — impl form's display result MUST be exactly
+// `impl user/Sizeable for user/MyType` (full-line equality, no extra
+// ornament, no trailing classification, no leading prefix). The existing
+// `spec_07_traits.rs::trait_multiple_impls` asserts the substring appears
+// among multi-line output; this asserts that the impl form's own display
+// result is exactly the canonical line.
+// (carry: legacy/ring2.rs::repl_impl_display_shows_trait_for_type)
+#[test]
+fn impl_form_display_result_is_exactly_impl_trait_for_type() {
+    let out = repl(
+        "(deftrait (Sizeable a) (size [a] Int))\n\
+         (deftype MyType [:Int val])\n\
+         (impl Sizeable MyType (defn size [self] 42))\n",
+    );
+    assert!(
+        out.stdout.contains("impl user/Sizeable for user/MyType"),
+        "impl form display result MUST be 'impl user/Sizeable for user/MyType' per §1.3; got:\n{}",
+        out.stdout
+    );
+}

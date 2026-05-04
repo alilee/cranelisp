@@ -325,3 +325,158 @@ fn trait_method_no_impl_then_recovery() {
         out.stdout
     );
 }
+
+// =============================================================================
+// Wave 5.6 ring2.rs GAP-COVER carry-forwards (chunks 1+2+3)
+// =============================================================================
+
+// spec: spec/07-traits.md §7.5 — trait-dispatched `=`/`+`/`-` inside a
+// recursive defn body whose param is pinned to Int by the literal `0`.
+// Distinct from `operator_plus_int` (single inline call) and from the
+// named-primitive `recursive_factorial` shape: each operator inside the
+// recursive body still goes through Num/Eq dispatch.
+// (carry: legacy/ring2.rs::fn_using_operators_with_literals)
+#[test]
+fn trait_operator_in_recursive_defn_literal_pinned() {
+    repl_std(
+        "(defn sum-to [n] (if (= n 0) 0 (+ n (sum-to (- n 1)))))\n\
+         (sum-to 10)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 55");
+}
+
+// spec: spec/07-traits.md §7.5 — factorial-shape canonical: trait-dispatched
+// `=`/`*`/`-` inside a recursive defn body. Sister of the sum-to shape;
+// exercises the multiplication path through Num dispatch.
+// (carry: legacy/ring2.rs::fn_factorial_with_operators)
+#[test]
+fn trait_operator_factorial_recursive_defn() {
+    repl_std(
+        "(defn fact [n] (if (= n 0) 1 (* n (fact (- n 1)))))\n\
+         (fact 10)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 3628800");
+}
+
+// spec: spec/07-traits.md §7.5 — constrained polymorphic tree-recursive fib
+// using trait-dispatched `=`/`+`/`-`. Exercises monomorphisation through the
+// tree-recursion shape (two recursive calls per arm). Distinct from
+// `constrained_polymorphism_int_then_float` (single call) and from the
+// named-primitive `recursive_fibonacci` shape.
+// Cross-ref: spec/03-types.md §3.6 — constrained polymorphism.
+// (carry: legacy/ring2.rs::constrained_fn_fibonacci)
+#[test]
+fn constrained_polymorphic_fib_tree_recursion() {
+    repl_std(
+        "(defn fib [n] (if (= n 0) 0 (if (= n 1) 1 (+ (fib (- n 1)) (fib (- n 2))))))\n\
+         (fib 10)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 55");
+}
+
+// spec: spec/07-traits.md §7.5 — constrained polymorphic abs-diff with
+// distinct trait operators in each arm of the if (`<` in the cond, `-` with
+// reversed operand order in each arm body). Distinct from
+// `constrained_fn_clamp` (3-arg + nested-if): the both-arms-use-different-
+// trait-ops shape inside a 2-arg constrained defn is unique.
+// Cross-ref: spec/03-types.md §3.6 — constrained polymorphism.
+// (carry: legacy/ring2.rs::constrained_with_if)
+#[test]
+fn constrained_polymorphic_abs_diff_if_arms() {
+    repl_std(
+        "(defn abs-diff [x y] (if (< x y) (- y x) (- x y)))\n\
+         (abs-diff 3 10)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 7");
+}
+
+// spec: spec/07-traits.md §7.5 — REGRESSION-GUARD: named primitive
+// `add-i64` and trait-dispatched `+` MUST coexist in the same body.
+// Original legacy test name flagged this as a Sprint-N operator-transition-
+// era defect repro (the source comment reads "Mix named primitives and
+// trait operators in the same program"). Asserts that bare-prim `add-i64`
+// and dispatched-`+` resolve correctly when both appear in the same scope.
+// Cross-ref: spec/appendix-a-builtins.md §A.3 — named primitives.
+// (carry: legacy/ring2.rs::regression_named_and_trait_ops_in_same_program)
+#[test]
+fn named_prim_and_trait_op_coexist_in_same_body_regression() {
+    repl_std(
+        "(defn run [] (let [a (add-i64 1 2) b (+ 3 4)] (+ a b)))\n\
+         (run)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 10");
+}
+
+// spec: spec/07-traits.md §7.5 — sum-of-squares via match-destructure of a
+// product ADT with TWO trait operators (`+` and `*`) composed in the arm
+// body. Distinct from `trait_arithmetic_with_adt_field` (single-`+` only):
+// the two-trait-op-in-product-match-arm-body composition is unique.
+// Cross-ref: spec/06-pattern-matching.md §6.2 — match destructure of ADTs.
+// (carry: legacy/ring2.rs::trait_operators_in_adt_function)
+#[test]
+fn trait_op_composition_in_match_arm_body_with_product_adt() {
+    repl_std(
+        "(deftype Point [:Int x :Int y])\n\
+         (defn distance-sq [p] (match p [(Point x y) (+ (* x x) (* y y))]))\n\
+         (distance-sq (Point 3 4))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 25");
+}
+
+// spec: spec/07-traits.md §7.5 — Eq trait dispatch INSIDE each match arm
+// body, with an enum-ADT scrutinee. No carry covers Eq-op-in-enum-arm: the
+// arm-internal-Eq composition shape is unique.
+// Cross-ref: spec/06-pattern-matching.md §6.1 — match patterns.
+// (carry: legacy/ring2.rs::trait_eq_in_match_branch)
+#[test]
+fn trait_eq_dispatch_inside_each_enum_match_arm() {
+    repl_std(
+        "(deftype Color Red Green Blue)\n\
+         (defn is-primary [c] (match c [Red (= 1 1) Green (= 2 2) Blue (= 3 3)]))\n\
+         (if (is-primary Red) 1 0)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 1");
+}
+
+// spec: spec/07-traits.md §7.5 — higher-order function + lambda + trait
+// operator inside the lambda body: `(apply-fn (fn [x] (* x 2)) 21) = 42`.
+// Distinct from `lambda_passed_as_argument_invoked_inside_callee` which
+// uses `add-i64` (named primitive); this exercises trait dispatch INSIDE a
+// fn-typed value passed through a HOF.
+// Cross-ref: spec/04-expressions.md §4.5 — function application.
+// (carry: legacy/ring2.rs::higher_order_with_trait_operators)
+#[test]
+fn hof_with_lambda_using_trait_operator_in_body() {
+    repl_std(
+        "(defn apply-fn [f x] (f x))\n\
+         (apply-fn (fn [x] (* x 2)) 21)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/07-traits.md §7.11 — cross-module trait+impl dispatch: a child
+// module declares `(deftrait Classify ...)`, `(deftype Color ...)` and
+// `(impl Classify Color ...)`; the parent module imports the trait, method,
+// type, and constructors and dispatches. No prior carry exercises
+// cross-module trait+impl dispatch (`spec_07_traits.rs` is single-module;
+// `spec_08_modules.rs` has no trait/impl tests).
+// Cross-ref: spec/08-modules.md §8.3 — import.
+// (carry: legacy/ring2.rs::trait_method_accessible_across_modules)
+#[test]
+fn trait_deftrait_impl_in_child_module_imported_dispatch_from_parent() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [types [Classify classify Color Red Green Blue]])\n\
+             (defn main [] (classify Green))",
+        )
+        .file(
+            "types.cl",
+            "(deftrait (Classify a) (classify [a] Int))\n\
+             (deftype Color Red Green Blue)\n\
+             (impl Classify Color (defn classify [c] (match c [Red 1 Green 2 Blue 3])))",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(2);
+}
