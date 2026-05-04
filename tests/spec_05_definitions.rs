@@ -213,3 +213,30 @@ fn forward_reference_between_defns() {
         .output()
         .assert_exit(5);
 }
+
+// spec: spec/05-definitions.md §5.13.1 — defns may reference each other
+// across forward-decl ordering. Distinct from
+// `forward_reference_between_defns` (single-direction chain a→b→c): this
+// test exercises the bidirectional shape where two defns each reference
+// the other via interleaved forward-references within a single module
+// compilation unit.
+// (carry: legacy/ring0.rs::mutual_forward_references)
+#[test]
+fn defns_mutual_forward_references() {
+    // is-positive references gt-i64; classify references is-positive.
+    // main combines two classify calls. Both functions are defined before
+    // main — but is-positive is referenced by classify *before* the
+    // body-of-classify is type-checked, exercising the module-as-unit
+    // forward-reference resolution. (5+10) + 3 = 18.
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [primitives [*]])\n\
+             (defn is-positive [n] (if (gt-i64 n 0) 1 0))\n\
+             (defn classify [n] (if (eq-i64 (is-positive n) 1) (add-i64 n 10) (sub-i64 0 n)))\n\
+             (defn main [] (add-i64 (classify 5) (classify (sub-i64 0 3))))",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(18);
+}

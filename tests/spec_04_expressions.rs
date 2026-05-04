@@ -182,6 +182,25 @@ fn if_neg_branch_type_mismatch() {
     );
 }
 
+// spec: spec/04-expressions.md §4.4 — nested if as a 3-way classification
+// ladder. An inner `if` in the false branch of an outer `if` exercises
+// both tail-position (the inner if as the body of the outer's else) and
+// non-tail composition (multiple ladder calls combined under arithmetic).
+// The single-arm `if_true_branch`/`if_false_branch` carries don't cover
+// the nested ladder shape that the legacy test asserts.
+// (carry: legacy/ring0.rs::nested_if)
+#[test]
+fn if_nested_three_way_ladder() {
+    // classify(n) = -1 if n<0, 0 if n=0, 1 if n>0.
+    // Sum classify(-5) + classify(0) + classify(5) = -1 + 0 + 1 = 0.
+    repl_prims(
+        "(defn classify [n] (if (lt-i64 n 0) (sub-i64 0 1) (if (eq-i64 n 0) 0 1)))
+(add-i64 (add-i64 (classify (sub-i64 0 5)) (classify 0)) (classify 5))
+",
+    )
+    .assert_stdout_contains(":primitives/Int 0");
+}
+
 // =============================================================================
 // §4.5 Lambda + §4.6 Application
 // =============================================================================
@@ -220,6 +239,34 @@ fn lambda_closure_captures() {
         "(defn make-add [n] (fn [x] (add-i64 x n)))\n((make-add 10) 5)\n",
     )
     .assert_stdout_contains(":primitives/Int 15");
+}
+
+// spec: spec/04-expressions.md §4.5 — a lambda value bound in `let` and
+// invoked via the let-bound name. The first-class-value property of
+// lambdas (§4.5: "result is a first-class value that can be ... bound
+// with `let`") is exercised end-to-end: the lambda is created, stored in
+// a binding, and called via that binding rather than directly.
+// (carry: legacy/ring0.rs::lambda_in_let)
+#[test]
+fn lambda_bound_in_let_and_called() {
+    repl_prims("(let [f (fn [x] (mul-i64 x 2))] (f 21))\n")
+        .assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/04-expressions.md §4.6 — a lambda passed as an argument and
+// invoked inside the callee. The §4.5 first-class-value property
+// ("can be ... passed as an argument") combined with the §4.6.2 indirect
+// call convention. Distinct from `lambda_closure_captures` (which
+// returns a closure) and from `multi_sig_arity_dispatch`.
+// (carry: legacy/ring0.rs::lambda_passed_to_function)
+#[test]
+fn lambda_passed_as_argument_invoked_inside_callee() {
+    repl_prims(
+        "(defn apply-fn [f x] (f x))
+(apply-fn (fn [x] (add-i64 x 10)) 32)
+",
+    )
+    .assert_stdout_contains(":primitives/Int 42");
 }
 
 // =============================================================================

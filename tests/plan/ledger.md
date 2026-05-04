@@ -248,6 +248,30 @@ inline `FIXME(/int)` annotation pointing at FIXME 0121.
 | Disposition | `out-of-scope (owner=/int) — duplicate-cluster of FIXME 0121` |
 | Rationale | Same defect surface as FIXME 0121 (`tests/cache.rs::cache_multi_module_transitive_imports`); 9 additional failing tests in this cluster expand the regression-guard coverage across spec sections §8.3, §8.4 (re-exports), §8.5, §8.10.3, §8.11.2. Failing-not-ignored per `memory/feedback_failing_not_ignored.md`. Carry-forward audit trail: the integration-tier `tests/legacy/modules.rs` tests passed via `helpers::batch_run_file`; the binary `--run` form rejects. No new FIXME filed — FIXME 0121 already names the underlying defect; resolving it resolves this entire cluster. |
 
+### Sprint 64 Wave 5.6 — defect surfaced during ring0.rs supplement (2026-05-04)
+
+Wave 5.6 file 4 ring0.rs supplement (per-test re-audit beyond cluster
+mode) carried forward `error_parse_error_unclosed_paren` from
+`tests/legacy/ring0.rs` as
+`tests/repl_negative.rs::parse_error_unclosed_paren_neg`. The legacy
+integration-tier test used `assert_parse_error` against the Rust API,
+which short-circuits the REPL's continuation logic; the e2e form
+exposes a multi-line-continuation + EOF gap. The REPL silently exits
+when an unclosed `(` is followed by EOF, instead of flushing the
+accumulated input through the parser and emitting a parse-error
+diagnostic. Asymmetric vs `parse_error_stray_close` (extra-close case
+is reported — passes).
+
+| Field | Value |
+|---|---|
+| Test name | `repl_negative::parse_error_unclosed_paren_neg` |
+| SHA | uncommitted (Wave 5.6 file 4 supplement) |
+| Stderr / observable signature | REPL stdout shows banner + first prompt then exits cleanly; no parse-error message. Stdin: `(add-i64 1 2\n` (unclosed `(`, EOF follows). Expected per repl/spec.md §5.1: a parse-error diagnostic. Inline `FIXME(/int)` annotation pointing at FIXME 0142. |
+| Owning skill | `/int` (REPL continuation/EOF flush — `src/repl.rs` / `src/session_v4.rs`) |
+| Target sprint | TBD — disposition open at S64 Wave 5.6 close |
+| Disposition | `out-of-scope (owner=/int)` |
+| Rationale | New defect surface, distinct from FIXME 0121/0140 (which are `--run`-mode `(mod ...)` orchestration). FIXME 0142 filed in same commit. Failing-not-ignored per `memory/feedback_failing_not_ignored.md`. Resolution: when the REPL sees EOF with a non-empty continuation accumulator, parse the partial form and emit whatever diagnostic the parser produces. |
+
 ### Exemplar-level tests (non-cargo)
 
 *No current exemplar-level failing entries. The S60-carried `exemplar/solver.cl::test-unsolvable` was resolved in Sprint 61 Wave 2; see "Resolved this sprint" below. The Defect 6 stack-overflow failures are captured above as cargo tests (`d6_exemplar_*` and `wave6_demo_repros::exemplar_solver_*`), not as non-cargo entries — per `memory/feedback_repros_join_suite.md` the cargo-level reductions are the durable record.*

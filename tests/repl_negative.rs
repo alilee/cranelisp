@@ -480,3 +480,42 @@ fn duplicate_param_names_neg() {
         out.stdout
     );
 }
+
+// =============================================================================
+// Unclosed paren — Wave 5.6 dedupe-recovery supplement
+// =============================================================================
+
+// spec: repl/spec.md §5.1 — unclosed `(` is a parse error, distinct from
+// the stray-close paren case (covered by `parse_error_stray_close`). The
+// REPL's parser must report a parse error rather than silently consuming
+// further input or executing the partial form.
+// (carry: legacy/ring0.rs::error_parse_error_unclosed_paren)
+// FIXME(/int): see design/arch/fixmes/0142-int-repl-unclosed-paren-on-eof-silent.md —
+// REPL silently exits on EOF when an unclosed `(` is pending, instead of
+// flushing the accumulated input through the parser and emitting a
+// parse-error diagnostic. Asymmetric vs `parse_error_stray_close` (which
+// passes). Failing un-ignored per parity rule.
+#[test]
+fn parse_error_unclosed_paren_neg() {
+    // Unclosed `(`: REPL multi-line continuation will keep reading until
+    // EOF. Pipe a single line with one open paren and no matching close.
+    let out = repl_prims("(add-i64 1 2\n");
+    let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    // The unclosed form must produce a parse error diagnostic, not a
+    // successful evaluation result.
+    assert!(
+        combined.contains("parse error")
+            || combined.contains("unexpected eof")
+            || combined.contains("unclosed")
+            || combined.contains("error"),
+        "unclosed `(` must produce a parse error; got:\nstdout={}\nstderr={}",
+        out.stdout,
+        out.stderr
+    );
+    // Negative-of-success: the partial expression must NOT evaluate to 3.
+    assert!(
+        !out.stdout.contains(":primitives/Int 3"),
+        "unclosed `(` must NOT evaluate to a result; got stdout:\n{}",
+        out.stdout
+    );
+}

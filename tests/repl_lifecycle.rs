@@ -362,3 +362,30 @@ fn blank_line_silent() {
         out.stdout
     );
 }
+
+// =============================================================================
+// Redefinition GOT propagation — Wave 5.6 dedupe-recovery supplement
+// =============================================================================
+
+// spec: repl/spec.md §15.6 — redefinition propagates to a live caller via
+// the GOT. This is the "caller defined first, helper redefined while the
+// caller is still alive in the session, caller re-evaluated" angle: the
+// existing `redefinition_propagates_through_callers` covers the same shape
+// but the GOT propagation timing is load-bearing enough that the
+// originating ring0 angle is preserved as a discrete REGRESSION-GUARD.
+// (carry: legacy/ring0.rs::repl_redefinition_updates_callers)
+#[test]
+fn redefinition_updates_live_callers() {
+    // Define helper, define caller (which closes over helper via GOT),
+    // call caller -> 11; redefine helper to add 2 instead of 1; call
+    // caller again -> 12. Both result lines must appear in stdout.
+    repl_prims(
+        "(defn helper [x] (add-i64 x 1))
+(defn caller [] (helper 10))
+(caller)
+(defn helper [x] (add-i64 x 2))
+(caller)
+",
+    )
+    .assert_stdout_contains_all(&[":primitives/Int 11", ":primitives/Int 12"]);
+}
