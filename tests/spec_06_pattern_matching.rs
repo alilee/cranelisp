@@ -200,3 +200,39 @@ fn pattern_non_exhaustive_match_on_adt_neg() {
         out.stderr
     );
 }
+
+// =============================================================================
+// §6.2 Nested match — match in arm body (Wave 5.6 sketch_port carry-forward)
+// =============================================================================
+
+// spec: spec/06-pattern-matching.md §6.2 — a `match` may appear inside another
+// match's arm body. Value flows through the outer arm into the inner
+// scrutinee position. This carry-forward consolidates two distinct shapes
+// from sketch_port: `sketch_adt_nested_match` (Option/Some-None) and
+// `sketch_list_head_tail` (Cons/Nil). The Cons/Nil shape is included to
+// exercise the match-into-tail pattern that arises in fold-like consumers
+// without recursion.
+// (carry: legacy/sketch_port.rs::sketch_adt_nested_match)
+// (carry: legacy/sketch_port.rs::sketch_list_head_tail)
+#[test]
+fn nested_match_in_arm_body() {
+    // Option/Some-None shape: outer match on Some(10), inner match on Some(32) → 42.
+    repl_prims(
+        "(deftype (Option a) None (Some [:a val]))\n\
+         (defn add-options [a b]\n\
+           (match a [None 0\n\
+                     (Some x)\n\
+                       (match b [None x (Some y) (add-i64 x y)])]))\n\
+         (add-options (Some 10) (Some 32))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 42");
+    // Cons/Nil shape: outer match destructures (Cons 1 (Cons 2 Nil));
+    // inner match recurses into the tail to extract its head (=2).
+    repl_prims(
+        "(deftype (List a) Nil (Cons [:a hd :(List a) tl]))\n\
+         (match (Cons 1 (Cons 2 Nil))\n\
+           [(Cons h t) (match t [(Cons h2 t2) h2 Nil 0])\n\
+            Nil 0])\n",
+    )
+    .assert_stdout_contains(":primitives/Int 2");
+}

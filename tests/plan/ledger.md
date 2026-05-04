@@ -272,6 +272,68 @@ is reported — passes).
 | Disposition | `out-of-scope (owner=/int)` |
 | Rationale | New defect surface, distinct from FIXME 0121/0140 (which are `--run`-mode `(mod ...)` orchestration). FIXME 0142 filed in same commit. Failing-not-ignored per `memory/feedback_failing_not_ignored.md`. Resolution: when the REPL sees EOF with a non-empty continuation accumulator, parse the partial form and emit whatever diagnostic the parser produces. |
 
+### Sprint 64 Wave 5.6 — defects surfaced during sketch_port carry-forward (2026-05-04)
+
+Wave 5.6 file 5 sketch_port.rs per-test re-audit
+(`tests/plan/wave-5.6-sketch-port-reaudit.md`) identified 33 GAP-COVER
+findings and 17 REGRESSION-GUARD shapes. User approved authoring all
+GAP-COVER carry-forwards. After consolidation per the audit's
+recommendations (chunk-3 #4 → chunk-2 #58 nested-match;
+chunk-3 #16 → chunk-1 #38 default-method-used; chunk-3 #17 → chunk-3
+#134 polymorphic-impl-on-concrete-ADT; chunk-3 #142 ↔ #148
+sigsegv-pair COVERED; chunk-3 #139 boolean-not COVERED via existing
+`primitive_not_true`/`primitive_not_false`), 30 carry-forwards landed
+across 9 spec/repl files (plus a NEW `tests/spec_platforms.rs` for the
+two platform DLL integration tests).
+
+**Outcome**: All 30 carry-forwards land green. No failing-not-ignored
+required: the implementation supports default-method synthesis
+(both Int and ADT impls), default-method-with-trait-call body,
+default-method-with-primitive-only body, multi-sig type-based dispatch,
+multi-sig duplicate-signature rejection, polymorphic ADT impl on
+concrete instantiation, all 5 distinct `sigsegv_isolation_*` shapes,
+trait-error-recovery, type-error-recovery, constrained-fn-as-value
+restriction, closure-multi-captures, auto-curry-HOF-pass, deftype
+shortcut, deftype constructor-as-first-class-value, nested-match in
+arm body (Option/Some-None and Cons/Nil), 3 vec edge cases (push-value
+at last index, vec-let-bound-then-get, push-onto-empty), 6 RC angles
+(nested-let-inner-string-freed, vec-of-Int-let-bound, empty-vec-let-bound,
+match-temp-scrutinee, closure-capturing-closure, plus user-composable
+test runner via `discover-tests`+`run-test`), and 2 platform DLL
+integration tests using `use_workspace_platforms()` against test-capture
+with differential observation (no stdout output + matching exit code).
+
+**No new defect FIXMEs filed.** The audit anticipated that some tests
+would land failing-not-ignored against `/typecheck`+`/backend` for
+default-method synthesis (chunk-1 #38-40, chunk-3 #144, #146) and
+multi-sig type-based dispatch (chunk-1 #45) per a Wave 5.5 quarantine
+header triage report citing Category A impl gaps. **Live verification
+disconfirmed those triage assumptions** — the implementation already
+supports both surfaces. Per `memory/feedback_validate_tests_against_spec.md`
+the assertion shape was validated against the implementation before
+authoring; failing-not-ignored was not warranted because the spec
+property holds.
+
+**One assertion validation correction surfaced**: the legacy
+`sketch_constrained_fn_as_value_errors` test expected an error from
+`(let [f add] (f 1 2))` where `add` is constrained polymorphic. Initial
+authoring as `constrained_fn_as_value_resolved_at_call_site` (positive
+shape) failed. Re-verification against the implementation (REPL +
+test-standard prelude) confirmed the legacy expectation: the diagnostic
+"constrained function 'add' cannot be used as a value — it must be
+called with arguments" fires at the let-bound reference. Test renamed
+to `constrained_fn_as_value_neg` and assertion inverted.
+
+| Field | Value |
+|---|---|
+| Test names | 30 carry-forwards (see PLAN.md `sketch_port.rs` row for the full distribution) |
+| SHA | uncommitted (Wave 5.6 file 5 carry-forward) |
+| Stderr / observable signature | All passing — no failing test entries warranted |
+| Owning skill | n/a (no defect surfaced) |
+| Target sprint | n/a |
+| Disposition | resolved at file 5 close (clean carry-forward) |
+| Rationale | Per the parity rule + `memory/feedback_repros_join_suite.md` the 30 carry-forwards are durable regression guards regardless of whether they currently fail. Cluster-mode accuracy on sketch_port (~73%) confirmed per-test audit was the right grain — the 30 net carry-forwards include 17 REGRESSION-GUARD shapes (5 distinct `sigsegv_isolation_*`, 3 default-method, 4 closure/RC, 5 platform / multi-sig / type-error / trait-error / constrained-fn-as-value). |
+
 ### Exemplar-level tests (non-cargo)
 
 *No current exemplar-level failing entries. The S60-carried `exemplar/solver.cl::test-unsolvable` was resolved in Sprint 61 Wave 2; see "Resolved this sprint" below. The Defect 6 stack-overflow failures are captured above as cargo tests (`d6_exemplar_*` and `wave6_demo_repros::exemplar_solver_*`), not as non-cargo entries — per `memory/feedback_repros_join_suite.md` the cargo-level reductions are the durable record.*

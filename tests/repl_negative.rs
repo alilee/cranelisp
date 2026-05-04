@@ -337,6 +337,55 @@ fn error_then_valid_form_succeeds() {
     );
 }
 
+// spec: repl/spec.md §5.2 — typecheck-path error recovery (vs the parse-path
+// covered by `error_then_valid_form_succeeds`). A type error from
+// `(add-i64 1 true)` MUST not corrupt the session; the next valid form
+// succeeds. Distinct from the parse-error recovery shape because the error
+// arises in the type-checker, not the reader.
+// (carry: legacy/sketch_port.rs::sketch_repl_type_error_recovers)
+#[test]
+fn type_error_recovery_continues_session() {
+    let out = repl_prims("(add-i64 1 true)
+(add-i64 1 2)
+");
+    assert!(
+        out.stdout.to_lowercase().contains("error"),
+        "type error MUST surface a diagnostic; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 3"),
+        "after type error, next valid form must succeed; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §5.1 — bare reference to a constrained polymorphic
+// function as a first-class value (without an instantiating call site at
+// the reference) MUST error. The compiler restriction: a constrained fn
+// must be called with arguments at its reference site so the constraint
+// can be instantiated; binding it to a let and calling later loses the
+// instantiation context. Diagnostic per the implementation: "constrained
+// function '<name>' cannot be used as a value — it must be called with
+// arguments". REPL session continues after the error.
+// (carry: legacy/sketch_port.rs::sketch_constrained_fn_as_value_errors)
+#[test]
+fn constrained_fn_as_value_neg() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(helpers::e2e::PreludeVariant::TestStandard)
+        .stdin("(defn add [x y] (+ x y))\n(let [f add] (f 1 2))\n")
+        .output();
+    assert!(
+        out.stdout.to_lowercase().contains("error")
+            || out.stdout.contains("cannot be used as a value")
+            || out.stdout.contains("constrained"),
+        "constrained fn as let-bound value MUST error per the compiler \
+         restriction; got:\n{}",
+        out.stdout
+    );
+}
+
 // =============================================================================
 // Slash command negative paths — repl/spec.md §5.2
 // =============================================================================

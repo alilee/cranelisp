@@ -187,6 +187,71 @@ fn vec_of_strings_alloc_drop() {
 }
 
 // =============================================================================
+// §12.3.1 Memory Management — additional shapes (Wave 5.6 sketch_port carry-forward)
+// =============================================================================
+
+// spec: spec/12-runtime.md §12.3.1 — nested let scopes; the inner string
+// allocation is reachable only inside the inner let body. The outer body
+// returning Int (=42) means the inner scope's binding goes out of scope
+// before the outer scope's; a leak / double-free in the inner-scope cleanup
+// path would terminate the process abnormally.
+// (carry: legacy/sketch_port.rs::sketch_rc_nested_let_inner_scope_freed)
+#[test]
+fn nested_let_inner_string_freed_before_outer() {
+    repl_prims("(let [s \"hello\"] (let [t \"world\"] (str-len t)))\n")
+        .assert_stdout_contains(":primitives/Int 5");
+}
+
+// spec: spec/12-runtime.md §12.1.5 / §12.3.1 — Vec-of-Int let-bound and freed
+// at scope exit. Distinct from `vec_of_strings_alloc_drop` (vec-of-Strings
+// exercises per-element drop glue); vec-of-Int has no per-element drop glue
+// but the vec body itself is still heap-allocated and must be freed.
+// (carry: legacy/sketch_port.rs::sketch_rc_vec_int_freed_on_scope_exit)
+#[test]
+fn vec_of_int_let_bound_freed() {
+    repl_prims("(let [xs [1 2 3]] (vec-len xs))\n")
+        .assert_stdout_contains(":primitives/Int 3");
+}
+
+// spec: spec/12-runtime.md §12.1.5 / §12.3.1 — empty vec literal is still
+// heap-allocated (boundary case: zero-element vec) and must be freed when
+// its binding goes out of scope.
+// (carry: legacy/sketch_port.rs::sketch_rc_vec_empty_freed)
+#[test]
+fn empty_vec_let_bound_freed() {
+    repl_prims("(let [xs []] (vec-len xs))\n")
+        .assert_stdout_contains(":primitives/Int 0");
+}
+
+// spec: spec/12-runtime.md §12.3.1 — match scrutinee that is a heap-allocated
+// temporary (no let binding) MUST be freed when the match exits. Distinct
+// from `adt_with_string_field_freed` (which uses a let-bound scrutinee);
+// the temporary-scrutinee path exercises a distinct cleanup pathway.
+// (carry: legacy/sketch_port.rs::sketch_rc_match_temporary_scrutinee_freed)
+#[test]
+fn match_temporary_scrutinee_freed_on_exit() {
+    repl_prims(
+        "(deftype (Option a) None (Some [:a val]))\n\
+         (match (Some \"hello\") [None 0 (Some s) (str-len s)])\n",
+    )
+    .assert_stdout_contains(":primitives/Int 5");
+}
+
+// spec: spec/12-runtime.md §12.1.3 / §12.3.1 — closure capturing another
+// closure (chained closure references) — known double-free / leak vector.
+// Per `memory/feedback_repros_join_suite.md` this shape stays in the suite
+// as a regression guard. The outer body returning Int (=42) means a
+// double-free during the chained closure cleanup would terminate the process.
+// (carry: legacy/sketch_port.rs::sketch_rc_closure_capturing_closure)
+#[test]
+fn closure_capturing_closure_balanced() {
+    repl_prims(
+        "(let [f (fn [x] x)] (let [g (fn [] f)] 42))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 42");
+}
+
+// =============================================================================
 // §4.12 Trace Expression — Trace is an ADT value observable via REPL display
 // (per spec §12.9.5 — trace uses canonical value display format).
 // =============================================================================
@@ -282,6 +347,34 @@ fn run_tests_empty_module_reports_no_tests() {
          /run-tests\n",
     )
     .assert_stdout_contains("No test-* functions found");
+}
+
+// spec: repl/spec.md §16 — `discover-tests` and `run-test` are user-callable
+// primitives; a user can compose their own test runner without relying on
+// the `/run-tests` slash command. Sprint 60 reduction history makes this a
+// load-bearing repro shape: the slash-command path differs from the direct
+// primitive-composition path. The test below defines its own `count-passes`
+// fold over `discover-tests` results and verifies the pass count surfaces.
+// (carry: legacy/sketch_port.rs::sketch_run_tests_pass_fn_called)
+#[test]
+fn discover_tests_and_run_test_user_composition() {
+    repl_prims(
+        "(deftype (Option a) None (Some [:a val]))\n\
+         (import [macros [SCons SNil]])\n\
+         (defn test-passing [] None)\n\
+         (defn count-passes [acc names]\n\
+           (match names\n\
+             [SNil (Pure acc)\n\
+              (SCons head tail)\n\
+                (bind (run-test head)\n\
+                      (fn [result]\n\
+                        (match result\n\
+                          [(TestPass n ns) (count-passes (add-i64 acc 1) tail)\n\
+                           (TestFail n ns r) (count-passes acc tail)])))]))\n\
+         (defn my-run-tests [] (bind (discover-tests) (fn [names] (count-passes 0 names))))\n\
+         (my-run-tests)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 1");
 }
 
 // =============================================================================

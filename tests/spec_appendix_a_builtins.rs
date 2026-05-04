@@ -199,6 +199,36 @@ fn primitive_vec_set_preserves_len() {
     repl_prims("(vec-len (vec-set [1 2 3] 1 99))\n").assert_stdout_contains(":primitives/Int 3");
 }
 
+// spec: spec/appendix-a-builtins.md §A.3 — vec-push places the new value at
+// the last index. Distinct from `primitive_vec_push_increases_len` (which only
+// observes the length); this confirms the value was actually written.
+// (carry: legacy/sketch_port.rs::sketch_vec_push_value)
+#[test]
+fn primitive_vec_push_value_at_last_index() {
+    repl_prims("(vec-get (vec-push [1 2 3] 99) 3)\n")
+        .assert_stdout_contains(":primitives/Int 99");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — vec value flows through a `let`
+// binding and out via `vec-get`. Distinct from inline-literal access; the
+// vec escapes the literal context, gets bound, and is then accessed.
+// (carry: legacy/sketch_port.rs::sketch_vec_in_let)
+#[test]
+fn primitive_vec_let_bound_then_get() {
+    repl_prims("(let [xs [10 20 30]] (vec-get xs 0))\n")
+        .assert_stdout_contains(":primitives/Int 10");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — push onto an empty vec literal
+// (boundary case: zero-element start). Verifies that `[]` is a valid input
+// to `vec-push` and that the resulting vec has the pushed value at index 0.
+// (carry: legacy/sketch_port.rs::sketch_vec_push_empty)
+#[test]
+fn primitive_vec_push_onto_empty() {
+    repl_prims("(vec-get (vec-push [] 42) 0)\n")
+        .assert_stdout_contains(":primitives/Int 42");
+}
+
 // =============================================================================
 // §A.3 String slicing / introspection — Wave 5.5 GAP-COVER
 //

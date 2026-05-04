@@ -241,6 +241,19 @@ fn lambda_closure_captures() {
     .assert_stdout_contains(":primitives/Int 15");
 }
 
+// spec: spec/04-expressions.md §4.5.1 — closure capturing two outer let
+// bindings. Distinct from `lambda_closure_captures` (single capture from a
+// fn-param). Multi-capture exercises the closure environment layout for
+// `>=2` captured values.
+// (carry: legacy/sketch_port.rs::sketch_closure_multiple_captures)
+#[test]
+fn lambda_closure_multi_captures() {
+    repl_prims(
+        "(let [a 1 b 2] ((fn [x] (add-i64 x (add-i64 a b))) 10))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 13");
+}
+
 // spec: spec/04-expressions.md §4.5 — a lambda value bound in `let` and
 // invoked via the let-bound name. The first-class-value property of
 // lambdas (§4.5: "result is a first-class value that can be ... bound
@@ -281,6 +294,21 @@ fn multi_sig_arity_dispatch() {
         "(defn f ([x] x) ([x y] (add-i64 x y)))\n(f 5)\n(f 3 4)\n",
     )
     .assert_stdout_contains_all(&[":primitives/Int 5", ":primitives/Int 7"]);
+}
+
+// spec: spec/04-expressions.md §4.6.3 — auto-curried partial application
+// passed as an argument to a higher-order function. Distinct from
+// `defn_auto_curry_call_with_fewer_args` (curry-then-direct-call): here the
+// curried result flows through `apply-fn` invocation.
+// (carry: legacy/sketch_port.rs::sketch_auto_curry_higher_order)
+#[test]
+fn auto_curry_passed_to_higher_order_fn() {
+    repl_prims(
+        "(defn add [x y] (add-i64 x y))\n\
+         (defn apply-fn [f x] (f x))\n\
+         (apply-fn (add 10) 5)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 15");
 }
 
 // =============================================================================

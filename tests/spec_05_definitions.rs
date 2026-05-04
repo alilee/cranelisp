@@ -99,6 +99,36 @@ fn defn_auto_curry_call_with_fewer_args() {
 }
 
 // =============================================================================
+// §5.1.2 Multi-Signature — additional shapes (Wave 5.6 sketch_port carry-forward)
+// =============================================================================
+
+// spec: spec/05-definitions.md §5.1.2 — multi-clause type-based dispatch
+// (same arity, different parameter types). Distinct from arity-only dispatch
+// already covered by `defn_multi_clause_arity`.
+// (carry: legacy/sketch_port.rs::sketch_multi_sig_type_based_dispatch)
+#[test]
+fn defn_multi_clause_type_dispatch() {
+    repl_prims(
+        "(defn choose ([x y] (add-i64 x y)) ([x y] (if y x 0)))\n\
+         (add-i64 (choose 10 20) (choose 5 true))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 35");
+}
+
+// spec: spec/05-definitions.md §5.1.2 — duplicate clause signatures rejected.
+// (carry: legacy/sketch_port.rs::sketch_multi_sig_duplicate_signature_error)
+#[test]
+fn defn_multi_clause_duplicate_sig_neg() {
+    let out = repl_prims("(defn dup ([x] (add-i64 x 1)) ([y] (add-i64 y 2)))\n");
+    assert!(
+        out.stdout.to_lowercase().contains("error")
+            || out.stdout.contains("duplicate"),
+        "duplicate clause signature MUST error per §5.1.2; got:\n{}",
+        out.stdout
+    );
+}
+
+// =============================================================================
 // §5.2 Type Definition (deftype)
 // =============================================================================
 
@@ -127,6 +157,33 @@ fn deftype_product_construct_and_destructure() {
         "(deftype Point [:Int x :Int y])\n(match (Point 3 4) [(Point a b) (add-i64 a b)])\n",
     )
     .assert_stdout_contains(":primitives/Int 7");
+}
+
+// spec: spec/05-definitions.md §5.2.4 — bare-field-name shortcut syntax
+// `(deftype Pair [first second])` — fresh type vars assigned to bare field
+// names, no `:Type` annotation required. Distinct from explicitly-annotated
+// product shape.
+// (carry: legacy/sketch_port.rs::sketch_adt_shortcut_syntax)
+#[test]
+fn deftype_product_shortcut_field_names() {
+    repl_prims(
+        "(deftype Pair [first second])\n\
+         (match (Pair 7 8) [(Pair a b) a])\n",
+    )
+    .assert_stdout_contains(":primitives/Int 7");
+}
+
+// spec: spec/05-definitions.md §5.2 — constructor as first-class value
+// (let-bound, then called as a function). Distinct from operator-as-value
+// and defn-as-value first-class shapes.
+// (carry: legacy/sketch_port.rs::sketch_adt_first_class_constructor)
+#[test]
+fn deftype_constructor_as_first_class_value() {
+    repl_prims(
+        "(deftype (MyOpt a) MyNone (MySome [:a mval]))\n\
+         (let [f MySome] (match (f 42) [MyNone 0 (MySome v) v]))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 42");
 }
 
 // =============================================================================

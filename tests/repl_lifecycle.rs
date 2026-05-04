@@ -171,6 +171,27 @@ fn redefinition_propagates_through_callers() {
     .assert_stdout_contains_all(&[":primitives/Int 20", ":primitives/Int 10"]);
 }
 
+// spec: repl/spec.md §15.6 — redefinition propagates transitively through a
+// 3-defn pipeline (caller -> mid-helper -> leaf-helper). The redefined helper
+// is mid-pipeline; its new value must flow through both the caller and the
+// original first-call observation. Distinct from the 1-caller / 1-helper
+// `redefinition_propagates_through_callers` shape: this exercises transitive
+// propagation through one extra layer of indirection.
+// (carry: legacy/sketch_port.rs::sketch_repl_redefinition_updates_callers)
+#[test]
+fn redefinition_propagates_transitively_through_pipeline() {
+    // First (pipeline 5): add1 -> 6, double -> 12. After redef add1 to +10:
+    // (pipeline 5): add1 -> 15, double -> 30. Both observations required.
+    repl_prims("(defn add1 [x] (add-i64 x 1))
+(defn double [x] (mul-i64 x 2))
+(defn pipeline [x] (double (add1 x)))
+(pipeline 5)
+(defn add1 [x] (add-i64 x 10))
+(pipeline 5)
+")
+    .assert_stdout_contains_all(&[":primitives/Int 12", ":primitives/Int 30"]);
+}
+
 // =============================================================================
 // Error recovery — repl/spec.md §5.2
 // =============================================================================
