@@ -456,3 +456,48 @@ fn continuation_prompt_for_unclosed_paren() {
         out.stdout
     );
 }
+
+// =============================================================================
+// Wave 5.6 file 6 e2e.rs chunk-2 GAP-COVER carry-forward.
+// (per tests/plan/wave-5.6-e2e-reaudit.md chunk 2)
+// =============================================================================
+
+// spec: (none — regression-only)
+// REGRESSION-GUARD: cross-session cache isolation. Two independent
+// REPL subprocess invocations MUST NOT share definitions through any
+// shared on-disk cache or state. The first session defines `secret`;
+// the second session, started fresh in its own TempDir, MUST report
+// `secret` as undefined. Defends against accidental cache leakage
+// across `cranelisp` invocations.
+// (carry: legacy/e2e.rs::e2e_isolation_no_shared_state)
+#[test]
+fn two_independent_sessions_isolation_neg_no_state_leak() {
+    // Session A: define `secret`.
+    let out_a = Cranelisp::new()
+        .repl()
+        .with_prelude(helpers::e2e::PreludeVariant::PrimitivesOnly)
+        .stdin("(defn secret [x] (mul-i64 x 99))\n")
+        .output()
+        .assert_ok();
+    // Sanity: A actually compiled the defn.
+    assert!(
+        out_a.stdout.contains("user/secret") || out_a.stdout.contains("secret"),
+        "session A MUST register 'secret' (got:\n{}\n)",
+        out_a.stdout
+    );
+
+    // Session B: independent TempDir; tries to call A's `secret`. MUST
+    // see an undefined-name error (no state leak from session A).
+    let out_b = Cranelisp::new()
+        .repl()
+        .with_prelude(helpers::e2e::PreludeVariant::PrimitivesOnly)
+        .stdin("(secret 1)\n")
+        .output();
+    let combined = format!("{}{}", out_b.stdout, out_b.stderr);
+    assert!(
+        combined.contains("Error:"),
+        "session B MUST NOT see 'secret' from session A — cross-session state leak detected; \
+         combined stdout+stderr:\n{}",
+        combined
+    );
+}

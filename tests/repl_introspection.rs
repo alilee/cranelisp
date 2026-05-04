@@ -751,3 +751,299 @@ Color
         out.stdout
     );
 }
+
+// =============================================================================
+// Wave 5.6 file 6 e2e.rs chunk-2 GAP-COVER carry-forwards (per
+// tests/plan/wave-5.6-e2e-reaudit.md chunk 2). Each carries a
+// `(carry: legacy/...)` provenance tag.
+// =============================================================================
+
+// spec: repl/spec.md §4.1.5 — bare `fn` self-documents (no error; signature
+// shape `(Fn [params body] function)` and the keyword name in the line).
+// (carry: legacy/e2e.rs::e2e_s4_2_special_form_fn)
+#[test]
+fn special_forms_bare_lookup_fn_self_documenting() {
+    let out = repl("fn\n");
+    assert!(
+        !out.stdout.contains("Error:"),
+        "bare 'fn' MUST self-document (not error); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("Fn") && out.stdout.contains("fn"),
+        "bare 'fn' MUST surface a signature-shaped line containing 'Fn' and the keyword 'fn'; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §4.1.5 — bare `defn` self-documents.
+// (carry: legacy/e2e.rs::e2e_s4_2_special_form_defn)
+#[test]
+fn special_forms_bare_lookup_defn_self_documenting() {
+    let out = repl("defn\n");
+    assert!(
+        !out.stdout.contains("Error:"),
+        "bare 'defn' MUST self-document (not error); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("Fn") && out.stdout.contains("defn"),
+        "bare 'defn' MUST surface a signature-shaped line containing 'Fn' and the keyword 'defn'; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §4.1.5 — bare `deftype` self-documents.
+// (carry: legacy/e2e.rs::e2e_s4_2_special_form_deftype)
+#[test]
+fn special_forms_bare_lookup_deftype_self_documenting() {
+    let out = repl("deftype\n");
+    assert!(
+        !out.stdout.contains("Error:"),
+        "bare 'deftype' MUST self-document (not error); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("Fn") && out.stdout.contains("deftype"),
+        "bare 'deftype' MUST surface a signature-shaped line containing 'Fn' and the keyword 'deftype'; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §4.1.5 — bare `match` self-documents.
+// (carry: legacy/e2e.rs::e2e_s4_2_special_form_match)
+#[test]
+fn special_forms_bare_lookup_match_self_documenting() {
+    let out = repl("match\n");
+    assert!(
+        !out.stdout.contains("Error:"),
+        "bare 'match' MUST self-document (not error); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("Fn") && out.stdout.contains("match"),
+        "bare 'match' MUST surface a signature-shaped line containing 'Fn' and the keyword 'match'; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §4.1.5 — bare `defmacro` self-documents (does NOT
+// produce an "undefined variable" error). Distinct code path from the
+// other special forms (`defmacro` is handled by the macro registry).
+// (carry: legacy/e2e.rs::e2e_s4_2_special_form_defmacro)
+#[test]
+fn special_forms_bare_lookup_defmacro_self_documenting() {
+    let out = repl("defmacro\n");
+    assert!(
+        !out.stdout.contains("undefined variable"),
+        "bare 'defmacro' MUST self-document (not 'undefined variable'); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("Fn") && out.stdout.contains("defmacro"),
+        "bare 'defmacro' MUST surface a signature-shaped line containing 'Fn' and the keyword 'defmacro'; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §4.1.8 — bare `+` operator self-documents (Fn type).
+// Operator availability requires the trait + impls, supplied by the
+// TestStandard prelude (Num/Eq/Ord on Int/Float/Bool/String).
+// (carry: legacy/e2e.rs::e2e_s4_3_operator_plus_feedback)
+#[test]
+fn operator_plus_bare_lookup_displays_signature() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(helpers::e2e::PreludeVariant::TestStandard)
+        .stdin("+\n")
+        .output();
+    assert!(
+        !out.stdout.contains("Error:"),
+        "bare '+' MUST display type info (not error); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("Fn") && out.stdout.contains("+"),
+        "bare '+' MUST surface 'Fn' + the operator symbol; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §4.1.8 — bare `=` operator self-documents (Fn returning Bool).
+// (carry: legacy/e2e.rs::e2e_s4_3_operator_eq_feedback)
+#[test]
+fn operator_eq_bare_lookup_displays_signature() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(helpers::e2e::PreludeVariant::TestStandard)
+        .stdin("=\n")
+        .output();
+    assert!(
+        !out.stdout.contains("Error:"),
+        "bare '=' MUST display type info (not error); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("Fn") && out.stdout.contains("Bool"),
+        "bare '=' MUST surface 'Fn' + Bool return type; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §4.1.8 — bare `<` operator self-documents (Fn returning Bool).
+// (carry: legacy/e2e.rs::e2e_s4_3_operator_lt_feedback)
+#[test]
+fn operator_lt_bare_lookup_displays_signature() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(helpers::e2e::PreludeVariant::TestStandard)
+        .stdin("<\n")
+        .output();
+    assert!(
+        !out.stdout.contains("Error:"),
+        "bare '<' MUST display type info (not error); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("Fn") && out.stdout.contains("Bool"),
+        "bare '<' MUST surface 'Fn' + Bool return type; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.3 — `/list` shows a Traits category after a
+// `deftrait` form. Distinct from `list_shows_types_category` (Types
+// category) and `list_shows_macros_after_defmacro` (Macros category).
+// (carry: legacy/e2e.rs::e2e_s3_3_list_traits)
+#[test]
+fn list_shows_traits_after_deftrait() {
+    let out = repl_prims("(deftrait Sizeable (size [self] Int))
+/list
+");
+    assert!(
+        out.stdout.contains("Traits"),
+        "/list MUST surface 'Traits' category after deftrait; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("Sizeable"),
+        "/list MUST list the user-defined trait 'Sizeable'; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §11.1 — `/expand` recursively expands nested macros to
+// fixed point (the expansion result MUST NOT contain a still-expandable
+// macro reference). The fixpoint property defends against partial
+// expansion that would leave unresolved macro references in the output.
+// (carry: legacy/e2e.rs::e2e_s11_1_expand_nested_macros)
+#[test]
+fn expand_recursively_to_fixpoint() {
+    let out = repl_prims("(defmacro inc [x] `(add-i64 ~x 1))
+(defmacro double-inc [x] `(inc (inc ~x)))
+/expand (double-inc 5)
+");
+    // The /expand line must contain `add-i64` (fully expanded form).
+    let expand_line = out
+        .stdout
+        .lines()
+        .find(|l| l.contains("add-i64"))
+        .unwrap_or_else(|| panic!(
+            "/expand MUST recursively expand to add-i64; got:\n{}",
+            out.stdout
+        ));
+    // Negative: the expansion MUST NOT contain `inc` — fixpoint reached.
+    assert!(
+        !expand_line.contains("inc"),
+        "/expand MUST reach fixed point (no 'inc' in expansion); got line:\n{}",
+        expand_line
+    );
+}
+
+// spec: repl/spec.md §11.2.4 — `/doc <macro>` on a macro without a
+// docstring surfaces the macro name (not an error). Distinct code path
+// from /doc on a fn (covered by `doc_no_docstring`).
+// (carry: legacy/e2e.rs::e2e_s11_2_4_doc_macro_no_docstring)
+#[test]
+fn doc_macro_no_docstring() {
+    let out = repl("(defmacro my-mac [x] x)
+/doc my-mac
+");
+    assert!(
+        out.stdout.contains("my-mac"),
+        "/doc on docstringless macro MUST mention the macro name; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §11.2.4 — `/doc <macro>` surfaces the docstring text
+// when the macro was defined with one. Distinct code path from /doc on a
+// fn (covered by `doc_shows_docstring`).
+// (carry: legacy/e2e.rs::e2e_s11_2_4_doc_macro_with_docstring)
+#[test]
+fn doc_macro_with_docstring() {
+    let out = repl_prims("(defmacro my-inc \"Increment by one\" [x] `(add-i64 ~x 1))
+/doc my-inc
+");
+    assert!(
+        out.stdout.contains("Increment by one"),
+        "/doc on documented macro MUST surface the docstring text; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.4 — `/imports <module>` filters listed imports by
+// source module. With an explicit primitive import, `/imports primitives`
+// MUST show the imported primitive name. Distinct from
+// `imports_shows_imported_primitive` which exercises the no-arg form.
+// (carry: legacy/e2e.rs::e2e_s3_4_imports_filter_by_module)
+#[test]
+fn imports_filter_by_source_module() {
+    let out = repl("(import [primitives [add-i64]])
+/imports primitives
+");
+    assert!(
+        out.stdout.contains("add-i64"),
+        "/imports primitives MUST show the imported primitive 'add-i64'; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.4 — `/imports <nonexistent>` MUST NOT error. The
+// graceful-handling property: a misspelled or nonexistent module produces
+// an empty/quiet listing, not a stack trace or error message.
+// (carry: legacy/e2e.rs::e2e_s3_4_neg_imports_nonexistent_not_error)
+#[test]
+fn imports_filter_neg_nonexistent_module_not_error() {
+    let out = repl("/imports nonexistent
+");
+    assert!(
+        !out.stdout.contains("Error:"),
+        "/imports <nonexistent> MUST NOT error; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.3 — `/list <prefix>` performs a case-insensitive
+// prefix match across categories. Three defns (`foo`, `bar`, `fuzz`) +
+// `/list f` MUST surface the f-prefixed names. Preserves the legacy
+// positive-only assertion shape (presence of `foo` + `fuzz`).
+// (carry: legacy/e2e.rs::e2e_s3_3_list_prefix_filter)
+#[test]
+fn list_prefix_filter_matches_names() {
+    let out = repl("(defn foo [x] x)
+(defn bar [x] x)
+(defn fuzz [x] x)
+/list f
+");
+    assert!(
+        out.stdout.contains("foo"),
+        "/list f MUST surface 'foo' (prefix match); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("fuzz"),
+        "/list f MUST surface 'fuzz' (prefix match); got:\n{}",
+        out.stdout
+    );
+}

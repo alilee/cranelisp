@@ -371,3 +371,40 @@ fn repl_error_recovery_bad_macro() {
         out.stdout
     );
 }
+
+// =============================================================================
+// Wave 5.6 file 6 e2e.rs chunk-2 GAP-COVER carry-forward.
+// (per tests/plan/wave-5.6-e2e-reaudit.md chunk 2)
+// =============================================================================
+
+// spec: spec/09-macros.md §9.9.4 — when a macro body raises a runtime
+// error during expansion (here: `(div-i64 1 0)` panics), the
+// implementation MUST report a clean error at the call site rather
+// than crashing the process. The legacy carry-forward source comment
+// noted "Currently this causes SIGILL — the test documents the gap";
+// verified against the current binary, the spec property now holds
+// (exit 0, "error" reported to stdout including a "runtime error
+// during macro expansion" message). Preserved as a durable
+// REGRESSION-GUARD per memory/feedback_repros_join_suite.md.
+// (carry: legacy/e2e.rs::e2e_s9_9_4_runtime_error_during_expansion)
+#[test]
+fn runtime_error_during_expansion_clean_report() {
+    let out = repl_prims(
+        "(defmacro boom [x] (let [_ (div-i64 1 0)] x))\n(boom 42)\n",
+    );
+    // Must not crash — clean exit + error message on stdout.
+    assert!(
+        out.status.success(),
+        "runtime error during macro expansion MUST produce a clean error, \
+         not a process crash (exit {:?}); stdout:\n{}\nstderr:\n{}",
+        out.status.code(),
+        out.stdout,
+        out.stderr,
+    );
+    assert!(
+        out.stdout.to_lowercase().contains("error"),
+        "runtime error during macro expansion MUST be reported (case-insensitive 'error' \
+         token in stdout); got:\n{}",
+        out.stdout
+    );
+}

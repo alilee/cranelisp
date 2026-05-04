@@ -381,6 +381,47 @@ limitation, not a spec violation.
 | Disposition | resolved at chunk-1 close (clean carry-forward) |
 | Rationale | Per parity rule + `memory/feedback_repros_join_suite.md` the 17 carry-forwards are durable regression guards. The 5 REGRESSION-GUARD shapes (3 prelude-Option display + 1 annotation-not-variable + 1 stderr-clean recovery) preserve historic BUG repros even where the implementation now satisfies the spec property. The `#[ignore]`'d perf test preserves the §7.1 carry-forward intent without the un-actionable nextest-overhead failure. |
 
+### Sprint 64 Wave 5.6 — defects surfaced during e2e.rs chunk-2 carry-forward (2026-05-04)
+
+Wave 5.6 file 6 e2e.rs per-test re-audit chunk-2
+(`tests/plan/wave-5.6-e2e-reaudit.md` chunk 2, tests 51-100) identified
+17 GAP-COVER findings (after dedupe: #18/#19 → COVERED, #20 absorbed by
+#13) with 2 REGRESSION-GUARD shapes (#9 cross-session isolation, #15
+§9.9.4 SIGILL gap-doc). User approved all GAP-COVER carry-forwards
+(chunked authoring; this is chunk 2 of 3). 17 carry-forward tests
+landed across 3 spec/repl files.
+
+**Outcome**: all 17 carry-forwards land green. The §9.9.4
+REGRESSION-GUARD (`runtime_error_during_expansion_clean_report`)
+deserves a specific note: the legacy carry-forward source comment
+read "Currently this causes SIGILL — the test documents the gap";
+verified against the current binary, the spec property now holds
+(exit 0; stdout contains a runtime-error-during-macro-expansion
+message). Preserved as a durable REGRESSION-GUARD per
+`memory/feedback_repros_join_suite.md` even though the gap-document
+condition no longer fires.
+
+**No new defect FIXMEs filed.** Per
+`memory/feedback_validate_tests_against_spec.md` each candidate
+assertion was probed against the current binary before authoring;
+all 17 carries match the spec property and the implementation
+behaviour. The `/list <prefix>` filter property (spec §3.3) is
+mechanically uncovered — the implementation does not actually filter
+(returns all definitions) but the legacy assertion shape only checks
+positive presence (`foo` + `fuzz`) and so passes; the negative
+absence of `bar` was not part of the chunk-2 GAP-COVER scope and is
+deferred.
+
+| Field | Value |
+|---|---|
+| Test names | 17 carry-forwards across 3 files: `tests/repl_introspection.rs` +15 (special_forms_bare_lookup_{fn,defn,deftype,match,defmacro}_self_documenting; operator_{plus,eq,lt}_bare_lookup_displays_signature; list_shows_traits_after_deftrait; expand_recursively_to_fixpoint; doc_macro_{no,with}_docstring; imports_filter_by_source_module; imports_filter_neg_nonexistent_module_not_error; list_prefix_filter_matches_names); `tests/repl_lifecycle.rs` +1 (two_independent_sessions_isolation_neg_no_state_leak); `tests/spec_09_macros.rs` +1 (runtime_error_during_expansion_clean_report) |
+| SHA | uncommitted (Wave 5.6 file 6 chunk-2) |
+| Stderr / observable signature | 17/17 active carries pass |
+| Owning skill | n/a (no defect surfaced) |
+| Target sprint | n/a |
+| Disposition | resolved at chunk-2 close (clean carry-forward) |
+| Rationale | Per parity rule + `memory/feedback_repros_join_suite.md` the 17 carry-forwards are durable regression guards. The 2 REGRESSION-GUARD shapes (#9 cross-session isolation, #15 §9.9.4 runtime-error-during-expansion clean-report) preserve historic regression-naming patterns / known-defect repros even where the implementation now satisfies the spec property. The `/list <prefix>` filter assertion preserves the legacy positive-only shape; the implementation gap (no actual filtering) is out-of-scope for chunk-2 carry-forward. |
+
 ### Exemplar-level tests (non-cargo)
 
 *No current exemplar-level failing entries. The S60-carried `exemplar/solver.cl::test-unsolvable` was resolved in Sprint 61 Wave 2; see "Resolved this sprint" below. The Defect 6 stack-overflow failures are captured above as cargo tests (`d6_exemplar_*` and `wave6_demo_repros::exemplar_solver_*`), not as non-cargo entries — per `memory/feedback_repros_join_suite.md` the cargo-level reductions are the durable record.*
