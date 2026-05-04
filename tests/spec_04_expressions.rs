@@ -137,6 +137,24 @@ fn let_nested_shadowing() {
     repl_prims("(let [x 1] (let [x 2] x))\n").assert_stdout_contains(":primitives/Int 2");
 }
 
+// spec: spec/04-expressions.md §4.3 — depth-3+ let nesting; outer
+// bindings remain visible through the body of every inner let.
+// (carry: legacy/ring0.rs::let_deeply_nested_3_or_more)
+#[test]
+fn let_deeply_nested_3_or_more() {
+    // Four nested lets; each binding is referenced from the innermost
+    // body. Result: 1 + 2 + 4 + 8 = 15. This exercises the depth axis
+    // that the existing single/sequential/shadowing carries do not.
+    repl_prims(
+        "(let [a 1]\n\
+           (let [b 2]\n\
+             (let [c 4]\n\
+               (let [d 8]\n\
+                 (add-i64 a (add-i64 b (add-i64 c d)))))))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 15");
+}
+
 // =============================================================================
 // §4.4 If Expression
 // =============================================================================

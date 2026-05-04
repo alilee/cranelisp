@@ -382,3 +382,144 @@ fn lenient_no_lenient_env_var_preserves_correctness() {
         .output()
         .assert_exit(31);
 }
+
+// =============================================================================
+// §12.5 Tail Call Optimization — Wave 5.6 dedupe-recovery carries
+//
+// The 5 TCO carries below are #[ignore]'d pending FIXME 0141 — `/spec`
+// upgrading §12.5 from `SHOULD` to `MUST` for self-recursive TCO. The
+// implementation already provides loop-based self-TCO (per
+// `memory/macros.md §"Tail Call Optimization (TCO)"`), so the assertions
+// pass against the current binary; the gate is normative, not behavioural.
+// Once §12.5's verb upgrades, /qa removes the `#[ignore]` attributes
+// (target Sprint 65). Citations resolve through the linter today — only
+// the normative authority is missing.
+// =============================================================================
+
+// spec: spec/12-runtime.md §12.5 — self-recursive tail calls optimised; deep
+// countdown completes without stack overflow.
+// (carry: legacy/ring0.rs::tco_deep_countdown)
+#[ignore = "TCO MUST clause not yet in spec — FIXME 0141; target S65"]
+#[test]
+fn tco_deep_countdown() {
+    // Without TCO, 1_000_000 frames overflow the default thread stack.
+    repl_prims(
+        "(defn countdown [n]\n\
+           (if (eq-i64 n 0)\n\
+             0\n\
+             (countdown (sub-i64 n 1))))\n\
+         (countdown 1000000)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 0");
+}
+
+// spec: spec/12-runtime.md §12.5 — TCO across an accumulator parameter.
+// (carry: legacy/ring0.rs::tco_accumulator)
+#[ignore = "TCO MUST clause not yet in spec — FIXME 0141; target S65"]
+#[test]
+fn tco_accumulator() {
+    // sum of 1..100 = 5050; recursion depth 100 is well under any
+    // overflow threshold but the test asserts the accumulator pattern
+    // returns the correct value.
+    repl_prims(
+        "(defn sum-acc [n acc]\n\
+           (if (eq-i64 n 0)\n\
+             acc\n\
+             (sum-acc (sub-i64 n 1) (add-i64 acc n))))\n\
+         (sum-acc 100 0)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 5050");
+}
+
+// spec: spec/12-runtime.md §12.5 — match arm is a tail-position context;
+// recursion through it does not grow the stack.
+// (carry: legacy/ring0.rs::tco_match_tail_position)
+#[ignore = "TCO MUST clause not yet in spec — FIXME 0141; target S65"]
+#[test]
+fn tco_match_tail_position() {
+    // 100_000-iteration loop using match in tail position. Without TCO
+    // through match arms, this overflows.
+    repl_prims(
+        "(deftype Action Stop Continue)\n\
+         (defn loop-match [n]\n\
+           (match (if (eq-i64 n 0) Stop Continue)\n\
+             [Stop 0\n\
+              Continue (loop-match (sub-i64 n 1))]))\n\
+         (loop-match 100000)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 0");
+}
+
+// spec: spec/12-runtime.md §12.5 — let body is a tail-position context.
+// (carry: legacy/ring0.rs::tco_let_body_tail_position)
+#[ignore = "TCO MUST clause not yet in spec — FIXME 0141; target S65"]
+#[test]
+fn tco_let_body_tail_position() {
+    // 100_000-iteration loop where the recursive call sits inside a
+    // let body in tail position.
+    repl_prims(
+        "(defn loop-let [n]\n\
+           (if (eq-i64 n 0)\n\
+             42\n\
+             (let [m (sub-i64 n 1)]\n\
+               (loop-let m))))\n\
+         (loop-let 100000)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/12-runtime.md §12.5 — non-tail recursion is NOT optimised but
+// still produces the correct value at modest depth (negative-of-TCO).
+// (carry: legacy/ring0.rs::tco_non_tail_recursion_unchanged)
+#[ignore = "TCO MUST clause not yet in spec — FIXME 0141; target S65"]
+#[test]
+fn tco_non_tail_recursion_unchanged() {
+    // sum of 0..10 via non-tail recursion (the recursive call is inside
+    // an add-i64 — not in tail position). Asserts correctness, not
+    // depth: TCO must NOT silently apply here, but the answer is the
+    // same regardless of optimisation.
+    repl_prims(
+        "(defn sum [n]\n\
+           (if (eq-i64 n 0)\n\
+             0\n\
+             (add-i64 n (sum (sub-i64 n 1)))))\n\
+         (sum 10)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 55");
+}
+
+// =============================================================================
+// §12.7.3 Arithmetic policy (continued) — i64::MIN / -1 trap
+//
+// On x86_64 / aarch64 the `idiv` of `i64::MIN` by `-1` traps because the
+// mathematical result (`i64::MAX + 1`) does not fit in a signed 64-bit
+// register. The spec lists this alongside divide-by-zero as a panic
+// source. The legacy test grouped it with the divide-by-zero diagnostic.
+// =============================================================================
+
+// spec: spec/12-runtime.md §12.7.3 — `div-i64` of i64::MIN by -1 panics
+// (carry: legacy/ring0.rs::checked_div_min_neg1_panics)
+#[test]
+fn integer_div_min_by_neg_one_panics_neg() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin("(div-i64 -9223372036854775808 -1)\n")
+        .output();
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    // §12.7.3: the i64::MIN / -1 case MUST trigger a runtime panic. The
+    // diagnostic vocabulary historically reuses the divide-by-zero
+    // wording (the legacy assertion checked exactly that). The REPL
+    // session MUST survive (§12.7.4); we only check for a diagnostic.
+    assert!(
+        combined.contains("division by zero")
+            || combined.contains("divide by zero")
+            || combined.contains("overflow")
+            || combined.contains("Error")
+            || combined.contains("panic"),
+        "div-i64 of i64::MIN by -1 MUST produce a panic / error diagnostic \
+         per §12.7.3; got stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}

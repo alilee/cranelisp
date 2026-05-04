@@ -445,3 +445,38 @@ fn failed_redefn_neg_original_preserved() {
         out.stdout
     );
 }
+
+// =============================================================================
+// Duplicate parameter names — Wave 5.6 dedupe-recovery carry
+// =============================================================================
+
+// spec: spec/05-definitions.md §5.1.1 — `(defn f [x x] ...)` rejected: a
+// parameter list MUST NOT contain duplicate names. The REPL surfaces an
+// error diagnostic and does NOT register a binding for `bad`.
+// (carry: legacy/ring0.rs::error_duplicate_param_names)
+#[test]
+fn duplicate_param_names_neg() {
+    let out = repl_prims("(defn bad [x x] (add-i64 x x))
+(bad 1)
+");
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    // The defn must fail with a diagnostic (not silently bind one of
+    // the params). The follow-up `(bad 1)` then errors on unbound name.
+    assert!(
+        combined.to_lowercase().contains("error")
+            || combined.to_lowercase().contains("duplicate")
+            || combined.to_lowercase().contains("undefined")
+            || combined.to_lowercase().contains("unbound"),
+        "duplicate parameter names MUST produce a diagnostic; got:\n\
+         stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+    // Negative-of-binding: the failed defn does NOT register; calling
+    // `bad` returns no `:primitives/Int 2` result.
+    assert!(
+        !out.stdout.contains(":primitives/Int 2"),
+        "duplicate-param defn must NOT register; got stdout:\n{}",
+        out.stdout
+    );
+}
