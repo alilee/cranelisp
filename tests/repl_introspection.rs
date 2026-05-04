@@ -553,3 +553,201 @@ fn sig_unknown_name_graceful() {
     // Should not crash; should give some message.
     assert!(out.status.success(), "/sig of unknown must not crash REPL");
 }
+
+// =============================================================================
+// Wave 5.6 file 6 e2e.rs chunk-1 GAP-COVER carry-forwards (per
+// tests/plan/wave-5.6-e2e-reaudit.md). Each carries a `(carry: legacy/...)`
+// provenance tag. Three prelude-Option tests are REGRESSION-GUARDs against
+// historic display BUGs (raw-pointer / definition-vs-value display) that
+// the current implementation no longer exhibits — they land green and are
+// preserved as durable regression guards per
+// memory/feedback_repros_join_suite.md.
+// =============================================================================
+
+// spec: repl/spec.md §1.5 — bare nullary constructor lookup displays in dot
+// notation `Type.Ctor` form (the value-display shape, distinct from the
+// definition display covered by `deftype_display_enum`).
+// (carry: legacy/e2e.rs::e2e_s1_5_nullary_ctor_dot_notation)
+#[test]
+fn nullary_constructor_bare_lookup_dot_notation() {
+    repl("(deftype Color Red Green Blue)
+Red
+")
+    .assert_stdout_contains("Color.Red");
+}
+
+// spec: repl/spec.md §1.5 — applied data constructor displays in
+// parenthesised dot-notation `(Type.Ctor args...)` value form.
+// (carry: legacy/e2e.rs::e2e_s1_5_data_ctor_dot_notation)
+#[test]
+fn data_constructor_applied_dot_notation_display() {
+    repl("(deftype (Option a) None (Some [:a val]))
+(Some 42)
+")
+    .assert_stdout_contains("(Option.Some 42)");
+}
+
+// spec: repl/spec.md §1.5 — prelude-Option `(Some 42)` value displays in
+// dot-notation; MUST NOT show a raw heap pointer in the value position.
+// REGRESSION-GUARD: the legacy test was marked "BUG"; the current
+// implementation displays the value correctly.
+// (carry: legacy/e2e.rs::e2e_s1_5_prelude_option_some_display)
+#[test]
+fn prelude_option_some_display_neg_raw_pointer() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(helpers::e2e::PreludeVariant::TestStandard)
+        .stdin("(Some 42)\n")
+        .output();
+    assert!(
+        out.stdout.contains("(Option.Some 42)"),
+        "prelude `(Some 42)` MUST display as `(Option.Some 42)`; got:\n{}",
+        out.stdout
+    );
+    // Negative: must NOT contain a long-digit-string raw heap pointer where
+    // the value should appear. Allow the `(Option.Some 42)` token itself.
+    let leak = out
+        .stdout
+        .lines()
+        .any(|l| {
+            l.contains("Option")
+                && l.chars().filter(|c| c.is_ascii_digit()).count() > 5
+                && !l.contains("(Option.Some 42)")
+        });
+    assert!(
+        !leak,
+        "result must not contain a raw heap pointer; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §1.5 — prelude-Option `None` value displays as
+// `Option.None`; MUST NOT render the *definition* drawer (`; deftype` /
+// `fn.option/` qualified path) when bare `None` is evaluated as a value.
+// REGRESSION-GUARD: legacy test marked "BUG"; current implementation shows
+// the value-display correctly.
+// (carry: legacy/e2e.rs::e2e_s1_5_prelude_option_none_display)
+#[test]
+fn prelude_option_none_value_display_neg_definition_metadata() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(helpers::e2e::PreludeVariant::TestStandard)
+        .stdin("None\n")
+        .output();
+    assert!(
+        out.stdout.contains("Option.None"),
+        "bare `None` MUST display the value `Option.None`; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("; deftype"),
+        "bare `None` (value) MUST NOT show the deftype-definition drawer; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("fn.option/"),
+        "bare `None` MUST NOT show a module-qualified constructor path; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §1.5 — prelude-Option `(Some "hello")` displays the
+// string contents inside the dot-notation form; MUST NOT render a raw
+// heap pointer for the String payload.
+// REGRESSION-GUARD: legacy test marked "BUG"; current implementation shows
+// the formatted value correctly.
+// (carry: legacy/e2e.rs::e2e_s1_5_prelude_option_some_string_display)
+#[test]
+fn prelude_option_some_string_payload_display() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(helpers::e2e::PreludeVariant::TestStandard)
+        .stdin("(Some \"hello\")\n")
+        .output();
+    assert!(
+        out.stdout.contains("\"hello\""),
+        "prelude `(Some \"hello\")` MUST display the string payload; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("Option.Some"),
+        "prelude `(Some \"hello\")` MUST use `Option.Some` ctor notation; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.4 — `/info <name>` shows symbol metadata including
+// the compiled code size in `bytes`.
+// (carry: legacy/e2e.rs::e2e_s3_4_info)
+#[test]
+fn info_shows_symbol_metadata_with_code_size() {
+    let out = repl_prims("(defn double [x] (mul-i64 x 2))
+/info double
+");
+    assert!(
+        out.stdout.contains("double"),
+        "/info MUST surface the symbol name 'double'; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("bytes"),
+        "/info MUST surface the compiled code size as 'bytes'; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.1 — `/time <expr>` displays elapsed evaluation time
+// in milliseconds.
+// (carry: legacy/e2e.rs::e2e_s3_1_time)
+#[test]
+fn time_shows_expression_timing_in_ms() {
+    let out = repl_prims("/time (add-i64 1 2)\n");
+    assert!(
+        out.stdout.contains("ms"),
+        "/time MUST surface elapsed time in milliseconds; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §1.1 — bare primitive type-name lookup produces type
+// info, not an "undefined" error. The Int instance is canonical here; the
+// same display shape applies to Bool/Float/String (see legacy
+// `e2e_s1_1_bare_type_{bool,float,string}` — absorbed by this carry per
+// the Wave 5.6 audit).
+// (carry: legacy/e2e.rs::e2e_s1_1_bare_type_int)
+#[test]
+fn bare_primitive_type_int_displays_type_info() {
+    let out = repl("Int\n").assert_ok();
+    assert!(
+        !out.stdout.contains("Error:"),
+        "bare 'Int' MUST display type info, not an error; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("Int"),
+        "bare 'Int' MUST mention the type name in display; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §1.1 — bare user-defined type-name lookup produces
+// type info, distinct from the primitive case (separate resolution path
+// through user-defined-type registry vs primitive type registry).
+// (carry: legacy/e2e.rs::e2e_s1_1_bare_type_user_defined)
+#[test]
+fn bare_user_defined_type_lookup_displays_type_info() {
+    let out = repl("(deftype Color Red Green Blue)
+Color
+")
+    .assert_ok();
+    assert!(
+        !out.stdout.contains("Error:"),
+        "bare user-defined type 'Color' MUST display type info, not error; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("Color"),
+        "bare 'Color' MUST mention the type name in display; got:\n{}",
+        out.stdout
+    );
+}

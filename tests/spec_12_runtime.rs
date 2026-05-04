@@ -590,6 +590,77 @@ fn tco_non_tail_recursion_unchanged() {
 // source. The legacy test grouped it with the divide-by-zero diagnostic.
 // =============================================================================
 
+// =============================================================================
+// Wave 5.6 file 6 e2e.rs chunk-1 GAP-COVER carry-forwards — `/run-tests`
+// aggregation angles (count multi, mixed pass+fail, non-test filter) per
+// repl/spec.md §3.1 (Command Inventory) + §16.2.1.
+// =============================================================================
+
+// spec: repl/spec.md §3.1 — `/run-tests` aggregates pass count across
+// multiple `test-*` functions. Distinct from the single-test
+// `run_tests_reports_passes` shape.
+// (carry: legacy/e2e.rs::e2e_run_tests_multiple)
+#[test]
+fn run_tests_multiple_passes_count() {
+    repl(
+        "(import [primitives [*]])\n\
+         (deftype (Option a) None (Some [:a val]))\n\
+         (defn test-a [] None)\n\
+         (defn test-b [] None)\n\
+         (defn test-c [] None)\n\
+         /run-tests\n",
+    )
+    .assert_stdout_contains("3 passed");
+}
+
+// spec: repl/spec.md §3.1 — `/run-tests` aggregates mixed pass+fail counts
+// in the same run. Distinct from per-test pass and per-test fail shapes
+// covered by `run_tests_reports_passes` and
+// `run_tests_reports_failures_with_reason`.
+// (carry: legacy/e2e.rs::e2e_run_tests_mixed_pass_fail)
+#[test]
+fn run_tests_mixed_pass_and_fail_counts() {
+    repl(
+        "(import [primitives [*]])\n\
+         (deftype (Option a) None (Some [:a val]))\n\
+         (defn test-pass-1 [] None)\n\
+         (defn test-pass-2 [] None)\n\
+         (defn test-fail-1 [] (Some \"broken\"))\n\
+         /run-tests\n",
+    )
+    .assert_stdout_contains_all(&["2 passed", "1 failed"]);
+}
+
+// spec: repl/spec.md §3.1 — REGRESSION-GUARD: `/run-tests` filters out
+// non-`test-*` prefixed functions. A `helper` defn alongside a `test-one`
+// defn must result in only `test-one` being discovered and run. The
+// negative angle confirms the prefix filter.
+// (carry: legacy/e2e.rs::e2e_run_tests_ignores_non_test)
+#[test]
+fn run_tests_neg_ignores_non_test_prefixed_fns() {
+    let out = repl(
+        "(import [primitives [*]])\n\
+         (deftype (Option a) None (Some [:a val]))\n\
+         (defn helper [] None)\n\
+         (defn test-one [] None)\n\
+         /run-tests\n",
+    );
+    assert!(
+        out.stdout.contains("1 passed"),
+        "/run-tests MUST discover exactly 1 test (test-one), not 'helper'; got:\n{}",
+        out.stdout
+    );
+    // Negative: `helper` must not appear in the per-test results section
+    // (the line shape is `name ............... ok`). The defn-display
+    // banner does mention `user/helper ; defn`, so guard against the
+    // results-line shape `helper ........` rather than substring `helper`.
+    assert!(
+        !out.stdout.contains("helper ."),
+        "/run-tests results MUST NOT include non-`test-*` fn 'helper'; got:\n{}",
+        out.stdout
+    );
+}
+
 // spec: spec/12-runtime.md §12.7.3 — `div-i64` of i64::MIN by -1 panics
 // (carry: legacy/ring0.rs::checked_div_min_neg1_panics)
 #[test]

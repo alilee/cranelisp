@@ -534,6 +534,52 @@ fn duplicate_param_names_neg() {
 // Unclosed paren — Wave 5.6 dedupe-recovery supplement
 // =============================================================================
 
+// =============================================================================
+// Wave 5.6 file 6 e2e.rs chunk-1 GAP-COVER carry-forward — Sprint 61
+// Slice 5 H neg-coverage promotion (#1) on §5.1 stderr-leak prevention
+// + session survival.
+// =============================================================================
+
+// spec: repl/spec.md §5.1 — REGRESSION-GUARD: error bodies (e.g. "type
+// mismatch", "Error:") MUST be on stdout, not stderr. Stderr is reserved
+// for traces (which are silent in the harness's clean-env default). The
+// REPL session MUST survive an error and process subsequent valid input.
+// This is the negative companion to `type_error_arg_mismatch` (positive
+// path: error on stdout) and `type_error_recovery_continues_session`
+// (recovery path): the explicit stderr-clean assertion plus end-to-end
+// recovery in one test.
+// (carry: legacy/e2e.rs::e2e_s5_1_errors_on_stdout_neg_stderr_empty)
+#[test]
+fn type_error_neg_stderr_empty_and_session_survives() {
+    let out = repl_prims("(add-i64 2 true)
+(add-i64 1 2)
+");
+    // (a) Error body MUST NOT appear on stderr.
+    assert!(
+        !out.stderr.contains("type mismatch"),
+        "Error body 'type mismatch' leaked to stderr — spec §5.1 mandates \
+         errors on stdout. stderr:\n{}\nstdout:\n{}",
+        out.stderr,
+        out.stdout
+    );
+    assert!(
+        !out.stderr.contains("Error:"),
+        "`Error:` prefix leaked to stderr — spec §5.1 reserves stderr for \
+         traces. stderr:\n{}\nstdout:\n{}",
+        out.stderr,
+        out.stdout
+    );
+    // (b) Session survives the error and processes the subsequent valid
+    // expression. `(add-i64 1 2)` = 3.
+    assert!(
+        out.stdout.contains(":primitives/Int 3"),
+        "Session MUST NOT crash on error per §5.1 last clause. \
+         Expected `:primitives/Int 3` after recovery; stdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
 // spec: repl/spec.md §5.1 — unclosed `(` is a parse error, distinct from
 // the stray-close paren case (covered by `parse_error_stray_close`). The
 // REPL's parser must report a parse error rather than silently consuming

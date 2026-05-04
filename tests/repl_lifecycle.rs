@@ -410,3 +410,49 @@ fn redefinition_updates_live_callers() {
     )
     .assert_stdout_contains_all(&[":primitives/Int 11", ":primitives/Int 12"]);
 }
+
+// =============================================================================
+// Wave 5.6 file 6 e2e.rs chunk-1 GAP-COVER carry-forwards
+// (per tests/plan/wave-5.6-e2e-reaudit.md).
+// =============================================================================
+
+// spec: repl/spec.md §2.1 — Primary Prompt format `{N}+{N}ms; user>`. The
+// startup output must contain the timing-prefix `ms;` separator and the
+// module-name `user>` suffix. Distinct from `boot_shows_banner` (which
+// asserts the header text only).
+// (carry: legacy/e2e.rs::e2e_s2_1_prompt_format)
+#[test]
+fn boot_prompt_format_timing_and_module() {
+    let out = repl("");
+    assert!(
+        out.stdout.contains("ms;"),
+        "prompt MUST contain the timing separator 'ms;' per repl/spec.md §2.1; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("user>"),
+        "prompt MUST end with the module suffix 'user>' per repl/spec.md §2.1; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §2.2 — Continuation Prompt: when input is incomplete
+// (e.g. an unclosed `(`), subsequent lines are prefixed with `...` until
+// the form is closed. After closure the form evaluates to its result.
+// (carry: legacy/e2e.rs::e2e_s2_2_continuation_prompt)
+#[test]
+fn continuation_prompt_for_unclosed_paren() {
+    let out = repl_prims("(add-i64
+  2 3)
+");
+    assert!(
+        out.stdout.contains("..."),
+        "incomplete input MUST emit `...` continuation marker per §2.2; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 5"),
+        "after closure, the multi-line form MUST evaluate to `:primitives/Int 5`; got:\n{}",
+        out.stdout
+    );
+}

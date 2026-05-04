@@ -172,3 +172,44 @@ fn annotated_return_type_int() {
     // via the body. Use (let [x :Int 5] x) to assert local annotations work.
     repl_prims("(let [x 5] x)\n").assert_stdout_contains(":primitives/Int 5");
 }
+
+// =============================================================================
+// Wave 5.6 file 6 e2e.rs chunk-1 GAP-COVER carry-forwards (annotation as
+// standalone expression form, per spec/02-grammar.md §2.3.8).
+// =============================================================================
+
+// spec: spec/02-grammar.md §2.3.8 — `:Int 42` is a standalone annotation
+// expression: a leading `:Type` prefix scopes the immediately-following
+// expression. Distinct from the parameter-position form `[:Int x]` covered
+// by `annotated_params_int`.
+// (carry: legacy/e2e.rs::e2e_s2_3_8_annotation_expr_simple)
+#[test]
+fn annotation_expression_standalone() {
+    repl_prims(":Int 42\n").assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/02-grammar.md §2.3.8 — applied-type annotation `:(Option Int)
+// None` constrains a polymorphic constructor at its use site. Distinct from
+// the simple-type case (`:Int 42`): the type expression is itself applied.
+// (carry: legacy/e2e.rs::e2e_s2_3_8_annotation_expr_applied_type)
+#[test]
+fn annotation_expression_applied_type() {
+    repl_std(":(Option Int) None\n").assert_stdout_contains("Option.None");
+}
+
+// spec: spec/02-grammar.md §2.3.8 — REGRESSION-GUARD: `:Int 42` MUST be
+// parsed as an annotation expression, not as a variable lookup of `:Int`
+// followed by a literal. The annotation parser path must not fall through
+// to variable resolution.
+// (carry: legacy/e2e.rs::e2e_s2_3_8_annotation_neg_not_variable_error)
+#[test]
+fn annotation_expression_neg_not_variable_lookup() {
+    let out = repl_prims(":Int 42\n");
+    assert!(
+        !out.stdout.contains("undefined variable"),
+        "`:Int 42` MUST NOT produce an `undefined variable` error — \
+         the annotation parser path must not fall through to variable \
+         resolution; got:\n{}",
+        out.stdout
+    );
+}
