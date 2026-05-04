@@ -26,6 +26,15 @@ into the owning crate's `#[cfg(test)]` unit tests.
 | `sprint61_observability_scheduler.rs` | 483 | 9 | /int (with /runtime co-owner) | 0132 | 2026-05-04 |
 | `sprint61_observability_shared.rs` | 251 | 3 | /int (with /runtime co-owner) | 0132 | 2026-05-04 |
 | `v4_jit_reclaim.rs` | 700 | 6 | /backend (with /runtime co-owner) | 0133 | 2026-05-04 |
+| `e2e.rs` | 2701 | 309 | /int (with /frontend, /typecheck, /backend) | 0134 | 2026-05-04 |
+| `ring0.rs` | 1135 | 216 | /typecheck (with /backend, /int) | 0134 | 2026-05-04 |
+| `ring1.rs` | 2253 | 380 | /typecheck (with /backend, /int) | 0134 | 2026-05-04 |
+| `ring2.rs` | 2484 | 405 | /typecheck (with /backend, /int) | 0134 | 2026-05-04 |
+| `lenient.rs` | 289 | 32 | /backend (with /runtime co-owner) | 0135 | 2026-05-04 |
+| `sketch_port.rs` | 1886 | 296 | /qa (test-shape harvest) | 0136 | 2026-05-04 |
+| `macros.rs` | 441 | 58 | /frontend (with /typecheck) | 0137 | 2026-05-04 |
+| `modules.rs` | 530 | 39 | /frontend (with /int) | 0138 | 2026-05-04 |
+| `sprint59_neg.rs` | 271 | 12 | /int (optional — carry-forward complete) | 0139 | 2026-05-04 |
 
 ## Discipline
 
