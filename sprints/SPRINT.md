@@ -1,6 +1,6 @@
 # Sprint 64: Test-Port — `/qa` two-tier migration
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 5 complete + committed. One wave remaining (Wave 6 — defects + Phase 3 close).
+**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 5.5 audit complete + committed. **25% GAP-COVER rate found** — Wave 5 silently lost discriminating tests; 34 recovered as new e2e + 1 defect surfaced (FIXME 0140). One wave remaining (Wave 6 — defects + Phase 3 close).
 
 **Goal**: Transition `/qa` fully to the two-tier regime. Audit every test file for assertions that test language behaviour (carry forward as new e2e tests in the harness specified by `tests/plan/helpers.md`) vs. Rust-internal state (quarantine in `tests/legacy/` for FIXME-driven harvest into the owning crate's unit tests). Reorganise the new e2e suite for spec-coverage auditability. Delete the legacy scaffolding once the new suite is sound. **Parity in spec-relevant coverage**: every assertion that exercises spec behaviour survives the transition; defects surfaced during audit land as FIXMEs + failing tests, not fixes.
 
@@ -306,6 +306,25 @@ User confirms continuation, redirects ordering, or requests scope adjustment. `/
   - **No new defect FIXMEs surfaced.** Spec-traceability discipline + per-file linter run held; 0 INVENTED assertions, 0 mis-cited annotations across 122 new tests. The Wave 3.5b mitigation is durable across the heaviest authoring batch of the sprint.
   - **Test count**: 1483 → 741 (-742 net: 862 quarantined removed + 120 new). 731 pass, 10 fail (carries unchanged: 5 pre-existing + 1 FIXME 0121 + 4 FIXME 0122). Net 0 regressions.
   - **Findings noted but not actioned**: (a) Trait dispatch on multiple types in REPL — declaring `(impl Tag Int ...)` then `(impl Tag Bool ...)` produces type-mismatch when calling on Bool. Test reduced; may be REPL-vs-batch trait registration timing issue. Not filed pending reduction. (b) Module cycle diagnostic doesn't say "cycle" verbatim ("dependency 'a' failed: dependency 'b' failed: type error 'f' not found"); cycle is rejected per spec §8.10.2 but UX gap. Not filed; needs reduction. (c) Three transient first-run failures (`sprint23::link_multi_module_project`, `sprint60_cache_build_marker::cache_meta_with_stale_build_id_triggers_recompile`, `v4_pipeline::v4_cross_module_macro_transitive`) passed individually and on second run — possibly filesystem cache contention under increased parallelism with 8 new e2e binaries. Watch in Wave 6.
+- 2026-05-04: User pushback at Wave 6 dispatch gate: "How certain are we that our 'dedupe' hasn't discarded discriminating tests, even if the assertion is deeply embedded?" Honest answer was "not certain". User authorised Wave 5.5 dedupe-verification audit.
+- 2026-05-04: Wave 5.5 dispatched: fresh `/qa` audit framing — sample audit (~10–20% per file, 173 tests across 9 files) + FULL audit of 35 regression-named tests across the 9 quarantined files.
+- 2026-05-04: Wave 5.5 complete + committed (2 commits, `b3a30db` + `5ba5d65`):
+  - Sample audit (Part A, 173 tests): **65% COVERED / 25% GAP-COVER / 1% GAP-HARVEST / 9% DUPLICATE**.
+  - Regression-named audit (Part B, 35 tests): **57% COVERED / 43% GAP-COVER / 0% GAP-HARVEST**.
+  - **The 25% GAP-COVER rate is substantially higher than Wave 5's "naturally absorbed" framing implied. User's skepticism was the right calibration.**
+  - **34 new e2e tests authored** to recover spec-load-bearing GAP-COVER findings:
+    - `spec_appendix_a_builtins.rs` +18 (string ops per §A.3 — zero prior carry-forward despite full spec coverage)
+    - `spec_06_pattern_matching.rs` +1 (non-exhaustive diagnostic)
+    - `spec_12_runtime.rs` +4 (overflow/underflow wrap, div-by-zero, UTF-8 source encoding)
+    - `spec_08_modules.rs` +2 (import-inside-let neg + import-below-use)
+    - `repl_negative.rs` +5 (slash-command nonexistent-name guards)
+    - `repl_introspection.rs` +4 (/list and /imports boundary checks)
+  - Each new test annotates dedupe-recovery provenance via `// (carry: legacy/<file>::<test>)` comment.
+  - **NEW DEFECT — FIXME 0140 → `/int`**: `--run` rejects programs where `(import ...)` follows `(defn main ...)`, despite `spec/08-modules.md §8.3.9` mandating en-bloc import extraction precedes compilation. THIRD `--run`-mode-vs-spec divergence Sprint 64's port has surfaced (after FIXME 0121 `(mod ...)` discovery and FIXME 0122 `--link` GOT alignment). Per pipeline-v4 convergence principles, indicates binary entry-point orchestration not yet converged.
+  - `cargo nextest run`: 775 tests, 764 pass, 11 fail (5 pre-existing + 1 FIXME 0121 + 4 FIXME 0122 + 1 NEW FIXME 0140). Net +1 parity-rule landing; +33 new passing tests. Linter clean (164/164 OK on the 6 updated files).
+  - Confidence assessment: ~50% real duplicates / ~10% Rust-internal / ~25% genuine coverage gaps (Wave 5 silently lost; Wave 5.5 recovered the spec-load-bearing portion) / ~15% wave-deferred (lazy seq, HKT, deep TCO, multi-dot modules; recorded in audit doc).
+  - **Wave 5.5 paid for itself**: 34 new tests + 1 surfaced defect = real risk discovered + closed (or formally tracked).
+  - Recommendations for Wave 6 dispatch: no gate-blocking concerns; S65 follow-up sweep recommended for `spec_07_traits.rs` and `spec_05_definitions.rs` residue; `// (carry: legacy/...)` linter rule recommended for future enforcement.
 
 ## Outcome (Phase 7)
 
