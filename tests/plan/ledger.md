@@ -526,6 +526,61 @@ behaviour. Specific load-bearing observations:
 | Disposition | resolved at chunks 1-3 close (clean carry-forward); chunk 4 dispatches separately |
 | Rationale | Per parity rule + `memory/feedback_repros_join_suite.md` the 12 carry-forwards are durable regression guards. The 3 REGRESSION-GUARDs preserve historic Sprint-attributed display + operator-transition defect repros even where the implementation now satisfies the spec property. |
 
+### Sprint 64 Wave 5.6 — defects surfaced during ring2.rs chunk 4 carry-forward (2026-05-04)
+
+Wave 5.6 file 8 ring2.rs per-test re-audit chunk 4
+(`tests/plan/wave-5.6-ring2-reaudit.md` lines 1060+) covered tests
+151-199. This entry records chunk 4: 16 net distinct carry-forward
+tests authored across five spec/* files, plus one absorption (#178
+DUPLICATE of #172) and three deferrals (#182/#190/#191) into FIXME
+0134's harvest scope per Wave 5.5 disposition.
+
+**Outcome**: all 16 chunk-4 carry-forwards land green on the current
+binary. The 5 REGRESSION-GUARDs (qualified-ref-after-glob private
+visibility per spec/08 §8.7.3; mod- private submodule per spec/08
+§8.2.3; private macro per spec/08 §8.7.3 + spec/09 §9.2;
+constrained-fn-in-let per spec/03 §3.6.6; auto-curry-on-anonymous-
+lambda error message text per spec/04 §4.6.3) all pass — the
+post-Sprint-16 D5 P1-HIGH visibility-boundary cluster, the
+constrained-poly-as-value rejection, and the auto-curry error-text
+contract are preserved as durable regression guards per
+`memory/feedback_repros_join_suite.md`.
+
+**No new defect FIXMEs filed.** Per
+`memory/feedback_validate_tests_against_spec.md` each candidate
+assertion was probed against the current binary at authoring time;
+all 16 active carries match the spec property and the implementation
+behaviour. Specific load-bearing observations:
+
+- The HKT cluster (#187/#188/#189) reclassified GAP-HARVEST →
+  GAP-COVER per per-test review: spec/03 §3.7, spec/05 §5.4.4,
+  spec/07 §7.2 are explicit anchors; full Functor.fmap dispatch
+  over Option monomorphises and matches correctly through `--run`
+  mode (numeric output observed). FIXME 0134 updated with the
+  reclassification note.
+- The constrained polymorphic make-adder pattern monomorphises
+  cleanly at the auto-curry boundary for both Int and Float
+  instantiations: `(make-adder 10) -> :primitives/Int 42` and
+  `(make-adder 1.5) -> :primitives/Float ...` per spec §3.6 + §4.6.3.
+- Auto-curry-on-anonymous-lambda produces the explicit
+  `auto-curry requires a named function` diagnostic message per
+  spec/04 §4.6.3; the message-text REGRESSION-GUARD prevents
+  silent loosening to a vague "type error".
+- Multi-sig bare-value rejection (#186) and constrained-fn-in-let
+  (#181) both error at typecheck per their §4.6.3/§3.6.6 anchors.
+- Module visibility regression-guard trio (#176/#177/#179) all
+  produce the expected import-rejection errors through `--run` mode.
+
+| Field | Value |
+|---|---|
+| Test names | 16 carry-forwards across 5 files: `tests/spec_08_modules.rs` +3 (glob_import_private_not_accessible_via_qualified_ref_neg [REGRESSION-GUARD]; mod_dash_private_submodule_not_importable_from_peer_neg [REGRESSION-GUARD]; defmacro_dash_private_not_importable_neg [REGRESSION-GUARD]); `tests/spec_03_types.rs` +3 (occurs_check_self_application_rejected_neg; constrained_polymorphic_fn_in_let_binding_rejected_neg [REGRESSION-GUARD]; defn_call_with_too_many_args_arity_mismatch_neg); `tests/spec_04_expressions.rs` +4 (multi_sig_fn_used_as_bare_value_rejected_neg; make_adder_constrained_auto_curry_monomorphises_for_int; make_adder_constrained_auto_curry_monomorphises_for_float; auto_curry_on_anonymous_lambda_partial_apply_rejected_neg [REGRESSION-GUARD]); `tests/spec_07_traits.rs` +4 (hkt_deftrait_declaration_with_type_constructor_parameter_succeeds; hkt_functor_impl_on_option_dispatches_via_match; hkt_impl_targets_bare_type_constructor_not_applied_form; trait_op_plus_single_arg_auto_curries_then_applies); `tests/spec_05_definitions.rs` +2 (deftype_with_docstring_does_not_affect_construct_or_match; deftrait_with_docstring_and_method_docstring_does_not_affect_dispatch) |
+| SHA | uncommitted (Wave 5.6 file 8 chunk 4 — final chunk) |
+| Stderr / observable signature | 16/16 active carries pass |
+| Owning skill | n/a (no defect surfaced) |
+| Target sprint | n/a |
+| Disposition | resolved at chunk-4 close (clean carry-forward) — Wave 5.6 ring2.rs reauthoring complete |
+| Rationale | Per parity rule + `memory/feedback_repros_join_suite.md` the 16 carry-forwards are durable regression guards. The 5 REGRESSION-GUARDs (3 visibility-boundary + 1 constrained-fn-in-let + 1 auto-curry error text) preserve historic spec-violation regressions. The HKT cluster reclassification (3 tests, GAP-HARVEST → GAP-COVER) lands the long-deferred HKT positive coverage. Cumulative across all 4 chunks: chunk-1 (3) + chunk-2 (2) + chunk-3 (7) + chunk-4 (16) = 28 carry-forwards from `tests/legacy/ring2.rs` (8 REGRESSION-GUARDs total). Wave 5.6 file 8 ring2.rs reauthoring complete. **Wave 5.6 dedupe-recovery campaign COMPLETE across all 8 files.** |
+
 ### Exemplar-level tests (non-cargo)
 
 *No current exemplar-level failing entries. The S60-carried `exemplar/solver.cl::test-unsolvable` was resolved in Sprint 61 Wave 2; see "Resolved this sprint" below. The Defect 6 stack-overflow failures are captured above as cargo tests (`d6_exemplar_*` and `wave6_demo_repros::exemplar_solver_*`), not as non-cargo entries — per `memory/feedback_repros_join_suite.md` the cargo-level reductions are the durable record.*

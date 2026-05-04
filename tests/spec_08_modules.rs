@@ -714,3 +714,107 @@ fn imported_fn_as_higher_order_arg_in_repl_mode() {
         out.stdout
     );
 }
+
+// =============================================================================
+// Wave 5.6 file 8 ring2.rs chunk 4 GAP-COVER carry-forwards (REGRESSION-GUARDs).
+// =============================================================================
+
+// spec: spec/08-modules.md §8.7.3 — after `[*]` glob import, a private name
+// MUST NOT be reachable via the qualified ref `<module>/<name>` either. The
+// existing canonical (`glob_import_excludes_private_neg`) only exercises the
+// bare-name path; this asserts the qualified-ref-after-glob angle, which is
+// the regression-prone composition (a fix that loosens visibility could
+// pass the bare-name test while letting the qualified-ref escape).
+// REGRESSION-GUARD: post-Sprint-16 D5 P1-HIGH negative-coverage shape.
+// (carry: legacy/ring2.rs::neg_glob_import_private_not_via_qualified)
+#[test]
+fn glob_import_private_not_accessible_via_qualified_ref_neg() {
+    let out = Cranelisp::new()
+        .file(
+            "main.cl",
+            "(mod util)\n\
+             (import [main.util [*]])\n\
+             (defn main [] (main.util/secret))",
+        )
+        .file(
+            "main/util.cl",
+            "(defn helper [] 42)\n(defn- secret [] 99)",
+        )
+        .run("main.cl")
+        .output();
+    assert!(
+        !out.status.success(),
+        "private name MUST NOT be accessible via qualified ref after glob \
+         import (spec §8.7.3); stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/08-modules.md §8.2.3 — a `(mod- internal)` private submodule
+// MUST NOT be importable from a peer module under the same parent. Distinct
+// from `(defn-)` private-name tests: this exercises private-submodule
+// declaration via `mod-`, which has zero existing carry-forward coverage.
+// REGRESSION-GUARD: spec/08 §8.2.3 promises private-submodule isolation;
+// silently loosening it would compromise module encapsulation.
+// (carry: legacy/ring2.rs::neg_private_submodule_not_importable_from_peer)
+#[test]
+fn mod_dash_private_submodule_not_importable_from_peer_neg() {
+    let out = Cranelisp::new()
+        .file(
+            "main.cl",
+            "(mod host)\n\
+             (mod consumer)\n\
+             (import [main.consumer [run]])\n\
+             (defn main [] (run))",
+        )
+        .file("main/host.cl", "(mod- internal)\n(defn public-fn [] 1)")
+        .file("main/host/internal.cl", "(defn private-leaf [] 42)")
+        .file(
+            "main/consumer.cl",
+            "(import [main.host.internal [private-leaf]])\n\
+             (defn run [] (private-leaf))",
+        )
+        .run("main.cl")
+        .output();
+    assert!(
+        !out.status.success(),
+        "peer module MUST NOT import from a `(mod- internal)` private \
+         submodule (spec §8.2.3); stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/08-modules.md §8.7.3 — a `(defmacro- secret-mac ...)` private
+// macro MUST NOT be importable from a peer module. Macro-visibility is
+// covered indirectly by spec/08 §8.7.3 ("private name semantics") and
+// spec/09 §9.2 (which lists `defmacro-` syntax); macro-visibility has
+// zero pre-existing carry-forward, making this the only regression-guard
+// for that boundary.
+// REGRESSION-GUARD: post-Sprint-16 D5 P1-HIGH negative-coverage shape.
+// Cross-ref: spec/09-macros.md §9.2.
+// (carry: legacy/ring2.rs::neg_private_macro_not_importable)
+#[test]
+fn defmacro_dash_private_not_importable_neg() {
+    let out = Cranelisp::new()
+        .file(
+            "main.cl",
+            "(mod util)\n\
+             (import [main.util [secret-mac]])\n\
+             (defn main [] (secret-mac 1))",
+        )
+        .file(
+            "main/util.cl",
+            "(defmacro- secret-mac [x] x)\n(defn helper [] 42)",
+        )
+        .run("main.cl")
+        .output();
+    assert!(
+        !out.status.success(),
+        "private (defmacro-) macro MUST NOT be importable (spec §8.7.3 + \
+         spec/09 §9.2); stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}

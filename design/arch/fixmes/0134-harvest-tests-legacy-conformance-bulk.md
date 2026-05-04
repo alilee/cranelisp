@@ -112,3 +112,40 @@ top level).
 The four-file consolidation under one FIXME reflects the shared
 multi-skill ownership; resolving skills can split sub-tasks per-skill at
 their own discretion when the harvest sprint(s) plan.
+
+## Wave 5.6 reclassification notes (2026-05-04)
+
+The Wave 5.6 file 8 ring2.rs per-test re-audit
+(`tests/plan/wave-5.6-ring2-reaudit.md`) reclassified three previously
+GAP-HARVEST-marked HKT tests from cluster FF (lines 2258-2302) as
+**GAP-COVER**, not harvest:
+
+- `hkt_type_variable_in_trait` (#187) — landed as
+  `tests/spec_07_traits.rs::hkt_deftrait_declaration_with_type_constructor_parameter_succeeds`.
+- `hkt_trait_declaration` (#188) — landed as
+  `tests/spec_07_traits.rs::hkt_functor_impl_on_option_dispatches_via_match`.
+- `hkt_impl_bare_constructor` (#189) — landed as
+  `tests/spec_07_traits.rs::hkt_impl_targets_bare_type_constructor_not_applied_form`.
+
+Rationale: per-test review confirms the spec anchors are explicit
+(`spec/03-types.md §3.7`, `spec/07-traits.md §7.2`,
+`spec/05-definitions.md §5.4.4`) and the assertions are e2e-observable
+through numeric output. The Wave 5.5 cluster-mode tag of GAP-HARVEST
+under "spec coverage unclear" was over-conservative.
+
+The chunk-4 GAP-HARVEST cluster that REMAINS in this FIXME's harvest
+scope:
+
+- `neg_hkt_impl_primitive_type_rejected` (#182) — defer per Wave 5.5
+  disposition (error-stability concern: implementation may not produce
+  a stable error message for impl-on-primitive rejection).
+- `lazy_seq_take_from_infinite` (#190) — defer (lazy `Seq` semantics
+  spec authority pending; spec/12 §12.4.2 references the property but
+  `(Seq a)` is not normatively defined).
+- `lazy_seq_construction_does_not_force_tail` (#191) — same as #190.
+
+All other ring2.rs GAP-COVER findings have landed as carry-forward
+e2e tests (chunks 1-4) and no longer need harvest treatment from this
+FIXME's perspective. The tests/legacy/ring2.rs source remains for
+unit-tier harvest by `/typecheck`/`/backend`/`/int` per the original
+sub-task plan.

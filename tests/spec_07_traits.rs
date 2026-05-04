@@ -480,3 +480,81 @@ fn trait_deftrait_impl_in_child_module_imported_dispatch_from_parent() {
         .output()
         .assert_exit(2);
 }
+
+// =============================================================================
+// Wave 5.6 file 8 ring2.rs chunk 4 GAP-COVER carry-forwards.
+// =============================================================================
+
+// spec: spec/07-traits.md §7.2 — Higher-kinded trait declaration. A trait
+// parameter `f` is itself a type constructor, used as `(f a)` in method
+// signatures. Reclassified from GAP-HARVEST → GAP-COVER per the chunk-4
+// re-audit: spec anchors `spec/03-types.md §3.7` and
+// `spec/07-traits.md §7.2.2` are explicit and the property is
+// e2e-observable as "deftrait declaration succeeds without error".
+// Cross-ref: spec/03-types.md §3.7 — Higher-Kinded Types.
+// (carry: legacy/ring2.rs::hkt_type_variable_in_trait)
+#[test]
+fn hkt_deftrait_declaration_with_type_constructor_parameter_succeeds() {
+    repl_prims(
+        "(deftrait (Functor f)\n  (fmap [(Fn [a] b) (f a)] (f b)))\n",
+    )
+    .assert_stdout_contains_all(&["user/Functor", "deftrait"]);
+}
+
+// spec: spec/07-traits.md §7.2 + spec/05-definitions.md §5.4.4 — full HKT
+// impl: declare `(deftrait (Functor f) ...)`, define `(deftype (Option a)
+// None (Some [:a val]))`, `(impl Functor Option ...)` with a match-
+// destructure dispatching `func` over `Some x` -> `Some (func x)` and
+// `None -> None`. Calling `(fmap (fn [x] (add-i64 x 1)) (Some 41))` and
+// match-destructuring the result must yield 42. Reclassified GAP-HARVEST
+// → GAP-COVER per the chunk-4 re-audit (spec anchors are explicit;
+// e2e-observable through numeric output).
+// Cross-ref: spec/03-types.md §3.7.6 — HKT dispatch.
+// (carry: legacy/ring2.rs::hkt_trait_declaration)
+#[test]
+fn hkt_functor_impl_on_option_dispatches_via_match() {
+    repl_prims(
+        "(deftype (Option a) None (Some [:a val]))\n\
+         (deftrait (Functor f) (fmap [(Fn [a] b) (f a)] (f b)))\n\
+         (impl Functor Option\n  (defn fmap [func opt]\n    (match opt [None None (Some x) (Some (func x))])))\n\
+         (match (fmap (fn [x] (add-i64 x 1)) (Some 41)) [(Some v) v None 0])\n",
+    )
+    .assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/05-definitions.md §5.4.4 + spec/07-traits.md §7.3.4 — when an
+// impl targets a higher-kinded trait, the impl-target syntax is the BARE
+// type constructor (`Option`), NOT an applied form (`(Option a)`). This
+// test isolates that distinction by confirming `(impl Functor Option ...)`
+// is the accepted form and the dispatch resolves over `Option a`.
+// Distinct from #188 by isolating the bare-vs-applied-target syntactic
+// requirement. Reclassified GAP-HARVEST → GAP-COVER per chunk-4 re-audit.
+// Cross-ref: spec/03-types.md §3.7.4 — Implementing HKT Traits.
+// (carry: legacy/ring2.rs::hkt_impl_bare_constructor)
+#[test]
+fn hkt_impl_targets_bare_type_constructor_not_applied_form() {
+    repl_prims(
+        "(deftype (Option a) None (Some [:a val]))\n\
+         (deftrait (Functor f) (fmap [(Fn [a] b) (f a)] (f b)))\n\
+         (impl Functor Option\n  (defn fmap [func opt]\n    (match opt [None None (Some x) (Some (func x))])))\n\
+         (match (fmap (fn [x] (add-i64 x 1)) (Some 99)) [(Some v) v None 0])\n",
+    )
+    .assert_stdout_contains(":primitives/Int 100");
+}
+
+// spec: spec/07-traits.md §7.5 + spec/04-expressions.md §4.6.3 — calling a
+// trait-dispatched operator with one argument auto-curries: `(+ 5)`
+// returns a closure of type `(Fn [Int] Int)`, which when applied to `10`
+// yields `15`. Distinct from existing `operator_as_first_class_value`
+// (let-bound + apply) and from `auto_curry_passed_to_higher_order_fn`
+// (named primitive path with `add-i64`): this asserts the trait-
+// dispatched-operator + single-arg-auto-curry composition unique to
+// constrained polymorphism. The two-step `((+ 5) 10)` form is what's
+// load-bearing — it exercises both the auto-curry construction and the
+// closure application in sequence.
+// Cross-ref: spec/03-types.md §3.6 — constrained polymorphism.
+// (carry: legacy/ring2.rs::constrained_auto_curry_plus_int)
+#[test]
+fn trait_op_plus_single_arg_auto_curries_then_applies() {
+    repl_std("((+ 5) 10)\n").assert_stdout_contains(":primitives/Int 15");
+}

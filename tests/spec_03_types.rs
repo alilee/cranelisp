@@ -396,3 +396,90 @@ fn unification_error_int_where_string_names_string_strict() {
         "diagnostic MUST name 'String', got: {combined}"
     );
 }
+
+// =============================================================================
+// Wave 5.6 file 8 ring2.rs chunk 4 GAP-COVER carry-forwards.
+// =============================================================================
+
+// spec: spec/03-types.md §3.8.2 — variable binding via the occurs check:
+// unifying a type variable `a` with a type that references `a` MUST be
+// rejected (otherwise the inferred type is infinite). The classic shape is
+// self-application `(fn [x] (x x))` — `x : a`, application requires
+// `a ~ (Fn [a] b)`, so `a` occurs in its own binding. No prior
+// carry-forward exercises the occurs-check error path; this is the
+// canonical e2e shape.
+// (carry: legacy/ring2.rs::neg_occurs_check_infinite_type)
+#[test]
+fn occurs_check_self_application_rejected_neg() {
+    let out = repl_prims(
+        "(defn apply-self [x] (x x))\n\
+         (apply-self apply-self)\n",
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.to_lowercase().contains("error")
+            || combined.to_lowercase().contains("occurs")
+            || combined.to_lowercase().contains("infinite")
+            || combined.to_lowercase().contains("type"),
+        "self-application `(x x)` MUST trigger the occurs-check error per \
+         spec §3.8.2; stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/03-types.md §3.6.6 — Restrictions: a constrained polymorphic
+// function (one whose signature carries trait constraints, such as `add`
+// using trait-dispatched `+`) MUST NOT be captured as a first-class value
+// in a `let` binding. Per §3.6.6, monomorphisation requires the call site
+// to be visible; binding the constrained name to a let variable hides the
+// call site. No prior carry covers the constrained-fn-as-value rejection.
+// REGRESSION-GUARD: silently loosening this restriction would let
+// constrained polymorphic fns leak through closures unmonomorphised.
+// Cross-ref: spec/04-expressions.md §4.6.3 — auto-curry monomorphisation.
+// (carry: legacy/ring2.rs::neg_constrained_fn_in_closure)
+#[test]
+fn constrained_polymorphic_fn_in_let_binding_rejected_neg() {
+    // `add` is constrained polymorphic: (Fn [:Num a a] a). Capturing it
+    // in `let [f add]` MUST fail per §3.6.6.
+    let out = repl_std(
+        "(defn add [x y] (+ x y))\n\
+         (let [f add] (f 1 2))\n",
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.to_lowercase().contains("error")
+            || combined.to_lowercase().contains("constrained")
+            || combined.to_lowercase().contains("cannot"),
+        "constrained polymorphic fn captured in let MUST be rejected per \
+         §3.6.6; stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/03-types.md §3.8.3 — function types unify only if their arities
+// match. Calling a 2-arg fn with 3 args MUST be rejected. Distinct from
+// `unification_int_passed_to_string_arg_errors_neg` (type mismatch by type)
+// and from `defn_multi_clause_duplicate_sig_neg` (signature collision):
+// the arity-too-many path is its own check. Lambda arity-mismatch is
+// covered by `lambda_call_with_wrong_arg_count_neg` in spec_04; this
+// covers the named-defn case.
+// (carry: legacy/ring2.rs::neg_type_mismatch_fn_arity)
+#[test]
+fn defn_call_with_too_many_args_arity_mismatch_neg() {
+    let out = repl_prims(
+        "(defn f [x y] (add-i64 x y))\n\
+         (f 1 2 3)\n",
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.to_lowercase().contains("error")
+            || combined.to_lowercase().contains("arity")
+            || combined.to_lowercase().contains("arg"),
+        "calling 2-arg `f` with 3 args MUST be rejected per §3.8.3; \
+         stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}

@@ -425,3 +425,39 @@ fn deftype_product_constructor_wrong_arg_type_names_bool_strict() {
         "diagnostic MUST name 'Bool' for the wrong-typed ctor arg, got: {combined}"
     );
 }
+
+// =============================================================================
+// Wave 5.6 file 8 ring2.rs chunk 4 GAP-COVER carry-forwards.
+// =============================================================================
+
+// spec: spec/05-definitions.md §5.2.5 — a `deftype` MAY carry a docstring
+// between the type name and the constructor list. The docstring MUST NOT
+// affect construction or match dispatch. Existing
+// `docstring_does_not_affect_call` covers defn-with-docstring; this is
+// the deftype companion (no prior carry).
+// (carry: legacy/ring2.rs::docstring_on_deftype)
+#[test]
+fn deftype_with_docstring_does_not_affect_construct_or_match() {
+    repl_prims(
+        "(deftype Color \"A primary color\" Red Green Blue)\n\
+         (match Green [Red 1 Green 2 Blue 3])\n",
+    )
+    .assert_stdout_contains(":primitives/Int 2");
+}
+
+// spec: spec/05-definitions.md §5.3 + §5.12 — a `deftrait` MAY carry a
+// docstring after the trait header AND each method MAY carry its own
+// docstring. Neither MUST affect dispatch. No prior carry exercises
+// deftrait-with-docstring + per-method docstring; this is the canonical
+// completion of docstring coverage.
+// Cross-ref: spec/07-traits.md §7.1.2 — Docstrings.
+// (carry: legacy/ring2.rs::docstring_on_deftrait)
+#[test]
+fn deftrait_with_docstring_and_method_docstring_does_not_affect_dispatch() {
+    repl_prims(
+        "(deftrait (Sizeable a) \"Types that have a size\"\n  (size \"Get the size\" [a] Int))\n\
+         (impl Sizeable Int (defn size [x] x))\n\
+         (size 42)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 42");
+}

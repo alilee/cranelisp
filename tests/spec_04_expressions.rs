@@ -637,3 +637,105 @@ fn data_constructor_undefined_error_names_constructor_strict() {
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(combined.contains("Foo"), "diagnostic MUST name 'Foo', got: {combined}");
 }
+
+// =============================================================================
+// Wave 5.6 file 8 ring2.rs chunk 4 GAP-COVER carry-forwards.
+// =============================================================================
+
+// spec: spec/04-expressions.md §4.6.3 — Restriction: a multi-signature
+// function name MUST NOT be used as a bare value (without arguments). The
+// reference is ambiguous because the compiler cannot determine which
+// variant is intended. The `defn_multi_clause_arity` test (existing)
+// covers the positive multi-sig dispatch path; this is the negative
+// companion that asserts the bare-value rejection. Cross-ref: spec/04
+// §4.7 (Multi-Signature Dispatch); spec/05 §5.1.2.
+// (carry: legacy/ring2.rs::neg_multi_sig_bare_value_errors)
+#[test]
+fn multi_sig_fn_used_as_bare_value_rejected_neg() {
+    let out = repl_prims(
+        "(defn choose ([:Int x] x) ([:Int x :Int y] (add-i64 x y)))\n\
+         (let [f choose] (f 1))\n",
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.to_lowercase().contains("error")
+            || combined.to_lowercase().contains("ambiguous")
+            || combined.to_lowercase().contains("multi"),
+        "multi-sig fn used as bare value MUST be rejected per §4.6.3 \
+         restriction + §4.7; stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/04-expressions.md §4.6.3 — constrained polymorphic make-adder
+// monomorphises for Int at the call site. `(defn make-adder [n] (+ n))`
+// uses trait-dispatched `+` auto-curried in its body; calling
+// `(make-adder 10)` resolves with `n : Int`, monomorphises, and returns
+// a `(Fn [Int] Int)` closure. Distinct from existing
+// `auto_curry_passed_to_higher_order_fn` (named-prim path,
+// `add-i64`-anchored): this tests the trait-dispatched-operator +
+// constrained-polymorphism + auto-curry composition unique to §4.6.3.
+// Paired with `make_adder_constrained_auto_curry_monomorphises_for_float`
+// to prove monomorphisation at the curry boundary works for both Int
+// and Float instantiations.
+// Cross-ref: spec/03-types.md §3.6 — constrained polymorphism;
+// spec/07-traits.md §7.5.
+// (carry: legacy/ring2.rs::constrained_auto_curry_make_adder_int)
+#[test]
+fn make_adder_constrained_auto_curry_monomorphises_for_int() {
+    repl_std(
+        "(defn make-adder [n] (+ n))\n\
+         ((make-adder 10) 32)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/04-expressions.md §4.6.3 — constrained polymorphic make-adder
+// monomorphises for Float at the call site. Sister of
+// `make_adder_constrained_auto_curry_monomorphises_for_int`: together
+// they prove per-call-site monomorphisation works at the auto-curry
+// boundary for both Int and Float type instantiations of the same
+// constrained polymorphic source.
+// Cross-ref: spec/03-types.md §3.6.4 — name mangling per concrete type.
+// (carry: legacy/ring2.rs::constrained_auto_curry_make_adder_float)
+#[test]
+fn make_adder_constrained_auto_curry_monomorphises_for_float() {
+    repl_std(
+        "(defn make-adder [n] (+ n))\n\
+         ((make-adder 1.5) 2.5)\n",
+    )
+    .assert_stdout_contains(":primitives/Float");
+}
+
+// spec: spec/04-expressions.md §4.6.3 — auto-currying applies only when
+// the callee is a variable reference. Anonymous lambda expressions like
+// `((fn [x y] ...) 1)` MUST NOT auto-curry; they MUST be bound to a
+// variable first. Asserts the explicit "auto-curry requires a named
+// function" error message text — REGRESSION-GUARD because the message
+// text is normative diagnostic content (a fix that drops the message
+// or replaces it with a vague "type error" would silently regress
+// the user-facing error quality).
+// (carry: legacy/ring2.rs::auto_curry_lambda_partial_apply)
+#[test]
+fn auto_curry_on_anonymous_lambda_partial_apply_rejected_neg() {
+    let out = repl_prims("((fn [x y] (add-i64 x y)) 1)\n");
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.to_lowercase().contains("error"),
+        "auto-curry on anonymous lambda MUST produce an error per §4.6.3; \
+         stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        combined.contains("auto-curry requires a named function")
+            || combined.to_lowercase().contains("named")
+            || combined.to_lowercase().contains("lambda"),
+        "diagnostic MUST mention the auto-curry / named-function \
+         requirement per §4.6.3 (target text: \"auto-curry requires a \
+         named function\"); got stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}
