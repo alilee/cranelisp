@@ -401,3 +401,27 @@ fn vec_containing_adt_elements_get_and_match() {
     )
     .assert_stdout_contains(":primitives/Int 1");
 }
+
+// =============================================================================
+// Wave 5.6 ring1.rs GAP-COVER carry-forwards (chunk 4)
+// =============================================================================
+
+// spec: spec/05-definitions.md §5.2.7 — constructor with wrong-typed
+// argument: `(Point true 2)` where `Point [:Int x :Int y]` expects
+// `Int`. The diagnostic MUST name the offending actual type "Bool".
+// Distinct from chunk-3 `error_adt_constructor_wrong_type` which
+// asserts any of Bool/Int/type indicators; this is the strict
+// Bool-naming variant per the U1.7 Wave 3 error-quality contract.
+// (carry: legacy/ring1.rs::error_quality_constructor_wrong_type_names_bool)
+#[test]
+fn deftype_product_constructor_wrong_arg_type_names_bool_strict() {
+    let out = repl_prims(
+        "(deftype Point [:Int x :Int y])\n\
+         (match (Point true 2) [(Point x y) x])\n",
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.contains("Bool"),
+        "diagnostic MUST name 'Bool' for the wrong-typed ctor arg, got: {combined}"
+    );
+}

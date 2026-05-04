@@ -464,3 +464,48 @@ fn primitive_vec_get_middle_index() {
     repl_prims("(vec-get [10 20 30] 1)\n")
         .assert_stdout_contains(":primitives/Int 20");
 }
+
+// =============================================================================
+// Wave 5.6 ring1.rs GAP-COVER carry-forwards (chunk 4)
+// =============================================================================
+
+// spec: spec/appendix-a-builtins.md §A.3 — vec-set at the LAST index.
+// `primitive_vec_set_preserves_len` covers index 1 only;
+// `primitive_vec_set_other_positions_preserved` covers untouched-positions
+// after a middle-index set. The first/middle/last positional triple
+// convention completes coverage with the last-index angle. Mild
+// ambiguity per audit /sprint flag — retained as GAP-COVER for
+// family-completeness with chunk-3 `primitive_vec_get_middle_index`.
+// (carry: legacy/ring1.rs::vec_set_last)
+#[test]
+fn primitive_vec_set_last_index() {
+    repl_prims("(vec-get (vec-set [1 2 3] 2 99) 2)\n")
+        .assert_stdout_contains(":primitives/Int 99");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — chained vec-push through three
+// nested levels onto an empty vec literal. `primitive_vec_push_onto_empty`
+// covers a single push onto `[]`; the 3-level chain `(vec-push (vec-push
+// (vec-push [] 1) 2) 3)` exercises repeat allocation through the
+// empty → 1-elem → 2-elem → 3-elem growth chain (RC + cap-growth at
+// each step). Mirror of chunk-1 `primitive_str_concat_chained_two_levels`
+// but for the Vec/heap-backed-collection growth path.
+// (carry: legacy/ring1.rs::vec_push_chain)
+#[test]
+fn primitive_vec_push_chain_three_levels() {
+    repl_prims("(vec-len (vec-push (vec-push (vec-push [] 1) 2) 3))\n")
+        .assert_stdout_contains(":primitives/Int 3");
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — `string-identity` is a
+// normative primitive (the entry on line 92 of appendix-a-builtins.md
+// explicitly cites this exact test name). It is the identity function on
+// `String`, used by the Display impl. Zero spec-anchored e2e coverage
+// existed before this carry — the Wave 5.6 ring1.rs audit flagged the
+// gap in cluster Y3.
+// (carry: legacy/ring1.rs::string_identity_returns_same)
+#[test]
+fn primitive_string_identity_returns_same() {
+    repl_prims("(str-len (string-identity \"hello\"))\n")
+        .assert_stdout_contains(":primitives/Int 5");
+}

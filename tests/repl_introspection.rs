@@ -1605,3 +1605,24 @@ fn closure_value_display_shows_closure_token() {
         out.stdout
     );
 }
+
+// =============================================================================
+// Wave 5.6 ring1.rs GAP-COVER carry-forwards (chunk 4)
+// =============================================================================
+
+// spec: repl/spec.md §1.5 — Vec value display MUST render the element
+// content (not just the type prefix). `vec_literal_int` asserts only
+// the `:primitives/Vec` type prefix; this carry asserts that the actual
+// element-content rendering is present in the displayed value, matching
+// either a comma-separated `[1, 2, 3]` or a space-separated `[1 2 3]`
+// rendering. Distinct from `:primitives/Vec` type prefix coverage.
+// (carry: legacy/ring1.rs::repl_vec_display)
+#[test]
+fn vec_value_display_shows_element_content() {
+    let out = repl_prims("[1 2 3]\n");
+    assert!(
+        out.stdout.contains("[1 2 3]") || out.stdout.contains("[1, 2, 3]"),
+        "Vec display MUST render element content per §1.5, got:\n{}",
+        out.stdout
+    );
+}

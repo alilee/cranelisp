@@ -285,3 +285,114 @@ fn polymorphic_higher_order_returning_adt() {
     )
     .assert_stdout_contains(":primitives/Int 42");
 }
+
+// =============================================================================
+// Wave 5.6 ring1.rs GAP-COVER carry-forwards (chunk 4)
+// =============================================================================
+
+// spec: spec/03-types.md §3.2.6 — Vec as function return type. The
+// callee-allocates-and-returns-Vec angle exercises consuming-convention
+// transfer + RC at the boundary. Distinct from
+// `string_returned_from_function_freed` (String — different RC
+// semantics) and from any covered `vec_in_let` shape (let-anchor only,
+// no fn-return boundary).
+// (carry: legacy/ring1.rs::vec_returned_from_function)
+#[test]
+fn vec_as_function_return_type() {
+    repl_prims(
+        "(defn make-vec [] [10 20 30])\n\
+         (vec-get (make-vec) 1)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 20");
+}
+
+// spec: spec/03-types.md §3.2.6 — Vec as function argument type. The
+// fn-arg-with-Vec-typed-slot exercises consuming-convention + RC
+// through a fn-arg boundary. Distinct from `vec_in_let` (let-anchor),
+// `primitive_vec_let_bound_then_get` (let), and from
+// `vec_as_function_return_type` (return position).
+// (carry: legacy/ring1.rs::vec_passed_to_function)
+#[test]
+fn vec_as_function_argument() {
+    repl_prims(
+        "(defn sum-first-two [v] (add-i64 (vec-get v 0) (vec-get v 1)))\n\
+         (sum-first-two [3 4 5])\n",
+    )
+    .assert_stdout_contains(":primitives/Int 7");
+}
+
+// spec: spec/03-types.md §3.8 — type-mismatch error MUST name BOTH the
+// expected and actual types. The U1.7 Wave 0 strict-naming contract:
+// `unification_int_vs_string_errors` uses `||` (any-of-names suffices),
+// not the strict-AND-naming property. This carry asserts BOTH "Int" AND
+// "String" appear in the diagnostic.
+// (carry: legacy/ring1.rs::error_type_mismatch_names_both_types)
+#[test]
+fn unification_error_names_both_types_strict() {
+    let out = repl_prims("(add-i64 1 \"hello\")\n");
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(combined.contains("Int"), "diagnostic MUST name 'Int', got: {combined}");
+    assert!(
+        combined.contains("String"),
+        "diagnostic MUST name 'String', got: {combined}"
+    );
+}
+
+// spec: spec/03-types.md §3.8 — String-where-Int-expected diagnostic
+// MUST name "String" specifically. The U1.7 Wave 3 strict-naming
+// variant — distinct from `unification_int_vs_string_errors` (any-of)
+// and from `unification_error_names_both_types_strict` (asserts BOTH;
+// this asserts only "String" via a flipped-arg shape).
+// (carry: legacy/ring1.rs::error_quality_string_where_int_names_string)
+#[test]
+fn unification_error_string_where_int_names_string_strict() {
+    let out = repl_prims("(add-i64 \"hello\" 1)\n");
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.contains("String"),
+        "diagnostic MUST name 'String', got: {combined}"
+    );
+}
+
+// spec: spec/03-types.md §3.8 — String-where-Int-expected diagnostic
+// MUST name "Int" specifically. Companion to
+// `unification_error_string_where_int_names_string_strict` — same
+// source, asserts the other type-name half of the strict-naming
+// contract.
+// (carry: legacy/ring1.rs::error_quality_string_where_int_names_int)
+#[test]
+fn unification_error_string_where_int_names_int_strict() {
+    let out = repl_prims("(add-i64 \"hello\" 1)\n");
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(combined.contains("Int"), "diagnostic MUST name 'Int', got: {combined}");
+}
+
+// spec: spec/03-types.md §3.8 — Int-where-String-expected diagnostic
+// MUST name "Int" specifically. Distinct from chunk-3
+// `error_int_where_string_expected` (asserts any-error-indicator);
+// this asserts the strict naming of the actual type "Int" in the
+// diagnostic, exercising the §3.8 `String → primitives/Int` unification
+// failure with the reverse argument-position.
+// (carry: legacy/ring1.rs::error_quality_int_where_string_names_int)
+#[test]
+fn unification_error_int_where_string_names_int_strict() {
+    let out = repl_prims("(str-len 42)\n");
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(combined.contains("Int"), "diagnostic MUST name 'Int', got: {combined}");
+}
+
+// spec: spec/03-types.md §3.8 — Int-where-String-expected diagnostic
+// MUST name "String" specifically. Companion to
+// `unification_error_int_where_string_names_int_strict` — same source
+// (`(str-len 42)`), asserts the other type-name half (the expected
+// "String" type).
+// (carry: legacy/ring1.rs::error_quality_int_where_string_names_string)
+#[test]
+fn unification_error_int_where_string_names_string_strict() {
+    let out = repl_prims("(str-len 42)\n");
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.contains("String"),
+        "diagnostic MUST name 'String', got: {combined}"
+    );
+}

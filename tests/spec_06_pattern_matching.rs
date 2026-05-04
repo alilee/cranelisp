@@ -259,3 +259,192 @@ fn higher_order_fn_over_option_functor_map_shape() {
     )
     .assert_stdout_contains(":primitives/Int 20");
 }
+
+// =============================================================================
+// Wave 5.6 ring1.rs GAP-COVER carry-forwards (chunk 4)
+// =============================================================================
+
+// spec: spec/06-pattern-matching.md §6.5.2 — non-ADT scrutinee + wildcard
+// pattern: `(match b [_ (if b 1 0)])` where `b : Bool`. Distinct from
+// `pattern_int_match_with_wildcard` (Int + variable) and from
+// `pattern_wildcard_catchall` (ADT + wildcard). The Bool+wildcard
+// shape exercises the §6.5.2 "wildcard or variable required for
+// non-ADT scrutinee" rule against the Bool primitive.
+// (carry: legacy/ring1.rs::match_non_adt_bool_wildcard)
+#[test]
+fn pattern_bool_match_with_wildcard() {
+    repl_prims(
+        "(defn bool-to-int [b] (match b [_ (if b 1 0)]))\n\
+         (bool-to-int true)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 1");
+}
+
+// spec: spec/06-pattern-matching.md §6.5.1 — non-exhaustive ADT match
+// MUST be a compile-time error naming the type AND the missing
+// constructor. This is the strict-naming variant: the diagnostic for
+// a Color match missing `Blue` MUST contain BOTH "Color" AND "Blue".
+// `pattern_non_exhaustive_match_on_adt_neg` is the loose-or form.
+// (carry: legacy/ring1.rs::neg_exhaustive_match_missing_constructor_compile_error)
+#[test]
+fn pattern_exhaustive_error_names_type_and_missing_ctor_strict_neg() {
+    let out = repl_prims(
+        "(deftype Color Red Green Blue)\n\
+         (defn pick [c] (match c [Red 1 Green 2]))\n\
+         (pick Blue)\n",
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.contains("Color"),
+        "exhaustiveness diagnostic MUST name the ADT type 'Color', got: {combined}"
+    );
+    assert!(
+        combined.contains("Blue"),
+        "exhaustiveness diagnostic MUST name the missing ctor 'Blue', got: {combined}"
+    );
+}
+
+// spec: spec/06-pattern-matching.md §6.5.1 — non-exhaustive ADT match
+// MUST list ALL missing constructors. With a single-Red arm on Color,
+// the diagnostic MUST contain BOTH "Green" AND "Blue". Distinct from
+// the prior single-missing-ctor test (which omits one); this asserts
+// the lists-all-missing angle (omitting two).
+// (carry: legacy/ring1.rs::neg_exhaustive_match_single_arm_lists_all_missing)
+#[test]
+fn pattern_exhaustive_error_lists_all_missing_ctors_neg() {
+    let out = repl_prims(
+        "(deftype Color Red Green Blue)\n\
+         (defn pick [c] (match c [Red 1]))\n\
+         (pick Green)\n",
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.contains("Green") && combined.contains("Blue"),
+        "exhaustiveness diagnostic MUST list ALL missing ctors (Green AND Blue), got: {combined}"
+    );
+}
+
+// spec: spec/06-pattern-matching.md §6.5.2 — match with empty arms
+// MUST be a compile-time error. A match cannot be exhaustive on
+// `Int`/`Bool`/`String`/etc. without a wildcard or variable pattern;
+// `(match b [])` has neither and MUST be rejected.
+// (carry: legacy/ring1.rs::neg_match_empty_arms_rejected)
+#[test]
+fn pattern_match_empty_arms_rejected_neg() {
+    let out = repl_prims(
+        "(defn pick [b] (match b []))\n\
+         (pick true)\n",
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.to_lowercase().contains("error")
+            || combined.to_lowercase().contains("exhaustive")
+            || combined.to_lowercase().contains("arm"),
+        "match with empty arms MUST be rejected per §6.5.2, got: {combined}"
+    );
+}
+
+// spec: spec/06-pattern-matching.md §6.5.2 — non-ADT scrutinee with
+// constructor patterns from a different ADT MUST be rejected. The
+// type-mismatch enforces the "wildcard or variable required" rule
+// indirectly: only those patterns type-check against `Int`/`Bool`/
+// `String`/etc. Using `None`/`(Some _)` ctor patterns on an `Int`
+// scrutinee MUST fail.
+// (carry: legacy/ring1.rs::neg_match_non_adt_scrut_with_adt_constructor_rejected)
+#[test]
+fn pattern_non_adt_scrut_rejects_adt_ctor_pattern_neg() {
+    let out = repl_prims(
+        "(deftype (Option a) None (Some [:a val]))\n\
+         (defn pick [n] (match n [None 1 (Some _) 2]))\n\
+         (pick 5)\n",
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.to_lowercase().contains("error")
+            || combined.to_lowercase().contains("type")
+            || combined.to_lowercase().contains("mismatch"),
+        "constructor patterns on non-ADT scrutinee MUST be rejected per §6.5.2, got: {combined}"
+    );
+}
+
+// spec: spec/06-pattern-matching.md §6.6.1 — nested constructor
+// patterns are NOT supported and MUST be rejected. `(Some (Point x y))`
+// nests a Point ctor pattern inside a Some ctor pattern. Per §6.6.1
+// pattern matching is one level deep only. Consolidates the legacy
+// duplicate pair `error_nested_pattern` + `neg_nested_pattern_rejected`
+// (both same source, same assertion — Sprint 16 added the second
+// without consolidating).
+// (carry: legacy/ring1.rs::error_nested_pattern,
+//  consolidates legacy/ring1.rs::neg_nested_pattern_rejected)
+#[test]
+fn pattern_nested_constructor_rejected_neg() {
+    let out = repl_prims(
+        "(deftype (Option a) None (Some [:a val]))\n\
+         (deftype Point [:Int x :Int y])\n\
+         (defn bad [opt] (match opt [(Some (Point x y)) (add-i64 x y) None 0]))\n\
+         (bad None)\n",
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.to_lowercase().contains("error")
+            || combined.to_lowercase().contains("nested")
+            || combined.to_lowercase().contains("pattern"),
+        "nested constructor pattern MUST be rejected per §6.6.1, got: {combined}"
+    );
+}
+
+// spec: spec/06-pattern-matching.md §6.3.3 — match arm bodies MUST
+// type-agree. The diagnostic MUST name BOTH conflicting types ("Int"
+// AND "String") in the strict variant. `error_match_arm_type_mismatch`
+// uses any-of-types form; this asserts both names per the U1.7 Wave
+// 3 error-quality contract. Subsumes the Wave-0 #9
+// `error_match_arm_type_disagreement`.
+// (carry: legacy/ring1.rs::error_quality_match_arm_type_mismatch,
+//  subsumes legacy/ring1.rs::error_match_arm_type_disagreement)
+#[test]
+fn pattern_match_arm_body_type_mismatch_names_both_types_strict_neg() {
+    let out = repl_prims(
+        "(deftype Color Red Green Blue)\n\
+         (match Red [Red 1 Green \"two\" Blue 3])\n",
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(combined.contains("Int"), "diagnostic MUST name 'Int', got: {combined}");
+    assert!(
+        combined.contains("String"),
+        "diagnostic MUST name 'String', got: {combined}"
+    );
+}
+
+// spec: spec/06-pattern-matching.md §6.2.1 — constructor pattern with
+// wrong arity MUST be rejected. Consolidates the legacy
+// `neg_pattern_wrong_binding_count` (too few — `(Point x)` for
+// `Point[:Int x :Int y]`) and `neg_pattern_too_many_bindings` (too
+// many — `(Point a b c)`) into one carry per audit #25.
+// (carry: legacy/ring1.rs::neg_pattern_wrong_binding_count,
+//  consolidates legacy/ring1.rs::neg_pattern_too_many_bindings)
+#[test]
+fn pattern_constructor_arity_mismatch_neg() {
+    let out_few = repl_prims(
+        "(deftype Point [:Int x :Int y])\n\
+         (match (Point 3 4) [(Point x) x])\n",
+    );
+    let combined_few = format!("{}{}", out_few.stdout, out_few.stderr);
+    assert!(
+        combined_few.to_lowercase().contains("error")
+            || combined_few.to_lowercase().contains("arity")
+            || combined_few.to_lowercase().contains("field"),
+        "Point ctor pattern with too few bindings MUST be rejected per §6.2.1, got: {combined_few}"
+    );
+
+    let out_many = repl_prims(
+        "(deftype Point [:Int x :Int y])\n\
+         (match (Point 3 4) [(Point a b c) a])\n",
+    );
+    let combined_many = format!("{}{}", out_many.stdout, out_many.stderr);
+    assert!(
+        combined_many.to_lowercase().contains("error")
+            || combined_many.to_lowercase().contains("arity")
+            || combined_many.to_lowercase().contains("field"),
+        "Point ctor pattern with too many bindings MUST be rejected per §6.2.1, got: {combined_many}"
+    );
+}

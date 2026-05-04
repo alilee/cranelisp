@@ -588,3 +588,52 @@ fn let_bound_capturing_lambda_invoked_with_independent_args() {
     )
     .assert_stdout_contains(":primitives/Int 203");
 }
+
+// =============================================================================
+// Wave 5.6 ring1.rs GAP-COVER carry-forwards (chunk 4)
+// =============================================================================
+
+// spec: spec/04-expressions.md §4.4 — `if` returning a Vec value with
+// **different-length** branches (`[1 2 3]` vs `[4 5]`). Distinct from
+// `if_branches_heap_typed_string_result` (String result) and from
+// `if_branches_heap_typed_closure_result` (closure result). The
+// Vec-result-with-different-lengths angle exercises if-branch
+// unification of a heap-typed compound where branch instances
+// genuinely differ in shape (allocation size, length).
+// (carry: legacy/ring1.rs::vec_in_if_branch)
+#[test]
+fn if_branches_heap_typed_vec_result_different_lengths() {
+    repl_prims("(vec-len (if true [1 2 3] [4 5]))\n")
+        .assert_stdout_contains(":primitives/Int 3");
+}
+
+// spec: spec/04-expressions.md §4.4 — if-branch type-mismatch
+// diagnostic MUST name BOTH branch types ("Int" AND "String"). The
+// U1.7 Wave 3 strict-naming variant — chunk-4 #22 per the audit, which
+// subsumes the Wave-0 #8 (any-of-types form). `if_neg_branch_type_mismatch`
+// exists but does not enforce strict naming of both type names.
+// (carry: legacy/ring1.rs::error_quality_if_branch_mismatch_names_types,
+//  subsumes legacy/ring1.rs::error_if_branch_type_mismatch)
+#[test]
+fn if_branch_mismatch_names_both_types_strict() {
+    let out = repl_prims("(if true \"hello\" 42)\n");
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(combined.contains("Int"), "diagnostic MUST name 'Int', got: {combined}");
+    assert!(
+        combined.contains("String"),
+        "diagnostic MUST name 'String', got: {combined}"
+    );
+}
+
+// spec: spec/04-expressions.md §4.2.1 — undefined-constructor
+// diagnostic MUST name the constructor literal "Foo". Distinct from
+// chunk-3 `error_undefined_constructor` which asserts any-of-error
+// indicators; this is the strict-Foo-naming variant per the U1.7
+// Wave 3 error-quality contract.
+// (carry: legacy/ring1.rs::error_quality_undefined_constructor_names_it)
+#[test]
+fn data_constructor_undefined_error_names_constructor_strict() {
+    let out = repl_prims("(Foo 1 2)\n");
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(combined.contains("Foo"), "diagnostic MUST name 'Foo', got: {combined}");
+}
