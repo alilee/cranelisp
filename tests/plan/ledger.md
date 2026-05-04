@@ -217,6 +217,37 @@ the binary surface MUST accept it.
 | Disposition | `out-of-scope (owner=/int)` |
 | Rationale | Spec §8.3.9 explicitly cites this test shape as `[Tested+Neg]`. Failing-not-ignored per `memory/feedback_failing_not_ignored.md` and `memory/feedback_repros_join_suite.md`. Carry-forward audit trail: the integration-tier sprint59_neg test passed; the binary `--run` path rejects. The right fix is in `/int`'s pipeline orchestration; until then the failing e2e test is the durable regression guard. |
 
+### Sprint 64 Wave 5.6 — defect cluster surfaced during file-2-of-8 audit carry-forward (2026-05-04)
+
+Wave 5.6 (per-file dedupe-recovery audit) carried forward 13
+language-behaviour assertions from `tests/legacy/modules.rs` into
+`tests/spec_08_modules.rs`. Nine of these tests share the same
+`--run`-mode orchestration defect already tracked by FIXME 0121 (entry
+module declares `(mod ...)` and the binary's `--run` driver loses
+sight of `(defn main)` after the `mod` declaration is processed). All
+nine fail with the same signature: `error: module error at 0..0:
+entry module has no main function — batch mode requires (defn main
+[] ...)`.
+
+The remaining four carry-forwards (`stdlib_module_compiles_and_runs`,
+`qualified_ref_to_missing_module_errors_neg`,
+`glob_import_excludes_private_neg`, `export_private_name_not_reexported_neg`)
+pass.
+
+Per the parity rule + `memory/feedback_repros_join_suite.md`, the
+nine failing tests are durable regression guards. Each carries an
+inline `FIXME(/int)` annotation pointing at FIXME 0121.
+
+| Field | Value |
+|---|---|
+| Test names | `spec_08_modules::import_dependency_compiles_correctly`, `spec_08_modules::project_root_shadows_stdlib`, `spec_08_modules::prelude_like_reexport_compiles`, `spec_08_modules::multi_dot_module_path_in_import`, `spec_08_modules::nested_dependency_chain_compiles`, `spec_08_modules::export_specific_reexport`, `spec_08_modules::export_glob_reexport`, `spec_08_modules::export_transitive_reexport_chain`, `spec_08_modules::export_multiple_modules` |
+| SHA | uncommitted (Wave 5.6) |
+| Stderr / observable signature | `error: module error at 0..0: entry module has no main function — batch mode requires (defn main [] ...)`. Each program declares `(mod <name>)` at the top of `main.cl` followed by a sibling `(defn main ...)`. The integration helper `helpers::batch_run_file` accepts the same programs (the legacy file passes); the binary's `--run` driver loses sight of `(defn main)` after the `(mod ...)` line is processed. |
+| Owning skill | `/int` (binary `--run` orchestration — `src/main.rs` / `src/session_v4.rs`) |
+| Target sprint | TBD — disposition open at S64 Wave 5.6 close |
+| Disposition | `out-of-scope (owner=/int) — duplicate-cluster of FIXME 0121` |
+| Rationale | Same defect surface as FIXME 0121 (`tests/cache.rs::cache_multi_module_transitive_imports`); 9 additional failing tests in this cluster expand the regression-guard coverage across spec sections §8.3, §8.4 (re-exports), §8.5, §8.10.3, §8.11.2. Failing-not-ignored per `memory/feedback_failing_not_ignored.md`. Carry-forward audit trail: the integration-tier `tests/legacy/modules.rs` tests passed via `helpers::batch_run_file`; the binary `--run` form rejects. No new FIXME filed — FIXME 0121 already names the underlying defect; resolving it resolves this entire cluster. |
+
 ### Exemplar-level tests (non-cargo)
 
 *No current exemplar-level failing entries. The S60-carried `exemplar/solver.cl::test-unsolvable` was resolved in Sprint 61 Wave 2; see "Resolved this sprint" below. The Defect 6 stack-overflow failures are captured above as cargo tests (`d6_exemplar_*` and `wave6_demo_repros::exemplar_solver_*`), not as non-cargo entries — per `memory/feedback_repros_join_suite.md` the cargo-level reductions are the durable record.*

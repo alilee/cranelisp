@@ -4,7 +4,7 @@ target: /int
 filed_by: /qa
 filed_at: 2026-05-03
 sprint_filed: 64
-refers_to: tests/cache.rs::cache_multi_module_transitive_imports
+refers_to: tests/cache.rs::cache_multi_module_transitive_imports, tests/spec_08_modules.rs (9 tests in Wave 5.6 cluster — see tests/plan/ledger.md §"Sprint 64 Wave 5.6")
 status: open
 ---
 

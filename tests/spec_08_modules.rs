@@ -304,3 +304,376 @@ fn import_below_use_still_available_before_definitions() {
         .output()
         .assert_exit(42);
 }
+
+// =============================================================================
+// §8.10.3 Whole-Module Compilation — explicit (mod ...) declaration
+//
+// Wave 5.6 carry-forwards from legacy/modules.rs. All 13 use the
+// tempdir-fixture + --run pattern (mode-specific exception per
+// PLAN.md §"Mode canonicalisation" — module discovery is most cleanly
+// tested through the batch-driver's project-root resolution).
+// =============================================================================
+
+// spec: spec/08-modules.md §8.10.3 — explicit `(mod util)` parent declaration
+// before sibling import. The child file lives at `main/util.cl` because the
+// parent declares (mod util), making the child a proper submodule of `main`.
+// (carry: legacy/modules.rs::import_dependency_compiles_correctly)
+//
+// FIXME(/int): same `--run`-mode defect as FIXME 0121 — the binary's `--run`
+// orchestration does not discover `(mod ...)` declarations in the entry
+// module, so `main.cl`'s `(defn main ...)` becomes invisible after the
+// `(mod util)` line is processed. Failing-not-ignored per
+// `memory/feedback_failing_not_ignored.md`. Ledger entry added at
+// `tests/plan/ledger.md` Wave 5.6 cluster.
+#[test]
+fn import_dependency_compiles_correctly() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(mod util)\n(import [main.util [helper]])\n(defn main [] (helper))",
+        )
+        .file("main/util.cl", "(defn helper [] 99)")
+        .run("main.cl")
+        .output()
+        .assert_exit(99);
+}
+
+// =============================================================================
+// §8.11.2 Module Resolution Search Order — project root precedence
+// =============================================================================
+
+// spec: spec/08-modules.md §8.11.2 — project root MUST shadow stdlib for
+// modules with the same name. REGRESSION-GUARD: Slice 1 boundary; the
+// stdlib copy returns a different value, so a value mismatch would
+// indicate stdlib precedence (a regression).
+// (carry: legacy/modules.rs::project_root_shadows_stdlib)
+//
+// FIXME(/int): same `--run`-mode defect as FIXME 0121 — `main.cl` declares
+// `(mod helper)` and the `--run` orchestration loses sight of `(defn main)`
+// after the mod declaration. Failing-not-ignored. Ledger entry added.
+#[test]
+fn project_root_shadows_stdlib() {
+    let cr = Cranelisp::new()
+        .file(
+            "main.cl",
+            "(mod helper)\n(defn main [] (helper/val))",
+        )
+        .file("main/helper.cl", "(defn val [] 100)")
+        // Stdlib copy with a DIFFERENT value — if the resolver picked
+        // stdlib over project root, the exit would be 200.
+        .file("stdlib/main/helper.cl", "(defn val [] 200)")
+        .lib_dir("stdlib")
+        .run("main.cl");
+    cr.output().assert_exit(100);
+}
+
+// spec: spec/08-modules.md §8.11.2 — module file present ONLY in stdlib_dir
+// MUST resolve. Demonstrates that stdlib search-path participation works
+// when the module is absent from project root.
+// (carry: legacy/modules.rs::stdlib_module_compiles_and_runs)
+#[test]
+fn stdlib_module_compiles_and_runs() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(mod helper)\n(defn main [] (helper/compute))",
+        )
+        // Note: NO `main/helper.cl` at project root — only in stdlib.
+        .file("stdlib/main/helper.cl", "(defn compute [] 55)")
+        .lib_dir("stdlib")
+        .run("main.cl")
+        .output()
+        .assert_exit(55);
+}
+
+// =============================================================================
+// §8.4 Export — re-export shell module patterns
+// =============================================================================
+
+// spec: spec/08-modules.md §8.4 — a shell module that imports + re-exports
+// (the prelude-like pattern) compiles. Here `main.shell` defines a function
+// directly; main imports from the shell.
+// (carry: legacy/modules.rs::prelude_like_reexport_compiles)
+//
+// FIXME(/int): same `--run`-mode defect as FIXME 0121 — `main.cl` declares
+// `(mod shell)` and the orchestration loses `(defn main)`. Failing-not-ignored.
+#[test]
+fn prelude_like_reexport_compiles() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(mod shell)\n(import [main.shell [get-val]])\n(defn main [] (get-val))",
+        )
+        .file("main/shell.cl", "(defn get-val [] 88)")
+        .run("main.cl")
+        .output()
+        .assert_exit(88);
+}
+
+// =============================================================================
+// §8.3 Import — multi-segment module path
+// =============================================================================
+
+// spec: spec/08-modules.md §8.3 — a 3-segment module path
+// (`main.shell.inner`) MUST resolve. The intermediate module has its
+// own `(mod inner)` declaration before importing from the leaf.
+// (carry: legacy/modules.rs::multi_dot_module_path_in_import)
+//
+// FIXME(/int): same `--run`-mode defect as FIXME 0121 — `main.cl` declares
+// `(mod shell)` and the orchestration loses `(defn main)`. Failing-not-ignored.
+#[test]
+fn multi_dot_module_path_in_import() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(mod shell)\n(import [main.shell [relay]])\n(defn main [] (relay))",
+        )
+        .file(
+            "main/shell.cl",
+            "(mod inner)\n(import [main.shell.inner [get-val]])\n(defn relay [] (get-val))",
+        )
+        .file("main/shell/inner.cl", "(defn get-val [] 88)")
+        .run("main.cl")
+        .output()
+        .assert_exit(88);
+}
+
+// =============================================================================
+// §8.5.1 Module-Qualified Names — three-level dependency chain
+// =============================================================================
+
+// spec: spec/08-modules.md §8.5.1 — A → B → C dependency chain via
+// qualified ref into a leaf module. Mid declares `(mod leaf)` and refers
+// to `main.mid.leaf/value` directly without an explicit import.
+// (carry: legacy/modules.rs::nested_dependency_chain_compiles)
+//
+// FIXME(/int): same `--run`-mode defect as FIXME 0121 — `main.cl` declares
+// `(mod mid)` and the orchestration loses `(defn main)`. Failing-not-ignored.
+#[test]
+fn nested_dependency_chain_compiles() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(mod mid)\n(import [main.mid [relay]])\n(defn main [] (relay))",
+        )
+        .file(
+            "main/mid.cl",
+            "(mod leaf)\n(defn relay [] (main.mid.leaf/value))",
+        )
+        .file("main/mid/leaf.cl", "(defn value [] 7)")
+        .run("main.cl")
+        .output()
+        .assert_exit(7);
+}
+
+// =============================================================================
+// §8.5.4 Auto-Loading — qualified ref into nonexistent module
+// =============================================================================
+
+// spec: spec/08-modules.md §8.5.4 — qualified reference to a non-existent
+// module MUST be a compile-time error. The auto-loader cannot find a file
+// for `nonexistent`.
+// (carry: legacy/modules.rs::qualified_ref_to_missing_module_errors)
+#[test]
+fn qualified_ref_to_missing_module_errors_neg() {
+    let out = Cranelisp::new()
+        .file("main.cl", "(defn main [] (nonexistent/foo))")
+        .run("main.cl")
+        .output();
+    assert!(
+        !out.status.success(),
+        "qualified ref to non-existent module MUST be rejected (spec §8.5.4); \
+         stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// =============================================================================
+// §8.7.3 Private Name Semantics — glob excludes private
+// =============================================================================
+
+// spec: spec/08-modules.md §8.7.3 — `[*]` glob import MUST NOT bring in
+// names defined with `(defn-)`. REGRESSION-GUARD: a regression in glob
+// import that pulled in private names would break the visibility boundary.
+// (carry: legacy/modules.rs::glob_import_excludes_private)
+#[test]
+fn glob_import_excludes_private_neg() {
+    let out = Cranelisp::new()
+        .file(
+            "main.cl",
+            "(mod util)\n(import [main.util [*]])\n(defn main [] (secret))",
+        )
+        .file(
+            "main/util.cl",
+            "(defn- secret [] 42)\n(defn public-fn [] 1)",
+        )
+        .run("main.cl")
+        .output();
+    assert!(
+        !out.status.success(),
+        "glob import MUST NOT include private (defn-) names — calling 'secret' \
+         from main MUST fail (spec §8.7.3); stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// =============================================================================
+// §8.4 Export — re-export chains
+// =============================================================================
+
+// spec: spec/08-modules.md §8.4.1 — a named re-export makes the source
+// module's binding visible to the importer through the shell module.
+// (carry: legacy/modules.rs::export_specific_reexport)
+//
+// FIXME(/int): same `--run`-mode defect as FIXME 0121 — `main.cl` declares
+// `(mod shell)` and the orchestration loses `(defn main)`. Failing-not-ignored.
+#[test]
+fn export_specific_reexport() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(mod shell)\n(import [main.shell [val]])\n(defn main [] (val))",
+        )
+        .file(
+            "main/shell.cl",
+            "(mod inner)\n(import [main.shell.inner [val]])\n(export [main.shell.inner [val]])",
+        )
+        .file("main/shell/inner.cl", "(defn val [] 42)")
+        .run("main.cl")
+        .output()
+        .assert_exit(42);
+}
+
+// spec: spec/08-modules.md §8.4.2 — a glob re-export `[*]` re-exports all
+// public names from the source module through the shell.
+// (carry: legacy/modules.rs::export_glob_reexport)
+//
+// FIXME(/int): same `--run`-mode defect as FIXME 0121 — `main.cl` declares
+// `(mod shell)` and the orchestration loses `(defn main)`. Failing-not-ignored.
+#[test]
+fn export_glob_reexport() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [primitives [add-i64]])\n\
+             (mod shell)\n\
+             (import [main.shell [a b]])\n\
+             (defn main [] (add-i64 (a) (b)))",
+        )
+        .file(
+            "main/shell.cl",
+            "(mod inner)\n\
+             (import [main.shell.inner [*]])\n\
+             (export [main.shell.inner [*]])",
+        )
+        .file(
+            "main/shell/inner.cl",
+            "(defn a [] 10)\n(defn b [] 20)",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(30);
+}
+
+// spec: spec/08-modules.md §8.4.4 — re-export semantics MUST compose
+// across a 3-level chain: leaf → mid → shell → main.
+// (carry: legacy/modules.rs::export_transitive_reexport_chain)
+//
+// FIXME(/int): same `--run`-mode defect as FIXME 0121 — `main.cl` declares
+// `(mod shell)` and the orchestration loses `(defn main)`. Failing-not-ignored.
+#[test]
+fn export_transitive_reexport_chain() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(mod shell)\n\
+             (import [main.shell [deep-val]])\n\
+             (defn main [] (deep-val))",
+        )
+        .file(
+            "main/shell.cl",
+            "(mod mid)\n\
+             (import [main.shell.mid [deep-val]])\n\
+             (export [main.shell.mid [deep-val]])",
+        )
+        .file(
+            "main/shell/mid.cl",
+            "(mod leaf)\n\
+             (import [main.shell.mid.leaf [deep-val]])\n\
+             (export [main.shell.mid.leaf [deep-val]])",
+        )
+        .file(
+            "main/shell/mid/leaf.cl",
+            "(defn deep-val [] 77)",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(77);
+}
+
+// spec: spec/08-modules.md §8.4.3 — a single shell module MAY re-export
+// names from multiple distinct source modules.
+// (carry: legacy/modules.rs::export_multiple_modules)
+//
+// FIXME(/int): same `--run`-mode defect as FIXME 0121 — `main.cl` declares
+// `(mod shell)` and the orchestration loses `(defn main)`. Failing-not-ignored.
+#[test]
+fn export_multiple_modules() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [primitives [add-i64]])\n\
+             (mod shell)\n\
+             (import [main.shell [alpha beta]])\n\
+             (defn main [] (add-i64 (alpha) (beta)))",
+        )
+        .file(
+            "main/shell.cl",
+            "(mod a)\n\
+             (mod b)\n\
+             (import [main.shell.a [alpha]])\n\
+             (import [main.shell.b [beta]])\n\
+             (export [main.shell.a [alpha]\n         main.shell.b [beta]])",
+        )
+        .file("main/shell/a.cl", "(defn alpha [] 3)")
+        .file("main/shell/b.cl", "(defn beta [] 7)")
+        .run("main.cl")
+        .output()
+        .assert_exit(10);
+}
+
+// spec: spec/08-modules.md §8.4.4 — a re-export of a private name MUST
+// fail. Re-export semantics cannot bypass the visibility boundary set by
+// `(defn-)`.
+// (carry: legacy/modules.rs::export_private_name_not_reexported)
+#[test]
+fn export_private_name_not_reexported_neg() {
+    let out = Cranelisp::new()
+        .file(
+            "main.cl",
+            "(mod shell)\n\
+             (import [main.shell [secret]])\n\
+             (defn main [] (secret))",
+        )
+        .file(
+            "main/shell.cl",
+            "(mod inner)\n\
+             (import [main.shell.inner [*]])\n\
+             (export [main.shell.inner [secret]])",
+        )
+        .file(
+            "main/shell/inner.cl",
+            "(defn- secret [] 42)\n(defn public-fn [] 1)",
+        )
+        .run("main.cl")
+        .output();
+    assert!(
+        !out.status.success(),
+        "re-exporting a (defn-) private name MUST be rejected (spec §8.4.4); \
+         stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}
