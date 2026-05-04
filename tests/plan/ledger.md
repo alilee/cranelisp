@@ -198,6 +198,25 @@ Wave 2.5 added the mode-equivalence subset (`tests/build_confidence.rs`) to vali
 | Disposition | `out-of-scope (owner=/backend)` |
 | Rationale | Same defect as `mode_equiv_adt_option_match`. Tracked by FIXME 0122. |
 
+### Sprint 64 Wave 5.5 — defect surfaced during dedupe-verification audit (2026-05-04)
+
+Wave 5.5 (audit pass between Wave 5 and Wave 6) carried forward
+`tests/legacy/sprint59_neg.rs::import_below_use_still_available_before_definitions`
+as a new e2e test in `tests/spec_08_modules.rs`. The original test
+passed via the integration helper `helpers::batch_run_file`; the e2e
+port via `--run main.cl` rejects the same program. Per spec §8.3.9
+the binary surface MUST accept it.
+
+| Field | Value |
+|---|---|
+| Test name | `spec_08_modules::import_below_use_still_available_before_definitions` |
+| SHA | uncommitted (Wave 5.5) |
+| Stderr / observable signature | `error: module error at 0..0: entry module has no main function — batch mode requires (defn main [] ...)`. Program: `(defn main [] (helper))\n(import [util [helper]])` with sibling file `util.cl` defining `helper`. Per §8.3.9 imports MUST be extracted en bloc before compilation; the binary's parse/extract path appears to fail before reaching the `defn main` form when an `import` follows it. |
+| Owning skill | `/int` (binary `--run` orchestration; integration helper `batch_run_file` accepts the program) |
+| Target sprint | TBD — disposition open at S64 Wave 5.5 close |
+| Disposition | `out-of-scope (owner=/int)` |
+| Rationale | Spec §8.3.9 explicitly cites this test shape as `[Tested+Neg]`. Failing-not-ignored per `memory/feedback_failing_not_ignored.md` and `memory/feedback_repros_join_suite.md`. Carry-forward audit trail: the integration-tier sprint59_neg test passed; the binary `--run` path rejects. The right fix is in `/int`'s pipeline orchestration; until then the failing e2e test is the durable regression guard. |
+
 ### Exemplar-level tests (non-cargo)
 
 *No current exemplar-level failing entries. The S60-carried `exemplar/solver.cl::test-unsolvable` was resolved in Sprint 61 Wave 2; see "Resolved this sprint" below. The Defect 6 stack-overflow failures are captured above as cargo tests (`d6_exemplar_*` and `wave6_demo_repros::exemplar_solver_*`), not as non-cargo entries — per `memory/feedback_repros_join_suite.md` the cargo-level reductions are the durable record.*
