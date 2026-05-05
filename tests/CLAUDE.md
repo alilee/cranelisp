@@ -38,12 +38,14 @@ not bridge with an internal-API helper.
 
 The earlier four-layer pyramid (unit → boundary → integration → e2e)
 is preserved at `plan/legacy/strategy.md` for provenance but is NOT
-authoritative. The current `tests/helpers/mod.rs::ReplSession` is a
-back-compat shim for ~30 pre-existing test files; it is **frozen**
-(no new methods, no new entry points). New tests use the e2e helper
-API in `plan/helpers.md`. Existing integration-tier tests are
-rewritten as e2e on touch (typically when an internal-API change
-breaks them), not en masse.
+authoritative. As of Sprint 64 Phase 3 close, the migration is
+**complete**: all 25 active e2e files in `tests/*.rs` use the
+`Cranelisp` builder API in `tests/helpers/e2e.rs`. The 41 superseded
+integration-tier files have been quarantined under `tests/legacy/`
+with harvest FIXMEs against `/qa`; they remain only for provenance
+and are not compiled. The `ReplSession` back-compat shim that
+previously bridged Rust-API tests has been deleted —
+`tests/helpers/mod.rs` is now a one-line module declaration.
 
 ## Spec-traceability linter
 
@@ -114,27 +116,29 @@ tests/
   CLAUDE.md              — this file
   plan/                  — PLAN.md + helpers.md + ledger.md + risks/coverage/neg + legacy/
   helpers/
-    mod.rs               — shared helpers (ReplSession back-compat shim + subprocess primitives).
-                            New e2e helper surface lives here per plan/helpers.md.
+    mod.rs               — module declarations only (pub mod e2e; pub mod regex;).
+    e2e.rs               — e2e harness: `Cranelisp` builder + subprocess primitives
+                            + tmpdir/fixture management. The only test-side helper API.
+    regex.rs             — named regex library for matching compiler output.
   fixtures/
     prelude.cl           — QA-owned test prelude (Option, Result, Num, Eq, Ord)
     preamble_primitives.cl — bare primitive imports
     stdlib_project/      — read-only project fixture for stdlib conformance tests
     user/, num/, num.cl, reload_target.cl — feature-specific fixtures
-  e2e.rs                 — original e2e tests (subprocess-driven; predates helpers.md API)
+  legacy/                — quarantined Rust-API/integration-tier tests (Sprint 64
+                            Phase 2). Frozen archive; not compiled. Carries harvest
+                            FIXMEs against `/qa` for any spec coverage not yet
+                            reproduced in the canonical e2e files.
   e2e/                   — per-suite .runs/ subdirectories (gitignored)
-  {topic}.rs             — feature-grouped tests (cache.rs, macros.rs, modules.rs, io.rs,
-                            rc.rs, repl_*.rs, stdlib.rs, scheduler.rs, …) — currently a mix of
-                            integration-tier (Rust API via ReplSession) and e2e-tier
-                            (subprocess); migration to e2e is opportunistic per plan/PLAN.md.
-  ring{0..4}.rs, sprint{NN}*.rs, wave{N}_*.rs — historical groupings carried forward
+  spec_*.rs, repl_*.rs, build_confidence.rs, cache.rs, regression.rs,
+  examples.rs, exemplar.rs, link.rs               — 25 canonical e2e files; all use
+                            `helpers::e2e::Cranelisp`.
 ```
 
-The test directory contains both e2e-tier (subprocess-driven) and
-integration-tier (Rust-API via `ReplSession`) tests. The two-tier
-strategy applies going forward: new tests go in as e2e, integration-tier
-files migrate when touched. See `plan/PLAN.md §"Strategy — two tiers,
-no middle"`.
+All active tests are e2e. There is no integration tier in the active
+suite — the previous Rust-API helpers (`ReplSession` and friends) were
+deleted in Sprint 64 Phase 3. Discipline is now simply "tests are e2e
+or unit, no middle tier" per `memory/project_test_strategy.md`.
 
 ## Test Isolation Strategy (Prelude & Stdlib)
 
@@ -149,56 +153,53 @@ Tests MUST NOT depend on `stdlib/`. Only the exemplar (`exemplar/`) and producti
 
 This is NOT a copy of `stdlib/prelude.cl` — it is a minimal, stable subset that tests can depend on without coupling to stdlib evolution.
 
-### E2E Test Isolation
+### Prelude variant selection
 
-E2E tests use two helpers depending on whether they need the prelude:
+E2E tests select the prelude through the `Cranelisp` builder's
+`PreludeVariant` parameter:
 
-- **`run_repl(input, label)`** — bare REPL, no prelude loaded. Use for tests of core language features, slash commands, and error handling that don't need operators or ADTs.
-- **`run_repl_with_test_prelude(input, label)`** — sets `CRANELISP_LIB=tests/fixtures/` so the binary loads `tests/fixtures/prelude.cl` as the prelude. Use for tests requiring operators (+, -, etc.), Option/Result types, or trait dispatch.
-
-### Integration Test Isolation
-
-Integration tests use two helpers:
-
-- **`repl_session()`** — bare REPL session via Rust API, no prelude.
-- **`repl_session_with_test_prelude()`** — REPL session with `tests/fixtures/prelude.cl` loaded via `ReplSession::new_with_prelude()`. Uses the same fixture as E2E tests.
-
-### Inline Trait Preludes (Legacy)
-
-Some older E2E tests define traits inline using constants (`NUM_TRAIT_PRELUDE`, `EQ_TRAIT_PRELUDE`, `ORD_TRAIT_PRELUDE`) at the top of `e2e.rs`. These are still valid but new tests should prefer `run_repl_with_test_prelude()` for consistency and to avoid duplicating trait definitions across tests.
+- **`PreludeVariant::None`** — bare REPL/`--run`, no prelude loaded. Use
+  for tests of core language features, slash commands, and error
+  handling that don't need operators or ADTs.
+- **`PreludeVariant::TestPrelude`** — sets `CRANELISP_LIB=tests/fixtures/`
+  so the binary loads `tests/fixtures/prelude.cl`. Use for tests
+  requiring operators (`+`, `-`, …), `Option` / `Result`, or trait
+  dispatch.
 
 ## Test Helpers
 
-| Helper | Layer | Description |
-|---|---|---|
-| `compile_and_run_simple(src)` | Integration | No macros. Full pipeline. |
-| `compile_and_run(src)` | Integration | Shared prelude session with macros. |
-| `compile_and_run_with_macros(src)` | Integration | Shared session + user defmacro. |
-| `repl_session()` | Integration | Creates a bare REPL session (no prelude). |
-| `repl_session_with_test_prelude()` | Integration | REPL session with test prelude (Option, traits). |
-| `test_fixtures_dir()` | Both | Path to `tests/fixtures/` directory. |
-| `compile_both(src)` | Integration | Batch + REPL, assert identical. |
-| `assert_type_error(src, msg)` | Integration | Assert type error with substring. |
-| `assert_parse_error(src, msg)` | Integration | Assert parse error with substring. |
-| `assert_rc_balanced(src)` | Integration | Compile + run with RC tracing. |
-| `run_repl(input, label)` | E2E | Invoke REPL binary with piped stdin (no prelude). |
-| `run_repl_with_test_prelude(input, label)` | E2E | Invoke REPL binary with test prelude loaded. |
-| `run_binary(args, stdin)` | E2E | Invoke `cranelisp` subprocess. |
-| `assert_output(case_dir)` | E2E | Check stdout/stderr/exit against expected. |
+The only helper API is the `Cranelisp` builder in
+`tests/helpers/e2e.rs`. Every active test file imports it via:
 
-The "Available from" Ring column is retired as of Sprint 64 — ring-based
-phasing is no longer the project model. The integration-tier helpers above
-will be superseded by the new `Cranelisp` builder per `tests/plan/helpers.md`
-on opportunistic migration (rewrite-on-touch).
+```rust
+mod helpers;
+use helpers::e2e::{Cranelisp, PreludeVariant};
+```
+
+Highlights:
+
+| Method | Description |
+|---|---|
+| `Cranelisp::new(label)` | Allocate a fresh per-test tmpdir under `tests/{suite}/.runs/...`. |
+| `.with_prelude(PreludeVariant)` | Choose `None` or `TestPrelude`. |
+| `.with_source(src)` | Inline source for `--run` mode. |
+| `.with_project(fixture_dir)` | Copy a fixture project into the tmpdir. |
+| `.repl_capture(input)` | Pipe `input` to the REPL, capture stdout/stderr/exit. |
+| `.run()` | `--run` mode. |
+| `.link()` | `--link` mode. |
+| `run_through_all_modes(...)` | Run a source program through every mode and assert mode-equivalence. |
+
+See `plan/helpers.md` for the full API and `tests/helpers/e2e.rs` for
+the source of truth. Mode canonicalisation, fresh-tmpdir-per-test
+discipline, and on-disk fixture management all live behind this builder.
 
 ## Test Standards
 
 - **Test names describe behavior, not implementation.** `test_let_polymorphism_infers_identity` not `test_case_47`.
-- **Every language-behavior test runs in both batch and REPL.** Use `compile_both()` or write separate variants.
+- **Every language-behavior test runs through all modes.** Use `run_through_all_modes` (REPL + `--run` + `--link`) for tests that assert language semantics.
 - **RC tests run serially.** Use `--test-threads=1` for any test that reads `CRANELISP_RC_TRACE`.
 - **Error tests use substring matching.** Not exact message comparison.
-- **Boundary tests test one stage at a time.** No full-pipeline invocations in boundary tests.
-- **E2E tests invoke the binary.** No Rust API calls. No internal state inspection.
+- **E2E tests invoke the binary.** No Rust API calls. No internal state inspection. The `Cranelisp` builder is the only sanctioned harness.
 - **No test is silently dropped.** Every test has a row in `tests/plan/PLAN.md` (or its predecessor `ledger.md`) tracing it to a spec section.
 - **Negative tests verify absence, not just presence.** For any MUST requirement that constrains what appears, write a companion test that verifies wrong things are absent. See below.
 
@@ -218,41 +219,40 @@ races that fire only under specific filesystem preconditions.
 **How to apply**:
 
 - If a test needs a Cranelisp project directory (for `Cranelisp.toml`,
-  a module tree, `user.cl`, …), copy the minimal fixture into a fresh
-  `TempDir` at the start of the test. See
-  `tests/helpers/mod.rs::tempdir_project_from_fixture` for the shared
-  helper, or inline a recursive `copy_dir` when the set of source
-  files is variable (see `tests/sprint59_defects456_repro.rs::copy_exemplar_tree`).
+  a module tree, `user.cl`, …), copy the minimal fixture into the
+  per-test tmpdir provided by `Cranelisp::new(label)`. The builder
+  exposes `with_project(fixture_dir)` for the common case of cloning
+  a checked-in fixture under `tests/fixtures/` into the tmpdir.
 - If a test is genuinely read-only on checked-in paths, `project_root()`
   is acceptable for locating the binary (`target/debug/cranelisp`),
   the stdlib directory (for `CRANELISP_LIB`), or test fixtures under
   `tests/fixtures/`. When used this way, the callsite MUST carry a
   `// read-only on project_root` comment so future audits can
   distinguish intentional from accidental usage.
-- Writes under `tests/{suite}/.runs/{RUN_TS}/{n_label}/` (the
-  `e2e.rs::test_dir()` pattern, now also in `tests/helpers/mod.rs::runs_dir`)
-  are permitted: the `.runs/` tree is `.gitignore`'d and per-test
-  labels provide isolation. Any new suite adopting this pattern MUST
-  also add its `.runs/` path to `.gitignore`.
-- `tempfile::TempDir` MUST be bound to a variable that lives for the
-  duration of the test (`let td = tempfile::tempdir().unwrap();` or
-  stored on a helper struct). Dropping the handle before the test ends
-  triggers eager cleanup and causes spurious failures under
-  concurrent runs.
+- Writes under `tests/{suite}/.runs/{RUN_TS}/{n_label}/` (allocated by
+  the `Cranelisp` builder when the test names a label) are permitted:
+  the `.runs/` tree is `.gitignore`'d and per-test labels provide
+  isolation. Any new suite adopting this pattern MUST also add its
+  `.runs/` path to `.gitignore`.
+- `tempfile::TempDir` handles owned by the test MUST be bound to a
+  variable that lives for the duration of the test
+  (`let td = tempfile::tempdir().unwrap();`). The `Cranelisp` builder
+  manages this internally for its own tmpdir; tests that allocate
+  their own TempDir directly are responsible for keeping it alive.
 
-**Exception**: the `tests/*/.runs/{RUN_TS}/{n_label}/` pattern
-(`tests/e2e.rs::test_dir`, `tests/helpers/mod.rs::runs_dir`) is
-permitted. It uses `project_root()` to locate the suite's `.runs/`
-parent, then allocates an isolated per-test directory under
-`.gitignore`. When adopting this pattern in a new test suite, also add
-the corresponding `.runs/` path to `.gitignore`.
+**Exception**: the `tests/*/.runs/{RUN_TS}/{n_label}/` pattern is
+permitted. The `Cranelisp` builder uses `project_root()` to locate
+the suite's `.runs/` parent, then allocates an isolated per-test
+directory under `.gitignore`. When adopting this pattern in a new
+test suite, also add the corresponding `.runs/` path to `.gitignore`.
 
 **CI lint candidate**: a pre-commit check that greps for
 `project_root` + `fs::write|fs::create|File::create|Command::.*current_dir`
 in the same file, absent the `// read-only` annotation. Sprint 61
 Slice 5 E-1 audit found this lint would have flagged `d45_*`, `d6_*`,
-`d7_*`, `s60_run_tests_reduction_1_*`, and the default
-`ReplSessionBuilder` path — all of which are now converted.
+`d7_*`, `s60_run_tests_reduction_1_*`, and the default project-root
+write paths in the deleted Rust-API session helpers — all of which
+are now converted (or quarantined under `tests/legacy/`).
 
 ## Negative Test Convention
 
@@ -276,63 +276,88 @@ fn e2e_s3_3_list_neg_no_primitives_in_user() { ... }
 
 ## Build Commands
 
+Always use `cargo nextest run` (per `memory/feedback_test_serialization.md`).
+
 ```bash
 # Run all tests
-cargo test
+cargo nextest run
 
-# Run a specific layer
-cargo test --test boundary_reader        # boundary
-cargo test --test integration_ring0      # integration
-cargo test --test e2e_runner             # E2E
+# Run a specific binary
+cargo nextest run --test spec_04_expressions
+cargo nextest run --test cache
 
-# Run RC tests serially
-cargo test --test integration_rc -- --test-threads=1
+# Run a single test
+cargo nextest run --test cache cache_multi_module_transitive_imports
 
-# Run with diagnostics
-CRANELISP_RC_TRACE=1 cargo test --test integration_rc -- --test-threads=1
-CRANELISP_INFER_TRACE=1 cargo test --test boundary_typecheck -- --nocapture
-
-# Run E2E tests only (release gate)
-cargo test --test e2e_runner
+# Run with diagnostics (sets env on the spawned subprocess)
+CRANELISP_RC_TRACE=1     cargo nextest run --test spec_12_runtime
+CRANELISP_INFER_TRACE=1  cargo nextest run --test spec_04_expressions
+CRANELISP_CODEGEN_TRACE=1 cargo nextest run --test regression
 ```
 
 ## Adding Tests
 
-1. **Choose the layer**: Is this testing one stage's output (boundary), the pipeline (integration), or the user experience (E2E)?
-2. **Choose the file**: within that layer, by ring or by concern
-3. **Choose the helper**: `compile_and_run_simple` for integration, `run_binary` for E2E
-4. **Name the test**: after the behavior being validated
-5. **Add dual-mode**: for language-behavior integration tests, test both batch and REPL
-6. **Note provenance**: if porting from prototype, note the original test name in a comment
+1. **Choose the file**: by spec section (`spec_NN_*.rs`) or by concern
+   (`repl_*.rs`, `cache.rs`, `regression.rs`, …).
+2. **Use the harness**: `Cranelisp::new(label)` from `helpers::e2e`.
+3. **Pick a prelude variant**: `PreludeVariant::None` for core-language
+   tests; `PreludeVariant::TestPrelude` if the test needs operators
+   or `Option` / `Result`.
+4. **Name the test**: after the behavior being validated.
+5. **Run it through all modes** if it tests language semantics: use
+   `run_through_all_modes` to assert REPL / `--run` / `--link`
+   equivalence.
+6. **Add the spec annotation**: `// spec: <path> §<anchor>` on every
+   `#[test]` function.
 
 ## Isolating Cross-Crate Failures
 
-When an integration test fails and the root cause could be in any crate (typecheck? backend? integration wiring?), follow this process to isolate before fixing. Do NOT guess-and-patch — that creates workarounds that mask the real problem.
+When an e2e test fails and the root cause could be in any crate
+(typecheck? backend? integration wiring?), follow this process to
+isolate before fixing. Do NOT guess-and-patch — that creates
+workarounds that mask the real problem.
 
-### Step 1: Minimal integration test
+### Step 1: Minimal e2e repro
 
-Write the smallest test that reproduces the failure. Strip everything: no prelude, no stdlib, no imports unless required. Use `repl_session()` (bare session). The test should fail with the same error as the original.
+Write the smallest test that reproduces the failure. Strip everything:
+no prelude (`PreludeVariant::None`), no stdlib, no imports unless
+required. The test should fail with the same error as the original.
 
 ```rust
 #[test]
-fn repl_defmacro_rest_splice() {
-    let mut s = repl_session();
-    s.eval("(defmacro my-begin ([] 0) ([x &rest] `(begin ~x ~@rest)))").unwrap();
-    let val = repl_eval(&mut s, "(my-begin 42)");
-    assert_eq!(val, 42);
+fn defmacro_rest_splice() {
+    let cap = Cranelisp::new("defmacro_rest_splice")
+        .with_prelude(PreludeVariant::None)
+        .repl_capture(
+            "(defmacro my-begin ([] 0) ([x &rest] `(begin ~x ~@rest)))\n\
+             (my-begin 42)\n",
+        );
+    assert!(cap.stdout.contains("42"), "stdout={}", cap.stdout);
 }
 ```
 
 ### Step 2: Inspect compiler state at the failure point
 
-The error message names a symbol (e.g., "undefined function: macros/sconcat"). Inspect the compiler's state for that symbol at the point where the error occurs. Use `ReplSession::show_entry("module/name")` to dump the symbol table entry, or add temporary diagnostics at the error site in the backend/integration code. Run with `cargo test --test <file> <test> -- --nocapture`.
+The error message names a symbol (e.g., "undefined function:
+macros/sconcat"). Use the REPL's introspection commands inside
+`repl_capture` to inspect what the compiler knows about that symbol:
+`/sig`, `/info`, `/list`, `/sexp`, `/clif`, `/ast`. Combine with
+`CRANELISP_CODEGEN_TRACE=1` (or the other trace env vars in the
+Diagnostic Logging table) for compiler-side observability. Small
+repros also produce small CLIF that can be inspected by eye.
 
 ```rust
-s.show_entry("macros/sconcat");  // what does the compiler know about this symbol?
-s.eval("...").unwrap();          // fails here
+let cap = Cranelisp::new("inspect_macros_sconcat")
+    .with_prelude(PreludeVariant::TestPrelude)
+    .repl_capture("/info macros/sconcat\n");
+println!("{}", cap.stdout);
 ```
 
-The goal: determine whether the data is **missing** (never created), **incomplete** (created but missing a field like `got_slot` or `resolved_call`), or **present but not reached** (exists in the symbol table but the code path doesn't look it up). This determines which crate owns the fix.
+The goal: determine whether the data is **missing** (never created),
+**incomplete** (created but missing a field like `got_slot` or
+`resolved_call`), or **present but not reached** (exists in the
+symbol table but the code path doesn't look it up). This determines
+which crate owns the fix.
 
 ### Step 3: Unit test in the owning crate
 
@@ -355,7 +380,7 @@ fn test_ast_annotation_qualified_extern_resolved_call() {
 
 ### Step 4: Interpret the result
 
-- **Unit test passes, integration test fails** → bug is in the integration wiring (`src/worker.rs`, `src/pipeline.rs`, `src/session_v4.rs`). The crate produces correct output but the integration layer isn't using it.
+- **Unit test passes, e2e test fails** → bug is in the integration wiring (`src/worker.rs`, `src/pipeline.rs`, `src/session_v4.rs`). The crate produces correct output but the integration layer isn't using it.
 - **Unit test fails** → bug is in the crate. Fix there.
 - **Unit test can't be written** (crate doesn't have the right test infrastructure) → add the infrastructure first.
 
