@@ -1706,3 +1706,222 @@ fn impl_form_display_result_is_exactly_impl_trait_for_type() {
         out.stdout
     );
 }
+
+// =============================================================================
+// Sprint 64 Wave 6 batch 5 — bare-primitive value-path Slice 1 carry-forwards
+// =============================================================================
+//
+// Carry-forward from `tests/legacy/sprint61_bare_primitive.rs` per Wave 6
+// batch 5 audit. Five tests guard the Sprint 61 Slice 1 fix in
+// `src/session_v4.rs::resolve_entry_for_display` +
+// `check_bare_symbol_introspection`: the fix aligns the bare-value path
+// (typing `add-i64` at the prompt) with the introspection path (`/sig
+// add-i64`) and the call path (`(add-i64 2 3)`) so that a re-exported
+// primitive resolves through `user → prelude → primitives` to its
+// terminal `Def` and produces a spec-conforming introspection card.
+//
+// Sibling cluster: the existing `bare_primitive_type_int_displays_type_info`
+// test above covers bare primitive **type** lookup; these five cover bare
+// primitive **fn** lookup (different resolution path through the symbol
+// table).
+//
+// REGRESSION-GUARD: Sprint 61 Slice 1 — bare-primitive value-path fix.
+// =============================================================================
+
+// spec: repl/spec.md §1.1 — universal `:Type name ; classification - doc`
+//       output format
+// (carry: legacy/sprint61_bare_primitive.rs::bare_primitive_add_i64_at_prompt_displays_type_and_fqn)
+#[test]
+fn bare_primitive_add_i64_at_prompt_displays_type_and_fqn() {
+    let out = repl_prims("add-i64\n");
+    let display = &out.stdout;
+    assert!(
+        display.contains("primitives/add-i64"),
+        "bare `add-i64` MUST resolve to the primitives-qualified name per \
+         spec/08-modules.md §8.9 re-export provenance; got:\n{display}"
+    );
+    assert!(
+        display.contains("(Fn ["),
+        "bare `add-i64` MUST display a function type prefix `:(Fn [...] ...)`; \
+         got:\n{display}"
+    );
+    assert!(
+        display.contains("; primitive"),
+        "classification MUST be `; primitive` per repl/spec.md §1.1 + §4.1.1 \
+         for a primitive Def; got:\n{display}"
+    );
+    assert!(
+        display.contains("; primitive - "),
+        "output MUST carry `; primitive - <docstring>` per the universal \
+         format (repl/spec.md §1.1); got:\n{display}"
+    );
+}
+
+// spec: design/int/bare-primitive-value-path.md §2 (three paths) + §5
+//       (expected output) — anti-divergence guard between bare-value /
+//       introspection / call paths. Cross-ref design/int/dual-path-persistence-collapse.md
+//       (dual-path anti-pattern).
+// (carry: legacy/sprint61_bare_primitive.rs::bare_primitive_parallel_paths_converge_on_same_attribution)
+#[test]
+fn bare_primitive_parallel_paths_converge_on_same_attribution() {
+    // All three paths driven through one REPL invocation so they share
+    // session state. /sig prints a sig card; bare add-i64 prints a value
+    // card; (add-i64 2 3) prints "5" (or `:primitives/Int 5`).
+    let out = repl_prims("/sig add-i64\nadd-i64\n(add-i64 2 3)\n");
+    let combined = &out.stdout;
+
+    // Path A — introspection: /sig must attribute to primitives/add-i64.
+    // Path B — bare value: same attribution.
+    assert!(
+        combined.contains("primitives/add-i64"),
+        "Both /sig add-i64 and bare add-i64 MUST attribute to \
+         primitives/add-i64 per spec/08-modules.md §8.9; got:\n{combined}"
+    );
+    // Bare display must additionally carry the qualified function type.
+    assert!(
+        combined.contains("(Fn ["),
+        "bare `add-i64` MUST carry the `:(Fn [...] ...)` type prefix; \
+         got:\n{combined}"
+    );
+    // Path C — call evaluates to 5.
+    assert!(
+        combined.contains("5"),
+        "(add-i64 2 3) MUST evaluate to 5 on the call path; got:\n{combined}"
+    );
+}
+
+// spec: spec/08-modules.md §8.9 — re-export provenance generalises across
+//       the primitives surface (≥ 5 primitives covered)
+// (carry: legacy/sprint61_bare_primitive.rs::bare_primitive_surface_resolves_identically_across_five_plus_symbols)
+#[test]
+fn bare_primitive_surface_resolves_identically_across_five_plus_symbols() {
+    // Pipe one bare reference per primitive in a single REPL session.
+    let input = "add-i64\neq-i64\nmul-i64\nsub-i64\nnot\nstr-concat\n";
+    let out = repl_prims(input);
+    let combined = &out.stdout;
+
+    for name in ["add-i64", "eq-i64", "mul-i64", "sub-i64", "not", "str-concat"] {
+        let fqn = format!("primitives/{name}");
+        assert!(
+            combined.contains(&fqn),
+            "bare `{name}` MUST resolve to `{fqn}` per \
+             spec/08-modules.md §8.9; got:\n{combined}"
+        );
+    }
+    assert!(
+        !combined.contains("undefined variable"),
+        "no bare primitive reference MAY surface an `undefined variable` \
+         error (bare-primitive-value-path.md §1 regression); got:\n{combined}"
+    );
+    // Classification must be `; primitive` somewhere in the output.
+    assert!(
+        combined.contains("; primitive"),
+        "bare primitive references MUST classify as `; primitive` per \
+         repl/spec.md §4.1.1; got:\n{combined}"
+    );
+}
+
+// spec: repl/spec.md §1.1 (negative complement) — unknown bare symbol
+//       MUST NOT silently dispatch to a similarly-named primitive
+// (carry: legacy/sprint61_bare_primitive.rs::bare_primitive_unknown_name_produces_undefined_error_neg)
+#[test]
+fn bare_primitive_unknown_name_produces_undefined_error_neg() {
+    let out = repl_prims("unknown-primitive-name-zzzz\n");
+    let combined = format!("{}\n{}", out.stdout, out.stderr);
+
+    // Must surface an error.
+    assert!(
+        combined.contains("undefined") || combined.contains("not found"),
+        "unknown bare symbol MUST produce an `undefined variable` or \
+         `not found` error per spec §1.1 negative complement; \
+         got:\n{combined}"
+    );
+    // Must NOT silently resolve to a nearby symbol — guards against an
+    // over-broad Slice 1 fix.
+    assert!(
+        !combined.contains("primitives/add-i64"),
+        "unknown bare symbol MUST NOT silently dispatch to `add-i64` \
+         (guards against over-broad Slice 1 fix); got:\n{combined}"
+    );
+    // Bare symbol must literally appear in the error to be actionable.
+    assert!(
+        combined.contains("unknown-primitive-name-zzzz"),
+        "error message MUST name the unknown symbol to be actionable; \
+         got:\n{combined}"
+    );
+}
+
+// spec: design/int/bare-primitive-value-path.md §"Post-implementation note"
+//       + spec/08-modules.md §8.9 — re-export chain transitivity (the
+//       resolver MUST walk user → prelude → primitives and land on the
+//       terminal Def)
+// (carry: legacy/sprint61_bare_primitive.rs::bare_primitive_two_hop_reexport_chain_lands_on_terminal_def)
+#[test]
+fn bare_primitive_two_hop_reexport_chain_lands_on_terminal_def() {
+    // Use the workspace stdlib so the real prelude (which re-exports
+    // primitives per stdlib/prelude.cl:49-52) is loaded — this creates the
+    // three-module chain user → prelude → primitives the design doc
+    // §"Post-implementation note" §1 describes.
+    let out = Cranelisp::new()
+        .repl()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .stdin("add-i64\n")
+        .output();
+    let display = &out.stdout;
+
+    // The resolver MUST walk user → prelude → primitives and produce the
+    // terminal Def's qualified name.
+    assert!(
+        display.contains("primitives/add-i64"),
+        "two-hop re-export chain (user → prelude → primitives) MUST resolve \
+         to `primitives/add-i64` per spec/08-modules.md §8.9 + \
+         bare-primitive-value-path.md post-impl note; got:\n{display}"
+    );
+    // Full signature must be present; threading through `resolved_module`
+    // means the chain lands on the terminal Def.
+    assert!(
+        display.contains("(Fn ["),
+        "two-hop resolver MUST surface the function signature, not just the \
+         name (would indicate truncation at intermediate Reexport); \
+         got:\n{display}"
+    );
+    // Negative face: MUST NOT be attributed to user/ or prelude/.
+    assert!(
+        !display.contains("user/add-i64"),
+        "bare `add-i64` MUST NOT be attributed to the `user` module \
+         (spec §8.9 — re-export provenance is the original defining module); \
+         got:\n{display}"
+    );
+    // Display types MUST be qualified per repl/spec.md §1.1.
+    assert!(
+        display.contains("primitives/Int"),
+        "display types MUST be qualified (`primitives/Int`), not bare `Int`, \
+         per repl/spec.md §1.1; got:\n{display}"
+    );
+}
+
+// =============================================================================
+// Sprint 64 Wave 6 batch 5 — Defect 3 docstring separator
+// =============================================================================
+
+// spec: repl/spec.md §1.1 — universal output format mandates a DASH
+//       separator between the classification word and the docstring's
+//       first line, NOT a semicolon
+// REGRESSION-GUARD: Sprint 58 Wave 6 Defect 3 — `append_docstring_comment`
+//       used to emit `; defn ; <doc>` (semicolon separator); spec mandates
+//       `; defn - <doc>`. /int fix landed; this guard prevents regression.
+// (carry: legacy/wave6_demo_repros.rs::display_defn_with_docstring_uses_dash_separator)
+#[test]
+fn display_defn_with_docstring_uses_dash_separator() {
+    let out = repl_prims(
+        "(defn double \"Multiply by 2\" [:Int x] (add-i64 x x))\ndouble\n",
+    );
+    let combined = format!("{}\n{}", out.stdout, out.stderr);
+    assert!(
+        combined.contains("; defn - Multiply by 2"),
+        "REPL output MUST use DASH separator per repl/spec.md §1.1 \
+         (`; defn - Multiply by 2`); semicolon-separator form \
+         (`; defn ; Multiply by 2`) is the pre-fix shape that MUST NOT \
+         regress. Combined:\n{combined}"
+    );
+}

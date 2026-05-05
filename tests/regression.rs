@@ -2680,3 +2680,181 @@ fn s60_run_tests_reduction_5_import_in_file_passes_control() {
          exit={exit:?}. --- combined ---\n{combined}"
     );
 }
+
+// =============================================================================
+// Sprint 64 Wave 6 batch 5 — Sprint 58 Wave 6 Defects 4+5 + Defect 6
+// =============================================================================
+//
+// Carry-forward from `tests/legacy/wave6_demo_repros.rs` per Wave 6
+// batch 5 audit. Two regression guards anchored to the original Sprint
+// 58 Wave 6 user-proxy demo defects.
+//
+// Defect 4+5 collapsed to a single repro shape: discovering a list of
+// tests under /run-tests and executing them in sequence MUST NOT
+// segfault/trap, AND the discovery MUST find tests (positive
+// completion). The d45 cluster above (§D) checks signal-crash; this
+// adds the positive-completion angle (test-wrap-tag + ok/FAILED:).
+//
+// Defect 6 — exemplar solver `--run` entry stack-overflow on the real
+// 81-cell puzzle. Distinct angle from the existing d6_exemplar_*
+// cluster (synthetic single-form repros using exemplar source as a
+// library, no IO): this exercises the **real solver entry**
+// (`--run exemplar/solver.cl::main`) including the IO trampolines.
+// Joins the four open-ledger d6_exemplar_* failing-not-ignored guards.
+// =============================================================================
+
+// spec: repl/spec.md §16.3 — `/run-tests <module>` MUST execute the
+//       module's discovered test functions and report pass/fail without
+//       crashing the process
+//
+// REGRESSION-GUARD: Sprint 58 Wave 6 Defects 4+5 — /run-tests html /
+// /run-tests form on real exemplar previously produced exit 139 / 133
+// (SIGSEGV / SIGTRAP) from the JIT'd test bodies. Combined fix landed;
+// this guard adds the positive-completion assertion missing from
+// d45_real_exemplar_html_run_tests_no_crash. Owning skill: /backend
+// (RC / last-use accounting across consecutive run_test_by_name calls)
+// or /int (run-tests dispatch loop).
+//
+// (carry: legacy/wave6_demo_repros.rs::run_tests_batched_invocation_no_crash)
+#[test]
+fn wave6_run_tests_batched_html_completes_without_crash() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    // Copy exemplar tree into a fresh tempdir and zero out user.cl so the
+    // checked-in user state is not in scope. Same shape as the d45 real-
+    // exemplar tests above.
+    let td = tempfile::tempdir().expect("tempdir for exemplar copy");
+    copy_exemplar_into(td.path(), ".");
+    std::fs::write(td.path().join("user.cl"), "").unwrap();
+    let cwd = td.path();
+
+    let binary = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("debug")
+        .join("cranelisp");
+    assert!(binary.exists(), "cranelisp binary not built");
+    let stdlib = Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib");
+    let platform = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("debug");
+
+    let input = "(import [html [test-wrap-tag]])\n/run-tests html\n";
+    let mut child = Command::new(&binary)
+        .current_dir(cwd)
+        .env("CRANELISP_LIB", stdlib)
+        .env("CRANELISP_PLATFORM_PATH", platform)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn cranelisp REPL");
+    {
+        let stdin = child.stdin.as_mut().expect("stdin");
+        let _ = stdin.write_all(input.as_bytes());
+    }
+    let out = child.wait_with_output().expect("wait subprocess");
+
+    let exit = out.status.code();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    // Failure mode 1: SIGSEGV / SIGTRAP from the JIT'd test bodies.
+    let signal_crash = matches!(exit, Some(139) | Some(133)) || exit.is_none();
+    // Failure mode 2: discovery race hides the test functions.
+    let no_tests_found = combined.contains("No test-* functions found");
+    // Failure mode 3: load fails outright before tests are discovered.
+    let load_failed = combined.contains("no parsed sexps for module")
+        || combined.contains("undefined variable: Nil");
+    // Success: at least one test ran and reported pass/fail.
+    let test_ran = combined.contains("test-wrap-tag")
+        && (combined.contains(" ok") || combined.contains("FAILED:"));
+
+    assert!(
+        !signal_crash && !no_tests_found && !load_failed && test_ran,
+        "/run-tests html did not complete cleanly. exit={exit:?}. \
+         signal_crash={signal_crash} (Defect 4: html SIGSEGV; \
+         Defect 5: form SIGTRAP). no_tests_found={no_tests_found}. \
+         load_failed={load_failed}. test_ran={test_ran}. \
+         Per repl/spec.md §16.3, /run-tests on a module with N test \
+         functions must execute all N and report pass/fail without \
+         crashing.\n--- combined ---\n{combined}"
+    );
+}
+
+// spec: spec/12-runtime.md §12.5 — RC behaviour at depth: deep recursion
+//       through Vec-copying ADT traversal must not segfault / overflow
+//       the stack
+//
+// REGRESSION-GUARD: Sprint 58 Wave 6 Defect 6 (= Sprint 19 known issue) —
+// exemplar solver `--run` entry stack-overflow on full 81-cell puzzle.
+// Distinct angle from the d6_exemplar_* cluster above (synthetic single-
+// form repros, no IO): this exercises the **real solver entry**
+// (`--run exemplar/solver.cl::main`) including the IO trampolines that
+// the synthetic repros elide. Differential observation: when /backend
+// resolves the recursion depth issue, this guard becomes passing; if it
+// still fails after the synthetic d6_exemplar_* guards pass, the
+// remaining defect is in the IO-trampoline interaction.
+//
+// FAILING-NOT-IGNORED per `memory/feedback_failing_not_ignored.md`.
+// Joins the four existing failing-not-ignored d6_exemplar_* tests in
+// §F above. Owning skill /backend (deep recursion / Vec COW / stack
+// frame size). Also FIXME(/port) — once Defect 6 is fixed, re-enable
+// test-easy-puzzle, test-hard-puzzle, test-unsolvable in
+// exemplar/solver.cl.
+//
+// (carry: legacy/wave6_demo_repros.rs::exemplar_solver_does_not_stack_overflow_on_small_puzzle)
+#[test]
+fn wave6_exemplar_solver_full_run_does_not_stack_overflow() {
+    use std::process::{Command, Stdio};
+
+    // Copy exemplar tree into a tempdir so the subprocess's cache + any
+    // transient .cl mutations stay isolated.
+    let td = tempfile::tempdir().expect("tempdir for exemplar copy");
+    copy_exemplar_into(td.path(), "exemplar");
+    let cwd = td.path();
+
+    let binary = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("debug")
+        .join("cranelisp");
+    assert!(binary.exists(), "cranelisp binary not built");
+    let stdlib = Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib");
+    let platform = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("debug");
+
+    // Use --run with the entry pointing to the real solver.cl. The
+    // CRANELISP_LIB env var points to the workspace stdlib so prelude
+    // resolves.
+    let out = Command::new(&binary)
+        .current_dir(cwd)
+        .args(["--run", "exemplar/solver.cl"])
+        .env("CRANELISP_LIB", stdlib)
+        .env("CRANELISP_PLATFORM_PATH", platform)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to invoke binary");
+
+    let exit = out.status.code();
+    // Stack overflow may surface as SIGABRT (None / SIGSEGV depending on
+    // platform / runtime) — Rust's stack-overflow handler aborts the
+    // process. Either way, exit success is required.
+    let signal_segv = exit == Some(139);
+    let killed_by_signal = exit.is_none();
+    assert!(
+        !signal_segv && !killed_by_signal,
+        "exemplar solver crashed with exit={exit:?}. Per Defect 6 \
+         (exemplar/CLAUDE.md Known Issues) propagate/solve stack-overflow \
+         on full 81-cell grids. Once /backend resolves this, /port can \
+         re-enable test-easy-puzzle, test-hard-puzzle, test-unsolvable \
+         in exemplar/solver.cl. \
+         stdout=\n{}\nstderr=\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+}

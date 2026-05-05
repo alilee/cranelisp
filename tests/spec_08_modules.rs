@@ -818,3 +818,64 @@ fn defmacro_dash_private_not_importable_neg() {
         out.stderr
     );
 }
+
+// =============================================================================
+// Sprint 64 Wave 6 batch 5 — Defect 2: stdlib seq.lazy null-import regression
+// =============================================================================
+//
+// Per Sprint 58 Wave 6 demo finding: `stdlib/seq/lazy.cl` once declared
+// `(import [prelude []])` (the null-import form per spec §8.3.6) which
+// suppresses the implicit prelude glob — yet referenced Nil/Cons from
+// `collections.list` and Some/None from `fn.option` without explicit
+// imports. /stdlib's fix added the missing imports. This test guards the
+// regression: any stdlib module that uses null-import MUST resolve every
+// name through explicit imports.
+//
+// REGRESSION-GUARD: Sprint 58 Wave 6 Defect 2 — /stdlib seq.lazy import
+// fix landed; this test is the durable record. Owning skill /stdlib
+// (per-module import discipline; resolved-by-passing-carry-forward).
+// (carry: legacy/wave6_demo_repros.rs::stdlib_seq_lazy_imports_resolve_nil_cons)
+
+// spec: spec/08-modules.md §8.3.6 — Null Import: a module that suppresses
+//       the prelude glob via `(import [prelude []])` MUST resolve every
+//       name through explicit imports
+#[test]
+fn null_import_module_resolves_all_names_via_explicit_imports() {
+    // Drive the stdlib seq.lazy module through batch compilation by
+    // importing it from a small entry file. If seq/lazy.cl is missing
+    // its Nil/Cons imports, the typechecker fails with "undefined
+    // variable: Nil". The test passes when seq.lazy typechecks cleanly.
+    let entry = "(import [seq.lazy [iterate take]])\n(defn main [] 0)\n";
+    let out = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .use_workspace_platforms()
+        .run("entry.cl")
+        .file("entry.cl", entry)
+        .output();
+
+    let combined = format!("{}\n{}", out.stdout, out.stderr);
+    // The exact symptom (`undefined variable: Nil/Cons/Some/None`) is the
+    // signature of Defect 2.
+    for missing in [
+        "undefined variable: Nil",
+        "undefined variable: Cons",
+        "undefined variable: Some",
+        "undefined variable: None",
+    ] {
+        assert!(
+            !combined.contains(missing),
+            "stdlib/seq/lazy.cl references Nil/Cons/Some/None without \
+             importing them. Per spec §8.3.6 a module that suppresses the \
+             prelude glob (via `(import [prelude []])`) MUST resolve every \
+             name through explicit imports. Found: `{missing}` in:\n{combined}"
+        );
+    }
+    // Successful exit (entry.cl's main returns 0).
+    assert!(
+        out.status.success(),
+        "entry importing seq.lazy MUST batch-compile cleanly when \
+         seq.lazy resolves Nil/Cons/Some/None via explicit imports per \
+         spec §8.3.6; got status={:?}\n{combined}",
+        out.status.code()
+    );
+}

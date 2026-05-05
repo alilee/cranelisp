@@ -45,6 +45,8 @@ into the owning crate's `#[cfg(test)]` unit tests.
 | `sprint60_cache_build_marker.rs` | 261 | 3 | /backend | 0146 | 2026-05-05 |
 | `sprint60_reduction.rs` | 721 | 17 | /backend | 0146 | 2026-05-05 |
 | `sprint60_run_tests_reduction.rs` | 325 | 5 | /backend (with /int co-owner — REPL session_v4 lifecycle) | 0146 | 2026-05-05 |
+| `sprint61_bare_primitive.rs` | 267 | 5 | /int | 0147 | 2026-05-05 |
+| `wave6_demo_repros.rs` | 495 | 5 | /int (with /backend, /stdlib, /port co-owners) | 0148 | 2026-05-05 |
 
 ## Discipline
 

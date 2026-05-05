@@ -687,3 +687,88 @@ fn h5_normal_completion_does_not_starve_repl_eval_thread() {
          stdout: {stdout}\nstderr: {stderr}"
     );
 }
+
+// =============================================================================
+// Sprint 64 Wave 6 batch 5 — Defect 1: REPL dep-load race in compile_dep_inline
+// =============================================================================
+//
+// Per /int Wave 6 FIXME #3 diagnosis (Sprint 58 Wave 6 demo finding):
+//   src/session_v4.rs::compile_dep_inline registered a dep with the
+//   scheduler BEFORE publishing dep_sexps to shared.module_sexps.
+//   Persistent priority workers (Sprint 57 W4) wake on the scheduler
+//   notify, dequeue Typecheck(<dep>), find no parsed sexps, and emit
+//   "no parsed sexps for module '<dep>'". The REPL's REPL-import + bare
+//   call shape consistently triggered the race when --priority-workers
+//   was raised to 4.
+//
+// Spec anchor: implicit Principle 11 (REPL and --run produce the same
+// semantics). Defects per root CLAUDE.md "Defects" §1: REPL/--run
+// divergence is a defect.
+//
+// REGRESSION-GUARD: Sprint 58 Wave 6 Defect 1 — race resolved post-S58 W6;
+// this test is the durable record. Owning skill /int (session_v4
+// compile_dep_inline ordering invariant).
+// (carry: legacy/wave6_demo_repros.rs::repl_dep_load_no_race_with_persistent_workers)
+
+// spec: repl/spec.md §0.2 — Run Mode parity: REPL `(import ...)` of a
+//       stdlib module MUST produce the same outcome as the equivalent
+//       `--run` invocation (root CLAUDE.md "Defects" §1 — REPL/--run
+//       divergence is a defect)
+#[test]
+fn repl_dep_load_no_race_with_persistent_workers() {
+    use std::io::Write;
+
+    // Setup: an isolated project root with the repo stdlib symlinked in.
+    // Drive the REPL with `--priority-workers 4` so multiple persistent
+    // workers wake on the scheduler notify — this is the configuration
+    // that consistently triggered the compile_dep_inline race per /int's
+    // FIXME #3 diagnosis. The race symptom is the literal error string
+    // "no parsed sexps for module" emitted when a worker dequeues a
+    // Typecheck task before compile_dep_inline has published the dep's
+    // sexps to shared.module_sexps.
+    let td = tempfile::tempdir().expect("create tempdir");
+    let cwd = td.path();
+    let proj_stdlib = cwd.join("stdlib");
+    if !proj_stdlib.exists() {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(project_root().join("stdlib"), &proj_stdlib).unwrap();
+        #[cfg(not(unix))]
+        std::fs::create_dir_all(&proj_stdlib).unwrap();
+    }
+
+    // The REPL evaluates a bare expression that requires the prelude
+    // graph to be loaded — the same shape /repl saw in Wave 6 demos.
+    let repl_input = "(import [collections.list [Cons Nil]])\n(Cons 1 Nil)\n";
+
+    let binary = binary_path();
+    assert!(
+        binary.exists(),
+        "cranelisp binary not found at {binary:?} — run `cargo build` first"
+    );
+    let mut child = Command::new(&binary)
+        .current_dir(cwd)
+        .args(["--priority-workers", "4"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to start cranelisp binary");
+    {
+        let stdin = child.stdin.as_mut().expect("failed to open stdin");
+        stdin
+            .write_all(repl_input.as_bytes())
+            .expect("failed to write input");
+    }
+    let out = child.wait_with_output().expect("failed to read output");
+
+    let combined = format!("{}{}", stdout_str(&out), stderr_str(&out));
+    assert!(
+        !combined.contains("no parsed sexps for module"),
+        "REPL emitted dep-load race symptom 'no parsed sexps for module'. \
+         Per /int FIXME #3 this means compile_dep_inline registered the dep \
+         with the scheduler before publishing the dep's sexps to \
+         shared.module_sexps. A persistent worker woke on the notify, \
+         dequeued the Typecheck task, and hit the empty map. \
+         Combined output:\n{combined}"
+    );
+}

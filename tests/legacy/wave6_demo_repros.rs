@@ -1,3 +1,36 @@
+// QUARANTINED Sprint 64 Wave 6 batch 5 — FIXME 0148 — owning skill /int
+// (with /backend, /stdlib, /port co-owners — see fan-out below).
+// Source archive — not built by Cargo (nested under tests/legacy/).
+// Awaiting harvest into the owning crates' #[cfg(test)] unit tests.
+//
+// Carry-forward: 5 tests across 4 files:
+//   - tests/repl_persist_race.rs::repl_dep_load_no_race_with_persistent_workers
+//     (Defect 1 — /int session_v4 compile_dep_inline ordering)
+//   - tests/spec_08_modules.rs::null_import_module_resolves_all_names_via_explicit_imports
+//     (Defect 2 — /stdlib seq.lazy null-import; resolved-by-passing)
+//   - tests/repl_introspection.rs::display_defn_with_docstring_uses_dash_separator
+//     (Defect 3 — /int append_docstring_comment format; resolved-by-passing)
+//   - tests/regression.rs::wave6_run_tests_batched_html_completes_without_crash
+//     (Defects 4+5 — /backend or /int run-tests RC/last-use; positive-
+//      completion angle adds to existing d45 cluster signal-crash check)
+//   - tests/regression.rs::wave6_exemplar_solver_full_run_does_not_stack_overflow
+//     (Defect 6 — /backend solver recursion; FAILING-NOT-IGNORED;
+//      cross-references FIXME 0145 for parent harvest scope)
+//
+// Inline FIXMEs preserved (verify during harvest):
+//   - lines 158–161: FIXME(/int) — Defect 1 dep-load race fix in
+//     compile_dep_inline. Resolved-by-passing-carry-forward.
+//   - lines 219–222: FIXME(/stdlib) — Defect 2 add explicit imports to
+//     stdlib/seq/lazy.cl. Resolved-by-passing-carry-forward.
+//   - lines 279–281: FIXME(/int) — Defect 3 append_docstring_comment
+//     format. Resolved-by-passing-carry-forward.
+//   - lines 329–332: FIXME(/backend) or FIXME(/int) — Defect 4+5 RC /
+//     last-use issue across consecutive run_test_by_name. Resolved-by-
+//     passing-carry-forward.
+//   - lines 437–443: FIXME(/backend) + FIXME(/port) — Defect 6 solver
+//     stack-overflow + re-enable disabled solver tests. OPEN; folds
+//     into FIXME 0148's /backend co-owner scope (cross-ref FIXME 0145).
+
 //! Sprint 58 Wave 6 — failing integration tests for demo-surfaced defects.
 //!
 //! Per the project-wide principle in root `CLAUDE.md` §"Usability Findings

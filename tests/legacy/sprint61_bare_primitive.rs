@@ -1,3 +1,20 @@
+// QUARANTINED Sprint 64 Wave 6 batch 5 — FIXME 0147 — owning skill /int
+// Source archive — not built by Cargo (nested under tests/legacy/).
+// Awaiting harvest into src/ #[cfg(test)] unit tests (the Slice 1 fix
+// area is `src/session_v4.rs::resolve_entry_for_display` +
+// `check_bare_symbol_introspection`).
+//
+// Carry-forward: 5 tests in 1 file → tests/repl_introspection.rs:
+//   - bare_primitive_add_i64_at_prompt_displays_type_and_fqn
+//   - bare_primitive_parallel_paths_converge_on_same_attribution
+//   - bare_primitive_surface_resolves_identically_across_five_plus_symbols
+//   - bare_primitive_unknown_name_produces_undefined_error_neg
+//   - bare_primitive_two_hop_reexport_chain_lands_on_terminal_def
+//
+// Inline FIXMEs preserved (verify during harvest):
+//   none — file's docstring + per-test docstrings reference design
+//   doc anchors; no pre-Sprint-63 inline FIXME(/skill) markers.
+
 //! Sprint 61 Slice 1 — bare-primitive value path integration tests.
 //!
 //! These tests validate /int's Slice 1 fix in
