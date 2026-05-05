@@ -39,6 +39,7 @@ into the owning crate's `#[cfg(test)]` unit tests.
 | `examples_run.rs` | 193 | 1 | /port | 0143 | 2026-05-05 |
 | `exemplar.rs` | 78 | 3 | /port | 0143 | 2026-05-05 |
 | `exemplar_solver_correctness.rs` | 302 | 2 | /port | 0143 | 2026-05-05 |
+| `sprint23.rs` | 2744 | 61 | /int | 0144 | 2026-05-05 |
 
 ## Discipline
 

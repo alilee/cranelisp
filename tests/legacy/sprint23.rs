@@ -1,3 +1,18 @@
+// QUARANTINED Sprint 64 Wave 6 batch 2 — FIXME 0144 — owning skill /int
+//
+// Read-only archive. Carry-forwards in:
+//   tests/link.rs (NEW, Part A commit 3b10234)         — Executable Generation
+//   tests/repl_shell.rs (NEW, Part A commit 3b10234)    — /sh shell escape
+//   tests/cache.rs (extended, Part A commit 3b10234)    — /reset + cache integration
+//   tests/repl_watch.rs (NEW, Part B)                   — file watching
+//   tests/repl_persist.rs (NEW, Part B)                 — session persistence
+//   tests/repl_persist_race.rs (NEW, Part B)            — heisenbug + H5 gate
+//   tests/build_confidence.rs (extended, Part B)        — #57 batch_main_nonzero_exit_code
+//
+// Total carry-forward: 58 tests across 7 files (25 Part A + 33 Part B), all PASS.
+// See tests/plan/wave-6-batch-2-audit.md for audit findings.
+// See design/arch/fixmes/0144-harvest-tests-legacy-sprint23.md for harvest commitment + inline-FIXME review tasks.
+
 //! Sprint 23: Executable Generation, /reset, Shell Escape, File Watching, REPL Cache
 //!
 //! Layer 4 (E2E) test stubs for Sprint 23 features. Each test traces to a

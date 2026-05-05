@@ -51,6 +51,28 @@ fn smoke_run_zero_arg_main_exits_zero() {
         .assert_exit(0);
 }
 
+// spec: spec/05-definitions.md §5.1 — `defn main`'s i64 return value
+//   becomes the process exit code under --run. Companion to
+//   `smoke_run_zero_arg_main_exits_zero` covering a non-zero exit code.
+//   The audit's marginal-call DUPLICATE-IN-LEGACY for #57
+//   (`batch_main_nonzero_exit_code`) was promoted to GAP-COVER per
+//   user's "additional tests are ok in marginal calls" guidance — the
+//   --run-only-mode-with-non-zero-Int main angle is not asserted by
+//   `smoke_link_then_run_executable_matches_run_exit` (which uses --link)
+//   nor by `mode_equiv_primitive_arithmetic` (which exits 3 across all 6
+//   modes). This test exercises just the --run path with the canonical
+//   42 exit code.
+//
+// (carry: legacy/sprint23.rs::batch_main_nonzero_exit_code)
+#[test]
+fn smoke_run_main_returns_int_propagates_as_exit_code() {
+    Cranelisp::new()
+        .run("user.cl")
+        .user("(defn main [] 42)")
+        .output()
+        .assert_exit(42);
+}
+
 // spec: design/backend/executable-generation.md §3 (End-to-End Flow) — `--link
 // main.cl` emits an executable next to the source; running it produces the
 // same exit code as `--run` would (per repl/spec.md §0.2.1 Link Mode).
