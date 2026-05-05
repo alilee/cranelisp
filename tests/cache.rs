@@ -661,3 +661,118 @@ fn cache_invalidation_on_dep_change_e2e() {
         .output()
         .assert_exit(22);
 }
+
+// =============================================================================
+// REPL-mode cache integration — Wave 6 batch 2 Part A carry-forward
+//
+// Per `tests/plan/wave-6-batch-2-audit.md` §4: the existing
+// `cache_repl_restart_cache_hit` and `cache_repl_incremental_monomorphisation`
+// cover the *batch-mode* (`--run`) cache restart flow. The legacy
+// `tests/sprint23.rs::cache_repl_*` cluster covers the *interactive REPL
+// session* (stdin-driven) cache write/load/reset surface — a distinct
+// angle preserved per Wave 5.5/5.6 multi-angle rule. `cache_writer_survives_reset`
+// is the sole `/reset`-+-cache test in the codebase.
+// =============================================================================
+
+// spec: design/int/repl-lifecycle.md §4.1 — Cache Write After Module Compilation.
+//       repl/spec.md §14.7 — Interaction with Object Cache.
+//   When the REPL compiles prelude modules at startup (here the
+//   TestStandard fixture prelude), `.cranelisp-cache/manifest.json`
+//   is materialised in the project_root (= per-test TempDir).
+//
+// (carry: legacy/sprint23.rs::cache_repl_writes_on_import)
+#[test]
+fn cache_repl_writes_manifest_on_prelude_load() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(helpers::e2e::PreludeVariant::TestStandard)
+        .stdin("(+ 1 2)\n/quit\n")
+        .output();
+
+    assert!(
+        out.stdout.contains("3"),
+        "prelude operator should evaluate: stdout={:?}",
+        out.stdout
+    );
+    assert!(
+        out.tmp_exists(".cranelisp-cache/manifest.json"),
+        "cache manifest should exist after REPL startup with prelude; tmpdir={}",
+        out.tmpdir.display()
+    );
+}
+
+// spec: design/int/repl-lifecycle.md §4.2 — Cache Load on Startup/Reset.
+//       repl/spec.md §14.7 — Interaction with Object Cache.
+//   Two REPL sessions in the same project root: first populates cache,
+//   second loads prelude from cache. Both produce identical results.
+//
+//   Note: legacy header documents Sprint 59 Workstream A resolution —
+//   the cache-hit arm of `inject_prelude_if_needed` now calls
+//   `register_imports` on the user-module check state with an
+//   `ImportNames::Glob` spec for `prelude`, matching the fresh-compile
+//   arm. This test guards that resolution.
+//
+// (carry: legacy/sprint23.rs::cache_repl_loads_on_startup)
+#[test]
+fn cache_repl_second_session_loads_prelude_from_cache() {
+    let first = Cranelisp::new()
+        .repl()
+        .with_prelude(helpers::e2e::PreludeVariant::TestStandard)
+        .stdin("(+ 40 2)\n/quit\n")
+        .output();
+
+    assert!(
+        first.stdout.contains("42"),
+        "first session should evaluate via prelude: stdout={:?}",
+        first.stdout
+    );
+    assert!(
+        first.tmp_exists(".cranelisp-cache/manifest.json"),
+        "cache must materialise after first session"
+    );
+
+    // Second session — same TempDir, prelude from cache.
+    let second = first
+        .run_again()
+        .repl()
+        .with_prelude(helpers::e2e::PreludeVariant::TestStandard)
+        .stdin("(+ 40 2)\n/quit\n")
+        .output();
+
+    assert!(
+        second.stdout.contains("42"),
+        "second session (cache loaded) should also produce 42: stdout={:?}",
+        second.stdout
+    );
+}
+
+// spec: design/int/repl-lifecycle.md §2.3 — Prelude Reload After Reset.
+//       design/int/repl-lifecycle.md §4.2 — Cache Load on Startup/Reset.
+//   After `/reset`, the prelude reload still produces working state and
+//   the cache survives across the reset. This is the ONLY `/reset`+cache
+//   integration test in the suite.
+//
+// (carry: legacy/sprint23.rs::cache_writer_survives_reset)
+#[test]
+fn cache_repl_writer_survives_slash_reset() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(helpers::e2e::PreludeVariant::TestStandard)
+        .stdin("(+ 3 4)\n/reset\n(+ 5 6)\n/quit\n")
+        .output();
+
+    assert!(
+        out.stdout.contains("7"),
+        "before /reset, (+ 3 4) should produce 7: stdout={:?}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("11"),
+        "after /reset, (+ 5 6) should produce 11 (prelude reloaded): stdout={:?}",
+        out.stdout
+    );
+    assert!(
+        out.tmp_exists(".cranelisp-cache/manifest.json"),
+        "cache manifest must survive /reset"
+    );
+}
