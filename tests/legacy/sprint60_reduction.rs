@@ -1,3 +1,43 @@
+// QUARANTINED Sprint 64 Wave 6 batch 4 — FIXME 0146 — owning skill /backend
+// Source archive — not built by Cargo (nested under tests/legacy/).
+// Awaiting harvest into cranelisp-backend/src/ #[cfg(test)] unit tests.
+//
+// Carry-forward: 17 tests across 1 file:
+//   §A cache-reuse cluster (11 tests) → tests/regression.rs:
+//     - s60_cache_reuse_exemplar_shaped_no_crash
+//     - s60_cache_reuse_no_cell_adt_no_crash
+//     - s60_cache_reuse_no_wrapper_adt_no_crash
+//     - s60_cache_reuse_non_recursive_helper_no_crash
+//     - s60_cache_reuse_nullary_helper_no_crash
+//     - s60_cache_reuse_empty_vec_helper_no_crash
+//     - s60_cache_reuse_int_helper_no_heap_no_crash
+//     - s60_cache_reuse_minimal_5_loc_no_crash
+//     - s60_control_single_file_no_crash
+//     - s60_control_no_intra_module_call_no_crash
+//     - s60_control_direct_helper_call_no_crash
+//   §B drop-glue cluster (6 tests) → tests/regression.rs:
+//     - s60_drop_glue_minimal_14_loc_no_crash
+//     - s60_drop_glue_one_cellat_call_passes
+//     - s60_drop_glue_inline_match_passes
+//     - s60_drop_glue_grid_vec_int_no_crash
+//     - s60_drop_glue_no_adt_wrapper_passes
+//     - s60_drop_glue_no_intermediate_fn_passes
+//
+// Inline FIXMEs preserved (verify during harvest):
+//   - line 167: FIXME(/backend) — S60 Step 1 exemplar-shaped baseline.
+//   - line 204: FIXME(/backend) — S60 reduction 2.1 Cell ADT not load-bearing.
+//   - line 223: FIXME(/backend) — S60 reduction 2.2 Grid wrapper not load-bearing.
+//   - line 240: FIXME(/backend) — S60 reduction 2.3 self-recursion not load-bearing.
+//   - line 257: FIXME(/backend) — S60 reduction 2.4 helper arity not load-bearing.
+//   - line 274: FIXME(/backend) — S60 reduction 2.5 vec-push not load-bearing.
+//   - line 291: FIXME(/backend) — S60 reduction 2.6 NO HEAP rules out RC.
+//   - line 321: FIXME(/backend) — S60 MINIMAL 5-LOC two-file cache-hit segfault.
+//   - line 542: FIXME(/backend) — S60 Round 2 MINIMAL drop-glue 14-LOC.
+//   - line 651: FIXME(/backend) — S60 Round 2 deletion-resistance double.
+// Total: 10 inline FIXME(/backend) hypothesis comments. All resolved-by-
+// passing-carry-forward at audit time (2026-05-05) — verify during /backend
+// harvest review and delete the legacy file when verification completes.
+
 //! Sprint 60 reduction tests — cache-reuse crashes, reduced from the
 //! A-cluster findings documented in
 //! `design/backend/defects-456-reduction.md §"Sprint 60 A.2/A.3b audit findings"`

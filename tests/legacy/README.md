@@ -42,6 +42,9 @@ into the owning crate's `#[cfg(test)]` unit tests.
 | `sprint23.rs` | 2744 | 61 | /int | 0144 | 2026-05-05 |
 | `sprint59_cache_repro.rs` | 152 | 2 | /backend | 0145 | 2026-05-05 |
 | `sprint59_defects456_repro.rs` | 1766 | 34 | /backend | 0145 | 2026-05-05 |
+| `sprint60_cache_build_marker.rs` | 261 | 3 | /backend | 0146 | 2026-05-05 |
+| `sprint60_reduction.rs` | 721 | 17 | /backend | 0146 | 2026-05-05 |
+| `sprint60_run_tests_reduction.rs` | 325 | 5 | /backend (with /int co-owner — REPL session_v4 lifecycle) | 0146 | 2026-05-05 |
 
 ## Discipline
 

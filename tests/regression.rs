@@ -1853,3 +1853,830 @@ fn d6_exemplar_make_grid_only_does_not_segv() {
         .output();
     assert_no_signal_crash("d6_exemplar_make_grid_only", &out);
 }
+
+// =============================================================================
+// Sprint 60 cache-reuse + drop-glue reductions
+// =============================================================================
+//
+// Carry-forward from `tests/legacy/sprint60_reduction.rs` per Wave 6 batch 4
+// audit (`tests/plan/wave-6-batch-4-audit.md`). Two reduction clusters:
+//
+//   §A cache-reuse SIGSEGV (steps 1 + 2.1–2.7 + 3 controls = 11 tests) —
+//      first run populates `.cranelisp-cache`; second run cache-hit-loads
+//      and historically segfaulted. Resolved by Sprint 60 Workstream A
+//      (single-GOT fix). Reductions stay as regression guards.
+//
+//   §B drop-glue / auto-curry double-free (step 1 + 5 reductions = 6 tests) —
+//      Grid-wrapped Vec + double `cell-at` call. Resolved post-Sprint-60
+//      Wave 2 Round 2. Reductions stay as regression guards.
+//
+// All 17 sprint60_reduction tests PASS on the current binary at audit time
+// (2026-05-05). Pre-Sprint 63 inline `FIXME(/backend)` hypothesis comments
+// preserved verbatim — see `tests/plan/wave-6-batch-4-audit.md` §"Tests
+// flagged for /sprint judgment" §C–§D for the migration discipline.
+// =============================================================================
+
+/// Run `cranelisp --run program.cl` from `cwd`, returning the raw `Output`.
+/// Used by the drop-glue 10-trial cold-cache loop where the per-trial fresh
+/// tempdir is the load-bearing setup. The standard `Cranelisp` builder
+/// produces one TempDir per builder; the 10-trial pattern needs ten fresh
+/// tempdirs, so we drop into bare `Command` for that loop.
+fn run_program_at(cwd: &Path, entry: &str) -> std::process::Output {
+    let binary = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("debug")
+        .join("cranelisp");
+    assert!(
+        binary.exists(),
+        "cranelisp binary not found at {binary:?} -- run `cargo build` first"
+    );
+    let stdlib = Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib");
+    let platform = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("debug");
+    std::process::Command::new(&binary)
+        .current_dir(cwd)
+        .args(["--run", entry])
+        .env("CRANELISP_LIB", stdlib)
+        .env("CRANELISP_PLATFORM_PATH", platform)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("failed to invoke binary")
+}
+
+/// 10 trials, fresh tempdir per trial. Panic if any trial signal-crashes.
+/// Used for the drop-glue cluster — under Rust-spawn cold-cache the crash
+/// rate is ~90% when the bug is active, so 10 trials gives >99% confidence
+/// that the reduction reproduces (or, post-fix, that it does not).
+fn reduce_single_file_10_trials(source: &str, label: &str) {
+    const TRIALS: usize = 10;
+    let mut crashes: Vec<String> = Vec::new();
+    for i in 0..TRIALS {
+        let td = tempfile::tempdir().expect("tempdir for trial");
+        std::fs::create_dir(td.path().join("subdir")).unwrap();
+        std::fs::write(td.path().join("subdir").join("program.cl"), source).unwrap();
+        let o = run_program_at(td.path(), "subdir/program.cl");
+        let exit = o.status.code();
+        let signal_crash = matches!(exit, Some(139) | Some(133) | Some(134)) || exit.is_none();
+        if signal_crash {
+            crashes.push(format!("trial {i}: exit={exit:?}"));
+        }
+    }
+    if !crashes.is_empty() {
+        panic!(
+            "{label}: {}/{} cold-cache trials crashed with signal. \
+             Reduced defect: drop-glue / auto-curry closure captures \
+             ADT-wrapped Vec and double-frees its inner Vec. \
+             trials that crashed: {}",
+            crashes.len(),
+            TRIALS,
+            crashes.join(", "),
+        );
+    }
+}
+
+/// Run a two-file cache-reuse program: write `grid_body` + `program_body`
+/// into a fresh tempdir, run `--run program.cl` twice in the same tempdir
+/// (first populates the cache, second hits the cache), assert neither run
+/// signal-crashed.
+fn assert_two_file_cache_reuse_no_crash(grid_body: &str, program_body: &str, label: &str) {
+    let first = Cranelisp::new()
+        .run("program.cl")
+        .file("grid.cl", grid_body)
+        .file("program.cl", program_body)
+        .output();
+    assert_first_not_signal_crashed(label, &first);
+    let second = first.run_again().run("program.cl").output();
+    assert_no_signal_crash(label, &second);
+}
+
+/// Run a single-file cache-reuse program: write `program_body` into a fresh
+/// tempdir, run twice in the same tempdir, assert neither run signal-crashed.
+fn assert_single_file_cache_reuse_no_crash(program_body: &str, label: &str) {
+    let first = Cranelisp::new()
+        .run("program.cl")
+        .file("program.cl", program_body)
+        .output();
+    assert_first_not_signal_crashed(label, &first);
+    let second = first.run_again().run("program.cl").output();
+    assert_no_signal_crash(label, &second);
+}
+
+/// First (fresh-cache) run must NOT signal-crash — we require the cache to
+/// be populated. Non-zero exit codes are fine (they reflect main's Int
+/// return), but a signal crash means the test is measuring the wrong thing.
+fn assert_first_not_signal_crashed(label: &str, out: &e2e::CrOutput) {
+    let exit = out.status.code();
+    let crashed = matches!(exit, Some(139) | Some(133)) || exit.is_none();
+    if crashed {
+        panic!(
+            "{label}: first (fresh-cache) run signal-crashed (exit={exit:?}). \
+             Cannot measure cache-reuse behaviour if the fresh-build path itself crashes.\n\
+             --- stdout ---\n{}\n--- stderr ---\n{}",
+            out.stdout, out.stderr
+        );
+    }
+}
+
+// -----------------------------------------------------------------------------
+// §A — cache-reuse cluster: step 1 baseline + 2.1–2.7 reductions + 3 controls
+// -----------------------------------------------------------------------------
+
+const S60_GRID_EXEMPLAR_SHAPED: &str = r#"(import [primitives [*]])
+
+(deftype Cell
+  (Given [:Int value])
+  (Solved [:Int value])
+  (Candidates [:Int bitmask]))
+
+(deftype Grid [cells])
+
+(defn build-helper [v i]
+  (if (eq-i64 i 9) v
+    (build-helper (vec-push v (Given 1)) (add-i64 i 1))))
+
+(defn make-grid [] (Grid (build-helper [] 0)))
+"#;
+
+const S60_PROGRAM_CALLS_MAKE_GRID: &str = r#"(import [grid [make-grid]])
+(defn main [] (let [g (make-grid)] 0))
+"#;
+
+// spec: design/backend/jit-object-convergence.md §1.1 — What MUST be identical.
+//   Sprint 60 Workstream A's A.3b uncommitted finding: cache-reuse on the
+//   exemplar-shaped baseline (Cell ADT + Grid wrapper + recursive
+//   build-helper) crashes on cache-hit load with SIGSEGV.
+//
+// REGRESSION-GUARD: Sprint 60 Workstream A — exemplar-shaped baseline
+//   reduction. Resolved by single-GOT fix.
+//
+// FIXME(/backend) — S60 Step 1: commits A.3b's uncommitted finding. First
+// run compiles + caches. Second run originally crashed on cache-hit load
+// with SIGSEGV. The exemplar-shaped baseline before reduction. When fixed:
+// restored the JIT/object convergence invariant for the cache-hit pathway
+// that populates `ModuleEntry::Def.code`.
+//
+// (carry: legacy/sprint60_reduction.rs::s60_cache_reuse_exemplar_shaped_no_crash)
+#[test]
+fn s60_cache_reuse_exemplar_shaped_no_crash() {
+    assert_two_file_cache_reuse_no_crash(
+        S60_GRID_EXEMPLAR_SHAPED,
+        S60_PROGRAM_CALLS_MAKE_GRID,
+        "s60_cache_reuse_exemplar_shaped",
+    );
+}
+
+const S60_GRID_NO_CELL_ADT: &str = r#"(import [primitives [*]])
+
+(deftype Grid [cells])
+
+(defn build-helper [v i]
+  (if (eq-i64 i 9) v
+    (build-helper (vec-push v i) (add-i64 i 1))))
+
+(defn make-grid [] (Grid (build-helper [] 0)))
+"#;
+
+// spec: (same anchor) — reduction 2.1 strips Cell ADT.
+// REGRESSION-GUARD: Cell ADT not load-bearing.
+// FIXME(/backend) — S60 reduction 2.1. Cell ADT not load-bearing.
+//
+// (carry: legacy/sprint60_reduction.rs::s60_cache_reuse_no_cell_adt_no_crash)
+#[test]
+fn s60_cache_reuse_no_cell_adt_no_crash() {
+    assert_two_file_cache_reuse_no_crash(
+        S60_GRID_NO_CELL_ADT,
+        S60_PROGRAM_CALLS_MAKE_GRID,
+        "s60_cache_reuse_no_cell_adt",
+    );
+}
+
+const S60_GRID_NO_WRAPPER_ADT: &str = r#"(import [primitives [*]])
+
+(defn build-helper [v i]
+  (if (eq-i64 i 9) v
+    (build-helper (vec-push v i) (add-i64 i 1))))
+
+(defn make-grid [] (build-helper [] 0))
+"#;
+
+// spec: (same anchor) — reduction 2.2 strips Grid wrapper.
+// REGRESSION-GUARD: Grid wrapper ADT not load-bearing.
+// FIXME(/backend) — S60 reduction 2.2. Grid wrapper ADT not load-bearing.
+//
+// (carry: legacy/sprint60_reduction.rs::s60_cache_reuse_no_wrapper_adt_no_crash)
+#[test]
+fn s60_cache_reuse_no_wrapper_adt_no_crash() {
+    assert_two_file_cache_reuse_no_crash(
+        S60_GRID_NO_WRAPPER_ADT,
+        S60_PROGRAM_CALLS_MAKE_GRID,
+        "s60_cache_reuse_no_wrapper_adt",
+    );
+}
+
+const S60_GRID_NON_RECURSIVE: &str = r#"(import [primitives [*]])
+
+(defn build-helper [v i] (vec-push v i))
+
+(defn make-grid [] (build-helper [] 0))
+"#;
+
+// spec: (same anchor) — reduction 2.3: helper not tail-recursive.
+// REGRESSION-GUARD: self-recursion not load-bearing.
+// FIXME(/backend) — S60 reduction 2.3. Self-recursion not load-bearing.
+//
+// (carry: legacy/sprint60_reduction.rs::s60_cache_reuse_non_recursive_helper_no_crash)
+#[test]
+fn s60_cache_reuse_non_recursive_helper_no_crash() {
+    assert_two_file_cache_reuse_no_crash(
+        S60_GRID_NON_RECURSIVE,
+        S60_PROGRAM_CALLS_MAKE_GRID,
+        "s60_cache_reuse_non_recursive_helper",
+    );
+}
+
+const S60_GRID_NULLARY_VEC_HELPER: &str = r#"(import [primitives [*]])
+
+(defn build-helper [] (vec-push [] 0))
+
+(defn make-grid [] (build-helper))
+"#;
+
+// spec: (same anchor) — reduction 2.4: helper takes no args.
+// REGRESSION-GUARD: helper arity not load-bearing.
+// FIXME(/backend) — S60 reduction 2.4. Helper arity not load-bearing.
+//
+// (carry: legacy/sprint60_reduction.rs::s60_cache_reuse_nullary_helper_no_crash)
+#[test]
+fn s60_cache_reuse_nullary_helper_no_crash() {
+    assert_two_file_cache_reuse_no_crash(
+        S60_GRID_NULLARY_VEC_HELPER,
+        S60_PROGRAM_CALLS_MAKE_GRID,
+        "s60_cache_reuse_nullary_helper",
+    );
+}
+
+const S60_GRID_EMPTY_VEC_HELPER: &str = r#"(import [primitives [*]])
+
+(defn build-helper [] [])
+
+(defn make-grid [] (build-helper))
+"#;
+
+// spec: (same anchor) — reduction 2.5: helper returns empty Vec.
+// REGRESSION-GUARD: vec-push not load-bearing; any heap value suffices.
+// FIXME(/backend) — S60 reduction 2.5. `vec-push` not load-bearing.
+//
+// (carry: legacy/sprint60_reduction.rs::s60_cache_reuse_empty_vec_helper_no_crash)
+#[test]
+fn s60_cache_reuse_empty_vec_helper_no_crash() {
+    assert_two_file_cache_reuse_no_crash(
+        S60_GRID_EMPTY_VEC_HELPER,
+        S60_PROGRAM_CALLS_MAKE_GRID,
+        "s60_cache_reuse_empty_vec_helper",
+    );
+}
+
+const S60_GRID_INT_HELPER: &str = r#"(import [primitives [*]])
+
+(defn build-helper [] 42)
+
+(defn make-grid [] (build-helper))
+"#;
+
+// spec: (same anchor) — reduction 2.6: helper returns Int literal. NO HEAP.
+// REGRESSION-GUARD: heap allocation NOT required; rules out RC entirely.
+// FIXME(/backend) — S60 reduction 2.6. NO HEAP. This rules out RC/drop-glue
+// entirely. The crash is purely about cache-hit handling of an imported
+// wrapper that calls a same-module helper, regardless of value type.
+//
+// (carry: legacy/sprint60_reduction.rs::s60_cache_reuse_int_helper_no_heap_no_crash)
+#[test]
+fn s60_cache_reuse_int_helper_no_heap_no_crash() {
+    assert_two_file_cache_reuse_no_crash(
+        S60_GRID_INT_HELPER,
+        S60_PROGRAM_CALLS_MAKE_GRID,
+        "s60_cache_reuse_int_helper_no_heap",
+    );
+}
+
+const S60_PROGRAM_NO_LET: &str = r#"(import [grid [make-grid]])
+(defn main [] (make-grid))
+"#;
+
+// spec: (same anchor) — THE 5-LOC MINIMUM.
+//   grid.cl: int helper + same-module wrapper.
+//   program.cl: cross-module import + call from main.
+// First run compiles both modules + caches; second run cache-loads and
+// historically SIGSEGV'd deterministically.
+//
+// REGRESSION-GUARD: Sprint 60 Workstream A — minimum crashing shape.
+// FIXME(/backend) — S60 MINIMAL — cache-hit path historically segfaulted on
+// a two-file, no-heap, no-recursion, no-`let` program. The SOLE load-bearing
+// shape: (1) module `grid` defines `build-helper` (no args, returns
+// literal); (2) module `grid` defines `make-grid` calling `build-helper`;
+// (3) module `program` imports `make-grid` and calls it from `main`;
+// (4) cache-hit second run. Resolved by Sprint 60 Workstream A single-GOT
+// fix; this test is the durable regression guard.
+//
+// Original hypothesis: on cache-hit, `make-grid`'s call to `build-helper`
+// dispatched through a NULL/stale GOT slot. Root-cause was in
+// `src/worker.rs::load_cached_module_via_linker` vicinity vs the
+// convergence invariant breach at design/backend/jit-object-convergence.md
+// §4 (`restore_cached_module`'s wholesale-swap of `symbol_tables[M].got`).
+//
+// (carry: legacy/sprint60_reduction.rs::s60_cache_reuse_minimal_5_loc_no_crash)
+#[test]
+fn s60_cache_reuse_minimal_5_loc_no_crash() {
+    assert_two_file_cache_reuse_no_crash(
+        S60_GRID_INT_HELPER,
+        S60_PROGRAM_NO_LET,
+        "s60_cache_reuse_minimal_5_loc",
+    );
+}
+
+const S60_SINGLE_FILE_WITH_HELPER: &str = r#"(import [primitives [*]])
+(defn build-helper [] 42)
+(defn make-grid [] (build-helper))
+(defn main [] (make-grid))
+"#;
+
+// REGRESSION-GUARD: control A — single-file. Pins cross-module-import as
+// load-bearing for the original cache-hit defect.
+//
+// (carry: legacy/sprint60_reduction.rs::s60_control_single_file_no_crash)
+#[test]
+fn s60_control_single_file_no_crash() {
+    assert_single_file_cache_reuse_no_crash(
+        S60_SINGLE_FILE_WITH_HELPER,
+        "s60_control_single_file",
+    );
+}
+
+const S60_GRID_TRIVIAL_WRAPPER: &str = r#"(import [primitives [*]])
+(defn make-grid [] 42)
+"#;
+
+// REGRESSION-GUARD: control B — no intra-module call in grid (`make-grid`
+// returns a literal directly, no `build-helper`). Pins the intra-module
+// call within `grid` as the load-bearing shape, not cross-module dispatch
+// generally.
+//
+// (carry: legacy/sprint60_reduction.rs::s60_control_no_intra_module_call_no_crash)
+#[test]
+fn s60_control_no_intra_module_call_no_crash() {
+    assert_two_file_cache_reuse_no_crash(
+        S60_GRID_TRIVIAL_WRAPPER,
+        S60_PROGRAM_NO_LET,
+        "s60_control_no_intra_module_call",
+    );
+}
+
+const S60_GRID_HELPER_ONLY: &str = r#"(import [primitives [*]])
+(defn build-helper [] 42)
+"#;
+
+const S60_PROGRAM_CALLS_HELPER_DIRECTLY: &str = r#"(import [grid [build-helper]])
+(defn main [] (build-helper))
+"#;
+
+// REGRESSION-GUARD: control C — direct call to helper, no wrapper layer in
+// grid. Pins "imported wrapper that calls a same-module helper" as the
+// load-bearing shape, not same-module calls in any imported module.
+//
+// (carry: legacy/sprint60_reduction.rs::s60_control_direct_helper_call_no_crash)
+#[test]
+fn s60_control_direct_helper_call_no_crash() {
+    assert_two_file_cache_reuse_no_crash(
+        S60_GRID_HELPER_ONLY,
+        S60_PROGRAM_CALLS_HELPER_DIRECTLY,
+        "s60_control_direct_helper_call",
+    );
+}
+
+// -----------------------------------------------------------------------------
+// §B — drop-glue / auto-curry double-free reductions (S60 Wave 2 Round 2)
+// -----------------------------------------------------------------------------
+//
+// Cluster character: 14-LOC minimal source; ASLR-dependent / heap-layout-
+// dependent flakiness. Each reduction trials 10× cold-cache to give >99%
+// repro confidence under the documented ~90% Rust-spawn crash rate when
+// the bug was active. Resolved post-S60 W2 R2; reductions stay as guards.
+
+const S60_DROP_GLUE_MINIMAL: &str = r#"(import [primitives [*]])
+
+(deftype Grid [cells])
+
+(defn cell-at [g idx]
+  (match g [(Grid cells) (vec-get cells idx)]))
+
+(defn walk [g]
+  (let [c1 (cell-at g 0)
+        c2 (cell-at g 0)]
+    0))
+
+(defn main []
+  (let [g (Grid (vec-push [] 0))]
+    (walk g)))
+"#;
+
+// spec: spec/12-runtime.md §12.4 — RC inc/dec must balance; drop glue must
+// not dec a captured value that the caller also dec's.
+//
+// REGRESSION-GUARD: Sprint 60 Wave 2 Round 2 — drop-glue / auto-curry
+// closure captures the ADT `g` twice (once per `cell-at` call in `walk`);
+// when both closures are RC-dec'd, the captured `g`'s RC reaches zero
+// before `walk`'s scope cleanup, causing `heap_dealloc` to be invoked on
+// `g`'s inner Vec twice. CLIF evidence: `walk`'s block1 allocates two
+// 24-byte heap regions, stores two fn pointers + the captured `v1` (g),
+// bumps g's RC twice, calls fn1(closure) then fn2(closure), then on return
+// decrements each closure's RC to zero and runs drop glue.
+//
+// FIXME(/backend) — S60 Round 2 MINIMAL (14 LOC). Root cause was in either
+// (a) `emit_consuming_caller_rc` for defn calls that get auto-curried
+// despite both args present, or (b) closure env RC accounting for captures
+// of ADT-wrapped Vec.
+//
+// (carry: legacy/sprint60_reduction.rs::s60_drop_glue_minimal_14_loc_no_crash)
+#[test]
+fn s60_drop_glue_minimal_14_loc_no_crash() {
+    reduce_single_file_10_trials(S60_DROP_GLUE_MINIMAL, "s60_drop_glue_minimal_14_loc");
+}
+
+const S60_DROP_GLUE_ONE_CALL: &str = r#"(import [primitives [*]])
+
+(deftype Grid [cells])
+
+(defn cell-at [g idx]
+  (match g [(Grid cells) (vec-get cells idx)]))
+
+(defn walk [g]
+  (let [c1 (cell-at g 0)]
+    0))
+
+(defn main []
+  (let [g (Grid (vec-push [] 0))]
+    (walk g)))
+"#;
+
+// REGRESSION-GUARD: control — single `cell-at` invocation does not crash.
+// Pins the defect to the TWO-closure-same-capture interaction.
+//
+// (carry: legacy/sprint60_reduction.rs::s60_drop_glue_one_cellat_call_passes)
+#[test]
+fn s60_drop_glue_one_cellat_call_passes() {
+    reduce_single_file_10_trials(S60_DROP_GLUE_ONE_CALL, "s60_drop_glue_one_cellat_call");
+}
+
+const S60_DROP_GLUE_INLINE_MATCH: &str = r#"(import [primitives [*]])
+
+(deftype Grid [cells])
+
+(defn walk [g]
+  (let [c1 (match g [(Grid cs) (vec-get cs 0)])
+        c2 (match g [(Grid cs) (vec-get cs 0)])]
+    0))
+
+(defn main []
+  (let [g (Grid (vec-push [] 0))]
+    (walk g)))
+"#;
+
+// REGRESSION-GUARD: control — inline-match twice on the same `g` does not
+// crash. Pins the defect to the defn-call path (cell-at), NOT to
+// match-semantics on Grid.
+//
+// (carry: legacy/sprint60_reduction.rs::s60_drop_glue_inline_match_passes)
+#[test]
+fn s60_drop_glue_inline_match_passes() {
+    reduce_single_file_10_trials(S60_DROP_GLUE_INLINE_MATCH, "s60_drop_glue_inline_match");
+}
+
+const S60_DROP_GLUE_GRID_VEC_INT: &str = r#"(import [primitives [*]])
+
+(deftype Grid [cells])
+
+(defn cell-at [g idx]
+  (match g [(Grid cells) (vec-get cells idx)]))
+
+(defn walk [g]
+  (let [c1 (cell-at g 0)
+        c2 (cell-at g 0)]
+    0))
+
+(defn main []
+  (let [g (Grid (vec-push [] 0))]
+    (walk g)))
+"#;
+
+// FIXME(/backend) — S60 Round 2 variant. This is literally identical source
+// to `s60_drop_glue_minimal_14_loc` — committed as a duplicate regression
+// guard so that a well-intentioned "simplify" edit of the minimal test
+// can't silently delete coverage. If one crashes, both do.
+//
+// REGRESSION-GUARD: deletion-resistance double for the minimal repro.
+//
+// (carry: legacy/sprint60_reduction.rs::s60_drop_glue_grid_vec_int_no_crash)
+#[test]
+fn s60_drop_glue_grid_vec_int_no_crash() {
+    reduce_single_file_10_trials(S60_DROP_GLUE_GRID_VEC_INT, "s60_drop_glue_grid_vec_int");
+}
+
+const S60_DROP_GLUE_NO_WRAPPER: &str = r#"(import [primitives [*]])
+
+(defn walk [v]
+  (let [c1 (vec-get v 0)
+        c2 (vec-get v 0)]
+    0))
+
+(defn main []
+  (let [v (vec-push [] 0)]
+    (walk v)))
+"#;
+
+// REGRESSION-GUARD: control — double `vec-get` on bare Vec, no ADT wrapper.
+// Passes. Pins the defect to the Grid-wrapped-Vec shape specifically.
+//
+// (carry: legacy/sprint60_reduction.rs::s60_drop_glue_no_adt_wrapper_passes)
+#[test]
+fn s60_drop_glue_no_adt_wrapper_passes() {
+    reduce_single_file_10_trials(S60_DROP_GLUE_NO_WRAPPER, "s60_drop_glue_no_adt_wrapper");
+}
+
+const S60_DROP_GLUE_NO_INTERMEDIATE: &str = r#"(import [primitives [*]])
+
+(deftype Grid [cells])
+
+(defn cell-at [g idx]
+  (match g [(Grid cells) (vec-get cells idx)]))
+
+(defn main []
+  (let [g (Grid (vec-push [] 0))
+        c1 (cell-at g 0)
+        c2 (cell-at g 0)]
+    0))
+"#;
+
+// REGRESSION-GUARD: control — double cell-at called directly from main (no
+// walk fn). Passes. Pins the defect to the intermediate-fn parameter path.
+//
+// (carry: legacy/sprint60_reduction.rs::s60_drop_glue_no_intermediate_fn_passes)
+#[test]
+fn s60_drop_glue_no_intermediate_fn_passes() {
+    reduce_single_file_10_trials(
+        S60_DROP_GLUE_NO_INTERMEDIATE,
+        "s60_drop_glue_no_intermediate_fn",
+    );
+}
+
+// =============================================================================
+// Sprint 60 Wave 2 Round 3 — `/run-tests` REPL-eval persistence-collapse
+// =============================================================================
+//
+// Carry-forward from `tests/legacy/sprint60_run_tests_reduction.rs` per
+// Wave 6 batch 4 audit. Cluster character: REPL-eval'd `(import [tiny ...])`
+// against an empty entry `user.cl` produces a shutdown-path failure ("no
+// parsed sexps for module 'user'") OR an active-path panic
+// (`register_dep_for_eval MUST publish dep_sexps`) depending on the
+// surfacing pathway. The four `_failing` reductions bound the defect
+// shape; the fifth is a passing negative control proving the defect is
+// REPL-eval-specific.
+//
+// CURRENT STATUS at audit time (2026-05-05):
+//   #1, #2, #4: PASS (bug shape shifted since sprint authorship)
+//   #3:        FAIL (open defect — failing-not-ignored per
+//                    memory/feedback_failing_not_ignored.md)
+//   #5:        PASS (negative control)
+//
+// Owning skill: /int (REPL session_v4 lifecycle wiring). FIXME 0146 is
+// the harvest target.
+// =============================================================================
+
+/// Drive the REPL binary from `cwd` (a fresh tempdir) with piped stdin.
+fn run_repl_in_tmpdir(cwd: &Path, stdin_input: &str) -> std::process::Output {
+    let binary = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("debug")
+        .join("cranelisp");
+    assert!(
+        binary.exists(),
+        "cranelisp binary not built at {binary:?} — run `cargo build` first"
+    );
+    let stdlib = Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib");
+    let platform = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("debug");
+    let mut child = std::process::Command::new(&binary)
+        .current_dir(cwd)
+        .env("CRANELISP_LIB", stdlib)
+        .env("CRANELISP_PLATFORM_PATH", platform)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn cranelisp REPL");
+    {
+        use std::io::Write;
+        if let Some(stdin) = child.stdin.as_mut() {
+            let _ = stdin.write_all(stdin_input.as_bytes());
+        }
+    }
+    child.wait_with_output().expect("failed to read REPL output")
+}
+
+fn combined_out(o: &std::process::Output) -> String {
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr),
+    )
+}
+
+// spec: repl/spec.md §16.2.1 — `/run-tests [module]` MUST exit cleanly.
+// REGRESSION-GUARD: Sprint 60 Wave 2 Round 3 — original cluster baseline
+// (exemplar /run-tests html with empty user.cl).
+//
+// Status at audit: PASSES (the original "no parsed sexps" shutdown failure
+// no longer fires for the exemplar batched shape).
+//
+// FIXME(/int) — REPL session_v4 lifecycle: REPL-eval'd imports against an
+// empty entry user.cl historically left the user module Failed at
+// shutdown. This shape now passes; the failure surface has shifted to
+// the /quit variant (#3 below). Kept as a regression guard.
+//
+// (carry: legacy/sprint60_run_tests_reduction.rs::s60_run_tests_reduction_1_exemplar_batched_failing)
+#[test]
+fn s60_run_tests_reduction_1_exemplar_batched_failing() {
+    let exemplar_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("exemplar");
+    if !exemplar_src.exists() {
+        eprintln!("exemplar/ missing — skipping this reduction");
+        return;
+    }
+    let td = tempfile::tempdir().expect("tempdir for exemplar copy");
+    copy_dir_recursive(&exemplar_src, td.path()).expect("copy exemplar tree");
+    // Empty user.cl matches the original shape (wave6 test) — the defect
+    // triggers only when user.cl is empty at session start.
+    std::fs::write(td.path().join("user.cl"), "").unwrap();
+
+    let input = "(import [html [test-wrap-tag]])\n/run-tests html\n";
+    let out = run_repl_in_tmpdir(td.path(), input);
+    let exit = out.status.code();
+    let combined = combined_out(&out);
+
+    let tests_all_ran = combined.contains("10 passed in");
+    let load_err = combined.contains("no parsed sexps for module 'user'");
+    let clean_exit = exit == Some(0);
+
+    assert!(
+        clean_exit && tests_all_ran && !load_err,
+        "exemplar /run-tests html: exit={exit:?} (want 0). \
+         tests_all_ran={tests_all_ran}. load_err_tail={load_err}. \
+         --- combined ---\n{combined}"
+    );
+}
+
+// spec: (same anchor) — MINIMAL REPRO of the shutdown-path defect.
+// REGRESSION-GUARD: 19 LOC total (2-file tempdir). Any REPL session that
+// imports from a local file-on-disk module while the current user.cl is
+// absent/empty historically failed exit 1 at shutdown after EOF.
+//
+// Status at audit: PASSES (bug surface has shifted).
+//
+// FIXME(/int) — minimum REPL-import shape carries forward as a regression
+// guard. If this ever fails again, the defect has regressed into the
+// shutdown path.
+//
+// (carry: legacy/sprint60_run_tests_reduction.rs::s60_run_tests_reduction_2_repl_import_empty_user_failing)
+#[test]
+fn s60_run_tests_reduction_2_repl_import_empty_user_failing() {
+    let td = tempfile::tempdir().expect("create tempdir");
+    let cwd = td.path();
+    std::fs::write(cwd.join("tiny.cl"), "(defn answer [] 42)\n").unwrap();
+    // NO user.cl — the entry module sources to "" (empty sexps).
+
+    let input = "(import [tiny [answer]])\n";
+    let out = run_repl_in_tmpdir(cwd, input);
+    let exit = out.status.code();
+    let combined = combined_out(&out);
+
+    let load_err = combined.contains("no parsed sexps for module 'user'");
+    let clean_exit = exit == Some(0);
+
+    assert!(
+        clean_exit && !load_err,
+        "minimal REPL-import shape: exit={exit:?} (want 0). load_err={load_err}. \
+         --- combined ---\n{combined}"
+    );
+}
+
+// spec: (same anchor) — `/quit` variant.
+//
+// **OPEN DEFECT (failing-not-ignored)**: at audit time (2026-05-05) this
+// test fails with exit 101 and a panic in `src/session_v4.rs:1572`:
+// `register_dep_for_eval MUST publish dep_sexps before calling
+// scheduler.register_module`. The original "no parsed sexps for module
+// 'user'" shutdown-path symptom no longer fires; the bug surface has
+// shifted into the active eval path. Same root-cause class
+// (entry-module sexp-lifecycle inconsistency between REPL import and the
+// persistent worker pool).
+//
+// Per `memory/feedback_failing_not_ignored.md`: lands un-ignored.
+// FIXME(/int) — REPL session_v4 lifecycle: register_dep_for_eval ordering
+// invariant violated when REPL evaluates an import against an empty entry
+// user.cl + `/quit` shutdown. Migrate to numbered fixme at FIXME 0146
+// close.
+//
+// (carry: legacy/sprint60_run_tests_reduction.rs::s60_run_tests_reduction_3_quit_variant_failing)
+#[test]
+fn s60_run_tests_reduction_3_quit_variant_failing() {
+    let td = tempfile::tempdir().expect("create tempdir");
+    let cwd = td.path();
+    std::fs::write(cwd.join("tiny.cl"), "(defn answer [] 42)\n").unwrap();
+
+    let input = "(import [tiny [answer]])\n/quit\n";
+    let out = run_repl_in_tmpdir(cwd, input);
+    let exit = out.status.code();
+    let combined = combined_out(&out);
+
+    let load_err = combined.contains("no parsed sexps for module 'user'");
+    let clean_exit = exit == Some(0);
+
+    assert!(
+        clean_exit && !load_err,
+        "REPL with /quit after import should exit 0 and not emit load_err. \
+         exit={exit:?} load_err={load_err}. \
+         --- combined ---\n{combined}"
+    );
+}
+
+// spec: (same anchor) — second-form variant: typing another expression
+// after the import runs one extra iteration of the REPL loop, giving
+// `poll_and_reload` a chance to observe the watcher event from
+// `regenerate_backing_file`.
+//
+// Status at audit: PASSES (bug shape shifted; this surface no longer
+// fires).
+//
+// FIXME(/int) — second-form variant carries forward as a regression guard.
+// Original observation: even typing another expression after the import
+// did not clear the scheduler state — the failure persisted through
+// wait_object_complete. If this ever fails again, the defect has
+// regressed into the second-form path.
+//
+// (carry: legacy/sprint60_run_tests_reduction.rs::s60_run_tests_reduction_4_second_form_variant_failing)
+#[test]
+fn s60_run_tests_reduction_4_second_form_variant_failing() {
+    let td = tempfile::tempdir().expect("create tempdir");
+    let cwd = td.path();
+    std::fs::write(cwd.join("tiny.cl"), "(defn answer [] 42)\n").unwrap();
+
+    // Import then a bare literal — the second iteration gives the watcher
+    // a chance to observe the regenerate_backing_file write.
+    let input = "(import [tiny [answer]])\n42\n";
+    let out = run_repl_in_tmpdir(cwd, input);
+    let exit = out.status.code();
+    let combined = combined_out(&out);
+
+    let load_err = combined.contains("no parsed sexps for module 'user'");
+    let clean_exit = exit == Some(0);
+
+    assert!(
+        clean_exit && !load_err,
+        "REPL with second form after import should exit 0 and not emit load_err. \
+         exit={exit:?} load_err={load_err}. \
+         --- combined ---\n{combined}"
+    );
+}
+
+// spec: (same anchor) — CONTROL: the same import form placed IN user.cl
+// (as-a-file) rather than typed at the REPL prompt does NOT trigger the
+// failure. Confirms the bug is specific to the REPL-eval path's
+// interaction with the scheduler's user-module state — not a general
+// local-import failure.
+//
+// REGRESSION-GUARD: passes today; if this ever fails, the defect has
+// spread into the entry-module load path.
+//
+// (carry: legacy/sprint60_run_tests_reduction.rs::s60_run_tests_reduction_5_import_in_file_passes_control)
+#[test]
+fn s60_run_tests_reduction_5_import_in_file_passes_control() {
+    let td = tempfile::tempdir().expect("create tempdir");
+    let cwd = td.path();
+    std::fs::write(cwd.join("tiny.cl"), "(defn answer [] 42)\n").unwrap();
+    // user.cl HAS the import up-front.
+    std::fs::write(cwd.join("user.cl"), "(import [tiny [answer]])\n").unwrap();
+
+    // Empty stdin — entry module resolution alone drives the import.
+    let out = run_repl_in_tmpdir(cwd, "");
+    let exit = out.status.code();
+    let combined = combined_out(&out);
+
+    assert_eq!(
+        exit,
+        Some(0),
+        "REPL with import in user.cl (not typed at prompt) should exit 0. \
+         exit={exit:?}. --- combined ---\n{combined}"
+    );
+}

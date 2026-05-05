@@ -883,3 +883,221 @@ fn cache_repl_empty_prelude_session_2_evaluates_literal() {
         second.stderr
     );
 }
+
+// =============================================================================
+// Sprint 60 Workstream C — `.meta.json` build_id field
+// =============================================================================
+//
+// Three regression guards covering the user-surface invariant of the
+// build-id cache invalidation extension. Unit-tier coverage for the
+// serialise/deserialise path lives in
+// `crates/cranelisp-backend/src/cache/serialize.rs`
+// (`build_id_round_trip_succeeds`, `stale_build_id_produces_build_id_mismatch`,
+// `missing_build_id_field_routes_cache_stale`); these e2e tests prove
+// the user-surface invariant fires through the binary subprocess.
+// Carry from Wave 6 batch 4 audit (tests/plan/wave-6-batch-4-audit.md).
+
+/// Trivial single-file program used by the build_id tests below. `main`
+/// returns 0 (spec §12.6) so `assert_ok()` is the right assertion.
+const BUILD_ID_SRC: &str = "(import [primitives [add-i64]])\n(defn double [x] (add-i64 x x))\n(defn main [] (double 0))";
+
+/// Extract the `build_id` string from the raw `.meta.json` text. Returns
+/// `None` if the field is absent. Narrow parser — looks for
+/// `"build_id":"..."` as a top-level field; avoids a serde_json dep.
+fn extract_build_id(meta_text: &str) -> Option<String> {
+    let needle = "\"build_id\":";
+    let idx = meta_text.find(needle)?;
+    let after = &meta_text[idx + needle.len()..];
+    let after = after.trim_start();
+    let after = after.strip_prefix('"')?;
+    let end = after.find('"')?;
+    Some(after[..end].to_string())
+}
+
+/// Rewrite the `build_id` field's value in raw JSON text. Panics if the
+/// field is absent — caller must ensure presence first.
+fn set_build_id(meta_text: &str, new_value: &str) -> String {
+    let needle = "\"build_id\":";
+    let idx = meta_text
+        .find(needle)
+        .expect("meta text must contain build_id field for set_build_id");
+    let before = &meta_text[..idx + needle.len()];
+    let after = &meta_text[idx + needle.len()..];
+    let after_trim = after.trim_start();
+    assert!(
+        after_trim.starts_with('"'),
+        "build_id value must be a JSON string; got: {after:.60}…"
+    );
+    let val_start = after.len() - after_trim.len() + 1;
+    let rest = &after[val_start..];
+    let end = rest
+        .find('"')
+        .expect("unterminated build_id value in meta.json");
+    let suffix = &rest[end..]; // starts with closing `"`
+    format!("{before}\"{new_value}{suffix}")
+}
+
+/// Remove the `build_id` field (and trailing comma if present) for the
+/// pre-Sprint-60 shape simulation.
+fn remove_build_id(meta_text: &str) -> String {
+    let needle = "\"build_id\":";
+    let idx = meta_text
+        .find(needle)
+        .expect("meta text must contain build_id field for remove_build_id");
+    let after = &meta_text[idx + needle.len()..];
+    let after_trim_offset = after.len() - after.trim_start().len();
+    let val = &after[after_trim_offset + 1..]; // skip opening quote
+    let end_quote = val
+        .find('"')
+        .expect("unterminated build_id value in meta.json");
+    let mut end_idx = idx + needle.len() + after_trim_offset + 1 + end_quote + 1;
+    let tail = &meta_text[end_idx..];
+    if tail.trim_start().starts_with(',') {
+        let ws = tail.len() - tail.trim_start().len();
+        end_idx += ws + 1 /* the comma */;
+        let after_comma = &meta_text[end_idx..];
+        let ws2 = after_comma.len() - after_comma.trim_start().len();
+        end_idx += ws2;
+    }
+    format!("{}{}", &meta_text[..idx], &meta_text[end_idx..])
+}
+
+// spec: design/backend/module-caching.md §4 — Serialization Format.
+//   First compile populates `.meta.json` with a non-empty build_id, and
+//   schema_version remains co-present (additive, not substitutive — Sprint
+//   60 Architecture Review Condition 3).
+//
+// REGRESSION-GUARD: Sprint 60 Workstream C — write-side e2e wrapper
+//   around unit `build_id_round_trip_succeeds` in
+//   crates/cranelisp-backend/src/cache/serialize.rs.
+//
+// (carry: legacy/sprint60_cache_build_marker.rs::cache_meta_carries_build_id_after_first_compile)
+#[test]
+fn cache_meta_carries_build_id_after_first_compile() {
+    let out = Cranelisp::new()
+        .run("main.cl")
+        .file("main.cl", BUILD_ID_SRC)
+        .output()
+        .assert_ok();
+
+    let meta_path = out.tmpdir.join(".cranelisp-cache").join("main.meta.json");
+    assert!(
+        meta_path.exists(),
+        "main.meta.json must be written under .cranelisp-cache/"
+    );
+    let text = fs::read_to_string(&meta_path).expect("read main.meta.json");
+    let build_id = extract_build_id(&text).unwrap_or_else(|| {
+        panic!("meta.json must carry a build_id field; got:\n{text}")
+    });
+    assert!(
+        !build_id.is_empty(),
+        "build_id must be non-empty; meta=\n{text}"
+    );
+    // Negative guard: schema_version must remain alongside build_id.
+    // Additive (Sprint 60 Architecture Review Condition 3), not substitutive.
+    assert!(
+        text.contains("\"schema_version\":"),
+        "schema_version must remain alongside build_id; meta=\n{text}"
+    );
+}
+
+// spec: design/backend/module-caching.md §6 — Cache Invalidation Strategy.
+//   Tampering with build_id forces a fresh build on the next compile:
+//   second compile MUST succeed, and meta.build_id MUST be re-stamped to
+//   the original (proving the cache miss + re-emit path ran rather than
+//   silently honouring the stale meta).
+//
+// REGRESSION-GUARD: Sprint 60 Workstream C — invalidation-side e2e
+//   wrapper around unit `stale_build_id_produces_build_id_mismatch`.
+//
+// (carry: legacy/sprint60_cache_build_marker.rs::cache_meta_with_stale_build_id_triggers_recompile)
+#[test]
+fn cache_meta_with_stale_build_id_triggers_recompile() {
+    let first = Cranelisp::new()
+        .run("main.cl")
+        .file("main.cl", BUILD_ID_SRC)
+        .output()
+        .assert_ok();
+
+    let meta_path = first.tmpdir.join(".cranelisp-cache").join("main.meta.json");
+    let original_text = fs::read_to_string(&meta_path).expect("read main.meta.json");
+    let original_build_id =
+        extract_build_id(&original_text).expect("first compile wrote build_id");
+
+    // Patch meta.build_id to a synthetic stale value.
+    let patched_text = set_build_id(&original_text, "0.0.0+stale-synthetic");
+    assert_eq!(
+        extract_build_id(&patched_text).as_deref(),
+        Some("0.0.0+stale-synthetic"),
+        "patch must land before second compile"
+    );
+    fs::write(&meta_path, &patched_text).expect("write patched meta");
+
+    // Second compile in the same TempDir — cache must miss and re-emit.
+    let second = first
+        .run_again()
+        .run("main.cl")
+        .output()
+        .assert_ok();
+
+    let after_path = second.tmpdir.join(".cranelisp-cache").join("main.meta.json");
+    let after_text = fs::read_to_string(&after_path).expect("read meta after rebuild");
+    let rewritten_build_id =
+        extract_build_id(&after_text).expect("rebuild must restore build_id");
+    // Negative: the stale sentinel MUST NOT survive — its survival would
+    // mean the cache honoured the patched meta (i.e. invalidation didn't fire).
+    assert_ne!(
+        rewritten_build_id, "0.0.0+stale-synthetic",
+        "stale build_id survived — cache did not invalidate on build_id mismatch"
+    );
+    assert_eq!(
+        rewritten_build_id, original_build_id,
+        "rebuild must stamp the current build_id (same as first compile)"
+    );
+}
+
+// spec: design/backend/module-caching.md §6 — pre-Sprint-60 `.meta.json`
+//   shape (no `build_id` field at all) MUST be treated as stale. Simulated
+//   by removing the field from a freshly-written meta.
+//
+// REGRESSION-GUARD: Sprint 60 Workstream C — schema-evolution e2e wrapper
+//   around unit `missing_build_id_field_routes_cache_stale`.
+//
+// (carry: legacy/sprint60_cache_build_marker.rs::cache_meta_without_build_id_field_triggers_recompile)
+#[test]
+fn cache_meta_without_build_id_field_triggers_recompile() {
+    let first = Cranelisp::new()
+        .run("main.cl")
+        .file("main.cl", BUILD_ID_SRC)
+        .output()
+        .assert_ok();
+
+    let meta_path = first.tmpdir.join(".cranelisp-cache").join("main.meta.json");
+    let original_text = fs::read_to_string(&meta_path).expect("read main.meta.json");
+    let original_build_id =
+        extract_build_id(&original_text).expect("first compile wrote build_id");
+
+    // Strip the build_id field entirely — pre-Sprint-60 cache shape.
+    let patched_text = remove_build_id(&original_text);
+    fs::write(&meta_path, &patched_text).expect("write patched meta");
+    let verify = fs::read_to_string(&meta_path).expect("re-read patched meta");
+    assert!(
+        extract_build_id(&verify).is_none(),
+        "patched meta must have no build_id field; got:\n{verify}"
+    );
+
+    // Second compile — cache must miss and rebuild.
+    let second = first
+        .run_again()
+        .run("main.cl")
+        .output()
+        .assert_ok();
+
+    let after_path = second.tmpdir.join(".cranelisp-cache").join("main.meta.json");
+    let after_text = fs::read_to_string(&after_path).expect("read meta after rebuild");
+    let restored = extract_build_id(&after_text).expect("rebuild must restore build_id");
+    assert_eq!(
+        restored, original_build_id,
+        "rebuild must stamp the current build_id on pre-Sprint-60-shape caches"
+    );
+}

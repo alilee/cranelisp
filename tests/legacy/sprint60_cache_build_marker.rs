@@ -1,3 +1,18 @@
+// QUARANTINED Sprint 64 Wave 6 batch 4 — FIXME 0146 — owning skill /backend
+// Source archive — not built by Cargo (nested under tests/legacy/).
+// Awaiting harvest into cranelisp-backend/src/ #[cfg(test)] unit tests.
+//
+// Carry-forward: 3 tests across 1 file:
+//   - tests/cache.rs::cache_meta_carries_build_id_after_first_compile
+//   - tests/cache.rs::cache_meta_with_stale_build_id_triggers_recompile
+//   - tests/cache.rs::cache_meta_without_build_id_field_triggers_recompile
+//
+// Inline FIXMEs preserved (verify during harvest):
+//   - none — file header (lines 1–13 below) names the unit-tier
+//     counterpart in crates/cranelisp-backend/src/cache/serialize.rs
+//     (build_id_round_trip_succeeds, stale_build_id_produces_build_id_mismatch,
+//     missing_build_id_field_routes_cache_stale).
+
 //! Sprint 60 Workstream C — compile-time build-id in cache `.meta.json`.
 //!
 //! Subprocess-level integration coverage for the build-id invalidation

@@ -1,3 +1,32 @@
+// QUARANTINED Sprint 64 Wave 6 batch 4 — FIXME 0146 — owning skill /backend
+// (secondary observation: /int — REPL session_v4 lifecycle wiring).
+// Source archive — not built by Cargo (nested under tests/legacy/).
+// Awaiting harvest into src/ or cranelisp-backend/src/ #[cfg(test)] unit tests
+// per the secondary-owner observation in FIXME 0146.
+//
+// Carry-forward: 5 tests across 1 file → tests/regression.rs:
+//   - s60_run_tests_reduction_1_exemplar_batched_failing
+//   - s60_run_tests_reduction_2_repl_import_empty_user_failing
+//   - s60_run_tests_reduction_3_quit_variant_failing
+//   - s60_run_tests_reduction_4_second_form_variant_failing
+//   - s60_run_tests_reduction_5_import_in_file_passes_control
+//
+// Status notes (audit time 2026-05-05): the cluster is intermittently
+// flaky — different tests fail across consecutive runs (race condition
+// in the entry-module sexp-lifecycle wiring). Per Wave 6 batch 4 audit
+// (`tests/plan/wave-6-batch-4-audit.md`), the carry-forwards land as
+// regression guards inheriting that flakiness; the underlying defect is
+// REPL-eval'd `(import ...)` against an empty entry user.cl. Original
+// shutdown-path symptom ("no parsed sexps for module 'user'") has shifted
+// to an active-path panic (`register_dep_for_eval MUST publish dep_sexps
+// before calling scheduler.register_module` in src/session_v4.rs:1572)
+// in the failing rotation.
+//
+// Inline FIXMEs preserved (verify during harvest):
+//   - line 80: FIXME(/int) or FIXME(/backend) — pick up from
+//     `defects-456-reduction.md §"Sprint 60 Wave 2 Round 3"`.
+// Total: 1 inline FIXME marker (file header).
+
 //! Sprint 60 Wave 2 Round 3 — reduction of `run_tests_batched_invocation_no_crash`.
 //!
 //! Starting point (`tests/wave6_demo_repros.rs`):
