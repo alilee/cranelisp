@@ -1,3 +1,87 @@
+// QUARANTINED Sprint 64 Wave 6 batch 3 — FIXME 0145 — owning skill /backend
+// Source archive — not built by Cargo (nested under tests/legacy/).
+// Awaiting harvest into cranelisp-backend/src/ #[cfg(test)] unit tests.
+//
+// Carry-forward: 34 tests in 1 file (all in tests/regression.rs):
+//   §A synthetic single-file /run-tests:
+//     - d45_baseline_trivial_run_tests_no_crash
+//     - d45_single_str_concat_contains_run_tests_no_crash
+//     - d45_wrap_tag_html_verbatim_run_tests_no_crash
+//     - d45_multiple_tests_with_contains_run_tests_no_crash
+//     - d45_form_shaped_body_run_tests_no_crash
+//     - d45_two_trivial_tests_run_tests_no_crash
+//     - d45_ten_str_bodies_run_tests_no_crash
+//   §B cross-module synthetic /run-tests:
+//     - d45_cross_module_adt_basic_no_crash
+//     - d45_cross_module_import_but_no_use_no_crash
+//     - d45_cross_module_grid_build_in_test_no_crash
+//     - d45_cross_module_html_like_batch_no_crash
+//     - d45_cross_module_html_full_10_tests_no_crash
+//   §C real exemplar /run-tests:
+//     - d45_real_exemplar_html_run_tests_no_crash
+//     - d45_real_exemplar_html_single_run_test_no_crash
+//     - d45_real_html_with_trimmed_grid_no_crash
+//   §D html-source reduction ladder:
+//     - d45_html_no_css_no_crash
+//     - d45_html_solution_tests_only_no_crash
+//     - d45_html_one_test_no_crash
+//     - d45_html_two_tests_no_crash
+//     - d45_html_three_tests_mixed_no_crash
+//     - d45_html_two_arg_solution_no_crash
+//     - d45_html_min_v1_no_crash
+//     - d45_html_min_v2_no_crash
+//     - d45_solution_cell_single_call_no_rc_underflow
+//   §E synthetic Vec/ADT/Grid COW (--run mode):
+//     - d6_vec_cow_int_loop_does_not_segv
+//     - d6_vec_cow_adt_loop_does_not_segv
+//     - d6_grid_wrapper_cow_does_not_segv
+//     - d6_solve_recursive_adt_does_not_segv
+//   §F real-exemplar (FAILING — open Defect 6 ledger):
+//     - d6_exemplar_solve_minimal_puzzle_no_io_does_not_segv [FAILING]
+//     - d6_exemplar_propagate_only_does_not_segv             [FAILING]
+//     - d6_exemplar_solve_all_dots_does_not_segv             [FAILING]
+//     - d6_exemplar_propagate_single_pass_does_not_segv      [FAILING]
+//   §G real-exemplar (PASSING):
+//     - d6_exemplar_eliminate_from_peers_does_not_segv
+//     - d6_exemplar_make_grid_only_does_not_segv
+//
+// Inline FIXMEs preserved (verify during harvest — 24 inline
+// `// FIXME(/backend)` markers, line-anchored. Each preserves a
+// hypothesis comment documenting the regression-discrimination
+// calibration. Resolved-by-passing-carry-forward when the corresponding
+// test in tests/regression.rs passes; remaining open FIXMEs (the four
+// d6_exemplar_* failing cases) close together when /backend resolves
+// Defect 6):
+//   - line 184: d45_baseline_trivial_run_tests_no_crash
+//   - line 214: d45_single_str_concat_contains_run_tests_no_crash
+//   - line 248: d45_wrap_tag_html_verbatim_run_tests_no_crash
+//   - line 278: d45_multiple_tests_with_contains_run_tests_no_crash
+//   - line 300: d45_form_shaped_body_run_tests_no_crash
+//   - line 316: d45_real_exemplar_html_run_tests_no_crash
+//   - line 354: d45_real_exemplar_html_single_run_test_no_crash
+//   - line 409: d6_vec_cow_int_loop_does_not_segv
+//   - line 445: d6_vec_cow_adt_loop_does_not_segv
+//   - line 491: d6_grid_wrapper_cow_does_not_segv
+//   - line 542: d6_solve_recursive_adt_does_not_segv
+//   - line 786: d45_ten_str_bodies_run_tests_no_crash
+//   - line 833: d45_cross_module_adt_basic_no_crash
+//   - line 875: d45_cross_module_import_but_no_use_no_crash
+//   - line 903: d45_cross_module_grid_build_in_test_no_crash
+//   - line 985: d45_cross_module_html_like_batch_no_crash
+//   - line 1116: d45_cross_module_html_full_10_tests_no_crash
+//   - line 1167: d45_real_html_with_trimmed_grid_no_crash
+//   - line 1328: d45_html_no_css_no_crash
+//   - line 1420: d45_html_solution_tests_only_no_crash
+//   - line 1468: d45_html_one_test_no_crash
+//   - line 1519: d45_html_two_tests_no_crash
+//   - line 1586: d45_html_three_tests_mixed_no_crash
+//   - line 1653: d45_html_two_arg_solution_no_crash
+//   - line 1695: d45_html_min_v1_no_crash
+//   - line 1726: d45_html_min_v2_no_crash
+// Plus 1 // spec: annotation on d45_solution_cell_single_call_no_rc_underflow
+// (line 1748) — already migrated to spec/12-runtime.md §12.3 anchor in
+// the carry-forward.
+
 //! Sprint 59 Wave 1 follow-on — reduction tests for Defects 4+5 and 6.
 //!
 //! Per root `CLAUDE.md` §"Usability Findings and Defects": a defect is not

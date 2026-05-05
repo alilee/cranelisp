@@ -40,6 +40,8 @@ into the owning crate's `#[cfg(test)]` unit tests.
 | `exemplar.rs` | 78 | 3 | /port | 0143 | 2026-05-05 |
 | `exemplar_solver_correctness.rs` | 302 | 2 | /port | 0143 | 2026-05-05 |
 | `sprint23.rs` | 2744 | 61 | /int | 0144 | 2026-05-05 |
+| `sprint59_cache_repro.rs` | 152 | 2 | /backend | 0145 | 2026-05-05 |
+| `sprint59_defects456_repro.rs` | 1766 | 34 | /backend | 0145 | 2026-05-05 |
 
 ## Discipline
 

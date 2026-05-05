@@ -239,6 +239,17 @@ impl Cranelisp {
         self
     }
 
+    // === TempDir introspection ==============================================
+
+    /// Path to the per-test TempDir. Use this when a test needs to inject
+    /// content into the TempDir via mechanisms outside the builder (e.g.,
+    /// recursive copy from a workspace path). Read-only — the returned
+    /// `PathBuf` is a snapshot; the underlying TempDir handle still lives
+    /// on `self`.
+    pub fn tmpdir_path(&self) -> PathBuf {
+        self.tmpdir.path().to_path_buf()
+    }
+
     // === Search-path & platform configuration ================================
 
     /// Add a directory under TempDir to `CRANELISP_LIB`.

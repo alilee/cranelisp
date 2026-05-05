@@ -776,3 +776,110 @@ fn cache_repl_writer_survives_slash_reset() {
         "cache manifest must survive /reset"
     );
 }
+
+// =============================================================================
+// Sprint 59 Workstream A — cache-hit prelude-restoration regression guards.
+//
+// Sibling tests to `cache_repl_second_session_loads_prelude_from_cache` (which
+// uses TestStandard prelude — operators + traits + ADTs). These two reductions
+// partition the discrimination axis the original Sprint 59 bug investigation
+// needed:
+//
+//   - Plain prelude (single defn, no operators / traits / impls): if session 2
+//     fails to call it, the bug is universal across binding shapes.
+//   - Empty prelude (no symbols at all): exercises only the cache-hit
+//     module-load pathway. If session 2 fails on a literal, the bug is at the
+//     module level, not the symbol-rebinding level.
+//
+// Carried from `tests/legacy/sprint59_cache_repro.rs` per Wave 6 batch 3 audit
+// (tests/plan/wave-6-batch-3-audit.md). Headed by FIXME 0145.
+// =============================================================================
+
+// spec: design/int/repl-lifecycle.md §4.2 — Cache Load on Startup/Reset.
+//       repl/spec.md §15.2 — session-persistence cache-hit symbol restoration.
+//   Reduction A: smallest possible prelude — single plain `(defn f [] 42)`.
+//   No traits, no impls, no operators. If session 2 cannot call `f`,
+//   cache-hit prelude restoration is broken for EVERY binding type — not
+//   just operator/trait machinery. Per the Wave 6 batch 3 audit
+//   (tests/plan/wave-6-batch-3-audit.md).
+//
+// REGRESSION-GUARD: Sprint 59 Workstream A. The legacy test header documents
+//   `design/int/cache-prelude-restoration-repro.md` as the diagnosis anchor.
+//
+// (carry: legacy/sprint59_cache_repro.rs::s59_cache_hit_plain_prelude_fn_not_restored)
+#[test]
+fn cache_repl_minimal_plain_fn_prelude_restored_on_session_2() {
+    // Drop a single-defn prelude under a per-test lib dir; route CRANELISP_LIB
+    // there so the binary auto-discovers it.
+    let first = Cranelisp::new()
+        .repl()
+        .file("lib/prelude.cl", "(defn f [] 42)\n")
+        .lib_dir("lib")
+        .stdin("(f)\n/quit\n")
+        .output();
+
+    assert!(
+        first.stdout.contains("42"),
+        "session 1 should print 42 (fresh compile): stdout={:?}",
+        first.stdout
+    );
+    assert!(
+        first.tmp_exists(".cranelisp-cache/manifest.json"),
+        "session 1 should populate cache manifest for a prelude with at least one export"
+    );
+
+    // Session 2 — same TempDir, prelude resolves via cache hit.
+    let second = first
+        .run_again()
+        .repl()
+        .lib_dir("lib")
+        .stdin("(f)\n/quit\n")
+        .output();
+
+    assert!(
+        second.stdout.contains("42"),
+        "session 2 (cache hit) should also print 42; stdout={:?} stderr={:?}",
+        second.stdout,
+        second.stderr
+    );
+}
+
+// spec: design/int/repl-lifecycle.md §4.2 — Cache Load on Startup/Reset.
+//       repl/spec.md §15.2 — empty-prelude pathway (negative control).
+//   Reduction B: empty prelude — no bindings to rebind. Exercises only the
+//   cache-hit module-load pathway. If this fails, the bug is at the
+//   module-load level (not symbol rebinding). Negative-control rung.
+//
+// REGRESSION-GUARD: Sprint 59 Workstream A — discriminator probe.
+//
+// (carry: legacy/sprint59_cache_repro.rs::s59_cache_hit_empty_prelude_basic_eval_works)
+#[test]
+fn cache_repl_empty_prelude_session_2_evaluates_literal() {
+    let first = Cranelisp::new()
+        .repl()
+        .file("lib/prelude.cl", ";; empty\n")
+        .lib_dir("lib")
+        .stdin("42\n/quit\n")
+        .output();
+
+    assert!(
+        first.stdout.contains("42"),
+        "session 1 should print 42: stdout={:?}",
+        first.stdout
+    );
+
+    // Session 2 — same TempDir, empty prelude reloaded from cache.
+    let second = first
+        .run_again()
+        .repl()
+        .lib_dir("lib")
+        .stdin("42\n/quit\n")
+        .output();
+
+    assert!(
+        second.stdout.contains("42"),
+        "session 2 with empty prelude should also print 42; stdout={:?} stderr={:?}",
+        second.stdout,
+        second.stderr
+    );
+}

@@ -1,3 +1,17 @@
+// QUARANTINED Sprint 64 Wave 6 batch 3 — FIXME 0145 — owning skill /backend
+// Source archive — not built by Cargo (nested under tests/legacy/).
+// Awaiting harvest into cranelisp-backend/src/ #[cfg(test)] unit tests.
+//
+// Carry-forward: 2 tests in 1 file:
+//   - tests/cache.rs::cache_repl_minimal_plain_fn_prelude_restored_on_session_2
+//     (carry: s59_cache_hit_plain_prelude_fn_not_restored)
+//   - tests/cache.rs::cache_repl_empty_prelude_session_2_evaluates_literal
+//     (carry: s59_cache_hit_empty_prelude_basic_eval_works)
+//
+// No inline FIXMEs in this file — the docstring is descriptive prose
+// only and references design/int/cache-prelude-restoration-repro.md
+// as the Sprint 59 Workstream A diagnosis anchor.
+
 //! Sprint 59 Wave 1 — cache-hit prelude-restoration bug isolation.
 //!
 //! Symptom: when the `cranelisp` REPL starts twice in the same project
