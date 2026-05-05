@@ -36,7 +36,9 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
-## Current Entries (as of 2026-04-22, sprint 61 Wave 4 step 4f, SHA `776a6cf`)
+## Current Entries (as of 2026-05-05, Sprint 64 Phase 6 Assess, SHA `9340534`)
+
+> **Sprint 64 Phase 6 reconciliation (2026-05-05, SHA `9340534`)**: Phase 6 (Assess) re-ran the full e2e suite (`cargo nextest run --no-fail-fast`) and reconciled the ledger against the post-Phase-3 active-suite shape (25 e2e files, 953 tests). **Result: 932 pass / 21 fail / 6 skipped — net 0 regressions vs. Wave 6 baseline `b0b63f1`.** All 21 failures are tracked in this ledger via the entries below; cluster mapping: 1 cache (FIXME 0121) + 9 spec_08_modules `(mod ...)` cluster (FIXME 0121 cluster) + 1 spec_08_modules import-below-use (FIXME 0140) + 4 build_confidence `--link` divergence (FIXME 0122) + 1 repl_negative unclosed-paren (FIXME 0142) + 4 d6_exemplar_* SEGVs (FIXME 0145 / Defect 6, /port + /backend) + 1 regression::wave6_exemplar_solver_full_run (FIXME 0148 / Defect 6, /port + /backend). The s60_run_tests_reduction race noted in FIXME 0146 secondary observation (intermittent under full-suite pressure) does NOT fire in this Phase-6 run; the cluster passed 5/5. The §8.10.1 SEGV recorded in FIXME 0149 is not currently surfaced as a failing test (recorded as `XXX(/backend)` aspirational re-enable in `spec_12_runtime.rs`); when the entry-point codegen lands at /backend, the aspirational test enables and may add a ledger row. Pre-Sprint-64 ledger entries (Sprint 61 era heisenbug residue, harness robustness, etc.) are kept in §"Pre-Sprint-64 carries" with a current-status note — the active-suite shape changed (some quarantined, some inherited). The full reconciliation is recorded in `sprints/SPRINT.md §Outcome (Phase 7)`.
 
 > **Sprint 60 close update (2026-04-21)**: under full-suite pressure (multiple consecutive `cargo nextest run --no-fail-fast`), two races fire intermittently at ~30% rate. Single-run verification showed 1837/0 and `/qa` originally recorded only the exemplar entry below. 8-run stress verification under close revealed the races. Per user directive "flaky is not a thing in local tests," these are recorded as real races under `under-investigation (sprint 61)` and a dedicated stabilisation sprint opens next. FQTypeName migration slides to Sprint 62.
 
@@ -50,8 +52,8 @@ A failing test without all six fields is treated as a sprint-blocking issue. `/s
 
 | Field | Value |
 |---|---|
-| Test name | `sprint23::heisenbug_race_reduced_concurrent_import_pairs` |
-| SHA | `35062ca` |
+| Test name | `sprint23::heisenbug_race_reduced_concurrent_import_pairs` (quarantined Sprint 64 Wave 6 batch 1 → `tests/legacy/sprint23.rs` per FIXME 0144; **not in active suite at SHA `9340534`** — entry preserved as audit trail; H6 residue carries forward into FIXME 0144's harvest scope and into S62+ concurrency-audit planning) |
+| SHA | `9340534` (quarantined; last failing observation `35062ca` at sprint 61 Wave 3) |
 | Stderr / observable signature | `reduced heisenbug repro fired across 10 trials (N failure(s)): [trial K] tT iI session 1: import+call failed` — body: `Error: type error at 9..28: 'helper-val' not found in module 'helper'` followed by `Error: type error at 1..11: undefined variable: helper-val`. Occasional codegen-phase variant: `module error at 0..0: module 'helper' failed: codegen error at 0..23: compile_to_module: symbol 'helper-val' missing from module 'helper' at GOT-data emission`. Post-H6-fix: same signature fires at reduced rate (~5–10% under 6-thread contention vs. ~80% pre-fix). |
 | Owning skill | `/int` (proposed fix site: `crates/cranelisp-typecheck/src/checker.rs::ensure_module_exists`; typecheck-crate ownership tension flagged for /arch at step 3d'' — see `design/int/heisenbug-race-closure.md §8.3.5` risk 7) |
 | Target sprint | Sprint 61 Wave 3 close — **disposition open**, pending `/sprint` decision at close: (a) open in-sprint H7 cycle to chase the residue, or (b) accept-and-defer to S62 concurrency audit. `/qa` does NOT pick; ledger captures current state. |
@@ -66,8 +68,8 @@ A failing test without all six fields is treated as a sprint-blocking issue. `/s
 
 | Field | Value |
 |---|---|
-| Test name | `sprint61_observability_io::io_trace_off_path_subprocess_completes_within_generous_ceiling` |
-| SHA | `a9028c0` |
+| Test name | `sprint61_observability_io::io_trace_off_path_subprocess_completes_within_generous_ceiling` (quarantined Sprint 64 Wave 3 → `tests/legacy/observability_io.rs` per FIXME 0128; **not in active suite at SHA `9340534`** — entry preserved as audit trail; per Sprint 64 Wave 3 PLAN.md row, the per-test fresh-TempDir discipline of the new harness implicitly resolves the concurrent-load contention that fired this test, and the recommended disposition is deletion at harvest) |
+| SHA | `9340534` (quarantined; last observation `a9028c0` at sprint 61 Wave 1) |
 | Stderr / observable signature | Subprocess wall-clock exceeds the 5-second off-path ceiling defined in the test (assertion: `elapsed < Duration::from_secs(5)`). Fires only under concurrent `cargo nextest run` load — multiple parallel subprocess-invoking tests contend on stdio DLL load + JIT warmup and push tail latency past 5s. Isolation runs complete well under 500 ms. |
 | Owning skill | `/qa` |
 | Target sprint | Sprint 61 Wave 5 (preferred) or Sprint 62 |
@@ -83,7 +85,7 @@ During Sprint 61 Wave 3 workspace stress verification, `/sprint` surfaced six te
 | Field | Value |
 |---|---|
 | Test name | `sprint59_defects456_repro::d6_exemplar_propagate_only_does_not_segv` |
-| SHA | `35062ca` |
+| SHA | `9340534` (still failing, same signature; first observed `35062ca`) |
 | Stderr / observable signature | Subprocess running reduced repro (`exemplar/d6_propagate_only.cl` — single `propagate` call on a real 17-clue puzzle, no backtracking) crashes with `exit=None` (killed by signal, no exit code). Child-process stderr: `thread 'main' (...) has overflowed its stack` followed by `fatal runtime error: stack overflow, aborting`. Test panic: `d6_exemplar_propagate_only: child process crashed with exit=None (139=SIGSEGV, 133=SIGTRAP, None=killed by signal). This is the reduced reproduction of the underlying defect.` |
 | Owning skill | `/port` (repro owner per ledger §"Allowed dispositions") with underlying-owner `/backend` (deep-recursion stack overflow in JIT'd `propagate` / constraint-propagation recursion on 81-cell Vec-copying ADT traversal — see `exemplar/CLAUDE.md §Known Issues`) |
 | Target sprint | **Sprint 62 — flag for `/sprint` disposition at close; disposition is open.** Sprint 61 scope did not include Defect 6 resolution; Wave 2 closed Defects 4+5 but Defect 6 was deliberately carried. `/sprint` decides at Wave 3 close whether this ledger entry maps to an in-S62 /port or /backend workstream, or rolls forward again with re-triage. |
@@ -93,7 +95,7 @@ During Sprint 61 Wave 3 workspace stress verification, `/sprint` surfaced six te
 | Field | Value |
 |---|---|
 | Test name | `sprint59_defects456_repro::d6_exemplar_propagate_single_pass_does_not_segv` |
-| SHA | `35062ca` |
+| SHA | `9340534` (still failing, same signature; first observed `35062ca`) |
 | Stderr / observable signature | Subprocess running reduced repro (`exemplar/d6_one_pass.cl` — a single call to `propagate-pass-helper g 0`, no fixpoint loop) crashes with `exit=None`. Child-process stderr: `thread 'main' (...) has overflowed its stack` / `fatal runtime error: stack overflow, aborting`. Same panic shape as the `propagate_only` entry above. |
 | Owning skill | `/port` with underlying-owner `/backend` (same deep-recursion stack overflow — narrows the defect further by removing the fixpoint loop; `propagate-pass-helper` alone overflows) |
 | Target sprint | **Sprint 62 — flag for `/sprint` disposition at close; disposition is open.** |
@@ -103,7 +105,7 @@ During Sprint 61 Wave 3 workspace stress verification, `/sprint` surfaced six te
 | Field | Value |
 |---|---|
 | Test name | `sprint59_defects456_repro::d6_exemplar_solve_all_dots_does_not_segv` |
-| SHA | `35062ca` |
+| SHA | `9340534` (still failing, same signature; first observed `35062ca`) |
 | Stderr / observable signature | Subprocess running reduced repro (`exemplar/d6_all_dots.cl` — `solve` on an all-dots / empty 81-cell puzzle, which should converge fast) crashes with `exit=None`. Child-process stderr: `thread 'main' (...) has overflowed its stack` / `fatal runtime error: stack overflow, aborting`. Same panic shape. |
 | Owning skill | `/port` with underlying-owner `/backend` (deep-recursion stack overflow in `solve` even on an empty grid, where constraint propagation has no work and backtracking should never recurse deeply — proves the defect is structural, not puzzle-difficulty-dependent) |
 | Target sprint | **Sprint 62 — flag for `/sprint` disposition at close; disposition is open.** |
@@ -113,7 +115,7 @@ During Sprint 61 Wave 3 workspace stress verification, `/sprint` surfaced six te
 | Field | Value |
 |---|---|
 | Test name | `sprint59_defects456_repro::d6_exemplar_solve_minimal_puzzle_no_io_does_not_segv` |
-| SHA | `35062ca` |
+| SHA | `9340534` (still failing, same signature; first observed `35062ca`) |
 | Stderr / observable signature | Subprocess running reduced repro (`exemplar/d6_repro_no_io.cl` — `solve` on a real 17-clue puzzle, no IO path, returns an Int count of determined cells) crashes with `exit=None`. Child-process stderr: `thread 'main' (...) has overflowed its stack` / `fatal runtime error: stack overflow, aborting`. Additional stderr preamble when run under concurrent nextest load includes cache `.meta.json` write failures (`nice-worker: .meta.json write failed for compare.eq: ... No such file or directory (os error 2)`), which is a concurrent-cache-write artefact not related to the underlying stack-overflow defect. |
 | Owning skill | `/port` with underlying-owner `/backend` (stack overflow in solver without involving the IO trampoline — isolates the defect from Defect 4/5 residues and from the `examples_run` IO subprocess-flake path) |
 | Target sprint | **Sprint 62 — flag for `/sprint` disposition at close; disposition is open.** |
@@ -122,8 +124,8 @@ During Sprint 61 Wave 3 workspace stress verification, `/sprint` surfaced six te
 
 | Field | Value |
 |---|---|
-| Test name | `wave6_demo_repros::exemplar_solver_does_not_stack_overflow_on_small_puzzle` |
-| SHA | `35062ca` |
+| Test name | `regression::wave6_exemplar_solver_full_run_does_not_stack_overflow` (renamed from `wave6_demo_repros::exemplar_solver_does_not_stack_overflow_on_small_puzzle` in Sprint 64 Wave 6 carry-forward; original quarantined under FIXME 0148) |
+| SHA | `9340534` (still failing, same signature; first observed `35062ca`) |
 | Stderr / observable signature | Subprocess running `cranelisp --run exemplar/solver.cl` (full solver with IO) crashes with `exit=None`. Child-process stdout shows the puzzle board printed cleanly (Sprint 57 Wave 6 IO path is fine), then stderr: `thread 'main' (...) has overflowed its stack` / `fatal runtime error: stack overflow, aborting`. Test panic: `exemplar solver crashed with exit=None. Per Defect 6 (exemplar/CLAUDE.md Known Issues) propagate/solve stack-overflow on full 81-cell grids. Once /backend resolves this, /port can re-enable test-easy-puzzle, test-hard-puzzle, test-unsolvable in exemplar/solver.cl.` |
 | Owning skill | `/port` (repro owner) with underlying-owner `/backend` (same deep-recursion stack overflow; this is the end-to-end entry point for Defect 6 — the broadest and most faithful repro) |
 | Target sprint | **Sprint 62 — flag for `/sprint` disposition at close; disposition is open.** |
@@ -137,7 +139,7 @@ Sprint 64's parity rule (`sprints/SPRINT.md §Phase 2`) requires every spec-rele
 | Field | Value |
 |---|---|
 | Test name | `cache::cache_multi_module_transitive_imports` |
-| SHA | `5a1f6e2` |
+| SHA | `9340534` (still failing, same signature; first observed `5a1f6e2`) |
 | Stderr / observable signature | `error: module error at 0..0: entry module has no `main` function — batch mode requires (defn main [] ...)`. Three-level submodule project (`main.cl` declares `(mod mid)`, `main/mid.cl` declares `(mod leaf)`, `main/mid/leaf.cl` defines `base-val`). The integration helper `compile_module_graph_cached` walks `(mod ...)` declarations to discover submodules before resolving `main`; the binary's `--run` driver does not, so it complains the entry has no `main`. |
 | Owning skill | `/int` (binary `--run` driver — `src/main.rs` / `src/session_v4.rs` entry-module handling) |
 | Target sprint | TBD — disposition open at S64 close pending `/sprint` decision |
@@ -161,7 +163,7 @@ Wave 2.5 added the mode-equivalence subset (`tests/build_confidence.rs`) to vali
 | Field | Value |
 |---|---|
 | Test name | `build_confidence::mode_equiv_adt_option_match` |
-| SHA | uncommitted (Wave 2.5) |
+| SHA | `9340534` (still failing, same signature; first observed Wave 2.5) |
 | Stderr / observable signature | REPL fresh + REPL cached + `--run` fresh + `--run` cached observe Int 0 (program: `(defn main [] (match (Some 7) [(Some x) (if (= x 7) 0 1) None 2]))` with TestStandard prelude). `--link` fresh + `--link` cached fail with linker error `ld: warning: alignment (1) of atom '___cranelisp_got_user' ... is too small and may result in unaligned pointers` → exit 1. The mode-equivalence assertion panics with a six-permutation diff. |
 | Owning skill | `/backend` (link-mode AOT object emission — GOT data atom alignment in `--link` codepath) |
 | Target sprint | TBD — disposition open at S64 close pending `/sprint` decision |
@@ -171,7 +173,7 @@ Wave 2.5 added the mode-equivalence subset (`tests/build_confidence.rs`) to vali
 | Field | Value |
 |---|---|
 | Test name | `build_confidence::mode_equiv_pattern_match_nested` |
-| SHA | uncommitted (Wave 2.5) |
+| SHA | `9340534` (still failing, same signature; first observed Wave 2.5) |
 | Stderr / observable signature | Same shape as `mode_equiv_adt_option_match` — REPL/`--run` permutations observe 42 from `(defn main [] (match (Ok 42) [(Ok x) x (Err _) -1]))`; `--link` fresh + cached fail with the GOT atom alignment linker error. |
 | Owning skill | `/backend` |
 | Target sprint | TBD |
@@ -181,7 +183,7 @@ Wave 2.5 added the mode-equivalence subset (`tests/build_confidence.rs`) to vali
 | Field | Value |
 |---|---|
 | Test name | `build_confidence::mode_equiv_macro_user_defined` |
-| SHA | uncommitted (Wave 2.5) |
+| SHA | `9340534` (still failing, same signature; first observed Wave 2.5) |
 | Stderr / observable signature | Same shape — REPL/`--run` permutations observe 42 from `(defmacro twice [x] ...) (defn main [] (twice 21))`; `--link` fresh + cached fail with the GOT atom alignment linker error. |
 | Owning skill | `/backend` |
 | Target sprint | TBD |
@@ -191,7 +193,7 @@ Wave 2.5 added the mode-equivalence subset (`tests/build_confidence.rs`) to vali
 | Field | Value |
 |---|---|
 | Test name | `build_confidence::mode_equiv_io_pure_primitive` |
-| SHA | uncommitted (Wave 2.5) |
+| SHA | `9340534` (still failing, same signature; first observed Wave 2.5) |
 | Stderr / observable signature | Same shape — REPL/`--run` permutations observe 7 from `(defn main [] (Pure 7))`; `--link` fresh + cached fail with the GOT atom alignment linker error. |
 | Owning skill | `/backend` |
 | Target sprint | TBD |
@@ -210,7 +212,7 @@ the binary surface MUST accept it.
 | Field | Value |
 |---|---|
 | Test name | `spec_08_modules::import_below_use_still_available_before_definitions` |
-| SHA | uncommitted (Wave 5.5) |
+| SHA | `9340534` (still failing, same signature; first observed Wave 5.5) |
 | Stderr / observable signature | `error: module error at 0..0: entry module has no main function — batch mode requires (defn main [] ...)`. Program: `(defn main [] (helper))\n(import [util [helper]])` with sibling file `util.cl` defining `helper`. Per §8.3.9 imports MUST be extracted en bloc before compilation; the binary's parse/extract path appears to fail before reaching the `defn main` form when an `import` follows it. |
 | Owning skill | `/int` (binary `--run` orchestration; integration helper `batch_run_file` accepts the program) |
 | Target sprint | TBD — disposition open at S64 Wave 5.5 close |
@@ -241,7 +243,7 @@ inline `FIXME(/int)` annotation pointing at FIXME 0121.
 | Field | Value |
 |---|---|
 | Test names | `spec_08_modules::import_dependency_compiles_correctly`, `spec_08_modules::project_root_shadows_stdlib`, `spec_08_modules::prelude_like_reexport_compiles`, `spec_08_modules::multi_dot_module_path_in_import`, `spec_08_modules::nested_dependency_chain_compiles`, `spec_08_modules::export_specific_reexport`, `spec_08_modules::export_glob_reexport`, `spec_08_modules::export_transitive_reexport_chain`, `spec_08_modules::export_multiple_modules` |
-| SHA | uncommitted (Wave 5.6) |
+| SHA | `9340534` (still failing, same signature; first observed Wave 5.6) |
 | Stderr / observable signature | `error: module error at 0..0: entry module has no main function — batch mode requires (defn main [] ...)`. Each program declares `(mod <name>)` at the top of `main.cl` followed by a sibling `(defn main ...)`. The integration helper `helpers::batch_run_file` accepts the same programs (the legacy file passes); the binary's `--run` driver loses sight of `(defn main)` after the `(mod ...)` line is processed. |
 | Owning skill | `/int` (binary `--run` orchestration — `src/main.rs` / `src/session_v4.rs`) |
 | Target sprint | TBD — disposition open at S64 Wave 5.6 close |
@@ -265,7 +267,7 @@ is reported — passes).
 | Field | Value |
 |---|---|
 | Test name | `repl_negative::parse_error_unclosed_paren_neg` |
-| SHA | uncommitted (Wave 5.6 file 4 supplement) |
+| SHA | `9340534` (still failing, same signature; first observed Wave 5.6 file 4 supplement) |
 | Stderr / observable signature | REPL stdout shows banner + first prompt then exits cleanly; no parse-error message. Stdin: `(add-i64 1 2\n` (unclosed `(`, EOF follows). Expected per repl/spec.md §5.1: a parse-error diagnostic. Inline `FIXME(/int)` annotation pointing at FIXME 0142. |
 | Owning skill | `/int` (REPL continuation/EOF flush — `src/repl.rs` / `src/session_v4.rs`) |
 | Target sprint | TBD — disposition open at S64 Wave 5.6 close |

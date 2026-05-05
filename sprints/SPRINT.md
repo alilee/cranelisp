@@ -1,6 +1,6 @@
 # Sprint 64: Test-Port — `/qa` two-tier migration
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 6 deferred. Wave 5.6 dispatched: full per-file dedupe-recovery audit applying Wave 5.5 discipline exhaustively. User principles: no exact duplicates; multi-angle on same spec preserved; repros presumptively discriminating.
+**Status**: PHASE 6 ASSESS (COMPLETE) — pending user review for Phase 7 archive + ROADMAP commit. Phase 5 LANGUAGE closed at `9340534` (Phase 3: legacy helpers deleted, `tests/CLAUDE.md` rewritten, 25 active e2e files in canonical shape). Phase 6 reconciled the ledger, PLAN.md disposition rows, and FIXME inventory against the post-Phase-3 baseline (953 tests; 932 pass / 21 fail / 6 skipped — net 0 regressions vs. Wave 6 baseline `b0b63f1`). DO NOT archive or update ROADMAP until user review.
 
 **Goal**: Transition `/qa` fully to the two-tier regime. Audit every test file for assertions that test language behaviour (carry forward as new e2e tests in the harness specified by `tests/plan/helpers.md`) vs. Rust-internal state (quarantine in `tests/legacy/` for FIXME-driven harvest into the owning crate's unit tests). Reorganise the new e2e suite for spec-coverage auditability. Delete the legacy scaffolding once the new suite is sound. **Parity in spec-relevant coverage**: every assertion that exercises spec behaviour survives the transition; defects surfaced during audit land as FIXMEs + failing tests, not fixes.
 
@@ -328,4 +328,54 @@ User confirms continuation, redirects ordering, or requests scope adjustment. `/
 
 ## Outcome (Phase 7)
 
-{Filled at close. Delivered / Deferred / Findings.}
+### Delivered
+
+Sprint 64 transitioned `/qa` from the four-layer integration-tier regime to the canonical two-tier regime (e2e in `tests/`, unit in `crates/{crate}/src/`). Outcome at SHA `9340534` (Phase 3 close) + reconciled at Phase 6 (this entry):
+
+- **25 canonical e2e files** in `tests/*.rs`, all using `Cranelisp::new(label)` from `tests/helpers/e2e.rs`. Reorganised by spec section (`spec_03_types.rs` … `spec_appendix_a_builtins.rs` + `spec_platforms.rs`) plus REPL-experience (`repl_introspection.rs`, `repl_lifecycle.rs`, `repl_negative.rs`), build/regression/cache/examples/exemplar/link surfaces. Down from 56+ source files.
+- **953 tests in the active suite** (932 pass / 21 fail / 6 skipped). Net 0 regressions vs. Wave 6 baseline `b0b63f1`. The 21 failures are tracked in `tests/plan/ledger.md` and break down as: 1 cache (`cache_multi_module_transitive_imports`, FIXME 0121) + 9 spec_08_modules `(mod ...)` cluster (FIXME 0121 cluster) + 1 spec_08_modules import-below-use (FIXME 0140) + 4 build_confidence `--link` divergence (FIXME 0122) + 1 repl_negative unclosed-paren (FIXME 0142) + 4 `d6_exemplar_*` SEGVs (FIXME 0145 / Defect 6) + 1 `regression::wave6_exemplar_solver_full_run` (FIXME 0148 / Defect 6).
+- **Harness on disk**: `tests/helpers/e2e.rs` (`Cranelisp` builder + `CrInvocation` + `CrOutput` + `PreludeVariant` + `run_through_all_modes` + `repl_capture` + 4 Wave-3.5c additions), `tests/helpers/regex.rs` (named regex library), per-test fresh `TempDir` by construction, `use_workspace_stdlib_for_stdlib_conformance_only()` gated to `tests/stdlib.rs`.
+- **Spec-link linter**: `tests/plan/spec_link_check.py` (Python 3, stdlib only; recognises numeric/named/section-anchored citations; scans 763 citations / 25 files; full-tree status: **751 OK / 0 MIS-CITED / 0 MALFORMED / 12 free-form skipped**). Built in Wave 3.5b in response to the 42 mis-cites + 2 INVENTED assertions found by the Wave 3.5 audit.
+- **41 legacy files quarantined** under `tests/legacy/` (~36k LOC archived) with provenance preserved via `tests/legacy/README.md` + 30 harvest FIXMEs (0116–0149, gap at 0123 retired with the INVENTED `/reset` assertion). Wave-6 alone added ~178 carry-forwards across 12 quarantines.
+- **Phase 3 deletion** complete: `tests/helpers/mod.rs::ReplSession` and the integration-tier helpers (`compile_and_run`, `compile_and_run_simple`, `compile_and_run_with_macros`, `repl_session`, `repl_session_with_test_prelude`, `compile_both`, `assert_type_error`, `assert_parse_error`, `assert_rc_balanced`) plus inline trait preludes deleted; `tests/CLAUDE.md` rewritten to e2e-only.
+
+### Deferred (S65+)
+
+- All 30 harvest FIXMEs (0116–0149) for `/dev` skills to harvest quarantined assertions into `#[cfg(test)]` modules in their crates. Owners distributed across `/int`, `/backend`, `/typecheck`, `/runtime`, `/frontend`, `/port`, `/qa` (sketch_port test-shape), `/platform`. Each FIXME names the legacy file, the carry-forward landing files, owning skill, and (where applicable) co-owners.
+- The Wave 5.5 audit's recommended S65 sweep for `spec_07_traits.rs` and `spec_05_definitions.rs` residue.
+- The `// (carry: legacy/...)` linter rule (recommended by Wave 5.5 audit) for future enforcement of carry-forward provenance annotations.
+- Pre-S64 carries: heisenbug H6 residue (`sprint23::heisenbug_race_reduced_concurrent_import_pairs`, now quarantined under FIXME 0144) carries into S62+ concurrency-audit planning; harness robustness concern (`io_trace_off_path_subprocess_completes_within_generous_ceiling`, now quarantined under FIXME 0128) implicitly resolves under fresh-TempDir-per-test discipline and is recommended for deletion at harvest.
+
+### Defect-discoveries logged this sprint (handed forward as failing-not-ignored tests + open FIXMEs)
+
+- **FIXME 0121 → /int** — `--run` driver does not discover `(mod ...)` declarations in entry module (10 tests in active suite: `cache::cache_multi_module_transitive_imports` + 9 spec_08_modules cluster).
+- **FIXME 0122 → /backend** — `--link` mode emits GOT data atom with alignment (1) too small; linker rejects programs using ADT/match, defmacro, or IO Pure (4 tests in `build_confidence::mode_equiv_*`).
+- **FIXME 0140 → /int** — `--run` rejects programs where `(import ...)` follows `(defn main ...)`, despite spec §8.3.9 mandating en-bloc import extraction precedes compilation (1 test in `spec_08_modules`).
+- **FIXME 0142 → /int** — REPL silently exits on unclosed `(` + EOF instead of flushing the accumulated input through the parser (1 test in `repl_negative`).
+- **FIXME 0149 — §8.10.1 SEGV (open, owner /backend)** — recorded inline in `tests/spec_12_runtime.rs` as `XXX(/backend) aspirational re-enable`; the spec-property test (clean stderr) passes, but the underlying program SEGVs at run-mode child exit. Not currently a failing test in the ledger; flips to a ledger row when the entry-point codegen lands.
+- **FIXME 0146 secondary — /int observation** — `s60_run_tests_reduction_*` cluster (5 tests in `regression.rs`) is intermittently flaky under full-suite pressure; the cluster passed 5/5 in this Phase-6 reconciliation run, so no current ledger entry. Harvest to `/backend` primary + `/int` co-owner per the FIXME.
+- **Defect 6 cluster (parent FIXME 0145, owner /port + underlying-owner /backend)** — exemplar solver `propagate`/`solve` deep-recursion stack overflow on full 81-cell grids; 5 active failing tests (4 `d6_exemplar_*` reductions + 1 `regression::wave6_exemplar_solver_full_run`).
+
+### Methodological deltas
+
+- **Phase 0 collapse (2026-05-03)**: `/int` Phase 0 (FIXMEs 0110/0111/0112 — `Cranelisp.toml` knobs, trace-channel separation, REPL ready sentinel) was retired pre-implementation. Subprocess pipe-then-parse + per-test `TempDir` + regex-based prompt parsing covered every e2e case; no binary-surface changes required. Three FIXMEs deleted before any code landed.
+- **Wave 3.5 audit pivot (2026-05-04)**: User pushback on a `/reset`-related test caught a slip-through (test asserted on a feature not in `repl/spec.md §3.1` Command Inventory). Fresh `/qa` audit reviewed 213 tests across 7 new e2e files; found 2 INVENTED + 42 MIS-CITED annotations (all corrected). The audit motivated the spec-link linter (Wave 3.5b) — durable mitigation against future invented assertions.
+- **Wave 5.5 dedupe-verification audit pivot (2026-05-04)**: User skepticism that Wave 5's "natural absorption" framing might have discarded discriminating tests. Honest answer was "not certain". Fresh `/qa` audit (sample + regression-named scope, 208 tests across 9 files) found a 25%/43% GAP-COVER rate — substantially higher than Wave 5's framing implied. 34 new e2e tests authored to recover spec-load-bearing GAP-COVER findings. The audit paid for itself: 34 carry-forwards + 1 surfaced defect (FIXME 0140). Pivot to Wave 5.6: per-test review for cluster-mode files.
+- **Wave 5.6 exhaustive per-file dedupe-recovery (2026-05-04 to 2026-05-05)**: applied Wave 5.5 discipline exhaustively across 8 quarantined files (sketch_port + e2e chunks 1–3 + ring0 + ring1 + ring2 chunks 1–4 + modules + sprint59_neg). Method validated by recovery yield (typically 30 net carry-forwards per high-value source file).
+
+### Sprint sizing observation
+
+The original `/qa` Phase 3 recommendation was a two-sprint split (S64 = Phase 1 + Batches 1/5/7/9/10; S65 = Batches 2/3/4/6/8 + Phase 3 legacy-helper deletion). User chose single-sprint with multi-wave structure and a mid-sprint review checkpoint. Result: completed in single sprint, but expanded to **seven Wave-5.x sub-waves and six Wave-6 sub-waves** (Wave 1, 2, 2.5, 3, 3.5, 3.5b, 3.5c, 4, 5, 5.5, 5.6 [8 file passes] + Wave 6 batches 1–6). Useful signal for future sprint sizing: when a single-sprint compression is chosen over a recommended split, expect sub-wave proliferation as the in-flight work meets its actual surface area.
+
+### Reconciled state at Phase 6
+
+- **Linter full-tree**: 751 OK / 0 MIS-CITED / 0 MALFORMED / 12 free-form skipped (763 citations / 25 files).
+- **Ledger rows**: 21 (14 single-test + 7 multi-test). All 21 active-suite failures covered. 2 entries marked as quarantined-not-in-active-suite (sprint23 heisenbug, sprint61_observability_io off-path).
+- **FIXME inventory**: 0116–0149 contiguous except 0123 (retired with the INVENTED `/reset` assertion). 33 new FIXMEs filed across the sprint (target was ~30); 0140, 0141, 0142, 0143–0149 land during Wave 5.5/5.6/6.
+- **PLAN.md disposition**: every quarantined legacy file has an owning row with carry-forward target list and FIXME number. Per-source-file rows in `tests/plan/PLAN.md §"Sprint 64 port plan"` cover all 41 quarantined files.
+
+### Next skills
+
+- `/sprint` (or user) — review and approve Phase 7 archive (move `sprints/SPRINT.md` to `sprints/archive/sprint-64-test-port-migration.md`; update `sprints/ROADMAP.md`; close FIXME 0115).
+- `/dev` skills (per FIXME — `/int`, `/backend`, `/typecheck`, `/runtime`, `/frontend`, `/port`, `/platform`) — pick up harvest FIXMEs 0116–0149 in subsequent sprints. Each FIXME has a self-contained scope.
+- `/sprint` — schedule `/dev` decomposition (FIXME 0109, `session_v4`/`worker` split) and other crate-refactor work that this sprint unblocks.
