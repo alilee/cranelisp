@@ -227,3 +227,77 @@ fn cranelisp_toml_malformed_does_not_crash() {
         out.stderr
     );
 }
+
+// =============================================================================
+// §8.9 + design/int/step8-platform-registry.md — stdio platform integration
+// (carry-forward: legacy/v4_pipeline.rs §F — Wave 6 batch 6)
+//
+// Distinct from the test-capture mock above: these exercise the real
+// `stdio` DLL through PlatformRegistry. The IO-trampoline path is
+// observable as `print "..."` writing the text to STDOUT.
+// =============================================================================
+
+// spec: spec/08-modules.md §8.9 — `(platform stdio)` form loads the stdio
+// platform DLL through PlatformRegistry; program compiles cleanly.
+// (carry: legacy/v4_pipeline.rs::v4_platform_form,
+//         legacy/v4_pipeline.rs::v4_platform_stdio_print collapsed)
+// REGRESSION-GUARD: Sprint 56 baseline failure cluster — flipped green
+// per `tests/plan/legacy/ring4.md` line 712 acceptance criteria.
+#[test]
+fn platform_form_with_stdio_compiles_in_run_mode() {
+    let out = Cranelisp::new()
+        .use_workspace_platforms()
+        .user(
+            "(platform stdio)\n\
+             (import [platform.stdio [print]])\n\
+             (defn main [] (print \"hello platform registry\"))",
+        )
+        .run("user.cl")
+        .output();
+    let err: String = out
+        .stderr
+        .lines()
+        .filter(|line| !line.starts_with("nice-worker:"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        err.is_empty(),
+        "platform_form: expected clean compilation but got stderr: {}",
+        err
+    );
+}
+
+// spec: repl/spec.md §0.2 + design/int/step8-platform-registry.md — main
+// returns IO Action; the trampoline executes the effect, producing the
+// printed text on STDOUT.
+// (carry: legacy/v4_pipeline.rs::v4_platform_io_trampoline)
+// REGRESSION-GUARD: IO trampoline runtime path.
+#[test]
+fn io_trampoline_executes_print_to_stdout() {
+    Cranelisp::new()
+        .use_workspace_platforms()
+        .user(
+            "(platform stdio)\n\
+             (import [platform.stdio [print]])\n\
+             (defn main [] (print \"trampoline works\"))",
+        )
+        .run("user.cl")
+        .output()
+        .assert_stdout_contains("trampoline works");
+}
+
+// spec: design/int/step8-platform-registry.md — programs WITHOUT
+// `(platform ...)` MUST continue to compile and run after the
+// PlatformRegistry refactor. Negative complement of the platform-form
+// tests above.
+// (carry: legacy/v4_pipeline.rs::v4_platform_empty_registry)
+// REGRESSION-GUARD: empty-registry codegen invariant.
+#[test]
+fn no_platform_form_program_runs_with_empty_registry() {
+    Cranelisp::new()
+        .user("(defn main [] (primitives/add-i64 100 200))")
+        .run("user.cl")
+        .output()
+        // 300 mod 256 = 44 on Unix (exit codes are bytes).
+        .assert_exit(300 % 256);
+}

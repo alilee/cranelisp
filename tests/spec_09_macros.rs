@@ -408,3 +408,277 @@ fn runtime_error_during_expansion_clean_report() {
         out.stdout
     );
 }
+
+// =============================================================================
+// §9.2.5 Macro body capabilities — single-file batch witnesses
+// (carry-forward: legacy/v4_pipeline.rs §D — Wave 6 batch 6)
+//
+// These tests use `--run` mode (mode-specific exception per
+// `tests/plan/PLAN.md §"Mode canonicalisation"`) — the canonical
+// observation for §9.2.5 capabilities (macro body calls helper, calls
+// another macro, transitive call graph) is the exit-code witness from
+// the batch driver. The REPL form is awkward for single-file
+// multi-form macro programs because the macro expansion + helper
+// dispatch happens at evaluation time per-form.
+// =============================================================================
+
+// spec: spec/09-macros.md §9.2.5 — macro body may call a helper fn defined
+// before the defmacro form
+// (carry: legacy/v4_pipeline.rs::v4_macro_calls_helper_function)
+#[test]
+fn macro_body_calls_helper_function_in_run_mode() {
+    Cranelisp::new()
+        .user(
+            "(defn make-seven [] 7)\n\
+             (defmacro lucky [] `(make-seven))\n\
+             (defn main [] (lucky))",
+        )
+        .run("user.cl")
+        .output()
+        .assert_exit(7);
+}
+
+// spec: spec/09-macros.md §9.3.3 — re-expansion to fixed point: a macro
+// body may expand to a call that uses another macro, and the expander
+// must reach a fixed point.
+// (carry: legacy/v4_pipeline.rs::v4_macro_calls_another_macro)
+#[test]
+fn macro_calls_another_macro_reaches_fixed_point() {
+    Cranelisp::new()
+        .user(
+            "(defmacro wrap-add [a b] `(primitives/add-i64 ~a ~b))\n\
+             (defmacro add-three [x] `(wrap-add ~x 3))\n\
+             (defn main [] (add-three 39))",
+        )
+        .run("user.cl")
+        .output()
+        .assert_exit(42);
+}
+
+// spec: spec/09-macros.md §9.2 + spec/05-definitions.md §5.5 — multiple
+// defmacros with interleaved defns; source-order processing makes each
+// macro available from the next form onward.
+// (carry: legacy/v4_pipeline.rs::v4_macro_multiple_macros_interleaved)
+#[test]
+fn multiple_macros_interleaved_with_defns_compose() {
+    Cranelisp::new()
+        .user(
+            "(defn triple [x] (primitives/add-i64 x (primitives/add-i64 x x)))\n\
+             (defmacro apply-triple [x] `(triple ~x))\n\
+             (defn six [] (apply-triple 2))\n\
+             (defmacro make-six [] `(six))\n\
+             (defn main [] (make-six))",
+        )
+        .run("user.cl")
+        .output()
+        .assert_exit(6);
+}
+
+// spec: spec/09-macros.md §9.3.4 + spec/05-definitions.md §5.5 — macro
+// hoisting: a macro may be referenced before its defmacro form in
+// source order; the v4 pipeline processes all defmacros before other
+// forms.
+// (carry: legacy/v4_pipeline.rs::v4_macro_forward_reference_succeeds)
+#[test]
+fn macro_used_before_defmacro_form_is_hoisted() {
+    Cranelisp::new()
+        .user(
+            "(defn main [] (nope 42))\n\
+             (defmacro nope [x] x)",
+        )
+        .run("user.cl")
+        .output()
+        .assert_exit(42);
+}
+
+// spec: spec/09-macros.md §9.2.5 — macro body invokes fn b which itself
+// calls fn a; transitive call graph must compile before macro runs.
+// (carry: legacy/v4_pipeline.rs::v4_macro_complex_call_graph)
+#[test]
+fn macro_body_drives_three_level_call_graph() {
+    Cranelisp::new()
+        .user(
+            "(defn a [] 10)\n\
+             (defn b [] (primitives/add-i64 (a) 11))\n\
+             (defmacro get-b [] `(b))\n\
+             (defn main [] (get-b))",
+        )
+        .run("user.cl")
+        .output()
+        .assert_exit(21);
+}
+
+// =============================================================================
+// §9.2.5 + §8.12 Cross-module Macro Dependencies
+// (carry-forward: legacy/v4_pipeline.rs §H — Wave 6 batch 6)
+//
+// Sprint 45 worker.rs:762 fix regression-guard cluster. The fix area:
+// `compile_dep_symbol_inline` was looking up macro-body-call dependencies
+// from the **current module's** symbol table when the dep actually lives
+// in **another module's** symbol table. The 6 tests below partition this
+// surface (helper, transitive, qualified ref, transitive call graph,
+// dep-error, private not accessible).
+// =============================================================================
+
+// spec: spec/09-macros.md §9.2.5 + spec/08-modules.md §8.12 — macro in
+// module B calls helper from module A.
+// (carry: legacy/v4_pipeline.rs::v4_cross_module_macro_calls_helper)
+// REGRESSION-GUARD: Sprint 45 worker.rs:762 fix.
+#[test]
+fn cross_module_macro_calls_helper_in_other_module() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [macmod [wrap-seven]])\n(defn main [] (wrap-seven))",
+        )
+        .file(
+            "macmod.cl",
+            "(import [helper [make-seven]])\n\
+             (defmacro wrap-seven [] `(make-seven))",
+        )
+        .file("helper.cl", "(defn make-seven [] 7)")
+        .run("main.cl")
+        .output()
+        .assert_exit(7);
+}
+
+// spec: spec/09-macros.md §9.2.5 + spec/08-modules.md §8.10.1 — A→B→C→D
+// transitive: macro module imports through a re-export module to reach
+// helper in the base module.
+// (carry: legacy/v4_pipeline.rs::v4_cross_module_macro_transitive)
+// REGRESSION-GUARD.
+#[test]
+fn cross_module_macro_transitive_via_reexport_chain() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [macmod [get-val]])\n(defn main [] (get-val))",
+        )
+        .file(
+            "macmod.cl",
+            "(import [relay [base-val]])\n\
+             (defmacro get-val [] `(base-val))",
+        )
+        .file(
+            "relay.cl",
+            "(import [base [base-val]])\n\
+             (export [base [base-val]])",
+        )
+        .file("base.cl", "(defn base-val [] 99)")
+        .run("main.cl")
+        .output()
+        .assert_exit(99);
+}
+
+// spec: spec/09-macros.md §9.4 + spec/08-modules.md §8.5.1 — macro body
+// generates a qualified reference to a function in another module.
+// (carry: legacy/v4_pipeline.rs::v4_cross_module_macro_qualified_ref)
+#[test]
+fn cross_module_macro_emits_qualified_reference() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [macmod [call-util]])\n(defn main [] (call-util))",
+        )
+        .file(
+            "macmod.cl",
+            "(import [util [add-ten]])\n\
+             (defmacro call-util [] `(util/add-ten 5))",
+        )
+        .file(
+            "util.cl",
+            "(defn add-ten [x] (primitives/add-i64 x 10))",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(15);
+}
+
+// spec: spec/09-macros.md §9.2.5 — macro→helper.compute→helper.base
+// transitive call graph WITHIN macro execution. All deps must compile
+// before the macro can run.
+// (carry: legacy/v4_pipeline.rs::v4_cross_module_macro_transitive_call_graph)
+// REGRESSION-GUARD.
+#[test]
+fn cross_module_macro_drives_transitive_call_graph() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [macmod [get-result]])\n(defn main [] (get-result))",
+        )
+        .file(
+            "macmod.cl",
+            "(import [helpers [compute]])\n\
+             (defmacro get-result [] `(compute))",
+        )
+        .file(
+            "helpers.cl",
+            "(defn base [] 10)\n\
+             (defn compute [] (primitives/add-i64 (base) 11))",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(21);
+}
+
+// spec: spec/09-macros.md §9.9 + design/int/step9-error-cascade.md §4.1 —
+// type error in a macro module's dependency cascades up through the
+// macro layer.
+// (carry: legacy/v4_pipeline.rs::v4_cross_module_macro_dep_type_error)
+// REGRESSION-GUARD.
+#[test]
+fn cross_module_macro_dependency_type_error_cascades_neg() {
+    let out = Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [macmod [get-val]])\n(defn main [] (get-val))",
+        )
+        .file(
+            "macmod.cl",
+            "(import [broken [bad-fn]])\n\
+             (defmacro get-val [] `(bad-fn))",
+        )
+        .file("broken.cl", "(defn bad-fn [] (add-i64 1 true))")
+        .run("main.cl")
+        .output();
+    assert!(
+        out.status.code() != Some(0),
+        "type error in macro dep should fail; got stderr: {}",
+        out.stderr
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.contains("error")
+            || combined.contains("Error")
+            || combined.contains("type")
+            || combined.contains("Type"),
+        "should report an error for type error in macro dependency; got stderr: {}",
+        out.stderr
+    );
+}
+
+// spec: spec/09-macros.md §9.2.5 + spec/08-modules.md §8.7 — `defn-` in
+// module A is NOT importable; a macro in module B trying to use that
+// private name MUST fail.
+// (carry: legacy/v4_pipeline.rs::v4_cross_module_macro_private_not_accessible)
+#[test]
+fn cross_module_macro_cannot_use_private_helper_neg() {
+    let out = Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [macmod [call-secret]])\n(defn main [] (call-secret))",
+        )
+        .file(
+            "macmod.cl",
+            "(import [secret [hidden]])\n\
+             (defmacro call-secret [] `(hidden))",
+        )
+        .file("secret.cl", "(defn- hidden [] 42)")
+        .run("main.cl")
+        .output();
+    assert!(
+        out.status.code() != Some(0),
+        "private fn must not be importable; got stderr: {}",
+        out.stderr
+    );
+}

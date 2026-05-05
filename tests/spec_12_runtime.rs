@@ -687,6 +687,255 @@ fn tco_self_recursion_with_fn_typed_parameter() {
     .assert_stdout_contains(":primitives/Int 5");
 }
 
+// =============================================================================
+// §12.6 Entry Point — `(defn main [] expr)` exit-code witness
+// (carry-forward: legacy/v4_pipeline.rs — Wave 6 batch 6)
+//
+// These tests are the FIRST coverage of spec/12-runtime.md §12.6 (R4 S10
+// pre-batch). They use `--run` mode (mode-specific exception per
+// `tests/plan/PLAN.md §"Mode canonicalisation"`) — the canonical
+// observation for §12.6 is the process exit code from
+// `(defn main [] expr-returning-Int)`. The REPL form does not invoke
+// `main`; only the `--run` driver does.
+// =============================================================================
+
+// spec: spec/12-runtime.md §12.6 — `(defn main [] Int)` exits with that Int
+// (carry: legacy/v4_pipeline.rs::test_v4_integer_literal)
+#[test]
+fn main_returning_int_produces_int_exit_code() {
+    Cranelisp::new()
+        .user("(defn main [] 42)")
+        .run("user.cl")
+        .output()
+        .assert_exit(42);
+}
+
+// spec: spec/12-runtime.md §12.6 — non-Int main result → exit 0
+// (carry: legacy/v4_pipeline.rs::test_v4_boolean_literal)
+#[test]
+fn main_returning_non_int_produces_zero_exit_code() {
+    Cranelisp::new()
+        .user("(defn main [] true)")
+        .run("user.cl")
+        .output()
+        .assert_exit(0);
+}
+
+// spec: spec/12-runtime.md §12.6 — main may invoke a primitive call
+// spec: spec/appendix-a-builtins.md — add-i64 primitive
+// (carry: legacy/v4_pipeline.rs::test_v4_add_i64)
+#[test]
+fn main_invokes_primitive_call_for_exit_code() {
+    Cranelisp::new()
+        .user("(defn main [] (primitives/add-i64 1 2))")
+        .run("user.cl")
+        .output()
+        .assert_exit(3);
+}
+
+// spec: spec/12-runtime.md §12.6 + spec/05-definitions.md §5.1.1 — main
+// invokes a sibling user-defined defn. The batch driver must compile both
+// forms in source order and produce the right exit code.
+// (carry: legacy/v4_pipeline.rs::test_v4_defn_and_call)
+#[test]
+fn main_invokes_sibling_user_defn_for_exit_code() {
+    Cranelisp::new()
+        .user(
+            "(defn double [x] (primitives/add-i64 x x))\n\
+             (defn main [] (double 5))",
+        )
+        .run("user.cl")
+        .output()
+        .assert_exit(10);
+}
+
+// spec: spec/12-runtime.md §12.6 + §12.5 — recursive (non-tail) call from main
+// computes factorial 5! = 120; demonstrates that recursive call frames work
+// through the entry-point invocation path.
+// (carry: legacy/v4_pipeline.rs::test_v4_recursive_function)
+#[test]
+fn main_invokes_recursive_user_defn_for_exit_code() {
+    Cranelisp::new()
+        .user(
+            "(defn fact [n]\n\
+               (if (primitives/eq-i64 n 0)\n\
+                 1\n\
+                 (primitives/mul-i64 n (fact (primitives/sub-i64 n 1)))))\n\
+             (defn main [] (fact 5))",
+        )
+        .run("user.cl")
+        .output()
+        .assert_exit(120);
+}
+
+// =============================================================================
+// §12.7.4.2 Batch Mode Error Behaviour
+// (carry-forward: legacy/v4_pipeline.rs — Wave 6 batch 6)
+//
+// Per `tests/plan/PLAN.md`, §12.7.4.2 was `[R4 S18]` UNTESTED. The
+// batch-mode error rendering surface is most cleanly observed via
+// `--run` mode + stderr capture + non-zero exit-code witness.
+// =============================================================================
+
+// spec: spec/12-runtime.md §12.7.4.2 — undefined name in entry produces
+// stderr error + non-zero exit
+// (carry: legacy/v4_pipeline.rs::test_v4_falls_back_for_operators)
+// REGRESSION-GUARD: bare `+` without prelude must error, not silently
+// dispatch to anything.
+#[test]
+fn main_with_undefined_name_errors_in_run_mode_neg() {
+    let out = Cranelisp::new()
+        .user("(defn main [] (+ 1 2))")
+        .run("user.cl")
+        .output();
+    assert!(
+        out.status.code() != Some(0),
+        "undefined `+` should produce non-zero exit; got {:?}",
+        out.status.code()
+    );
+    assert!(
+        out.stderr.contains("undefined variable: +"),
+        "stderr should contain 'undefined variable: +'; got: {}",
+        out.stderr
+    );
+}
+
+// spec: spec/12-runtime.md §12.7.4.2 — type error in entry produces stderr
+// error + non-zero exit
+// (carry: legacy/v4_pipeline.rs::v4_error_type_error_in_entry)
+#[test]
+fn main_with_type_error_in_entry_errors_in_run_mode_neg() {
+    let out = Cranelisp::new()
+        .user("(defn main [] (add-i64 1 true))")
+        .run("user.cl")
+        .output();
+    assert!(
+        out.status.code() != Some(0),
+        "type error should produce non-zero exit"
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.contains("type")
+            || combined.contains("Type")
+            || combined.contains("mismatch")
+            || combined.contains("error")
+            || combined.contains("Error"),
+        "error output should mention type error; got stderr: {}",
+        out.stderr
+    );
+}
+
+// spec: spec/12-runtime.md §12.7.4.2 + design/int/step9-error-cascade.md §4.1+4.2 —
+// type error in dependency module cascades to dependent module with
+// dependency-module name in the error context.
+// (carry: legacy/v4_pipeline.rs::v4_error_cascade_from_dependency)
+// REGRESSION-GUARD: error chain rendering — Sprint 45 Step 9 design guard.
+#[test]
+fn dependency_type_error_cascades_with_module_context_neg() {
+    let out = Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [math [compute]])\n(defn main [] (compute))",
+        )
+        .file("math.cl", "(defn compute [] (add-i64 1 true))")
+        .run("main.cl")
+        .output();
+    assert!(
+        out.status.code() != Some(0),
+        "cascade: type error in dep should fail compilation"
+    );
+    assert!(
+        out.stderr.contains("math"),
+        "cascade error should mention dependency module 'math'; got: {}",
+        out.stderr
+    );
+}
+
+// spec: spec/12-runtime.md §12.7.4.2 + design/int/step9-error-cascade.md §4.1 —
+// cascade error preserves root-cause type-error context (not just
+// "dependency failed").
+// (carry: legacy/v4_pipeline.rs::v4_error_cascade_includes_root_cause)
+// REGRESSION-GUARD: cascade rendering must preserve root cause.
+#[test]
+fn dependency_type_error_cascade_preserves_root_cause_neg() {
+    let out = Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [lib [broken-fn]])\n(defn main [] (broken-fn))",
+        )
+        .file("lib.cl", "(defn broken-fn [] (add-i64 true false))")
+        .run("main.cl")
+        .output();
+    assert!(out.status.code() != Some(0));
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.contains("type")
+            || combined.contains("Type")
+            || combined.contains("mismatch")
+            || combined.contains("Bool"),
+        "cascade error should include root cause type error, not just 'dependency failed'; got: {}",
+        out.stderr
+    );
+}
+
+// spec: spec/12-runtime.md §12.7.4.2 (negative complement) — clean program
+// produces no error text on stderr. Regression guard: error path changes
+// MUST NOT break the success path.
+// (carry: legacy/v4_pipeline.rs::v4_error_no_error_exits_cleanly)
+#[test]
+fn clean_program_produces_no_error_in_run_mode() {
+    let out = Cranelisp::new()
+        .user("(defn main [] (primitives/add-i64 10 20))")
+        .run("user.cl")
+        .output();
+    // Filter benign nice-worker warnings from stderr before assertion.
+    let err: String = out
+        .stderr
+        .lines()
+        .filter(|line| !line.starts_with("nice-worker:"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !err.contains("Error") && !err.contains("failed") && !err.contains("panic"),
+        "clean program should produce no errors on stderr; got: {}",
+        err
+    );
+    out.assert_exit(30);
+}
+
+// spec: spec/12-runtime.md §12.7.4.2 + design/int/step9-error-cascade.md §4.2 —
+// A→B→C cascade prints root cause once or twice, not 3+ times. Regression
+// guard: no per-module duplicate error rendering.
+// (carry: legacy/v4_pipeline.rs::v4_error_cascade_no_duplicate_output)
+#[test]
+fn three_level_cascade_does_not_duplicate_error_output_neg() {
+    let out = Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [mid [relay]])\n(defn main [] (relay))",
+        )
+        .file(
+            "mid.cl",
+            "(import [leaf [broken]])\n(defn relay [] (broken))",
+        )
+        .file("leaf.cl", "(defn broken [] (add-i64 1 true))")
+        .run("main.cl")
+        .output();
+    assert!(out.status.code() != Some(0));
+    let all = &out.stderr;
+    let mentions = all.matches("type mismatch").count()
+        + all.matches("Type mismatch").count()
+        + all.matches("type error").count()
+        + all.matches("Type error").count();
+    // Root cause + context = at most 2; 3+ would be one per cascade level.
+    assert!(
+        mentions <= 2,
+        "expected <= 2 type-error mentions in 3-level cascade, got {}; output: {}",
+        mentions,
+        all
+    );
+}
+
 // spec: spec/12-runtime.md §12.7.3 — `div-i64` of i64::MIN by -1 panics
 // (carry: legacy/ring0.rs::checked_div_min_neg1_panics)
 #[test]

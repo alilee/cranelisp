@@ -1,3 +1,70 @@
+// QUARANTINED Sprint 64 Wave 6 batch 6 — FIXME 0149 — owning skill /int
+// Source archive — not built by Cargo (nested under tests/legacy/).
+// Awaiting harvest into /int (with /frontend, /backend, /platform
+// co-owners) #[cfg(test)] unit tests + targeted integration follow-up.
+//
+// Carry-forward: 27 tests across 4 files:
+//   - tests/spec_12_runtime.rs (+11): main_returning_int_produces_int_exit_code,
+//     main_returning_non_int_produces_zero_exit_code,
+//     main_invokes_primitive_call_for_exit_code,
+//     main_invokes_sibling_user_defn_for_exit_code,
+//     main_invokes_recursive_user_defn_for_exit_code,
+//     main_with_undefined_name_errors_in_run_mode_neg,
+//     main_with_type_error_in_entry_errors_in_run_mode_neg,
+//     dependency_type_error_cascades_with_module_context_neg,
+//     dependency_type_error_cascade_preserves_root_cause_neg,
+//     clean_program_produces_no_error_in_run_mode,
+//     three_level_cascade_does_not_duplicate_error_output_neg
+//   - tests/spec_09_macros.rs (+11): macro_body_calls_helper_function_in_run_mode,
+//     macro_calls_another_macro_reaches_fixed_point,
+//     multiple_macros_interleaved_with_defns_compose,
+//     macro_used_before_defmacro_form_is_hoisted,
+//     macro_body_drives_three_level_call_graph,
+//     cross_module_macro_calls_helper_in_other_module,
+//     cross_module_macro_transitive_via_reexport_chain,
+//     cross_module_macro_emits_qualified_reference,
+//     cross_module_macro_drives_transitive_call_graph,
+//     cross_module_macro_dependency_type_error_cascades_neg,
+//     cross_module_macro_cannot_use_private_helper_neg
+//   - tests/spec_08_modules.rs (+2): multiple_import_forms_in_one_module,
+//     defn_before_import_resumes_correctly_after_dep_load
+//   - tests/spec_platforms.rs (+3): platform_form_with_stdio_compiles_in_run_mode,
+//     io_trampoline_executes_print_to_stdout,
+//     no_platform_form_program_runs_with_empty_registry
+//
+// DUPLICATE-IN-LEGACY (18 tests, NOT carried — REPL-canonical
+// equivalents already in spec_04_expressions / spec_05_definitions /
+// spec_08_modules / spec_09_macros / spec_appendix_a_builtins / cache.rs):
+//   - test_v4_sub_i64, test_v4_if_expression, test_v4_let_binding,
+//     test_v4_falls_back_for_imports, v4_macro_simple_defmacro_and_call,
+//     v4_macro_quasiquote, v4_macro_multi_clause_dispatch,
+//     v4_macro_type_error_in_body, v4_macro_begin_splicing,
+//     v4_import_simple, v4_import_transitive, v4_prelude_auto_load,
+//     v4_operator_expressions, v4_circular_import_error,
+//     v4_cache_hit_dependency, v4_export_reexport, v4_glob_import,
+//     v4_platform_stdio_print, v4_platform_import_and_use,
+//     v4_platform_multiple_calls
+//
+// GAP-HARVEST candidates (0 tests): none — all 47 tests are E2E
+// (subprocess-driven, observable through stdout/stderr/exit code) and
+// either DUPLICATE-IN-LEGACY or already carry-forwarded as such above.
+// The 47 tests do not exercise Rust-internal APIs; they are pure E2E.
+//
+// Inline FIXMEs preserved (verify during harvest):
+//   - line 587–592: FIXME(/int) — Sprint 58 Wave 2c cache-hit second
+//     `--run` exit-code divergence. **Resolved-by-passing-carry-forward**
+//     — the test passes today (47/47 PASS at audit time, 2026-05-05).
+//
+// Defect-discovery note (Wave 6 batch 6): the carry-forward authoring
+// found that `v4_resumption_correctness` (line 645) only asserted
+// stderr emptiness; it did NOT check exit code. The carry-forward in
+// `tests/spec_08_modules.rs::defn_before_import_resumes_correctly_after_dep_load`
+// preserves the legacy spec invariant (clean stderr = §8.10.1
+// resumption succeeded) AND records the discovered downstream defect:
+// the run-mode child SEGVs (exit 139) on this shape. Defect cluster
+// joins FIXME 0149 scope as `XXX(/backend)`; downstream resolution
+// re-enables the exit-code witness once fixed.
+
 //! Integration tests for the v4 scheduler-driven pipeline (`--run`).
 //!
 //! Verifies that programs compile correctly through the unified pipeline.
