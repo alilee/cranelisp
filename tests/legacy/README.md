@@ -35,6 +35,10 @@ into the owning crate's `#[cfg(test)]` unit tests.
 | `macros.rs` | 441 | 58 | /frontend (with /typecheck) | 0137 | 2026-05-04 |
 | `modules.rs` | 530 | 39 | /frontend (with /int) | 0138 | 2026-05-04 |
 | `sprint59_neg.rs` | 271 | 12 | /int (optional — carry-forward complete) | 0139 | 2026-05-04 |
+| `examples.rs` | 132 | 15 | /port | 0143 | 2026-05-05 |
+| `examples_run.rs` | 193 | 1 | /port | 0143 | 2026-05-05 |
+| `exemplar.rs` | 78 | 3 | /port | 0143 | 2026-05-05 |
+| `exemplar_solver_correctness.rs` | 302 | 2 | /port | 0143 | 2026-05-05 |
 
 ## Discipline
 

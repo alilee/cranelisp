@@ -1,3 +1,11 @@
+// QUARANTINED Sprint 64 Wave 6 batch 1 — FIXME 0143 — owning skill /port (carry-forward author /qa)
+//
+// Read-only archive. Carry-forwards: T-S2-1 to tests/exemplar.rs (NEW;
+// inline-rewritten to remove exemplar/ source dependency per
+// memory/feedback_repro_handoff.md); T-S2-2 to tests/regression.rs (NEW;
+// pure backend codegen regression guard).
+// See tests/plan/wave-6-batch-1-audit.md for audit findings.
+
 //! Sprint 61 Slice 2 — exemplar solver correctness regression guards.
 //!
 //! Two regression guards, both originally authored FAILING per

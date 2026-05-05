@@ -1,3 +1,9 @@
+// QUARANTINED Sprint 64 Wave 6 batch 1 — FIXME 0143 — owning skill /port (carry-forward author /qa)
+//
+// Read-only archive. Carry-forwards in tests/examples.rs (NEW; umbrella
+// table-driven, this file's 27-row expected_exits is the authoritative
+// source of truth used by the new file). See tests/plan/wave-6-batch-1-audit.md.
+
 //! Sprint 60 Workstream F — examples `--run` path regression guard.
 //!
 //! Per the Sprint 60 scope revision (sprints/SPRINT.md §Wave 1 finding
