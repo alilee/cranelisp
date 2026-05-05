@@ -191,6 +191,11 @@ Platform-origin failures construct `PlatformError` and surface via `CranelispErr
 
 ```rust
 pub const ABI_VERSION: u32;                                                        // platform ABI version — bumped on breaking changes
+pub const IO_TAG_PURE: i64;                                                        // IO node tag — Pure (spec §10)
+pub const IO_TAG_EFFECT: i64;                                                      // IO node tag — Effect (spec §10)
+pub const IO_TAG_BIND: i64;                                                        // IO node tag — Bind (spec §10)
+pub const IO_TAG_PAR: i64;                                                         // IO node tag — Par (spec §10.12)
+pub const IO_EFFECT_RESOURCE_OFFSET: i64;                                          // byte offset of resource token in Effect node payload
 ```
 
 ---
