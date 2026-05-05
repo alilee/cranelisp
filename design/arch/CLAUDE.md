@@ -39,6 +39,13 @@ Historical pipeline designs (v1, v2, v3) and superseded migration artefacts. Ref
 - `archive/sprint-40a-design.md` — cancelled Sprint 40a design
 - `archive/codegen-convergence.md` — Sprint 54 Wave 3a; superseded by Decisions 22, 23, 25 (S63 archive)
 - `archive/ast-annotation-examples.md` — Sprint 55 Step 1b annotation spec (S63 archive)
+- `archive/pipeline-v4.md`, `archive/pipeline-v4-roadmap.md`, `archive/concurrent-pipeline.md` — v4 scheduler-driven pipeline design + roadmap; superseded by per-crate `design/{crate}/{crate}.md` and Decisions 21–27, 31, 36–41 (S65 Phase 2 legacy triage)
+- `archive/reconciliation-plan.md` — Sprint 63 close procedural reconciliation plan; substance + procedural waves executed (S65 Phase 2 legacy triage)
+- `archive/roadmap.md` — pre-S63 ring-by-ring architectural roadmap; delivery tracked by `sprints/ROADMAP.md`; per-crate intent in `design/{crate}/{crate}.md` (S65 Phase 2 legacy triage)
+- `archive/substance-scoping-brief.md` — input brief for the substance-scoping pass; pass executed and resolved into Decisions 40–43 (S65 Phase 2 legacy triage)
+- `archive/macro-resolver.md` — Sprint 50 macro resolver design; superseded by FIXME 0098 (Decision 8 retracted; `MacroResolver` trait drops in favour of direct `&SymbolTables<C, L>` lookup) (S65 Phase 2 legacy triage)
+- `archive/traitimpl-symbol-table.md` — Sprint 51 ImplRegistry-deletion design; landed in source (`ModuleEntry::TraitImpl` exists; `ImplRegistry` deleted per `crates/cranelisp-typecheck/src/{checker,traits}.rs` source comments) (S65 Phase 2 legacy triage)
+- `archive/sequence-diagram/` — pre-S63 v4-target sequence diagrams; superseded by `sequences/` (S65 Phase 2 legacy triage)
 
 ## Decisions
 
@@ -55,8 +62,9 @@ The active register holds Decisions whose outcome is NOT yet fully embodied in t
 - [0040](decisions/0040-runtime-trace-io-trace-relocate-to-int.md) — `trace.rs` and `io_trace.rs` relocate to int; runtime keeps `IoObserver` callback contract; BC §4 unchanged (pre-implementation; tracked by FIXME 0098)
 - [0041](decisions/0041-compile-to-module-per-symbol-jit-direct-writes.md) — `compile_to_module` per-symbol JIT cardinality; `Code` moves to `cranelisp-backend`; backend writes shared state directly; `Result<(), CompilationError>` (pre-implementation; amends 31, 35)
 - [0042](decisions/0042-platform-error-adopts-error-location.md) — `PlatformError` is a `cranelisp-types`-hosted enum with `ErrorLocation` carriers per variant; surfaces via `CranelispError::Platform` (pre-implementation)
+- [0043](decisions/0043-runtime-split-into-primitives-intrinsics.md) — `cranelisp-runtime` splits into `cranelisp-primitives` + `cranelisp-intrinsics`; backend has no trait knowledge (retracts 14, reframes 15; pre-implementation; tracked by FIXME 0150)
 
-Legacy Decisions (outcome fully embodied in architecture; preserved in `legacy/decisions/` for narrative continuity) — `0001`–`0006`, `0008`–`0009`, `0012`–`0013`, `0016`, `0018`–`0019`, `0021`–`0026`, `0029`, `0032`–`0034`, `0036`–`0039`. Retracted/superseded Decisions deleted (rely on git for history): `0007`, `0014`, `0015`, `0017`, `0020`, `0028`.
+Legacy Decisions (outcome fully embodied in architecture; preserved in `legacy/decisions/` for narrative continuity) — `0001`–`0006`, `0008`–`0009`, `0012`–`0013`, `0016`, `0018`–`0019`, `0021`–`0026`, `0029`, `0032`–`0034`, `0036`–`0039`. Retracted/superseded Decisions deleted (rely on git for history): `0007`, `0014` (retracted by 43; commit `754d525`), `0015` (reframed by 43; commit `754d525`), `0017`, `0020`, `0028`.
 
 ## Cross-References
 
