@@ -4,7 +4,7 @@ sequenceDiagram
     participant Caller as Caller<br/>::session_v4::CompilerSession::eval (REPL trailing expr) or ::main (Run mode trampoline)
     participant Trampoline as Trampoline<br/>::session_v4::CompilerSession::trampoline
 
-    Note over Caller, Trampoline: † marks proposed/target API not yet in current code.<br/>Receiver is implicit in the lifeline.<br/>Runtime cadence begins when JIT'd user code starts executing — ends when the trampoline returns to the caller.<br/>Compilation internals (typecheck, codegen) delegated to exec-flow-compilation.
+    Note over Caller, Trampoline: † marks proposed/target API not yet in current code.<br/>Receiver is implicit in the lifeline.<br/>Runtime cadence begins when JIT'd user code starts executing — ends when the trampoline returns to the caller.<br/>Per Decision 43 the running-program substrate is split across cranelisp-primitives (user-callable) and cranelisp-intrinsics (backend-emitted-call targets shown below).<br/>Compilation internals (typecheck, codegen) delegated to exec-flow-compilation.
 
     rect rgb(245, 230, 255)
         Note over Caller, Trampoline: ENTRY — caller invokes the trampoline with a code pointer + expected type<br/>(code_ptr was obtained from ST[m].get(sym).code.ptr() or from a per-eval JITModule)
@@ -20,8 +20,8 @@ sequenceDiagram
         Trampoline ->> UserCode: indirect call via fn pointer — args per Type signature, abi=SystemV
 
         opt heap allocation needed (string literal, ADT constructor, closure capture, Vec push, etc.)
-            create participant Allocator as Heap allocator<br/>cranelisp_runtime::alloc
-            UserCode ->> Allocator: cranelisp_runtime::heap_alloc(payload_size: i64) -> i64
+            create participant Allocator as Heap allocator<br/>cranelisp_intrinsics::alloc (per Decision 43 — backend-emitted-call target)
+            UserCode ->> Allocator: cranelisp_intrinsics::heap_alloc(payload_size: i64) -> i64
             Note over Allocator: layout — [total_size: u64 | rc: u64 | payload bytes...]<br/>returns base pointer (offset 0) — payload starts at offset 16. Per src/CLAUDE.md "Heap Access".
             Allocator -->> UserCode: ptr: i64 (base of allocation)
         end
@@ -39,7 +39,7 @@ sequenceDiagram
                 opt nested heap fields
                     DropGlue ->> DropGlue: recursive dec on each heap field (may invoke other drop_glues via the same fn-ptr mechanism)
                 end
-                DropGlue ->> Allocator: cranelisp_runtime::heap_dealloc(ptr: i64)
+                DropGlue ->> Allocator: cranelisp_intrinsics::heap_dealloc(ptr: i64)
                 Note over Allocator: reads total_size from ptr+0 — frees the full allocation back to the system allocator
             end
         end
@@ -62,8 +62,8 @@ sequenceDiagram
         rect rgb(220, 255, 220)
             Note over Trampoline: IO WALK — trampoline reduces the IO tree to a final value via run_io_trampoline
 
-            create participant IORuntime as IO runtime<br/>cranelisp_runtime::io
-            Trampoline ->> IORuntime: cranelisp_runtime::cranelisp_run_io(io_root_ptr: i64) -> i64
+            create participant IORuntime as IO trampoline<br/>cranelisp_intrinsics::io (per Decision 43 — backend-emitted-call target)
+            Trampoline ->> IORuntime: cranelisp_intrinsics::cranelisp_run_io(io_root_ptr: i64) -> i64
             Note over IORuntime: reduces the IO tree node-by-node, consuming each outer allocation via rc::dec_shallow_io (per Decision 29)
 
             loop walk IO tree until fully reduced
@@ -81,7 +81,7 @@ sequenceDiagram
                     Note over PlatformDLL: platform fn body runs — may call back into runtime via HostCallbacks for alloc / dec / rc_inc / invoke_closure (callbacks installed once per session by HostContext::init at CompilerSession::new)
                     opt platform fn needs to allocate (e.g. produce a CLString result)
                         PlatformDLL ->> Allocator: HostCallbacks.alloc(size: usize) -> *mut u8
-                        Note over Allocator: callback routes to cranelisp_runtime::heap_alloc — same allocator as user code, same RC discipline
+                        Note over Allocator: callback routes to cranelisp_intrinsics::heap_alloc — same allocator as user code, same RC discipline
                         Allocator -->> PlatformDLL: ptr
                     end
                     PlatformDLL -->> IORuntime: CLType repr (i64) — return value of the platform fn

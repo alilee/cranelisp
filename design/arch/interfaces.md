@@ -1431,7 +1431,7 @@ impl HeapHeader {
 }
 ```
 
-### HeapString (in `cranelisp-runtime`)
+### HeapString (in `cranelisp-intrinsics`)
 
 ```rust
 #[repr(C)]

@@ -4,7 +4,7 @@
 
 ## The language and the system
 
-Cranelisp is a statically typed, pure-functional Lisp with type inference, trait-based dispatch, and Cranelift-backed JIT compilation. It is REPL-first: definitions accumulate during a session, redefinition is cheap, and JIT-emitted code is reclaimed when superseded. A persistent on-disk cache makes module loads incremental across sessions. A `--link` mode produces a standalone executable that depends only on the runtime and any platform DLLs the program calls.
+Cranelisp is a statically typed, pure-functional Lisp with type inference, trait-based dispatch, and Cranelift-backed JIT compilation. It is REPL-first: definitions accumulate during a session, redefinition is cheap, and JIT-emitted code is reclaimed when superseded. A persistent on-disk cache makes module loads incremental across sessions. A `--link` mode produces a standalone executable that links the user-callable primitives crate, the backend-emitted-call intrinsics crate, and any platform DLLs the program calls.
 
 The project is one Rust workspace of seven crates. Six of them are *surfaces* — bounded contexts the development triad (`/design`, `/dev`, `/review`) narrow-deploys to one at a time. The seventh, `cranelisp-types`, is owned by `/arch` and is the single home for everything that crosses crate boundaries. The full per-surface bounded contexts live in `bounded-contexts.md`; this overview introduces them in the order a reader meets them.
 
@@ -18,7 +18,7 @@ The **frontend** turns source text into an AST. It reads source bytes into S-exp
 
 The **backend** translates symbol-table entries into Cranelift IR and produces compilation artefacts: in-memory machine code for direct execution, object files for linking, and a cache pair (metadata plus object) for re-use across sessions. There is one compilation entry point regardless of mode; "in-memory vs object" is a property of the Cranelift module supplied to it, not a parameter on the entry point.
 
-The **runtime** is what a running cranelisp program needs to execute: a heap, reference counting, drop glue, string and vector primitives, an IO trampoline that interprets effect chains, fork-join evaluation cells. JIT-emitted code calls into the runtime through a stable C-ABI surface. The runtime knows nothing about compilation, the REPL, or development tooling. That separation is load-bearing — it means a deployed `--link` executable does not pay for compiler infrastructure it never uses.
+The **running-program substrate** is what a running cranelisp program needs to execute, split per Decision 43 across two crates. **`cranelisp-primitives`** holds user-callable, spec-defined operations addressable via the `primitives/<name>` symbol path: arithmetic, comparison, string/vec ctors, IO primitives — visible in the symbol table, addressable as values via GOT slots. **`cranelisp-intrinsics`** holds backend-emitted-call targets: the heap allocator, drop glue, RC fences, the IO trampoline, fork-join cells, the `HeapString` representation. Intrinsics are not callable from user code; the ABI is tightly coupled to backend's codegen. Together these two crates are what JIT-emitted code calls into through a stable C-ABI surface. Neither knows anything about compilation, the REPL, or development tooling. That separation is load-bearing — it means a deployed `--link` executable links primitives + intrinsics + platform DLLs and does not pay for compiler infrastructure it never uses.
 
 The **platform** crate is the shared interface contract between the cranelisp host and platform DLLs (the language's `IO` effect implementations). Both sides link against it; that is its purpose. Platform DLLs publish manifests describing the functions they expose; the host loads them and the IO trampoline dispatches through them.
 
@@ -35,7 +35,7 @@ The linear story is correct as a description of *what happens to one form*. It i
 - **Compilation cadence** lives inside the integration layer. Workers consume *work packets* off internal queues, process them, publish results, and notify a scheduler. Closed-loop within the compilation subsystem; no external clock.
 - **REPL cadence** lives inside the integration layer. Turn-based, synchronous to user input. One prompt → one parse → one submission to the compilation cadence → wait → display.
 - **Watcher cadence** lives inside the integration layer. Open-loop — its timing is dictated by the operating system. File-change events arrive on a callback thread and are captured into a channel, polled by the REPL at prompt boundaries to avoid mid-input interleave.
-- **Runtime cadence** lives inside the runtime crate, executing as part of the running program. Atomic reference counting interleaved with normal execution; fork-join scopes during parallel evaluation. Invisible outside the running program — it produces no handoffs to the other cadences.
+- **Runtime cadence** is the running-program cadence — it executes as part of the running program, hosted across `cranelisp-primitives`, `cranelisp-intrinsics`, and (when observation is enabled) the `src/io_trace/` and `src/trace/` consumer side. Atomic reference counting interleaved with normal execution; fork-join scopes during parallel evaluation; the IO trampoline reducing effect trees. Invisible outside the running program — it produces no handoffs to the other cadences.
 
 **Handoffs** are the typed values that cross cadence boundaries. The REPL submits an evaluation request to compilation and waits; compilation returns a result or an error; the watcher's events become re-register requests at prompt boundaries. The integration layer's facade pins the handoff types; the bounded context fixes the patterns (who initiates, who waits, who polls).
 
@@ -48,7 +48,7 @@ The vocabulary — *surface*, *bounded context*, *cadence*, *handoff*, *window* 
 `cranelisp-types` is the single home for everything that crosses crate boundaries. It depends on nothing else in the workspace, and nothing is allowed to invert that direction. The crate hosts two kinds of contract:
 
 - **Value types** — the AST, types, sexp, symbol tables, errors, identifier newtypes, layout constants. These flow across the workspace by ownership.
-- **Marker traits** for cross-crate generic shapes. Downstream crates implement these to supply concrete types where the boundary is generic; the concrete types live in the owning crate, never here. This is what keeps `cranelisp-types` ignorant of backend and runtime concrete state — the integration layer's compiled-code carrier is the canonical example.
+- **Marker traits** for cross-crate generic shapes. Downstream crates implement these to supply concrete types where the boundary is generic; the concrete types live in the owning crate, never here. This is what keeps `cranelisp-types` ignorant of backend and running-program concrete state — the integration layer's compiled-code carrier is the canonical example.
 
 The crate is `/arch`'s own; consumers file `target: /arch` to add or change shapes. The narrative companion to the types crate is `interfaces.md`, which describes each boundary type's purpose.
 

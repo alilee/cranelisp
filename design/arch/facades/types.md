@@ -112,7 +112,10 @@ pub fn free_vars_expr(expr: &Expr) -> HashSet<Symbol>;
 
 The `TypeName → FQTypeName` lift happens inside `check_form` when a `TypeExpr::Named(name)` is resolved by looking up `name` in the current scope plus imported modules. This is the architectural reason the two newtypes exist as distinct types.
 
-**Producer/consumer responsibility.** Frontend produces `TypeExpr` carrying bare `TypeName` (no resolution). Typecheck consumes `TypeExpr`, performs the lift, and produces `Type` / `TypeDefInfo` / `MethodResolutions` / `CheckResult` shapes carrying `FQTypeName`. Backend, intrinsics, primitives, platform, and int consume only `FQTypeName` at their public surface — no consumer past typecheck ever sees a bare `TypeName` in a boundary type. The single permitted exception is the reverse-lookup helpers on `Type` itself (`from_name(&TypeName)` for primitive recognition, `type_name(&Type) -> Option<TypeName>` for primitive emission), which operate on the small set of built-in non-ADT types where the unqualified name IS unique.
+**Producer/consumer responsibility.** Frontend produces `TypeExpr` carrying bare `TypeName` (no resolution). Typecheck consumes `TypeExpr`, performs the lift, and produces `Type` / `TypeDefInfo` / `MethodResolutions` / `CheckResult` shapes carrying `FQTypeName`. Backend, intrinsics, primitives, platform, and int consume only `FQTypeName` at their public surface — no consumer past typecheck ever sees a bare `TypeName` in a boundary type. Two narrow exceptions, documented as principled and not extendable without `/arch` review:
+
+1. **Reverse-lookup helpers on `Type`** — `from_name(&TypeName)` for primitive recognition and `type_name(&Type) -> Option<TypeName>` for primitive emission, which operate on the small set of built-in non-ADT types where the unqualified name IS unique.
+2. **Receiver-pinned lookups** — APIs whose receiver itself supplies the module context. `SymbolTable::get_type(&TypeName)` is keyed by bare `TypeName` because the `&self` receiver IS the module; wrapping the local-to-this-table key in `FQTypeName` would re-encode information already pinned by the receiver. The fully-qualified identity is reconstructible by the caller as `FQTypeName::new(module_of(&self), name.clone())` if needed downstream. This exception is structural, not aspirational: it applies wherever the receiver's type pins the module context.
 
 ```rust
 pub type TypeId = u32;
@@ -224,7 +227,7 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
     pub fn public_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry<C>)>;
     pub fn defined_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry<C>)>;              // Decision 22 — codegen-compilable predicate
     pub fn all_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry<C>)>;
-    pub fn get_type(&self, name: &TypeName) -> Option<&TypeDef>;                                    // FQTypeName resolution path
+    pub fn get_type(&self, name: &TypeName) -> Option<&TypeDef>;                                    // receiver-pinned exception — &self IS the module context (see §"Resolved type system" exception 2)
 
     // ────── Defn order — read-only (regeneration walks this) ──────
     pub fn defn_order(&self) -> &[Symbol];

@@ -100,7 +100,7 @@ pub struct HeapString {
 }
 ```
 
-`HeapString` layout is intrinsics-owned per Decision 12 — backend never reads or writes string bytes; all string ops route through these extern functions. Enables a future rope upgrade as an intrinsics-only change.
+`HeapString` layout is intrinsics-owned per Decision 12 — backend never reads or writes string bytes; all string ops route through these extern functions. Enables a future rope upgrade as an intrinsics-only change. `cranelisp-platform`'s `CLString` (`facades/platform.md` §"Wrapper types") is a `#[repr(transparent)]` `i64` newtype carrying a `*const HeapString` for cross-DLL boundary use; platform DLL code reaches the bytes via `CLString::as_str()` which calls back through this crate's `read_string_as_str`.
 
 ### Sexp marshaling (for macro args + quote_sexp)
 
