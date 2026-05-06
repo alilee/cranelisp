@@ -103,12 +103,16 @@ pub fn free_vars_expr(expr: &Expr) -> HashSet<Symbol>;
 
 ### Resolved type system (output of typecheck, consumed by backend)
 
+**`FQTypeName` is binding** as the cross-crate boundary type for resolved-stage type identifiers. Every API past frontend's resolution stage that names a type uses `FQTypeName`; bare `TypeName` is reserved for syntactic-stage uses inside the frontend (parser output, AST surface, `TypeExpr` shape). This commitment was lifted from aspirational to binding in Sprint 65 W2 — see `sprint-65-reshape-phase-2-review.md` §4.1 for the lift's rationale and the grep-and-classify pass that landed it.
+
 `TypeName` and `FQTypeName` partition cleanly across the parse → resolve boundary:
 
-- **`TypeName`** appears in **syntactic** positions (`TypeExpr::Named`, `TypeExpr::Applied`, `TraitImpl.target_type`) — produced by the frontend before module context is known.
-- **`FQTypeName`** appears in **resolved** positions (`Type::ADT`, `TypeDefInfo.name`, `MethodResolutions.impl_type`) — produced by typecheck after resolution against `&symbol_tables`.
+- **`TypeName`** (syntactic stage) appears in positions produced by the frontend before module context is known: `TypeExpr::Named(TypeName)`, `TypeExpr::Applied`, `TraitImpl.target_type`, `TraitDecl.type_params`. The bare identifier is correct here; resolution has not happened yet. Frontend-internal constructs and AST nodes that the frontend emits are the only home for bare `TypeName`.
+- **`FQTypeName`** (resolved stage) appears in positions produced by typecheck after resolution against `&symbol_tables`: `Type::ADT(FQTypeName, …)`, `TypeDefInfo.name`, `MethodResolutions.impl_type`, `ResolutionGap::Type(FQTypeName)`, `int::wait_for_typecheck_type(fqt: &FQTypeName)`. Every cross-crate API that names a type by identity uses `FQTypeName` — module ambiguity is resolved by the time the boundary is crossed.
 
 The `TypeName → FQTypeName` lift happens inside `check_form` when a `TypeExpr::Named(name)` is resolved by looking up `name` in the current scope plus imported modules. This is the architectural reason the two newtypes exist as distinct types.
+
+**Producer/consumer responsibility.** Frontend produces `TypeExpr` carrying bare `TypeName` (no resolution). Typecheck consumes `TypeExpr`, performs the lift, and produces `Type` / `TypeDefInfo` / `MethodResolutions` / `CheckResult` shapes carrying `FQTypeName`. Backend, intrinsics, primitives, platform, and int consume only `FQTypeName` at their public surface — no consumer past typecheck ever sees a bare `TypeName` in a boundary type. The single permitted exception is the reverse-lookup helpers on `Type` itself (`from_name(&TypeName)` for primitive recognition, `type_name(&Type) -> Option<TypeName>` for primitive emission), which operate on the small set of built-in non-ADT types where the unqualified name IS unique.
 
 ```rust
 pub type TypeId = u32;
