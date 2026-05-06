@@ -1,0 +1,24 @@
+---
+number: 16
+title: Punctuation symbols are not special
+---
+
+# Principle 16 — Punctuation symbols are not special
+
+**Statement.** Punctuation symbols (e.g., `+`, `-`, `*`, `/`, `=`, `<`, `>`, `not`, `and`, `or`) are symbols like any other. The compiler does not treat them differently based on lexical shape — they resolve, dispatch, and substitute by name through the same paths every other symbol traverses. The single exception is reader macros, which by definition translate source forms during reading and are documented as such at the spec level.
+
+**Rationale.** Special treatment of punctuation accumulates. Decision 14 created a backend-resident `(TraitName, Symbol, TypeName) → primitive-name` table to "shortcut" operator dispatch; once installed, every new trait wanting primitive-backed impls demanded a backend change, and a parallel `"+" → "cranelisp_op_add"` table appeared in `literals.rs` to handle operator-as-value separately from operator-as-call. The closure-table problem repeats whenever a layer takes responsibility for knowledge that does not belong to it. The mechanism leaks dispatch logic into the backend (where only resolved targets should arrive) and into the typechecker (where operators-as-values would otherwise be ordinary references), and obscures the spec's own clarity that these names are symbols. Decision 43 retracts Decision 14 and reframes Decision 15 on this point; this Principle elevates the underlying rule so future design work does not re-derive the same debt.
+
+**Consequence.**
+
+- **Backend's inline-substitution table is name-keyed only.** No `(TraitName, Symbol, TypeName)` tuples; no separate paths for operator-as-value vs operator-as-call. The table maps a primitive name (e.g., `"add-i64"`) to the CLIF instruction that substitutes for it. The table does not know about traits, types, or symbol shapes.
+- **Trait dispatch resolves at typecheck/stdlib.** Backend sees a resolved target name and either substitutes inline (the name appears in the inline-substitution table) or emits a normal call (the name resolves to a GOT slot like every other function reference). Operator-as-value and operator-as-call use the same path: the symbol is looked up by name; the resolved target is invoked.
+- **Files named `operators.*` or modules categorising "operators" are an architectural smell.** The legitimate role of such a file is "name-keyed inline primitive substitutions." It should be named accordingly (per Decision 43's substance scoping §1.7 commitment, `crates/cranelisp-backend/src/operators.rs` renames to `primitives_inline.rs` or similar). A file named for the lexical shape of its contents is asserting a category that does not exist.
+- **Reader macros are the named exception.** They translate source forms by design; their translation is documented at spec level (today's spec does not define user-defined reader macros — deferred to reimplementation). When user-defined reader macros are added, the language designer's approach is constrained by this Principle: a reader macro is the only place punctuation may receive shape-specific treatment, and only because it is translating before the compiler ever sees the form as a symbol.
+
+**Cross-references.**
+
+- Decision 14 — retracted by Decision 43; deleted from the active register (commit `754d525` per `design/arch/CLAUDE.md` §Decisions). The retracted commitment created the closure-table this Principle prohibits.
+- Decision 15 — reframed by Decision 43; the operator-resolution mechanism it specified retracts with Decision 14.
+- [Decision 43](../decisions/0043-runtime-split-into-primitives-intrinsics.md) — operator-category retirement; the runtime split where the closure-table mechanism deletes.
+- `design/arch/legacy/substance-scoping.md §1.7` — the cleanup commitments (rename, trait-knowledge map deletions, stdlib trait-impl audit) that implement this Principle in source.
