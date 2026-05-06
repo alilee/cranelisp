@@ -71,7 +71,7 @@ impl<T: CLHeap> Drop for CLOwned<T> { /* dec via HostCallbacks */ }
 
 ```rust
 impl CLString {
-    pub fn as_str(&self) -> &str;                                                  // borrow the runtime-owned bytes
+    pub fn as_str(&self) -> &str;                                                  // borrow the intrinsics-owned bytes (HeapString lives in cranelisp-intrinsics per Decision 12 + Decision 43)
 }
 ```
 

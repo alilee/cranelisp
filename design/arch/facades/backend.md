@@ -149,7 +149,7 @@ Wrapped in `Arc<Linker>` by `load_object`; analogous lifecycle to `Jit`. `Arc<Li
 
 ### GOT-population observation (extension point)
 
-NOT diagnostics — an extension point in the same shape as runtime's `IoObserver` (Decision 40). Backend defines the observation taxonomy and a registration API; `int` implements all observer state. The events fire from `compile_to_module`'s `write_code` site (where the data is in hand) and from `Linker::load_object`'s slot population. Production batch (no observer registered) pays one relaxed null-check load per call site.
+NOT diagnostics — an extension point in the same shape as intrinsics' `IoObserver` (Decision 40 + Decision 43 — the IoObserver registration API resides in `cranelisp-intrinsics` post-D43; see `facades/intrinsics.md` §"IO observation"). Backend defines the observation taxonomy and a registration API; `int` implements all observer state. The events fire from `compile_to_module`'s `write_code` site (where the data is in hand) and from `Linker::load_object`'s slot population. Production batch (no observer registered) pays one relaxed null-check load per call site.
 
 ```rust
 pub enum GotEventTag { JitWrite, LinkerWrite, Redefinition, /* … */ }

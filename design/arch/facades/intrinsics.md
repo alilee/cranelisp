@@ -191,7 +191,7 @@ No re-exports of `cranelisp-types` items per Principle 15.
 The intrinsics crate imports from:
 
 - **`cranelisp-types`** — `Symbol`, `ErrorLocation`, `Span`, `CranelispError`, marshaling tags (`TAG_SNIL`, `TAG_SCONS`, `TAG_SEXP_*`), `SchedulingClass`. No types-crate trait implementations.
-- **`cranelisp-platform`** — the `IO_TAG_*` consts (`IO_TAG_PURE`, `IO_TAG_EFFECT`, `IO_TAG_BIND`, `IO_TAG_PAR`) consumed by the IO trampoline; `HostContext` for the IO trampoline's Effect dispatch path. Per `bounded-contexts.md` §4b + §5 — intrinsics is paired with platform; the IO trampoline calls `HostContext::dispatch` to invoke platform fns.
+- **`cranelisp-platform`** — the `IO_TAG_*` consts (`IO_TAG_PURE`, `IO_TAG_EFFECT`, `IO_TAG_BIND`, `IO_TAG_PAR`) consumed by the IO trampoline; `HostContext` for the IO trampoline's Effect dispatch path. Per `bounded-contexts.md` §4b + §5 — intrinsics is paired with platform; the IO trampoline reaches platform fns through the per-entry `platform_fn_ptr` on `ModuleEntry::Def` (per Decision 26) rather than through a centralised dispatch wrapper. See `facades/platform.md` §"Host context" — no `HostContext::dispatch` is exposed; the per-entry pointer IS the dispatch path.
 
 Intrinsics imports from no other workspace crate — not `cranelisp-frontend`, not `cranelisp-typecheck`, not `cranelisp-backend`, not `cranelisp-primitives`. (Backend names intrinsics extern functions by string at codegen time — relocation-time dependency, not a Rust-source dependency.)
 
