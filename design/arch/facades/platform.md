@@ -1,6 +1,6 @@
 # Facade spec — `crates/cranelisp-platform/`
 
-**Bounded context citation.** Platform DLL loading, IO trampoline contract, and scheduling-class registry. Consumes runtime; exposes platform-fn registry to backend. See `bounded-contexts.md` §5 — Platform.
+**Bounded context citation.** Platform DLL loading, IO trampoline contract, and scheduling-class registry. Paired with `cranelisp-intrinsics` (Decision 43) — the IO trampoline lives in intrinsics; platform exposes the DLL ABI + host callbacks the trampoline uses. Exposes platform-fn registry to backend. See `bounded-contexts.md` §5 — Platform.
 
 This spec is **target-stating**. Drift detection between as-designed and as-built is the job of `cargo-public-api` (M4-pending) and `/review`'s per-PR audit, not this document.
 
@@ -8,7 +8,7 @@ This spec is **target-stating**. Drift detection between as-designed and as-buil
 
 ## Public surface (as-designed)
 
-The platform crate has two faces: a **host-side API** (what `int` and `cranelisp-runtime` use to load DLLs and dispatch effects) and a **DLL-author API** (what platform DLL authors use via the `declare_platform!` macro to register their fns and types). Both live in this crate.
+The platform crate has two faces: a **host-side API** (what `int` and `cranelisp-intrinsics` use to load DLLs and dispatch effects — per Decision 43, intrinsics' IO trampoline reaches into platform via `HostContext` + per-entry `platform_fn_ptr`) and a **DLL-author API** (what platform DLL authors use via the `declare_platform!` macro to register their fns and types). Both live in this crate.
 
 ### Marshaling — CL value wrappers (host + DLL)
 
@@ -22,7 +22,7 @@ pub trait CLType: Copy {
 }
 
 #[non_exhaustive] pub struct CLInt(pub i64);
-#[non_exhaustive] pub struct CLString(pub i64);                                    // i64 = ptr to HeapString in runtime
+#[non_exhaustive] pub struct CLString(pub i64);                                    // i64 = ptr to cranelisp_intrinsics::HeapString (Decision 43 — string layout owned by intrinsics)
 #[non_exhaustive] pub struct CLBool(pub i64);                                      // 0 = false, 1 = true
 #[non_exhaustive] pub struct CLFloat(pub i64);                                     // bit-cast f64
 
@@ -47,7 +47,7 @@ Per spec §10.10.1: the platform calling convention permits `Int`, `Bool`, `Stri
 
 ```rust
 pub trait CLHeap: CLType + Copy {
-    fn rc_inc(self);                                                               // calls runtime via HostCallbacks
+    fn rc_inc(self);                                                               // calls intrinsics via HostCallbacks
     fn rc_dec(self);
     /* … */
 }
@@ -116,7 +116,7 @@ pub struct OwnedPlatformFnDescriptor {
     pub scheduling_class: SchedulingClass,
 }
 
-pub fn load_manifest(dll_path: &Path) -> Result<Vec<OwnedPlatformFnDescriptor>, PlatformError> †;
+pub fn load_manifest(dll_path: &Path) -> Result<Vec<OwnedPlatformFnDescriptor>, PlatformError>;
 ```
 
 `load_manifest` opens the DLL via `libloading`, locates the exported `__cranelisp_platform_manifest` symbol, copies the descriptor list into safe Rust shapes, and returns. `int`'s session holds `Vec<OwnedPlatformFnDescriptor>` per loaded platform; the JIT registers each fn pointer via `JITBuilder::symbol` keyed by `jit_name`.
@@ -141,15 +141,15 @@ Platform-fn invocation is via direct GOT lookup, NOT a centralised dispatch wrap
 ```rust
 #[repr(C)]
 pub struct HostCallbacks {
-    pub alloc: extern "C" fn(size: usize) -> *mut u8,                              // → cranelisp_runtime::heap_alloc
-    pub dec: extern "C" fn(ptr: *mut u8),                                          // → cranelisp_runtime RC dec (debug helper)
-    pub rc_inc: extern "C" fn(ptr: *mut u8),                                       // → atomic_rmw via runtime helper
+    pub alloc: extern "C" fn(size: usize) -> *mut u8,                              // → cranelisp_intrinsics::cranelisp_alloc (Decision 43 — allocator owned by intrinsics)
+    pub dec: extern "C" fn(ptr: *mut u8),                                          // → cranelisp_intrinsics::rc_dec (debug helper)
+    pub rc_inc: extern "C" fn(ptr: *mut u8),                                       // → cranelisp_intrinsics::rc_inc (atomic_rmw helper)
     pub invoke_closure: extern "C" fn(closure_ptr: *mut u8, args: *const i64, n_args: usize) -> i64,  // GOT-indirect dispatch through closure's code_ptr (Decision 31 callback support)
     /* … */
 }
 ```
 
-Platform DLL code uses these callbacks to allocate heap values (e.g., to produce a `CLString` result), to retain user-supplied closures across calls, to invoke retained closures. Each callback's behaviour is documented as part of the platform ABI (`bounded-contexts.md` §5 references `spec/10-io.md §10.10.3`).
+Platform DLL code uses these callbacks to allocate heap values (e.g., to produce a `CLString` result), to retain user-supplied closures across calls, to invoke retained closures. Each callback's behaviour is documented as part of the platform ABI (`bounded-contexts.md` §5 references `spec/10-io.md §10.10.3`). Per Decision 43, the underlying allocator and RC primitives live in `cranelisp-intrinsics`; `int` resolves the fn pointers at session init.
 
 ### Type signature parser (used by load_manifest + by `int` for type checking platform fn calls)
 
@@ -209,7 +209,7 @@ pub use cranelisp_types::PlatformError;                                         
 
 Principle 15 forbids re-exports of `cranelisp-types` items from implementation-crate facades by default, but explicitly permits the **external-audience exception** for facades whose external consumers would not otherwise depend on `cranelisp-types`. `cranelisp-platform` qualifies: out-of-tree DLL author crates (`cranelisp-stdio`, `cranelisp-fs`, etc.) depend ONLY on `cranelisp-platform` and have no other reason to learn about `cranelisp-types`.
 
-- `SchedulingClass` lives in `cranelisp-types` because `ModuleEntry::Def` carries it inside `PrimitiveKind::PlatformEffect { scheduling_class }` per Decision 26 (multi-consumer per Principle 15's heuristic — typecheck, backend, platform, runtime all reference it). Re-exported here for DLL authors.
+- `SchedulingClass` lives in `cranelisp-types` because `ModuleEntry::Def` carries it inside `PrimitiveKind::PlatformEffect { scheduling_class }` per Decision 26 (multi-consumer per Principle 15's heuristic — typecheck, backend, platform, intrinsics all reference it). Re-exported here for DLL authors.
 - `PlatformError` lives in `cranelisp-types` per Decision 42 (`CranelispError::Platform(PlatformError)` is constructed by both platform and `int`'s error-formatting layer). Re-exported here for DLL authors who construct platform errors from their handler code.
 
 No other re-exports.
@@ -222,7 +222,7 @@ The platform crate imports from:
 
 - **`cranelisp-types`** — `SchedulingClass`, `Type` (for parse_type_sig output), `Span`, `CranelispError`, `Symbol`, `ModuleFullPath`, `PlatformSpec`.
 
-The platform crate imports from no other workspace crate. (Runtime is downstream of platform via the IO trampoline's call to `HostContext::dispatch`, but platform does not name runtime — the host callbacks reach runtime via fn pointers installed at session init.)
+The platform crate imports from no other workspace crate. (Per Decision 43, `cranelisp-intrinsics` is downstream of platform via the IO trampoline's per-entry `platform_fn_ptr` dispatch — see §"Host context" for why no `HostContext::dispatch` wrapper exists. Platform does not name intrinsics; the host callbacks reach intrinsics via fn pointers installed at session init by `int`.)
 
 External:
 - **`libloading`** — for loading DLLs at runtime.
@@ -264,9 +264,9 @@ These hold across sprints — the contract `cranelisp-platform` makes with the r
 
 3. **Heap closures via GOT, not raw code pointers (Decision 31 callback support).** When `Fn a b` is added to spec §10.10.1 (currently future work), platform fn arguments of fn type pass as the heap closure address (Decision 11 layout: `[header | code_ptr | drop_glue_ptr | captures...]`), NOT raw code pointers. Platforms invoke retained closures via `HostCallbacks::invoke_closure` which dispatches through the GOT — so REPL redefinition retargets future invocations transparently. Retention requires `rc_inc` on storage, `rc_dec` on release.
 
-4. **Marshaling tags shared with runtime.** The `CLType` impls use the same i64 layout the runtime helpers expect. `CLString.0` is a pointer to a runtime-allocated `HeapString`; `CLOwned<CLString>` participates in RC via `HostCallbacks.dec`. There is one i64 representation per CLType, agreed between platform and runtime via this crate's documented layout.
+4. **Marshaling tags shared with intrinsics.** The `CLType` impls use the same i64 layout the intrinsics helpers expect. `CLString.0` is a pointer to an intrinsics-allocated `HeapString` (Decision 12 — string layout owned by `cranelisp-intrinsics`; Decision 43 — intrinsics is the post-runtime-split host); `CLOwned<CLString>` participates in RC via `HostCallbacks.dec`. There is one i64 representation per CLType, agreed between platform and intrinsics via this crate's documented layout.
 
-5. **`HostContext` initialised once per session.** `int` constructs `HostCallbacks` (with fn pointers into `cranelisp_runtime`) at `CompilerSession::new` and calls `HostContext::init` exactly once. Subsequent platform fn calls see the same callbacks for the session's lifetime.
+5. **`HostContext` initialised once per session.** `int` constructs `HostCallbacks` (with fn pointers into `cranelisp_intrinsics`) at `CompilerSession::new` and calls `HostContext::init` exactly once. Subsequent platform fn calls see the same callbacks for the session's lifetime.
 
 6. **No DLL unloading mid-session.** Once a platform DLL is loaded via `load_manifest`, it stays loaded until session shutdown. This is what makes the per-symbol `platform_fn_ptr` valid for the session — DLL pages are not unmapped while symbols reference them.
 

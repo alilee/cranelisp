@@ -60,6 +60,8 @@ Fed directly into `SymbolTable::write_structural_decls` per Decision 33 — sing
 
 `expand` invokes registered macros via JIT'd code addresses found through `symbol_tables`. The actual call into the macro happens through the GOT slot per Decision 23 — the frontend does not know about JITs; it only knows that when an FQ macro reference resolves to a `ModuleEntry::Macro` with `code: Some(_)`, it can dispatch.
 
+Per Decision 43's reframing of Principle 15 (legacy Decision 8 retracted), there is **no `MacroResolver` trait** mediating macro lookup. `expand` looks up macros directly against the `&SymbolTables<C, L>` parameter — the dependency-inversion shape used in earlier rings is gone. Frontend's only collaborator for macro lookup is the symbol-tables map itself; the JIT'd code address sits on `ModuleEntry::Macro.code`, reached through the standard `&SymbolTable` access path. Migration of the still-in-`src/expander.rs` implementation into `cranelisp-frontend` is tracked under FIXME 0098 Phase 2.
+
 When `expand` encounters an FQ symbol whose target isn't fully ready, it CANNOT block or call the scheduler — frontend has no `Sess` dependency (Principle 3). It surfaces the dependency uniformly via `Err(ExpansionError::Gap(ResolutionGap::MacroInMem(fq)))` regardless of whether the module is unregistered, typecheck is incomplete, or code is missing. The orchestrator (`int::process_form`) translates this into the right wait sequence and decides whether to wait for code based on what the entry turns out to be:
 
 - `ensure_registered` + `wait_for_typecheck_symbol(fq)`. After typecheck completes, the orchestrator peeks at the entry:
@@ -140,7 +142,9 @@ None.
 
 Per Principle 15 — frontend's facade-originated types live here. None currently: `Sexp`, `Expr`, `TopLevel`, `Defn`, `Pattern`, `MatchArm`, `TypeExpr`, `Ast`, `Program`, `ImportSpec`, `ExportSpec`, `ImportNames`, `MacroClauseInfo`, `MacroParam`, `ModDecl`, `PlatformSpec`, `ResolutionGap`, etc. are all multi-consumer types (frontend produces; typecheck/backend/int consume) and live in `cranelisp-types`.
 
-Frontend is a pure transform from source text to AST: its public surface is the free functions (`parse`, `extract_module_declarations`, `expand`, `parse_preserving_comments`) plus `ExtractedDeclarations` and `StructuralDecls` (already frontend-originated; see `module_extract` module). No re-exports of `cranelisp-types` items per Principle 15 — consumers import boundary types directly from `cranelisp_types::*`.
+Frontend is a pure transform from source text to AST: its public surface is the free functions (`parse`, `extract_module_declarations`, `expand`, `parse_preserving_comments`) plus `ExtractedDeclarations`, `StructuralDecls`, `DefmacroInfo`, and `ExpansionError`. No re-exports of `cranelisp-types` items per Principle 15 — consumers import boundary types directly from `cranelisp_types::*`.
+
+**`ResolutionGap` re-exported (narrow ergonomic exception per FIXME 0098).** `ExpansionError::Gap(ResolutionGap)` is the dominant variant of the public error enum, and consumers pattern-matching on it always need `ResolutionGap` in scope. The frontend re-exports `cranelisp_types::ResolutionGap` from its `lib.rs` so `use cranelisp_frontend::{expand, ExpansionError, ResolutionGap}` works in one import. This is an inline-justified instance of Principle 15's narrowness — limited to the gap-orchestration retry loop's pattern-match readability; not a general license.
 
 (Optional ergonomic alias: `pub type Ast = cranelisp_types::TopLevel;` — a type alias, not a re-export, kept for readability at frontend call sites and consumer code.)
 
@@ -154,7 +158,7 @@ The frontend imports from:
 
 - **`cranelisp` (binary)** — `SymbolTables` type alias (or equivalent), provided as input to `expand`. Frontend does not depend on `cranelisp` as a crate (would invert the DAG); the type is structural — `DashMap<ModuleFullPath, Arc<SymbolTable<C, L>>>` for any compatible `C`, `L`. The `expand` signature accepts a generic alias so the frontend remains downstream of types only.
 
-The frontend imports from no other workspace crate — not `cranelisp-typecheck`, not `cranelisp-backend`, not `cranelisp-runtime`, not `cranelisp-platform`.
+The frontend imports from no other workspace crate — not `cranelisp-typecheck`, not `cranelisp-backend`, not `cranelisp-primitives`, not `cranelisp-intrinsics`, not `cranelisp-platform`. (Per Decision 43, `cranelisp-runtime` retired into `cranelisp-primitives` + `cranelisp-intrinsics`; neither is a frontend dependency.)
 
 ---
 
@@ -168,7 +172,7 @@ None implemented. The frontend does not implement traits from `cranelisp-types`.
 
 All public DTOs published by the frontend are `#[non_exhaustive]`:
 
-- `ParseProduct`
+- `StructuralDecls`
 - `DefmacroInfo`
 - `ExpansionError`
 
@@ -181,10 +185,10 @@ All public DTOs published by the frontend are `#[non_exhaustive]`:
 These hold across sprints — the contract `cranelisp-frontend` makes with the rest of the workspace:
 
 1. **No type inference.** Types in the frontend are `TypeExpr` (syntactic), not `Type` (resolved). Type resolution is `cranelisp-typecheck`'s job. The frontend never names `Type`, `Scheme`, or `TypeId`.
-2. **No code generation.** Macro bodies are AST nodes that `int` compiles via the backend; the frontend never invokes Cranelift and never names `cranelisp-backend` or `cranelisp-runtime`.
+2. **No code generation.** Macro bodies are AST nodes that `int` compiles via the backend; the frontend never invokes Cranelift and never names `cranelisp-backend`, `cranelisp-primitives`, or `cranelisp-intrinsics`.
 3. **`super` resolved at frontend.** Per `super-import-arbitration.md`: `ImportSpec.module_path` NEVER contains the literal `"super"` past `parse` (specifically past `parse_import_sexp`). All `super`-resolution happens at parse time against the parsing module's own path.
 4. **Synthetic spans are unique.** `next_synthetic_span` issues monotonically increasing spans for compiler-generated forms. No two synthetic spans collide within a session.
 5. **`expand` is re-entrant.** May invoke registered macros which may themselves expand further. Whether the implementation imposes a defensive depth limit (and what value) is `/dev`'s call — not a facade concern.
-6. **`expand` is side-effect-free for dependency resolution.** When an FQ ref's target isn't ready, expand returns `Err(ExpansionError::Gap(ResolutionGap::SymbolInMemory(fq)))` — never calls the scheduler, never registers modules, never blocks. The frontend has no `Sess` / `CompileScheduler` dependency (Principle 3). The orchestrator (`int::process_form`) handles dispatch + retry.
+6. **`expand` is side-effect-free for dependency resolution.** When an FQ ref's target isn't ready, expand returns `Err(ExpansionError::Gap(ResolutionGap::MacroInMem(fq)))` — never calls the scheduler, never registers modules, never blocks. The frontend has no `Sess` / `CompileScheduler` dependency (Principle 3). The orchestrator (`int::process_form`) handles dispatch + retry.
 7. **`#[non_exhaustive] DTOs include all error types.** `ExpansionError` is `#[non_exhaustive]` so adding new gap kinds or genuine error variants is non-breaking.
-6. **Form-by-form, not pre-pass.** Per FIXME `sprints/fixmes/0005-spec-macro-availability-form-by-form.md`: there is NO defmacro pre-pass extraction. Each form is processed in source order; macros become available to subsequent forms only after their `defmacro` form is itself processed. The "module-wide availability" model in `spec/09-macros.md §9.3.4` is to be revised — until then, the frontend does not implement it.
+8. **Form-by-form, not pre-pass.** Per FIXME `sprints/fixmes/0005-spec-macro-availability-form-by-form.md`: there is NO defmacro pre-pass extraction. Each form is processed in source order; macros become available to subsequent forms only after their `defmacro` form is itself processed. The "module-wide availability" model in `spec/09-macros.md §9.3.4` is to be revised — until then, the frontend does not implement it.
