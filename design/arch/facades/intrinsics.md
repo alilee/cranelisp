@@ -177,7 +177,8 @@ Per Principle 15 — the following are intrinsics-originated and live in `cranel
 
 - `HeapString`
 - `IoEvent`, `IoEventTag`, `IoObserver`, `register_io_observer` (the IO observation contract per Decision 40)
-- `IoTraceFlushGuard`, `SchedulerTraceFlushGuard`
+
+`IoTraceFlushGuard` and `SchedulerTraceFlushGuard` are NOT intrinsics surface — they are `int`'s consumer-side machinery (RAII guards over the ring buffers in `src/io_trace/` and `src/scheduler_trace/`). Intrinsics exposes only the `IoObserver` extension point per Decision 40; what consumers do with observed events (ring buffers, flush guards, panic hooks, dump formatters) is consumer-specific machinery owned by `int`. See `facades/int.md` for the guards' public surface.
 
 The multi-consumer types intrinsics depends on (`Span`, `CranelispError`, `ErrorLocation`, marshaling tags `TAG_SNIL`/`TAG_SCONS`/etc., `SchedulingClass`) live in `cranelisp-types`. Consumers (backend codegen names them in emitted code; `int` reads them when interpreting marshaled values) import directly.
 
@@ -204,7 +205,7 @@ None implemented. Intrinsics does not implement traits from `cranelisp-types`.
 
 ## `#[non_exhaustive]` DTOs
 
-`HeapString`, `IoEvent`, `IoEventTag`, `IoTraceFlushGuard`, `SchedulerTraceFlushGuard` are `#[non_exhaustive]`.
+`HeapString`, `IoEvent`, `IoEventTag` are `#[non_exhaustive]`.
 
 No `#[repr(C)]` layout types currently surface from this crate — string and Sexp marshaling cross the FFI boundary as opaque `i64` tags + extern functions, not as layout-stable structs. If a future intrinsics extension publishes a `#[repr(C)]` DTO, Principle 14 applies: omit `#[non_exhaustive]` and govern evolution via an explicit version bump.
 
