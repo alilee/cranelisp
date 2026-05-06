@@ -49,7 +49,7 @@ Each section: bounded context (essence + why); in-scope (responsibilities, conce
 - AST construction (frontend)
 - Code generation (backend)
 - Pipeline scheduling, module loading, REPL session (int)
-- Runtime helpers (runtime)
+- Runtime helpers (intrinsics — §4b)
 
 **What crosses the boundary.**
 - **Inputs**: AST values; a symbol-table view supplied by the caller.
@@ -74,7 +74,7 @@ Each section: bounded context (essence + why); in-scope (responsibilities, conce
 - Type inference (typecheck)
 - Macro expansion (frontend)
 - Pipeline scheduling (int)
-- Runtime helpers (runtime — backend declares them as imports)
+- Runtime helpers (intrinsics — backend declares them as imports; §4b) and user-callable primitives (primitives — §4a)
 
 **What crosses the boundary.**
 - **Inputs**: a symbol-table view; a Cranelift module to emit into.
@@ -83,32 +83,64 @@ Each section: bounded context (essence + why); in-scope (responsibilities, conce
 
 ---
 
-## 4. Runtime — `crates/cranelisp-runtime/`
+## 4a. Primitives — `crates/cranelisp-primitives/`
 
-**Bounded context.** What a running cranelisp program needs to execute. The runtime is the C-ABI surface JIT-emitted code calls into: heap allocation, reference counting, drop glue, string and vector primitives, the IO trampoline, fork-join evaluation cells. It has no knowledge of compilation, scheduling, REPL, or development tooling. Its job is to provide the language's runtime semantics in a way that depends only on the running program — not on how that program was loaded, who is observing it, or what process structure surrounds it. Diagnostic and observability surfaces are explicitly out: those are development concerns, not part of running a program.
+**Bounded context.** Spec-defined operations callable from user code via the `primitives/<name>` module path. Primitives are language-level: they appear in the symbol table, they have GOT slots, they are addressable as values (`(let [f +] (f 1 2))` reads a fn pointer from the GOT slot and indirect-calls it). Backend MAY substitute inline CLIF at known direct call sites via a name-keyed substitution table; the named fn pointer is a legitimate fallback for indirect call sites. The crate has no trait knowledge; trait dispatch resolves at typecheck/stdlib level, and the resolved target — an impl body — calls primitives by name. Per Decision 43 the previous combined `cranelisp-runtime` BC retires; this section and §4b replace it.
 
-**Internal cadence.** Runtime hosts the **runtime cadence** — atomic RC operations interleaved with normal execution; fork-join scopes during parallel evaluation. This cadence is invisible outside the running program; it produces no handoffs to compilation or REPL.
+**Internal cadence.** None. The crate is a leaf — extern fns called from JIT-emitted code or from user code via GOT-indirect call. No state machine; no scheduling.
 
 **In-scope.**
-- Heap memory model (allocation, layout)
-- Reference counting primitives
-- Drop glue helpers
-- String and vector runtime
-- IO trampoline
-- Fork-join evaluation cells
-- Marshal between language Sexp values and host Rust values
-- Panic intrinsic for match exhaustiveness failure
+- Integer / float / bool primitive operations (arithmetic, comparison, logical)
+- Primitive type conversions (`int_to_string`, `parse_int`, `float_to_string`, `bool_to_string`, …)
+- The named `extern "C"` form is *the* addressable backing for each primitive; no `cranelisp_op_*` parallel form (per Decision 43's Phase 4 deletion)
 
 **Out of scope.**
 - Code generation (backend)
-- Diagnostics, tracing, observability (int — development concerns) — per Decision 40, the historical `trace.rs` and `io_trace.rs` modules relocate from runtime to int via an `IoObserver` callback contract; this BC entry is reaffirmed by the relocation, not revised by it. Runtime keeps only a ~50-line extension-point API parallel to `register_alloc_callback`.
+- Backend-emitted-call targets (intrinsics — §4b)
+- Trait dispatch knowledge (typecheck + stdlib)
+- Symbol-table seeding logic (int — int reads `cranelisp-types::primitives()` at session init)
+
+**What crosses the boundary.**
+- **Outward**: an `extern "C"` symbol surface — primitives by their kebab-case symbol name.
+- **Inward**: identifier newtypes from `cranelisp-types` (for the seeding helper); nothing else from the workspace.
+- **Window types**: none.
+
+**Evolution driver.** Spec-driven — new primitives appear when the spec requires them.
+
+---
+
+## 4b. Intrinsics — `crates/cranelisp-intrinsics/`
+
+**Bounded context.** Backend-emitted-call targets — runtime support code with stable ABI contracts called by JIT-emitted code or by the IO trampoline. Intrinsics are NOT callable from user code; not in any symbol table; not in any GOT. The ABI is tightly coupled to backend's codegen choices. The crate has no knowledge of compilation, scheduling, REPL, or development tooling; its job is to provide the language's runtime semantics in a way that depends only on the running program — not on how that program was loaded, who is observing it, or what process structure surrounds it. Diagnostic and observability surfaces are explicitly out: those are development concerns, not part of running a program. Per Decision 43 the previous combined `cranelisp-runtime` BC retires; this section and §4a replace it.
+
+**Internal cadence.** Intrinsics hosts the **runtime cadence** — atomic RC operations interleaved with normal execution; fork-join scopes during parallel evaluation. This cadence is invisible outside the running program; it produces no handoffs to compilation or REPL.
+
+**In-scope.**
+- Heap memory model (allocation, layout — base-pointer convention per Decision 11)
+- Reference counting primitives
+- Drop glue helpers (consume_shallow, consume_io_tree, dec_shallow_io)
+- String and vector runtime
+- IO trampoline
+- Fork-join evaluation cells (IVar)
+- Marshal between language Sexp values and host Rust values
+- Panic intrinsic for match exhaustiveness failure
+- IO observer registration API (per Decision 40 — the registration site lives here; observer state lives in int)
+
+**Out of scope.**
+- Code generation (backend)
+- User-callable primitives (primitives — §4a)
+- Diagnostics, tracing, observability state (int — development concerns) — per Decision 40, the historical `trace.rs` and `io_trace.rs` modules relocate from runtime/intrinsics to int via the `IoObserver` callback contract. Intrinsics keeps only a ~50-line extension-point API parallel to `register_alloc_callback`.
 - Platform DLL loading and lifecycle (int)
 - Pipeline state (int)
 
 **What crosses the boundary.**
-- **Outward**: an `extern "C"` symbol surface plus a small set of host-callback structures used for inversions of control (e.g., when platform DLLs need runtime services).
-- **Inward**: layout constants from `cranelisp-types`; nothing else.
-- **Window types**: write-once evaluation cells held by the runtime cadence. The C-ABI surface itself is value-passing — heap pointers cross as integers, opaque to the consumer.
+- **Outward**: an `extern "C"` symbol surface plus a small set of host-callback structures used for inversions of control (e.g., when platform DLLs need runtime services); plus the `IoObserver` registration API.
+- **Inward**: layout constants and identifier newtypes from `cranelisp-types`; the `IO_TAG_*` consts and `HostContext` from `cranelisp-platform` (consumed by the IO trampoline).
+- **Window types**: write-once evaluation cells (IVar) held by the runtime cadence. The C-ABI surface itself is value-passing — heap pointers cross as integers, opaque to the consumer.
+
+**Evolution driver.** Backend-driven — new intrinsics appear when backend codegen needs them; existing intrinsics evolve in lock-step with backend's emitted-call shapes.
+
+**Cross-crate dependency edges (post-D43).** Backend depends on `cranelisp-primitives` (for symbol-table seeding via `cranelisp-types::primitives()`) AND on `cranelisp-intrinsics` (for emitted-symbol declarations); backend does NOT depend on the retired `cranelisp-runtime`. `int` depends on both — primitives for seeding, intrinsics for JIT registration of fn ptrs and for the trace/io_trace consumer side post-FIXME 0103.
 
 ---
 
@@ -125,7 +157,7 @@ Each section: bounded context (essence + why); in-scope (responsibilities, conce
 
 **Out of scope.**
 - DLL session lifecycle and retention (int)
-- IO trampoline implementation (runtime)
+- IO trampoline implementation (intrinsics — §4b)
 - Per-DLL platform implementations (separate downstream crates)
 - Spec definition of IO semantics (`/spec`)
 
@@ -181,7 +213,7 @@ Each cadence accesses shared state only through typed handles owned by the caden
 - Source parsing (frontend)
 - Type inference (typecheck)
 - Code emission (backend)
-- Runtime helpers (runtime)
+- Runtime helpers (intrinsics — §4b) and user-callable primitives (primitives — §4a)
 - Platform ABI contract (platform)
 
 ### What crosses the boundary
@@ -219,7 +251,7 @@ Each cadence accesses shared state only through typed handles owned by the caden
 **Out of scope.**
 - Anything that would invert the dependency graph (Cranelift types, JIT/linker types, the integration-layer code carrier)
 - Pipeline orchestration (int)
-- Runtime intrinsics (runtime)
+- Runtime intrinsics (intrinsics — §4b)
 - Per-form transient typecheck-internal state
 
 **What crosses the boundary.**

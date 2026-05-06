@@ -1,3 +1,5 @@
+# Archived 2026-05-06 (Sprint 65 W1) — content migrated to facades/primitives.md + facades/intrinsics.md per Decision 43.
+
 # Facade spec — `crates/cranelisp-runtime/`
 
 **Bounded context citation.** Drop glue, intrinsic helpers, and RC primitives consumed by backend-emitted code. Implementation-paired with backend. See `bounded-contexts.md` §4 — Runtime.

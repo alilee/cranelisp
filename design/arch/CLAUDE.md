@@ -46,6 +46,7 @@ Historical pipeline designs (v1, v2, v3) and superseded migration artefacts. Ref
 - `archive/macro-resolver.md` — Sprint 50 macro resolver design; superseded by FIXME 0098 (Decision 8 retracted; `MacroResolver` trait drops in favour of direct `&SymbolTables<C, L>` lookup) (S65 Phase 2 legacy triage)
 - `archive/traitimpl-symbol-table.md` — Sprint 51 ImplRegistry-deletion design; landed in source (`ModuleEntry::TraitImpl` exists; `ImplRegistry` deleted per `crates/cranelisp-typecheck/src/{checker,traits}.rs` source comments) (S65 Phase 2 legacy triage)
 - `archive/sequence-diagram/` — pre-S63 v4-target sequence diagrams; superseded by `sequences/` (S65 Phase 2 legacy triage)
+- `archive/facades-runtime.md` — pre-D43 runtime facade; content migrated to `facades/primitives.md` + `facades/intrinsics.md` (S65 W1 — Decision 43 crate split)
 
 ## Decisions
 
@@ -59,7 +60,7 @@ The active register holds Decisions whose outcome is NOT yet fully embodied in t
 - [0030](decisions/0030-form-by-form-scheduler-mutual-imports.md) — Form-by-form scheduler deadlocks on mutual imports (environmental — coordination constraint future readers will hit)
 - [0031](decisions/0031-one-jitmodule-per-compile-batch.md) — One `JITModule` per compile batch; `Arc<Jit>` on `ModuleEntry::Def.code`; custom `Drop` calls `unsafe free_memory()` (environmental — Cranelift `Memory::drop` evidence; amended Sprint 64 per Decision 41)
 - [0035](decisions/0035-code-enum-integration-layer.md) — `Code` enum location (operative; amended Sprint 64 per Decision 41 — Code now in `cranelisp-backend`)
-- [0040](decisions/0040-runtime-trace-io-trace-relocate-to-int.md) — `trace.rs` and `io_trace.rs` relocate to int; runtime keeps `IoObserver` callback contract; BC §4 unchanged (pre-implementation; tracked by FIXME 0098)
+- [0040](decisions/0040-runtime-trace-io-trace-relocate-to-int.md) — `trace.rs` and `io_trace.rs` relocate to int; the `IoObserver` callback registration API resides in `cranelisp-intrinsics` post-Decision-43 (originally specified to remain in runtime; the registration-site host moved with the D43 split — see `facades/intrinsics.md` §"IO observation"). BC §4b carries the contract (pre-implementation; tracked by FIXME 0103)
 - [0041](decisions/0041-compile-to-module-per-symbol-jit-direct-writes.md) — `compile_to_module` per-symbol JIT cardinality; `Code` moves to `cranelisp-backend`; backend writes shared state directly; `Result<(), CompilationError>` (pre-implementation; amends 31, 35)
 - [0042](decisions/0042-platform-error-adopts-error-location.md) — `PlatformError` is a `cranelisp-types`-hosted enum with `ErrorLocation` carriers per variant; surfaces via `CranelispError::Platform` (pre-implementation)
 - [0043](decisions/0043-runtime-split-into-primitives-intrinsics.md) — `cranelisp-runtime` splits into `cranelisp-primitives` + `cranelisp-intrinsics`; backend has no trait knowledge (retracts 14, reframes 15; pre-implementation; tracked by FIXME 0150)
