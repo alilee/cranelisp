@@ -138,6 +138,11 @@ pub struct IoEvent { /* per-variant payload — same variants as today's IoTrace
 
 pub type IoObserver = fn(IoEventTag, &IoEvent);
 
+/// Replaces the current observer atomically. Thread-safe from any thread;
+/// last write wins under happens-before ordering. Pass `None` to unregister.
+/// Subsequent IO events emitted by the trampoline are delivered to the
+/// observer most recently registered (in happens-before order). Callers
+/// do not reason about Acquire/Release — the API commits to the contract.
 pub fn register_io_observer(observer: Option<IoObserver>);
 pub fn trace_anchor() -> &'static Instant;     // shared monotonic anchor (kept here so int's scheduler trace and the IO trace use the same origin)
 ```

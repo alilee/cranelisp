@@ -162,6 +162,13 @@ pub struct GotEvent {
 }
 pub type GotObserver = fn(GotEventTag, &GotEvent);
 
+/// Replaces the current observer atomically. Thread-safe from any thread;
+/// last write wins under happens-before ordering. Pass `None` to unregister.
+/// Subsequent GOT-population events emitted from `compile_to_module`'s
+/// `write_code` site and from `Linker::load_object` slot population are
+/// delivered to the observer most recently registered (in happens-before
+/// order). Callers do not reason about Acquire/Release — the API commits
+/// to the contract.
 pub fn register_got_observer(observer: Option<GotObserver>);
 ```
 
