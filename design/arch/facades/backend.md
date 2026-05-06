@@ -233,20 +233,22 @@ The backend imports from:
 
 - **`cranelisp-types`** — the full set above plus internals: `Expr`, `Pattern`, `MatchArm`, `Defn`, `Span`, `Visibility`, `ConstrainedFn`, `MonoDefn`, `OverloadVariant`, `TypeDefInfo`, `ConstructorInfo`, `FieldInfo`.
 
-- **`cranelisp-runtime`** — backend emits Cranelift IR that calls runtime extern functions. Not a code dependency in the Rust sense (backend doesn't `use cranelisp_runtime::*`) but a relocation-time dependency: the JIT registers runtime fn pointers via `JITBuilder::symbol`, and the `.o` files contain unresolved relocations against runtime symbol names that `--link`'s system linker resolves against the `cranelisp-runtime` archive. Backend names the runtime symbols by string at codegen time:
-  - `cranelisp_runtime::heap_alloc`, `heap_alloc_payload`, `heap_dealloc`
-  - `cranelisp_runtime::rc_underflow_check`
-  - `cranelisp_runtime::vec_new`, `vec_len`, `vec_set_copy`, `vec_push_copy`, `vec_push_grow`, `vec_drop`
-  - `cranelisp_runtime::heap_alloc_string`, `string_read`, `alloc_string`, `read_string_as_str`
-  - `cranelisp_runtime::int_to_string`, `parse_int`, `float_to_string`, `bool_to_string`
-  - `cranelisp_runtime::sconcat`, `quote_sexp`
-  - `cranelisp_runtime::cranelisp_run_io`, `run_io_trampoline`
-  - `cranelisp_runtime::ivar_create`, `ivar_spark`, `ivar_force`
-  - `cranelisp_runtime::runtime_panic`
+- **`cranelisp-intrinsics`** — backend emits Cranelift IR that calls intrinsic extern functions (per Decision 43, the post-split home of all backend-emitted-call targets). Not a code dependency in the Rust sense (backend doesn't `use cranelisp_intrinsics::*`) but a relocation-time dependency: the JIT registers intrinsic fn pointers via `JITBuilder::symbol`, and the `.o` files contain unresolved relocations against intrinsic symbol names that `--link`'s system linker resolves against the `cranelisp-intrinsics` archive. Backend names the intrinsic symbols by string at codegen time:
+  - `cranelisp_alloc`, `heap_alloc_payload`, `heap_dealloc`
+  - `rc_underflow_check`, `rc_inc`, `rc_dec`
+  - `consume_shallow`, `dec_shallow_io`, per-type drop glue (backend-emitted, named in the `.o`)
+  - `vec_new`, `vec_len`, `vec_set_copy`, `vec_push_copy`, `vec_push_grow`, `vec_drop`
+  - `heap_alloc_string`, `string_read`
+  - `sconcat`, `quote_sexp`
+  - `cranelisp_run_io`, `io_run`, `run_io_trampoline`
+  - `ivar_create`, `ivar_spark`, `ivar_force`
+  - `runtime_panic`
+
+- **`cranelisp-primitives`** — for the inline-substitution table at backend's direct call sites (per Decision 43). The substitution table is keyed on `Symbol` (e.g., `add-i64`, `int-to-string`) ONLY — never on `(TraitName, Symbol, TypeName)` triples. Trait dispatch resolves at typecheck/stdlib level; the resolved target name is what backend sees. Backend has no trait knowledge per Decision 43 (Decision 14 retracted; Decision 15 reframed). The substitution table lives in `cranelisp-backend/src/primitives_inline.rs` (renamed from `operators.rs` per Decision 43); it is name-keyed only. Substitution is optional — the named primitive fn ptr in the synthetic `primitives` module's GOT is a legitimate fallback for indirect calls (operator-as-value, GOT-indirect cross-module calls). Backend names primitives by string at codegen time when emitting non-substituted calls (e.g., `add-i64`, `int-to-string`, `parse-int`, `float-to-string`, `bool-to-string`); registration of primitive fn ptrs happens at `int`'s session init.
 
 - **Cranelift** (`cranelift`, `cranelift-codegen`, `cranelift-jit`, `cranelift-module`, `cranelift-frontend`, `cranelift-object`) — direct dependencies. Backend is the only crate that names Cranelift types.
 
-The backend does NOT import from `cranelisp-frontend`, `cranelisp-typecheck`, `cranelisp-platform`, or `cranelisp` (binary). All inputs flow via `cranelisp-types`.
+The backend does NOT import from `cranelisp-frontend`, `cranelisp-typecheck`, `cranelisp-platform`, `cranelisp-runtime` (retired per Decision 43), or `cranelisp` (binary). All inputs flow via `cranelisp-types` plus the relocation-time bindings against `cranelisp-intrinsics` + `cranelisp-primitives`.
 
 ---
 
@@ -258,7 +260,7 @@ None implemented. Backend does not implement traits from `cranelisp-types`. (`Mo
 
 ## `#[non_exhaustive]` DTOs
 
-`JitArtefact`, `LinkerArtefact`, `ObjectArtefact` are all `#[non_exhaustive]`. `Jit`, `Linker` are opaque structs (no public field access). Types re-exported from `cranelisp-types` are `#[non_exhaustive]` per the types-crate facade.
+`LinkerArtefact`, `ObjectArtefact`, `Code`, `CompilationError`, `GotEvent`, `GotEventTag`, `GotProvenance` are all `#[non_exhaustive]`. `Jit`, `Linker` are opaque structs (no public field access). Per Decision 41, `compile_to_module` no longer returns a `JitArtefact` — it writes `Code::Jit` directly and returns `Result<(), CompilationError>`. Types re-exported from `cranelisp-types` are `#[non_exhaustive]` per the types-crate facade.
 
 ---
 
@@ -270,7 +272,7 @@ These hold across sprints — the contract `cranelisp-backend` makes with the re
 
 2. **Uniform consuming calling convention.** Per Decision 24 — every call site emits identically for RC management. Caller transfers ownership of heap-typed args (inc-before-call for non-last-use, direct transfer for last-use); callee owns heap params. Data constructors, user fns, trait methods, builtins, and externs all follow the same rule. There is no "borrowing" classification.
 
-3. **Compiled code lives on `ModuleEntry::Def.code`.** Per Decision 25 — backend returns artefacts (`JitArtefact`, `LinkerArtefact`, `ObjectArtefact`); `int` constructs the `Code` enum (`src/code.rs` per Decision 35) and writes it to `ModuleEntry::Def.code`. Backend never names `Code` and never directly mutates `SymbolTable.symbols[name].code` — the field's type is `Option<C>` for any `C: CodeStore`, and backend operates on `SymbolTable<(), ()>` per Decision 32.
+3. **Compiled code lives on `ModuleEntry::Def.code`.** Per Decisions 25 + 41 — backend constructs `Code::Jit { jit, ptr }` directly (Decision 35 Layer 2 Option B retracted by Decision 41) and writes via Decision 38's `write_code(&self, sym, code)` (interior-mutable; no `&mut` flow). The `Code` enum lives in `cranelisp-backend/src/code.rs` (moved from `src/code.rs` per Decision 41). For non-codegen crates the field's type stays `Option<C>` for any `C: CodeStore`; backend's signatures use `SymbolTable<Code, ()>` per Decision 41, while frontend/typecheck stay generic on `SymbolTable<(), ()>` per Decision 32. `load_object` returns a `LinkerArtefact` for cache-hit code; `compile_to_object` returns an `ObjectArtefact` for nice-worker output. There is no `JitArtefact` return shape post-Decision-41 — direct writes replace the previous tuple-return.
 
 4. **`defined_symbols()` is the codegen-compilable predicate.** Per Decision 22 — `compile_to_module` trusts the contract: if a name in `names` resolves to an entry where `defined_symbols()` would not include it, return `Err(CodegenError)` rather than synthesising. One filter, exposed on `SymbolTable`, consumed identically by callers and the backend's internal loop.
 

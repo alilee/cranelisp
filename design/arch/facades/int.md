@@ -515,6 +515,123 @@ pub enum CliError {
 }
 ```
 
+### Observability — `src/io_trace/`, `src/scheduler_trace/`, `src/got_trace/` (per Decision 40 + FIXME 0099 + FIXME 0103)
+
+Per Decision 40, the consumer-side ring buffers and formatters that pre-S65 lived in `cranelisp-runtime` (`trace.rs`, `io_trace.rs`) relocate to int. Per Decision 43, the `IoObserver` registration API lives in `cranelisp-intrinsics`; int registers an observer at session init. Per FIXME 0099, the `GotObserver` registration API lives in `cranelisp-backend`; int registers similarly. All three follow the same shape — env-var-gated activation, per-thread `VecDeque` ring buffer with FIFO overflow, end-of-session flush formatter, RAII guards over the buffers.
+
+```rust
+pub mod io_trace {
+    /// Registered with intrinsics via `cranelisp_intrinsics::register_io_observer(Some(record))`.
+    /// Activates iff REPL/trace mode is on or `CRANELISP_IO_TRACE=1`. Production batch (`--link`,
+    /// non-trace `--run`) does NOT register and pays one relaxed null-check load per IO call site.
+    pub fn record(tag: cranelisp_intrinsics::IoEventTag, event: &cranelisp_intrinsics::IoEvent);
+
+    /// End-of-session formatter — drains all per-thread ring buffers, merge-sorts by
+    /// `cranelisp_intrinsics::trace_anchor()` monotonic origin, writes formatted text to stderr.
+    pub fn flush_to_stderr();
+}
+
+pub mod scheduler_trace {
+    /// Internal scheduler-cadence trace events (form-by-form scheduler dispatch + work
+    /// completion + park/wake). Recorded directly by int's scheduler — no external observer
+    /// contract because the producer and consumer both live in int. Same monotonic anchor as
+    /// io_trace (`cranelisp_intrinsics::trace_anchor()`) so cross-trace merge-sort produces a
+    /// coherent ordering.
+    pub fn record_event(/* … */);
+    pub fn flush_to_stderr();
+}
+
+pub mod got_trace {
+    /// Registered with backend via `cranelisp_backend::register_got_observer(Some(record))`.
+    /// Activates iff REPL/trace mode is on or `CRANELISP_GOT_TRACE=1`.
+    pub fn record(tag: cranelisp_backend::GotEventTag, event: &cranelisp_backend::GotEvent);
+
+    pub fn flush_to_stderr();
+}
+
+#[non_exhaustive]
+pub struct IoTraceFlushGuard {
+    /* opaque — RAII guard; on Drop, calls io_trace::flush_to_stderr() */
+}
+
+#[non_exhaustive]
+pub struct SchedulerTraceFlushGuard {
+    /* opaque — RAII guard; on Drop, calls scheduler_trace::flush_to_stderr() */
+}
+
+/// Installs a panic hook that flushes the IO and scheduler trace ring buffers
+/// on panic so test failures and unexpected aborts surface the trace context.
+/// Idempotent; called once at session init when trace mode is active.
+pub fn install_panic_hook();
+```
+
+`IoTraceFlushGuard` and `SchedulerTraceFlushGuard` are int's own types (per Principle 15 they live where the consumer state lives — int's `src/io_trace/` and `src/scheduler_trace/`). They are NOT intrinsics surface (intrinsics owns only the `IoObserver` extension-point API per Decision 40 + 43). Tests that need to flush at end-of-test use these guards; production binaries activate them implicitly on session init when REPL/trace mode is on.
+
+### Display surface — `src/display.rs` (per FIXME 0108)
+
+Per FIXME 0108, the value/type display formatting (831 LOC pre-relocation in `cranelisp-backend/src/display.rs`) belongs in int — REPL display orchestration is downstream of execution and is an integration-layer concern, not a backend concern. The backend bounded context is "typed AST → executable"; nothing about REPL display crosses boundaries backend exposes. Post-relocation, these helpers live in `src/display.rs`:
+
+```rust
+/// Formats a `Type` with FQTypeName module prefixes (e.g. `:primitives/Int`).
+/// Used by `format_eval_result`, slash-command output (`/sig`, `/type`, `/info`),
+/// and error formatting that includes type display.
+pub fn format_type_qualified(ty: &Type) -> String;
+
+/// Formats a `Scheme` (forall-quantified type) with constraints and FQTypeName-qualified
+/// argument types — the canonical scheme display per `repl/spec.md` §3. Used by `/sig name`,
+/// `EvalResult::Def` display, and `describe_symbol`.
+pub fn format_scheme_display(scheme: &Scheme) -> String;
+```
+
+Backend imports nothing from display; int's `format_eval_result`, `format_command_result`, `format_error`, and the slash-command flows all call these helpers directly.
+
+### Cache writer — `src/cache_writer.rs` (per Phase 2 reach-around R4)
+
+Per the Phase 2 review §3 reach-around catalogue (R4), `CacheWritePacket` and `process_cache_packet` are caller-specific orchestration types — their single consumer is int's cache writer. They land in int's source per the single-consumer relocation pattern of FIXME 0100, NOT in backend's facade.
+
+```rust
+/// Per-module work item written by codegen workers when an `.o` artefact is ready
+/// for cache persistence. Internal to int's cache-writer subsystem.
+#[non_exhaustive]
+pub struct CacheWritePacket {
+    pub module: ModuleFullPath,
+    pub artefact: cranelisp_backend::ObjectArtefact,        // (.o bytes + sidecar SymbolTable<(), ()>)
+}
+
+/// Internal cache-writer pump — consumes a `CacheWritePacket`, hands the artefact to
+/// `ObjectCache::write`, and accumulates errors into the session's warnings list.
+/// Not re-exported across crates; lives in int's source so the file IO discipline
+/// (atomic write + temp + rename, schema-version stamping) stays co-located with the
+/// orchestration that drives it.
+pub(crate) fn process_cache_packet(packet: CacheWritePacket, cache: &ObjectCache) -> Result<(), CacheError>;
+```
+
+### Link orchestration helpers — `src/exe.rs` / `cranelisp-exe-bundle` (per Phase 2 reach-around R5)
+
+Per the Phase 2 review §3 reach-around catalogue (R5), `generate_startup_object` is part of `--link` orchestration and lives on int's side, NOT in backend's facade. The function builds the `_main` alias `.o` per Decision 36 ("Link orchestration" §3 above) and lives in `crates/cranelisp-exe-bundle/`.
+
+```rust
+/// Builds the tiny alias `.o` whose only content is an exported `_main` symbol that
+/// jumps through `__cranelisp_got_{entry_module}[main_slot]`. Backend stays uniform
+/// (bare-Local for every function including `main`); this alias is int's targeted
+/// addition for the system linker's expected entry point. Invoked from `link_by_name`.
+pub fn generate_startup_object(entry_module: &ModuleFullPath, main_slot: usize) -> Result<Vec<u8>, CranelispError>;
+```
+
+### Tracing helpers — `src/trace/` (per Phase 2 reach-around R6)
+
+Per the Phase 2 review §3 reach-around catalogue (R6), `TracedFnInfo` is an int-only consumer concern — it carries metadata about traced function instances (the GOT-swap wrapper machinery for `(trace ...)`) and lives in int's `src/trace/` per Decision 40's relocation. It is NOT part of backend's facade. If a duplicate type previously existed on backend's side, it deletes; `TracedFnInfo` lives in int, sourced from int's tracing subsystem.
+
+```rust
+#[non_exhaustive]
+pub struct TracedFnInfo {
+    pub fq: FQSymbol,
+    pub original_code_ptr: *const u8,                  // pre-trace GOT slot value
+    pub wrapper_code_ptr: *const u8,                   // post-trace wrapper that emits trace events around the call
+    /* … */
+}
+```
+
 ### Public consts
 
 ```rust
@@ -657,7 +774,7 @@ Slash commands are **composed flows over the existing primitives**, not new faca
 ### `/time name`, `/mem` — performance / allocation stats
 
 - `/time`: `Sess::symbol_compile_duration(fq) -> Option<Duration>` — reads `shared.introspection[fq].compile_duration`. Populated by the codegen wrapper when introspection is enabled.
-- `/mem`: composes `cranelisp_runtime::{alloc_count, dealloc_count, bytes_allocated, bytes_current, bytes_peak}` directly. No new int facade method needed — `process_command` in the `/mem` branch calls these and formats the result.
+- `/mem`: composes `cranelisp_intrinsics::{alloc_count, dealloc_count, bytes_allocated, bytes_current, bytes_peak}` directly (post-Decision-43; the allocator and stats accessors live in `cranelisp-intrinsics`). No new int facade method needed — `process_command` in the `/mem` branch calls these and formats the result.
 
 ### `/run-tests` — the most composed flow
 
@@ -696,7 +813,7 @@ This flow uses no new facade surface. `Sess::trampoline` (already exposed for Ru
    - `-o {project_root}/target/{entry_module}` (executable output path; `.exe` on Windows)
    - The collected `.o` paths
    - The alias `.o` from step 3
-   - The `cranelisp-runtime` static archive (linked at build time via `build.rs`; path captured in a const)
+   - The `cranelisp-intrinsics` and `cranelisp-primitives` static archives (linked at build time via `build.rs`; paths captured in consts) — post-Decision-43 the previously-single `cranelisp-runtime` archive is replaced by these two siblings
    - Any platform `.dylib`/`.so` files for transitively-loaded platforms
    - Standard system libraries (`-lc`, etc. — platform-specific)
 
@@ -732,8 +849,9 @@ The integration crate imports from:
 - **`cranelisp-types`** — the full set above.
 - **`cranelisp-frontend`** — `parse`, `expand`, `build_ast`, `parse_import_sexp`, `parse_export_sexp`, `parse_mod_sexp`, `parse_platform_sexp`, `parse_defmacro`, `synthesize_macro_clause_defn`, `next_synthetic_span`, `is_defmacro`, `is_begin`, `flatten_begin`, `expand_quasiquotes`, `parse_preserving_comments`, `ParseProduct`, `DefmacroInfo`, `Ast`, `ExpansionError`.
 - **`cranelisp-typecheck`** — `check_form`, `register_builtins`, `CheckResult`, `CheckError`, `CheckState`, `TypeCheckEnv`, the trace install hook.
-- **`cranelisp-backend`** — `compile_to_module` (returns `Result<(), CompilationError>` per Decision 41), `load_object`, `compile_to_object`, `Code` (re-exported per Decision 41), `LinkerArtefact`, `ObjectArtefact`, `Jit`, `Linker`, `CompilationError` (with `SymbolNotCompilable` variant per §2.7). Cranelift `Module`, `JITModule`, `ObjectModule`, `JITBuilder` (via cranelift crates re-exported from backend).
-- **`cranelisp-runtime`** — runtime extern functions registered with the JIT (via `JITBuilder::symbol`): `heap_alloc`, `heap_dealloc`, `cranelisp_run_io`, `vec_*`, `string_*`, marshal helpers, `runtime_panic`, `ivar_*`, primitive conversions. Stats accessors (`alloc_count`, `bytes_*`) for `/mem`. The trace flush guards (`IoTraceFlushGuard`, `SchedulerTraceFlushGuard`) for observability.
+- **`cranelisp-backend`** — `compile_to_module` (returns `Result<(), CompilationError>` per Decision 41; writes `Code::Jit` and `Introspection` directly into the passed-in shared stores via `&self`-interior-mutable methods), `load_object`, `compile_to_object`, `Code` (re-exported per Decision 41), `LinkerArtefact`, `ObjectArtefact`, `Jit`, `Linker`, `CompilationError` (with `SymbolNotCompilable` variant per §2.7), `GotObserver` + `GotEvent` + `GotEventTag` + `GotProvenance` + `register_got_observer` (per FIXME 0099 — backend-originated observer types, int registers consumer state). Cranelift `Module`, `JITModule`, `ObjectModule`, `JITBuilder` (via cranelift crates re-exported from backend).
+- **`cranelisp-intrinsics`** — backend-emitted intrinsic extern functions registered with the JIT (via `JITBuilder::symbol`) per Decision 43: `cranelisp_alloc`, `heap_alloc_payload`, `heap_dealloc`, `rc_inc`, `rc_dec`, `consume_shallow`, `dec_shallow_io`, `vec_*`, `heap_alloc_string`, `string_read`, `sconcat`, `quote_sexp`, `cranelisp_run_io`, `io_run`, `run_io_trampoline`, `ivar_*`, `runtime_panic`. Stats accessors (`alloc_count`, `dealloc_count`, `bytes_allocated`, `bytes_current`, `bytes_peak`, `reset_counts`) for `/mem`. The IO observer extension point (`IoEvent`, `IoEventTag`, `IoObserver`, `register_io_observer`, `trace_anchor`) per Decision 40 — int registers an `IoObserver` at session init when REPL/trace mode is on or `CRANELISP_IO_TRACE=1`.
+- **`cranelisp-primitives`** — user-callable primitive extern functions registered with the JIT and seeded into the synthetic `primitives` module's symbol table by `int` at session init per Decision 43: integer ops (`add_i64`, `sub_i64`, `mul_i64`, `div_i64`, `mod_i64`, `eq_i64`, `lt_i64`, `gt_i64`, `le_i64`, `ge_i64`), float ops, `not`, conversions (`int_to_string`, `parse_int`, `float_to_string`, `bool_to_string`). Each primitive gets a GOT slot (so `(let [f +] (f 1 2))` resolves through the slot).
 - **`cranelisp-platform`** — `HostContext`, `HostCallbacks`, `OwnedPlatformFnDescriptor`, `PlatformFn`, `load_manifest`, `parse_type_sig`, `derive_jit_name`. `int` constructs `HostCallbacks` at session init pointing at runtime fns.
 - **`cranelisp-exe-bundle`** — for `--link` mode. The crate provides the alias `.o` template + system linker invocation helpers. Per `bounded-contexts.md` §6 — exe-bundle is part of the binary surface; one D/D/R cycle covers both.
 
@@ -764,6 +882,8 @@ All public DTOs published from `int` are `#[non_exhaustive]`:
 - `InputState`, `ContinuationState`, `ReplError`
 - `FileChangeEvent`
 - `Action`, `CliError`
+- `IoTraceFlushGuard`, `SchedulerTraceFlushGuard` (per Decision 40 + FIXME 0103)
+- `CacheWritePacket`, `TracedFnInfo` (per Phase 2 reach-around R4 + R6 — single-consumer relocations)
 
 `Code` is a `pub` enum without `#[non_exhaustive]` — both variants are load-bearing per Decision 35 and the integration layer pattern-matches exhaustively at known sites. New variants would be a deliberate extension requiring `/arch` decision.
 
@@ -777,7 +897,7 @@ These hold across sprints — the contract `int` makes with the rest of the work
 
 2. **Workers are persistent.** Per Decision 27 — priority workers are spawned once per session and parked on condvars; not respawned per work item. (The G9 persistent-worker refactor is Sprint 57's work; this facade reflects the post-G9 target.)
 
-3. **`Code` lives in `cranelisp-backend` (Decision 41 amends Decision 35).** The concrete `C` parameter for `SymbolTable<C, L>` is `Code` — the enum lives in `cranelisp-backend/src/code.rs` (moved per Decision 41 from the previous `src/code.rs` location). `cranelisp-types` stays Cranelift-ignorant — Principle 3 protection intact. Backend constructs `Code::Jit { jit, ptr }` directly (Decision 35 Layer 2 Option B retracts); `int` re-exports `Code` for session-boundary `SymbolTable<Code, ()>` instantiation. Backend signatures use `&DashMap<ModuleFullPath, SymbolTable<Code, ()>>` rather than the `<C, L>`-blind shape; non-codegen crates (frontend, typecheck) stay generic per Decision 32's empty-marker traits.
+3. **`Code` lives in `cranelisp-backend` (Decision 41 amends Decision 35).** The concrete `C` parameter for `SymbolTable<C, L>` is `Code` — the enum lives in `cranelisp-backend/src/code.rs` (moved per Decision 41 from the previous `src/code.rs` location). `cranelisp-types` stays Cranelift-ignorant — Principle 3 protection intact. Backend constructs `Code::Jit { jit, ptr }` directly and writes via Decision 38's `write_code(&self, sym, code)` (interior-mutable; no `&mut` flow needed) — Decision 35 Layer 2 Option B retracts. `int` re-exports `Code` for session-boundary `SymbolTable<Code, ()>` instantiation; the previous worker-side post-loop (iterate-over-names + GOT-store + `Code::Jit`-construct + three error cascades) collapses into the per-symbol call-site loop documented in `facades/backend.md` §"`Code` — the per-entry retention root". Backend signatures use `&DashMap<ModuleFullPath, SymbolTable<Code, ()>>` (non-blind for `C`); non-codegen crates (frontend, typecheck) stay generic on `SymbolTable<(), ()>` per Decision 32's empty-marker traits.
 
 4. **Scheduler is sole coordination authority.** Per the runtime/platform diagrams' explicit merge — `CompileScheduler` owns BOTH work dispatch AND per-symbol/per-module wait/release. There is no separate `DependencyService`.
 
