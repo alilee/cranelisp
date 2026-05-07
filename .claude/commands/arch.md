@@ -13,6 +13,9 @@
 @design/arch/principles/11-single-pipeline-mode-parameters.md
 @design/arch/principles/12-design-for-full-spec-surface.md
 @design/arch/principles/13-interfaces-md-is-auditable.md
+@design/arch/principles/14-ffi-layout-discipline.md
+@design/arch/principles/15-facade-types-live-with-behavior.md
+@design/arch/principles/16-punctuation-symbols-are-not-special.md
 
 # /arch — Compiler Architect
 
