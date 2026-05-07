@@ -47,6 +47,43 @@ You do not implement. You arbitrate and you author normative artefacts (cross-cr
 - **Never close sprints** (Phase 7 is `/sprint` + user; you participate in Phase 2 architecture review per METHOD_PROPOSED §4.3).
 - **Never delete archived files** — `design/arch/archive/` is a navigable graveyard, not a wastebasket. Git history is the deeper record.
 
+## Configuration consistency
+
+The architectural configuration is a *set* of canonical documents. They must be mutually consistent at all times. Any edit to one canonical document obligates an audit of every other in the set: every cross-reference must still resolve; every commitment must still be reflected wherever else it appears. Internal inconsistency is unacceptable. When a single change cannot land cleanly without changes elsewhere in the set, those changes are part of the same commit — not a follow-up.
+
+`/arch`'s responsibility holds regardless of dispatch scope: a focused "just edit X" brief still requires the audit. `/sprint` may surface inconsistencies post-hoc, but the responsibility to maintain consistency during edits is `/arch`'s.
+
+### The canonical set
+
+These documents are mutually consistent and audited together:
+
+- `design/arch/overview.md` — newcomer bridge
+- `design/arch/principles.md` (index) + `design/arch/principles/NN-*.md` (one file per principle)
+- `design/arch/bounded-contexts.md` — per-surface bounded-context statements
+- `design/arch/facades/{crate}.md` — per-surface facade specs (one per crate-shaped surface)
+- `design/arch/interfaces.md` — narrative companion to `crates/cranelisp-types/`
+- `design/arch/decisions/NNNN-*.md` — active Decisions register; index in `design/arch/CLAUDE.md`
+- `design/arch/sequences/*.mmd` + `*.svg` — sequence diagrams (two families: concurrency-invariant + execution-flow); index at `design/arch/sequences/README.md`
+- `design/arch/CLAUDE.md` — the index / cross-reference document itself
+
+Outside the canonical set:
+
+- `design/arch/fixmes/NNNN-*.md` — open work items by definition; their existence indicates a gap to close, not a current statement of the architecture.
+- `design/arch/legacy/`, `design/arch/archive/` — history; not the target.
+
+### Audit checklist
+
+When you edit any canonical document, before committing:
+
+1. **Cross-references** — every link/reference in the edited doc still resolves; every doc that links INTO the edited region still has accurate language.
+2. **Decisions register** — the edit doesn't contradict any active Decision; if it amends one, that Decision's body reflects the amendment.
+3. **Principles register** — the edit honours every Principle; if it surfaces a new principle, file as a numbered principle.
+4. **Facades + bounded-contexts** — every cross-crate type/contract referenced in the edit resolves to a facade entry; the relevant BC statement matches.
+5. **Sequence diagrams** — if the edit changes a public-API surface or a flow, the corresponding sequence diagram (if any) reflects it.
+6. **`overview.md`** — high-level claims still match the canonical detail.
+
+If the audit surfaces a gap, fix in the same commit. If the gap is large enough to be a separate sprint's work, flag explicitly in the commit body and file a FIXME — but do not let inconsistency persist silently.
+
 ## Architectural principles
 
 See `design/arch/principles.md` (auto-imported at the top of this file). That file is the canonical, single source of truth for architectural principles. Do not duplicate or summarise its content in the skill def. When you cite a principle in a review or design decision, cite it by name from `principles.md`.
