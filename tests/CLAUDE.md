@@ -89,6 +89,10 @@ findings remain in older files (`sketch_port.rs`, `ring{0,1,2}.rs`,
 `exemplar_solver_correctness.rs`, `wave6_demo_repros.rs`) — these are
 durable findings now visible for Wave 4+ cleanup.
 
+## Public-API enforcement
+
+Sprint 66 introduces `cargo public-api` as the mechanical drift detector between as-designed (per-crate facade in `design/arch/facades/{crate}.md`) and as-built (the crate's actual public surface). One `public-api.txt` baseline lives in each crate's directory; a top-level `cargo xtask api-check` (or `just api-check`) wrapper runs the diff per crate in CI alongside `cargo nextest run`. **Triad ownership** (per `tests/plan/implementation-slice-s66.md` §1.1): `/dev` runs `cargo +nightly public-api > crates/{crate}/public-api.txt` and commits the baseline in the same change set as the source change; `/design` (per crate) verifies the baseline matches the facade target — no scope creep; `/review` approves the baseline diff against `/arch`'s facade approval. `cargo public-api` requires the **nightly Rust toolchain** (`rustup toolchain install nightly && cargo +nightly install cargo-public-api`); the xtask wrapper invokes `cargo +nightly public-api` explicitly. The 8 final-state baselines (`cranelisp-types`, `cranelisp-frontend`, `cranelisp-typecheck`, `cranelisp-backend`, `cranelisp-primitives`, `cranelisp-intrinsics`, `cranelisp-platform`, `cranelisp` binary / int) are bound by the S66 facade adoption + D43 runtime split. Drift-resolution workflow: intentional facade-shape change → author updates the facade `.md` first, regenerates the baseline, commits both atomically; unintentional drift → fix the source to match the facade, baseline does not regenerate. Reviewers always look at the facade first to distinguish the two cases. **`CRANELISP_RC_TRACE` + `CRANELISP_CODEGEN_TRACE` are reserved for the D43 Phase-4 stdlib trait-impl audit** (highest-risk reshape per the slice §2.3); concurrent agents should not contend on those env-var outputs during Phase 4.
+
 ## Diagnostic Requirements
 
 `/qa` specifies observability that compiler skills **must implement**. See `plan/strategy.md` §"Diagnostic Requirements" for full details.
