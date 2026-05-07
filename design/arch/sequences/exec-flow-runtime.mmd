@@ -3,8 +3,9 @@ sequenceDiagram
 
     participant Caller as Caller<br/>::session_v4::CompilerSession::eval (REPL trailing expr) or ::main (Run mode trampoline)
     participant Trampoline as Trampoline<br/>::session_v4::CompilerSession::trampoline
+    participant IoObs as IoObserver<br/>cranelisp_intrinsics::register_io_observer<br/>(extension point — consumer state in src::io_trace)
 
-    Note over Caller, Trampoline: † marks proposed/target API not yet in current code.<br/>Receiver is implicit in the lifeline.<br/>Runtime cadence begins when JIT'd user code starts executing — ends when the trampoline returns to the caller.<br/>Per Decision 43 the running-program substrate is split across cranelisp-primitives (user-callable) and cranelisp-intrinsics (backend-emitted-call targets shown below).<br/>Compilation internals (typecheck, codegen) delegated to exec-flow-compilation.
+    Note over Caller, IoObs: † marks proposed/target API not yet in current code.<br/>Receiver is implicit in the lifeline.<br/>Runtime cadence begins when JIT'd user code starts executing — ends when the trampoline returns to the caller.<br/>Per Decision 43 the running-program substrate is split across cranelisp-primitives (user-callable) and cranelisp-intrinsics (backend-emitted-call targets shown below).<br/>Compilation internals (typecheck, codegen) delegated to exec-flow-compilation.<br/>IoObserver registration (extension point per facades/intrinsics.md §"IO observation") happens once at session init from int when REPL/trace mode or CRANELISP_IO_TRACE=1 is active. Production batch: no observer registered, one relaxed null-check load per emit site.
 
     rect rgb(245, 230, 255)
         Note over Caller, Trampoline: ENTRY — caller invokes the trampoline with a code pointer + expected type<br/>(code_ptr was obtained from ST[m].get(sym).code.ptr() or from a per-eval JITModule)
@@ -65,10 +66,17 @@ sequenceDiagram
             create participant IORuntime as IO trampoline<br/>cranelisp_intrinsics::io (per Decision 43 — backend-emitted-call target)
             Trampoline ->> IORuntime: cranelisp_intrinsics::cranelisp_run_io(io_root_ptr: i64) -> i64
             Note over IORuntime: reduces the IO tree node-by-node, consuming each outer allocation via rc::dec_shallow_io (per Decision 29)
+            opt IoObserver registered (relaxed-load null check)
+                Note over IORuntime, IoObs: extension-point emit on trampoline entry — facades/intrinsics.md §"IO observation"
+                IORuntime ->> IoObs: IoObserver(IoEventTag::TrampolineEnter, &IoEvent { /* root payload */ })
+            end
 
             loop walk IO tree until fully reduced
                 alt current node is Pure(value)
                     Note over IORuntime: load value from payload — return value from this branch
+                    opt IoObserver registered
+                        IORuntime ->> IoObs: IoObserver(IoEventTag::PureStep, &IoEvent { /* value */ })
+                    end
                 else current node is Effect(fq: FQSymbol, args, continuation)
                     Note over IORuntime: dispatch the effect via direct GOT lookup per Decision 26 — NO HostContext::dispatch wrapper (facades/platform.md §2.13).<br/>IORuntime reads platform_fn_ptr off the resolved ModuleEntry::Def for fq's PrimitiveKind::PlatformEffect entry, and scheduling_class from the same variant.
 
@@ -85,11 +93,23 @@ sequenceDiagram
                         Allocator -->> PlatformDLL: ptr
                     end
                     PlatformDLL -->> IORuntime: CLType repr (i64) — return value of the platform fn
-                    Note over IORuntime: continue the walk with continuation(value)
+                    opt IoObserver registered
+                        IORuntime ->> IoObs: IoObserver(IoEventTag::PlatformEffect, &IoEvent { /* fq, args, result */ })
+                    end
+                    Note over IORuntime: continue the walk with continuation(value) — pop continuation frame from cont_stack
+                    opt IoObserver registered (continuation pop)
+                        IORuntime ->> IoObs: IoObserver(IoEventTag::ContPop, &IoEvent { /* … */ })
+                    end
                 else current node is Bind(io_lhs, continuation_closure)
                     Note over IORuntime: recursively reduce io_lhs, then call continuation_closure(lhs_result) which produces another IO node — push onto cont_stack
+                    opt IoObserver registered
+                        IORuntime ->> IoObs: IoObserver(IoEventTag::Bind, &IoEvent { /* … */ })
+                    end
                 else current node is Par(io_branches)
                     Note over IORuntime: fork-join via rayon — each branch reduced concurrently — collect results when all branches complete
+                    opt IoObserver registered
+                        IORuntime ->> IoObs: IoObserver(IoEventTag::Par, &IoEvent { /* branch count */ })
+                    end
                 end
             end
 

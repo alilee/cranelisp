@@ -7,8 +7,9 @@ sequenceDiagram
     participant Shared as Sess.shared (Arc[SharedState])<br/>worker-shareable subset<br/>(symbol_tables, scheduler, cache, kept_dlls, introspection)<br/>per Decision 38 — workers hold Arc clones
     participant Sched as Scheduler<br/>::scheduler::CompileScheduler<br/>(work dispatch + per-symbol/per-module readiness)
     participant Cache as Object cache<br/>::cache::ObjectCache
+    participant GotObs as GotObserver<br/>cranelisp_backend::register_got_observer<br/>(extension point — consumer state in src::got_trace)
 
-    Note over Initiator, Cache: † marks proposed/target API not yet in current code.<br/>Workers, facades, and STs introduced lazily at first use.<br/>All call signatures are the as-designed facade — translate directly to Rust source.<br/>Receiver (&self / &mut self) is implicit in the lifeline.<br/>SharedState is the Arc[T] every worker holds — initiator-side calls touch Sess, worker-side calls touch Shared.
+    Note over Initiator, GotObs: † marks proposed/target API not yet in current code.<br/>Workers, facades, and STs introduced lazily at first use.<br/>All call signatures are the as-designed facade — translate directly to Rust source.<br/>Receiver (&self / &mut self) is implicit in the lifeline.<br/>SharedState is the Arc[T] every worker holds — initiator-side calls touch Sess, worker-side calls touch Shared.<br/>GotObserver registration (extension point per facades/backend.md §"GOT-population observation") happens once at session init from int when REPL/trace mode or CRANELISP_GOT_TRACE=1 is active. Production batch: no observer registered, one relaxed null-check load per emit site.
 
     rect rgb(245, 230, 255)
         Note over Initiator, Sched: ENTRY — register_module runs Phase 0 SYNCHRONOUSLY (parse + structural decls), then dispatches<br/>Phase 0 is the only [&mut SymbolTable] hold (microseconds — entry write lock on the outer DashMap).<br/>After Phase 0 the SymbolTable is reachable only via shared .get() — workers run with [&SymbolTable] + per-entry inner locks.
@@ -165,6 +166,10 @@ sequenceDiagram
             PW ->> Backend: cranelisp_backend::load_object(module: &ModuleFullPath, object: &[u8], symbol_tables: &SymbolTables) -> Result[LinkerArtefact, CranelispError]
             Note over Backend, ST_m1: linker resolves each defined symbol of m1 by bare name (per Decision 36)
             Backend ->> ST_m1: SymbolTable::write_code(sym: &Symbol, code: Code::Linker { linker: Arc[Linker], ptr }) — for each defined symbol
+            opt GotObserver registered (per defined symbol — relaxed-load null check)
+                Note over Backend, GotObs: extension-point emit at the load_object slot-population site — facades/backend.md §"GOT-population observation"
+                Backend ->> GotObs: GotObserver(GotEventTag::LinkerWrite, &GotEvent { module: m1, symbol, slot, ptr, provenance: GotProvenance::Linker { linker_addr } })
+            end
             Backend -->> PW: Ok(LinkerArtefact { linker: Arc[Linker], ptrs: HashMap[Symbol, *const u8] })
             PW ->> Sched: CompileScheduler::notify_inmem_codegen_batch_complete(module: &ModuleFullPath)
             PW ->> Sched: CompileScheduler::notify_object_codegen_complete(module: &ModuleFullPath)
@@ -177,6 +182,10 @@ sequenceDiagram
             PW ->> Backend: cranelisp_backend::compile_to_module[M: Module](scope: &ModuleFullPath, names: &[Symbol], symbol_tables: &DashMap[ModuleFullPath, SymbolTable[Code, ()]], introspection: Option[&DashMap[FQSymbol, Introspection]], module: M) -> Result[(), CompilationError]
             Backend ->> ST_m1: SymbolTable::get(sym: &Symbol) -> Option[Ref[ModuleEntry[Code]]] — read ast, scheme, resolved calls
             Backend ->> ST_m1: SymbolTable::write_code(sym: &Symbol, code: Code::Jit { jit: Arc[Jit], ptr })<br/>([&self] + inner DashMap per-key write lock, atomic GOT slot swap per Decision 31)
+            opt GotObserver registered (relaxed-load null check)
+                Note over Backend, GotObs: extension-point emit at the write_code site — facades/backend.md §"GOT-population observation"
+                Backend ->> GotObs: GotObserver(GotEventTag::JitWrite, &GotEvent { module: m1, symbol, slot, ptr, provenance: GotProvenance::Jit { jit_addr } })
+            end
             opt introspection.is_some() (REPL or trace mode — Decision 38 mode discriminator)
                 Note over Backend, Shared: backend writes Introspection directly per Decision 41 — int does no post-processing
                 Backend ->> Shared: introspection.unwrap().insert(fq, Introspection { clif_ir: Some(...), disasm: Some(...), code_size: Some(...), compile_duration: Some(...), .. })

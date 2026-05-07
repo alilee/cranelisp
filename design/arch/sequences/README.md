@@ -25,14 +25,17 @@ Each diagram is a temporal walkthrough of one execution mode. The actor grain is
 | `exec-flow-repl.svg` | REPL session — all four cadences active (compilation, REPL, watcher, runtime). |
 | `exec-flow-run.svg` | `--run` — compilation and runtime cadences only; no REPL or watcher. |
 | `exec-flow-link.svg` | `--link` — compilation cadence only; runtime cadence activates only when the produced binary is later executed. |
+| `exec-flow-compilation.svg` | Compilation cadence in isolation — scheduler, priority/nice workers, Phase 0 (synchronous parse + structural decls) then form-by-form typecheck + JIT + object codegen with cache-hit / cache-miss branches. |
+| `exec-flow-runtime.svg` | Runtime + platform cadence in isolation — trampoline entry, JIT'd user code, RC inc/dec, heap allocator, cross-module GOT dispatch, IO trampoline (Pure / Effect / Bind / Par) with platform-DLL effect calls. |
 
 ## Reading order for a newcomer
 
 1. `../overview.md` — establishes the vocabulary.
 2. `exec-flow-repl.svg` — the maximal execution scenario; introduces the cadences in motion.
 3. `exec-flow-run.svg` and `exec-flow-link.svg` — narrower modes, easier once REPL is understood.
-4. The six concurrency-invariant diagrams — verify the correctness claims.
-5. `../facades/{crate}.md` — once the choreography is in mind, the typed Rust signatures fall into place.
+4. `exec-flow-compilation.svg` and `exec-flow-runtime.svg` — the two cadences in isolation, when narrower depth is wanted than the per-mode flows.
+5. The five concurrency-invariant diagrams — verify the correctness claims.
+6. `../facades/{crate}.md` — once the choreography is in mind, the typed Rust signatures fall into place.
 
 ## Regenerating
 
