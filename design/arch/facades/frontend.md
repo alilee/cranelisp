@@ -20,7 +20,7 @@ pub fn extract_module_declarations(
     forms: Vec<Sexp>,
 ) -> Result<(StructuralDecls, Vec<Sexp>), CranelispError>;
 
-pub fn build_ast(defn_sexp: &Sexp) -> Result<Defn, CranelispError>;
+pub fn build_form(sexp: &Sexp) -> Result<Vec<ParsedEntry>, CranelispError>;
 
 pub fn build_expr(sexp: &Sexp) -> Result<Expr, CranelispError>;
 
@@ -36,7 +36,11 @@ where
 
 `parse` produces a flat `Vec<Sexp>` — pure source-to-sexp lowering, no structural-decl harvesting. `extract_module_declarations` is the post-parse pass that walks the form vector once, peels off `(import …)` / `(export …)` / `(mod …)` / `(platform …)` declarations into a `StructuralDecls` bundle, and returns the residual non-structural form vector. The two-call shape lets parse stay reusable for non-orchestration consumers (REPL slash commands, comment-preserving variants — see `parse_preserving_comments` below) without forcing them to construct a structural-decl store they'll never use.
 
-`build_ast` and `build_expr` are per-form constructors — one entry for top-level `defn` forms (returning the typed `Defn` shape), one for inner expressions (returning `Expr`). No union enum bridges them; a top-level form's body is just an `Expr`. Callers know which one they want at the call site (the worker calls `build_ast` for top-level forms; the REPL eval path calls `build_expr` directly for bare-expression evals).
+`build_form` and `build_expr` are per-form constructors — one entry for top-level forms in the wide vocabulary (returning a list of `ParsedEntry` transients per FIXME 0156 resolution), one for inner expressions (returning `Expr`). No union AST enum bridges them. Callers know which one they want at the call site (the worker calls `build_form` for top-level forms; the REPL eval path calls `build_expr` directly for bare-expression evals).
+
+`build_form` accepts the full top-level form vocabulary (`defn`, `deftype`, `deftrait`, `impl`, `defmacro`, `mod`, `import`, `export`, `platform`) and returns `Vec<ParsedEntry>` because some shapes (notably `defmacro` with multiple clauses, and `deftype` whose constructors register independently) yield more than one entry per source form. Internally `build_form` dispatches to per-shape `pub(crate)` helpers (`parse_defn`, `parse_deftype`, `parse_deftrait`, `parse_impl`, `parse_defmacro`); the dispatcher is the single public entry. `import`/`export`/`mod`/`platform` continue to be peeled off by `extract_module_declarations` before `build_form` runs — they never reach `build_form`.
+
+`ParsedEntry` is a **transient** parse-time-only carrier defined in `cranelisp-types` (see `facades/types.md` §"Boundary types" — the `ParsedEntry` family). It carries only what the parser knows; resolved-stage fields (type, scheme, callees, code, got_slot) are populated by `check_form` downstream. **`ParsedEntry` NEVER lands in `SymbolTable`.** Lifecycle: `parse` → `ParsedEntry` (transient) → `check_form` consumes → returns `Vec<(Symbol, ModuleEntry<C>)>` → `int::insert_symbol` writes to the table. The `SymbolTable` invariant — "if it's in the table, it's checked" — holds because the post-Gap state contract for `check_form` (per FIXME 0160 resolution) is structural: the orchestrator inserts only on Ok.
 
 `SymbolTables<C, L>` is the generic alias per Decision 32 — frontend stays C/L-blind so the same facade serves typecheck-only callers (`SymbolTables<(), ()>`) and integration-layer callers (`SymbolTables<Code, ()>`). The alias is structural; frontend does not depend on `int` to use it.
 
@@ -96,26 +100,19 @@ pub fn next_synthetic_span() -> Span;
 
 Allocates monotonically-increasing synthetic spans for forms produced by macro expansion. Reused across the session.
 
-### Defmacro shape parsing
+### Defmacro shape parsing — internal only
 
 ```rust
-pub fn parse_defmacro(sexp: &Sexp) -> Result<DefmacroInfo, CranelispError>;
-
-#[non_exhaustive]
-pub struct DefmacroInfo {
-    pub name: Symbol,
-    pub clauses: Vec<MacroClauseInfo>,
-    pub visibility: Visibility,
-    pub docstring: Option<String>,
-    pub span: Span,
-}
+pub(crate) fn parse_defmacro(sexp: &Sexp) -> Result<DefmacroInfo, CranelispError>;
 
 pub fn synthesize_macro_clause_defn(info: &DefmacroInfo, clause_idx: usize) -> Defn;
 ```
 
-`DefmacroInfo` is a frontend-shaped construct (per-clause macro structure derived from a `defmacro` Sexp). Each clause is compiled as a separate normal `Defn` via `synthesize_macro_clause_defn`, then registered in the `ModuleEntry::Macro` clauses list per Decision 21 cross-reference.
+Per FIXME 0156 resolution — `parse_defmacro` is `pub(crate)` (called from `build_form`'s dispatcher when the form-shape is a `defmacro`). `DefmacroInfo` itself moves from `cranelisp-frontend` to `cranelisp-types` (see `facades/types.md` §"Boundary types") because `int`'s post-`build_form` consumption path needs to name the type, and `MacroClauseInfo` / `MacroParam` already live in `cranelisp-types`. The parser dispatcher returns `DefmacroInfo` packaged inside one or more `ParsedEntry::Macro` variants per the standard `build_form` shape.
 
-`MacroClauseInfo` and `MacroParam` themselves live in `cranelisp-types` (they cross the typecheck boundary).
+`synthesize_macro_clause_defn` remains public — it builds a `Defn` (one per clause) for compilation. Each clause is compiled as a separate normal `Defn`, then registered in the `ModuleEntry::Macro` clauses list per Decision 21 cross-reference.
+
+`MacroClauseInfo` and `MacroParam` live in `cranelisp-types` (they cross the typecheck boundary). `DefmacroInfo` joins them per FIXME 0156 resolution.
 
 ### `begin` / `quasiquote` helpers (called from `expand` and from `parse_defmacro`)
 
@@ -140,9 +137,9 @@ None.
 
 ## Types originated here
 
-Per Principle 15 — frontend's facade-originated types live here. None currently: `Sexp`, `Expr`, `TopLevel`, `Defn`, `Pattern`, `MatchArm`, `TypeExpr`, `Ast`, `Program`, `ImportSpec`, `ExportSpec`, `ImportNames`, `MacroClauseInfo`, `MacroParam`, `ModDecl`, `PlatformSpec`, `ResolutionGap`, etc. are all multi-consumer types (frontend produces; typecheck/backend/int consume) and live in `cranelisp-types`.
+Per Principle 15 — frontend's facade-originated types live here. None currently: `Sexp`, `Expr`, `TopLevel`, `Defn`, `Pattern`, `MatchArm`, `TypeExpr`, `Ast`, `Program`, `ImportSpec`, `ExportSpec`, `ImportNames`, `MacroClauseInfo`, `MacroParam`, `ModDecl`, `PlatformSpec`, `ResolutionGap`, `ParsedEntry`, `DefmacroInfo` (per FIXME 0156 resolution) are all multi-consumer types (frontend produces; typecheck/backend/int consume) and live in `cranelisp-types`.
 
-Frontend is a pure transform from source text to AST: its public surface is the free functions (`parse`, `extract_module_declarations`, `expand`, `parse_preserving_comments`) plus `ExtractedDeclarations`, `StructuralDecls`, `DefmacroInfo`, and `ExpansionError`. No re-exports of `cranelisp-types` items per Principle 15 — consumers import boundary types directly from `cranelisp_types::*`.
+Frontend is a pure transform from source text to AST: its public surface is the free functions (`parse`, `extract_module_declarations`, `build_form`, `build_expr`, `expand`, `parse_preserving_comments`) plus `StructuralDecls` and `ExpansionError`. No re-exports of `cranelisp-types` items per Principle 15 — consumers import boundary types directly from `cranelisp_types::*`.
 
 **`ResolutionGap` re-exported (narrow ergonomic exception per FIXME 0098).** `ExpansionError::Gap(ResolutionGap)` is the dominant variant of the public error enum, and consumers pattern-matching on it always need `ResolutionGap` in scope. The frontend re-exports `cranelisp_types::ResolutionGap` from its `lib.rs` so `use cranelisp_frontend::{expand, ExpansionError, ResolutionGap}` works in one import. This is an inline-justified instance of Principle 15's narrowness — limited to the gap-orchestration retry loop's pattern-match readability; not a general license.
 
@@ -173,10 +170,9 @@ None implemented. The frontend does not implement traits from `cranelisp-types`.
 All public DTOs published by the frontend are `#[non_exhaustive]`:
 
 - `StructuralDecls`
-- `DefmacroInfo`
 - `ExpansionError`
 
-(Types re-exported from `cranelisp-types` are `#[non_exhaustive]` per the types-crate facade.)
+(Types re-exported from `cranelisp-types` are `#[non_exhaustive]` per the types-crate facade. `DefmacroInfo` and `ParsedEntry` live in `cranelisp-types` per FIXME 0156 resolution.)
 
 ---
 

@@ -102,6 +102,23 @@ pub enum CompilationError {
 
 Per §2.7 — `SymbolNotCompilable` is the typed signal for the Decision-37 failure mode. Replaces ad-hoc `CranelispError::CodegenError { message: "..." }` strings at the boundary; callers can match on the variant rather than parse messages.
 
+```rust
+#[non_exhaustive]
+pub enum LinkerError {
+    /// Symbol not found in the loaded object's resolved symbol set.
+    /// Pre-S58 silent-NULL regression net per Decision 37 — this variant
+    /// is what the integration layer matches on at cache-hit failure.
+    SymbolNotFound { name: LinkerSymbol },
+
+    /// Object relocation pass produced an error during `load_object` or
+    /// per-symbol resolution. Signals corruption, ABI mismatch, or
+    /// unresolved external reference.
+    RelocationFailed { name: LinkerSymbol, cause: String },
+}
+```
+
+`LinkerError` is the typed result of `Linker::get_symbol` (Decision 36 — bare-name lookup) and other per-symbol cache-load operations. Per Decision 37, asking for a symbol that isn't there is a typed error, not a bare `Option`. The two-variant baseline is the minimum surface acceptable at S66 close — additional variants (e.g., `MmapFailed`, `MachOParseError`, `AbiMismatch`) extend as evidence accrues from production traces; the `#[non_exhaustive]` attribute admits future additions without a public-API break. Re-shape may be triggered during /review of a future FIXME if the variant set proves insufficient.
+
 ### `Jit` — the JIT retention newtype (Decision 31)
 
 ```rust
@@ -227,6 +244,8 @@ Per Principle 15 — the following are backend-originated (only `int` consumes t
 - `CompilationError` (see §"Errors" above)
 - `GotEvent`, `GotEventTag`, `GotProvenance`, `GotObserver` (see §"GOT-population observation")
 - `register_got_observer` free function
+
+`LinkerError` is the typed result of `Linker::get_symbol` (per FIXME 0154 resolution); it is **defined in `cranelisp-types`** (multi-consumer per Principle 15 — backend constructs, `int` matches at cache-hit failure) and surfaces in the backend public API via the `Linker::get_symbol` signature. See `facades/types.md` §"Errors and warnings" for the canonical definition; the §"Errors" enumeration above is the same shape repeated for facade-local readability.
 
 The multi-consumer types backend depends on (`SymbolTable`, `ModuleEntry`, `DefKind`, `Type`, `Scheme`, `Symbol`, `FQSymbol`, `ModuleFullPath`, `CranelispError`, `ResolvedCall`, `MethodResolutions`, `MonoDefn`, `OverloadVariant`, `ConstrainedFn`, `TypeDefInfo`, `ConstructorInfo`, `FieldInfo`, `Expr`, `Pattern`, `MatchArm`, `Defn`, `Span`, `Visibility`, `PrimitiveDef`, `PrimitiveKind`, `SchedulingClass`, `HeapCategory`, `HeapHeader`, `NULLARY_TAG_THRESHOLD`, `CallGraph`, `CallEdge`, `CompileContext`, `CompileResult`, `GotTable`, `GOT_TABLE_SIZE`, marshaling tags) live in `cranelisp-types`. Consumers import them from there directly.
 

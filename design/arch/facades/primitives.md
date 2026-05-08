@@ -10,58 +10,93 @@ This spec is **target-stating**. Drift detection between as-designed and as-buil
 
 ## Public surface (as-designed)
 
-The primitives crate's public surface is the set of `extern "C"` Rust fns the language exposes by name at `primitives/<name>`. Each has:
-
-- A symbol-table entry seeded by `int`'s prelude-loading path (`PrimitiveDef` from `cranelisp-types`'s `primitives()` registry — see `facades/types.md` §"Operator / primitive registry").
-- A GOT slot allocated for it (so `(let [f +] (f 1 2))` reads the address from the slot and indirect-calls it).
-- An optional inline-CLIF substitution at backend (when called by name at a known direct call site, backend may emit `iadd` rather than a call); the named fn ptr remains the addressable backing form for non-substituted call sites.
-
-Backend has **no trait knowledge** per Decision 43. The substitution table at backend is keyed on `Symbol` (e.g., `add-i64`) only — never on `(TraitName, Symbol, TypeName)` triples.
-
-### Integer primitives
+Per FIXME 0159 resolution — the public Rust surface of `cranelisp-primitives` is **one item**: a static `LazyLock<SymbolTable>` that names the synthetic `primitives` module. The extern fns themselves are `pub(crate)` — they are not part of the published Rust API; their addresses are reachable only via the static table's `ModuleEntry::Def.code = Code::Primitive(*const u8)` field.
 
 ```rust
-#[no_mangle] pub extern "C" fn add_i64(a: i64, b: i64) -> i64;
-#[no_mangle] pub extern "C" fn sub_i64(a: i64, b: i64) -> i64;
-#[no_mangle] pub extern "C" fn mul_i64(a: i64, b: i64) -> i64;
-#[no_mangle] pub extern "C" fn div_i64(a: i64, b: i64) -> i64;
-#[no_mangle] pub extern "C" fn mod_i64(a: i64, b: i64) -> i64;
-#[no_mangle] pub extern "C" fn eq_i64(a: i64, b: i64) -> i64;        // returns 0 / 1 in i64
-#[no_mangle] pub extern "C" fn lt_i64(a: i64, b: i64) -> i64;
-#[no_mangle] pub extern "C" fn gt_i64(a: i64, b: i64) -> i64;
-#[no_mangle] pub extern "C" fn le_i64(a: i64, b: i64) -> i64;
-#[no_mangle] pub extern "C" fn ge_i64(a: i64, b: i64) -> i64;
+use std::sync::LazyLock;
+use cranelisp_types::{ModuleFullPath, SymbolTable};
+
+/// The synthetic `primitives` module's symbol table. Populated at static-init time
+/// with one `ModuleEntry::Def { kind: Primitive { kind: Builtin }, primitive_fn_ptr: Some(fn_ptr), … }`
+/// entry per primitive named by the spec.
+///
+/// Per FIXME 0159 resolution — single source of truth for primitives. Both `int`
+/// (session init: `tables.insert(ModuleFullPath::primitives(), Arc::new(PRIMITIVES_TABLE.clone()))`)
+/// and backend (`register_intrinsics` walks the same static) read from this table.
+/// Decoupled from compilation session lifecycle; never invalidates, never rebuilds.
+///
+/// Type: `SymbolTable` with default `<C = (), L = ()>` — no `Code` field is populated
+/// for primitives. The fn ptr is carried on `ModuleEntry::Def.primitive_fn_ptr`
+/// (parallel to `platform_fn_ptr` for platform effects). This avoids the
+/// `cranelisp-primitives → cranelisp-backend` cycle that `Code::Primitive` would
+/// induce (since `Code` lives in backend per Decision 41 and references `Arc<Jit>`).
+pub static PRIMITIVES_TABLE: LazyLock<SymbolTable>;
+```
+
+The static is built once per process from the in-crate `pub(crate)` extern fns plus per-fn metadata (signature, docstring, kebab-case symbol name); subsequent reads are address-stable for the process lifetime. `int`'s session init installs the static into the per-session `SymbolTables` map at `ModuleFullPath::primitives()`; backend's `register_intrinsics` walks the same static when populating the JITModule's symbol-name lookup table.
+
+The shape requires a new `primitive_fn_ptr: Option<*const u8>` field on `ModuleEntry::Def` in `cranelisp-types` (parallel to the existing `platform_fn_ptr`). This is captured in the Wave 0 types-crate authoring plan.
+
+The substitution table at backend is keyed on `Symbol` (e.g., `add-i64`) only — never on `(TraitName, Symbol, TypeName)` triples — per Decision 43 (no trait knowledge). The named fn ptr remains the addressable backing form for non-substituted call sites; backend MAY substitute inline CLIF at known direct call sites (`add-i64 → iadd`) but is not required to.
+
+### Internal extern fns (`pub(crate)`)
+
+Per FIXME 0159 resolution — these are NOT public. They are referenced only via `PRIMITIVES_TABLE`'s `Code::Primitive` fn pointers. Listed here for facade completeness; the binding contract is the static table, not the Rust source surface.
+
+#### Integer primitives
+
+```rust
+pub(crate) extern "C" fn add_i64(a: i64, b: i64) -> i64;
+pub(crate) extern "C" fn sub_i64(a: i64, b: i64) -> i64;
+pub(crate) extern "C" fn mul_i64(a: i64, b: i64) -> i64;
+pub(crate) extern "C" fn div_i64(a: i64, b: i64) -> i64;
+pub(crate) extern "C" fn mod_i64(a: i64, b: i64) -> i64;
+pub(crate) extern "C" fn eq_i64(a: i64, b: i64) -> i64;        // returns 0 / 1 in i64
+pub(crate) extern "C" fn lt_i64(a: i64, b: i64) -> i64;
+pub(crate) extern "C" fn gt_i64(a: i64, b: i64) -> i64;
+pub(crate) extern "C" fn le_i64(a: i64, b: i64) -> i64;
+pub(crate) extern "C" fn ge_i64(a: i64, b: i64) -> i64;
 ```
 
 Symbol-table names per `src/CLAUDE.md` JIT-Symbol-Names: `add-i64`, `sub-i64`, `mul-i64`, `div-i64`, `mod-i64`, `eq-i64`, `lt-i64`, `gt-i64`, `le-i64`, `ge-i64`. (Underscore in Rust source; kebab-case at the symbol-table layer.)
 
-### Float primitives
+#### Float primitives
 
 ```rust
-#[no_mangle] pub extern "C" fn add_f64(a: f64, b: f64) -> f64;
-#[no_mangle] pub extern "C" fn sub_f64(a: f64, b: f64) -> f64;
-#[no_mangle] pub extern "C" fn mul_f64(a: f64, b: f64) -> f64;
-#[no_mangle] pub extern "C" fn div_f64(a: f64, b: f64) -> f64;
+pub(crate) extern "C" fn add_f64(a: f64, b: f64) -> f64;
+pub(crate) extern "C" fn sub_f64(a: f64, b: f64) -> f64;
+pub(crate) extern "C" fn mul_f64(a: f64, b: f64) -> f64;
+pub(crate) extern "C" fn div_f64(a: f64, b: f64) -> f64;
 // (plus comparison ops as the language requires; pre-implementation list will be confirmed at S67+ vertical)
 ```
 
-### Boolean primitives
+#### Boolean primitives
 
 ```rust
-#[no_mangle] pub extern "C" fn not(b: i64) -> i64;
+pub(crate) extern "C" fn not(b: i64) -> i64;
 ```
 
-### Primitive type conversions
+#### Primitive type conversions
 
 ```rust
-#[no_mangle] pub extern "C" fn int_to_string(n: i64) -> i64;
-#[no_mangle] pub extern "C" fn parse_int(s: i64) -> i64;
-#[no_mangle] pub extern "C" fn float_to_string(f: f64) -> i64;
-#[no_mangle] pub extern "C" fn bool_to_string(b: i64) -> i64;
+pub(crate) extern "C" fn int_to_string(n: i64) -> i64;
+pub(crate) extern "C" fn parse_int(s: i64) -> i64;
+pub(crate) extern "C" fn float_to_string(f: f64) -> i64;
+pub(crate) extern "C" fn bool_to_string(b: i64) -> i64;
 // (parse_float and equivalents per the spec's primitive surface)
 ```
 
 These return heap-allocated string pointers (allocated through `cranelisp-intrinsics`'s allocator); the consuming-convention rules per Decision 24 apply at the call site.
+
+### Versioning policy (per FIXME 0158 resolution — dissolves into 0159)
+
+Because the public Rust API is one item (`PRIMITIVES_TABLE`), the `cargo-public-api` baseline for `cranelisp-primitives` is **one line** and is stable across primitive churn. Adding, renaming, or deleting a primitive does NOT change the cargo-public-api surface — the extern fns are private; only the static is published, and its type is unchanged.
+
+The **semantic surface** (which primitives exist + their signatures) is governed by **spec conformance tests**, NOT by `cargo-public-api`. Two surfaces, two tools, no overlap:
+- Rust public-API drift detection → `cargo-public-api` baseline (one-line, near-static).
+- Primitive set + signatures drift detection → spec conformance test suite (`/qa`).
+
+This dissolves the workspace-uniform versioning question raised in FIXME 0158 for this crate's purposes — primitive churn doesn't show up in `cargo-public-api`, so the versioning-on-diff policy is moot here. Other crates with richer Rust public surfaces still need a workspace policy; that is a /arch + /qa question outside this facade's scope.
 
 ### Public consts
 
@@ -85,9 +120,9 @@ None. Per Principle 15 — facade types live with behaviour; primitives owns no 
 
 The primitives crate imports from:
 
-- **`cranelisp-types`** — for the `Symbol` and `ModuleFullPath` newtypes consumed by the symbol-table seeding path. (At runtime, the extern fns themselves take only scalar/pointer types and never name `cranelisp-types` items in their signatures; the type-import is for the seeding helper.)
+- **`cranelisp-types`** — per FIXME 0159 resolution, this is now an acyclic load-bearing dependency. The static `PRIMITIVES_TABLE: LazyLock<SymbolTable>` requires `SymbolTable`, `ModuleEntry`, `DefKind`, `PrimitiveKind`, `Code`, `Symbol`, `Type`, `Scheme`, `ModuleFullPath`, `FQTypeName`, `PrimitiveDef` — the full set needed to construct a populated symbol table at static-init time. The dependency direction `cranelisp-primitives → cranelisp-types` is acyclic; types is the leaf with no workspace dependencies.
 
-That is the entire dependency surface. Primitives does not depend on `cranelisp-frontend`, `cranelisp-typecheck`, `cranelisp-backend`, `cranelisp-platform`, `cranelisp-intrinsics`, or `cranelisp` (binary). It is a leaf in the workspace dependency DAG (paralleling cranelisp-types in that respect, though it does depend on cranelisp-types).
+That is the entire workspace-crate dependency surface. Primitives does not depend on `cranelisp-frontend`, `cranelisp-typecheck`, `cranelisp-backend`, `cranelisp-platform`, `cranelisp-intrinsics`, or `cranelisp` (binary).
 
 In particular: primitives does NOT depend on `cranelisp-intrinsics`. The two crates are siblings under the runtime-split-decision and have independent evolution drivers (spec-driven vs backend-driven). Where a primitive needs to allocate heap (e.g., `int-to-string` returns a heap string), it does so by calling the allocator's extern fn at the linker-resolved name — the same way backend-emitted code calls intrinsics — not by depending on intrinsics as a Rust crate.
 

@@ -116,10 +116,14 @@ pub struct OwnedPlatformFnDescriptor {
     pub scheduling_class: SchedulingClass,
 }
 
-pub fn load_manifest(dll_path: &Path) -> Result<Vec<OwnedPlatformFnDescriptor>, PlatformError>;
+pub fn manifest_to_descriptors(
+    manifest: &PlatformManifest,
+) -> Result<Vec<OwnedPlatformFnDescriptor>, PlatformError>;
 ```
 
-`load_manifest` opens the DLL via `libloading`, locates the exported `__cranelisp_platform_manifest` symbol, copies the descriptor list into safe Rust shapes, and returns. `int`'s session holds `Vec<OwnedPlatformFnDescriptor>` per loaded platform; the JIT registers each fn pointer via `JITBuilder::symbol` keyed by `jit_name`.
+`manifest_to_descriptors` is the public C-ABI → typed-Rust bridge: given a raw `PlatformManifest` (already located in a loaded DLL by the caller), it copies the descriptor list into safe Rust shapes and returns. Per BC §5, DLL lifecycle orchestration (`dlopen` + `libloading::Library` retention via `SharedState.kept_dlls`) is `int`'s job — the platform crate does not own DLL lifecycle. `int`'s session holds `Vec<OwnedPlatformFnDescriptor>` per loaded platform; the JIT registers each fn pointer via `JITBuilder::symbol` keyed by `jit_name`.
+
+Per FIXME 0155 resolution — the historical `load_manifest(dll_path: &Path)` and `parse_type_sig(sig: &str)` entries are platform-internal `pub(crate)` helpers (called from `manifest_to_descriptors`). They are **not** part of the platform crate's public surface: out-of-tree DLL authors never call them, and `int` reaches the typed descriptors via `manifest_to_descriptors` only. The `load_manifest` entry point that opens the DLL with `libloading` lives in `int` per BC §5 — DLL lifecycle is integration-side. `parse_type_sig` similarly stays internal because type-signature parsing requires `cranelisp-typecheck` vocabulary access, which platform crate must not depend on (Principle 3).
 
 ### Host context — runtime ↔ platform bridge
 
@@ -151,11 +155,9 @@ pub struct HostCallbacks {
 
 Platform DLL code uses these callbacks to allocate heap values (e.g., to produce a `CLString` result), to retain user-supplied closures across calls, to invoke retained closures. Each callback's behaviour is documented as part of the platform ABI (`bounded-contexts.md` §5 references `spec/10-io.md §10.10.3`). Per Decision 43, the underlying allocator and RC primitives live in `cranelisp-intrinsics`; `int` resolves the fn pointers at session init.
 
-### Type signature parser (used by load_manifest + by `int` for type checking platform fn calls)
+### Type signature parser — internal only
 
-```rust
-pub fn parse_type_sig(sig: &str) -> Result<Vec<Type>, PlatformError>;              // "Int -> IO Bool" → [Type::Int, Type::IO(Box::new(Type::Bool))]
-```
+`parse_type_sig(sig: &str) -> Result<Vec<Type>, PlatformError>` is platform-internal `pub(crate)`, called from `manifest_to_descriptors` to lift each `PlatformFn.type_sig` into the resolved `Vec<Type>` form on `OwnedPlatformFnDescriptor.type_sig` (or the equivalent typed shape `int` needs for type-checking platform fn calls). Per FIXME 0155 resolution — not exposed to DLL authors or to `int` directly. The `int`-side type-checking entry point that `int` uses to validate platform fn calls lives in `int` per BC §5; it consumes the typed `Vec<Type>` already produced by `manifest_to_descriptors` rather than re-invoking the parser.
 
 ### `declare_platform!` macro (DLL-author API)
 

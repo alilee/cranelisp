@@ -1,12 +1,14 @@
 # Sprint 66 implementation slice — `cranelisp-primitives` (new crate)
 
-**Status.** draft
-**Author.** `/design (cranelisp-primitives)`, 2026-05-06
-**Reads.** `design/arch/facades/primitives.md` (W1 output, S65); `design/arch/decisions/0043-runtime-split-into-primitives-intrinsics.md` (D43); `design/arch/legacy/substance-scoping.md §1.7` (substance source); `design/arch/fixmes/0150-runtime-split-primitives-intrinsics.md` (implementation tracker); `design/runtime/runtime.md` (current runtime master design — context for what migrates); `crates/cranelisp-runtime/src/primitives/{int,float,bool,mod}.rs` (current source of language-level callable primitives); `sprints/SPRINT.md` Phase 4 W4a; `design/arch/sprint-65-reshape-phase-2-review.md §3` (slice template).
+**Status.** ACTIVE — Phase 3 design refresh (S66, 2026-05-07). Slice authored 2026-05-06 against the post-S65 facade; D43 was an open scope question at that time and the slice was conditionally bound. /arch's Phase 2 verdict (`sprints/SPRINT.md` §"Architecture review (Phase 2)", verdict PASS-WITH-REVISIONS) selected Option A: "BIND D43 INTO S66" per Principle 8 (deferring D43 would create 1.5–2 weeks of throwaway adoption work). The slice is now executing in S66 — no longer conditional — and is scheduled per the SPRINT.md wave plan: Phase α (crate scaffolding) lands in **Wave 2**; Phases β/γ/δ (source migration, consumer wiring, finalisation) land in **Wave 3** (with Wave 4 absorbing the cross-crate cleanup tail per SPRINT.md). See §2 for slice-internal phase ordering.
 
-**This is a "new crate" slice.** `crates/cranelisp-primitives/` does not yet exist. The slice scopes its **creation** plus the migration of user-callable primitives out of `crates/cranelisp-runtime/src/primitives/` into the new crate, per Decision 43's split. Sibling slice: `design/intrinsics/implementation-slice-s66.md` (the other half of the D43 split).
+**Author.** `/design (cranelisp-primitives)`, 2026-05-06; refreshed 2026-05-07.
 
-This slice maps onto FIXME 0150's Phases 1, 2 (primitives portion), 4 (primitives portion), and 5 (primitives portion). The intrinsics slice maps onto Phases 1, 2 (intrinsics portion), and 5 (intrinsics portion). Phase 3 (backend trait-knowledge deletions + crate-dep flip) is in the backend slice. Phase 4 (stdlib trait-impl audit) is split across this slice (deletion of `cranelisp_op_*` duplicates) and stdlib's slice (the impl-body audit).
+**Reads.** `design/arch/facades/primitives.md` (W1 output, S65); `design/arch/decisions/0043-runtime-split-into-primitives-intrinsics.md` (D43, the binding spec); `design/arch/legacy/substance-scoping.md §1.7` (substance source); `design/arch/fixmes/0150-runtime-split-primitives-intrinsics.md` (implementation tracker); `design/runtime/runtime.md` (current runtime master design — context for what migrates); `design/runtime/implementation-slice-s66.md` (sibling retiring slice — outbound list cross-checked against this slice's inbound list per §1a); `design/intrinsics/implementation-slice-s66.md` (sibling new-crate slice — same shape); `crates/cranelisp-runtime/src/primitives/{int,float,bool,mod}.rs` (current source of language-level callable primitives); `sprints/SPRINT.md` Phase 4 W4a + Phase 2 review verdict (Option A); `design/arch/sprint-65-reshape-phase-2-review.md §3` (slice template).
+
+**This is a "new crate" slice.** `crates/cranelisp-primitives/` does not yet exist. The slice scopes its **creation** plus the migration of user-callable primitives out of `crates/cranelisp-runtime/src/primitives/` into the new crate, per Decision 43's split. Sibling slice: `design/intrinsics/implementation-slice-s66.md` (the other half of the D43 split). Coordinating slice: `design/runtime/implementation-slice-s66.md` (the retiring side).
+
+This slice maps onto FIXME 0150's Phases 1, 2 (primitives portion), 4 (primitives portion), and 5 (primitives portion). The intrinsics slice maps onto Phases 1, 2 (intrinsics portion), and 5 (intrinsics portion). Phase 3 (backend trait-knowledge deletions + crate-dep flip) is in the backend slice. Phase 4 (stdlib trait-impl audit) is split across this slice (deletion of `cranelisp_op_*` duplicates) and stdlib's slice (the impl-body audit) — see §1a inbound check + §4 cross-crate deps.
 
 ---
 
@@ -25,7 +27,7 @@ The crate does not yet exist, so every line of `facades/primitives.md` is a delt
 | 7 | Author `crates/cranelisp-primitives/src/lib.rs` re-exports — declare each per-type module + re-export the `extern "C"` fn set so the symbol-name surface is one `pub use` block | new | C | 0150 (Phase 2) | The list is searchable by string-grep of `pub use` lines; one cross-reference per facade-listed primitive name. |
 | 8 | Add the **Rust-level** `extern "C" fn add_i64`/`sub_i64`/`mul_i64`/`div_i64`/`mod_i64`/`eq_i64`/`lt_i64`/`gt_i64`/`le_i64`/`ge_i64` (and float equivalents) — the *named* primitives that today exist only as backend's CLIF-substitution targets but have no Rust extern fallback for indirect calls | new — `crates/cranelisp-primitives/src/int.rs` + `float.rs` | C | 0150 (Phase 4 sets up: `add-i64` IS the addressable form; without a Rust extern, indirect calls have no backing) | Each named primitive in `facades/primitives.md` §"Integer primitives" + §"Float primitives" has a Rust extern fn body; `add-i64` linker-symbol resolves at JIT registration. |
 | 9 | Delete the 10 `cranelisp_op_*` extern fns from `crates/cranelisp-primitives/src/int.rs` (post-relocation) | `crates/cranelisp-primitives/src/int.rs` (lines 60–119 after move) | D | 0150 (Phase 4) | `git grep cranelisp_op_` returns nothing in the new crate; `add-i64` is the sole addressable form per facade BC-invariant #3. |
-| 10 | Author the `pub fn primitives_module() -> ModuleEntry`-like seeding helper, OR confirm seeding stays driven by `cranelisp-types::operator::ring{0,1,3}_primitives()` and primitives crate exposes only the Rust extern fns (no helper). | `crates/cranelisp-primitives/src/lib.rs`; cross-check `crates/cranelisp-types/src/operator.rs` `ring0_primitives()`/`ring1_primitives()`/`ring3_primitives()` | A | none (open-question; resolution in §6) | Per facade §"Public surface" the symbol-table seeding is `int`'s job consuming `cranelisp-types`'s `primitives()` registry; this slice confirms primitives crate exposes ONLY the extern fns + the `cranelisp-types` registry knows their names. No seeding helper authored unless §6 Q1 resolves toward "yes." |
+| 10 | Author `pub static PRIMITIVES_TABLE: LazyLock<SymbolTable>` in `crates/cranelisp-primitives/src/lib.rs` — populated at static-init from the `pub(crate)` extern fns plus per-fn metadata (signature, docstring, kebab-case symbol name); each entry is `ModuleEntry::Def { kind: Primitive { kind: Builtin }, primitive_fn_ptr: Some(fn_ptr), … }`. Per FIXME 0159 resolution. | `crates/cranelisp-primitives/src/lib.rs` | C | 0159 (this row IS the resolution) | `PRIMITIVES_TABLE` builds at static-init; `int` session init installs at `ModuleFullPath::primitives()`; backend `register_intrinsics` walks it. Single source of truth — no special-case dispatch. Extern fns become `pub(crate)`. The primitives crate is no longer leaf-pure — it depends on `cranelisp-types` for `SymbolTable`/`ModuleEntry`/`DefKind`/`PrimitiveKind`/`Type`/`Scheme`/`PrimitiveDef`/`FQTypeName`/`Symbol`/`ModuleFullPath` (acyclic; types is the leaf). |
 | 11 | Update `crates/cranelisp-backend/src/jit.rs` `IntrinsicSymbol` array — entries for `int-to-string`, `parse_int`, `float-to-string`, `bool-to-string`, AND the per-primitive `add-i64`/`sub-i64`/… `add-f64`/… extern names — point to `cranelisp_primitives::*` (was `cranelisp_runtime::*`); REMOVE the 10 `cranelisp_op_*` rows. | `crates/cranelisp-backend/src/jit.rs:130–159` | M+D | 0150 (Phase 3 partial — primitives portion of the registration table) | After this row + the backend slice's row #N (delete trait-knowledge maps), `register_intrinsics` registers exactly the addressable primitive surface; `cranelisp_op_*` names are gone from the symbol table. |
 | 12 | Add `cranelisp-primitives` dep to backend `Cargo.toml` (alongside `cranelisp-intrinsics` and dropping `cranelisp-runtime`) | `crates/cranelisp-backend/Cargo.toml:8` | R | 0150 (Phase 3) | `cargo build -p cranelisp-backend` succeeds; `cranelisp-runtime` no longer in backend's dep tree. |
 | 13 | Add `cranelisp-primitives` dep to int's `Cargo.toml` (for primitives-module seeding at session init) | `src/Cargo.toml` (the binary crate that hosts `int`) | R | 0150 (Phase 3) | int names `cranelisp_primitives` for the seeding helper / extern-fn import path; `cargo build` of the binary succeeds. |
@@ -34,6 +36,40 @@ The crate does not yet exist, so every line of `facades/primitives.md` is a delt
 | 16 | `cargo public-api` baseline file authored for `cranelisp-primitives`; no baseline for the (retiring) runtime is created/maintained — runtime baseline deletes per Phase 5 of FIXME 0150 | `crates/cranelisp-primitives/cargo-public-api-baseline.txt` (or per-crate convention used by other crates) | C | 0150 (Phase 5) | `cargo public-api` against the new crate produces the baseline; CI consumes it. |
 
 **Total rows: 16.** Action-class breakdown: **C × 5** (rows 1, 7, 8, 14, 16); **M × 4** (rows 4, 5, 6, 11 — row 11 is M+D partly); **D × 1** (row 9; row 11 mixed); **R × 4** (rows 2, 3, 12, 13); **A × 2** (rows 10, 15).
+
+### 1a. Inbound symbol list vs runtime slice's outbound (cross-check)
+
+The runtime-retiring slice (`design/runtime/implementation-slice-s66.md` §1) names the migration-out destinations for every file in `crates/cranelisp-runtime/src/`. This crate is the destination for **rows 12, 13, 14** of that slice (and indirectly absorbs row 15's `mod.rs` retirement). The inbound list for `cranelisp-primitives` enumerated below MUST match the runtime slice's outbound list for those rows.
+
+**Inbound symbols (this crate accepts from `cranelisp-runtime`):**
+
+| Source file (current) | Symbols inbound | Destination file in this crate | Runtime-slice row |
+|---|---|---|---|
+| `cranelisp-runtime/src/primitives/int.rs` | `int_to_string`, `parse_int` (2 user-callable conversion fns) | `crates/cranelisp-primitives/src/int.rs` | 12 (migrate-to-primitives portion) |
+| `cranelisp-runtime/src/primitives/int.rs` | `cranelisp_op_add`, `cranelisp_op_sub`, `cranelisp_op_mul`, `cranelisp_op_div`, `cranelisp_op_eq`, `cranelisp_op_neq`, `cranelisp_op_lt`, `cranelisp_op_gt`, `cranelisp_op_le`, `cranelisp_op_ge` (10 Decision-14 duplicates) | transit through this crate; **DELETE outright in Phase γ row 9** (post-row-11) | 12 (delete-content portion) |
+| `cranelisp-runtime/src/primitives/float.rs` | `float_to_string` (1 user-callable conversion fn) | `crates/cranelisp-primitives/src/float.rs` | 13 |
+| `cranelisp-runtime/src/primitives/bool.rs` | `bool_to_string` (1 user-callable conversion fn) | `crates/cranelisp-primitives/src/bool.rs` | 14 |
+| `cranelisp-runtime/src/primitives/mod.rs` | (5 LOC of `pub mod` declarations — module-shape only) | retired; primitives crate re-declares modules in `lib.rs` (this slice row 7) | 15 (retire) |
+
+**Inbound symbol count from runtime: 14 extern fns** (4 user-callable conversions to keep + 10 `cranelisp_op_*` duplicates that transit and delete).
+
+**Greenfield symbols (this crate originates, no runtime source):**
+
+Per facade §"Integer primitives" + §"Float primitives" + §"Boolean primitives" — the named user-callable primitive surface that today exists ONLY as backend's CLIF-substitution table targets, with no Rust extern backing for indirect (operator-as-value, GOT-indirect) calls:
+
+- 10 integer primitives: `add_i64`, `sub_i64`, `mul_i64`, `div_i64`, `mod_i64`, `eq_i64`, `lt_i64`, `gt_i64`, `le_i64`, `ge_i64`.
+- 4 float primitives confirmed by facade: `add_f64`, `sub_f64`, `mul_f64`, `div_f64` (facade line 45 notes "comparison ops as the language requires; pre-implementation list will be confirmed at S67+ vertical" — initial cut is the four).
+- 1 boolean primitive: `not` — flagged as Q3 in §6, because runtime source has no `not` extern fn; treating as greenfield per facade.
+
+**Greenfield symbol count: 15 extern fns** (this slice row 8 authors them).
+
+**Net `pub(crate)` extern surface at S66 close: 19 fns** = 14 inbound (4 conversions kept + 0 `cranelisp_op_*` survived) + 15 greenfield − 0 lost. The 10 `cranelisp_op_*` duplicates inbound transit and DELETE post-row-11 per Phase γ; the user-callable form is the named `add-i64`/`sub-i64`/… primitive (greenfield row 8) per facade BC-invariant #3 (no duplicate addressable forms).
+
+**Public Rust surface at S66 close: 1 item** — `pub static PRIMITIVES_TABLE: LazyLock<SymbolTable>` (per FIXME 0159 resolution; row 10 authors). All extern fns are `pub(crate)`. `cargo public-api` baseline is one line (per FIXME 0158 dissolution into 0159).
+
+**Inbound = outbound check.** Runtime slice §1 rows 12–15 enumerate destinations matching the four source files above; the symbols enumerated there match this slice's inbound enumeration exactly. **No drift.** If during /dev implementation a primitive is found in `cranelisp-runtime/src/primitives/` not enumerated above, treat as a bug in this cross-check and resolve before slice executes Phase β.
+
+**Coordination note for Phase 4 (stdlib trait-impl audit).** This slice does NOT claim ownership of the stdlib trait-impl audit — that work lives in `/dev (stdlib)` per FIXME 0150 Phase 4. This slice **coordinates** with the stdlib audit at row 9: the `cranelisp_op_*` deletion CANNOT land until the stdlib audit confirms no `(impl Trait Type)` body relies on the operator-as-value path resolving via `cranelisp_op_*`. Per /arch recommendation #4 in SPRINT.md Phase 2 review ("D43 Phase 4 stdlib trait-impl audit is highest-risk reshape; observability bandwidth (CRANELISP_RC_TRACE, CRANELISP_CODEGEN_TRACE) reserved"), the audit is the highest-risk reshape — this slice's row 9 deletion is downstream.
 
 ---
 
@@ -61,6 +97,16 @@ Within Phase γ:
 **Phase δ — finalisation (rows 15, 16).** Cross-check `src/CLAUDE.md` wording (row 15); author public-API baseline (row 16). Independent and post-everything.
 
 The phase ordering across this slice and the intrinsics slice is bilateral — see §4. Phase α MUST land in lockstep across both (FIXME 0150 Phase 1 single commit). Phase β is parallelisable across the two slices (independent files). Phase γ in this slice depends on Phase γ in the intrinsics slice for the same `jit.rs` file (both slices touch the `IntrinsicSymbol` array; coordinate one commit, not two — see §4).
+
+### 2a. SPRINT.md wave-plan correspondence
+
+The slice's α/β/γ/δ phases map onto the S66 wave plan (`sprints/SPRINT.md` §"Waves (Phase 4)") as follows:
+
+- **Wave 2 (D43 crate scaffolding + type relocations)**: this slice's **Phase α** lands here — rows 1, 2, 3, 14 (crate skeleton + workspace member entry + types-only dep declaration + CLAUDE.md). Per SPRINT.md Wave 2 line 205, Wave 2 is "front-loaded because Wave 3 + 4 transitively depend on the new crate locations". The new `crates/cranelisp-primitives/` directory exists at Wave 2 close with empty surface; `cargo build -p cranelisp-primitives` green.
+- **Wave 3 (per-crate observer/error adoption + D43 source migration)**: this slice's **Phase β + Phase γ** land here — rows 4–13 (file moves, named-primitive authoring, lib.rs re-exports, jit.rs `IntrinsicSymbol` swap, dep flips, `cranelisp_op_*` deletion). The intra-Phase-γ ordering constraint (row 11 before row 9) is preserved within Wave 3.
+- **Wave 4 (cross-crate cleanup)**: this slice's **Phase δ** lands here — rows 15, 16 (`src/CLAUDE.md` cross-check, `cargo public-api` baseline). SPRINT.md Wave 4 line 207 absorbs "final `cargo public-api` reconciliation"; row 16 is a contributor.
+
+This confirms the user's specific concern (item 7 in Phase 3 task brief): primitives crate skeleton is Wave 2 work; source migration is Wave 3. **Confirmed.** No revision needed.
 
 ---
 
@@ -122,6 +168,18 @@ Bilateral — every entry below has a counterpart in the named slice, surfaced f
 ## 6. Open questions
 
 Surfaced for `/arch`. Not invented; the facade does not pin these.
+
+**Phase 3 triage (2026-05-07).** Re-evaluated against the SPRINT.md Phase 2 review verdict (Option A) and /arch recommendation #3 ("16 open questions surfaced across slices should be triaged at Phase 3 open"):
+
+| Q | Triage | Rationale |
+|---:|---|---|
+| Q1 — primitives_table seeding helper home | **RESOLVED by /arch FIXME 0159 (Wave B, 2026-05-08)** — option (a) revisited as `pub static PRIMITIVES_TABLE`. Row 10 revised to author the static. The "leaf purity / no helper authored" stance is retired — it was aesthetic, didn't yield isolation. The single-source-of-truth payoff is larger than the leaf-purity cost. cranelisp-primitives gains an acyclic dep on cranelisp-types. |
+| Q2 — fn ptr at seed time vs lazy | **RESOLVED by /arch FIXME 0159 (Wave B, 2026-05-08)** — eager: fn ptr lives on `ModuleEntry::Def.primitive_fn_ptr` populated at static-init in `PRIMITIVES_TABLE`. Single source of truth; no per-call resolution. |
+| Q3 — `not` placement: primitive vs stdlib fn | **FILE FIXME `target: /arch`** | Source today has no `not` extern fn but facade lists it. Either source is missing it (this slice's row 8 authors as part of the greenfield set per facade) OR the facade over-specified. (The originally-filed FIXME for this concern was reused for the LinkerError discussion at FIXME 0154; if /dev hits this during impl, file a fresh FIXME.) |
+| Q4 — `parse-int` symbol vs `parse_int` Rust source | **DEFER to cycle 2 implementation** | Implementation diagnostic; resolved by reading current `jit.rs` registration when the row 11 edit lands. Not a design question. No FIXME. |
+| Q5 — `non_exhaustive` policy for adding a primitive | **DISSOLVED by /arch FIXME 0159 + 0158 (Wave B, 2026-05-08)** | Public Rust API is one item (`PRIMITIVES_TABLE`), so cargo-public-api baseline is one line, stable across primitive churn. Semantic surface (which primitives exist) is governed by spec conformance tests, not cargo-public-api. Two surfaces, two tools, no overlap. |
+
+**FIXMEs filed from this triage (historical, all resolved 2026-05-08):** 3 (Q2 → 0159, Q3 → as captured above, Q5 → 0158). All resolved during Wave B per `sprints/SPRINT.md` §"Phase 3 FIXME resolutions".
 
 **Q1 — Where does the `primitives` synthetic-module seeding helper live?**
 

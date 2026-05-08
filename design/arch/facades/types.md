@@ -101,6 +101,66 @@ pub struct Program { pub forms: Vec<TopLevel> }
 pub fn free_vars_expr(expr: &Expr) -> HashSet<Symbol>;
 ```
 
+### `ParsedEntry` — the parse-time-only transient (per FIXME 0156 resolution)
+
+`ParsedEntry` is the transient handoff from `cranelisp_frontend::build_form` to `cranelisp_typecheck::check_form`. It carries only what the parser knows; resolved-stage fields (type, scheme, callees, code, got_slot) are populated by `check_form` downstream and end up on `ModuleEntry`. **`ParsedEntry` NEVER lands in `SymbolTable`** — its lifecycle is bounded by one orchestrator iteration: `parse → ParsedEntry → check_form → Vec<(Symbol, ModuleEntry)> → SymbolTable.insert`. The SymbolTable invariant ("if it's in the table, it's checked") is preserved.
+
+```rust
+#[non_exhaustive]
+pub enum ParsedEntry {
+    /// Parsed `(defn name (params) body)` form. Pre-typecheck — types are `TypeExpr`, no `Scheme`.
+    Def {
+        name: Symbol,
+        variants: Vec<DefnVariant>,
+        visibility: Visibility,
+        docstring: Option<String>,
+        span: Span,
+    },
+    /// Parsed `(deftype Name … | (Variant fields...))` form. Yields the type itself plus per-constructor entries downstream.
+    TypeDef {
+        name: TypeName,
+        type_params: Vec<TypeName>,
+        constructors: Vec<ConstructorDef>,
+        visibility: Visibility,
+        docstring: Option<String>,
+        span: Span,
+    },
+    /// Parsed `(deftrait Name … (method sig)*)` form.
+    TraitDecl {
+        decl: TraitDecl,                                   // re-uses the same shape as in `TopLevel::Deftrait`
+    },
+    /// Parsed `(impl Trait Type method-defns…)` form.
+    TraitImpl {
+        impl_: TraitImpl,
+    },
+    /// Parsed `(defmacro name clauses…)` form. Each clause downstream becomes a `ModuleEntry::Macro` clause.
+    Macro {
+        info: DefmacroInfo,
+    },
+    /// Synthetic per-constructor entry — emitted by `build_form` for each constructor of a `TypeDef`.
+    /// Pre-typecheck shape; `check_form` lifts to a `ModuleEntry::Def` with primitive-kind constructor metadata.
+    Constructor {
+        name: Symbol,
+        of_type: TypeName,
+        fields: Vec<FieldDef>,
+        span: Span,
+    },
+}
+
+#[non_exhaustive]
+pub struct DefmacroInfo {
+    pub name: Symbol,
+    pub clauses: Vec<MacroClauseInfo>,
+    pub visibility: Visibility,
+    pub docstring: Option<String>,
+    pub span: Span,
+}
+```
+
+`DefmacroInfo` moves from `cranelisp-frontend` to `cranelisp-types` (per FIXME 0156 resolution) so that `check_form`'s consumer (`int`) can name the type uniformly. The frontend's `parse_defmacro` becomes `pub(crate)` inside the `build_form` dispatcher.
+
+`#[non_exhaustive]` on both `ParsedEntry` and `DefmacroInfo`. Derived traits: `Debug, Clone`. Not `Serialize/Deserialize` — `ParsedEntry` is transient; never persisted to cache.
+
 ### Resolved type system (output of typecheck, consumed by backend)
 
 **`FQTypeName` is binding** as the cross-crate boundary type for resolved-stage type identifiers. Every API past frontend's resolution stage that names a type uses `FQTypeName`; bare `TypeName` is reserved for syntactic-stage uses inside the frontend (parser output, AST surface, `TypeExpr` shape). This commitment was lifted from aspirational to binding in Sprint 65 W2 — see `sprint-65-reshape-phase-2-review.md` §4.1 for the lift's rationale and the grep-and-classify pass that landed it.
@@ -253,6 +313,7 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         visibility: Visibility,
         docstring: Option<String>,
         platform_fn_ptr: Option<*const u8>,          // Decision 26 — serde-skip
+        primitive_fn_ptr: Option<*const u8>,         // FIXME 0159 — set on entries seeded from cranelisp-primitives' PRIMITIVES_TABLE static; serde-skip
         #[serde(skip)] code: Option<C>,              // Decision 25 — Code lives here, lifecycle via C's Drop
     },
     Macro { name: Symbol, clauses: Vec<MacroClauseInfo>, callees: Vec<FQSymbol>, got_slot: usize, visibility: Visibility, docstring: Option<String>, #[serde(skip)] code: Option<C> },
@@ -565,6 +626,9 @@ pub enum WarningKind { UnusedDefn, UnusedImport, ShadowedName, /* … */ }
 /// per-symbol cache-load operations. Distinct from `CranelispError::LinkError`
 /// (process-level link failure). Per §2.6 — facade embeds logic in types:
 /// asking for a symbol that's not there is a typed result, not a bare `Option`.
+/// Per FIXME 0154 resolution — the two-variant baseline is the minimum surface
+/// acceptable at S66 close; additional variants extend as evidence accrues
+/// (re-shape may be triggered during /review of a future FIXME).
 #[non_exhaustive]
 pub enum LinkerError {
     /// The cache `Linker`'s symbol table does not contain the requested name.
@@ -573,7 +637,10 @@ pub enum LinkerError {
     /// (b) the symbol's `Linkage::Local` bare name doesn't match what the
     /// caller asked for (Decision 36 contract violation).
     SymbolNotFound { name: LinkerSymbol },
-    /* future: RelocationFailure, AbiMismatch, etc. */
+    /// Object relocation pass produced an error during `load_object` or
+    /// per-symbol resolution. Signals corruption, ABI mismatch, or
+    /// unresolved external reference.
+    RelocationFailed { name: LinkerSymbol, cause: String },
 }
 
 /// Cross-cutting "this dependency isn't ready yet" signal. Carried by both
