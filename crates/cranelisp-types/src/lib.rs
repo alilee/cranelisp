@@ -40,9 +40,14 @@ pub use ast::{
 };
 pub use types::{Scheme, Subst, Type, TypeId, apply, free_vars, max_type_var_id, format_type_display, format_type_with_vars, type_var_names};
 pub use check::{
-    CheckResult, ConstructorInfo, DisplayInfo, FieldInfo, MethodResolutions, MonoDefn,
-    ReplSnapshot, ResolvedCall, TypeDefInfo,
+    ConstructorInfo, DisplayInfo, FieldInfo, MethodResolutions, MonoDefn, ResolvedCall,
+    TypeDefInfo,
 };
+// `CheckResult` and `ReplSnapshot` relocated to `cranelisp-typecheck` per
+// FIXME 0100 Phase 1 — single-consumer types live with their originating
+// crate (Principle 15). `CheckError` was authored directly in
+// `cranelisp-typecheck` per the same FIXME (no transitional cranelisp-types
+// home).
 // `pub use code::Code` removed in Sprint 58 Wave 3b (Decision 35). See
 // the `pub mod code` block above for the rationale; the integration
 // layer's `Code` enum at `src/code.rs` is the replacement.

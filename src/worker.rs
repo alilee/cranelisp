@@ -11,13 +11,13 @@
 
 use std::path::{Path, PathBuf};
 
-use cranelisp_types::{ErrorLocation, 
-    CheckResult, CranelispError, DefKind, Defn, ExportSpec, ImportNames, ImportSpec,
+use cranelisp_types::{ErrorLocation,
+    CranelispError, DefKind, Defn, ExportSpec, ImportNames, ImportSpec,
     MacroClauseInfo, ModuleEntry, ModuleFullPath, ModuleStrategy,
     PlatformSpec, PrimitiveKind, Sexp, Span, Symbol, TopLevel, Visibility,
 };
 
-use cranelisp_typecheck::{CheckPass, CheckState, ModuleCheckAccumulator};
+use cranelisp_typecheck::{CheckPass, CheckResult, CheckState, ModuleCheckAccumulator};
 
 use crate::expander::{
     self, MacroClauseEntry, MacroEntry, MacroResolver,

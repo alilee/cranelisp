@@ -20,6 +20,7 @@ mod checker;
 mod infer;
 mod program;
 mod resolve;
+mod result;
 mod scheme;
 mod scope;
 pub mod trace;
@@ -30,11 +31,10 @@ mod unify;
 pub use builtins::register_builtins;
 pub use checker::{CheckState, TypeCheckEnv};
 pub use program::{CheckPass, FormCheckResult, ModuleCheckAccumulator};
+pub use result::{CheckError, CheckResult, ReplSnapshot};
 pub use trace::{
     SymbolTableEnsureHook, SymbolTableEnsureOutcome, install_symbol_table_ensure_hook,
 };
 
-// Re-export boundary types that callers need
-pub use cranelisp_types::{
-    CheckResult, CranelispError, ReplSnapshot, TopLevel,
-};
+// Re-export boundary types that callers need (these stay in cranelisp-types).
+pub use cranelisp_types::{CranelispError, TopLevel};

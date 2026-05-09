@@ -27,12 +27,14 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use dashmap::DashMap;
 
-use cranelisp_types::{ErrorLocation, 
+use cranelisp_types::{ErrorLocation,
     ConstructorInfo, CranelispError, ExportSpec, FQSymbol, ImportNames, ImportSpec,
-    MethodResolutions, ModuleEntry, ModuleFullPath, ResolvedCall, ReplSnapshot, Scheme, Span,
+    MethodResolutions, ModuleEntry, ModuleFullPath, ResolvedCall, Scheme, Span,
     Subst, Symbol, SymbolTable, TraitName, Type, TypeDefInfo, TypeId, TypeName, Warning,
     apply,
 };
+
+use crate::result::ReplSnapshot;
 
 use crate::scope::ScopeStack;
 use crate::scheme;
@@ -1721,7 +1723,7 @@ impl TestFixture {
     pub fn check_program_self(
         &mut self,
         program: &[cranelisp_types::TopLevel],
-    ) -> Result<cranelisp_types::CheckResult, CranelispError> {
+    ) -> Result<crate::result::CheckResult, CranelispError> {
         let env = TypeCheckEnv::new(&self.modules, &self.next_id);
         #[allow(deprecated)]
         env.check_program(&mut self.state, program)
@@ -1731,7 +1733,7 @@ impl TestFixture {
     pub fn check_repl_input_self(
         &mut self,
         input: &cranelisp_types::TopLevel,
-    ) -> Result<cranelisp_types::CheckResult, CranelispError> {
+    ) -> Result<crate::result::CheckResult, CranelispError> {
         let env = TypeCheckEnv::new(&self.modules, &self.next_id);
         #[allow(deprecated)]
         env.check_repl_input(&mut self.state, input)
@@ -1856,7 +1858,7 @@ impl TestFixture {
         accumulator: &mut crate::program::ModuleCheckAccumulator,
         working_program: &[cranelisp_types::TopLevel],
         strategy: cranelisp_types::ModuleStrategy,
-    ) -> Result<cranelisp_types::CheckResult, CranelispError> {
+    ) -> Result<crate::result::CheckResult, CranelispError> {
         let env = TypeCheckEnv::new(&self.modules, &self.next_id);
         env.finalize_check_result(module, &mut self.state, accumulator, working_program, strategy)
     }
@@ -1867,7 +1869,7 @@ impl TestFixture {
         program: &[cranelisp_types::TopLevel],
         ctx: &cranelisp_types::CompileContext,
         strategy: cranelisp_types::ModuleStrategy,
-    ) -> Result<cranelisp_types::CheckResult, CranelispError> {
+    ) -> Result<crate::result::CheckResult, CranelispError> {
         let env = TypeCheckEnv::new(&self.modules, &self.next_id);
         env.check(&mut self.state, program, ctx, strategy)
     }

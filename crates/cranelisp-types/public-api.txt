@@ -1,3 +1,40 @@
+ Documenting cranelisp-types v0.1.0 (/Users/alilee/Projects.nosync/rust/cranelisp/crates/cranelisp-types)
+warning: unclosed HTML tag `String`
+ --> crates/cranelisp-types/src/newtype.rs:6:35
+  |
+6 | /// Impls: Deref<Target=str>, From<String>, From<&str>, AsRef<str>, Display, Borrow<str>
+  |                                   ^^^^^^^^
+  |
+  = note: `#[warn(rustdoc::invalid_html_tags)]` on by default
+help: try marking as source code
+  |
+6 | /// Impls: Deref<Target=str>, `From<String>`, From<&str>, AsRef<str>, Display, Borrow<str>
+  |                               +            +
+
+warning: unclosed HTML tag `str`
+ --> crates/cranelisp-types/src/newtype.rs:6:62
+  |
+6 | /// Impls: Deref<Target=str>, From<String>, From<&str>, AsRef<str>, Display, Borrow<str>
+  |                                                              ^^^^^
+  |
+help: try marking as source code
+  |
+6 | /// Impls: Deref<Target=str>, From<String>, From<&str>, `AsRef<str>`, Display, Borrow<str>
+  |                                                         +          +
+
+warning: unclosed HTML tag `str`
+ --> crates/cranelisp-types/src/newtype.rs:6:84
+  |
+6 | /// Impls: Deref<Target=str>, From<String>, From<&str>, AsRef<str>, Display, Borrow<str>
+  |                                                                                    ^^^^^
+  |
+help: try marking as source code
+  |
+6 | /// Impls: Deref<Target=str>, From<String>, From<&str>, AsRef<str>, Display, `Borrow<str>`
+  |                                                                              +           +
+
+warning: `cranelisp-types` (lib doc) generated 3 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.63s
 pub mod cranelisp_types
 pub mod cranelisp_types::ast
 pub enum cranelisp_types::ast::Expr
@@ -389,20 +426,6 @@ impl core::marker::Unpin for cranelisp_types::check::ResolvedCall
 impl core::marker::UnsafeUnpin for cranelisp_types::check::ResolvedCall
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::check::ResolvedCall
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::check::ResolvedCall
-pub struct cranelisp_types::check::CheckResult
-pub cranelisp_types::check::CheckResult::display: core::option::Option<cranelisp_types::check::DisplayInfo>
-pub cranelisp_types::check::CheckResult::warnings: alloc::vec::Vec<cranelisp_types::error::Warning>
-impl core::clone::Clone for cranelisp_types::check::CheckResult
-pub fn cranelisp_types::check::CheckResult::clone(&self) -> cranelisp_types::check::CheckResult
-impl core::fmt::Debug for cranelisp_types::check::CheckResult
-pub fn cranelisp_types::check::CheckResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for cranelisp_types::check::CheckResult
-impl core::marker::Send for cranelisp_types::check::CheckResult
-impl core::marker::Sync for cranelisp_types::check::CheckResult
-impl core::marker::Unpin for cranelisp_types::check::CheckResult
-impl core::marker::UnsafeUnpin for cranelisp_types::check::CheckResult
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::check::CheckResult
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::check::CheckResult
 pub struct cranelisp_types::check::ConstructorInfo
 pub cranelisp_types::check::ConstructorInfo::docstring: core::option::Option<alloc::string::String>
 pub cranelisp_types::check::ConstructorInfo::fields: alloc::vec::Vec<cranelisp_types::check::FieldInfo>
@@ -471,22 +494,6 @@ impl core::marker::Unpin for cranelisp_types::check::MonoDefn
 impl core::marker::UnsafeUnpin for cranelisp_types::check::MonoDefn
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::check::MonoDefn
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::check::MonoDefn
-pub struct cranelisp_types::check::ReplSnapshot
-pub cranelisp_types::check::ReplSnapshot::next_type_id: cranelisp_types::types::TypeId
-pub cranelisp_types::check::ReplSnapshot::scope_depth: usize
-pub cranelisp_types::check::ReplSnapshot::subst_len: usize
-pub cranelisp_types::check::ReplSnapshot::symbol_keys: std::collections::hash::set::HashSet<cranelisp_types::newtype::Symbol>
-impl core::clone::Clone for cranelisp_types::check::ReplSnapshot
-pub fn cranelisp_types::check::ReplSnapshot::clone(&self) -> cranelisp_types::check::ReplSnapshot
-impl core::fmt::Debug for cranelisp_types::check::ReplSnapshot
-pub fn cranelisp_types::check::ReplSnapshot::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for cranelisp_types::check::ReplSnapshot
-impl core::marker::Send for cranelisp_types::check::ReplSnapshot
-impl core::marker::Sync for cranelisp_types::check::ReplSnapshot
-impl core::marker::Unpin for cranelisp_types::check::ReplSnapshot
-impl core::marker::UnsafeUnpin for cranelisp_types::check::ReplSnapshot
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::check::ReplSnapshot
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::check::ReplSnapshot
 pub struct cranelisp_types::check::TypeDefInfo
 pub cranelisp_types::check::TypeDefInfo::constructors: alloc::vec::Vec<cranelisp_types::check::ConstructorInfo>
 pub cranelisp_types::check::TypeDefInfo::docstring: core::option::Option<alloc::string::String>
@@ -2628,20 +2635,6 @@ impl core::marker::Unpin for cranelisp_types::pipeline::CallInfo
 impl core::marker::UnsafeUnpin for cranelisp_types::pipeline::CallInfo
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::pipeline::CallInfo
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::pipeline::CallInfo
-pub struct cranelisp_types::CheckResult
-pub cranelisp_types::CheckResult::display: core::option::Option<cranelisp_types::check::DisplayInfo>
-pub cranelisp_types::CheckResult::warnings: alloc::vec::Vec<cranelisp_types::error::Warning>
-impl core::clone::Clone for cranelisp_types::check::CheckResult
-pub fn cranelisp_types::check::CheckResult::clone(&self) -> cranelisp_types::check::CheckResult
-impl core::fmt::Debug for cranelisp_types::check::CheckResult
-pub fn cranelisp_types::check::CheckResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for cranelisp_types::check::CheckResult
-impl core::marker::Send for cranelisp_types::check::CheckResult
-impl core::marker::Sync for cranelisp_types::check::CheckResult
-impl core::marker::Unpin for cranelisp_types::check::CheckResult
-impl core::marker::UnsafeUnpin for cranelisp_types::check::CheckResult
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::check::CheckResult
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::check::CheckResult
 pub struct cranelisp_types::CompileContext
 pub cranelisp_types::CompileContext::codegen: cranelisp_types::pipeline::CodegenBehaviour
 pub cranelisp_types::CompileContext::module: cranelisp_types::newtype::ModuleFullPath
@@ -3401,22 +3394,6 @@ impl core::marker::Unpin for cranelisp_types::operator::PrimitiveDef
 impl core::marker::UnsafeUnpin for cranelisp_types::operator::PrimitiveDef
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::operator::PrimitiveDef
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::operator::PrimitiveDef
-pub struct cranelisp_types::ReplSnapshot
-pub cranelisp_types::ReplSnapshot::next_type_id: cranelisp_types::types::TypeId
-pub cranelisp_types::ReplSnapshot::scope_depth: usize
-pub cranelisp_types::ReplSnapshot::subst_len: usize
-pub cranelisp_types::ReplSnapshot::symbol_keys: std::collections::hash::set::HashSet<cranelisp_types::newtype::Symbol>
-impl core::clone::Clone for cranelisp_types::check::ReplSnapshot
-pub fn cranelisp_types::check::ReplSnapshot::clone(&self) -> cranelisp_types::check::ReplSnapshot
-impl core::fmt::Debug for cranelisp_types::check::ReplSnapshot
-pub fn cranelisp_types::check::ReplSnapshot::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for cranelisp_types::check::ReplSnapshot
-impl core::marker::Send for cranelisp_types::check::ReplSnapshot
-impl core::marker::Sync for cranelisp_types::check::ReplSnapshot
-impl core::marker::Unpin for cranelisp_types::check::ReplSnapshot
-impl core::marker::UnsafeUnpin for cranelisp_types::check::ReplSnapshot
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::check::ReplSnapshot
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::check::ReplSnapshot
 pub struct cranelisp_types::Scheme
 pub cranelisp_types::Scheme::constraints: std::collections::hash::map::HashMap<cranelisp_types::types::TypeId, alloc::vec::Vec<cranelisp_types::newtype::FQTraitName>>
 pub cranelisp_types::Scheme::ty: cranelisp_types::types::Type

@@ -11,14 +11,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::{Arc, Mutex};
 
-use cranelisp_types::{ErrorLocation, 
-    CheckResult, CodegenBehaviour, CranelispError,
+use cranelisp_types::{ErrorLocation,
+    CodegenBehaviour, CranelispError,
     DefKind, FQSymbol, MacroClauseInfo, MacroParam, ModuleEntry, ModuleFullPath,
     ModuleStrategy, OverloadVariant, Sexp, Span, Symbol, TopLevel,
     TraitName, Type, TypeName, Warning,
 };
 
-use cranelisp_typecheck::{CheckState, TypeCheckEnv};
+use cranelisp_typecheck::{CheckResult, CheckState, ReplSnapshot, TypeCheckEnv};
 
 use crate::code::{Code, SessionSymbolTable};
 use crate::platform::LoadedPlatform;
@@ -986,7 +986,7 @@ impl CompilerSession {
     }
 
     /// Take a snapshot for REPL error recovery.
-    fn tc_snapshot(&self) -> cranelisp_types::ReplSnapshot {
+    fn tc_snapshot(&self) -> ReplSnapshot {
         let tc = self.tc_env();
         let cs = self.shared.repl_check_state.lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -995,7 +995,7 @@ impl CompilerSession {
     }
 
     /// Restore from a snapshot on REPL error.
-    fn tc_restore(&self, snapshot: cranelisp_types::ReplSnapshot) {
+    fn tc_restore(&self, snapshot: ReplSnapshot) {
         let tc = self.tc_env();
         let mut guard = self.shared.repl_check_state.lock()
             .unwrap_or_else(|e| e.into_inner());

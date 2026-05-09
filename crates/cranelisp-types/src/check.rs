@@ -1,9 +1,7 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-use crate::{
-    Defn, FQTraitName, FQTypeName, JitSymbol, Scheme, Span, Symbol, Type, TypeId, Warning,
-};
+use crate::{Defn, FQTraitName, FQTypeName, JitSymbol, Scheme, Span, Symbol, Type};
 
 /// Map from call site span to how that call was resolved.
 pub type MethodResolutions = HashMap<Span, ResolvedCall>;
@@ -59,25 +57,8 @@ pub struct DisplayInfo {
     pub scheme: Option<Scheme>,
 }
 
-/// Transient output of `TypeChecker::check`.
-///
-/// NOT a boundary type — the durable typecheck output lives on `SymbolTable`
-/// entries' `ast`, `scheme`, `callees`, `got_slot`, and `trait_origin` fields.
-/// This struct carries only diagnostics and optional REPL display payload.
-///
-/// Prior to Sprint 57 Wave 2 step 4, this struct also carried
-/// `method_resolutions`, `constrained_fn_names`, `mono_defns`, `expr_types`,
-/// and `default_method_defns`. Those fields were retired once the Phase-1
-/// per-AST-node annotations (`Expr.inferred_type`, `Expr::Apply.resolved_call`)
-/// and Phase-2 `ModuleEntry::Def.ast` became the single source of truth.
-/// See `design/typecheck/ast-annotation.md` §10 for the audit trail.
-#[derive(Debug, Clone)]
-pub struct CheckResult {
-    /// Non-fatal warnings accumulated during checking.
-    pub warnings: Vec<Warning>,
-    /// Display info for REPL output (None in batch / module-load mode).
-    pub display: Option<DisplayInfo>,
-}
+// `CheckResult` relocated to `cranelisp-typecheck::result` per FIXME 0100
+// Phase 1 (Principle 15). See `crates/cranelisp-typecheck/src/result.rs`.
 
 /// Information about a user-defined type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,25 +89,5 @@ pub struct FieldInfo {
     pub ty: Type,
 }
 
-/// Snapshot of typechecker state for REPL error recovery.
-///
-/// Before processing each REPL input, the typechecker takes a snapshot.
-/// If type checking or codegen fails, the snapshot is restored so the
-/// session remains in a consistent state.
-///
-/// Design decision (Wave 1): The typechecker owns the snapshot/restore
-/// mechanism. The binary crate calls `snapshot()` before and `restore()`
-/// on error. Fields are opaque to the binary crate.
-#[derive(Debug, Clone)]
-pub struct ReplSnapshot {
-    /// Next type variable ID at snapshot time
-    pub next_type_id: TypeId,
-    /// Symbol keys present in the current module's symbol table at snapshot time.
-    /// On restore, any keys not in this set are removed.
-    pub symbol_keys: HashSet<Symbol>,
-    /// Substitution state at snapshot time
-    pub subst_len: usize,
-    /// Scope stack depth at snapshot time (number of frames).
-    /// On restore, extra frames pushed during a failed check are popped.
-    pub scope_depth: usize,
-}
+// `ReplSnapshot` relocated to `cranelisp-typecheck::result` per FIXME 0100
+// Phase 1 (Principle 15). See `crates/cranelisp-typecheck/src/result.rs`.

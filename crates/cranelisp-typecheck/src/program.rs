@@ -22,12 +22,14 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cranelisp_types::{ErrorLocation, 
-    CheckResult, CompileContext, ConstrainedFn, CranelispError, Defn, DefKind, DefnVariant,
+use cranelisp_types::{ErrorLocation,
+    CompileContext, ConstrainedFn, CranelispError, Defn, DefKind, DefnVariant,
     DisplayInfo, Expr, FQSymbol, JitSymbol, ModuleEntry, ModuleFullPath,
     ModuleStrategy, MonoDefn, ResolvedCall, Scheme, Span, Symbol, SymbolTable, TopLevel, Type,
     Visibility, Warning, apply,
 };
+
+use crate::result::CheckResult;
 
 use cranelisp_types::types::Subst;
 
