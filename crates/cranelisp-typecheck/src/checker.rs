@@ -2162,7 +2162,6 @@ mod tests {
                 trait_origin: None,
                 ast: None,
                 code: None,
-                fn_ptr: None,
             },
         );
 
@@ -2193,7 +2192,6 @@ mod tests {
                     trait_origin: None,
                     ast: None,
                     code: None,
-                    fn_ptr: None,
                 },
             );
         }
@@ -2676,7 +2674,6 @@ mod tests {
                     trait_origin: None,
                     ast: None,
                     code: None,
-                    fn_ptr: None,
                 },
             );
         }

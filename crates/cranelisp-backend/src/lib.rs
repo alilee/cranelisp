@@ -958,7 +958,6 @@ mod tests {
             trait_origin: None,
             ast: Some(defn),
             code: None,
-            fn_ptr: None,
         }
     }
 
@@ -3558,7 +3557,6 @@ mod tests {
                 trait_origin: None,
                 ast: None,
                 code: None,
-                fn_ptr: None,
             },
         );
         tables.insert(module_path, table);
@@ -3667,7 +3665,6 @@ mod tests {
                 trait_origin: None,
                 ast: None,
                 code: None,
-                fn_ptr: None,
             },
         );
         tables.insert(module_path, table);
@@ -3883,7 +3880,6 @@ mod tests {
                     trait_origin: None,
                     ast: None,
                     code: None,
-                    fn_ptr: None,
                 },
             );
             tables.insert(module.clone(), st);
@@ -3979,7 +3975,6 @@ mod tests {
                     trait_origin: None,
                     ast: None,
                     code: None,
-                    fn_ptr: None,
                 },
             );
             // Mangled variant entry: ast: Some(variant_defn).
@@ -4084,7 +4079,6 @@ mod tests {
                     trait_origin: None,
                     ast: Some(template_defn),
                     code: None,
-                    fn_ptr: None,
                 },
             );
             tables.insert(module.clone(), st);
@@ -4163,7 +4157,6 @@ mod tests {
                 trait_origin: None,
                 ast: Some(defn),
                 code: None,
-                fn_ptr: None,
             },
         );
         tables.insert(module.clone(), st);
@@ -4415,7 +4408,6 @@ mod tests {
                     trait_origin: None,
                     ast: Some(defn),
                     code: None,
-                    fn_ptr: None,
                 },
             );
         }
@@ -4515,7 +4507,6 @@ mod tests {
                 trait_origin: None,
                 ast: Some(helper),
                 code: None,
-                fn_ptr: None,
             },
         );
         tables.insert(util_path.clone(), util_st);
@@ -4540,7 +4531,6 @@ mod tests {
                 trait_origin: None,
                 ast: Some(caller),
                 code: None,
-                fn_ptr: None,
             },
         );
         user_st.insert(

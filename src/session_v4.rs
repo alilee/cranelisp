@@ -648,18 +648,21 @@ pub struct SharedState {
     // §2.3 for the dissolution rationale.
     /// Platform DLL retention pool (Sprint 57 Wave 3 G8). Holds
     /// `LoadedPlatform` handles for the session lifetime so that every
-    /// `ModuleEntry::Def.fn_ptr` remains valid for as long as any
-    /// code on the symbol tables might dispatch through it.
+    /// platform-fn pointer in a per-module GOT (referenced by an entry's
+    /// `ModuleEntry::Def.got_slot`) remains valid for as long as any code on
+    /// the symbol tables might dispatch through it. (Sprint 66 Wave 0
+    /// amendment — the prior `ModuleEntry::Def.fn_ptr` field has been
+    /// replaced by GOT-as-single-source-of-truth.)
     ///
     /// # Safety invariant
     ///
-    /// `fn_ptr` is valid for as long as the owning DLL handle is
-    /// in `SharedState::kept_dlls`. Sessions retain these handles for their
-    /// full lifetime; the pool is never drained. Pushing a `LoadedPlatform`
-    /// is the write that makes its `fn_ptr`s safe to call; dropping a
-    /// `LoadedPlatform` invalidates its pointers. On drop (end of session)
-    /// all pointers are simultaneously invalidated, which is fine because
-    /// nothing can still be calling them after drop.
+    /// Each platform-fn GOT entry is valid for as long as the owning DLL
+    /// handle is in `SharedState::kept_dlls`. Sessions retain these handles
+    /// for their full lifetime; the pool is never drained. Pushing a
+    /// `LoadedPlatform` is the write that makes its GOT pointers safe to
+    /// call; dropping a `LoadedPlatform` invalidates its pointers. On drop
+    /// (end of session) all pointers are simultaneously invalidated, which
+    /// is fine because nothing can still be calling them after drop.
     pub kept_dlls: Mutex<Vec<LoadedPlatform>>,
     /// Per-symbol introspection data, REPL-only (replaces def_codegen for slash commands).
     pub introspection: dashmap::DashMap<FQSymbol, Introspection>,
@@ -4959,7 +4962,6 @@ mod format_entry_sig_tests {
             trait_origin: None,
             ast: None,
             code: None,
-            fn_ptr: None,
         }
     }
 
@@ -5056,7 +5058,6 @@ mod bare_primitive_value_path_tests {
             trait_origin: None,
             ast: None,
             code: None,
-            fn_ptr: None,
         }
     }
 

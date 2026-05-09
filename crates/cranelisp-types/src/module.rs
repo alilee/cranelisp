@@ -284,10 +284,10 @@ impl ModuleEntry<()> {
         match self {
             ModuleEntry::Def {
                 scheme, visibility, docstring, param_names, kind, callees,
-                got_slot, trait_origin, ast, code: _, fn_ptr,
+                got_slot, trait_origin, ast, code: _,
             } => ModuleEntry::Def {
                 scheme, visibility, docstring, param_names, kind, callees,
-                got_slot, trait_origin, ast, code: None, fn_ptr,
+                got_slot, trait_origin, ast, code: None,
             },
             ModuleEntry::Import { source } => ModuleEntry::Import { source },
             ModuleEntry::Reexport { source } => ModuleEntry::Reexport { source },
@@ -427,9 +427,30 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         /// Empty for primitives, special forms, and entries not yet body-checked.
         #[serde(default)]
         callees: Vec<FQSymbol>,
-        /// Module-local GOT slot index. Assigned at registration time for
-        /// user-defined functions. `None` for primitives and special forms
-        /// (they don't need GOT slots — inlined or called directly).
+        /// Module-local GOT slot index. The slot is the **single source of
+        /// truth** for the entry's runtime code address: the GOT is owned by
+        /// the module's `SymbolTable.got` and reads/writes go through
+        /// `SymbolTable.got.store_slot(slot, ptr)` / `.load_slot(slot)`. No
+        /// duplicate `fn_ptr` field exists on `ModuleEntry::Def` (Sprint 66
+        /// Wave 0 amendment — the prior `fn_ptr: Option<*const u8>` field was
+        /// redundant with the GOT and has been removed).
+        ///
+        /// A slot is allocated at registration time for any **addressable
+        /// callable** — any entry that may be invoked, including via the
+        /// operator-as-value path (`(let [f +] (f 1 2))` indirects through the
+        /// GOT slot allocated for `+`). This covers user functions, primitives
+        /// (when used as values), and platform DLL fns.
+        ///
+        /// The slot is `None` only for entries that are **never** called or
+        /// referenced as values: special forms (`if`, `let`, `defn` — pure
+        /// syntax, no runtime address), `Overloaded` base entries (the
+        /// mangled variants carry the slots), `TypeDef`/`TraitDecl`/`Macro`
+        /// (no callable position), and constrained-fn templates whose mono
+        /// specialisations carry the slots.
+        ///
+        /// Direct-call inlining at known call sites does not require a GOT
+        /// lookup, but having a slot does not preclude a direct call — the
+        /// slot is for the operator-as-value path.
         #[serde(default)]
         got_slot: Option<usize>,
         /// If this Def is a trait method, which trait it belongs to.
@@ -460,34 +481,6 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         /// primitive.
         #[serde(skip)]
         code: Option<C>,
-        /// Unified fn pointer — single source of truth for "where to call to
-        /// invoke this entry." Origin is encoded by `kind: DefKind`, NOT by
-        /// which optional field is set. Per Sprint 66 fn_ptr unification
-        /// (supersedes the per-origin `fn_ptr` field; see
-        /// `design/arch/sprint-66-types-authoring-plan.md` §1.7-revised).
-        ///
-        ///   - `DefKind::Function | UserFn { … }` — user fn; ptr written by
-        ///     backend at codegen (JIT path) or by `load_object` (linker-loaded
-        ///     cache path); paired with `code = Some(Code::Jit(_))` or
-        ///     `Some(Code::Linker(_))`.
-        ///   - `DefKind::Primitive { primitive_kind: Builtin | Inline | … }` —
-        ///     primitive; ptr written at static-init by
-        ///     `cranelisp-primitives::PRIMITIVES_TABLE`; `code = None`
-        ///     (primitives have process lifetime; no per-entry lifecycle owner).
-        ///   - `DefKind::Primitive { primitive_kind: PlatformEffect { … } }` —
-        ///     platform DLL fn; ptr resolved at platform-load time from
-        ///     `OwnedPlatformFnDescriptor.ptr`; `code = None` (DLL handle held
-        ///     in `SharedState.kept_dlls`).
-        ///
-        /// `#[serde(skip)]` — runtime state, never persisted. The pointer is
-        /// valid for as long as the owning DLL is loaded (platform fns) or
-        /// the JIT module is alive (user fns); the session retains the
-        /// appropriate handle. On cache-hit load this field deserialises to
-        /// `None`; it is re-populated by the appropriate path (re-opening
-        /// the DLL for platform fns; reading the relocated symbol address
-        /// for linker-loaded user fns; static-init for primitives).
-        #[serde(skip, default)]
-        fn_ptr: Option<*const u8>,
     },
     /// An imported name from another module (Ring 2).
     Import { source: FQSymbol },
@@ -545,28 +538,23 @@ pub enum ModuleEntry<C: CodeStore = ()> {
     Ambiguous,
 }
 
-// SAFETY: `ModuleEntry::Def` carries `fn_ptr: Option<*const u8>`
-// (Sprint 66 fn_ptr unification — supersedes the prior `fn_ptr`
-// per the Sprint 66 authoring plan §1.7-revised) — a raw pointer into
-// JIT-allocated, linker-loaded, or DLL-loaded code pages depending on the
-// entry's `kind: DefKind`. The pointer is an integer handle; transmitting
-// the integer across threads is safe. The backing pages are kept alive by
-// the session-level owner appropriate for the entry's origin (`SharedState`
-// holds DLL handles for platform entries, `Arc<Jit>` lives in
-// `code = Some(Code::Jit(_))` for JIT-compiled user fns, etc.) — the
-// session enforces the invariant that any thread dereferencing `fn_ptr`
-// holds a live handle (directly or transitively) to the owning resource.
-//
-// `code: Option<C>` (Decision 25 + Decision 32) is parameterised over
-// `C: CodeStore`, which itself requires `Send + Sync + 'static`. The
-// safety of `code` is therefore delegated to whatever concrete type the
-// integration layer chooses for `C` — for `C = ()` (the default for
-// typecheck/frontend/backend), there is nothing to dereference; for
-// `C = Code` (the integration layer's enum per Decision 35), `Code`
+// SAFETY: `ModuleEntry::Def` carries no raw pointer fields directly —
+// the runtime address for an entry lives in the GOT slot referenced by
+// `got_slot: Option<usize>` (the single source of truth for "where to call
+// to invoke this entry"). `code: Option<C>` (Decision 25 + Decision 32) is
+// parameterised over `C: CodeStore`, which itself requires `Send + Sync +
+// 'static`. The safety of `code` is therefore delegated to whatever
+// concrete type the integration layer chooses for `C` — for `C = ()` (the
+// default for typecheck/frontend/backend), there is nothing to dereference;
+// for `C = Code` (the integration layer's enum per Decision 35), `Code`
 // carries its own `unsafe impl Send + Sync` with the `Arc<Jit>` /
 // `Arc<Linker>` keeping the backing pages alive. The `CodeStore` bound
-// guarantees `Send + Sync` propagates through `Option<C>`, so the
-// `unsafe impl` here covers only the `*const u8` pointer in `fn_ptr`.
+// guarantees `Send + Sync` propagates through `Option<C>`. The remaining
+// fields are all owned data (no raw pointers, no shared interior
+// mutability) and therefore Send + Sync via the auto traits, so this
+// `unsafe impl` is informational only — it documents that the entry's
+// thread-safety story now flows through `code` and the GOT (which is
+// itself `Send + Sync` by virtue of holding `AtomicPtr`).
 unsafe impl<C: CodeStore> Send for ModuleEntry<C> {}
 unsafe impl<C: CodeStore> Sync for ModuleEntry<C> {}
 
@@ -639,10 +627,11 @@ pub enum PrimitiveKind {
     ///
     /// The variant serialises normally: `scheduling_class` is static manifest
     /// data (re-read from the DLL manifest on cache-hit load via `PlatformDecl`
-    /// reconstruction, not a runtime pointer). Contrast with the sibling
-    /// `ModuleEntry::Def.fn_ptr` which is `#[serde(skip)]` because it
-    /// IS a runtime pointer into the loaded DLL's code pages (or JIT pages,
-    /// or linker-loaded pages, depending on `kind`).
+    /// reconstruction, not a runtime pointer). Contrast with the runtime
+    /// pointer for the entry, which lives in the module's GOT slot
+    /// (`SymbolTable.got.load_slot(entry.got_slot?)`); the GOT itself is
+    /// `#[serde(skip)]` and re-populated on cache-hit by re-resolving each
+    /// platform DLL.
     PlatformEffect {
         scheduling_class: SchedulingClass,
     },
@@ -774,7 +763,6 @@ mod tests {
             trait_origin: None,
             ast,
             code: None,
-            fn_ptr: None,
         }
     }
 
@@ -1041,7 +1029,6 @@ mod tests {
             // `()` flavour — Some/None of the unit type. Serde discipline
             // is the same regardless of `C`.
             code: Some(()),
-            fn_ptr: None,
         };
 
         let json = serde_json::to_string(&entry).expect("entry must serialize");
@@ -1069,22 +1056,27 @@ mod tests {
         }
     }
 
-    // ---- Sprint 57 Wave 3 Step A — Decision 26: fn_ptr + scheduling_class ----
+    // ---- Sprint 66 Wave 0 amendment — fn_ptr removed; GOT is the single source of truth ----
 
-    // spec: design/arch/CLAUDE.md Decision 26 — `fn_ptr: Option<*const u8>`
-    //       sibling field on ModuleEntry::Def; defaults to None on fresh construction.
+    // spec: design/arch/CLAUDE.md Sprint 66 Wave 0 amendment — the prior
+    //       `fn_ptr: Option<*const u8>` field on `ModuleEntry::Def` has been
+    //       deleted. The runtime address for an addressable callable lives
+    //       in the module's GOT slot referenced by `got_slot: Option<usize>`.
+    //       A freshly constructed entry has `got_slot: None` (no slot
+    //       allocated yet); registration sites that mark an entry callable
+    //       allocate a slot via `SymbolTable::allocate_got_slot`.
     #[test]
-    fn platform_fn_ptr_field_defaults_to_none() {
+    fn fresh_module_entry_def_has_no_got_slot() {
         let entry = mk_def(
             DefKind::UserFn { constrained_fn: None },
             Some(trivial_defn("fresh")),
         );
         match entry {
-            ModuleEntry::Def { fn_ptr, .. } => {
+            ModuleEntry::Def { got_slot, .. } => {
                 assert!(
-                    fn_ptr.is_none(),
-                    "freshly constructed ModuleEntry::Def must have fn_ptr: None; got {:?}",
-                    fn_ptr
+                    got_slot.is_none(),
+                    "freshly constructed ModuleEntry::Def must have got_slot: None; got {:?}",
+                    got_slot
                 );
             }
             other => panic!("expected ModuleEntry::Def, got {:?}", other),
@@ -1133,20 +1125,14 @@ mod tests {
         }
     }
 
-    // spec: design/arch/CLAUDE.md Decision 26 — `#[serde(skip)]` on fn_ptr;
-    //       runtime-only, never round-trips through the cache manifest. Also confirms
-    //       the `scheduling_class` inside PrimitiveKind::PlatformEffect DOES round-trip
+    // spec: design/arch/CLAUDE.md Sprint 66 Wave 0 amendment — `fn_ptr` field
+    //       removed from `ModuleEntry::Def`; `scheduling_class` inside
+    //       `PrimitiveKind::PlatformEffect` continues to round-trip via serde
     //       (it is static manifest data, not a runtime pointer).
     #[test]
-    fn platform_fn_ptr_skipped_by_serde() {
-        let fake_ptr = 0xFEEDFACEusize as *const u8;
+    fn platform_effect_scheduling_class_round_trips() {
         // Explicit `<()>` annotation: `code: None` is polymorphic in `C`, so
-        // the inferred `C` would be ambiguous without context (Wave 3a:
-        // ModuleEntry is generic over `C: CodeStore = ()`). The downstream
-        // deserialise (`let rt: ModuleEntry = ...`) anchors the inferred
-        // type via the type annotation on `rt`, but the construction here
-        // needs its own annotation since defaults don't propagate to enum
-        // variant constructors.
+        // the inferred `C` would be ambiguous without context.
         let entry: ModuleEntry = ModuleEntry::Def {
             scheme: Scheme {
                 vars: vec![],
@@ -1167,37 +1153,23 @@ mod tests {
             trait_origin: None,
             ast: None,
             code: None,
-            fn_ptr: Some(fake_ptr),
         };
 
         let json = serde_json::to_string(&entry).expect("entry must serialize");
 
-        // `fn_ptr` field must not appear in the serialised form.
+        // No leaked runtime pointer field of any name.
         assert!(
             !json.contains("fn_ptr"),
-            "serialised form must not contain the `fn_ptr` field (it is #[serde(skip)]): {}",
-            json
-        );
-        // Raw pointer value must not leak through (hex or decimal representation).
-        assert!(
-            !json.to_lowercase().contains("feedface"),
-            "serialised form must not contain the raw pointer value: {}",
+            "serialised form must not contain any `fn_ptr` field (the field has been removed entirely): {}",
             json
         );
 
         let rt: ModuleEntry =
             serde_json::from_str(&json).expect("entry must deserialize");
         match rt {
-            ModuleEntry::Def { fn_ptr, kind, .. } => {
-                assert!(
-                    fn_ptr.is_none(),
-                    "deserialised ModuleEntry::Def must have fn_ptr: None (serde(skip)); got {:?}",
-                    fn_ptr
-                );
+            ModuleEntry::Def { kind, .. } => {
                 // scheduling_class (on the variant) MUST round-trip — it is static
-                // manifest data, not a runtime pointer. Re-reading the DLL manifest
-                // on cache-hit load would re-derive it, but serde carrying it across
-                // avoids an extra DLL read.
+                // manifest data, not a runtime pointer.
                 match *kind {
                     DefKind::Primitive {
                         primitive_kind: PrimitiveKind::PlatformEffect { scheduling_class },
@@ -1469,7 +1441,7 @@ mod tests {
     // spec: design/typecheck/ast-annotation.md §11.3 invariant 6 — serde round-trip
     //       identity. A SymbolTable serialised → deserialised yields structurally
     //       identical fields modulo runtime-only fields (`got`, `code`,
-    //       `fn_ptr`, `linker`).
+    //       `linker`).
     #[test]
     fn symbol_table_serde_round_trip_with_structural_decls() {
         let mut st = SymbolTable::new(ModuleFullPath::from("user.module"));
@@ -1719,7 +1691,6 @@ mod tests {
             trait_origin: None,
             ast: Some(trivial_defn("synthetic")),
             code: Some(42i64),
-            fn_ptr: None,
         };
 
         // The `code` field carries the synthetic `C = i64` value.
@@ -1756,8 +1727,9 @@ mod tests {
                     "deserialised ModuleEntry<()>::Def must have code: None (serde(skip)); got {:?}",
                     code
                 );
-                // ast survives the round-trip — only the `code` (and
-                // `fn_ptr`) fields are skipped.
+                // ast survives the round-trip — only the `code` field is
+                // skipped (the prior `fn_ptr` field has been removed entirely
+                // per the Sprint 66 Wave 0 amendment).
                 assert!(ast.is_some(), "ast must survive the round-trip");
             }
             other => panic!("expected ModuleEntry::Def, got {:?}", other),

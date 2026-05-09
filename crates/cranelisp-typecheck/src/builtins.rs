@@ -137,7 +137,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     trait_origin: None,
                 ast: None,
                     code: None,
-                    fn_ptr: None,
                 },
             );
         }
@@ -176,7 +175,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     trait_origin: None,
                 ast: None,
                     code: None,
-                    fn_ptr: None,
                 },
             );
         }
@@ -270,7 +268,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     trait_origin: None,
                 ast: None,
                     code: None,
-                    fn_ptr: None,
                 },
             );
         }
@@ -326,7 +323,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     trait_origin: None,
                 ast: None,
                     code: None,
-                    fn_ptr: None,
                 },
             );
         }
@@ -407,7 +403,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     trait_origin: None,
                 ast: None,
                     code: None,
-                    fn_ptr: None,
                 },
             );
         }
@@ -483,7 +478,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 trait_origin: None,
                 ast: None,
                 code: None,
-                fn_ptr: None,
             },
         );
     }
@@ -841,7 +835,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 trait_origin: None,
                 ast: None,
                 code: None,
-                fn_ptr: None,
             },
         );
     }
@@ -979,7 +972,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     trait_origin: None,
                 ast: None,
                     code: None,
-                    fn_ptr: None,
                 },
             );
         }
@@ -1012,7 +1004,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 trait_origin: None,
                 ast: None,
                 code: None,
-                fn_ptr: None,
             },
         );
 
@@ -1111,7 +1102,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 trait_origin: None,
                 ast: None,
                 code: None,
-                fn_ptr: None,
             },
         );
 
@@ -1138,7 +1128,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 trait_origin: None,
                 ast: None,
                 code: None,
-                fn_ptr: None,
             },
         );
 

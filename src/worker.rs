@@ -33,8 +33,11 @@ use crate::scheduler::{CompileScheduler, PriorityWork};
 /// TypeChecker state (symbol_tables, next_type_id) lives on SharedState.
 /// Workers create `TypeCheckEnv` on the stack from these references.
 /// Sprint 57 Wave 3 G8: `platform_registry` is deleted. Platform function
-/// pointers live on `ModuleEntry::Def.fn_ptr`; DLL handles are
-/// retained in `SharedState::kept_dlls`.
+/// pointers live in the per-module GOT, indexed by each entry's
+/// `ModuleEntry::Def.got_slot`; DLL handles are retained in
+/// `SharedState::kept_dlls` (Sprint 66 Wave 0 amendment — the prior
+/// `ModuleEntry::Def.fn_ptr` field was redundant with the GOT and has been
+/// removed).
 pub struct ModuleCompiler<'a> {
     pub symbol_tables: &'a dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     pub next_type_id: &'a std::sync::atomic::AtomicU32,
@@ -1536,12 +1539,12 @@ fn try_cache_hit_load(
     cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).restore_cached_impls(&mangled_names);
 
     // Sprint 58 Step 5b §3.2 — re-resolve platform fn ptrs for each
-    // (platform …) declaration recorded on the cached SymbolTable. The
-    // `fn_ptr` fields are `#[serde(skip)]` so they arrived as
-    // `None`; re-running `load_and_register_platform` opens the DLL,
-    // validates the manifest, and populates the live entries on the
-    // synthetic `platform.{name}` module — matching the fresh-build path's
-    // result for `(platform …)` forms. Failures here are non-fatal at the
+    // (platform …) declaration recorded on the cached SymbolTable. The GOT
+    // is `#[serde(skip)]` so cache-hit arrives with all slots null;
+    // re-running `load_and_register_platform` opens the DLL, validates the
+    // manifest, and populates the live entries on the synthetic
+    // `platform.{name}` module — matching the fresh-build path's result
+    // for `(platform …)` forms. Failures here are non-fatal at the
     // cache-hit level (we treat them as "platform missing — fall back to
     // full rebuild" per `symbol-table-cache.md` §6); we abandon the
     // cache-hit attempt and let the normal load path retry.
@@ -1561,17 +1564,28 @@ fn try_cache_hit_load(
             spec.span,
         ) {
             Ok((platform, _jit_syms)) => {
-                // Mirror `handle_platform`'s post-load fn-ptr write: walk the
-                // synthetic `platform.{name}` module and populate
-                // `fn_ptr` from the descriptor pointers.
+                // Mirror `handle_platform`'s post-load: walk the synthetic
+                // `platform.{name}` module, allocate a GOT slot for each
+                // entry, and write the descriptor pointer into the GOT. The
+                // GOT is the single source of truth for the entry's runtime
+                // address (Sprint 66 Wave 0 amendment).
                 let plat_path = ModuleFullPath::from(format!("platform.{}", platform.name));
                 if let Some(mut table) = ctx.symbol_tables.get_mut(&plat_path) {
                     for desc in &platform.descriptors {
-                        if let Some(ModuleEntry::Def { fn_ptr, .. }) =
-                            table.symbols.get_mut(desc.name.as_str())
-                        {
-                            *fn_ptr = Some(desc.ptr);
-                        }
+                        let slot = match table.symbols.get(desc.name.as_str()) {
+                            Some(ModuleEntry::Def { got_slot: Some(s), .. }) => *s,
+                            Some(ModuleEntry::Def { got_slot: None, .. }) => {
+                                let s = table.allocate_got_slot();
+                                if let Some(ModuleEntry::Def { got_slot, .. }) =
+                                    table.symbols.get_mut(desc.name.as_str())
+                                {
+                                    *got_slot = Some(s);
+                                }
+                                s
+                            }
+                            _ => continue,
+                        };
+                        table.got.store_slot(slot, desc.ptr);
                     }
                 }
                 // Retain DLL handle for session lifetime so pointers stay valid.
@@ -1900,27 +1914,38 @@ fn handle_platform(
         spec.span,
     )?;
 
-    // Sprint 57 Wave 3 G8: write `fn_ptr` onto each
-    // `ModuleEntry::Def` in the synthetic `platform.{name}` module. This
-    // replaces `PlatformRegistry.register`. The entry was inserted in
-    // `register_platform_in_tc` (src/platform.rs) with `fn_ptr: None`;
-    // this follow-up write populates the runtime pointer.
+    // Sprint 57 Wave 3 G8 (revised Sprint 66 Wave 0): for each platform
+    // descriptor, allocate a per-module GOT slot and write the runtime
+    // pointer into the GOT. The GOT is the single source of truth for the
+    // entry's runtime address (Sprint 66 Wave 0 amendment — replaces the
+    // prior `ModuleEntry::Def.fn_ptr` field). The entry was inserted in
+    // `register_platform_in_tc` (src/platform.rs) with `got_slot: None`;
+    // this follow-up allocates the slot and stores the pointer.
     let module_path = ModuleFullPath::from(format!("platform.{}", platform.name));
     if let Some(mut table) = ctx.symbol_tables.get_mut(&module_path) {
         for desc in &platform.descriptors {
-            if let Some(ModuleEntry::Def { fn_ptr, .. }) =
-                table.symbols.get_mut(desc.name.as_str())
-            {
-                *fn_ptr = Some(desc.ptr);
-            }
+            let slot = match table.symbols.get(desc.name.as_str()) {
+                Some(ModuleEntry::Def { got_slot: Some(s), .. }) => *s,
+                Some(ModuleEntry::Def { got_slot: None, .. }) => {
+                    let s = table.allocate_got_slot();
+                    if let Some(ModuleEntry::Def { got_slot, .. }) =
+                        table.symbols.get_mut(desc.name.as_str())
+                    {
+                        *got_slot = Some(s);
+                    }
+                    s
+                }
+                _ => continue,
+            };
+            table.got.store_slot(slot, desc.ptr);
         }
     }
 
-    // Retain the DLL handle on the session's `kept_dlls` pool so that
-    // `fn_ptr` remains valid for the session lifetime. Without this
+    // Retain the DLL handle on the session's `kept_dlls` pool so that the
+    // GOT pointers remain valid for the session lifetime. Without this
     // push, the `LoadedPlatform` would drop at the end of this function,
     // `libloading::Library::drop` would `dlclose` the DLL, and every
-    // `fn_ptr` would dangle.
+    // GOT entry would dangle.
     if let Some(shared) = ctx.shared_state {
         shared
             .kept_dlls
@@ -1932,7 +1957,7 @@ fn handle_platform(
         // pointers remain valid for the process lifetime. This matches the
         // pre-G8 comment that "Platform DLLs are leaked (kept alive for
         // process lifetime)". Dropping `platform` here would `dlclose` the
-        // DLL and dangle every `fn_ptr`.
+        // DLL and dangle every GOT entry.
         std::mem::forget(platform);
     }
     Ok(())
@@ -2543,11 +2568,12 @@ fn wrap_exprs_as_defns(program: &[TopLevel]) -> Vec<TopLevel> {
 ///
 /// Replaces `SessionCompilationEnv::collect_jit_setup_for_module`. Walks the
 /// module's symbol table for `PlatformEffect` primitives (both direct defs and
-/// imports), reads their function pointers from `ModuleEntry::Def.fn_ptr`
-/// (Sprint 57 Wave 3 G8 — the ptr lives on the entry itself, replacing the
-/// deleted `PlatformRegistry`), and then records every existing module's GOT
-/// base address so the JIT module can define `__cranelisp_got_{m}` literal-pool
-/// entries — see `design/backend/compile-to-module.md` §12 and
+/// imports), reads their function pointers from the owning module's GOT
+/// (Sprint 66 Wave 0 amendment — GOT is the single source of truth, replacing
+/// the prior `ModuleEntry::Def.fn_ptr` field), and then records every existing
+/// module's GOT base address so the JIT module can define
+/// `__cranelisp_got_{m}` literal-pool entries — see
+/// `design/backend/compile-to-module.md` §12 and
 /// `design/int/phase2-codegen-convergence.md` §5.
 #[allow(clippy::type_complexity)]
 fn collect_jit_setup(
@@ -2562,7 +2588,7 @@ fn collect_jit_setup(
             match entry {
                 ModuleEntry::Def {
                     kind,
-                    fn_ptr: Some(ptr),
+                    got_slot: Some(slot),
                     ..
                 } => {
                     if let DefKind::Primitive {
@@ -2570,14 +2596,17 @@ fn collect_jit_setup(
                         jit_name: Some(jit_name),
                     } = kind.as_ref()
                     {
-                        jit_symbols.push((jit_name.0.clone(), *ptr));
+                        let ptr = st.got.load_slot(*slot);
+                        if !ptr.is_null() {
+                            jit_symbols.push((jit_name.0.clone(), ptr));
+                        }
                     }
                 }
                 ModuleEntry::Import { source } => {
                     if let Some(source_table) = tc_modules.get(&source.module)
                         && let Some(ModuleEntry::Def {
                             kind,
-                            fn_ptr: Some(ptr),
+                            got_slot: Some(slot),
                             ..
                         }) = source_table.get(source.symbol.as_ref())
                         && let DefKind::Primitive {
@@ -2585,7 +2614,10 @@ fn collect_jit_setup(
                             jit_name: Some(jit_name),
                         } = kind.as_ref()
                     {
-                        jit_symbols.push((jit_name.0.clone(), *ptr));
+                        let ptr = source_table.got.load_slot(*slot);
+                        if !ptr.is_null() {
+                            jit_symbols.push((jit_name.0.clone(), ptr));
+                        }
                     }
                 }
                 _ => {}
@@ -3108,16 +3140,18 @@ fn load_cached_module_via_linker(
         linker.register_symbol(sym.name, sym.ptr);
     }
 
-    // Sprint 57 Wave 3 G8: register platform symbols by walking symbol
-    // tables instead of the deleted `PlatformRegistry`. Every
-    // `PlatformEffect` entry carries its DLL function pointer on
-    // `ModuleEntry::Def.fn_ptr`; the corresponding `jit_name` is
-    // the linker-side symbol.
+    // Sprint 57 Wave 3 G8 (revised Sprint 66 Wave 0): register platform
+    // symbols by walking symbol tables instead of the deleted
+    // `PlatformRegistry`. Every `PlatformEffect` entry carries its DLL
+    // function pointer in the owning module's GOT slot
+    // (`got.load_slot(got_slot)`); the corresponding `jit_name` is the
+    // linker-side symbol.
     for st_entry in shared_state.symbol_tables.iter() {
-        for (_name, entry) in st_entry.value().all_symbols() {
+        let st = st_entry.value();
+        for (_name, entry) in st.all_symbols() {
             if let ModuleEntry::Def {
                 kind,
-                fn_ptr: Some(ptr),
+                got_slot: Some(slot),
                 ..
             } = entry
                 && let DefKind::Primitive {
@@ -3125,7 +3159,10 @@ fn load_cached_module_via_linker(
                     jit_name: Some(jit_name),
                 } = kind.as_ref()
             {
-                linker.register_symbol(jit_name.as_ref(), *ptr);
+                let ptr = st.got.load_slot(*slot);
+                if !ptr.is_null() {
+                    linker.register_symbol(jit_name.as_ref(), ptr);
+                }
             }
         }
     }
@@ -3536,7 +3573,6 @@ mod tests {
             trait_origin: None,
             ast,
             code: None,
-            fn_ptr: None,
         }
     }
 
@@ -4070,7 +4106,6 @@ mod tests {
                     ),
                     fake_ptr,
                 )),
-                fn_ptr: None,
             },
         );
         symbol_tables.insert(dep_module.clone(), dep_st);
@@ -4112,17 +4147,19 @@ mod tests {
     }
 
     // spec: design/int/platform-registry-removal.md §10 — `(platform …)`
-    // form handler writes `fn_ptr` onto the `ModuleEntry::Def`
-    // of each platform function (replacing `PlatformRegistry.register`).
+    // form handler allocates a GOT slot and writes the runtime pointer into
+    // the GOT for each platform function (replacing
+    // `PlatformRegistry.register`; Sprint 66 Wave 0 amendment makes the GOT
+    // the single source of truth, replacing the prior
+    // `ModuleEntry::Def.fn_ptr` field).
     //
     // Loading a real DLL requires the stdio platform build artefact and a
     // scoped `SharedState`; what is structurally load-bearing is that
-    // `collect_jit_setup` reads the pointer from
-    // `ModuleEntry::Def.fn_ptr`. This test seeds a
-    // `PlatformEffect` entry with an explicit `fn_ptr: Some(_)`
-    // (mirroring exactly what `handle_platform` writes) and asserts the
-    // reader picks the pointer off the entry itself (not off the deleted
-    // `PlatformRegistry`).
+    // `collect_jit_setup` reads the pointer from the owning module's GOT.
+    // This test seeds a `PlatformEffect` entry with an explicit
+    // `got_slot: Some(_)` and writes the fake ptr into the corresponding
+    // GOT slot (mirroring exactly what `handle_platform` writes) and asserts
+    // the reader picks the pointer off the GOT.
     #[test]
     fn platform_form_handler_writes_fn_ptr_to_entry() {
         use cranelisp_types::{JitSymbol, PrimitiveKind, Scheme, Type};
@@ -4132,6 +4169,10 @@ mod tests {
         let current = ModuleFullPath::from("platform.stdio");
         let fake_ptr: *const u8 = 0xC0FFEE_usize as *const u8;
         let jit_name = JitSymbol::from("cranelisp_print");
+
+        let mut st = crate::code::SessionSymbolTable::new_with_params(current.clone());
+        let slot = st.allocate_got_slot();
+        st.got.store_slot(slot, fake_ptr);
 
         let entry = ModuleEntry::Def {
             scheme: Scheme {
@@ -4149,40 +4190,40 @@ mod tests {
                 jit_name: Some(jit_name.clone()),
             }),
             callees: Vec::new(),
-            got_slot: None,
+            got_slot: Some(slot),
             trait_origin: None,
             ast: None,
             code: None,
-            fn_ptr: Some(fake_ptr),
         };
 
-        let mut st = crate::code::SessionSymbolTable::new_with_params(current.clone());
         st.insert(Symbol::from("print"), entry);
         symbol_tables.insert(current.clone(), st);
 
-        // Direct invariant check: the entry carries the pointer we just wrote.
+        // Direct invariant check: the GOT slot referenced by the entry
+        // carries the pointer we just wrote.
         {
             let table = symbol_tables.get(&current).expect("platform table present");
             match table.get("print").expect("print entry present") {
-                ModuleEntry::Def { fn_ptr, .. } => {
+                ModuleEntry::Def { got_slot: Some(s), .. } => {
                     assert_eq!(
-                        *fn_ptr,
-                        Some(fake_ptr),
-                        "handle_platform must write fn_ptr onto ModuleEntry::Def"
+                        table.got.load_slot(*s),
+                        fake_ptr,
+                        "handle_platform must write the runtime pointer into the GOT slot"
                     );
                 }
-                other => panic!("expected Def entry, got {other:?}"),
+                other => panic!("expected Def entry with got_slot, got {other:?}"),
             }
         }
 
         // Collector-side invariant: `collect_jit_setup` reads the pointer
-        // from the entry (post-G8 path), not from a deleted registry.
+        // from the GOT (Sprint 66 Wave 0 amendment), not from a deleted
+        // `fn_ptr` field.
         let (jit_syms, _got) = collect_jit_setup(&symbol_tables, &current);
         assert!(
             jit_syms
                 .iter()
                 .any(|(name, ptr)| name == jit_name.as_ref() && *ptr == fake_ptr),
-            "collect_jit_setup must surface the platform fn from ModuleEntry::Def.fn_ptr; \
+            "collect_jit_setup must surface the platform fn from the GOT slot; \
              got {jit_syms:?}"
         );
     }
@@ -4203,7 +4244,11 @@ mod tests {
         let jit_name = JitSymbol::from("cranelisp_print");
 
         // platform.stdio defines `print` as a PlatformEffect primitive with
-        // its DLL fn ptr on the entry (post-G8 write path).
+        // its DLL fn ptr in the GOT slot referenced by the entry (Sprint 66
+        // Wave 0 amendment — GOT-as-single-source-of-truth).
+        let mut plat_st = crate::code::SessionSymbolTable::new_with_params(plat_mod.clone());
+        let slot = plat_st.allocate_got_slot();
+        plat_st.got.store_slot(slot, fake_ptr);
         let plat_entry = ModuleEntry::Def {
             scheme: Scheme {
                 vars: vec![],
@@ -4220,13 +4265,11 @@ mod tests {
                 jit_name: Some(jit_name.clone()),
             }),
             callees: Vec::new(),
-            got_slot: None,
+            got_slot: Some(slot),
             trait_origin: None,
             ast: None,
             code: None,
-            fn_ptr: Some(fake_ptr),
         };
-        let mut plat_st = crate::code::SessionSymbolTable::new_with_params(plat_mod.clone());
         plat_st.insert(Symbol::from("print"), plat_entry);
         symbol_tables.insert(plat_mod.clone(), plat_st);
 
@@ -4246,8 +4289,8 @@ mod tests {
         symbol_tables.insert(user_mod.clone(), user_st);
 
         // The caller's `collect_jit_setup` must follow the Import chain
-        // (one step) to the defining `platform.stdio` entry and read
-        // `fn_ptr` there.
+        // (one step) to the defining `platform.stdio` entry and read the
+        // pointer from that module's GOT slot.
         let (jit_syms, _got) = collect_jit_setup(&symbol_tables, &user_mod);
         assert!(
             jit_syms

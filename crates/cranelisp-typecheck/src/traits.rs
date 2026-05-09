@@ -211,7 +211,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     trait_origin: Some(fq_trait_name.clone()),
                     ast: None,
                     code: None,
-                    fn_ptr: None,
                 },
             );
 
@@ -274,7 +273,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 trait_origin: Some(fq_trait_name),
                 ast: None,
                 code: None,
-                fn_ptr: None,
             },
         );
 
@@ -701,7 +699,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     trait_origin: None,
                     ast: Some(annotated.clone()),
                     code: None,
-                    fn_ptr: None,
                 },
             );
         }
@@ -854,7 +851,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     trait_origin: None,
                     ast: Some(annotated.clone()),
                     code: None,
-                    fn_ptr: None,
                 },
             );
         }
@@ -1212,7 +1208,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 trait_origin: None,
                 ast: Some(mono.defn.clone()),
                 code: None,
-                fn_ptr: None,
             },
         );
     }

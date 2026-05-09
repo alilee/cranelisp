@@ -550,7 +550,6 @@ mod tests {
                 trait_origin: None,
                 ast: Some(defn.clone()),
                 code: None,
-                fn_ptr: None,
             },
         );
         tables.insert(module.clone(), st);
@@ -620,7 +619,6 @@ mod tests {
                 trait_origin: None,
                 ast: None,
                 code: None,
-                fn_ptr: None,
             },
         );
 

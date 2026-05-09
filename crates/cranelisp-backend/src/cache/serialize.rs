@@ -2,8 +2,8 @@
 //
 // Sprint 58 Step 5b — Per `design/backend/module-caching.md` §14 (PRESCRIPTIVE):
 // the `.meta.json` file IS a serialised `SymbolTable<(), ()>`. The pre-Phase-5
-// `CacheMetadata` envelope dissolves; runtime fields (`code`, `fn_ptr`,
-// `got`, `linker`) are `#[serde(skip)]` on the symbol table itself and are
+// `CacheMetadata` envelope dissolves; runtime fields (`code`, `got`,
+// `linker`) are `#[serde(skip)]` on the symbol table itself and are
 // re-derived on cache-hit by re-running codegen against `ast` and re-resolving
 // platform DLLs. The schema_version field on `SymbolTable` (Decision 34) is
 // the cache invalidation handshake.
@@ -147,9 +147,11 @@ impl std::fmt::Display for CacheStale {
 /// cache-invalidation handshake; the value here is what `load_meta` will
 /// compare against `CACHE_SCHEMA_VERSION` on the read side.
 ///
-/// `code`, `fn_ptr`, `got`, and `linker` are `#[serde(skip)]` on
+/// `code`, `got`, and `linker` are `#[serde(skip)]` on
 /// `SymbolTable` / `ModuleEntry::Def`, so the produced bytes never contain
-/// pointer state — they are re-derived on cache-hit per §14.3.
+/// pointer state — they are re-derived on cache-hit per §14.3. The runtime
+/// address for an addressable callable lives in the GOT (per its `got_slot`)
+/// and is re-populated on cache-hit by codegen / platform reload.
 pub fn serialise_meta<C, L>(
     table: &SymbolTable<C, L>,
     schema_version: u32,
@@ -202,9 +204,11 @@ where
 /// Per §14.3:
 /// * Deserialise errors → `CacheStale::Deserialise` (treat as miss).
 /// * `schema_version` mismatch → `CacheStale::SchemaMismatch` (treat as miss).
-/// * Success → return the table; `code` / `fn_ptr` / `got` / `linker`
-///   are at their default values and the caller is responsible for
-///   re-deriving them per §14.3 step [5].
+/// * Success → return the table; `code` / `got` / `linker` are at their
+///   default values and the caller is responsible for re-deriving them per
+///   §14.3 step [5]. (The runtime address for each addressable callable is
+///   re-populated into the GOT slot on cache-hit by codegen / platform
+///   reload — there is no separate `fn_ptr` field on the entry.)
 pub fn deserialise_meta(
     bytes: &[u8],
     expected_schema_version: u32,
@@ -428,7 +432,6 @@ mod tests {
             trait_origin: None,
             ast: Some(defn),
             code: None,
-            fn_ptr: None,
         }
     }
 
@@ -467,7 +470,7 @@ mod tests {
         );
         assert!(
             !json_str.contains("\"fn_ptr\""),
-            "ModuleEntry::Def.fn_ptr is #[serde(skip)] — must not appear"
+            "ModuleEntry::Def has no `fn_ptr` field (Sprint 66 Wave 0 amendment); must not appear"
         );
     }
 

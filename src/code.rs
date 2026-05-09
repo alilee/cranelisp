@@ -282,7 +282,6 @@ mod tests {
                 trait_origin: None,
                 ast: Some(trivial_defn(name)),
                 code,
-                fn_ptr: None,
             }
         }
 

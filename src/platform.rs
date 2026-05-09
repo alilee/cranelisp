@@ -268,7 +268,6 @@ pub fn register_platform_in_tc(
                     trait_origin: None,
                     ast: None,
                     code: None,
-                    fn_ptr: None,
                 },
             );
         }
