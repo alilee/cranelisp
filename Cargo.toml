@@ -6,12 +6,23 @@ members = [
     "crates/cranelisp-typecheck",
     "crates/cranelisp-backend",
     "crates/cranelisp-runtime",
+    "crates/cranelisp-primitives",
+    "crates/cranelisp-intrinsics",
     "crates/cranelisp-platform",
     "crates/cranelisp-exe-bundle",
     "platforms/stdio",
     "platforms/test-capture",
 ]
 resolver = "2"
+
+[workspace.dependencies]
+# Sprint 66 Wave 2 Batch A: D43 runtime split crate skeletons. Path deps
+# declared at the workspace level so consumers can opt in via
+# `dep.workspace = true` once Wave 3b lands the source migration. Sibling
+# crates currently still declare path deps inline (workspace dep convention
+# was introduced with these two crates).
+cranelisp-primitives = { path = "crates/cranelisp-primitives", version = "0.1.0" }
+cranelisp-intrinsics = { path = "crates/cranelisp-intrinsics", version = "0.1.0" }
 
 [package]
 name = "cranelisp"

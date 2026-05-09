@@ -1,0 +1,9 @@
+[package]
+name = "cranelisp-intrinsics"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cranelisp-types = { path = "../cranelisp-types" }
+cranelisp-platform = { path = "../cranelisp-platform" }
+serde = { version = "1", features = ["derive"] }

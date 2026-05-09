@@ -326,10 +326,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "cranelisp-intrinsics"
+version = "0.1.0"
+dependencies = [
+ "cranelisp-platform",
+ "cranelisp-types",
+ "serde",
+]
+
+[[package]]
 name = "cranelisp-platform"
 version = "0.1.0"
 dependencies = [
  "cranelisp-types",
+]
+
+[[package]]
+name = "cranelisp-primitives"
+version = "0.1.0"
+dependencies = [
+ "cranelisp-types",
+ "serde",
 ]
 
 [[package]]
