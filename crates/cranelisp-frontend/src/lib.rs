@@ -11,12 +11,17 @@
 
 pub mod reader;
 pub mod ast_builder;
+pub mod expand;
 pub mod module_extract;
 pub mod quasiquote;
 pub mod defmacro;
 
 use cranelisp_types::{CranelispError, Program, Sexp, TopLevel};
 
+pub use expand::ExpansionError;
+// Re-export `ResolutionGap` for ergonomics — frontend originates the
+// `MacroInMem` variant per the facade contract (FIXME 0098 Phase 2 step 1).
+pub use cranelisp_types::ResolutionGap;
 pub use module_extract::extract_module_declarations;
 pub use module_extract::ExtractedDeclarations;
 pub use module_extract::{

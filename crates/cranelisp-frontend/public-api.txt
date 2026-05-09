@@ -1,6 +1,7 @@
 pub mod cranelisp_frontend
 pub use cranelisp_frontend::DefmacroInfo
 pub use cranelisp_frontend::MacroClause
+pub use cranelisp_frontend::ResolutionGap
 pub mod cranelisp_frontend::ast_builder
 pub fn cranelisp_frontend::ast_builder::build_program(sexps: &[cranelisp_types::sexp::Sexp]) -> core::result::Result<cranelisp_types::ast::Program, cranelisp_types::error::CranelispError>
 pub fn cranelisp_frontend::ast_builder::build_repl_input(sexp: &cranelisp_types::sexp::Sexp) -> core::result::Result<cranelisp_types::ast::TopLevel, cranelisp_types::error::CranelispError>
@@ -14,6 +15,30 @@ pub fn cranelisp_frontend::defmacro::is_defmacro(sexp: &cranelisp_types::sexp::S
 pub fn cranelisp_frontend::defmacro::parse_defmacro(sexp: &cranelisp_types::sexp::Sexp) -> core::result::Result<cranelisp_types::parsed::DefmacroInfo, cranelisp_types::error::CranelispError>
 pub fn cranelisp_frontend::defmacro::parse_macro_params(bracket: &cranelisp_types::sexp::Sexp) -> core::result::Result<(alloc::vec::Vec<cranelisp_types::module::MacroParam>, core::option::Option<cranelisp_types::newtype::Symbol>), cranelisp_types::error::CranelispError>
 pub fn cranelisp_frontend::defmacro::synthesize_macro_clause_defn(name: &str, clause_idx: usize, clause: &cranelisp_types::parsed::MacroClause, _span: cranelisp_types::span::Span) -> cranelisp_types::sexp::Sexp
+pub mod cranelisp_frontend::expand
+#[non_exhaustive] pub enum cranelisp_frontend::expand::ExpansionError
+pub cranelisp_frontend::expand::ExpansionError::Gap(cranelisp_types::error::ResolutionGap)
+pub cranelisp_frontend::expand::ExpansionError::MacroAborted
+pub cranelisp_frontend::expand::ExpansionError::MacroAborted::fq: cranelisp_types::newtype::FQSymbol
+pub cranelisp_frontend::expand::ExpansionError::MacroAborted::message: alloc::string::String
+pub cranelisp_frontend::expand::ExpansionError::MacroAborted::span: cranelisp_types::span::Span
+pub cranelisp_frontend::expand::ExpansionError::Malformed
+pub cranelisp_frontend::expand::ExpansionError::Malformed::message: alloc::string::String
+pub cranelisp_frontend::expand::ExpansionError::Malformed::span: cranelisp_types::span::Span
+impl core::clone::Clone for cranelisp_frontend::expand::ExpansionError
+pub fn cranelisp_frontend::expand::ExpansionError::clone(&self) -> cranelisp_frontend::expand::ExpansionError
+impl core::error::Error for cranelisp_frontend::expand::ExpansionError
+impl core::fmt::Debug for cranelisp_frontend::expand::ExpansionError
+pub fn cranelisp_frontend::expand::ExpansionError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for cranelisp_frontend::expand::ExpansionError
+pub fn cranelisp_frontend::expand::ExpansionError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for cranelisp_frontend::expand::ExpansionError
+impl core::marker::Send for cranelisp_frontend::expand::ExpansionError
+impl core::marker::Sync for cranelisp_frontend::expand::ExpansionError
+impl core::marker::Unpin for cranelisp_frontend::expand::ExpansionError
+impl core::marker::UnsafeUnpin for cranelisp_frontend::expand::ExpansionError
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_frontend::expand::ExpansionError
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_frontend::expand::ExpansionError
 pub mod cranelisp_frontend::module_extract
 pub struct cranelisp_frontend::module_extract::ExtractedDeclarations
 pub cranelisp_frontend::module_extract::ExtractedDeclarations::export_specs: alloc::vec::Vec<cranelisp_types::module::ExportSpec>
@@ -44,6 +69,29 @@ pub fn cranelisp_frontend::quasiquote::next_synthetic_span() -> cranelisp_types:
 pub mod cranelisp_frontend::reader
 pub fn cranelisp_frontend::reader::parse(source: &str) -> core::result::Result<alloc::vec::Vec<cranelisp_types::sexp::Sexp>, cranelisp_types::error::CranelispError>
 pub fn cranelisp_frontend::reader::parse_preserving_comments(source: &str) -> core::result::Result<alloc::vec::Vec<cranelisp_types::sexp::Sexp>, cranelisp_types::error::CranelispError>
+#[non_exhaustive] pub enum cranelisp_frontend::ExpansionError
+pub cranelisp_frontend::ExpansionError::Gap(cranelisp_types::error::ResolutionGap)
+pub cranelisp_frontend::ExpansionError::MacroAborted
+pub cranelisp_frontend::ExpansionError::MacroAborted::fq: cranelisp_types::newtype::FQSymbol
+pub cranelisp_frontend::ExpansionError::MacroAborted::message: alloc::string::String
+pub cranelisp_frontend::ExpansionError::MacroAborted::span: cranelisp_types::span::Span
+pub cranelisp_frontend::ExpansionError::Malformed
+pub cranelisp_frontend::ExpansionError::Malformed::message: alloc::string::String
+pub cranelisp_frontend::ExpansionError::Malformed::span: cranelisp_types::span::Span
+impl core::clone::Clone for cranelisp_frontend::expand::ExpansionError
+pub fn cranelisp_frontend::expand::ExpansionError::clone(&self) -> cranelisp_frontend::expand::ExpansionError
+impl core::error::Error for cranelisp_frontend::expand::ExpansionError
+impl core::fmt::Debug for cranelisp_frontend::expand::ExpansionError
+pub fn cranelisp_frontend::expand::ExpansionError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for cranelisp_frontend::expand::ExpansionError
+pub fn cranelisp_frontend::expand::ExpansionError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for cranelisp_frontend::expand::ExpansionError
+impl core::marker::Send for cranelisp_frontend::expand::ExpansionError
+impl core::marker::Sync for cranelisp_frontend::expand::ExpansionError
+impl core::marker::Unpin for cranelisp_frontend::expand::ExpansionError
+impl core::marker::UnsafeUnpin for cranelisp_frontend::expand::ExpansionError
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_frontend::expand::ExpansionError
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_frontend::expand::ExpansionError
 pub struct cranelisp_frontend::ExtractedDeclarations
 pub cranelisp_frontend::ExtractedDeclarations::export_specs: alloc::vec::Vec<cranelisp_types::module::ExportSpec>
 pub cranelisp_frontend::ExtractedDeclarations::import_specs: alloc::vec::Vec<cranelisp_types::module::ImportSpec>
