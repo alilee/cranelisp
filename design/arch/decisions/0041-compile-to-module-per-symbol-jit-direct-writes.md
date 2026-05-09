@@ -60,6 +60,19 @@ Decision 37's "no swallowed failures" rule lands as a single `?` inside `compile
 - `facades/int.md` §"SharedState — code carrier construction": post-loop description deleted; `Code` import path updates from `src/code.rs` to `cranelisp_backend::Code`.
 - `tests/v4_jit_reclaim.rs::decision31_scenario2_per_redefinition_jit_pages_reclaimed` re-verified against per-symbol cardinality — the test's "redefine X, observe pages reclaimed" assertion strengthens (reclaim is now per-symbol-immediate rather than batch-coalesced).
 
+## S66 amendment — fn_ptr unification (2026-05-09)
+
+The ptr embedded in `Code` variants migrates to a unified `fn_ptr: Option<*const u8>` field on `ModuleEntry::Def` (which also subsumes the previously-separate `platform_fn_ptr` and supersedes the briefly-planned `primitive_fn_ptr`). `Code` variants slim to lifecycle owner only:
+
+```rust
+pub enum Code {
+    Jit(Arc<Jit>),
+    Linker(Arc<Linker>),
+}
+```
+
+Decision 41's substance is unchanged: per-symbol JIT cardinality, `Code` lives in `cranelisp-backend`, backend writes shared state directly, returns `Result<(), CompilationError>`. The S66 amendment only relocates the per-entry ptr from inside the `Code` variant onto a sibling field on `ModuleEntry::Def` — the `write_code` call now pairs with a `fn_ptr` write. Decision 31 Scenario 2 reclaim semantics are preserved (lifecycle ownership stays inside `Code::Jit(Arc<Jit>)`; `Drop` chain unchanged). See `design/arch/sprint-66-types-authoring-plan.md` §1.7-revised + §1.8 and `design/arch/facades/{types,backend,primitives,platform}.md` for the as-designed shape.
+
 ## Cross-references and amendments
 
 **Decision 31 amends.** "Per-batch JIT" → "per-symbol JIT for `compile_to_module` JIT calls; per-batch retains for object mode (one ObjectModule per `.o`)". Per-redefinition reclaim becomes immediate-per-symbol rather than coalesced-per-batch.

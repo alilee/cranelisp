@@ -10,14 +10,14 @@ This spec is **target-stating**. Drift detection between as-designed and as-buil
 
 ## Public surface (as-designed)
 
-Per FIXME 0159 resolution — the public Rust surface of `cranelisp-primitives` is **one item**: a static `LazyLock<SymbolTable>` that names the synthetic `primitives` module. The extern fns themselves are `pub(crate)` — they are not part of the published Rust API; their addresses are reachable only via the static table's `ModuleEntry::Def.code = Code::Primitive(*const u8)` field.
+Per FIXME 0159 resolution — the public Rust surface of `cranelisp-primitives` is **one item**: a static `LazyLock<SymbolTable>` that names the synthetic `primitives` module. The extern fns themselves are `pub(crate)` — they are not part of the published Rust API; their addresses are reachable only via the static table's `ModuleEntry::Def.fn_ptr` field. `code` is `None` for primitives — primitives have process lifetime, no per-entry lifecycle owner.
 
 ```rust
 use std::sync::LazyLock;
 use cranelisp_types::{ModuleFullPath, SymbolTable};
 
 /// The synthetic `primitives` module's symbol table. Populated at static-init time
-/// with one `ModuleEntry::Def { kind: Primitive { kind: Builtin }, primitive_fn_ptr: Some(fn_ptr), … }`
+/// with one `ModuleEntry::Def { kind: Primitive { kind: Builtin }, fn_ptr: Some(fn_ptr), code: None, … }`
 /// entry per primitive named by the spec.
 ///
 /// Per FIXME 0159 resolution — single source of truth for primitives. Both `int`
@@ -25,23 +25,32 @@ use cranelisp_types::{ModuleFullPath, SymbolTable};
 /// and backend (`register_intrinsics` walks the same static) read from this table.
 /// Decoupled from compilation session lifecycle; never invalidates, never rebuilds.
 ///
-/// Type: `SymbolTable` with default `<C = (), L = ()>` — no `Code` field is populated
-/// for primitives. The fn ptr is carried on `ModuleEntry::Def.primitive_fn_ptr`
-/// (parallel to `platform_fn_ptr` for platform effects). This avoids the
-/// `cranelisp-primitives → cranelisp-backend` cycle that `Code::Primitive` would
-/// induce (since `Code` lives in backend per Decision 41 and references `Arc<Jit>`).
+/// Type: `SymbolTable` with default `<C = (), L = ()>` — `code` is structurally `None`
+/// for primitives because their lifecycle is process-static (the `LazyLock` is the
+/// owner; nothing per-entry to drop). The fn ptr is carried on `ModuleEntry::Def.fn_ptr`
+/// — the unified per-entry call-address field that also covers JIT user fns,
+/// linker-loaded user fns, and platform DLL fns (S66 fn_ptr unification — replaces
+/// the previously-separate `platform_fn_ptr` and the briefly-planned `primitive_fn_ptr`
+/// fields with one `fn_ptr`).
+///
+/// The cycle `cranelisp-primitives → cranelisp-backend` is structurally avoided:
+/// `Code` variants no longer carry a ptr (they carry the `Arc<Jit>` / `Arc<Linker>`
+/// lifecycle owner only — see `facades/backend.md`), so primitives' static can populate
+/// `fn_ptr` without ever naming `Code`. Primitives uses `SymbolTable<C = ()>` (Decision 32
+/// default), which never names `Code` in its type signature; the dependency edge stays
+/// `cranelisp-primitives → cranelisp-types` (acyclic).
 pub static PRIMITIVES_TABLE: LazyLock<SymbolTable>;
 ```
 
 The static is built once per process from the in-crate `pub(crate)` extern fns plus per-fn metadata (signature, docstring, kebab-case symbol name); subsequent reads are address-stable for the process lifetime. `int`'s session init installs the static into the per-session `SymbolTables` map at `ModuleFullPath::primitives()`; backend's `register_intrinsics` walks the same static when populating the JITModule's symbol-name lookup table.
 
-The shape requires a new `primitive_fn_ptr: Option<*const u8>` field on `ModuleEntry::Def` in `cranelisp-types` (parallel to the existing `platform_fn_ptr`). This is captured in the Wave 0 types-crate authoring plan.
+The shape requires the unified `fn_ptr: Option<*const u8>` field on `ModuleEntry::Def` in `cranelisp-types` (single field covering all four ptr origins — JIT user fn, linker user fn, primitive, platform DLL). This is captured in the Wave 0 types-crate authoring plan.
 
 The substitution table at backend is keyed on `Symbol` (e.g., `add-i64`) only — never on `(TraitName, Symbol, TypeName)` triples — per Decision 43 (no trait knowledge). The named fn ptr remains the addressable backing form for non-substituted call sites; backend MAY substitute inline CLIF at known direct call sites (`add-i64 → iadd`) but is not required to.
 
 ### Internal extern fns (`pub(crate)`)
 
-Per FIXME 0159 resolution — these are NOT public. They are referenced only via `PRIMITIVES_TABLE`'s `Code::Primitive` fn pointers. Listed here for facade completeness; the binding contract is the static table, not the Rust source surface.
+Per FIXME 0159 resolution — these are NOT public. They are referenced only via the `fn_ptr` field on each `PRIMITIVES_TABLE` entry. Listed here for facade completeness; the binding contract is the static table, not the Rust source surface.
 
 #### Integer primitives
 

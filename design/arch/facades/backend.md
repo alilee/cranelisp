@@ -35,9 +35,9 @@ pub fn compile_to_object(
 
 `compile_to_module` is the codegen entry — used by `int`'s priority workers (JIT path) and nice workers (object path). Generic over `M: cranelift_module::Module` per Decision 23 — the same body emits byte-identical CLIF whether `M` is a `JITModule` or an `ObjectModule`; the mode is a property of which `Module` instance the caller passes. **Cardinality is determined by the `names` arity at the caller, NOT by mode** — JIT mode passes one symbol per call (per Decision 41 — true per-symbol JIT for per-redefinition reclaim); object mode passes the full module's defined symbols (per-module ObjectModule).
 
-Per Decision 41, backend writes each compiled symbol's `Code::Jit { jit, ptr }` directly into its entry via Decision 38's `write_code(&self, sym, code)` (interior mutable; no `&mut` flow needed). Backend also writes `Introspection { clif_ir, disasm, code_size, compile_duration }` into the introspection map iff `introspection.is_some()` — the `Option`'s `is_some()` IS Decision 38's mode discriminator, reaching backend directly via the parameter. There is no return tuple to unpack; `int`'s previous post-loop (worker.rs:2860-3018) collapses into the per-symbol call-site loop. Decision 37's "no swallowed failures" rule lands as a single `?` inside `compile_to_module` — the per-step cascade collapses; backend errors out at the first invariant breach with a typed `CompilationError` variant.
+Per Decision 41 (S66-amended for fn_ptr unification), backend writes each compiled symbol's lifecycle owner via Decision 38's `write_code(&self, sym, code)` with `code = Code::Jit(Arc<Jit>)` (interior mutable; no `&mut` flow needed) AND writes the resulting fn pointer to the same entry's `fn_ptr` field. Backend also writes `Introspection { clif_ir, disasm, code_size, compile_duration }` into the introspection map iff `introspection.is_some()` — the `Option`'s `is_some()` IS Decision 38's mode discriminator, reaching backend directly via the parameter. There is no return tuple to unpack; `int`'s previous post-loop (worker.rs:2860-3018) collapses into the per-symbol call-site loop. Decision 37's "no swallowed failures" rule lands as a single `?` inside `compile_to_module` — the per-step cascade collapses; backend errors out at the first invariant breach with a typed `CompilationError` variant.
 
-`load_object` is the JIT-mode cache-hit entry — reads a `.o` produced by an earlier `compile_to_object` call (or by `--link` mode), runs the cache `Linker` to resolve each defined symbol's address, returns a `LinkerArtefact` that `int` writes into `ST[m].symbols[name].code` per Decision 35. Per-module cardinality (one Linker holds many symbols) is unchanged; the per-symbol direct-write pattern is for `compile_to_module` only.
+`load_object` is the JIT-mode cache-hit entry — reads a `.o` produced by an earlier `compile_to_object` call (or by `--link` mode), runs the cache `Linker` to resolve each defined symbol's address, returns a `LinkerArtefact` that `int` consumes to populate per-symbol `code = Code::Linker(Arc<Linker>)` (lifecycle owner) and `fn_ptr = Some(ptr)` (call address) on each `ST[m].symbols[name]` entry. Per-module cardinality (one Linker holds many symbols) is unchanged; the per-symbol direct-write pattern is for `compile_to_module` only.
 
 `compile_to_object` is the nice-worker object-codegen entry — produces the `.o` artefact + sidecar (`.meta.json` containing the serialised `SymbolTable<(), ()>`). Backend writes nothing to disk itself; `int`'s `ObjectCache::write` does the file IO.
 
@@ -49,7 +49,7 @@ Per Decision 41, backend writes each compiled symbol's `Code::Jit { jit, ptr }` 
 #[non_exhaustive]
 pub struct LinkerArtefact {
     pub linker: Arc<Linker>,                                   // per-module retention root for cache-hit code — analogous to Jit for JIT mode
-    pub ptrs: HashMap<Symbol, *const u8>,                      // per-symbol code addresses for `int` to wrap as Code::Linker { linker, ptr }
+    pub ptrs: HashMap<Symbol, *const u8>,                      // per-symbol code addresses; `int` writes each into the entry's `fn_ptr` and stores `Code::Linker(linker.clone())` as the lifecycle owner
 }
 
 #[non_exhaustive]
@@ -59,24 +59,26 @@ pub struct ObjectArtefact {
 }
 ```
 
-### `Code` — the per-symbol code carrier (moved here from `src/` per Decision 41)
+### `Code` — the per-symbol lifecycle owner (moved here from `src/` per Decision 41; slimmed per S66 fn_ptr unification)
 
 ```rust
 #[non_exhaustive]
 pub enum Code {
-    Jit { jit: Arc<Jit>, ptr: *const u8 },                     // fresh-build code; Arc<Jit> is the Decision-31 reclaim primitive
-    Linker { linker: Arc<Linker>, ptr: *const u8 },            // cache-hit code mapped from .o via load_object
-}
-
-impl Code {
-    pub fn ptr(&self) -> *const u8;                            // variant-uniform code-address accessor
+    Jit(Arc<Jit>),                                             // fresh-build code; Arc<Jit> is the Decision-31 reclaim primitive
+    Linker(Arc<Linker>),                                       // cache-hit code mapped from .o via load_object
 }
 
 unsafe impl Send for Code {}
 unsafe impl Sync for Code {}
 ```
 
+**`Code` carries lifecycle ownership ONLY.** The fn ptr for an indirect call lives on `ModuleEntry::Def.fn_ptr` (multi-origin: JIT user fn, linker-loaded user fn, primitive, platform DLL fn — see `facades/types.md` §"Symbol table — the single store"). Variants here distinguish JIT-side reclaim semantics (Decision 31 Scenario 2 — `Arc<Jit>::Drop` calls `JITModule::free_memory()` once refcount hits 0) from linker-loaded persistence (cache-hit reload — `Arc<Linker>` holds the mmap'd object alive). Primitives and platform DLL fns set `code = None` because their lifecycle owners live elsewhere (process-static `LazyLock<SymbolTable>` for primitives; `SharedState.kept_dlls` for platform).
+
+To extract the fn ptr from a callable entry, **read `fn_ptr` directly**; do NOT match on `Code` variants for ptr access. The variant-uniform `Code::ptr()` accessor that previously lived here is removed — there is no ptr inside `Code` to accessor over.
+
 `Code` is the integration layer's concrete `C` for `SymbolTable<C, L>`, but its definition lives in `cranelisp-backend` because both variants reference backend-owned types (`Jit`, `Linker`). Decision 35's Principle-3 protection (no `cranelisp-types → cranelisp-backend` dep) survives intact — `Code` does NOT live in `cranelisp-types`. Decision 35 Layer 2 Option B retracts: backend now constructs `Code` directly (per Decision 41), so the integration layer is no longer the sole crate that names `Code`.
+
+**Decision 31 Scenario 2 preserved.** Lifecycle ownership stays inside `Code::Jit(Arc<Jit>)`. When a user redefines a fn, the old `ModuleEntry::Def` drops, its `Code::Jit(Arc<Jit>)` drops, refcount → 0 if last reference, custom `Drop` on `Jit` fires, `JITModule::free_memory()` runs. The `fn_ptr` field is a raw pointer that becomes invalid after free — same lifecycle semantics, just relocated out of the `Code` variant.
 
 ### Errors
 
@@ -144,7 +146,7 @@ unsafe impl Send for Jit {}
 unsafe impl Sync for Jit {}
 ```
 
-Wrapped in `Arc<Jit>` by `compile_to_module`; the Arc lives on `ModuleEntry::Def.code = Code::Jit { jit, ptr }` per Decision 35. When the last clone drops (REPL redefinition or session shutdown), executable memory is reclaimed.
+Wrapped in `Arc<Jit>` by `compile_to_module`; the Arc lives on `ModuleEntry::Def.code = Code::Jit(Arc<Jit>)` per Decision 35 (S66-amended — variant carries lifecycle owner only; the fn ptr is on the sibling `fn_ptr` field). When the last clone drops (REPL redefinition or session shutdown), executable memory is reclaimed.
 
 ### `Linker` — the cache-load retention newtype
 
@@ -162,7 +164,7 @@ unsafe impl Send for Linker {}
 unsafe impl Sync for Linker {}
 ```
 
-Wrapped in `Arc<Linker>` by `load_object`; analogous lifecycle to `Jit`. `Arc<Linker>` lives on `ModuleEntry::Def.code = Code::Linker { linker, ptr }` for cache-hit modules.
+Wrapped in `Arc<Linker>` by `load_object`; analogous lifecycle to `Jit`. `Arc<Linker>` lives on `ModuleEntry::Def.code = Code::Linker(Arc<Linker>)` for cache-hit modules (S66-amended — the per-symbol fn ptr lives on the sibling `fn_ptr` field).
 
 ### GOT-population observation (extension point)
 
@@ -286,7 +288,7 @@ None implemented. Backend does not implement traits from `cranelisp-types`. (`Mo
 
 ## `#[non_exhaustive]` DTOs
 
-`LinkerArtefact`, `ObjectArtefact`, `Code`, `CompilationError`, `GotEvent`, `GotEventTag`, `GotProvenance` are all `#[non_exhaustive]`. `Jit`, `Linker` are opaque structs (no public field access). Per Decision 41, `compile_to_module` no longer returns a `JitArtefact` — it writes `Code::Jit` directly and returns `Result<(), CompilationError>`. Types re-exported from `cranelisp-types` are `#[non_exhaustive]` per the types-crate facade.
+`LinkerArtefact`, `ObjectArtefact`, `Code`, `CompilationError`, `GotEvent`, `GotEventTag`, `GotProvenance` are all `#[non_exhaustive]`. `Jit`, `Linker` are opaque structs (no public field access). Per Decision 41 (S66-amended for fn_ptr unification), `compile_to_module` no longer returns a `JitArtefact` — it writes `Code::Jit(Arc<Jit>)` and `fn_ptr` directly, then returns `Result<(), CompilationError>`. Types re-exported from `cranelisp-types` are `#[non_exhaustive]` per the types-crate facade.
 
 ---
 
@@ -298,7 +300,7 @@ These hold across sprints — the contract `cranelisp-backend` makes with the re
 
 2. **Uniform consuming calling convention.** Per Decision 24 — every call site emits identically for RC management. Caller transfers ownership of heap-typed args (inc-before-call for non-last-use, direct transfer for last-use); callee owns heap params. Data constructors, user fns, trait methods, builtins, and externs all follow the same rule. There is no "borrowing" classification.
 
-3. **Compiled code lives on `ModuleEntry::Def.code`.** Per Decisions 25 + 41 — backend constructs `Code::Jit { jit, ptr }` directly (Decision 35 Layer 2 Option B retracted by Decision 41) and writes via Decision 38's `write_code(&self, sym, code)` (interior-mutable; no `&mut` flow). The `Code` enum lives in `cranelisp-backend/src/code.rs` (moved from `src/code.rs` per Decision 41). For non-codegen crates the field's type stays `Option<C>` for any `C: CodeStore`; backend's signatures use `SymbolTable<Code, ()>` per Decision 41, while frontend/typecheck stay generic on `SymbolTable<(), ()>` per Decision 32. `load_object` returns a `LinkerArtefact` for cache-hit code; `compile_to_object` returns an `ObjectArtefact` for nice-worker output. There is no `JitArtefact` return shape post-Decision-41 — direct writes replace the previous tuple-return.
+3. **Compiled code lifecycle owner lives on `ModuleEntry::Def.code`; fn ptr lives on the sibling `fn_ptr` field.** Per Decisions 25 + 41 (S66-amended for fn_ptr unification) — backend constructs `Code::Jit(Arc<Jit>)` directly (Decision 35 Layer 2 Option B retracted by Decision 41) and writes via Decision 38's `write_code(&self, sym, code)` (interior-mutable; no `&mut` flow); backend additionally writes the resulting fn pointer to the same entry's `fn_ptr` field. `Code` carries lifecycle ownership ONLY — the variants no longer embed a `ptr`. The `Code` enum lives in `cranelisp-backend/src/code.rs` (moved from `src/code.rs` per Decision 41). For non-codegen crates the field's type stays `Option<C>` for any `C: CodeStore`; backend's signatures use `SymbolTable<Code, ()>` per Decision 41, while frontend/typecheck stay generic on `SymbolTable<(), ()>` per Decision 32. `load_object` returns a `LinkerArtefact` for cache-hit code; `compile_to_object` returns an `ObjectArtefact` for nice-worker output. There is no `JitArtefact` return shape post-Decision-41 — direct writes replace the previous tuple-return.
 
 4. **`defined_symbols()` is the codegen-compilable predicate.** Per Decision 22 — `compile_to_module` trusts the contract: if a name in `names` resolves to an entry where `defined_symbols()` would not include it, return `Err(CodegenError)` rather than synthesising. One filter, exposed on `SymbolTable`, consumed identically by callers and the backend's internal loop.
 

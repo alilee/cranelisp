@@ -312,9 +312,29 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         got_slot: usize,
         visibility: Visibility,
         docstring: Option<String>,
-        platform_fn_ptr: Option<*const u8>,          // Decision 26 — serde-skip
-        primitive_fn_ptr: Option<*const u8>,         // FIXME 0159 — set on entries seeded from cranelisp-primitives' PRIMITIVES_TABLE static; serde-skip
-        #[serde(skip)] code: Option<C>,              // Decision 25 — Code lives here, lifecycle via C's Drop
+        /// Unified fn pointer — single source of truth for "where to call to invoke this entry."
+        /// Origin is encoded by `kind: DefKind`, NOT by which optional field is set:
+        ///   - `DefKind::Function | UserFn { … }` — user fn; ptr written by backend at codegen
+        ///     (JIT path) or by `load_object` (linker-loaded cache path); paired with
+        ///     `code = Some(Code::Jit(_))` or `Some(Code::Linker(_))`.
+        ///   - `DefKind::Primitive { primitive_kind: Builtin | Inline | … }` — primitive;
+        ///     ptr written at static-init by `cranelisp-primitives::PRIMITIVES_TABLE`;
+        ///     `code = None` (primitives have process lifetime; no per-entry lifecycle owner).
+        ///   - `DefKind::Primitive { primitive_kind: PlatformEffect { … } }` — platform DLL fn;
+        ///     ptr resolved at platform-load time from `OwnedPlatformFnDescriptor.ptr`;
+        ///     `code = None` (DLL handle held in `SharedState.kept_dlls`; DLL pages are not
+        ///     unmapped while the session lives).
+        /// serde-skip — runtime state, never persisted.
+        ///
+        /// Use `fn_ptr` directly for ptr extraction; do NOT match on `Code` variants for ptr access
+        /// (`Code` carries lifecycle ownership only — see `code` field below and `facades/backend.md`).
+        fn_ptr: Option<*const u8>,                   // unified — serde-skip
+        /// Lifecycle owner only — `Code::Jit(Arc<Jit>)` for JIT-compiled user fns (Decision 31
+        /// Scenario 2 — per-redefinition reclaim fires when the last `Arc<Jit>` clone drops),
+        /// `Code::Linker(Arc<Linker>)` for cache-hit user fns. `None` for primitives (process
+        /// lifetime) and platform DLL fns (DLL handle held elsewhere). The fn ptr lives on
+        /// `fn_ptr`, NOT inside the `Code` variant. Decision 25 + Decision 41.
+        #[serde(skip)] code: Option<C>,
     },
     Macro { name: Symbol, clauses: Vec<MacroClauseInfo>, callees: Vec<FQSymbol>, got_slot: usize, visibility: Visibility, docstring: Option<String>, #[serde(skip)] code: Option<C> },
     TypeDef { /* … per Decision 22 */ },
