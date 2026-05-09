@@ -149,15 +149,19 @@ pub fn load_platform_dll(
     dll_path: &Path,
     span: Span,
 ) -> Result<LoadedPlatform, CranelispError> {
+    // Per Decision 42 / FIXME 0104: build a fresh `ErrorLocation` per
+    // construction site so the user sees the `(platform "name")` form's
+    // coordinates.
+    let location = || ErrorLocation::from_span_file(span, Some(dll_path.to_path_buf()));
+
     // Step 1: Open the library.
     let library = unsafe {
-        libloading::Library::new(dll_path).map_err(|e| CranelispError::ModuleError {
-            message: format!(
-                "failed to load platform library '{}': {}",
-                dll_path.display(),
-                e
-            ),
-            location: ErrorLocation::from_span_file(span, Some(dll_path.to_path_buf())),
+        libloading::Library::new(dll_path).map_err(|e| {
+            CranelispError::Platform(cranelisp_types::PlatformError::LoadFailed {
+                dll: dll_path.to_path_buf(),
+                cause: e.to_string(),
+                location: location(),
+            })
         })?
     };
 
@@ -166,13 +170,11 @@ pub fn load_platform_dll(
     let manifest_fn: libloading::Symbol<ManifestFn> = unsafe {
         library
             .get(b"cranelisp_platform_manifest")
-            .map_err(|e| CranelispError::ModuleError {
-                message: format!(
-                    "platform missing manifest function '{}': {}",
-                    dll_path.display(),
-                    e
-                ),
-                location: ErrorLocation::from_span_file(span, Some(dll_path.to_path_buf())),
+            .map_err(|_e| {
+                CranelispError::Platform(cranelisp_types::PlatformError::ManifestNotFound {
+                    dll: dll_path.to_path_buf(),
+                    location: location(),
+                })
             })?
     };
 
@@ -184,22 +186,34 @@ pub fn load_platform_dll(
 
     // Step 4: Validate ABI version.
     if manifest.abi_version != ABI_VERSION {
-        return Err(CranelispError::ModuleError {
-            message: format!(
-                "platform ABI version mismatch: platform has {}, host expects {}",
-                manifest.abi_version, ABI_VERSION
-            ),
-            location: ErrorLocation::from_span_file(span, Some(dll_path.to_path_buf())),
-        });
+        return Err(CranelispError::Platform(
+            cranelisp_types::PlatformError::AbiVersionMismatch {
+                dll: dll_path.to_path_buf(),
+                expected: ABI_VERSION,
+                found: manifest.abi_version,
+                location: location(),
+            },
+        ));
     }
 
     // Step 5: Convert to safe Rust types.
+    //
+    // `manifest_to_descriptors` constructs `PlatformError::LoadFailed` with
+    // `ErrorLocation::unknown()` and an empty `dll` path because it has no
+    // call-site coordinates; rewrite both at this call site so the user
+    // sees the form span.
     let (name, version, descriptors) = unsafe {
-        cranelisp_platform::manifest_to_descriptors(&manifest).map_err(|e| {
-            CranelispError::ModuleError {
-                message: e,
-                location: ErrorLocation::from_span_file(span, Some(dll_path.to_path_buf())),
+        cranelisp_platform::manifest_to_descriptors(&manifest).map_err(|e| match e {
+            cranelisp_types::PlatformError::LoadFailed { cause, .. } => {
+                CranelispError::Platform(cranelisp_types::PlatformError::LoadFailed {
+                    dll: dll_path.to_path_buf(),
+                    cause,
+                    location: location(),
+                })
             }
+            // Defensive: forward any non-LoadFailed variant the platform
+            // crate may emit in future.
+            other => CranelispError::Platform(other),
         })?
     };
 

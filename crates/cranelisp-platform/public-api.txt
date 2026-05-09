@@ -1,4 +1,5 @@
 pub mod cranelisp_platform
+pub use cranelisp_platform::PlatformError
 pub use cranelisp_platform::SchedulingClass
 pub macro cranelisp_platform::declare_platform!
 #[repr(transparent)] pub struct cranelisp_platform::CLBool(_)
@@ -249,4 +250,4 @@ impl cranelisp_platform::CLType for cranelisp_platform::CLString
 pub fn cranelisp_platform::CLString::to_raw(self) -> i64
 pub unsafe fn cranelisp_platform::call_effect_thunk(thunk_ptr: i64) -> i64
 pub fn cranelisp_platform::derive_jit_name(cl_name: &str) -> alloc::string::String
-pub unsafe fn cranelisp_platform::manifest_to_descriptors(manifest: &cranelisp_platform::PlatformManifest) -> core::result::Result<(alloc::string::String, alloc::string::String, alloc::vec::Vec<cranelisp_platform::OwnedPlatformFnDescriptor>), alloc::string::String>
+pub unsafe fn cranelisp_platform::manifest_to_descriptors(manifest: &cranelisp_platform::PlatformManifest) -> core::result::Result<(alloc::string::String, alloc::string::String, alloc::vec::Vec<cranelisp_platform::OwnedPlatformFnDescriptor>), cranelisp_types::error::PlatformError>

@@ -40,6 +40,13 @@ pub const IO_EFFECT_RESOURCE_OFFSET: i64 = 16;
 /// continue to import `cranelisp_platform::SchedulingClass` unchanged.
 pub use cranelisp_types::SchedulingClass;
 
+/// Per Decision 42 / FIXME 0104 — `cranelisp_types::PlatformError` is the
+/// platform crate's boundary error type for `manifest_to_descriptors` and
+/// any future platform-side helpers. Host re-exports for ergonomics; the
+/// canonical definition lives in `cranelisp-types`.
+pub use cranelisp_types::PlatformError;
+use cranelisp_types::ErrorLocation;
+
 /// Heap header size: `[i64 total_size][i64 rc]` = 16 bytes.
 /// The host allocator returns payload pointer = base + HEAP_HEADER_SIZE.
 /// The trampoline expects base pointers for IO nodes.
@@ -595,19 +602,31 @@ pub struct OwnedPlatformFnDescriptor {
 ///
 /// # Safety
 /// All pointers in the manifest must be valid and point to UTF-8 data.
+///
+/// # Errors
+/// UTF-8 validation failures construct `PlatformError::LoadFailed` with
+/// `ErrorLocation::unknown()` (the caller — `int::load_platform_dll` —
+/// rewrites `dll` and `location` at the call site). Per Decision 42 /
+/// FIXME 0104.
 pub unsafe fn manifest_to_descriptors(
     manifest: &PlatformManifest,
-) -> Result<(String, String, Vec<OwnedPlatformFnDescriptor>), String> {
+) -> Result<(String, String, Vec<OwnedPlatformFnDescriptor>), PlatformError> {
+    let utf8_err = |what: &str, e: std::str::Utf8Error| PlatformError::LoadFailed {
+        dll: std::path::PathBuf::new(),
+        cause: format!("invalid UTF-8 in {what}: {e}"),
+        location: ErrorLocation::unknown(),
+    };
+
     let name = unsafe {
         let bytes = std::slice::from_raw_parts(manifest.name, manifest.name_len);
         std::str::from_utf8(bytes)
-            .map_err(|e| format!("invalid UTF-8 in platform name: {}", e))?
+            .map_err(|e| utf8_err("platform name", e))?
             .to_string()
     };
     let version = unsafe {
         let bytes = std::slice::from_raw_parts(manifest.version, manifest.version_len);
         std::str::from_utf8(bytes)
-            .map_err(|e| format!("invalid UTF-8 in platform version: {}", e))?
+            .map_err(|e| utf8_err("platform version", e))?
             .to_string()
     };
 
@@ -619,25 +638,25 @@ pub unsafe fn manifest_to_descriptors(
         let func_name = unsafe {
             let bytes = std::slice::from_raw_parts(func.name, func.name_len);
             std::str::from_utf8(bytes)
-                .map_err(|e| format!("invalid UTF-8 in function name: {}", e))?
+                .map_err(|e| utf8_err("function name", e))?
                 .to_string()
         };
         let func_jit_name = unsafe {
             let bytes = std::slice::from_raw_parts(func.jit_name, func.jit_name_len);
             std::str::from_utf8(bytes)
-                .map_err(|e| format!("invalid UTF-8 in function jit_name: {}", e))?
+                .map_err(|e| utf8_err("function jit_name", e))?
                 .to_string()
         };
         let func_type_sig = unsafe {
             let bytes = std::slice::from_raw_parts(func.type_sig, func.type_sig_len);
             std::str::from_utf8(bytes)
-                .map_err(|e| format!("invalid UTF-8 in function type_sig: {}", e))?
+                .map_err(|e| utf8_err("function type_sig", e))?
                 .to_string()
         };
         let func_docstring = unsafe {
             let bytes = std::slice::from_raw_parts(func.docstring, func.docstring_len);
             std::str::from_utf8(bytes)
-                .map_err(|e| format!("invalid UTF-8 in function docstring: {}", e))?
+                .map_err(|e| utf8_err("function docstring", e))?
                 .to_string()
         };
 
@@ -653,7 +672,7 @@ pub unsafe fn manifest_to_descriptors(
                 let pname = unsafe {
                     let bytes = std::slice::from_raw_parts(name_ptrs[i], name_lens[i]);
                     std::str::from_utf8(bytes)
-                        .map_err(|e| format!("invalid UTF-8 in param name {}: {}", i, e))?
+                        .map_err(|e| utf8_err(&format!("param name {i}"), e))?
                         .to_string()
                 };
                 param_names.push(pname);
