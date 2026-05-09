@@ -30,7 +30,7 @@ use cranelift_module::FuncId;
 
 use dashmap::DashMap;
 
-use cranelisp_types::{
+use cranelisp_types::{ErrorLocation, 
     CranelispError, Defn, ModuleFullPath, Span, Symbol, SymbolTable, Warning,
 };
 
@@ -237,7 +237,7 @@ impl CodeFinalizer for cranelift_jit::JITModule {
     fn finalize_for_code_read(&mut self) -> Result<(), CranelispError> {
         self.finalize_definitions().map_err(|e| CranelispError::CodegenError {
             message: format!("failed to finalize JIT definitions: {e}"),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         })
     }
 
@@ -297,7 +297,7 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
                 message: format!(
                     "failed to declare GOT data symbol '{name}' as Export: {e}"
                 ),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             })?;
 
         let mut desc = cranelift_module::DataDescription::new();
@@ -321,7 +321,7 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
                     message: format!(
                         "GOT slot {slot} for '{name}' exceeds declared slot_count {slot_count}"
                     ),
-                    span: Span::SYNTHETIC,
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
                 });
             }
             let func_ref = self.declare_func_in_data(func_id, &mut desc);
@@ -330,7 +330,7 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
                     message: format!(
                         "GOT slot offset overflows u32 for slot {slot} in '{name}'"
                     ),
-                    span: Span::SYNTHETIC,
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
                 }
             })?;
             desc.write_function_addr(offset, func_ref);
@@ -339,7 +339,7 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
         self.define_data(data_id, &desc)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to define GOT data symbol '{name}': {e}"),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             })?;
         Ok(())
     }
@@ -428,7 +428,7 @@ where
                 message: format!(
                     "compile_to_module: no symbol table for module '{module_path}'"
                 ),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             }
         })?;
         for name in names {
@@ -437,7 +437,7 @@ where
                     message: format!(
                         "compile_to_module: symbol '{name}' not found in module '{module_path}'"
                     ),
-                    span: Span::SYNTHETIC,
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
                 }
             })?;
             let ModuleEntry::Def { ast, .. } = entry else {
@@ -445,14 +445,14 @@ where
                     message: format!(
                         "compile_to_module: symbol '{name}' in module '{module_path}' is not a compilable Def (wrong ModuleEntry variant)"
                     ),
-                    span: Span::SYNTHETIC,
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
                 });
             };
             let defn = ast.as_ref().ok_or_else(|| CranelispError::CodegenError {
                 message: format!(
                     "compile_to_module: symbol '{name}' in module '{module_path}' has ast: None — Wave 0 invariant violated (see design/typecheck/ast-annotation.md for the categories of entries that must carry ast: Some(_))"
                 ),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             })?;
             defns.push(defn.clone());
         }
@@ -461,7 +461,7 @@ where
     if defns.is_empty() {
         return Err(CranelispError::CodegenError {
             message: "no function definitions to compile".into(),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         });
     }
 
@@ -487,7 +487,7 @@ where
             .declare_function(defn.name.as_ref(), cranelift_module::Linkage::Local, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare function '{}': {e}", defn.name),
-                span: defn.span,
+                location: ErrorLocation::from_span(defn.span),
             })?;
         func_ids.insert(defn.name.clone(), func_id);
     }
@@ -573,7 +573,7 @@ where
                 message: format!(
                     "compile_to_module: no symbol table for module '{module_path}' at GOT-data emission"
                 ),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             }
         })?;
         let mut slot_funcs: Vec<(usize, FuncId)> = Vec::with_capacity(defns.len());
@@ -584,7 +584,7 @@ where
                         "compile_to_module: symbol '{}' missing from module '{module_path}' at GOT-data emission",
                         defn.name
                     ),
-                    span: defn.span,
+                    location: ErrorLocation::from_span(defn.span),
                 }
             })?;
             let ModuleEntry::Def { got_slot, .. } = entry else {
@@ -679,7 +679,7 @@ where
     let func_id = *func_ids.get(&defn.name).ok_or_else(|| {
         CranelispError::CodegenError {
             message: format!("function '{}' not declared", defn.name),
-            span: defn.span,
+            location: ErrorLocation::from_span(defn.span),
         }
     })?;
 
@@ -700,7 +700,7 @@ where
         .define_function(func_id, &mut ctx)
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to define function '{}': {e}", defn.name),
-            span: defn.span,
+            location: ErrorLocation::from_span(defn.span),
         })?;
 
     // Capture disasm + code size from the compiled code.
@@ -793,7 +793,7 @@ mod clif_dump_tests {
 mod tests {
     use super::*;
     use crate::jit::Jit;
-    use cranelisp_types::{
+    use cranelisp_types::{ErrorLocation, 
         Defn, DefnVariant, DisplayInfo, Expr, MethodResolutions, MonoDefn, Program, Span, Symbol,
         TopLevel, Type, Visibility,
     };
@@ -958,7 +958,7 @@ mod tests {
             trait_origin: None,
             ast: Some(defn),
             code: None,
-            platform_fn_ptr: None,
+            fn_ptr: None,
         }
     }
 
@@ -1009,7 +1009,7 @@ mod tests {
         // Post-G6: `compile_to_module` already finalized the JIT internally.
         let entry_id = result.entry_func_id.ok_or_else(|| CranelispError::CodegenError {
             message: "no entry function".into(),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
         let ptr = jit.get_finalized_ptr(entry_id);
         let _ = cranelisp_runtime::panic::take_runtime_error();
@@ -1018,7 +1018,7 @@ mod tests {
         if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
             return Err(CranelispError::CodegenError {
                 message: format!("runtime panic: {}", msg),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             });
         }
         Ok(value)
@@ -1142,7 +1142,7 @@ mod tests {
         // Post-G6: `compile_to_module` already finalized the JIT internally.
         let entry_id = result.entry_func_id.ok_or_else(|| CranelispError::CodegenError {
             message: "no entry function".into(),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
         let ptr = jit.get_finalized_ptr(entry_id);
         let _ = cranelisp_runtime::panic::take_runtime_error();
@@ -1151,7 +1151,7 @@ mod tests {
         if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
             return Err(CranelispError::CodegenError {
                 message: format!("runtime panic: {}", msg),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             });
         }
         Ok(value)
@@ -1159,8 +1159,7 @@ mod tests {
 
     /// Build symbol tables with an Option type for ADT tests.
     fn option_type_tables() -> DashMap<ModuleFullPath, SymbolTable> {
-        use cranelisp_types::{
-            ConstructorInfo, FQTypeName, FieldInfo, ModuleEntry, Scheme, Type,
+        use cranelisp_types::{ConstructorInfo, FQTypeName, FieldInfo, ModuleEntry, Scheme, Type,
             TypeDefInfo, TypeName, Visibility,
         };
 
@@ -3559,7 +3558,7 @@ mod tests {
                 trait_origin: None,
                 ast: None,
                 code: None,
-                platform_fn_ptr: None,
+                fn_ptr: None,
             },
         );
         tables.insert(module_path, table);
@@ -3668,7 +3667,7 @@ mod tests {
                 trait_origin: None,
                 ast: None,
                 code: None,
-                platform_fn_ptr: None,
+                fn_ptr: None,
             },
         );
         tables.insert(module_path, table);
@@ -3884,7 +3883,7 @@ mod tests {
                     trait_origin: None,
                     ast: None,
                     code: None,
-                    platform_fn_ptr: None,
+                    fn_ptr: None,
                 },
             );
             tables.insert(module.clone(), st);
@@ -3980,7 +3979,7 @@ mod tests {
                     trait_origin: None,
                     ast: None,
                     code: None,
-                    platform_fn_ptr: None,
+                    fn_ptr: None,
                 },
             );
             // Mangled variant entry: ast: Some(variant_defn).
@@ -4085,7 +4084,7 @@ mod tests {
                     trait_origin: None,
                     ast: Some(template_defn),
                     code: None,
-                    platform_fn_ptr: None,
+                    fn_ptr: None,
                 },
             );
             tables.insert(module.clone(), st);
@@ -4164,7 +4163,7 @@ mod tests {
                 trait_origin: None,
                 ast: Some(defn),
                 code: None,
-                platform_fn_ptr: None,
+                fn_ptr: None,
             },
         );
         tables.insert(module.clone(), st);
@@ -4416,7 +4415,7 @@ mod tests {
                     trait_origin: None,
                     ast: Some(defn),
                     code: None,
-                    platform_fn_ptr: None,
+                    fn_ptr: None,
                 },
             );
         }
@@ -4492,8 +4491,7 @@ mod tests {
         // entry on user's table records the cross-module dependency.
         let caller = make_int_defn("caller", 7);
 
-        use cranelisp_types::{
-            DefKind, FQSymbol, ModuleEntry, Scheme, Visibility,
+        use cranelisp_types::{DefKind, FQSymbol, ModuleEntry, Scheme, Visibility,
         };
         let tables = DashMap::new();
 
@@ -4517,7 +4515,7 @@ mod tests {
                 trait_origin: None,
                 ast: Some(helper),
                 code: None,
-                platform_fn_ptr: None,
+                fn_ptr: None,
             },
         );
         tables.insert(util_path.clone(), util_st);
@@ -4542,7 +4540,7 @@ mod tests {
                 trait_origin: None,
                 ast: Some(caller),
                 code: None,
-                platform_fn_ptr: None,
+                fn_ptr: None,
             },
         );
         user_st.insert(

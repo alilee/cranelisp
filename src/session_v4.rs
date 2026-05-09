@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::{Arc, Mutex};
 
-use cranelisp_types::{
+use cranelisp_types::{ErrorLocation, 
     CheckResult, CodegenBehaviour, CranelispError,
     DefKind, FQSymbol, MacroClauseInfo, MacroParam, ModuleEntry, ModuleFullPath,
     ModuleStrategy, OverloadVariant, Sexp, Span, Symbol, TopLevel,
@@ -648,12 +648,12 @@ pub struct SharedState {
     // §2.3 for the dissolution rationale.
     /// Platform DLL retention pool (Sprint 57 Wave 3 G8). Holds
     /// `LoadedPlatform` handles for the session lifetime so that every
-    /// `ModuleEntry::Def.platform_fn_ptr` remains valid for as long as any
+    /// `ModuleEntry::Def.fn_ptr` remains valid for as long as any
     /// code on the symbol tables might dispatch through it.
     ///
     /// # Safety invariant
     ///
-    /// `platform_fn_ptr` is valid for as long as the owning DLL handle is
+    /// `fn_ptr` is valid for as long as the owning DLL handle is
     /// in `SharedState::kept_dlls`. Sessions retain these handles for their
     /// full lifetime; the pool is never drained. Pushing a `LoadedPlatform`
     /// is the write that makes its `fn_ptr`s safe to call; dropping a
@@ -1288,8 +1288,7 @@ impl CompilerSession {
         let source = std::fs::read_to_string(file_path).map_err(|e| {
             CranelispError::ModuleError {
                 message: format!("cannot read {}: {e}", file_path.display()),
-                file: Some(file_path.to_path_buf()),
-                span: Span::new(0, 0),
+                location: ErrorLocation::from_span_file(Span::new(0, 0), Some(file_path.to_path_buf())),
             }
         })?;
 
@@ -1348,8 +1347,7 @@ impl CompilerSession {
         if self.shared.scheduler.is_failed(module_path) {
             return Err(CranelispError::ModuleError {
                 message: format!("module '{}' failed to compile", module_path.as_ref()),
-                file: None,
-                span: Span::new(0, 0),
+                location: ErrorLocation::from_span_file(Span::new(0, 0), None),
             });
         }
 
@@ -1922,8 +1920,7 @@ impl CompilerSession {
                                 "dependency chain too deep (>{} retries) while resolving '{}'",
                                 MAX_DEP_RETRIES, dep_module,
                             ),
-                            file: None,
-                            span: Span::SYNTHETIC,
+                            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
                         });
                     }
                 }
@@ -2650,7 +2647,7 @@ impl CompilerSession {
         if sexps.is_empty() {
             return Err(CranelispError::ParseError {
                 message: "empty expression".into(),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             });
         }
         let input = cranelisp_frontend::build_repl_input(&sexps[0])?;
@@ -2961,13 +2958,13 @@ impl CompilerSession {
         if sexps.is_empty() {
             return Err(CranelispError::ParseError {
                 message: "empty form".into(),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             });
         }
         let sexp = sexps.into_iter().next().ok_or_else(|| {
             CranelispError::ParseError {
                 message: "empty form".into(),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             }
         })?;
         let module = self.current_module_path();
@@ -3184,7 +3181,7 @@ impl CompilerSession {
         if let Some(err) = cranelisp_runtime::panic::take_runtime_error() {
             return Err(CranelispError::CodegenError {
                 message: format!("runtime panic: {}", err),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             });
         }
 
@@ -3225,8 +3222,7 @@ impl CompilerSession {
         Err(CranelispError::ModuleError {
             message: "entry module has no `main` function — batch mode requires (defn main [] ...)"
                 .into(),
-            file: None,
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
         })
     }
 
@@ -3366,8 +3362,7 @@ impl CompilerSession {
         let entry_table = self.module_table(&module).ok_or_else(|| {
             CranelispError::ModuleError {
                 message: format!("entry module '{}' not found in typechecker", module_name),
-                file: None,
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
             }
         })?;
         let main_return = crate::exe::validate_main(&entry_table)?;
@@ -3388,8 +3383,7 @@ impl CompilerSession {
         if o_paths.is_empty() {
             return Err(CranelispError::ModuleError {
                 message: "no .o files produced — cannot link".into(),
-                file: None,
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
             });
         }
 
@@ -3419,16 +3413,14 @@ impl CompilerSession {
         let cache_dir = self.shared.cache_dir.as_ref().ok_or_else(|| {
             CranelispError::ModuleError {
                 message: "cache directory not configured — cannot write startup .o".into(),
-                file: None,
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
             }
         })?;
         let startup_o_path = cache_dir.join("__startup.o");
         std::fs::write(&startup_o_path, &startup_bytes).map_err(|e| {
             CranelispError::ModuleError {
                 message: format!("failed to write startup .o: {e}"),
-                file: Some(startup_o_path.clone()),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(startup_o_path.clone())),
             }
         })?;
 
@@ -3444,8 +3436,7 @@ impl CompilerSession {
         std::fs::write(&alias_o_path, &alias_bytes).map_err(|e| {
             CranelispError::ModuleError {
                 message: format!("failed to write main alias .o: {e}"),
-                file: Some(alias_o_path.clone()),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(alias_o_path.clone())),
             }
         })?;
 
@@ -4968,7 +4959,7 @@ mod format_entry_sig_tests {
             trait_origin: None,
             ast: None,
             code: None,
-            platform_fn_ptr: None,
+            fn_ptr: None,
         }
     }
 
@@ -5040,8 +5031,7 @@ mod format_entry_sig_tests {
 #[cfg(test)]
 mod bare_primitive_value_path_tests {
     use super::*;
-    use cranelisp_types::{
-        DefKind, ModuleEntry, PrimitiveKind, Scheme, Symbol, Type, Visibility,
+    use cranelisp_types::{DefKind, ModuleEntry, PrimitiveKind, Scheme, Symbol, Type, Visibility,
     };
     use std::collections::HashMap as StdHashMap;
 
@@ -5066,7 +5056,7 @@ mod bare_primitive_value_path_tests {
             trait_origin: None,
             ast: None,
             code: None,
-            platform_fn_ptr: None,
+            fn_ptr: None,
         }
     }
 

@@ -22,7 +22,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cranelisp_types::{
+use cranelisp_types::{ErrorLocation, 
     CheckResult, CompileContext, ConstrainedFn, CranelispError, Defn, DefKind, DefnVariant,
     DisplayInfo, Expr, FQSymbol, JitSymbol, ModuleEntry, ModuleFullPath,
     ModuleStrategy, MonoDefn, ResolvedCall, Scheme, Span, Symbol, SymbolTable, TopLevel, Type,
@@ -642,7 +642,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 trait_origin: None,
                 ast: None,
                 code: None,
-                platform_fn_ptr: None,
+                fn_ptr: None,
             },
         );
 
@@ -700,7 +700,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .get(&defn.name)
             .ok_or_else(|| CranelispError::TypeError {
                 message: format!("internal: missing type vars for {}", defn.name),
-                span: defn.span,
+                location: ErrorLocation::from_span(defn.span),
             })?;
 
         // Snapshot method_resolutions and expr_types sizes so we can extract
@@ -808,7 +808,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         "internal: missing type vars for multi-sig variant {}",
                         internal_name
                     ),
-                    span: variant.span,
+                    location: ErrorLocation::from_span(variant.span),
                 })?;
 
             // Snapshot for per-variant delta extraction
@@ -1467,7 +1467,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         trait_origin: None,
                         ast: None,
                         code: None,
-                        platform_fn_ptr: None,
+                        fn_ptr: None,
                     },
                 );
             }
@@ -1530,7 +1530,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         "internal: missing type vars for multi-sig variant {}",
                         internal_name
                     ),
-                    span: variant.span,
+                    location: ErrorLocation::from_span(variant.span),
                 })?;
 
             let concrete_params: Vec<Type> = param_tys
@@ -1551,7 +1551,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                             .collect::<Vec<_>>()
                             .join(", ")
                     ),
-                    span: variant.span,
+                    location: ErrorLocation::from_span(variant.span),
                 });
             }
             sig_set.push(concrete_params.clone());
@@ -1620,7 +1620,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     trait_origin: None,
                     ast: annotated_ast,
                     code: None,
-                    platform_fn_ptr: None,
+                    fn_ptr: None,
                 },
             );
 
@@ -1687,7 +1687,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 trait_origin: None,
                 ast: None,
                 code: None,
-                platform_fn_ptr: None,
+                fn_ptr: None,
             },
         );
 
@@ -1715,7 +1715,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 .get(base_name)
                 .ok_or_else(|| CranelispError::TypeError {
                     message: format!("no overloaded function: {}", base_name),
-                    span: *span,
+                    location: ErrorLocation::from_span(*span),
                 })?
                 .clone();
 
@@ -1755,7 +1755,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         base_name,
                         exact_matches.len()
                     ),
-                    span: *span,
+                    location: ErrorLocation::from_span(*span),
                 });
             } else {
                 return Err(CranelispError::TypeError {
@@ -1768,7 +1768,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                             .collect::<Vec<_>>()
                             .join(", ")
                     ),
-                    span: *span,
+                    location: ErrorLocation::from_span(*span),
                 });
             }
         }
@@ -2227,7 +2227,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 trait_origin: None,
                 ast: existing_ast,
                 code: existing_code,
-                platform_fn_ptr: None,
+                fn_ptr: None,
             },
         );
 
@@ -2275,7 +2275,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 .get(&defn.name)
                 .ok_or_else(|| CranelispError::TypeError {
                     message: format!("internal: missing type vars for {}", defn.name),
-                    span: defn.span,
+                    location: ErrorLocation::from_span(defn.span),
                 })?;
 
             self.check_defn_body(state, defn, param_types, ret_ty)?;
@@ -2467,7 +2467,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 trait_origin: None,
                 ast: None,
                 code: None,
-                platform_fn_ptr: None,
+                fn_ptr: None,
             },
         );
 
@@ -2817,8 +2817,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 mod tests {
     use super::*;
     use crate::checker::TestFixture;
-    use cranelisp_types::{
-        CompileContext, DefnVariant, Expr, FQTypeName, ImportNames, ImportSpec,
+    use cranelisp_types::{CompileContext, DefnVariant, Expr, FQTypeName, ImportNames, ImportSpec,
         ModuleFullPath, Symbol,
         TraitDecl, TraitImpl, TraitMethodSig, TraitName, TypeExpr, TypeName, Visibility,
     };

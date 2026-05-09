@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Condvar, Mutex, MutexGuard};
 
-use cranelisp_types::{CranelispError, ModuleFullPath, Span, Symbol};
+use cranelisp_types::{ErrorLocation, CranelispError, ModuleFullPath, Span, Symbol};
 
 use crate::observability::{
     self, SchedulerTraceTag,
@@ -645,13 +645,11 @@ impl CompileScheduler {
             // Fail the module in the scheduler.
             Self::notify_module_failed_locked(&mut state, module, CranelispError::ModuleError {
                 message: msg.clone(),
-                file: None,
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
             });
             return Err(CranelispError::ModuleError {
                 message: msg,
-                file: None,
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
             });
         }
 
@@ -1556,8 +1554,7 @@ impl CompileScheduler {
                     failed_module,
                     original_error_msg,
                 ),
-                file: None,
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
             };
             // Recursive cascade.
             Self::notify_module_failed_locked(state, &waiter_module, error);
@@ -1832,8 +1829,7 @@ impl From<SchedulerError> for CranelispError {
             SchedulerError::ModuleFailed { module, message } => {
                 CranelispError::ModuleError {
                     message: format!("module '{}' failed: {}", module, message),
-                    file: None,
-                    span: Span::SYNTHETIC,
+                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
                 }
             }
             SchedulerError::InmemIncomplete { module } => {
@@ -1841,8 +1837,7 @@ impl From<SchedulerError> for CranelispError {
                     message: format!(
                         "in-memory codegen incomplete for '{}'", module
                     ),
-                    file: None,
-                    span: Span::SYNTHETIC,
+                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
                 }
             }
             SchedulerError::ObjectIncomplete { module } => {
@@ -1850,8 +1845,7 @@ impl From<SchedulerError> for CranelispError {
                     message: format!(
                         "object codegen incomplete for '{}'", module
                     ),
-                    file: None,
-                    span: Span::SYNTHETIC,
+                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
                 }
             }
         }
@@ -1952,8 +1946,7 @@ mod tests {
             &m,
             CranelispError::ModuleError {
                 message: "test error".into(),
-                file: None,
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
             },
         );
 

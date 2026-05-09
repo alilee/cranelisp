@@ -7,7 +7,7 @@
 //! Also provides `is_defmacro`, `is_begin`, and `flatten_begin` for pipeline
 //! orchestration.
 
-use cranelisp_types::{CranelispError, MacroParam, Sexp, Span, Symbol};
+use cranelisp_types::{CranelispError, ErrorLocation, MacroParam, Sexp, Span, Symbol};
 
 use crate::quasiquote::next_synthetic_span;
 
@@ -20,23 +20,11 @@ fn next_span() -> Span {
 // Public types
 // ---------------------------------------------------------------------------
 
-/// Parsed defmacro components (before compilation).
-#[derive(Clone, Debug)]
-pub struct DefmacroInfo {
-    pub name: Symbol,
-    pub is_private: bool,
-    pub docstring: Option<String>,
-    pub clauses: Vec<MacroClause>,
-    pub span: Span,
-}
+// `DefmacroInfo` and `MacroClause` are defined in `cranelisp_types::parsed`
+// per FIXME 0156 (Sprint 66 Wave 0). They are re-exported through this
+// module's public surface and through `cranelisp_frontend::lib.rs`.
 
-/// A single parsed macro clause (params + body sexp).
-#[derive(Clone, Debug)]
-pub struct MacroClause {
-    pub fixed_params: Vec<MacroParam>,
-    pub rest_param: Option<Symbol>,
-    pub body_sexp: Sexp,
-}
+pub use cranelisp_types::{DefmacroInfo, MacroClause};
 
 // ---------------------------------------------------------------------------
 // Form detection
@@ -93,7 +81,7 @@ pub fn parse_macro_params(
         _ => {
             return Err(CranelispError::ParseError {
                 message: "macro params must be a bracket list".to_string(),
-                span: bracket.span(),
+                location: ErrorLocation::from_span(bracket.span()),
             });
         }
     };
@@ -134,7 +122,7 @@ fn parse_param_items(
             other => {
                 return Err(CranelispError::ParseError {
                     message: "defmacro param must be a symbol or bracket pattern".to_string(),
-                    span: other.span(),
+                    location: ErrorLocation::from_span(other.span()),
                 });
             }
         }
@@ -167,7 +155,7 @@ fn parse_bracket_pattern(
             other => {
                 return Err(CranelispError::ParseError {
                     message: "bracket destructuring param must be a symbol".to_string(),
-                    span: other.span(),
+                    location: ErrorLocation::from_span(other.span()),
                 });
             }
         }
@@ -190,7 +178,7 @@ pub fn parse_defmacro(sexp: &Sexp) -> Result<DefmacroInfo, CranelispError> {
         _ => {
             return Err(CranelispError::ParseError {
                 message: "defmacro requires a list form".to_string(),
-                span: sexp.span(),
+                location: ErrorLocation::from_span(sexp.span()),
             });
         }
     };
@@ -198,7 +186,7 @@ pub fn parse_defmacro(sexp: &Sexp) -> Result<DefmacroInfo, CranelispError> {
     if children.len() < 3 {
         return Err(CranelispError::ParseError {
             message: "defmacro requires at least name and one clause".to_string(),
-            span,
+            location: ErrorLocation::from_span(span),
         });
     }
 
@@ -211,7 +199,7 @@ pub fn parse_defmacro(sexp: &Sexp) -> Result<DefmacroInfo, CranelispError> {
         _ => {
             return Err(CranelispError::ParseError {
                 message: "defmacro name must be a symbol".to_string(),
-                span: children[1].span(),
+                location: ErrorLocation::from_span(children[1].span()),
             });
         }
     };
@@ -225,7 +213,7 @@ pub fn parse_defmacro(sexp: &Sexp) -> Result<DefmacroInfo, CranelispError> {
     if next_idx >= children.len() {
         return Err(CranelispError::ParseError {
             message: "defmacro requires params or clauses after name".to_string(),
-            span,
+            location: ErrorLocation::from_span(span),
         });
     }
 
@@ -236,7 +224,7 @@ pub fn parse_defmacro(sexp: &Sexp) -> Result<DefmacroInfo, CranelispError> {
             if next_idx + 1 >= children.len() {
                 return Err(CranelispError::ParseError {
                     message: "defmacro requires a body after params".to_string(),
-                    span,
+                    location: ErrorLocation::from_span(span),
                 });
             }
             let (fixed_params, rest_param) = parse_param_items(items)?;
@@ -256,18 +244,18 @@ pub fn parse_defmacro(sexp: &Sexp) -> Result<DefmacroInfo, CranelispError> {
         _ => {
             return Err(CranelispError::ParseError {
                 message: "expected bracket params or clause list after defmacro name".to_string(),
-                span: children[next_idx].span(),
+                location: ErrorLocation::from_span(children[next_idx].span()),
             });
         }
     };
 
-    Ok(DefmacroInfo {
+    Ok(DefmacroInfo::new(
         name,
         is_private,
         docstring,
         clauses,
         span,
-    })
+    ))
 }
 
 /// Parse a single clause from `([params] body)`.
@@ -277,7 +265,7 @@ fn parse_single_clause(sexp: &Sexp) -> Result<MacroClause, CranelispError> {
         _ => {
             return Err(CranelispError::ParseError {
                 message: "defmacro clause must be a list ([params] body)".to_string(),
-                span: sexp.span(),
+                location: ErrorLocation::from_span(sexp.span()),
             });
         }
     };
@@ -285,7 +273,7 @@ fn parse_single_clause(sexp: &Sexp) -> Result<MacroClause, CranelispError> {
     if children.len() != 2 {
         return Err(CranelispError::ParseError {
             message: "defmacro clause requires params and body".to_string(),
-            span,
+            location: ErrorLocation::from_span(span),
         });
     }
 
@@ -294,7 +282,7 @@ fn parse_single_clause(sexp: &Sexp) -> Result<MacroClause, CranelispError> {
         _ => {
             return Err(CranelispError::ParseError {
                 message: "defmacro clause params must be a bracket list".to_string(),
-                span: children[0].span(),
+                location: ErrorLocation::from_span(children[0].span()),
             });
         }
     };

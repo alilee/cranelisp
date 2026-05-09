@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use cranelisp_types::{
+use cranelisp_types::{ErrorLocation, 
     CranelispError, Expr, MatchArm, ModuleEntry, Pattern, ResolvedCall, Scheme, Span, Symbol,
     Type, TypeExpr,
 };
@@ -100,7 +100,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     fn infer_var(&self, state: &mut CheckState, name: &Symbol, span: Span) -> Result<Type, CranelispError> {
         let scheme = self.lookup(state, name).ok_or_else(|| CranelispError::TypeError {
             message: format!("undefined variable: {name}"),
-            span,
+            location: ErrorLocation::from_span(span),
         })?;
 
         // Don't instantiate special forms -- they are not callable as values
@@ -109,7 +109,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         {
             return Err(CranelispError::TypeError {
                 message: format!("{name} is a special form, not a value"),
-                span,
+                location: ErrorLocation::from_span(span),
             });
         }
 
@@ -120,7 +120,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 message: format!(
                     "cannot construct internal type constructor '{name}'"
                 ),
-                span,
+                location: ErrorLocation::from_span(span),
             });
         }
 
@@ -140,7 +140,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     "constrained function '{name}' cannot be used as a value \
                      — it must be called with arguments"
                 ),
-                span,
+                location: ErrorLocation::from_span(span),
             });
         }
 
@@ -156,7 +156,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     "multi-sig function '{name}' cannot be used as a value \
                      — it must be called with arguments"
                 ),
-                span,
+                location: ErrorLocation::from_span(span),
             });
         }
 
@@ -396,7 +396,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             _ => {
                 return Err(CranelispError::TypeError {
                     message: "auto-curry requires a named function; bind this expression to a variable first".to_string(),
-                    span,
+                    location: ErrorLocation::from_span(span),
                 });
             }
         };
@@ -571,7 +571,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         if arms.is_empty() {
             return Err(CranelispError::TypeError {
                 message: "match expression must have at least one arm".into(),
-                span,
+                location: ErrorLocation::from_span(span),
             });
         }
 
@@ -647,7 +647,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 message: format!(
                     "cannot match on internal type constructor '{name}'"
                 ),
-                span,
+                location: ErrorLocation::from_span(span),
             });
         }
 
@@ -686,14 +686,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         {
             return Err(CranelispError::TypeError {
                 message: format!("unknown constructor in pattern: {name}"),
-                span,
+                location: ErrorLocation::from_span(span),
             });
         }
 
         // Get the scheme from the symbol table (handles qualified names via lookup)
         self.lookup(state, name).ok_or_else(|| CranelispError::TypeError {
             message: format!("constructor {name} has no type scheme"),
-            span,
+            location: ErrorLocation::from_span(span),
         })
     }
 
@@ -715,7 +715,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                             "constructor {name} takes no arguments, got {}",
                             bindings.len()
                         ),
-                        span,
+                        location: ErrorLocation::from_span(span),
                     });
                 }
                 self.unify(state, scrutinee_ty, instantiated, span)
@@ -732,7 +732,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 message: format!(
                     "constructor {name} has unexpected type: {instantiated}"
                 ),
-                span,
+                location: ErrorLocation::from_span(span),
             }),
         }
     }
@@ -755,7 +755,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     field_types.len(),
                     bindings.len()
                 ),
-                span,
+                location: ErrorLocation::from_span(span),
             });
         }
 
@@ -2607,7 +2607,7 @@ mod tests {
                 trait_origin: None,
                 ast: None,
                 code: None,
-                platform_fn_ptr: None,
+                fn_ptr: None,
             },
         );
     }

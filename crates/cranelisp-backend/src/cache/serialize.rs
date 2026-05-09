@@ -2,7 +2,7 @@
 //
 // Sprint 58 Step 5b — Per `design/backend/module-caching.md` §14 (PRESCRIPTIVE):
 // the `.meta.json` file IS a serialised `SymbolTable<(), ()>`. The pre-Phase-5
-// `CacheMetadata` envelope dissolves; runtime fields (`code`, `platform_fn_ptr`,
+// `CacheMetadata` envelope dissolves; runtime fields (`code`, `fn_ptr`,
 // `got`, `linker`) are `#[serde(skip)]` on the symbol table itself and are
 // re-derived on cache-hit by re-running codegen against `ast` and re-resolving
 // platform DLLs. The schema_version field on `SymbolTable` (Decision 34) is
@@ -25,7 +25,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use cranelisp_types::{CranelispError, ModuleFullPath, Span, SymbolTable};
+use cranelisp_types::{ErrorLocation, CranelispError, ModuleFullPath, Span, SymbolTable};
 
 // ---------------------------------------------------------------------------
 // CacheStale — failure-mode discriminator (Sprint 58 §14.7)
@@ -147,7 +147,7 @@ impl std::fmt::Display for CacheStale {
 /// cache-invalidation handshake; the value here is what `load_meta` will
 /// compare against `CACHE_SCHEMA_VERSION` on the read side.
 ///
-/// `code`, `platform_fn_ptr`, `got`, and `linker` are `#[serde(skip)]` on
+/// `code`, `fn_ptr`, `got`, and `linker` are `#[serde(skip)]` on
 /// `SymbolTable` / `ModuleEntry::Def`, so the produced bytes never contain
 /// pointer state — they are re-derived on cache-hit per §14.3.
 pub fn serialise_meta<C, L>(
@@ -178,7 +178,7 @@ where
     stamped.schema_version = schema_version;
     let mut value = serde_json::to_value(&stamped).map_err(|e| CranelispError::CodegenError {
         message: format!("failed to serialise SymbolTable for cache: {e}"),
-        span: Span::SYNTHETIC,
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
     })?;
     // Insert `build_id` as a sibling of `schema_version` at the JSON root.
     // This keeps `.meta.json` shape-identical to pre-Sprint-60 except for
@@ -192,7 +192,7 @@ where
     }
     serde_json::to_vec_pretty(&value).map_err(|e| CranelispError::CodegenError {
         message: format!("failed to serialise SymbolTable for cache: {e}"),
-        span: Span::SYNTHETIC,
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
     })
 }
 
@@ -202,7 +202,7 @@ where
 /// Per §14.3:
 /// * Deserialise errors → `CacheStale::Deserialise` (treat as miss).
 /// * `schema_version` mismatch → `CacheStale::SchemaMismatch` (treat as miss).
-/// * Success → return the table; `code` / `platform_fn_ptr` / `got` / `linker`
+/// * Success → return the table; `code` / `fn_ptr` / `got` / `linker`
 ///   are at their default values and the caller is responsible for
 ///   re-deriving them per §14.3 step [5].
 pub fn deserialise_meta(
@@ -283,7 +283,7 @@ where
             "failed to write cache metadata {}: {e}",
             meta_path.display()
         ),
-        span: Span::SYNTHETIC,
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
     })
 }
 
@@ -348,7 +348,7 @@ pub fn read_cached_metadata(meta_path: &Path) -> Result<CacheMetadata, Cranelisp
     let content = std::fs::read_to_string(meta_path).map_err(|e| {
         CranelispError::CodegenError {
             message: format!("failed to read cache metadata {}: {e}", meta_path.display()),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         }
     })?;
     serde_json::from_str(&content).map_err(|e| CranelispError::CodegenError {
@@ -356,7 +356,7 @@ pub fn read_cached_metadata(meta_path: &Path) -> Result<CacheMetadata, Cranelisp
             "failed to deserialize cache metadata {}: {e}",
             meta_path.display()
         ),
-        span: Span::SYNTHETIC,
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
     })
 }
 
@@ -372,13 +372,13 @@ pub fn write_cached_metadata(
     let json = serde_json::to_string_pretty(metadata).map_err(|e| {
         CranelispError::CodegenError {
             message: format!("failed to serialize cache metadata: {e}"),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         }
     })?;
     super::atomic_write(meta_path, json.as_bytes()).map_err(|e| {
         CranelispError::CodegenError {
             message: format!("failed to write cache metadata {}: {e}", meta_path.display()),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         }
     })?;
     Ok(())
@@ -391,8 +391,7 @@ pub fn write_cached_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::{
-        DefKind, Defn, DefnVariant, Expr, FQSymbol, ImportSpec, ModuleEntry, ModuleFullPath,
+    use cranelisp_types::{DefKind, Defn, DefnVariant, Expr, FQSymbol, ImportSpec, ModuleEntry, ModuleFullPath,
         Scheme, Span as TSpan, Symbol, Type, Visibility,
     };
     use std::collections::HashMap;
@@ -429,7 +428,7 @@ mod tests {
             trait_origin: None,
             ast: Some(defn),
             code: None,
-            platform_fn_ptr: None,
+            fn_ptr: None,
         }
     }
 
@@ -467,8 +466,8 @@ mod tests {
             "ModuleEntry::Def.code is #[serde(skip)] — must not appear: {json_str}"
         );
         assert!(
-            !json_str.contains("\"platform_fn_ptr\""),
-            "ModuleEntry::Def.platform_fn_ptr is #[serde(skip)] — must not appear"
+            !json_str.contains("\"fn_ptr\""),
+            "ModuleEntry::Def.fn_ptr is #[serde(skip)] — must not appear"
         );
     }
 

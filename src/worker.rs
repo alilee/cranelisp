@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use cranelisp_types::{
+use cranelisp_types::{ErrorLocation, 
     CheckResult, CranelispError, DefKind, Defn, ExportSpec, ImportNames, ImportSpec,
     MacroClauseInfo, ModuleEntry, ModuleFullPath, ModuleStrategy,
     PlatformSpec, PrimitiveKind, Sexp, Span, Symbol, TopLevel, Visibility,
@@ -33,7 +33,7 @@ use crate::scheduler::{CompileScheduler, PriorityWork};
 /// TypeChecker state (symbol_tables, next_type_id) lives on SharedState.
 /// Workers create `TypeCheckEnv` on the stack from these references.
 /// Sprint 57 Wave 3 G8: `platform_registry` is deleted. Platform function
-/// pointers live on `ModuleEntry::Def.platform_fn_ptr`; DLL handles are
+/// pointers live on `ModuleEntry::Def.fn_ptr`; DLL handles are
 /// retained in `SharedState::kept_dlls`.
 pub struct ModuleCompiler<'a> {
     pub symbol_tables: &'a dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
@@ -317,7 +317,7 @@ fn compile_macro_clause_with_state(
                 "macro clause {} for '{}' produced no defn",
                 clause_idx, macro_name
             ),
-            span,
+            location: ErrorLocation::from_span(span),
         })?;
 
     let defn = symbol_tables
@@ -1178,8 +1178,7 @@ fn check_private_submodule_import(
              by '{parent_path}' via (mod- {trailing}); importer '{importer}' \
              is not within the '{parent_path}' subtree (spec §8.2.3)"
         ),
-        file: None,
-        span: spec_span,
+        location: ErrorLocation::from_span_file(spec_span, None),
     })
 }
 
@@ -1254,8 +1253,7 @@ fn handle_import(
                     "module '{}' not found (imported by '{}')",
                     dep, module
                 ),
-                file: None,
-                span: spec.span,
+                location: ErrorLocation::from_span_file(spec.span, None),
             })?;
 
         // Populate file_to_module mapping for file watcher (Step 14).
@@ -1288,8 +1286,7 @@ fn handle_import(
                     dep_file_for_err.display(),
                     e
                 ),
-                file: Some(dep_file_for_err.clone()),
-                span: spec_span,
+                location: ErrorLocation::from_span_file(spec_span, Some(dep_file_for_err.clone())),
             }
         })?;
 
@@ -1513,7 +1510,7 @@ fn try_cache_hit_load(
     // Sprint 58 Step 5b §3.2 — pull structural decls (platforms) out of the
     // about-to-be-moved symbol table BEFORE `restore_cached_module` consumes
     // it. We re-resolve platform DLLs after install so each
-    // `PlatformEffect`-kind entry's `platform_fn_ptr` is repopulated
+    // `PlatformEffect`-kind entry's `fn_ptr` is repopulated
     // (Decision 26 — re-derive on cache-hit load via the same
     // `load_and_register_platform` path used by fresh build).
     let cached_platforms: Vec<PlatformSpec> =
@@ -1540,7 +1537,7 @@ fn try_cache_hit_load(
 
     // Sprint 58 Step 5b §3.2 — re-resolve platform fn ptrs for each
     // (platform …) declaration recorded on the cached SymbolTable. The
-    // `platform_fn_ptr` fields are `#[serde(skip)]` so they arrived as
+    // `fn_ptr` fields are `#[serde(skip)]` so they arrived as
     // `None`; re-running `load_and_register_platform` opens the DLL,
     // validates the manifest, and populates the live entries on the
     // synthetic `platform.{name}` module — matching the fresh-build path's
@@ -1566,14 +1563,14 @@ fn try_cache_hit_load(
             Ok((platform, _jit_syms)) => {
                 // Mirror `handle_platform`'s post-load fn-ptr write: walk the
                 // synthetic `platform.{name}` module and populate
-                // `platform_fn_ptr` from the descriptor pointers.
+                // `fn_ptr` from the descriptor pointers.
                 let plat_path = ModuleFullPath::from(format!("platform.{}", platform.name));
                 if let Some(mut table) = ctx.symbol_tables.get_mut(&plat_path) {
                     for desc in &platform.descriptors {
-                        if let Some(ModuleEntry::Def { platform_fn_ptr, .. }) =
+                        if let Some(ModuleEntry::Def { fn_ptr, .. }) =
                             table.symbols.get_mut(desc.name.as_str())
                         {
-                            *platform_fn_ptr = Some(desc.ptr);
+                            *fn_ptr = Some(desc.ptr);
                         }
                     }
                 }
@@ -1700,8 +1697,7 @@ fn register_transitive_cached_imports(
                     "failed to read transitive dep '{}' from '{}': {}",
                     dep_for_err, dep_file_ref.display(), e
                 ),
-                file: Some(dep_file_ref.clone()),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(dep_file_ref.clone())),
             }
         }) {
             Ok(s) => s,
@@ -1748,8 +1744,7 @@ fn handle_export(
                     "module '{}' not found (re-exported by '{}')",
                     dep, module
                 ),
-                file: None,
-                span: spec.span,
+                location: ErrorLocation::from_span_file(spec.span, None),
             })?;
 
         // Populate file_to_module mapping for file watcher.
@@ -1779,8 +1774,7 @@ fn handle_export(
                     "cannot read module '{}' from '{}': {}",
                     dep_clone_for_err, dep_file_for_err.display(), e
                 ),
-                file: Some(dep_file_for_err.clone()),
-                span: spec_span,
+                location: ErrorLocation::from_span_file(spec_span, Some(dep_file_for_err.clone())),
             }
         })?;
 
@@ -1829,8 +1823,7 @@ fn handle_mod(
                 "submodule '{}' not found (declared by '{}')",
                 sub_path, module
             ),
-            file: None,
-            span: decl.span,
+            location: ErrorLocation::from_span_file(decl.span, None),
         })?;
 
     // Populate file_to_module mapping for file watcher.
@@ -1862,8 +1855,7 @@ fn handle_mod(
                 dep_file_for_err.display(),
                 e
             ),
-            file: Some(dep_file_for_err.clone()),
-            span: decl_span,
+            location: ErrorLocation::from_span_file(decl_span, Some(dep_file_for_err.clone())),
         }
     })?;
 
@@ -1908,27 +1900,27 @@ fn handle_platform(
         spec.span,
     )?;
 
-    // Sprint 57 Wave 3 G8: write `platform_fn_ptr` onto each
+    // Sprint 57 Wave 3 G8: write `fn_ptr` onto each
     // `ModuleEntry::Def` in the synthetic `platform.{name}` module. This
     // replaces `PlatformRegistry.register`. The entry was inserted in
-    // `register_platform_in_tc` (src/platform.rs) with `platform_fn_ptr: None`;
+    // `register_platform_in_tc` (src/platform.rs) with `fn_ptr: None`;
     // this follow-up write populates the runtime pointer.
     let module_path = ModuleFullPath::from(format!("platform.{}", platform.name));
     if let Some(mut table) = ctx.symbol_tables.get_mut(&module_path) {
         for desc in &platform.descriptors {
-            if let Some(ModuleEntry::Def { platform_fn_ptr, .. }) =
+            if let Some(ModuleEntry::Def { fn_ptr, .. }) =
                 table.symbols.get_mut(desc.name.as_str())
             {
-                *platform_fn_ptr = Some(desc.ptr);
+                *fn_ptr = Some(desc.ptr);
             }
         }
     }
 
     // Retain the DLL handle on the session's `kept_dlls` pool so that
-    // `platform_fn_ptr` remains valid for the session lifetime. Without this
+    // `fn_ptr` remains valid for the session lifetime. Without this
     // push, the `LoadedPlatform` would drop at the end of this function,
     // `libloading::Library::drop` would `dlclose` the DLL, and every
-    // `platform_fn_ptr` would dangle.
+    // `fn_ptr` would dangle.
     if let Some(shared) = ctx.shared_state {
         shared
             .kept_dlls
@@ -1940,7 +1932,7 @@ fn handle_platform(
         // pointers remain valid for the process lifetime. This matches the
         // pre-G8 comment that "Platform DLLs are leaked (kept alive for
         // process lifetime)". Dropping `platform` here would `dlclose` the
-        // DLL and dangle every `platform_fn_ptr`.
+        // DLL and dangle every `fn_ptr`.
         std::mem::forget(platform);
     }
     Ok(())
@@ -1965,8 +1957,7 @@ fn write_inline_mod_to_disk(
             file_path.display(),
             e
         ),
-        file: Some(file_path.clone()),
-        span: Span::SYNTHETIC,
+        location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(file_path.clone())),
     })?;
 
     // Write body sexps as source text.
@@ -1981,8 +1972,7 @@ fn write_inline_mod_to_disk(
             file_path.display(),
             e
         ),
-        file: Some(file_path),
-        span: Span::SYNTHETIC,
+        location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(file_path)),
     })?;
 
     Ok(())
@@ -2163,7 +2153,7 @@ fn compile_macro_clause_inline(
                 "macro clause {} for '{}' produced no defn",
                 clause_idx, macro_name
             ),
-            span,
+            location: ErrorLocation::from_span(span),
         })?;
 
     let defn = ctx.symbol_tables
@@ -2351,8 +2341,7 @@ fn inject_prelude_if_needed(
                         prelude_file_for_err.display(),
                         e
                     ),
-                    file: Some(prelude_file_for_err.clone()),
-                    span: Span::SYNTHETIC,
+                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(prelude_file_for_err.clone())),
                 }
             })?;
 
@@ -2554,7 +2543,7 @@ fn wrap_exprs_as_defns(program: &[TopLevel]) -> Vec<TopLevel> {
 ///
 /// Replaces `SessionCompilationEnv::collect_jit_setup_for_module`. Walks the
 /// module's symbol table for `PlatformEffect` primitives (both direct defs and
-/// imports), reads their function pointers from `ModuleEntry::Def.platform_fn_ptr`
+/// imports), reads their function pointers from `ModuleEntry::Def.fn_ptr`
 /// (Sprint 57 Wave 3 G8 — the ptr lives on the entry itself, replacing the
 /// deleted `PlatformRegistry`), and then records every existing module's GOT
 /// base address so the JIT module can define `__cranelisp_got_{m}` literal-pool
@@ -2573,7 +2562,7 @@ fn collect_jit_setup(
             match entry {
                 ModuleEntry::Def {
                     kind,
-                    platform_fn_ptr: Some(ptr),
+                    fn_ptr: Some(ptr),
                     ..
                 } => {
                     if let DefKind::Primitive {
@@ -2588,7 +2577,7 @@ fn collect_jit_setup(
                     if let Some(source_table) = tc_modules.get(&source.module)
                         && let Some(ModuleEntry::Def {
                             kind,
-                            platform_fn_ptr: Some(ptr),
+                            fn_ptr: Some(ptr),
                             ..
                         }) = source_table.get(source.symbol.as_ref())
                         && let DefKind::Primitive {
@@ -2942,8 +2931,7 @@ pub fn inline_jit_codegen_for_names(
                      `compile_to_module` must emit a code pointer for every \
                      name in the input batch."
                 ),
-                file: None,
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
             });
         };
 
@@ -2958,8 +2946,7 @@ pub fn inline_jit_codegen_for_names(
                      typecheck phase before any codegen runs; a missing slot \
                      here indicates a typecheck-to-codegen handoff contract breach."
                 ),
-                file: None,
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
             });
         };
         {
@@ -2972,8 +2959,7 @@ pub fn inline_jit_codegen_for_names(
                          `inline_jit_codegen_for_names` must ensure \
                          `tc_modules[module]` is live for the duration of the call."
                     ),
-                    file: None,
-                    span: Span::SYNTHETIC,
+                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
                 });
             };
             st.got.store_slot(slot, code_ptr);
@@ -2991,8 +2977,7 @@ pub fn inline_jit_codegen_for_names(
                      for module '{module}' disappeared during codegen while \
                      writing Code::Jit for '{name}'."
                 ),
-                file: None,
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
             });
         };
         let Some(entry) = st.symbols.get_mut(name.as_ref()) else {
@@ -3006,8 +2991,7 @@ pub fn inline_jit_codegen_for_names(
                      `tc_modules[module].symbols` during codegen, which \
                      violates Decision 37's scheduler discipline."
                 ),
-                file: None,
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
             });
         };
         let cranelisp_types::ModuleEntry::Def { code, .. } = entry else {
@@ -3019,8 +3003,7 @@ pub fn inline_jit_codegen_for_names(
                      products; a name reaching this loop without a Def entry \
                      indicates a typecheck-to-codegen handoff contract breach."
                 ),
-                file: None,
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
             });
         };
         *code = Some(crate::code::Code::jit(
@@ -3100,23 +3083,20 @@ fn load_cached_module_via_linker(
 
     let cache_dir = shared_state.cache_dir.as_ref().ok_or_else(|| CranelispError::ModuleError {
         message: format!("no cache directory for cache-hit loading of '{}'", module),
-        file: None,
-        span: Span::SYNTHETIC,
+        location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
     })?;
 
     // Load metadata from disk.
     let cached = cache::try_load_cached_module(cache_dir, module)?
         .ok_or_else(|| CranelispError::ModuleError {
             message: format!("cache metadata missing for module '{}'", module),
-            file: None,
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
         })?;
 
     if !cached.has_object {
         return Err(CranelispError::ModuleError {
             message: format!("cached .o file missing for module '{}'", module),
-            file: None,
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
         });
     }
 
@@ -3131,13 +3111,13 @@ fn load_cached_module_via_linker(
     // Sprint 57 Wave 3 G8: register platform symbols by walking symbol
     // tables instead of the deleted `PlatformRegistry`. Every
     // `PlatformEffect` entry carries its DLL function pointer on
-    // `ModuleEntry::Def.platform_fn_ptr`; the corresponding `jit_name` is
+    // `ModuleEntry::Def.fn_ptr`; the corresponding `jit_name` is
     // the linker-side symbol.
     for st_entry in shared_state.symbol_tables.iter() {
         for (_name, entry) in st_entry.value().all_symbols() {
             if let ModuleEntry::Def {
                 kind,
-                platform_fn_ptr: Some(ptr),
+                fn_ptr: Some(ptr),
                 ..
             } = entry
                 && let DefKind::Primitive {
@@ -3172,8 +3152,7 @@ fn load_cached_module_via_linker(
     let module_got = shared_state.symbol_tables.get(module)
         .ok_or_else(|| CranelispError::ModuleError {
             message: format!("no symbol table for cached module '{}'", module),
-            file: None,
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
         })?.got.clone();
 
     // Load the .o file — one mmap + relocation pass.
@@ -3206,8 +3185,7 @@ fn load_cached_module_via_linker(
                      This indicates a cache inconsistency — the cached `.meta.json` \
                      records a defined function whose code is missing from the `.o`."
                 ),
-                file: None,
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
             });
         };
         module_got.store_slot(slot, ptr);
@@ -3266,8 +3244,7 @@ fn handle_cached_codegen(
 
     let shared = shared_state.ok_or_else(|| CranelispError::ModuleError {
         message: format!("no shared state for cache-hit loading of '{}'", module),
-        file: None,
-        span: Span::SYNTHETIC,
+        location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
     })?;
 
     // Sprint 57 Wave 2 G6: `codegen_products` deleted. The linker is retained
@@ -3394,8 +3371,7 @@ fn handle_typecheck_work_shared(
         map.get(module)
             .ok_or_else(|| CranelispError::ModuleError {
                 message: format!("no parsed sexps for module '{}'", module),
-                file: None,
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
             })?
             .clone()
     };
@@ -3511,7 +3487,7 @@ fn handle_typecheck_work_shared(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::{
+    use cranelisp_types::{ErrorLocation, 
         DefKind, Defn, DefnVariant, Expr, FQSymbol, ModuleEntry, ModuleFullPath,
         Scheme, Symbol, Type, Visibility,
     };
@@ -3560,7 +3536,7 @@ mod tests {
             trait_origin: None,
             ast,
             code: None,
-            platform_fn_ptr: None,
+            fn_ptr: None,
         }
     }
 
@@ -4094,7 +4070,7 @@ mod tests {
                     ),
                     fake_ptr,
                 )),
-                platform_fn_ptr: None,
+                fn_ptr: None,
             },
         );
         symbol_tables.insert(dep_module.clone(), dep_st);
@@ -4136,14 +4112,14 @@ mod tests {
     }
 
     // spec: design/int/platform-registry-removal.md §10 — `(platform …)`
-    // form handler writes `platform_fn_ptr` onto the `ModuleEntry::Def`
+    // form handler writes `fn_ptr` onto the `ModuleEntry::Def`
     // of each platform function (replacing `PlatformRegistry.register`).
     //
     // Loading a real DLL requires the stdio platform build artefact and a
     // scoped `SharedState`; what is structurally load-bearing is that
     // `collect_jit_setup` reads the pointer from
-    // `ModuleEntry::Def.platform_fn_ptr`. This test seeds a
-    // `PlatformEffect` entry with an explicit `platform_fn_ptr: Some(_)`
+    // `ModuleEntry::Def.fn_ptr`. This test seeds a
+    // `PlatformEffect` entry with an explicit `fn_ptr: Some(_)`
     // (mirroring exactly what `handle_platform` writes) and asserts the
     // reader picks the pointer off the entry itself (not off the deleted
     // `PlatformRegistry`).
@@ -4177,7 +4153,7 @@ mod tests {
             trait_origin: None,
             ast: None,
             code: None,
-            platform_fn_ptr: Some(fake_ptr),
+            fn_ptr: Some(fake_ptr),
         };
 
         let mut st = crate::code::SessionSymbolTable::new_with_params(current.clone());
@@ -4188,11 +4164,11 @@ mod tests {
         {
             let table = symbol_tables.get(&current).expect("platform table present");
             match table.get("print").expect("print entry present") {
-                ModuleEntry::Def { platform_fn_ptr, .. } => {
+                ModuleEntry::Def { fn_ptr, .. } => {
                     assert_eq!(
-                        *platform_fn_ptr,
+                        *fn_ptr,
                         Some(fake_ptr),
-                        "handle_platform must write platform_fn_ptr onto ModuleEntry::Def"
+                        "handle_platform must write fn_ptr onto ModuleEntry::Def"
                     );
                 }
                 other => panic!("expected Def entry, got {other:?}"),
@@ -4206,7 +4182,7 @@ mod tests {
             jit_syms
                 .iter()
                 .any(|(name, ptr)| name == jit_name.as_ref() && *ptr == fake_ptr),
-            "collect_jit_setup must surface the platform fn from ModuleEntry::Def.platform_fn_ptr; \
+            "collect_jit_setup must surface the platform fn from ModuleEntry::Def.fn_ptr; \
              got {jit_syms:?}"
         );
     }
@@ -4248,7 +4224,7 @@ mod tests {
             trait_origin: None,
             ast: None,
             code: None,
-            platform_fn_ptr: Some(fake_ptr),
+            fn_ptr: Some(fake_ptr),
         };
         let mut plat_st = crate::code::SessionSymbolTable::new_with_params(plat_mod.clone());
         plat_st.insert(Symbol::from("print"), plat_entry);
@@ -4271,7 +4247,7 @@ mod tests {
 
         // The caller's `collect_jit_setup` must follow the Import chain
         // (one step) to the defining `platform.stdio` entry and read
-        // `platform_fn_ptr` there.
+        // `fn_ptr` there.
         let (jit_syms, _got) = collect_jit_setup(&symbol_tables, &user_mod);
         assert!(
             jit_syms
@@ -4660,8 +4636,7 @@ mod tests {
                  This indicates a cache inconsistency — the cached `.meta.json` \
                  records a defined function whose code is missing from the `.o`."
             ),
-            file: None,
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
         };
 
         // The error message MUST mention both the module and the bare name

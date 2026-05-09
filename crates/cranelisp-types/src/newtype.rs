@@ -67,6 +67,7 @@ string_newtype!(TraitName);
 string_newtype!(TypeName);
 string_newtype!(ModuleName);
 string_newtype!(JitSymbol);
+string_newtype!(LinkerSymbol);
 
 /// Fully qualified symbol: module path + local name.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

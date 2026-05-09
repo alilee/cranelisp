@@ -8,6 +8,7 @@ pub mod sexp;
 pub mod ast;
 pub mod types;
 pub mod check;
+pub mod parsed;
 // `pub mod code` removed in Sprint 58 Wave 3b (Decision 35): the old
 // pointer-only `cranelisp_types::Code` struct dissolves in favour of the
 // integration layer's `Code` enum at `src/code.rs`, which carries
@@ -27,7 +28,11 @@ pub mod scheduling;
 
 // Re-export key types at crate root for convenience.
 pub use span::Span;
-pub use error::{CranelispError, Warning, WarningKind};
+pub use error::{
+    CranelispError, ErrorLocation, LineCol, LineColRange, LinkerError, PlatformError,
+    ResolutionGap, Warning, WarningKind,
+};
+pub use parsed::{DefmacroInfo, MacroClause, ParsedEntry};
 pub use sexp::Sexp;
 pub use ast::{
     ConstructorDef, Defn, DefnVariant, Expr, FieldDef, MatchArm, Pattern, Program,
@@ -62,6 +67,6 @@ pub use marshal::{
 
 // String newtypes and fully-qualified name types
 pub use newtype::{
-    FQSymbol, FQTraitName, FQTypeName, JitSymbol, ModuleFullPath, ModuleName, Symbol, TraitName,
-    TypeName,
+    FQSymbol, FQTraitName, FQTypeName, JitSymbol, LinkerSymbol, ModuleFullPath, ModuleName, Symbol,
+    TraitName, TypeName,
 };

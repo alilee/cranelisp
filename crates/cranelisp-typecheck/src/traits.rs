@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cranelisp_types::{
+use cranelisp_types::{ErrorLocation, 
     ConstrainedFn, CranelispError, DefKind, Defn, DefnVariant, FQTraitName, FQTypeName,
     JitSymbol, MethodResolutions, ModuleEntry, ModuleFullPath, MonoDefn, ResolvedCall, Scheme,
     Sexp, Span, Symbol, TraitDecl, TraitImpl, TraitMethodSig, TraitName, Type, TypeId, TypeName,
@@ -98,7 +98,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         if self.lookup_trait_decl(&decl.name).is_some() {
             return Err(CranelispError::TypeError {
                 message: format!("trait {} already defined", decl.name),
-                span: decl.span,
+                location: ErrorLocation::from_span(decl.span),
             });
         }
 
@@ -211,7 +211,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     trait_origin: Some(fq_trait_name.clone()),
                     ast: None,
                     code: None,
-                    platform_fn_ptr: None,
+                    fn_ptr: None,
                 },
             );
 
@@ -274,7 +274,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 trait_origin: Some(fq_trait_name),
                 ast: None,
                 code: None,
-                platform_fn_ptr: None,
+                fn_ptr: None,
             },
         );
 
@@ -335,7 +335,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .lookup_trait_decl(&impl_.trait_name)
             .ok_or_else(|| CranelispError::TypeError {
                 message: format!("unknown trait: {}", impl_.trait_name),
-                span: impl_.span,
+                location: ErrorLocation::from_span(impl_.span),
             })?;
 
         // HKT arity validation: if the trait has constructor variables,
@@ -359,7 +359,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                                             "{} is not a type constructor (trait {} expects arity {})",
                                             impl_.target_type, impl_.trait_name, expected_arity
                                         ),
-                                        span: impl_.span,
+                                        location: ErrorLocation::from_span(impl_.span),
                                     });
                                 }
                                 _ => {}
@@ -377,7 +377,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                                     impl_.trait_name,
                                     expected_arity
                                 ),
-                                span: impl_.span,
+                                location: ErrorLocation::from_span(impl_.span),
                             });
                         }
                     }
@@ -441,7 +441,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         "internal: default method defn name {} does not match expected mangled form",
                         mangled
                     ),
-                    span: default_defn.span,
+                    location: ErrorLocation::from_span(default_defn.span),
                 })?;
             let method_sig = decl
                 .methods
@@ -452,7 +452,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         "internal: trait {} has no method named {}",
                         decl.name, method_name
                     ),
-                    span: default_defn.span,
+                    location: ErrorLocation::from_span(default_defn.span),
                 })?;
             let annotated = self.check_impl_method_with_sig(
                 state,
@@ -502,7 +502,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         "impl {} for {}: missing required method {}",
                         decl.name, impl_.target_type, method_sig.name
                     ),
-                    span: impl_.span,
+                    location: ErrorLocation::from_span(impl_.span),
                 });
             }
         }
@@ -533,7 +533,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     "method {} not found in trait {}",
                     method_defn.name, decl.name
                 ),
-                span: method_defn.span,
+                location: ErrorLocation::from_span(method_defn.span),
             })?;
         self.check_impl_method_with_sig(state, decl, impl_, method_defn, method_sig, false)
     }
@@ -701,7 +701,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     trait_origin: None,
                     ast: Some(annotated.clone()),
                     code: None,
-                    platform_fn_ptr: None,
+                    fn_ptr: None,
                 },
             );
         }
@@ -854,7 +854,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     trait_origin: None,
                     ast: Some(annotated.clone()),
                     code: None,
-                    platform_fn_ptr: None,
+                    fn_ptr: None,
                 },
             );
         }
@@ -1003,7 +1003,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     "no impl of trait {} for type {}",
                     trait_name, impl_type_name
                 ),
-                span,
+                location: ErrorLocation::from_span(span),
             });
         }
 
@@ -1212,7 +1212,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 trait_origin: None,
                 ast: Some(mono.defn.clone()),
                 code: None,
-                platform_fn_ptr: None,
+                fn_ptr: None,
             },
         );
     }
@@ -1258,7 +1258,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                             "no impl of trait {} for type {}",
                             fq_trait, impl_type
                         ),
-                        span: call_span,
+                        location: ErrorLocation::from_span(call_span),
                     });
                 }
             }
@@ -1416,7 +1416,7 @@ fn build_default_body(
                 "default method {trait_name}.{method_name}: expected 2 params, got {}",
                 param_names.len()
             ),
-            span,
+            location: ErrorLocation::from_span(span),
         });
     }
 
@@ -1481,7 +1481,7 @@ fn build_default_body(
             message: format!(
                 "no hard-coded default body for {trait_name}.{method_name}"
             ),
-            span,
+            location: ErrorLocation::from_span(span),
         }),
     }
 }
@@ -1523,7 +1523,7 @@ fn sexp_to_default_expr(sexp: &Sexp) -> Result<cranelisp_types::Expr, CranelispE
             if children.is_empty() {
                 return Err(CranelispError::TypeError {
                     message: "empty list in default method body".into(),
-                    span: *span,
+                    location: ErrorLocation::from_span(*span),
                 });
             }
             let callee = Box::new(sexp_to_default_expr(&children[0])?);
@@ -1541,7 +1541,7 @@ fn sexp_to_default_expr(sexp: &Sexp) -> Result<cranelisp_types::Expr, CranelispE
         }
         _ => Err(CranelispError::TypeError {
             message: format!("unsupported sexp form in default method body: {:?}", sexp),
-            span: sexp.span(),
+            location: ErrorLocation::from_span(sexp.span()),
         }),
     }
 }
@@ -1561,7 +1561,7 @@ fn resolve_trait_type_expr(
         TypeExpr::Named(name) => Type::from_name(name.as_ref())
             .ok_or_else(|| CranelispError::TypeError {
                 message: format!("unknown type: {name}"),
-                span,
+                location: ErrorLocation::from_span(span),
             }),
         TypeExpr::TypeVar(name) => {
             if let Some(ty) = var_map.get(name) {
@@ -1648,7 +1648,7 @@ fn resolve_type_expr_hkt(
         TypeExpr::SelfType => {
             Err(CranelispError::TypeError {
                 message: "Self is not allowed in HKT trait signatures".to_string(),
-                span,
+                location: ErrorLocation::from_span(span),
             })
         }
         TypeExpr::FnType(params, ret) => {
@@ -1709,7 +1709,7 @@ fn resolve_type_expr_hkt_impl(
         TypeExpr::SelfType => {
             Err(CranelispError::TypeError {
                 message: "Self is not allowed in HKT trait signatures".to_string(),
-                span,
+                location: ErrorLocation::from_span(span),
             })
         }
         TypeExpr::FnType(params, ret) => {
@@ -1841,8 +1841,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 mod tests {
     use super::*;
     use crate::checker::TestFixture;
-    use cranelisp_types::{
-        Defn, DefnVariant, ImportNames, ImportSpec, ModuleEntry, ModuleFullPath,
+    use cranelisp_types::{Defn, DefnVariant, ImportNames, ImportSpec, ModuleEntry, ModuleFullPath,
         Sexp, Span, TraitDecl, TraitImpl, TraitMethodSig, TypeExpr, Visibility,
     };
 

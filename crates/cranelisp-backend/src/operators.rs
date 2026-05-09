@@ -15,7 +15,7 @@
 use cranelift::prelude::*;
 use cranelift_module::{FuncId, Module};
 
-use cranelisp_types::{CranelispError, Span, Symbol, TraitName, TypeName};
+use cranelisp_types::{ErrorLocation, CranelispError, Span, Symbol, TraitName, TypeName};
 
 /// Emit inline Cranelift IR for a builtin primitive.
 ///
@@ -72,7 +72,7 @@ pub fn emit_builtin_op<M: Module>(
         "neq-bool" => emit_int_cmp(builder, name, args, IntCC::NotEqual, span),
         _ => Err(CranelispError::CodegenError {
             message: format!("unknown builtin primitive: {name}"),
-            span,
+            location: ErrorLocation::from_span(span),
         }),
     }
 }
@@ -207,7 +207,7 @@ fn emit_checked_div<M: Module>(
 
     let panic_id = panic_func_id.ok_or_else(|| CranelispError::CodegenError {
         message: "runtime/panic not declared".into(),
-        span,
+        location: ErrorLocation::from_span(span),
     })?;
 
     let lhs = args[0];
@@ -273,7 +273,7 @@ fn emit_panic_return<M: Module>(
         .declare_anonymous_data(false, false)
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to declare panic data: {e}"),
-            span,
+            location: ErrorLocation::from_span(span),
         })?;
     let mut desc = cranelift_module::DataDescription::new();
     desc.define(msg.to_vec().into_boxed_slice());
@@ -281,7 +281,7 @@ fn emit_panic_return<M: Module>(
         .define_data(data_id, &desc)
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to define panic data: {e}"),
-            span,
+            location: ErrorLocation::from_span(span),
         })?;
 
     let gv = module.declare_data_in_func(data_id, builder.func);
@@ -371,7 +371,7 @@ fn require_args(name: &str, args: &[Value], expected: usize, span: Span) -> Resu
                 "primitive '{name}' requires {expected} argument(s), got {}",
                 args.len()
             ),
-            span,
+            location: ErrorLocation::from_span(span),
         });
     }
     Ok(())

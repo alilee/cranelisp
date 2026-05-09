@@ -4,7 +4,7 @@
 //! forms into `ExtractedDeclarations`, returning remaining sexps for further processing.
 //! This runs before macro expansion per spec §8.12.1.
 
-use cranelisp_types::{
+use cranelisp_types::{ErrorLocation, 
     CranelispError, ExportSpec, ImportNames, ImportSpec, ModDecl, ModuleFullPath, ModuleName,
     PlatformSpec, Sexp, Span,
 };
@@ -89,8 +89,7 @@ fn parse_mod_decl(elems: &[Sexp], span: Span, is_private: bool) -> Result<ModDec
     if elems.len() < 2 {
         return Err(CranelispError::ModuleError {
             message: "mod declaration requires a name".to_string(),
-            file: None,
-            span,
+            location: ErrorLocation::from_span_file(span, None),
         });
     }
 
@@ -130,8 +129,7 @@ fn parse_import(
     if elems.len() != 2 {
         return Err(CranelispError::ModuleError {
             message: "import requires exactly one bracket argument".to_string(),
-            file: None,
-            span,
+            location: ErrorLocation::from_span_file(span, None),
         });
     }
 
@@ -140,8 +138,7 @@ fn parse_import(
         _ => {
             return Err(CranelispError::ModuleError {
                 message: "import argument must be a bracket list".to_string(),
-                file: None,
-                span: elems[1].span(),
+                location: ErrorLocation::from_span_file(elems[1].span(), None),
             });
         }
     };
@@ -176,8 +173,7 @@ fn parse_import_entries(
                             "'super' import used in top-level module '{}' (no parent)",
                             containing_module.as_ref()
                         ),
-                        file: None,
-                        span: mod_span,
+                        location: ErrorLocation::from_span_file(mod_span, None),
                     });
                 }
             }
@@ -189,8 +185,7 @@ fn parse_import_entries(
         if i >= items.len() {
             return Err(CranelispError::ModuleError {
                 message: format!("import: missing names list after module '{}'", module_path),
-                file: None,
-                span: form_span,
+                location: ErrorLocation::from_span_file(form_span, None),
             });
         }
 
@@ -220,8 +215,7 @@ fn parse_module_spec(sexp: &Sexp) -> Result<(String, Option<String>, Span), Cran
             if elems.len() != 2 {
                 return Err(CranelispError::ModuleError {
                     message: "aliased module spec must be (module alias)".to_string(),
-                    file: None,
-                    span: *span,
+                    location: ErrorLocation::from_span_file(*span, None),
                 });
             }
             let module = expect_symbol(&elems[0], "module path in alias")?;
@@ -230,8 +224,7 @@ fn parse_module_spec(sexp: &Sexp) -> Result<(String, Option<String>, Span), Cran
         }
         other => Err(CranelispError::ModuleError {
             message: "expected module specifier (symbol or (module alias))".to_string(),
-            file: None,
-            span: other.span(),
+            location: ErrorLocation::from_span_file(other.span(), None),
         }),
     }
 }
@@ -279,8 +272,7 @@ fn parse_names_list(sexp: &Sexp) -> Result<(ImportNames, Span), CranelispError> 
         }
         other => Err(CranelispError::ModuleError {
             message: "expected bracket names list".to_string(),
-            file: None,
-            span: other.span(),
+            location: ErrorLocation::from_span_file(other.span(), None),
         }),
     }
 }
@@ -294,8 +286,7 @@ fn parse_export(elems: &[Sexp], span: Span) -> Result<Vec<ExportSpec>, Cranelisp
     if elems.len() != 2 {
         return Err(CranelispError::ModuleError {
             message: "export requires exactly one bracket argument".to_string(),
-            file: None,
-            span,
+            location: ErrorLocation::from_span_file(span, None),
         });
     }
 
@@ -304,8 +295,7 @@ fn parse_export(elems: &[Sexp], span: Span) -> Result<Vec<ExportSpec>, Cranelisp
         _ => {
             return Err(CranelispError::ModuleError {
                 message: "export argument must be a bracket list".to_string(),
-                file: None,
-                span: elems[1].span(),
+                location: ErrorLocation::from_span_file(elems[1].span(), None),
             });
         }
     };
@@ -326,8 +316,7 @@ fn parse_export_entries(items: &[Sexp], form_span: Span) -> Result<Vec<ExportSpe
         if i >= items.len() {
             return Err(CranelispError::ModuleError {
                 message: format!("export: missing names list after module '{}'", module_path),
-                file: None,
-                span: form_span,
+                location: ErrorLocation::from_span_file(form_span, None),
             });
         }
 
@@ -354,8 +343,7 @@ fn parse_platform(elems: &[Sexp], span: Span) -> Result<PlatformSpec, CranelispE
     if elems.len() != 2 {
         return Err(CranelispError::ModuleError {
             message: "platform declaration requires exactly one name argument".to_string(),
-            file: None,
-            span,
+            location: ErrorLocation::from_span_file(span, None),
         });
     }
 
@@ -388,8 +376,7 @@ pub fn parse_import_sexp(
         }
         _ => Err(CranelispError::ModuleError {
             message: "expected (import [...]) form".to_string(),
-            file: None,
-            span: sexp.span(),
+            location: ErrorLocation::from_span_file(sexp.span(), None),
         }),
     }
 }
@@ -402,8 +389,7 @@ pub fn parse_export_sexp(sexp: &Sexp) -> Result<Vec<ExportSpec>, CranelispError>
         }
         _ => Err(CranelispError::ModuleError {
             message: "expected (export [...]) form".to_string(),
-            file: None,
-            span: sexp.span(),
+            location: ErrorLocation::from_span_file(sexp.span(), None),
         }),
     }
 }
@@ -418,15 +404,13 @@ pub fn parse_mod_sexp(sexp: &Sexp) -> Result<ModDecl, CranelispError> {
             } else {
                 Err(CranelispError::ModuleError {
                     message: "expected (mod ...) or (mod- ...) form".to_string(),
-                    file: None,
-                    span: *span,
+                    location: ErrorLocation::from_span_file(*span, None),
                 })
             }
         }
         _ => Err(CranelispError::ModuleError {
             message: "expected (mod ...) or (mod- ...) form".to_string(),
-            file: None,
-            span: sexp.span(),
+            location: ErrorLocation::from_span_file(sexp.span(), None),
         }),
     }
 }
@@ -439,8 +423,7 @@ pub fn parse_platform_sexp(sexp: &Sexp) -> Result<PlatformSpec, CranelispError> 
         }
         _ => Err(CranelispError::ModuleError {
             message: "expected (platform ...) form".to_string(),
-            file: None,
-            span: sexp.span(),
+            location: ErrorLocation::from_span_file(sexp.span(), None),
         }),
     }
 }
@@ -455,8 +438,7 @@ fn expect_symbol(sexp: &Sexp, context: &str) -> Result<String, CranelispError> {
         Sexp::Symbol(name, _) => Ok(name.clone()),
         other => Err(CranelispError::ModuleError {
             message: format!("expected symbol for {}, got {:?}", context, other),
-            file: None,
-            span: other.span(),
+            location: ErrorLocation::from_span_file(other.span(), None),
         }),
     }
 }

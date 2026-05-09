@@ -6,7 +6,7 @@
 //!
 //! Commas are whitespace (Clojure convention). Comments run from `;` to EOL.
 
-use cranelisp_types::{CranelispError, Sexp, Span};
+use cranelisp_types::{ErrorLocation, CranelispError, Sexp, Span};
 
 // ---------------------------------------------------------------------------
 // Parser state
@@ -53,7 +53,7 @@ impl<'a> Reader<'a> {
         let pos = self.pos as u32;
         CranelispError::ParseError {
             message: message.to_string(),
-            span: Span::new(pos, pos),
+            location: ErrorLocation::from_span(Span::new(pos, pos)),
         }
     }
 
@@ -61,7 +61,7 @@ impl<'a> Reader<'a> {
     fn error_at(&self, message: &str, start: u32, end: u32) -> CranelispError {
         CranelispError::ParseError {
             message: message.to_string(),
-            span: Span::new(start, end),
+            location: ErrorLocation::from_span(Span::new(start, end)),
         }
     }
 }

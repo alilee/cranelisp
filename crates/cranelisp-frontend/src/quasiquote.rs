@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use cranelisp_types::{CranelispError, Sexp, Span};
+use cranelisp_types::{ErrorLocation, CranelispError, Sexp, Span};
 
 /// Global counter for unique synthetic spans. Starts well above any realistic
 /// source file size to avoid collisions with real source spans.
@@ -317,7 +317,7 @@ fn expand_qq_list(
                 return Err(CranelispError::ParseError {
                     message:
                         "unquote-splicing (~@) not valid at top level of quasiquote".to_string(),
-                    span,
+                    location: ErrorLocation::from_span(span),
                 });
             }
             let inner = expand_qq_template(&children[1], depth - 1, gensym_map)?;

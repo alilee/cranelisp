@@ -14,7 +14,7 @@ use cranelift::prelude::*;
 use cranelift_module::{default_libcall_names, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
-use cranelisp_types::{CranelispError, Span};
+use cranelisp_types::{ErrorLocation, CranelispError, Span};
 
 /// Generate a startup `.o` that defines `start` (exported, referenced by
 /// the linker via `-e _start`) which initializes platforms, calls `main()`,
@@ -39,7 +39,7 @@ pub fn generate_startup_object(
         ObjectBuilder::new(isa, "cranelisp_startup", default_libcall_names()).map_err(|e| {
             CranelispError::CodegenError {
                 message: format!("failed to create ObjectBuilder: {e}"),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             }
         })?;
     let mut obj_module = ObjectModule::new(obj_builder);
@@ -53,7 +53,7 @@ pub fn generate_startup_object(
         .declare_function(entry_fn_name, Linkage::Import, &main_sig)
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to declare {}: {e}", entry_fn_name),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
     // Declare `cranelisp_run_io` as imported (IO trampoline)
@@ -66,7 +66,7 @@ pub fn generate_startup_object(
                 .declare_function("cranelisp_run_io", Linkage::Import, &run_io_sig)
                 .map_err(|e| CranelispError::CodegenError {
                     message: format!("failed to declare cranelisp_run_io: {e}"),
-                    span: Span::SYNTHETIC,
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
                 })?,
         )
     } else {
@@ -80,7 +80,7 @@ pub fn generate_startup_object(
         .declare_function("exit", Linkage::Import, &exit_sig)
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to declare exit: {e}"),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
     // Declare `cranelisp_init_platform` as imported (if platforms exist)
@@ -92,7 +92,7 @@ pub fn generate_startup_object(
                 .declare_function("cranelisp_init_platform", Linkage::Import, &init_sig)
                 .map_err(|e| CranelispError::CodegenError {
                     message: format!("failed to declare cranelisp_init_platform: {e}"),
-                    span: Span::SYNTHETIC,
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
                 })?,
         )
     } else {
@@ -107,7 +107,7 @@ pub fn generate_startup_object(
             .declare_function(manifest_name, Linkage::Import, &manifest_sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare {manifest_name}: {e}"),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             })?;
         manifest_func_ids.push(fid);
     }
@@ -118,7 +118,7 @@ pub fn generate_startup_object(
         .declare_function("start", Linkage::Export, &start_sig)
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to declare start: {e}"),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
     let mut func = cranelift::codegen::ir::Function::with_name_signature(
@@ -176,13 +176,13 @@ pub fn generate_startup_object(
         .define_function(start_func_id, &mut ctx)
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to define start: {e:?}"),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
     let product = obj_module.finish();
     let bytes = product.emit().map_err(|e| CranelispError::CodegenError {
         message: format!("failed to emit startup object: {e}"),
-        span: Span::SYNTHETIC,
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
     })?;
 
     Ok(bytes)

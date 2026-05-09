@@ -14,7 +14,7 @@ use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 
-use cranelisp_types::{
+use cranelisp_types::{ErrorLocation, 
     CranelispError, Defn, Span, Symbol,
 };
 
@@ -39,26 +39,26 @@ pub fn build_isa() -> Result<Arc<dyn cranelift::codegen::isa::TargetIsa>, Cranel
         .set("use_colocated_libcalls", "false")
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to set ISA flag: {e}"),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
     flag_builder
         .set("is_pic", "false")
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to set ISA flag: {e}"),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
     let isa_builder =
         cranelift_native::builder().map_err(|msg| CranelispError::CodegenError {
             message: format!("host architecture not supported: {msg}"),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
     isa_builder
         .finish(settings::Flags::new(flag_builder))
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to build ISA: {e}"),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         })
 }
 
@@ -401,7 +401,7 @@ impl Jit {
                 .declare_function(&defn.name, Linkage::Export, &sig)
                 .map_err(|e| CranelispError::CodegenError {
                     message: format!("failed to declare function '{}': {e}", defn.name),
-                    span: defn.span,
+                    location: ErrorLocation::from_span(defn.span),
                 })?;
             func_ids.insert(defn.name.clone(), func_id);
         }
@@ -431,7 +431,7 @@ impl Jit {
                 .declare_function(&qualified_name, Linkage::Export, &sig)
                 .map_err(|e| CranelispError::CodegenError {
                     message: format!("failed to declare function '{}': {e}", defn.name),
-                    span: defn.span,
+                    location: ErrorLocation::from_span(defn.span),
                 })?;
             func_ids.insert(defn.name.clone(), func_id);
             jit_names.insert(defn.name.clone(), Symbol::from(qualified_name));
@@ -464,7 +464,7 @@ impl Jit {
                         "failed to declare imported function '{}': {e}",
                         name
                     ),
-                    span: Span::SYNTHETIC,
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
                 })?;
             func_ids.insert(name.clone(), func_id);
         }
@@ -527,7 +527,7 @@ impl Jit {
             .get(&defn.name)
             .ok_or_else(|| CranelispError::CodegenError {
                 message: format!("function '{}' not declared", defn.name),
-                span: defn.span,
+                location: ErrorLocation::from_span(defn.span),
             })?;
 
         let module = self.module.as_mut().unwrap_or_else(|| {
@@ -539,7 +539,7 @@ impl Jit {
             .define_function(func_id, &mut self.ctx)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to define function '{}': {e}", defn.name),
-                span: defn.span,
+                location: ErrorLocation::from_span(defn.span),
             })?;
 
         // Capture disasm + code size after compilation, before clear_context.
@@ -620,7 +620,7 @@ impl Jit {
         self.module_mut().finalize_definitions().map_err(|e| {
             CranelispError::CodegenError {
                 message: format!("failed to finalize JIT definitions: {e}"),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             }
         })
     }
@@ -647,7 +647,7 @@ impl Jit {
             .declare_function(name, Linkage::Export, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to look up function '{}': {e}", name),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             })?;
 
         Ok(self.module().get_finalized_function(func_id))
@@ -668,7 +668,7 @@ impl Jit {
             .declare_function(name, Linkage::Export, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to look up function '{}': {e}", name),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             })?;
         Ok(self.module().get_finalized_function(func_id))
     }
@@ -744,7 +744,7 @@ pub fn declare_intrinsics_generic<M: Module>(
             .declare_function(sym.name, Linkage::Import, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare intrinsic '{}': {e}", sym.name),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             })?;
 
         ids.by_name.insert(Symbol::from(sym.name), func_id);

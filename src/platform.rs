@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use cranelisp_platform::{
     ABI_VERSION, HostCallbacks, OwnedPlatformFnDescriptor, PlatformManifest,
 };
-use cranelisp_types::{
+use cranelisp_types::{ErrorLocation, 
     CranelispError, DefKind, JitSymbol, ModuleEntry, ModuleFullPath, PrimitiveKind, Scheme, Sexp,
     Span, Symbol, Type, Visibility,
 };
@@ -157,8 +157,7 @@ pub fn load_platform_dll(
                 dll_path.display(),
                 e
             ),
-            file: Some(dll_path.to_path_buf()),
-            span,
+            location: ErrorLocation::from_span_file(span, Some(dll_path.to_path_buf())),
         })?
     };
 
@@ -173,8 +172,7 @@ pub fn load_platform_dll(
                     dll_path.display(),
                     e
                 ),
-                file: Some(dll_path.to_path_buf()),
-                span,
+                location: ErrorLocation::from_span_file(span, Some(dll_path.to_path_buf())),
             })?
     };
 
@@ -191,8 +189,7 @@ pub fn load_platform_dll(
                 "platform ABI version mismatch: platform has {}, host expects {}",
                 manifest.abi_version, ABI_VERSION
             ),
-            file: Some(dll_path.to_path_buf()),
-            span,
+            location: ErrorLocation::from_span_file(span, Some(dll_path.to_path_buf())),
         });
     }
 
@@ -201,8 +198,7 @@ pub fn load_platform_dll(
         cranelisp_platform::manifest_to_descriptors(&manifest).map_err(|e| {
             CranelispError::ModuleError {
                 message: e,
-                file: Some(dll_path.to_path_buf()),
-                span,
+                location: ErrorLocation::from_span_file(span, Some(dll_path.to_path_buf())),
             }
         })?
     };
@@ -272,7 +268,7 @@ pub fn register_platform_in_tc(
                     trait_origin: None,
                     ast: None,
                     code: None,
-                    platform_fn_ptr: None,
+                    fn_ptr: None,
                 },
             );
         }
@@ -294,8 +290,7 @@ fn parse_platform_type_sig(sig: &str, fn_name: &str) -> Result<Type, CranelispEr
             "invalid type signature for platform function '{}': {}",
             fn_name, sig
         ),
-        file: None,
-        span: Span::SYNTHETIC,
+        location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
     })?;
 
     if sexps.len() != 1 {
@@ -305,8 +300,7 @@ fn parse_platform_type_sig(sig: &str, fn_name: &str) -> Result<Type, CranelispEr
                 fn_name,
                 sexps.len()
             ),
-            file: None,
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
         });
     }
 
@@ -327,8 +321,7 @@ fn sexp_to_type(sexp: &Sexp, fn_name: &str) -> Result<Type, CranelispError> {
                     "unknown type '{}' in platform function '{}' signature",
                     name, fn_name
                 ),
-                file: None,
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
             })
         }
         Sexp::List(elems, _) if !elems.is_empty() => {
@@ -341,8 +334,7 @@ fn sexp_to_type(sexp: &Sexp, fn_name: &str) -> Result<Type, CranelispError> {
                             "unsupported type constructor '{}' in platform function '{}' signature",
                             head, fn_name
                         ),
-                        file: None,
-                        span: Span::SYNTHETIC,
+                        location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
                     }),
                 }
             } else {
@@ -351,8 +343,7 @@ fn sexp_to_type(sexp: &Sexp, fn_name: &str) -> Result<Type, CranelispError> {
                         "invalid type form in platform function '{}' signature",
                         fn_name
                     ),
-                    file: None,
-                    span: Span::SYNTHETIC,
+                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
                 })
             }
         }
@@ -361,8 +352,7 @@ fn sexp_to_type(sexp: &Sexp, fn_name: &str) -> Result<Type, CranelispError> {
                 "invalid type in platform function '{}' signature",
                 fn_name
             ),
-            file: None,
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
         }),
     }
 }
@@ -375,8 +365,7 @@ fn parse_fn_type(elems: &[Sexp], fn_name: &str) -> Result<Type, CranelispError> 
                 "Fn type must have exactly 2 arguments (params and return), got {}",
                 elems.len() - 1
             ),
-            file: None,
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
         });
     }
 
@@ -395,8 +384,7 @@ fn parse_fn_type(elems: &[Sexp], fn_name: &str) -> Result<Type, CranelispError> 
                     "Fn type params must be a bracket list in platform function '{}'",
                     fn_name
                 ),
-                file: None,
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
             });
         }
     };
@@ -415,8 +403,7 @@ fn parse_io_type(elems: &[Sexp], fn_name: &str) -> Result<Type, CranelispError> 
                 "IO type must have exactly 1 argument, got {}",
                 elems.len() - 1
             ),
-            file: None,
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
         });
     }
 
@@ -471,8 +458,7 @@ pub fn load_and_register_platform(
         .ok_or_else(|| {
             CranelispError::ModuleError {
                 message: format!("platform '{}' not found", platform_name),
-                file: None,
-                span,
+                location: ErrorLocation::from_span_file(span, None),
             }
         })?;
 
@@ -486,8 +472,7 @@ pub fn load_and_register_platform(
                 "platform manifest name '{}' does not match declared name '{}'",
                 platform.name, platform_name
             ),
-            file: Some(dll_path),
-            span,
+            location: ErrorLocation::from_span_file(span, Some(dll_path)),
         });
     }
 

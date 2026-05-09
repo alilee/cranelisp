@@ -33,7 +33,7 @@
 
 use std::collections::HashMap;
 
-use cranelisp_types::{CranelispError, Span};
+use cranelisp_types::{ErrorLocation, CranelispError, Span};
 
 /// Mach-O aarch64 relocation types (from mach-o/arm64/reloc.h).
 #[allow(dead_code)]
@@ -154,7 +154,7 @@ impl Linker {
             let page = memmap2::MmapMut::map_anon(PAGE_SIZE).map_err(|e| {
                 CranelispError::CodegenError {
                     message: format!("failed to mmap GOT slot page: {e}"),
-                    span: Span::SYNTHETIC,
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
                 }
             })?;
             self.got_pool.push(page);
@@ -198,7 +198,7 @@ impl Linker {
 
         let obj = object::File::parse(bytes).map_err(|e| CranelispError::CodegenError {
             message: format!("failed to parse object file: {e}"),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
         // Find the .text section (Mach-O uses "__text" in "__TEXT" segment)
@@ -207,11 +207,11 @@ impl Linker {
             .or_else(|| obj.section_by_name(".text"))
             .ok_or_else(|| CranelispError::CodegenError {
                 message: "object file has no text section".to_string(),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             })?;
         let text_data = text_section.data().map_err(|e| CranelispError::CodegenError {
             message: format!("failed to read text section: {e}"),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
         let text_size = text_data.len();
 
@@ -223,7 +223,7 @@ impl Linker {
         let mut mmap =
             memmap2::MmapMut::map_anon(text_size).map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to mmap code region: {e}"),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             })?;
         mmap[..text_size].copy_from_slice(text_data);
         let base_addr = mmap.as_ptr() as usize;
@@ -270,19 +270,19 @@ impl Linker {
                     let sym = obj.symbol_by_index(sym_idx).map_err(|e| {
                         CranelispError::CodegenError {
                             message: format!("bad relocation symbol: {e}"),
-                            span: Span::SYNTHETIC,
+                            location: ErrorLocation::from_span(Span::SYNTHETIC),
                         }
                     })?;
                     let raw_name = sym.name().map_err(|e| CranelispError::CodegenError {
                         message: format!("bad symbol name: {e}"),
-                        span: Span::SYNTHETIC,
+                        location: ErrorLocation::from_span(Span::SYNTHETIC),
                     })?;
                     raw_name.strip_prefix('_').unwrap_or(raw_name).to_string()
                 }
                 _ => {
                     return Err(CranelispError::CodegenError {
                         message: "unsupported relocation target".to_string(),
-                        span: Span::SYNTHETIC,
+                        location: ErrorLocation::from_span(Span::SYNTHETIC),
                     });
                 }
             };
@@ -294,7 +294,7 @@ impl Linker {
                 .copied()
                 .ok_or_else(|| CranelispError::CodegenError {
                     message: format!("unresolved symbol: {target_name}"),
-                    span: Span::SYNTHETIC,
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
                 })?;
 
             let patch_addr = base_addr + offset as usize;
@@ -352,7 +352,7 @@ impl Linker {
                         message: format!(
                             "unsupported relocation flags {flags:?} for '{target_name}'"
                         ),
-                        span: Span::SYNTHETIC,
+                        location: ErrorLocation::from_span(Span::SYNTHETIC),
                     });
                 }
             }
@@ -371,7 +371,7 @@ impl Linker {
                         "mprotect failed: {}",
                         std::io::Error::last_os_error()
                     ),
-                    span: Span::SYNTHETIC,
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
                 });
             }
         }
@@ -407,7 +407,7 @@ impl Linker {
         for section in &data_sections {
             let section_data = section.data().map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to read data section: {e}"),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             })?;
             if section_data.is_empty() {
                 continue;
@@ -417,7 +417,7 @@ impl Linker {
             let mut data_mmap = memmap2::MmapMut::map_anon(section_data.len())
                 .map_err(|e| CranelispError::CodegenError {
                     message: format!("failed to mmap data region: {e}"),
-                    span: Span::SYNTHETIC,
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
                 })?;
             data_mmap[..section_data.len()].copy_from_slice(section_data);
             let data_base = data_mmap.as_ptr() as usize;
@@ -561,7 +561,7 @@ fn apply_macho_arm64_reloc(
                          instead of BL for external function calls.",
                         rel_offset * 4
                     ),
-                    span: Span::SYNTHETIC,
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
                 });
             }
             let existing =
@@ -615,7 +615,7 @@ fn apply_macho_arm64_reloc(
                 message: format!(
                     "unsupported Mach-O ARM64 relocation type {r_type} for '{target_name}'"
                 ),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             });
         }
     }
@@ -646,7 +646,7 @@ fn apply_elf_aarch64_reloc(
                          Fix: emit ADRP+LDR+BLR for external function calls.",
                         rel_offset * 4
                     ),
-                    span: Span::SYNTHETIC,
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
                 });
             }
             let existing =
@@ -691,7 +691,7 @@ fn apply_elf_aarch64_reloc(
                 message: format!(
                     "unsupported ELF aarch64 relocation type {r_type} for '{target_name}'"
                 ),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             });
         }
     }

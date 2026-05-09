@@ -4,7 +4,7 @@
 //! and free functions for clause matching, invocation, and span rewriting.
 //! Lives in the binary crate because it wires typecheck + backend.
 
-use cranelisp_types::{
+use cranelisp_types::{ErrorLocation, 
     CranelispError, MacroParam, Sexp, Span, Symbol,
     NULLARY_TAG_THRESHOLD,
 };
@@ -149,7 +149,7 @@ pub(crate) fn invoke_clause(
             message: format!(
                 "macro returned invalid value {result_i64} (expected heap pointer)"
             ),
-            span,
+            location: ErrorLocation::from_span(span),
         });
     }
 
@@ -207,7 +207,7 @@ fn invoke_jit_protected(
     if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
         return Err(CranelispError::MacroError {
             message: format!("runtime error during macro expansion: {msg}"),
-            span,
+            location: ErrorLocation::from_span(span),
         });
     }
 
@@ -221,7 +221,7 @@ fn invoke_jit_protected(
                 libc::SIGBUS => "runtime error during macro expansion: bus error".to_string(),
                 _ => format!("runtime error during macro expansion: signal {sig}"),
             };
-            Err(CranelispError::MacroError { message, span })
+            Err(CranelispError::MacroError { message, location: ErrorLocation::from_span(span) })
         }
         Err(panic_payload) => {
             // Rust panic caught (e.g., from runtime_panic).
@@ -232,7 +232,7 @@ fn invoke_jit_protected(
             } else {
                 "unknown runtime error during macro expansion".to_string()
             };
-            Err(CranelispError::MacroError { message, span })
+            Err(CranelispError::MacroError { message, location: ErrorLocation::from_span(span) })
         }
     }
 }
@@ -361,7 +361,7 @@ pub(crate) fn expand_sexp_recursive(
             message: format!(
                 "macro expansion depth limit ({EXPANSION_DEPTH_LIMIT}) exceeded"
             ),
-            span: sexp.span(),
+            location: ErrorLocation::from_span(sexp.span()),
         });
     }
 
@@ -420,7 +420,7 @@ pub(crate) fn expand_macro_call_with_entry(
                 "no matching clause for macro '{name}' with {} arguments",
                 args.len()
             ),
-            span,
+            location: ErrorLocation::from_span(span),
         }
     })?;
 

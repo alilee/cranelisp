@@ -9,7 +9,7 @@
 
 use std::collections::HashSet;
 
-use cranelisp_types::{
+use cranelisp_types::{ErrorLocation, 
     CranelispError, ConstructorDef, Defn, DefnVariant, Expr, FieldDef, MatchArm,
     Pattern, Program, Sexp, Span, Symbol, TopLevel, TraitDecl, TraitImpl,
     TraitMethodSig, TraitName, TypeExpr, TypeName, Visibility,
@@ -23,7 +23,7 @@ use cranelisp_types::{
 fn parse_err(message: &str, span: Span) -> CranelispError {
     CranelispError::ParseError {
         message: message.to_string(),
-        span,
+        location: ErrorLocation::from_span(span),
     }
 }
 
@@ -925,7 +925,7 @@ fn build_expr(sexp: &Sexp) -> Result<Expr, CranelispError> {
         Sexp::Bracket(children, span) => build_vec_lit(children, *span),
         Sexp::Comment(_, span) => Err(CranelispError::ParseError {
             message: "unexpected comment in expression position".to_string(),
-            span: *span,
+            location: ErrorLocation::from_span(*span),
         }),
     }
 }

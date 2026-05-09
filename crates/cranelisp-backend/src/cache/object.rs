@@ -20,7 +20,7 @@ use cranelift_object::ObjectModule;
 
 use serde::{Deserialize, Serialize};
 
-use cranelisp_types::{
+use cranelisp_types::{ErrorLocation, 
     CranelispError, Defn, MethodResolutions, ModuleFullPath,
     Scheme, Span, Symbol, SymbolTable, Type,
 };
@@ -142,26 +142,26 @@ pub fn build_isa(
         .set("use_colocated_libcalls", "false")
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to set ISA flag: {e}"),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
     flag_builder
         .set("is_pic", if is_pic { "true" } else { "false" })
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to set ISA flag: {e}"),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
     let isa_builder =
         cranelift_native::builder().map_err(|msg| CranelispError::CodegenError {
             message: format!("host architecture not supported: {msg}"),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
     isa_builder
         .finish(settings::Flags::new(flag_builder))
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to build ISA: {e}"),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         })
 }
 
@@ -192,7 +192,7 @@ pub fn build_cache_packet(
         serde_json::to_string_pretty(metadata)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to serialize module metadata: {e}"),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             })?
             .into_bytes();
 
@@ -232,7 +232,7 @@ pub fn process_cache_packet(
                 "failed to write cache metadata for {}: {e}",
                 packet.module_path
             ),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         }
     })?;
 
@@ -256,7 +256,7 @@ pub fn process_cache_packet(
         let obj_builder = ObjectBuilder::new(isa, "cranelisp_module", default_libcall_names())
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to create ObjectBuilder: {e}"),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             })?;
         let mut obj_module = ObjectModule::new(obj_builder);
 
@@ -270,7 +270,7 @@ pub fn process_cache_packet(
         let product = obj_module.finish();
         let obj_bytes = product.emit().map_err(|e| CranelispError::CodegenError {
             message: format!("failed to emit object file: {e}"),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
         super::atomic_write(&packet.object_path, &obj_bytes).map_err(|e| {
@@ -279,7 +279,7 @@ pub fn process_cache_packet(
                     "failed to write object file for {}: {e}",
                     packet.module_path
                 ),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             }
         })?;
     }
@@ -476,7 +476,7 @@ mod tests {
                 trait_origin: None,
                 ast: Some(defn),
                 code: None,
-                platform_fn_ptr: None,
+                fn_ptr: None,
             },
         );
         tables.insert(module.clone(), st);

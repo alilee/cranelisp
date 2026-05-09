@@ -11,7 +11,7 @@ use cranelift::codegen::ir::{StackSlotData, StackSlotKind};
 use cranelift::prelude::*;
 use cranelift_module::{FuncId, Linkage, Module};
 
-use cranelisp_types::{CranelispError, Expr, Span};
+use cranelisp_types::{ErrorLocation, CranelispError, Expr, Span};
 
 use super::{FnCompiler, TracedFnInfo};
 
@@ -210,7 +210,7 @@ where
             .declare_function(name, Linkage::Import, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare trace extern '{}': {}", name, e),
-                span,
+                location: ErrorLocation::from_span(span),
             })
     }
 
@@ -264,7 +264,7 @@ where
                     "failed to declare trace wrapper for '{}': {}",
                     tf.name, e
                 ),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         // Declare trace_enter (4 params), trace_exit (2 params), and trace_format (2 params).
@@ -386,7 +386,7 @@ where
                         "failed to define trace wrapper for '{}': {}",
                         tf.name, e
                     ),
-                    span,
+                    location: ErrorLocation::from_span(span),
                 })?;
         }
 

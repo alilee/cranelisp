@@ -11,7 +11,7 @@
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
-use cranelisp_types::{
+use cranelisp_types::{ErrorLocation, 
     CranelispError, Expr, HeapCategory, HeapHeader, Span, Type,
 };
 
@@ -33,7 +33,7 @@ where
         let vec_new_id = self.ctx.vec_new_func_id.ok_or_else(|| {
             CranelispError::CodegenError {
                 message: "runtime/vec_new not declared (need declare_intrinsics)".into(),
-                span,
+                location: ErrorLocation::from_span(span),
             }
         })?;
 
@@ -138,7 +138,7 @@ where
         let panic_id = self.ctx.panic_func_id.ok_or_else(|| {
             CranelispError::CodegenError {
                 message: "runtime/panic not declared".into(),
-                span,
+                location: ErrorLocation::from_span(span),
             }
         })?;
 
@@ -516,7 +516,7 @@ where
         let vec_drop_id = self.ctx.vec_drop_func_id.ok_or_else(|| {
             CranelispError::CodegenError {
                 message: "runtime/vec_drop not declared".into(),
-                span,
+                location: ErrorLocation::from_span(span),
             }
         })?;
 
@@ -613,7 +613,7 @@ where
         let vec_drop_id = self.ctx.vec_drop_func_id.ok_or_else(|| {
             CranelispError::CodegenError {
                 message: "runtime/vec_drop not declared (need declare_intrinsics)".into(),
-                span,
+                location: ErrorLocation::from_span(span),
             }
         })?;
 
@@ -661,7 +661,7 @@ where
             .declare_function(&name, Linkage::Local, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare elem inc fn: {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         let mut ctx = self.module.make_context();
@@ -703,7 +703,7 @@ where
             .define_function(func_id, &mut ctx)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to define elem inc fn: {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         Ok(func_id)
@@ -750,7 +750,7 @@ where
             .declare_function(&name, Linkage::Local, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare elem dec fn: {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         let mut ctx = self.module.make_context();
@@ -782,7 +782,7 @@ where
             .define_function(func_id, &mut ctx)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to define elem dec fn: {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         Ok(func_id)
@@ -870,7 +870,7 @@ where
             .declare_function(&glue_name, Linkage::Local, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare drop glue fn: {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         let mut ctx = self.module.make_context();
@@ -953,7 +953,7 @@ where
             .define_function(glue_func_id, &mut ctx)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to define drop glue fn: {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         Ok(Some(glue_func_id))
@@ -995,7 +995,7 @@ where
                         let vdrop = vec_drop_id.ok_or_else(|| {
                             CranelispError::CodegenError {
                                 message: "runtime/vec_drop not declared for drop-glue Vec field".into(),
-                                span,
+                                location: ErrorLocation::from_span(span),
                             }
                         })?;
                         // Build per-element dec fn (needs &mut self; outer
@@ -1107,7 +1107,7 @@ where
             .declare_function(name, Linkage::Import, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare extern '{name}': {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
         let func_ref = self
             .module
@@ -1136,7 +1136,7 @@ where
             .declare_function(name, Linkage::Import, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare extern '{name}': {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
         let func_ref = self
             .module
@@ -1167,7 +1167,7 @@ where
             .declare_function(name, Linkage::Import, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare extern '{name}': {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
         let func_ref = self
             .module
@@ -1288,7 +1288,7 @@ fn emit_vec_bounds_panic<M: Module>(
         .declare_anonymous_data(false, false)
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to declare panic data: {e}"),
-            span,
+            location: ErrorLocation::from_span(span),
         })?;
     let mut desc = cranelift_module::DataDescription::new();
     desc.define(msg.to_vec().into_boxed_slice());
@@ -1296,7 +1296,7 @@ fn emit_vec_bounds_panic<M: Module>(
         .define_data(data_id, &desc)
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to define panic data: {e}"),
-            span,
+            location: ErrorLocation::from_span(span),
         })?;
 
     let gv = module.declare_data_in_func(data_id, builder.func);

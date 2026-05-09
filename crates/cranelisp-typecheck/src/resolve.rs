@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use cranelisp_types::{CranelispError, FQTypeName, Span, Symbol, Type, TypeExpr, TypeId, TypeName};
+use cranelisp_types::{ErrorLocation, CranelispError, FQTypeName, Span, Symbol, Type, TypeExpr, TypeId, TypeName};
 
 /// Map of known user-defined type names to their FQTypeName and type parameter count.
 /// Used by `resolve_type_expr` for ADT lookup and arity validation.
@@ -38,13 +38,13 @@ pub fn resolve_type_expr(
                 .map(|&id| Type::Var(id))
                 .ok_or_else(|| CranelispError::TypeError {
                     message: format!("unresolved type variable: :{name}"),
-                    span,
+                    location: ErrorLocation::from_span(span),
                 })
         }
 
         TypeExpr::SelfType => Err(CranelispError::TypeError {
             message: "Self type not available outside trait implementations".into(),
-            span,
+            location: ErrorLocation::from_span(span),
         }),
 
         TypeExpr::Applied(name, args) => {
@@ -71,7 +71,7 @@ fn resolve_named(
 
     Err(CranelispError::TypeError {
         message: format!("unknown type: {name}"),
-        span,
+        location: ErrorLocation::from_span(span),
     })
 }
 
@@ -89,7 +89,7 @@ fn resolve_applied(
     let (fqtn, expected_arity) = known_types.get(name).ok_or_else(|| {
         CranelispError::TypeError {
             message: format!("unknown type: {name}"),
-            span,
+            location: ErrorLocation::from_span(span),
         }
     })?;
 
@@ -99,7 +99,7 @@ fn resolve_applied(
                 "type {name} expects {expected_arity} type argument(s), got {}",
                 args.len()
             ),
-            span,
+            location: ErrorLocation::from_span(span),
         });
     }
 

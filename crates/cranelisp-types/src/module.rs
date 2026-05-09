@@ -284,10 +284,10 @@ impl ModuleEntry<()> {
         match self {
             ModuleEntry::Def {
                 scheme, visibility, docstring, param_names, kind, callees,
-                got_slot, trait_origin, ast, code: _, platform_fn_ptr,
+                got_slot, trait_origin, ast, code: _, fn_ptr,
             } => ModuleEntry::Def {
                 scheme, visibility, docstring, param_names, kind, callees,
-                got_slot, trait_origin, ast, code: None, platform_fn_ptr,
+                got_slot, trait_origin, ast, code: None, fn_ptr,
             },
             ModuleEntry::Import { source } => ModuleEntry::Import { source },
             ModuleEntry::Reexport { source } => ModuleEntry::Reexport { source },
@@ -460,24 +460,34 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         /// primitive.
         #[serde(skip)]
         code: Option<C>,
-        /// Platform-function pointer written during `(platform ...)` form
-        /// processing (Sprint 57 Wave 3 / G8, Decision 26 in
-        /// `design/arch/CLAUDE.md`).
+        /// Unified fn pointer — single source of truth for "where to call to
+        /// invoke this entry." Origin is encoded by `kind: DefKind`, NOT by
+        /// which optional field is set. Per Sprint 66 fn_ptr unification
+        /// (supersedes the per-origin `fn_ptr` field; see
+        /// `design/arch/sprint-66-types-authoring-plan.md` §1.7-revised).
         ///
-        /// `Some` only when `kind == DefKind::Primitive { primitive_kind:
-        /// PrimitiveKind::PlatformEffect { .. }, .. }`. `None` for every
-        /// non-platform `Def`. Replaces the separate `PlatformRegistry`:
-        /// the IO trampoline and JIT symbol resolution look up platform fn
-        /// ptrs by walking Import chains to the defining `PlatformEffect`
-        /// entry and reading this field.
+        ///   - `DefKind::Function | UserFn { … }` — user fn; ptr written by
+        ///     backend at codegen (JIT path) or by `load_object` (linker-loaded
+        ///     cache path); paired with `code = Some(Code::Jit(_))` or
+        ///     `Some(Code::Linker(_))`.
+        ///   - `DefKind::Primitive { primitive_kind: Builtin | Inline | … }` —
+        ///     primitive; ptr written at static-init by
+        ///     `cranelisp-primitives::PRIMITIVES_TABLE`; `code = None`
+        ///     (primitives have process lifetime; no per-entry lifecycle owner).
+        ///   - `DefKind::Primitive { primitive_kind: PlatformEffect { … } }` —
+        ///     platform DLL fn; ptr resolved at platform-load time from
+        ///     `OwnedPlatformFnDescriptor.ptr`; `code = None` (DLL handle held
+        ///     in `SharedState.kept_dlls`).
         ///
-        /// `#[serde(skip)]` — runtime state. The pointer is valid for as long
-        /// as the owning DLL is loaded; the session retains DLL handles for
-        /// every platform entry. On cache-hit load this field deserialises to
-        /// `None`; it is re-populated by re-opening the DLL referenced by the
-        /// corresponding `PlatformDecl` entry and reading its manifest.
+        /// `#[serde(skip)]` — runtime state, never persisted. The pointer is
+        /// valid for as long as the owning DLL is loaded (platform fns) or
+        /// the JIT module is alive (user fns); the session retains the
+        /// appropriate handle. On cache-hit load this field deserialises to
+        /// `None`; it is re-populated by the appropriate path (re-opening
+        /// the DLL for platform fns; reading the relocated symbol address
+        /// for linker-loaded user fns; static-init for primitives).
         #[serde(skip, default)]
-        platform_fn_ptr: Option<*const u8>,
+        fn_ptr: Option<*const u8>,
     },
     /// An imported name from another module (Ring 2).
     Import { source: FQSymbol },
@@ -535,15 +545,17 @@ pub enum ModuleEntry<C: CodeStore = ()> {
     Ambiguous,
 }
 
-// SAFETY: `ModuleEntry::Def` carries `platform_fn_ptr: Option<*const u8>`
-// (Sprint 57 Wave 3, Decision 26) — a raw pointer into DLL code pages.
-// The pointer is an integer handle; transmitting the integer across threads
-// is safe. The backing pages are kept alive at the session level (session's
-// `loaded_platforms` DLL handles), which outlives every `SymbolTable`
-// holding entries that reference them. Threads that dereference
-// `platform_fn_ptr` must hold a live handle (directly or transitively via
-// the session) to the owning resource — the session enforces this
-// invariant.
+// SAFETY: `ModuleEntry::Def` carries `fn_ptr: Option<*const u8>`
+// (Sprint 66 fn_ptr unification — supersedes the prior `fn_ptr`
+// per the Sprint 66 authoring plan §1.7-revised) — a raw pointer into
+// JIT-allocated, linker-loaded, or DLL-loaded code pages depending on the
+// entry's `kind: DefKind`. The pointer is an integer handle; transmitting
+// the integer across threads is safe. The backing pages are kept alive by
+// the session-level owner appropriate for the entry's origin (`SharedState`
+// holds DLL handles for platform entries, `Arc<Jit>` lives in
+// `code = Some(Code::Jit(_))` for JIT-compiled user fns, etc.) — the
+// session enforces the invariant that any thread dereferencing `fn_ptr`
+// holds a live handle (directly or transitively) to the owning resource.
 //
 // `code: Option<C>` (Decision 25 + Decision 32) is parameterised over
 // `C: CodeStore`, which itself requires `Send + Sync + 'static`. The
@@ -554,8 +566,7 @@ pub enum ModuleEntry<C: CodeStore = ()> {
 // carries its own `unsafe impl Send + Sync` with the `Arc<Jit>` /
 // `Arc<Linker>` keeping the backing pages alive. The `CodeStore` bound
 // guarantees `Send + Sync` propagates through `Option<C>`, so the
-// `unsafe impl` here covers only the `*const u8` pointer in
-// `platform_fn_ptr`.
+// `unsafe impl` here covers only the `*const u8` pointer in `fn_ptr`.
 unsafe impl<C: CodeStore> Send for ModuleEntry<C> {}
 unsafe impl<C: CodeStore> Sync for ModuleEntry<C> {}
 
@@ -629,8 +640,9 @@ pub enum PrimitiveKind {
     /// The variant serialises normally: `scheduling_class` is static manifest
     /// data (re-read from the DLL manifest on cache-hit load via `PlatformDecl`
     /// reconstruction, not a runtime pointer). Contrast with the sibling
-    /// `ModuleEntry::Def.platform_fn_ptr` which is `#[serde(skip)]` because it
-    /// IS a runtime pointer into the loaded DLL's code pages.
+    /// `ModuleEntry::Def.fn_ptr` which is `#[serde(skip)]` because it
+    /// IS a runtime pointer into the loaded DLL's code pages (or JIT pages,
+    /// or linker-loaded pages, depending on `kind`).
     PlatformEffect {
         scheduling_class: SchedulingClass,
     },
@@ -762,7 +774,7 @@ mod tests {
             trait_origin: None,
             ast,
             code: None,
-            platform_fn_ptr: None,
+            fn_ptr: None,
         }
     }
 
@@ -1029,7 +1041,7 @@ mod tests {
             // `()` flavour — Some/None of the unit type. Serde discipline
             // is the same regardless of `C`.
             code: Some(()),
-            platform_fn_ptr: None,
+            fn_ptr: None,
         };
 
         let json = serde_json::to_string(&entry).expect("entry must serialize");
@@ -1057,9 +1069,9 @@ mod tests {
         }
     }
 
-    // ---- Sprint 57 Wave 3 Step A — Decision 26: platform_fn_ptr + scheduling_class ----
+    // ---- Sprint 57 Wave 3 Step A — Decision 26: fn_ptr + scheduling_class ----
 
-    // spec: design/arch/CLAUDE.md Decision 26 — `platform_fn_ptr: Option<*const u8>`
+    // spec: design/arch/CLAUDE.md Decision 26 — `fn_ptr: Option<*const u8>`
     //       sibling field on ModuleEntry::Def; defaults to None on fresh construction.
     #[test]
     fn platform_fn_ptr_field_defaults_to_none() {
@@ -1068,11 +1080,11 @@ mod tests {
             Some(trivial_defn("fresh")),
         );
         match entry {
-            ModuleEntry::Def { platform_fn_ptr, .. } => {
+            ModuleEntry::Def { fn_ptr, .. } => {
                 assert!(
-                    platform_fn_ptr.is_none(),
-                    "freshly constructed ModuleEntry::Def must have platform_fn_ptr: None; got {:?}",
-                    platform_fn_ptr
+                    fn_ptr.is_none(),
+                    "freshly constructed ModuleEntry::Def must have fn_ptr: None; got {:?}",
+                    fn_ptr
                 );
             }
             other => panic!("expected ModuleEntry::Def, got {:?}", other),
@@ -1121,7 +1133,7 @@ mod tests {
         }
     }
 
-    // spec: design/arch/CLAUDE.md Decision 26 — `#[serde(skip)]` on platform_fn_ptr;
+    // spec: design/arch/CLAUDE.md Decision 26 — `#[serde(skip)]` on fn_ptr;
     //       runtime-only, never round-trips through the cache manifest. Also confirms
     //       the `scheduling_class` inside PrimitiveKind::PlatformEffect DOES round-trip
     //       (it is static manifest data, not a runtime pointer).
@@ -1155,15 +1167,15 @@ mod tests {
             trait_origin: None,
             ast: None,
             code: None,
-            platform_fn_ptr: Some(fake_ptr),
+            fn_ptr: Some(fake_ptr),
         };
 
         let json = serde_json::to_string(&entry).expect("entry must serialize");
 
-        // `platform_fn_ptr` field must not appear in the serialised form.
+        // `fn_ptr` field must not appear in the serialised form.
         assert!(
-            !json.contains("platform_fn_ptr"),
-            "serialised form must not contain the `platform_fn_ptr` field (it is #[serde(skip)]): {}",
+            !json.contains("fn_ptr"),
+            "serialised form must not contain the `fn_ptr` field (it is #[serde(skip)]): {}",
             json
         );
         // Raw pointer value must not leak through (hex or decimal representation).
@@ -1176,11 +1188,11 @@ mod tests {
         let rt: ModuleEntry =
             serde_json::from_str(&json).expect("entry must deserialize");
         match rt {
-            ModuleEntry::Def { platform_fn_ptr, kind, .. } => {
+            ModuleEntry::Def { fn_ptr, kind, .. } => {
                 assert!(
-                    platform_fn_ptr.is_none(),
-                    "deserialised ModuleEntry::Def must have platform_fn_ptr: None (serde(skip)); got {:?}",
-                    platform_fn_ptr
+                    fn_ptr.is_none(),
+                    "deserialised ModuleEntry::Def must have fn_ptr: None (serde(skip)); got {:?}",
+                    fn_ptr
                 );
                 // scheduling_class (on the variant) MUST round-trip — it is static
                 // manifest data, not a runtime pointer. Re-reading the DLL manifest
@@ -1457,7 +1469,7 @@ mod tests {
     // spec: design/typecheck/ast-annotation.md §11.3 invariant 6 — serde round-trip
     //       identity. A SymbolTable serialised → deserialised yields structurally
     //       identical fields modulo runtime-only fields (`got`, `code`,
-    //       `platform_fn_ptr`, `linker`).
+    //       `fn_ptr`, `linker`).
     #[test]
     fn symbol_table_serde_round_trip_with_structural_decls() {
         let mut st = SymbolTable::new(ModuleFullPath::from("user.module"));
@@ -1707,7 +1719,7 @@ mod tests {
             trait_origin: None,
             ast: Some(trivial_defn("synthetic")),
             code: Some(42i64),
-            platform_fn_ptr: None,
+            fn_ptr: None,
         };
 
         // The `code` field carries the synthetic `C = i64` value.
@@ -1745,7 +1757,7 @@ mod tests {
                     code
                 );
                 // ast survives the round-trip — only the `code` (and
-                // `platform_fn_ptr`) fields are skipped.
+                // `fn_ptr`) fields are skipped.
                 assert!(ast.is_some(), "ast must survive the round-trip");
             }
             other => panic!("expected ModuleEntry::Def, got {:?}", other),

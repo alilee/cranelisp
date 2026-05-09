@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::Instant;
 
-use cranelisp_types::{CodegenBehaviour, CranelispError, Span};
+use cranelisp_types::{ErrorLocation, CodegenBehaviour, CranelispError, Span};
 
 use cranelisp::observability;
 use cranelisp::session_v4::{CommandResult, CompilerSession, SessionSettings};
@@ -393,13 +393,11 @@ fn read_file(path: &Path) -> Result<String, CranelispError> {
     if !path.exists() {
         return Err(CranelispError::ModuleError {
             message: format!("file not found: {}", path.display()),
-            file: Some(path.to_path_buf()),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(path.to_path_buf())),
         });
     }
     std::fs::read_to_string(path).map_err(|e| CranelispError::ModuleError {
         message: format!("cannot read '{}': {}", path.display(), e),
-        file: Some(path.to_path_buf()),
-        span: Span::SYNTHETIC,
+        location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(path.to_path_buf())),
     })
 }

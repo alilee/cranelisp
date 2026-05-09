@@ -1,3 +1,4 @@
+use cranelisp_types::ErrorLocation;
 // Module caching: persist compiled module metadata and object files to disk.
 //
 // Layout:
@@ -271,7 +272,7 @@ pub fn load_cached_object(
                 "failed to read cached object file '{}': {e}",
                 cached.object_path.display()
             ),
-            span: cranelisp_types::Span::SYNTHETIC,
+            location: ErrorLocation::from_span(cranelisp_types::Span::SYNTHETIC),
         }
     })?;
 
@@ -504,8 +505,7 @@ mod tests {
     // spec: design/backend/module-caching.md §13 — end-to-end: compile .o, load via linker, execute
     #[test]
     fn test_compile_load_and_execute_cached_module() {
-        use cranelisp_types::{
-            DefKind, Defn, DefnVariant, Expr, ModuleEntry, ModuleFullPath, Scheme, Span, Symbol,
+        use cranelisp_types::{DefKind, Defn, DefnVariant, Expr, ModuleEntry, ModuleFullPath, Scheme, Span, Symbol,
             SymbolTable, Type, Visibility,
         };
         use cranelift_module::default_libcall_names;
@@ -550,7 +550,7 @@ mod tests {
                 trait_origin: None,
                 ast: Some(defn.clone()),
                 code: None,
-                platform_fn_ptr: None,
+                fn_ptr: None,
             },
         );
         tables.insert(module.clone(), st);
@@ -620,7 +620,7 @@ mod tests {
                 trait_origin: None,
                 ast: None,
                 code: None,
-                platform_fn_ptr: None,
+                fn_ptr: None,
             },
         );
 

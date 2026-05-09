@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use cranelisp_types::{
+use cranelisp_types::{ErrorLocation, 
     CranelispError, ModuleFullPath,
     Span, Type,
 };
@@ -100,7 +100,7 @@ pub fn compile_and_execute_expr(
         })
         .ok_or_else(|| CranelispError::CodegenError {
             message: "no `__expr` entry found in current module".into(),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
     let expr = &expr_owned;
 
@@ -111,7 +111,7 @@ pub fn compile_and_execute_expr(
         .unwrap_or(Type::Int);
 
     if traced_fns.is_empty() {
-        use cranelisp_types::{Defn, DefnVariant, Symbol, Visibility};
+        use cranelisp_types::{ErrorLocation, Defn, DefnVariant, Symbol, Visibility};
 
         // Decision 23 (Wave 2 follow-on): per-module GOT slabs are registered
         // through the JIT's symbol-lookup table — the symbol address IS the
@@ -170,7 +170,7 @@ pub fn compile_and_execute_expr(
         if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
             return Err(CranelispError::CodegenError {
                 message: format!("runtime error: {msg}"),
-                span: expr.span(),
+                location: ErrorLocation::from_span(expr.span()),
             });
         }
 
@@ -245,7 +245,7 @@ fn compile_and_execute_expr_with_trace(
     current_module: ModuleFullPath,
     ty: Type,
 ) -> Result<(i64, Type), CranelispError> {
-    use cranelisp_types::{Defn, DefnVariant, Symbol, Visibility};
+    use cranelisp_types::{ErrorLocation, Defn, DefnVariant, Symbol, Visibility};
 
     let mut extra_syms: Vec<(&str, *const u8)> = jit_symbols
         .iter()
@@ -301,7 +301,7 @@ fn compile_and_execute_expr_with_trace(
     if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
         return Err(CranelispError::CodegenError {
             message: format!("runtime error: {msg}"),
-            span: expr.span(),
+            location: ErrorLocation::from_span(expr.span()),
         });
     }
 

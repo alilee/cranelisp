@@ -8,7 +8,7 @@
 use cranelift::prelude::*;
 use cranelift_module::Module;
 
-use cranelisp_types::{CranelispError, Expr, HeapCategory, MatchArm, Pattern, Span, Symbol};
+use cranelisp_types::{ErrorLocation, CranelispError, Expr, HeapCategory, MatchArm, Pattern, Span, Symbol};
 
 use crate::heap::{self, HeapAdt};
 
@@ -203,14 +203,14 @@ where
                 .lookup_constructor(name.as_ref())
                 .ok_or_else(|| CranelispError::CodegenError {
                     message: format!("unknown constructor: {name}"),
-                    span,
+                    location: ErrorLocation::from_span(span),
                 })?;
         let _type_def =
             self.ctx
                 .lookup_type_def(&fqtn)
                 .ok_or_else(|| CranelispError::CodegenError {
                     message: format!("unknown type: {fqtn}"),
-                    span,
+                    location: ErrorLocation::from_span(span),
                 })?;
 
         let tag = ctor_info.tag;
@@ -232,7 +232,7 @@ where
                     ctor_info.fields.len(),
                     bindings.len()
                 ),
-                span,
+                location: ErrorLocation::from_span(span),
             })
         }
     }
@@ -543,7 +543,7 @@ where
         let panic_id = self.ctx.panic_func_id.ok_or_else(|| {
             CranelispError::CodegenError {
                 message: "runtime/panic not declared".into(),
-                span: Span::new(0, 0),
+                location: ErrorLocation::from_span(Span::new(0, 0)),
             }
         })?;
 
@@ -553,7 +553,7 @@ where
             .declare_anonymous_data(false, false)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare panic data: {e}"),
-                span: Span::new(0, 0),
+                location: ErrorLocation::from_span(Span::new(0, 0)),
             })?;
         let mut desc = cranelift_module::DataDescription::new();
         desc.define(msg.to_vec().into_boxed_slice());
@@ -561,7 +561,7 @@ where
             .define_data(data_id, &desc)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to define panic data: {e}"),
-                span: Span::new(0, 0),
+                location: ErrorLocation::from_span(Span::new(0, 0)),
             })?;
 
         let gv = self.module.declare_data_in_func(data_id, self.builder.func);

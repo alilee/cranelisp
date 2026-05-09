@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use dashmap::DashMap;
 
-use cranelisp_types::{
+use cranelisp_types::{ErrorLocation, 
     ConstructorInfo, CranelispError, ExportSpec, FQSymbol, ImportNames, ImportSpec,
     MethodResolutions, ModuleEntry, ModuleFullPath, ResolvedCall, ReplSnapshot, Scheme, Span,
     Subst, Symbol, SymbolTable, TraitName, Type, TypeDefInfo, TypeId, TypeName, Warning,
@@ -648,7 +648,7 @@ where
                     "'{}' is private in module '{}'",
                     name, resolved_path
                 ),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             });
         }
 
@@ -719,7 +719,7 @@ where
             if e.span() == Span::SYNTHETIC {
                 CranelispError::TypeError {
                     message: e.message().to_string(),
-                    span,
+                    location: ErrorLocation::from_span(span),
                 }
             } else {
                 e
@@ -860,7 +860,7 @@ where
                                 "unknown module '{}' in import",
                                 spec.module_path
                             ),
-                            span: spec.span,
+                            location: ErrorLocation::from_span(spec.span),
                         });
                     }
                 };
@@ -926,7 +926,7 @@ where
                             "unknown module '{}' in export",
                             spec.module_path
                         ),
-                        span: spec.span,
+                        location: ErrorLocation::from_span(spec.span),
                     });
                 }
             };
@@ -995,7 +995,7 @@ where
                                 "'{}' is not public in '{}'",
                                 name, module_path
                             ),
-                            span,
+                            location: ErrorLocation::from_span(span),
                         });
                     }
                     let fq = FQSymbol {
@@ -1013,7 +1013,7 @@ where
                             "'{}' not found in module '{}'",
                             name, module_path
                         ),
-                        span,
+                        location: ErrorLocation::from_span(span),
                     });
                 }
             }
@@ -1084,7 +1084,7 @@ where
                                 "'{}' is not public in '{}'",
                                 name, module_path
                             ),
-                            span,
+                            location: ErrorLocation::from_span(span),
                         });
                     }
                     let fq = FQSymbol {
@@ -1102,7 +1102,7 @@ where
                             "'{}' not found in module '{}'",
                             name, module_path
                         ),
-                        span,
+                        location: ErrorLocation::from_span(span),
                     });
                 }
             }
@@ -2066,8 +2066,7 @@ fn collect_resolutions_from_expr(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::{
-        DefKind, ImportNames, ImportSpec, ModuleEntry, ModuleFullPath,
+    use cranelisp_types::{DefKind, ImportNames, ImportSpec, ModuleEntry, ModuleFullPath,
         Span, Symbol, Visibility,
     };
 
@@ -2163,7 +2162,7 @@ mod tests {
                 trait_origin: None,
                 ast: None,
                 code: None,
-                platform_fn_ptr: None,
+                fn_ptr: None,
             },
         );
 
@@ -2194,7 +2193,7 @@ mod tests {
                     trait_origin: None,
                     ast: None,
                     code: None,
-                    platform_fn_ptr: None,
+                    fn_ptr: None,
                 },
             );
         }
@@ -2677,7 +2676,7 @@ mod tests {
                     trait_origin: None,
                     ast: None,
                     code: None,
-                    platform_fn_ptr: None,
+                    fn_ptr: None,
                 },
             );
         }

@@ -3,7 +3,7 @@
 //! Core functions take explicit `&mut Subst` and `&mut TypeId` parameters
 //! (borrow-splitting pattern) to avoid &mut self conflicts in the TypeChecker.
 
-use cranelisp_types::{CranelispError, Span, Subst, Type, TypeId, apply, free_vars};
+use cranelisp_types::{ErrorLocation, CranelispError, Span, Subst, Type, TypeId, apply, free_vars};
 
 /// Unify two types, updating the substitution.
 ///
@@ -34,7 +34,7 @@ pub fn unify(subst: &mut Subst, t1: &Type, t2: &Type) -> Result<(), CranelispErr
                         params1.len(),
                         params2.len()
                     ),
-                    span: Span::SYNTHETIC,
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
                 });
             }
             for (p1, p2) in params1.iter().zip(params2.iter()) {
@@ -48,7 +48,7 @@ pub fn unify(subst: &mut Subst, t1: &Type, t2: &Type) -> Result<(), CranelispErr
             if name1 != name2 {
                 return Err(CranelispError::TypeError {
                     message: format!("type mismatch: {name1} vs {name2}"),
-                    span: Span::SYNTHETIC,
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
                 });
             }
             if args1.len() != args2.len() {
@@ -58,7 +58,7 @@ pub fn unify(subst: &mut Subst, t1: &Type, t2: &Type) -> Result<(), CranelispErr
                         args1.len(),
                         args2.len()
                     ),
-                    span: Span::SYNTHETIC,
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
                 });
             }
             for (a1, a2) in args1.iter().zip(args2.iter()) {
@@ -78,7 +78,7 @@ pub fn unify(subst: &mut Subst, t1: &Type, t2: &Type) -> Result<(), CranelispErr
                         args1.len(),
                         args2.len()
                     ),
-                    span: Span::SYNTHETIC,
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
                 });
             }
             // Bind constructor variable to bare ADT constructor
@@ -100,7 +100,7 @@ pub fn unify(subst: &mut Subst, t1: &Type, t2: &Type) -> Result<(), CranelispErr
                         args1.len(),
                         args2.len()
                     ),
-                    span: Span::SYNTHETIC,
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
                 });
             }
             if f1 != f2 {
@@ -115,7 +115,7 @@ pub fn unify(subst: &mut Subst, t1: &Type, t2: &Type) -> Result<(), CranelispErr
         // Everything else is a type mismatch
         _ => Err(CranelispError::TypeError {
             message: format!("type mismatch: expected {t1}, got {t2}"),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         }),
     }
 }
@@ -133,7 +133,7 @@ fn bind_var(subst: &mut Subst, id: TypeId, ty: &Type) -> Result<(), CranelispErr
     if occurs_check(subst, id, ty) {
         return Err(CranelispError::TypeError {
             message: format!("infinite type: t{id} occurs in {ty}"),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         });
     }
 

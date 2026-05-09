@@ -282,7 +282,7 @@ mod tests {
                 trait_origin: None,
                 ast: Some(trivial_defn(name)),
                 code,
-                platform_fn_ptr: None,
+                fn_ptr: None,
             }
         }
 

@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use cranelisp_types::{
+use cranelisp_types::{ErrorLocation, 
     ConstructorDef, ConstructorInfo, CranelispError, FQTypeName, FieldInfo, ModuleEntry,
     Scheme, Span, Symbol, Type, TypeDefInfo, TypeId, TypeName, Visibility,
 };
@@ -279,7 +279,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let type_def = self.lookup_type_def(type_name).ok_or_else(|| {
             CranelispError::TypeError {
                 message: format!("unknown type in match: {type_name}"),
-                span,
+                location: ErrorLocation::from_span(span),
             }
         })?;
 
@@ -307,7 +307,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     "non-exhaustive match on {type_name}: missing constructor(s) {}",
                     missing_sorted.join(", ")
                 ),
-                span,
+                location: ErrorLocation::from_span(span),
             })
         }
     }

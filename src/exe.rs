@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use cranelisp_types::{
+use cranelisp_types::{ErrorLocation, 
     CranelispError, ModuleEntry, ModuleFullPath, Span, Type,
 };
 
@@ -37,7 +37,7 @@ pub fn validate_main(entry_symbols: &crate::code::SessionSymbolTable) -> Result<
     let entry = entry_symbols.get("main").ok_or_else(|| {
         CranelispError::CodegenError {
             message: "entry module has no 'main' function".to_string(),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         }
     })?;
 
@@ -45,7 +45,7 @@ pub fn validate_main(entry_symbols: &crate::code::SessionSymbolTable) -> Result<
         ModuleEntry::Def { scheme, .. } => classify_main_return_type(&scheme.ty),
         _ => Err(CranelispError::CodegenError {
             message: "'main' in entry module is not a function definition".to_string(),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         }),
     }
 }
@@ -61,7 +61,7 @@ fn classify_main_return_type(ty: &Type) -> Result<MainReturnKind, CranelispError
                     "main must return Int or IO, found: {}",
                     type_display_brief(other)
                 ),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             }),
         },
         _ => Err(CranelispError::CodegenError {
@@ -69,7 +69,7 @@ fn classify_main_return_type(ty: &Type) -> Result<MainReturnKind, CranelispError
                 "main must be a zero-argument function, found: {}",
                 type_display_brief(ty)
             ),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         }),
     }
 }
@@ -153,7 +153,7 @@ pub fn generate_main_alias_object(
     )
     .map_err(|e| CranelispError::CodegenError {
         message: format!("failed to create ObjectBuilder for main alias: {e}"),
-        span: Span::SYNTHETIC,
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
     })?;
     let mut obj_module = ObjectModule::new(obj_builder);
 
@@ -165,7 +165,7 @@ pub fn generate_main_alias_object(
         .declare_data(&got_name, Linkage::Import, false, false)
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to declare {got_name} as Import: {e}"),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
     // Declare `main` as Linkage::Export. The system linker resolves the
@@ -176,7 +176,7 @@ pub fn generate_main_alias_object(
         .declare_function("main", Linkage::Export, &main_sig)
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to declare main alias as Export: {e}"),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
     let mut func = cranelift::codegen::ir::Function::with_name_signature(
@@ -202,7 +202,7 @@ pub fn generate_main_alias_object(
                 message: format!(
                     "main GOT slot offset overflows i32 for slot {main_got_slot}"
                 ),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             }
         })?;
         let fn_ptr = builder.ins().load(
@@ -227,13 +227,13 @@ pub fn generate_main_alias_object(
         .define_function(main_func_id, &mut ctx)
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to define main alias: {e:?}"),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
     let product = obj_module.finish();
     product.emit().map_err(|e| CranelispError::CodegenError {
         message: format!("failed to emit main alias object: {e}"),
-        span: Span::SYNTHETIC,
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
     })
 }
 
@@ -246,7 +246,7 @@ pub fn entry_main_got_slot(entry_table: &crate::code::SessionSymbolTable) -> Res
     let entry = entry_table.get("main").ok_or_else(|| {
         CranelispError::CodegenError {
             message: "entry module has no 'main' function (alias generation)".to_string(),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         }
     })?;
     match entry {
@@ -254,11 +254,11 @@ pub fn entry_main_got_slot(entry_table: &crate::code::SessionSymbolTable) -> Res
         ModuleEntry::Def { got_slot: None, .. } => Err(CranelispError::CodegenError {
             message: "entry module's 'main' has no GOT slot — typecheck did \
                       not pin a slot index".to_string(),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         }),
         _ => Err(CranelispError::CodegenError {
             message: "entry module's 'main' is not a Def entry".to_string(),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         }),
     }
 }
@@ -292,7 +292,7 @@ impl LinkerConfig {
             Err(CranelispError::CodegenError {
                 message: "standalone executable generation is only supported on macOS aarch64"
                     .to_string(),
-                span: Span::SYNTHETIC,
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             })
         }
     }
@@ -378,7 +378,7 @@ pub fn link_executable(
         .output()
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to run ld: {e}"),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
     if !ld_output.status.success() {
@@ -387,7 +387,7 @@ pub fn link_executable(
                 "linker failed:\n{}",
                 String::from_utf8_lossy(&ld_output.stderr)
             ),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         });
     }
 
@@ -403,7 +403,7 @@ fn get_sdk_sysroot() -> Result<String, CranelispError> {
             message: format!(
                 "failed to run xcrun: {e} (is Xcode Command Line Tools installed?)"
             ),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
     if !output.status.success() {
@@ -412,7 +412,7 @@ fn get_sdk_sysroot() -> Result<String, CranelispError> {
                 "xcrun --show-sdk-path failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             ),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         });
     }
 
@@ -520,7 +520,7 @@ pub fn find_bundle_lib() -> Result<PathBuf, CranelispError> {
                   build it with `cargo build -p cranelisp-exe-bundle` or \
                   set CRANELISP_BUNDLE_PATH"
             .to_string(),
-        span: Span::SYNTHETIC,
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
     })
 }
 
@@ -560,7 +560,7 @@ mod tests {
             trait_origin: None,
             ast: None,
             code: None,
-            platform_fn_ptr: None,
+            fn_ptr: None,
         }
     }
 

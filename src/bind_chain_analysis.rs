@@ -574,7 +574,7 @@ mod tests {
             trait_origin: None,
             ast: None,
             code: None,
-            platform_fn_ptr: None,
+            fn_ptr: None,
         }
     }
 

@@ -6,7 +6,7 @@
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
-use cranelisp_types::{CranelispError, Span, Symbol};
+use cranelisp_types::{ErrorLocation, CranelispError, Span, Symbol};
 
 use super::FnCompiler;
 use crate::heap::{self, HeapAdt, HeapClosure};
@@ -47,7 +47,7 @@ where
                 .alloc_string_func_id
                 .ok_or_else(|| CranelispError::CodegenError {
                     message: "runtime/alloc_string not declared (need declare_intrinsics)".into(),
-                    span,
+                    location: ErrorLocation::from_span(span),
                 })?;
 
         let bytes = value.as_bytes();
@@ -70,7 +70,7 @@ where
             .declare_anonymous_data(false, false)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare string data: {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         let mut data_desc = cranelift_module::DataDescription::new();
@@ -80,7 +80,7 @@ where
             .define_data(data_id, &data_desc)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to define string data: {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         // Get the data pointer as a Cranelift value.
@@ -141,7 +141,7 @@ where
 
         Err(CranelispError::CodegenError {
             message: format!("undefined variable: {name}"),
-            span,
+            location: ErrorLocation::from_span(span),
         })
     }
 
@@ -193,7 +193,7 @@ where
                 .alloc_func_id
                 .ok_or_else(|| CranelispError::CodegenError {
                     message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                    span,
+                    location: ErrorLocation::from_span(span),
                 })?;
 
         // Declare the wrapper function: (env_ptr, fields...) -> i64
@@ -210,7 +210,7 @@ where
             .declare_function(&wrapper_name, Linkage::Local, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare constructor wrapper: {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         // Compile the wrapper body.
@@ -312,7 +312,7 @@ where
             .define_function(func_id, &mut inner_ctx)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to define constructor wrapper: {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         Ok(())
@@ -354,7 +354,7 @@ where
                 .alloc_func_id
                 .ok_or_else(|| CranelispError::CodegenError {
                     message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                    span,
+                    location: ErrorLocation::from_span(span),
                 })?;
 
         // Declare the operator extern function: (i64, i64) -> i64
@@ -368,7 +368,7 @@ where
             .declare_function(op_extern_name, Linkage::Import, &op_sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare operator '{op_extern_name}': {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         // Create a wrapper function: (env_ptr, a, b) -> i64
@@ -385,7 +385,7 @@ where
             .declare_function(&wrapper_name, Linkage::Local, &wrapper_sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare operator wrapper: {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         // Compile wrapper body: ignore env_ptr, forward (a, b) to operator.
@@ -426,7 +426,7 @@ where
                 .define_function(wrapper_func_id, &mut inner_ctx)
                 .map_err(|e| CranelispError::CodegenError {
                     message: format!("failed to define operator wrapper: {e}"),
-                    span,
+                    location: ErrorLocation::from_span(span),
                 })?;
         }
 

@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
-use cranelisp_types::{CranelispError, Expr, HeapCategory, ResolvedCall, Span, Symbol, Type};
+use cranelisp_types::{ErrorLocation, CranelispError, Expr, HeapCategory, ResolvedCall, Span, Symbol, Type};
 
 use crate::heap::{self, HeapAdt, HeapClosure};
 use crate::operators;
@@ -218,7 +218,7 @@ where
             .declare_function(name, Linkage::Import, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare extern function '{name}': {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         let local_func = self
@@ -308,7 +308,7 @@ where
                 .alloc_func_id
                 .ok_or_else(|| CranelispError::CodegenError {
                     message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                    span,
+                    location: ErrorLocation::from_span(span),
                 })?;
 
         let n = bindings.len();
@@ -403,7 +403,7 @@ where
                 .alloc_func_id
                 .ok_or_else(|| CranelispError::CodegenError {
                     message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                    span,
+                    location: ErrorLocation::from_span(span),
                 })?;
 
         // Compute captures: free variables of the body that are NOT among
@@ -429,7 +429,7 @@ where
             .declare_function(&cont_name, Linkage::Local, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare par-bind continuation: {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         // Compile the continuation body using a separate Cranelift context.
@@ -544,7 +544,7 @@ where
                 .define_function(cont_func_id, &mut inner_ctx)
                 .map_err(|e| CranelispError::CodegenError {
                     message: format!("failed to define par-bind continuation: {e}"),
-                    span,
+                    location: ErrorLocation::from_span(span),
                 })?;
         }
 
@@ -683,7 +683,7 @@ where
                 .alloc_func_id
                 .ok_or_else(|| CranelispError::CodegenError {
                     message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                    span,
+                    location: ErrorLocation::from_span(span),
                 })?;
 
         // Determine captured variables: free variables in the body that are
@@ -715,7 +715,7 @@ where
             .declare_function(&inner_name, Linkage::Local, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare lambda function: {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         // Compile the inner function body using a new Cranelift context.
@@ -850,7 +850,7 @@ where
             .declare_function(&glue_name, Linkage::Local, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare closure drop glue fn: {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         let mut ctx = self.module.make_context();
@@ -904,7 +904,7 @@ where
             .define_function(glue_func_id, &mut ctx)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to define closure drop glue fn: {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         Ok(Some(glue_func_id))
@@ -1120,7 +1120,7 @@ where
             .define_function(func_id, &mut inner_ctx)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to define lambda function: {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         Ok(())
@@ -1154,7 +1154,7 @@ where
                 .alloc_func_id
                 .ok_or_else(|| CranelispError::CodegenError {
                     message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                    span,
+                    location: ErrorLocation::from_span(span),
                 })?;
 
         let arity = self.ctx.func_arities.get(name).copied()
@@ -1166,7 +1166,7 @@ where
             .ok_or_else(|| {
                 CranelispError::CodegenError {
                     message: format!("unknown arity for function: {name}"),
-                    span,
+                    location: ErrorLocation::from_span(span),
                 }
             })?;
 
@@ -1184,7 +1184,7 @@ where
             .declare_function(&wrapper_name, Linkage::Local, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare wrapper function: {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         self.compile_fn_wrapper_body(wrapper_func_id, name, arity, span)?;
@@ -1263,7 +1263,7 @@ where
             .define_function(func_id, &mut inner_ctx)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to define wrapper function: {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         Ok(())
@@ -1299,7 +1299,7 @@ where
             .declare_data(&got_sym, cranelift_module::Linkage::Import, false, false)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare GOT data '{}': {e}", got_sym),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         // Decision 23 (Wave 2 follow-on): the symbol address IS the slab base
@@ -1423,7 +1423,7 @@ where
                 .alloc_func_id
                 .ok_or_else(|| CranelispError::CodegenError {
                     message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                    span,
+                    location: ErrorLocation::from_span(span),
                 })?;
 
         let remaining_count = total_count - applied_count;
@@ -1546,7 +1546,7 @@ where
             .declare_function(&wrapper_name, Linkage::Local, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare auto-curry wrapper: {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         // Build the wrapper body in a separate codegen context.
@@ -1608,7 +1608,7 @@ where
             .define_function(wrapper_func_id, &mut ctx)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to define auto-curry wrapper: {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         Ok(wrapper_func_id)
@@ -1652,7 +1652,7 @@ where
             .declare_function(&glue_name, Linkage::Local, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare auto-curry drop glue: {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         let mut ctx = self.module.make_context();
@@ -1706,7 +1706,7 @@ where
             .define_function(glue_func_id, &mut ctx)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to define auto-curry drop glue: {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         Ok(Some(glue_func_id))
@@ -1862,7 +1862,7 @@ fn emit_extern_call_in_wrapper(
         .declare_function(name, Linkage::Import, &sig)
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to declare extern function '{name}' in wrapper: {e}"),
-            span,
+            location: ErrorLocation::from_span(span),
         })?;
 
     let local_func = module.declare_func_in_func(func_id, builder.func);

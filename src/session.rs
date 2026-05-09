@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use cranelisp_types::{
+use cranelisp_types::{ErrorLocation, 
     CranelispError, ModuleFullPath, Program, Span,
     Type,
 };
@@ -182,8 +182,7 @@ pub fn load_project_config_lib_dirs(
                 candidate.display(),
                 e
             ),
-            file: Some(candidate.clone()),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(candidate.clone())),
         }
     })?;
     let config: ProjectConfig = toml::from_str(&contents).map_err(|e| {
@@ -193,8 +192,7 @@ pub fn load_project_config_lib_dirs(
                 candidate.display(),
                 e
             ),
-            file: Some(candidate.clone()),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(candidate.clone())),
         }
     })?;
     let resolved: Vec<PathBuf> = config
@@ -424,7 +422,7 @@ mod project_config_tests {
         write_project_config(tmp.path(), "lib-dirs = [\"oops");
         let result = load_project_config_lib_dirs(tmp.path());
         match result {
-            Err(CranelispError::ModuleError { message, file, .. }) => {
+            Err(CranelispError::ModuleError { message, location, .. }) => {
                 assert!(
                     message.contains("malformed project config"),
                     "error must self-identify as project-config parse failure: {message}"
@@ -434,7 +432,7 @@ mod project_config_tests {
                     "error must cite spec §8.11.4: {message}"
                 );
                 assert!(
-                    file.is_some(),
+                    location.file.is_some(),
                     "error must carry the file path for IDE diagnostics"
                 );
             }

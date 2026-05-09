@@ -7,7 +7,7 @@
 use cranelift::prelude::*;
 use cranelift_module::Module;
 
-use cranelisp_types::{CranelispError, Expr, HeapCategory, ResolvedCall, Span, Symbol};
+use cranelisp_types::{ErrorLocation, CranelispError, Expr, HeapCategory, ResolvedCall, Span, Symbol};
 
 use crate::heap::{self, HeapAdt, HeapClosure};
 use crate::operators;
@@ -289,7 +289,7 @@ where
                         "constructor '{name}' expects {field_count} args, got {}",
                         args.len()
                     ),
-                    span,
+                    location: ErrorLocation::from_span(span),
                 });
             }
 
@@ -396,7 +396,7 @@ where
                 .declare_data(&got_sym, cranelift_module::Linkage::Import, false, false)
                 .map_err(|e| CranelispError::CodegenError {
                     message: format!("failed to declare GOT data '{}': {e}", got_sym),
-                    span,
+                    location: ErrorLocation::from_span(span),
                 })?;
             return self.emit_got_indirect_call_via_data_id(data_id, slot, arg_vals);
         }
@@ -406,7 +406,7 @@ where
             let func_id = self.ctx.func_ids.get(name).ok_or_else(|| {
                 CranelispError::CodegenError {
                     message: format!("undefined function: {name}"),
-                    span,
+                    location: ErrorLocation::from_span(span),
                 }
             })?;
 
@@ -485,7 +485,7 @@ where
         )
         .ok_or_else(|| CranelispError::CodegenError {
             message: format!("no GOT slot for function: {name}"),
-            span,
+            location: ErrorLocation::from_span(span),
         })
     }
 
@@ -527,7 +527,7 @@ where
                 .alloc_func_id
                 .ok_or_else(|| CranelispError::CodegenError {
                     message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                    span,
+                    location: ErrorLocation::from_span(span),
                 })?;
 
         let payload_size = HeapAdt::payload_size(field_vals.len()) as i64;
@@ -574,7 +574,7 @@ where
             .declare_function(name, cranelift_module::Linkage::Import, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare extern function '{name}': {e}"),
-                span,
+                location: ErrorLocation::from_span(span),
             })?;
 
         let local_func = self
@@ -646,7 +646,7 @@ where
                     "bind requires 2 arguments, got {}",
                     arg_vals.len()
                 ),
-                span,
+                location: ErrorLocation::from_span(span),
             });
         }
 
@@ -658,7 +658,7 @@ where
                 .alloc_func_id
                 .ok_or_else(|| CranelispError::CodegenError {
                     message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                    span,
+                    location: ErrorLocation::from_span(span),
                 })?;
 
         // Allocate Bind node: 3 fields x 8 bytes = 24 bytes payload

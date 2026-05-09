@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use cranelisp_types::{CranelispError, ModuleFullPath, Span};
+use cranelisp_types::{ErrorLocation, CranelispError, ModuleFullPath, Span};
 
 // `cache_format_version` is the field name on `CacheManifest` (kept stable
 // for on-disk JSON compatibility). The constant value comes from
@@ -257,18 +257,18 @@ pub fn write_manifest(
 ) -> Result<(), CranelispError> {
     std::fs::create_dir_all(cache_dir).map_err(|e| CranelispError::CodegenError {
         message: format!("failed to create cache dir: {e}"),
-        span: Span::SYNTHETIC,
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
     })?;
     let path = cache_dir.join("manifest.json");
     let json = serde_json::to_string_pretty(manifest).map_err(|e| {
         CranelispError::CodegenError {
             message: format!("failed to serialize manifest: {e}"),
-            span: Span::SYNTHETIC,
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
         }
     })?;
     super::atomic_write(&path, json.as_bytes()).map_err(|e| CranelispError::CodegenError {
         message: format!("failed to write manifest: {e}"),
-        span: Span::SYNTHETIC,
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
     })?;
     Ok(())
 }
