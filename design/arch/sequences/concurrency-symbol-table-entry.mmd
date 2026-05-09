@@ -36,7 +36,7 @@ sequenceDiagram
                 Note right of SessST: Ref[SymbolTable] (m1) — SHARED<br/>(read lock — does not block PWb's get(&m2) shared lock,<br/>and does not block other readers of m1)
                 SessST -->> PWa: Some(Ref[SymbolTable]) ≡ [&SymbolTable]
 
-                Note over PWa, ST_m2: cranelisp_typecheck::check_form(ast, [&SymbolTable], [&SymbolTables])<br/>([&SymbolTable] for own module mutation via inner DashMap, [&SymbolTables] for cross-module reads)
+                Note over PWa, ST_m2: cranelisp_typecheck::check_form(parsed, table, symbol_tables) -> Result[Vec[entry], CheckError] — where parsed: ParsedEntry, table: &SymbolTable, symbol_tables: &SymbolTables, entry pair = Symbol plus ModuleEntry<br/>S66 FIXME 0160 — pure function, does NOT mutate, caller commits returned entries on Ok via insert_symbol
 
                 rect rgb(255, 240, 200)
                     Note over PWa, ST_m2: CROSS-MODULE READ — shared outer lock + inner DashMap lookup
@@ -58,7 +58,7 @@ sequenceDiagram
 
                 rect rgb(255, 220, 220)
                     Note over PWa, Entry_m1_foo: PHASE 1 write — sole writer of m1/foo via INNER DashMap per-entry write lock<br/>insert_or_update is [&self] — outer ST_m1 lock stays SHARED throughout
-                    PWa ->> ST_m1: SymbolTable::insert_or_update(<br/>  sym: Symbol("foo"),<br/>  entry: ModuleEntry::Def {<br/>    name, kind, scheme: Some(_), ast: Some(_),<br/>    callees, got_slot, visibility, docstring,<br/>    platform_fn_ptr: None,<br/>    code: existing.as_ref().and_then(|e| e.code.clone()),  ← Decision 31 CARRY-FORWARD<br/>  })
+                    PWa ->> ST_m1: SymbolTable::insert_or_update(<br/>  sym: Symbol("foo"),<br/>  entry: ModuleEntry::Def {<br/>    name, kind, scheme: Some(_), ast: Some(_),<br/>    callees, got_slot, visibility, docstring,<br/>    fn_ptr: None,  ← S66 unified field (was platform_fn_ptr)<br/>    code: existing.as_ref().and_then(|e| e.code.clone()),  ← Decision 31 CARRY-FORWARD<br/>  })
                     activate Entry_m1_foo
                     Note right of Entry_m1_foo: per-entry write lock — held briefly across upsert<br/>(microseconds, not a per-form hold)<br/>REPL redefinition: clone existing.code forward (Decision 31 + Decision 32 Clone bound)
                     deactivate Entry_m1_foo
@@ -104,12 +104,12 @@ sequenceDiagram
     rect rgb(220, 255, 220)
         Note over PWa, Slot: PHASE 3 write — sole writer of m1/foo's code field<br/>write_code is [&self] + INNER DashMap per-entry write lock<br/>(Decision 31 — GOT swap MUST precede any old-Arc[Jit] drop)
         alt fresh JIT path (cache miss)
-            PWa ->> ST_m1: SymbolTable::write_code(<br/>  sym: &Symbol("foo"),<br/>  code: Code::Jit { jit: Arc[Jit], ptr })
+            PWa ->> ST_m1: SymbolTable::write_code(<br/>  sym: &Symbol("foo"),<br/>  code: Code::Jit(Arc[Jit])) + entry.fn_ptr = Some(ptr)<br/>S66 — Code carries lifecycle owner only — ptr lives on ModuleEntry::Def.fn_ptr
         else cache-hit path (Decision 35)
-            PWa ->> ST_m1: SymbolTable::write_code(<br/>  sym: &Symbol("foo"),<br/>  code: Code::Linker { linker: Arc[Linker], ptr })
+            PWa ->> ST_m1: SymbolTable::write_code(<br/>  sym: &Symbol("foo"),<br/>  code: Code::Linker(Arc[Linker])) + entry.fn_ptr = Some(ptr)<br/>S66 — paired ptr write
         end
         activate Entry_m1_foo
-        Note right of Entry_m1_foo: write_code internals (atomic, in this order):<br/>1. inner DashMap shard write lock for "foo"<br/>2. mem::replace entry.code = Some(new_code) — old Code dropped LAST<br/>3. self.got.store_slot(entry.got_slot, new_code.ptr()) — Release<br/>4. inner shard write lock released<br/>5. old Arc[Jit] / Arc[Linker] drops, if refcount→0, custom Drop runs unsafe free_memory()
+        Note right of Entry_m1_foo: write_code + fn_ptr write internals (atomic, in this order):<br/>1. inner DashMap shard write lock for "foo"<br/>2. mem::replace entry.code = Some(new_code) — old Code dropped LAST<br/>3. entry.fn_ptr = Some(new_ptr) — S66 unified ptr field<br/>4. self.got.store_slot(entry.got_slot, new_ptr) — Release<br/>5. inner shard write lock released<br/>6. old Arc[Jit] / Arc[Linker] drops, if refcount→0, custom Drop runs unsafe free_memory()
         ST_m1 ->> Slot: GotTable::store_slot(slot=foo_idx, ptr=new_ptr)<br/>(Ordering::Release)
         deactivate Entry_m1_foo
     end

@@ -771,9 +771,90 @@ impl CallGraph {
 }
 ```
 
-### FormCheckResult (typecheck-internal)
+### `ParsedEntry` — the parse-time-only transient (Sprint 66, FIXME 0156)
 
-Per-form typecheck output, returned by `tc.check_form()`. **Not a boundary type** — lives inside `cranelisp-typecheck` and is merged via `tc.merge_form_result()`. Merging deposits annotations onto AST nodes (`Expr.inferred_type`, `Expr::Apply.resolved_call`), writes call-graph edges to `ModuleEntry.callees`, and registers mangled multi-sig variants / mono specializations directly on the `SymbolTable`. It does not populate a cross-crate `CheckResult`.
+**`ParsedEntry` is a transient boundary type, hosted in `cranelisp-types`,
+that bridges `cranelisp-frontend::build_form` to
+`cranelisp-typecheck::check_form`.** It carries only what the parser
+knows; resolved-stage fields (type, scheme, callees, code, got_slot) are
+populated by `check_form` downstream. **`ParsedEntry` NEVER lands in
+`SymbolTable`** — its lifecycle is bounded by one orchestrator iteration:
+
+```
+parse → ParsedEntry → check_form → Vec<(Symbol, ModuleEntry)>
+                                         → SymbolTable.insert (caller)
+```
+
+The SymbolTable invariant ("if it's in the table, it's checked") is
+preserved because the orchestrator inserts only on `check_form`'s `Ok`
+return.
+
+`build_form` returns `Vec<ParsedEntry>` because some shapes yield more
+than one entry per source form: a multi-clause `defmacro` yields one
+`ParsedEntry::Macro` per clause (each clause typechecks independently);
+a `deftype` yields the type entry plus per-constructor entries. The
+caller drives `check_form` once per `ParsedEntry`. See
+`facades/types.md` §"`ParsedEntry`" for the full enum shape and
+`facades/frontend.md` §"Free functions" + `facades/typecheck.md`
+§"Free functions" for the producer/consumer signatures.
+
+`#[non_exhaustive]`. Derived: `Debug, Clone`. NOT
+`Serialize/Deserialize` — never persisted.
+
+**`DefmacroInfo` location move (FIXME 0156).** `DefmacroInfo` was
+previously hosted in `cranelisp-frontend/src/defmacro.rs`. Per FIXME
+0156 resolution it moves to `cranelisp-types` so that `int`'s
+post-`build_form` consumption path can name the type uniformly.
+`MacroClauseInfo` and `MacroParam` already live in `cranelisp-types`;
+`DefmacroInfo` joins them. Frontend's `parse_defmacro` becomes
+`pub(crate)` inside the `build_form` dispatcher; the public surface is
+`build_form` returning `Vec<ParsedEntry>` carrying
+`ParsedEntry::Macro { info: DefmacroInfo, .. }`.
+
+### `check_form` is pure (Sprint 66, FIXME 0160)
+
+The pre-S66 `check_form` mutated the symbol table in-place and was
+merged via a typecheck-internal `merge_form_result()` helper. Per FIXME
+0160 resolution, `check_form` is now a **pure function**:
+
+```rust
+pub fn check_form<C, L>(
+    parsed: ParsedEntry,
+    table: &SymbolTable<C, L>,         // immutable — see Decision 38
+    symbol_tables: &SymbolTables<C, L>, // for cross-module reads
+) -> Result<Vec<(Symbol, ModuleEntry<C>)>, CheckError>;
+```
+
+The function does NOT call `insert_or_update`, does NOT install import
+bindings, does NOT mutate the table. The caller (`int::insert_symbol`)
+inserts the returned entries on `Ok`; on `Err(Gap | TypeError)` nothing
+has been written, no rollback is needed. Per FIXME 0160 the post-Gap
+state contract is **structural Option B** — the orchestrator's
+snapshot-restore (`ReplSnapshot`) covers type-var-pool rollback inside
+`CheckState` between calls, but the symbol table is unaffected by a
+Gap or TypeError return because the function never wrote.
+
+The pre-S66 `FormCheckResult` carrier and its `merge_form_result()`
+helper are retired by this purification. Annotations onto AST nodes
+(`Expr.inferred_type`, `Expr::Apply.resolved_call`) are now part of the
+returned `ModuleEntry::Def.ast`; call-graph edges land in
+`ModuleEntry::Def.callees` of the returned entries; mangled multi-sig
+variants and mono specializations come back as additional entries in
+the returned `Vec<(Symbol, ModuleEntry)>`. The orchestrator commits
+the whole vector atomically on `Ok`.
+
+### FormCheckResult (typecheck-internal — pre-S66 shape, retained for reference)
+
+Per-form typecheck output produced internally by typecheck before
+collation into the `Vec<(Symbol, ModuleEntry)>` returned by
+`check_form`. **Not a boundary type** — typecheck-internal scratch
+state. Pre-FIXME-0160, this was returned by `check_form` itself and
+merged via a `merge_form_result()` helper that mutated the symbol
+table in place. Post-FIXME-0160 (Sprint 66), the merge happens inside
+`check_form` and the function returns a pure `Vec<(Symbol,
+ModuleEntry)>` to the caller — the merge no longer crosses a crate
+boundary. The struct shape below is preserved for reference; it is
+purely an internal accumulator now.
 
 ```rust
 /// Per-form typecheck result. Typecheck-internal.
@@ -986,29 +1067,47 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         /// entries. Authoritative per-category table:
         /// `design/typecheck/ast-annotation.md` §6. (Phase 1.)
         ast: Option<Defn>,
-        /// Compiled code for this symbol (Phase 3 Step 3b — G6;
-        /// parameterised over `C` at Phase 5 Step 5c).
-        /// Written by the priority worker after `compile_to_module` returns.
-        /// `None` until codegen completes. The integration layer chooses
-        /// `C` so this carries the raw code pointer stored into the GOT
-        /// slot plus an `Arc<Jit>` shared across every sibling entry
-        /// produced by the same `compile_to_module` batch.
+        /// Lifecycle owner for compiled code (Phase 3 Step 3b — G6;
+        /// parameterised over `C` at Phase 5 Step 5c; **slimmed in Sprint 66
+        /// — fn_ptr unification**).
+        /// Written by the priority worker after `compile_to_module` returns
+        /// (or by `load_object` on cache-hit). `None` until codegen completes,
+        /// and `None` for entries whose lifecycle owner lives elsewhere
+        /// (primitives — process-static `LazyLock<SymbolTable>` in
+        /// `cranelisp-primitives`; platform DLL fns — DLL handle held in
+        /// `SharedState.kept_dlls`). The integration layer chooses
+        /// `C = Code` (re-exported from `cranelisp-backend`); the variants
+        /// carry **lifecycle ownership only** — the call address lives on
+        /// the sibling `fn_ptr` field below, not inside the variant.
         ///
-        /// **Lifetime / reclaim (Decision 31, Scenario 2 active at Step 5c)**:
-        /// the `Arc<Jit>` *living directly on this field* is the
-        /// reachability primitive that fires per-redefinition reclaim.
-        /// While any `Code` entry holding an `Arc<Jit>` clone is alive,
-        /// its code pointers are reachable and the JIT's executable pages
-        /// stay mapped. When every sibling entry is evicted or redefined,
-        /// the Arc refcount reaches zero and the custom `Drop` on our
-        /// `Jit` wrapper calls `unsafe JITModule::free_memory()` — this is
-        /// the ONLY way to reclaim JIT pages in Cranelift 0.116 (the
-        /// default drop path leaks on purpose; see `pipeline-v4.md` §9.4
-        /// for evidence). The safety invariant is maintained by: (a) code
-        /// pointers live here or on the stack; (b) GOT slots are atomically
-        /// swapped to new code before the old Arc can drop; (c)
-        /// user-returned `fn` values are heap closures calling through the
-        /// GOT, not raw code pointers.
+        /// **Variant shape post-Sprint 66 (S66 fn_ptr unification)**:
+        /// `Code::Jit(Arc<Jit>)` for JIT-built user fns;
+        /// `Code::Linker(Arc<Linker>)` for cache-hit user fns. The previous
+        /// `Code::Jit { jit, ptr }` / `Code::Linker { linker, ptr }` shapes
+        /// are retired — the per-entry ptr is now on `fn_ptr`. Reading the
+        /// call address through a variant-uniform `Code::ptr()` accessor is
+        /// retired with the embedded ptr; consumers read `fn_ptr` directly.
+        ///
+        /// **Lifetime / reclaim (Decision 31, Scenario 2 — preserved
+        /// post-S66)**: the `Arc<Jit>` *living directly on this field* is
+        /// the reachability primitive that fires per-redefinition reclaim.
+        /// While any entry holds an `Arc<Jit>` clone alive, the JIT's
+        /// executable pages stay mapped. When every entry referencing the
+        /// JIT is evicted or redefined, the Arc refcount reaches zero and
+        /// the custom `Drop` on our `Jit` wrapper calls
+        /// `unsafe JITModule::free_memory()` — this is the ONLY way to
+        /// reclaim JIT pages in Cranelift 0.116 (the default drop path
+        /// leaks on purpose; see archived `pipeline-v4.md` §9.4 for
+        /// evidence). The safety invariant is maintained by: (a) the
+        /// `fn_ptr` raw pointer becomes invalid the same instant
+        /// `JITModule::free_memory()` runs (same lifecycle semantics as the
+        /// pre-S66 in-variant ptr — only the field placement moved); (b)
+        /// GOT slots are atomically swapped to new code before the old Arc
+        /// can drop (Decision 41 per-symbol JIT cardinality means redefine
+        /// → new `Code::Jit(Arc<Jit>)` written to entry → old Arc clone
+        /// drops as the entry is replaced); (c) user-returned `fn` values
+        /// are heap closures calling through the GOT, not raw code
+        /// pointers.
         ///
         /// **Pre-Phase-5 transitional shape (Sprint 57; superseded at
         /// Step 5c)**: `Arc<Jit>` lived in `SharedState.kept_jits` rather
@@ -1018,29 +1117,68 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         /// dissolves `kept_jits`.
         ///
         /// `#[serde(skip)]` — runtime state. Cache re-derives it from
-        /// `ast` on cache-hit load. See Decision 25 (canonical placement)
-        /// + Decision 31 (reclaim primitive) + Decision 32 (`CodeStore`
-        /// trait shape).
+        /// `ast` on cache-hit load (constructs `Code::Linker(Arc<Linker>)`
+        /// per `load_object`). See Decision 25 (canonical placement)
+        /// + Decision 31 (reclaim primitive; S66 amendment preserves
+        /// semantics) + Decision 32 (`CodeStore` trait shape) + Decision
+        /// 41 (per-symbol JIT cardinality + S66 amendment relocating ptr
+        /// to `fn_ptr`).
         #[serde(skip)]
         code: Option<C>,
-        /// Platform function pointer (Phase 4 Step 4a — G8).
-        /// `Some` only when `kind == DefKind::Primitive { primitive_kind:
-        /// PrimitiveKind::PlatformEffect { scheduling_class }, .. }` —
-        /// written during `(platform …)` form processing. Replaces the
-        /// separate `PlatformRegistry`: the IO trampoline and JIT symbol
-        /// resolution look up platform fn ptrs by walking Import chains
-        /// to the defining `PlatformEffect` entry. `None` for every
-        /// non-platform `Def`.
+        /// Unified function pointer — single source of truth for
+        /// "where to call to invoke this entry" (Sprint 66 fn_ptr
+        /// unification, 2026-05-09). Replaces the previously-separate
+        /// `platform_fn_ptr` and supersedes the briefly-planned
+        /// `primitive_fn_ptr`. Origin is encoded by `kind: DefKind`,
+        /// NOT by which optional field is set:
         ///
-        /// `scheduling_class` lives INSIDE the `PrimitiveKind::PlatformEffect`
-        /// variant (not as a sibling field here). The asymmetry is
-        /// deliberate — see Decision 26 for rationale.
+        /// - `DefKind::UserFn { .. }` — JIT-built or linker-loaded user
+        ///   fn; ptr written by backend's `compile_to_module` (JIT) or
+        ///   by `load_object` (cache-hit `.o`); paired with
+        ///   `code = Some(Code::Jit(_))` or `Some(Code::Linker(_))`.
+        /// - `DefKind::Primitive { primitive_kind: Inline | Extern }` —
+        ///   user-callable primitive; ptr written at static-init by
+        ///   `cranelisp-primitives::PRIMITIVES_TABLE`; `code = None`
+        ///   (process lifetime; no per-entry lifecycle owner).
+        /// - `DefKind::Primitive { primitive_kind: PlatformEffect { .. } }`
+        ///   — platform DLL fn; ptr resolved at platform-load time from
+        ///   `OwnedPlatformFnDescriptor.ptr` during `(platform …)` form
+        ///   processing; `code = None` (DLL handle held in
+        ///   `SharedState.kept_dlls`; pages not unmapped while the
+        ///   session lives). Replaces the per-DLL `PlatformRegistry`
+        ///   the IO trampoline previously consulted.
         ///
-        /// `#[serde(skip)]` — runtime state. Cache re-derives it from the
-        /// owning `PlatformDecl` on cache-hit load by re-resolving the
-        /// DLL and reading its manifest. See Decision 26.
+        /// **Cycle-avoidance rationale (S66).** The `Code` enum lives
+        /// in `cranelisp-backend` and references Cranelift types
+        /// (`Jit`, `Linker`); `cranelisp-primitives` and
+        /// `cranelisp-platform` must NOT depend on `cranelisp-backend`.
+        /// The unified `fn_ptr` field decouples the call address from
+        /// the lifecycle owner: primitives' static `SymbolTable` uses
+        /// `SymbolTable<C = ()>` (Decision 32 default — `()` never
+        /// names `Code`), populates `fn_ptr` from a function pointer
+        /// constant, and leaves `code = None`. Same for platform DLL
+        /// fns — `fn_ptr` is set from the manifest, `code` stays
+        /// `None`, no Cranelift types are named in those crates. The
+        /// dep DAG stays acyclic.
+        ///
+        /// **Ptr extraction.** Read `fn_ptr` directly. The variant-uniform
+        /// `Code::ptr()` accessor is retired post-S66 — there is no ptr
+        /// inside the `Code` variant to accessor over.
+        ///
+        /// **`scheduling_class` is NOT a sibling here.** It lives INSIDE
+        /// `PrimitiveKind::PlatformEffect { scheduling_class }`. Only
+        /// platform-effect entries can carry one — the asymmetry is
+        /// deliberate (see Decision 26).
+        ///
+        /// `#[serde(skip)]` — runtime state. Cache re-derives `fn_ptr`
+        /// on cache-hit load: from `ast` for user fns (`load_object`
+        /// resolves each defined symbol's address); from
+        /// `cranelisp-primitives::PRIMITIVES_TABLE` for primitives; from
+        /// the owning `PlatformDecl` (re-resolving the DLL and reading
+        /// its manifest) for platform DLL fns. See Decisions 25 +
+        /// 26 + 41 (S66 amendments).
         #[serde(skip)]
-        platform_fn_ptr: Option<*const u8>,
+        fn_ptr: Option<*const u8>,
     },
     Import { source: FQSymbol },
     Reexport { source: FQSymbol },
@@ -1133,56 +1271,70 @@ pub struct ConstrainedFn {
 
 No changes from v1.
 
-### Integration-Layer `Code` Enum (in `src/`)
+### Backend-hosted `Code` Enum (in `cranelisp-backend`)
 
 The integration layer's concrete `C` for `SymbolTable<C, L>` is the `Code`
-enum defined below. **Lives in `src/` (owned by `/int`), NOT in
-`cranelisp-types`** — see Decision 35 for why placement here would invert
-Principle 3's dependency edge. Documented at this boundary because every
-integration-layer `SymbolTable` instantiation names it.
+enum defined below. **Lives in `cranelisp-backend/src/code.rs` per
+Decision 41 (Sprint 64 — Layer 2 Option B retracts; backend constructs
+`Code` directly inside `compile_to_module`).** Originally placed in
+`src/code.rs` per Decision 35; the move to backend keeps `cranelisp-types
+→ cranelisp-backend` forbidden (the dep direction Principle 3 protects)
+while letting backend's direct-write pattern (Decision 38's
+`write_code(&self, …)`) self-contain on the backend side. The
+integration layer still names `Code` at the session boundary's
+`SymbolTable<Code, ()>` instantiation, re-exporting from backend.
 
 ```rust
-// src/code.rs (or inline in src/session_v4.rs); owned by /int.
+// crates/cranelisp-backend/src/code.rs; owned by /backend.
 //
-// Concrete `C: CodeStore` for the integration layer's SymbolTable<Code, ()>.
-// Unifies two compilation lineages — fresh-build JIT and cache-hit Linker —
-// behind one uniform code-pointer accessor.
+// Concrete `C: CodeStore` for SymbolTable<Code, ()>. Carries lifecycle
+// ownership only — the per-entry call address lives on the sibling
+// `ModuleEntry::Def.fn_ptr` field (S66 fn_ptr unification, 2026-05-09).
 //
-// See Decision 35 for the full rationale (Code-enum location, L=() choice,
-// Layer 2 Option B for compile_to_module's return shape, kept_jits +
-// kept_linkers dissolution, mixed-lineage modules).
+// See Decisions 35 (original location + L=() choice + mixed-lineage
+// modules) + 41 (S64 location move + direct-write pattern; S66
+// amendment slimming the variants).
+#[non_exhaustive]
 pub enum Code {
-    Jit { jit: Arc<cranelisp_backend::jit::Jit>, ptr: *const u8 },
-    Linker { linker: Arc<cranelisp_backend::cache::Linker>, ptr: *const u8 },
+    Jit(Arc<Jit>),
+    Linker(Arc<Linker>),
 }
 
-impl Code {
-    /// GOT-target code address; variant-uniform.
-    pub fn ptr(&self) -> *const u8 {
-        match self {
-            Code::Jit { ptr, .. } => *ptr,
-            Code::Linker { ptr, .. } => *ptr,
-        }
-    }
-}
-
-// SAFETY: the raw pointer is an integer handle into pages the Arc keeps
-// alive (analogous to ModuleEntry's existing `unsafe impl Send + Sync`).
-unsafe impl Send for Code {}
-unsafe impl Sync for Code {}
+// SAFETY: lifecycle owners are Send + Sync via Arc; no raw pointers
+// inside the variants post-S66.
 ```
+
+**S66 amendment — variant slimming (2026-05-09)**. The previous variant
+shapes `Code::Jit { jit, ptr }` and `Code::Linker { linker, ptr }`
+retire. The per-entry ptr migrates to a unified `fn_ptr: Option<*const
+u8>` field on `ModuleEntry::Def` (subsumes the previously-separate
+`platform_fn_ptr`; supersedes the briefly-planned `primitive_fn_ptr`).
+The variant-uniform `Code::ptr()` accessor retires with the embedded
+ptr; consumers read `fn_ptr` directly. Decision 31 Scenario 2 reclaim
+semantics are preserved (lifecycle ownership stays inside
+`Code::Jit(Arc<Jit>)`; `Drop` chain unchanged; the `fn_ptr` raw pointer
+becomes invalid the same instant `JITModule::free_memory()` runs — same
+lifecycle as the pre-S66 in-variant ptr, only the field placement
+moved). See `facades/types.md` §"Symbol table — the single store" +
+`facades/backend.md` §"`Code` — the per-symbol lifecycle owner" for the
+authoritative shape, and Decision 41's "S66 amendment" for the
+amendment record.
 
 The session boundary types in `src/session_v4.rs` instantiate
 `SymbolTable<Code, ()>` and `ModuleEntry<Code>`; backend signatures
 continue to read `SymbolTable` (i.e. `SymbolTable<(), ()>`) per Decision
 32 and `compile-to-module.md` §17.
 
-`compile_to_module<M: Module>` returns the raw codegen result
-(`CompilationResult` carrying `func_ids` + the per-batch `Arc<Jit>`); the
-integration-layer worker constructs `Code::Jit { jit, ptr }` per defined
-symbol and writes it onto `Def.code`. This is the **CP1 arbitration**
-recorded in Sprint 58 Phase 3a Architecture Review (Layer 2 Option B):
-backend stays generic-blind, `/int` owns the conversion.
+Per Decision 41, `compile_to_module<M: Module>` no longer returns a
+codegen artefact: it writes `Code::Jit(Arc<Jit>)` onto each defined
+symbol's `Def.code` directly via `SymbolTable::write_code(&self, sym,
+code)` (Decision 38's interior-mutable signature) AND writes the
+resulting fn pointer to the same entry's `fn_ptr` field. The function
+returns `Result<(), CompilationError>`. The historical CP1 Layer-2
+Option-B return-tuple shape (`compile_to_module` returning
+`(Arc<Jit>, HashMap<Symbol, *const u8>)` for the integration layer to
+wrap into `Code::Jit { jit, ptr }`) is retracted by Decision 41; the
+`int` post-loop in `worker.rs:2860-3018` collapses.
 
 ### Macro Support Types
 
@@ -1663,7 +1815,7 @@ impl SymbolTable {
 
 The filter is deliberately strict: any `ModuleEntry::Def` with `ast: None` is excluded — whether pre-body-check, primitive, special form, `Overloaded` base, or constrained-fn template. Adding new non-compilable categories never silently breaks codegen, because the `ast.is_some()` clause comes first.
 
-> Note on `ModuleEntry::Def.ast` / `code` / `platform_fn_ptr`: the full set of typecheck- and codegen-populated fields on `ModuleEntry::Def` (`ast`, `code`, `platform_fn_ptr`, `got_slot`, `callees`, `trait_origin`) is now shown in the variant definition above and matches `pipeline-v4.md` §9.1. `ast` arrived in Sprint 55 (Phase 1); `code` shape landed in Sprint 57 Phase 3 G6 (concrete `Code` placeholder); `platform_fn_ptr` landed in Sprint 57 Phase 4 G8; `code` is parameterised to `Option<C>` in Sprint 58 Phase 5 Step 5c (G12) per Decision 32 — the integration layer chooses the concrete `C = Arc<Jit>` so per-redefinition reclaim fires (Decision 31 Scenario 2). The `code` and `platform_fn_ptr` fields are `#[serde(skip)]` — runtime-only, re-derivable from the AST (code) or platform manifest (platform_fn_ptr) on cache-hit load. See `design/typecheck/ast-annotation.md` §6 for the authoritative per-category table of which entries carry `ast: Some(_)`.
+> Note on `ModuleEntry::Def.ast` / `code` / `fn_ptr`: the full set of typecheck- and codegen-populated fields on `ModuleEntry::Def` (`ast`, `code`, `fn_ptr`, `got_slot`, `callees`, `trait_origin`) is now shown in the variant definition above. `ast` arrived in Sprint 55 (Phase 1); `code` shape landed in Sprint 57 Phase 3 G6 (concrete `Code` placeholder); the previously-separate `platform_fn_ptr` landed in Sprint 57 Phase 4 G8; `code` is parameterised to `Option<C>` in Sprint 58 Phase 5 Step 5c (G12) per Decision 32 — the integration layer chooses the concrete `C = Code` (re-exported from `cranelisp-backend` per Decision 41) so per-redefinition reclaim fires (Decision 31 Scenario 2). **Sprint 66 (2026-05-09 — fn_ptr unification)** unifies `platform_fn_ptr` into a single `fn_ptr: Option<*const u8>` field that covers all four ptr origins (JIT user fn, linker-loaded user fn, primitive, platform DLL fn) and slims `Code` variants to lifecycle owner only (`Code::Jit(Arc<Jit>)` / `Code::Linker(Arc<Linker>)`). The `code` and `fn_ptr` fields are `#[serde(skip)]` — runtime-only, re-derivable from the AST + cache `.o` (`fn_ptr`/`code` for user fns), from `cranelisp-primitives::PRIMITIVES_TABLE` (`fn_ptr` for primitives), or from the owning `PlatformDecl` (`fn_ptr` for platform DLL fns) on cache-hit load. See `design/typecheck/ast-annotation.md` §6 for the authoritative per-category table of which entries carry `ast: Some(_)`, and `design/arch/facades/types.md` §"Symbol table — the single store" for the canonical S66 field shape.
 
 ---
 
@@ -1693,7 +1845,10 @@ The filter is deliberately strict: any `ModuleEntry::Def` with `ast: None` is ex
 - `SymbolTable.imports`, `.exports`, `.platforms`, `.submodules` (Sprint 58 Step 5a, Decision 33) — structural declarations as fields, not a parallel store. Reuse existing `cranelisp-types::{ImportSpec, ExportSpec, PlatformSpec, ModDecl}`.
 - `SymbolTable.linker: Option<L>` (Sprint 58 Step 5c) — per-module linker store for cache-hit `.o` mapping. `#[serde(skip)]`.
 - `SymbolTable.schema_version: u32` (Sprint 58 Step 5b, Decision 34) — explicit cache schema version; mismatch invalidates the cache as if dependencies changed.
-- `Code` enum (Sprint 58 Phase 3a, Decision 35) — integration-layer concrete `C` for `SymbolTable<Code, ()>`. Two variants `Code::Jit { jit: Arc<Jit>, ptr }` + `Code::Linker { linker: Arc<Linker>, ptr }`. Lives in `src/`, NOT in `cranelisp-types` (Principle 3). Backend signatures stay generic-blind per CP1 arbitration (Layer 2 Option B): `compile_to_module` returns raw `(Arc<Jit>, …)`, integration layer constructs `Code::Jit`. Documented at this boundary so every consumer of `SymbolTable<Code, ()>` references the same shape.
+- `Code` enum (Sprint 58 Phase 3a, Decision 35; Sprint 64 location move per Decision 41; **Sprint 66 variant slimming per S66 fn_ptr unification**) — concrete `C` for `SymbolTable<Code, ()>`. Variants `Code::Jit(Arc<Jit>)` + `Code::Linker(Arc<Linker>)` — lifecycle owner ONLY post-S66; the per-entry call address lives on the sibling `ModuleEntry::Def.fn_ptr` field. Lives in `cranelisp-backend/src/code.rs` (moved from `src/code.rs` per Decision 41), NOT in `cranelisp-types` (Principle 3). The CP1 Layer-2-Option-B return-tuple pattern retracts: `compile_to_module` writes `Code::Jit(Arc<Jit>)` and `fn_ptr` directly via Decision 38's `write_code` plus a paired `fn_ptr` write, returning `Result<(), CompilationError>`. Documented at this boundary so every consumer of `SymbolTable<Code, ()>` references the same shape.
+- `ModuleEntry::Def.fn_ptr: Option<*const u8>` (Sprint 66 — fn_ptr unification, 2026-05-09). Single source of truth for "where to call to invoke this entry"; subsumes the previously-separate `platform_fn_ptr` field and supersedes the briefly-planned `primitive_fn_ptr`. Origin encoded by `kind: DefKind` (UserFn → JIT/linker; Primitive { Builtin/Inline } → primitive; Primitive { PlatformEffect } → platform DLL). `#[serde(skip)]`. See `facades/types.md` §"Symbol table — the single store" + Decision 41 S66 amendment.
+- `ParsedEntry` enum (Sprint 66, FIXME 0156) — parse-time-only transient produced by `cranelisp_frontend::build_form` and consumed by `cranelisp_typecheck::check_form`. NEVER lands in `SymbolTable`. `#[non_exhaustive]`; not `Serialize/Deserialize`. See `facades/types.md` §"`ParsedEntry`" + `facades/frontend.md` + `facades/typecheck.md`.
+- `DefmacroInfo` struct (Sprint 66, FIXME 0156) — moved from `cranelisp-frontend/src/defmacro.rs` to `cranelisp-types` so `int`'s post-`build_form` consumption path can name the type uniformly. Frontend's `parse_defmacro` becomes `pub(crate)` inside the `build_form` dispatcher.
 
 ### Types NOT added
 - ~~`CheckMode`~~ — eliminated during design review. The multi-pass pipeline works identically on any input size. See `pipeline-v2.md` §5.
@@ -1707,7 +1862,9 @@ The filter is deliberately strict: any `ModuleEntry::Def` with `ast: None` is ex
 
 ### Functions changed
 - `TypeChecker::check(&mut self, ctx: &CompileContext, program: &[TopLevel])` — single typecheck entry point, now takes explicit context; `CheckResult` is no longer a backend input.
-- `compile_to_module<M: Module>(module_path, names, symbol_tables, module)` — four-parameter normative signature (Sprint 56 Phase 2). No `CheckResult`, no `Program`, no intrinsic IDs, no GOT map, no arities parameter. See `design/backend/compile-to-module.md` §2.1.
+- `compile_to_module<M: Module>(module_path, names, symbol_tables, module)` — four-parameter normative signature (Sprint 56 Phase 2). No `CheckResult`, no `Program`, no intrinsic IDs, no GOT map, no arities parameter. **Per Decision 41 (Sprint 64) + S66 amendment**: returns `Result<(), CompilationError>`; backend writes `Code::Jit(Arc<Jit>)` via `SymbolTable::write_code` and the resulting fn pointer to the same entry's `fn_ptr` field, directly. See `facades/backend.md` §"Free functions" and `design/backend/compile-to-module.md`.
+- `cranelisp_frontend::build_form(sexp: &Sexp) -> Result<Vec<ParsedEntry>, CranelispError>` (Sprint 66, FIXME 0156) — replaces the prior `build_ast` shape at the frontend's per-form boundary. Returns a `Vec` because some shapes yield more than one entry per source form (multi-clause `defmacro`, `deftype` with constructors). See `facades/frontend.md`.
+- `cranelisp_typecheck::check_form` is now a **pure function** (Sprint 66, FIXME 0160): `(parsed: ParsedEntry, table: &SymbolTable<C, L>, symbol_tables: &SymbolTables<C, L>) -> Result<Vec<(Symbol, ModuleEntry<C>)>, CheckError>`. Pre-S66 it mutated the table in-place via a typecheck-internal `merge_form_result()`; post-S66 the function does NOT mutate, the caller (`int::insert_symbol`) commits returned entries on `Ok`, and on `Err(Gap | TypeError)` nothing has been written. See `facades/typecheck.md` and §"`check_form` is pure" above.
 
 ### Functions added
 - `CallGraph::add_edge()`, `reverse_index()`, `sccs()`, `non_tail_self_recursion()`

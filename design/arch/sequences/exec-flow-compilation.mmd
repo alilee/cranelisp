@@ -48,7 +48,7 @@ sequenceDiagram
     Note over Sched: Scheduler invariants —<br/>at most ONE worker per module during typecheck (ORDERING per Decision 30 — no longer required for lock safety).<br/>Per-symbol mutability via inner DashMap per-key locks (Decisions 25, 33, 38).<br/>Wait/release is per-symbol or per-module readiness.
 
     rect rgb(220, 235, 255)
-        Note over Sched: TYPECHECK PHASE — workers operate on [&SymbolTable] via Sess.shared.symbol_tables.get(m1)<br/>opt cache hit (sidecar) skips the form-by-form loop entirely<br/>check_form takes [&SymbolTable] + [&SymbolTables] (cross-module reads via shared shard locks),<br/>per-symbol writes via SymbolTable::insert_or_update(&self, ...) under inner DashMap per-entry locks.
+        Note over Sched: TYPECHECK PHASE — workers operate on [&SymbolTable] via Sess.shared.symbol_tables.get(m1)<br/>opt cache hit (sidecar) skips the form-by-form loop entirely<br/>check_form is pure per S66 FIXME 0160 — signature ParsedEntry plus &SymbolTable plus &SymbolTables -> Result[Vec[entry], CheckError] where entry = Symbol+ModuleEntry pair<br/>The orchestrator at int::insert_symbol commits returned entries on Ok via SymbolTable::insert_or_update under inner DashMap per-entry locks<br/>On Err nothing has been written — structural Option B — no rollback at the table level
 
         create participant PW as Priority Worker<br/>::worker::priority_worker_loop(Arc[SharedState])
         Sched -->> PW: Some(PriorityWork::Typecheck(m1: ModuleFullPath))<br/>(returned from take_priority_work_blocking() the worker was parked in)
@@ -99,11 +99,11 @@ sequenceDiagram
                     PW ->> Shared: Sess.shared.introspection.as_ref().map(|m| m.insert(fq, Introspection { source: ... slice from file Arc[str] ..., sexp: Some(expanded.clone()), ..Default::default() }))
                 end
 
-                PW ->> Frontend: cranelisp_frontend::build_ast(defn_sexp: &Sexp) -> Result[Defn, CranelispError]<br/>(or build_expr(sexp: &Sexp) -> Result[Expr, CranelispError] for trailing-expression forms — chosen at the call site, no AST union enum)
-                Frontend -->> PW: Ok(Defn) — untyped (build_ast / build_expr has no gaps — pure transform)
+                PW ->> Frontend: cranelisp_frontend::build_form(defn_sexp: &Sexp) -> Result[Vec[ParsedEntry], CranelispError]<br/>(S66 FIXME 0156 — returns Vec[ParsedEntry] because some shapes yield more than one entry per source form: multi-clause defmacro, deftype with constructors. For trailing-expression forms the REPL path calls build_expr(sexp: &Sexp) -> Result[Expr, CranelispError] directly — chosen at the call site, no AST union enum)
+                Frontend -->> PW: Ok(Vec[ParsedEntry]) — untyped (build_form / build_expr has no gaps — pure transform)
 
-                alt form is import [m2 ...] — known at build_ast, not gap-driven
-                    Note over PW, Sched: import is structurally classified at build_ast (not a gap-return) — process_form invokes scheduler explicitly to wait for m2 and update local bindings.
+                alt form is import [m2 ...] — peeled off by extract_module_declarations BEFORE build_form, not gap-driven
+                    Note over PW, Sched: import is structurally classified BEFORE build_form (extract_module_declarations) — process_form invokes scheduler explicitly to wait for m2 and update local bindings.
                     PW ->> Shared: ensure_registered(shared, &m2.module)
                     Shared -->> PW: Ok(())
                     PW ->> Sched: CompileScheduler::wait_for_typecheck(module: &ModuleFullPath) -> Result[(), SchedulerError]
@@ -117,17 +117,18 @@ sequenceDiagram
                     PW ->> ST_m1: SymbolTable::install_import_bindings(from: &ModuleFullPath, names: ImportNames)<br/>([&self] — writes Import-variant entries via inner DashMap per-key locks)
                 else FQ form (the catch-all — defns, defmacros, deftypes, deftraits, impls, top-level exprs)
                     create participant Typecheck as Typecheck facade<br/>cranelisp_typecheck
-                    PW ->> Typecheck: cranelisp_typecheck::check_form(node: Ast, table: &mut SymbolTable [generic C=Code, L=()], symbol_tables: &SymbolTables) -> Result[CheckResult, CheckError]
+                    Note over PW, Typecheck: drive check_form once per ParsedEntry returned by build_form (multi-clause defmacro and deftype-with-constructors yield multiple ParsedEntry items)
+                    PW ->> Typecheck: cranelisp_typecheck::check_form(parsed: ParsedEntry, table: &SymbolTable [generic C=Code, L=()], symbol_tables: &SymbolTables) -> Result[Vec[entry], CheckError]<br/>where entry pair = Symbol plus ModuleEntry[Code]<br/>S66 FIXME 0160 — pure function — table is &SymbolTable not &mut — check_form does NOT mutate
 
                     opt check_form returns gap (FQ value/fn ref m2/foo needs typecheck — code not needed since macros are already expanded)
                         Typecheck -->> PW: Err(CheckError::Gap(ResolutionGap::SymbolTypechecked(m2/foo)))
-                        Note over PW, Sched: process_form's handle_gap dispatch on SymbolTypechecked:
+                        Note over PW, Sched: process_form's handle_gap dispatch on SymbolTypechecked. Per FIXME 0160 structural Option B: nothing was written to the table on Err, no rollback needed.
                         PW ->> Shared: ensure_registered(shared, &m2/foo.module)
                         Shared -->> PW: Ok(())
                         PW ->> Sched: CompileScheduler::wait_for_typecheck_symbol(fq: &FQSymbol) -> Result[(), SchedulerError]
                         Note over PW, Sched: PW releases m1 and parks at saved form cursor.<br/>(typecheck waits do NOT priority-boost — m2 typecheck progresses naturally)
                         Sched -->> PW: Ok(())
-                        PW ->> Typecheck: cranelisp_typecheck::check_form(...) — retry
+                        PW ->> Typecheck: cranelisp_typecheck::check_form(parsed, ...) — retry with same ParsedEntry
                     end
 
                     opt check_form returns gap (FQ type ref m2/SomeType needs typecheck)
@@ -137,11 +138,14 @@ sequenceDiagram
                         Shared -->> PW: Ok(())
                         PW ->> Sched: CompileScheduler::wait_for_typecheck_type(fqt: &FQTypeName) -> Result[(), SchedulerError]
                         Sched -->> PW: Ok(())
-                        PW ->> Typecheck: cranelisp_typecheck::check_form(...) — retry
+                        PW ->> Typecheck: cranelisp_typecheck::check_form(parsed, ...) — retry with same ParsedEntry
                     end
 
-                    Typecheck -->> PW: Ok(CheckResult { annotated_ast, scheme, callees, .. })
-                    PW ->> ST_m1: SymbolTable::insert_or_update(sym: Symbol, entry: ModuleEntry[Code])<br/>([&self] — inner DashMap per-entry write lock briefly. Decision 31 carry-forward of existing code field.)
+                    Typecheck -->> PW: Ok(Vec[(Symbol, ModuleEntry[Code])]) — typecheck-resolved entries to commit
+                    Note over PW, ST_m1: int::insert_symbol commits returned entries on Ok — order matters for ADT (type then constructors) and multi-clause defmacro (one per clause)
+                    loop for each (sym, entry) in returned vec
+                        PW ->> ST_m1: SymbolTable::insert_or_update(sym: Symbol, entry: ModuleEntry[Code])<br/>([&self] — inner DashMap per-entry write lock briefly. Decision 31 carry-forward of existing code field.)
+                    end
                 end
 
                 PW ->> Sched: CompileScheduler::notify_symbol_typechecked(fq: &FQSymbol)
@@ -165,7 +169,7 @@ sequenceDiagram
             create participant Backend as Backend facade<br/>cranelisp_backend
             PW ->> Backend: cranelisp_backend::load_object(module: &ModuleFullPath, object: &[u8], symbol_tables: &SymbolTables) -> Result[LinkerArtefact, CranelispError]
             Note over Backend, ST_m1: linker resolves each defined symbol of m1 by bare name (per Decision 36)
-            Backend ->> ST_m1: SymbolTable::write_code(sym: &Symbol, code: Code::Linker { linker: Arc[Linker], ptr }) — for each defined symbol
+            Backend ->> ST_m1: SymbolTable::write_code(sym: &Symbol, code: Code::Linker(Arc[Linker])) + entry.fn_ptr = Some(ptr) — for each defined symbol<br/>S66 — Code carries lifecycle owner only — ptr lives on ModuleEntry::Def.fn_ptr
             opt GotObserver registered (per defined symbol — relaxed-load null check)
                 Note over Backend, GotObs: extension-point emit at the load_object slot-population site — facades/backend.md §"GOT-population observation"
                 Backend ->> GotObs: GotObserver(GotEventTag::LinkerWrite, &GotEvent { module: m1, symbol, slot, ptr, provenance: GotProvenance::Linker { linker_addr } })
@@ -181,7 +185,7 @@ sequenceDiagram
             Note over PW, Backend: per-symbol JIT call site (Decision 41) — names is single-element [fq.symbol].<br/>Backend writes Code and Introspection directly into the passed-in stores via Decision 38's write_code(&self, sym, code) and the Option[&DashMap] introspection parameter.<br/>No artefact return — Result[(), CompilationError]. The previous int-side post-loop (worker.rs:2860-3018) collapses into this single call site.
             PW ->> Backend: cranelisp_backend::compile_to_module[M: Module](scope: &ModuleFullPath, names: &[Symbol], symbol_tables: &DashMap[ModuleFullPath, SymbolTable[Code, ()]], introspection: Option[&DashMap[FQSymbol, Introspection]], module: M) -> Result[(), CompilationError]
             Backend ->> ST_m1: SymbolTable::get(sym: &Symbol) -> Option[Ref[ModuleEntry[Code]]] — read ast, scheme, resolved calls
-            Backend ->> ST_m1: SymbolTable::write_code(sym: &Symbol, code: Code::Jit { jit: Arc[Jit], ptr })<br/>([&self] + inner DashMap per-key write lock, atomic GOT slot swap per Decision 31)
+            Backend ->> ST_m1: SymbolTable::write_code(sym: &Symbol, code: Code::Jit(Arc[Jit])) + entry.fn_ptr = Some(ptr)<br/>S66 — Code carries lifecycle owner only — ptr lives on ModuleEntry::Def.fn_ptr — [&self] + inner DashMap per-key write lock, atomic GOT slot swap per Decision 31
             opt GotObserver registered (relaxed-load null check)
                 Note over Backend, GotObs: extension-point emit at the write_code site — facades/backend.md §"GOT-population observation"
                 Backend ->> GotObs: GotObserver(GotEventTag::JitWrite, &GotEvent { module: m1, symbol, slot, ptr, provenance: GotProvenance::Jit { jit_addr } })

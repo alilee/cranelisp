@@ -750,7 +750,7 @@ The newtypes (`Symbol`, `ModuleFullPath`, etc.) are an exception — they wrap a
 
 These types are referenced from the diagrams but live elsewhere because including them here would invert the dependency edge (Principle 3):
 
-- **`Code` enum** — the per-entry retention root for compiled code (`Code::Jit { jit: Arc<Jit>, ptr } | Code::Linker { linker: Arc<Linker>, ptr }`). Lives in `int` (`src/code.rs`) per Decision 35. References `cranelisp_backend::jit::Jit` and `cranelisp_backend::cache::Linker` — neither of which `cranelisp-types` may name.
+- **`Code` enum** — the per-entry lifecycle owner for compiled code (`Code::Jit(Arc<Jit>) | Code::Linker(Arc<Linker>)` per S66 fn_ptr unification — variants carry lifecycle ownership only; the per-entry call address lives on the sibling `ModuleEntry::Def.fn_ptr` field). Lives in `cranelisp-backend/src/code.rs` (moved from `src/code.rs` per Decision 41). References `cranelisp_backend::jit::Jit` and `cranelisp_backend::cache::Linker` — neither of which `cranelisp-types` may name.
 - **`JitArtefact`, `LinkerArtefact`, `ObjectArtefact`** — backend's compile_to_module / load_object / compile_to_object return shapes. Live in `cranelisp-backend`. Reference Cranelift types.
 - **`PriorityWork`, `NiceWork`, `CompileScheduler`** — work item enums and the scheduler itself. Live in `int` (`src/scheduler.rs`).
 - **`ProcessedForm`** — the shared `process_form` return shape. Lives in `int`. Composes a `CheckResult` (from `cranelisp-types`) with codegen-readiness info.

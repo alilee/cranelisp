@@ -437,7 +437,7 @@ Defined in `cranelisp-backend` per Decision 41 (which retracts Decision 35's Lay
 pub use cranelisp_backend::Code;       // re-export for SymbolTable<Code, ()> instantiation at the session boundary
 ```
 
-Backend is no longer C-blind — it constructs `Code::Jit { jit, ptr }` directly inside `compile_to_module` and writes via Decision 38's `write_code(&self, sym, code)`. Int still names `Code` at the session-boundary instantiation `SymbolTable<Code, ()>`, but no longer wraps a backend return tuple — the previous post-loop in `worker.rs:2860-3018` (iterate-over-names + GOT-store + `Code::Jit`-construct + three error cascades) collapses into the per-symbol call-site loop:
+Backend is no longer C-blind — it constructs `Code::Jit(Arc<Jit>)` directly inside `compile_to_module` and writes via Decision 38's `write_code(&self, sym, code)`, and writes the resulting fn pointer to the same entry's `fn_ptr` field (S66 fn_ptr unification — `Code` carries lifecycle owner only). Int still names `Code` at the session-boundary instantiation `SymbolTable<Code, ()>`, but no longer wraps a backend return tuple — the previous post-loop in `worker.rs:2860-3018` (iterate-over-names + GOT-store + `Code::Jit`-construct + three error cascades) collapses into the per-symbol call-site loop:
 
 ```rust
 for sym in defined_symbols(&shared.symbol_tables[scope]) {
@@ -642,7 +642,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 ## `process_form` — the gap-orchestration retry loop
 
-`int::process_form` is the sole orchestrator of the form-processing chain. It composes `frontend::expand`, `frontend::build_ast`, and `cranelisp_typecheck::check_form`; catches their `ResolutionGap` returns; dispatches to the scheduler; and retries until the form fully processes or a non-gap error fires.
+`int::process_form` is the sole orchestrator of the form-processing chain. It composes `frontend::expand`, `frontend::build_form` (returning `Vec<ParsedEntry>` per S66 FIXME 0156), and `cranelisp_typecheck::check_form` (a pure function returning `Vec<(Symbol, ModuleEntry)>` per S66 FIXME 0160); catches their `ResolutionGap` returns; dispatches to the scheduler; and retries until the form fully processes or a non-gap error fires.
 
 Frontend and typecheck stay pure (no `Sess`, no `CompileScheduler` dependency — Principle 3). Workers park inside `wait_for_*` calls — that IS the worker's allowed parking site, never inside library code. `process_form` is THE crossing point where the gap value becomes a scheduler call.
 
@@ -668,7 +668,7 @@ pub fn process_form(shared: &SharedState, form: Sexp, scope: &ModuleFullPath) ->
             Err(other) => return Err(other.into()),                 // genuine expansion failure
         };
 
-        let ast = cranelisp_frontend::build_ast(expanded)?;         // build_ast has no gaps — pure transform
+        let parsed_entries = cranelisp_frontend::build_form(&expanded)?;  // build_form returns Vec<ParsedEntry>; no gaps — pure transform (S66 FIXME 0156)
 
         // Shared shard read lock on m1's SymbolTable. Per Decision 25/33 + per-symbol
         // mutability — check_form takes [&SymbolTable] (not [&mut]) and writes via
@@ -678,16 +678,24 @@ pub fn process_form(shared: &SharedState, form: Sexp, scope: &ModuleFullPath) ->
         let scope_table = shared.symbol_tables.get(scope)
             .expect("Phase 0 must run in register_module before process_form");
 
-        let check_result = match cranelisp_typecheck::check_form(ast, &scope_table, &shared.symbol_tables) {
-            Ok(r) => r,
-            Err(CheckError::Gap(gap)) => {
-                handle_gap(shared, gap)?;
-                continue;                                           // retry — gap resolved
-            }
-            Err(other) => return Err(other.into()),                 // genuine type error
-        };
+        // S66 FIXME 0160 — check_form is pure: drive once per ParsedEntry returned by build_form
+        // (multi-clause defmacro and deftype-with-constructors yield multiple ParsedEntry items).
+        // On Ok, accumulate the returned (Symbol, ModuleEntry) pairs for caller-side commit
+        // (insert_symbol). On Err(Gap), retry with the same ParsedEntry — nothing was written.
+        let mut all_entries: Vec<(Symbol, ModuleEntry<Code>)> = Vec::new();
+        for parsed in &parsed_entries {
+            let entries = match cranelisp_typecheck::check_form(parsed.clone(), &scope_table, &shared.symbol_tables) {
+                Ok(v) => v,
+                Err(CheckError::Gap(gap)) => {
+                    handle_gap(shared, gap)?;
+                    continue;                                       // retry — gap resolved
+                }
+                Err(other) => return Err(other.into()),             // genuine type error
+            };
+            all_entries.extend(entries);
+        }
 
-        return Ok(ProcessedForm::from(check_result));
+        return Ok(ProcessedForm::from(all_entries));
     }
 }
 
@@ -847,7 +855,7 @@ Re-exports cover every type that crosses `int`'s public surface.
 The integration crate imports from:
 
 - **`cranelisp-types`** — the full set above.
-- **`cranelisp-frontend`** — `parse`, `expand`, `build_ast`, `parse_import_sexp`, `parse_export_sexp`, `parse_mod_sexp`, `parse_platform_sexp`, `parse_defmacro`, `synthesize_macro_clause_defn`, `next_synthetic_span`, `is_defmacro`, `is_begin`, `flatten_begin`, `expand_quasiquotes`, `parse_preserving_comments`, `ParseProduct`, `DefmacroInfo`, `Ast`, `ExpansionError`.
+- **`cranelisp-frontend`** — `parse`, `expand`, `build_form` (returns `Vec<ParsedEntry>` per S66 FIXME 0156; replaces the prior `build_ast` shape at the per-form boundary), `build_expr`, `extract_module_declarations`, `synthesize_macro_clause_defn`, `next_synthetic_span`, `is_defmacro`, `is_begin`, `flatten_begin`, `expand_quasiquotes`, `parse_preserving_comments`, `ParseProduct`, `Ast`, `ExpansionError`. (Per FIXME 0156 resolution: `parse_defmacro` becomes `pub(crate)` inside `build_form`'s dispatcher; `DefmacroInfo` and `ParsedEntry` move to `cranelisp-types` — int imports both from there.)
 - **`cranelisp-typecheck`** — `check_form`, `register_builtins`, `CheckResult`, `CheckError`, `CheckState`, `TypeCheckEnv`, the trace install hook.
 - **`cranelisp-backend`** — `compile_to_module` (returns `Result<(), CompilationError>` per Decision 41; writes `Code::Jit` and `Introspection` directly into the passed-in shared stores via `&self`-interior-mutable methods), `load_object`, `compile_to_object`, `Code` (re-exported per Decision 41), `LinkerArtefact`, `ObjectArtefact`, `Jit`, `Linker`, `CompilationError` (with `SymbolNotCompilable` variant per §2.7), `GotObserver` + `GotEvent` + `GotEventTag` + `GotProvenance` + `register_got_observer` (per FIXME 0099 — backend-originated observer types, int registers consumer state). Cranelift `Module`, `JITModule`, `ObjectModule`, `JITBuilder` (via cranelift crates re-exported from backend).
 - **`cranelisp-intrinsics`** — backend-emitted intrinsic extern functions registered with the JIT (via `JITBuilder::symbol`) per Decision 43: `cranelisp_alloc`, `heap_alloc_payload`, `heap_dealloc`, `rc_inc`, `rc_dec`, `consume_shallow`, `dec_shallow_io`, `vec_*`, `heap_alloc_string`, `string_read`, `sconcat`, `quote_sexp`, `cranelisp_run_io`, `io_run`, `run_io_trampoline`, `ivar_*`, `runtime_panic`. Stats accessors (`alloc_count`, `dealloc_count`, `bytes_allocated`, `bytes_current`, `bytes_peak`, `reset_counts`) for `/mem`. The IO observer extension point (`IoEvent`, `IoEventTag`, `IoObserver`, `register_io_observer`, `trace_anchor`) per Decision 40 — int registers an `IoObserver` at session init when REPL/trace mode is on or `CRANELISP_IO_TRACE=1`.
@@ -897,7 +905,7 @@ These hold across sprints — the contract `int` makes with the rest of the work
 
 2. **Workers are persistent.** Per Decision 27 — priority workers are spawned once per session and parked on condvars; not respawned per work item. (The G9 persistent-worker refactor is Sprint 57's work; this facade reflects the post-G9 target.)
 
-3. **`Code` lives in `cranelisp-backend` (Decision 41 amends Decision 35).** The concrete `C` parameter for `SymbolTable<C, L>` is `Code` — the enum lives in `cranelisp-backend/src/code.rs` (moved per Decision 41 from the previous `src/code.rs` location). `cranelisp-types` stays Cranelift-ignorant — Principle 3 protection intact. Backend constructs `Code::Jit { jit, ptr }` directly and writes via Decision 38's `write_code(&self, sym, code)` (interior-mutable; no `&mut` flow needed) — Decision 35 Layer 2 Option B retracts. `int` re-exports `Code` for session-boundary `SymbolTable<Code, ()>` instantiation; the previous worker-side post-loop (iterate-over-names + GOT-store + `Code::Jit`-construct + three error cascades) collapses into the per-symbol call-site loop documented in `facades/backend.md` §"`Code` — the per-entry retention root". Backend signatures use `&DashMap<ModuleFullPath, SymbolTable<Code, ()>>` (non-blind for `C`); non-codegen crates (frontend, typecheck) stay generic on `SymbolTable<(), ()>` per Decision 32's empty-marker traits.
+3. **`Code` lives in `cranelisp-backend` (Decision 41 amends Decision 35; S66 amendment slims variants).** The concrete `C` parameter for `SymbolTable<C, L>` is `Code` — the enum lives in `cranelisp-backend/src/code.rs` (moved per Decision 41 from the previous `src/code.rs` location). `cranelisp-types` stays Cranelift-ignorant — Principle 3 protection intact. Backend constructs `Code::Jit(Arc<Jit>)` directly and writes via Decision 38's `write_code(&self, sym, code)` (interior-mutable; no `&mut` flow needed), and writes the resulting fn pointer to the same entry's `fn_ptr` field (S66 fn_ptr unification — `Code` carries lifecycle owner only; the call address lives on `ModuleEntry::Def.fn_ptr`). Decision 35 Layer 2 Option B retracts. `int` re-exports `Code` for session-boundary `SymbolTable<Code, ()>` instantiation; the previous worker-side post-loop (iterate-over-names + GOT-store + `Code::Jit`-construct + three error cascades) collapses into the per-symbol call-site loop documented in `facades/backend.md` §"`Code` — the per-symbol lifecycle owner". Backend signatures use `&DashMap<ModuleFullPath, SymbolTable<Code, ()>>` (non-blind for `C`); non-codegen crates (frontend, typecheck) stay generic on `SymbolTable<(), ()>` per Decision 32's empty-marker traits.
 
 4. **Scheduler is sole coordination authority.** Per the runtime/platform diagrams' explicit merge — `CompileScheduler` owns BOTH work dispatch AND per-symbol/per-module wait/release. There is no separate `DependencyService`.
 

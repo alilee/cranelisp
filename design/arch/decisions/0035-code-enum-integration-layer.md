@@ -43,3 +43,47 @@ Canonical location: `src/code.rs` (or inline near `SharedState` in `src/session_
 **Principle 3 protection survives intact.** `Code` does NOT move to `cranelisp-types` — that was the original Layer-2 decision driver and remains the right call. The move from `src/` to `cranelisp-backend` keeps `cranelisp-types → cranelisp-backend` forbidden (the dep direction in question); `cranelisp-backend → cranelisp-types` (the existing direction) is unaffected. The motivation for Layer 2 Option B (keep backend signature simple by returning raw tuples) is replaced by Decision 41's direct-write pattern via Decision 38's `write_code(&self, sym, code)` — backend writes the constructed `Code::Jit` directly rather than handing back parts for int to assemble. The previous post-loop in `worker.rs:2860-3018` collapses; the contract becomes self-contained on the backend side.
 
 See Decision 41 for the full signature, the per-symbol JIT cardinality story (which amends Decision 31), and the consequences listing.
+
+## Amendment (Sprint 66 — fn_ptr unification, 2026-05-09)
+
+**Variant slimming.** The two-field variant shapes shown in the original decision —
+
+```rust
+pub enum Code {
+    Jit { jit: Arc<Jit>, ptr: *const u8 },
+    Linker { linker: Arc<Linker>, ptr: *const u8 },
+}
+```
+
+— retire. Post-S66 the variants are tuple-variant-shaped, carrying the
+lifecycle owner only:
+
+```rust
+pub enum Code {
+    Jit(Arc<Jit>),
+    Linker(Arc<Linker>),
+}
+```
+
+The per-entry `*const u8` migrates to a unified `fn_ptr: Option<*const
+u8>` field on `ModuleEntry::Def` (per Decision 41's S66 amendment + the
+S66 fn_ptr unification work). The variant-uniform `Code::ptr()`
+accessor referenced in the original decision's "Pattern-matching and
+accessor discipline" paragraph is **retired** with the embedded ptr —
+consumers read `fn_ptr` directly. See `facades/backend.md` §"`Code` —
+the per-symbol lifecycle owner" + Decision 41 §"S66 amendment" for the
+canonical post-S66 shape.
+
+**Decision 31 Scenario 2 reclaim semantics preserved.** Lifecycle
+ownership stays inside `Code::Jit(Arc<Jit>)`. When the entry's `Code`
+clone drops and refcount hits 0, `Drop::drop` on the `Jit` wrapper
+calls `unsafe JITModule::free_memory()` — same chain as the original
+decision. The `fn_ptr` raw pointer becomes invalid the same instant
+the JIT pages are freed; same lifecycle as the pre-S66 in-variant ptr,
+just relocated to a sibling field.
+
+**Substance unchanged.** The original decision's load-bearing claims —
+`Code` lives in backend (post Sprint 64), `L = ()` is sufficient,
+mixed-lineage modules are first-class, `kept_jits` and `kept_linkers`
+both dissolve, Principle 3 protection holds — are all preserved. Only
+the two-field variant shape and the `Code::ptr()` accessor change.
