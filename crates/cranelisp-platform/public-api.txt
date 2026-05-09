@@ -1,0 +1,252 @@
+pub mod cranelisp_platform
+pub use cranelisp_platform::SchedulingClass
+pub macro cranelisp_platform::declare_platform!
+#[repr(transparent)] pub struct cranelisp_platform::CLBool(_)
+impl core::clone::Clone for cranelisp_platform::CLBool
+pub fn cranelisp_platform::CLBool::clone(&self) -> cranelisp_platform::CLBool
+impl core::convert::From<bool> for cranelisp_platform::CLBool
+pub fn cranelisp_platform::CLBool::from(v: bool) -> Self
+impl core::convert::From<cranelisp_platform::CLBool> for bool
+pub fn bool::from(v: cranelisp_platform::CLBool) -> Self
+impl core::convert::From<cranelisp_platform::CLBool> for cranelisp_platform::CLIO<cranelisp_platform::CLBool>
+pub fn cranelisp_platform::CLIO<cranelisp_platform::CLBool>::from(val: cranelisp_platform::CLBool) -> Self
+impl core::fmt::Debug for cranelisp_platform::CLBool
+pub fn cranelisp_platform::CLBool::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for cranelisp_platform::CLBool
+impl cranelisp_platform::CLType for cranelisp_platform::CLBool
+pub fn cranelisp_platform::CLBool::to_raw(self) -> i64
+impl core::marker::Freeze for cranelisp_platform::CLBool
+impl core::marker::Send for cranelisp_platform::CLBool
+impl core::marker::Sync for cranelisp_platform::CLBool
+impl core::marker::Unpin for cranelisp_platform::CLBool
+impl core::marker::UnsafeUnpin for cranelisp_platform::CLBool
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::CLBool
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::CLBool
+#[repr(transparent)] pub struct cranelisp_platform::CLFloat(_)
+impl core::clone::Clone for cranelisp_platform::CLFloat
+pub fn cranelisp_platform::CLFloat::clone(&self) -> cranelisp_platform::CLFloat
+impl core::convert::From<cranelisp_platform::CLFloat> for cranelisp_platform::CLIO<cranelisp_platform::CLFloat>
+pub fn cranelisp_platform::CLIO<cranelisp_platform::CLFloat>::from(val: cranelisp_platform::CLFloat) -> Self
+impl core::convert::From<cranelisp_platform::CLFloat> for f64
+pub fn f64::from(v: cranelisp_platform::CLFloat) -> Self
+impl core::convert::From<f64> for cranelisp_platform::CLFloat
+pub fn cranelisp_platform::CLFloat::from(v: f64) -> Self
+impl core::fmt::Debug for cranelisp_platform::CLFloat
+pub fn cranelisp_platform::CLFloat::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for cranelisp_platform::CLFloat
+impl cranelisp_platform::CLType for cranelisp_platform::CLFloat
+pub fn cranelisp_platform::CLFloat::to_raw(self) -> i64
+impl core::marker::Freeze for cranelisp_platform::CLFloat
+impl core::marker::Send for cranelisp_platform::CLFloat
+impl core::marker::Sync for cranelisp_platform::CLFloat
+impl core::marker::Unpin for cranelisp_platform::CLFloat
+impl core::marker::UnsafeUnpin for cranelisp_platform::CLFloat
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::CLFloat
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::CLFloat
+#[repr(transparent)] pub struct cranelisp_platform::CLIO<CL: cranelisp_platform::CLType>(_, _)
+impl<CL: cranelisp_platform::CLType> cranelisp_platform::CLIO<CL>
+pub fn cranelisp_platform::CLIO<CL>::effect(f: impl core::ops::function::FnOnce() -> CL + 'static) -> Self
+pub fn cranelisp_platform::CLIO<CL>::effect_on_resource(token: i64, f: impl core::ops::function::FnOnce() -> CL + 'static) -> Self
+pub fn cranelisp_platform::CLIO<CL>::pure(val: CL) -> Self
+impl core::convert::From<alloc::string::String> for cranelisp_platform::CLIO<cranelisp_platform::CLString>
+pub fn cranelisp_platform::CLIO<cranelisp_platform::CLString>::from(val: alloc::string::String) -> Self
+impl core::convert::From<bool> for cranelisp_platform::CLIO<cranelisp_platform::CLBool>
+pub fn cranelisp_platform::CLIO<cranelisp_platform::CLBool>::from(val: bool) -> Self
+impl core::convert::From<cranelisp_platform::CLBool> for cranelisp_platform::CLIO<cranelisp_platform::CLBool>
+pub fn cranelisp_platform::CLIO<cranelisp_platform::CLBool>::from(val: cranelisp_platform::CLBool) -> Self
+impl core::convert::From<cranelisp_platform::CLFloat> for cranelisp_platform::CLIO<cranelisp_platform::CLFloat>
+pub fn cranelisp_platform::CLIO<cranelisp_platform::CLFloat>::from(val: cranelisp_platform::CLFloat) -> Self
+impl core::convert::From<cranelisp_platform::CLInt> for cranelisp_platform::CLIO<cranelisp_platform::CLInt>
+pub fn cranelisp_platform::CLIO<cranelisp_platform::CLInt>::from(val: cranelisp_platform::CLInt) -> Self
+impl core::convert::From<cranelisp_platform::CLString> for cranelisp_platform::CLIO<cranelisp_platform::CLString>
+pub fn cranelisp_platform::CLIO<cranelisp_platform::CLString>::from(val: cranelisp_platform::CLString) -> Self
+impl core::convert::From<f64> for cranelisp_platform::CLIO<cranelisp_platform::CLFloat>
+pub fn cranelisp_platform::CLIO<cranelisp_platform::CLFloat>::from(val: f64) -> Self
+impl core::convert::From<i64> for cranelisp_platform::CLIO<cranelisp_platform::CLInt>
+pub fn cranelisp_platform::CLIO<cranelisp_platform::CLInt>::from(val: i64) -> Self
+impl<CL: core::fmt::Debug + cranelisp_platform::CLType> core::fmt::Debug for cranelisp_platform::CLIO<CL>
+pub fn cranelisp_platform::CLIO<CL>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<CL: cranelisp_platform::CLType> core::convert::From<cranelisp_platform::CLIO<CL>> for i64
+pub fn i64::from(v: cranelisp_platform::CLIO<CL>) -> Self
+impl<CL> core::marker::Freeze for cranelisp_platform::CLIO<CL>
+impl<CL> core::marker::Send for cranelisp_platform::CLIO<CL> where CL: core::marker::Send
+impl<CL> core::marker::Sync for cranelisp_platform::CLIO<CL> where CL: core::marker::Sync
+impl<CL> core::marker::Unpin for cranelisp_platform::CLIO<CL> where CL: core::marker::Unpin
+impl<CL> core::marker::UnsafeUnpin for cranelisp_platform::CLIO<CL>
+impl<CL> core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::CLIO<CL> where CL: core::panic::unwind_safe::RefUnwindSafe
+impl<CL> core::panic::unwind_safe::UnwindSafe for cranelisp_platform::CLIO<CL> where CL: core::panic::unwind_safe::UnwindSafe
+#[repr(transparent)] pub struct cranelisp_platform::CLInt(_)
+impl core::clone::Clone for cranelisp_platform::CLInt
+pub fn cranelisp_platform::CLInt::clone(&self) -> cranelisp_platform::CLInt
+impl core::convert::From<cranelisp_platform::CLInt> for cranelisp_platform::CLIO<cranelisp_platform::CLInt>
+pub fn cranelisp_platform::CLIO<cranelisp_platform::CLInt>::from(val: cranelisp_platform::CLInt) -> Self
+impl core::convert::From<cranelisp_platform::CLInt> for i64
+pub fn i64::from(v: cranelisp_platform::CLInt) -> Self
+impl core::convert::From<i64> for cranelisp_platform::CLInt
+pub fn cranelisp_platform::CLInt::from(v: i64) -> Self
+impl core::fmt::Debug for cranelisp_platform::CLInt
+pub fn cranelisp_platform::CLInt::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for cranelisp_platform::CLInt
+impl cranelisp_platform::CLType for cranelisp_platform::CLInt
+pub fn cranelisp_platform::CLInt::to_raw(self) -> i64
+impl core::marker::Freeze for cranelisp_platform::CLInt
+impl core::marker::Send for cranelisp_platform::CLInt
+impl core::marker::Sync for cranelisp_platform::CLInt
+impl core::marker::Unpin for cranelisp_platform::CLInt
+impl core::marker::UnsafeUnpin for cranelisp_platform::CLInt
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::CLInt
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::CLInt
+pub struct cranelisp_platform::CLOwned<T: cranelisp_platform::CLHeap>
+impl<T: cranelisp_platform::CLHeap> cranelisp_platform::CLOwned<T>
+pub fn cranelisp_platform::CLOwned<T>::new(val: T) -> Self
+impl<T: cranelisp_platform::CLHeap> core::ops::deref::Deref for cranelisp_platform::CLOwned<T>
+pub type cranelisp_platform::CLOwned<T>::Target = T
+pub fn cranelisp_platform::CLOwned<T>::deref(&self) -> &T
+impl<T: cranelisp_platform::CLHeap> core::ops::drop::Drop for cranelisp_platform::CLOwned<T>
+pub fn cranelisp_platform::CLOwned<T>::drop(&mut self)
+impl<T> core::marker::Freeze for cranelisp_platform::CLOwned<T> where T: core::marker::Freeze
+impl<T> core::marker::Send for cranelisp_platform::CLOwned<T> where T: core::marker::Send
+impl<T> core::marker::Sync for cranelisp_platform::CLOwned<T> where T: core::marker::Sync
+impl<T> core::marker::Unpin for cranelisp_platform::CLOwned<T> where T: core::marker::Unpin
+impl<T> core::marker::UnsafeUnpin for cranelisp_platform::CLOwned<T> where T: core::marker::UnsafeUnpin
+impl<T> core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::CLOwned<T> where T: core::panic::unwind_safe::RefUnwindSafe
+impl<T> core::panic::unwind_safe::UnwindSafe for cranelisp_platform::CLOwned<T> where T: core::panic::unwind_safe::UnwindSafe
+#[repr(transparent)] pub struct cranelisp_platform::CLString(_)
+impl cranelisp_platform::CLString
+pub fn cranelisp_platform::CLString::as_str(&self) -> &str
+impl core::clone::Clone for cranelisp_platform::CLString
+pub fn cranelisp_platform::CLString::clone(&self) -> cranelisp_platform::CLString
+impl core::convert::From<&str> for cranelisp_platform::CLString
+pub fn cranelisp_platform::CLString::from(s: &str) -> Self
+impl core::convert::From<alloc::string::String> for cranelisp_platform::CLString
+pub fn cranelisp_platform::CLString::from(s: alloc::string::String) -> Self
+impl core::convert::From<cranelisp_platform::CLString> for alloc::string::String
+pub fn alloc::string::String::from(v: cranelisp_platform::CLString) -> Self
+impl core::convert::From<cranelisp_platform::CLString> for cranelisp_platform::CLIO<cranelisp_platform::CLString>
+pub fn cranelisp_platform::CLIO<cranelisp_platform::CLString>::from(val: cranelisp_platform::CLString) -> Self
+impl core::fmt::Debug for cranelisp_platform::CLString
+pub fn cranelisp_platform::CLString::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for cranelisp_platform::CLString
+impl cranelisp_platform::CLHeap for cranelisp_platform::CLString
+pub fn cranelisp_platform::CLString::dec_rc(&self)
+pub fn cranelisp_platform::CLString::inc_rc(&self)
+pub fn cranelisp_platform::CLString::into_owned_consuming(self) -> cranelisp_platform::CLOwned<Self>
+pub fn cranelisp_platform::CLString::own(&self) -> cranelisp_platform::CLOwned<Self>
+pub fn cranelisp_platform::CLString::raw_ptr(&self) -> i64
+impl cranelisp_platform::CLType for cranelisp_platform::CLString
+pub fn cranelisp_platform::CLString::to_raw(self) -> i64
+impl core::marker::Freeze for cranelisp_platform::CLString
+impl core::marker::Send for cranelisp_platform::CLString
+impl core::marker::Sync for cranelisp_platform::CLString
+impl core::marker::Unpin for cranelisp_platform::CLString
+impl core::marker::UnsafeUnpin for cranelisp_platform::CLString
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::CLString
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::CLString
+#[repr(C)] pub struct cranelisp_platform::HostCallbacks
+pub cranelisp_platform::HostCallbacks::alloc: fn(i64) -> i64
+impl core::marker::Freeze for cranelisp_platform::HostCallbacks
+impl core::marker::Send for cranelisp_platform::HostCallbacks
+impl core::marker::Sync for cranelisp_platform::HostCallbacks
+impl core::marker::Unpin for cranelisp_platform::HostCallbacks
+impl core::marker::UnsafeUnpin for cranelisp_platform::HostCallbacks
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::HostCallbacks
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::HostCallbacks
+pub struct cranelisp_platform::HostContext
+impl cranelisp_platform::HostContext
+pub unsafe fn cranelisp_platform::HostContext::init(&self, callbacks: *const cranelisp_platform::HostCallbacks)
+pub const fn cranelisp_platform::HostContext::new() -> Self
+impl core::default::Default for cranelisp_platform::HostContext
+pub fn cranelisp_platform::HostContext::default() -> Self
+impl !core::marker::Freeze for cranelisp_platform::HostContext
+impl core::marker::Send for cranelisp_platform::HostContext
+impl core::marker::Sync for cranelisp_platform::HostContext
+impl core::marker::Unpin for cranelisp_platform::HostContext
+impl core::marker::UnsafeUnpin for cranelisp_platform::HostContext
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::HostContext
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::HostContext
+pub struct cranelisp_platform::OwnedPlatformFnDescriptor
+pub cranelisp_platform::OwnedPlatformFnDescriptor::docstring: alloc::string::String
+pub cranelisp_platform::OwnedPlatformFnDescriptor::jit_name: alloc::string::String
+pub cranelisp_platform::OwnedPlatformFnDescriptor::name: alloc::string::String
+pub cranelisp_platform::OwnedPlatformFnDescriptor::param_count: usize
+pub cranelisp_platform::OwnedPlatformFnDescriptor::param_names: alloc::vec::Vec<alloc::string::String>
+pub cranelisp_platform::OwnedPlatformFnDescriptor::ptr: *const u8
+pub cranelisp_platform::OwnedPlatformFnDescriptor::scheduling_class: cranelisp_types::scheduling::SchedulingClass
+pub cranelisp_platform::OwnedPlatformFnDescriptor::type_sig: alloc::string::String
+impl core::marker::Freeze for cranelisp_platform::OwnedPlatformFnDescriptor
+impl !core::marker::Send for cranelisp_platform::OwnedPlatformFnDescriptor
+impl !core::marker::Sync for cranelisp_platform::OwnedPlatformFnDescriptor
+impl core::marker::Unpin for cranelisp_platform::OwnedPlatformFnDescriptor
+impl core::marker::UnsafeUnpin for cranelisp_platform::OwnedPlatformFnDescriptor
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::OwnedPlatformFnDescriptor
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::OwnedPlatformFnDescriptor
+#[repr(C)] pub struct cranelisp_platform::PlatformFn
+pub cranelisp_platform::PlatformFn::docstring: *const u8
+pub cranelisp_platform::PlatformFn::docstring_len: usize
+pub cranelisp_platform::PlatformFn::jit_name: *const u8
+pub cranelisp_platform::PlatformFn::jit_name_len: usize
+pub cranelisp_platform::PlatformFn::name: *const u8
+pub cranelisp_platform::PlatformFn::name_len: usize
+pub cranelisp_platform::PlatformFn::param_count: u32
+pub cranelisp_platform::PlatformFn::param_name_count: usize
+pub cranelisp_platform::PlatformFn::param_name_lens: *const usize
+pub cranelisp_platform::PlatformFn::param_names: *const *const u8
+pub cranelisp_platform::PlatformFn::ptr: *const u8
+pub cranelisp_platform::PlatformFn::scheduling_class: u32
+pub cranelisp_platform::PlatformFn::type_sig: *const u8
+pub cranelisp_platform::PlatformFn::type_sig_len: usize
+impl core::marker::Send for cranelisp_platform::PlatformFn
+impl core::marker::Sync for cranelisp_platform::PlatformFn
+impl core::marker::Freeze for cranelisp_platform::PlatformFn
+impl core::marker::Unpin for cranelisp_platform::PlatformFn
+impl core::marker::UnsafeUnpin for cranelisp_platform::PlatformFn
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::PlatformFn
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::PlatformFn
+#[repr(C)] pub struct cranelisp_platform::PlatformManifest
+pub cranelisp_platform::PlatformManifest::abi_version: u32
+pub cranelisp_platform::PlatformManifest::function_count: usize
+pub cranelisp_platform::PlatformManifest::functions: *const cranelisp_platform::PlatformFn
+pub cranelisp_platform::PlatformManifest::name: *const u8
+pub cranelisp_platform::PlatformManifest::name_len: usize
+pub cranelisp_platform::PlatformManifest::version: *const u8
+pub cranelisp_platform::PlatformManifest::version_len: usize
+impl core::marker::Freeze for cranelisp_platform::PlatformManifest
+impl !core::marker::Send for cranelisp_platform::PlatformManifest
+impl !core::marker::Sync for cranelisp_platform::PlatformManifest
+impl core::marker::Unpin for cranelisp_platform::PlatformManifest
+impl core::marker::UnsafeUnpin for cranelisp_platform::PlatformManifest
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::PlatformManifest
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::PlatformManifest
+pub const cranelisp_platform::ABI_VERSION: u32
+pub const cranelisp_platform::HEAP_HEADER_SIZE: i64
+pub const cranelisp_platform::IO_EFFECT_RESOURCE_OFFSET: i64
+pub const cranelisp_platform::IO_TAG_BIND: i64
+pub const cranelisp_platform::IO_TAG_EFFECT: i64
+pub const cranelisp_platform::IO_TAG_PAR: i64
+pub const cranelisp_platform::IO_TAG_PURE: i64
+pub const cranelisp_platform::STRING_HEADER_BYTES: usize
+pub trait cranelisp_platform::CLHeap: cranelisp_platform::CLType + core::marker::Copy
+pub fn cranelisp_platform::CLHeap::dec_rc(&self)
+pub fn cranelisp_platform::CLHeap::inc_rc(&self)
+pub fn cranelisp_platform::CLHeap::into_owned_consuming(self) -> cranelisp_platform::CLOwned<Self>
+pub fn cranelisp_platform::CLHeap::own(&self) -> cranelisp_platform::CLOwned<Self>
+pub fn cranelisp_platform::CLHeap::raw_ptr(&self) -> i64
+impl cranelisp_platform::CLHeap for cranelisp_platform::CLString
+pub fn cranelisp_platform::CLString::dec_rc(&self)
+pub fn cranelisp_platform::CLString::inc_rc(&self)
+pub fn cranelisp_platform::CLString::into_owned_consuming(self) -> cranelisp_platform::CLOwned<Self>
+pub fn cranelisp_platform::CLString::own(&self) -> cranelisp_platform::CLOwned<Self>
+pub fn cranelisp_platform::CLString::raw_ptr(&self) -> i64
+pub trait cranelisp_platform::CLType: core::marker::Copy
+pub fn cranelisp_platform::CLType::to_raw(self) -> i64
+impl cranelisp_platform::CLType for cranelisp_platform::CLBool
+pub fn cranelisp_platform::CLBool::to_raw(self) -> i64
+impl cranelisp_platform::CLType for cranelisp_platform::CLFloat
+pub fn cranelisp_platform::CLFloat::to_raw(self) -> i64
+impl cranelisp_platform::CLType for cranelisp_platform::CLInt
+pub fn cranelisp_platform::CLInt::to_raw(self) -> i64
+impl cranelisp_platform::CLType for cranelisp_platform::CLString
+pub fn cranelisp_platform::CLString::to_raw(self) -> i64
+pub unsafe fn cranelisp_platform::call_effect_thunk(thunk_ptr: i64) -> i64
+pub fn cranelisp_platform::derive_jit_name(cl_name: &str) -> alloc::string::String
+pub unsafe fn cranelisp_platform::manifest_to_descriptors(manifest: &cranelisp_platform::PlatformManifest) -> core::result::Result<(alloc::string::String, alloc::string::String, alloc::vec::Vec<cranelisp_platform::OwnedPlatformFnDescriptor>), alloc::string::String>

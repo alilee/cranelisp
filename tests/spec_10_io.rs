@@ -356,3 +356,112 @@ fn auto_curry_io_returning_fn() {
         out.stdout
     );
 }
+
+// =============================================================================
+// FIXME 0103 — IoObserver in cranelisp-intrinsics; trace.rs/io_trace.rs in int
+// =============================================================================
+//
+// Authored failing-not-ignored at Sprint 66 Phase-5 Stage-1 open per /qa
+// Phase-5 obligation. Pinning the canonical trace dump shape catches silent
+// reshape during the FIXME-0103 + FIXME-0150 Phase-2 migration where:
+//   - IoObserver registration moves from `cranelisp-runtime` to
+//     `cranelisp-intrinsics` (per /arch Phase-2 revision #3).
+//   - trace.rs + io_trace.rs ring-buffer + flush guard move from runtime
+//     into `src/io_trace/`.
+//
+// Per `tests/plan/implementation-slice-s66.md §5.4`. The snapshot fixture
+// `tests/fixtures/io_trace_snapshot.txt` pins event presence (not line
+// ordering — line ordering may shift slightly across the relocation). The
+// second test verifies the public-API home of `register_io_observer` is
+// `cranelisp-intrinsics`, not `cranelisp-runtime`, post-relocation.
+
+// spec: spec/10-io.md §"IO observation contract" + spec/12-runtime.md
+// §"Diagnostic logging".
+// FIXME(/dev intrinsics FIXME 0103 Phase 1 + /dev int FIXME 0103 Phase 2)
+// — fails until the relocated machinery emits trace lines whose shape
+// matches the snapshot fixture (event tags present at minimum).
+#[test]
+fn io_trace_snapshot_pre_post_relocation_byte_equivalent() {
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .use_workspace_platforms()
+        .run("user.cl")
+        .user(
+            "(platform \"stdio\")\n\
+             (defn main [] (Pure 0))\n",
+        )
+        .env("CRANELISP_IO_TRACE", "1")
+        .output();
+
+    // Read the snapshot fixture — list of event tags that MUST appear.
+    let fixture = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/io_trace_snapshot.txt"
+    ))
+    .expect("read tests/fixtures/io_trace_snapshot.txt");
+
+    // Each non-empty, non-comment line is a required substring in stderr.
+    let mut missing: Vec<&str> = Vec::new();
+    for line in fixture.lines() {
+        let needle = line.trim();
+        if needle.is_empty() || needle.starts_with('#') {
+            continue;
+        }
+        if !out.stderr.contains(needle) {
+            missing.push(needle);
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "io_trace snapshot drift — these required substrings are MISSING from stderr:\n  {}\n\
+         full stderr was:\n{}",
+        missing.join("\n  "),
+        out.stderr
+    );
+}
+
+// spec: structural — IoObserver registration site post-FIXME-0103 is in
+// `cranelisp-intrinsics`, NOT `cranelisp-runtime` (per /arch Phase-2
+// revision #3). Verifiable through `cargo public-api` baselines: a) the
+// intrinsics baseline must list `register_io_observer`; b) the runtime
+// baseline (transit) must NOT list it (after the relocation).
+//
+// FIXME(/dev intrinsics FIXME 0103 Phase 1 + /dev runtime retire under
+// FIXME 0150 Phase 5).
+#[test]
+fn io_observer_registration_lives_in_intrinsics() {
+    use std::path::PathBuf;
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let intrinsics_baseline = root.join("crates/cranelisp-intrinsics/public-api.txt");
+    let runtime_baseline = root.join("crates/cranelisp-runtime/public-api.txt");
+
+    let intrinsics_present = intrinsics_baseline.exists();
+    assert!(
+        intrinsics_present,
+        "FIXME 0103: cranelisp-intrinsics crate / baseline must exist post-Wave-2 \
+         (D43 Phase 1+2). Path: {}",
+        intrinsics_baseline.display()
+    );
+
+    let intrinsics_pub = std::fs::read_to_string(&intrinsics_baseline)
+        .unwrap_or_else(|e| panic!("read {}: {e}", intrinsics_baseline.display()));
+    assert!(
+        intrinsics_pub.contains("register_io_observer"),
+        "cranelisp-intrinsics MUST expose `register_io_observer` per FIXME 0103 + /arch Phase-2 revision #3; \
+         baseline at {}:\n{}",
+        intrinsics_baseline.display(),
+        intrinsics_pub
+    );
+
+    if runtime_baseline.exists() {
+        let runtime_pub = std::fs::read_to_string(&runtime_baseline)
+            .unwrap_or_else(|e| panic!("read {}: {e}", runtime_baseline.display()));
+        assert!(
+            !runtime_pub.contains("register_io_observer"),
+            "cranelisp-runtime MUST NOT expose `register_io_observer` post-relocation \
+             per FIXME 0103; baseline at {}:\n{}",
+            runtime_baseline.display(),
+            runtime_pub
+        );
+    }
+}

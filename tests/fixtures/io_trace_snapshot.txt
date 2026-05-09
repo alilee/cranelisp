@@ -1,0 +1,25 @@
+# io_trace_snapshot.txt — canonical CRANELISP_IO_TRACE=1 stderr-trace
+# event-presence snapshot for the IO trampoline path.
+#
+# Authored Sprint 66 Phase-5 Stage 1 (/qa, FIXME 0103). Each non-blank,
+# non-comment line is a required substring in the captured stderr trace
+# when running a representative IO program with `CRANELISP_IO_TRACE=1`.
+#
+# Why event presence and not line ordering: the FIXME-0103 + D43 Phase-2
+# relocation moves the ring-buffer + flush guard from `cranelisp-runtime`
+# into `src/io_trace/`. The trace MUST continue to surface the same
+# events; their exact line ordering or precise field formatting may shift
+# slightly during migration. Event presence is the load-bearing invariant.
+#
+# Update protocol: when /dev lands FIXME 0103 + 0150 Phase 2 and the
+# snapshot intentionally widens, /qa verifies the new shape against the
+# facade in `design/arch/facades/intrinsics.md` § "IO observation" and
+# this fixture. New tags ADDED here; tags MUST NOT be removed without
+# a facade update.
+
+# Trampoline lifecycle (per `design/backend/io-trampoline-trace.md §3`)
+TrampolineEnter
+TrampolineExit
+
+# Platform-effect dispatch (load + invoke)
+PlatformEffect

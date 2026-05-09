@@ -1074,3 +1074,88 @@ batch's diff.
 - **Does not replace the spec.** Rows cite the spec; the spec is
   normative on what the language does. This plan is normative on
   what `/qa` tests.
+
+## Sprint 66 Phase 5 Wave 1 — failing-not-ignored bedrock (2026-05-09)
+
+Per `tests/plan/implementation-slice-s66.md §5` inventory, `/qa` authored
+35 failing-not-ignored e2e tests at Phase-5 Stage-1 open. The rows below
+trace each test to its FIXME + spec section + resolving /dev workstream.
+Status `[S66 W3]` until /dev wave lands the consumer-side API; flips to
+`[Tested ...]` at FIXME closure.
+
+### FIXME 0098 — process_form gap-orchestration (critical-path triad)
+
+| Test | Spec | Status | Resolves at |
+|---|---|---|---|
+| `tests/process_form_dispatch.rs::process_form_dispatch_macro_after_import_succeeds_in_one_eval` | spec/08-modules.md §"REPL form sequencing"; spec/09-macros.md §"Macro resolution" | `[S66 W3a]` | frontend Phase 2 + int Phase 4 of FIXME 0098 |
+| `tests/process_form_dispatch.rs::process_form_dispatch_typecheck_gap_completes_in_one_eval` | spec/08-modules.md §"REPL form sequencing" | `[S66 W3a]` | typecheck Phase 3 + int Phase 4 of FIXME 0098 |
+| `tests/process_form_dispatch.rs::process_form_dispatch_function_gap_does_not_speculatively_jit` | spec/12-runtime.md §"Diagnostic logging" (CRANELISP_GOT_TRACE reservation) | `[S66 W3a]` | int Phase 4 of FIXME 0098 + backend Phase 1 of FIXME 0099 |
+
+### FIXME 0099 — GotObserver
+
+| Test | Spec | Status | Resolves at |
+|---|---|---|---|
+| `tests/got_trace.rs::got_trace_emits_jit_write_event` | spec/12-runtime.md §"Diagnostic logging" | `[S66 W3b]` | backend Phase 1 + int Phase 2 of FIXME 0099 |
+| `tests/got_trace.rs::got_trace_emits_linker_write_event_on_cache_hit` | spec/12-runtime.md §"Diagnostic logging" | `[S66 W3b]` | backend Phase 1 + int Phase 2 of FIXME 0099 |
+| `tests/got_trace.rs::got_trace_emits_redefinition_event_on_repl_redefn` | spec/12-runtime.md §"Diagnostic logging" | `[S66 W3b]` | backend Phase 1 + int Phase 2 of FIXME 0099 |
+| `tests/got_trace.rs::got_trace_off_path_zero_overhead_neg` (negative) | spec/12-runtime.md §"Diagnostic logging" | `[S66 W3b]` | backend Phase 1 of FIXME 0099 |
+
+### FIXME 0100 — single-consumer relocations
+
+| Test | Spec | Status | Resolves at |
+|---|---|---|---|
+| `tests/public_api_relocations.rs::public_api_check_runs_against_all_eight_crates` | structural — `tests/CLAUDE.md §"Public-API enforcement"` | `[S66 W2-W4]` | All 8 per-crate baselines committed; FIXME 0100 Phase 1+2 relocations land |
+
+### FIXME 0103 — IoObserver in intrinsics; trace.rs/io_trace.rs in int
+
+| Test | Spec | Status | Resolves at |
+|---|---|---|---|
+| `tests/spec_10_io.rs::io_trace_snapshot_pre_post_relocation_byte_equivalent` | spec/10-io.md §"IO observation contract" + spec/12-runtime.md §"Diagnostic logging" | `[S66 W3b]` | intrinsics Phase 2 + int Phase 2 of FIXME 0103 |
+| `tests/spec_10_io.rs::io_observer_registration_lives_in_intrinsics` | structural — facade-mediated | `[S66 W2-W3b]` | FIXME 0103 Phase 1 (intrinsics) + FIXME 0150 Phase 5 (runtime retire) |
+
+### FIXME 0104 — PlatformError adoption
+
+| Test | Spec | Status | Resolves at |
+|---|---|---|---|
+| `tests/platform_errors.rs::platform_load_failed_carries_form_span` | spec/11-platform.md §"Platform error reporting" | `[S66 W3a]` | types Wave 0 + platform Phase 2 + int Phase 3 of FIXME 0104 |
+| `tests/platform_errors.rs::platform_manifest_not_found_carries_dll_path` | spec/11-platform.md §"Platform error reporting" | `[S66 W3a]` | types Wave 0 + platform Phase 2 of FIXME 0104 |
+| `tests/platform_errors.rs::platform_abi_version_mismatch_emits_expected_vs_found` | spec/11-platform.md §"Platform error reporting" | `[S66 W3a]` | types Wave 0 + platform Phase 2 of FIXME 0104 + manifest-loader audit |
+| `tests/platform_errors.rs::platform_dispatch_error_during_run_carries_fn_name` | spec/11-platform.md §"Platform error reporting" | `[S66 W3a]` | types Wave 0 + platform Phase 2 + int Phase 3 of FIXME 0104 |
+
+### FIXME 0107 — `OwnedPlatformFnDescriptor` `#[non_exhaustive]`
+
+Tracked at /dev-unit tier (compile_fail doc-test inside `cranelisp-platform`); no e2e row required per `tests/plan/implementation-slice-s66.md §5.6`.
+
+### FIXME 0108 — display.rs backend → int
+
+| Test | Spec | Status | Resolves at |
+|---|---|---|---|
+| `tests/repl_introspection.rs::display_format_eval_result_after_relocation_unchanged` | repl/spec.md §1.1 | `[S66 W3b]` | int FIXME 0108 |
+| `tests/repl_introspection.rs::public_api_check_backend_display_absent_neg` (negative) | structural — facade-mediated | `[S66 W3b]` | int FIXME 0108 + backend baseline regenerated |
+
+### FIXME 0150 — D43 runtime split (highest-risk reshape)
+
+| Test | Spec | Status | Resolves at |
+|---|---|---|---|
+| `tests/stdlib_trait_impls.rs::stdlib_num_int_inline_path` | spec/appendix-a-builtins.md §"Num.Int" | `[S66 W3-W4]` | FIXME 0150 Phase 3 + 4 |
+| `tests/stdlib_trait_impls.rs::stdlib_num_int_mappable_path` | spec/07-traits.md §"Operators as first-class values" | `[S66 W3-W4]` | FIXME 0150 Phase 3 + 4 |
+| `tests/stdlib_trait_impls.rs::stdlib_num_float_inline_path` | spec/appendix-a-builtins.md §"Num.Float" | `[S66 W3-W4]` | FIXME 0150 Phase 3 + 4 |
+| `tests/stdlib_trait_impls.rs::stdlib_num_float_mappable_path` | spec/07-traits.md §"Operators as first-class values" | `[S66 W3-W4]` | FIXME 0150 Phase 3 + 4 |
+| `tests/stdlib_trait_impls.rs::stdlib_eq_int_inline_path` | spec/appendix-a-builtins.md §"Eq.Int" | `[S66 W3-W4]` | FIXME 0150 Phase 3 + 4 |
+| `tests/stdlib_trait_impls.rs::stdlib_eq_int_mappable_path` | spec/07-traits.md §"Operators as first-class values" | `[S66 W3-W4]` | FIXME 0150 Phase 3 + 4 |
+| `tests/stdlib_trait_impls.rs::stdlib_eq_float_inline_path` | spec/appendix-a-builtins.md §"Eq.Float" | `[S66 W3-W4]` | FIXME 0150 Phase 3 + 4 |
+| `tests/stdlib_trait_impls.rs::stdlib_eq_float_mappable_path` | spec/07-traits.md §"Operators as first-class values" | `[S66 W3-W4]` | FIXME 0150 Phase 3 + 4 |
+| `tests/stdlib_trait_impls.rs::stdlib_eq_bool_inline_path` | spec/appendix-a-builtins.md §"Eq.Bool" | `[S66 W3-W4]` | FIXME 0150 Phase 3 + 4 |
+| `tests/stdlib_trait_impls.rs::stdlib_eq_bool_mappable_path` | spec/07-traits.md §"Operators as first-class values" | `[S66 W3-W4]` | FIXME 0150 Phase 3 + 4 |
+| `tests/stdlib_trait_impls.rs::stdlib_eq_string_inline_path` | spec/appendix-a-builtins.md §"Eq.String" | `[S66 W3-W4]` | FIXME 0150 Phase 3 + 4 |
+| `tests/stdlib_trait_impls.rs::stdlib_eq_string_mappable_path` | spec/07-traits.md §"Operators as first-class values" | `[S66 W3-W4]` | FIXME 0150 Phase 3 + 4 |
+| `tests/stdlib_trait_impls.rs::stdlib_ord_int_inline_path` | spec/appendix-a-builtins.md §"Ord.Int" | `[S66 W3-W4]` | FIXME 0150 Phase 3 + 4 |
+| `tests/stdlib_trait_impls.rs::stdlib_ord_int_mappable_path` | spec/07-traits.md §"Operators as first-class values" | `[S66 W3-W4]` | FIXME 0150 Phase 3 + 4 |
+| `tests/stdlib_trait_impls.rs::stdlib_ord_float_inline_path` | spec/appendix-a-builtins.md §"Ord.Float" | `[S66 W3-W4]` | FIXME 0150 Phase 3 + 4 |
+| `tests/stdlib_trait_impls.rs::stdlib_ord_float_mappable_path` | spec/07-traits.md §"Operators as first-class values" | `[S66 W3-W4]` | FIXME 0150 Phase 3 + 4 |
+| `tests/stdlib_trait_impls.rs::stdlib_display_int_inline_path` | spec/appendix-a-builtins.md §"Display.Int" | `[S66 W3-W4]` | FIXME 0150 Phase 3 + 4 |
+| `tests/stdlib_trait_impls.rs::stdlib_display_float_inline_path` | spec/appendix-a-builtins.md §"Display.Float" | `[S66 W3-W4]` | FIXME 0150 Phase 3 + 4 |
+| `tests/stdlib_trait_impls.rs::stdlib_not_inline_path` | spec/appendix-a-builtins.md §"not" | `[S66 W3-W4]` | FIXME 0150 Phase 4 + primitives-side seeding |
+| `tests/stdlib_trait_impls.rs::stdlib_not_mappable_path` | spec/appendix-a-builtins.md §"not" + spec/07-traits.md §"Operators as first-class values" | `[S66 W3-W4]` | FIXME 0150 Phase 4 + primitives-side seeding |
+| `tests/stdlib_trait_impls.rs::stdlib_link_mode_against_intrinsics_archive` | structural — Phase 5 retirement | `[S66 W4]` | FIXME 0150 Phase 5 |
+| `tests/stdlib_trait_impls.rs::cranelisp_runtime_crate_absent_post_phase_5_neg` (negative) | structural — Phase 5 retirement | `[S66 W4]` | FIXME 0150 Phase 5 |

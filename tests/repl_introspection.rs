@@ -1925,3 +1925,80 @@ fn display_defn_with_docstring_uses_dash_separator() {
          regress. Combined:\n{combined}"
     );
 }
+
+// =============================================================================
+// FIXME 0108 — display.rs relocation backend → int (Sprint 66 Phase 5 Stage 1)
+// =============================================================================
+//
+// Authored failing-not-ignored at Phase-5 Stage-1 open per /qa Phase-5
+// obligation. FIXME 0108 relocates `crates/cranelisp-backend/src/display.rs`
+// into the int binary. The relocation is pure source-move; output bytes for
+// /sig, /info, /type, REPL eval-result formatting MUST be byte-identical
+// pre/post relocation. The negative test additionally asserts (via
+// `cargo public-api` baseline) that backend's public surface no longer
+// exposes `display::*` symbols.
+//
+// Per `tests/plan/implementation-slice-s66.md §5.7`.
+
+// spec: repl/spec.md §1.1 — universal output format `:Type value` is
+// spec-pinned; relocation MUST NOT shift output bytes.
+// FIXME(/dev int FIXME 0108) — fails if the relocation shifts output bytes.
+#[test]
+fn display_format_eval_result_after_relocation_unchanged() {
+    let out = repl_prims(
+        "(defn id [x] x)\n\
+         /sig id\n\
+         /info id\n\
+         (id 7)\n",
+    );
+    let combined = format!("{}\n{}", out.stdout, out.stderr);
+    assert!(
+        combined.contains(":primitives/Int 7"),
+        "REPL eval result MUST format as `:primitives/Int 7` per repl/spec.md §1.1; \
+         display.rs relocation must not shift output bytes. Combined:\n{combined}"
+    );
+    assert!(
+        combined.contains("Fn") && combined.contains("id"),
+        "/sig id MUST surface Fn type for id per repl/spec.md §3; \
+         display.rs relocation must not shift output bytes. Combined:\n{combined}"
+    );
+    assert!(
+        combined.contains("; defn"),
+        "/info MUST surface `; defn` classification per repl/spec.md §3; \
+         display.rs relocation must not shift output bytes. Combined:\n{combined}"
+    );
+}
+
+// spec: structural — FIXME 0108 closure: backend's public surface MUST NOT
+// list `display::*` post-relocation. Negative test verified via the
+// committed `cargo public-api` baseline.
+// FIXME(/dev int FIXME 0108 + /dev backend baseline regenerated post-relocation).
+#[test]
+fn public_api_check_backend_display_absent_neg() {
+    use std::path::PathBuf;
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let backend_baseline = root.join("crates/cranelisp-backend/public-api.txt");
+    assert!(
+        backend_baseline.exists(),
+        "backend public-api baseline must exist per /qa slice §1.1; path: {}",
+        backend_baseline.display()
+    );
+    let s = std::fs::read_to_string(&backend_baseline)
+        .unwrap_or_else(|e| panic!("read {}: {e}", backend_baseline.display()));
+    // After FIXME 0108 lands, no `display::` path should appear in
+    // backend's public API surface. Conservative match: a public-surface
+    // line containing the `display` module name signals the relocation
+    // hasn't completed.
+    let has_display_pub = s.lines().any(|line| {
+        let t = line.trim();
+        t.contains("::display::") || t.contains("pub mod display")
+            || t.contains("pub use cranelisp_backend::display")
+    });
+    assert!(
+        !has_display_pub,
+        "backend public surface MUST NOT expose `display::*` post-FIXME-0108; \
+         baseline at {}:\n{}",
+        backend_baseline.display(),
+        s
+    );
+}
