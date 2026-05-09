@@ -1,6 +1,6 @@
 # Sprint 66 — `cranelisp-types` Wave 0 authoring plan
 
-**Status:** authored 2026-05-07 by `/arch` (Phase 3 design); expanded 2026-05-08 (/arch Wave B — Phase 3 FIXME resolutions per `sprints/SPRINT.md` §"Phase 3 FIXME resolutions"); revised 2026-05-09 (/arch — fn_ptr unification: the Wave B `primitive_fn_ptr` add is replaced by a unified `fn_ptr` field that ALSO replaces the existing `platform_fn_ptr`; `Code` variants slim to lifecycle owner only). Wave B added `ParsedEntry`, moved `DefmacroInfo` into types, confirmed `LinkerError`'s 2-variant baseline. Wave B's `primitive_fn_ptr` add is **superseded** by §1.7-revised below.
+**Status:** authored 2026-05-07 by `/arch` (Phase 3 design); expanded 2026-05-08 (/arch Wave B — Phase 3 FIXME resolutions per `sprints/SPRINT.md` §"Phase 3 FIXME resolutions"); revised 2026-05-09 (/arch — fn_ptr unification: the Wave B `primitive_fn_ptr` add was replaced by a unified `fn_ptr` field that ALSO replaced `platform_fn_ptr`; `Code` variants slim to lifecycle owner only); **rolled back 2026-05-09 later same day (Wave 0 amendment, commit `1dc57ae`)** — the unified `fn_ptr` field introduced by `b09ec76` was redundant with the per-module `GotTable` already populated at registration; it has been **removed** from `ModuleEntry::Def`. The `Code` variant slim still holds (variants are tuple-shaped `Code::Jit(Arc<Jit>)` / `Code::Linker(Arc<Linker>)`); the post-rollback canonical statement is **GOT is the single source of truth for callable addresses** (see §1.7-revised below). Wave B's `ParsedEntry`, `DefmacroInfo`, `LinkerError` additions are unaffected.
 **Companion docs:** `sprints/SPRINT.md` §"Architecture review (Phase 2)" — Wave 0 task; `sprints/SPRINT.md` §"Phase 3 FIXME resolutions" — Wave B resolutions; `design/arch/facades/types.md` — target-stating public surface.
 **Scope:** design-only. Source authoring (`crates/cranelisp-types/src/`) lands in Phase 5 by `/dev` (types). This plan is the brief that `/dev` (types) executes.
 
@@ -376,54 +376,77 @@ pub enum LinkerError {
 
 **Cost:** ~15 LOC of authoring; this is a small enum with two variants.
 
-### 1.7-revised `fn_ptr` field on `ModuleEntry::Def` — unified across all four ptr origins (supersedes Wave B's `primitive_fn_ptr` add)
+### 1.7-revised GOT-as-single-source-of-truth (post-rollback) — supersedes both Wave B's `primitive_fn_ptr` add and the briefly-landed unified `fn_ptr` field
 
-**Source:** `design/arch/facades/types.md` §"Symbol table — the single store" — `ModuleEntry::Def`; `design/arch/facades/primitives.md` §"Public surface" — `PRIMITIVES_TABLE`; `design/arch/facades/backend.md` §"Code — the per-symbol lifecycle owner"; `design/arch/facades/platform.md` §"Bounded-context invariants" #1.
+**Source:** `design/arch/facades/types.md` §"Symbol table — the single store" — `ModuleEntry::Def`; `design/arch/facades/primitives.md` §"Public surface" — `PRIMITIVES_TABLE`; `design/arch/facades/backend.md` §"Code — the per-symbol lifecycle owner"; `design/arch/facades/platform.md` §"Bounded-context invariants" #1; `crates/cranelisp-types/src/got.rs` (`GotTable`).
 
-**Revision rationale (2026-05-09).** Wave B planned to add `primitive_fn_ptr: Option<*const u8>` to `ModuleEntry::Def` "parallel to the existing `platform_fn_ptr`" (FIXME 0159 resolution). That add was solving a real cycle (`cranelisp-primitives → cranelisp-backend` would have arisen if `Code::Primitive` had been the carrier), but it perpetuated a per-origin field proliferation pattern. The cleaner answer: **one `fn_ptr: Option<*const u8>` field that covers all four ptr origins** (JIT user fn, linker-loaded user fn, primitive, platform DLL fn), and slim the `Code` variants to carry only the lifecycle owner (`Arc<Jit>` / `Arc<Linker>`). Origin is encoded by `kind: DefKind`, not by which optional field is set.
+**Status (2026-05-09).** This section's authoring history has two superseded chapters:
 
-**Authoring (revised):**
+1. **Wave B (FIXME 0159 resolution)** — proposed adding `primitive_fn_ptr: Option<*const u8>` to `ModuleEntry::Def` parallel to the existing `platform_fn_ptr`. Solved a real cycle but perpetuated per-origin field proliferation. **Superseded** mid-sprint by the fn_ptr unification (below).
+2. **fn_ptr unification (commit `b09ec76`, Wave 0)** — proposed a single unified `fn_ptr: Option<*const u8>` covering all four origins, removing `platform_fn_ptr`. Landed briefly. **Superseded same day by `1dc57ae`** (the rollback) when /arch identified that the unified field duplicated state already maintained by the per-module `GotTable`: every callable entry already has a `got_slot`, and JIT-emitted code reads addresses from `got_base + slot * 8`. Stashing the same address on a sibling field was duplicate state — a Principle 7 violation.
 
-- **Add** `fn_ptr: Option<*const u8>` to `ModuleEntry::Def` in `crates/cranelisp-types/src/module.rs`. Serde-skip (transient — fn ptrs don't survive process boundaries).
-- **Remove** `platform_fn_ptr: Option<*const u8>` from `ModuleEntry::Def` (existing field — its use sites migrate to `fn_ptr`).
-- **Do NOT add** `primitive_fn_ptr` — the Wave B add never lands; `PRIMITIVES_TABLE`'s static-init populates `fn_ptr` directly.
+**Canonical statement (post-rollback):**
 
-**Doc comment (target shape on `fn_ptr`):**
+> **GOT is the single source of truth for callable addresses.** `ModuleEntry::Def.got_slot: Option<usize>` indexes into the module's `GotTable`; the runtime address lives at `symbol_table.got().load_slot(slot)`. There is no separate `fn_ptr` / `platform_fn_ptr` / `primitive_fn_ptr` field — those workarounds are deleted. Origin (JIT-compiled / linker-loaded / platform DLL / primitive) is encoded by `kind: DefKind`, not by which optional field carries the ptr. `got_slot: None` indicates non-callable, non-addressable entries (special forms, `Overloaded` base entries, `TypeDef`/`TraitDecl`/`Macro`, constrained-fn templates).
+
+**Authoring (post-rollback):**
+
+- **No `fn_ptr` field on `ModuleEntry::Def`.** The b09ec76 add has been reverted by `1dc57ae`. `ModuleEntry::Def`'s post-rollback callable-address shape is `got_slot: Option<usize>` only.
+- **No `platform_fn_ptr` field.** Removed by `b09ec76`; not reinstated by the rollback. Platform fn registration writes to a GOT slot, not to a per-entry field.
+- **No `primitive_fn_ptr` field.** Wave B add never landed.
+- **GOT shape unchanged** (`crates/cranelisp-types/src/got.rs`). `GotTable` carries `[AtomicPtr<u8>; GOT_TABLE_SIZE]`; `store_slot(slot, ptr)` (Release) / `load_slot(slot)` (Acquire). One `GotTable` per `SymbolTable`.
+
+**Read pattern (post-rollback):**
 
 ```rust
-/// Unified fn pointer — single source of truth for "where to call to invoke this entry."
-/// Origin is encoded by `kind: DefKind`, NOT by which optional field is set:
-///   - `DefKind::Function | UserFn { … }` — user fn; ptr written by backend at codegen
-///     (JIT path) or by `load_object` (linker-loaded cache path); paired with
-///     `code = Some(Code::Jit(_))` or `Some(Code::Linker(_))`.
-///   - `DefKind::Primitive { primitive_kind: Builtin | Inline | … }` — primitive;
-///     ptr written at static-init by `cranelisp-primitives::PRIMITIVES_TABLE`;
-///     `code = None` (primitives have process lifetime; no per-entry lifecycle owner).
-///   - `DefKind::Primitive { primitive_kind: PlatformEffect { … } }` — platform DLL fn;
-///     ptr resolved at platform-load time from `OwnedPlatformFnDescriptor.ptr`;
-///     `code = None` (DLL handle held in `SharedState.kept_dlls`).
-/// serde-skip — runtime state, never persisted.
-#[serde(skip)]
-pub fn_ptr: Option<*const u8>,
+// At read sites — collect_jit_setup, linker setup, IO trampoline, etc.
+if let ModuleEntry::Def { got_slot: Some(slot), .. } = entry {
+    let ptr = st.got().load_slot(*slot);
+    if !ptr.is_null() {
+        // use ptr — register with linker, push to jit_symbols, dispatch effect, etc.
+    }
+}
 ```
 
-**Cycle stays avoided.** Primitives' static `SymbolTable` uses `SymbolTable<C = ()>` (Decision 32 default). Primitives never names `Code` and never depends on `cranelisp-backend`. Primitives sets `fn_ptr: Some(ptr)` and `code: None`. The dep DAG `cranelisp-primitives → cranelisp-types` stays acyclic.
+**Write pattern (post-rollback):**
 
-**Decision 31 Scenario 2 preserved.** Lifecycle ownership stays inside `Code::Jit(Arc<Jit>)`. When a user redefines a fn, the old `ModuleEntry::Def` drops, its `Code::Jit(Arc<Jit>)` drops, refcount → 0 if last reference, custom `Drop` on `Jit` fires, `JITModule::free_memory()` runs. The `fn_ptr` field is a raw pointer that becomes invalid after free — same lifecycle semantics, just relocated out of the `Code` variant.
+```rust
+// Backend: compile_to_module per defined symbol —
+let slot = table.allocate_got_slot_for(&sym); // existing
+let ptr = jit.get_finalized_function(func_id);
+table.got().store_slot(slot, ptr);
+// (No paired fn_ptr write. The entry already carries got_slot: Some(slot).)
 
-**Cost:** ~10 LOC of authoring net (one field add, one field remove, doc comment, serde attribute, plus mechanical constructor/match-arm sweeps in this crate). Net authoring effort vs. the Wave B `primitive_fn_ptr` add is roughly net-zero — a field add was already planned; this revision swaps the new field's name and removes one existing field. The slimming of `Code` variants is `/dev (backend)` Wave 3 work, not /arch authoring (see §1.8 below).
+// Platform: handle_platform per descriptor —
+let slot = entry.got_slot.unwrap_or_else(|| table.allocate_got_slot());
+table.got().store_slot(slot, desc.ptr);
+// entry.got_slot updated to Some(slot) if newly allocated.
 
-### 1.8 `Code` enum slim — note for `/dev (backend)` Wave 3
+// Primitives: PRIMITIVES_TABLE static init —
+// every primitive entry registers with a got_slot; the static populates
+// the GOT slot to the function constant. C = () (Decision 32 default);
+// no Code variant is named.
+```
 
-The `Code` enum's variants slim from `Code::Jit { jit: Arc<Jit>, ptr: *const u8 }` / `Code::Linker { linker: Arc<Linker>, ptr: *const u8 }` to `Code::Jit(Arc<Jit>)` / `Code::Linker(Arc<Linker>)` — lifecycle owner only; the per-entry ptr migrates to the unified `fn_ptr` field on `ModuleEntry::Def`. The variant-uniform `Code::ptr()` accessor is removed.
+**Cycle stays avoided.** `cranelisp-primitives` and `cranelisp-platform` use `SymbolTable<C = ()>` (Decision 32 default — `()` never names `Code`). Both write to GOT slots via the `cranelisp-types`-hosted `GotTable` API. Neither names `cranelisp-backend`. Dep DAG `cranelisp-primitives → cranelisp-types` and `cranelisp-platform → cranelisp-types` stay acyclic.
+
+**Decision 31 Scenario 2 preserved.** Lifecycle ownership stays inside `Code::Jit(Arc<Jit>)`. When a user redefines a fn, the old `ModuleEntry::Def` drops, its `Code::Jit(Arc<Jit>)` drops, refcount → 0 if last reference, custom `Drop` on `Jit` fires, `JITModule::free_memory()` runs. The GOT slot is atomically updated to the new code address before the old `Arc<Jit>` clone can drop (per-symbol JIT cardinality + GOT swap order — see Decision 41 + concurrency-symbol-table-entry.mmd for the atomic ordering). The GOT slot's pointer becomes invalid the instant `JITModule::free_memory()` runs — same lifecycle semantics as the briefly-considered sibling-field placement, but now the callable address has a single home.
+
+**Cost (post-rollback):** zero net authoring in this Wave 0 brief. The `b09ec76` field add and `1dc57ae` field remove are paired in source; `cranelisp-types` is back at the pre-fn_ptr-unification shape (modulo the rewritten `got_slot` doc comment which now states the single-source-of-truth invariant). The `Code` variant slim (§1.8) still holds — that aspect of the unification work survived the rollback.
+
+### 1.8 `Code` enum slim — `/dev (backend)` Wave 3 (preserved through rollback)
+
+The `Code` enum's variants slim from `Code::Jit { jit: Arc<Jit>, ptr: *const u8 }` / `Code::Linker { linker: Arc<Linker>, ptr: *const u8 }` to `Code::Jit(Arc<Jit>)` / `Code::Linker(Arc<Linker>)` — lifecycle owner only. The variant-uniform `Code::ptr()` accessor is removed; consumers read the address from the GOT (the post-rollback single source of truth — see §1.7-revised) via the entry's `got_slot`, not from the `Code` variant.
+
+This aspect of the S66 unification survived the `1dc57ae` rollback. The rollback removed only the redundant per-entry `fn_ptr` field; `Code` variants stay slim because the GOT (not a sibling field) is now where the address lives.
 
 This is `/dev (backend)` work (Wave 3), not /arch authoring — `Code` lives in `crates/cranelisp-backend/src/code.rs` per Decision 41. The /arch deliverables that drive the work:
 
 - `facades/backend.md` §"Code — the per-symbol lifecycle owner" — target shape (slim variants, no ptr accessor)
-- `facades/types.md` §"Symbol table — the single store" — `ModuleEntry::Def.fn_ptr` field present
-- `facades/primitives.md`, `facades/platform.md`, `facades/intrinsics.md` — `fn_ptr` references at the facade level
+- `facades/types.md` §"Symbol table — the single store" — `ModuleEntry::Def.got_slot: Option<usize>` (the single source of truth for callable addresses; doc-comment in `crates/cranelisp-types/src/module.rs:430–460`)
+- `facades/primitives.md`, `facades/platform.md`, `facades/intrinsics.md` — GOT-slot reference at the facade level
 
-**Cross-wave dep:** the `Code` slim depends on Wave 0's `fn_ptr` field landing first (so backend has somewhere to write the ptr after removing it from the variant). Once Wave 0 lands, backend can slim `Code` and update `compile_to_module` / `load_object` to write `fn_ptr` alongside `code`.
+**Cross-wave dep:** the `Code` slim depends on consumers being able to read addresses without a `Code::ptr()` accessor. Post-rollback that requirement is met by the GOT — every callable entry has `got_slot: Some(_)` and the address is read via `symbol_table.got().load_slot(slot)`. Backend's `compile_to_module` writes to the GOT slot (not to a per-entry field) immediately after `jit.get_finalized_function`; the `Code::Jit(Arc<Jit>)` lifecycle owner is written separately via `SymbolTable::write_code`.
 
 ---
 
@@ -576,8 +599,8 @@ pub use newtype::{FQSymbol, FQTraitName, FQTypeName, JitSymbol, ModuleFullPath, 
 | **Added** | +8 | `ErrorLocation`, `LineCol`, `LineColRange`, `PlatformError`, `ResolutionGap`, `LinkerError`, `ParsedEntry`, `DefmacroInfo` |
 | **Removed** | −9 | `CheckResult`, `ConstructorInfo`, `DisplayInfo`, `FieldInfo`, `MethodResolutions`, `MonoDefn`, `ReplSnapshot`, `ResolvedCall`, `TypeDefInfo` |
 | **Reshaped** | +1 enum (variants reshaped) | `CranelispError` (variants migrate `span`/`file` → `location: ErrorLocation`; new `Platform` variant) |
-| **Reshaped** | +1 struct (field swap) | `ModuleEntry::Def` gains `fn_ptr: Option<*const u8>` and removes `platform_fn_ptr` (§1.7-revised — S66 fn_ptr unification supersedes the Wave B `primitive_fn_ptr` add) |
-| **Reshaped** | +1 enum (variants slim) | `Code` (in `cranelisp-backend`) variants slim from `{ jit, ptr }` / `{ linker, ptr }` to `(Arc<Jit>)` / `(Arc<Linker>)` — lifecycle owner only; ptr migrates to sibling `fn_ptr` field. (NOT `cranelisp-types` work; `/dev (backend)` Wave 3 — see §1.8.) |
+| **Reshaped** | +1 struct (field shape) | `ModuleEntry::Def` `got_slot: Option<usize>` doc-comment rewritten — GOT is the **single source of truth** for callable addresses (§1.7-revised post-rollback). `platform_fn_ptr` removed by `b09ec76`; the briefly-landed unified `fn_ptr` field also removed by `1dc57ae` (the rollback). No per-entry sibling ptr field. |
+| **Reshaped** | +1 enum (variants slim) | `Code` (in `cranelisp-backend`) variants slim from `{ jit, ptr }` / `{ linker, ptr }` to `(Arc<Jit>)` / `(Arc<Linker>)` — lifecycle owner only; the per-entry call address now lives in `SymbolTable.got()` (a `GotTable` per Decision 7), indexed by `ModuleEntry::Def.got_slot`. (NOT `cranelisp-types` work; `/dev (backend)` Wave 3 — see §1.8.) |
 
 **Net: −1 public type** in `cranelisp-types` (was −4 pre-Wave-B; +3 Wave-B additions narrow the shrinkage). The direction is still mild shrinkage per Principle 15 — the types crate is concentrating on multi-consumer boundary types. The two new transient types (`ParsedEntry`, `DefmacroInfo`) are additions because the parse-time → check-time handoff was previously implicit (frontend internal types); making it explicit is the cost of the form-vocabulary widening (FIXME 0156 resolution).
 
@@ -601,7 +624,7 @@ The 5 new types from §1 unblock specific items across the 8 implementation slic
 | `CranelispError::Platform` variant | int slice row 27 (`format_error` Platform arm) | Same as `PlatformError`. |
 | `LinkerError` (Wave B — FIXME 0154) | backend slice row 12 (`Linker::get_symbol` typed-result reshape) | **Hard prerequisite** for backend row 12; small surface so low risk. |
 | `ParsedEntry` + `DefmacroInfo` (Wave B — FIXME 0156) | frontend slice rows 5–6 (`build_form` shape-pivot, `parse_defmacro` reshape) ; typecheck slice row 1 (`check_form` consumes `ParsedEntry`) ; int slice (`process_form` parse → check → insert pipeline) | **Hard prerequisite** for the form-vocabulary widening. Coordinated with frontend's `defmacro.rs` move-out. |
-| `fn_ptr` field on `ModuleEntry::Def` (Wave B revised — FIXME 0159 + S66 fn_ptr unification) | primitives slice row 10 (`PRIMITIVES_TABLE` static authoring) ; backend slice (`compile_to_module` direct-write of `fn_ptr` alongside `code`) ; platform slice (`platform_fn_ptr` callsite migration → `fn_ptr`) | **Hard prerequisite** for all three. Field add (and `platform_fn_ptr` removal) must precede static authoring AND backend `Code` slim AND platform callsite migration. |
+| GOT-slot canonicalisation on `ModuleEntry::Def` (Wave B revised — FIXME 0159 + S66 fn_ptr unification + post-rollback per `1dc57ae`) | primitives slice row 10 (`PRIMITIVES_TABLE` static authoring writes to GOT slot) ; backend slice (`compile_to_module` writes ptr to `got().store_slot(slot, ptr)`) ; platform slice (`platform_fn_ptr` callsite migration → GOT-slot read/write) | **Hard prerequisite** for all three. Removal of `platform_fn_ptr` (b09ec76) and removal of the briefly-added `fn_ptr` (1dc57ae) must precede static authoring AND backend `Code` slim AND platform callsite migration. Post-rollback the GOT is the single source of truth for callable addresses. |
 
 ### 5.2 Wave 2 consumer slices that DEPEND on Wave 0
 
@@ -612,7 +635,7 @@ In Wave-order priority:
 3. **platform slice** — depends on `PlatformError` (rows 1, 2).
 4. **int slice** — depends on `ResolutionGap` (row 3), `PlatformError` (rows 27, 28), `ErrorLocation` (rows 27, 28, 51), `ParsedEntry` (parse → check → insert pipeline shape).
 5. **backend slice** — depends on `ErrorLocation` (rows 5, 15) for `CompilationError::CodegenFailed.location` field; depends on `LinkerError` (row 12) per FIXME 0154.
-6. **primitives slice** — depends on `fn_ptr` field on `ModuleEntry::Def` (row 10) per FIXME 0159 + S66 fn_ptr unification; the static populates `fn_ptr` and leaves `code: None`.
+6. **primitives slice** — depends on the GOT-slot canonicalisation on `ModuleEntry::Def` (row 10) per FIXME 0159 + S66 fn_ptr unification + post-rollback per `1dc57ae`; the static allocates a `got_slot` per primitive and populates the slot via `got().store_slot(slot, ptr)`, leaving `code: None`.
 
 ### 5.3 Wave 0 internal ordering
 
@@ -624,7 +647,7 @@ Within Wave 0 (single `/dev` (types) author working alone):
 4. **`PlatformError` + `CranelispError::Platform` variant** — depends on #1 (needs `ErrorLocation`). Lands after #1 but in same wave.
 5. **`LinkerError`** (§1.6, Wave B) — independent of all of the above; tiny enum. Can land at any point.
 6. **`ParsedEntry` + `DefmacroInfo`** (§1.5, Wave B) — depends on existing types (`Span`, `Symbol`, `MacroClauseInfo`, `TraitDecl`, `TraitImpl`, `ConstructorDef`, `FieldDef`). Independent of error types. Pair with the move-out of `DefmacroInfo` from `cranelisp-frontend` (frontend slice coordinates the deletion in Wave 2).
-7. **`fn_ptr` field on `ModuleEntry::Def`** (§1.7-revised, Wave B revised — fn_ptr unification) — single-line field add (`fn_ptr: Option<*const u8>`) + single-line field remove (`platform_fn_ptr`); serde-skip; coordinated with primitives slice's row 10 (writes `fn_ptr` from the static), backend slice (writes `fn_ptr` alongside `code` in `compile_to_module` / `load_object`; slims `Code` variants per §1.8), and platform slice (migrates `platform_fn_ptr` callsites to `fn_ptr`). The `primitive_fn_ptr` add planned in Wave B never lands.
+7. **GOT-slot canonicalisation on `ModuleEntry::Def`** (§1.7-revised, Wave B revised — fn_ptr unification then post-rollback per `1dc57ae`) — `platform_fn_ptr` removed (b09ec76); briefly-landed unified `fn_ptr` removed (1dc57ae); `got_slot: Option<usize>` doc-comment rewritten in `crates/cranelisp-types/src/module.rs:430–460` to state the GOT-as-single-source-of-truth invariant. Coordinated with primitives slice's row 10 (writes ptr to GOT slot from the static), backend slice (writes ptr to `got().store_slot(slot, ptr)` in `compile_to_module` / `load_object`; slims `Code` variants per §1.8), and platform slice (migrates `platform_fn_ptr` callsites to GOT-slot reads/writes). Neither `primitive_fn_ptr` (Wave B) nor `fn_ptr` (b09ec76 unification) lives in source.
 
 Wave 0 is sized as **~2.5 days of `/dev` (types) work** (revised up from 1.5d after Wave B additions) — most of it is the `CranelispError` reshape and the construction-site sweep across consumer crates that must follow. The pure type authoring breakdown:
 
@@ -636,9 +659,9 @@ Wave 0 is sized as **~2.5 days of `/dev` (types) work** (revised up from 1.5d af
 | `PlatformError` + `CranelispError::Platform` | ~2 hours |
 | `LinkerError` (Wave B) | ~30 minutes |
 | `ParsedEntry` + `DefmacroInfo` move (Wave B) | ~1 day (variants + module wiring + frontend `defmacro.rs` move-out coordination) |
-| `fn_ptr` field add + `platform_fn_ptr` remove (Wave B revised) | ~30 minutes |
+| GOT-slot canonicalisation + `platform_fn_ptr` remove (Wave B revised, post-rollback `1dc57ae`) | ~30 minutes (already landed; doc-comment-only at this point) |
 
-**Total: ~2.5 days.** The bulk of the expansion is `ParsedEntry` (the form-vocabulary widening adds the most authoring work). `LinkerError` and the `fn_ptr` field swap (per §1.7-revised) are minutes-grade additions that don't materially shift the timeline.
+**Total: ~2.5 days.** The bulk of the expansion is `ParsedEntry` (the form-vocabulary widening adds the most authoring work). `LinkerError` and the GOT-slot canonicalisation (per §1.7-revised — post-rollback) are minutes-grade additions that don't materially shift the timeline.
 
 ### 5.4 Wave 2 begins when Wave 0 closes
 

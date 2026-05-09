@@ -78,14 +78,16 @@ sequenceDiagram
                         IORuntime ->> IoObs: IoObserver(IoEventTag::PureStep, &IoEvent { /* value */ })
                     end
                 else current node is Effect(fq: FQSymbol, args, continuation)
-                    Note over IORuntime: dispatch the effect via direct GOT lookup per Decision 26 — NO HostContext::dispatch wrapper (facades/platform.md §2.13).<br/>IORuntime reads fn_ptr off the resolved ModuleEntry::Def for fq's PrimitiveKind::PlatformEffect entry (S66 unified field — was platform_fn_ptr), and scheduling_class from the same variant.
+                    Note over IORuntime: dispatch the effect via direct GOT lookup per Decision 26 — NO HostContext::dispatch wrapper (facades/platform.md §2.13).<br/>IORuntime reads got_slot off the resolved ModuleEntry::Def for fq's PrimitiveKind::PlatformEffect entry (S66 post-rollback — GOT is the single source of truth for callable addresses), and scheduling_class from the same variant.
 
                     create participant ST_fq as ST[fq.module]<br/>SymbolTable [generic C=Code, L=()]<br/>(reached via Sess.shared.symbol_tables.get(&fq.module))
                     IORuntime ->> ST_fq: SymbolTable::get(&fq.symbol) -> Option[Ref[ModuleEntry[Code]]]
-                    ST_fq -->> IORuntime: Some(Ref[ModuleEntry::Def { fn_ptr: Some(ptr), kind: DefKind::Primitive { primitive_kind: PrimitiveKind::PlatformEffect { scheduling_class } }, .. }])
+                    ST_fq -->> IORuntime: Some(Ref[ModuleEntry::Def { got_slot: Some(slot), kind: DefKind::Primitive { primitive_kind: PrimitiveKind::PlatformEffect { scheduling_class } }, .. }])
+                    IORuntime ->> ST_fq: SymbolTable::got.load_slot(slot)
+                    ST_fq -->> IORuntime: ptr (the platform DLL fn address, Acquire ordering)
                     Note over IORuntime: marshal args via CLType::from_repr (CLInt / CLString / CLBool / CLFloat / CLIO _)
-                    create participant PlatformDLL as Platform DLL<br/>(loaded via cranelisp_platform::load_manifest from {project_root}/platforms/{name}.dylib — example: stdio.<br/>Per Decision 26 (S66-amended) the per-symbol fn_ptr on ModuleEntry::Def is the runtime call target.)
-                    IORuntime ->> PlatformDLL: indirect call via fn_ptr (declared by the platform's declare_platform! macro, exported with derive_jit_name)
+                    create participant PlatformDLL as Platform DLL<br/>(loaded via cranelisp_platform::load_manifest from {project_root}/platforms/{name}.dylib — example: stdio.<br/>Per Decision 26 (S66 amendment plus rollback) the per-symbol GOT slot — read via SymbolTable.got.load_slot(slot) — is the runtime call target.)
+                    IORuntime ->> PlatformDLL: indirect call via ptr from the GOT (declared by the platform's declare_platform! macro, exported with derive_jit_name)
                     Note over PlatformDLL: platform fn body runs — may call back into runtime via HostCallbacks for alloc / dec / rc_inc / invoke_closure (callbacks installed once per session by HostContext::init at CompilerSession::new)
                     opt platform fn needs to allocate (e.g. produce a CLString result)
                         PlatformDLL ->> Allocator: HostCallbacks.alloc(size: usize) -> *mut u8

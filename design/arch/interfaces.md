@@ -1050,9 +1050,22 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         /// from TC-sourced call graph edges. Used by scheduler for
         /// transitive macro dep discovery. See Decision 21.
         callees: Vec<FQSymbol>,
-        /// Module-local GOT slot index (Sprint 56 Wave 0 §9.8 G7). Assigned
-        /// at registration time for user-defined functions. `None` for
-        /// primitives and special forms.
+        /// Module-local GOT slot index — **single source of truth** for the
+        /// entry's runtime call address (Sprint 56 Wave 0 §9.8 G7; reaffirmed
+        /// Sprint 66 post-rollback per `1dc57ae`). Assigned at registration
+        /// time for any **addressable callable** — user fns (JIT-built or
+        /// linker-loaded), primitives (when used as values), and platform
+        /// DLL fns. The address lives in `SymbolTable.got()` (a `GotTable`
+        /// per module) and is read/written via
+        /// `got().load_slot(slot)` / `got().store_slot(slot, ptr)`. No
+        /// sibling `fn_ptr` / `platform_fn_ptr` / `primitive_fn_ptr` field
+        /// exists — those workarounds were considered (Wave B
+        /// `primitive_fn_ptr`; commit `b09ec76`'s unified `fn_ptr`) and
+        /// rejected/rolled back as redundant with the GOT.
+        ///
+        /// `got_slot: None` indicates non-callable, non-addressable entries
+        /// (special forms, `Overloaded` base entries, `TypeDef` /
+        /// `TraitDecl` / `Macro`, constrained-fn templates).
         got_slot: Option<usize>,
         /// Trait-method origin (Sprint 56 Decision 21). `Some(trait)` when
         /// this `Def` is a trait-method impl — replaces the
@@ -1069,7 +1082,7 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         ast: Option<Defn>,
         /// Lifecycle owner for compiled code (Phase 3 Step 3b — G6;
         /// parameterised over `C` at Phase 5 Step 5c; **slimmed in Sprint 66
-        /// — fn_ptr unification**).
+        /// — variants now carry lifecycle ownership only**).
         /// Written by the priority worker after `compile_to_module` returns
         /// (or by `load_object` on cache-hit). `None` until codegen completes,
         /// and `None` for entries whose lifecycle owner lives elsewhere
@@ -1077,16 +1090,21 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         /// `cranelisp-primitives`; platform DLL fns — DLL handle held in
         /// `SharedState.kept_dlls`). The integration layer chooses
         /// `C = Code` (re-exported from `cranelisp-backend`); the variants
-        /// carry **lifecycle ownership only** — the call address lives on
-        /// the sibling `fn_ptr` field below, not inside the variant.
+        /// carry **lifecycle ownership only** — the call address lives in
+        /// the per-module `GotTable` (the post-rollback single source of
+        /// truth — see `got_slot` doc below and
+        /// `crates/cranelisp-types/src/got.rs`), not inside the variant.
         ///
-        /// **Variant shape post-Sprint 66 (S66 fn_ptr unification)**:
+        /// **Variant shape post-Sprint 66 (slimmed)**:
         /// `Code::Jit(Arc<Jit>)` for JIT-built user fns;
         /// `Code::Linker(Arc<Linker>)` for cache-hit user fns. The previous
         /// `Code::Jit { jit, ptr }` / `Code::Linker { linker, ptr }` shapes
-        /// are retired — the per-entry ptr is now on `fn_ptr`. Reading the
-        /// call address through a variant-uniform `Code::ptr()` accessor is
-        /// retired with the embedded ptr; consumers read `fn_ptr` directly.
+        /// are retired — the per-entry ptr is in the GOT (commit `b09ec76`
+        /// briefly placed it on a sibling `fn_ptr` field; commit `1dc57ae`
+        /// rolled that back as redundant with the GOT). The
+        /// variant-uniform `Code::ptr()` accessor is retired with the
+        /// embedded ptr; consumers read the address via
+        /// `symbol_table.got().load_slot(entry.got_slot.unwrap())`.
         ///
         /// **Lifetime / reclaim (Decision 31, Scenario 2 — preserved
         /// post-S66)**: the `Arc<Jit>` *living directly on this field* is
@@ -1098,16 +1116,14 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         /// `unsafe JITModule::free_memory()` — this is the ONLY way to
         /// reclaim JIT pages in Cranelift 0.116 (the default drop path
         /// leaks on purpose; see archived `pipeline-v4.md` §9.4 for
-        /// evidence). The safety invariant is maintained by: (a) the
-        /// `fn_ptr` raw pointer becomes invalid the same instant
-        /// `JITModule::free_memory()` runs (same lifecycle semantics as the
-        /// pre-S66 in-variant ptr — only the field placement moved); (b)
-        /// GOT slots are atomically swapped to new code before the old Arc
-        /// can drop (Decision 41 per-symbol JIT cardinality means redefine
-        /// → new `Code::Jit(Arc<Jit>)` written to entry → old Arc clone
-        /// drops as the entry is replaced); (c) user-returned `fn` values
-        /// are heap closures calling through the GOT, not raw code
-        /// pointers.
+        /// evidence). The safety invariant is maintained by: (a) the GOT
+        /// slot's stored ptr becomes invalid the instant
+        /// `JITModule::free_memory()` runs; (b) GOT slots are atomically
+        /// swapped to new code before the old Arc can drop (Decision 41
+        /// per-symbol JIT cardinality means redefine → new
+        /// `Code::Jit(Arc<Jit>)` written to entry → old Arc clone drops
+        /// as the entry is replaced); (c) user-returned `fn` values are
+        /// heap closures calling through the GOT, not raw code pointers.
         ///
         /// **Pre-Phase-5 transitional shape (Sprint 57; superseded at
         /// Step 5c)**: `Arc<Jit>` lived in `SharedState.kept_jits` rather
@@ -1121,64 +1137,21 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         /// per `load_object`). See Decision 25 (canonical placement)
         /// + Decision 31 (reclaim primitive; S66 amendment preserves
         /// semantics) + Decision 32 (`CodeStore` trait shape) + Decision
-        /// 41 (per-symbol JIT cardinality + S66 amendment relocating ptr
-        /// to `fn_ptr`).
+        /// 41 (per-symbol JIT cardinality + S66 amendment + rollback —
+        /// call address lives in the GOT, not on a sibling field).
         #[serde(skip)]
         code: Option<C>,
-        /// Unified function pointer — single source of truth for
-        /// "where to call to invoke this entry" (Sprint 66 fn_ptr
-        /// unification, 2026-05-09). Replaces the previously-separate
-        /// `platform_fn_ptr` and supersedes the briefly-planned
-        /// `primitive_fn_ptr`. Origin is encoded by `kind: DefKind`,
-        /// NOT by which optional field is set:
-        ///
-        /// - `DefKind::UserFn { .. }` — JIT-built or linker-loaded user
-        ///   fn; ptr written by backend's `compile_to_module` (JIT) or
-        ///   by `load_object` (cache-hit `.o`); paired with
-        ///   `code = Some(Code::Jit(_))` or `Some(Code::Linker(_))`.
-        /// - `DefKind::Primitive { primitive_kind: Inline | Extern }` —
-        ///   user-callable primitive; ptr written at static-init by
-        ///   `cranelisp-primitives::PRIMITIVES_TABLE`; `code = None`
-        ///   (process lifetime; no per-entry lifecycle owner).
-        /// - `DefKind::Primitive { primitive_kind: PlatformEffect { .. } }`
-        ///   — platform DLL fn; ptr resolved at platform-load time from
-        ///   `OwnedPlatformFnDescriptor.ptr` during `(platform …)` form
-        ///   processing; `code = None` (DLL handle held in
-        ///   `SharedState.kept_dlls`; pages not unmapped while the
-        ///   session lives). Replaces the per-DLL `PlatformRegistry`
-        ///   the IO trampoline previously consulted.
-        ///
-        /// **Cycle-avoidance rationale (S66).** The `Code` enum lives
-        /// in `cranelisp-backend` and references Cranelift types
-        /// (`Jit`, `Linker`); `cranelisp-primitives` and
-        /// `cranelisp-platform` must NOT depend on `cranelisp-backend`.
-        /// The unified `fn_ptr` field decouples the call address from
-        /// the lifecycle owner: primitives' static `SymbolTable` uses
-        /// `SymbolTable<C = ()>` (Decision 32 default — `()` never
-        /// names `Code`), populates `fn_ptr` from a function pointer
-        /// constant, and leaves `code = None`. Same for platform DLL
-        /// fns — `fn_ptr` is set from the manifest, `code` stays
-        /// `None`, no Cranelift types are named in those crates. The
-        /// dep DAG stays acyclic.
-        ///
-        /// **Ptr extraction.** Read `fn_ptr` directly. The variant-uniform
-        /// `Code::ptr()` accessor is retired post-S66 — there is no ptr
-        /// inside the `Code` variant to accessor over.
-        ///
-        /// **`scheduling_class` is NOT a sibling here.** It lives INSIDE
-        /// `PrimitiveKind::PlatformEffect { scheduling_class }`. Only
-        /// platform-effect entries can carry one — the asymmetry is
-        /// deliberate (see Decision 26).
-        ///
-        /// `#[serde(skip)]` — runtime state. Cache re-derives `fn_ptr`
-        /// on cache-hit load: from `ast` for user fns (`load_object`
-        /// resolves each defined symbol's address); from
-        /// `cranelisp-primitives::PRIMITIVES_TABLE` for primitives; from
-        /// the owning `PlatformDecl` (re-resolving the DLL and reading
-        /// its manifest) for platform DLL fns. See Decisions 25 +
-        /// 26 + 41 (S66 amendments).
-        #[serde(skip)]
-        fn_ptr: Option<*const u8>,
+        // Note: there is **no** `fn_ptr` / `platform_fn_ptr` /
+        // `primitive_fn_ptr` field on `ModuleEntry::Def`. The S66 work
+        // briefly added a unified `fn_ptr: Option<*const u8>` (commit
+        // `b09ec76`) as the relocation target for the per-entry call
+        // address removed from the `Code` variants; `1dc57ae` rolled
+        // that back the same day after identifying it as redundant with
+        // the per-module `GotTable`. The runtime call address lives at
+        // `symbol_table.got().load_slot(slot)`, indexed by `got_slot`
+        // (above). Origin (JIT / linker / primitive / platform DLL) is
+        // encoded by `kind: DefKind`. See `got_slot` doc above and
+        // `crates/cranelisp-types/src/got.rs`.
     },
     Import { source: FQSymbol },
     Reexport { source: FQSymbol },
@@ -1289,7 +1262,8 @@ integration layer still names `Code` at the session boundary's
 //
 // Concrete `C: CodeStore` for SymbolTable<Code, ()>. Carries lifecycle
 // ownership only — the per-entry call address lives on the sibling
-// `ModuleEntry::Def.fn_ptr` field (S66 fn_ptr unification, 2026-05-09).
+// the per-module `GotTable` (S66 fn_ptr unification → rollback `1dc57ae`,
+// 2026-05-09 — GOT is the single source of truth for callable addresses).
 //
 // See Decisions 35 (original location + L=() choice + mixed-lineage
 // modules) + 41 (S64 location move + direct-write pattern; S66
@@ -1304,37 +1278,21 @@ pub enum Code {
 // inside the variants post-S66.
 ```
 
-**S66 amendment — variant slimming (2026-05-09)**. The previous variant
-shapes `Code::Jit { jit, ptr }` and `Code::Linker { linker, ptr }`
-retire. The per-entry ptr migrates to a unified `fn_ptr: Option<*const
-u8>` field on `ModuleEntry::Def` (subsumes the previously-separate
-`platform_fn_ptr`; supersedes the briefly-planned `primitive_fn_ptr`).
-The variant-uniform `Code::ptr()` accessor retires with the embedded
-ptr; consumers read `fn_ptr` directly. Decision 31 Scenario 2 reclaim
-semantics are preserved (lifecycle ownership stays inside
-`Code::Jit(Arc<Jit>)`; `Drop` chain unchanged; the `fn_ptr` raw pointer
-becomes invalid the same instant `JITModule::free_memory()` runs — same
-lifecycle as the pre-S66 in-variant ptr, only the field placement
-moved). See `facades/types.md` §"Symbol table — the single store" +
-`facades/backend.md` §"`Code` — the per-symbol lifecycle owner" for the
-authoritative shape, and Decision 41's "S66 amendment" for the
-amendment record.
+**S66 amendment — variant slimming + GOT-as-single-source-of-truth (2026-05-09)**. The previous variant shapes `Code::Jit { jit, ptr }` and `Code::Linker { linker, ptr }` retire. The variants are now tuple-shaped, carrying lifecycle ownership only.
+
+Two-step history of the per-entry ptr:
+
+1. **`b09ec76` (S66 Wave 0):** the per-entry ptr was relocated to a unified `fn_ptr: Option<*const u8>` field on `ModuleEntry::Def` (subsuming the previously-separate `platform_fn_ptr`; superseding the briefly-planned `primitive_fn_ptr`).
+2. **`1dc57ae` (same day, rollback):** the unified `fn_ptr` field was removed once /arch identified that it duplicated state already in the per-module `GotTable` — every callable entry already had a `got_slot`, and JIT-emitted code reads addresses from `got_base + slot * 8`. Stashing the same address on a sibling field was a Principle 7 violation.
+
+**Canonical post-rollback statement.** GOT is the single source of truth for callable addresses. The variant-uniform `Code::ptr()` accessor retires with the embedded ptr; consumers read the address via `symbol_table.got().load_slot(entry.got_slot.unwrap())`. Decision 31 Scenario 2 reclaim semantics are preserved (lifecycle ownership stays inside `Code::Jit(Arc<Jit>)`; `Drop` chain unchanged; the GOT slot's stored ptr becomes invalid the instant `JITModule::free_memory()` runs). See `facades/types.md` §"Symbol table — the single store" + `facades/backend.md` §"`Code` — the per-symbol lifecycle owner" for the authoritative shape, and Decision 41's "S66 amendment + rollback" for the amendment record.
 
 The session boundary types in `src/session_v4.rs` instantiate
 `SymbolTable<Code, ()>` and `ModuleEntry<Code>`; backend signatures
 continue to read `SymbolTable` (i.e. `SymbolTable<(), ()>`) per Decision
 32 and `compile-to-module.md` §17.
 
-Per Decision 41, `compile_to_module<M: Module>` no longer returns a
-codegen artefact: it writes `Code::Jit(Arc<Jit>)` onto each defined
-symbol's `Def.code` directly via `SymbolTable::write_code(&self, sym,
-code)` (Decision 38's interior-mutable signature) AND writes the
-resulting fn pointer to the same entry's `fn_ptr` field. The function
-returns `Result<(), CompilationError>`. The historical CP1 Layer-2
-Option-B return-tuple shape (`compile_to_module` returning
-`(Arc<Jit>, HashMap<Symbol, *const u8>)` for the integration layer to
-wrap into `Code::Jit { jit, ptr }`) is retracted by Decision 41; the
-`int` post-loop in `worker.rs:2860-3018` collapses.
+Per Decision 41 (S66 amendment + rollback), `compile_to_module<M: Module>` no longer returns a codegen artefact: it writes `Code::Jit(Arc<Jit>)` onto each defined symbol's `Def.code` directly via `SymbolTable::write_code(&self, sym, code)` (Decision 38's interior-mutable signature) AND writes the resulting fn pointer **to the entry's GOT slot** via `symbol_table.got().store_slot(entry.got_slot.unwrap(), ptr)`. There is no paired `fn_ptr`-field write — the GOT is the single source of truth for callable addresses. The function returns `Result<(), CompilationError>`. The historical CP1 Layer-2 Option-B return-tuple shape (`compile_to_module` returning `(Arc<Jit>, HashMap<Symbol, *const u8>)` for the integration layer to wrap into `Code::Jit { jit, ptr }`) is retracted by Decision 41; the `int` post-loop in `worker.rs:2860-3018` collapses.
 
 ### Macro Support Types
 
@@ -1815,7 +1773,7 @@ impl SymbolTable {
 
 The filter is deliberately strict: any `ModuleEntry::Def` with `ast: None` is excluded — whether pre-body-check, primitive, special form, `Overloaded` base, or constrained-fn template. Adding new non-compilable categories never silently breaks codegen, because the `ast.is_some()` clause comes first.
 
-> Note on `ModuleEntry::Def.ast` / `code` / `fn_ptr`: the full set of typecheck- and codegen-populated fields on `ModuleEntry::Def` (`ast`, `code`, `fn_ptr`, `got_slot`, `callees`, `trait_origin`) is now shown in the variant definition above. `ast` arrived in Sprint 55 (Phase 1); `code` shape landed in Sprint 57 Phase 3 G6 (concrete `Code` placeholder); the previously-separate `platform_fn_ptr` landed in Sprint 57 Phase 4 G8; `code` is parameterised to `Option<C>` in Sprint 58 Phase 5 Step 5c (G12) per Decision 32 — the integration layer chooses the concrete `C = Code` (re-exported from `cranelisp-backend` per Decision 41) so per-redefinition reclaim fires (Decision 31 Scenario 2). **Sprint 66 (2026-05-09 — fn_ptr unification)** unifies `platform_fn_ptr` into a single `fn_ptr: Option<*const u8>` field that covers all four ptr origins (JIT user fn, linker-loaded user fn, primitive, platform DLL fn) and slims `Code` variants to lifecycle owner only (`Code::Jit(Arc<Jit>)` / `Code::Linker(Arc<Linker>)`). The `code` and `fn_ptr` fields are `#[serde(skip)]` — runtime-only, re-derivable from the AST + cache `.o` (`fn_ptr`/`code` for user fns), from `cranelisp-primitives::PRIMITIVES_TABLE` (`fn_ptr` for primitives), or from the owning `PlatformDecl` (`fn_ptr` for platform DLL fns) on cache-hit load. See `design/typecheck/ast-annotation.md` §6 for the authoritative per-category table of which entries carry `ast: Some(_)`, and `design/arch/facades/types.md` §"Symbol table — the single store" for the canonical S66 field shape.
+> Note on `ModuleEntry::Def.ast` / `code` / `got_slot`: the full set of typecheck- and codegen-populated fields on `ModuleEntry::Def` (`ast`, `code`, `got_slot`, `callees`, `trait_origin`) is now shown in the variant definition above. `ast` arrived in Sprint 55 (Phase 1); `code` shape landed in Sprint 57 Phase 3 G6 (concrete `Code` placeholder); the previously-separate `platform_fn_ptr` landed in Sprint 57 Phase 4 G8 (later removed in S66 — see below); `code` is parameterised to `Option<C>` in Sprint 58 Phase 5 Step 5c (G12) per Decision 32 — the integration layer chooses the concrete `C = Code` (re-exported from `cranelisp-backend` per Decision 41) so per-redefinition reclaim fires (Decision 31 Scenario 2). **Sprint 66 (2026-05-09 — fn_ptr unification + rollback)** worked in two steps: (1) commit `b09ec76` removed `platform_fn_ptr` and added a unified `fn_ptr: Option<*const u8>` covering all four ptr origins (JIT user fn, linker-loaded user fn, primitive, platform DLL fn); (2) commit `1dc57ae` (same day) **rolled back** the unified `fn_ptr` field as redundant with the per-module `GotTable` already in place. Post-rollback canonical statement: **GOT is the single source of truth for callable addresses** — `got_slot: Some(slot)` indexes into `SymbolTable.got()` (a `GotTable` per module — `crates/cranelisp-types/src/got.rs`); the runtime address lives at `symbol_table.got().load_slot(slot)`. The `Code` variant slim survived the rollback (`Code::Jit(Arc<Jit>)` / `Code::Linker(Arc<Linker>)`). The `code` field is `#[serde(skip)]` — runtime-only, re-derivable from the AST + cache `.o` (constructs `Code::Linker(Arc<Linker>)` per `load_object` for user fns; primitives have process lifetime, `code = None`; platform DLL fns are `code = None`, DLL handle held in `SharedState.kept_dlls`). See `design/typecheck/ast-annotation.md` §6 for the authoritative per-category table of which entries carry `ast: Some(_)`, and `design/arch/facades/types.md` §"Symbol table — the single store" for the canonical post-rollback field shape.
 
 ---
 
@@ -1845,8 +1803,8 @@ The filter is deliberately strict: any `ModuleEntry::Def` with `ast: None` is ex
 - `SymbolTable.imports`, `.exports`, `.platforms`, `.submodules` (Sprint 58 Step 5a, Decision 33) — structural declarations as fields, not a parallel store. Reuse existing `cranelisp-types::{ImportSpec, ExportSpec, PlatformSpec, ModDecl}`.
 - `SymbolTable.linker: Option<L>` (Sprint 58 Step 5c) — per-module linker store for cache-hit `.o` mapping. `#[serde(skip)]`.
 - `SymbolTable.schema_version: u32` (Sprint 58 Step 5b, Decision 34) — explicit cache schema version; mismatch invalidates the cache as if dependencies changed.
-- `Code` enum (Sprint 58 Phase 3a, Decision 35; Sprint 64 location move per Decision 41; **Sprint 66 variant slimming per S66 fn_ptr unification**) — concrete `C` for `SymbolTable<Code, ()>`. Variants `Code::Jit(Arc<Jit>)` + `Code::Linker(Arc<Linker>)` — lifecycle owner ONLY post-S66; the per-entry call address lives on the sibling `ModuleEntry::Def.fn_ptr` field. Lives in `cranelisp-backend/src/code.rs` (moved from `src/code.rs` per Decision 41), NOT in `cranelisp-types` (Principle 3). The CP1 Layer-2-Option-B return-tuple pattern retracts: `compile_to_module` writes `Code::Jit(Arc<Jit>)` and `fn_ptr` directly via Decision 38's `write_code` plus a paired `fn_ptr` write, returning `Result<(), CompilationError>`. Documented at this boundary so every consumer of `SymbolTable<Code, ()>` references the same shape.
-- `ModuleEntry::Def.fn_ptr: Option<*const u8>` (Sprint 66 — fn_ptr unification, 2026-05-09). Single source of truth for "where to call to invoke this entry"; subsumes the previously-separate `platform_fn_ptr` field and supersedes the briefly-planned `primitive_fn_ptr`. Origin encoded by `kind: DefKind` (UserFn → JIT/linker; Primitive { Builtin/Inline } → primitive; Primitive { PlatformEffect } → platform DLL). `#[serde(skip)]`. See `facades/types.md` §"Symbol table — the single store" + Decision 41 S66 amendment.
+- `Code` enum (Sprint 58 Phase 3a, Decision 35; Sprint 64 location move per Decision 41; **Sprint 66 variant slimming preserved through the same-day fn_ptr-unification rollback**) — concrete `C` for `SymbolTable<Code, ()>`. Variants `Code::Jit(Arc<Jit>)` + `Code::Linker(Arc<Linker>)` — lifecycle owner ONLY post-S66; the per-entry call address lives in `SymbolTable.got()` (the post-rollback single source of truth — see `crates/cranelisp-types/src/got.rs`), indexed by `ModuleEntry::Def.got_slot`. Lives in `cranelisp-backend/src/code.rs` (moved from `src/code.rs` per Decision 41), NOT in `cranelisp-types` (Principle 3). The CP1 Layer-2-Option-B return-tuple pattern retracts: `compile_to_module` writes `Code::Jit(Arc<Jit>)` directly via Decision 38's `write_code` and writes the resulting fn pointer to the entry's GOT slot via `symbol_table.got().store_slot(slot, ptr)`, returning `Result<(), CompilationError>`. Documented at this boundary so every consumer of `SymbolTable<Code, ()>` references the same shape.
+- `ModuleEntry::Def.got_slot: Option<usize>` — single source of truth for "where to call to invoke this entry" (Sprint 56 G7; reaffirmed Sprint 66 post-rollback per `1dc57ae`). Indexes into `SymbolTable.got()`; the runtime address is `got().load_slot(slot)`. The S66 unification briefly placed the address on a sibling `ModuleEntry::Def.fn_ptr` field (commit `b09ec76`); the same-day rollback `1dc57ae` removed that field as redundant with the GOT. No per-entry pointer field exists post-rollback. Origin encoded by `kind: DefKind` (UserFn → JIT/linker; Primitive { Inline | Extern } → primitive; Primitive { PlatformEffect } → platform DLL). See `facades/types.md` §"Symbol table — the single store" + Decision 41 S66 amendment + rollback.
 - `ParsedEntry` enum (Sprint 66, FIXME 0156) — parse-time-only transient produced by `cranelisp_frontend::build_form` and consumed by `cranelisp_typecheck::check_form`. NEVER lands in `SymbolTable`. `#[non_exhaustive]`; not `Serialize/Deserialize`. See `facades/types.md` §"`ParsedEntry`" + `facades/frontend.md` + `facades/typecheck.md`.
 - `DefmacroInfo` struct (Sprint 66, FIXME 0156) — moved from `cranelisp-frontend/src/defmacro.rs` to `cranelisp-types` so `int`'s post-`build_form` consumption path can name the type uniformly. Frontend's `parse_defmacro` becomes `pub(crate)` inside the `build_form` dispatcher.
 
@@ -1862,7 +1820,7 @@ The filter is deliberately strict: any `ModuleEntry::Def` with `ast: None` is ex
 
 ### Functions changed
 - `TypeChecker::check(&mut self, ctx: &CompileContext, program: &[TopLevel])` — single typecheck entry point, now takes explicit context; `CheckResult` is no longer a backend input.
-- `compile_to_module<M: Module>(module_path, names, symbol_tables, module)` — four-parameter normative signature (Sprint 56 Phase 2). No `CheckResult`, no `Program`, no intrinsic IDs, no GOT map, no arities parameter. **Per Decision 41 (Sprint 64) + S66 amendment**: returns `Result<(), CompilationError>`; backend writes `Code::Jit(Arc<Jit>)` via `SymbolTable::write_code` and the resulting fn pointer to the same entry's `fn_ptr` field, directly. See `facades/backend.md` §"Free functions" and `design/backend/compile-to-module.md`.
+- `compile_to_module<M: Module>(module_path, names, symbol_tables, module)` — four-parameter normative signature (Sprint 56 Phase 2). No `CheckResult`, no `Program`, no intrinsic IDs, no GOT map, no arities parameter. **Per Decision 41 (Sprint 64) + S66 amendment + rollback**: returns `Result<(), CompilationError>`; backend writes `Code::Jit(Arc<Jit>)` via `SymbolTable::write_code` and the resulting fn pointer to the entry's GOT slot via `symbol_table.got().store_slot(entry.got_slot.unwrap(), ptr)` directly (the GOT is the post-rollback single source of truth for callable addresses; the briefly-considered sibling `fn_ptr` field landed in `b09ec76` and was rolled back the same day in `1dc57ae`). See `facades/backend.md` §"Free functions" and `design/backend/compile-to-module.md`.
 - `cranelisp_frontend::build_form(sexp: &Sexp) -> Result<Vec<ParsedEntry>, CranelispError>` (Sprint 66, FIXME 0156) — replaces the prior `build_ast` shape at the frontend's per-form boundary. Returns a `Vec` because some shapes yield more than one entry per source form (multi-clause `defmacro`, `deftype` with constructors). See `facades/frontend.md`.
 - `cranelisp_typecheck::check_form` is now a **pure function** (Sprint 66, FIXME 0160): `(parsed: ParsedEntry, table: &SymbolTable<C, L>, symbol_tables: &SymbolTables<C, L>) -> Result<Vec<(Symbol, ModuleEntry<C>)>, CheckError>`. Pre-S66 it mutated the table in-place via a typecheck-internal `merge_form_result()`; post-S66 the function does NOT mutate, the caller (`int::insert_symbol`) commits returned entries on `Ok`, and on `Err(Gap | TypeError)` nothing has been written. See `facades/typecheck.md` and §"`check_form` is pure" above.
 

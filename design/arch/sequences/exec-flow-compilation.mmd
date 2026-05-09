@@ -169,7 +169,7 @@ sequenceDiagram
             create participant Backend as Backend facade<br/>cranelisp_backend
             PW ->> Backend: cranelisp_backend::load_object(module: &ModuleFullPath, object: &[u8], symbol_tables: &SymbolTables) -> Result[LinkerArtefact, CranelispError]
             Note over Backend, ST_m1: linker resolves each defined symbol of m1 by bare name (per Decision 36)
-            Backend ->> ST_m1: SymbolTable::write_code(sym: &Symbol, code: Code::Linker(Arc[Linker])) + entry.fn_ptr = Some(ptr) — for each defined symbol<br/>S66 — Code carries lifecycle owner only — ptr lives on ModuleEntry::Def.fn_ptr
+            Backend ->> ST_m1: SymbolTable::write_code(sym: &Symbol, code: Code::Linker(Arc[Linker])) + got().store_slot(entry.got_slot, ptr) — for each defined symbol<br/>S66 post-rollback — Code carries lifecycle owner only — call address lives in the GOT (single source of truth)
             opt GotObserver registered (per defined symbol — relaxed-load null check)
                 Note over Backend, GotObs: extension-point emit at the load_object slot-population site — facades/backend.md §"GOT-population observation"
                 Backend ->> GotObs: GotObserver(GotEventTag::LinkerWrite, &GotEvent { module: m1, symbol, slot, ptr, provenance: GotProvenance::Linker { linker_addr } })
@@ -185,7 +185,7 @@ sequenceDiagram
             Note over PW, Backend: per-symbol JIT call site (Decision 41) — names is single-element [fq.symbol].<br/>Backend writes Code and Introspection directly into the passed-in stores via Decision 38's write_code(&self, sym, code) and the Option[&DashMap] introspection parameter.<br/>No artefact return — Result[(), CompilationError]. The previous int-side post-loop (worker.rs:2860-3018) collapses into this single call site.
             PW ->> Backend: cranelisp_backend::compile_to_module[M: Module](scope: &ModuleFullPath, names: &[Symbol], symbol_tables: &DashMap[ModuleFullPath, SymbolTable[Code, ()]], introspection: Option[&DashMap[FQSymbol, Introspection]], module: M) -> Result[(), CompilationError]
             Backend ->> ST_m1: SymbolTable::get(sym: &Symbol) -> Option[Ref[ModuleEntry[Code]]] — read ast, scheme, resolved calls
-            Backend ->> ST_m1: SymbolTable::write_code(sym: &Symbol, code: Code::Jit(Arc[Jit])) + entry.fn_ptr = Some(ptr)<br/>S66 — Code carries lifecycle owner only — ptr lives on ModuleEntry::Def.fn_ptr — [&self] + inner DashMap per-key write lock, atomic GOT slot swap per Decision 31
+            Backend ->> ST_m1: SymbolTable::write_code(sym: &Symbol, code: Code::Jit(Arc[Jit])) + got().store_slot(entry.got_slot, ptr)<br/>S66 post-rollback — Code carries lifecycle owner only — call address lives in the GOT (single source of truth) — [&self] + inner DashMap per-key write lock, atomic GOT slot swap per Decision 31
             opt GotObserver registered (relaxed-load null check)
                 Note over Backend, GotObs: extension-point emit at the write_code site — facades/backend.md §"GOT-population observation"
                 Backend ->> GotObs: GotObserver(GotEventTag::JitWrite, &GotEvent { module: m1, symbol, slot, ptr, provenance: GotProvenance::Jit { jit_addr } })

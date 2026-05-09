@@ -309,31 +309,46 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         scheme: Option<Scheme>,
         ast: Option<Expr>,                           // Decision 22 — codegen-compilable iff Some
         callees: Vec<FQSymbol>,                      // Decision 21 — TC-sourced call graph
-        got_slot: usize,
+        /// Module-local GOT slot index — **single source of truth** for the
+        /// entry's runtime call address (S66 post-rollback `1dc57ae`). The
+        /// GOT is owned by the module's `SymbolTable.got` and reads/writes
+        /// go through `SymbolTable.got().store_slot(slot, ptr)` /
+        /// `.load_slot(slot)`. No sibling `fn_ptr` / `platform_fn_ptr` /
+        /// `primitive_fn_ptr` field exists — those workarounds were
+        /// considered (Wave B `primitive_fn_ptr`; commit `b09ec76`'s unified
+        /// `fn_ptr`) and rejected/rolled back as redundant with the GOT.
+        ///
+        /// A slot is allocated at registration for any **addressable
+        /// callable** — user fns (JIT-built or linker-loaded), primitives
+        /// (when used as values), and platform DLL fns. Origin is encoded
+        /// by `kind: DefKind`:
+        ///   - `DefKind::UserFn { .. }` — slot written by backend's
+        ///     `compile_to_module` (JIT) or `load_object` (cache-hit `.o`);
+        ///     paired with `code = Some(Code::Jit(_))` or
+        ///     `Some(Code::Linker(_))`.
+        ///   - `DefKind::Primitive { primitive_kind: Inline | Extern }` —
+        ///     slot populated at static-init by
+        ///     `cranelisp-primitives::PRIMITIVES_TABLE`; `code = None`.
+        ///   - `DefKind::Primitive { primitive_kind: PlatformEffect { .. } }`
+        ///     — slot populated at platform-load time from
+        ///     `OwnedPlatformFnDescriptor.ptr`; `code = None` (DLL handle
+        ///     held in `SharedState.kept_dlls`).
+        ///
+        /// `got_slot: None` indicates **non-callable, non-addressable**
+        /// entries: special forms (pure syntax, no runtime address);
+        /// `Overloaded` base entries (the mangled variants carry slots);
+        /// `TypeDef` / `TraitDecl` / `Macro` (no callable position);
+        /// constrained-fn templates (their mono specialisations carry
+        /// slots).
+        got_slot: Option<usize>,
         visibility: Visibility,
         docstring: Option<String>,
-        /// Unified fn pointer — single source of truth for "where to call to invoke this entry."
-        /// Origin is encoded by `kind: DefKind`, NOT by which optional field is set:
-        ///   - `DefKind::Function | UserFn { … }` — user fn; ptr written by backend at codegen
-        ///     (JIT path) or by `load_object` (linker-loaded cache path); paired with
-        ///     `code = Some(Code::Jit(_))` or `Some(Code::Linker(_))`.
-        ///   - `DefKind::Primitive { primitive_kind: Builtin | Inline | … }` — primitive;
-        ///     ptr written at static-init by `cranelisp-primitives::PRIMITIVES_TABLE`;
-        ///     `code = None` (primitives have process lifetime; no per-entry lifecycle owner).
-        ///   - `DefKind::Primitive { primitive_kind: PlatformEffect { … } }` — platform DLL fn;
-        ///     ptr resolved at platform-load time from `OwnedPlatformFnDescriptor.ptr`;
-        ///     `code = None` (DLL handle held in `SharedState.kept_dlls`; DLL pages are not
-        ///     unmapped while the session lives).
-        /// serde-skip — runtime state, never persisted.
-        ///
-        /// Use `fn_ptr` directly for ptr extraction; do NOT match on `Code` variants for ptr access
-        /// (`Code` carries lifecycle ownership only — see `code` field below and `facades/backend.md`).
-        fn_ptr: Option<*const u8>,                   // unified — serde-skip
         /// Lifecycle owner only — `Code::Jit(Arc<Jit>)` for JIT-compiled user fns (Decision 31
         /// Scenario 2 — per-redefinition reclaim fires when the last `Arc<Jit>` clone drops),
         /// `Code::Linker(Arc<Linker>)` for cache-hit user fns. `None` for primitives (process
-        /// lifetime) and platform DLL fns (DLL handle held elsewhere). The fn ptr lives on
-        /// `fn_ptr`, NOT inside the `Code` variant. Decision 25 + Decision 41.
+        /// lifetime) and platform DLL fns (DLL handle held elsewhere). **The call address is in
+        /// the GOT (read via `got_slot`), not in the `Code` variant.** Decision 25 + Decision 41
+        /// + Decision 35 (S66 amendment, slimmed variants).
         #[serde(skip)] code: Option<C>,
     },
     Macro { name: Symbol, clauses: Vec<MacroClauseInfo>, callees: Vec<FQSymbol>, got_slot: usize, visibility: Visibility, docstring: Option<String>, #[serde(skip)] code: Option<C> },
@@ -750,7 +765,7 @@ The newtypes (`Symbol`, `ModuleFullPath`, etc.) are an exception — they wrap a
 
 These types are referenced from the diagrams but live elsewhere because including them here would invert the dependency edge (Principle 3):
 
-- **`Code` enum** — the per-entry lifecycle owner for compiled code (`Code::Jit(Arc<Jit>) | Code::Linker(Arc<Linker>)` per S66 fn_ptr unification — variants carry lifecycle ownership only; the per-entry call address lives on the sibling `ModuleEntry::Def.fn_ptr` field). Lives in `cranelisp-backend/src/code.rs` (moved from `src/code.rs` per Decision 41). References `cranelisp_backend::jit::Jit` and `cranelisp_backend::cache::Linker` — neither of which `cranelisp-types` may name.
+- **`Code` enum** — the per-entry lifecycle owner for compiled code (`Code::Jit(Arc<Jit>) | Code::Linker(Arc<Linker>)` per S66 — variants carry lifecycle ownership only; the per-entry call address lives **in the per-module `GotTable`**, indexed by `ModuleEntry::Def.got_slot`. The S66 unification briefly placed the address on a sibling `ModuleEntry::Def.fn_ptr` field; the `1dc57ae` rollback removed that field as redundant with the GOT — see "Symbol table — the single store" §`got_slot` doc and `crates/cranelisp-types/src/got.rs`). Lives in `cranelisp-backend/src/code.rs` (moved from `src/code.rs` per Decision 41). References `cranelisp_backend::jit::Jit` and `cranelisp_backend::cache::Linker` — neither of which `cranelisp-types` may name.
 - **`JitArtefact`, `LinkerArtefact`, `ObjectArtefact`** — backend's compile_to_module / load_object / compile_to_object return shapes. Live in `cranelisp-backend`. Reference Cranelift types.
 - **`PriorityWork`, `NiceWork`, `CompileScheduler`** — work item enums and the scheduler itself. Live in `int` (`src/scheduler.rs`).
 - **`ProcessedForm`** — the shared `process_form` return shape. Lives in `int`. Composes a `CheckResult` (from `cranelisp-types`) with codegen-readiness info.

@@ -44,9 +44,19 @@ Canonical location: `src/code.rs` (or inline near `SharedState` in `src/session_
 
 See Decision 41 for the full signature, the per-symbol JIT cardinality story (which amends Decision 31), and the consequences listing.
 
-## Amendment (Sprint 66 — fn_ptr unification, 2026-05-09)
+## Amendment (Sprint 66 — fn_ptr unification, 2026-05-09; superseded same day by 1dc57ae)
 
-**Variant slimming.** The two-field variant shapes shown in the original decision —
+> **Status note.** This amendment was authored alongside `b09ec76`
+> (unified `fn_ptr` field on `ModuleEntry::Def`) and `6f47008`
+> (configuration consistency sweep). It was **superseded mid-sprint**
+> by commit `1dc57ae` — the rollback of the `fn_ptr` field. The
+> variant-slim outcome below STILL HOLDS; only the relocation of the
+> per-entry ptr to a sibling field has been undone in favour of the
+> GOT (which was already authoritative). See "Amendment (Sprint 66 —
+> rollback, 2026-05-09)" below for the post-rollback canonical shape.
+
+**Variant slimming (preserved through rollback).** The two-field
+variant shapes shown in the original decision —
 
 ```rust
 pub enum Code {
@@ -65,25 +75,64 @@ pub enum Code {
 }
 ```
 
-The per-entry `*const u8` migrates to a unified `fn_ptr: Option<*const
-u8>` field on `ModuleEntry::Def` (per Decision 41's S66 amendment + the
-S66 fn_ptr unification work). The variant-uniform `Code::ptr()`
-accessor referenced in the original decision's "Pattern-matching and
-accessor discipline" paragraph is **retired** with the embedded ptr —
-consumers read `fn_ptr` directly. See `facades/backend.md` §"`Code` —
-the per-symbol lifecycle owner" + Decision 41 §"S66 amendment" for the
-canonical post-S66 shape.
+The per-entry `*const u8` was briefly migrated to a unified
+`fn_ptr: Option<*const u8>` field on `ModuleEntry::Def` (b09ec76);
+that placement has been reverted by `1dc57ae` — see the rollback
+amendment below. The variant-uniform `Code::ptr()` accessor
+referenced in the original decision's "Pattern-matching and accessor
+discipline" paragraph is **retired** with the embedded ptr — consumers
+read the call address from the GOT (the post-rollback single source of
+truth — see `facades/types.md` §"Symbol table — the single store"
+`got_slot` doc).
 
 **Decision 31 Scenario 2 reclaim semantics preserved.** Lifecycle
 ownership stays inside `Code::Jit(Arc<Jit>)`. When the entry's `Code`
 clone drops and refcount hits 0, `Drop::drop` on the `Jit` wrapper
 calls `unsafe JITModule::free_memory()` — same chain as the original
-decision. The `fn_ptr` raw pointer becomes invalid the same instant
-the JIT pages are freed; same lifecycle as the pre-S66 in-variant ptr,
-just relocated to a sibling field.
+decision. The GOT slot is updated to the new code address before the
+old `Arc<Jit>` clone can drop (atomic ordering per
+concurrency-symbol-table-entry.mmd); the GOT slot's stored ptr becomes
+invalid the same instant the JIT pages are freed.
 
 **Substance unchanged.** The original decision's load-bearing claims —
 `Code` lives in backend (post Sprint 64), `L = ()` is sufficient,
 mixed-lineage modules are first-class, `kept_jits` and `kept_linkers`
 both dissolve, Principle 3 protection holds — are all preserved. Only
 the two-field variant shape and the `Code::ptr()` accessor change.
+
+## Amendment (Sprint 66 — rollback, 2026-05-09)
+
+**The unified `fn_ptr` field is retracted.** Commit `b09ec76` added
+`fn_ptr: Option<*const u8>` to `ModuleEntry::Def` as the relocation
+target for the per-entry call address removed from the `Code`
+variants. Commit `1dc57ae` (same day) **removed** that field after
+identifying it as redundant: every callable entry already has a
+`got_slot`, and JIT-emitted code reads addresses from the per-module
+`GotTable` at `got_base + slot * 8`. Stashing the same address on a
+sibling field was duplicate state — a Principle 7 violation.
+
+**Canonical post-rollback shape.** The GOT is the single source of
+truth for callable addresses:
+
+- `ModuleEntry::Def.got_slot: Option<usize>` indexes into
+  `SymbolTable.got()` (a `GotTable` per module — see
+  `crates/cranelisp-types/src/got.rs`).
+- The runtime address lives at `symbol_table.got().load_slot(slot)`.
+- Backend's `compile_to_module` writes the address via
+  `got().store_slot(slot, ptr)` immediately after
+  `jit.get_finalized_function`; the `Code::Jit(Arc<Jit>)` lifecycle
+  owner is written separately via `SymbolTable::write_code`.
+- Platform-fn registration and primitives' static-init follow the
+  same GOT-write pattern.
+- `got_slot: None` indicates non-callable, non-addressable entries.
+
+The variant slim from the previous amendment is preserved — `Code`
+stays tuple-shaped (`Code::Jit(Arc<Jit>)` /
+`Code::Linker(Arc<Linker>)`), carrying lifecycle ownership only. The
+difference vs. the previous amendment is purely *where* the call
+address lives: GOT slot, not sibling field.
+
+See `design/arch/sprint-66-types-authoring-plan.md` §1.7-revised for
+the complete authoring brief; `facades/types.md` §"Symbol table — the
+single store" and Decision 41's "S66 amendment + rollback" for the
+canonical post-rollback statement.

@@ -60,9 +60,9 @@ Decision 37's "no swallowed failures" rule lands as a single `?` inside `compile
 - `facades/int.md` §"SharedState — code carrier construction": post-loop description deleted; `Code` import path updates from `src/code.rs` to `cranelisp_backend::Code`.
 - `tests/v4_jit_reclaim.rs::decision31_scenario2_per_redefinition_jit_pages_reclaimed` re-verified against per-symbol cardinality — the test's "redefine X, observe pages reclaimed" assertion strengthens (reclaim is now per-symbol-immediate rather than batch-coalesced).
 
-## S66 amendment — fn_ptr unification (2026-05-09)
+## S66 amendment + rollback — GOT is single source of truth (2026-05-09)
 
-The ptr embedded in `Code` variants migrates to a unified `fn_ptr: Option<*const u8>` field on `ModuleEntry::Def` (which also subsumes the previously-separate `platform_fn_ptr` and supersedes the briefly-planned `primitive_fn_ptr`). `Code` variants slim to lifecycle owner only:
+**Phase 1 (commit `b09ec76` + `6f47008`, superseded same day):** The ptr embedded in `Code` variants was migrated to a unified `fn_ptr: Option<*const u8>` field on `ModuleEntry::Def` (which also subsumed the previously-separate `platform_fn_ptr` and superseded the briefly-planned `primitive_fn_ptr`). `Code` variants slimmed to lifecycle owner only:
 
 ```rust
 pub enum Code {
@@ -71,7 +71,20 @@ pub enum Code {
 }
 ```
 
-Decision 41's substance is unchanged: per-symbol JIT cardinality, `Code` lives in `cranelisp-backend`, backend writes shared state directly, returns `Result<(), CompilationError>`. The S66 amendment only relocates the per-entry ptr from inside the `Code` variant onto a sibling field on `ModuleEntry::Def` — the `write_code` call now pairs with a `fn_ptr` write. Decision 31 Scenario 2 reclaim semantics are preserved (lifecycle ownership stays inside `Code::Jit(Arc<Jit>)`; `Drop` chain unchanged). See `design/arch/sprint-66-types-authoring-plan.md` §1.7-revised + §1.8 and `design/arch/facades/{types,backend,primitives,platform}.md` for the as-designed shape.
+**Phase 2 (commit `1dc57ae`, rollback — same day):** The unified `fn_ptr` field was identified as redundant with the per-module `GotTable` already populated at registration. Removed. The variant slim is preserved; the call address now has its single home in the GOT.
+
+**Canonical post-rollback statement:**
+
+> **GOT is the single source of truth for callable addresses.** `ModuleEntry::Def.got_slot: Option<usize>` indexes into `SymbolTable.got()` (a `GotTable` — see `crates/cranelisp-types/src/got.rs`); the runtime address lives at `symbol_table.got().load_slot(slot)`. There is no separate `fn_ptr` / `platform_fn_ptr` / `primitive_fn_ptr` field. Origin (JIT-compiled / linker-loaded / platform DLL / primitive) is encoded by `kind: DefKind`.
+
+Decision 41's substance is unchanged: per-symbol JIT cardinality, `Code` lives in `cranelisp-backend`, backend writes shared state directly, returns `Result<(), CompilationError>`. The post-rollback write pattern is:
+
+1. Backend calls `jit.get_finalized_function(func_id)` to obtain the code ptr.
+2. Backend calls `symbol_table.got().store_slot(slot, ptr)` to publish the address (Release; visible to JIT-emitted GOT loads).
+3. Backend calls `SymbolTable::write_code(&self, sym, Code::Jit(Arc<Jit>))` to install the lifecycle owner (Decision 38's interior-mutable signature).
+4. The entry's `got_slot: Some(slot)` was already allocated at registration; no field-level ptr write occurs.
+
+Decision 31 Scenario 2 reclaim semantics are preserved (lifecycle ownership stays inside `Code::Jit(Arc<Jit>)`; `Drop` chain unchanged; the GOT slot's stored ptr becomes invalid the instant `JITModule::free_memory()` runs). See `design/arch/sprint-66-types-authoring-plan.md` §1.7-revised + §1.8 and `design/arch/facades/{types,backend,primitives,platform}.md` for the as-designed shape.
 
 ## Cross-references and amendments
 

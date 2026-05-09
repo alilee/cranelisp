@@ -8,7 +8,7 @@ This spec is **target-stating**. Drift detection between as-designed and as-buil
 
 ## Public surface (as-designed)
 
-The platform crate has two faces: a **host-side API** (what `int` and `cranelisp-intrinsics` use to load DLLs and dispatch effects — per Decision 43, intrinsics' IO trampoline reaches into platform via `HostContext` + per-entry `fn_ptr` — the unified per-entry call-address field on `ModuleEntry::Def`, which for `PrimitiveKind::PlatformEffect` entries holds the platform DLL fn address) and a **DLL-author API** (what platform DLL authors use via the `declare_platform!` macro to register their fns and types). Both live in this crate.
+The platform crate has two faces: a **host-side API** (what `int` and `cranelisp-intrinsics` use to load DLLs and dispatch effects — per Decision 43, intrinsics' IO trampoline reaches into platform via `HostContext` + the per-entry GOT slot — `ModuleEntry::Def.got_slot` indexes into `SymbolTable.got()`, which for `PrimitiveKind::PlatformEffect` entries holds the platform DLL fn address per Decision 26 (S66 amendment + rollback `1dc57ae` — GOT is the single source of truth for callable addresses; the briefly-considered sibling `fn_ptr` field was rolled back as redundant)) and a **DLL-author API** (what platform DLL authors use via the `declare_platform!` macro to register their fns and types). Both live in this crate.
 
 ### Marshaling — CL value wrappers (host + DLL)
 
@@ -138,7 +138,7 @@ impl HostContext {
 }
 ```
 
-Platform-fn invocation is via direct GOT lookup, NOT a centralised dispatch wrapper. The IO trampoline reads `fn_ptr` off the `ModuleEntry::Def` for the resolved `PrimitiveKind::PlatformEffect` entry per Decision 26 (S66-amended — `fn_ptr` is the unified per-entry call-address field; the previously-named `platform_fn_ptr` collapses into it alongside JIT-fn, linker-fn, and primitive ptrs) and calls through it; `scheduling_class` is read from the same variant. Adding a `HostContext::dispatch` wrapper would re-introduce a parallel call path (Principle 7 violation) without buying anything the per-entry pointer doesn't already provide. (Per §2.13 — facade truth-telling; the implementation never built `dispatch`, and the post-Decision-26 architecture made it redundant.)
+Platform-fn invocation is via direct GOT lookup, NOT a centralised dispatch wrapper. The IO trampoline reads `got_slot` off the `ModuleEntry::Def` for the resolved `PrimitiveKind::PlatformEffect` entry per Decision 26 (S66 amendment + rollback `1dc57ae` — GOT is the single source of truth for callable addresses; the address is read via `symbol_table.got().load_slot(slot)`. The unified `fn_ptr` field briefly added in `b09ec76` was rolled back as redundant with the GOT — JIT-emitted code already reads addresses from `got_base + slot * 8`) and calls through it; `scheduling_class` is read from the same `PrimitiveKind::PlatformEffect` variant. Adding a `HostContext::dispatch` wrapper would re-introduce a parallel call path (Principle 7 violation) without buying anything the per-entry GOT slot doesn't already provide. (Per §2.13 — facade truth-telling; the implementation never built `dispatch`, and the post-Decision-26 architecture made it redundant.)
 
 ### Host callbacks — what platform DLL code can call back into runtime
 
@@ -224,7 +224,7 @@ The platform crate imports from:
 
 - **`cranelisp-types`** — `SchedulingClass`, `Type` (for parse_type_sig output), `Span`, `CranelispError`, `Symbol`, `ModuleFullPath`, `PlatformSpec`.
 
-The platform crate imports from no other workspace crate. (Per Decision 43, `cranelisp-intrinsics` is downstream of platform via the IO trampoline's per-entry `fn_ptr` dispatch — see §"Host context" for why no `HostContext::dispatch` wrapper exists. Platform does not name intrinsics; the host callbacks reach intrinsics via fn pointers installed at session init by `int`.)
+The platform crate imports from no other workspace crate. (Per Decision 43, `cranelisp-intrinsics` is downstream of platform via the IO trampoline's per-entry GOT-slot dispatch — see §"Host context" for why no `HostContext::dispatch` wrapper exists. Platform does not name intrinsics; the host callbacks reach intrinsics via fn pointers installed at session init by `int`.)
 
 External:
 - **`libloading`** — for loading DLLs at runtime.
@@ -260,7 +260,7 @@ Per Principle 14 — FFI boundary types are governed by layout discipline (`ABI_
 
 These hold across sprints — the contract `cranelisp-platform` makes with the rest of the workspace:
 
-1. **Platform fn pointers live on `ModuleEntry::Def.fn_ptr`** (Decision 26, S66-amended for fn_ptr unification). Per-DLL `OwnedPlatformFnDescriptor` is held on `int`'s `SharedState.kept_dlls`; the per-symbol `fn_ptr` field on the corresponding `ModuleEntry::Def` (with `kind: Primitive { primitive_kind: PlatformEffect { … } }` distinguishing the platform origin) is the runtime lookup target. `code` is `None` for platform entries — the DLL handle is the lifecycle owner, held in `kept_dlls`, not on the per-entry `code` field. `scheduling_class` lives inside the variant `PrimitiveKind::PlatformEffect { scheduling_class }` — making ill-formed states (a class on a non-platform entry) unrepresentable.
+1. **Platform fn pointers live in `SymbolTable.got()`, indexed by `ModuleEntry::Def.got_slot`** (Decision 26, S66 amendment + rollback `1dc57ae` — GOT is the single source of truth for callable addresses). Per-DLL `OwnedPlatformFnDescriptor` is held on `int`'s `SharedState.kept_dlls`; at registration time `handle_platform` allocates a GOT slot for each platform-fn `ModuleEntry::Def` (with `kind: Primitive { primitive_kind: PlatformEffect { … } }` distinguishing the platform origin), records it as `got_slot: Some(slot)` on the entry, and writes the descriptor's pointer via `symbol_table.got().store_slot(slot, desc.ptr)`. The runtime lookup target is `entry_owning_module.got().load_slot(entry.got_slot.unwrap())`. `code` is `None` for platform entries — the DLL handle is the lifecycle owner, held in `kept_dlls`, not on the per-entry `code` field. `scheduling_class` lives inside the variant `PrimitiveKind::PlatformEffect { scheduling_class }` — making ill-formed states (a class on a non-platform entry) unrepresentable.
 
 2. **Stable C ABI at the DLL boundary.** `PlatformManifest`, `PlatformFn`, `HostCallbacks` are `#[repr(C)]`. Layout changes require an `ABI_VERSION` bump. `load_manifest` validates the version on load and refuses mismatched DLLs with `PlatformError::AbiVersionMismatch`.
 
@@ -270,6 +270,6 @@ These hold across sprints — the contract `cranelisp-platform` makes with the r
 
 5. **`HostContext` initialised once per session.** `int` constructs `HostCallbacks` (with fn pointers into `cranelisp_intrinsics`) at `CompilerSession::new` and calls `HostContext::init` exactly once. Subsequent platform fn calls see the same callbacks for the session's lifetime.
 
-6. **No DLL unloading mid-session.** Once a platform DLL is loaded via `load_manifest`, it stays loaded until session shutdown. This is what makes the per-symbol `fn_ptr` valid for the session — DLL pages are not unmapped while symbols reference them.
+6. **No DLL unloading mid-session.** Once a platform DLL is loaded via `load_manifest`, it stays loaded until session shutdown. This is what makes the per-symbol GOT-slot pointer valid for the session — DLL pages are not unmapped while symbols reference them.
 
 7. **`scheduling_class` declared by the DLL, consumed by the IO trampoline.** Per Decision 26 — the IO trampoline reads `scheduling_class` off the destructured `PlatformEffect` variant when it dispatches an Effect, and uses it to decide whether to spawn the work on the IO thread pool, the CPU thread pool, etc. Platform authors choose the class statically per fn.
