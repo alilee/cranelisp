@@ -1,6 +1,3 @@
-    Checking cranelisp-types v0.1.0 (/Users/alilee/Projects.nosync/rust/cranelisp/crates/cranelisp-types)
- Documenting cranelisp-typecheck v0.1.0 (/Users/alilee/Projects.nosync/rust/cranelisp/crates/cranelisp-typecheck)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.17s
 pub mod cranelisp_typecheck
 pub use cranelisp_typecheck::CranelispError
 pub use cranelisp_typecheck::TopLevel
