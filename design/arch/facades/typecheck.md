@@ -10,34 +10,34 @@ This spec is **target-stating**. Drift detection between as-designed and as-buil
 
 ### Free functions — the two-pass per-form check
 
-The typecheck entry surface used by `int`'s shared `process_cluster` (see `facades/int.md`). Per Decision 44, the per-form check splits into two pure passes that the orchestrator drives across every form in a cluster: Pass 1 across all forms, then Pass 2 across all forms. Both passes are pure (FIXME 0160 structural Option B holds for both); orchestrator-owned staging is invisible to typecheck — it sees only a `View<'a, C, L>` read surface.
+The typecheck entry surface used by `int`'s shared `process_cluster` (see `facades/int.md`). Per Decision 44 (amended FIXME 0167 for Approach B + ClusterContext), the per-form check splits into two passes that the orchestrator drives across every form in a cluster: Pass 1 across all forms, then Pass 2 across all forms. Both passes are pure with respect to live state; staging mutation flows through the same accessor API used in committed-mode (`current_symbol_table_mut`) and is invisible to typecheck. Cluster atomicity is preserved because staging is orchestrator-local and is committed (drained into live) only on Pass-2 success across all forms.
 
 ```rust
 pub fn check_form_signatures<C, L>(
     parsed: ParsedEntry,
-    table: &View<'_, C, L>,                       // staging ∪ live composite read view (orchestrator-constructed)
+    ctx: &mut ClusterContext<'_, C, L>,           // staging-or-live access via accessor; see Decision 44 + ClusterContext
     symbol_tables: &SymbolTables<C, L>,
-) -> Result<Vec<(Symbol, ModuleEntry<C>)>, CheckError>;
+) -> Result<(), CheckError>;
 
 pub fn check_form_body<C, L>(
     parsed: ParsedEntry,
-    table: &View<'_, C, L>,                       // staging ∪ live; cluster signatures from Pass 1 are visible
+    ctx: &mut ClusterContext<'_, C, L>,           // cluster signatures from Pass 1 visible via current_symbol_table()
     symbol_tables: &SymbolTables<C, L>,
-) -> Result<Vec<(Symbol, ModuleEntry<C>)>, CheckError>;
+) -> Result<(), CheckError>;
 ```
 
 Parameters:
 - `parsed` — the parse-time-only `ParsedEntry` produced by `cranelisp_frontend::build_form` (per FIXME 0156 resolution). One `build_form` call may produce multiple `ParsedEntry` items (e.g., a multi-clause `defmacro` yields one per clause); the orchestrator drives both passes once per `ParsedEntry`. The same `ParsedEntry` instance is passed to Pass 2 that was passed to Pass 1 — `ParsedEntry` persists across both passes within one cluster's processing (see `facades/types.md` §"`ParsedEntry`").
-- `table` — the read surface, a `View<'_, C, L>` newtype constructed by the orchestrator (`int::process_cluster`) wrapping `(staging, live)` symbol tables. Lookups route staging-first then live; both passes call `table.lookup(name)` and get an answer regardless of where the entry resides. Typecheck does not know whether it is reading staging, live, or unioned content. `View` lives in `cranelisp-types` per the `View<'_, C, L>` boundary-type entry in `facades/types.md`.
+- `ctx` — `&mut ClusterContext<'_, C, L>` constructed by the orchestrator. In `ClusterContext::Cluster` mode (the cluster-processing flow), `ctx.current_symbol_table()` returns a `View<'_, C, L>` unioning staging + live (staging-first); `ctx.current_symbol_table_mut()` returns `&mut staging`. Typecheck calls these accessors uniformly — the 91 register-call sites in `program.rs` (e.g., `register_type_def`, `register_trait_decl`, `register_defn_signature`, `register_mono_entry`) and the 51 read access sites continue to use the existing API; the staging-vs-live distinction is absorbed inside the accessors. `ClusterContext` lives in `cranelisp-typecheck`.
 - `symbol_tables` — read-only access to all other modules' tables for resolving FQ symbol references (`m2/foo`) and FQ type references (`m2/SomeType`). Generic over `<C, L>` per Decision 32 — typecheck is C/L-blind in production (caller passes `SymbolTables<Code, ()>`), and tests / fine-grained drivers pass `SymbolTables<(), ()>`.
 
 Returns (both passes):
-- `Ok(Vec<(Symbol, ModuleEntry<C>)>)` on success — the entries the orchestrator should write into the staging table for this pass. Pass 1 returns signature-only `ModuleEntry` shells (Algorithm W fresh return-type variables; bodies un-checked); Pass 2 returns body-checked entries that supersede Pass 1's shells (and may include additional entries — multi-sig variants, mono specializations, ADT per-constructor entries, multi-clause macro entries). Each pass overwrites Pass-1 shells with their Pass-2 counterparts in the staging table.
+- `Ok(())` on success — entries Pass 1 staged are visible via the View for Pass 2; Pass 2 entries supersede Pass 1's shells in staging. The orchestrator commits the whole staging table atomically into live on cluster completion (Pass 2 `Ok` for every `ParsedEntry`).
 - `Err(CheckError::Gap(ResolutionGap::SymbolTypechecked(fq)))` when an FQ value reference cannot be resolved (its module is not yet typechecked). The orchestrator catches, registers `fq.module` if needed, calls `wait_for_typecheck_symbol(fq)`, and retries the same pass with the same `ParsedEntry`. Per the gap-return pattern in `facades/int.md`.
 - `Err(CheckError::Gap(ResolutionGap::Type(fqt)))` — same pattern for FQ type references. The orchestrator registers `fqt.module` if needed and calls `wait_for_typecheck_type(fqt)`.
-- `Err(CheckError::TypeError { message, location })` — genuine type errors (non-recoverable). The orchestrator drops the staging table on the floor; the live table is byte-identical to its pre-cluster state. `location: ErrorLocation` per Decision 39.
+- `Err(CheckError::TypeError { message, location })` — genuine type errors (non-recoverable). The orchestrator drops the staging table on the floor when the function frame returns; the live table is byte-identical to its pre-cluster state. `location: ErrorLocation` per Decision 39.
 
-**Post-Gap state contract (per FIXME 0160 + Decision 44): structural Option B, applied per pass.** Both passes are pure; on `Err` nothing has been written — neither to the live table (the orchestrator commits only at cluster end) nor to staging (the orchestrator commits each pass's `Ok` returns to staging only on `Ok`). On a Gap return, the orchestrator dispatches and retries the same pass with the same `ParsedEntry`; on a TypeError, the orchestrator drops staging and propagates the error. `ReplSnapshot` remains the type-var-pool rollback primitive within `CheckState` between calls (multi-form cluster processing); the `View` and the underlying tables are unaffected by either error return because neither pass wrote.
+**Post-Gap state contract (per FIXME 0160 + Decision 44 + FIXME 0167 amendment).** On `Err`, no live mutation has occurred — the orchestrator commits only on whole-cluster Pass-2 success. Staging may carry partial entries written before the Gap; the orchestrator does NOT roll staging back on a Gap because the same pass is about to be retried with the same `ParsedEntry` and the same accessors will overwrite. On `Err(TypeError)`, the orchestrator drops staging and propagates the error; the live table is unchanged. On a Gap return, the orchestrator dispatches via `handle_gap` and retries the same pass. `ReplSnapshot` remains the type-var-pool rollback primitive within `CheckState` between calls (multi-form cluster processing); the live table is unaffected by either error return because no pass writes live, and staging dissolves with the function frame on TypeError.
 
 Both passes ask for `ResolutionGap::SymbolTypechecked` (not `SymbolInMemory`) for value references because typecheck only needs the entry's `Scheme`, not its compiled code. Macro expansion's need for code happens earlier, in `frontend::expand` — by the time either pass runs, any macros have already been expanded out.
 
@@ -52,10 +52,24 @@ impl CheckState {
     pub fn new<C, L>(symbol_tables: &SymbolTables<C, L>) -> Self;
 }
 
-pub struct TypeCheckEnv<'a, C, L> { /* per-form environment — wraps shared symbol table + read-only symbol_tables */ }
+pub enum ClusterContext<'a, C: CodeStore, L: LinkerStore> {
+    Live { modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>> },
+    Cluster {
+        modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
+        staging: &'a mut SymbolTable<C, L>,
+        current_module: ModuleFullPath,
+    },
+}
+
+impl<'a, C: CodeStore, L: LinkerStore> ClusterContext<'a, C, L> {
+    pub fn current_symbol_table(&self) -> View<'_, C, L>;            // Cluster → View::union(staging, live); Live → single
+    pub fn current_symbol_table_mut(&mut self) -> &mut SymbolTable<C, L>;  // Cluster → &mut staging; Live → &mut live[current]
+}
+
+pub struct TypeCheckEnv<'a, C, L> { /* per-form environment — wraps &mut ClusterContext + read-only symbol_tables */ }
 
 impl<'a, C, L> TypeCheckEnv<'a, C, L> {
-    pub fn new(table: &'a SymbolTable<C, L>, symbol_tables: &'a SymbolTables<C, L>) -> Self;
+    pub fn new(ctx: &'a mut ClusterContext<'a, C, L>, symbol_tables: &'a SymbolTables<C, L>) -> Self;
     pub fn next_type_id(&mut self) -> TypeId;
 }
 
@@ -64,7 +78,7 @@ pub struct FormCheckResult { /* per-form internal product — accumulated by Mod
 pub struct ModuleCheckAccumulator { /* whole-module accumulator — used by tests; not the per-form path */ }
 ```
 
-These exist for tests and for crates that want to drive typecheck at finer granularity than the two-pass surface. `int` uses `check_form_signatures` + `check_form_body` exclusively in production. `TypeCheckEnv` carries a shared `&View<'_, C, L>` per Decision 38 + Decision 44 — concurrent forms may share access via the View's underlying `&SymbolTable` refs; per-symbol writes (in tests that opt to mutate directly) go through the inner DashMap's per-key locks.
+These exist for tests and for crates that want to drive typecheck at finer granularity than the two-pass surface. `int` uses `check_form_signatures` + `check_form_body` exclusively in production. `TypeCheckEnv` carries `&mut ClusterContext<'_, C, L>` per Decision 38 + Decision 44 (amended FIXME 0167) — table access flows through `ClusterContext::current_symbol_table()` (read) / `current_symbol_table_mut()` (write) so the 91 register-call sites and 51 access sites in `program.rs` do not change individually. In production cluster-processing flow, the orchestrator hands `ClusterContext::Cluster { staging, … }`; in REPL introspection / fine-grained-test paths the caller may construct `ClusterContext::Live { modules }` for direct live access. Per-symbol writes in committed (Live) mode go through the inner DashMap's per-key locks; in cluster mode they go through the `&mut staging` exclusive borrow held by the orchestrator's stack frame.
 
 ### Builtin registration (called once per `SymbolTable::new`)
 
@@ -92,7 +106,7 @@ None.
 
 ## Types originated here
 
-Per Principle 15's placement heuristic — `CheckResult`, `CheckError`, `FormCheckResult`, `CheckPass`, `CheckState`, `TypeCheckEnv`, `ModuleCheckAccumulator`, and `ReplSnapshot` live in `cranelisp-typecheck` (referenced by `int` only — single implementation-crate consumer). `ResolutionGap` is the cross-cutting exception: it is referenced by the frontend facade (`ExpansionError::Gap`) and the typecheck facade (`CheckError::Gap`), so it lives in `cranelisp-types` per the multi-consumer rule. `int` pattern-matches both gap-bearing errors against the same shared variants.
+Per Principle 15's placement heuristic — `CheckResult`, `CheckError`, `FormCheckResult`, `CheckPass`, `CheckState`, `TypeCheckEnv`, `ClusterContext`, `ModuleCheckAccumulator`, and `ReplSnapshot` live in `cranelisp-typecheck` (referenced by `int` only — single implementation-crate consumer). `ResolutionGap` is the cross-cutting exception: it is referenced by the frontend facade (`ExpansionError::Gap`) and the typecheck facade (`CheckError::Gap`), so it lives in `cranelisp-types` per the multi-consumer rule. `int` pattern-matches both gap-bearing errors against the same shared variants. `View<'a, C, L>` lives in `cranelisp-types` (multi-consumer at the boundary type level — see `facades/types.md` §"`View<'a, C, L>`"); `ClusterContext` consumes it via the read accessor.
 
 ```rust
 // In cranelisp-typecheck:
@@ -101,6 +115,7 @@ pub enum   CheckError { Gap(ResolutionGap), TypeError { message, location: Error
 pub struct FormCheckResult { /* … */ }                // per-form internal product (for fine-grained callers + tests)
 pub enum   CheckPass { Pass1Signatures, Pass2Bodies }
 pub struct CheckState { /* … */ }
+pub enum   ClusterContext<'a, C, L> { Live { … }, Cluster { … } }   // Decision 44 (amended FIXME 0167) — staging-vs-live abstraction
 pub struct TypeCheckEnv<'a, C, L> { /* … */ }
 pub struct ModuleCheckAccumulator { /* … */ }
 pub struct ReplSnapshot { /* … */ }                   // typecheck snapshot/restore primitive for REPL eval rollback
@@ -151,7 +166,7 @@ None implemented. Typecheck does not implement traits from `cranelisp-types`.
 
 ## `#[non_exhaustive]` DTOs
 
-`CheckState`, `TypeCheckEnv`, `CheckPass`, `FormCheckResult`, `ModuleCheckAccumulator` are all `#[non_exhaustive]`. (Types re-exported from `cranelisp-types` are `#[non_exhaustive]` per the types-crate facade.)
+`CheckState`, `TypeCheckEnv`, `ClusterContext`, `CheckPass`, `FormCheckResult`, `ModuleCheckAccumulator` are all `#[non_exhaustive]`. (Types re-exported from `cranelisp-types` are `#[non_exhaustive]` per the types-crate facade.)
 
 ---
 
@@ -160,7 +175,7 @@ None implemented. Typecheck does not implement traits from `cranelisp-types`.
 These hold across sprints — the contract `cranelisp-typecheck` makes with the rest of the workspace:
 
 1. **No code generation.** Typecheck never invokes Cranelift, never produces JIT or object output. Its product is annotated AST + symbol-table entries.
-2. **No commits to `SymbolTable` from `check_form_signatures` / `check_form_body`.** Per FIXME 0160 resolution + Decision 44 — both passes are pure functions: `(ParsedEntry, &View<'_, C, L>, &SymbolTables) → Result<Vec<(Symbol, ModuleEntry)>, CheckError>`. Neither calls `insert_or_update`, neither installs import bindings, neither mutates any `SymbolTable` (live or staging). The caller (`int::process_cluster`) writes returned entries into staging on each pass's `Ok` and commits the staging table atomically into the live `SymbolTable` only on whole-cluster success. On `Err(Gap | TypeError)` from any pass, no mutation has occurred — the orchestrator either retries the same pass (Gap) or drops staging on the floor (TypeError); the live table is byte-identical to its pre-cluster state. This is what makes the temp-closure path in REPL eval work — for expression evals the orchestrator runs the cluster (one form) without committing to a module (per `facades/int.md` and `exec-flow-repl`). Resolved import bindings are installed by `int` (post-cluster Ok arm) via `SymbolTable::install_import_bindings(&self, …)`; this is `int`'s call, not typecheck's.
+2. **No commits to live `SymbolTable` from `check_form_signatures` / `check_form_body`.** Per FIXME 0160 resolution + Decision 44 (amended FIXME 0167 for Approach B + ClusterContext) — both passes are pure with respect to **live state**: neither mutates the live `SymbolTable` nor any state visible outside the cluster. Both passes MAY mutate the orchestrator-handed staging `SymbolTable` via the same accessor API used in committed-mode (`ctx.current_symbol_table_mut()`); typecheck cannot distinguish staging from live because the accessor abstracts the difference. The 91 register-call sites in `program.rs` and the 51 read access sites continue to use the existing API; the `ClusterContext` accessors are the single point of staging-vs-live surgery. Cluster atomicity is preserved because staging is orchestrator-local and is committed (drained into live) only on Pass-2 success across all forms. The caller (`int::process_cluster`) drops staging on the floor on any `Err(TypeError)`; on `Err(Gap)` the orchestrator dispatches and retries the same pass with the same `ParsedEntry` (staging may carry partial writes from before the Gap; the retry overwrites). The live table is byte-identical to its pre-cluster state across any failure — this is what makes the temp-closure path in REPL eval work, and what preserves Decision 44's structural intent (Principle 1 decoupling + Principle 7 single durable source of truth) without requiring a multi-week inversion of every register-call site. Resolved import bindings are installed by `int` (post-cluster Ok arm) via `SymbolTable::install_import_bindings(&self, …)`; this is `int`'s call, not typecheck's.
 3. **Single source of truth via `defined_symbols()`.** Per Decision 22 — the codegen-compilable predicate is `SymbolTable::defined_symbols()`. Typecheck writes entries that satisfy or fail this predicate; it does not maintain a parallel store.
 4. **TC-sourced call graph.** Per Decision 21 — call graph edges are extracted during typechecking from method resolutions. `CheckResult.callees: Vec<FQSymbol>` is the per-symbol call graph; the rich `CallGraph` (with tail-position info) is for within-module codegen analysis.
 5. **Trait method dispatch via `ResolvedCall::TraitMethod`.** Typecheck always emits `TraitMethod` for trait-dispatched operators; backend handles lowering. Typecheck stays clean of backend-specific concerns. The prior `(TraitName, Symbol, TypeName) → primitive` collusion-table approach in backend is retired per Decision 43 — backend has no trait knowledge; primitive emission goes through `cranelisp-primitives` + `cranelisp-intrinsics` directly.

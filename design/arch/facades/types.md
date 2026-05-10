@@ -163,9 +163,11 @@ pub struct DefmacroInfo {
 
 `#[non_exhaustive]` on both `ParsedEntry` and `DefmacroInfo`. Derived traits: `Debug, Clone`. Not `Serialize/Deserialize` — `ParsedEntry` is transient; never persisted to cache.
 
-### `View<'a, C, L>` — the cluster read surface (per Decision 44)
+### `View<'a, C, L>` — the cluster read surface (per Decision 44, amended FIXME 0167)
 
 `View<'a, C, L>` is a thin newtype that wraps two `&SymbolTable<C, L>` references — staging (orchestrator-local, transient) and live — and routes lookups staging-first then live. It is the read surface the two-pass typecheck functions (`check_form_signatures`, `check_form_body`) see for the current cluster's per-module read. Typecheck does not know whether a given lookup hits staging, live, or unioned content; it just calls `view.lookup(name)`.
+
+**Construction site**. `View` is not constructed at the typecheck call site directly; it is produced inside `ClusterContext::current_symbol_table()` (in `cranelisp-typecheck`). In `ClusterContext::Cluster` mode the accessor returns `View::union(staging, live)`; in `ClusterContext::Live` mode the accessor returns a single-source view over the live module. This indirection means the two-pass typecheck signature does not change shape across cluster-vs-committed mode — typecheck always reads through `ctx.current_symbol_table()`, and the staging-vs-live distinction is absorbed by `ClusterContext`'s accessor surgery. `View` itself remains the read-side abstraction and lives in `cranelisp-types` (multi-consumer at the boundary type level — frontend + typecheck both consume it via `ClusterContext`'s API surface).
 
 ```rust
 pub struct View<'a, C: CodeStore = (), L: LinkerStore = ()> {

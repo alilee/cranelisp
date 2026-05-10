@@ -36,9 +36,11 @@ impl CompilerSession {
     pub fn re_register_module(&mut self, module: &ModuleFullPath) -> Result<bool, CranelispError>;       // file watcher path
 
     // Shared cluster-processing entry — used by both compilation worker and eval (per exec-flow-compilation + exec-flow-repl).
-    // Per Decision 44 — a cluster is one form (non-`begin` REPL input), the contents of (begin form₁ ... formN) (explicit
-    // REPL cluster), or a file's non-structural forms (batch one-big-cluster). The orchestrator owns a transient staging
-    // SymbolTable across the cluster's two-pass typecheck and commits atomically on success.
+    // Per Decision 44 (amended FIXME 0167 for Approach B + ClusterContext) — a cluster is one form (non-`begin` REPL input),
+    // the contents of (begin form₁ ... formN) (explicit REPL cluster), or a file's non-structural forms (batch
+    // one-big-cluster). The orchestrator constructs ClusterContext::Cluster { modules, staging, current_module }, threads
+    // &mut ctx through both passes (typecheck mutates staging via ctx.current_symbol_table_mut() — the same accessor used
+    // in committed-mode), and commits atomically on Pass-2 success by draining staging into the live SymbolTable.
     pub fn process_cluster(&mut self, forms: Vec<Sexp>, scope: &ModuleFullPath) -> Result<ProcessedCluster, CranelispError>;
     pub fn insert_cluster(&mut self, processed: &ProcessedCluster, target: &ModuleFullPath);
 
@@ -671,7 +673,7 @@ A **cluster** is the unit of typecheck atomicity (Decision 44):
 - A `(begin form₁ … formN)` REPL input is the explicit multi-form cluster boundary — `eval` unwraps the top-level `begin` and passes the inner forms to `process_cluster`.
 - Batch (file) compilation passes a file's non-structural forms as one big cluster (per spec §5.13.1's MAY-reference-freely rule at file scope).
 
-Frontend and typecheck stay pure (no `Sess`, no `CompileScheduler` dependency — Principle 3). Workers park inside `wait_for_*` calls — that IS the worker's allowed parking site, never inside library code. `process_cluster` is THE crossing point where the gap value becomes a scheduler call AND where the staging table mediates Pass 1 / Pass 2 visibility.
+Frontend and typecheck stay pure with respect to live state (no `Sess`, no `CompileScheduler` dependency — Principle 3). Per Decision 44 (amended FIXME 0167 for Approach B + ClusterContext), typecheck may mutate the orchestrator-handed staging `SymbolTable` via the `ctx.current_symbol_table_mut()` accessor — staging mutation is invisible to typecheck and to other workers. Workers park inside `wait_for_*` calls — that IS the worker's allowed parking site, never inside library code. `process_cluster` is THE crossing point where the gap value becomes a scheduler call AND where the `ClusterContext::Cluster` construction mediates Pass 1 / Pass 2 visibility.
 
 ```rust
 // process_cluster runs on workers — takes &SharedState (the worker's Arc clone).
@@ -682,10 +684,15 @@ Frontend and typecheck stay pure (no `Sess`, no `CompileScheduler` dependency �
 // Phase 0 (write_structural_decls + defn_order seed) ran in register_module
 // before this work item was dispatched — see "register_module Phase 0" below.
 //
-// Per Decision 44 — staging is a transient, orchestrator-local SymbolTable that
-// holds Pass 1 signature shells and Pass 2 body-checked entries until cluster
-// commit. The View<'_, C, L> newtype wraps (staging, live) refs and routes
-// lookups staging-first then live; typecheck reads through View only.
+// Per Decision 44 (amended FIXME 0167 for Approach B + ClusterContext) —
+// staging is a transient, orchestrator-local SymbolTable that holds Pass 1
+// signature shells and Pass 2 body-checked entries until cluster commit.
+// The orchestrator constructs ClusterContext::Cluster { modules, staging,
+// current_module } and threads &mut ctx to both passes; typecheck reads via
+// ctx.current_symbol_table() (returns View::union(staging, live)) and writes
+// via ctx.current_symbol_table_mut() (returns &mut staging). The 91
+// register-call sites in typecheck/program.rs do NOT change individually —
+// the staging-vs-live distinction is absorbed by the accessors.
 pub fn process_cluster(shared: &SharedState, forms: Vec<Sexp>, scope: &ModuleFullPath) -> Result<ProcessedCluster, CranelispError> {
     // 1. Expand + build_form for every form in the cluster, with gap-retry.
     let mut parsed_list: Vec<ParsedEntry> = Vec::new();
@@ -703,44 +710,46 @@ pub fn process_cluster(shared: &SharedState, forms: Vec<Sexp>, scope: &ModuleFul
         }
     }
 
-    // 2. Construct staging + the View read surface. Typecheck never sees the
-    //    staging or live tables directly — only through View.
-    let mut staging: SymbolTable<Code, ()> = SymbolTable::new();
-    let live_table = shared.symbol_tables.get(scope)
-        .expect("Phase 0 must run in register_module before process_cluster");
+    // 2. Construct staging + ClusterContext. Typecheck never sees staging or
+    //    live directly — only through ctx.current_symbol_table{,_mut}.
+    let mut staging: SymbolTable<Code, ()> = SymbolTable::new(scope.clone());
+    let mut ctx = ClusterContext::Cluster {
+        modules: &shared.symbol_tables,
+        staging: &mut staging,
+        current_module: scope.clone(),
+    };
 
-    // 3. Pass 1 — signatures across every ParsedEntry. Each Ok return goes
-    //    into staging; on Gap we retry; on TypeError we drop staging on the floor.
+    // 3. Pass 1 — signatures across every ParsedEntry. Staging mutations flow
+    //    through ctx.current_symbol_table_mut() inside typecheck. On Gap we
+    //    retry the same pass with the same ParsedEntry; on TypeError staging
+    //    dissolves with the function frame (live table unchanged).
     for parsed in &parsed_list {
         loop {
-            let view = View::union(&staging, &live_table);
-            let entries = match cranelisp_typecheck::check_form_signatures(parsed.clone(), &view, &shared.symbol_tables) {
-                Ok(v) => v,
+            match cranelisp_typecheck::check_form_signatures(parsed.clone(), &mut ctx, &shared.symbol_tables) {
+                Ok(()) => break,
                 Err(CheckError::Gap(gap)) => { handle_gap(shared, gap)?; continue; }
-                Err(other) => return Err(other.into()),                 // staging dissolves with the function frame
-            };
-            for (k, e) in entries { staging.insert(k, e); }
-            break;
+                Err(other) => return Err(other.into()),
+            }
         }
     }
 
     // 4. Pass 2 — bodies across every ParsedEntry, with all cluster signatures
-    //    visible via View. Pass 2 entries supersede Pass 1 shells in staging.
+    //    from Pass 1 visible via ctx.current_symbol_table() (View::union).
+    //    Pass 2 entries supersede Pass 1 shells via staging mutation.
     for parsed in &parsed_list {
         loop {
-            let view = View::union(&staging, &live_table);
-            let entries = match cranelisp_typecheck::check_form_body(parsed.clone(), &view, &shared.symbol_tables) {
-                Ok(v) => v,
+            match cranelisp_typecheck::check_form_body(parsed.clone(), &mut ctx, &shared.symbol_tables) {
+                Ok(()) => break,
                 Err(CheckError::Gap(gap)) => { handle_gap(shared, gap)?; continue; }
                 Err(other) => return Err(other.into()),
-            };
-            for (k, e) in entries { staging.insert(k, e); }
+            }
         }
     }
 
-    // 5. Cluster-atomic commit — drain staging into the live SymbolTable in one
-    //    go. Per-entry inner-DashMap writes; no whole-module lock. If we got
-    //    here, every form in the cluster passed both passes.
+    // 5. Drop ctx to release the &mut staging borrow, then drain. The drain is
+    //    deferred to insert_cluster — process_cluster returns the staging
+    //    payload via ProcessedCluster::from_staging.
+    drop(ctx);
     Ok(ProcessedCluster::from_staging(staging))
 }
 
@@ -800,7 +809,7 @@ fn ensure_registered(shared: &SharedState, module: &ModuleFullPath) -> Result<()
 
 **Atomicity guarantees**:
 - A failure at any point — `expand` Gap that the scheduler resolves to a cycle, `check_form_signatures` TypeError, `check_form_body` TypeError — drops the staging `SymbolTable` on the floor when the function frame returns. The live `SymbolTable` is byte-identical to its pre-cluster state. The live invariant ("if it's in the live table, it's checked AND committed") holds across cluster boundaries; only completed clusters are visible to other workers.
-- Within a cluster, Pass 1's signature shells become visible to Pass 2 through the `View::union` read surface — that is how mutual recursion / forward references resolve. Other workers seeing the live table mid-cluster cannot observe staging contents; staging is orchestrator-local.
+- Within a cluster, Pass 1's signature shells become visible to Pass 2 through `ctx.current_symbol_table()` — which returns a `View::union(staging, live)` in `ClusterContext::Cluster` mode. That is how mutual recursion / forward references resolve. Other workers seeing the live table mid-cluster cannot observe staging contents; staging is orchestrator-local and is held under the orchestrator's stack-frame `&mut` borrow inside the `ClusterContext`.
 
 **Termination**. Each `handle_gap` call advances the dependency state monotonically (registers a module, satisfies a typecheck wait, satisfies an inmem wait). Subsequent retries see strictly more state than the previous attempt; the loop terminates when expand + both passes succeed, when a non-gap error fires, or when the scheduler returns `SchedulerError::Cycle` (mutual import per Decision 30).
 
@@ -974,7 +983,7 @@ These hold across sprints — the contract `int` makes with the rest of the work
 
 5a. **`process_cluster` is the gap-orchestration crossing point.** Frontend and typecheck stay pure — they surface dependencies as `Err(ExpansionError::Gap(ResolutionGap))` / `Err(CheckError::Gap(ResolutionGap))`. `int::process_cluster` is the sole crate-crossing where gap values become scheduler calls (`handle_gap` → register + wait + priority_boost). Workers park inside the scheduler's `wait_for_*` calls — never inside frontend or typecheck library code. See "`process_cluster` — the cluster-atomic orchestration loop" above.
 
-5b. **Cluster-atomic commit, staging is orchestrator-local (Decision 44).** Within `process_cluster` the orchestrator owns a transient `SymbolTable` ("staging") that holds Pass 1 signature shells and Pass 2 body-checked entries; typecheck reads from a `View<'_, C, L>` newtype that unions staging-first then live. On any `Err` from any pass, the orchestrator drops staging on the floor when the function frame returns; the live `SymbolTable` is byte-identical to its pre-cluster state. On full success, `insert_cluster` drains staging into the live table per-entry (under inner-DashMap locks). The live invariant ("if it's in the live table, it's checked AND committed") holds across cluster boundaries — staging contents are never observable to other workers.
+5b. **Cluster-atomic commit, staging is orchestrator-local (Decision 44 amended FIXME 0167).** Within `process_cluster` the orchestrator owns a transient `SymbolTable` ("staging") that holds Pass 1 signature shells and Pass 2 body-checked entries; typecheck reads via `ctx.current_symbol_table()` (returns `View::union(staging, live)` in `Cluster` mode) and writes via `ctx.current_symbol_table_mut()` (returns `&mut staging`). The 91 register-call sites in typecheck do not change individually — staging-vs-live distinction is absorbed inside the accessors. On any `Err` from any pass, the orchestrator drops staging on the floor when the function frame returns; the live `SymbolTable` is byte-identical to its pre-cluster state. On full success, `insert_cluster` drains staging into the live table per-entry (under inner-DashMap locks). The live invariant ("if it's in the live table, it's checked AND committed") holds across cluster boundaries — staging contents are never observable to other workers.
 
 6. **Per-eval JIT lifetime (Decision 31).** Per pipeline-v4 §6.2 — each eval expression compiles its temp closure on a fresh `JITModule` wrapped in `Arc<Jit>`. The wrapper's custom `Drop` reclaims pages when the trampoline returns and the value is consumed.
 
@@ -996,6 +1005,6 @@ These hold across sprints — the contract `int` makes with the rest of the work
 
 15. **`SharedState` vs `CompilerSession` split is mode-aligned (Decision 38).** `SharedState` carries everything reachable by workers — `symbol_tables`, `scheduler`, `cache`, `kept_dlls`, `introspection`, read-only configuration. `CompilerSession` carries everything reachable only by the initiator thread — watcher channel, REPL eval cursor, worker pool handles, accumulated warnings. Workers receive `Arc<SharedState>` at spawn, never see `CompilerSession`. No worker-side merge step: all mutation happens through interior mutability of the contained types under per-cell locks.
 
-16. **Per-symbol mutability after Phase 0 (Decision 38, FIXMEs 0008/0009; Decision 44 amends).** `register_module` runs Phase 0 synchronously: `parse → entry(m).or_default() → write_structural_decls → drop RefMut`. After Phase 0, all live `SymbolTable` access is `&SymbolTable` + per-entry inner-DashMap locks. `process_cluster` uses shared `.get(&scope)` for the live table, not `.entry().or_default()`. The two-pass typecheck surface (`check_form_signatures` + `check_form_body`) takes a `&View<'_, C, L>` (which composes `&SymbolTable` refs internally), not `&mut`. Within `process_cluster`, the orchestrator owns a separate transient `SymbolTable` ("staging") that is `&mut` for orchestrator-side staging-writes between passes; staging is never published — it dissolves on cluster failure or drains into live atomically on success. The only `&mut SymbolTable` operations on the **live** table are Phase 0 (structural decls + defn_order seed) and per-cluster REPL appends to `defn_order` during `insert_cluster`.
+16. **Per-symbol mutability after Phase 0 (Decision 38, FIXMEs 0008/0009; Decision 44 amended FIXME 0167).** `register_module` runs Phase 0 synchronously: `parse → entry(m).or_default() → write_structural_decls → drop RefMut`. After Phase 0, all live `SymbolTable` access is `&SymbolTable` + per-entry inner-DashMap locks. `process_cluster` uses the `&shared.symbol_tables` DashMap reference (housed under `ClusterContext::Cluster.modules`) for cross-module reads, not `.entry().or_default()`. The two-pass typecheck surface (`check_form_signatures` + `check_form_body`) takes `&mut ClusterContext<'_, C, L>`; in `Cluster` mode the orchestrator owns a separate transient `SymbolTable` ("staging") that is `&mut`-borrowed inside `ClusterContext` for orchestrator-side staging-writes between passes — typecheck mutates staging via the `current_symbol_table_mut()` accessor, oblivious to the staging-vs-live distinction. Staging is never published — it dissolves on cluster failure or drains into live atomically on success. The only `&mut SymbolTable` operations on the **live** table are Phase 0 (structural decls + defn_order seed) and per-cluster REPL appends to `defn_order` during `insert_cluster`.
 
 17. **Introspection is mode-conditional (Decisions 38, 39).** `shared.introspection` is `Some(DashMap)` iff REPL mode OR `CRANELISP_CODEGEN_TRACE` is set. Production batch leaves it `None` and pays zero per-symbol metadata overhead. Source text is per-defn on `Introspection.source` — there is no module-global source store. Parse errors capture context inline (in `ErrorLocation.context`); typecheck/codegen errors capture coordinates (`line_col` + `fq`) and let the formatter resolve source via introspection at display time.
