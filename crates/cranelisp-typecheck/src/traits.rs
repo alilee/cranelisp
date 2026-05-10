@@ -94,8 +94,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state: &mut CheckState,
         decl: &TraitDecl,
     ) -> Result<(), CranelispError> {
-        // Check for duplicate trait name by looking in SymbolTables
-        if self.lookup_trait_decl(&decl.name).is_some() {
+        // Check for duplicate trait name in the current module's symbol table.
+        // Per Principle 17 — module-locality lookup; ambiguity across modules
+        // is the import system's concern (`ModuleEntry::Ambiguous`).
+        if self
+            .lookup_trait_decl_in_module(&state.current_module, &decl.name)
+            .is_some()
+        {
             return Err(CranelispError::TypeError {
                 message: format!("trait {} already defined", decl.name),
                 location: ErrorLocation::from_span(decl.span),
@@ -328,9 +333,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state: &mut CheckState,
         impl_: &TraitImpl,
     ) -> Result<Vec<Defn>, CranelispError> {
-        // Look up the trait declaration via SymbolTables
+        // Look up the trait declaration via SymbolTables. Per Principle 17 —
+        // resolve from the active module's transitive import closure.
         let decl = self
-            .lookup_trait_decl(&impl_.trait_name)
+            .lookup_trait_decl_in_module(&state.current_module, &impl_.trait_name)
+            .or_else(|| {
+                let primitives_path = ModuleFullPath::from("primitives");
+                if state.current_module != primitives_path {
+                    self.lookup_trait_decl_in_module(&primitives_path, &impl_.trait_name)
+                } else {
+                    None
+                }
+            })
             .ok_or_else(|| CranelispError::TypeError {
                 message: format!("unknown trait: {}", impl_.trait_name),
                 location: ErrorLocation::from_span(impl_.span),
@@ -364,7 +378,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                             }
                         }
                         // Check arity of known ADT types
-                        if let Some(td) = self.lookup_type_def(&impl_.target_type)
+                        if let Some(td) = self.lookup_type_def_with_state(state, &impl_.target_type)
                             && td.type_params.len() != expected_arity
                         {
                             return Err(CranelispError::TypeError {
@@ -970,14 +984,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         arg_types: &[Type],
         span: Span,
     ) -> Result<Option<ResolvedCall>, CranelispError> {
-        // Check if this name is a trait method (via trait_origin on ModuleEntry::Def)
-        let trait_name = match self.method_to_trait(callee_name) {
+        // Check if this name is a trait method (via trait_origin on
+        // ModuleEntry::Def). Per Principle 17 — search the current module's
+        // transitive import closure, not the universe.
+        let trait_name = match self.method_to_trait_in_module(&state.current_module, callee_name) {
             Some(tn) => tn,
             None => return Ok(None),
         };
 
         // Use hkt_param_index for dispatch argument selection (defaults to 0)
-        let param_idx = self.hkt_param_idx_for_method(callee_name);
+        let param_idx = self.hkt_param_idx_for_method(state, callee_name);
         let dispatch_arg = match arg_types.get(param_idx) {
             Some(a) => a,
             None => return Ok(None),
@@ -993,7 +1009,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         // Check if an impl exists — if the name IS a trait method and the
         // type IS concrete but the impl DOESN'T exist, that's a type error.
-        if !self.has_impl(&trait_name, &impl_type_name) {
+        if !self.has_impl_in_module(&state.current_module, &trait_name, &impl_type_name) {
             return Err(CranelispError::TypeError {
                 message: format!(
                     "no impl of trait {} for type {}",
@@ -1027,6 +1043,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     #[allow(dead_code)]
     pub(crate) fn is_trait_method(&self, name: &Symbol) -> bool {
         self.method_to_trait(name).is_some()
+    }
+
+    /// `module_path`-rooted variant of [`Self::is_trait_method`] — uses the
+    /// transitive import closure of `module_path`.
+    pub(crate) fn is_trait_method_in_module(
+        &self,
+        module_path: &ModuleFullPath,
+        name: &Symbol,
+    ) -> bool {
+        self.method_to_trait_in_module(module_path, name).is_some()
     }
 }
 
@@ -1247,7 +1273,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 None => continue,
             };
             for fq_trait in traits {
-                if !self.has_impl(&fq_trait.name, &impl_type) {
+                if !self.has_impl_in_module(&state.current_module, &fq_trait.name, &impl_type) {
                     return Err(CranelispError::TypeError {
                         message: format!(
                             "no impl of trait {} for type {}",
@@ -1339,7 +1365,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
     }
 
-    /// Look up a constrained function by name.
+    /// Look up a constrained function by name in the current module.
+    ///
+    /// Per Principle 17 access shape 1 — uses `current_symbol_table(state)`
+    /// rather than direct DashMap probing.
     #[allow(dead_code)]
     fn get_constrained_fn(
         &self,
@@ -1348,7 +1377,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) -> Option<ConstrainedFn> {
         use cranelisp_types::{DefKind, ModuleEntry};
 
-        let guard = self.modules.get(&state.current_module)?;
+        let guard = self.current_symbol_table(state);
         match guard.get(name.as_ref())? {
             ModuleEntry::Def { kind, .. } => match kind.as_ref() {
                 DefKind::UserFn {
@@ -1789,10 +1818,10 @@ fn find_applied_arity(texpr: &cranelisp_types::TypeExpr, con_name: &Symbol) -> O
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     /// Get the HKT param index for a method name, defaulting to 0.
     /// For mangled names like "Functor.fmap$Option", extracts the base method name first.
-    fn hkt_param_idx_for_method(&self, name: &Symbol) -> usize {
+    fn hkt_param_idx_for_method(&self, state: &CheckState, name: &Symbol) -> usize {
         let name_str = name.as_ref();
-        // Try direct lookup
-        if let Some(idx) = self.find_hkt_param_index_in_registry(name_str) {
+        // Try direct lookup rooted at the active module.
+        if let Some(idx) = self.find_hkt_param_index_in_registry(state, name_str) {
             return idx;
         }
         // For mangled names like "Functor.fmap$Option", extract the method name
@@ -1804,21 +1833,41 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             } else {
                 prefix
             };
-            if let Some(idx) = self.find_hkt_param_index_in_registry(base) {
+            if let Some(idx) = self.find_hkt_param_index_in_registry(state, base) {
                 return idx;
             }
         }
         0
     }
 
-    /// Walk trait declarations in loaded modules to find a method's hkt_param_index.
-    fn find_hkt_param_index_in_registry(&self, method_name: &str) -> Option<usize> {
-        for guard in self.modules.iter() {
-            for (_name, entry) in guard.all_symbols() {
-                if let ModuleEntry::TraitDecl { decl, .. } = entry {
-                    for method in &decl.methods {
-                        if method.name.as_ref() == method_name {
-                            return method.hkt_param_index;
+    /// Walk trait declarations reachable from `state.current_module` to find
+    /// a method's `hkt_param_index`.
+    ///
+    /// Per Principle 17 access shape 3: probes the active module's view +
+    /// transitive import closure for `TraitDecl` entries, rather than
+    /// scanning every loaded module. Internal helper — used only when
+    /// `method_to_trait` has not pinned the trait by name yet.
+    fn find_hkt_param_index_in_registry(&self, state: &CheckState, method_name: &str) -> Option<usize> {
+        let mut order = vec![state.current_module.clone()];
+        order.extend(self.transitive_import_closure(&state.current_module));
+        // Synthetic-root fallback for modules that don't import primitives
+        // or macros explicitly (test fixtures, REPL bootstrap).
+        for synthetic in [
+            ModuleFullPath::from("primitives"),
+            ModuleFullPath::from("macros"),
+        ] {
+            if !order.contains(&synthetic) {
+                order.push(synthetic);
+            }
+        }
+        for path in order {
+            if let Some(guard) = self.modules.get(&path) {
+                for (_name, entry) in guard.all_symbols() {
+                    if let ModuleEntry::TraitDecl { decl, .. } = entry {
+                        for method in &decl.methods {
+                            if method.name.as_ref() == method_name {
+                                return method.hkt_param_index;
+                            }
                         }
                     }
                 }

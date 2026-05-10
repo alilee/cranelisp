@@ -68,7 +68,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // If resolution fails, remove the pre-seeded placeholder so it
         // doesn't pollute known_types for subsequent definitions.
         let ctor_infos = match self.build_constructor_infos(
-            name, constructors, &var_map, span,
+            state, name, constructors, &var_map, span,
         ) {
             Ok(infos) => infos,
             Err(e) => {
@@ -127,12 +127,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// Build ConstructorInfo entries with resolved field types.
     fn build_constructor_infos(
         &self,
+        state: &CheckState,
         type_name: &TypeName,
         constructors: &[ConstructorDef],
         var_map: &HashMap<Symbol, TypeId>,
         span: Span,
     ) -> Result<Vec<ConstructorInfo>, CranelispError> {
-        let known_types = self.known_type_names();
+        // Per Principle 17 — resolve via the current module's view, not a
+        // universe scan.
+        let known_types = self.known_type_names_with_state(state);
 
         constructors
             .iter()
@@ -267,6 +270,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// 2. A wildcard or variable pattern is present.
     pub(crate) fn check_exhaustiveness(
         &self,
+        state: &CheckState,
         type_name: &TypeName,
         covered_ctors: &[Symbol],
         has_wildcard: bool,
@@ -276,7 +280,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             return Ok(());
         }
 
-        let type_def = self.lookup_type_def(type_name).ok_or_else(|| {
+        // Per Principle 17 — resolve from the active module's view.
+        let type_def = self.lookup_type_def_with_state(state, type_name).ok_or_else(|| {
             CranelispError::TypeError {
                 message: format!("unknown type in match: {type_name}"),
                 location: ErrorLocation::from_span(span),

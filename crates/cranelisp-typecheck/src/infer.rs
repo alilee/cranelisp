@@ -5,9 +5,9 @@
 
 use std::collections::HashMap;
 
-use cranelisp_types::{ErrorLocation, 
-    CranelispError, Expr, MatchArm, ModuleEntry, Pattern, ResolvedCall, Scheme, Span, Symbol,
-    Type, TypeExpr,
+use cranelisp_types::{ErrorLocation,
+    CranelispError, Expr, MatchArm, ModuleEntry, ModuleFullPath, Pattern, ResolvedCall, Scheme,
+    Span, Symbol, Type, TypeExpr,
 };
 
 use crate::checker::{CheckState, TypeCheckEnv};
@@ -115,7 +115,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         // Reject internal constructors (e.g. Bind) — they cannot be
         // constructed by user code, only by compiler-generated primitives.
-        if self.is_internal_constructor(name) {
+        if self.is_internal_constructor_with_state(state, name) {
             return Err(CranelispError::TypeError {
                 message: format!(
                     "cannot construct internal type constructor '{name}'"
@@ -222,7 +222,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let mut param_types = Vec::new();
         for (i, param_name) in params.iter().enumerate() {
             let param_ty = if let Some(Some(annotation)) = param_annotations.get(i) {
-                let known = self.known_type_names();
+                let known = self.known_type_names_with_state(state);
                 let var_map = HashMap::new();
                 resolve_type_expr(annotation, &var_map, &known, span)?
             } else {
@@ -498,7 +498,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // Try to resolve this Apply if it's not already resolved
                 if !state.method_resolutions.contains_key(span)
                     && let Expr::Var { name, .. } = callee.as_ref()
-                    && self.is_trait_method(name)
+                    && self.is_trait_method_in_module(&state.current_module, name)
                 {
                     let resolved_args: Vec<Type> = args
                         .iter()
@@ -619,7 +619,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Check exhaustiveness for concrete ADT scrutinees
         let resolved_scrutinee = self.apply_subst(state, &scrutinee_ty);
         if let Type::ADT(fqtn, _) = &resolved_scrutinee {
-            self.check_exhaustiveness(&fqtn.name, &covered_ctors, has_wildcard, span)?;
+            self.check_exhaustiveness(state, &fqtn.name, &covered_ctors, has_wildcard, span)?;
         }
 
         let resolved = self.apply_subst(state, &result_ty);
@@ -642,7 +642,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) -> Result<(), CranelispError> {
         // Reject internal constructors (e.g. Bind) in pattern matching.
         // Internal constructors are implementation details not meant for user code.
-        if self.is_internal_constructor(name) {
+        if self.is_internal_constructor_with_state(state, name) {
             return Err(CranelispError::TypeError {
                 message: format!(
                     "cannot match on internal type constructor '{name}'"
@@ -681,9 +681,31 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             name.as_ref()
         };
 
-        // Verify the constructor exists by checking the module system
-        if self.lookup_constructor_type(bare_name).is_none()
-        {
+        // Verify the constructor exists by checking the module system.
+        // Per Principle 17 — lookup is rooted in the active module's view,
+        // falling back to the synthetic root modules for universally-available
+        // constructors (None/Some/Pure/Effect/SCons/...) per spec convention.
+        let mut found = self
+            .lookup_constructor_type_in_module(&state.current_module, bare_name)
+            .is_some();
+        if !found {
+            for synthetic in [
+                ModuleFullPath::from("primitives"),
+                ModuleFullPath::from("macros"),
+            ] {
+                if state.current_module == synthetic {
+                    continue;
+                }
+                if self
+                    .lookup_constructor_type_in_module(&synthetic, bare_name)
+                    .is_some()
+                {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if !found {
             return Err(CranelispError::TypeError {
                 message: format!("unknown constructor in pattern: {name}"),
                 location: ErrorLocation::from_span(span),
@@ -834,7 +856,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         expr: &Expr,
         span: Span,
     ) -> Result<Type, CranelispError> {
-        let known = self.known_type_names();
+        let known = self.known_type_names_with_state(state);
         let var_map = HashMap::new();
         let ann_type = resolve_type_expr(annotation, &var_map, &known, span)?;
 
