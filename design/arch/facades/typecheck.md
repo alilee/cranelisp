@@ -183,3 +183,41 @@ These hold across sprints — the contract `cranelisp-typecheck` makes with the 
 7. **TC snapshot/restore for error rollback.** Both pass functions allocate type vars within `CheckState`; the symbol-table writes that pre-S66 stages performed are gone (FIXME 0160 + Decision 44 — both passes are pure). On `Err`, `int` (or the caller) restores via `ReplSnapshot` before the next pass is invoked. Typecheck provides the snapshot/restore primitive but does not invoke it itself; the caller decides when to take and restore snapshots. (REPL eval is the primary consumer — a failed cluster must not leave residual type-var bindings visible to the next eval.) The orchestrator's transient staging table (per Decision 44) is the layer that absorbs cross-pass write-side intent — it is not visible to typecheck and is dropped on cluster failure.
 8. **FQ resolution surfaces via `CheckError::Gap`.** Per the gap-return pattern (`facades/int.md`, `exec-flow-compilation`) — when either pass encounters an FQ symbol or FQ type reference whose target isn't typechecked, it returns `Err(CheckError::Gap(ResolutionGap::SymbolTypechecked(fq)))` or `Err(CheckError::Gap(ResolutionGap::Type(fqt)))`. Typecheck does NOT block, does NOT call the scheduler, does NOT register modules — it surfaces the dependency to its caller (`int::process_cluster`), which dispatches via `handle_gap` and retries the same pass.
 9. **No `Sess` / `CompileScheduler` dependency.** Same as frontend — typecheck stays a pure function from inputs (`ParsedEntry`, `SymbolTable`, `SymbolTables`) to outputs (`Vec<(Symbol, ModuleEntry)>` or `CheckError`). Principle 3.
+10. **Module locality — typecheck never iterates the universe of modules.** Per Principle 17 (Module locality in typecheck), every cross-module access in `cranelisp-typecheck` fits one of four principled shapes; unbounded scans of `self.modules` for short-name resolution, impl resolution, or method-of-type aggregation are forbidden. The shapes are:
+
+    ```rust
+    // 1. Unqualified short-name lookup — current module only; follow Import bindings to FQ home.
+    match ctx.current_symbol_table().lookup(&name) {
+        Some(ModuleEntry::Import { source, .. }) => {
+            // `source` is the FQSymbol that the import binding points at; cross-module read
+            // is direct (Q2 shape 2), not an unbounded scan.
+            symbol_tables.get(&source.module).and_then(|t| t.get(&source.symbol))
+        }
+        Some(entry) => Some(entry),
+        None => None,
+    }
+
+    // 2. Qualified (FQ) lookup — direct, single named module.
+    symbol_tables.get(&fq.module).and_then(|t| t.get(&fq.symbol))
+
+    // 3. Impl resolution — walk the current module's transitive import closure
+    //    (per /spec FIXME 0169 Reading 2 — transitive). The first match wins.
+    //    Storage placement is the writer's module per Decision 0045.
+    for imported in current_module_imports_transitive(&current_module, &symbol_tables) {
+        if let Some(entry) = symbol_tables.get(&imported)
+            .and_then(|t| t.get(&Symbol::from(impl_synthetic_key(trait_fq, type_fq))))
+        {
+            return Some(entry);
+        }
+    }
+    None
+
+    // 4. Bulk introspection — current module only.
+    let local_type_defs: Vec<_> = ctx.current_symbol_table()
+        .iter()
+        .filter_map(|(_, e)| matches!(e, ModuleEntry::TypeDef { .. }).then(|| e))
+        .collect();
+    // Multi-module aggregation is composed at the orchestrator (session/REPL) layer, not inside check_form*.
+    ```
+
+    Mutating writes always go through `ctx.current_symbol_table_mut()` — a typecheck pass MUST NOT mutate a foreign module's table. `ModuleEntry::TraitImpl` writes target the writer's module per Decision 0045; cross-module impl writes that pre-S66 source carries (~6 sites in `builtins.rs` + `checker.rs`, audited 2026-05-12) are Wave 3a-α retargets per Decision 0046. This invariant is the structural prerequisite for invariant 2's cluster-atomic guarantee — the `ClusterContext` accessor surgery only delivers cluster atomicity if every read and write actually flows through it; the absence of orphaned `self.modules.X` pierces is what makes that the case.

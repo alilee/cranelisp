@@ -24,3 +24,4 @@ Each Principle is one file at `principles/NN-{slug}.md`. Index:
 - [Principle 14](principles/14-ffi-layout-discipline.md) — FFI boundary types are governed by layout discipline
 - [Principle 15](principles/15-facade-types-live-with-behavior.md) — Facade types live with their behavior
 - [Principle 16](principles/16-punctuation-symbols-are-not-special.md) — Punctuation symbols are not special
+- [Principle 17](principles/17-module-locality-in-typecheck.md) — Module locality in typecheck

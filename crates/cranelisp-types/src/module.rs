@@ -527,7 +527,24 @@ pub enum ModuleEntry<C: CodeStore = ()> {
     /// A trait implementation for a specific type (Ring 2).
     /// Keyed by synthetic name `impl$FQTypeName$FQTraitName` on the SymbolTable.
     /// Always public (spec §5.11: impls are visible wherever both trait and type are in scope).
-    /// See `design/arch/traitimpl-symbol-table.md` for the full design.
+    ///
+    /// **Storage placement (Decision 0045).** `(impl Trait Type method-defns…)`
+    /// written in module M lands HERE — in M's symbol table. The trait's
+    /// defining module and the type's defining module are NOT mutated by the
+    /// impl write; only M is. Discovery from the importer side is via an
+    /// import-chain walk (Principle 17): readers searching for an impl walk
+    /// the current module's transitive import closure and probe each named
+    /// module's table for the synthetic key. This keeps typecheck writes
+    /// local (Principle 1) and the canonical store single-sourced
+    /// (Principle 7); cluster atomicity (Decision 44) follows because the
+    /// staging table for cluster mode is M's table, the same one
+    /// `ctx.current_symbol_table_mut()` already targets.
+    ///
+    /// The associated method bodies are written to M as ordinary
+    /// `ModuleEntry::Def` entries with mangled names (e.g.,
+    /// `Display.show$Option$Int`); the `methods: Vec<Symbol>` field below
+    /// lists the local names so importers can dereference back to the bodies
+    /// in M.
     TraitImpl {
         trait_name: FQTraitName,
         impl_type: FQTypeName,

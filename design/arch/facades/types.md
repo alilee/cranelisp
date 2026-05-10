@@ -395,7 +395,27 @@ pub enum ModuleEntry<C: CodeStore = ()> {
     Macro { name: Symbol, clauses: Vec<MacroClauseInfo>, callees: Vec<FQSymbol>, got_slot: usize, visibility: Visibility, docstring: Option<String>, #[serde(skip)] code: Option<C> },
     TypeDef { /* … per Decision 22 */ },
     Trait { /* … */ },
-    TraitImpl { /* … */ },
+    /// `(impl Trait Type method-defns…)` written in module M lands HERE — in M's
+    /// symbol table — keyed by the synthetic name `impl$FQTypeName$FQTraitName`.
+    /// Per Decision 0045 (TraitImpl placement is the writer's module): the
+    /// trait's defining module and the type's defining module are NOT mutated
+    /// by the impl write; only M is. This keeps typecheck writes local
+    /// (Principle 1 — Decoupling) and the canonical store single-sourced
+    /// (Principle 7 — Single source of truth).
+    ///
+    /// **Discovery.** Importers locate impls by walking the current module's
+    /// transitive import closure (per Principle 17 — Module locality in
+    /// typecheck — and `/spec` FIXME 0169's resolution): for each module M' in
+    /// the closure, probe `M'.symbols.get("impl$FQTypeName$FQTraitName")`. The
+    /// first match wins. Visibility is bounded by the import set, not the
+    /// universe of modules.
+    ///
+    /// **Always public** (spec §5.11: impls are visible wherever both trait
+    /// and type are in scope). The `methods: Vec<Symbol>` field carries the
+    /// local names of the impl's method bodies, which live as ordinary
+    /// `ModuleEntry::Def` entries with mangled names (e.g.,
+    /// `Display.show$Option$Int`) in the same module M.
+    TraitImpl { /* trait_name: FQTraitName, impl_type: FQTypeName, methods: Vec<Symbol> */ },
     Import { /* bare-name binding installed by install_import_bindings */ },
     PlatformDecl { /* serde-persistent record of which DLL provides this fn */ },
 }

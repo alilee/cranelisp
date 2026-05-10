@@ -16,6 +16,7 @@
 @design/arch/principles/14-ffi-layout-discipline.md
 @design/arch/principles/15-facade-types-live-with-behavior.md
 @design/arch/principles/16-punctuation-symbols-are-not-special.md
+@design/arch/principles/17-module-locality-in-typecheck.md
 
 # /arch — Compiler Architect
 

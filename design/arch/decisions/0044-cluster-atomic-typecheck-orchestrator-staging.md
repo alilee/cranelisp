@@ -3,14 +3,14 @@ number: 0044
 title: Cluster-atomic typecheck — split `check_form` into two passes; orchestrator owns staging via ClusterContext
 status: pre-implementation
 filed: sprint 66 (Phase 5 Wave 3a structural-finding resolution)
-amended: sprint 66 Phase 3 (FIXME 0167 — Approach B; staging mutation via `current_symbol_table_mut` accessor; ClusterContext introduction; invariant 2 revision; pass return type changes to `Result<(), CheckError>`)
+amended: sprint 66 Phase 3 (FIXME 0167 — Approach B; staging mutation via `current_symbol_table_mut` accessor; ClusterContext introduction; invariant 2 revision; pass return type changes to `Result<(), CheckError>`); sprint 66 Phase 3 (FIXME 0168 — Sequencing α/β split; Wave 3a-α locality-correctness refactor precedes Wave 3a-β triad re-fire — see Decision 0046)
 canonical_location: design/arch/facades/typecheck.md §"check_form_signatures + check_form_body"; design/arch/facades/int.md §"process_cluster — the cluster-atomic orchestration loop"; design/arch/facades/types.md §"`ParsedEntry`" + §"`View`"; design/arch/sequences/exec-flow-compilation.mmd, exec-flow-repl.mmd, concurrency-symbol-table-entry.mmd
 amends: []
 amended_by: []
 retracts: []
 reframes: [0038]
 filed_by_fixme: 0166
-amended_by_fixme: 0167
+amended_by_fixme: 0167, 0168
 ---
 
 # 0044 — Cluster-atomic typecheck via orchestrator-owned staging + two pure passes
@@ -129,14 +129,20 @@ No BC moves. Typecheck's BC ("AST → typed AST + symbol tables; pure transform"
 
 ## Sequencing
 
-This Decision unblocks Sprint 66 Wave 3a re-fire. Implementation cost (~+2 days vs the original Wave 3a triad estimate) sits within the sprint envelope per `sprints/SPRINT.md`. Sequencing:
+This Decision unblocks Sprint 66 Wave 3a re-fire. The original sequencing (~+2 days vs the prior Wave 3a triad estimate) is amended by FIXME 0168's α/β split — see Decision 0046. Wave 3a-β cannot start before Wave 3a-α completes because cluster-atomic correctness depends on every typecheck read and write flowing through `ctx.current_symbol_table[_mut]()`; the ~40+ orphaned `self.modules.X` accesses (Sprint 66 third-re-attempt audit, 2026-05-12) bypass the accessor and would render the staging surgery ineffective if left in place.
 
-1. `/arch` lands this Decision + facade + sequence updates (this commit).
+Sequencing (post-FIXME 0168 amendment):
+
+1. `/arch` lands this Decision + facade + sequence updates (FIXME 0167 commit).
 2. `/spec` lands FIXME 0165 (§5.13.2 extension; `(begin)` cluster role).
-3. Wave 3a triad re-fires:
+3. `/arch` lands Decisions 0045 + 0046 + Principle 17 + facade locality updates (FIXME 0168 commit).
+4. **Wave 3a-α — locality-correctness refactor** (precondition; ~3–5 days). Per Decision 0046 + Principle 17. Replace the ~40+ direct `self.modules.X` access sites with the four principled access-pattern shapes; retarget the ~6 cross-module impl writes to the writer's module per Decision 0045. `/dev` narrow per typecheck.
+5. **Wave 3a-β — triad re-fires atop locality-correct typecheck** (~3–4 days):
    - Frontend: `build_form` per FIXME 0156 (unchanged from prior plan).
    - Typecheck: TWO passes (`check_form_signatures` + `check_form_body`); each takes `&mut ClusterContext` and returns `Result<(), CheckError>`. The 91 register-call sites do not change individually — the surgery is in the `ClusterContext::current_symbol_table_mut` accessor adaptation. `TypeCheckEnv` retains its other state and is reshaped to consume `ClusterContext` for table access.
    - Int: `process_cluster` constructs `ClusterContext::Cluster { modules, staging, current_module }` per cluster; transient staging `SymbolTable`; cluster-atomic drain on Pass-2 success; `(begin)` unwrapping.
-4. Wave 1 gate test `tests/process_form_dispatch.rs` revises (forward-ref defns wrapped in `(begin)`; second test asserts cross-input forward-ref produces a clear error).
+6. Wave 1 gate test `tests/process_form_dispatch.rs` revises (forward-ref defns wrapped in `(begin)`; second test asserts cross-input forward-ref produces a clear error).
+
+Total Wave 3a envelope: ~6–9 days (α + β), within the Sprint 66 envelope per `sprints/SPRINT.md`.
 
 The `View<'_, C, L>` newtype is `/arch`-authored as a `cranelisp-types` addition (per "boundary types live in `cranelisp-types`"). The `ClusterContext` enum lives in `cranelisp-typecheck` (single-consumer pair: typecheck owns the structural shape; `int` constructs and threads instances). The two-pass typecheck surface is `/dev`-implemented per the facade.

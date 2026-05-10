@@ -56,6 +56,8 @@ Each section: bounded context (essence + why); in-scope (responsibilities, conce
 - **Outputs**: in-place AST annotations; symbol-table writes; transient warnings.
 - **Window types**: typecheck consumes a symbol-table-view window passed by the caller; it exposes no windows of its own.
 
+**Module-locality invariant.** Typecheck never iterates the universe of modules to resolve a name, type, or impl (Principle 17). Cross-module access happens via fully-qualified references (one named module) or via a bounded walk of the current module's transitive import closure (impl resolution). Mutating writes always target the current module — `ModuleEntry::TraitImpl` is written to the writer's module per Decision 0045; importers discover impls by walking the import closure. This invariant is the structural prerequisite for Decision 44's cluster-atomic two-pass shape; see `facades/typecheck.md` invariant 10 for the access-pattern shapes.
+
 ---
 
 ## 3. Backend — `crates/cranelisp-backend/`
