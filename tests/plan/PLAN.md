@@ -1088,7 +1088,8 @@ Status `[S66 W3]` until /dev wave lands the consumer-side API; flips to
 | Test | Spec | Status | Resolves at |
 |---|---|---|---|
 | `tests/process_form_dispatch.rs::process_form_dispatch_macro_after_import_succeeds_in_one_eval` | spec/08-modules.md §"REPL form sequencing"; spec/09-macros.md §"Macro resolution" | `[S66 W3a]` | frontend Phase 2 + int Phase 4 of FIXME 0098 |
-| `tests/process_form_dispatch.rs::process_form_dispatch_typecheck_gap_completes_in_one_eval` | spec/08-modules.md §"REPL form sequencing" | `[S66 W3a]` | typecheck Phase 3 + int Phase 4 of FIXME 0098 |
+| `tests/process_form_dispatch.rs::process_form_dispatch_begin_cluster_resolves_mutual_forward_ref` (positive — `(begin ...)` cluster atomicity per Decision 44 + /spec FIXME 0165 resolution + /arch FIXME 0166 resolution; renamed from `process_form_dispatch_typecheck_gap_completes_in_one_eval` 2026-05-10) | spec/05-definitions.md §5.13.2; design/arch/decisions/0044-cluster-atomic-typecheck-orchestrator-staging.md | `[S66 W3a]` | typecheck Phase 3 (`check_form_signatures` + `check_form_body` split per Decision 44) + int Phase 4 (`process_cluster` shape) of FIXME 0098 |
+| `tests/process_form_dispatch.rs::process_form_dispatch_bare_forward_ref_errors_clearly` (negative — bare cross-input forward ref must surface clear typed error; staging drops, nothing commits) | spec/05-definitions.md §5.13.2 (non-clustered cross-input forward refs are an error) | `[S66 W3a]` | int Phase 4 of FIXME 0098 (typed Gap → user-visible diagnostic; cluster-atomic staging drop per Decision 44) |
 | `tests/process_form_dispatch.rs::process_form_dispatch_function_gap_does_not_speculatively_jit` | spec/12-runtime.md §"Diagnostic logging" (CRANELISP_GOT_TRACE reservation) | `[S66 W3a]` | int Phase 4 of FIXME 0098 + backend Phase 1 of FIXME 0099 |
 
 ### FIXME 0099 — GotObserver
