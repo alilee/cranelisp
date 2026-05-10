@@ -205,7 +205,7 @@ The inference algorithm relies on five core operations:
 
 ### 3.5.2 Two-Pass Checking
 
-To support forward references and mutual recursion among top-level definitions, the typechecker uses a two-pass strategy:
+To support forward references and mutual recursion among top-level definitions, the typechecker uses a two-pass strategy. At file scope this applies across all top-level forms; at the REPL it applies across the forms in a single `begin` cluster (see [§5.13.2](05-definitions.md#5132-repl-input-boundary-and-begin-clusters)).
 
 **Pass 1 -- Registration**: All top-level `defn` names are registered with fresh type variables for their parameter types and return type:
 

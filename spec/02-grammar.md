@@ -15,7 +15,7 @@ program      = top_level*
 Top-level forms are processed in three phases:
 
 1. **Module phase**: `mod`, `import`, `export`, and `platform` declarations are extracted and processed before any other compilation occurs.
-2. **Macro phase**: `defmacro` and `defmacro-` forms are compiled and executed; macro calls are expanded. `begin` forms are flattened into the surrounding top-level sequence.
+2. **Macro phase**: `defmacro` and `defmacro-` forms are compiled and executed; macro calls are expanded. `begin` forms are flattened into the surrounding top-level sequence. At the REPL, a user-authored `(begin form₁ ... formN)` at top level marks an atomic cluster of forms to be processed together -- see [§5.13.2](05-definitions.md#5132-repl-input-boundary-and-begin-clusters).
 3. **AST phase**: The remaining forms (`defn`, `deftype`, `deftrait`, `impl`) are converted to abstract syntax tree nodes.
 
 The implementation MUST process these phases in order: module declarations before macro expansion, and macro expansion before AST construction. Forms from one phase MUST NOT appear in a later phase -- for example, a `mod` or `import` form that survives to the AST phase is an error.

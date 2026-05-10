@@ -257,7 +257,7 @@ Implementations SHOULD limit the number of expansion iterations to prevent infin
 
 ### 9.3.4 Module-Wide Availability
 
-Within a module (batch compilation), macros are available throughout the module regardless of definition position. The compiler extracts and compiles all `defmacro` forms in a pre-pass before processing other forms. This means a macro MAY be used before its `defmacro` form in source order, consistent with the two-pass model described in [Section 5.13.2](05-definitions.md#5132-macros).
+Within a module (batch compilation), macros are available throughout the module regardless of definition position. The compiler extracts and compiles all `defmacro` forms in a pre-pass before processing other forms. This means a macro MAY be used before its `defmacro` form in source order, consistent with the two-pass model described in [Section 5.13.2](05-definitions.md#5132-repl-input-boundary-and-begin-clusters).
 
 In the REPL, macros MUST be defined before use because forms are evaluated one at a time. A reference to an undefined macro in a REPL expression is an error — it passes through to the AST builder as a regular function call.
 
@@ -362,7 +362,12 @@ A macro MAY return a form whose head symbol is `begin`. The `begin` form causes 
 
 Each `form1` through `formN` is treated as a separate top-level form, as if the macro call had been replaced by all of them in sequence.
 
-`begin` is handled exclusively by the macro expander. It is NOT a valid user-level special form and MUST NOT appear in user source code outside of macro output. An implementation SHOULD report an error if `begin` appears in non-macro-expanded code.
+`begin` is handled by the macro expander as a top-level splicing form. Its valid appearances are:
+
+- **In macro output** -- a macro returns `(begin form1 ... formN)` to emit multiple top-level forms. This is the primary use.
+- **At the REPL top level** -- as a user-authored cluster boundary for mutual recursion across forms in a single REPL input. See [§5.13.2](05-definitions.md#5132-repl-input-boundary-and-begin-clusters).
+
+`begin` MUST NOT appear nested inside expression positions in user source code, and MUST NOT appear at top level in batch (file) source code (where the file itself already provides the cluster scope per §5.13.1). An implementation SHOULD report an error in these cases.
 
 **Example:**
 

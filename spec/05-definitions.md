@@ -385,7 +385,7 @@ always-one   ; -> 1 (no parens needed)
 
 ### 5.5.2 Multi-Form Expansion (`begin`)
 
-A macro MAY return `(begin form1 form2 ...)` to splice multiple top-level forms into the enclosing scope. `begin` is handled during macro expansion and is NOT valid in user source code.
+A macro MAY return `(begin form1 form2 ...)` to splice multiple top-level forms into the enclosing scope. `begin` is handled by the macro expander. In batch (file) source code it is NOT valid as a user-authored top-level form (the file itself already provides the cluster scope per §5.13.1). At the REPL, `begin` IS valid as a user-authored cluster boundary -- see [§5.13.2](#5132-repl-input-boundary-and-begin-clusters).
 
 ```clojure
 (defmacro def-pair [name a b]
@@ -571,12 +571,33 @@ This means a function may call another function defined later in the file, and a
   (if (= n 0) false (is-even (- n 1))))
 ```
 
-### 5.13.2 Macros [Tested tests/ring3_repl::r3_neg_forward_reference_not_expanded, tests/macros::batch_defmacro_simple]
+### 5.13.2 REPL Input Boundary and `begin` Clusters [R4 S66 — tests/process_form_dispatch.rs]
 
-Within a module (batch compilation), macros are available throughout the module regardless of definition position. The compiler uses a two-pass model: all `defmacro` forms are extracted and compiled in a pre-pass before other forms are processed. This means a macro may be used before its `defmacro` form in source order. This is consistent with Clojure's model where macros are available module-wide.
+In the REPL, **each input is a single top-level form**. Forward references to definitions defined in subsequent REPL inputs are NOT supported -- non-`begin`-grouped forms are processed in source order, one per eval. A reference in a REPL input to a name that has not yet been defined is an error, with the same diagnostic shape as a reference to a non-existent identifier.
+
+Mutual recursion in the REPL is expressed via `(begin form₁ form₂ ... formN)`, which the orchestrator processes as a single **cluster**: signatures of all forms register first (Pass 1), then bodies are type-checked (Pass 2), and the cluster commits atomically (all-or-nothing). Within a cluster, §5.13.1's MAY-reference-freely rule applies across the forms in that one cluster. This is the REPL analogue of the file-scope two-pass behaviour.
 
 ```clojure
-;; Both orderings are valid in a module:
+;; REPL: forward reference within a single cluster -- OK
+(begin
+  (defn is-even [n] (if (= n 0) true (is-odd (- n 1))))
+  (defn is-odd  [n] (if (= n 0) false (is-even (- n 1)))))
+
+;; REPL: forward reference across separate inputs -- ERROR
+(defn f [] (g 1))    ; ERROR: g is not defined
+(defn g [x] x)       ; (defining g now does not retroactively repair f)
+```
+
+This rule applies uniformly to all top-level definitions: `defn`, `deftype`, `deftrait`, `impl`, `defmacro`, `const`, `def`. **Macros follow the same rule** -- a macro MUST be defined (or appear earlier in the same `begin` cluster) before its first use. A reference to an undefined macro in a REPL expression is an error.
+
+**Cluster atomicity**: If type checking fails for any form in the cluster, none of the forms are committed -- the REPL state is unchanged. On success, all forms commit together.
+
+**Module-phase declarations** (`mod`, `import`, `export`, `platform`) MUST NOT appear inside a `begin` cluster. They are processed in the module phase (see §5.13.3 and §2.1), before macro expansion and clusters. A `begin` form in user code that contains a module-phase declaration is a compile-time error.
+
+**Batch (file-level) semantics are unchanged**: §5.13.1's MAY-reference-freely rule continues to apply across the file scope. The orchestrator effectively treats a file's top-level definitions as one cluster. Macros within a module remain available throughout the module regardless of definition position -- all `defmacro` forms are extracted and compiled in a pre-pass before other forms are processed (consistent with Clojure's module-wide macro model):
+
+```clojure
+;; Batch: both orderings are valid in a module
 (defn f [x] (double x))
 (defmacro double [x] `(+ ~x ~x))
 
@@ -584,7 +605,7 @@ Within a module (batch compilation), macros are available throughout the module 
 (defn g [x] (triple x))
 ```
 
-In the REPL, macros MUST be defined before use because forms are evaluated one at a time. A reference to an undefined macro in a REPL expression is an error.
+**Why explicit clustering?** This aligns Cranelisp with statically-typed REPL precedent. ML-family languages (OCaml, SML, F#) require explicit `let rec ... and ...` syntax for mutual recursion at any scope; Haskell-family languages (Haskell, Elm, PureScript) do automatic dependency analysis at module scope but treat each REPL input as a separate eval (with explicit grouping syntax such as `:{ ... :}` for multi-form input). Cranelisp matches Haskell-family at file scope (automatic via two-pass per §5.13.1) and ML-family at REPL scope (explicit `begin` cluster).
 
 ### 5.13.3 Module-Phase Declarations [Tested tests/ring2.rs::module_phase_declarations_order_independent, crates/cranelisp-frontend/src/module_extract.rs::test_mixed_forms]
 
