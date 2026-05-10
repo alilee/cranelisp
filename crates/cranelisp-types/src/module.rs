@@ -124,10 +124,15 @@ pub struct SymbolTable<C: CodeStore = (), L: LinkerStore = ()> {
     pub got: std::sync::Arc<GotTable>,
 
     // --- Structural declarations (Sprint 58 Step 5a; Decision 33) ---
-    /// Original `(import [module [names...]])` declarations in source order.
-    /// Used by `src/save.rs::generate_module_source` for `.cl` regeneration
-    /// (spec §6.4) and by the import-resolver. Distinct from the per-symbol
-    /// `ModuleEntry::Import` entries, which are the *resolved* effects.
+    /// User-authored form-level record of `(import …)` declarations in source
+    /// order. This is the regeneration source-of-truth (see
+    /// `src/save.rs::generate_imports`, spec §6.4); compiler-injected imports
+    /// (e.g., the implicit `(import [prelude [*]])` injection) do NOT appear
+    /// here. The **effective import set** (per-name resolved bindings) lives
+    /// on per-symbol `ModuleEntry::Import` / `ModuleEntry::Reexport` entries.
+    /// Consumers that need the effective set (transitive impl-resolution;
+    /// module-locality short-name lookups) walk both stores — see
+    /// `transitive_import_closure` in `crates/cranelisp-typecheck/src/checker.rs`.
     ///
     /// Append-only during the form-by-form classification pass; insertion
     /// order MUST match source order. No deduplication: duplicate `(import …)`
