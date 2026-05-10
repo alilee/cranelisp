@@ -276,6 +276,16 @@ An implementation MUST track re-export provenance so that introspection can disp
 
 `export` forms MUST appear as top-level forms. They are extracted alongside `mod` and `import` before macro expansion.
 
+### 8.4.6 Implicit Impl Re-export [R4 S66]
+
+Trait implementations are NOT enumerable in `export` (or `import`) lists. An impl form `(impl Trait Type ...)` does not have a name that can appear inside `[...]`. Instead, **re-exporting a trait or a type implicitly re-exports any impl whose trait + type are reachable through the re-exporter's import closure**.
+
+Concretely: if module M re-exports a trait `T` (via `(export [src [T ...]])` or `(export [src [*]])`), then any `(impl T Type)` reachable from M — declared in M itself or in any module M transitively imports — is visible to a module that imports `T` from M, provided the importer also reaches `Type`. The same rule applies symmetrically to re-exporting a type: any `(impl Trait Type)` impl reachable from M comes along for the ride wherever `Type` reaches.
+
+This avoids forcing authors to enumerate impls in re-export lists — a list that has no syntactic anchor to enumerate against, since impls are nameless. Users see the rule as: **impls follow their trait and type through the import graph.**
+
+See [§5.11.1](05-definitions.md#5111-impl-visibility--transitive-import-closure) for the full visibility statement (which §8.4.6 is the module-side projection of) and a worked three-module example, and [§7.11.1](07-traits.md#7111-impl-visibility--transitive-import-closure) for the trait-resolution consequences.
+
 **Example:** A standard library might organize re-exports through a shell module:
 
 ```clojure
@@ -452,11 +462,21 @@ For a qualified name `path/sym`, resolution proceeds:
 
 The target symbol MUST be public in the resolved module. Accessing a private name through a qualified reference is a compile-time error.
 
+### 8.6.7 Impl Resolution Boundary [R4 S66]
+
+When resolving a trait method call (per [§7.4](07-traits.md#74-method-resolution-static-dispatch)), the implementation MUST consider only impls reachable through the **transitive import closure of the current module**. Impls in modules that the current module does not transitively import — even modules that happen to be loaded into the same compilation unit — MUST NOT participate in resolution.
+
+This is the operational consequence of the visibility rule in [§5.11.1](05-definitions.md#5111-impl-visibility--transitive-import-closure): two unrelated modules in a project, each defining its own impl for the same `(Trait, Type)` pair, do not collide so long as no third module transitively imports both. The impl search space is bounded by the import graph, not by global module-table iteration.
+
+The lookup mechanism — whether the typechecker pre-computes a per-module impl index at module-load time, or walks `current_module.imports` on demand at each call site — is **implementation-defined**. The spec pins the visibility rule (which impls a call site CAN see), not the algorithm.
+
 ## 8.7 Visibility [Tested tests/ring2.rs::visibility_private_defn_not_importable, tests/ring2.rs::visibility_public_defn_importable, tests/ring2.rs::visibility_private_deftype_not_importable]
 
 ### 8.7.1 Public by Default
 
 All definitions are public by default. Public names are accessible from other modules via `import` or qualified reference.
+
+> **Trait implementations** have no public/private split — `impl` has no `-` variant. See [§5.11.1](05-definitions.md#5111-impl-visibility--transitive-import-closure) and [§8.4.6](#846-implicit-impl-re-export) for the impl-specific visibility rule (transitive import closure of the trait + type).
 
 ### 8.7.2 Private Definitions
 

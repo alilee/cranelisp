@@ -736,11 +736,23 @@ Functor.fmap :: (Fn [(Fn [a] b) (:Functor f a)] (f b))
 Trait declarations and implementations participate in the module system (see section 8).
 
 - A `deftrait` form registers the trait and all its method names in the declaring module.
-- An `impl` form registers the method implementations in the module where the `impl` appears.
+- An `impl` form registers the method implementations in the module where the `impl` appears (the **writer's module**).
 - Trait methods are accessible via import like any other symbol.
 - Method names from different traits MAY collide. If two traits declare methods with the same name and both are in scope, the result is an ambiguous name error at the call site.
 
 Note: There is no mechanism for disambiguating same-named methods from different traits at a call site. Users SHOULD choose distinct method names across traits, or use qualified references (`module/method`) to avoid ambiguity.
+
+### 7.11.1 Impl Visibility — Transitive Import Closure [R4 S66]
+
+`impl` has no private variant. A trait implementation declared in module L is visible at any call site in module N where **both** the trait and the type are reachable from N through the transitive closure of N's `import` declarations. N does not need to import L directly; the impl follows the trait and type wherever those names propagate (via re-export chains, glob imports, etc.).
+
+This rule has three consequences for trait method resolution (see §7.4):
+
+1. **Impl discovery is bounded by the import graph, not the universe of compiled modules.** When the typechecker resolves a trait method call, it looks for impls only among modules reachable from the current module's import closure.
+2. **Re-exporting a trait or type implicitly re-exports its impls.** See [§8.4.6](08-modules.md#846-implicit-impl-re-export). Authors do not — and cannot — enumerate impls in `export` lists.
+3. **Impl visibility is determined by the visibility of the trait + type pair.** An impl becomes invisible from a module only when at least one of the trait or the type is unreachable. Private declarations (`deftrait-`, `deftype-`) bound impl reach the same way they bound name reach.
+
+The full normative statement and worked example live in [§5.11.1](05-definitions.md#5111-impl-visibility--transitive-import-closure). The lookup mechanism (pre-computed index vs. on-demand walk) is implementation-defined.
 
 ## 7.12 Restrictions and Future Extensions [Tested]
 

@@ -340,7 +340,7 @@ For HKT traits, the target is a bare type constructor name (not an applied type)
 
 ### 5.4.5 Implementation Semantics [Tested tests/ring2::user_trait_simple, tests/ring2::error_plus_bool]
 
-- `impl` has no private variant. All trait implementations are visible wherever the trait and type are visible.
+- `impl` has no private variant. All trait implementations are visible wherever both the trait and type are visible — i.e., wherever both are reachable through the current module's transitive import closure. See [§5.11.1](#5111-impl-visibility--transitive-import-closure) for the full visibility rule and worked example, and [§7.11.1](07-traits.md#7111-impl-visibility--transitive-import-closure) for resolution-side consequences.
 - Method definitions within `impl` follow `defn` syntax but MUST NOT include docstrings (the docstring comes from the trait declaration).
 - The method parameter count and types MUST conform to the trait's declared signature.
 - Method bodies are type-checked against the instantiated trait signature.
@@ -529,8 +529,39 @@ All definitions are **public by default**. A `-` suffix on the definition keywor
 **Semantics:**
 
 - Private names are accessible only within the defining module and its submodule subtree. They MUST NOT be imported by other modules.
-- `impl` has no private variant. Trait implementations are always visible wherever both the trait and the type are in scope.
+- `impl` has no private variant. Trait implementations are always visible wherever both the trait and the type are in scope. The phrase "in scope" means **reachable through the transitive import closure of the current module** — see §5.11.1 for the precise rule and worked example, and cross-references to [§7.11](07-traits.md#711-scope-and-visibility) (trait-side) and [§8.4.6](08-modules.md#846-implicit-impl-re-export) (module-side).
 - `import`, `export`, and `platform` have no private variants.
+
+### 5.11.1 Impl Visibility — Transitive Import Closure [R4 S66]
+
+A trait implementation `(impl Trait Type ...)` declared in module L is visible in module N when **both** the trait `Trait` and the type `Type` are reachable from N through the transitive closure of N's `import` declarations. An implementation MUST NOT require N to directly import L for the impl to be visible; if L's impl is reachable through any chain of imports (or re-exports — see §8.4.6) that brings `Trait` and `Type` into N's scope, the impl is in scope at N.
+
+This matches the "instances are global within the import closure" semantics found in Haskell-family type-class systems: users do not enumerate impls in import or export lists; impls follow the trait and type wherever those names go.
+
+**Worked example.** Three modules:
+
+```clojure
+;; --- l.cl ---
+(deftype Color Red Green Blue)
+(deftrait Display (show [self] String))
+(impl Display Color
+  (defn show [c] (match c [Red "Red" Green "Green" Blue "Blue"])))
+
+;; --- m.cl ---
+(import [l [Color Display Red Green Blue]])
+(export [l [Color Display Red Green Blue]])
+
+;; --- n.cl ---
+(import [m [Color Display Red Green Blue]])
+;; n.cl does NOT import l directly.
+(defn describe [c] (show c))   ; OK -- (impl Display Color) from L is visible to N
+```
+
+N reaches `Display` and `Color` through M's re-export of L's names. The `(impl Display Color)` declared in L is therefore visible at N's call to `show`, and the call resolves to L's `Color` impl — even though N never wrote `(import [l ...])`. This applies symmetrically whether N reaches the trait/type via explicit re-export (`(export [l [...]])`), via a glob re-export (`(export [l [*]])`), or via direct import of L from a module that itself imports L.
+
+**Visibility is a property of the trait + type pair, not the impl form.** An impl becomes invisible from N only when at least one of `Trait` or `Type` is unreachable from N. In particular, a private name (`defn-`, `deftype-`, `deftrait-`, see §5.11) breaks the chain: an impl declared in L for a private trait or type cannot reach beyond L's submodule subtree, because the names themselves cannot.
+
+**Implementation note (non-normative).** The lookup mechanism — pre-computed per-module impl index, on-demand walk of `current_module.imports`, or another shape — is **implementation-defined**. The spec pins the visibility rule, not the algorithm.
 
 ## 5.12 Docstrings [Tested tests/ring2.rs::docstring_on_defn, tests/ring2.rs::docstring_on_deftype, tests/ring2.rs::docstring_on_deftrait]
 
