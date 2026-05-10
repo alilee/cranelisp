@@ -36,7 +36,7 @@ sequenceDiagram
                 Note right of SessST: Ref[SymbolTable] (m1) — SHARED<br/>(read lock — does not block PWb's get(&m2) shared lock,<br/>and does not block other readers of m1)
                 SessST -->> PWa: Some(Ref[SymbolTable]) ≡ [&SymbolTable]
 
-                Note over PWa, ST_m2: cranelisp_typecheck::check_form(parsed, table, symbol_tables) -> Result[Vec[entry], CheckError] — where parsed: ParsedEntry, table: &SymbolTable, symbol_tables: &SymbolTables, entry pair = Symbol plus ModuleEntry<br/>S66 FIXME 0160 — pure function, does NOT mutate, caller commits returned entries on Ok via insert_symbol
+                Note over PWa, ST_m2: cranelisp_typecheck::check_form_signatures(parsed, view, symbol_tables) -> Result[Vec[entry], CheckError] then check_form_body(parsed, view, symbol_tables) -> Result[Vec[entry], CheckError] — where parsed: ParsedEntry, view: &View[staging union live], symbol_tables: &SymbolTables, entry pair = Symbol plus ModuleEntry<br/>Decision 44 — both passes pure, neither mutates — orchestrator int::process_cluster writes Ok entries into transient staging SymbolTable, commits to live atomically via insert_cluster on whole-cluster success.
 
                 rect rgb(255, 240, 200)
                     Note over PWa, ST_m2: CROSS-MODULE READ — shared outer lock + inner DashMap lookup
@@ -46,10 +46,10 @@ sequenceDiagram
                     SessST -->> PWa: Some(Ref[SymbolTable])
                     PWa ->> ST_m2: SymbolTable::get(&Symbol("bar"))<br/>(inner DashMap shared lookup — may briefly contend on the per-entry lock if PWb is mid-insert on bar)
                     alt bar already typechecked (entry exists)
-                        ST_m2 -->> PWa: Some(Ref[ModuleEntry]) — read scheme, callees (proceed with check_form)
+                        ST_m2 -->> PWa: Some(Ref[ModuleEntry]) — read scheme, callees (proceed with current pass — signatures or body)
                     else bar not yet typechecked (entry missing)
                         ST_m2 -->> PWa: None
-                        Note over PWa, Sched: check_form returns Err(CheckError::Gap(ResolutionGap::SymbolTypechecked(m2/bar))).<br/>Per-symbol gap is mechanically valid here — PWb does NOT hold a whole-module lock,<br/>so retry on wake-up will not contend on the outer SymbolTable.<br/>process_form returns Gap up the loop, all SessST Refs drop, PWa parks.<br/>(Park / wake / retry not drawn as a separate sequence — see Notes below.)
+                        Note over PWa, Sched: current pass (check_form_signatures or check_form_body) returns Err(CheckError::Gap(ResolutionGap::SymbolTypechecked(m2/bar))).<br/>Per-symbol gap is mechanically valid here — PWb does NOT hold a whole-module lock,<br/>so retry on wake-up will not contend on the outer SymbolTable.<br/>process_cluster returns Gap up the loop — staging unaffected — all SessST Refs drop, PWa parks.<br/>(Park / wake / retry not drawn as a separate sequence — see Notes below.)
                         PWa ->> Sched: wait_for_typecheck_symbol(&m2/bar: FQSymbol)
                         Sched -->> PWa: Ok(()) — m2/bar typechecked, signalled by PWb's notify_symbol_typechecked.<br/>PWa restarts from top of form loop. Subsequent get(&m2).get(&bar) succeeds.
                     end

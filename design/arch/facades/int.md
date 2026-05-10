@@ -35,11 +35,16 @@ impl CompilerSession {
     pub fn register_module(&mut self, module: &ModuleFullPath) -> Result<(), CranelispError>;
     pub fn re_register_module(&mut self, module: &ModuleFullPath) -> Result<bool, CranelispError>;       // file watcher path
 
-    // Shared form-processing entry — used by both compilation worker and eval (per exec-flow-compilation + exec-flow-repl)
-    pub fn process_form(&mut self, form: Sexp, scope: &ModuleFullPath) -> Result<ProcessedForm, CranelispError>;
-    pub fn insert_symbol(&mut self, processed: &ProcessedForm, target: &ModuleFullPath);
+    // Shared cluster-processing entry — used by both compilation worker and eval (per exec-flow-compilation + exec-flow-repl).
+    // Per Decision 44 — a cluster is one form (non-`begin` REPL input), the contents of (begin form₁ ... formN) (explicit
+    // REPL cluster), or a file's non-structural forms (batch one-big-cluster). The orchestrator owns a transient staging
+    // SymbolTable across the cluster's two-pass typecheck and commits atomically on success.
+    pub fn process_cluster(&mut self, forms: Vec<Sexp>, scope: &ModuleFullPath) -> Result<ProcessedCluster, CranelispError>;
+    pub fn insert_cluster(&mut self, processed: &ProcessedCluster, target: &ModuleFullPath);
 
-    // REPL eval — composes process_form + insert_symbol (defns) or process_form + temp-closure JIT (expressions)
+    // REPL eval — composes process_cluster + insert_cluster (defns) or process_cluster + temp-closure JIT (expressions).
+    // Eval unwraps a top-level `(begin ...)` into its inner forms before constructing the cluster; non-`begin` inputs
+    // become single-form clusters.
     pub fn eval(&mut self, src: &str) -> Result<Option<EvalResult>, CranelispError>;
 
     // REPL slash-command dispatch
@@ -199,6 +204,23 @@ pub struct ProjectTarget {
 }
 ```
 
+### Cluster orchestration result (returned by `process_cluster`, consumed by `insert_cluster`)
+
+Per Decision 44 — the typed product of one cluster's two-pass check, ready for atomic commit. The wrapper carries the drained staging entries (and any cluster-level metadata the orchestrator needs to thread to the commit step). It is an opaque carrier between `process_cluster` and `insert_cluster`; callers do not mutate it.
+
+```rust
+#[non_exhaustive]
+pub struct ProcessedCluster {
+    /* opaque — drained staging entries (Vec<(Symbol, ModuleEntry<Code>)>) plus per-cluster metadata
+       (resolved import bindings, populated introspection records, etc.) */
+}
+
+impl ProcessedCluster {
+    pub fn is_empty(&self) -> bool;                                                // empty cluster — orchestrator may skip commit
+    pub fn into_iter(self) -> impl Iterator<Item = (Symbol, ModuleEntry<Code>)>;   // consumed by insert_cluster
+}
+```
+
 ### Eval results (returned by eval, displayed via format_eval_result)
 
 ```rust
@@ -322,10 +344,10 @@ pub struct Introspection {
 ```
 
 **Population points** (all conditional on `shared.introspection.is_some()`):
-- `process_form` after `parse`: write `source` + `sexp` for each defn form.
+- `process_cluster` after `parse`: write `source` + `sexp` for each defn form in the cluster.
 - `compile_to_module` per-symbol call (Decision 41): backend writes `clif_ir`, `disasm`, `code_size`, `compile_duration` directly into the introspection map via the `Option<&DashMap<FQSymbol, Introspection>>` parameter — no int-side post-processing. Per-symbol JIT cardinality means one `Introspection` write per `compile_to_module` call.
 
-**Consistency with Decision 31 carry-forward.** REPL redefinition replaces the `ModuleEntry::Def` for the same FQSymbol; the corresponding `Introspection` entry is overwritten in the same `process_form` pass (`introspection.insert(fq, fresh_intro)`). The two stores share keying by FQSymbol and are mutated at the same orchestration points; no drift.
+**Consistency with Decision 31 carry-forward.** REPL redefinition replaces the `ModuleEntry::Def` for the same FQSymbol; the corresponding `Introspection` entry is overwritten in the same `process_cluster` pass (`introspection.insert(fq, fresh_intro)`). The two stores share keying by FQSymbol and are mutated at the same orchestration points; no drift.
 
 ### `CompileScheduler` — work dispatch + per-symbol readiness coordination
 
@@ -640,62 +662,96 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 ---
 
-## `process_form` — the gap-orchestration retry loop
+## `process_cluster` — the cluster-atomic orchestration loop
 
-`int::process_form` is the sole orchestrator of the form-processing chain. It composes `frontend::expand`, `frontend::build_form` (returning `Vec<ParsedEntry>` per S66 FIXME 0156), and `cranelisp_typecheck::check_form` (a pure function returning `Vec<(Symbol, ModuleEntry)>` per S66 FIXME 0160); catches their `ResolutionGap` returns; dispatches to the scheduler; and retries until the form fully processes or a non-gap error fires.
+`int::process_cluster` is the sole orchestrator of the cluster-processing chain. It composes `frontend::expand`, `frontend::build_form` (returning `Vec<ParsedEntry>` per S66 FIXME 0156), and the two-pass typecheck surface (`check_form_signatures` + `check_form_body` per Decision 44); catches `ResolutionGap` returns from any of them; dispatches to the scheduler; and retries until the cluster fully processes or a non-gap error fires.
 
-Frontend and typecheck stay pure (no `Sess`, no `CompileScheduler` dependency — Principle 3). Workers park inside `wait_for_*` calls — that IS the worker's allowed parking site, never inside library code. `process_form` is THE crossing point where the gap value becomes a scheduler call.
+A **cluster** is the unit of typecheck atomicity (Decision 44):
+- A non-`(begin)` REPL input is a one-form cluster (per the spec twin FIXME 0165 — non-`begin`-grouped REPL inputs are processed as single-form clusters; cross-input forward references are NOT supported).
+- A `(begin form₁ … formN)` REPL input is the explicit multi-form cluster boundary — `eval` unwraps the top-level `begin` and passes the inner forms to `process_cluster`.
+- Batch (file) compilation passes a file's non-structural forms as one big cluster (per spec §5.13.1's MAY-reference-freely rule at file scope).
+
+Frontend and typecheck stay pure (no `Sess`, no `CompileScheduler` dependency — Principle 3). Workers park inside `wait_for_*` calls — that IS the worker's allowed parking site, never inside library code. `process_cluster` is THE crossing point where the gap value becomes a scheduler call AND where the staging table mediates Pass 1 / Pass 2 visibility.
 
 ```rust
-// process_form runs on workers — takes &SharedState (the worker's Arc clone).
-// Per Decisions 25, 33 + the per-symbol mutability model: scope_table is acquired
+// process_cluster runs on workers — takes &SharedState (the worker's Arc clone).
+// Per Decisions 25, 33 + the per-symbol mutability model: live_table is acquired
 // via shared .get() (a shared shard read lock on the outer DashMap), NOT via
 // .entry().or_default() (which would acquire a per-form whole-module write lock).
-// Per-symbol mutation inside check_form goes through the inner DashMap's per-key
-// write lock via SymbolTable::insert_or_update(&self, ...).
 //
 // Phase 0 (write_structural_decls + defn_order seed) ran in register_module
 // before this work item was dispatched — see "register_module Phase 0" below.
-pub fn process_form(shared: &SharedState, form: Sexp, scope: &ModuleFullPath) -> Result<ProcessedForm, CranelispError> {
-    let mut sexp = form;
-    loop {
-        let expanded = match cranelisp_frontend::expand(sexp.clone(), &shared.symbol_tables) {
-            Ok(s) => s,
-            Err(ExpansionError::Gap(gap)) => {
-                handle_gap(shared, gap)?;
-                continue;                                           // retry — gap resolved
-            }
-            Err(other) => return Err(other.into()),                 // genuine expansion failure
-        };
-
-        let parsed_entries = cranelisp_frontend::build_form(&expanded)?;  // build_form returns Vec<ParsedEntry>; no gaps — pure transform (S66 FIXME 0156)
-
-        // Shared shard read lock on m1's SymbolTable. Per Decision 25/33 + per-symbol
-        // mutability — check_form takes [&SymbolTable] (not [&mut]) and writes via
-        // SymbolTable::insert_or_update(&self, ...) which acquires the inner DashMap's
-        // per-entry write lock briefly. No whole-module lock contention with cross-module
-        // readers. Phase 0 (in register_module) guarantees the SymbolTable already exists.
-        let scope_table = shared.symbol_tables.get(scope)
-            .expect("Phase 0 must run in register_module before process_form");
-
-        // S66 FIXME 0160 — check_form is pure: drive once per ParsedEntry returned by build_form
-        // (multi-clause defmacro and deftype-with-constructors yield multiple ParsedEntry items).
-        // On Ok, accumulate the returned (Symbol, ModuleEntry) pairs for caller-side commit
-        // (insert_symbol). On Err(Gap), retry with the same ParsedEntry — nothing was written.
-        let mut all_entries: Vec<(Symbol, ModuleEntry<Code>)> = Vec::new();
-        for parsed in &parsed_entries {
-            let entries = match cranelisp_typecheck::check_form(parsed.clone(), &scope_table, &shared.symbol_tables) {
-                Ok(v) => v,
-                Err(CheckError::Gap(gap)) => {
-                    handle_gap(shared, gap)?;
-                    continue;                                       // retry — gap resolved
-                }
-                Err(other) => return Err(other.into()),             // genuine type error
+//
+// Per Decision 44 — staging is a transient, orchestrator-local SymbolTable that
+// holds Pass 1 signature shells and Pass 2 body-checked entries until cluster
+// commit. The View<'_, C, L> newtype wraps (staging, live) refs and routes
+// lookups staging-first then live; typecheck reads through View only.
+pub fn process_cluster(shared: &SharedState, forms: Vec<Sexp>, scope: &ModuleFullPath) -> Result<ProcessedCluster, CranelispError> {
+    // 1. Expand + build_form for every form in the cluster, with gap-retry.
+    let mut parsed_list: Vec<ParsedEntry> = Vec::new();
+    for form in &forms {
+        let mut sexp = form.clone();
+        loop {
+            let expanded = match cranelisp_frontend::expand(sexp.clone(), &shared.symbol_tables) {
+                Ok(s) => s,
+                Err(ExpansionError::Gap(gap)) => { handle_gap(shared, gap)?; continue; }
+                Err(other) => return Err(other.into()),
             };
-            all_entries.extend(entries);
+            let entries = cranelisp_frontend::build_form(&expanded)?;   // pure — no gaps
+            parsed_list.extend(entries);
+            break;
         }
+    }
 
-        return Ok(ProcessedForm::from(all_entries));
+    // 2. Construct staging + the View read surface. Typecheck never sees the
+    //    staging or live tables directly — only through View.
+    let mut staging: SymbolTable<Code, ()> = SymbolTable::new();
+    let live_table = shared.symbol_tables.get(scope)
+        .expect("Phase 0 must run in register_module before process_cluster");
+
+    // 3. Pass 1 — signatures across every ParsedEntry. Each Ok return goes
+    //    into staging; on Gap we retry; on TypeError we drop staging on the floor.
+    for parsed in &parsed_list {
+        loop {
+            let view = View::union(&staging, &live_table);
+            let entries = match cranelisp_typecheck::check_form_signatures(parsed.clone(), &view, &shared.symbol_tables) {
+                Ok(v) => v,
+                Err(CheckError::Gap(gap)) => { handle_gap(shared, gap)?; continue; }
+                Err(other) => return Err(other.into()),                 // staging dissolves with the function frame
+            };
+            for (k, e) in entries { staging.insert(k, e); }
+            break;
+        }
+    }
+
+    // 4. Pass 2 — bodies across every ParsedEntry, with all cluster signatures
+    //    visible via View. Pass 2 entries supersede Pass 1 shells in staging.
+    for parsed in &parsed_list {
+        loop {
+            let view = View::union(&staging, &live_table);
+            let entries = match cranelisp_typecheck::check_form_body(parsed.clone(), &view, &shared.symbol_tables) {
+                Ok(v) => v,
+                Err(CheckError::Gap(gap)) => { handle_gap(shared, gap)?; continue; }
+                Err(other) => return Err(other.into()),
+            };
+            for (k, e) in entries { staging.insert(k, e); }
+        }
+    }
+
+    // 5. Cluster-atomic commit — drain staging into the live SymbolTable in one
+    //    go. Per-entry inner-DashMap writes; no whole-module lock. If we got
+    //    here, every form in the cluster passed both passes.
+    Ok(ProcessedCluster::from_staging(staging))
+}
+
+// insert_cluster commits the ProcessedCluster's drained staging entries into
+// the live SymbolTable for `target`. Called by callers that want commit-side
+// control (REPL defns; compilation worker). Eval expressions skip insert_cluster
+// — the temp closure has no module commit.
+pub fn insert_cluster(shared: &SharedState, processed: ProcessedCluster, target: &ModuleFullPath) {
+    let live = shared.symbol_tables.get(target).expect("module registered");
+    for (k, e) in processed.into_iter() {
+        live.insert_or_update(k, e);                    // per-entry inner-DashMap write
     }
 }
 
@@ -740,16 +796,20 @@ fn ensure_registered(shared: &SharedState, module: &ModuleFullPath) -> Result<()
 }
 ```
 
-(`process_form` is shown as a free function for clarity — the actual Rust may keep it as a `CompilerSession` method that immediately delegates to a free function `worker::process_form(&self.shared, …)`. Workers invoke the free-function form directly with their `&SharedState` reference.)
+(`process_cluster` is shown as a free function for clarity — the actual Rust may keep it as a `CompilerSession` method that immediately delegates to a free function `worker::process_cluster(&self.shared, …)`. Workers invoke the free-function form directly with their `&SharedState` reference.)
 
-**Termination.** Each `handle_gap` call advances the dependency state monotonically (registers a module, satisfies a typecheck wait, satisfies an inmem wait). Subsequent retries see strictly more state than the previous attempt; the loop terminates when expand + check_form both succeed, when a non-gap error fires, or when the scheduler returns `SchedulerError::Cycle` (mutual import per Decision 30).
+**Atomicity guarantees**:
+- A failure at any point — `expand` Gap that the scheduler resolves to a cycle, `check_form_signatures` TypeError, `check_form_body` TypeError — drops the staging `SymbolTable` on the floor when the function frame returns. The live `SymbolTable` is byte-identical to its pre-cluster state. The live invariant ("if it's in the live table, it's checked AND committed") holds across cluster boundaries; only completed clusters are visible to other workers.
+- Within a cluster, Pass 1's signature shells become visible to Pass 2 through the `View::union` read surface — that is how mutual recursion / forward references resolve. Other workers seeing the live table mid-cluster cannot observe staging contents; staging is orchestrator-local.
+
+**Termination**. Each `handle_gap` call advances the dependency state monotonically (registers a module, satisfies a typecheck wait, satisfies an inmem wait). Subsequent retries see strictly more state than the previous attempt; the loop terminates when expand + both passes succeed, when a non-gap error fires, or when the scheduler returns `SchedulerError::Cycle` (mutual import per Decision 30).
 
 **Gap design rationale** (one round-trip per FQ ref encountered):
 - A single FQ ref produces one gap → one `handle_gap` → one retry. The loop doesn't fire N+1 round-trips per FQ.
 - `expand` returns `MacroInMem(fq)` uniformly for any FQ ref it can't yet resolve — regardless of whether the module is unregistered, typecheck is incomplete, or code is missing. Expand stays uniform; the gap-name reflects expansion's MAXIMUM possible need.
 - The orchestrator owns the **macro-vs-fn discrimination**. After `wait_for_typecheck_symbol` completes, it peeks at the entry: only forces a JIT (`priority_boost_jit` + `wait_for_inmem`) if the entry actually IS a macro with missing code. Functions are NOT speculatively JIT-pushed — the function will be JIT'd when its caller is processed. This avoids yanking a function ahead of pending priority work for code that expand never actually needs.
-- `check_form` asks for `SymbolTypechecked` only — by the time check_form runs, any macros are already expanded out, so only types/schemes are needed.
-- Multiple FQ refs in the same form still cost one round-trip each (expand or check_form returns at the first unresolved ref). Batching across multiple gaps in one return would require expand/check_form to continue past the first unresolved ref and accumulate; deferred until profiling shows it matters.
+- Both typecheck passes ask for `SymbolTypechecked` only — by the time either pass runs, any macros are already expanded out, so only types/schemes are needed.
+- Multiple FQ refs in the same form still cost one round-trip each (expand or a typecheck pass returns at the first unresolved ref). Batching across multiple gaps in one return would require continuing past the first unresolved ref and accumulating; deferred until profiling shows it matters.
 
 ## Composed introspection flows (slash commands)
 
@@ -856,7 +916,7 @@ The integration crate imports from:
 
 - **`cranelisp-types`** — the full set above.
 - **`cranelisp-frontend`** — `parse`, `expand`, `build_form` (returns `Vec<ParsedEntry>` per S66 FIXME 0156; replaces the prior `build_ast` shape at the per-form boundary), `build_expr`, `extract_module_declarations`, `synthesize_macro_clause_defn`, `next_synthetic_span`, `is_defmacro`, `is_begin`, `flatten_begin`, `expand_quasiquotes`, `parse_preserving_comments`, `ParseProduct`, `Ast`, `ExpansionError`. (Per FIXME 0156 resolution: `parse_defmacro` becomes `pub(crate)` inside `build_form`'s dispatcher; `DefmacroInfo` and `ParsedEntry` move to `cranelisp-types` — int imports both from there.)
-- **`cranelisp-typecheck`** — `check_form`, `register_builtins`, `CheckResult`, `CheckError`, `CheckState`, `TypeCheckEnv`, the trace install hook.
+- **`cranelisp-typecheck`** — `check_form_signatures`, `check_form_body` (per Decision 44 — the two-pass split replacing the single `check_form` call), `register_builtins`, `CheckResult`, `CheckError`, `CheckState`, `TypeCheckEnv`, the trace install hook.
 - **`cranelisp-backend`** — `compile_to_module` (returns `Result<(), CompilationError>` per Decision 41; writes `Code::Jit` and `Introspection` directly into the passed-in shared stores via `&self`-interior-mutable methods), `load_object`, `compile_to_object`, `Code` (re-exported per Decision 41), `LinkerArtefact`, `ObjectArtefact`, `Jit`, `Linker`, `CompilationError` (with `SymbolNotCompilable` variant per §2.7), `GotObserver` + `GotEvent` + `GotEventTag` + `GotProvenance` + `register_got_observer` (per FIXME 0099 — backend-originated observer types, int registers consumer state). Cranelift `Module`, `JITModule`, `ObjectModule`, `JITBuilder` (via cranelift crates re-exported from backend).
 - **`cranelisp-intrinsics`** — backend-emitted intrinsic extern functions registered with the JIT (via `JITBuilder::symbol`) per Decision 43: `cranelisp_alloc`, `heap_alloc_payload`, `heap_dealloc`, `rc_inc`, `rc_dec`, `consume_shallow`, `dec_shallow_io`, `vec_*`, `heap_alloc_string`, `string_read`, `sconcat`, `quote_sexp`, `cranelisp_run_io`, `io_run`, `run_io_trampoline`, `ivar_*`, `runtime_panic`. Stats accessors (`alloc_count`, `dealloc_count`, `bytes_allocated`, `bytes_current`, `bytes_peak`, `reset_counts`) for `/mem`. The IO observer extension point (`IoEvent`, `IoEventTag`, `IoObserver`, `register_io_observer`, `trace_anchor`) per Decision 40 — int registers an `IoObserver` at session init when REPL/trace mode is on or `CRANELISP_IO_TRACE=1`.
 - **`cranelisp-primitives`** — user-callable primitive extern functions registered with the JIT and seeded into the synthetic `primitives` module's symbol table by `int` at session init per Decision 43: integer ops (`add_i64`, `sub_i64`, `mul_i64`, `div_i64`, `mod_i64`, `eq_i64`, `lt_i64`, `gt_i64`, `le_i64`, `ge_i64`), float ops, `not`, conversions (`int_to_string`, `parse_int`, `float_to_string`, `bool_to_string`). Each primitive gets a GOT slot (so `(let [f +] (f 1 2))` resolves through the slot).
@@ -882,6 +942,7 @@ None implemented. `int` does not implement traits from `cranelisp-types`.
 
 All public DTOs published from `int` are `#[non_exhaustive]`:
 - `SessionSettings`, `ProjectTarget`
+- `ProcessedCluster` (per Decision 44)
 - `EvalResult`, `EvalValue`, `HeapRetention`
 - `CommandResult`, `SlashCommand`
 - `SymbolInfo`, `SymbolDescription`, `SymbolCategory`
@@ -909,9 +970,11 @@ These hold across sprints — the contract `int` makes with the rest of the work
 
 4. **Scheduler is sole coordination authority.** Per the runtime/platform diagrams' explicit merge — `CompileScheduler` owns BOTH work dispatch AND per-symbol/per-module wait/release. There is no separate `DependencyService`.
 
-5. **`process_form` + `insert_symbol` is the shared form-processing entry.** Per `exec-flow-compilation` and `exec-flow-repl` — workers and eval both call `process_form` for typechecking; defining-form callers follow up with `insert_symbol`. Eval expressions skip `insert_symbol` (temp closure — no commit target).
+5. **`process_cluster` + `insert_cluster` is the shared cluster-processing entry.** Per `exec-flow-compilation` and `exec-flow-repl` — workers and eval both call `process_cluster` for the two-pass typecheck against orchestrator-owned staging; defining-form callers follow up with `insert_cluster` to commit staging into the live `SymbolTable` atomically. Eval expressions skip `insert_cluster` (temp closure — no commit target). Per Decision 44, a cluster is one form (non-`begin` REPL input), the contents of `(begin ...)` (explicit REPL cluster), or a file's non-structural forms (batch).
 
-5a. **`process_form` is the gap-orchestration crossing point.** Frontend and typecheck stay pure — they surface dependencies as `Err(ExpansionError::Gap(ResolutionGap))` / `Err(CheckError::Gap(ResolutionGap))`. `int::process_form` is the sole crate-crossing where gap values become scheduler calls (`handle_gap` → register + wait + priority_boost). Workers park inside the scheduler's `wait_for_*` calls — never inside frontend or typecheck library code. See "`process_form` — the gap-orchestration retry loop" above.
+5a. **`process_cluster` is the gap-orchestration crossing point.** Frontend and typecheck stay pure — they surface dependencies as `Err(ExpansionError::Gap(ResolutionGap))` / `Err(CheckError::Gap(ResolutionGap))`. `int::process_cluster` is the sole crate-crossing where gap values become scheduler calls (`handle_gap` → register + wait + priority_boost). Workers park inside the scheduler's `wait_for_*` calls — never inside frontend or typecheck library code. See "`process_cluster` — the cluster-atomic orchestration loop" above.
+
+5b. **Cluster-atomic commit, staging is orchestrator-local (Decision 44).** Within `process_cluster` the orchestrator owns a transient `SymbolTable` ("staging") that holds Pass 1 signature shells and Pass 2 body-checked entries; typecheck reads from a `View<'_, C, L>` newtype that unions staging-first then live. On any `Err` from any pass, the orchestrator drops staging on the floor when the function frame returns; the live `SymbolTable` is byte-identical to its pre-cluster state. On full success, `insert_cluster` drains staging into the live table per-entry (under inner-DashMap locks). The live invariant ("if it's in the live table, it's checked AND committed") holds across cluster boundaries — staging contents are never observable to other workers.
 
 6. **Per-eval JIT lifetime (Decision 31).** Per pipeline-v4 §6.2 — each eval expression compiles its temp closure on a fresh `JITModule` wrapped in `Arc<Jit>`. The wrapper's custom `Drop` reclaims pages when the trampoline returns and the value is consumed.
 
@@ -921,7 +984,7 @@ These hold across sprints — the contract `int` makes with the rest of the work
 
 9. **Definitions append to `current_repl_module`, not `user`.** Per `exec-flow-repl` — `current_repl_module` is the session-scoped target for `eval`'s defining forms. Defaults to the entry module from `parse_args`. `/mod` changes it. `"user"` is a default name, not architecturally special.
 
-10. **Additive append, not re-register.** Per `exec-flow-repl` — `Sess::eval` for a defining form calls `Sched::append_form(current_repl_module, sexp)` and waits for that single symbol's typecheck + jit. The whole module is NOT re-typechecked.
+10. **Additive append, not re-register.** Per `exec-flow-repl` — `Sess::eval` for a defining-form input constructs a one-form cluster (or unwraps a `(begin ...)` into a multi-form cluster per Decision 44), runs `process_cluster` against `current_repl_module`'s live table + transient staging, commits via `insert_cluster` on success, and waits for that cluster's symbols' jit. The whole module is NOT re-typechecked.
 
 11. **Cache-hit decision lives at `notify_typecheck_done_from_cache` (Decision 37).** Cache-hit-typecheck path enqueues `LoadObject(m1)` only; cache-miss path uses per-symbol `Jit(fq)`. The decision is implicit in which `notify_typecheck_done_*` variant fires — no mid-flight cache rechecking.
 
@@ -933,6 +996,6 @@ These hold across sprints — the contract `int` makes with the rest of the work
 
 15. **`SharedState` vs `CompilerSession` split is mode-aligned (Decision 38).** `SharedState` carries everything reachable by workers — `symbol_tables`, `scheduler`, `cache`, `kept_dlls`, `introspection`, read-only configuration. `CompilerSession` carries everything reachable only by the initiator thread — watcher channel, REPL eval cursor, worker pool handles, accumulated warnings. Workers receive `Arc<SharedState>` at spawn, never see `CompilerSession`. No worker-side merge step: all mutation happens through interior mutability of the contained types under per-cell locks.
 
-16. **Per-symbol mutability after Phase 0 (Decision 38, FIXMEs 0008/0009).** `register_module` runs Phase 0 synchronously: `parse → entry(m).or_default() → write_structural_decls → drop RefMut`. After Phase 0, all SymbolTable access is `&SymbolTable` + per-entry inner-DashMap locks. `process_form` uses shared `.get(&scope)`, not `.entry().or_default()`. `check_form` takes `&SymbolTable`, not `&mut`. The only `&mut SymbolTable` operations are Phase 0 (structural decls + defn_order seed) and per-form REPL appends to `defn_order`.
+16. **Per-symbol mutability after Phase 0 (Decision 38, FIXMEs 0008/0009; Decision 44 amends).** `register_module` runs Phase 0 synchronously: `parse → entry(m).or_default() → write_structural_decls → drop RefMut`. After Phase 0, all live `SymbolTable` access is `&SymbolTable` + per-entry inner-DashMap locks. `process_cluster` uses shared `.get(&scope)` for the live table, not `.entry().or_default()`. The two-pass typecheck surface (`check_form_signatures` + `check_form_body`) takes a `&View<'_, C, L>` (which composes `&SymbolTable` refs internally), not `&mut`. Within `process_cluster`, the orchestrator owns a separate transient `SymbolTable` ("staging") that is `&mut` for orchestrator-side staging-writes between passes; staging is never published — it dissolves on cluster failure or drains into live atomically on success. The only `&mut SymbolTable` operations on the **live** table are Phase 0 (structural decls + defn_order seed) and per-cluster REPL appends to `defn_order` during `insert_cluster`.
 
 17. **Introspection is mode-conditional (Decisions 38, 39).** `shared.introspection` is `Some(DashMap)` iff REPL mode OR `CRANELISP_CODEGEN_TRACE` is set. Production batch leaves it `None` and pays zero per-symbol metadata overhead. Source text is per-defn on `Introspection.source` — there is no module-global source store. Parse errors capture context inline (in `ErrorLocation.context`); typecheck/codegen errors capture coordinates (`line_col` + `fq`) and let the formatter resolve source via introspection at display time.

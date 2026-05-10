@@ -811,28 +811,57 @@ post-`build_form` consumption path can name the type uniformly.
 `build_form` returning `Vec<ParsedEntry>` carrying
 `ParsedEntry::Macro { info: DefmacroInfo, .. }`.
 
-### `check_form` is pure (Sprint 66, FIXME 0160)
+### `check_form_signatures` + `check_form_body` are pure (Sprint 66, FIXME 0160 + Decision 44)
 
 The pre-S66 `check_form` mutated the symbol table in-place and was
-merged via a typecheck-internal `merge_form_result()` helper. Per FIXME
-0160 resolution, `check_form` is now a **pure function**:
+merged via a typecheck-internal `merge_form_result()` helper. FIXME
+0160 first purified it to a single-call pure function. Wave 3a
+implementation surfaced a structural conflict with spec §5.13.1's
+mandated two-pass typecheck (Pass 1 Registration; Pass 2 Checking) for
+forward references / mutual recursion at top level — a single per-form
+pure call cannot satisfy this because when checking `(defn f [] (g 1))`'s
+body, `g`'s signature must already be in scope, but a per-form caller has
+no opportunity to register `g`'s signature first. Per Decision 44 the
+single call splits into two pure passes:
 
 ```rust
-pub fn check_form<C, L>(
+pub fn check_form_signatures<C, L>(
     parsed: ParsedEntry,
-    table: &SymbolTable<C, L>,         // immutable — see Decision 38
+    table: &View<'_, C, L>,            // composite (staging ∪ live) read view — see facades/types.md §"View"
     symbol_tables: &SymbolTables<C, L>, // for cross-module reads
+) -> Result<Vec<(Symbol, ModuleEntry<C>)>, CheckError>;
+
+pub fn check_form_body<C, L>(
+    parsed: ParsedEntry,
+    table: &View<'_, C, L>,            // staging ∪ live; cluster signatures from Pass 1 visible
+    symbol_tables: &SymbolTables<C, L>,
 ) -> Result<Vec<(Symbol, ModuleEntry<C>)>, CheckError>;
 ```
 
-The function does NOT call `insert_or_update`, does NOT install import
-bindings, does NOT mutate the table. The caller (`int::insert_symbol`)
-inserts the returned entries on `Ok`; on `Err(Gap | TypeError)` nothing
-has been written, no rollback is needed. Per FIXME 0160 the post-Gap
-state contract is **structural Option B** — the orchestrator's
+Neither pass calls `insert_or_update`; neither installs import bindings;
+neither mutates the live `SymbolTable`. The caller
+(`int::process_cluster`) writes returned entries into a transient
+orchestrator-local staging `SymbolTable` on each pass's `Ok`, then
+commits the staging table atomically into the live `SymbolTable` via
+`int::insert_cluster` only on whole-cluster success. On `Err(Gap |
+TypeError)` from any pass, no live mutation has occurred — the
+orchestrator either retries the same pass (Gap) or drops staging on the
+floor (TypeError); the live table is byte-identical to its pre-cluster
+state. Per FIXME 0160 + Decision 44, the post-Gap state contract is
+**structural Option B applied per pass** — the orchestrator's
 snapshot-restore (`ReplSnapshot`) covers type-var-pool rollback inside
-`CheckState` between calls, but the symbol table is unaffected by a
-Gap or TypeError return because the function never wrote.
+`CheckState` between calls, but the live and staging tables are
+unaffected by either error return because neither pass wrote.
+
+**Cluster atomicity**. The orchestrator drives Pass 1 across every
+`ParsedEntry` in a cluster, then Pass 2 across every `ParsedEntry` in
+the cluster, then commits staging into live on success. A cluster is one
+form (non-`begin` REPL input), the contents of `(begin form₁ … formN)`
+(REPL explicit cluster), or a file's non-structural forms (batch). See
+`facades/int.md` §"`process_cluster` — the cluster-atomic orchestration
+loop" for the orchestrator side, `facades/types.md` §"`View<'a, C, L>`"
+for the read-surface newtype, and `decisions/0044-*.md` for the
+rationale + rejected alternatives.
 
 The pre-S66 `FormCheckResult` carrier and its `merge_form_result()`
 helper are retired by this purification. Annotations onto AST nodes
@@ -1805,8 +1834,9 @@ The filter is deliberately strict: any `ModuleEntry::Def` with `ast: None` is ex
 - `SymbolTable.schema_version: u32` (Sprint 58 Step 5b, Decision 34) — explicit cache schema version; mismatch invalidates the cache as if dependencies changed.
 - `Code` enum (Sprint 58 Phase 3a, Decision 35; Sprint 64 location move per Decision 41; **Sprint 66 variant slimming preserved through the same-day fn_ptr-unification rollback**) — concrete `C` for `SymbolTable<Code, ()>`. Variants `Code::Jit(Arc<Jit>)` + `Code::Linker(Arc<Linker>)` — lifecycle owner ONLY post-S66; the per-entry call address lives in `SymbolTable.got()` (the post-rollback single source of truth — see `crates/cranelisp-types/src/got.rs`), indexed by `ModuleEntry::Def.got_slot`. Lives in `cranelisp-backend/src/code.rs` (moved from `src/code.rs` per Decision 41), NOT in `cranelisp-types` (Principle 3). The CP1 Layer-2-Option-B return-tuple pattern retracts: `compile_to_module` writes `Code::Jit(Arc<Jit>)` directly via Decision 38's `write_code` and writes the resulting fn pointer to the entry's GOT slot via `symbol_table.got().store_slot(slot, ptr)`, returning `Result<(), CompilationError>`. Documented at this boundary so every consumer of `SymbolTable<Code, ()>` references the same shape.
 - `ModuleEntry::Def.got_slot: Option<usize>` — single source of truth for "where to call to invoke this entry" (Sprint 56 G7; reaffirmed Sprint 66 post-rollback per `1dc57ae`). Indexes into `SymbolTable.got()`; the runtime address is `got().load_slot(slot)`. The S66 unification briefly placed the address on a sibling `ModuleEntry::Def.fn_ptr` field (commit `b09ec76`); the same-day rollback `1dc57ae` removed that field as redundant with the GOT. No per-entry pointer field exists post-rollback. Origin encoded by `kind: DefKind` (UserFn → JIT/linker; Primitive { Inline | Extern } → primitive; Primitive { PlatformEffect } → platform DLL). See `facades/types.md` §"Symbol table — the single store" + Decision 41 S66 amendment + rollback.
-- `ParsedEntry` enum (Sprint 66, FIXME 0156) — parse-time-only transient produced by `cranelisp_frontend::build_form` and consumed by `cranelisp_typecheck::check_form`. NEVER lands in `SymbolTable`. `#[non_exhaustive]`; not `Serialize/Deserialize`. See `facades/types.md` §"`ParsedEntry`" + `facades/frontend.md` + `facades/typecheck.md`.
+- `ParsedEntry` enum (Sprint 66, FIXME 0156) — parse-time-only transient produced by `cranelisp_frontend::build_form` and consumed by both passes of `cranelisp_typecheck`'s two-pass surface (`check_form_signatures` + `check_form_body`, per Decision 44). NEVER lands in `SymbolTable`. Persists across both passes for one cluster's processing (orchestrator-held). `#[non_exhaustive]`; not `Serialize/Deserialize`. See `facades/types.md` §"`ParsedEntry`" + `facades/frontend.md` + `facades/typecheck.md`.
 - `DefmacroInfo` struct (Sprint 66, FIXME 0156) — moved from `cranelisp-frontend/src/defmacro.rs` to `cranelisp-types` so `int`'s post-`build_form` consumption path can name the type uniformly. Frontend's `parse_defmacro` becomes `pub(crate)` inside the `build_form` dispatcher.
+- `View<'a, C, L>` newtype (Sprint 66, Decision 44) — composite read surface `(staging, live)` that wraps two `&SymbolTable` refs and routes lookups staging-first then live. Constructed by `int::process_cluster` and passed to both typecheck passes; typecheck reads through `View` only. No allocation per lookup; lifetime-bounded; read-only. See `facades/types.md` §"`View<'a, C, L>`".
 
 ### Types NOT added
 - ~~`CheckMode`~~ — eliminated during design review. The multi-pass pipeline works identically on any input size. See `pipeline-v2.md` §5.
@@ -1822,7 +1852,7 @@ The filter is deliberately strict: any `ModuleEntry::Def` with `ast: None` is ex
 - `TypeChecker::check(&mut self, ctx: &CompileContext, program: &[TopLevel])` — single typecheck entry point, now takes explicit context; `CheckResult` is no longer a backend input.
 - `compile_to_module<M: Module>(module_path, names, symbol_tables, module)` — four-parameter normative signature (Sprint 56 Phase 2). No `CheckResult`, no `Program`, no intrinsic IDs, no GOT map, no arities parameter. **Per Decision 41 (Sprint 64) + S66 amendment + rollback**: returns `Result<(), CompilationError>`; backend writes `Code::Jit(Arc<Jit>)` via `SymbolTable::write_code` and the resulting fn pointer to the entry's GOT slot via `symbol_table.got().store_slot(entry.got_slot.unwrap(), ptr)` directly (the GOT is the post-rollback single source of truth for callable addresses; the briefly-considered sibling `fn_ptr` field landed in `b09ec76` and was rolled back the same day in `1dc57ae`). See `facades/backend.md` §"Free functions" and `design/backend/compile-to-module.md`.
 - `cranelisp_frontend::build_form(sexp: &Sexp) -> Result<Vec<ParsedEntry>, CranelispError>` (Sprint 66, FIXME 0156) — replaces the prior `build_ast` shape at the frontend's per-form boundary. Returns a `Vec` because some shapes yield more than one entry per source form (multi-clause `defmacro`, `deftype` with constructors). See `facades/frontend.md`.
-- `cranelisp_typecheck::check_form` is now a **pure function** (Sprint 66, FIXME 0160): `(parsed: ParsedEntry, table: &SymbolTable<C, L>, symbol_tables: &SymbolTables<C, L>) -> Result<Vec<(Symbol, ModuleEntry<C>)>, CheckError>`. Pre-S66 it mutated the table in-place via a typecheck-internal `merge_form_result()`; post-S66 the function does NOT mutate, the caller (`int::insert_symbol`) commits returned entries on `Ok`, and on `Err(Gap | TypeError)` nothing has been written. See `facades/typecheck.md` and §"`check_form` is pure" above.
+- `cranelisp_typecheck::check_form` splits into **two pure functions** (Sprint 66, FIXME 0160 + Decision 44): `check_form_signatures` and `check_form_body`, each `(parsed: ParsedEntry, table: &View<'_, C, L>, symbol_tables: &SymbolTables<C, L>) -> Result<Vec<(Symbol, ModuleEntry<C>)>, CheckError>`. Pre-S66 the legacy `check_form` mutated the table in-place via a typecheck-internal `merge_form_result()`; FIXME 0160 first purified it to a single-call pure function; Decision 44 then split that single call into a Pass 1 (signatures) + Pass 2 (bodies) shape so spec §5.13.1's two-pass mandate (forward references / mutual recursion) survives the orchestrator-side cluster. Both passes are pure; neither mutates any `SymbolTable`. The caller (`int::process_cluster`) writes returned entries into a transient orchestrator-local staging table on each pass's `Ok` and commits staging into the live table atomically via `int::insert_cluster` only on whole-cluster success; on `Err(Gap | TypeError)` from any pass, nothing has been written. See `facades/typecheck.md`, `facades/int.md` §"`process_cluster` — the cluster-atomic orchestration loop", and §"`check_form_signatures` + `check_form_body` are pure" above.
 
 ### Functions added
 - `CallGraph::add_edge()`, `reverse_index()`, `sccs()`, `non_tail_self_recursion()`

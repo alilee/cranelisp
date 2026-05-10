@@ -48,7 +48,7 @@ sequenceDiagram
     Note over Sched: Scheduler invariants —<br/>at most ONE worker per module during typecheck (ORDERING per Decision 30 — no longer required for lock safety).<br/>Per-symbol mutability via inner DashMap per-key locks (Decisions 25, 33, 38).<br/>Wait/release is per-symbol or per-module readiness.
 
     rect rgb(220, 235, 255)
-        Note over Sched: TYPECHECK PHASE — workers operate on [&SymbolTable] via Sess.shared.symbol_tables.get(m1)<br/>opt cache hit (sidecar) skips the form-by-form loop entirely<br/>check_form is pure per S66 FIXME 0160 — signature ParsedEntry plus &SymbolTable plus &SymbolTables -> Result[Vec[entry], CheckError] where entry = Symbol+ModuleEntry pair<br/>The orchestrator at int::insert_symbol commits returned entries on Ok via SymbolTable::insert_or_update under inner DashMap per-entry locks<br/>On Err nothing has been written — structural Option B — no rollback at the table level
+        Note over Sched: TYPECHECK PHASE — workers operate on [&SymbolTable] via Sess.shared.symbol_tables.get(m1)<br/>opt cache hit (sidecar) skips the cluster loop entirely<br/>per Decision 44 the typecheck surface splits into two pure passes — check_form_signatures + check_form_body — and the orchestrator (int::process_cluster) drives them across one cluster (one form for non-begin REPL, contents of (begin ...) for explicit clusters, or the file's non-structural forms for batch one-big-cluster)<br/>each pass takes ParsedEntry plus &View[staging-union-live] plus &SymbolTables -> Result[Vec[entry], CheckError] where entry = Symbol+ModuleEntry pair<br/>orchestrator owns a transient staging SymbolTable for the cluster, commits via int::insert_cluster atomically into the live SymbolTable on success<br/>On any Err, staging dissolves with the function frame — live table byte-identical to pre-cluster state — structural Option B applied per pass
 
         create participant PW as Priority Worker<br/>::worker::priority_worker_loop(Arc[SharedState])
         Sched -->> PW: Some(PriorityWork::Typecheck(m1: ModuleFullPath))<br/>(returned from take_priority_work_blocking() the worker was parked in)
@@ -65,8 +65,8 @@ sequenceDiagram
             Cache -->> PW: CacheLookupResult::Miss
             Note over PW, ST_m1: Phase 0 already ran in register_module — structural decls + defn_order are present.<br/>Worker proceeds directly to the form loop with [&SymbolTable] via Sess.shared.symbol_tables.get(m1).
 
-            loop each form: Sexp in m1 (source order, from saved cursor on resume)
-                Note over PW, Sched: process_form(shared: &SharedState, form: Sexp, scope: &m1) — the orchestrator.<br/>Frontend and typecheck stay pure (no Sess / scheduler dependency, Principle 3) — they SURFACE dependencies as<br/>Err(ExpansionError::Gap(ResolutionGap)) / Err(CheckError::Gap(ResolutionGap)).<br/>process_form catches each gap, dispatches via handle_gap → ensure_registered + wait + (priority_boost + wait_for_inmem) — and RETRIES the call.<br/>Workers park inside scheduler wait_* — never inside library code. See facades/int.md "process_form — the gap-orchestration retry loop".
+            loop one cluster (file's non-structural forms in source order, from saved cursor on resume)
+                Note over PW, Sched: process_cluster(shared: &SharedState, forms: Vec[Sexp], scope: &m1) — the orchestrator (Decision 44).<br/>Frontend and typecheck stay pure (no Sess / scheduler dependency, Principle 3) — they SURFACE dependencies as<br/>Err(ExpansionError::Gap(ResolutionGap)) / Err(CheckError::Gap(ResolutionGap)).<br/>process_cluster catches each gap, dispatches via handle_gap → ensure_registered + wait + (priority_boost + wait_for_inmem) — and RETRIES the call.<br/>Workers park inside scheduler wait_* — never inside library code. See facades/int.md "process_cluster — the cluster-atomic orchestration loop".<br/>Inner loops below: (1) per-form expand+build_form (2) Pass 1 check_form_signatures across cluster (3) Pass 2 check_form_body across cluster (4) cluster-atomic commit via insert_cluster.
 
                 PW ->> Shared: Sess.shared.symbol_tables.get(&m1)<br/>(shared shard read lock — concurrent with other workers' shared reads)
                 Shared -->> PW: Some(Ref[SymbolTable]) ≡ [&SymbolTable]
@@ -117,33 +117,39 @@ sequenceDiagram
                     PW ->> ST_m1: SymbolTable::install_import_bindings(from: &ModuleFullPath, names: ImportNames)<br/>([&self] — writes Import-variant entries via inner DashMap per-key locks)
                 else FQ form (the catch-all — defns, defmacros, deftypes, deftraits, impls, top-level exprs)
                     create participant Typecheck as Typecheck facade<br/>cranelisp_typecheck
-                    Note over PW, Typecheck: drive check_form once per ParsedEntry returned by build_form (multi-clause defmacro and deftype-with-constructors yield multiple ParsedEntry items)
-                    PW ->> Typecheck: cranelisp_typecheck::check_form(parsed: ParsedEntry, table: &SymbolTable [generic C=Code, L=()], symbol_tables: &SymbolTables) -> Result[Vec[entry], CheckError]<br/>where entry pair = Symbol plus ModuleEntry[Code]<br/>S66 FIXME 0160 — pure function — table is &SymbolTable not &mut — check_form does NOT mutate
+                    Note over PW, Typecheck: drive both passes once per ParsedEntry returned by build_form (multi-clause defmacro and deftype-with-constructors yield multiple ParsedEntry items).<br/>Per Decision 44 — Pass 1 check_form_signatures runs across the whole cluster first, then Pass 2 check_form_body runs across the whole cluster. The orchestrator constructs View::union(&staging, &live_table) per call. Each pass's Ok entries write to staging — cluster-atomic commit at the end.
 
-                    opt check_form returns gap (FQ value/fn ref m2/foo needs typecheck — code not needed since macros are already expanded)
+                    Note over PW, Typecheck: Pass 1 — signatures (Algorithm W fresh return-type vars, bodies un-checked). After all forms in cluster pass, Pass 2 begins.
+                    PW ->> Typecheck: cranelisp_typecheck::check_form_signatures(parsed: ParsedEntry, table: &View[Code, ()], symbol_tables: &SymbolTables) -> Result[Vec[entry], CheckError]<br/>where entry pair = Symbol plus ModuleEntry[Code]<br/>Decision 44 — pure function — table is &View not &mut — check_form_signatures does NOT mutate
+
+                    opt either pass returns gap (FQ value/fn ref m2/foo needs typecheck — code not needed since macros are already expanded)
                         Typecheck -->> PW: Err(CheckError::Gap(ResolutionGap::SymbolTypechecked(m2/foo)))
-                        Note over PW, Sched: process_form's handle_gap dispatch on SymbolTypechecked. Per FIXME 0160 structural Option B: nothing was written to the table on Err, no rollback needed.
+                        Note over PW, Sched: process_cluster's handle_gap dispatch on SymbolTypechecked. Per FIXME 0160 + Decision 44 structural Option B: nothing was written to the live or staging table on Err, no rollback needed.
                         PW ->> Shared: ensure_registered(shared, &m2/foo.module)
                         Shared -->> PW: Ok(())
                         PW ->> Sched: CompileScheduler::wait_for_typecheck_symbol(fq: &FQSymbol) -> Result[(), SchedulerError]
                         Note over PW, Sched: PW releases m1 and parks at saved form cursor.<br/>(typecheck waits do NOT priority-boost — m2 typecheck progresses naturally)
                         Sched -->> PW: Ok(())
-                        PW ->> Typecheck: cranelisp_typecheck::check_form(parsed, ...) — retry with same ParsedEntry
+                        PW ->> Typecheck: cranelisp_typecheck::check_form_signatures or check_form_body(parsed, ...) — retry the same pass with same ParsedEntry
                     end
 
-                    opt check_form returns gap (FQ type ref m2/SomeType needs typecheck)
+                    opt either pass returns gap (FQ type ref m2/SomeType needs typecheck)
                         Typecheck -->> PW: Err(CheckError::Gap(ResolutionGap::Type(m2/SomeType)))
-                        Note over PW, Sched: process_form's handle_gap dispatch on Type:
+                        Note over PW, Sched: process_cluster's handle_gap dispatch on Type:
                         PW ->> Shared: ensure_registered(shared, &m2/SomeType.module)
                         Shared -->> PW: Ok(())
                         PW ->> Sched: CompileScheduler::wait_for_typecheck_type(fqt: &FQTypeName) -> Result[(), SchedulerError]
                         Sched -->> PW: Ok(())
-                        PW ->> Typecheck: cranelisp_typecheck::check_form(parsed, ...) — retry with same ParsedEntry
+                        PW ->> Typecheck: cranelisp_typecheck::check_form_signatures or check_form_body(parsed, ...) — retry the same pass with same ParsedEntry
                     end
 
-                    Typecheck -->> PW: Ok(Vec[(Symbol, ModuleEntry[Code])]) — typecheck-resolved entries to commit
-                    Note over PW, ST_m1: int::insert_symbol commits returned entries on Ok — order matters for ADT (type then constructors) and multi-clause defmacro (one per clause)
-                    loop for each (sym, entry) in returned vec
+                    Typecheck -->> PW: Ok(Vec[(Symbol, ModuleEntry[Code])]) — Pass 1 sig shells written into staging
+                    Note over PW: After Pass 1 has completed across every ParsedEntry in the cluster, Pass 2 begins.
+                    PW ->> Typecheck: cranelisp_typecheck::check_form_body(parsed: ParsedEntry, table: &View[Code, ()], symbol_tables: &SymbolTables) -> Result[Vec[entry], CheckError]<br/>Decision 44 — pure function — body checked against unified (staging plus live) view — cluster signatures from Pass 1 visible
+                    Typecheck -->> PW: Ok(Vec[(Symbol, ModuleEntry[Code])]) — body-checked entries supersede Pass 1 shells in staging
+
+                    Note over PW, ST_m1: After Pass 2 completes for every ParsedEntry in the cluster, int::insert_cluster commits staging into the live SymbolTable atomically (per-entry inner DashMap writes — no whole-module lock).<br/>Order matters for ADT (type then constructors) and multi-clause defmacro (one per clause) — preserved by build_form's emission order, threaded through staging.
+                    loop for each (sym, entry) in drained staging
                         PW ->> ST_m1: SymbolTable::insert_or_update(sym: Symbol, entry: ModuleEntry[Code])<br/>([&self] — inner DashMap per-entry write lock briefly. Decision 31 carry-forward of existing code field.)
                     end
                 end

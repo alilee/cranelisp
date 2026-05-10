@@ -8,34 +8,42 @@ This spec is **target-stating**. Drift detection between as-designed and as-buil
 
 ## Public surface (as-designed)
 
-### Free function — the per-form check
+### Free functions — the two-pass per-form check
 
-The single typecheck entry point used by `int`'s shared `process_form` (see `facades/int.md`). Compilation worker invokes once per form; REPL eval invokes once per parsed input form.
+The typecheck entry surface used by `int`'s shared `process_cluster` (see `facades/int.md`). Per Decision 44, the per-form check splits into two pure passes that the orchestrator drives across every form in a cluster: Pass 1 across all forms, then Pass 2 across all forms. Both passes are pure (FIXME 0160 structural Option B holds for both); orchestrator-owned staging is invisible to typecheck — it sees only a `View<'a, C, L>` read surface.
 
 ```rust
-pub fn check_form<C, L>(
+pub fn check_form_signatures<C, L>(
     parsed: ParsedEntry,
-    table: &SymbolTable<C, L>,
+    table: &View<'_, C, L>,                       // staging ∪ live composite read view (orchestrator-constructed)
+    symbol_tables: &SymbolTables<C, L>,
+) -> Result<Vec<(Symbol, ModuleEntry<C>)>, CheckError>;
+
+pub fn check_form_body<C, L>(
+    parsed: ParsedEntry,
+    table: &View<'_, C, L>,                       // staging ∪ live; cluster signatures from Pass 1 are visible
     symbol_tables: &SymbolTables<C, L>,
 ) -> Result<Vec<(Symbol, ModuleEntry<C>)>, CheckError>;
 ```
 
 Parameters:
-- `parsed` — the parse-time-only `ParsedEntry` produced by `cranelisp_frontend::build_form` (per FIXME 0156 resolution). One `build_form` call may produce multiple `ParsedEntry` items (e.g., a multi-clause `defmacro` yields one per clause); `int`'s orchestrator drives `check_form` once per `ParsedEntry`.
-- `table` — the typecheck target's own symbol table. Per Decision 38 + FIXME 0008, `check_form` takes `&SymbolTable` (not `&mut`). The integration layer no longer holds a whole-module RefMut across the call. **`check_form` itself does NOT mutate the table.** Per FIXME 0160 resolution — it is a **pure function** from `(ParsedEntry, &SymbolTable, &SymbolTables) → Result<Vec<(Symbol, ModuleEntry)>, CheckError>`. The caller (`int::insert_symbol`) inserts on `Ok`; on `Err(Gap)` nothing has been written.
+- `parsed` — the parse-time-only `ParsedEntry` produced by `cranelisp_frontend::build_form` (per FIXME 0156 resolution). One `build_form` call may produce multiple `ParsedEntry` items (e.g., a multi-clause `defmacro` yields one per clause); the orchestrator drives both passes once per `ParsedEntry`. The same `ParsedEntry` instance is passed to Pass 2 that was passed to Pass 1 — `ParsedEntry` persists across both passes within one cluster's processing (see `facades/types.md` §"`ParsedEntry`").
+- `table` — the read surface, a `View<'_, C, L>` newtype constructed by the orchestrator (`int::process_cluster`) wrapping `(staging, live)` symbol tables. Lookups route staging-first then live; both passes call `table.lookup(name)` and get an answer regardless of where the entry resides. Typecheck does not know whether it is reading staging, live, or unioned content. `View` lives in `cranelisp-types` per the `View<'_, C, L>` boundary-type entry in `facades/types.md`.
 - `symbol_tables` — read-only access to all other modules' tables for resolving FQ symbol references (`m2/foo`) and FQ type references (`m2/SomeType`). Generic over `<C, L>` per Decision 32 — typecheck is C/L-blind in production (caller passes `SymbolTables<Code, ()>`), and tests / fine-grained drivers pass `SymbolTables<(), ()>`.
 
-Returns:
-- `Ok(Vec<(Symbol, ModuleEntry<C>)>)` on success — the entries to insert, in the order the orchestrator should commit them. Most `ParsedEntry` shapes yield one entry; ADT `ParsedEntry::TypeDef` may yield multiple (the type itself plus per-constructor entries); `ParsedEntry::Macro` yields one entry per clause.
-- `Err(CheckError::Gap(ResolutionGap::SymbolTypechecked(fq)))` when an FQ value reference cannot be resolved (its module is not yet typechecked). The orchestrator (`int::process_form`) catches this, registers `fq.module` if needed, calls `wait_for_typecheck_symbol(fq)`, and retries `check_form` with the same `ParsedEntry`. Per the gap-return pattern in `facades/int.md`.
+Returns (both passes):
+- `Ok(Vec<(Symbol, ModuleEntry<C>)>)` on success — the entries the orchestrator should write into the staging table for this pass. Pass 1 returns signature-only `ModuleEntry` shells (Algorithm W fresh return-type variables; bodies un-checked); Pass 2 returns body-checked entries that supersede Pass 1's shells (and may include additional entries — multi-sig variants, mono specializations, ADT per-constructor entries, multi-clause macro entries). Each pass overwrites Pass-1 shells with their Pass-2 counterparts in the staging table.
+- `Err(CheckError::Gap(ResolutionGap::SymbolTypechecked(fq)))` when an FQ value reference cannot be resolved (its module is not yet typechecked). The orchestrator catches, registers `fq.module` if needed, calls `wait_for_typecheck_symbol(fq)`, and retries the same pass with the same `ParsedEntry`. Per the gap-return pattern in `facades/int.md`.
 - `Err(CheckError::Gap(ResolutionGap::Type(fqt)))` — same pattern for FQ type references. The orchestrator registers `fqt.module` if needed and calls `wait_for_typecheck_type(fqt)`.
-- `Err(CheckError::TypeError { message, location })` — genuine type errors (non-recoverable; eval rolls back any orchestrator-side preparatory state via `ReplSnapshot` — see invariant 7 below). `location: ErrorLocation` per Decision 39.
+- `Err(CheckError::TypeError { message, location })` — genuine type errors (non-recoverable). The orchestrator drops the staging table on the floor; the live table is byte-identical to its pre-cluster state. `location: ErrorLocation` per Decision 39.
 
-**Post-Gap state contract (per FIXME 0160 resolution): structural Option B.** `check_form` is pure; on `Err` nothing has been written to the symbol table. The orchestrator (`int`) inserts only on `Ok`. Snapshot-restore is structural, not behavioural — there is nothing to roll back at the table level because the function never wrote. `ReplSnapshot` remains the typecheck snapshot/restore primitive for type-var-pool rollback that may live inside `CheckState` between calls (multi-form REPL eval), but the `&SymbolTable` is unaffected by a Gap or TypeError return.
+**Post-Gap state contract (per FIXME 0160 + Decision 44): structural Option B, applied per pass.** Both passes are pure; on `Err` nothing has been written — neither to the live table (the orchestrator commits only at cluster end) nor to staging (the orchestrator commits each pass's `Ok` returns to staging only on `Ok`). On a Gap return, the orchestrator dispatches and retries the same pass with the same `ParsedEntry`; on a TypeError, the orchestrator drops staging and propagates the error. `ReplSnapshot` remains the type-var-pool rollback primitive within `CheckState` between calls (multi-form cluster processing); the `View` and the underlying tables are unaffected by either error return because neither pass wrote.
 
-`check_form` asks for `ResolutionGap::SymbolTypechecked` (not `SymbolInMemory`) for value references because typecheck only needs the entry's `Scheme`, not its compiled code. Macro expansion's need for code happens earlier, in `frontend::expand` — by the time `check_form` runs, any macros have already been expanded out.
+Both passes ask for `ResolutionGap::SymbolTypechecked` (not `SymbolInMemory`) for value references because typecheck only needs the entry's `Scheme`, not its compiled code. Macro expansion's need for code happens earlier, in `frontend::expand` — by the time either pass runs, any macros have already been expanded out.
 
-### Per-form-pass scaffolding (called from within `check_form`'s body — exposed for finer-grained callers)
+**Cluster atomicity**. The orchestrator drives Pass 1 across every `ParsedEntry` in the cluster, then Pass 2 across every `ParsedEntry` in the cluster, then commits the staging table atomically into the live `SymbolTable` on success. A cluster is one form (REPL non-`begin` input), the contents of `(begin form₁ … formN)` (REPL explicit cluster), or a file's non-structural forms (batch). See `facades/int.md` §"`process_cluster` — the cluster-atomic orchestration loop" for the orchestrator side.
+
+### Per-form-pass scaffolding (called from within both pass functions — exposed for finer-grained callers)
 
 ```rust
 pub struct CheckState { /* per-call state — type-var pool, substitution, deferred resolutions */ }
@@ -56,7 +64,7 @@ pub struct FormCheckResult { /* per-form internal product — accumulated by Mod
 pub struct ModuleCheckAccumulator { /* whole-module accumulator — used by tests; not the per-form path */ }
 ```
 
-These exist for tests and for crates that want to drive typecheck at finer granularity than `check_form`. `int` uses `check_form` exclusively in production. `TypeCheckEnv` carries a shared `&SymbolTable` per Decision 38 — concurrent forms may share access; per-symbol writes go through the inner DashMap's per-key locks.
+These exist for tests and for crates that want to drive typecheck at finer granularity than the two-pass surface. `int` uses `check_form_signatures` + `check_form_body` exclusively in production. `TypeCheckEnv` carries a shared `&View<'_, C, L>` per Decision 38 + Decision 44 — concurrent forms may share access via the View's underlying `&SymbolTable` refs; per-symbol writes (in tests that opt to mutate directly) go through the inner DashMap's per-key locks.
 
 ### Builtin registration (called once per `SymbolTable::new`)
 
@@ -100,10 +108,11 @@ pub struct ReplSnapshot { /* … */ }                   // typecheck snapshot/re
 // In cranelisp-types (multi-consumer):
 pub enum ResolutionGap {
     /// Symbol's typecheck not yet complete — orchestrator waits for `notify_symbol_typechecked(fq)`.
-    /// Produced by `cranelisp_typecheck::check_form` for FQ value references whose target module
-    /// has not finished typechecking. (Macros are already expanded by the time `check_form` runs,
-    /// so this variant is never produced from typecheck for macro lookups; `MacroInMem` is the
-    /// macro-side variant produced by frontend's `expand`.)
+    /// Produced by either pass of `cranelisp_typecheck`'s two-pass surface
+    /// (`check_form_signatures` + `check_form_body`, per Decision 44) for FQ value references
+    /// whose target module has not finished typechecking. (Macros are already expanded by the
+    /// time either pass runs, so this variant is never produced from typecheck for macro lookups;
+    /// `MacroInMem` is the macro-side variant produced by frontend's `expand`.)
     SymbolTypechecked(FQSymbol),
     /// Macro target needs in-mem JIT — orchestrator does `ensure_registered` +
     /// `wait_for_typecheck_symbol`, peeks at the entry, and if it's a Macro with `code` missing
@@ -111,8 +120,9 @@ pub enum ResolutionGap {
     /// regardless of macro-vs-fn. Produced exclusively by `cranelisp_frontend::expand`.
     MacroInMem(FQSymbol),
     /// Type reference needs typecheck — orchestrator waits for `notify_type_resolved(fqt)`.
-    /// Produced by `cranelisp_typecheck::check_form` for FQ type references in `TypeExpr::Named` /
-    /// `TypeExpr::Applied` whose target module has not finished typechecking.
+    /// Produced by either pass of `cranelisp_typecheck`'s two-pass surface for FQ type
+    /// references in `TypeExpr::Named` / `TypeExpr::Applied` whose target module has not
+    /// finished typechecking.
     Type(FQTypeName),
 }
 ```
@@ -150,11 +160,11 @@ None implemented. Typecheck does not implement traits from `cranelisp-types`.
 These hold across sprints — the contract `cranelisp-typecheck` makes with the rest of the workspace:
 
 1. **No code generation.** Typecheck never invokes Cranelift, never produces JIT or object output. Its product is annotated AST + symbol-table entries.
-2. **No commits to `SymbolTable` from `check_form`.** Per FIXME 0160 resolution — `check_form` is a pure function: `(ParsedEntry, &SymbolTable, &SymbolTables) → Result<Vec<(Symbol, ModuleEntry)>, CheckError>`. It does NOT call `insert_or_update`, does NOT install import bindings, does NOT mutate the table. The caller (`int::insert_symbol`) commits the returned entries on `Ok`. On `Err(Gap | TypeError)`, the table is byte-identical to its pre-call state — no rollback needed because no mutation occurred. This is what makes the temp-closure path in REPL eval work — `process_form` for an expression returns the typed AST without persisting it (per `facades/int.md` and `exec-flow-repl`). Resolved import bindings are installed by `int` (post-`check_form` Ok arm) via `SymbolTable::install_import_bindings(&self, …)`; this is `int`'s call, not typecheck's.
+2. **No commits to `SymbolTable` from `check_form_signatures` / `check_form_body`.** Per FIXME 0160 resolution + Decision 44 — both passes are pure functions: `(ParsedEntry, &View<'_, C, L>, &SymbolTables) → Result<Vec<(Symbol, ModuleEntry)>, CheckError>`. Neither calls `insert_or_update`, neither installs import bindings, neither mutates any `SymbolTable` (live or staging). The caller (`int::process_cluster`) writes returned entries into staging on each pass's `Ok` and commits the staging table atomically into the live `SymbolTable` only on whole-cluster success. On `Err(Gap | TypeError)` from any pass, no mutation has occurred — the orchestrator either retries the same pass (Gap) or drops staging on the floor (TypeError); the live table is byte-identical to its pre-cluster state. This is what makes the temp-closure path in REPL eval work — for expression evals the orchestrator runs the cluster (one form) without committing to a module (per `facades/int.md` and `exec-flow-repl`). Resolved import bindings are installed by `int` (post-cluster Ok arm) via `SymbolTable::install_import_bindings(&self, …)`; this is `int`'s call, not typecheck's.
 3. **Single source of truth via `defined_symbols()`.** Per Decision 22 — the codegen-compilable predicate is `SymbolTable::defined_symbols()`. Typecheck writes entries that satisfy or fail this predicate; it does not maintain a parallel store.
 4. **TC-sourced call graph.** Per Decision 21 — call graph edges are extracted during typechecking from method resolutions. `CheckResult.callees: Vec<FQSymbol>` is the per-symbol call graph; the rich `CallGraph` (with tail-position info) is for within-module codegen analysis.
 5. **Trait method dispatch via `ResolvedCall::TraitMethod`.** Typecheck always emits `TraitMethod` for trait-dispatched operators; backend handles lowering. Typecheck stays clean of backend-specific concerns. The prior `(TraitName, Symbol, TypeName) → primitive` collusion-table approach in backend is retired per Decision 43 — backend has no trait knowledge; primitive emission goes through `cranelisp-primitives` + `cranelisp-intrinsics` directly.
 6. **Constraint propagation in `generalize`.** Per Decision 19 — `Scheme.constraints` is populated by collecting trait constraints from active type variables during generalisation. Non-empty constraints mark a constrained polymorphic function (monomorphised at call sites).
-7. **TC snapshot/restore for error rollback.** `check_form` allocates type vars and may write intermediate state on the symbol table (per-entry, under inner-DashMap locks per Decision 38); on `Err`, `int` (or the caller) restores via `ReplSnapshot` before the next form is processed. Typecheck provides the snapshot/restore primitive but does not invoke it itself; the caller decides when to take and restore snapshots. (REPL eval is the primary consumer — a failed form must not leave residual type-var bindings visible to the next eval.)
-8. **FQ resolution surfaces via `CheckError::Gap`.** Per the gap-return pattern (`facades/int.md`, `exec-flow-compilation`) — when `check_form` encounters an FQ symbol or FQ type reference whose target isn't typechecked, it returns `Err(CheckError::Gap(ResolutionGap::SymbolTypechecked(fq)))` or `Err(CheckError::Gap(ResolutionGap::Type(fqt)))`. Typecheck does NOT block, does NOT call the scheduler, does NOT register modules — it surfaces the dependency to its caller (`int::process_form`), which dispatches via `handle_gap` and retries.
+7. **TC snapshot/restore for error rollback.** Both pass functions allocate type vars within `CheckState`; the symbol-table writes that pre-S66 stages performed are gone (FIXME 0160 + Decision 44 — both passes are pure). On `Err`, `int` (or the caller) restores via `ReplSnapshot` before the next pass is invoked. Typecheck provides the snapshot/restore primitive but does not invoke it itself; the caller decides when to take and restore snapshots. (REPL eval is the primary consumer — a failed cluster must not leave residual type-var bindings visible to the next eval.) The orchestrator's transient staging table (per Decision 44) is the layer that absorbs cross-pass write-side intent — it is not visible to typecheck and is dropped on cluster failure.
+8. **FQ resolution surfaces via `CheckError::Gap`.** Per the gap-return pattern (`facades/int.md`, `exec-flow-compilation`) — when either pass encounters an FQ symbol or FQ type reference whose target isn't typechecked, it returns `Err(CheckError::Gap(ResolutionGap::SymbolTypechecked(fq)))` or `Err(CheckError::Gap(ResolutionGap::Type(fqt)))`. Typecheck does NOT block, does NOT call the scheduler, does NOT register modules — it surfaces the dependency to its caller (`int::process_cluster`), which dispatches via `handle_gap` and retries the same pass.
 9. **No `Sess` / `CompileScheduler` dependency.** Same as frontend — typecheck stays a pure function from inputs (`ParsedEntry`, `SymbolTable`, `SymbolTables`) to outputs (`Vec<(Symbol, ModuleEntry)>` or `CheckError`). Principle 3.

@@ -101,9 +101,11 @@ pub struct Program { pub forms: Vec<TopLevel> }
 pub fn free_vars_expr(expr: &Expr) -> HashSet<Symbol>;
 ```
 
-### `ParsedEntry` — the parse-time-only transient (per FIXME 0156 resolution)
+### `ParsedEntry` — the parse-time-only transient (per FIXME 0156 resolution; persists across both passes per Decision 44)
 
-`ParsedEntry` is the transient handoff from `cranelisp_frontend::build_form` to `cranelisp_typecheck::check_form`. It carries only what the parser knows; resolved-stage fields (type, scheme, callees, code, got_slot) are populated by `check_form` downstream and end up on `ModuleEntry`. **`ParsedEntry` NEVER lands in `SymbolTable`** — its lifecycle is bounded by one orchestrator iteration: `parse → ParsedEntry → check_form → Vec<(Symbol, ModuleEntry)> → SymbolTable.insert`. The SymbolTable invariant ("if it's in the table, it's checked") is preserved.
+`ParsedEntry` is the transient handoff from `cranelisp_frontend::build_form` to the two-pass typecheck surface (`cranelisp_typecheck::check_form_signatures` + `check_form_body`). It carries only what the parser knows; resolved-stage fields (type, scheme, callees, code, got_slot) are populated by the typecheck passes downstream and end up on `ModuleEntry`. **`ParsedEntry` NEVER lands in `SymbolTable`** — its lifecycle is bounded by one orchestrator-cluster iteration: `parse → ParsedEntry → (check_form_signatures across cluster, then check_form_body across cluster) → Vec<(Symbol, ModuleEntry)> → orchestrator commits staging into live SymbolTable`. The SymbolTable invariant ("if it's in the live table, it's checked AND committed") is preserved by the cluster-atomic commit.
+
+**Persistence across passes**. The orchestrator (`int::process_cluster`) holds the parsed-entry list for the duration of a cluster's processing. The same `ParsedEntry` instance is passed to Pass 1 (signatures) and Pass 2 (bodies). `ParsedEntry` derives `Clone` so the orchestrator can clone for retry-on-Gap; the parser never produces a `ParsedEntry` that would invalidate between passes.
 
 ```rust
 #[non_exhaustive]
@@ -160,6 +162,43 @@ pub struct DefmacroInfo {
 `DefmacroInfo` moves from `cranelisp-frontend` to `cranelisp-types` (per FIXME 0156 resolution) so that `check_form`'s consumer (`int`) can name the type uniformly. The frontend's `parse_defmacro` becomes `pub(crate)` inside the `build_form` dispatcher.
 
 `#[non_exhaustive]` on both `ParsedEntry` and `DefmacroInfo`. Derived traits: `Debug, Clone`. Not `Serialize/Deserialize` — `ParsedEntry` is transient; never persisted to cache.
+
+### `View<'a, C, L>` — the cluster read surface (per Decision 44)
+
+`View<'a, C, L>` is a thin newtype that wraps two `&SymbolTable<C, L>` references — staging (orchestrator-local, transient) and live — and routes lookups staging-first then live. It is the read surface the two-pass typecheck functions (`check_form_signatures`, `check_form_body`) see for the current cluster's per-module read. Typecheck does not know whether a given lookup hits staging, live, or unioned content; it just calls `view.lookup(name)`.
+
+```rust
+pub struct View<'a, C: CodeStore = (), L: LinkerStore = ()> {
+    staging: &'a SymbolTable<C, L>,
+    live: &'a SymbolTable<C, L>,
+}
+
+impl<'a, C: CodeStore, L: LinkerStore> View<'a, C, L> {
+    /// Construct a composite read view. Lookups dispatch staging-first, then live.
+    /// Both refs must outlive `'a`; lifetime bound on the returned `View`.
+    pub fn union(staging: &'a SymbolTable<C, L>, live: &'a SymbolTable<C, L>) -> Self;
+
+    /// Read-through lookup. Staging entries shadow live entries (Pass 1 sig
+    /// shells masking any partially-existing live placeholder that should
+    /// not happen — both passes assume cluster atomicity).
+    pub fn lookup(&self, name: &Symbol) -> Option<&ModuleEntry<C>>;
+
+    /// Iterate the union, staging-first; live entries shadowed by staging
+    /// keys are skipped. Order within each table is iteration order of the
+    /// underlying DashMap. Used by typecheck passes that need to enumerate
+    /// (e.g., `defined_symbols()`-style passes).
+    pub fn iter(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry<C>)> + '_;
+}
+```
+
+**Properties**:
+- No allocation per lookup — the newtype holds two references and dispatches.
+- Read-only — `View` exposes no write methods; staging is mutated only through the orchestrator's direct `&mut SymbolTable` handle outside the typecheck call.
+- Lifetime-bounded — the `View` borrows both tables for `'a`; it cannot outlive either.
+
+**Why a newtype rather than a trait or a method on `SymbolTable`**. The orchestrator passes a 2-level composite read view today. A trait abstraction (`SymbolTableView`) would generalise to N-level staging or alternate read shapes, but adds a trait surface to support a single production caller pattern. A method on `SymbolTable` returning a `View` is fine but the construction call (`View::union`) reads cleaner at the orchestrator site. If future needs require N-level staging or other compositions, a trait can be introduced then; the current shape is the minimum surface that satisfies cluster-atomic Pass 1 / Pass 2 visibility.
+
+`#[non_exhaustive]`. Derived traits: `Debug` (best-effort — delegates to underlying tables). Not `Clone` (a `View` is constructed at the call site; cloning the borrow has no value). Not `Serialize/Deserialize` — never persisted; the `'a` lifetime makes this physically impossible at the boundary.
 
 ### Resolved type system (output of typecheck, consumed by backend)
 
