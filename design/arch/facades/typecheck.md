@@ -200,17 +200,14 @@ These hold across sprints — the contract `cranelisp-typecheck` makes with the 
     // 2. Qualified (FQ) lookup — direct, single named module.
     symbol_tables.get(&fq.module).and_then(|t| t.get(&fq.symbol))
 
-    // 3. Impl resolution — walk the current module's transitive import closure
-    //    (per /spec FIXME 0169 Reading 2 — transitive). The first match wins.
-    //    Storage placement is the writer's module per Decision 0045.
-    for imported in current_module_imports_transitive(&current_module, &symbol_tables) {
-        if let Some(entry) = symbol_tables.get(&imported)
-            .and_then(|t| t.get(&Symbol::from(impl_synthetic_key(trait_fq, type_fq))))
-        {
-            return Some(entry);
-        }
-    }
-    None
+    // 3. Impl resolution — chain-follow the trait reference back to its
+    //    defining module (per shape 1) and probe that one module's table for
+    //    `impl$FQTypeName$FQTraitName`. Storage placement is the trait's
+    //    defining module per Decision 0045. No closure walk; no cycle
+    //    detection; per-symbol point-to-point navigation only.
+    let trait_home = chain_follow_to_home(trait_fq, &symbol_tables);
+    symbol_tables.get(&trait_home)
+        .and_then(|t| t.get(&Symbol::from(impl_synthetic_key(trait_fq, type_fq))))
 
     // 4. Bulk introspection — current module only.
     let local_type_defs: Vec<_> = ctx.current_symbol_table()
@@ -220,4 +217,4 @@ These hold across sprints — the contract `cranelisp-typecheck` makes with the 
     // Multi-module aggregation is composed at the orchestrator (session/REPL) layer, not inside check_form*.
     ```
 
-    Mutating writes always go through `ctx.current_symbol_table_mut()` — a typecheck pass MUST NOT mutate a foreign module's table. `ModuleEntry::TraitImpl` writes target the writer's module per Decision 0045; cross-module impl writes that pre-S66 source carries (~6 sites in `builtins.rs` + `checker.rs`, audited 2026-05-12) are Wave 3a-α retargets per Decision 0046. This invariant is the structural prerequisite for invariant 2's cluster-atomic guarantee — the `ClusterContext` accessor surgery only delivers cluster atomicity if every read and write actually flows through it; the absence of orphaned `self.modules.X` pierces is what makes that the case.
+    Mutating writes always go through `ctx.current_symbol_table_mut()` — a typecheck pass MUST NOT mutate a foreign module's table directly. `ModuleEntry::TraitImpl` writes target the **trait's defining module** per Decision 0045; the orchestrator selects the target table by chain-following the trait reference at write time, identically to the read side. Cross-module impl writes that pre-S66 source carries (~6 sites in `builtins.rs` + `checker.rs`, audited 2026-05-12) are Wave 3a-α retargets per Decision 0046 — the redo retargets to the trait's home, not the writer's home. This invariant is the structural prerequisite for invariant 2's cluster-atomic guarantee — the `ClusterContext` accessor surgery only delivers cluster atomicity if every read and write actually flows through it; the absence of orphaned `self.modules.X` pierces is what makes that the case.

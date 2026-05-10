@@ -736,7 +736,7 @@ Functor.fmap :: (Fn [(Fn [a] b) (:Functor f a)] (f b))
 Trait declarations and implementations participate in the module system (see section 8).
 
 - A `deftrait` form registers the trait and all its method names in the declaring module.
-- An `impl` form registers the method implementations in the module where the `impl` appears (the **writer's module**).
+- An `impl` form's method implementations are visible per the rule in [§5.11.1](05-definitions.md#5111-impl-visibility--transitive-import-closure) (visibility = reachability of the trait + type names). Where the implementation internally records the impl entry — which module's symbol table holds it — is **implementation-defined**, not pinned by this spec.
 - Trait methods are accessible via import like any other symbol.
 - Method names from different traits MAY collide. If two traits declare methods with the same name and both are in scope, the result is an ambiguous name error at the call site.
 

@@ -395,26 +395,31 @@ pub enum ModuleEntry<C: CodeStore = ()> {
     Macro { name: Symbol, clauses: Vec<MacroClauseInfo>, callees: Vec<FQSymbol>, got_slot: usize, visibility: Visibility, docstring: Option<String>, #[serde(skip)] code: Option<C> },
     TypeDef { /* … per Decision 22 */ },
     Trait { /* … */ },
-    /// `(impl Trait Type method-defns…)` written in module M lands HERE — in M's
-    /// symbol table — keyed by the synthetic name `impl$FQTypeName$FQTraitName`.
-    /// Per Decision 0045 (TraitImpl placement is the writer's module): the
-    /// trait's defining module and the type's defining module are NOT mutated
-    /// by the impl write; only M is. This keeps typecheck writes local
-    /// (Principle 1 — Decoupling) and the canonical store single-sourced
-    /// (Principle 7 — Single source of truth).
+    /// `(impl Trait Type method-defns…)` lands in the **trait's defining
+    /// module** — keyed by the synthetic name `impl$FQTypeName$FQTraitName`.
+    /// Per Decision 0045 (TraitImpl placement is the trait's defining module):
+    /// neither the writer's module nor the type's defining module are mutated
+    /// by the impl write; only the trait's home is. This keeps the canonical
+    /// store single-sourced (Principle 7) and reduces lookup to a per-symbol
+    /// chain-follow (Principle 17 — Module locality in typecheck).
     ///
-    /// **Discovery.** Importers locate impls by walking the current module's
-    /// transitive import closure (per Principle 17 — Module locality in
-    /// typecheck — and `/spec` FIXME 0169's resolution): for each module M' in
-    /// the closure, probe `M'.symbols.get("impl$FQTypeName$FQTraitName")`. The
-    /// first match wins. Visibility is bounded by the import set, not the
-    /// universe of modules.
+    /// **Discovery.** Importers locate impls by **chain-following the trait
+    /// reference** back to its defining module (per Principle 17): from the
+    /// current module N's view, look up the trait — if the entry is
+    /// `ModuleEntry::Import { source, … }` or `ModuleEntry::Reexport { source, … }`,
+    /// follow `source.module` one edge at a time until a `ModuleEntry::Trait`
+    /// entry is reached. That terminating module IS the trait's home; probe
+    /// its symbol table for `impl$FQTypeName$FQTraitName`. No closure walk; no
+    /// cycle detection; per-symbol point-to-point navigation only. The impl
+    /// is reachable from N iff the trait is reachable from N (encoded
+    /// structurally by the chain-follow's termination at the trait's home).
     ///
-    /// **Always public** (spec §5.11: impls are visible wherever both trait
+    /// **Always public** (spec §5.11.1: impls are visible wherever both trait
     /// and type are in scope). The `methods: Vec<Symbol>` field carries the
     /// local names of the impl's method bodies, which live as ordinary
     /// `ModuleEntry::Def` entries with mangled names (e.g.,
-    /// `Display.show$Option$Int`) in the same module M.
+    /// `Display.show$Option$Int`) in the **same module** as the `TraitImpl`
+    /// entry — i.e., the trait's defining module.
     TraitImpl { /* trait_name: FQTraitName, impl_type: FQTypeName, methods: Vec<Symbol> */ },
     Import { /* bare-name binding installed by install_import_bindings */ },
     PlatformDecl { /* serde-persistent record of which DLL provides this fn */ },
