@@ -2166,7 +2166,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let mut param_types = Vec::new();
         for (i, _param) in defn.params().iter().enumerate() {
             let param_ty = if let Some(Some(ann)) = defn.param_annotations().get(i) {
-                let known = self.known_type_names_with_state(state);
+                let known = self.known_type_names();
                 let var_map = HashMap::new();
                 resolve_type_expr(ann, &var_map, &known, defn.span)?
             } else {

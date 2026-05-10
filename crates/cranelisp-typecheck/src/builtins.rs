@@ -73,43 +73,24 @@ where
         );
     }
 
-    // Per Principle 17 (module locality), every builtin write goes through
-    // `current_symbol_table_mut(state)` — i.e., the writer's module. Bootstrap
-    // routines that target `primitives` switch `state.current_module` to
-    // `primitives` for the duration of their work and restore on exit.
-    let user_module = state.current_module.clone();
-    state.current_module = primitives_path.clone();
-
-    env.register_primitives(&state);
-    env.register_ring1_primitives(&state);
-    env.register_vec_primitives(&state);
-    // Special forms live in `user` (the module they are seeded into) — switch
-    // back briefly. `register_builtin_type_names` writes to `primitives`,
-    // re-enter `primitives` after.
-    state.current_module = user_module.clone();
+    env.register_primitives();
+    env.register_ring1_primitives();
+    env.register_vec_primitives();
     env.register_special_forms(&state);
-    state.current_module = primitives_path.clone();
-    env.register_builtin_type_names(&state);
+    env.register_builtin_type_names();
 
     // Ring 3: Seed synthetic `macros` module with SList and Sexp ADTs + sconcat.
-    // `register_macros_module` switches to `macros` itself and restores.
-    state.current_module = user_module.clone();
     env.register_macros_module(&mut state);
 
-    // Ring 3: quote-sexp in `primitives`.
-    state.current_module = primitives_path.clone();
-    env.register_ring3_primitives(&state);
-    state.current_module = user_module.clone();
+    // Ring 3: quote-sexp in `primitives` — must come after macros module
+    env.register_ring3_primitives();
 
     // Ring 1: Option ADT in `primitives` (needed by parse-int return type).
     env.register_option_type(&mut state);
 
-    // Ring 4: IO ADT in `primitives`.
+    // Ring 4: IO ADT and bind primitive in `primitives`.
     env.register_io_type(&mut state);
-    // bind primitive — writer's module is `primitives`.
-    state.current_module = primitives_path.clone();
-    env.register_bind_primitive(&state);
-    state.current_module = user_module.clone();
+    env.register_bind_primitive();
 
     // Ring 4: Trace ADT (TraceCall) + field accessors in `primitives`.
     env.register_trace_type(&mut state);
@@ -129,10 +110,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// Cranelift IR for the `cranelift_op` field.
     ///
     /// Docstrings are taken from spec appendix-a-builtins.md §A.3.
-    fn register_primitives(&self, state: &CheckState) {
-        // Caller has set state.current_module = primitives_path (Principle 17).
-        debug_assert!(state.current_module.as_ref() == "primitives");
-        let mut primitives_table = self.current_symbol_table_mut(state);
+    fn register_primitives(&self) {
+        let primitives_path = ModuleFullPath::from("primitives");
+        let mut primitives_table = self
+            .modules
+            .get_mut(&primitives_path)
+            .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
 
         for prim in ring0_primitives() {
             let scheme = mono(prim.ty.clone());
@@ -165,9 +148,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// functions. The backend calls them via JIT symbol references, not inline IR.
     ///
     /// Docstrings are taken from spec appendix-a-builtins.md §A.3.
-    fn register_ring1_primitives(&self, state: &CheckState) {
-        debug_assert!(state.current_module.as_ref() == "primitives");
-        let mut primitives_table = self.current_symbol_table_mut(state);
+    fn register_ring1_primitives(&self) {
+        let primitives_path = ModuleFullPath::from("primitives");
+        let mut primitives_table = self
+            .modules
+            .get_mut(&primitives_path)
+            .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
 
         for prim in ring1_primitives() {
             let scheme = mono(prim.ty.clone());
@@ -204,8 +190,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ///
     /// Unlike Ring 1 string primitives (monomorphic), these require quantified
     /// type variables so the typechecker can instantiate them at each call site.
-    fn register_vec_primitives(&self, state: &CheckState) {
-        debug_assert!(state.current_module.as_ref() == "primitives");
+    fn register_vec_primitives(&self) {
         // Allocate a fresh type variable ID for the polymorphic parameter 'a'.
         // This ensures the scheme's Var(a) won't collide with any Var already
         // in use by the typechecker, preventing infinite recursion in `apply`
@@ -259,7 +244,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             ),
         ];
 
-        let mut primitives_table = self.current_symbol_table_mut(state);
+        let primitives_path = ModuleFullPath::from("primitives");
+        let mut primitives_table = self
+            .modules
+            .get_mut(&primitives_path)
+            .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
 
         for (name, param_names, scheme) in vec_prims {
             let docstring = builtin_docstring(name);
@@ -345,8 +334,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// root module — universally available for type annotations without import.
     /// Registered in `user` (the root module) so they get seeded into every
     /// new module via `ensure_module_exists`.
-    fn register_builtin_type_names(&self, state: &CheckState) {
-        debug_assert!(state.current_module.as_ref() == "primitives");
+    fn register_builtin_type_names(&self) {
         let builtin_types = vec![
             ("Int", "builtin integer type"),
             ("Bool", "builtin boolean type"),
@@ -356,10 +344,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         ];
 
         // Per spec §8.9.1: builtin types live in `primitives` and require
-        // explicit import. They are NOT seeded into `user`. Writer's-module
-        // discipline (Decision 0045): caller has switched current_module to
-        // primitives_path before calling.
-        let mut primitives_table = self.current_symbol_table_mut(state);
+        // explicit import. They are NOT seeded into `user`.
+        let primitives_path = ModuleFullPath::from("primitives");
+        let mut primitives_table = self
+            .modules
+            .get_mut(&primitives_path)
+            .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
 
         for (name, desc) in builtin_types {
             primitives_table.insert(
@@ -386,9 +376,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ///
     /// Registered in `primitives` (not `user`) so that `import_primitives_into_user()`
     /// copies them into `user` alongside Ring 0-1 primitives.
-    fn register_ring3_primitives(&self, state: &CheckState) {
-        debug_assert!(state.current_module.as_ref() == "primitives");
-        let mut primitives_table = self.current_symbol_table_mut(state);
+    fn register_ring3_primitives(&self) {
+        let primitives_path = ModuleFullPath::from("primitives");
+        let mut primitives_table = self
+            .modules
+            .get_mut(&primitives_path)
+            .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
 
         for prim in ring3_primitives() {
             let scheme = mono(prim.ty.clone());
@@ -444,33 +437,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let saved_module = state.current_module.clone();
         let macros_path = ModuleFullPath::from("macros");
         self.ensure_module_exists(&macros_path);
-        state.current_module = macros_path.clone();
+        state.current_module = macros_path;
 
         self.register_slist_type(state);
         self.register_sexp_type(state);
         self.register_sconcat(state);
-
-        // Per Principle 17 — primitives uses SList in its `Trace` ADT field
-        // types. Record the dependency as a glob import so the
-        // transitive-import walk finds SList from primitives' view (otherwise
-        // primitives would have no way to reference macros without a fictitious
-        // universe scan). This is a bootstrap-only synthetic import; user code
-        // still requires explicit `(import [macros [...]])`.
-        let primitives_path = ModuleFullPath::from("primitives");
-        if let Some(mut prim_table) = self.modules.get_mut(&primitives_path) {
-            let already_imports_macros = prim_table
-                .imports
-                .iter()
-                .any(|spec| spec.module_path == macros_path);
-            if !already_imports_macros {
-                prim_table.imports.push(cranelisp_types::ImportSpec {
-                    module_path: macros_path.clone(),
-                    alias: None,
-                    names: cranelisp_types::ImportNames::Glob,
-                    span: Span::SYNTHETIC,
-                });
-            }
-        }
 
         // Restore the original module context.
         state.current_module = saved_module;
@@ -515,10 +486,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     fn register_slist_type(&self, state: &mut CheckState) {
         // Pre-seed SList in macros module's SymbolTable so SCons's self-referential
         // stail field resolves during build_constructor_infos.
-        // Caller (register_macros_module) has set state.current_module = macros_path.
         {
-            debug_assert!(state.current_module.as_ref() == "macros");
-            let mut macros_table = self.current_symbol_table_mut(state);
+            let macros_path = ModuleFullPath::from("macros");
+            let mut macros_table = self.modules.get_mut(&macros_path)
+                .unwrap_or_else(|| unreachable!("invariant: macros module should exist"));
             macros_table.insert(
                 Symbol::from("SList"),
                 ModuleEntry::TypeDef {
@@ -581,10 +552,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     fn register_sexp_type(&self, state: &mut CheckState) {
         // Pre-seed Sexp in macros module's SymbolTable so SexpList/SexpBracket's
         // :(SList Sexp) fields resolve during build_constructor_infos.
-        // Caller (register_macros_module) has set state.current_module = macros_path.
         {
-            debug_assert!(state.current_module.as_ref() == "macros");
-            let mut macros_table = self.current_symbol_table_mut(state);
+            let macros_path = ModuleFullPath::from("macros");
+            let mut macros_table = self.modules.get_mut(&macros_path)
+                .unwrap_or_else(|| unreachable!("invariant: macros module should exist"));
             macros_table.insert(
                 Symbol::from("Sexp"),
                 ModuleEntry::TypeDef {
@@ -705,11 +676,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ///
     /// See `design/typecheck/io-types.md` §2-3 for the full design rationale.
     fn register_io_type(&self, state: &mut CheckState) {
-        // Switch to the synthetic `primitives` module. `ensure_module_exists`
-        // is idempotent and creates the table if absent — replaces the previous
-        // direct `self.modules.contains_key` / `self.modules.insert` pierce.
+        // Switch to the synthetic `primitives` module.
         let saved_module = state.current_module.clone();
         let primitives_path = ModuleFullPath::from("primitives");
+        if !self.modules.contains_key(&primitives_path) {
+            self.modules.insert(
+                primitives_path.clone(),
+                cranelisp_types::SymbolTable::<C, L>::new_with_params(primitives_path.clone()),
+            );
+        }
         self.ensure_module_exists(&primitives_path);
         state.current_module = primitives_path;
 
@@ -750,7 +725,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         });
 
         // Add Bind as an internal constructor (tag=2).
-        self.add_internal_bind_constructor(state);
+        self.add_internal_bind_constructor();
 
         // Restore the original module context.
         state.current_module = saved_module;
@@ -765,10 +740,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// The Bind constructor appears in `TypeDefInfo.constructors` for REPL
     /// introspection (`/info IO` shows all three constructors) but is NOT
     /// resolvable as a name in the type environment.
-    fn add_internal_bind_constructor(&self, state: &CheckState) {
-        // Caller (register_io_type) has set state.current_module = primitives.
-        debug_assert!(state.current_module.as_ref() == "primitives");
-
+    fn add_internal_bind_constructor(&self) {
         // Allocate fresh type vars for the existential types.
         let (_, a_id) = self.fresh_var_id();
         let (_, b_id) = self.fresh_var_id();
@@ -798,8 +770,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             internal: true,
         };
 
-        // Append Bind to the IO TypeDefInfo in the writer's (current) module.
-        let mut primitives_table = self.current_symbol_table_mut(state);
+        // Append Bind to the IO TypeDefInfo in the primitives module's SymbolTable.
+        let primitives_path = ModuleFullPath::from("primitives");
+        let mut primitives_table = self.modules.get_mut(&primitives_path)
+            .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
         if let Some(ModuleEntry::TypeDef { info, .. }) = primitives_table.symbols.get_mut(&Symbol::from("IO")) {
             info.constructors.push(bind_ctor);
         } else {
@@ -818,9 +792,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// emits inline Cranelift IR to allocate a Bind node: `[tag=2, io_ptr, cont_ptr]`.
     ///
     /// See `design/typecheck/io-types.md` §4 for the type scheme construction.
-    fn register_bind_primitive(&self, state: &CheckState) {
-        // Caller has set state.current_module = primitives (Decision 0045).
-        debug_assert!(state.current_module.as_ref() == "primitives");
+    fn register_bind_primitive(&self) {
+        let primitives_path = ModuleFullPath::from("primitives");
 
         // Allocate fresh type vars for the polymorphic parameters.
         let (_, a_id) = self.fresh_var_id();
@@ -838,7 +811,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             ty: bind_ty,
         };
 
-        let mut primitives_table = self.current_symbol_table_mut(state);
+        let mut primitives_table = self
+            .modules
+            .get_mut(&primitives_path)
+            .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
 
         primitives_table.insert(
             Symbol::from("bind"),

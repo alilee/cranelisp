@@ -22,7 +22,7 @@
 //! `check()` calls. Module compilation locks are a scheduling concern owned
 //! by the caller, not by the typechecker.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use dashmap::DashMap;
@@ -299,300 +299,75 @@ where
         self.modules.contains_key(path)
     }
 
-    /// Look up a TypeDefInfo by bare TypeName starting from a specific module.
+    /// Look up a TypeDefInfo by bare TypeName, scanning all loaded module SymbolTables.
     ///
-    /// Per Principle 17 (Module locality in typecheck): walks `module_path`'s
-    /// symbol table and follows any `ModuleEntry::Import`/`Reexport` bindings
-    /// to their FQ home (access shape 1). If still not found, walks the
-    /// transitive import closure (access shape 3) — required so that a type
-    /// reachable through a re-export chain (spec §5.11.1, §8.4.6) resolves.
-    ///
-    /// Direct hits in `module_path` shadow imports; transitive imports are
-    /// the last fallback. Returns `None` when the name is not reachable.
-    pub(crate) fn lookup_type_def_in_module(
-        &self,
-        module_path: &ModuleFullPath,
-        name: &TypeName,
-    ) -> Option<TypeDefInfo> {
-        let sym = Symbol::from(name.as_ref());
-        // Direct + Import-follow on `module_path`.
-        if let Some(info) = self.lookup_type_def_via_entry(module_path, sym.as_ref()) {
-            return Some(info);
-        }
-        // Transitive import-closure walk.
-        for imported in self.transitive_import_closure(module_path) {
-            if let Some(info) = self.lookup_type_def_via_entry(&imported, sym.as_ref()) {
-                return Some(info);
-            }
-        }
-        None
-    }
-
-    fn lookup_type_def_via_entry(
-        &self,
-        module_path: &ModuleFullPath,
-        sym: &str,
-    ) -> Option<TypeDefInfo> {
-        let entry = {
-            let guard = self.modules.get(module_path)?;
-            guard.get(sym)?.clone()
-        };
-        self.resolve_typedef_from_entry(&entry, 0)
-    }
-
-    /// Follow an Import/Reexport chain to a `TypeDef`, if any.
-    fn resolve_typedef_from_entry(
-        &self,
-        entry: &ModuleEntry<C>,
-        depth: usize,
-    ) -> Option<TypeDefInfo> {
-        if depth > IMPORT_CHAIN_DEPTH_LIMIT {
-            return None;
-        }
-        match entry {
-            ModuleEntry::TypeDef { info, .. } => Some(info.clone()),
-            ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
-                let next = {
-                    let guard = self.modules.get(&source.module)?;
-                    guard.get(source.symbol.as_ref())?.clone()
-                };
-                self.resolve_typedef_from_entry(&next, depth + 1)
-            }
-            _ => None,
-        }
-    }
-
-    /// Walk the transitive import closure of `module_path`.
-    ///
-    /// Per Principle 17 access shape 3 + Decision 0045 + spec §5.11.1
-    /// "Reading 2 (transitive)": returns the modules reachable from
-    /// `module_path` by following its `imports: Vec<ImportSpec>` declarations
-    /// recursively. Cycles are broken by a `visited` set; depth is bounded by
-    /// the number of loaded modules.
-    ///
-    /// The closure does NOT include `module_path` itself — callers probe the
-    /// starting module first (access shapes 1/2), then iterate the closure
-    /// for transitive lookups (impl resolution, re-exported type / trait
-    /// resolution).
-    pub(crate) fn transitive_import_closure(
-        &self,
-        module_path: &ModuleFullPath,
-    ) -> Vec<ModuleFullPath> {
-        let mut visited: HashSet<ModuleFullPath> = HashSet::new();
-        visited.insert(module_path.clone());
-        let mut order: Vec<ModuleFullPath> = Vec::new();
-
-        // Seed worklist with all reachable source modules.
-        let collect_seeds = |guard: &SymbolTable<C, L>| -> Vec<ModuleFullPath> {
-            // Source modules referenced in three places (per spec §5.11.1 +
-            // §8.4.6, and CP3 option-(b) which keeps the implicit prelude
-            // OFF `imports` but ON the per-symbol `ModuleEntry::Import`):
-            //   1. `imports: Vec<ImportSpec>` — user-authored `(import …)`.
-            //   2. `exports: Vec<ExportSpec>` — `(export [src …])` re-exports.
-            //   3. `ModuleEntry::Import { source }` /
-            //      `ModuleEntry::Reexport { source }` — resolved per-symbol
-            //      bindings, which include the implicit prelude.
-            let mut paths: Vec<ModuleFullPath> = guard
-                .imports
-                .iter()
-                .map(|spec| spec.module_path.clone())
-                .collect();
-            paths.extend(guard.exports.iter().map(|spec| spec.module_path.clone()));
-            for (_name, entry) in guard.all_symbols() {
-                match entry {
-                    ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
-                        paths.push(source.module.clone());
-                    }
-                    _ => {}
-                }
-            }
-            paths
-        };
-
-        let mut to_visit: Vec<ModuleFullPath> = match self.modules.get(module_path) {
-            Some(guard) => collect_seeds(&guard),
-            None => return order,
-        };
-
-        while let Some(m) = to_visit.pop() {
-            if !visited.insert(m.clone()) {
-                continue;
-            }
-            order.push(m.clone());
-            if let Some(guard) = self.modules.get(&m) {
-                for next in collect_seeds(&guard) {
-                    if !visited.contains(&next) {
-                        to_visit.push(next);
-                    }
-                }
-            }
-        }
-        order
-    }
-
-    /// Look up a TypeDefInfo by bare TypeName from the current module.
-    ///
-    /// Convenience wrapper over [`Self::lookup_type_def_in_module`] for
-    /// callers that hold a `CheckState`. Per Principle 17 access shape 1+3.
+    /// Returns the first matching TypeDefInfo found across all modules.
+    /// Used where the old `TypeDefRegistry.get()` was called.
     pub fn lookup_type_def(&self, name: &TypeName) -> Option<TypeDefInfo> {
-        // Backward-compatible: callers without a CheckState use `user` as
-        // the conventional default starting module (it imports primitives
-        // and is the REPL's home). Internal typecheck call sites that hold
-        // a CheckState prefer the explicit
-        // `lookup_type_def_with_state(state, name)` form below.
-        let user_path = ModuleFullPath::from("user");
-        if let Some(info) = self.lookup_type_def_in_module(&user_path, name) {
-            return Some(info);
-        }
-        // Primitives fallback for callers that haven't imported into "user"
-        // (test fixtures, fresh sessions before prelude). Direct primitives
-        // probe — single named module, access shape 2.
+        let sym = Symbol::from(name.as_ref());
         let primitives_path = ModuleFullPath::from("primitives");
-        self.lookup_type_def_in_module(&primitives_path, name)
-    }
-
-    /// Look up a TypeDefInfo for a name reachable from the caller's current
-    /// module. Preferred over [`Self::lookup_type_def`] inside typecheck —
-    /// honours `state.current_module` as the access root.
-    ///
-    /// Falls back to the synthetic root modules (`primitives`, `macros`) if
-    /// not found via the current module's transitive import closure. Types
-    /// in those modules (`Int`, `Bool`, `IO`, `Option`, `SList`, `Sexp`, …)
-    /// are universally available by spec convention. This matches the
-    /// pre-refactor universal-scan semantics for the synthetic modules while
-    /// keeping every other lookup module-local.
-    pub(crate) fn lookup_type_def_with_state(
-        &self,
-        state: &CheckState,
-        name: &TypeName,
-    ) -> Option<TypeDefInfo> {
-        if let Some(info) = self.lookup_type_def_in_module(&state.current_module, name) {
-            return Some(info);
-        }
-        for synthetic in [
-            ModuleFullPath::from("primitives"),
-            ModuleFullPath::from("macros"),
-        ] {
-            if state.current_module == synthetic {
-                continue;
-            }
-            if let Some(info) = self.lookup_type_def_in_module(&synthetic, name) {
-                return Some(info);
+        let mut primitives_fallback: Option<TypeDefInfo> = None;
+        for guard in self.modules.iter() {
+            if let Some(ModuleEntry::TypeDef { info, .. }) = guard.get(sym.as_ref()) {
+                if *guard.key() == primitives_path {
+                    // Defer primitives — prefer user-defined types.
+                    primitives_fallback = Some(info.clone());
+                } else {
+                    return Some(info.clone());
+                }
             }
         }
-        None
+        primitives_fallback
     }
 
-    /// Look up the parent type name for a constructor.
+    /// Look up the parent type name for a constructor by scanning all modules.
     ///
-    /// Per Principle 17 access shape 1+3: probes the named starting module
-    /// (default `user`), follows Import/Reexport bindings, then walks the
-    /// transitive import closure. Returns the bare TypeName of the parent type.
-    /// Also handles product types where the constructor has the same name as
-    /// the type — in that case the `ModuleEntry::TypeDef` with
-    /// `constructor_scheme` is the authority.
+    /// Returns the bare TypeName of the parent type.
+    /// Also handles product types where the constructor has the same name as the
+    /// type — in that case, the `ModuleEntry::TypeDef` with `constructor_scheme`
+    /// is the authority (the Constructor entry was overwritten by the TypeDef entry).
     pub fn lookup_constructor_type(&self, ctor_name: &str) -> Option<TypeName> {
-        let user_path = ModuleFullPath::from("user");
-        if let Some(tn) = self.lookup_constructor_type_in_module(&user_path, ctor_name) {
-            return Some(tn);
-        }
-        // Primitives fallback for early-bootstrap / fresh-session callers.
-        let primitives_path = ModuleFullPath::from("primitives");
-        self.lookup_constructor_type_in_module(&primitives_path, ctor_name)
-    }
-
-    /// Module-rooted variant of [`Self::lookup_constructor_type`].
-    pub(crate) fn lookup_constructor_type_in_module(
-        &self,
-        module_path: &ModuleFullPath,
-        ctor_name: &str,
-    ) -> Option<TypeName> {
-        if let Some(tn) = self.lookup_ctor_type_via_entry(module_path, ctor_name) {
-            return Some(tn);
-        }
-        for imported in self.transitive_import_closure(module_path) {
-            if let Some(tn) = self.lookup_ctor_type_via_entry(&imported, ctor_name) {
-                return Some(tn);
+        for guard in self.modules.iter() {
+            match guard.get(ctor_name) {
+                Some(ModuleEntry::Constructor { type_name, .. }) => {
+                    return Some(type_name.name.clone());
+                }
+                Some(ModuleEntry::TypeDef { info, constructor_scheme: Some(_), .. }) => {
+                    // Product type: constructor has same name as type.
+                    return Some(info.name.name.clone());
+                }
+                _ => {}
             }
         }
         None
-    }
-
-    fn lookup_ctor_type_via_entry(
-        &self,
-        module_path: &ModuleFullPath,
-        ctor_name: &str,
-    ) -> Option<TypeName> {
-        let entry = {
-            let guard = self.modules.get(module_path)?;
-            guard.get(ctor_name)?.clone()
-        };
-        self.resolve_ctor_type_from_entry(&entry, 0)
-    }
-
-    fn resolve_ctor_type_from_entry(
-        &self,
-        entry: &ModuleEntry<C>,
-        depth: usize,
-    ) -> Option<TypeName> {
-        if depth > IMPORT_CHAIN_DEPTH_LIMIT {
-            return None;
-        }
-        match entry {
-            ModuleEntry::Constructor { type_name, .. } => Some(type_name.name.clone()),
-            ModuleEntry::TypeDef { info, constructor_scheme: Some(_), .. } => {
-                // Product type: constructor has same name as type.
-                Some(info.name.name.clone())
-            }
-            ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
-                let next = {
-                    let guard = self.modules.get(&source.module)?;
-                    guard.get(source.symbol.as_ref())?.clone()
-                };
-                self.resolve_ctor_type_from_entry(&next, depth + 1)
-            }
-            _ => None,
-        }
     }
 
     /// Check whether a constructor is marked as internal (not user-constructable).
     ///
-    /// Per Principle 17: routes through the principled lookups above —
-    /// `lookup_constructor_type` and `lookup_type_def` both honour the
-    /// current-module-rooted access pattern.
+    /// Scans all modules for the constructor, then checks the parent type's
+    /// TypeDefInfo for the internal flag.
     pub fn is_internal_constructor_check(&self, ctor_name: &str) -> bool {
+        // Find which type owns this constructor
         let type_name = match self.lookup_constructor_type(ctor_name) {
             Some(tn) => tn,
             None => return false,
         };
+        // Look up the TypeDefInfo
         if let Some(info) = self.lookup_type_def(&type_name) {
             return info.constructors.iter().any(|c| c.name.as_ref() == ctor_name && c.internal);
         }
         false
     }
 
-    /// Iterate over all type definitions reachable from the current module.
+    /// Iterate over all type definitions across all loaded modules.
     ///
-    /// Per Principle 17 access shape 4 (bulk introspection — current module
-    /// only), augmented with the transitive import closure so that types
-    /// reachable through re-exports surface for REPL displays. Multi-module
-    /// aggregation across the entire module set is the session/REPL layer's
-    /// concern (see [`Self::modules_ref`] for the underlying handle).
+    /// Returns (TypeName, TypeDefInfo) pairs. Used by REPL to sync type defs for display.
     pub fn all_type_defs(&self) -> Vec<(TypeName, TypeDefInfo)> {
-        let user_path = ModuleFullPath::from("user");
-        let mut result: Vec<(TypeName, TypeDefInfo)> = Vec::new();
-        let mut seen: HashSet<TypeName> = HashSet::new();
-        // Walk user's view: local + transitive imports.
-        let mut order = vec![user_path.clone()];
-        order.extend(self.transitive_import_closure(&user_path));
-        for module_path in order {
-            if let Some(guard) = self.modules.get(&module_path) {
-                for (_name, entry) in guard.all_symbols() {
-                    if let ModuleEntry::TypeDef { info, .. } = entry {
-                        if seen.insert(info.name.name.clone()) {
-                            result.push((info.name.name.clone(), info.clone()));
-                        }
-                    }
+        let mut result = Vec::new();
+        for guard in self.modules.iter() {
+            for (_name, entry) in guard.all_symbols() {
+                if let ModuleEntry::TypeDef { info, .. } = entry {
+                    result.push((info.name.name.clone(), info.clone()));
                 }
             }
         }
@@ -660,7 +435,7 @@ where
     /// Build an FQTypeName for a bare TypeName by looking up SymbolTables.
     /// Falls back to the current module if the type is not found.
     pub(crate) fn fqtn_for_bare_type_name(&self, state: &CheckState, type_name: &TypeName) -> cranelisp_types::FQTypeName {
-        if let Some(info) = self.lookup_type_def_with_state(state, type_name) {
+        if let Some(info) = self.lookup_type_def(type_name) {
             return info.name.clone();
         }
         // Primitive types
@@ -1393,35 +1168,16 @@ where
     /// Return all trait names that have an impl registered for `type_name`.
     /// Results are sorted alphabetically.
     ///
-    /// Per Principle 17 access shape 3 (impl resolution via the transitive
-    /// import closure): walks the user module + everything it imports
-    /// transitively. `ModuleEntry::TraitImpl` lives in the writer's module
-    /// (Decision 0045), discovered through the import-chain walk.
+    /// Scans all loaded module SymbolTables for `ModuleEntry::TraitImpl` entries
+    /// whose `impl_type.name` matches the given type name.
     pub fn get_impls_for_type(&self, type_name: &TypeName) -> Vec<TraitName> {
-        let user_path = ModuleFullPath::from("user");
-        self.get_impls_for_type_in_module(&user_path, type_name)
-    }
-
-    /// Module-rooted variant — walks `module_path`'s transitive import
-    /// closure (plus `module_path` itself) for `TraitImpl` entries
-    /// targeting `type_name`.
-    pub(crate) fn get_impls_for_type_in_module(
-        &self,
-        module_path: &ModuleFullPath,
-        type_name: &TypeName,
-    ) -> Vec<TraitName> {
         let mut traits: Vec<TraitName> = Vec::new();
-        let mut order = vec![module_path.clone()];
-        order.extend(self.transitive_import_closure(module_path));
-        for path in order {
-            if let Some(guard) = self.modules.get(&path) {
-                for (_name, entry) in guard.all_symbols() {
-                    if let ModuleEntry::TraitImpl { trait_name, impl_type, .. } = entry
-                        && &impl_type.name == type_name
-                        && !traits.contains(&trait_name.name)
-                    {
-                        traits.push(trait_name.name.clone());
-                    }
+        for guard in self.modules.iter() {
+            for (_name, entry) in guard.all_symbols() {
+                if let ModuleEntry::TraitImpl { trait_name, impl_type, .. } = entry
+                    && &impl_type.name == type_name && !traits.contains(&trait_name.name)
+                {
+                    traits.push(trait_name.name.clone());
                 }
             }
         }
@@ -1435,129 +1191,28 @@ where
             .map(|decl| decl.methods.iter().map(|m| m.name.clone()).collect())
     }
 
-    /// Look up a TraitDecl by bare TraitName.
-    ///
-    /// Per Principle 17 access shape 1+3: probes `user`'s view first (local +
-    /// Import/Reexport-following), then falls back to the transitive import
-    /// closure for re-exported traits (spec §5.11.1, §8.4.6).
+    /// Look up a TraitDecl by bare TraitName, scanning all loaded module SymbolTables.
     pub fn lookup_trait_decl(&self, trait_name: &TraitName) -> Option<cranelisp_types::TraitDecl> {
-        let user_path = ModuleFullPath::from("user");
-        if let Some(decl) = self.lookup_trait_decl_in_module(&user_path, trait_name) {
-            return Some(decl);
-        }
-        let primitives_path = ModuleFullPath::from("primitives");
-        self.lookup_trait_decl_in_module(&primitives_path, trait_name)
-    }
-
-    /// Module-rooted variant — probes `module_path` (with Import-following)
-    /// and its transitive import closure for a `TraitDecl` named `trait_name`.
-    pub(crate) fn lookup_trait_decl_in_module(
-        &self,
-        module_path: &ModuleFullPath,
-        trait_name: &TraitName,
-    ) -> Option<cranelisp_types::TraitDecl> {
         let sym = Symbol::from(trait_name.as_ref());
-        if let Some(decl) = self.lookup_trait_decl_via_entry(module_path, sym.as_ref()) {
-            return Some(decl);
-        }
-        for imported in self.transitive_import_closure(module_path) {
-            if let Some(decl) = self.lookup_trait_decl_via_entry(&imported, sym.as_ref()) {
-                return Some(decl);
+        for guard in self.modules.iter() {
+            if let Some(ModuleEntry::TraitDecl { decl, .. }) = guard.get(sym.as_ref()) {
+                return Some(decl.clone());
             }
         }
         None
     }
 
-    fn lookup_trait_decl_via_entry(
-        &self,
-        module_path: &ModuleFullPath,
-        sym: &str,
-    ) -> Option<cranelisp_types::TraitDecl> {
-        let entry = {
-            let guard = self.modules.get(module_path)?;
-            guard.get(sym)?.clone()
-        };
-        self.resolve_trait_decl_from_entry(&entry, 0)
-    }
-
-    fn resolve_trait_decl_from_entry(
-        &self,
-        entry: &ModuleEntry<C>,
-        depth: usize,
-    ) -> Option<cranelisp_types::TraitDecl> {
-        if depth > IMPORT_CHAIN_DEPTH_LIMIT {
-            return None;
-        }
-        match entry {
-            ModuleEntry::TraitDecl { decl, .. } => Some(decl.clone()),
-            ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
-                let next = {
-                    let guard = self.modules.get(&source.module)?;
-                    guard.get(source.symbol.as_ref())?.clone()
-                };
-                self.resolve_trait_decl_from_entry(&next, depth + 1)
-            }
-            _ => None,
-        }
-    }
-
-    /// Look up which trait a method name belongs to, via `trait_origin` on
-    /// `ModuleEntry::Def`.
+    /// Look up which trait a method name belongs to, via trait_origin on ModuleEntry::Def.
     ///
-    /// Per Principle 17 access shape 1+3.
+    /// Scans all loaded modules for a Def entry with the given name that has
+    /// a `trait_origin` set.
     pub fn method_to_trait(&self, method_name: &Symbol) -> Option<TraitName> {
-        let user_path = ModuleFullPath::from("user");
-        self.method_to_trait_in_module(&user_path, method_name)
-    }
-
-    /// Module-rooted variant.
-    pub(crate) fn method_to_trait_in_module(
-        &self,
-        module_path: &ModuleFullPath,
-        method_name: &Symbol,
-    ) -> Option<TraitName> {
-        if let Some(tn) = self.method_to_trait_via_entry(module_path, method_name.as_ref()) {
-            return Some(tn);
-        }
-        for imported in self.transitive_import_closure(module_path) {
-            if let Some(tn) = self.method_to_trait_via_entry(&imported, method_name.as_ref()) {
-                return Some(tn);
+        for guard in self.modules.iter() {
+            if let Some(ModuleEntry::Def { trait_origin: Some(fqtn), .. }) = guard.get(method_name.as_ref()) {
+                return Some(fqtn.name.clone());
             }
         }
         None
-    }
-
-    fn method_to_trait_via_entry(
-        &self,
-        module_path: &ModuleFullPath,
-        sym: &str,
-    ) -> Option<TraitName> {
-        let entry = {
-            let guard = self.modules.get(module_path)?;
-            guard.get(sym)?.clone()
-        };
-        self.resolve_method_origin_from_entry(&entry, 0)
-    }
-
-    fn resolve_method_origin_from_entry(
-        &self,
-        entry: &ModuleEntry<C>,
-        depth: usize,
-    ) -> Option<TraitName> {
-        if depth > IMPORT_CHAIN_DEPTH_LIMIT {
-            return None;
-        }
-        match entry {
-            ModuleEntry::Def { trait_origin: Some(fqtn), .. } => Some(fqtn.name.clone()),
-            ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
-                let next = {
-                    let guard = self.modules.get(&source.module)?;
-                    guard.get(source.symbol.as_ref())?.clone()
-                };
-                self.resolve_method_origin_from_entry(&next, depth + 1)
-            }
-            _ => None,
-        }
     }
 
     /// Check if a method belongs to a specific trait, via trait_origin on ModuleEntry::Def.
@@ -1567,31 +1222,15 @@ where
 
     /// Check if a trait impl exists for the given (trait_name, impl_type) pair.
     ///
-    /// Per Principle 17 access shape 3 — walks `user`'s transitive import
-    /// closure for `ModuleEntry::TraitImpl` entries.
+    /// Scans all loaded module SymbolTables for a `ModuleEntry::TraitImpl` entry
+    /// matching both the trait name and the implementation type name.
     pub fn has_impl(&self, trait_name: &TraitName, impl_type: &TypeName) -> bool {
-        let user_path = ModuleFullPath::from("user");
-        self.has_impl_in_module(&user_path, trait_name, impl_type)
-    }
-
-    /// Module-rooted variant.
-    pub(crate) fn has_impl_in_module(
-        &self,
-        module_path: &ModuleFullPath,
-        trait_name: &TraitName,
-        impl_type: &TypeName,
-    ) -> bool {
-        let mut order = vec![module_path.clone()];
-        order.extend(self.transitive_import_closure(module_path));
-        for path in order {
-            if let Some(guard) = self.modules.get(&path) {
-                for (_name, entry) in guard.all_symbols() {
-                    if let ModuleEntry::TraitImpl { trait_name: tn, impl_type: it, .. } = entry
-                        && &tn.name == trait_name
-                        && &it.name == impl_type
-                    {
-                        return true;
-                    }
+        for guard in self.modules.iter() {
+            for (_name, entry) in guard.all_symbols() {
+                if let ModuleEntry::TraitImpl { trait_name: tn, impl_type: it, .. } = entry
+                    && &tn.name == trait_name && &it.name == impl_type
+                {
+                    return true;
                 }
             }
         }
@@ -1601,30 +1240,16 @@ where
     /// Return all type names that implement a given trait.
     /// Results are sorted alphabetically.
     ///
-    /// Per Principle 17 access shape 3.
+    /// Scans all loaded module SymbolTables for `ModuleEntry::TraitImpl` entries
+    /// whose `trait_name.name` matches the given trait name.
     pub fn get_implementing_types(&self, trait_name: &TraitName) -> Vec<TypeName> {
-        let user_path = ModuleFullPath::from("user");
-        self.get_implementing_types_in_module(&user_path, trait_name)
-    }
-
-    /// Module-rooted variant.
-    pub(crate) fn get_implementing_types_in_module(
-        &self,
-        module_path: &ModuleFullPath,
-        trait_name: &TraitName,
-    ) -> Vec<TypeName> {
         let mut types: Vec<TypeName> = Vec::new();
-        let mut order = vec![module_path.clone()];
-        order.extend(self.transitive_import_closure(module_path));
-        for path in order {
-            if let Some(guard) = self.modules.get(&path) {
-                for (_name, entry) in guard.all_symbols() {
-                    if let ModuleEntry::TraitImpl { trait_name: tn, impl_type, .. } = entry
-                        && &tn.name == trait_name
-                        && !types.contains(&impl_type.name)
-                    {
-                        types.push(impl_type.name.clone());
-                    }
+        for guard in self.modules.iter() {
+            for (_name, entry) in guard.all_symbols() {
+                if let ModuleEntry::TraitImpl { trait_name: tn, impl_type, .. } = entry
+                    && &tn.name == trait_name && !types.contains(&impl_type.name)
+                {
+                    types.push(impl_type.name.clone());
                 }
             }
         }
@@ -1806,60 +1431,33 @@ where
 
     /// Build a map of known type names for type expression resolution.
     ///
-    /// Per Principle 17 access shape 4 (bulk introspection — current module
-    /// + transitive imports). Walks `user`'s view by default; internal
-    /// callers that hold a `CheckState` should prefer
-    /// [`Self::known_type_names_with_state`] to honour the active module.
-    ///
-    /// HashMap last-insert-wins puts local definitions ahead of imports.
-    #[allow(dead_code)] // used by TestFixture in test builds only
+    /// Scans all loaded module SymbolTables for TypeDef entries and builds
+    /// a map of (TypeName -> (FQTypeName, arity)).
     pub(crate) fn known_type_names(&self) -> crate::resolve::KnownTypes {
-        let user_path = ModuleFullPath::from("user");
-        self.known_type_names_in_module(&user_path)
-    }
-
-    /// `state`-rooted variant — preferred inside typecheck.
-    pub(crate) fn known_type_names_with_state(&self, state: &CheckState) -> crate::resolve::KnownTypes {
-        self.known_type_names_in_module(&state.current_module)
-    }
-
-    fn known_type_names_in_module(&self, module_path: &ModuleFullPath) -> crate::resolve::KnownTypes {
         let mut result = crate::resolve::KnownTypes::new();
         let primitives_path = ModuleFullPath::from("primitives");
-        let macros_path = ModuleFullPath::from("macros");
-        // Process synthetic root modules first so locally-defined types win
-        // on collision (Spec convention: types in `primitives` and `macros`
-        // are universally available even without explicit import).
-        for synthetic in [&primitives_path, &macros_path] {
-            if let Some(guard) = self.modules.get(synthetic) {
-                for (_name, entry) in guard.all_symbols() {
-                    if let ModuleEntry::TypeDef { info, .. } = entry {
-                        result.insert(
-                            info.name.name.clone(),
-                            (info.name.clone(), info.type_params.len()),
-                        );
-                    }
+        // Process primitives module first so user-defined types shadow builtins.
+        // HashMap last-insert-wins ensures local definitions take precedence.
+        if let Some(guard) = self.modules.get(&primitives_path) {
+            for (_name, entry) in guard.all_symbols() {
+                if let ModuleEntry::TypeDef { info, .. } = entry {
+                    result.insert(
+                        info.name.name.clone(),
+                        (info.name.clone(), info.type_params.len()),
+                    );
                 }
             }
         }
-        // Then `module_path` itself + everything it imports transitively.
-        let mut visited: HashSet<ModuleFullPath> = HashSet::new();
-        visited.insert(primitives_path);
-        visited.insert(macros_path);
-        let mut order = vec![module_path.clone()];
-        order.extend(self.transitive_import_closure(module_path));
-        for path in order {
-            if !visited.insert(path.clone()) {
-                continue;
+        for guard in self.modules.iter() {
+            if *guard.key() == primitives_path {
+                continue; // Already processed above.
             }
-            if let Some(guard) = self.modules.get(&path) {
-                for (_name, entry) in guard.all_symbols() {
-                    if let ModuleEntry::TypeDef { info, .. } = entry {
-                        result.insert(
-                            info.name.name.clone(),
-                            (info.name.clone(), info.type_params.len()),
-                        );
-                    }
+            for (_name, entry) in guard.all_symbols() {
+                if let ModuleEntry::TypeDef { info, .. } = entry {
+                    result.insert(
+                        info.name.name.clone(),
+                        (info.name.clone(), info.type_params.len()),
+                    );
                 }
             }
         }
@@ -1870,7 +1468,6 @@ where
     ///
     /// Internal constructors (e.g. `Bind` for the IO type) cannot be
     /// constructed or pattern-matched by user code.
-    #[allow(dead_code)] // public-API kept for binary crate; internal use prefers _with_state
     pub(crate) fn is_internal_constructor(&self, name: &Symbol) -> bool {
         // Strip module prefix for qualified names like "primitives/Bind"
         let bare_name: &str = if let Some(slash_pos) = name.as_ref().find('/') {
@@ -1879,41 +1476,6 @@ where
             name.as_ref()
         };
         self.is_internal_constructor_check(bare_name)
-    }
-
-    /// `state`-rooted variant of [`Self::is_internal_constructor`].
-    pub(crate) fn is_internal_constructor_with_state(&self, state: &CheckState, name: &Symbol) -> bool {
-        let bare_name: &str = if let Some(slash_pos) = name.as_ref().find('/') {
-            &name.as_ref()[slash_pos + 1..]
-        } else {
-            name.as_ref()
-        };
-        let type_name = self
-            .lookup_constructor_type_in_module(&state.current_module, bare_name)
-            .or_else(|| {
-                for synthetic in [
-                    ModuleFullPath::from("primitives"),
-                    ModuleFullPath::from("macros"),
-                ] {
-                    if state.current_module == synthetic {
-                        continue;
-                    }
-                    if let Some(tn) =
-                        self.lookup_constructor_type_in_module(&synthetic, bare_name)
-                    {
-                        return Some(tn);
-                    }
-                }
-                None
-            });
-        let type_name = match type_name {
-            Some(tn) => tn,
-            None => return false,
-        };
-        if let Some(info) = self.lookup_type_def_with_state(state, &type_name) {
-            return info.constructors.iter().any(|c| c.name.as_ref() == bare_name && c.internal);
-        }
-        false
     }
 
 }
@@ -2205,25 +1767,14 @@ impl TestFixture {
         self.env().resolve_primitive_jit_name(&self.state, name)
     }
 
-    /// Look up type def (test convenience). Uses the fixture's
-    /// `state.current_module` as the access root.
+    /// Look up type def (test convenience).
     pub fn lookup_type_def(&self, name: &TypeName) -> Option<TypeDefInfo> {
-        self.env().lookup_type_def_with_state(&self.state, name)
+        self.env().lookup_type_def(name)
     }
 
-    /// Look up constructor type (test convenience). Uses the fixture's
-    /// `state.current_module` as the access root, with primitives fallback.
+    /// Look up constructor type (test convenience).
     pub fn lookup_constructor_type(&self, ctor_name: &str) -> Option<TypeName> {
-        let env = self.env();
-        env.lookup_constructor_type_in_module(&self.state.current_module, ctor_name)
-            .or_else(|| {
-                let primitives_path = ModuleFullPath::from("primitives");
-                if self.state.current_module != primitives_path {
-                    env.lookup_constructor_type_in_module(&primitives_path, ctor_name)
-                } else {
-                    None
-                }
-            })
+        self.env().lookup_constructor_type(ctor_name)
     }
 
     /// Check exhaustiveness (test convenience).
@@ -2234,7 +1785,7 @@ impl TestFixture {
         has_wildcard: bool,
         span: Span,
     ) -> Result<(), CranelispError> {
-        self.env().check_exhaustiveness(&self.state, type_name, covered, has_wildcard, span)
+        self.env().check_exhaustiveness(type_name, covered, has_wildcard, span)
     }
 
     /// Fresh var id (test convenience).
@@ -2252,28 +1803,19 @@ impl TestFixture {
         self.env().snapshot(&self.state)
     }
 
-    /// Has impl (test convenience). Uses fixture's current module.
+    /// Has impl (test convenience).
     pub fn has_impl(&self, trait_name: &TraitName, impl_type: &TypeName) -> bool {
-        self.env().has_impl_in_module(&self.state.current_module, trait_name, impl_type)
+        self.env().has_impl(trait_name, impl_type)
     }
 
-    /// Lookup trait decl (test convenience). Uses fixture's current module.
+    /// Lookup trait decl (test convenience).
     pub fn lookup_trait_decl(&self, trait_name: &TraitName) -> Option<cranelisp_types::TraitDecl> {
-        let env = self.env();
-        env.lookup_trait_decl_in_module(&self.state.current_module, trait_name)
-            .or_else(|| {
-                let primitives_path = ModuleFullPath::from("primitives");
-                if self.state.current_module != primitives_path {
-                    env.lookup_trait_decl_in_module(&primitives_path, trait_name)
-                } else {
-                    None
-                }
-            })
+        self.env().lookup_trait_decl(trait_name)
     }
 
-    /// Method to trait (test convenience). Uses fixture's current module.
+    /// Method to trait (test convenience).
     pub fn method_to_trait(&self, method_name: &Symbol) -> Option<TraitName> {
-        self.env().method_to_trait_in_module(&self.state.current_module, method_name)
+        self.env().method_to_trait(method_name)
     }
 
     /// Bind local (test convenience).
@@ -2332,19 +1874,19 @@ impl TestFixture {
         env.check(&mut self.state, program, ctx, strategy)
     }
 
-    /// Is internal constructor (test convenience). Uses fixture's current module.
+    /// Is internal constructor (test convenience).
     pub fn is_internal_constructor_check(&self, ctor_name: &str) -> bool {
-        self.env().is_internal_constructor_with_state(&self.state, &Symbol::from(ctor_name))
+        self.env().is_internal_constructor_check(ctor_name)
     }
 
-    /// Known type names (test convenience). Uses fixture's current module.
+    /// Known type names (test convenience).
     pub fn known_type_names(&self) -> crate::resolve::KnownTypes {
-        self.env().known_type_names_with_state(&self.state)
+        self.env().known_type_names()
     }
 
-    /// Is trait method (test convenience). Uses fixture's current module.
+    /// Is trait method (test convenience).
     pub fn is_trait_method(&self, name: &Symbol) -> bool {
-        self.env().is_trait_method_in_module(&self.state.current_module, name)
+        self.env().method_to_trait(name).is_some()
     }
 
     /// Generate default methods (test convenience).
