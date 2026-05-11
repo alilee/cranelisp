@@ -1,6 +1,6 @@
 # Sprint 66: Facade adoption at the edges
 
-**Status**: PHASE 5 LANGUAGE (READY)
+**Status**: PHASE 5 LANGUAGE (ACTIVE — Wave 3a redo queued after architectural correction)
 
 **Goal**: Adopt the S65 final-state facades at every crate edge — execute the 9 W4a implementation slices, close the substantive cross-crate-migration FIXMEs, and land D43 (runtime split into `cranelisp-primitives` + `cranelisp-intrinsics`) because the post-S65 facade requires it (Principle 8).
 
@@ -293,6 +293,33 @@ Outcome authoring, ROADMAP update, archive on user approval.
 - **Note 1 — Implicit prelude injection in `imports` (FIXME 0034 — RESOLVED).** User-arbitrated answer (b): the implicit prelude does NOT appear in `SymbolTable.imports`. `imports` is the user-authored form-level record (drives regeneration); per-symbol `ModuleEntry::Import` / `Reexport` entries are the resolved-per-name record. The two stores record different facets at different granularities; both contribute valid edges to the import graph; consumers that need the **effective** import set walk both. α's `transitive_import_closure` (commit `ab068e2`) embodies the pattern. Path A (storage in `imports` + filter at regen) was rejected: shape-match filter cannot distinguish synthetic from user-authored `(import [prelude [*]])`. **Permanent landing**: the substance lives in `design/typecheck/ast-annotation.md` §11.3 item 4 (existing canonical home for `SymbolTable.imports` invariants) + a doc-comment cross-ref on `crates/cranelisp-types/src/module.rs`. No new Principle, no new Decision — §11.3 already articulates the one-way coherence rule and held the open question; flipping the bullet to resolved is the right edit. **FIXMEs filed**: 0170 → /typecheck (flip §11.3 + module.rs doc-comment); 0171 → /int (formal close of 0034, depends on 0170). 0034 amended with `status: resolved` + full Resolution block in-sprint as a transient bridge; deletes when 0171 fires.
 - **FIXME 0155** (platform facade text — `load_manifest` / `parse_type_sig` placement) — **Resolution: reduce facade.** /arch Wave B tightens `facades/platform.md` to mark both as platform-internal `pub(crate)` helpers (called by platform's own `manifest_to_descriptors` entry). int never calls them directly. One-paragraph facade edit; no source impact.
 - **FIXME 0158** (primitives `cargo public-api` versioning policy) — **Resolution: dissolves once 0159 lands.** cranelisp-primitives' Rust public API is one static declaration (`PRIMITIVES_TABLE`); cargo-public-api baseline is one line, stable across primitive churn. Semantic surface (which primitives exist + their signatures) is governed by spec conformance tests, NOT cargo-public-api. Two surfaces, two tools, no overlap. Standard /qa baseline-ownership process applies.
+
+### Wave 3a-α revert + architectural correction (2026-05-11)
+
+α's structural notes surfaced that α's foundation rested on three contested architectural inputs that the user-arbitrated post-mortem (2026-05-11) corrected. User framing: "no new wave to undo a previous wave. either we remove obvious issues now because we are confident, or we roll back and retry having fixed the inputs." Confidence inventory showed Pattern B retargeting + closure-walk removal were medium-low (foundational, not narrow); rollback chosen.
+
+**Architectural inputs corrected (commit chain on top of α `ab068e2`):**
+
+| Commit | Substance |
+|---|---|
+| `ab1686c` | Note 1 (FIXME 0034) closure: implicit prelude not in `SymbolTable.imports`; substance landed in `design/typecheck/ast-annotation.md` §11.3 item 4 + `crates/cranelisp-types/src/module.rs` doc-comment. Also first commit of `sprints/SPRINT.md`. |
+| `2033f0c` | Decision 45 reversal (Pattern A → Pattern B): impl storage in trait's defining module; lookup via per-symbol chain-follow back to trait's home. Principle 17 amended: chain-follow as cross-module primitive; closure walks forbidden; synthetic modules have empty `imports`/`exports`. Spec §7.11 generalised: impl storage is implementation-defined. Facades + bounded-contexts swept for Pattern A residue. |
+| `ea392d6` | Revert α (`ab068e2`) in full. Typecheck crate returns to pre-α state (commit `4eeeac6`); 1894 passed / 39 failed baseline. |
+| `f7f4287` | Principle 17 clarification: short-name resolution algorithm is current-module-only — no fallback, no root sweep, no closure walk. Universally-feeling symbols (`Int`, `+`) reach user code via implicit prelude injection of per-symbol `ModuleEntry::Import` bindings per spec §8.8.1. Special forms never enter resolution. The "root module" at `""` is notional only — no `SymbolTable` instance exists at that path. |
+
+**Notes 1, 2, 3 closure:**
+- Note 1 — resolved + durable in `ab1686c`; FIXMEs 0034/0170/0171 deleted (transient bridges, no persistent files left behind).
+- Note 2 (synthetic-module imports) — dissolved by Principle 17 amendment in `2033f0c`. α's defensive synthetic glob (`primitives.imports` glob injection of `macros`) was a workaround for a path that shouldn't exist; FQ-at-registration discipline (already used for `sconcat`) is the canonical path. No artifact change beyond Principle 17.
+- Note 3 (universal-types fallback) — dissolved. There is no fallback. Primitives reach user code via prelude per-symbol injection; root is notional only; the "contradiction" of `primitives/Int` being qualified-but-not-imported was a framing error — the prelude imports primitives (per spec §8.8.1), so per-symbol bindings carry the reach.
+
+**Sprint NOT closing.** The sprint plan is the trace of the architectural learning; holding the plan open serves the discovery + resolution discipline. Per user direction (2026-05-11): we are holding to the plan because it is helping find and resolve issues.
+
+**Wave 3a status: redo queued.** Architectural inputs are locked in (commits `ab1686c..f7f4287`). Wave 3a re-executes against the corrected inputs:
+
+1. **`/design (typecheck)` first** — refine `design/typecheck/implementation-slice-s66.md` against Pattern B + chain-follow + current-module-only short-name lookup + FQ-at-registration + synthetic-modules-empty. The slice has uncommitted Pattern-A-era content that needs Pattern-B reconciliation before `/dev` fires.
+2. **`/dev (typecheck)` second** — implement the locality refactor with the corrected design as guidance. The 40+ direct `self.modules.X` access sites still need refactoring to current-module-rooted accessors; impl writes target the trait's defining module (chain-follow to find it from the writer's view); impl reads use chain-follow from the trait member; no `transitive_import_closure` function; no defensive synthetic glob.
+3. **`/review (typecheck)` third** — change-set review against the corrected design intent.
+4. **Wave 3a-β** (cluster-atomic triad per Decision 44) — downstream of α redo.
 
 ### Phase 3 SCOPE expansion (per FIXME 0156 resolution)
 
