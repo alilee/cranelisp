@@ -390,10 +390,19 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let default_defns =
             self.generate_default_methods(state, &decl, impl_)?;
 
-        // Register the impl as a ModuleEntry::TraitImpl on the current module's SymbolTable.
-        // Build FQ names for the trait and impl type.
-        let trait_defining_module = self.defining_module_for(state, impl_.trait_name.as_ref());
-        let fq_trait_name = FQTraitName::new(trait_defining_module, impl_.trait_name.clone());
+        // Register the impl as a ModuleEntry::TraitImpl in the trait's
+        // **defining module** (Decision 45 / Pattern B). The write target is
+        // resolved by chain-following the trait reference from the writer's
+        // current module back to its home — not the writer's lexical module.
+        //
+        // For builtin trait impls (trait declared in `primitives`, written
+        // from `primitives`), the chain is length-zero, and the write target
+        // coincides with `state.current_module`. For user-mode impls
+        // (trait imported into the writer's module), the chain follows the
+        // per-symbol `ModuleEntry::Import` binding back to the trait's home,
+        // and the write lands there — not in the writer's table.
+        let trait_home = self.trait_home_for(state, impl_.trait_name.as_ref());
+        let fq_trait_name = FQTraitName::new(trait_home.clone(), impl_.trait_name.clone());
         let fq_impl_type = self.fqtn_for_bare_type_name(state, &impl_.target_type);
 
         let method_names: Vec<Symbol> = impl_.methods.iter()
@@ -404,7 +413,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             "impl${}${}",
             fq_impl_type, fq_trait_name
         ));
-        self.current_symbol_table_mut(state).insert(
+        self.symbol_table_mut_in(&trait_home).insert(
             impl_key,
             ModuleEntry::TraitImpl {
                 trait_name: fq_trait_name,
@@ -970,8 +979,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         arg_types: &[Type],
         span: Span,
     ) -> Result<Option<ResolvedCall>, CranelispError> {
-        // Check if this name is a trait method (via trait_origin on ModuleEntry::Def)
-        let trait_name = match self.method_to_trait(callee_name) {
+        // Check if this name is a trait method (via trait_origin on ModuleEntry::Def).
+        // State-rooted: chain-follow from the current module's view per Principle 17.
+        let trait_name = match self.method_to_trait_with_state(state, callee_name) {
             Some(tn) => tn,
             None => return Ok(None),
         };
@@ -993,7 +1003,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         // Check if an impl exists — if the name IS a trait method and the
         // type IS concrete but the impl DOESN'T exist, that's a type error.
-        if !self.has_impl(&trait_name, &impl_type_name) {
+        // State-rooted: chain-follow the trait reference from the current
+        // module's view to the trait's defining module per Decision 45.
+        if !self.has_impl_with_state(state, &trait_name, &impl_type_name) {
             return Err(CranelispError::TypeError {
                 message: format!(
                     "no impl of trait {} for type {}",
@@ -1008,8 +1020,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             trait_name, callee_name, impl_type_name
         );
 
-        // Build FQTraitName — look up defining module for the trait
-        let trait_defining_module = self.defining_module_for(state, trait_name.as_ref());
+        // Build FQTraitName — chain-follow the trait reference to its
+        // defining module per Decision 45 Pattern B.
+        let trait_defining_module = self.trait_home_for(state, trait_name.as_ref());
         let fq_trait_name = FQTraitName::new(trait_defining_module, trait_name);
 
         // Build FQTypeName for the impl type
@@ -1024,9 +1037,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     }
 
     /// Check if a callee name is a trait method (via trait_origin on ModuleEntry::Def).
+    /// Default-rooted to `user` — for state-aware callers use
+    /// [`Self::is_trait_method_with_state`].
     #[allow(dead_code)]
     pub(crate) fn is_trait_method(&self, name: &Symbol) -> bool {
         self.method_to_trait(name).is_some()
+    }
+
+    /// State-rooted variant of [`Self::is_trait_method`]. Chain-follows from
+    /// `state.current_module` per Principle 17.
+    pub(crate) fn is_trait_method_with_state(&self, state: &CheckState, name: &Symbol) -> bool {
+        self.method_to_trait_with_state(state, name).is_some()
     }
 }
 
@@ -1247,7 +1268,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 None => continue,
             };
             for fq_trait in traits {
-                if !self.has_impl(&fq_trait.name, &impl_type) {
+                if !self.has_impl_with_state(state, &fq_trait.name, &impl_type) {
                     return Err(CranelispError::TypeError {
                         message: format!(
                             "no impl of trait {} for type {}",

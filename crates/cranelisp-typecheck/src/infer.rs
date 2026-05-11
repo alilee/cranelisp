@@ -498,7 +498,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // Try to resolve this Apply if it's not already resolved
                 if !state.method_resolutions.contains_key(span)
                     && let Expr::Var { name, .. } = callee.as_ref()
-                    && self.is_trait_method(name)
+                    && self.is_trait_method_with_state(state, name)
                 {
                     let resolved_args: Vec<Type> = args
                         .iter()

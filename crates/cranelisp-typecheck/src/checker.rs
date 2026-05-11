@@ -197,6 +197,24 @@ where
             .unwrap_or_else(|| unreachable!("invariant: current_module always exists in modules map"))
     }
 
+    /// Get a write guard for an explicitly named module's symbol table.
+    ///
+    /// Used by Pattern B impl-write retargeting (Decision 45 / α15): the
+    /// orchestrator selects the trait's defining module as the write target,
+    /// not the writer's lexical module. Caller must ensure the module exists
+    /// (typecheck invariant: `ensure_module_exists` precedes any write).
+    pub(crate) fn symbol_table_mut_in(
+        &self,
+        module_path: &ModuleFullPath,
+    ) -> dashmap::mapref::one::RefMut<'_, ModuleFullPath, SymbolTable<C, L>> {
+        self.modules
+            .get_mut(module_path)
+            .unwrap_or_else(|| unreachable!(
+                "invariant: target module '{}' must exist before write",
+                module_path
+            ))
+    }
+
     /// Ensure a module's symbol table exists, creating it if needed.
     ///
     /// Uses DashMap interior mutation — safe with `&self`. Seeds new modules
@@ -568,6 +586,23 @@ where
         state.current_module.clone()
     }
 
+    /// Resolve the defining module of a trait reference reachable from
+    /// `state.current_module` via per-symbol chain-follow (Principle 17
+    /// shape 1 + Decision 45 Pattern B). Returns the chain-followed home if
+    /// the name resolves to a `TraitDecl`; otherwise falls back to
+    /// [`Self::defining_module_for`] for compatibility with call sites that
+    /// pre-date trait registration (e.g., builtins-bootstrap, which writes
+    /// `TraitDecl` and impls in the same orchestrator pass and may probe
+    /// for the trait before its `TraitDecl` lands).
+    pub(crate) fn trait_home_for(&self, state: &CheckState, trait_name: &str) -> ModuleFullPath {
+        if let Some((ModuleEntry::TraitDecl { .. }, home)) =
+            self.resolve_terminal_entry_and_home(&state.current_module, trait_name)
+        {
+            return home;
+        }
+        self.defining_module_for(state, trait_name)
+    }
+
     // --- Scope operations (delegate to CheckState.env) ---
 
     /// Push a new scope frame.
@@ -716,6 +751,51 @@ where
                 self.resolve_to_terminal_entry_owned(&target, depth + 1)
             }
             other => Some(other.clone()),
+        }
+    }
+
+    /// Chain-follow a name starting from `module_path` to its canonical home,
+    /// returning `(terminal_entry, terminal_module)`. Per Principle 17 and
+    /// Decision 45 — used by Pattern B impl resolution.
+    ///
+    /// Walks per-symbol `ModuleEntry::Import` / `ModuleEntry::Reexport`
+    /// bindings one edge at a time along `source.module` references until a
+    /// canonical (non-Import/non-Reexport) entry is reached. Returns the
+    /// terminal entry plus the module that hosts it (the defining module).
+    /// Returns `None` if no entry exists for `name` in `module_path`, the
+    /// chain is malformed, or the chain depth limit is exceeded.
+    pub(crate) fn resolve_terminal_entry_and_home(
+        &self,
+        module_path: &ModuleFullPath,
+        name: &str,
+    ) -> Option<(ModuleEntry<C>, ModuleFullPath)> {
+        let (entry, home) = {
+            let guard = self.modules.get(module_path)?;
+            (guard.get(name)?.clone(), module_path.clone())
+        };
+        self.chain_follow_to_home(entry, home, 0)
+    }
+
+    /// Recursive helper for [`Self::resolve_terminal_entry_and_home`].
+    fn chain_follow_to_home(
+        &self,
+        entry: ModuleEntry<C>,
+        home: ModuleFullPath,
+        depth: usize,
+    ) -> Option<(ModuleEntry<C>, ModuleFullPath)> {
+        if depth > IMPORT_CHAIN_DEPTH_LIMIT {
+            return None;
+        }
+        match &entry {
+            ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
+                let next_home = source.module.clone();
+                let next_entry = {
+                    let guard = self.modules.get(&source.module)?;
+                    guard.get(source.symbol.as_ref())?.clone()
+                };
+                self.chain_follow_to_home(next_entry, next_home, depth + 1)
+            }
+            _ => Some((entry, home)),
         }
     }
 
@@ -1276,21 +1356,79 @@ where
     /// Return all trait names that have an impl registered for `type_name`.
     /// Results are sorted alphabetically.
     ///
-    /// Scans all loaded module SymbolTables for `ModuleEntry::TraitImpl` entries
-    /// whose `impl_type.name` matches the given type name.
+    /// Per Decision 45 (Pattern B) — enumerate traits visible from the
+    /// (default `user`) module via shape-4 current-module introspection,
+    /// chain-follow each to its defining module, and probe each home for
+    /// impls of `type_name`. No universe scan; each trait home is touched
+    /// at most once.
     pub fn get_impls_for_type(&self, type_name: &TypeName) -> Vec<TraitName> {
+        let user_path = ModuleFullPath::from("user");
+        self.get_impls_for_type_in_module(&user_path, type_name)
+    }
+
+    /// Module-rooted variant of [`Self::get_impls_for_type`].
+    pub(crate) fn get_impls_for_type_in_module(
+        &self,
+        module_path: &ModuleFullPath,
+        type_name: &TypeName,
+    ) -> Vec<TraitName> {
         let mut traits: Vec<TraitName> = Vec::new();
-        for guard in self.modules.iter() {
-            for (_name, entry) in guard.all_symbols() {
-                if let ModuleEntry::TraitImpl { trait_name, impl_type, .. } = entry
-                    && &impl_type.name == type_name && !traits.contains(&trait_name.name)
-                {
-                    traits.push(trait_name.name.clone());
+        // Collect candidate trait names from the current module (shape 4 —
+        // bulk current-module-only introspection). Each candidate is then
+        // chain-followed (shape 3) per Decision 45.
+        let candidates: Vec<TraitName> = match self.modules.get(module_path) {
+            Some(guard) => guard.all_symbols()
+                .filter_map(|(name, entry)| match entry {
+                    ModuleEntry::TraitDecl { .. } => Some(TraitName::from(name.as_ref())),
+                    // Imported/reexported traits also count — their short
+                    // name is visible from this module; chain-follow
+                    // disambiguates against non-trait entries below.
+                    ModuleEntry::Import { .. } | ModuleEntry::Reexport { .. } =>
+                        Some(TraitName::from(name.as_ref())),
+                    _ => None,
+                })
+                .collect(),
+            None => return traits,
+        };
+        // Track visited trait homes so we don't double-scan.
+        let mut visited_homes: std::collections::HashSet<ModuleFullPath> =
+            std::collections::HashSet::new();
+        for candidate in candidates {
+            let trait_home = match self.resolve_terminal_entry_and_home(
+                module_path,
+                candidate.as_ref(),
+            ) {
+                Some((ModuleEntry::TraitDecl { .. }, home)) => home,
+                _ => continue,
+            };
+            if !visited_homes.insert(trait_home.clone()) {
+                continue;
+            }
+            if let Some(guard) = self.modules.get(&trait_home) {
+                for (_key, entry) in guard.all_symbols() {
+                    if let ModuleEntry::TraitImpl { trait_name, impl_type, .. } = entry
+                        && &impl_type.name == type_name
+                        && !traits.contains(&trait_name.name)
+                    {
+                        traits.push(trait_name.name.clone());
+                    }
                 }
             }
         }
         traits.sort();
         traits
+    }
+
+    /// State-rooted variant of [`Self::get_impls_for_type`]. Reserved for
+    /// future internal callers (`/repl` and session-layer REPL formatters
+    /// currently use the public default-rooted variant).
+    #[allow(dead_code)]
+    pub(crate) fn get_impls_for_type_with_state(
+        &self,
+        state: &CheckState,
+        type_name: &TypeName,
+    ) -> Vec<TraitName> {
+        self.get_impls_for_type_in_module(&state.current_module, type_name)
     }
 
     /// Return the method names declared in a trait.
@@ -1331,17 +1469,38 @@ where
         self.lookup_trait_decl_in_module(&state.current_module, trait_name)
     }
 
-    /// Look up which trait a method name belongs to, via trait_origin on ModuleEntry::Def.
+    /// Look up which trait a method name belongs to.
     ///
-    /// Scans all loaded modules for a Def entry with the given name that has
-    /// a `trait_origin` set.
+    /// Per Principle 17 — current-module-only short-name lookup with
+    /// per-symbol chain-follow on `Import`/`Reexport` entries. Probes the
+    /// (default `user`) module for `method_name`; if it resolves to a
+    /// canonical `ModuleEntry::Def` carrying `trait_origin`, returns the
+    /// bare trait name. No universe scan.
     pub fn method_to_trait(&self, method_name: &Symbol) -> Option<TraitName> {
-        for guard in self.modules.iter() {
-            if let Some(ModuleEntry::Def { trait_origin: Some(fqtn), .. }) = guard.get(method_name.as_ref()) {
-                return Some(fqtn.name.clone());
-            }
+        let user_path = ModuleFullPath::from("user");
+        self.method_to_trait_in_module(&user_path, method_name)
+    }
+
+    /// Module-rooted variant of [`Self::method_to_trait`].
+    pub(crate) fn method_to_trait_in_module(
+        &self,
+        module_path: &ModuleFullPath,
+        method_name: &Symbol,
+    ) -> Option<TraitName> {
+        let entry = self.resolve_entry_in_module(module_path, method_name.as_ref())?;
+        match entry {
+            ModuleEntry::Def { trait_origin: Some(fqtn), .. } => Some(fqtn.name.clone()),
+            _ => None,
         }
-        None
+    }
+
+    /// State-rooted variant of [`Self::method_to_trait`].
+    pub(crate) fn method_to_trait_with_state(
+        &self,
+        state: &CheckState,
+        method_name: &Symbol,
+    ) -> Option<TraitName> {
+        self.method_to_trait_in_module(&state.current_module, method_name)
     }
 
     /// Check if a method belongs to a specific trait, via trait_origin on ModuleEntry::Def.
@@ -1351,29 +1510,100 @@ where
 
     /// Check if a trait impl exists for the given (trait_name, impl_type) pair.
     ///
-    /// Scans all loaded module SymbolTables for a `ModuleEntry::TraitImpl` entry
-    /// matching both the trait name and the implementation type name.
+    /// Per Decision 45 (Pattern B) — chain-follow the trait reference from
+    /// the (default `user`) module to its defining module, then probe that
+    /// one module's symbol table for the synthetic key
+    /// `impl$<FQTypeName>$<FQTraitName>`. No universe scan.
     pub fn has_impl(&self, trait_name: &TraitName, impl_type: &TypeName) -> bool {
-        for guard in self.modules.iter() {
-            for (_name, entry) in guard.all_symbols() {
-                if let ModuleEntry::TraitImpl { trait_name: tn, impl_type: it, .. } = entry
-                    && &tn.name == trait_name && &it.name == impl_type
-                {
-                    return true;
-                }
+        let user_path = ModuleFullPath::from("user");
+        self.has_impl_in_module(&user_path, trait_name, impl_type)
+    }
+
+    /// Module-rooted variant of [`Self::has_impl`].
+    pub(crate) fn has_impl_in_module(
+        &self,
+        module_path: &ModuleFullPath,
+        trait_name: &TraitName,
+        impl_type: &TypeName,
+    ) -> bool {
+        self.find_impl_entry_in_module(module_path, trait_name, impl_type).is_some()
+    }
+
+    /// State-rooted variant of [`Self::has_impl`].
+    pub(crate) fn has_impl_with_state(
+        &self,
+        state: &CheckState,
+        trait_name: &TraitName,
+        impl_type: &TypeName,
+    ) -> bool {
+        self.has_impl_in_module(&state.current_module, trait_name, impl_type)
+    }
+
+    /// Pattern B impl-resolution primitive: chain-follow the trait to its
+    /// defining module H, then probe H for `impl$<FQTypeName>$<FQTraitName>`.
+    /// Returns the impl entry (cloned) plus the trait's home module.
+    ///
+    /// The probe matches by `impl_type.name == impl_type` to accommodate the
+    /// caller passing a bare `TypeName`; the FQ trait name is built from the
+    /// trait's chain-followed home so the synthetic key is correct.
+    fn find_impl_entry_in_module(
+        &self,
+        module_path: &ModuleFullPath,
+        trait_name: &TraitName,
+        impl_type: &TypeName,
+    ) -> Option<(ModuleEntry<C>, ModuleFullPath)> {
+        // Chain-follow trait reference to its defining module.
+        let (terminal, trait_home) = self.resolve_terminal_entry_and_home(
+            module_path,
+            trait_name.as_ref(),
+        )?;
+        // Terminal must be a TraitDecl for this to be a valid trait reference.
+        if !matches!(terminal, ModuleEntry::TraitDecl { .. }) {
+            return None;
+        }
+        // Probe trait's home for any `impl$*$<trait_home/trait_name>` whose
+        // impl_type's bare name matches `impl_type`. Iterate the trait's home
+        // symbol table only (Principle 17 shape 3) — no other modules touched.
+        let guard = self.modules.get(&trait_home)?;
+        for (_key, entry) in guard.all_symbols() {
+            if let ModuleEntry::TraitImpl { trait_name: tn, impl_type: it, .. } = &entry
+                && &tn.name == trait_name && &it.name == impl_type
+            {
+                return Some((entry.clone(), trait_home.clone()));
             }
         }
-        false
+        None
     }
 
     /// Return all type names that implement a given trait.
     /// Results are sorted alphabetically.
     ///
-    /// Scans all loaded module SymbolTables for `ModuleEntry::TraitImpl` entries
-    /// whose `trait_name.name` matches the given trait name.
+    /// Per Decision 45 (Pattern B) — chain-follow the trait reference to
+    /// its defining module, then enumerate `ModuleEntry::TraitImpl` entries
+    /// in that one module's symbol table. The trait's home owns the complete
+    /// impl set; no other modules are consulted.
     pub fn get_implementing_types(&self, trait_name: &TraitName) -> Vec<TypeName> {
+        let user_path = ModuleFullPath::from("user");
+        self.get_implementing_types_in_module(&user_path, trait_name)
+    }
+
+    /// Module-rooted variant of [`Self::get_implementing_types`].
+    pub(crate) fn get_implementing_types_in_module(
+        &self,
+        module_path: &ModuleFullPath,
+        trait_name: &TraitName,
+    ) -> Vec<TypeName> {
         let mut types: Vec<TypeName> = Vec::new();
-        for guard in self.modules.iter() {
+        // Chain-follow trait reference to its defining module.
+        let trait_home = match self.resolve_terminal_entry_and_home(
+            module_path,
+            trait_name.as_ref(),
+        ) {
+            Some((ModuleEntry::TraitDecl { .. }, home)) => home,
+            _ => return types, // trait not reachable from this module
+        };
+        // Enumerate impls in the trait's home only.
+        if let Some(guard) = self.modules.get(&trait_home) {
             for (_name, entry) in guard.all_symbols() {
                 if let ModuleEntry::TraitImpl { trait_name: tn, impl_type, .. } = entry
                     && &tn.name == trait_name && !types.contains(&impl_type.name)
@@ -1384,6 +1614,17 @@ where
         }
         types.sort();
         types
+    }
+
+    /// State-rooted variant of [`Self::get_implementing_types`]. Reserved
+    /// for future internal callers.
+    #[allow(dead_code)]
+    pub(crate) fn get_implementing_types_with_state(
+        &self,
+        state: &CheckState,
+        trait_name: &TraitName,
+    ) -> Vec<TypeName> {
+        self.get_implementing_types_in_module(&state.current_module, trait_name)
     }
 
     /// Resolve a module name: try as child of current module first, then as
@@ -1984,19 +2225,20 @@ impl TestFixture {
         self.env().snapshot(&self.state)
     }
 
-    /// Has impl (test convenience).
+    /// Has impl (test convenience). State-rooted so tests that switch the
+    /// active module via `set_current_module` honour the active module.
     pub fn has_impl(&self, trait_name: &TraitName, impl_type: &TypeName) -> bool {
-        self.env().has_impl(trait_name, impl_type)
+        self.env().has_impl_with_state(&self.state, trait_name, impl_type)
     }
 
-    /// Lookup trait decl (test convenience).
+    /// Lookup trait decl (test convenience). State-rooted.
     pub fn lookup_trait_decl(&self, trait_name: &TraitName) -> Option<cranelisp_types::TraitDecl> {
-        self.env().lookup_trait_decl(trait_name)
+        self.env().lookup_trait_decl_with_state(&self.state, trait_name)
     }
 
-    /// Method to trait (test convenience).
+    /// Method to trait (test convenience). State-rooted.
     pub fn method_to_trait(&self, method_name: &Symbol) -> Option<TraitName> {
-        self.env().method_to_trait(method_name)
+        self.env().method_to_trait_with_state(&self.state, method_name)
     }
 
     /// Bind local (test convenience).
