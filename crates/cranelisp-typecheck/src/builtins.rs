@@ -869,52 +869,57 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         self.ensure_module_exists(&primitives_path);
         state.current_module = primitives_path.clone();
 
-        // Define the TraceCall constructor via the normal registration path.
-        let trace_ctors = vec![ConstructorDef {
+        // Build TraceCall's ConstructorInfo with pre-resolved FQ field types.
+        //
+        // Per Principle 17, `primitives` has empty imports — short-name
+        // resolution against the current module's view cannot find
+        // `macros/SList`. Construct the cross-module field types FQ at
+        // registration time using `macros_fqtn(...)` / `primitives_fqtn(...)`.
+        let trace_fqtn = primitives_fqtn("Trace");
+        let slist_string_ty = Type::ADT(macros_fqtn("SList"), vec![Type::String]);
+        let slist_trace_ty = Type::ADT(
+            macros_fqtn("SList"),
+            vec![Type::ADT(trace_fqtn.clone(), vec![])],
+        );
+
+        let trace_ctor_info = ConstructorInfo {
             name: Symbol::from("TraceCall"),
-            docstring: Some("Trace call tree node".to_string()),
+            tag: 0,
             fields: vec![
-                FieldDef {
+                FieldInfo {
                     name: Symbol::from("name"),
-                    type_expr: TypeExpr::Named(TypeName::from("String")),
+                    ty: Type::String,
                 },
-                FieldDef {
+                FieldInfo {
                     name: Symbol::from("params"),
-                    type_expr: TypeExpr::Applied(
-                        TypeName::from("SList"),
-                        vec![TypeExpr::Named(TypeName::from("String"))],
-                    ),
+                    ty: slist_string_ty,
                 },
-                FieldDef {
+                FieldInfo {
                     name: Symbol::from("result"),
-                    type_expr: TypeExpr::Named(TypeName::from("String")),
+                    ty: Type::String,
                 },
-                FieldDef {
+                FieldInfo {
                     name: Symbol::from("children"),
-                    type_expr: TypeExpr::Applied(
-                        TypeName::from("SList"),
-                        vec![TypeExpr::Named(TypeName::from("Trace"))],
-                    ),
+                    ty: slist_trace_ty,
                 },
-                FieldDef {
+                FieldInfo {
                     name: Symbol::from("nanos"),
-                    type_expr: TypeExpr::Named(TypeName::from("Int")),
+                    ty: Type::Int,
                 },
             ],
-            span: Span::SYNTHETIC,
-        }];
+            docstring: Some("Trace call tree node".to_string()),
+            internal: false,
+        };
 
-        self.register_type_def(state,
+        self.register_type_def_with_ctor_infos(
+            state,
             &TypeName::from("Trace"),
             &Some("Recorded execution call tree from (trace expr)".to_string()),
-            &[], // monomorphic — no type parameters
-            &trace_ctors,
+            &[],
+            &[],
+            vec![trace_ctor_info],
             Visibility::Public,
-            Span::SYNTHETIC,
-        )
-        .unwrap_or_else(|e| {
-            unreachable!("invariant: Trace type registration failed: {e}")
-        });
+        );
 
         // Register field accessor functions as monomorphic Def entries.
         // These allow destructuring via function application rather than match.
@@ -1523,7 +1528,8 @@ mod tests {
     #[test]
     fn test_slist_type_registered() {
         let tf = TestFixture::new();
-        let info = tf.env().lookup_type_def(&TypeName::from("SList"));
+        let macros_path = ModuleFullPath::from("macros");
+        let info = tf.lookup_type_def_in_module(&macros_path, &TypeName::from("SList"));
         assert!(info.is_some(), "SList type should be registered");
         let info = info.unwrap();
         assert_eq!(info.type_params.len(), 1, "SList has 1 type parameter");
@@ -1604,7 +1610,8 @@ mod tests {
     #[test]
     fn test_sexp_type_registered() {
         let tf = TestFixture::new();
-        let info = tf.env().lookup_type_def(&TypeName::from("Sexp"));
+        let macros_path = ModuleFullPath::from("macros");
+        let info = tf.lookup_type_def_in_module(&macros_path, &TypeName::from("Sexp"));
         assert!(info.is_some(), "Sexp type should be registered");
         let info = info.unwrap();
         assert!(info.type_params.is_empty(), "Sexp has 0 type parameters");
@@ -1881,7 +1888,8 @@ mod tests {
     #[test]
     fn test_io_type_registered() {
         let tf = TestFixture::new();
-        let info = tf.env().lookup_type_def(&TypeName::from("IO"));
+        let primitives_path = ModuleFullPath::from("primitives");
+        let info = tf.lookup_type_def_in_module(&primitives_path, &TypeName::from("IO"));
         assert!(info.is_some(), "IO type should be registered");
         let info = info.unwrap();
         assert_eq!(info.type_params.len(), 1, "IO has 1 type parameter");
@@ -1973,7 +1981,10 @@ mod tests {
         let tf = TestFixture::new();
 
         // Bind should be in TypeDefInfo but NOT in the symbol table.
-        let info = tf.env().lookup_type_def(&TypeName::from("IO")).unwrap();
+        let primitives_path = ModuleFullPath::from("primitives");
+        let info = tf
+            .lookup_type_def_in_module(&primitives_path, &TypeName::from("IO"))
+            .unwrap();
         let bind_ctor = &info.constructors[2];
         assert_eq!(bind_ctor.name.as_ref(), "Bind");
         assert_eq!(bind_ctor.tag, 2);
@@ -2280,7 +2291,8 @@ mod tests {
     #[test]
     fn test_trace_type_registered() {
         let tf = TestFixture::new();
-        let info = tf.env().lookup_type_def(&TypeName::from("Trace"));
+        let primitives_path = ModuleFullPath::from("primitives");
+        let info = tf.lookup_type_def_in_module(&primitives_path, &TypeName::from("Trace"));
         assert!(info.is_some(), "Trace type should be registered");
         let info = info.unwrap();
         assert!(info.type_params.is_empty(), "Trace has no type parameters (monomorphic)");

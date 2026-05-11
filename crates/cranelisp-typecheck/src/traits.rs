@@ -95,7 +95,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         decl: &TraitDecl,
     ) -> Result<(), CranelispError> {
         // Check for duplicate trait name by looking in SymbolTables
-        if self.lookup_trait_decl(&decl.name).is_some() {
+        if self.lookup_trait_decl_with_state(state, &decl.name).is_some() {
             return Err(CranelispError::TypeError {
                 message: format!("trait {} already defined", decl.name),
                 location: ErrorLocation::from_span(decl.span),
@@ -330,7 +330,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) -> Result<Vec<Defn>, CranelispError> {
         // Look up the trait declaration via SymbolTables
         let decl = self
-            .lookup_trait_decl(&impl_.trait_name)
+            .lookup_trait_decl_with_state(state, &impl_.trait_name)
             .ok_or_else(|| CranelispError::TypeError {
                 message: format!("unknown trait: {}", impl_.trait_name),
                 location: ErrorLocation::from_span(impl_.span),
@@ -364,7 +364,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                             }
                         }
                         // Check arity of known ADT types
-                        if let Some(td) = self.lookup_type_def(&impl_.target_type)
+                        if let Some(td) = self.lookup_type_def_with_state(state, &impl_.target_type)
                             && td.type_params.len() != expected_arity
                         {
                             return Err(CranelispError::TypeError {
@@ -977,7 +977,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         };
 
         // Use hkt_param_index for dispatch argument selection (defaults to 0)
-        let param_idx = self.hkt_param_idx_for_method(callee_name);
+        let param_idx = self.hkt_param_idx_for_method(state, callee_name);
         let dispatch_arg = match arg_types.get(param_idx) {
             Some(a) => a,
             None => return Ok(None),
@@ -1789,10 +1789,15 @@ fn find_applied_arity(texpr: &cranelisp_types::TypeExpr, con_name: &Symbol) -> O
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     /// Get the HKT param index for a method name, defaulting to 0.
     /// For mangled names like "Functor.fmap$Option", extracts the base method name first.
-    fn hkt_param_idx_for_method(&self, name: &Symbol) -> usize {
+    ///
+    /// Per Principle 17 — current-module-rooted; trait declarations reach
+    /// here via the prelude's per-symbol `ModuleEntry::Import` bindings (or
+    /// the user's explicit imports), which the underlying chain-follow
+    /// follows back to the trait's defining module.
+    fn hkt_param_idx_for_method(&self, state: &CheckState, name: &Symbol) -> usize {
         let name_str = name.as_ref();
         // Try direct lookup
-        if let Some(idx) = self.find_hkt_param_index_in_registry(name_str) {
+        if let Some(idx) = self.find_hkt_param_index_in_registry(state, name_str) {
             return idx;
         }
         // For mangled names like "Functor.fmap$Option", extract the method name
@@ -1804,22 +1809,33 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             } else {
                 prefix
             };
-            if let Some(idx) = self.find_hkt_param_index_in_registry(base) {
+            if let Some(idx) = self.find_hkt_param_index_in_registry(state, base) {
                 return idx;
             }
         }
         0
     }
 
-    /// Walk trait declarations in loaded modules to find a method's hkt_param_index.
-    fn find_hkt_param_index_in_registry(&self, method_name: &str) -> Option<usize> {
-        for guard in self.modules.iter() {
-            for (_name, entry) in guard.all_symbols() {
-                if let ModuleEntry::TraitDecl { decl, .. } = entry {
-                    for method in &decl.methods {
-                        if method.name.as_ref() == method_name {
-                            return method.hkt_param_index;
-                        }
+    /// Walk trait declarations visible from `state.current_module` to find a
+    /// method's `hkt_param_index`.
+    ///
+    /// Per Principle 17 shape 4 (bulk introspection — current-module-only):
+    /// iterates the current module's symbol table; `Import`/`Reexport`
+    /// entries are chain-followed to their terminal `TraitDecl` so traits
+    /// imported (e.g., via the prelude) are reachable.
+    fn find_hkt_param_index_in_registry(
+        &self,
+        state: &CheckState,
+        method_name: &str,
+    ) -> Option<usize> {
+        let guard = self.modules.get(&state.current_module)?;
+        for (_name, entry) in guard.all_symbols() {
+            if let Some(terminal) = self.resolve_to_terminal_entry_owned(&entry, 0)
+                && let ModuleEntry::TraitDecl { decl, .. } = terminal
+            {
+                for method in &decl.methods {
+                    if method.name.as_ref() == method_name {
+                        return method.hkt_param_index;
                     }
                 }
             }

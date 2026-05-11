@@ -115,7 +115,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         // Reject internal constructors (e.g. Bind) — they cannot be
         // constructed by user code, only by compiler-generated primitives.
-        if self.is_internal_constructor(name) {
+        if self.is_internal_constructor(state, name) {
             return Err(CranelispError::TypeError {
                 message: format!(
                     "cannot construct internal type constructor '{name}'"
@@ -222,7 +222,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let mut param_types = Vec::new();
         for (i, param_name) in params.iter().enumerate() {
             let param_ty = if let Some(Some(annotation)) = param_annotations.get(i) {
-                let known = self.known_type_names();
+                let known = self.known_type_names_with_state(state);
                 let var_map = HashMap::new();
                 resolve_type_expr(annotation, &var_map, &known, span)?
             } else {
@@ -619,7 +619,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Check exhaustiveness for concrete ADT scrutinees
         let resolved_scrutinee = self.apply_subst(state, &scrutinee_ty);
         if let Type::ADT(fqtn, _) = &resolved_scrutinee {
-            self.check_exhaustiveness(&fqtn.name, &covered_ctors, has_wildcard, span)?;
+            self.check_exhaustiveness_in_module(
+                &state.current_module,
+                &fqtn.name,
+                &covered_ctors,
+                has_wildcard,
+                span,
+            )?;
         }
 
         let resolved = self.apply_subst(state, &result_ty);
@@ -642,7 +648,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) -> Result<(), CranelispError> {
         // Reject internal constructors (e.g. Bind) in pattern matching.
         // Internal constructors are implementation details not meant for user code.
-        if self.is_internal_constructor(name) {
+        if self.is_internal_constructor(state, name) {
             return Err(CranelispError::TypeError {
                 message: format!(
                     "cannot match on internal type constructor '{name}'"
@@ -682,7 +688,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         };
 
         // Verify the constructor exists by checking the module system
-        if self.lookup_constructor_type(bare_name).is_none()
+        if self.lookup_constructor_type_with_state(state, bare_name).is_none()
         {
             return Err(CranelispError::TypeError {
                 message: format!("unknown constructor in pattern: {name}"),
@@ -834,7 +840,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         expr: &Expr,
         span: Span,
     ) -> Result<Type, CranelispError> {
-        let known = self.known_type_names();
+        let known = self.known_type_names_with_state(state);
         let var_map = HashMap::new();
         let ann_type = resolve_type_expr(annotation, &var_map, &known, span)?;
 

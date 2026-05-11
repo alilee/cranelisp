@@ -10,9 +10,9 @@
 
 use std::collections::HashMap;
 
-use cranelisp_types::{ErrorLocation, 
+use cranelisp_types::{ErrorLocation,
     ConstructorDef, ConstructorInfo, CranelispError, FQTypeName, FieldInfo, ModuleEntry,
-    Scheme, Span, Symbol, Type, TypeDefInfo, TypeId, TypeName, Visibility,
+    ModuleFullPath, Scheme, Span, Symbol, Type, TypeDefInfo, TypeId, TypeName, Visibility,
 };
 
 use crate::checker::{CheckState, TypeCheckEnv};
@@ -41,10 +41,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Build the fully-qualified type name
         let fqtn = FQTypeName::new(state.current_module.clone(), name.clone());
 
-        // Build the ADT result type using the type parameter vars
-        let type_args: Vec<Type> = type_var_ids.iter().map(|&id| Type::Var(id)).collect();
-        let adt_type = Type::ADT(fqtn.clone(), type_args);
-
         // Pre-seed the type name in the symbol table so recursive constructor
         // fields (e.g., `:(List a) tail` inside a `(deftype (List a) ...)`) can
         // resolve the type during `build_constructor_infos`. The full TypeDefInfo
@@ -68,7 +64,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // If resolution fails, remove the pre-seeded placeholder so it
         // doesn't pollute known_types for subsequent definitions.
         let ctor_infos = match self.build_constructor_infos(
-            name, constructors, &var_map, span,
+            state, name, constructors, &var_map, span,
         ) {
             Ok(infos) => infos,
             Err(e) => {
@@ -78,6 +74,64 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
         };
 
+        self.register_type_def_with_ctor_infos(
+            state,
+            name,
+            docstring,
+            type_params,
+            &type_var_ids,
+            ctor_infos,
+            visibility,
+        );
+
+        Ok(())
+    }
+
+    /// Register a type definition using pre-resolved `ConstructorInfo`s.
+    ///
+    /// This is the synthetic-bootstrap path used when a type's constructor
+    /// fields reference types in foreign synthetic modules (e.g. `Trace` in
+    /// `primitives` referencing `macros/SList`). Per Principle 17, synthetic
+    /// modules have empty imports, so short-name resolution via TypeExpr
+    /// cannot reach foreign-module type names — the caller must construct
+    /// FQ field types directly using `*_fqtn(...)` helpers and supply them
+    /// here as already-built `ConstructorInfo`s.
+    ///
+    /// Caller's responsibility: `type_var_ids` MUST correspond positionally
+    /// to `type_params` (i.e. the type vars that should be quantified in
+    /// each constructor's scheme).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn register_type_def_with_ctor_infos(
+        &self,
+        state: &mut CheckState,
+        name: &TypeName,
+        docstring: &Option<String>,
+        type_params: &[Symbol],
+        type_var_ids: &[TypeId],
+        ctor_infos: Vec<ConstructorInfo>,
+        visibility: Visibility,
+    ) {
+        let fqtn = FQTypeName::new(state.current_module.clone(), name.clone());
+        let type_args: Vec<Type> = type_var_ids.iter().map(|&id| Type::Var(id)).collect();
+        let adt_type = Type::ADT(fqtn.clone(), type_args);
+
+        // Ensure the type is pre-seeded (the `register_type_def` path pre-seeds;
+        // direct callers may not have, so do it here defensively).
+        self.current_symbol_table_mut(state).insert(
+            Symbol::from(name.as_ref()),
+            ModuleEntry::TypeDef {
+                info: TypeDefInfo {
+                    name: fqtn.clone(),
+                    type_params: type_params.to_vec(),
+                    constructors: vec![],
+                    docstring: None,
+                },
+                visibility,
+                constructor_scheme: None,
+                sexp: None,
+            },
+        );
+
         let type_def_info = TypeDefInfo {
             name: fqtn.clone(),
             type_params: type_params.to_vec(),
@@ -86,8 +140,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         };
 
         // Register each constructor with its scheme
-        self.register_constructors(state, 
-            name, &type_def_info, &adt_type, &type_var_ids, visibility,
+        self.register_constructors(
+            state,
+            name,
+            &type_def_info,
+            &adt_type,
+            type_var_ids,
+            visibility,
         );
 
         // If a single constructor has the same name as the type (product type),
@@ -104,8 +163,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 sexp: None,
             },
         );
-
-        Ok(())
     }
 
     /// Allocate fresh type variables for type parameters.
@@ -127,12 +184,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// Build ConstructorInfo entries with resolved field types.
     fn build_constructor_infos(
         &self,
+        state: &CheckState,
         type_name: &TypeName,
         constructors: &[ConstructorDef],
         var_map: &HashMap<Symbol, TypeId>,
         span: Span,
     ) -> Result<Vec<ConstructorInfo>, CranelispError> {
-        let known_types = self.known_type_names();
+        let known_types = self.known_type_names_with_state(state);
 
         constructors
             .iter()
@@ -265,8 +323,26 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// A match is exhaustive if:
     /// 1. All constructors of the ADT are covered, OR
     /// 2. A wildcard or variable pattern is present.
-    pub(crate) fn check_exhaustiveness(
+    pub fn check_exhaustiveness(
         &self,
+        type_name: &TypeName,
+        covered_ctors: &[Symbol],
+        has_wildcard: bool,
+        span: Span,
+    ) -> Result<(), CranelispError> {
+        self.check_exhaustiveness_in_module(
+            &ModuleFullPath::from("user"),
+            type_name,
+            covered_ctors,
+            has_wildcard,
+            span,
+        )
+    }
+
+    /// Module-rooted variant of [`Self::check_exhaustiveness`].
+    pub(crate) fn check_exhaustiveness_in_module(
+        &self,
+        module_path: &ModuleFullPath,
         type_name: &TypeName,
         covered_ctors: &[Symbol],
         has_wildcard: bool,
@@ -276,7 +352,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             return Ok(());
         }
 
-        let type_def = self.lookup_type_def(type_name).ok_or_else(|| {
+        let type_def = self.lookup_type_def_in_module(module_path, type_name).ok_or_else(|| {
             CranelispError::TypeError {
                 message: format!("unknown type in match: {type_name}"),
                 location: ErrorLocation::from_span(span),
@@ -902,11 +978,18 @@ mod tests {
     #[test]
     fn test_exhaustiveness_excludes_internal_constructors() {
         let tc = TestFixture::new();
+        let primitives_path = ModuleFullPath::from("primitives");
         // IO has Pure (tag=0), Effect (tag=1), Bind (tag=2, internal).
         // Exhaustiveness should only require Pure and Effect.
         let covered = vec![Symbol::from("Pure"), Symbol::from("Effect")];
         assert!(tc
-            .check_exhaustiveness(&TypeName::from("IO"), &covered, false, Span::SYNTHETIC)
+            .check_exhaustiveness_in_module(
+                &primitives_path,
+                &TypeName::from("IO"),
+                &covered,
+                false,
+                Span::SYNTHETIC,
+            )
             .is_ok(),
             "matching Pure + Effect should be exhaustive (Bind is internal)"
         );
@@ -914,7 +997,13 @@ mod tests {
         // Missing Effect should fail.
         let covered = vec![Symbol::from("Pure")];
         let err = tc
-            .check_exhaustiveness(&TypeName::from("IO"), &covered, false, Span::SYNTHETIC)
+            .check_exhaustiveness_in_module(
+                &primitives_path,
+                &TypeName::from("IO"),
+                &covered,
+                false,
+                Span::SYNTHETIC,
+            )
             .unwrap_err();
         assert!(err.message().contains("Effect"), "should report missing Effect, got: {}", err.message());
         // Should NOT mention Bind.
