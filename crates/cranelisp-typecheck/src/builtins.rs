@@ -2431,4 +2431,188 @@ mod tests {
         check_accessor("children", &slist_trace);
         check_accessor("nanos", &Type::Int);
     }
+
+    // -----------------------------------------------------------------------
+    // Wave 3a-α redo Sub-D — α-wave invariant tests
+    // -----------------------------------------------------------------------
+    //
+    // These tests guard the locality-correctness invariants established by
+    // Wave 3a-α (Decision 45 + Decision 46 + Principle 17). See
+    // `design/typecheck/implementation-slice-s66.md §5` for the test surface
+    // plan.
+
+    // spec: arch Principle 17 + slice §1.A α13 — synthetic modules have empty
+    // imports/exports by invariant. Negative invariant guards against any
+    // future defensive `(import [macros [*]])` re-injection into primitives.
+    #[test]
+    fn test_synthetic_modules_have_empty_imports_exports() {
+        let tf = TestFixture::new();
+
+        let primitives_path = ModuleFullPath::from("primitives");
+        let primitives_table = tf
+            .modules
+            .get(&primitives_path)
+            .expect("primitives module should exist");
+        assert!(
+            primitives_table.imports.is_empty(),
+            "primitives.imports MUST be empty (Principle 17 + α13); found {} entries",
+            primitives_table.imports.len()
+        );
+        assert!(
+            primitives_table.exports.is_empty(),
+            "primitives.exports MUST be empty (Principle 17 + α13); found {} entries",
+            primitives_table.exports.len()
+        );
+        // Release this guard before acquiring the next.
+        drop(primitives_table);
+
+        let macros_path = ModuleFullPath::from("macros");
+        let macros_table = tf
+            .modules
+            .get(&macros_path)
+            .expect("macros module should exist");
+        assert!(
+            macros_table.imports.is_empty(),
+            "macros.imports MUST be empty (Principle 17 + α13); found {} entries",
+            macros_table.imports.len()
+        );
+        assert!(
+            macros_table.exports.is_empty(),
+            "macros.exports MUST be empty (Principle 17 + α13); found {} entries",
+            macros_table.exports.len()
+        );
+    }
+
+    // spec: arch Decision 46 + slice §1.A α14 — the retired closure-walk
+    // function (name composed from three lowercase tokens joined with
+    // underscores, see `forbidden` below) MUST NOT exist anywhere in the
+    // typecheck crate's source. It was retired with Decision 45 Pattern B
+    // (chain-follow replaces the closure walk). Permanent regression guard
+    // against re-introduction.
+    //
+    // To avoid this guard self-tripping on its own source bytes, the
+    // forbidden symbol is constructed at runtime from token parts; no
+    // literal occurrence of the joined string appears anywhere in this
+    // file (verified by the test itself — if it did, the test would fail
+    // immediately).
+    #[test]
+    fn test_no_retired_closure_walk_fn_in_typecheck_src() {
+        // Compile-time `include_str!` against every typecheck source file
+        // we know contained or could plausibly contain the symbol. A
+        // brand-new typecheck source file that ever defines or calls the
+        // retired function MUST be added to this list — that
+        // expansion-friction is intentional (forces a deliberate review
+        // before the symbol can re-enter the crate).
+        const SOURCES: &[(&str, &str)] = &[
+            ("adt.rs", include_str!("adt.rs")),
+            ("builtins.rs", include_str!("builtins.rs")),
+            ("checker.rs", include_str!("checker.rs")),
+            ("infer.rs", include_str!("infer.rs")),
+            ("lib.rs", include_str!("lib.rs")),
+            ("program.rs", include_str!("program.rs")),
+            ("resolve.rs", include_str!("resolve.rs")),
+            ("result.rs", include_str!("result.rs")),
+            ("scheme.rs", include_str!("scheme.rs")),
+            ("scope.rs", include_str!("scope.rs")),
+            ("trace.rs", include_str!("trace.rs")),
+            ("traits.rs", include_str!("traits.rs")),
+            ("unify.rs", include_str!("unify.rs")),
+        ];
+        // Construct the forbidden symbol at runtime so this very test
+        // file's literal mention of the substring (in panic messages,
+        // doc-comments, the SOURCES list itself) does not self-trigger.
+        let forbidden: String = ["transitive", "import", "closure"].join("_");
+
+        for (name, body) in SOURCES {
+            // Count occurrences; this test file itself constructs the
+            // symbol at runtime so its source bytes never spell it
+            // literally. Any literal occurrence is a regression.
+            assert!(
+                !body.contains(forbidden.as_str()),
+                "`{forbidden}` MUST NOT appear in crates/cranelisp-typecheck/src/{name} \
+                 — retired by Decision 45 Pattern B; chain-follow is THE navigation primitive \
+                 (Principle 17). See design/typecheck/implementation-slice-s66.md §1.A α14."
+            );
+        }
+    }
+
+    // spec: arch Principle 17 + slice §1.A α12 — synthetic-module type
+    // references (e.g., primitives' `Trace` ADT referring to `macros/SList`)
+    // are constructed FQ at registration time. The TraceCall constructor's
+    // `params` and `children` field types MUST be `Type::ADT(macros_fqtn(...),
+    // ...)` with the FQ name pointing at the `macros` module — never a
+    // short-name lookup result.
+    #[test]
+    fn test_trace_call_fields_use_fq_macros_types() {
+        let tf = TestFixture::new();
+        let primitives_path = ModuleFullPath::from("primitives");
+        let macros_module = ModuleFullPath::from("macros");
+
+        let info = tf
+            .lookup_type_def_in_module(&primitives_path, &TypeName::from("Trace"))
+            .expect("Trace ADT should be registered in primitives");
+        assert_eq!(info.constructors.len(), 1, "Trace has one constructor");
+        let trace_call = &info.constructors[0];
+        assert_eq!(trace_call.name.as_ref(), "TraceCall");
+
+        // Locate the `params` field — its type must be `(SList String)` with
+        // the FQ name `macros/SList`.
+        let params_field = trace_call
+            .fields
+            .iter()
+            .find(|f| f.name.as_ref() == "params")
+            .expect("TraceCall has a `params` field");
+        match &params_field.ty {
+            Type::ADT(fqtn, args) => {
+                assert_eq!(
+                    fqtn.module, macros_module,
+                    "TraceCall.params field type FQ module MUST be `macros` \
+                     (α12 FQ-at-registration); got {}",
+                    fqtn.module
+                );
+                assert_eq!(fqtn.name.as_ref(), "SList");
+                assert_eq!(args.len(), 1, "SList has one type arg");
+                assert_eq!(args[0], Type::String, "TraceCall.params is SList of String");
+            }
+            other => panic!(
+                "TraceCall.params field type MUST be `Type::ADT(macros/SList, [String])`, got {other:?}"
+            ),
+        }
+
+        // Locate the `children` field — its type must be `(SList Trace)`
+        // with the FQ name `macros/SList` and the inner Trace fully qualified
+        // to `primitives/Trace`.
+        let children_field = trace_call
+            .fields
+            .iter()
+            .find(|f| f.name.as_ref() == "children")
+            .expect("TraceCall has a `children` field");
+        match &children_field.ty {
+            Type::ADT(fqtn, args) => {
+                assert_eq!(
+                    fqtn.module, macros_module,
+                    "TraceCall.children field type FQ module MUST be `macros` \
+                     (α12 FQ-at-registration); got {}",
+                    fqtn.module
+                );
+                assert_eq!(fqtn.name.as_ref(), "SList");
+                assert_eq!(args.len(), 1, "SList has one type arg");
+                match &args[0] {
+                    Type::ADT(inner_fqtn, inner_args) => {
+                        assert_eq!(
+                            inner_fqtn.module, primitives_path,
+                            "inner Trace type's FQ module MUST be `primitives`; got {}",
+                            inner_fqtn.module
+                        );
+                        assert_eq!(inner_fqtn.name.as_ref(), "Trace");
+                        assert!(inner_args.is_empty(), "Trace is monomorphic");
+                    }
+                    other => panic!("inner type of (SList _) MUST be Type::ADT(primitives/Trace, []), got {other:?}"),
+                }
+            }
+            other => panic!(
+                "TraceCall.children field type MUST be `Type::ADT(macros/SList, [...])`, got {other:?}"
+            ),
+        }
+    }
 }

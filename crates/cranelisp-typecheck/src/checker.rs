@@ -3216,4 +3216,417 @@ mod tests {
             );
         }
     }
+
+    // -----------------------------------------------------------------
+    // Wave 3a-α redo Sub-D — Pattern B trait-home + chain-follow tests
+    // -----------------------------------------------------------------
+    //
+    // These tests guard Decision 45 (Pattern B) and Principle 17 (per-symbol
+    // chain-follow as THE navigation primitive) for `TraitImpl` writes and
+    // lookups. See `design/typecheck/implementation-slice-s66.md §5`.
+
+    use cranelisp_types::{
+        Defn, DefnVariant, Expr, FQSymbol, FQTypeName, TraitDecl, TraitImpl, TraitMethodSig,
+        TraitName, TypeExpr, TypeName,
+    };
+
+    /// Make a unary trait `T` over type parameter `a` with one method `op`
+    /// (`(Fn [a a] a)`). Used by Pattern B / chain-follow tests below.
+    fn make_unary_trait_decl(name: &str, method: &str) -> TraitDecl {
+        TraitDecl {
+            name: TraitName::from(name),
+            docstring: None,
+            type_params: vec![Symbol::from("a")],
+            methods: vec![TraitMethodSig {
+                name: Symbol::from(method),
+                docstring: None,
+                params: vec![
+                    TypeExpr::TypeVar(Symbol::from("a")),
+                    TypeExpr::TypeVar(Symbol::from("a")),
+                ],
+                ret_type: TypeExpr::TypeVar(Symbol::from("a")),
+                span: Span::SYNTHETIC,
+                hkt_param_index: None,
+                default_param_names: vec![
+                    Symbol::from("lhs"),
+                    Symbol::from("rhs"),
+                ],
+                default_body: None,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        }
+    }
+
+    /// Make a concrete `(impl T Int (defn op [lhs rhs] (add-i64 lhs rhs)))`.
+    fn make_int_op_impl(trait_name: &str, method: &str) -> TraitImpl {
+        TraitImpl {
+            trait_name: TraitName::from(trait_name),
+            target_type: TypeName::from("Int"),
+            type_args: vec![],
+            type_constraints: vec![],
+            methods: vec![Defn {
+                name: Symbol::from(method),
+                docstring: None,
+                variants: vec![DefnVariant {
+                    params: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+                    param_annotations: vec![None, None],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add-i64"),
+                            span: Span::SYNTHETIC,
+                            inferred_type: None,
+                        }),
+                        args: vec![
+                            Expr::Var {
+                                name: Symbol::from("lhs"),
+                                span: Span::SYNTHETIC,
+                                inferred_type: None,
+                            },
+                            Expr::Var {
+                                name: Symbol::from("rhs"),
+                                span: Span::SYNTHETIC,
+                                inferred_type: None,
+                            },
+                        ],
+                        span: Span::SYNTHETIC,
+                        resolved_call: None,
+                        inferred_type: None,
+                    },
+                    span: Span::SYNTHETIC,
+                }],
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            }],
+            span: Span::SYNTHETIC,
+        }
+    }
+
+    // spec: arch Decision 45 Pattern B + slice §1.A α15 — `ModuleEntry::TraitImpl`
+    // writes target the trait's defining module H, NOT the writer's module M.
+    // Set up: trait T declared in H; M imports T from H; register impl from M's
+    // perspective; assert the impl entry lands in H's symbol table and is
+    // absent from M's.
+    #[test]
+    fn test_trait_impl_write_lands_in_trait_home_not_writer() {
+        let mut tf = TestFixture::new();
+
+        // Need primitives imported into M so the impl body (`add-i64`) and
+        // the bare type name `Int` are resolvable.
+        let home = ModuleFullPath::from("home_h");
+        let writer = ModuleFullPath::from("writer_m");
+
+        // 1. Declare trait T in H.
+        tf.set_current_module(home.clone());
+        tf.register_imports_self(&[ImportSpec {
+            module_path: ModuleFullPath::from("primitives"),
+            alias: None,
+            names: ImportNames::Glob,
+            span: Span::SYNTHETIC,
+        }]).unwrap();
+        tf.register_trait_decl_self(&make_unary_trait_decl("PatternBTrait", "pb-op"))
+            .unwrap();
+
+        // 2. Switch to writer M; import T from H + primitives glob.
+        tf.set_current_module(writer.clone());
+        tf.register_imports_self(&[
+            ImportSpec {
+                module_path: ModuleFullPath::from("primitives"),
+                alias: None,
+                names: ImportNames::Glob,
+                span: Span::SYNTHETIC,
+            },
+            ImportSpec {
+                module_path: home.clone(),
+                alias: None,
+                names: ImportNames::Specific(vec![
+                    Symbol::from("PatternBTrait"),
+                    Symbol::from("pb-op"),
+                ]),
+                span: Span::SYNTHETIC,
+            },
+        ]).unwrap();
+
+        // Sanity: M sees T via Import binding (terminal resolves to TraitDecl in H).
+        let (_term, term_home) = tf
+            .env()
+            .resolve_terminal_entry_and_home(&writer, "PatternBTrait")
+            .expect("M's Import of PatternBTrait should chain-follow to H");
+        assert_eq!(
+            term_home, home,
+            "chain-follow of `PatternBTrait` from writer M should land at trait home H"
+        );
+
+        // 3. Register impl from M's perspective.
+        tf.register_trait_impl_self(&make_int_op_impl("PatternBTrait", "pb-op"))
+            .unwrap();
+
+        // 4. Assert ModuleEntry::TraitImpl lands in H, not M.
+        let expected_key = Symbol::from("impl$primitives/Int$home_h/PatternBTrait");
+
+        let home_table = tf
+            .modules
+            .get(&home)
+            .expect("H's symbol table should exist");
+        let h_entry = home_table.get(expected_key.as_ref());
+        assert!(
+            matches!(h_entry, Some(ModuleEntry::TraitImpl { .. })),
+            "Pattern B: TraitImpl MUST be written to H (trait's home), \
+             key `{expected_key}`; got {h_entry:?}"
+        );
+        if let Some(ModuleEntry::TraitImpl { trait_name, impl_type, .. }) = h_entry {
+            assert_eq!(trait_name.module, home, "trait_name FQ module should be H");
+            assert_eq!(trait_name.name.as_ref(), "PatternBTrait");
+            assert_eq!(
+                impl_type.module.as_ref(),
+                "primitives",
+                "Int resolves to primitives"
+            );
+            assert_eq!(impl_type.name.as_ref(), "Int");
+        }
+        drop(home_table);
+
+        // Negative: writer M's table MUST NOT contain ANY TraitImpl entry
+        // for PatternBTrait — and no synthetic `impl$...$home_h/PatternBTrait`
+        // key in particular.
+        let writer_table = tf
+            .modules
+            .get(&writer)
+            .expect("M's symbol table should exist");
+        assert!(
+            writer_table.get(expected_key.as_ref()).is_none(),
+            "Pattern A regression: TraitImpl MUST NOT appear in writer module M's table"
+        );
+        for (key, entry) in writer_table.all_symbols() {
+            if let ModuleEntry::TraitImpl { trait_name, .. } = entry {
+                panic!(
+                    "writer M contains an unexpected TraitImpl entry `{key}` for trait `{trait_name}` \
+                     — Pattern B requires it to live in the trait's home module H, not M"
+                );
+            }
+        }
+    }
+
+    // spec: arch Decision 45 + Principle 17 + slice §1.A α5/α6/α7 — impl
+    // resolution uses per-symbol chain-follow on `Import`/`Reexport`
+    // bindings to find the trait's home, then probes ONLY that one module
+    // for the synthetic `impl$...` key. No universe scan, no closure walk.
+    //
+    // Set up a re-export chain: L declares trait T; M imports T from L and
+    // re-exports it; N imports T from M (so N's binding is an `Import`
+    // pointing at M's `Reexport` pointing at L's `TraitDecl`). Place the
+    // impl at L (trait's home, per Pattern B). Place "decoy" TraitImpl
+    // entries in two unrelated modules (D1 and D2) that a universe scan
+    // would erroneously pick up. From N's view, `has_impl_in_module(N, T,
+    // Int)` MUST return true (chain-follow finds the L-resident impl), and
+    // the decoys MUST be ignored.
+    #[test]
+    fn test_impl_resolution_chain_follows_not_universe_scans() {
+        let mut tf = TestFixture::new();
+
+        let l = ModuleFullPath::from("chain_l");
+        let m = ModuleFullPath::from("chain_m");
+        let n = ModuleFullPath::from("chain_n");
+        let d1 = ModuleFullPath::from("decoy_d1");
+        let d2 = ModuleFullPath::from("decoy_d2");
+
+        // 1. L declares trait T (with primitives glob so the impl body
+        //    can resolve add-i64).
+        tf.set_current_module(l.clone());
+        tf.register_imports_self(&[ImportSpec {
+            module_path: ModuleFullPath::from("primitives"),
+            alias: None,
+            names: ImportNames::Glob,
+            span: Span::SYNTHETIC,
+        }]).unwrap();
+        tf.register_trait_decl_self(&make_unary_trait_decl("ChainTrait", "ch-op"))
+            .unwrap();
+        // L also owns the impl — write from L's perspective (Pattern B:
+        // chain-follow is depth-zero because writer == trait home).
+        tf.register_trait_impl_self(&make_int_op_impl("ChainTrait", "ch-op"))
+            .unwrap();
+
+        // 2. M imports T from L AND re-exports it. We construct the
+        //    `Reexport` entry directly (matches what `register_exports`
+        //    builds in the prod pipeline).
+        tf.set_current_module(m.clone());
+        tf.register_imports_self(&[ImportSpec {
+            module_path: l.clone(),
+            alias: None,
+            names: ImportNames::Specific(vec![Symbol::from("ChainTrait")]),
+            span: Span::SYNTHETIC,
+        }]).unwrap();
+        // Overwrite the `Import` with a `Reexport` on M so N's import sees
+        // a `Reexport` edge — the chain becomes N(Import) → M(Reexport) → L(TraitDecl).
+        tf.symbol_table_mut().insert(
+            Symbol::from("ChainTrait"),
+            ModuleEntry::Reexport {
+                source: FQSymbol {
+                    module: l.clone(),
+                    symbol: Symbol::from("ChainTrait"),
+                },
+            },
+        );
+
+        // 3. N imports T from M.
+        tf.set_current_module(n.clone());
+        tf.register_imports_self(&[ImportSpec {
+            module_path: m.clone(),
+            alias: None,
+            names: ImportNames::Specific(vec![Symbol::from("ChainTrait")]),
+            span: Span::SYNTHETIC,
+        }]).unwrap();
+
+        // Sanity: from N, chain-follow lands at L (the trait's home).
+        let (_term, home_via_n) = tf
+            .env()
+            .resolve_terminal_entry_and_home(&n, "ChainTrait")
+            .expect("chain-follow from N should reach L");
+        assert_eq!(
+            home_via_n, l,
+            "chain-follow of `ChainTrait` from N must terminate at L (chain length 2)"
+        );
+
+        // 4. Place decoy TraitImpl entries in D1 and D2. A universe scan
+        //    would erroneously match these; chain-follow MUST ignore them
+        //    because it probes ONLY the trait's home (L).
+        let decoy_key = Symbol::from("impl$primitives/Int$chain_l/ChainTrait");
+        for decoy_path in [&d1, &d2] {
+            // Ensure the module exists so a write succeeds.
+            tf.env().ensure_module_exists(decoy_path);
+            let mut tbl = tf
+                .modules
+                .get_mut(decoy_path)
+                .expect("decoy module just ensured");
+            tbl.insert(
+                decoy_key.clone(),
+                ModuleEntry::TraitImpl {
+                    trait_name: cranelisp_types::FQTraitName::new(
+                        l.clone(),
+                        TraitName::from("ChainTrait"),
+                    ),
+                    impl_type: FQTypeName::new(
+                        ModuleFullPath::from("primitives"),
+                        TypeName::from("Int"),
+                    ),
+                    methods: vec![Symbol::from("ch-op")],
+                },
+            );
+        }
+
+        // 5. From N's view, has_impl_with_state MUST find the L-resident
+        //    impl via chain-follow (positive). The decoy entries are
+        //    structurally identical but live in unrelated modules; if the
+        //    resolver were doing a universe scan it would still find one,
+        //    so the positive does not by itself prove chain-follow. The
+        //    negative below tightens the assertion.
+        let n_state = CheckState::new(n.clone());
+        let env = tf.env();
+        assert!(
+            env.has_impl_with_state(&n_state, &TraitName::from("ChainTrait"), &TypeName::from("Int")),
+            "impl resolution from N should chain-follow N → M → L and find the L-resident impl"
+        );
+
+        // Negative: lookup against a trait name that DOES NOT have an
+        // import binding in N MUST return false. If the resolver were
+        // doing a universe scan over `self.modules`, the decoys (whose
+        // synthetic key embeds `chain_l/ChainTrait`) could be matched by
+        // name alone; chain-follow refuses because the starting module N
+        // has no `UnknownTrait` binding to follow.
+        assert!(
+            !env.has_impl_with_state(
+                &n_state,
+                &TraitName::from("UnknownTrait"),
+                &TypeName::from("Int")
+            ),
+            "no `UnknownTrait` import in N → chain-follow must fail and decoys MUST NOT be matched \
+             (a universe scan would falsely hit the decoy entries)"
+        );
+
+        // Negative: probing the writer module N directly for the synthetic
+        // impl key MUST find nothing — the entry lives in L only.
+        let n_table = tf
+            .modules
+            .get(&n)
+            .expect("N's symbol table should exist");
+        assert!(
+            n_table.get(decoy_key.as_ref()).is_none(),
+            "N's symbol table MUST NOT carry the impl entry (it lives in L per Pattern B)"
+        );
+    }
+
+    // spec: arch Principle 17 + slice §1.A α1/α2/α3 — short-name lookup is
+    // current-module-only. If `foo` is absent from the current module's
+    // symbol table, the lookup fails — no fallback to primitives, no
+    // closure walk, no universe scan. With a `(import [M [foo]])` binding
+    // in N, the same lookup chain-follows the per-symbol Import edge to M.
+    #[test]
+    fn test_short_name_lookup_is_current_module_only() {
+        let mut tf = TestFixture::new();
+
+        let m = ModuleFullPath::from("home_m");
+        let n = ModuleFullPath::from("consumer_n");
+
+        // 1. Register a TypeDef for `Foo` in M.
+        tf.set_current_module(m.clone());
+        tf.register_type_def_self(
+            &TypeName::from("Foo"),
+            &None,
+            &[],
+            &[cranelisp_types::ConstructorDef {
+                name: Symbol::from("MkFoo"),
+                docstring: None,
+                fields: vec![],
+                span: Span::SYNTHETIC,
+            }],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        ).unwrap();
+
+        // 2. From N (no import of M.Foo), short-name lookup of Foo MUST fail.
+        tf.set_current_module(n.clone());
+        let result_no_import = tf
+            .env()
+            .lookup_type_def_in_module(&n, &TypeName::from("Foo"));
+        assert!(
+            result_no_import.is_none(),
+            "current-module-only short-name lookup MUST fail when `Foo` is not bound in N \
+             (Principle 17: no fallback, no closure walk, no universe scan)"
+        );
+
+        // Negative: also confirm that short-name `lookup` (Scheme variant)
+        // does not silently chain into M.
+        let n_state = CheckState::new(n.clone());
+        assert!(
+            tf.env().lookup(&n_state, "Foo").is_none(),
+            "Scheme-flavoured lookup of `Foo` from N MUST also fail without an Import"
+        );
+
+        // 3. Now inject a per-symbol Import binding into N for M.Foo.
+        //    Manual insert mirrors what `register_imports` would build for
+        //    a Specific import (TypeDef entries are public-by-default here).
+        tf.symbol_table_mut().insert(
+            Symbol::from("Foo"),
+            ModuleEntry::Import {
+                source: FQSymbol {
+                    module: m.clone(),
+                    symbol: Symbol::from("Foo"),
+                },
+            },
+        );
+
+        // 4. The same short-name lookup now chain-follows N(Import) → M(TypeDef)
+        //    and succeeds — reach is per-binding, not per-resolver.
+        let result_after_import = tf
+            .env()
+            .lookup_type_def_in_module(&n, &TypeName::from("Foo"));
+        assert!(
+            result_after_import.is_some(),
+            "after injecting `ModuleEntry::Import {{ source: M/Foo }}` into N, \
+             chain-follow should resolve `Foo` to M's TypeDef"
+        );
+        let info = result_after_import.unwrap();
+        assert_eq!(info.name.module, m, "resolved Foo's FQ module should be M");
+        assert_eq!(info.name.name.as_ref(), "Foo");
+    }
 }
