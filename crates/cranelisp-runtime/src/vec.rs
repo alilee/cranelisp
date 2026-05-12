@@ -134,8 +134,8 @@ fn call_elem_fn(fn_ptr: i64, val: i64) {
 /// Sets len=0, cap=cap, data_ptr to the data buffer.
 /// Returns base pointer to the Vec struct (rc=1).
 ///
-/// JIT name: "runtime/vec_new"
-#[unsafe(no_mangle)]
+/// JIT name: "runtime/vec_new" — exported via export_name so link-mode resolves.
+#[unsafe(export_name = "runtime/vec_new")]
 pub extern "C" fn vec_new(cap: i64) -> i64 {
     let base = heap_alloc_mod::alloc_with_rc(VEC_PAYLOAD_SIZE);
     let data = alloc_data_buffer(cap);
@@ -151,8 +151,8 @@ pub extern "C" fn vec_new(cap: i64) -> i64 {
 
 /// Read the length of a Vec.
 ///
-/// JIT name: "vec-len"
-#[unsafe(no_mangle)]
+/// JIT name: "vec-len" — exported via export_name so link-mode resolves.
+#[unsafe(export_name = "vec-len")]
 pub extern "C" fn vec_len(vec: i64) -> i64 {
     unsafe { read_len(vec as *const u8) }
 }
@@ -167,8 +167,8 @@ pub extern "C" fn vec_len(vec: i64) -> i64 {
 /// `elem_inc_fn`: function pointer `(i64) -> i64` for per-element RC inc.
 ///                Pass 0 (null) for NeverHeap element types.
 ///
-/// JIT name: "vec-set-copy"
-#[unsafe(no_mangle)]
+/// JIT name: "vec-set-copy" — exported via export_name so link-mode resolves.
+#[unsafe(export_name = "vec-set-copy")]
 pub extern "C" fn vec_set_copy(vec: i64, idx: i64, val: i64, elem_inc_fn: i64) -> i64 {
     let src = vec as *const u8;
     unsafe {
@@ -211,8 +211,8 @@ pub extern "C" fn vec_set_copy(vec: i64, idx: i64, val: i64, elem_inc_fn: i64) -
 /// (calling `elem_inc_fn` on each), and appends `val`.
 /// Returns base pointer to the new Vec (rc=1).
 ///
-/// JIT name: "vec-push-copy"
-#[unsafe(no_mangle)]
+/// JIT name: "vec-push-copy" — exported via export_name so link-mode resolves.
+#[unsafe(export_name = "vec-push-copy")]
 pub extern "C" fn vec_push_copy(vec: i64, val: i64, elem_inc_fn: i64) -> i64 {
     let src = vec as *const u8;
     unsafe {
@@ -249,8 +249,8 @@ pub extern "C" fn vec_push_copy(vec: i64, val: i64, elem_inc_fn: i64) -> i64 {
 /// (len >= cap). Reallocates the data buffer with doubled capacity (minimum 4),
 /// stores val at data[len], increments len. Returns the same Vec pointer.
 ///
-/// JIT name: "vec-push-grow"
-#[unsafe(no_mangle)]
+/// JIT name: "vec-push-grow" — exported via export_name so link-mode resolves.
+#[unsafe(export_name = "vec-push-grow")]
 pub extern "C" fn vec_push_grow(vec: i64, val: i64) -> i64 {
     let base = vec as *mut u8;
     unsafe {
@@ -290,8 +290,8 @@ pub extern "C" fn vec_push_grow(vec: i64, val: i64) -> i64 {
 /// `elem_dec_fn`: function pointer `(i64) -> i64` for per-element RC dec.
 ///                Pass 0 (null) for NeverHeap element types.
 ///
-/// JIT name: "runtime/vec_drop"
-#[unsafe(no_mangle)]
+/// JIT name: "runtime/vec_drop" — exported via export_name so link-mode resolves.
+#[unsafe(export_name = "runtime/vec_drop")]
 pub extern "C" fn vec_drop(vec: i64, elem_dec_fn: i64) {
     let base = vec as *mut u8;
     unsafe {

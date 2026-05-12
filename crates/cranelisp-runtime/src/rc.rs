@@ -103,7 +103,9 @@ pub fn consume_shallow(ptr: i64) {
 /// diagnostic logging and debug assertion.
 ///
 /// In release builds, this is a no-op (the JIT should not emit the call).
-#[unsafe(no_mangle)]
+///
+/// Linker symbol: `runtime/rc_underflow_check` (per runtime/* convention).
+#[unsafe(export_name = "runtime/rc_underflow_check")]
 pub extern "C-unwind" fn rc_underflow_check(ptr: i64, old_rc: i64) -> i64 {
     debug_assert!(
         old_rc > 0,

@@ -47,6 +47,12 @@ const CLOSURE_CODE_PTR_OFFSET: isize = HeapHeader::SIZE as isize; // 16
 /// # Safety
 /// `io_ptr` must be a valid base pointer to an IO node with rc > 0.
 /// The IO tree must remain live for the duration of this call.
+///
+/// Linker symbol is `_cranelisp_run_io` (default Rust name via no_mangle) —
+/// the standalone startup stub (`__startup.o`) calls into this directly by
+/// the Rust function name to drive the IO trampoline, so the export_name
+/// MUST remain the unaliased Rust name. JIT side registers it under
+/// `runtime/run_io` via function pointer (not linker name).
 #[unsafe(no_mangle)]
 pub extern "C" fn cranelisp_run_io(io_ptr: i64) -> i64 {
     let result = run_io_trampoline(io_ptr);

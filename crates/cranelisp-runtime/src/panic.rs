@@ -22,7 +22,7 @@ thread_local! {
 ///
 /// `msg_ptr` must point to a valid UTF-8 byte sequence of length `msg_len`,
 /// or be null (in which case a default message is used).
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "runtime/panic")]
 #[allow(clippy::not_unsafe_ptr_arg_deref)] // Called from JIT code; cannot be marked unsafe
 pub extern "C" fn runtime_panic(msg_ptr: *const u8, msg_len: usize) {
     let msg = if msg_ptr.is_null() || msg_len == 0 {

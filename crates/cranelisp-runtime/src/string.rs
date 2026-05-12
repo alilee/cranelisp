@@ -96,7 +96,7 @@ unsafe fn read_str(base: *const u8) -> &'static str {
 
 /// Allocate a new string from raw bytes. Copies `byte_len` bytes from `bytes_ptr`.
 /// Returns base pointer to a HeapString (rc=1).
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "runtime/alloc_string")]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn heap_alloc_string(bytes_ptr: *const u8, byte_len: i64) -> i64 {
     let len = byte_len as usize;
@@ -114,7 +114,7 @@ pub extern "C" fn heap_alloc_string(bytes_ptr: *const u8, byte_len: i64) -> i64 
 /// Decision 24 (Sprint 56 Step 2c): consuming convention — this extern dec's
 /// both heap args before returning. Caller emits `compile_consuming_arg_list`
 /// which incs heap-typed Var args so the caller's binding survives.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "str-concat")]
 pub extern "C" fn str_concat(a: i64, b: i64) -> i64 {
     // SAFETY: a and b are valid HeapString base pointers from JIT code.
     let a_str = unsafe { read_str(a as *const u8) };
@@ -131,7 +131,7 @@ pub extern "C" fn str_concat(a: i64, b: i64) -> i64 {
 /// String equality (byte-wise). Returns 1 (true) or 0 (false).
 ///
 /// Decision 24 (Sprint 56 Step 2c): consuming convention — dec both heap args.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "str-eq")]
 pub extern "C" fn str_eq(a: i64, b: i64) -> i64 {
     // SAFETY: a and b are valid HeapString base pointers from JIT code.
     let a_str = unsafe { read_str(a as *const u8) };
@@ -145,7 +145,7 @@ pub extern "C" fn str_eq(a: i64, b: i64) -> i64 {
 /// String length in bytes.
 ///
 /// Decision 24 (Sprint 56 Step 2c): consuming convention — dec the heap arg.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "str-len")]
 pub extern "C" fn str_len(s: i64) -> i64 {
     // SAFETY: s is a valid HeapString base pointer.
     let len = unsafe { *((s as *const u8).add(HeapString::LEN_OFFSET as usize) as *const i64) };
@@ -155,7 +155,7 @@ pub extern "C" fn str_len(s: i64) -> i64 {
 
 /// Identity function for strings — increments RC and returns the same pointer.
 /// Used when a string value needs to be shared (creates a new reference).
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "string-identity")]
 pub extern "C" fn string_identity(s: i64) -> i64 {
     // Atomically increment RC at base + HeapHeader::RC_OFFSET.
     // SAFETY: s is a valid HeapString base pointer; RC field is at offset 8.
@@ -171,7 +171,7 @@ pub extern "C" fn string_identity(s: i64) -> i64 {
 /// to the provided out-parameters.
 ///
 /// Used by the binary crate's ValueFormatter — NOT called from JIT code.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "runtime/string_read")]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn string_read(s: i64, out_ptr: *mut *const u8, out_len: *mut i64) {
     // SAFETY: s is a valid HeapString base pointer; out_ptr/out_len are valid.
@@ -190,7 +190,7 @@ pub extern "C" fn string_read(s: i64, out_ptr: *mut *const u8, out_len: *mut i64
 /// out-of-bounds indices. Returns a new heap string (rc=1).
 ///
 /// Decision 24 (Sprint 56 Step 2c): consuming convention — dec the heap arg.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "substring")]
 pub extern "C" fn str_substring(s: i64, start: i64, end: i64) -> i64 {
     let src = unsafe { read_str(s as *const u8) };
     let len = src.len() as i64;
@@ -207,7 +207,7 @@ pub extern "C" fn str_substring(s: i64, start: i64, end: i64) -> i64 {
 /// Returns an empty string if `idx` is out of bounds.
 ///
 /// Decision 24 (Sprint 56 Step 2c): consuming convention — dec the heap arg.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "char-at")]
 pub extern "C" fn str_char_at(s: i64, idx: i64) -> i64 {
     let src = unsafe { read_str(s as *const u8) };
     let idx = idx as usize;
@@ -229,7 +229,7 @@ pub extern "C" fn str_char_at(s: i64, idx: i64) -> i64 {
 /// Split a string by a separator. Returns a Vec of heap strings.
 ///
 /// Decision 24 (Sprint 56 Step 2c): consuming convention — dec both heap args.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "split")]
 pub extern "C" fn str_split(s: i64, sep: i64) -> i64 {
     let src = unsafe { read_str(s as *const u8) };
     let sep_str = unsafe { read_str(sep as *const u8) };
@@ -260,7 +260,7 @@ pub extern "C" fn str_split(s: i64, sep: i64) -> i64 {
 /// Decision 24 (Sprint 56 Step 2c): consuming convention — dec the separator
 /// via `consume_shallow` and dec the Vec via `consume_vec_of_string` (which
 /// walks the element Strings and frees the Vec struct + data buffer).
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "join")]
 pub extern "C" fn str_join(sep: i64, vec: i64) -> i64 {
     let sep_str = unsafe { read_str(sep as *const u8) };
 
@@ -289,7 +289,7 @@ pub extern "C" fn str_join(sep: i64, vec: i64) -> i64 {
 /// Replace all occurrences of `from` with `to` in `s`. Returns a new string.
 ///
 /// Decision 24 (Sprint 56 Step 2c): consuming convention — dec all three heap args.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "replace")]
 pub extern "C" fn str_replace(s: i64, from: i64, to: i64) -> i64 {
     let src = unsafe { read_str(s as *const u8) };
     let from_str = unsafe { read_str(from as *const u8) };
@@ -304,7 +304,7 @@ pub extern "C" fn str_replace(s: i64, from: i64, to: i64) -> i64 {
 /// Trim leading and trailing whitespace. Returns a new string.
 ///
 /// Decision 24 (Sprint 56 Step 2c): consuming convention — dec the heap arg.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "trim")]
 pub extern "C" fn str_trim(s: i64) -> i64 {
     let src = unsafe { read_str(s as *const u8) };
     let result = alloc_string(src.trim().as_bytes()) as i64;
@@ -315,7 +315,7 @@ pub extern "C" fn str_trim(s: i64) -> i64 {
 /// Returns 1 if `s` starts with `prefix`, 0 otherwise.
 ///
 /// Decision 24 (Sprint 56 Step 2c): consuming convention — dec both heap args.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "starts-with?")]
 pub extern "C" fn str_starts_with(s: i64, prefix: i64) -> i64 {
     let src = unsafe { read_str(s as *const u8) };
     let prefix_str = unsafe { read_str(prefix as *const u8) };
@@ -328,7 +328,7 @@ pub extern "C" fn str_starts_with(s: i64, prefix: i64) -> i64 {
 /// Returns 1 if `s` ends with `suffix`, 0 otherwise.
 ///
 /// Decision 24 (Sprint 56 Step 2c): consuming convention — dec both heap args.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "ends-with?")]
 pub extern "C" fn str_ends_with(s: i64, suffix: i64) -> i64 {
     let src = unsafe { read_str(s as *const u8) };
     let suffix_str = unsafe { read_str(suffix as *const u8) };
@@ -341,7 +341,7 @@ pub extern "C" fn str_ends_with(s: i64, suffix: i64) -> i64 {
 /// Returns 1 if `s` contains `needle`, 0 otherwise.
 ///
 /// Decision 24 (Sprint 56 Step 2c): consuming convention — dec both heap args.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "contains?")]
 pub extern "C" fn str_contains(s: i64, needle: i64) -> i64 {
     let src = unsafe { read_str(s as *const u8) };
     let needle_str = unsafe { read_str(needle as *const u8) };
@@ -354,7 +354,7 @@ pub extern "C" fn str_contains(s: i64, needle: i64) -> i64 {
 /// Convert string to uppercase. Returns a new string.
 ///
 /// Decision 24 (Sprint 56 Step 2c): consuming convention — dec the heap arg.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "to-upper")]
 pub extern "C" fn str_to_upper(s: i64) -> i64 {
     let src = unsafe { read_str(s as *const u8) };
     let result = alloc_string(src.to_uppercase().as_bytes()) as i64;
@@ -365,7 +365,7 @@ pub extern "C" fn str_to_upper(s: i64) -> i64 {
 /// Convert string to lowercase. Returns a new string.
 ///
 /// Decision 24 (Sprint 56 Step 2c): consuming convention — dec the heap arg.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "to-lower")]
 pub extern "C" fn str_to_lower(s: i64) -> i64 {
     let src = unsafe { read_str(s as *const u8) };
     let result = alloc_string(src.to_lowercase().as_bytes()) as i64;

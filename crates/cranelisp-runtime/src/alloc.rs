@@ -193,7 +193,9 @@ pub extern "C" fn heap_alloc_payload(payload_size: i64) -> i64 {
 }
 
 /// Deallocate a heap object. Reads alloc_size from HeapHeader at base pointer.
-#[unsafe(no_mangle)]
+///
+/// Linker symbol: `runtime/dealloc` (per runtime/* JIT-name convention).
+#[unsafe(export_name = "runtime/dealloc")]
 pub extern "C" fn heap_dealloc(base_ptr: i64) -> i64 {
     // SAFETY: JIT code guarantees base_ptr was returned by heap_alloc
     // and the object's RC has reached zero.

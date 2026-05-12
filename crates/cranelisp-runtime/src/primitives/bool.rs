@@ -4,7 +4,7 @@ use crate::string;
 
 /// Convert a Bool (0 or 1) to "true" or "false".
 /// Returns a new HeapString (rc=1).
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "bool-to-string")]
 pub extern "C" fn bool_to_string(b: i64) -> i64 {
     let s = if b != 0 { "true" } else { "false" };
     string::alloc_string(s.as_bytes()) as i64

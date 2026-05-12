@@ -6,7 +6,7 @@ use crate::string;
 
 /// Convert an integer to its decimal string representation.
 /// Returns a new HeapString (rc=1).
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "int-to-string")]
 pub extern "C" fn int_to_string(n: i64) -> i64 {
     let s = n.to_string();
     string::alloc_string(s.as_bytes()) as i64
@@ -23,7 +23,7 @@ pub extern "C" fn int_to_string(n: i64) -> i64 {
 /// Parse an integer from a string. Returns an Option Int as a heap ADT.
 ///
 /// Decision 24 (Sprint 56 Step 2c): consuming convention — dec the heap arg.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "parse-int")]
 pub extern "C" fn parse_int(s: i64) -> i64 {
     // SAFETY: s is a valid HeapString base pointer.
     let str_val = unsafe { string::read_string_as_str(s) };
