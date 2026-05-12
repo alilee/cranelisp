@@ -170,7 +170,13 @@ pub unsafe fn dealloc(base: *mut u8) {
 /// Allocate a heap object. Writes HeapHeader (alloc_size, rc=1). Returns base pointer.
 ///
 /// `payload_size`: bytes needed after the header.
-#[unsafe(no_mangle)]
+///
+/// Linker symbol is `runtime/alloc` (per src/CLAUDE.md "Runtime infrastructure
+/// uses `runtime/name`" convention) so codegen's `declare_function("runtime/alloc",
+/// Linkage::Import, ...)` in object/link mode resolves cleanly against the bundle.
+/// JIT mode is unaffected — it registers the function pointer by Rust path
+/// (`cranelisp_runtime::heap_alloc`), not by linker name.
+#[unsafe(export_name = "runtime/alloc")]
 pub extern "C" fn heap_alloc(payload_size: i64) -> i64 {
     alloc_with_rc(payload_size as usize) as i64
 }
