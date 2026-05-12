@@ -301,6 +301,14 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
             })?;
 
         let mut desc = cranelift_module::DataDescription::new();
+        // GOT atoms hold pointer-sized (8-byte) function-address slots, and
+        // the `desc.write_function_addr` relocations declared below assume
+        // pointer alignment. `DataDescription::new()` defaults to alignment
+        // 1; macOS `ld` rejects unaligned atoms carrying pointer-sized
+        // relocations ("warning: alignment (1) of atom ... is incompatible
+        // ..." → linker error). Set explicit 8-byte alignment so the atom
+        // lands at a pointer-aligned address.
+        desc.set_align(8);
         // Use `define` with explicit zero bytes (NOT `define_zeroinit`) so the
         // GOT lands in a regular `__DATA` section, not `__DATA,__bss`
         // (`S_ZEROFILL`). macOS `ld` segfaults when applying relocations
