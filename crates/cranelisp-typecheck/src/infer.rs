@@ -679,17 +679,21 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         name: &Symbol,
         span: Span,
     ) -> Result<Scheme, CranelispError> {
-        // For qualified names like "macros/SCons", use the bare name for
-        // the constructor_to_type lookup (which stores unqualified names).
-        let bare_name: &str = if let Some(slash_pos) = name.as_ref().find('/') {
-            &name.as_ref()[slash_pos + 1..]
+        // Constructor name can be bare (`SCons`, looked up in current module
+        // via Principle 17 import-scoped resolution) or fully qualified
+        // (`macros/SCons`, looked up in the named module directly — FQ refs
+        // bypass the import system per the module-locality model).
+        let exists = if let Some(slash_pos) = name.as_ref().find('/') {
+            let module_str = &name.as_ref()[..slash_pos];
+            let bare_name = &name.as_ref()[slash_pos + 1..];
+            let module_path = cranelisp_types::ModuleFullPath::from(module_str);
+            self.lookup_constructor_type_in_module(&module_path, bare_name)
+                .is_some()
         } else {
-            name.as_ref()
+            self.lookup_constructor_type_with_state(state, name.as_ref())
+                .is_some()
         };
-
-        // Verify the constructor exists by checking the module system
-        if self.lookup_constructor_type_with_state(state, bare_name).is_none()
-        {
+        if !exists {
             return Err(CranelispError::TypeError {
                 message: format!("unknown constructor in pattern: {name}"),
                 location: ErrorLocation::from_span(span),

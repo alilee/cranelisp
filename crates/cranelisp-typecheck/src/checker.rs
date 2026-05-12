@@ -1820,6 +1820,11 @@ where
         module_path: &ModuleFullPath,
     ) -> crate::resolve::KnownTypes {
         let mut result = crate::resolve::KnownTypes::new();
+
+        // Tier 1 (import-scoped, bare-name keys per Principle 17): types
+        // reachable from `module_path` via its own symbol table + chain-follow
+        // on per-symbol Import/Reexport entries. Short-name lookups against
+        // `result` resolve only what's actually imported into `module_path`.
         let guard = match self.modules.get(module_path) {
             Some(g) => g,
             None => return result,
@@ -1834,6 +1839,31 @@ where
                 );
             }
         }
+        drop(guard); // release the lock before iterating other modules
+
+        // Tier 2 (universe-scoped, FQ keys): every type defined in any loaded
+        // module is also addressable by its fully-qualified name (`module/name`).
+        // FQ refs are explicit module specifications by the source author — NOT
+        // a fallback or graph walk, so Principle 17's "no fallback" does not
+        // apply. The bare-name keys above remain import-scoped; the FQ keys are
+        // a parallel direct-addressing surface. This is what makes
+        // `(import [macros [SList]])` redundant for FQ references — the type's
+        // own home is always reachable via `macros/SList`.
+        //
+        // Why this lives in the same `KnownTypes`: `resolve_applied` calls
+        // `known_types.get(name)`; if `name` is FQ (contains `/`), it matches
+        // the FQ key. If bare, it matches the bare key (only if import-reachable).
+        for module_entry in self.modules.iter() {
+            let home_path = module_entry.key();
+            for (_name, entry) in module_entry.value().all_symbols() {
+                if let ModuleEntry::TypeDef { info, .. } = &entry {
+                    let fq_key =
+                        cranelisp_types::TypeName::from(format!("{home_path}/{}", info.name.name));
+                    result.insert(fq_key, (info.name.clone(), info.type_params.len()));
+                }
+            }
+        }
+
         result
     }
 

@@ -348,15 +348,21 @@ pub fn synthesize_macro_clause_defn(
         clause.body_sexp.clone()
     };
 
-    // Build: (defn __macro_name_clause_N [: (SList Sexp) __args__] <body>)
+    // Build: (defn __macro_name_clause_N [: (macros/SList macros/Sexp) __args__] <body>)
     // The bracket items must be at the top level — the AST builder's
     // build_annotated_params expects `:` + type-expr + name as separate bracket items.
-    // Type names are unqualified because the typechecker's known_types registry
-    // stores them without module prefix (SList, Sexp — not macros/SList).
+    //
+    // Type names must be FQ (`macros/SList`, `macros/Sexp`). Sprint 66 Wave 3a-α
+    // tightened typecheck to current-module-only short-name resolution per
+    // Principle 17 — a synthesized defn that lands in the user's module cannot
+    // resolve bare `SList` without an explicit `(import [macros [...]])` in scope.
+    // Emitting the FQ form lets the resolver bypass short-name lookup entirely.
+    // (Pre-Wave-3a-α this code emitted unqualified `SList`/`Sexp`; the typechecker's
+    // known_types registry used to be flat, but is no longer.)
     let type_expr = Sexp::List(
         vec![
-            Sexp::Symbol("SList".to_string(), next_span()),
-            Sexp::Symbol("Sexp".to_string(), next_span()),
+            Sexp::Symbol("macros/SList".to_string(), next_span()),
+            Sexp::Symbol("macros/Sexp".to_string(), next_span()),
         ],
         next_span(),
     );
@@ -911,9 +917,10 @@ mod tests {
         };
         let result = synthesize_macro_clause_defn("test", 0, &clause, Span::SYNTHETIC);
 
-        // The param bracket should contain type annotation with SList and Sexp
-        // (unqualified — the typechecker's known_types stores bare names).
-        assert!(contains_symbol(&result, "SList"));
-        assert!(contains_symbol(&result, "Sexp"));
+        // The param bracket should contain type annotation with macros/SList
+        // and macros/Sexp (FQ — Sprint 66 Wave 3a-α requires FQ for cross-module
+        // refs since typecheck is current-module-only per Principle 17).
+        assert!(contains_symbol(&result, "macros/SList"));
+        assert!(contains_symbol(&result, "macros/Sexp"));
     }
 }

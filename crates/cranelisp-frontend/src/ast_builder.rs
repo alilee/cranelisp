@@ -63,7 +63,13 @@ fn extract_optional_docstring(children: &[Sexp], start: usize) -> (Option<String
 }
 
 fn is_uppercase_start(s: &str) -> bool {
-    s.starts_with(|c: char| c.is_uppercase())
+    // For module-qualified names like `macros/Sexp`, the type-vs-variable
+    // distinction is on the name part AFTER the final slash. `macros/Sexp`
+    // is a named type (uppercase after slash); `a` or `module/a` would be
+    // a type variable. The slash itself is rejected by the reader for
+    // type-variable names (they're bare lowercase identifiers).
+    let bare = s.rsplit('/').next().unwrap_or(s);
+    bare.starts_with(|c: char| c.is_uppercase())
 }
 
 /// Check if a head symbol is a definition form and return its base form and visibility.
