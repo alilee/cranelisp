@@ -368,8 +368,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .map(|c| c.name.as_ref())
             .collect();
 
-        let covered: std::collections::HashSet<&str> =
-            covered_ctors.iter().map(|c| c.as_ref()).collect();
+        // Strip optional module prefix from covered constructor names so FQ
+        // pattern names (`macros/SCons`) compare equal to type_def's bare
+        // constructor names (`SCons`). FQ constructor references are valid
+        // under Principle 17 cross-module navigation.
+        let covered: std::collections::HashSet<&str> = covered_ctors
+            .iter()
+            .map(|c| {
+                let s = c.as_ref();
+                s.rsplit('/').next().unwrap_or(s)
+            })
+            .collect();
 
         let missing: Vec<&str> = all_ctors.difference(&covered).copied().collect();
 

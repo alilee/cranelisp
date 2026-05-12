@@ -616,11 +616,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             self.pop_scope(state);
         }
 
-        // Check exhaustiveness for concrete ADT scrutinees
+        // Check exhaustiveness for concrete ADT scrutinees.
+        // The type is defined in `fqtn.module` (its home module), not the
+        // current module — under Principle 17 short-name resolution, looking
+        // up the type via `state.current_module` would fail for ADTs imported
+        // from other modules (e.g. `macros/SList` matched in `fn.threading`).
         let resolved_scrutinee = self.apply_subst(state, &scrutinee_ty);
         if let Type::ADT(fqtn, _) = &resolved_scrutinee {
             self.check_exhaustiveness_in_module(
-                &state.current_module,
+                &fqtn.module,
                 &fqtn.name,
                 &covered_ctors,
                 has_wildcard,
