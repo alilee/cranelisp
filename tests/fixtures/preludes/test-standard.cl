@@ -77,3 +77,25 @@
   (defn > [a b] (gt-f64 a b))
   (defn <= [a b] (le-f64 a b))
   (defn >= [a b] (ge-f64 a b)))
+
+;; --- Display trait + impls ---
+;;
+;; Modelled on the stdlib Display trait (stdlib/text/display.cl) but
+;; provided directly in the prelude so tests do not couple to stdlib.
+;; Used by `tests/trait_imports.rs` to validate trait-method short-name
+;; resolution under Principle 17 / per-method ModuleEntry::Import.
+
+(deftrait Display
+  (show [self] String))
+
+(impl Display Int
+  (defn show [x] (int-to-string x)))
+
+(impl Display Float
+  (defn show [x] (float-to-string x)))
+
+(impl Display Bool
+  (defn show [x] (bool-to-string x)))
+
+(impl Display String
+  (defn show [x] x))
