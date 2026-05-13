@@ -1,19 +1,36 @@
-//! AST builder: converts S-expressions (`Vec<Sexp>`) into typed AST nodes
-//! (`Vec<TopLevel>` for both batch and REPL).
+//! AST builder: converts S-expressions to per-form parser-stage entries.
 //!
-//! Ring 0 forms: `defn`, `deftype`, `let`, `if`, `fn`/`lambda`, `match`,
-//! type annotations (`:Type expr`).
+//! Post-FIXME-0156 (Wave 3a-β) the public surface is two free functions:
+//!   - `build_form(&Sexp) -> Result<Vec<ParsedEntry>, CranelispError>` —
+//!     dispatches on the top-level form head (`defn` / `deftype` /
+//!     `deftrait` / `impl` / `defmacro`) and yields one or more
+//!     transient `ParsedEntry` values for the orchestrator to feed into
+//!     the cluster-atomic typecheck.
+//!   - `build_expr(&Sexp) -> Result<Expr, CranelispError>` — pure
+//!     structural transform of a single S-expression into an `Expr`,
+//!     used by REPL eval of bare expressions and recursively by the
+//!     per-shape parsers when lowering bodies.
 //!
-//! Non-Ring-0 forms are rejected with clear error messages indicating which
-//! ring they belong to.
+//! Per-shape parsers (`parse_defn`, `parse_deftype`, `parse_deftrait`,
+//! `parse_impl`) are `pub(crate)` helpers invoked from `build_form`.
+//! Pre-AST forms (`begin`, `mod`/`mod-`, `import`, `export`, `platform`)
+//! are rejected — the orchestrator must peel them off before calling
+//! `build_form`. Callers must expand macros before calling either
+//! function.
 
 use std::collections::HashSet;
 
-use cranelisp_types::{ErrorLocation, 
+use cranelisp_types::{ErrorLocation,
     CranelispError, ConstructorDef, Defn, DefnVariant, Expr, FieldDef, MatchArm,
-    Pattern, Program, Sexp, Span, Symbol, TopLevel, TraitDecl, TraitImpl,
+    ParsedEntry, Pattern, Sexp, Span, Symbol, TraitDecl, TraitImpl,
     TraitMethodSig, TraitName, TypeExpr, TypeName, Visibility,
 };
+// `Defn` is used by `build_impl_method` to package a method into the
+// `TraitImpl.methods` list. Other AST union types (`TopLevel`, `Program`)
+// are no longer named by frontend code post-FIXME-0156; tests inside this
+// crate's `tests` module bring them in locally via a thin adapter.
+
+use crate::defmacro::parse_defmacro;
 
 
 // ---------------------------------------------------------------------------
@@ -86,124 +103,100 @@ fn parse_def_visibility(head: &str) -> Option<(&str, Visibility)> {
 }
 
 // ---------------------------------------------------------------------------
-// Public API
+// Public API — `build_form` and `build_expr` (per FIXME 0156 + facade)
 // ---------------------------------------------------------------------------
 
-/// Build a batch program from parsed S-expressions.
+/// Build per-form `ParsedEntry` values from a single top-level S-expression.
 ///
-/// Each sexp must be a top-level form (`defn`, `deftype`, `deftrait`, `impl`).
-pub fn build_program(
-    sexps: &[Sexp],
-) -> Result<Program, CranelispError> {
-    sexps
-        .iter()
-        .filter(|s| !matches!(s, Sexp::Comment(_, _)))
-        .map(build_top_level)
-        .collect()
-}
-
-/// Build REPL input from a sequence of S-expressions.
+/// Dispatches on form head and returns a `Vec<ParsedEntry>` because some
+/// shapes (notably `deftype`) yield more than one entry per source form:
+/// a `TypeDef` plus one `Constructor` per declared variant.
 ///
-/// Handles top-level annotation expressions where `:Type expr` or `:(T a) expr`
-/// parses as two separate sexps that must be combined into a single `TopLevel::Expr(Expr::Annotate)`.
-/// Falls through to single-sexp handling for all other cases.
-pub fn build_repl_input_from_sexps(
-    sexps: &[Sexp],
-) -> Result<TopLevel, CranelispError> {
-    if sexps.is_empty() {
-        return Err(parse_err("expected expression", Span::SYNTHETIC));
-    }
-    // Handle top-level annotation: `:Type expr` or `:(T a) expr`
-    if sexps.len() > 1 {
-        let args = build_args_with_annotations(sexps)?;
-        if args.len() == 1 {
-            return Ok(TopLevel::Expr(args.into_iter().next().unwrap()));
+/// `build_form` is the **single public per-form dispatcher** for top-level
+/// shapes (`defn` / `deftype` / `deftrait` / `impl` / `defmacro`). Bare
+/// expressions, structural decls (`mod`/`mod-`/`import`/`export`/`platform`),
+/// and `begin` clusters must be handled by the orchestrator BEFORE calling
+/// `build_form`. See `design/frontend/wave-3a-build-form.md` §2.3.
+pub fn build_form(sexp: &Sexp) -> Result<Vec<ParsedEntry>, CranelispError> {
+    let (children, span) = match sexp {
+        Sexp::List(c, s) if !c.is_empty() => (c.as_slice(), *s),
+        Sexp::Comment(_, span) => {
+            return Err(parse_err(
+                "build_form: comment forms must be filtered by the caller",
+                *span,
+            ));
         }
-        // Multiple non-annotation sexps — error (expected single expression)
-        return Err(parse_err("expected single expression", sexps[1].span()));
-    }
-    build_repl_input(&sexps[0])
-}
+        _ => {
+            return Err(parse_err(
+                "build_form expects a top-level form (list with a head symbol)",
+                sexp.span(),
+            ));
+        }
+    };
 
-/// Build REPL input from a single S-expression.
-///
-/// Accepts top-level forms and bare expressions (returns `TopLevel::Expr` for the latter).
-pub fn build_repl_input(
-    sexp: &Sexp,
-) -> Result<TopLevel, CranelispError> {
-    // Try top-level forms first, fall back to expression
-    match sexp {
-        Sexp::List(children, span) if !children.is_empty() => {
-            if let Sexp::Symbol(head, head_span) = &children[0] {
-                // Reject forms handled by other pipeline stages
-                reject_pre_ast_forms(head, *span)?;
+    let (head, head_span) = match &children[0] {
+        Sexp::Symbol(s, sp) => (s.as_str(), *sp),
+        _ => {
+            return Err(parse_err(
+                "build_form: top-level form head must be a symbol",
+                children[0].span(),
+            ));
+        }
+    };
 
-                // Check for non-Ring-0 forms
-                reject_non_ring0_toplevel(head, *head_span)?;
-
-                // impl has no private variant
-                if head == "impl" {
-                    return build_trait_impl(children, *span);
-                }
-
-                // Check for definition forms with visibility
-                if let Some((base, vis)) = parse_def_visibility(head) {
-                    return match base {
-                        "defn" => build_defn(children, *span, vis),
-                        "deftype" => build_deftype(children, *span, vis),
-                        "deftrait" => build_deftrait(children, *span, vis),
-                        _ => unreachable!("invariant: parse_def_visibility returns known base"),
-                    };
-                }
-            }
+    // Pre-AST forms are not accepted by `build_form`. begin / module-decl
+    // forms are the orchestrator's responsibility; defmacro is dispatched
+    // separately below (it's a top-level form vocabulary entry, not pre-AST).
+    match head {
+        "begin" => {
+            return Err(parse_err(
+                "build_form: `(begin …)` must be flattened by the orchestrator before per-form dispatch",
+                head_span,
+            ));
+        }
+        "mod" | "mod-" | "import" | "export" | "platform" => {
+            return Err(parse_err(
+                "build_form: structural declarations must be peeled by `extract_module_declarations` before per-form dispatch",
+                head_span,
+            ));
         }
         _ => {}
     }
-    // Fall through to expression
-    let expr = build_expr(sexp)?;
-    Ok(TopLevel::Expr(expr))
+
+    // defmacro / defmacro-: package as ParsedEntry::Macro.
+    if head == "defmacro" || head == "defmacro-" {
+        let info = parse_defmacro(sexp)?;
+        return Ok(vec![ParsedEntry::Macro { info }]);
+    }
+
+    // impl: no private variant.
+    if head == "impl" {
+        return parse_impl(children, span).map(|e| vec![e]);
+    }
+
+    // defn / deftype / deftrait (with visibility suffix `-`).
+    if let Some((base, vis)) = parse_def_visibility(head) {
+        return match base {
+            "defn" => parse_defn(children, span, vis).map(|e| vec![e]),
+            "deftype" => parse_deftype(children, span, vis),
+            "deftrait" => parse_deftrait(children, span, vis).map(|e| vec![e]),
+            _ => unreachable!("invariant: parse_def_visibility returns known base"),
+        };
+    }
+
+    Err(parse_err(
+        &format!("unknown top-level form: `{head}`"),
+        head_span,
+    ))
 }
+
+// `build_expr` is the public per-form expression builder (see the function
+// definition further below — promoted from internal helper to `pub` per
+// FIXME 0156 + the Wave 3a facade).
 
 // ---------------------------------------------------------------------------
 // Rejection helpers
 // ---------------------------------------------------------------------------
-
-/// Reject forms that should be handled by earlier pipeline stages.
-fn reject_pre_ast_forms(head: &str, span: Span) -> Result<(), CranelispError> {
-    match head {
-        "defmacro" | "defmacro-" => Err(parse_err(
-            "defmacro should be handled before AST building (macro expansion phase)",
-            span,
-        )),
-        "begin" => Err(parse_err(
-            "begin should be handled before AST building (macro expansion phase)",
-            span,
-        )),
-        "mod" | "mod-" => Err(parse_err(
-            "(mod ...) should be handled before AST building (module loading phase)",
-            span,
-        )),
-        "import" => Err(parse_err(
-            "(import ...) should be handled before AST building (module loading phase)",
-            span,
-        )),
-        "export" => Err(parse_err(
-            "(export ...) should be handled before AST building (module loading phase)",
-            span,
-        )),
-        "platform" => Err(parse_err(
-            "(platform ...) declaration should be handled before AST building",
-            span,
-        )),
-        _ => Ok(()),
-    }
-}
-
-/// Reject non-Ring-0 top-level forms with clear error messages.
-fn reject_non_ring0_toplevel(_head: &str, _span: Span) -> Result<(), CranelispError> {
-    // All formerly-rejected top-level forms (deftrait, impl) are now handled.
-    Ok(())
-}
 
 /// Reject non-Ring-0 symbol forms in expression position.
 fn reject_non_ring0_symbol(name: &str, span: Span) -> Result<(), CranelispError> {
@@ -232,57 +225,14 @@ fn reject_non_ring0_symbol(name: &str, span: Span) -> Result<(), CranelispError>
 }
 
 // ---------------------------------------------------------------------------
-// Top-level builders
+// Per-shape parsers (pub(crate) helpers for build_form)
 // ---------------------------------------------------------------------------
 
-fn build_top_level(
-    sexp: &Sexp,
-) -> Result<TopLevel, CranelispError> {
-    match sexp {
-        Sexp::List(children, span) if !children.is_empty() => {
-            if let Sexp::Symbol(head, head_span) = &children[0] {
-                // Reject forms handled by earlier pipeline stages
-                reject_pre_ast_forms(head, *span)?;
-
-                // Reject non-Ring-0 top-level forms
-                reject_non_ring0_toplevel(head, *head_span)?;
-
-                // Check for definition forms with visibility
-                if let Some((base, vis)) = parse_def_visibility(head) {
-                    return match base {
-                        "defn" => build_defn(children, *span, vis),
-                        "deftype" => build_deftype(children, *span, vis),
-                        "deftrait" => build_deftrait(children, *span, vis),
-                        _ => unreachable!("invariant: parse_def_visibility returns known base"),
-                    };
-                }
-
-                // impl has no private variant
-                if head == "impl" {
-                    return build_trait_impl(children, *span);
-                }
-            }
-            // Fall through to expression for unknown list forms
-            let expr = build_expr(sexp)?;
-            Ok(TopLevel::Expr(expr))
-        }
-        _ => {
-            // Non-list sexp: treat as expression
-            let expr = build_expr(sexp)?;
-            Ok(TopLevel::Expr(expr))
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// defn builder
-// ---------------------------------------------------------------------------
-
-fn build_defn(
+pub(crate) fn parse_defn(
     children: &[Sexp],
     span: Span,
     visibility: Visibility,
-) -> Result<TopLevel, CranelispError> {
+) -> Result<ParsedEntry, CranelispError> {
     // (defn name "doc"? [params] body)      -- single
     // (defn name "doc"? ([p] b) ([p] b))    -- multi
     if children.len() < 3 {
@@ -327,13 +277,13 @@ fn build_defn(
         )),
     };
 
-    Ok(TopLevel::Defn(Defn {
+    Ok(ParsedEntry::Def {
         name,
-        docstring,
         variants,
         visibility,
+        docstring,
         span,
-    }))
+    })
 }
 
 fn get_defn_name(sexp: &Sexp) -> Result<Symbol, CranelispError> {
@@ -364,13 +314,16 @@ fn build_defn_variant(
 // deftype builder
 // ---------------------------------------------------------------------------
 
-fn build_deftype(
+pub(crate) fn parse_deftype(
     children: &[Sexp],
     span: Span,
     visibility: Visibility,
-) -> Result<TopLevel, CranelispError> {
+) -> Result<Vec<ParsedEntry>, CranelispError> {
     // (deftype Head "doc"? [fields])              -- product
     // (deftype Head "doc"? Ctor1 (Ctor2 [f]) ...) -- sum/enum
+    //
+    // Yields one ParsedEntry::TypeDef followed by one ParsedEntry::Constructor
+    // per declared variant in source-declaration order.
     if children.len() < 2 {
         return Err(parse_err("deftype requires a type head", span));
     }
@@ -403,14 +356,32 @@ fn build_deftype(
         }
     };
 
-    Ok(TopLevel::TypeDef {
-        name: type_name,
-        docstring,
-        type_params: resolved_params,
-        constructors,
+    // ParsedEntry::TypeDef carries type_params as `Vec<TypeName>` (per the
+    // canonical types-crate shape); convert from `Vec<Symbol>` produced
+    // by desugar_type_def.
+    let type_params_as_names: Vec<TypeName> = resolved_params
+        .iter()
+        .map(|s| TypeName::from(s.as_ref()))
+        .collect();
+
+    let mut out = Vec::with_capacity(constructors.len() + 1);
+    out.push(ParsedEntry::TypeDef {
+        name: type_name.clone(),
+        type_params: type_params_as_names,
+        constructors: constructors.clone(),
         visibility,
+        docstring,
         span,
-    })
+    });
+    for ctor in &constructors {
+        out.push(ParsedEntry::Constructor {
+            name: ctor.name.clone(),
+            of_type: type_name.clone(),
+            fields: ctor.fields.clone(),
+            span: ctor.span,
+        });
+    }
+    Ok(out)
 }
 
 fn build_type_head(sexp: &Sexp) -> Result<(TypeName, Vec<Symbol>), CranelispError> {
@@ -595,11 +566,11 @@ fn sequential_type_var(index: usize) -> String {
 // deftrait builder
 // ---------------------------------------------------------------------------
 
-fn build_deftrait(
+pub(crate) fn parse_deftrait(
     children: &[Sexp],
     span: Span,
     visibility: Visibility,
-) -> Result<TopLevel, CranelispError> {
+) -> Result<ParsedEntry, CranelispError> {
     // (deftrait Head "doc"? method_sig+)
     // Head = TraitName | (TraitName type_var)
     if children.len() < 3 {
@@ -619,14 +590,16 @@ fn build_deftrait(
         .map(|s| build_method_sig(s, is_hkt, &hkt_param_name))
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(TopLevel::TraitDecl(TraitDecl {
-        name: trait_name,
-        docstring,
-        type_params,
-        methods,
-        visibility,
-        span,
-    }))
+    Ok(ParsedEntry::TraitDecl {
+        decl: TraitDecl {
+            name: trait_name,
+            docstring,
+            type_params,
+            methods,
+            visibility,
+            span,
+        },
+    })
 }
 
 /// Parse a trait head: either `TraitName` or `(TraitName var)`.
@@ -753,10 +726,10 @@ fn build_method_sig(
 // impl builder
 // ---------------------------------------------------------------------------
 
-fn build_trait_impl(
+pub(crate) fn parse_impl(
     children: &[Sexp],
     span: Span,
-) -> Result<TopLevel, CranelispError> {
+) -> Result<ParsedEntry, CranelispError> {
     // (impl TraitName impl_target method_def+)
     // impl_target = Type | (Type :Constraint var ...)
     if children.len() < 4 {
@@ -778,14 +751,16 @@ fn build_trait_impl(
         .map(build_impl_method)
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(TopLevel::TraitImpl(TraitImpl {
-        trait_name: trait_name.into(),
-        target_type,
-        type_args,
-        type_constraints,
-        methods,
-        span,
-    }))
+    Ok(ParsedEntry::TraitImpl {
+        impl_: TraitImpl {
+            trait_name: trait_name.into(),
+            target_type,
+            type_args,
+            type_constraints,
+            methods,
+            span,
+        },
+    })
 }
 
 /// Parsed impl target: (type_name, type_params, trait_constraints).
@@ -897,7 +872,11 @@ fn build_impl_method(
 // Expression builders
 // ---------------------------------------------------------------------------
 
-fn build_expr(sexp: &Sexp) -> Result<Expr, CranelispError> {
+/// Build an `Expr` from a single S-expression.
+///
+/// Pure structural transform — no symbol-tables lookup, no gap returns.
+/// Callers must expand macros before calling `build_expr`.
+pub fn build_expr(sexp: &Sexp) -> Result<Expr, CranelispError> {
     match sexp {
         Sexp::Int(v, span) => Ok(Expr::IntLit {
             value: *v,
@@ -1530,15 +1509,121 @@ fn build_type_expr_from_list(
 mod tests {
     use super::*;
 
+    use cranelisp_types::TopLevel;
+
+    /// Test-only adapter: builds a synthetic batch program from one or more
+    /// source forms by calling `build_form`/`build_expr` and re-packaging the
+    /// resulting `ParsedEntry` values into the legacy `Vec<TopLevel>` shape
+    /// the existing assertions match against. The orchestrator now owns this
+    /// re-packaging at runtime; the adapter exists only to preserve test
+    /// surface during the Wave 3a-β cutover.
+    type Program = Vec<TopLevel>;
+
+    fn parsed_entry_to_top_level(entry: ParsedEntry) -> TopLevel {
+        use cranelisp_types::Defn;
+        match entry {
+            ParsedEntry::Def {
+                name,
+                variants,
+                visibility,
+                docstring,
+                span,
+            } => TopLevel::Defn(Defn {
+                name,
+                docstring,
+                variants,
+                visibility,
+                span,
+            }),
+            ParsedEntry::TypeDef {
+                name,
+                type_params,
+                constructors,
+                visibility,
+                docstring,
+                span,
+            } => {
+                // The legacy TopLevel::TypeDef carries type_params as Vec<Symbol>.
+                let type_params_as_symbols: Vec<Symbol> = type_params
+                    .into_iter()
+                    .map(|t| Symbol::from(t.as_ref()))
+                    .collect();
+                TopLevel::TypeDef {
+                    name,
+                    docstring,
+                    type_params: type_params_as_symbols,
+                    constructors,
+                    visibility,
+                    span,
+                }
+            }
+            ParsedEntry::TraitDecl { decl } => TopLevel::TraitDecl(decl),
+            ParsedEntry::TraitImpl { impl_ } => TopLevel::TraitImpl(impl_),
+            ParsedEntry::Macro { .. } | ParsedEntry::Constructor { .. } => {
+                unreachable!(
+                    "test adapter: parser-only entries (Macro/Constructor) should not appear in TopLevel-shaped assertions"
+                )
+            }
+            _ => unreachable!("test adapter: unknown ParsedEntry variant"),
+        }
+    }
+
+    /// Detect a top-level form head (defn/deftype/deftrait/impl/defmacro and
+    /// their `-` variants) so the test adapter knows whether to route to
+    /// `build_form` (and propagate its errors) or fall through to
+    /// `build_expr`.
+    fn is_top_level_form(sexp: &Sexp) -> bool {
+        if let Sexp::List(children, _) = sexp
+            && let Some(Sexp::Symbol(head, _)) = children.first()
+        {
+            return matches!(
+                head.as_str(),
+                "defn" | "defn-" | "deftype" | "deftype-" | "deftrait" | "deftrait-"
+                    | "impl" | "defmacro" | "defmacro-"
+            );
+        }
+        false
+    }
+
     fn parse_and_build_program(input: &str) -> Result<Program, CranelispError> {
         let sexps = crate::reader::parse(input)?;
-        build_program(&sexps)
+        let mut out = Vec::new();
+        for s in sexps {
+            if matches!(s, Sexp::Comment(_, _)) {
+                continue;
+            }
+            if is_top_level_form(&s) {
+                // Top-level form: route through build_form and propagate
+                // errors. Drop per-deftype Constructor entries — they were
+                // not in the legacy `Program` shape; the TypeDef entry
+                // alone carries the constructor list inline for assertion.
+                let entries = build_form(&s)?;
+                for entry in entries {
+                    if matches!(entry, ParsedEntry::Constructor { .. }) {
+                        continue;
+                    }
+                    out.push(parsed_entry_to_top_level(entry));
+                }
+            } else {
+                let expr = build_expr(&s)?;
+                out.push(TopLevel::Expr(expr));
+            }
+        }
+        Ok(out)
     }
 
     fn parse_and_build_repl(input: &str) -> Result<TopLevel, CranelispError> {
         let sexps = crate::reader::parse(input)?;
         assert!(!sexps.is_empty(), "expected at least one sexp");
-        build_repl_input(&sexps[0])
+        if is_top_level_form(&sexps[0]) {
+            let mut entries = build_form(&sexps[0])?;
+            entries.retain(|e| !matches!(e, ParsedEntry::Constructor { .. }));
+            assert!(!entries.is_empty(), "expected at least one TopLevel-shaped entry");
+            Ok(parsed_entry_to_top_level(entries.remove(0)))
+        } else {
+            let expr = build_expr(&sexps[0])?;
+            Ok(TopLevel::Expr(expr))
+        }
     }
 
     fn parse_and_build_expr(input: &str) -> Result<Expr, CranelispError> {
@@ -2917,5 +3002,200 @@ mod tests {
     #[test]
     fn test_distinct_param_names_ok() {
         assert!(parse_and_build_program("(defn good [x y] (add-i64 x y))").is_ok());
+    }
+
+    // ---------------------------------------------------------------------
+    // build_form direct tests (Wave 3a-β — FIXME 0156)
+    // ---------------------------------------------------------------------
+
+    fn parse_one(input: &str) -> Sexp {
+        let sexps = crate::reader::parse(input).unwrap();
+        sexps.into_iter().next().unwrap()
+    }
+
+    // spec: 02-grammar §2.2.1 + facade frontend.md §"Free functions" — defn
+    // yields exactly one ParsedEntry::Def.
+    #[test]
+    fn build_form_defn_yields_single_def() {
+        let entries = build_form(&parse_one("(defn add [a b] (add-i64 a b))")).unwrap();
+        assert_eq!(entries.len(), 1, "defn should yield 1 entry");
+        match &entries[0] {
+            ParsedEntry::Def { name, variants, visibility, .. } => {
+                assert_eq!(name.as_ref(), "add");
+                assert_eq!(variants.len(), 1);
+                assert_eq!(variants[0].params.len(), 2);
+                assert_eq!(*visibility, Visibility::Public);
+            }
+            other => panic!("expected ParsedEntry::Def, got {other:?}"),
+        }
+    }
+
+    // spec: 02-grammar §2.6 — defn- yields Private visibility.
+    #[test]
+    fn build_form_defn_private() {
+        let entries = build_form(&parse_one("(defn- helper [x] x)")).unwrap();
+        match &entries[0] {
+            ParsedEntry::Def { visibility, .. } => {
+                assert_eq!(*visibility, Visibility::Private);
+            }
+            other => panic!("expected ParsedEntry::Def, got {other:?}"),
+        }
+    }
+
+    // spec: 02-grammar §2.2.2 + facade — deftype with N constructors yields
+    // 1 TypeDef + N Constructor entries (in source-declaration order).
+    #[test]
+    fn build_form_deftype_yields_typedef_plus_per_constructor() {
+        // 3 variants → 4 entries.
+        let entries = build_form(&parse_one("(deftype Color Red Green Blue)")).unwrap();
+        assert_eq!(entries.len(), 4, "1 TypeDef + 3 Constructors expected");
+        match &entries[0] {
+            ParsedEntry::TypeDef { name, constructors, .. } => {
+                assert_eq!(name.as_ref(), "Color");
+                assert_eq!(constructors.len(), 3);
+            }
+            other => panic!("entries[0] should be TypeDef, got {other:?}"),
+        }
+        // Ordering: TypeDef, then Constructors in source order.
+        for (i, expected_name) in ["Red", "Green", "Blue"].iter().enumerate() {
+            match &entries[i + 1] {
+                ParsedEntry::Constructor { name, of_type, .. } => {
+                    assert_eq!(name.as_ref(), *expected_name);
+                    assert_eq!(of_type.as_ref(), "Color");
+                }
+                other => panic!("entries[{}] should be Constructor, got {other:?}", i + 1),
+            }
+        }
+    }
+
+    // spec: 02-grammar §2.2.2 — product type (single bracketed-fields ctor)
+    // yields 1 TypeDef + 1 Constructor.
+    #[test]
+    fn build_form_deftype_product_yields_two_entries() {
+        let entries = build_form(&parse_one("(deftype Point [:Int x :Int y])")).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(matches!(&entries[0], ParsedEntry::TypeDef { .. }));
+        match &entries[1] {
+            ParsedEntry::Constructor { name, of_type, fields, .. } => {
+                assert_eq!(name.as_ref(), "Point");
+                assert_eq!(of_type.as_ref(), "Point");
+                assert_eq!(fields.len(), 2);
+            }
+            other => panic!("entries[1] should be Constructor, got {other:?}"),
+        }
+    }
+
+    // spec: 02-grammar §2.2.3 — deftrait yields exactly one TraitDecl.
+    #[test]
+    fn build_form_deftrait_yields_single_trait_decl() {
+        let entries = build_form(&parse_one("(deftrait Display (show [self] String))")).unwrap();
+        assert_eq!(entries.len(), 1);
+        match &entries[0] {
+            ParsedEntry::TraitDecl { decl } => {
+                assert_eq!(decl.name.as_ref(), "Display");
+                assert_eq!(decl.methods.len(), 1);
+            }
+            other => panic!("expected ParsedEntry::TraitDecl, got {other:?}"),
+        }
+    }
+
+    // spec: 02-grammar §2.2.4 — impl yields exactly one TraitImpl.
+    #[test]
+    fn build_form_impl_yields_single_trait_impl() {
+        let entries = build_form(&parse_one(
+            "(impl Display Int (defn show [x] (int-to-string x)))",
+        ))
+        .unwrap();
+        assert_eq!(entries.len(), 1);
+        match &entries[0] {
+            ParsedEntry::TraitImpl { impl_ } => {
+                assert_eq!(impl_.trait_name.as_ref(), "Display");
+                assert_eq!(impl_.target_type.as_ref(), "Int");
+            }
+            other => panic!("expected ParsedEntry::TraitImpl, got {other:?}"),
+        }
+    }
+
+    // spec: 09-macros.md + facade — defmacro yields one ParsedEntry::Macro
+    // carrying ALL clauses in DefmacroInfo.clauses.
+    #[test]
+    fn build_form_defmacro_yields_single_macro_with_all_clauses() {
+        let entries = build_form(&parse_one(
+            "(defmacro when ([cond body] (if cond body 0)))",
+        ))
+        .unwrap();
+        assert_eq!(entries.len(), 1);
+        match &entries[0] {
+            ParsedEntry::Macro { info } => {
+                assert_eq!(info.name.as_ref(), "when");
+                assert_eq!(info.clauses.len(), 1);
+                assert!(!info.is_private);
+            }
+            other => panic!("expected ParsedEntry::Macro, got {other:?}"),
+        }
+    }
+
+    // spec: 09-macros.md — multi-clause defmacro packages every clause
+    // inside one Macro entry (NOT per-clause Macro entries).
+    #[test]
+    fn build_form_multi_clause_defmacro_yields_single_macro() {
+        let entries = build_form(&parse_one(
+            "(defmacro pick ([x] x) ([x y] x) ([x y z] x))",
+        ))
+        .unwrap();
+        assert_eq!(entries.len(), 1);
+        match &entries[0] {
+            ParsedEntry::Macro { info } => {
+                assert_eq!(info.clauses.len(), 3);
+            }
+            other => panic!("expected single Macro entry, got {other:?}"),
+        }
+    }
+
+    // facade — `begin` must be flattened by the orchestrator; reaching
+    // `build_form` is a caller bug.
+    #[test]
+    fn build_form_rejects_begin() {
+        let err = build_form(&parse_one("(begin 1 2)")).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("begin") && msg.contains("flatten"),
+            "got: {msg}"
+        );
+    }
+
+    // facade — structural decls must be peeled by extract_module_declarations.
+    #[test]
+    fn build_form_rejects_import() {
+        let err = build_form(&parse_one("(import [user [foo]])")).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("structural"), "got: {msg}");
+    }
+
+    // facade — `build_form` rejects bare expressions (route to build_expr).
+    #[test]
+    fn build_form_rejects_bare_expression() {
+        // A bare int isn't a top-level form vocabulary entry.
+        let err = build_form(&parse_one("42")).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("top-level form"), "got: {msg}");
+    }
+
+    // facade — unknown top-level head produces a clear error.
+    #[test]
+    fn build_form_rejects_unknown_head() {
+        let err = build_form(&parse_one("(woot foo bar)")).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("unknown top-level form"),
+            "got: {msg}"
+        );
+    }
+
+    // facade — `build_expr` is a pure structural transform; no macro lookup.
+    #[test]
+    fn build_expr_pure_int_literal() {
+        let expr = build_expr(&parse_one("42")).unwrap();
+        assert!(matches!(expr, Expr::IntLit { value: 42, .. }));
     }
 }

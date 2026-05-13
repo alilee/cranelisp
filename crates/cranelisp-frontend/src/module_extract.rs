@@ -366,7 +366,14 @@ fn parse_platform(elems: &[Sexp], span: Span) -> Result<PlatformSpec, CranelispE
 /// per spec §8.3.7. After this function returns, no
 /// `ImportSpec.module_path` contains the literal string `"super"` — the
 /// frontend-boundary invariant for `ImportSpec`.
-pub fn parse_import_sexp(
+// Facade entry retained per `design/arch/facades/frontend.md` §"Sub-parsers
+// for structural forms — internal only" — single-form parser exposed as a
+// `pub(crate)` helper for future REPL slash-command routing through
+// `extract_module_declarations`. Currently has no in-crate callers; the
+// `#[allow(dead_code)]` documents the intentional retention until the
+// REPL-side wiring (per facade) is in place.
+#[allow(dead_code)]
+pub(crate) fn parse_import_sexp(
     sexp: &Sexp,
     containing_module: &ModuleFullPath,
 ) -> Result<Vec<ImportSpec>, CranelispError> {
@@ -382,7 +389,8 @@ pub fn parse_import_sexp(
 }
 
 /// Parse a single `(export ...)` sexp into export specs.
-pub fn parse_export_sexp(sexp: &Sexp) -> Result<Vec<ExportSpec>, CranelispError> {
+#[allow(dead_code)] // Facade entry — see `parse_import_sexp` doc comment.
+pub(crate) fn parse_export_sexp(sexp: &Sexp) -> Result<Vec<ExportSpec>, CranelispError> {
     match sexp {
         Sexp::List(elems, span) if !elems.is_empty() => {
             parse_export(elems, *span)
@@ -395,7 +403,8 @@ pub fn parse_export_sexp(sexp: &Sexp) -> Result<Vec<ExportSpec>, CranelispError>
 }
 
 /// Parse a single `(mod ...)` or `(mod- ...)` sexp into a `ModDecl`.
-pub fn parse_mod_sexp(sexp: &Sexp) -> Result<ModDecl, CranelispError> {
+#[allow(dead_code)] // Facade entry — see `parse_import_sexp` doc comment.
+pub(crate) fn parse_mod_sexp(sexp: &Sexp) -> Result<ModDecl, CranelispError> {
     match sexp {
         Sexp::List(elems, span) if !elems.is_empty() => {
             if let Sexp::Symbol(head, _) = &elems[0] {
@@ -416,7 +425,8 @@ pub fn parse_mod_sexp(sexp: &Sexp) -> Result<ModDecl, CranelispError> {
 }
 
 /// Parse a single `(platform ...)` sexp into a `PlatformSpec`.
-pub fn parse_platform_sexp(sexp: &Sexp) -> Result<PlatformSpec, CranelispError> {
+#[allow(dead_code)] // Facade entry — see `parse_import_sexp` doc comment.
+pub(crate) fn parse_platform_sexp(sexp: &Sexp) -> Result<PlatformSpec, CranelispError> {
     match sexp {
         Sexp::List(elems, span) if !elems.is_empty() => {
             parse_platform(elems, *span)

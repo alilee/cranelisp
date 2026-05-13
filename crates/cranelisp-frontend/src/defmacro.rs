@@ -73,7 +73,11 @@ pub fn flatten_begin(sexp: Sexp) -> Vec<Sexp> {
 ///
 /// Supports simple names, bracket destructuring, and `& rest` syntax.
 /// Examples: `[a b]`, `[a & rest]`, `[[x y] body]`
-pub fn parse_macro_params(
+///
+/// Demoted to `pub(crate)` per facade row 16; retained as a facade entry
+/// for future REPL/slash-command surfacing.
+#[allow(dead_code)]
+pub(crate) fn parse_macro_params(
     bracket: &Sexp,
 ) -> Result<(Vec<MacroParam>, Option<Symbol>), CranelispError> {
     let (items, _span) = match bracket {

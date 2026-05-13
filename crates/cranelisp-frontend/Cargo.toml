@@ -5,3 +5,8 @@ edition = "2024"
 
 [dependencies]
 cranelisp-types = { path = "../cranelisp-types" }
+# `dashmap` is named directly in the `SymbolTables<C, L>` type alias per
+# the facade (`design/arch/facades/frontend.md` §"Free functions"). It is
+# already a transitive dep of `cranelisp-types`; declaring it here keeps
+# the alias-naming visible at the crate boundary.
+dashmap = "6"
