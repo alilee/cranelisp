@@ -91,6 +91,8 @@ The audit's recommended-remediation item 3 calls for a crate-local `crates/crane
 
 ## 4. Form-classification + dispatch model
 
+> **S66 Wave 3a update.** The per-form pair `build_ast` + `build_expr` named in earlier drafts of this section collapses into `build_form -> Vec<ParsedEntry>` + `build_expr -> Expr` per FIXME 0156. See `wave-3a-build-form.md` for the wave-specific shape; the model description below is the pre-pivot reading and remains accurate at the chain-composition level (parse → expand → per-form build → typecheck).
+
 The form-by-form scheduler (Decision 30) processes one source form at a time. The per-form chain — `expand` + `build_ast` + `check_form` — is composed by `int::process_form` (`facades/int.md` §"`process_form` — the gap-orchestration retry loop"); the frontend's role inside that chain has three calls:
 
 1. **`parse` runs once per source unit** (file load or REPL submission). It returns `Vec<Sexp>` — flat, source-ordered, including any comments if the comment-preserving variant was called.
@@ -271,6 +273,8 @@ This master doc does NOT edit the subordinate docs. The register below records e
 | Macro resolver trait | `design/frontend/macro-resolver-trait.md` | **Stale (Sprint-50-era).** Documents a `MacroResolver` trait refactor that the wider Decision-8 retraction supersedes. Resolver lookup migrates back to direct `&symbol_tables` reads when FIXME 0098 Phase 2 lands |
 | Modules | `design/frontend/modules.md` | **Partially stale.** Module-system concept accurate; specific function names + parallel-store framing predates Decisions 33 + 38. `super` rewrite at frontend boundary still correct |
 | Frontend plan | `crates/cranelisp-frontend/plan-frontend.md` | **Stale (architectural).** Names `peg` 0.8 as the parser; reality is hand-written. This is the highest-impact doc-drift item per audit HIGH-5 |
+| S66 slice (overall) | `design/frontend/implementation-slice-s66.md` | **Partially superseded.** Rows 5 + 6 (per-form `build_ast` / `build_expr` pair) are SUPERSEDED by `design/frontend/wave-3a-build-form.md` — collapsed into `build_form -> Vec<ParsedEntry>` + `build_expr -> Expr` per FIXME 0156 resolution + Decision 44. Rows 3, 4, 7, 16 remain authoritative |
+| S66 Wave 3a-β (`build_form` + `expand`) | `design/frontend/wave-3a-build-form.md` | **Current.** Authored 2026-05-12 for FIXME 0156 + FIXME 0098 Phase 2 under Decision 44 (amended 0167, 0168) — `/dev` implementation target |
 
 Refresh order, in priority of audit blast radius:
 

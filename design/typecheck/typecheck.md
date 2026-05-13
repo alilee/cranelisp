@@ -357,6 +357,7 @@ FIXME 0043 (`typecheck-resolved-call-autocurry-total-count`) is open — `Resolv
 | Sprint-50 fixes (RC4 builtin leak, RC5 macro body type) | `sprint50-fixes.md` | Historical (lessons folded) |
 | Step-4 macro deps assessment (Decision 21 alignment) | `step4-macro-deps.md` | Current |
 | **`check_form` per-form API** | **`check-form-api.md`** | **Stale on `&mut SymbolTable` signature — superseded by §6 / FIXME 0008. Algorithm shape (Pass-1/Pass-2, accumulator) survives.** |
+| **Wave 3a-β cluster-atomic two-pass entry surface** | **`wave-3a-check-form.md`** | **Current** (Sprint 66 Phase 5 Stage 2). Binds the post-Decision-44/FIXME-0167 shape: `check_form_signatures` + `check_form_body` free functions; `&mut ClusterContext` staging accessor; orchestrator-driven cluster atomicity. Supersedes `check-form-api.md` for the entry shape. |
 | **DashMap migration of TypeChecker.modules** | **`dashmap-migration.md`** | **Largely stale — built around `&mut SymbolTable` access; the migration succeeded; superseded by §6.** |
 | **Stateless TypeChecker (Sprint-51 extraction)** | **`stateless-tc-impl.md`** | **Stale on `&mut SymbolTable` patterns — the goal landed (`TypeChecker` struct dissolved; state in `CheckState` + caller-supplied table); §6 supersedes.** |
 
@@ -464,4 +465,5 @@ Decisions not listed (3, 4, 5, 7, 10–13, 16, 18, 20, 23–29, 31, 32, 34–37,
 - `design/arch/fixmes/0043-typecheck-resolved-call-autocurry-total-count.md` — open AutoCurry shape question
 - `crates/cranelisp-typecheck/src/lib.rs` — current public exports (subset of facade)
 - `design/typecheck/{inference,traits,adt,hkt,auto-curry,ast-annotation,io-types,step4-macro-deps}.md` — current subordinate docs
+- `design/typecheck/wave-3a-check-form.md` — Wave 3a-β cluster-atomic two-pass entry surface design (Sprint 66 Phase 5 Stage 2)
 - `design/typecheck/{check-form-api,dashmap-migration,stateless-tc-impl,sprint50-fixes}.md` — historical / superseded subordinate docs (see §10)

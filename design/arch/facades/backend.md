@@ -199,6 +199,30 @@ None.
 
 ---
 
+## Non-goals / forbidden patterns
+
+These are patterns the backend MUST NOT carry. They are listed here so `/review` (narrow backend) can flag any regression and `/dev` knows what NOT to add. Drift away from these constitutes a public-API gating concern even when no signature changes.
+
+### Operator special-casing is forbidden
+
+Backend MUST NOT carry name-keyed special cases for operators or any other primitive. The pre-D43 shape — a dispatch table in `backend/operators.rs` keyed on Symbol strings like `not`, `+`, `=`, `add-i64`, `eq-f64`, with inline Cranelift emission per-operator — is the **wrong shape** and is to be eliminated. Per Decision 43 (Decision 14 retracted; Decision 15 reframed) + Principle 17 + the user-arbitrated direction of 2026-05-13:
+
+**Every primitive — including `not`, `+`, `=`, the 18 arithmetic and comparison operators in `ring0_primitives()`, and any future primitive — MUST go through the same dispatch path as any user-defined function.** That path is:
+
+1. The `primitives` synthetic module's `SymbolTable` carries a `ModuleEntry::Def { kind: DefKind::Primitive { primitive_kind: Builtin }, got_slot: Some(slot), code: None, … }` entry per primitive (seeded by `cranelisp-primitives` at session init; see `facades/primitives.md`).
+2. Backend's codegen for a call site, having resolved the callee FQ to the primitives module, looks up the entry, reads the GOT slot, and emits a standard GOT-indirect call — identical in shape to a call to any user function.
+3. Inline-substitution at the codegen site (the legitimate optimisation) is keyed on Symbol ONLY (never on `(TraitName, Symbol, TypeName)` triples — backend has no trait knowledge), and is a substitution applied to the same call shape, not a parallel dispatch path. Per `facades/backend.md` §"Consumed surface" — `cranelisp-primitives` provides the substitution table; backend matches by name and emits inline Cranelift IR for the matched ones, falling through to the GOT-indirect call for the rest. The substitution is OPTIONAL — the named primitive fn ptr in the synthetic `primitives` module's GOT is always a legitimate target for indirect calls (operator-as-value, mappable-path resolutions like `(let [f =] (f 1 2))`).
+
+**What is forbidden, concretely:**
+
+- A dispatch function whose body is `match name { "not" => …, "add-i64" => …, "eq-f64" => …, _ => … }` operating in any path other than the name-keyed inline-substitution lookup described above. The current `crates/cranelisp-backend/src/operators.rs::emit_builtin_op` is exactly this shape and is to be deleted (see next paragraph).
+- A typecheck-side or backend-side hack that treats `not` as a primitive without a `ModuleEntry::Def` in `primitives`. Per `design/typecheck/wave-3a-check-form.md` §8 + FIXME 0150: `not` failing to resolve under Principle 17 because it has no symbol-table entry is a defect — `not` must be seeded into `primitives` like every other operator.
+- A code path that resolves `(+ a b)` differently from `(my-fn a b)` at the codegen layer. The typecheck-side `ResolvedCall::TraitMethod` shape (per `facades/typecheck.md` invariant 5) names the resolved primitive; backend takes that name and dispatches uniformly.
+
+**`crates/cranelisp-backend/src/operators.rs` is scheduled for deletion in Wave 4 (D43 close).** The 531-line file is the entire body of the forbidden pattern: `match name { "add-i64" => …, "not" => …, … }` over the 19 Ring 0 primitives, doubling as both the inline-substitution table and the only emission path. Its inline-substitution role moves to `crates/cranelisp-backend/src/primitives_inline.rs` (Decision 43 — name-keyed substitution table that complements, not replaces, the GOT-indirect emission); its operator-dispatch role disappears entirely (every primitive becomes a `ModuleEntry::Def` in `primitives` and is called through the standard path). The facade text alone is the deliverable for this Wave 3a-β cycle; the file deletion lands in Wave 4 alongside the rest of D43's close-out. See FIXME 0150 (`runtime-split-primitives-intrinsics`) and the new FIXME filed by this `/arch` cycle for the explicit deletion tracking.
+
+---
+
 ## Object file contract — what `compile_to_object` emits and `load_object` / system `ld` consume
 
 The `.o` file is a single artefact consumed by **both** JIT mode (via `Linker::load_object` on cache hit) AND `--link` mode (via the system linker). The contract is one file, two readers — the two-GOT model in Decision 23 distinguishes which GOT is consulted at finalize, NOT where the `.o` lives.

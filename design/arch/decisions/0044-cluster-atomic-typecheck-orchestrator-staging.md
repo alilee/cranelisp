@@ -1,10 +1,10 @@
 ---
 number: 0044
-title: Cluster-atomic typecheck — split `check_form` into two passes; orchestrator owns staging via ClusterContext
+title: Cluster-atomic typecheck via orchestrator-owned staging + ClusterContext; single `check_forms` facade
 status: pre-implementation
 filed: sprint 66 (Phase 5 Wave 3a structural-finding resolution)
-amended: sprint 66 Phase 3 (FIXME 0167 — Approach B; staging mutation via `current_symbol_table_mut` accessor; ClusterContext introduction; invariant 2 revision; pass return type changes to `Result<(), CheckError>`); sprint 66 Phase 3 (FIXME 0168 — Sequencing α/β split; Wave 3a-α locality-correctness refactor precedes Wave 3a-β triad re-fire — see Decision 0046)
-canonical_location: design/arch/facades/typecheck.md §"check_form_signatures + check_form_body"; design/arch/facades/int.md §"process_cluster — the cluster-atomic orchestration loop"; design/arch/facades/types.md §"`ParsedEntry`" + §"`View`"; design/arch/sequences/exec-flow-compilation.mmd, exec-flow-repl.mmd, concurrency-symbol-table-entry.mmd
+amended: sprint 66 Phase 3 (FIXME 0167 — Approach B; staging mutation via `current_symbol_table_mut` accessor; ClusterContext introduction; invariant 2 revision; pass return type changes to `Result<(), CheckError>`); sprint 66 Phase 3 (FIXME 0168 — Sequencing α/β split; Wave 3a-α locality-correctness refactor precedes Wave 3a-β triad re-fire — see Decision 0046); 2026-05-13 (state-threading resolution — two-pass split collapsed into single `check_forms` function; Pass-1-to-Pass-2 working state internalised; state-threading hole closed by construction)
+canonical_location: design/arch/facades/typecheck.md §"check_forms — cluster check"; design/arch/facades/int.md §"process_cluster — the cluster-atomic orchestration loop"; design/arch/facades/types.md §"`ParsedEntry`" + §"`View`"; design/arch/sequences/exec-flow-compilation.mmd, exec-flow-repl.mmd, concurrency-symbol-table-entry.mmd
 amends: []
 amended_by: []
 retracts: []
@@ -16,6 +16,18 @@ amended_by_fixme: 0167, 0168
 # 0044 — Cluster-atomic typecheck via orchestrator-owned staging + two pure passes
 
 ## Statement
+
+> **2026-05-13 third amendment — single `check_forms` facade (state-threading resolution).** The two-pass facade split (`check_form_signatures` + `check_form_body`) below is **superseded** by a single free function `cranelisp_typecheck::check_forms`. The two-pass discipline (Pass 1 signatures, Pass 2 bodies — spec §5.13.1) is preserved as an implementation-phase ordering inside `check_forms`; it does not cross the facade. Pass-1-to-Pass-2 working state lives inside that one stack frame, dropped when the call returns. The state-threading hole (FIXME 0177 — `defn_type_vars`, default-method-defn deferrals, etc. could not survive across two separate free-function calls without a public accumulator) is closed by construction: no working state crosses the facade because there is only one call. `ClusterContext`, the staging-vs-live accessor, `&mut ctx` threading, the 91-register-call-site preservation, whole-cluster atomic commit, and every other structural commitment below remain. What changes: a single canonical signature, and the retirement of `ModuleCheckAccumulator` from public-API consideration (neither typecheck-side nor `int`-side — see facades for the new shape). The orchestrator retries the whole `check_forms` call on `Err(Gap)` (no per-form retry granularity, because there is no per-form facade call). Canonical surface:
+>
+> ```rust
+> pub fn check_forms<C, L>(
+>     parsed: Vec<ParsedEntry>,
+>     ctx: &mut ClusterContext<'_, C, L>,
+>     symbol_tables: &SymbolTables<C, L>,
+> ) -> Result<(), CheckError>;
+> ```
+>
+> The rest of this Statement and the body that follows describe the pre-amendment two-pass facade shape; read it as illustrative of the cluster-atomic protocol's intent (the protocol carries forward verbatim), not as the canonical surface. The canonical facade is `facades/typecheck.md` §"check_forms".
 
 `cranelisp_typecheck::check_form` (the single per-form pure call introduced by FIXME 0160) splits into two passes that the orchestrator drives across every form in a cluster:
 
@@ -102,7 +114,9 @@ The cluster-atomic shape resolves the conflict without compromising purity:
 
 ### Rejected alternatives
 
-- **Single function with a `Pass` enum parameter** (`fn check_form(parsed, table, symbol_tables, pass: Pass) -> Result<...>`). Rejected: forces dispatch noise on every consumer; collapses two narrow surfaces into one wide one (Principle 2 — narrow interfaces); makes per-pass return-type evolution awkward (Pass 1 sig-shells vs Pass 2 body-checked entries with mono variants are conceivably distinct shapes in future evolution); makes per-pass test targeting clumsier. Two explicit functions is cleaner.
+> **2026-05-13 third-amendment note.** The "single function with a `Pass` enum parameter" rejection below remains valid for that specific shape (run-time pass discriminator passed by the consumer). The third amendment's single `check_forms` function is **different**: it consumes the whole cluster (`Vec<ParsedEntry>`) and runs both passes internally — the consumer never passes a pass discriminator. The narrow-interfaces concern that justified rejecting the enum-parameter approach (every consumer has to dispatch on `Pass`) does not apply to `check_forms` (consumers see one entry, one return). The two-function split was reaction against the enum-parameter shape but over-corrected — it exposed implementation phasing across the facade and created the FIXME-0177 state-threading hole. The third amendment lands the canonical shape: one cluster-scoped function, internal pass ordering.
+
+- **Single function with a `Pass` enum parameter** (`fn check_form(parsed, table, symbol_tables, pass: Pass) -> Result<...>`). Rejected: forces dispatch noise on every consumer; collapses two narrow surfaces into one wide one (Principle 2 — narrow interfaces); makes per-pass return-type evolution awkward (Pass 1 sig-shells vs Pass 2 body-checked entries with mono variants are conceivably distinct shapes in future evolution); makes per-pass test targeting clumsier. Two explicit functions is cleaner — *but see the third-amendment note above: subsequent experience showed that the two-function shape, while narrower than the enum-parameter shape, exposed implementation phasing across the facade and created a state-threading hole; the canonical surface collapses to one cluster-scoped function.*
 - **Staging lives on `SymbolTable`** (e.g., a `SymbolTable::with_staging()` mode). Rejected: violates Principle 7 — there would be two write surfaces on the canonical store, with the live invariant ("checked AND committed") qualified by mode. Orchestrator-owned staging keeps the live `SymbolTable` invariant un-qualified.[^transient-vs-durable]
 
 [^transient-vs-durable]: **Transient-vs-durable footnote (FIXME 0167 amendment).** The original "two write surfaces on the canonical store" objection conflated transient with durable. Under Approach B the canonical store has **one durable write surface** (live, committed via cluster atomic drain). Staging is a **transient orchestrator-local frame** — a separate `SymbolTable` value owned by `process_cluster`'s stack, dropped on failure, drained on success. It is never published; other workers cannot observe it. The Principle 7 objection (two write surfaces on a single canonical store) does not apply because staging is not the canonical store; it is a per-cluster frame with the same shape as the canonical store, used to absorb cross-pass write-side intent before atomic commit. The amendment in FIXME 0167 records this distinction: typecheck is structurally a stateful engine whose 91 register-call sites must mutate *something* across passes; the orchestrator hands it a transient `&mut SymbolTable` that satisfies the API while preserving cluster atomicity and live-table invariants. The `current_symbol_table_mut` accessor abstracts staging-vs-live so typecheck still cannot distinguish the two — preserving Decision 44's Principle 1 (decoupling) and Principle 7 (single durable source of truth) intent without forcing a multi-week inversion of every register-call site.
@@ -115,7 +129,7 @@ No BC moves. Typecheck's BC ("AST → typed AST + symbol tables; pure transform"
 
 ## Cross-references
 
-- `design/arch/facades/typecheck.md` §"`check_form_signatures` + `check_form_body`" — the as-designed two-call surface (post-amendment: `&mut ClusterContext` parameter; `Result<(), CheckError>` return; staging-mutation through accessor)
+- `design/arch/facades/typecheck.md` §"check_forms — cluster check" — the as-designed single-call surface (post-2026-05-13-third-amendment: `Vec<ParsedEntry>` parameter; `&mut ClusterContext`; `Result<(), CheckError>` return; staging-mutation through accessor; internal two-pass ordering)
 - `design/arch/facades/int.md` §"`process_cluster` — the cluster-atomic orchestration loop" — orchestrator shape, ClusterContext::Cluster construction, staging drain on cluster commit
 - `design/arch/facades/types.md` §"`ParsedEntry`" + §"`View`" — boundary types; `View` is constructed inside `ClusterContext::current_symbol_table`
 - `design/arch/interfaces.md` §"`check_form` is pure" — narrative companion update describing the split
@@ -137,10 +151,10 @@ Sequencing (post-FIXME 0168 amendment):
 2. `/spec` lands FIXME 0165 (§5.13.2 extension; `(begin)` cluster role).
 3. `/arch` lands Decisions 0045 + 0046 + Principle 17 + facade locality updates (FIXME 0168 commit).
 4. **Wave 3a-α — locality-correctness refactor** (precondition; ~3–5 days). Per Decision 0046 + Principle 17. Replace the ~40+ direct `self.modules.X` access sites with the four principled access-pattern shapes; retarget the ~6 cross-module impl writes to the writer's module per Decision 0045. `/dev` narrow per typecheck.
-5. **Wave 3a-β — triad re-fires atop locality-correct typecheck** (~3–4 days):
+5. **Wave 3a-β — triad re-fires atop locality-correct typecheck** (~3–4 days; revised per 2026-05-13 third amendment):
    - Frontend: `build_form` per FIXME 0156 (unchanged from prior plan).
-   - Typecheck: TWO passes (`check_form_signatures` + `check_form_body`); each takes `&mut ClusterContext` and returns `Result<(), CheckError>`. The 91 register-call sites do not change individually — the surgery is in the `ClusterContext::current_symbol_table_mut` accessor adaptation. `TypeCheckEnv` retains its other state and is reshaped to consume `ClusterContext` for table access.
-   - Int: `process_cluster` constructs `ClusterContext::Cluster { modules, staging, current_module }` per cluster; transient staging `SymbolTable`; cluster-atomic drain on Pass-2 success; `(begin)` unwrapping.
+   - Typecheck: single `check_forms(parsed: Vec<ParsedEntry>, ctx: &mut ClusterContext, symbol_tables: &SymbolTables) -> Result<(), CheckError>` per Decision 44's third amendment. Internal two-pass ordering: Pass 1 sweeps `parsed` registering signatures into staging via the accessor; Pass 2 sweeps `parsed` body-checking against `View::union(staging, live)`. The 91 register-call sites do not change individually — the surgery is in the `ClusterContext::current_symbol_table_mut` accessor adaptation. Pass-1-to-Pass-2 working state (`defn_type_vars`, default-method-defn deferrals, generalisation inputs) is internal to the `check_forms` frame. `TypeCheckEnv` retains its other state and is reshaped to consume `ClusterContext` for table access.
+   - Int: `process_cluster` constructs `ClusterContext::Cluster { modules, staging, current_module }` per cluster; transient staging `SymbolTable`; one `check_forms` call per cluster; cluster-atomic drain on `Ok`; whole-cluster retry on `Err(Gap)`; `(begin)` unwrapping. `ProcessedCluster` carries warnings + resolved_imports + introspection_records in addition to staged entries; no separate `ModuleCheckAccumulator` exists on either side.
 6. Wave 1 gate test `tests/process_form_dispatch.rs` revises (forward-ref defns wrapped in `(begin)`; second test asserts cross-input forward-ref produces a clear error).
 
 Total Wave 3a envelope: ~6–9 days (α + β), within the Sprint 66 envelope per `sprints/SPRINT.md`.

@@ -48,6 +48,21 @@ pub struct FQTraitName {
 
 Used wherever a value, type, or trait reference crosses a module boundary. The diagram-surfaced `process_form`, `wait_for_typecheck_symbol`, `wait_for_typecheck_type`, `priority_boost_jit`, `notify_symbol_typechecked`, `notify_inmem_codegen_complete`, `enqueue_jit` all take these.
 
+**Trait-method addressing convention (S66 Wave 3a — user-arbitrated 2026-05-13).** Trait methods are addressed by composite `Symbol` within the trait's defining module. For a trait method `Display.show` declared in module `core`:
+
+- The canonical `ModuleEntry::Def` for the method lives in `core` keyed by `Symbol::from("Display.show")`.
+- Per-method `ModuleEntry::Import` bindings injected by the prelude into user modules carry `source: FQSymbol { module: ModuleFullPath::from("core"), symbol: Symbol::from("Display.show") }`.
+- Bare-name use sites (`(show 42)`) install the local Import binding under the bare `Symbol::from("show")` — keyed by the user-visible name, with `source` pointing at the composite `Display.show` in the trait's home module.
+
+The trait is **not** a distinct module namespace — `core/Display/show` is NOT a valid path. Two options were considered and rejected:
+
+- (A) `module: "core/Display", symbol: "show"` — breaks Principle 17's module-path semantics (`/` in `ModuleFullPath` would imply nested-module lookup, which `chain-follow` would then try to navigate against a path that has no `SymbolTable`).
+- (C) `module: "core", trait: Some("Display"), symbol: "show"` — promotes traits to a first-class third component of `FQSymbol`. Rejected as gratuitous structural cost; the dot-composite spelling is already the REPL's convention (`/list` Trait.method format) and matches what users type when disambiguating.
+
+Option B (composite `Symbol`) keeps `FQSymbol` two-component, keeps `ModuleFullPath` strictly module-pathed, and keeps the per-symbol-chain-follow primitive of Principle 17 unchanged — a trait-method Import binding chains exactly like any other Import binding, with the symbol part happening to contain a `.`. Backend mangling for trait-method bodies (`Display.show$Option$Int`, etc., per `facades/types.md` §"`SymbolTable` — the single store" `TraitImpl` notes) is unaffected: the `$`-mangled local Symbol IS the body name; the dot-composite is the trait-method canonical name. The two coexist because they identify different things (the body vs. the trait-method binding).
+
+This is binding for `Wave 3a-α/β` and forward: any `FQSymbol` whose `symbol` field contains a `.` is a trait-method reference, addressable in the trait's defining module.
+
 ### Source-level constructs (read by frontend, threaded through typecheck/backend)
 
 ```rust
@@ -101,11 +116,11 @@ pub struct Program { pub forms: Vec<TopLevel> }
 pub fn free_vars_expr(expr: &Expr) -> HashSet<Symbol>;
 ```
 
-### `ParsedEntry` — the parse-time-only transient (per FIXME 0156 resolution; persists across both passes per Decision 44)
+### `ParsedEntry` — the parse-time-only transient (per FIXME 0156 resolution; passed as `Vec<ParsedEntry>` to `check_forms` per Decision 44's 2026-05-13 third amendment)
 
-`ParsedEntry` is the transient handoff from `cranelisp_frontend::build_form` to the two-pass typecheck surface (`cranelisp_typecheck::check_form_signatures` + `check_form_body`). It carries only what the parser knows; resolved-stage fields (type, scheme, callees, code, got_slot) are populated by the typecheck passes downstream and end up on `ModuleEntry`. **`ParsedEntry` NEVER lands in `SymbolTable`** — its lifecycle is bounded by one orchestrator-cluster iteration: `parse → ParsedEntry → (check_form_signatures across cluster, then check_form_body across cluster) → Vec<(Symbol, ModuleEntry)> → orchestrator commits staging into live SymbolTable`. The SymbolTable invariant ("if it's in the live table, it's checked AND committed") is preserved by the cluster-atomic commit.
+`ParsedEntry` is the transient handoff from `cranelisp_frontend::build_form` to the single-call typecheck surface (`cranelisp_typecheck::check_forms`). It carries only what the parser knows; resolved-stage fields (type, scheme, callees, code, got_slot) are populated by `check_forms` downstream and end up on `ModuleEntry`. **`ParsedEntry` NEVER lands in `SymbolTable`** — its lifecycle is bounded by one orchestrator-cluster iteration: `parse → ParsedEntry → orchestrator accumulates Vec<ParsedEntry> → check_forms(Vec<ParsedEntry>) (internal Pass 1 then Pass 2) → staging carries typed entries → orchestrator commits staging into live SymbolTable`. The SymbolTable invariant ("if it's in the live table, it's checked AND committed") is preserved by the cluster-atomic commit.
 
-**Persistence across passes**. The orchestrator (`int::process_cluster`) holds the parsed-entry list for the duration of a cluster's processing. The same `ParsedEntry` instance is passed to Pass 1 (signatures) and Pass 2 (bodies). `ParsedEntry` derives `Clone` so the orchestrator can clone for retry-on-Gap; the parser never produces a `ParsedEntry` that would invalidate between passes.
+**Persistence across passes**. The orchestrator (`int::process_cluster`) accumulates the `Vec<ParsedEntry>` for the cluster and hands the whole list to one `check_forms` call. The internal Pass 1 / Pass 2 ordering reads the same vector twice. `ParsedEntry` derives `Clone` so the orchestrator can rebuild the vector on Gap-retry (whole-cluster retry against a fresh staging frame); the parser never produces a `ParsedEntry` that would invalidate between cluster attempts.
 
 ```rust
 #[non_exhaustive]
@@ -165,9 +180,9 @@ pub struct DefmacroInfo {
 
 ### `View<'a, C, L>` — the cluster read surface (per Decision 44, amended FIXME 0167)
 
-`View<'a, C, L>` is a thin newtype that wraps two `&SymbolTable<C, L>` references — staging (orchestrator-local, transient) and live — and routes lookups staging-first then live. It is the read surface the two-pass typecheck functions (`check_form_signatures`, `check_form_body`) see for the current cluster's per-module read. Typecheck does not know whether a given lookup hits staging, live, or unioned content; it just calls `view.lookup(name)`.
+`View<'a, C, L>` is a thin newtype that wraps two `&SymbolTable<C, L>` references — staging (orchestrator-local, transient) and live — and routes lookups staging-first then live. It is the read surface the typecheck cluster surface (`check_forms`) sees for the current cluster's per-module read. Typecheck does not know whether a given lookup hits staging, live, or unioned content; it just calls `view.lookup(name)`.
 
-**Construction site**. `View` is not constructed at the typecheck call site directly; it is produced inside `ClusterContext::current_symbol_table()` (in `cranelisp-typecheck`). In `ClusterContext::Cluster` mode the accessor returns `View::union(staging, live)`; in `ClusterContext::Live` mode the accessor returns a single-source view over the live module. This indirection means the two-pass typecheck signature does not change shape across cluster-vs-committed mode — typecheck always reads through `ctx.current_symbol_table()`, and the staging-vs-live distinction is absorbed by `ClusterContext`'s accessor surgery. `View` itself remains the read-side abstraction and lives in `cranelisp-types` (multi-consumer at the boundary type level — frontend + typecheck both consume it via `ClusterContext`'s API surface).
+**Construction site**. `View` is not constructed at the typecheck call site directly; it is produced inside `ClusterContext::current_symbol_table()` (in `cranelisp-typecheck`). In `ClusterContext::Cluster` mode the accessor returns `View::union(staging, live)`; in `ClusterContext::Live` mode the accessor returns `View::single(live)` — a single-source view over the live module. This indirection means the two-pass typecheck signature does not change shape across cluster-vs-committed mode — typecheck always reads through `ctx.current_symbol_table()`, and the staging-vs-live distinction is absorbed by `ClusterContext`'s accessor surgery. `View` itself remains the read-side abstraction and lives in `cranelisp-types` (multi-consumer at the boundary type level — frontend + typecheck both consume it via `ClusterContext`'s API surface).
 
 ```rust
 pub struct View<'a, C: CodeStore = (), L: LinkerStore = ()> {
@@ -180,9 +195,19 @@ impl<'a, C: CodeStore, L: LinkerStore> View<'a, C, L> {
     /// Both refs must outlive `'a`; lifetime bound on the returned `View`.
     pub fn union(staging: &'a SymbolTable<C, L>, live: &'a SymbolTable<C, L>) -> Self;
 
+    /// Construct a single-source read view over `live` alone. Used by
+    /// `ClusterContext::Live` (REPL introspection, fine-grained-test paths,
+    /// any caller reading committed state directly). Lookups dispatch
+    /// directly to `live`; no staging side. Adds no allocation; the newtype
+    /// stores the single reference. Selected over a static empty-sentinel
+    /// sentinel (`View::union(&EMPTY, live)`) for cleaner surface — the API
+    /// names what each mode does rather than embedding a sentinel idiom.
+    pub fn single(live: &'a SymbolTable<C, L>) -> Self;
+
     /// Read-through lookup. Staging entries shadow live entries (Pass 1 sig
     /// shells masking any partially-existing live placeholder that should
-    /// not happen — both passes assume cluster atomicity).
+    /// not happen — both passes assume cluster atomicity). `single`-mode
+    /// dispatches directly to live.
     pub fn lookup(&self, name: &Symbol) -> Option<&ModuleEntry<C>>;
 
     /// Iterate the union, staging-first; live entries shadowed by staging

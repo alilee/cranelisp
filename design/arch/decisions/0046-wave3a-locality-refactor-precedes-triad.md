@@ -19,7 +19,7 @@ Sprint 66 Wave 3a re-fires as two sub-waves:
 
 - **Wave 3a-α — locality-correctness refactor** (estimated 3–5 days). Replace 40+ direct `self.modules.X` access sites in `crates/cranelisp-typecheck/src/{checker,infer,traits,builtins}.rs` with the four principled access-pattern shapes defined in Principle 17. The ~6 direct mutating writes in `builtins.rs` + `checker.rs` (impls written into foreign modules) retarget to the writer's module per Decision 0045. The 91 register-call sites and 51 read-access sites already flow through `current_symbol_table` / `current_symbol_table_mut`; α's surgery is on the orphaned cross-module accesses that don't.
 
-- **Wave 3a-β — cluster-atomic triad implementation** (estimated 3–4 days). Build `frontend::build_form` (FIXME 0156), `typecheck::check_form_signatures` + `check_form_body` (Decision 44), `int::process_cluster` (Decision 44), and the `ClusterContext` accessor adaptation, atop the locality-correct typecheck.
+- **Wave 3a-β — cluster-atomic triad implementation** (estimated 3–4 days). Build `frontend::build_form` (FIXME 0156), `typecheck::check_forms` (Decision 44 third amendment 2026-05-13 — single-call cluster surface; internal two-pass discipline), `int::process_cluster` (Decision 44), and the `ClusterContext` accessor adaptation, atop the locality-correct typecheck.
 
 Wave 3a-β cannot start before α completes. The reasoning is structural: cluster-atomic correctness depends on every typecheck read and write flowing through `ctx.current_symbol_table[_mut]()`. An orphaned `self.modules.X` pierce in a typecheck pass would read live during cluster mode (ignoring staging) and silently weaken the live-table invariant, rendering Decision 44's staging surgery ineffective. The third Wave 3a re-attempt (2026-05-12) blocked on exactly this — the locality violations are structurally inconsistent with the cluster-atomic shape, not just stylistically untidy.
 
@@ -53,7 +53,7 @@ Decision 0044's "Sequencing" section is amended to reference the α-then-β spli
 ### Per-skill assignment
 
 - **Wave 3a-α** is `/dev` narrow per typecheck: a typecheck-internal sweep with no facade or cross-crate impact. `/arch` review per Phase 5 (no public-API change anticipated; if α surfaces one, file FIXME `target: /arch`). `/qa` confirms no regression in current behaviour (every access-pattern replacement should be observably identical pre-cluster).
-- **Wave 3a-β** is the original triad (frontend + typecheck + int) per Decision 44's Sequencing. `/arch` reviews public-API changes (`check_form` → `check_form_signatures` + `check_form_body`; `process_form` → `process_cluster`); `/dev` narrow per crate implements; `/review` per crate audits as-built against facade.
+- **Wave 3a-β** is the original triad (frontend + typecheck + int) per Decision 44's Sequencing. `/arch` reviews public-API changes (`check_form` → `check_forms` per Decision 44 third amendment; `process_form` → `process_cluster`); `/dev` narrow per crate implements; `/review` per crate audits as-built against facade.
 
 ### Acceptance criteria for α
 
@@ -71,8 +71,8 @@ Decision 0044's "Sequencing" section is amended to reference the α-then-β spli
 β is complete when:
 
 1. `frontend::build_form` produces `ParsedEntry` values per FIXME 0156's resolution; `parse_defmacro` becomes `pub(crate)`.
-2. `typecheck::check_form_signatures` and `typecheck::check_form_body` exist; both take `&mut ClusterContext` and return `Result<(), CheckError>`; both are pure with respect to live state.
-3. `int::process_cluster` constructs `ClusterContext::Cluster { modules, staging, current_module }` per cluster, drives Pass 1 across every form, then Pass 2, then commits staging atomically into live.
+2. `typecheck::check_forms(parsed: Vec<ParsedEntry>, ctx: &mut ClusterContext, symbol_tables: &SymbolTables) -> Result<(), CheckError>` exists; pure with respect to live state; internal two-pass discipline (Pass 1 signatures, Pass 2 bodies) lives inside its frame.
+3. `int::process_cluster` constructs `ClusterContext::Cluster { modules, staging, current_module }` per cluster, makes one `check_forms` call per cluster, then commits staging atomically into live (drop-on-Err / drain-on-Ok).
 4. `(begin form₁ … formN)` REPL inputs are unwrapped into one cluster (per `/spec` resolution of FIXME 0165); non-`begin` REPL inputs are one-form clusters.
 5. `tests/process_form_dispatch.rs` revision passes (forward-ref defns inside `(begin)` work; cross-input forward references produce a clear error).
 6. `/review` per-crate audit confirms compliance with the facades for frontend, typecheck, int.

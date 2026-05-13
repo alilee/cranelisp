@@ -811,7 +811,7 @@ post-`build_form` consumption path can name the type uniformly.
 `build_form` returning `Vec<ParsedEntry>` carrying
 `ParsedEntry::Macro { info: DefmacroInfo, .. }`.
 
-### `check_form_signatures` + `check_form_body` (Sprint 66, FIXME 0160 + Decision 44 amended FIXME 0167)
+### `check_forms` (Sprint 66, FIXME 0160 + Decision 44 amended FIXME 0167 + 2026-05-13 third amendment)
 
 The pre-S66 `check_form` mutated the symbol table in-place and was
 merged via a typecheck-internal `merge_form_result()` helper. FIXME
@@ -821,52 +821,49 @@ mandated two-pass typecheck (Pass 1 Registration; Pass 2 Checking) for
 forward references / mutual recursion at top level — a single per-form
 pure call cannot satisfy this because when checking `(defn f [] (g 1))`'s
 body, `g`'s signature must already be in scope, but a per-form caller has
-no opportunity to register `g`'s signature first. Per Decision 44 the
-single call splits into two passes; per Decision 44's FIXME 0167
-amendment (Approach B + ClusterContext), both passes take
-`&mut ClusterContext` and return `Result<(), CheckError>` — staging
-mutation flows through the existing `current_symbol_table_mut`
-accessor, and the 91 register-call sites in `program.rs` do not change
-individually:
+no opportunity to register `g`'s signature first. Decision 44 first split
+the single call into two passes; the intermediate two-function shape
+(`check_form_signatures` + `check_form_body`) exposed implementation
+phasing across the facade and created a state-threading hole
+(Pass-1-to-Pass-2 working state had no public home). The 2026-05-13
+third amendment collapses the two-function split into a single
+`check_forms` function that consumes the whole cluster and runs both
+passes internally; Pass-1-to-Pass-2 working state lives inside the call
+frame and never crosses the facade:
 
 ```rust
-pub fn check_form_signatures<C, L>(
-    parsed: ParsedEntry,
+pub fn check_forms<C, L>(
+    parsed: Vec<ParsedEntry>,             // whole cluster
     ctx: &mut ClusterContext<'_, C, L>,    // staging-or-live access via accessor
     symbol_tables: &SymbolTables<C, L>,    // for cross-module reads
 ) -> Result<(), CheckError>;
-
-pub fn check_form_body<C, L>(
-    parsed: ParsedEntry,
-    ctx: &mut ClusterContext<'_, C, L>,    // cluster signatures from Pass 1 visible via current_symbol_table()
-    symbol_tables: &SymbolTables<C, L>,
-) -> Result<(), CheckError>;
 ```
 
-Both passes are pure with respect to **live state** — neither mutates
-the live `SymbolTable` nor any state visible outside the cluster.
-Both passes MAY mutate the orchestrator-handed staging `SymbolTable`
-via `ctx.current_symbol_table_mut()` — the same accessor API used in
+`check_forms` is pure with respect to **live state** — it does not
+mutate the live `SymbolTable` nor any state visible outside the cluster.
+It MAY mutate the orchestrator-handed staging `SymbolTable` via
+`ctx.current_symbol_table_mut()` — the same accessor API used in
 committed-mode. Typecheck cannot distinguish staging from live because
 the accessor abstracts the difference. The caller
 (`int::process_cluster`) constructs `ClusterContext::Cluster { modules,
 staging: &mut empty_staging, current_module }` for the duration of one
-cluster's processing, threads `&mut ctx` to both passes, and commits
-staging into the live `SymbolTable` atomically via
+cluster's processing, threads `&mut ctx` to one `check_forms` call,
+and commits staging into the live `SymbolTable` atomically via
 `int::insert_cluster` only on whole-cluster success. On `Err(Gap |
-TypeError)` from any pass, no live mutation has occurred — the
-orchestrator either retries the same pass (Gap; staging may carry
-partial pre-Gap writes — the retry overwrites via the same accessor)
-or drops staging on the floor when the function frame returns
-(TypeError); the live table is byte-identical to its pre-cluster state.
+TypeError)`, no live mutation has occurred — the orchestrator either
+drops the staging frame and retries the whole `check_forms` call
+against a fresh staging frame (Gap) or drops staging on the floor when
+the function frame returns (TypeError); the live table is
+byte-identical to its pre-cluster state.
 
-Per Decision 44 (amended FIXME 0167), cluster atomicity is preserved
-because staging is orchestrator-local and is committed (drained into
-live) only on Pass-2 success across all forms. The transient-vs-durable
-distinction matters: the canonical store has ONE durable write surface
-(live, committed via cluster atomic drain); staging is a transient
-orchestrator-local frame, never published. The Principle 7 objection
-"two write surfaces on the canonical store" does not apply because
+Per Decision 44 (amended FIXME 0167; third amendment 2026-05-13), cluster
+atomicity is preserved because staging is orchestrator-local and is
+committed (drained into live) only on whole-cluster `check_forms`
+success. The transient-vs-durable distinction matters: the canonical
+store has ONE durable write surface (live, committed via cluster atomic
+drain); staging is a transient orchestrator-local frame, never published.
+The Principle 7 objection "two write surfaces on the canonical store"
+does not apply because
 staging is not the canonical store — it is a per-cluster frame with the
 same shape as the canonical store, used to absorb cross-pass write-side
 intent before atomic commit. `ReplSnapshot` covers type-var-pool
@@ -1853,11 +1850,11 @@ The filter is deliberately strict: any `ModuleEntry::Def` with `ast: None` is ex
 - `SymbolTable.schema_version: u32` (Sprint 58 Step 5b, Decision 34) — explicit cache schema version; mismatch invalidates the cache as if dependencies changed.
 - `Code` enum (Sprint 58 Phase 3a, Decision 35; Sprint 64 location move per Decision 41; **Sprint 66 variant slimming preserved through the same-day fn_ptr-unification rollback**) — concrete `C` for `SymbolTable<Code, ()>`. Variants `Code::Jit(Arc<Jit>)` + `Code::Linker(Arc<Linker>)` — lifecycle owner ONLY post-S66; the per-entry call address lives in `SymbolTable.got()` (the post-rollback single source of truth — see `crates/cranelisp-types/src/got.rs`), indexed by `ModuleEntry::Def.got_slot`. Lives in `cranelisp-backend/src/code.rs` (moved from `src/code.rs` per Decision 41), NOT in `cranelisp-types` (Principle 3). The CP1 Layer-2-Option-B return-tuple pattern retracts: `compile_to_module` writes `Code::Jit(Arc<Jit>)` directly via Decision 38's `write_code` and writes the resulting fn pointer to the entry's GOT slot via `symbol_table.got().store_slot(slot, ptr)`, returning `Result<(), CompilationError>`. Documented at this boundary so every consumer of `SymbolTable<Code, ()>` references the same shape.
 - `ModuleEntry::Def.got_slot: Option<usize>` — single source of truth for "where to call to invoke this entry" (Sprint 56 G7; reaffirmed Sprint 66 post-rollback per `1dc57ae`). Indexes into `SymbolTable.got()`; the runtime address is `got().load_slot(slot)`. The S66 unification briefly placed the address on a sibling `ModuleEntry::Def.fn_ptr` field (commit `b09ec76`); the same-day rollback `1dc57ae` removed that field as redundant with the GOT. No per-entry pointer field exists post-rollback. Origin encoded by `kind: DefKind` (UserFn → JIT/linker; Primitive { Inline | Extern } → primitive; Primitive { PlatformEffect } → platform DLL). See `facades/types.md` §"Symbol table — the single store" + Decision 41 S66 amendment + rollback.
-- `ParsedEntry` enum (Sprint 66, FIXME 0156) — parse-time-only transient produced by `cranelisp_frontend::build_form` and consumed by both passes of `cranelisp_typecheck`'s two-pass surface (`check_form_signatures` + `check_form_body`, per Decision 44). NEVER lands in `SymbolTable`. Persists across both passes for one cluster's processing (orchestrator-held). `#[non_exhaustive]`; not `Serialize/Deserialize`. See `facades/types.md` §"`ParsedEntry`" + `facades/frontend.md` + `facades/typecheck.md`.
+- `ParsedEntry` enum (Sprint 66, FIXME 0156) — parse-time-only transient produced by `cranelisp_frontend::build_form` and consumed (as `Vec<ParsedEntry>`) by `cranelisp_typecheck::check_forms`'s single-call cluster surface (per Decision 44's 2026-05-13 third amendment; internal two-pass discipline). NEVER lands in `SymbolTable`. Orchestrator accumulates the vector across the cluster's forms and hands it to one `check_forms` call. `#[non_exhaustive]`; not `Serialize/Deserialize`; derives `Clone` so the orchestrator can rebuild the vector for Gap-retry. See `facades/types.md` §"`ParsedEntry`" + `facades/frontend.md` + `facades/typecheck.md`.
 - `DefmacroInfo` struct (Sprint 66, FIXME 0156) — moved from `cranelisp-frontend/src/defmacro.rs` to `cranelisp-types` so `int`'s post-`build_form` consumption path can name the type uniformly. Frontend's `parse_defmacro` becomes `pub(crate)` inside the `build_form` dispatcher.
 - `View<'a, C, L>` newtype (Sprint 66, Decision 44 amended FIXME 0167) — composite read surface `(staging, live)` that wraps two `&SymbolTable` refs and routes lookups staging-first then live. Constructed inside `ClusterContext::current_symbol_table()` (in `cranelisp-typecheck`); in `Cluster` mode returns `View::union(staging, live)`, in `Live` mode returns a single-source view. Typecheck reads through `ctx.current_symbol_table()` whenever it would have read `&SymbolTable` directly. No allocation per lookup; lifetime-bounded; read-only. See `facades/types.md` §"`View<'a, C, L>`".
 
-- `ClusterContext<'a, C, L>` enum (Sprint 66, Decision 44 amended FIXME 0167) — staging-vs-live abstraction that absorbs the surgery point for cluster-atomic typecheck under Approach B. Lives in `cranelisp-typecheck` (single-consumer pair: typecheck owns the structural shape; `int` constructs and threads instances). Two variants: `Live { modules }` for committed-mode access, `Cluster { modules, staging: &mut SymbolTable, current_module }` for cluster processing. Two accessors: `current_symbol_table() -> View<'_, C, L>` (read), `current_symbol_table_mut() -> &mut SymbolTable<C, L>` (write). The 91 register-call sites and 51 read access sites in `crates/cranelisp-typecheck/src/program.rs` flow through these accessors unchanged — staging-vs-live distinction is invisible to typecheck. See `facades/typecheck.md` §"Per-form-pass scaffolding".
+- `ClusterContext<'a, C, L>` enum (Sprint 66, Decision 44 amended FIXME 0167; 2026-05-13 third amendment) — staging-vs-live abstraction that absorbs the surgery point for cluster-atomic typecheck under Approach B. Lives in `cranelisp-typecheck` (single-consumer pair: typecheck owns the structural shape; `int` constructs and threads instances). Two variants: `Live { modules }` for committed-mode access, `Cluster { modules, staging: &mut SymbolTable, current_module }` for cluster processing. Two accessors: `current_symbol_table() -> View<'_, C, L>` (read), `current_symbol_table_mut() -> &mut SymbolTable<C, L>` (write). The 91 register-call sites and 51 read access sites in `crates/cranelisp-typecheck/src/program.rs` flow through these accessors unchanged — staging-vs-live distinction is invisible to typecheck. See `facades/typecheck.md` §"Cluster check scaffolding".
 
 ### Types NOT added
 - ~~`CheckMode`~~ — eliminated during design review. The multi-pass pipeline works identically on any input size. See `pipeline-v2.md` §5.
@@ -1873,7 +1870,7 @@ The filter is deliberately strict: any `ModuleEntry::Def` with `ast: None` is ex
 - `TypeChecker::check(&mut self, ctx: &CompileContext, program: &[TopLevel])` — single typecheck entry point, now takes explicit context; `CheckResult` is no longer a backend input.
 - `compile_to_module<M: Module>(module_path, names, symbol_tables, module)` — four-parameter normative signature (Sprint 56 Phase 2). No `CheckResult`, no `Program`, no intrinsic IDs, no GOT map, no arities parameter. **Per Decision 41 (Sprint 64) + S66 amendment + rollback**: returns `Result<(), CompilationError>`; backend writes `Code::Jit(Arc<Jit>)` via `SymbolTable::write_code` and the resulting fn pointer to the entry's GOT slot via `symbol_table.got().store_slot(entry.got_slot.unwrap(), ptr)` directly (the GOT is the post-rollback single source of truth for callable addresses; the briefly-considered sibling `fn_ptr` field landed in `b09ec76` and was rolled back the same day in `1dc57ae`). See `facades/backend.md` §"Free functions" and `design/backend/compile-to-module.md`.
 - `cranelisp_frontend::build_form(sexp: &Sexp) -> Result<Vec<ParsedEntry>, CranelispError>` (Sprint 66, FIXME 0156) — replaces the prior `build_ast` shape at the frontend's per-form boundary. Returns a `Vec` because some shapes yield more than one entry per source form (multi-clause `defmacro`, `deftype` with constructors). See `facades/frontend.md`.
-- `cranelisp_typecheck::check_form` splits into **two passes** (Sprint 66, FIXME 0160 + Decision 44 amended FIXME 0167 for Approach B + ClusterContext): `check_form_signatures` and `check_form_body`, each `(parsed: ParsedEntry, ctx: &mut ClusterContext<'_, C, L>, symbol_tables: &SymbolTables<C, L>) -> Result<(), CheckError>`. Pre-S66 the legacy `check_form` mutated the table in-place via a typecheck-internal `merge_form_result()`; FIXME 0160 first purified it to a single-call pure function; Decision 44 then split that single call into a Pass 1 (signatures) + Pass 2 (bodies) shape so spec §5.13.1's two-pass mandate (forward references / mutual recursion) survives the orchestrator-side cluster. FIXME 0167 amended Decision 44 to take `&mut ClusterContext` (Approach B — staging is empty at cluster start; reads via `View::union(staging, live)`; writes go to staging via the same `current_symbol_table_mut` accessor used in committed-mode). Both passes are pure with respect to live state; neither mutates the live `SymbolTable`. The 91 register-call sites in `program.rs` do not change individually — staging-vs-live is absorbed inside `ClusterContext::current_symbol_table{,_mut}` accessors. The caller (`int::process_cluster`) constructs `ClusterContext::Cluster` with a transient orchestrator-local staging table and commits staging into the live table atomically via `int::insert_cluster` only on whole-cluster success; on `Err(Gap)` from any pass, the orchestrator retries the same pass (staging may carry partial pre-Gap writes — the retry overwrites); on `Err(TypeError)`, staging dissolves with the function frame (live table byte-identical). See `facades/typecheck.md`, `facades/int.md` §"`process_cluster` — the cluster-atomic orchestration loop", and §"`check_form_signatures` + `check_form_body`" above.
+- `cranelisp_typecheck::check_form` collapses to a **single `check_forms` free function** (Sprint 66, FIXME 0160 + Decision 44 amended FIXME 0167 + 2026-05-13 third amendment): `check_forms(parsed: Vec<ParsedEntry>, ctx: &mut ClusterContext<'_, C, L>, symbol_tables: &SymbolTables<C, L>) -> Result<(), CheckError>`. Pre-S66 the legacy `check_form` mutated the table in-place via a typecheck-internal `merge_form_result()`; FIXME 0160 first purified it to a single-call pure function; Decision 44 then split that single call into a two-function Pass 1 (signatures) + Pass 2 (bodies) shape so spec §5.13.1's two-pass mandate (forward references / mutual recursion) survives the orchestrator-side cluster. The two-function shape exposed implementation phasing across the facade and created a state-threading hole; the third amendment collapses it back into a single `check_forms` call that runs both passes internally. Pass-1-to-Pass-2 working state lives inside `check_forms`'s frame and never crosses the facade. FIXME 0167's Approach B + ClusterContext discipline is preserved: staging is empty at cluster start; reads via `View::union(staging, live)`; writes go to staging via the same `current_symbol_table_mut` accessor used in committed-mode. `check_forms` is pure with respect to live state; it does not mutate the live `SymbolTable`. The 91 register-call sites in `program.rs` do not change individually — staging-vs-live is absorbed inside `ClusterContext::current_symbol_table{,_mut}` accessors. The caller (`int::process_cluster`) constructs `ClusterContext::Cluster` with a transient orchestrator-local staging table and commits staging into the live table atomically via `int::insert_cluster` only on whole-cluster success; on `Err(Gap)`, the orchestrator drops the staging frame and retries the whole `check_forms` call against a fresh staging frame; on `Err(TypeError)`, staging dissolves with the function frame (live table byte-identical). See `facades/typecheck.md`, `facades/int.md` §"`process_cluster` — the cluster-atomic orchestration loop", and the `check_forms` section above.
 
 ### Functions added
 - `CallGraph::add_edge()`, `reverse_index()`, `sccs()`, `non_tail_self_recursion()`
