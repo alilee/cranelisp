@@ -666,6 +666,22 @@ pub struct SharedState {
     pub kept_dlls: Mutex<Vec<LoadedPlatform>>,
     /// Per-symbol introspection data, REPL-only (replaces def_codegen for slash commands).
     pub introspection: dashmap::DashMap<FQSymbol, Introspection>,
+
+    /// Test runner state used by the `run-test` / `discover-tests` intrinsics
+    /// (Sprint 66 Wave 3a-γ).
+    ///
+    /// Boxed so the pointer is stable for the session's lifetime. The
+    /// `TEST_RUNNER` thread-local stores `*const TestRunnerState` derived from
+    /// this Box; because the Box owns the allocation for the full session and
+    /// the pointed-at `current_module` field is wrapped in `Mutex`, the
+    /// thread-local pointer is always safe to dereference while
+    /// `CompilerSession` is alive.
+    ///
+    /// Lifted from per-compilation init to session-wide init so that the test
+    /// intrinsics may be registered unconditionally at JIT setup (the
+    /// architectural answer to FIXME 0177's "conditionally-registered
+    /// intrinsics" wart).
+    pub test_runner_state: Box<TestRunnerState>,
     // Sprint 58 Step 5a (Decision 33): `module_structures` was a parallel
     // store for `(import …)`/`(export …)`/`(platform …)`/`(mod …)` decls in
     // source order. Those are now fields on `SymbolTable` itself
@@ -828,6 +844,17 @@ impl CompilerSession {
         // Seed builtins into symbol tables before any user modules load.
         cranelisp_typecheck::register_builtins(&symbol_tables, &next_type_id);
 
+        // Sprint 66 Wave 3a-γ: build the session-wide TestRunnerState. The
+        // `tc_modules` pointer is derived from the `symbol_tables` DashMap
+        // owned by the Arc<SharedState> we're about to construct. Since
+        // `SharedState` is held behind `Arc` for the session lifetime and
+        // never moved, the pointer is stable. The `current_module` field is
+        // a `Mutex` so `/mod` may update it without rebuilding the state.
+        let test_runner_state = Box::new(TestRunnerState {
+            tc_modules: std::ptr::null(), // patched immediately after Arc construction
+            current_module: Mutex::new(user_module.clone()),
+        });
+
         let shared = Arc::new(SharedState {
             scheduler: CompileScheduler::new(),
             project_root,
@@ -851,7 +878,23 @@ impl CompilerSession {
             // Code::Linker on `ModuleEntry::Def.code`.
             kept_dlls: Mutex::new(Vec::new()),
             introspection: dashmap::DashMap::new(),
+            test_runner_state,
         });
+
+        // Patch the `tc_modules` pointer inside `test_runner_state` to point
+        // at `shared.symbol_tables`. Safe: `shared` is `Arc<SharedState>`,
+        // never moved; the `symbol_tables` field has a stable address for
+        // the session lifetime. The `Box<TestRunnerState>` itself sits inside
+        // the `SharedState` struct, so a `&mut` through `Arc` would alias
+        // shared state — instead we cast through a raw pointer to flip the
+        // single `*const` field. This write happens exactly once, before any
+        // worker thread is spawned (so before any reader observes the field).
+        // SAFETY: single-writer, pre-spawn; no concurrent reader exists yet.
+        unsafe {
+            let trs_ptr = &*shared.test_runner_state as *const TestRunnerState
+                as *mut TestRunnerState;
+            (*trs_ptr).tc_modules = &shared.symbol_tables as *const _;
+        }
 
         // Spawn persistent priority worker threads (Sprint 57 Wave 4 G9).
         // Workers park on `scheduler.priority_work_available` and process
@@ -956,6 +999,11 @@ impl CompilerSession {
         let tc = self.tc_env();
         tc.ensure_module_exists(&path);
         *self.shared.current_module.lock()
+            .unwrap_or_else(|e| e.into_inner()) = path.clone();
+        // Sprint 66 Wave 3a-γ: keep the test-runner state's `current_module`
+        // in sync so `discover-tests` (with empty module arg) targets the
+        // active REPL namespace after a `/mod` switch.
+        *self.shared.test_runner_state.current_module.lock()
             .unwrap_or_else(|e| e.into_inner()) = path.clone();
         // Create a new CheckState for the new module.
         // REPL carry-forward state (subst, env, overloads) is lost on module switch.
@@ -1835,8 +1883,7 @@ impl CompilerSession {
     ///
     /// Handles blocked dependencies by compiling them inline and retrying.
     fn process_single_form(&mut self, sexp: &Sexp) -> Result<Option<EvalResult>, CranelispError> {
-        use crate::worker::{self, ProcessResult};
-        use cranelisp_typecheck::ModuleCheckAccumulator;
+        use crate::worker::{self, ModuleCheckAccumulator, ProcessResult};
 
         const MAX_DEP_RETRIES: usize = 100;
 
@@ -1943,54 +1990,21 @@ impl CompilerSession {
         // Ensure typecheck product exists for this module.
         crate::worker::ensure_typecheck_product(&self.shared.typecheck_products, module);
 
-        // Collect extra JIT symbols that must be registered BEFORE codegen —
-        // primarily the REPL-specific trace and test-runner externs that
-        // user code in this program references. `compile_to_module` declares
-        // these symbols as `Linkage::Import`; without pre-registration the
-        // JIT `finalize_definitions` fails with "can't resolve symbol".
-        let mut codegen_extra_symbols: Vec<(String, *const u8)> = Vec::new();
-        if Self::program_uses_test_forms(program) {
-            codegen_extra_symbols.push((
-                "discover-tests".to_string(),
-                discover_tests_extern as *const u8,
-            ));
-            codegen_extra_symbols.push((
-                "run-test".to_string(),
-                run_test_extern as *const u8,
-            ));
-        }
-        let needs_trace_format = Self::program_needs_trace(program);
-        if needs_trace_format {
-            codegen_extra_symbols.push((
-                "cranelisp_trace_format".to_string(),
-                repl_trace_format as *const u8,
-            ));
-        }
-
-        // The test-runner externs dereference `TestRunnerState` at call
-        // time; the state must be set before the compiled expression runs
-        // AND the compiled `__expr` body may reference these symbols. Set
-        // the test-runner state here (before codegen) so any references are
-        // live by JIT finalize.
-        let current_module_for_tests = module.clone();
-        let test_state = TestRunnerState {
-            tc_modules: &self.shared.symbol_tables as *const _,
-            current_module: &current_module_for_tests as *const _,
-        };
-        // Defect 8 (Sprint 59): the test-runner externs may be reached
-        // transitively through previously-compiled defns (e.g. a user-level
-        // `(my-run-tests)` whose body calls `discover-tests`). The
-        // `codegen_extra_symbols` list only reflects this batch's direct
-        // syntactic references, so gating state on it misses transitive
-        // callers. Set state whenever the current module has any defn that
-        // references test forms in its body — the scan is the same walker
-        // used for extern registration, applied across typecheck products.
-        let needs_test_state =
-            codegen_extra_symbols.iter().any(|(n, _)| n == "discover-tests")
-                || self.any_compiled_defn_uses_test_forms();
-        if needs_test_state {
-            set_test_runner_state(&test_state);
-        }
+        // Sprint 66 Wave 3a-γ: the `discover-tests` / `run-test` /
+        // `cranelisp_trace_format` intrinsics are registered unconditionally
+        // at JIT setup inside `inline_jit_codegen_for_names` (and inside the
+        // expression-eval JIT in `pipeline.rs`). No per-program scan, no
+        // conditional plumbing. See FIXME 0178 for the architectural
+        // principle (no conditional registration of intrinsics — uniform
+        // dispatch through `JITBuilder::symbol()`).
+        //
+        // The intrinsics dereference `TestRunnerState` / `TraceDisplayState`
+        // at call time. The `TestRunnerState` allocation lives on
+        // `SharedState` (built once in `CompilerSession::new`); the
+        // thread-local pointer is set just-in-time below before invoking
+        // compiled code. The trace-display state is set per-eval when
+        // `(trace ...)` is present in the expression.
+        set_test_runner_state(&self.shared.test_runner_state);
 
         // Unified JIT codegen via compile_to_module (Sprint 56 Wave 2).
         // Derives the compilation batch from `program`, compiles through the
@@ -2003,81 +2017,46 @@ impl CompilerSession {
             program,
             &self.shared.symbol_tables,
             Some(&self.shared.introspection),
-            &codegen_extra_symbols,
+            &[],
             Some(&self.shared),
         )?;
 
         let has_expr = program.iter().any(|tl| matches!(tl, TopLevel::Expr(_)));
 
         if has_expr {
-            let (mut jit_syms, got_defs) = crate::worker::collect_jit_setup_public(
+            let (jit_syms, got_defs) = crate::worker::collect_jit_setup_public(
                 &self.shared.symbol_tables,
                 module,
             );
 
-            // Build traced_fns if the expression contains (trace ...).
-            let traced_fns = if Self::program_needs_trace(program) {
-                self.build_traced_fns(module)
-            } else {
-                Vec::new()
-            };
+            // Build traced_fns from the session's compiled symbols (project-
+            // root modules only, per spec §4.12.3). When the expression has
+            // no `(trace ...)` form, `compile_and_execute_expr` takes the
+            // non-trace JIT path regardless of `traced_fns` length, so this
+            // is a no-op cost beyond the symbol-table scan.
+            //
+            // Sprint 66 Wave 3a-γ: the `cranelisp_trace_format` symbol is
+            // registered as an intrinsic at JIT setup (no extra-symbols
+            // plumbing); the trace display state is set unconditionally so
+            // the intrinsic always has a valid pointer to read.
+            let traced_fns = self.build_traced_fns(module);
 
-            // Trace format override: provide rich formatting via session's type defs.
-            let mut trace_extra_symbols: Vec<(String, *const u8)> = Vec::new();
-            if !traced_fns.is_empty() {
-                trace_extra_symbols.push((
-                    "cranelisp_trace_format".to_string(),
-                    repl_trace_format as *const u8,
-                ));
-            }
-
-            // Register test infrastructure externs as JIT symbols.
-            let needs_test_externs = Self::program_uses_test_forms(program);
-            if needs_test_externs {
-                jit_syms.push((
-                    "discover-tests".to_string(),
-                    discover_tests_extern as *const u8,
-                ));
-                jit_syms.push((
-                    "run-test".to_string(),
-                    run_test_extern as *const u8,
-                ));
-            }
-
-            // Set trace display state so repl_trace_format can access symbol tables.
             let display_state = TraceDisplayState {
                 symbol_tables: &self.shared.symbol_tables as *const _,
             };
-            if !traced_fns.is_empty() {
-                set_trace_display_state(&display_state);
-            }
-
-            // Set test runner state for discover-tests/run-test externs.
-            let current_module_for_tests = module.clone();
-            let test_state = TestRunnerState {
-                tc_modules: &self.shared.symbol_tables as *const _,
-                current_module: &current_module_for_tests as *const _,
-            };
-            if needs_test_externs {
-                set_test_runner_state(&test_state);
-            }
+            set_trace_display_state(&display_state);
 
             let result = crate::pipeline::compile_and_execute_expr(
                 &jit_syms,
                 &got_defs,
                 check.display.as_ref(),
                 &traced_fns,
-                &trace_extra_symbols,
+                &[],
                 &self.shared.symbol_tables,
                 module.clone(),
             );
 
-            if needs_test_externs || needs_test_state {
-                clear_test_runner_state();
-            }
-            if !traced_fns.is_empty() {
-                clear_trace_display_state();
-            }
+            clear_trace_display_state();
 
             let (value, ty) = result?;
 
@@ -2087,12 +2066,6 @@ impl CompilerSession {
                 warnings: check.warnings.clone(),
             })
         } else {
-            // Test runner state was set pre-codegen; clear it now since no
-            // expression runs in this branch.
-            if needs_test_state {
-                clear_test_runner_state();
-            }
-
             // Definition-only: extract the defined symbol name from the last
             // user-visible form. Inlined defns (mono, default methods, trait
             // impl mangled methods) are appended after the original forms by
@@ -2123,115 +2096,6 @@ impl CompilerSession {
                 ty,
                 warnings: check.warnings.clone(),
             })
-        }
-    }
-
-    /// Check if a program uses discover-tests or run-test special forms.
-    fn program_uses_test_forms(program: &[TopLevel]) -> bool {
-        Self::any_expr_in_program(program, Self::expr_uses_test_forms)
-    }
-
-    /// Defect 8 (Sprint 59): scan every previously-compiled defn across all
-    /// session symbol tables and return true if any body references
-    /// `discover-tests` / `run-test`. Used to decide whether
-    /// `TestRunnerState` must be set before evaluating a top-level
-    /// expression that may transitively call the test externs through an
-    /// already-compiled defn.
-    fn any_compiled_defn_uses_test_forms(&self) -> bool {
-        for entry in self.shared.symbol_tables.iter() {
-            let table = entry.value();
-            for (_name, mod_entry) in table.all_symbols() {
-                if let ModuleEntry::Def { ast: Some(defn), .. } = mod_entry
-                    && defn.variants.iter().any(|v|
-                        Self::expr_uses_test_forms(&v.body)) {
-                        return true;
-                    }
-            }
-        }
-        false
-    }
-
-    /// Walk every `Expr` embedded in the program (top-level `Expr`, `Defn`
-    /// variant bodies, `TraitImpl` method variant bodies) and return true if
-    /// `pred` matches any of them.
-    fn any_expr_in_program(
-        program: &[TopLevel],
-        pred: fn(&cranelisp_types::Expr) -> bool,
-    ) -> bool {
-        program.iter().any(|tl| match tl {
-            TopLevel::Expr(e) => pred(e),
-            TopLevel::Defn(d) => d.variants.iter().any(|v| pred(&v.body)),
-            TopLevel::TraitImpl(t) => t.methods.iter().any(|m|
-                m.variants.iter().any(|v| pred(&v.body))
-            ),
-            _ => false,
-        })
-    }
-
-    fn expr_uses_test_forms(expr: &cranelisp_types::Expr) -> bool {
-        use cranelisp_types::Expr;
-        match expr {
-            Expr::Apply { callee, args, .. } => {
-                if let Expr::Var { name, .. } = callee.as_ref() {
-                    let n = name.as_ref();
-                    if n == "discover-tests" || n == "run-test" {
-                        return true;
-                    }
-                }
-                Self::expr_uses_test_forms(callee) || args.iter().any(Self::expr_uses_test_forms)
-            }
-            Expr::Let { bindings, body, .. } | Expr::ParBind { bindings, body, .. } => {
-                bindings.iter().any(|(_, e)| Self::expr_uses_test_forms(e))
-                    || Self::expr_uses_test_forms(body)
-            }
-            Expr::If { cond, then_branch, else_branch, .. } => {
-                Self::expr_uses_test_forms(cond)
-                    || Self::expr_uses_test_forms(then_branch)
-                    || Self::expr_uses_test_forms(else_branch)
-            }
-            Expr::Lambda { body, .. } => Self::expr_uses_test_forms(body),
-            Expr::Match { scrutinee, arms, .. } => {
-                Self::expr_uses_test_forms(scrutinee)
-                    || arms.iter().any(|arm| Self::expr_uses_test_forms(&arm.body))
-            }
-            Expr::Annotate { expr, .. } => Self::expr_uses_test_forms(expr),
-            Expr::VecLit { elements, .. } => elements.iter().any(Self::expr_uses_test_forms),
-            Expr::Trace { body, .. } => Self::expr_uses_test_forms(body),
-            _ => false,
-        }
-    }
-
-    /// Check if a program contains `Expr::Trace` that needs
-    /// traced function info for GOT-swap codegen.
-    fn program_needs_trace(program: &[TopLevel]) -> bool {
-        Self::any_expr_in_program(program, Self::expr_needs_trace)
-    }
-
-    /// Recursively check if an expression contains trace or run-tests.
-    fn expr_needs_trace(expr: &cranelisp_types::Expr) -> bool {
-        use cranelisp_types::Expr;
-        match expr {
-            Expr::Trace { .. } => true,
-            Expr::Apply { callee, args, .. } => {
-                Self::expr_needs_trace(callee) || args.iter().any(Self::expr_needs_trace)
-            }
-            Expr::Let { bindings, body, .. } | Expr::ParBind { bindings, body, .. } => {
-                bindings.iter().any(|(_, e)| Self::expr_needs_trace(e))
-                    || Self::expr_needs_trace(body)
-            }
-            Expr::If { cond, then_branch, else_branch, .. } => {
-                Self::expr_needs_trace(cond)
-                    || Self::expr_needs_trace(then_branch)
-                    || Self::expr_needs_trace(else_branch)
-            }
-            Expr::Lambda { body, .. } => Self::expr_needs_trace(body),
-            Expr::Match { scrutinee, arms, .. } => {
-                Self::expr_needs_trace(scrutinee)
-                    || arms.iter().any(|arm| Self::expr_needs_trace(&arm.body))
-            }
-            Expr::Annotate { expr, .. } => Self::expr_needs_trace(expr),
-            Expr::VecLit { elements, .. } => elements.iter().any(Self::expr_needs_trace),
-            _ => false,
         }
     }
 
@@ -2645,6 +2509,13 @@ impl CompilerSession {
     }
 
     /// Parse, expand, and typecheck an expression without compiling or executing.
+    ///
+    /// Per Decision 44 (2026-05-13 third amendment) — routes through the
+    /// collapsed `check_forms` surface via `worker::check_program_compat`.
+    /// The pre-S66 `tc.check(...)` entry point (which fed a multi-pass
+    /// pipeline driven by a public `ModuleCheckAccumulator`) is retired;
+    /// the type query now lifts inferred-type data off the live `SymbolTable`
+    /// after the cluster commit.
     fn typecheck_only(&mut self, expr_src: &str) -> Result<Type, CranelispError> {
         let sexps = cranelisp_frontend::parse(expr_src)?;
         if sexps.is_empty() {
@@ -2653,20 +2524,78 @@ impl CompilerSession {
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
             });
         }
-        let input = cranelisp_frontend::build_repl_input(&sexps[0])?;
         let module = self.current_module_path();
-        let ctx = cranelisp_types::CompileContext {
-            module,
-            codegen: CodegenBehaviour::InMemoryAndObject,
-        };
-        let tc = self.tc_env();
-        let mut guard = self.shared.repl_check_state.lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let cs = guard.as_mut().expect("REPL check state must be initialized");
-        let check_result = tc.check(cs, &[input], &ctx, ModuleStrategy::Additive)?;
-        Ok(check_result.display.as_ref()
-            .map(|d| d.ty.clone())
-            .unwrap_or(Type::Int))
+
+        // Build the input through the new `build_form` / `build_expr` boundary
+        // (replacing the retired `build_repl_input`). A bare-expr REPL input
+        // is wrapped as a synthetic `__expr` defn for typecheck dispatch.
+        let working_program =
+            crate::worker::build_program_compat(&[sexps[0].clone()])?;
+        let working_program = self.wrap_exprs_as_synthetic_defns(&working_program);
+
+        // Ensure the current module exists before the live ClusterContext
+        // tries to take a guard on it.
+        self.tc_env().ensure_module_exists(&module);
+
+        crate::worker::check_program_compat(
+            &self.shared.symbol_tables,
+            &module,
+            &working_program,
+        )?;
+
+        // Try to surface the inferred type of the synthetic `__expr` Defn
+        // by reading back from the live `SymbolTable`. Fall back to `Int`
+        // when no display info is available (matches pre-S66 fallback).
+        Ok(self.lift_expr_type(&module).unwrap_or(Type::Int))
+    }
+
+    /// Local equivalent of the retired `wrap_exprs_as_defns` helper. Folds
+    /// any `TopLevel::Expr` into a synthetic zero-arg `__expr` defn so it
+    /// flows uniformly through the typecheck dispatch.
+    fn wrap_exprs_as_synthetic_defns(&self, program: &[TopLevel]) -> Vec<TopLevel> {
+        use cranelisp_types::{DefnVariant, Visibility};
+        let mut working = Vec::with_capacity(program.len());
+        for top in program {
+            match top {
+                TopLevel::Expr(expr) => {
+                    let span = expr.span();
+                    let wrapper_span = Span::new(
+                        span.start.saturating_sub(1),
+                        span.end.saturating_add(1),
+                    );
+                    working.push(TopLevel::Defn(cranelisp_types::Defn {
+                        name: Symbol::from("__expr"),
+                        docstring: None,
+                        variants: vec![DefnVariant {
+                            params: vec![],
+                            param_annotations: vec![],
+                            body: expr.clone(),
+                            span,
+                        }],
+                        visibility: Visibility::Public,
+                        span: wrapper_span,
+                    }));
+                }
+                other => working.push(other.clone()),
+            }
+        }
+        working
+    }
+
+    /// Read back the inferred type of the synthetic `__expr` defn, if any.
+    fn lift_expr_type(&self, module: &ModuleFullPath) -> Option<Type> {
+        let table = self.shared.symbol_tables.get(module)?;
+        match table.get("__expr")? {
+            ModuleEntry::Def { scheme, .. } => {
+                // Zero-arg defns have type `Fn([], ret)` — surface the return.
+                if let Type::Fn(_, ret) = &scheme.ty {
+                    Some((**ret).clone())
+                } else {
+                    Some(scheme.ty.clone())
+                }
+            }
+            _ => None,
+        }
     }
 
     /// /imports handler: list imports in current module by category.
@@ -2887,7 +2816,7 @@ impl CompilerSession {
     /// in the TC but defers compilation until the macro is first used. For /expand
     /// we need to compile them eagerly.
     fn compile_pending_macros(&mut self) -> Result<(), CranelispError> {
-        use cranelisp_typecheck::ModuleCheckAccumulator;
+        use crate::worker::ModuleCheckAccumulator;
 
         // Collect macro names + sexps that need compilation.
         let mut to_compile: Vec<(Symbol, Sexp)> = Vec::new();
@@ -4261,32 +4190,78 @@ fn run_test_by_name(
     }
 }
 
-/// Session state for test externs. Set before JIT evaluation of expressions
-/// containing discover-tests/run-test, cleared after.
+/// Session state for the `run-test` / `discover-tests` intrinsics.
 ///
-/// Sprint 57 Wave 2 G6: holds only a pointer to the symbol tables. Code
-/// pointers are read off `ModuleEntry::Def.code` (replaces the deleted
-/// `codegen_products` DashMap).
-struct TestRunnerState {
+/// Sprint 66 Wave 3a-γ: lifted from per-compilation construction to
+/// session-wide construction (built once in `CompilerSession::new`, stored on
+/// `SharedState`). The thread-local `TEST_RUNNER` cell holds a pointer derived
+/// from `SharedState.test_runner_state` (a `Box`, so the address is stable for
+/// the session lifetime); the REPL eval path sets it before invoking a
+/// compiled expression. The `current_module` field is a `Mutex` so the REPL
+/// `/mod` command may update it without re-allocating the state.
+///
+/// The intrinsics themselves dereference these pointers when JIT-emitted code
+/// invokes `run-test` / `discover-tests` — see `run_test_extern` /
+/// `discover_tests_extern` below. The state is only meaningful inside an
+/// active REPL eval; absent that, the intrinsics return harmless empty
+/// results (mirrors the prior null-pointer-guard behaviour).
+pub struct TestRunnerState {
     /// TC modules for scanning symbol tables and reading compiled `code`.
     tc_modules: *const dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
     /// Current module path (for discover-tests with empty module arg).
-    current_module: *const ModuleFullPath,
+    /// Updated by `set_current_module` when the REPL `/mod` command switches.
+    current_module: Mutex<ModuleFullPath>,
 }
 
+// Safety: the pointer-typed `tc_modules` field is read-only data; it points
+// at a `DashMap` (itself Send + Sync) inside the same `SharedState` instance.
+// `Mutex<ModuleFullPath>` is Send + Sync. The thread-local-pointer access is
+// always read-via-Cell on the thread that called `set_test_runner_state`.
 unsafe impl Send for TestRunnerState {}
+unsafe impl Sync for TestRunnerState {}
+
+impl TestRunnerState {
+    /// Construct a stub TestRunnerState for unit tests that need to build a
+    /// `SharedState` but don't exercise the test intrinsics. The
+    /// `tc_modules` pointer is null; any extern call against this state
+    /// returns the harmless null-pointer fallback (empty list / `?` name).
+    pub fn stub() -> Self {
+        Self {
+            tc_modules: std::ptr::null(),
+            current_module: Mutex::new(ModuleFullPath::from("user")),
+        }
+    }
+}
 
 thread_local! {
     static TEST_RUNNER: std::cell::Cell<*const TestRunnerState> =
         const { std::cell::Cell::new(std::ptr::null()) };
 }
 
-fn set_test_runner_state(state: &TestRunnerState) {
+pub(crate) fn set_test_runner_state(state: &TestRunnerState) {
     TEST_RUNNER.with(|c| c.set(state as *const _));
 }
 
-fn clear_test_runner_state() {
-    TEST_RUNNER.with(|c| c.set(std::ptr::null()));
+/// Sprint 66 Wave 3a-γ: int-owned intrinsics inventory.
+///
+/// These three extern functions are backend-emitted-call targets — JIT-emitted
+/// CLIF declares them as `Linkage::Import` and `JITBuilder::symbol(...)` must
+/// resolve them. Per `design/arch/facades/intrinsics.md` they are intrinsics
+/// like `heap_alloc` / `runtime/panic` / primitive arithmetic, and must be
+/// registered uniformly at JIT setup. Pre-S66 they were conditionally
+/// registered via syntactic scans of each program — see the FIXME 0178 filed
+/// alongside this change.
+///
+/// The thread-local state these intrinsics read (`TestRunnerState`,
+/// `TraceDisplayState`) is set just-in-time by the REPL eval path; the
+/// intrinsics themselves null-check the pointer and return harmless defaults
+/// when absent.
+pub(crate) fn int_intrinsics() -> [(&'static str, *const u8); 3] {
+    [
+        ("discover-tests", discover_tests_extern as *const u8),
+        ("run-test", run_test_extern as *const u8),
+        ("cranelisp_trace_format", repl_trace_format as *const u8),
+    ]
 }
 
 /// Allocate a heap ADT with the given tag and fields.
@@ -4330,12 +4305,14 @@ extern "C" fn discover_tests_extern(module_path_str: i64) -> i64 {
 
         let state = unsafe { &*state_ptr };
         let tc_modules = unsafe { &*state.tc_modules };
-        let current_module = unsafe { &*state.current_module };
+        let current_module = state.current_module.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
 
         let module = if module_path_str == 0
             || unsafe { cranelisp_runtime::read_string_as_str(module_path_str) }.is_empty()
         {
-            current_module.clone()
+            current_module
         } else {
             let path_str = unsafe { cranelisp_runtime::read_string_as_str(module_path_str) };
             ModuleFullPath::from(path_str)

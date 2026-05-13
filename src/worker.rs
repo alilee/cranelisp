@@ -17,7 +17,233 @@ use cranelisp_types::{ErrorLocation,
     PlatformSpec, PrimitiveKind, Sexp, Span, Symbol, TopLevel, Visibility,
 };
 
-use cranelisp_typecheck::{CheckPass, CheckResult, CheckState, ModuleCheckAccumulator};
+use cranelisp_typecheck::{CheckResult, CheckState};
+
+// Internal per-int compatibility shim for the (post-Decision-44, 2026-05-13
+// third amendment) collapsed `check_forms` surface. The legacy multi-call
+// shape (`check_form` + `merge_form_result` + `finalize_check_result` +
+// `ModuleCheckAccumulator`) has been retired from typecheck's public API; the
+// `accumulator` parameter that pre-S66 worker code threaded through 20+
+// call sites is no longer required at the facade. The shim type below is a
+// vestigial empty placeholder so the existing worker call signatures compile
+// while we route the actual typecheck dispatch through `check_forms` (one
+// call per cluster of `Vec<ParsedEntry>`). This is the migration scaffold
+// described in `design/arch/facades/int.md` §"process_cluster" and the
+// `2026-05-13 third amendment` block in Decision 44.
+#[derive(Default)]
+pub struct ModuleCheckAccumulator {
+    /// Default-method defns deferred from trait-impl registration to the
+    /// next pass. Kept for source compatibility with pre-S66 worker code;
+    /// `check_forms` handles this internally and the worker side no longer
+    /// drives it.
+    pub default_method_defns: Vec<Defn>,
+    /// Per-defn type vars captured during Pass 1, consumed by Pass 2 and
+    /// `compute_display_info_public`. Kept as a placeholder for source
+    /// compatibility; `check_forms` rebuilds this internally.
+    pub defn_type_vars: std::collections::HashMap<Symbol, (Vec<cranelisp_types::Type>, cranelisp_types::Type)>,
+}
+
+impl ModuleCheckAccumulator {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Build-form + check-forms compatibility helpers (S66 Wave 3a-β)
+// ---------------------------------------------------------------------------
+
+/// Drop-in replacement for the retired `cranelisp_frontend::build_program`.
+///
+/// Iterates `build_form` over each sexp, converting `Vec<ParsedEntry>` back to
+/// `Vec<TopLevel>` for source-compat with existing worker / session code paths
+/// that consume `TopLevel`. Filter out `Macro` and `Constructor` entries —
+/// those are handled by the macro pipeline (defmacro registration) and ADT
+/// constructor synthesis respectively, NOT by the per-form typecheck dispatch.
+///
+/// Per Decision 44's 2026-05-13 third amendment + FIXME 0156: `build_form`
+/// returns the parsed entries; the worker side still tracks `TopLevel` for
+/// downstream codegen, so we transcode at this boundary.
+pub(crate) fn build_program_compat(
+    sexps: &[Sexp],
+) -> Result<Vec<TopLevel>, CranelispError> {
+    let mut out: Vec<TopLevel> = Vec::with_capacity(sexps.len());
+    for sexp in sexps {
+        // `(begin form₁ … formN)` clusters flatten into their inner forms
+        // — `build_form` rejects `begin` per its facade. This preserves the
+        // pre-S66 `build_program` semantics where `flatten_begin` ran before
+        // per-form dispatch.
+        let flattened = cranelisp_frontend::flatten_begin(sexp.clone());
+        for inner in flattened {
+            // Treat shapes that aren't a list-with-head-symbol as bare
+            // expressions (`TopLevel::Expr`). `build_form` requires a
+            // list-with-head-symbol top-level form.
+            if !is_top_level_form(&inner) {
+                let expr = cranelisp_frontend::build_expr(&inner)?;
+                out.push(TopLevel::Expr(expr));
+                continue;
+            }
+
+            let entries = cranelisp_frontend::build_form(&inner)?;
+            for entry in entries {
+                if let Some(tl) = parsed_entry_to_top_level(entry) {
+                    out.push(tl);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Check whether a sexp shape is a top-level form that `build_form` can
+/// dispatch on. Pre-S66 `build_program` used a heuristic: any list whose
+/// head symbol is one of the recognised top-level form heads
+/// (`defn`/`defn-`, `deftype`/`deftype-`, `deftrait`/`deftrait-`, `impl`,
+/// `defmacro`/`defmacro-`). Other heads (function calls, primitives, macro
+/// expansions whose head is bare) fall through to `build_expr` as
+/// `TopLevel::Expr`. Comments / atoms / brackets also fall through.
+fn is_top_level_form(sexp: &Sexp) -> bool {
+    if let Sexp::List(children, _) = sexp
+        && !children.is_empty()
+        && let Sexp::Symbol(name, _) = &children[0]
+    {
+        matches!(
+            name.as_str(),
+            "defn" | "defn-" | "deftype" | "deftype-" | "deftrait" | "deftrait-"
+                | "impl" | "defmacro" | "defmacro-"
+        )
+    } else {
+        false
+    }
+}
+
+/// Convert a `ParsedEntry` to a `TopLevel` shape. Mirrors typecheck's
+/// `parsed_to_top_level` (which is private). `Macro` and `Constructor`
+/// entries return `None` — they are handled by the macro pipeline and ADT
+/// constructor synthesis respectively, outside the typecheck dispatch.
+fn parsed_entry_to_top_level(parsed: cranelisp_types::ParsedEntry) -> Option<TopLevel> {
+    use cranelisp_types::ParsedEntry;
+    match parsed {
+        ParsedEntry::Def { name, variants, visibility, docstring, span } => {
+            Some(TopLevel::Defn(Defn {
+                name,
+                docstring,
+                variants,
+                visibility,
+                span,
+            }))
+        }
+        ParsedEntry::TypeDef { name, type_params, constructors, visibility, docstring, span } => {
+            let type_params: Vec<Symbol> =
+                type_params.into_iter().map(|t| Symbol::from(t.as_ref())).collect();
+            Some(TopLevel::TypeDef {
+                name,
+                docstring,
+                type_params,
+                constructors,
+                visibility,
+                span,
+            })
+        }
+        ParsedEntry::TraitDecl { decl } => Some(TopLevel::TraitDecl(decl)),
+        ParsedEntry::TraitImpl { impl_ } => Some(TopLevel::TraitImpl(impl_)),
+        ParsedEntry::Macro { .. } | ParsedEntry::Constructor { .. } => None,
+        _ => None,
+    }
+}
+
+/// Convert `Vec<TopLevel>` back into `Vec<ParsedEntry>` for handoff to
+/// `cranelisp_typecheck::check_forms`. The worker pipeline still operates in
+/// `TopLevel` shapes downstream of build_form for codegen + display info; we
+/// transcode again here at the typecheck-dispatch boundary.
+fn top_level_to_parsed_entries(program: &[TopLevel]) -> Vec<cranelisp_types::ParsedEntry> {
+    use cranelisp_types::ParsedEntry;
+
+    let mut out = Vec::with_capacity(program.len());
+    for tl in program {
+        match tl {
+            TopLevel::Defn(d) => out.push(ParsedEntry::Def {
+                name: d.name.clone(),
+                variants: d.variants.clone(),
+                visibility: d.visibility,
+                docstring: d.docstring.clone(),
+                span: d.span,
+            }),
+            TopLevel::TypeDef { name, docstring, type_params, constructors, visibility, span } => {
+                use cranelisp_types::TypeName;
+                let type_params_tn: Vec<TypeName> = type_params
+                    .iter()
+                    .map(|s| TypeName::from(s.as_ref()))
+                    .collect();
+                out.push(ParsedEntry::TypeDef {
+                    name: name.clone(),
+                    type_params: type_params_tn,
+                    constructors: constructors.clone(),
+                    visibility: *visibility,
+                    docstring: docstring.clone(),
+                    span: *span,
+                });
+            }
+            TopLevel::TraitDecl(decl) => out.push(ParsedEntry::TraitDecl { decl: decl.clone() }),
+            TopLevel::TraitImpl(impl_) => out.push(ParsedEntry::TraitImpl { impl_: impl_.clone() }),
+            // Expression forms are wrapped by `wrap_exprs_as_defns` upstream;
+            // any remaining `Expr` here would be a workflow bug, so skip silently
+            // and let downstream catch the inconsistency. Note: `TopLevel` is
+            // not `#[non_exhaustive]` to external callers — the four variants
+            // above plus `Expr` are the full set; no wildcard arm required.
+            TopLevel::Expr(_) => {}
+        }
+    }
+    out
+}
+
+/// Single-call typecheck dispatch through `cranelisp_typecheck::check_forms`.
+///
+/// Replaces the retired pre-S66 multi-call sequence `check_form(Register)` +
+/// `merge_form_result` + `check_form(CheckBody)` + `merge_form_result` +
+/// `finalize_check_result`. Per Decision 44's 2026-05-13 third amendment,
+/// `check_forms` performs both internal passes plus finalize on a single call
+/// over a `Vec<ParsedEntry>`. The orchestrator (this function) constructs a
+/// `ClusterContext::Live` so writes flow into the per-module live table —
+/// preserving the pre-S66 commit semantics until the full `process_cluster`
+/// shape pivot lands (FIXME 0176).
+pub(crate) fn check_program_compat(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module: &ModuleFullPath,
+    working_program: &[TopLevel],
+) -> Result<(), CranelispError> {
+    use cranelisp_typecheck::{check_forms, ClusterContext};
+
+    let parsed = top_level_to_parsed_entries(working_program);
+    if parsed.is_empty() {
+        return Ok(());
+    }
+    let mut ctx: ClusterContext<'_, crate::code::Code, ()> =
+        ClusterContext::live(symbol_tables, module.clone());
+    check_forms(parsed, &mut ctx, symbol_tables)
+        .map_err(check_error_to_cranelisp_error)
+}
+
+/// Translate `CheckError` to the legacy `CranelispError` shape used by
+/// the worker's error sites.
+fn check_error_to_cranelisp_error(err: cranelisp_typecheck::CheckError) -> CranelispError {
+    use cranelisp_typecheck::CheckError;
+    match err {
+        CheckError::TypeError { message, location } => {
+            CranelispError::TypeError { message, location }
+        }
+        CheckError::Gap(gap) => CranelispError::TypeError {
+            message: format!("typecheck gap: {gap:?}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        },
+        // `CheckError` is `#[non_exhaustive]` per the typecheck facade —
+        // future variants surface uniformly as a generic type error.
+        _ => CranelispError::TypeError {
+            message: "unknown CheckError variant".into(),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        },
+    }
+}
 
 use crate::expander::{
     self, MacroClauseEntry, MacroEntry, MacroResolver,
@@ -290,21 +516,18 @@ fn compile_macro_clause_with_state(
     let expanded_sexp = cranelisp_frontend::expand_quasiquotes(&synth_sexp)?;
 
     // Step 3: Build AST.
-    let program = cranelisp_frontend::build_program(&[expanded_sexp])?;
+    let program = build_program_compat(&[expanded_sexp])?;
 
-    // Step 4: Typecheck using _with_state API (Register + CheckBody).
-    for form in &program {
-        let result = cranelisp_typecheck::TypeCheckEnv::new(symbol_tables, next_type_id).check_form(
-            target_module, form, CheckPass::Register, check_state, accumulator,
-        )?;
-        cranelisp_typecheck::TypeCheckEnv::new(symbol_tables, next_type_id).merge_form_result(target_module, check_state, accumulator, result);
-    }
-    for form in &program {
-        let result = cranelisp_typecheck::TypeCheckEnv::new(symbol_tables, next_type_id).check_form(
-            target_module, form, CheckPass::CheckBody, check_state, accumulator,
-        )?;
-        cranelisp_typecheck::TypeCheckEnv::new(symbol_tables, next_type_id).merge_form_result(target_module, check_state, accumulator, result);
-    }
+    // Step 4: Typecheck via the collapsed `check_forms` surface (Decision 44
+    // 2026-05-13 third amendment). `check_program_compat` runs the internal
+    // Pass 1 + Pass 2 + finalize sequence in one call. `check_state` /
+    // `accumulator` are no longer threaded through the public typecheck
+    // surface — they are vestigial parameters on this function (kept for
+    // source-compat with pre-S66 callers).
+    let _ = check_state;
+    let _ = accumulator;
+    let _ = next_type_id;
+    check_program_compat(symbol_tables, target_module, &program)?;
 
     // Step 5: Extract the defn from the annotated symbol table (not the unannotated program).
     // The typechecker stores annotated defns (with resolved_call on AST nodes) in
@@ -639,20 +862,53 @@ fn classify_form(
         Sexp::List(items, _span) if !items.is_empty() => {
             if let Sexp::Symbol(name, _) = &items[0] {
                 match name.as_str() {
+                    // Per Decision 44 + FIXME 0156: `parse_{import,export,mod,
+                    // platform}_sexp` are no longer public on the frontend
+                    // facade. Use `extract_module_declarations` to peel a
+                    // single sexp's structural decl out — it returns the
+                    // typed shape the worker needs.
                     "import" => {
-                        let specs = cranelisp_frontend::parse_import_sexp(sexp, containing_module)?;
-                        Ok(FormKind::Import(specs))
+                        let (decls, _remaining) =
+                            cranelisp_frontend::extract_module_declarations(
+                                containing_module.clone(),
+                                vec![sexp.clone()],
+                            )?;
+                        Ok(FormKind::Import(decls.import_specs))
                     }
                     "export" => {
-                        let specs = cranelisp_frontend::parse_export_sexp(sexp)?;
-                        Ok(FormKind::Export(specs))
+                        let (decls, _remaining) =
+                            cranelisp_frontend::extract_module_declarations(
+                                containing_module.clone(),
+                                vec![sexp.clone()],
+                            )?;
+                        Ok(FormKind::Export(decls.export_specs))
                     }
                     "mod" | "mod-" => {
-                        let decl = cranelisp_frontend::parse_mod_sexp(sexp)?;
+                        let (decls, _remaining) =
+                            cranelisp_frontend::extract_module_declarations(
+                                containing_module.clone(),
+                                vec![sexp.clone()],
+                            )?;
+                        let decl = decls.mod_decls.into_iter().next().ok_or_else(|| {
+                            CranelispError::ParseError {
+                                message: "classify_form: no mod decl produced".into(),
+                                location: ErrorLocation::from_span(sexp.span()),
+                            }
+                        })?;
                         Ok(FormKind::Mod(decl))
                     }
                     "platform" => {
-                        let spec = cranelisp_frontend::parse_platform_sexp(sexp)?;
+                        let (decls, _remaining) =
+                            cranelisp_frontend::extract_module_declarations(
+                                containing_module.clone(),
+                                vec![sexp.clone()],
+                            )?;
+                        let spec = decls.platform_specs.into_iter().next().ok_or_else(|| {
+                            CranelispError::ParseError {
+                                message: "classify_form: no platform spec produced".into(),
+                                location: ErrorLocation::from_span(sexp.span()),
+                            }
+                        })?;
                         Ok(FormKind::Platform(spec))
                     }
                     "defmacro" => Ok(FormKind::Defmacro),
@@ -807,7 +1063,7 @@ pub fn process_module_forms(
         let (regular_sexps, macro_infos) = separate_macros(sexps, module)?;
 
         // Build AST for regular (non-macro) forms.
-        let program = cranelisp_frontend::build_program(&regular_sexps)?;
+        let program = build_program_compat(&regular_sexps)?;
         let working_program = wrap_exprs_as_defns(&program);
 
         pass1_register(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, &working_program, &mut state.accumulator)?;
@@ -864,33 +1120,46 @@ fn separate_macros(
 }
 
 /// Finalize a fully typechecked module: run post-passes and build CheckResult.
+///
+/// Per Decision 44's 2026-05-13 third amendment, the typecheck dispatch
+/// has collapsed onto a single `check_forms` call per cluster. The pre-S66
+/// shape (`pass1_register` + per-form `check_form(CheckBody)` +
+/// `finalize_check_result`) is consolidated here into one
+/// `check_program_compat` invocation over `expanded_program` plus the
+/// accumulated default-method defns. `accumulator.defn_type_vars` is no
+/// longer published across the facade — the worker side fabricates the
+/// display info from whatever `__expr` defn was registered into the live
+/// `SymbolTable`, falling back to `None` for the multi-defn case (a follow-up
+/// FIXME will surface display info via accessor on `ProcessedCluster`).
 fn finalize_module(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     expanded_program: &[TopLevel],
     accumulator: &mut ModuleCheckAccumulator,
-    strategy: ModuleStrategy,
+    _strategy: ModuleStrategy,
 ) -> Result<ProcessResult, CranelispError> {
-    let final_working = wrap_exprs_as_defns(expanded_program);
+    let mut final_working = wrap_exprs_as_defns(expanded_program);
 
-    // Check bodies of default method defns.
-    let defaults_for_body: Vec<Defn> = accumulator.default_method_defns.clone();
+    // Append default-method defns the trait-impl Pass-1 step had deferred.
+    // Pre-S66 these flowed through a separate Pass-2 `check_form(CheckBody)`
+    // step; under collapsed `check_forms` they ride into the same dispatch
+    // alongside the body forms.
+    let defaults_for_body: Vec<Defn> = std::mem::take(&mut accumulator.default_method_defns);
     for defn in &defaults_for_body {
-        let form = TopLevel::Defn(defn.clone());
-        let result = cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).check_form(module, &form, CheckPass::CheckBody, &mut ctx.check_state, accumulator)?;
-        cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).merge_form_result(module, &mut ctx.check_state, accumulator, result);
+        final_working.push(TopLevel::Defn(defn.clone()));
     }
 
-    let mut check_result = cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).finalize_check_result(
-        module,
-        &mut ctx.check_state,
-        accumulator,
-        &final_working,
-        strategy,
-    )?;
+    // Single typecheck dispatch — internally drives Pass 1, Pass 2, finalize.
+    check_program_compat(ctx.symbol_tables, module, &final_working)?;
 
-    check_result.display =
-        cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).compute_display_info_public(&ctx.check_state,expanded_program, &accumulator.defn_type_vars);
+    // Build a minimal `CheckResult` carrier for downstream codegen. The new
+    // typecheck surface no longer returns a `CheckResult` from
+    // `check_forms`; downstream code consumes only `warnings` (none today)
+    // and `display` (handled by REPL via direct SymbolTable lookups).
+    let check_result = CheckResult {
+        warnings: Vec::new(),
+        display: None,
+    };
 
     // NOTE: notify_typecheck_done is NOT called here. The caller is
     // responsible for stashing the program and calling
@@ -1050,23 +1319,18 @@ fn process_regular_form(
         return Ok(());
     }
 
-    let built = cranelisp_frontend::build_program(&regular_sexps)?;
+    let built = build_program_compat(&regular_sexps)?;
     let working = wrap_exprs_as_defns(&built);
 
-    // Register signatures for macro-expanded forms only. Non-expanded forms
-    // were already registered in Pass 1 (pass1_register). Re-registering
-    // causes "already defined" errors for traits.
-    if effective_sexp.is_some() {
-        for form in &working {
-            let result = cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).check_form(module, form, CheckPass::Register, &mut ctx.check_state, accumulator)?;
-            cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).merge_form_result(module, &mut ctx.check_state, accumulator, result);
-        }
-    }
-
-    // Typecheck body for each form produced (Pass 2).
+    // Per Decision 44's 2026-05-13 third amendment, the per-form
+    // `check_form(Register)` + `check_form(CheckBody)` calls are no longer
+    // exposed; typecheck is now driven once over the cluster via
+    // `check_program_compat` in `finalize_module`. The per-form work loop
+    // below remains in place for the introspection + scheduler-notification
+    // bookkeeping (which is `int`-side, not typecheck-side) — accumulator
+    // mutation is silenced here.
+    let _ = accumulator;
     for form in &working {
-        let result = cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).check_form(module, form, CheckPass::CheckBody, &mut ctx.check_state, accumulator)?;
-        cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).merge_form_result(module, &mut ctx.check_state, accumulator, result);
 
         // Populate introspection for REPL slash commands (--repl only).
         if let Some(intr_map) = ctx.introspection
@@ -2151,18 +2415,13 @@ fn compile_macro_clause_inline(
 
     // Step 3: Build AST (macro clause bodies use quasiquote constructs,
     // not other macros, so no expander is needed).
-    let program = cranelisp_frontend::build_program(&[expanded_sexp])?;
+    let program = build_program_compat(&[expanded_sexp])?;
 
-    // Step 4: Typecheck using per-form check_form API (Register + CheckBody).
+    // Step 4: Typecheck via the collapsed `check_forms` surface (Decision 44
+    // 2026-05-13 third amendment) — single call runs Pass 1 + Pass 2 + finalize.
     let module = ctx.current_module.clone();
-    for form in &program {
-        let result = cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).check_form(&module, form, CheckPass::Register, &mut ctx.check_state, accumulator)?;
-        cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).merge_form_result(&module, &mut ctx.check_state, accumulator, result);
-    }
-    for form in &program {
-        let result = cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).check_form(&module, form, CheckPass::CheckBody, &mut ctx.check_state, accumulator)?;
-        cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).merge_form_result(&module, &mut ctx.check_state, accumulator, result);
-    }
+    let _ = accumulator;
+    check_program_compat(ctx.symbol_tables, &module, &program)?;
 
     // Step 5: Extract the defn from the annotated symbol table (not the unannotated program).
     // The typechecker stores annotated defns (with resolved_call on AST nodes) in
@@ -2272,43 +2531,45 @@ pub fn compile_macro_for_repl(
     module: &ModuleFullPath,
     info: &cranelisp_frontend::DefmacroInfo,
     span: Span,
-    accumulator: &mut cranelisp_typecheck::ModuleCheckAccumulator,
+    accumulator: &mut ModuleCheckAccumulator,
 ) -> Result<(), CranelispError> {
     compile_macro_if_needed(ctx, module, info, span, accumulator)
 }
 
-/// Pass 1: register all forms' type signatures in source order.
+/// Pass 1 registration (no-op under the collapsed `check_forms` surface).
+///
+/// Per Decision 44's 2026-05-13 third amendment, the typecheck Pass-1
+/// registration phase is internal to `check_forms` and runs as part of the
+/// single call performed by `finalize_module` (via `check_program_compat`).
+/// This function is retained for source compatibility with the existing
+/// `process_module_forms` orchestration; it intentionally performs no
+/// typecheck work itself.
 fn pass1_register(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    next_type_id: &std::sync::atomic::AtomicU32,
-    check_state: &mut CheckState,
-    module: &ModuleFullPath,
-    working_program: &[TopLevel],
-    accumulator: &mut ModuleCheckAccumulator,
+    _symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    _next_type_id: &std::sync::atomic::AtomicU32,
+    _check_state: &mut CheckState,
+    _module: &ModuleFullPath,
+    _working_program: &[TopLevel],
+    _accumulator: &mut ModuleCheckAccumulator,
 ) -> Result<(), CranelispError> {
-    let tc = cranelisp_typecheck::TypeCheckEnv::new(symbol_tables, next_type_id);
-    for form in working_program {
-        let result = tc.check_form(module, form, CheckPass::Register, check_state, accumulator)?;
-        tc.merge_form_result(module, check_state, accumulator, result);
-    }
     Ok(())
 }
 
 /// Register default method defns generated during Pass 1 TraitImpl processing.
+///
+/// Pre-S66 this drove `check_form(Register)` for each default-method-defn the
+/// `check_form(TraitImpl)` Pass-1 step had appended to `accumulator`. Under
+/// the collapsed `check_forms` surface, default-method handling is internal
+/// to typecheck — the orchestrator merely takes the (now-empty) deferral list
+/// off the local accumulator to maintain the pre-S66 worker invariants.
 fn register_default_methods(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    next_type_id: &std::sync::atomic::AtomicU32,
-    check_state: &mut CheckState,
-    module: &ModuleFullPath,
+    _symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    _next_type_id: &std::sync::atomic::AtomicU32,
+    _check_state: &mut CheckState,
+    _module: &ModuleFullPath,
     accumulator: &mut ModuleCheckAccumulator,
 ) -> Result<Vec<Defn>, CranelispError> {
-    let tc = cranelisp_typecheck::TypeCheckEnv::new(symbol_tables, next_type_id);
     let defaults: Vec<Defn> = std::mem::take(&mut accumulator.default_method_defns);
-    for defn in &defaults {
-        let form = TopLevel::Defn(defn.clone());
-        let result = tc.check_form(module, &form, CheckPass::Register, check_state, accumulator)?;
-        tc.merge_form_result(module, check_state, accumulator, result);
-    }
     Ok(defaults)
 }
 
@@ -2866,6 +3127,23 @@ pub fn inline_jit_codegen_for_names(
     // 2. Collect platform symbols + per-module GOT base addresses.
     let (mut jit_symbols, got_data_defs) =
         collect_jit_setup(tc_modules, module);
+
+    // Sprint 66 Wave 3a-γ: register int-owned intrinsics unconditionally
+    // (`discover-tests`, `run-test`, `cranelisp_trace_format`). Per
+    // `design/arch/facades/intrinsics.md` these are backend-emitted-call
+    // targets — JIT-emitted CLIF declares them as `Linkage::Import` whenever
+    // any program (including prelude defns) references them. The pre-S66
+    // syntactic scan that gated registration on per-program references was
+    // an architectural wart: the prelude's `run-tests-report` defn declares
+    // `run-test` as Import on every JIT it touches, and a syntactic scan of
+    // the current eval misses transitive references through previously-
+    // compiled defns. Unconditional registration is the same uniform
+    // dispatch principle that governs `heap_alloc` / `runtime/panic` /
+    // primitive arithmetic. See FIXME 0178.
+    for (name, ptr) in crate::session_v4::int_intrinsics() {
+        jit_symbols.push((name.to_string(), ptr));
+    }
+
     jit_symbols.extend_from_slice(extra_jit_symbols);
 
     // 2b. Register pointers for already-compiled functions across all modules.

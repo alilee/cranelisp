@@ -1980,6 +1980,11 @@ mod tests {
             // Decision 35.
             kept_dlls: Mutex::new(Vec::new()),
             introspection: dashmap::DashMap::new(),
+            // Sprint 66 Wave 3a-γ: TestRunnerState stub for the scheduler
+            // unit test. The test exercises the nice-worker lifecycle, not
+            // test/trace intrinsics — a default state with empty/null
+            // pointers is fine; no JIT codegen runs in this test.
+            test_runner_state: Box::new(crate::session_v4::TestRunnerState::stub()),
         });
 
         let m = mod_path("test.mod");

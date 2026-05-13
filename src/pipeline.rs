@@ -125,6 +125,14 @@ pub fn compile_and_execute_expr(
         for (name, ptr) in got_data_defs {
             extra_syms.push((name.as_str(), *ptr));
         }
+        // Sprint 66 Wave 3a-γ: register int-owned intrinsics unconditionally
+        // at JIT setup (see FIXME 0178 + worker::inline_jit_codegen_for_names
+        // for the rationale). These are intrinsics per
+        // `design/arch/facades/intrinsics.md` — uniform dispatch through
+        // `JITBuilder::symbol()`, no conditional gating.
+        for (name, ptr) in crate::session_v4::int_intrinsics() {
+            extra_syms.push((name, ptr));
+        }
 
         let mut jit = cranelisp_backend::jit::Jit::new_with_symbols(&extra_syms)?;
         jit.declare_intrinsics()?;
@@ -258,6 +266,11 @@ fn compile_and_execute_expr_with_trace(
     // the JIT's symbol-lookup table — the symbol address IS the slab base.
     for (name, ptr) in got_data_defs {
         extra_syms.push((name.as_str(), *ptr));
+    }
+    // Sprint 66 Wave 3a-γ: int-owned intrinsics — unconditional registration
+    // (see FIXME 0178). Mirror of `compile_and_execute_expr` above.
+    for (name, ptr) in crate::session_v4::int_intrinsics() {
+        extra_syms.push((name, ptr));
     }
 
     let mut jit = cranelisp_backend::jit::Jit::new_with_symbols(&extra_syms)?;
