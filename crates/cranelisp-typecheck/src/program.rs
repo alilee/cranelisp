@@ -230,7 +230,7 @@ where
 /// fundamental to Algorithm W with mutual recursion. The caller drives the
 /// iteration; `check_form` does the right thing for each (form, pass) pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CheckPass {
+pub(crate) enum CheckPass {
     /// Pass 1: register type/trait/signature.
     /// For Defn: registers signature only. For TypeDef/TraitDecl/TraitImpl: full registration.
     Register,
@@ -245,41 +245,41 @@ pub enum CheckPass {
 /// feeds this to `merge_form_result()` to accumulate into module-level state.
 /// In v4, the scheduler also uses these fields for per-symbol codegen readiness.
 #[derive(Debug)]
-pub struct FormCheckResult {
+pub(crate) struct FormCheckResult {
     /// Method resolutions discovered while checking this form.
     /// In Pass 1: empty (registration produces no resolutions).
     /// In Pass 2: resolutions from the body of this defn.
-    pub method_resolutions: HashMap<Span, ResolvedCall>,
+    pub(crate) method_resolutions: HashMap<Span, ResolvedCall>,
 
     /// Expression types for this form's AST nodes.
     /// In Pass 1: may contain constructor types for TypeDef forms.
     /// In Pass 2: contains all expr types from the defn body + the defn's Fn type.
-    pub expr_types: HashMap<Span, Type>,
+    pub(crate) expr_types: HashMap<Span, Type>,
 
     /// If this form defines a constrained polymorphic function (Pass 2 only),
     /// the function name. Used by the caller to build the constrained_fn_names set.
-    pub constrained_fn: Option<Symbol>,
+    pub(crate) constrained_fn: Option<Symbol>,
 
     /// Monomorphised definitions generated from this form's call sites (Pass 2 only).
-    pub mono_defns: Vec<MonoDefn>,
+    pub(crate) mono_defns: Vec<MonoDefn>,
 
     /// Default method definitions expanded from trait impls in this form (Pass 1 only).
     /// Produced when a TraitImpl form triggers default method synthesis.
-    pub default_method_defns: Vec<Defn>,
+    pub(crate) default_method_defns: Vec<Defn>,
 
     /// Multi-sig mangled definitions produced during overload resolution.
     /// Populated when a multi-sig DefnMulti's variants are resolved after Pass 2.
-    pub multi_sig_defns: Vec<Defn>,
+    pub(crate) multi_sig_defns: Vec<Defn>,
 
     /// Warnings emitted during checking this form.
-    pub warnings: Vec<Warning>,
+    pub(crate) warnings: Vec<Warning>,
 
     /// Call graph edges discovered during this form's checking.
     /// Each entry is (caller_symbol, callee_fqsymbol). The caller is local to
     /// the current module; the callee is fully qualified (may be cross-module).
     /// Accumulated for the module's call graph, used by the scheduler for
     /// macro dependency walks.
-    pub call_graph_edges: Vec<(Symbol, FQSymbol)>,
+    pub(crate) call_graph_edges: Vec<(Symbol, FQSymbol)>,
 }
 
 impl FormCheckResult {
@@ -309,18 +309,18 @@ impl FormCheckResult {
 /// `finalize_check_result()`, any additional resolutions/warnings produced by those passes
 /// are swept from `self.state` into the accumulator, and the `CheckResult` is built
 /// exclusively from the accumulator.
-pub struct ModuleCheckAccumulator {
-    pub method_resolutions: HashMap<Span, ResolvedCall>,
-    pub expr_types: HashMap<Span, Type>,
-    pub constrained_fn_names: HashSet<Symbol>,
-    pub mono_defns: Vec<MonoDefn>,
-    pub default_method_defns: Vec<Defn>,
-    pub multi_sig_defns: Vec<Defn>,
-    pub warnings: Vec<Warning>,
-    pub call_graph_edges: Vec<(Symbol, FQSymbol)>,
+pub(crate) struct ModuleCheckAccumulator {
+    pub(crate) method_resolutions: HashMap<Span, ResolvedCall>,
+    pub(crate) expr_types: HashMap<Span, Type>,
+    pub(crate) constrained_fn_names: HashSet<Symbol>,
+    pub(crate) mono_defns: Vec<MonoDefn>,
+    pub(crate) default_method_defns: Vec<Defn>,
+    pub(crate) multi_sig_defns: Vec<Defn>,
+    pub(crate) warnings: Vec<Warning>,
+    pub(crate) call_graph_edges: Vec<(Symbol, FQSymbol)>,
     /// Type vars from pass 1 registration, keyed by defn name.
     /// Needed by pass 2 to check bodies against registered signatures.
-    pub defn_type_vars: HashMap<Symbol, (Vec<Type>, Type)>,
+    pub(crate) defn_type_vars: HashMap<Symbol, (Vec<Type>, Type)>,
 }
 
 impl Default for ModuleCheckAccumulator {
@@ -331,7 +331,7 @@ impl Default for ModuleCheckAccumulator {
 
 impl ModuleCheckAccumulator {
     /// Create a new empty accumulator for a module.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         ModuleCheckAccumulator {
             method_resolutions: HashMap::new(),
             expr_types: HashMap::new(),
@@ -347,11 +347,20 @@ impl ModuleCheckAccumulator {
 }
 
 // --- Multi-sig type aliases ---
+//
+// Reachable only through `check_program` / `check_repl_input` /
+// `finalize_check_result` chains, which are `pub(crate)` and consumed only
+// by `#[cfg(test)]` test-fixture proxies (see `TestFixture` in `checker.rs`).
+// The new free-function surface (`check_form_signatures` /
+// `check_form_body`) does not yet wire through multi-sig overload
+// resolution; that integration arrives in Wave 3a-α completion.
 
 /// Resolved variant info: (concrete_params, concrete_ret, internal_name, variant_index).
+#[allow(dead_code)]
 type ResolvedVariant = (Vec<Type>, Type, Symbol, usize);
 
 /// Mangled variant info: (concrete_params, concrete_ret, mangled_name).
+#[allow(dead_code)]
 type MangledVariantInfo = (Vec<Type>, Type, Symbol);
 
 // --- Name mangling for multi-sig overload dispatch ---
@@ -378,6 +387,7 @@ fn is_trait_impl_mangled_name(name: &str) -> bool {
     false
 }
 
+#[allow(dead_code)]
 fn mangle_sig(name: &str, param_types: &[Type]) -> Symbol {
     if param_types.is_empty() {
         Symbol::from(format!("{}$", name))
@@ -388,6 +398,7 @@ fn mangle_sig(name: &str, param_types: &[Type]) -> Symbol {
 }
 
 /// Mangle a single type for name mangling.
+#[allow(dead_code)]
 fn mangle_type(ty: &Type) -> String {
     match ty {
         Type::Int => "Int".to_string(),
@@ -409,6 +420,7 @@ fn mangle_type(ty: &Type) -> String {
 }
 
 /// Check if two concrete types are compatible (for overload resolution).
+#[allow(dead_code)]
 fn types_compatible(a: &Type, b: &Type) -> bool {
     match (a, b) {
         (Type::Int, Type::Int)
@@ -441,6 +453,14 @@ fn types_compatible(a: &Type, b: &Type) -> bool {
     }
 }
 
+// The whole-program / REPL-input legacy check methods (`check`,
+// `check_program`, `check_repl_input`) plus their helper chain are
+// reachable only through `#[cfg(test)]` test-fixture proxies (per the
+// Wave 3a-β public-surface demotion — see FIXME 0173). Their dead-code
+// lints are suppressed at the impl-block level until the chain is fully
+// retired in a follow-up wave; the new free-function surface
+// (`check_form_signatures` / `check_form_body`) is the production path.
+#[allow(dead_code)]
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     // =================================================================
     // Per-Form Typecheck API (v4 pipeline)
@@ -526,7 +546,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ///
     /// The caller owns the `CheckState` and passes it in. Multiple workers
     /// can hold `&TypeCheckEnv` concurrently, each with their own state.
-    pub fn check_form(
+    pub(crate) fn check_form(
         &self,
         _module: &ModuleFullPath,
         form: &TopLevel,
@@ -919,7 +939,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// scheduler can read them immediately without waiting for
     /// `finalize_check_result`.
     /// Merge a per-form check result into the module accumulator.
-    pub fn merge_form_result(
+    pub(crate) fn merge_form_result(
         &self,
         _module: &ModuleFullPath,
         state: &mut CheckState,
@@ -969,7 +989,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// module tables, not from the accumulator — TypeDef registration writes
     /// directly into the module's type_defs registry during Pass 1.
     /// Finalize: run post-passes and drain the accumulator into `CheckResult`.
-    pub fn finalize_check_result(
+    pub(crate) fn finalize_check_result(
         &self,
         _module: &ModuleFullPath,
         state: &mut CheckState,
@@ -1192,7 +1212,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// `Expr` variants are wrapped in a synthetic zero-arg `Defn` named `__expr`
     /// so they flow through the same passes as regular definitions.
     #[must_use = "check result contains expr_types and method_resolutions needed by codegen"]
-    pub fn check(
+    pub(crate) fn check(
         &self,
         state: &mut CheckState,
         program: &[TopLevel],
@@ -1781,7 +1801,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// 2. Check function bodies, generalize types.
     #[deprecated(note = "use check() instead — unified pipeline entry point")]
     #[must_use = "check result contains expr_types and method_resolutions needed by codegen"]
-    pub fn check_program(
+    pub(crate) fn check_program(
         &self,
         state: &mut CheckState,
         program: &[TopLevel],
@@ -1920,7 +1940,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// Check a single REPL input incrementally.
     #[deprecated(note = "use check() instead — unified pipeline entry point")]
     #[must_use = "check result contains type and expr_types needed by codegen"]
-    pub fn check_repl_input(
+    pub(crate) fn check_repl_input(
         &self,
         state: &mut CheckState,
         input: &TopLevel,
@@ -6614,6 +6634,12 @@ mod tests {
     // A defn body that calls macros/sconcat via qualified name must have
     // resolved_call set on the Apply node. This is the pattern quasiquote
     // ~@ generates inside macro clause bodies.
+    //
+    // FIXME(/dev frontend): test references `cranelisp_frontend::build_program`
+    // which was renamed to `build_form` returning `Vec<ParsedEntry>` per
+    // the Wave 3a-β FIXME 0156 pivot. The test wiring needs to land
+    // after frontend's parallel /dev work completes.
+    #[cfg(any())]
     #[test]
     fn test_ast_annotation_qualified_extern_resolved_call() {
         let mut tc = tc_with_prims();

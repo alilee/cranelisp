@@ -47,25 +47,56 @@ impl core::marker::Unpin for cranelisp_typecheck::CheckError
 impl core::marker::UnsafeUnpin for cranelisp_typecheck::CheckError
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_typecheck::CheckError
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_typecheck::CheckError
-pub enum cranelisp_typecheck::CheckPass
-pub cranelisp_typecheck::CheckPass::CheckBody
-pub cranelisp_typecheck::CheckPass::Register
-impl core::clone::Clone for cranelisp_typecheck::CheckPass
-pub fn cranelisp_typecheck::CheckPass::clone(&self) -> cranelisp_typecheck::CheckPass
-impl core::cmp::Eq for cranelisp_typecheck::CheckPass
-impl core::cmp::PartialEq for cranelisp_typecheck::CheckPass
-pub fn cranelisp_typecheck::CheckPass::eq(&self, other: &cranelisp_typecheck::CheckPass) -> bool
-impl core::fmt::Debug for cranelisp_typecheck::CheckPass
-pub fn cranelisp_typecheck::CheckPass::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for cranelisp_typecheck::CheckPass
-impl core::marker::StructuralPartialEq for cranelisp_typecheck::CheckPass
-impl core::marker::Freeze for cranelisp_typecheck::CheckPass
-impl core::marker::Send for cranelisp_typecheck::CheckPass
-impl core::marker::Sync for cranelisp_typecheck::CheckPass
-impl core::marker::Unpin for cranelisp_typecheck::CheckPass
-impl core::marker::UnsafeUnpin for cranelisp_typecheck::CheckPass
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_typecheck::CheckPass
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_typecheck::CheckPass
+#[non_exhaustive] pub enum cranelisp_typecheck::ClusterContext<'a, C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore>
+pub cranelisp_typecheck::ClusterContext::Cluster
+pub cranelisp_typecheck::ClusterContext::Cluster::current_module: cranelisp_types::newtype::ModuleFullPath
+pub cranelisp_typecheck::ClusterContext::Cluster::modules: &'a dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>
+pub cranelisp_typecheck::ClusterContext::Cluster::staging: &'a mut cranelisp_types::module::SymbolTable<C, L>
+pub cranelisp_typecheck::ClusterContext::Live
+pub cranelisp_typecheck::ClusterContext::Live::current_module: cranelisp_types::newtype::ModuleFullPath
+pub cranelisp_typecheck::ClusterContext::Live::modules: &'a dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>
+impl<'a, C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore> cranelisp_typecheck::ClusterContext<'a, C, L>
+pub fn cranelisp_typecheck::ClusterContext<'a, C, L>::cluster(modules: &'a dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, staging: &'a mut cranelisp_types::module::SymbolTable<C, L>, current_module: cranelisp_types::newtype::ModuleFullPath) -> Self
+pub fn cranelisp_typecheck::ClusterContext<'a, C, L>::current_module(&self) -> &cranelisp_types::newtype::ModuleFullPath
+pub fn cranelisp_typecheck::ClusterContext<'a, C, L>::current_symbol_table(&self) -> cranelisp_typecheck::ClusterRead<'_, C, L>
+pub fn cranelisp_typecheck::ClusterContext<'a, C, L>::current_symbol_table_mut(&mut self) -> cranelisp_typecheck::ClusterWrite<'_, C, L>
+pub fn cranelisp_typecheck::ClusterContext<'a, C, L>::live(modules: &'a dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, current_module: cranelisp_types::newtype::ModuleFullPath) -> Self
+impl<'a, C, L> core::marker::Freeze for cranelisp_typecheck::ClusterContext<'a, C, L>
+impl<'a, C, L> core::marker::Send for cranelisp_typecheck::ClusterContext<'a, C, L>
+impl<'a, C, L> core::marker::Sync for cranelisp_typecheck::ClusterContext<'a, C, L>
+impl<'a, C, L> core::marker::Unpin for cranelisp_typecheck::ClusterContext<'a, C, L>
+impl<'a, C, L> core::marker::UnsafeUnpin for cranelisp_typecheck::ClusterContext<'a, C, L>
+impl<'a, C, L> !core::panic::unwind_safe::RefUnwindSafe for cranelisp_typecheck::ClusterContext<'a, C, L>
+impl<'a, C, L> !core::panic::unwind_safe::UnwindSafe for cranelisp_typecheck::ClusterContext<'a, C, L>
+pub enum cranelisp_typecheck::ClusterRead<'a, C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore>
+pub cranelisp_typecheck::ClusterRead::Cluster
+pub cranelisp_typecheck::ClusterRead::Cluster::live: dashmap::mapref::one::Ref<'a, cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>
+pub cranelisp_typecheck::ClusterRead::Cluster::staging: &'a cranelisp_types::module::SymbolTable<C, L>
+pub cranelisp_typecheck::ClusterRead::Live(dashmap::mapref::one::Ref<'a, cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>)
+impl<'a, C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore> cranelisp_typecheck::ClusterRead<'a, C, L>
+pub fn cranelisp_typecheck::ClusterRead<'a, C, L>::view(&self) -> cranelisp_types::view::View<'_, C, L>
+impl<'a, C, L> core::marker::Freeze for cranelisp_typecheck::ClusterRead<'a, C, L>
+impl<'a, C, L> core::marker::Send for cranelisp_typecheck::ClusterRead<'a, C, L>
+impl<'a, C, L> core::marker::Sync for cranelisp_typecheck::ClusterRead<'a, C, L>
+impl<'a, C, L> core::marker::Unpin for cranelisp_typecheck::ClusterRead<'a, C, L>
+impl<'a, C, L> core::marker::UnsafeUnpin for cranelisp_typecheck::ClusterRead<'a, C, L>
+impl<'a, C, L> !core::panic::unwind_safe::RefUnwindSafe for cranelisp_typecheck::ClusterRead<'a, C, L>
+impl<'a, C, L> !core::panic::unwind_safe::UnwindSafe for cranelisp_typecheck::ClusterRead<'a, C, L>
+pub enum cranelisp_typecheck::ClusterWrite<'a, C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore>
+pub cranelisp_typecheck::ClusterWrite::Cluster(&'a mut cranelisp_types::module::SymbolTable<C, L>)
+pub cranelisp_typecheck::ClusterWrite::Live(dashmap::mapref::one::RefMut<'a, cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>)
+impl<'a, C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore> core::ops::deref::Deref for cranelisp_typecheck::ClusterWrite<'a, C, L>
+pub type cranelisp_typecheck::ClusterWrite<'a, C, L>::Target = cranelisp_types::module::SymbolTable<C, L>
+pub fn cranelisp_typecheck::ClusterWrite<'a, C, L>::deref(&self) -> &Self::Target
+impl<'a, C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore> core::ops::deref::DerefMut for cranelisp_typecheck::ClusterWrite<'a, C, L>
+pub fn cranelisp_typecheck::ClusterWrite<'a, C, L>::deref_mut(&mut self) -> &mut Self::Target
+impl<'a, C, L> core::marker::Freeze for cranelisp_typecheck::ClusterWrite<'a, C, L>
+impl<'a, C, L> core::marker::Send for cranelisp_typecheck::ClusterWrite<'a, C, L>
+impl<'a, C, L> core::marker::Sync for cranelisp_typecheck::ClusterWrite<'a, C, L>
+impl<'a, C, L> core::marker::Unpin for cranelisp_typecheck::ClusterWrite<'a, C, L>
+impl<'a, C, L> core::marker::UnsafeUnpin for cranelisp_typecheck::ClusterWrite<'a, C, L>
+impl<'a, C, L> !core::panic::unwind_safe::RefUnwindSafe for cranelisp_typecheck::ClusterWrite<'a, C, L>
+impl<'a, C, L> !core::panic::unwind_safe::UnwindSafe for cranelisp_typecheck::ClusterWrite<'a, C, L>
 pub enum cranelisp_typecheck::SymbolTableEnsureOutcome
 pub cranelisp_typecheck::SymbolTableEnsureOutcome::AlreadyPresent
 pub cranelisp_typecheck::SymbolTableEnsureOutcome::Created
@@ -112,45 +143,6 @@ impl core::marker::Unpin for cranelisp_typecheck::CheckState
 impl core::marker::UnsafeUnpin for cranelisp_typecheck::CheckState
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_typecheck::CheckState
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_typecheck::CheckState
-pub struct cranelisp_typecheck::FormCheckResult
-pub cranelisp_typecheck::FormCheckResult::call_graph_edges: alloc::vec::Vec<(cranelisp_types::newtype::Symbol, cranelisp_types::newtype::FQSymbol)>
-pub cranelisp_typecheck::FormCheckResult::constrained_fn: core::option::Option<cranelisp_types::newtype::Symbol>
-pub cranelisp_typecheck::FormCheckResult::default_method_defns: alloc::vec::Vec<cranelisp_types::ast::Defn>
-pub cranelisp_typecheck::FormCheckResult::expr_types: std::collections::hash::map::HashMap<cranelisp_types::span::Span, cranelisp_types::types::Type>
-pub cranelisp_typecheck::FormCheckResult::method_resolutions: std::collections::hash::map::HashMap<cranelisp_types::span::Span, cranelisp_types::check::ResolvedCall>
-pub cranelisp_typecheck::FormCheckResult::mono_defns: alloc::vec::Vec<cranelisp_types::check::MonoDefn>
-pub cranelisp_typecheck::FormCheckResult::multi_sig_defns: alloc::vec::Vec<cranelisp_types::ast::Defn>
-pub cranelisp_typecheck::FormCheckResult::warnings: alloc::vec::Vec<cranelisp_types::error::Warning>
-impl core::fmt::Debug for cranelisp_typecheck::FormCheckResult
-pub fn cranelisp_typecheck::FormCheckResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for cranelisp_typecheck::FormCheckResult
-impl core::marker::Send for cranelisp_typecheck::FormCheckResult
-impl core::marker::Sync for cranelisp_typecheck::FormCheckResult
-impl core::marker::Unpin for cranelisp_typecheck::FormCheckResult
-impl core::marker::UnsafeUnpin for cranelisp_typecheck::FormCheckResult
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_typecheck::FormCheckResult
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_typecheck::FormCheckResult
-pub struct cranelisp_typecheck::ModuleCheckAccumulator
-pub cranelisp_typecheck::ModuleCheckAccumulator::call_graph_edges: alloc::vec::Vec<(cranelisp_types::newtype::Symbol, cranelisp_types::newtype::FQSymbol)>
-pub cranelisp_typecheck::ModuleCheckAccumulator::constrained_fn_names: std::collections::hash::set::HashSet<cranelisp_types::newtype::Symbol>
-pub cranelisp_typecheck::ModuleCheckAccumulator::default_method_defns: alloc::vec::Vec<cranelisp_types::ast::Defn>
-pub cranelisp_typecheck::ModuleCheckAccumulator::defn_type_vars: std::collections::hash::map::HashMap<cranelisp_types::newtype::Symbol, (alloc::vec::Vec<cranelisp_types::types::Type>, cranelisp_types::types::Type)>
-pub cranelisp_typecheck::ModuleCheckAccumulator::expr_types: std::collections::hash::map::HashMap<cranelisp_types::span::Span, cranelisp_types::types::Type>
-pub cranelisp_typecheck::ModuleCheckAccumulator::method_resolutions: std::collections::hash::map::HashMap<cranelisp_types::span::Span, cranelisp_types::check::ResolvedCall>
-pub cranelisp_typecheck::ModuleCheckAccumulator::mono_defns: alloc::vec::Vec<cranelisp_types::check::MonoDefn>
-pub cranelisp_typecheck::ModuleCheckAccumulator::multi_sig_defns: alloc::vec::Vec<cranelisp_types::ast::Defn>
-pub cranelisp_typecheck::ModuleCheckAccumulator::warnings: alloc::vec::Vec<cranelisp_types::error::Warning>
-impl cranelisp_typecheck::ModuleCheckAccumulator
-pub fn cranelisp_typecheck::ModuleCheckAccumulator::new() -> Self
-impl core::default::Default for cranelisp_typecheck::ModuleCheckAccumulator
-pub fn cranelisp_typecheck::ModuleCheckAccumulator::default() -> Self
-impl core::marker::Freeze for cranelisp_typecheck::ModuleCheckAccumulator
-impl core::marker::Send for cranelisp_typecheck::ModuleCheckAccumulator
-impl core::marker::Sync for cranelisp_typecheck::ModuleCheckAccumulator
-impl core::marker::Unpin for cranelisp_typecheck::ModuleCheckAccumulator
-impl core::marker::UnsafeUnpin for cranelisp_typecheck::ModuleCheckAccumulator
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_typecheck::ModuleCheckAccumulator
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_typecheck::ModuleCheckAccumulator
 pub struct cranelisp_typecheck::ReplSnapshot
 pub cranelisp_typecheck::ReplSnapshot::next_type_id: cranelisp_types::types::TypeId
 pub cranelisp_typecheck::ReplSnapshot::scope_depth: usize
@@ -204,16 +196,10 @@ pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::snapshot(&self, state: &cran
 pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::snapshot_type_defs(&self) -> (std::collections::hash::map::HashMap<cranelisp_types::newtype::TypeName, cranelisp_types::check::TypeDefInfo>, std::collections::hash::map::HashMap<cranelisp_types::newtype::Symbol, cranelisp_types::newtype::TypeName>)
 pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::unregister_trait(&self, _trait_name: &cranelisp_types::newtype::TraitName)
 impl<C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore> cranelisp_typecheck::TypeCheckEnv<'_, C, L>
-pub fn cranelisp_typecheck::TypeCheckEnv<'_, C, L>::check(&self, state: &mut cranelisp_typecheck::CheckState, program: &[cranelisp_types::ast::TopLevel], ctx: &cranelisp_types::pipeline::CompileContext, strategy: cranelisp_types::pipeline::ModuleStrategy) -> core::result::Result<cranelisp_typecheck::CheckResult, cranelisp_types::error::CranelispError>
-pub fn cranelisp_typecheck::TypeCheckEnv<'_, C, L>::check_form(&self, _module: &cranelisp_types::newtype::ModuleFullPath, form: &cranelisp_types::ast::TopLevel, pass: cranelisp_typecheck::CheckPass, state: &mut cranelisp_typecheck::CheckState, accumulator: &mut cranelisp_typecheck::ModuleCheckAccumulator) -> core::result::Result<cranelisp_typecheck::FormCheckResult, cranelisp_types::error::CranelispError>
-pub fn cranelisp_typecheck::TypeCheckEnv<'_, C, L>::check_program(&self, state: &mut cranelisp_typecheck::CheckState, program: &[cranelisp_types::ast::TopLevel]) -> core::result::Result<cranelisp_typecheck::CheckResult, cranelisp_types::error::CranelispError>
-pub fn cranelisp_typecheck::TypeCheckEnv<'_, C, L>::check_repl_input(&self, state: &mut cranelisp_typecheck::CheckState, input: &cranelisp_types::ast::TopLevel) -> core::result::Result<cranelisp_typecheck::CheckResult, cranelisp_types::error::CranelispError>
+pub fn cranelisp_typecheck::TypeCheckEnv<'_, C, L>::check_exhaustiveness(&self, type_name: &cranelisp_types::newtype::TypeName, covered_ctors: &[cranelisp_types::newtype::Symbol], has_wildcard: bool, span: cranelisp_types::span::Span) -> core::result::Result<(), cranelisp_types::error::CranelispError>
+impl<C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore> cranelisp_typecheck::TypeCheckEnv<'_, C, L>
 pub fn cranelisp_typecheck::TypeCheckEnv<'_, C, L>::clear_module_for_replace_public(&self, state: &mut cranelisp_typecheck::CheckState)
 pub fn cranelisp_typecheck::TypeCheckEnv<'_, C, L>::compute_display_info_public(&self, state: &cranelisp_typecheck::CheckState, original_program: &[cranelisp_types::ast::TopLevel], defn_type_vars: &std::collections::hash::map::HashMap<cranelisp_types::newtype::Symbol, (alloc::vec::Vec<cranelisp_types::types::Type>, cranelisp_types::types::Type)>) -> core::option::Option<cranelisp_types::check::DisplayInfo>
-pub fn cranelisp_typecheck::TypeCheckEnv<'_, C, L>::finalize_check_result(&self, _module: &cranelisp_types::newtype::ModuleFullPath, state: &mut cranelisp_typecheck::CheckState, accumulator: &mut cranelisp_typecheck::ModuleCheckAccumulator, working_program: &[cranelisp_types::ast::TopLevel], strategy: cranelisp_types::pipeline::ModuleStrategy) -> core::result::Result<cranelisp_typecheck::CheckResult, cranelisp_types::error::CranelispError>
-pub fn cranelisp_typecheck::TypeCheckEnv<'_, C, L>::merge_form_result(&self, _module: &cranelisp_types::newtype::ModuleFullPath, state: &mut cranelisp_typecheck::CheckState, accumulator: &mut cranelisp_typecheck::ModuleCheckAccumulator, result: cranelisp_typecheck::FormCheckResult)
-impl<C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore> cranelisp_typecheck::TypeCheckEnv<'_, C, L>
-pub fn cranelisp_typecheck::TypeCheckEnv<'_, C, L>::check_exhaustiveness(&self, type_name: &cranelisp_types::newtype::TypeName, covered_ctors: &[cranelisp_types::newtype::Symbol], has_wildcard: bool, span: cranelisp_types::span::Span) -> core::result::Result<(), cranelisp_types::error::CranelispError>
 impl<'a, C, L> core::marker::Freeze for cranelisp_typecheck::TypeCheckEnv<'a, C, L>
 impl<'a, C, L> core::marker::Send for cranelisp_typecheck::TypeCheckEnv<'a, C, L>
 impl<'a, C, L> core::marker::Sync for cranelisp_typecheck::TypeCheckEnv<'a, C, L>
@@ -221,6 +207,7 @@ impl<'a, C, L> core::marker::Unpin for cranelisp_typecheck::TypeCheckEnv<'a, C, 
 impl<'a, C, L> core::marker::UnsafeUnpin for cranelisp_typecheck::TypeCheckEnv<'a, C, L>
 impl<'a, C, L> !core::panic::unwind_safe::RefUnwindSafe for cranelisp_typecheck::TypeCheckEnv<'a, C, L>
 impl<'a, C, L> !core::panic::unwind_safe::UnwindSafe for cranelisp_typecheck::TypeCheckEnv<'a, C, L>
+pub fn cranelisp_typecheck::check_forms<C, L>(parsed: alloc::vec::Vec<cranelisp_types::parsed::ParsedEntry>, ctx: &mut cranelisp_typecheck::ClusterContext<'_, C, L>, symbol_tables: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>) -> core::result::Result<(), cranelisp_typecheck::CheckError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub fn cranelisp_typecheck::install_symbol_table_ensure_hook(hook: cranelisp_typecheck::trace::SymbolTableEnsureHook)
 pub fn cranelisp_typecheck::register_builtins<C, L>(modules: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, next_id: &core::sync::atomic::AtomicU32) where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub type cranelisp_typecheck::SymbolTableEnsureHook = fn(module: &cranelisp_types::newtype::ModuleFullPath, outcome: cranelisp_typecheck::trace::SymbolTableEnsureOutcome)
