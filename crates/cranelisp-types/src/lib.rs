@@ -25,6 +25,7 @@ pub mod pipeline;
 pub mod operator;
 pub mod marshal;
 pub mod scheduling;
+pub mod view;
 
 // Re-export key types at crate root for convenience.
 pub use span::Span;
@@ -64,6 +65,7 @@ pub use pipeline::{
     GOT_TABLE_SIZE, ModuleStrategy, NULLARY_TAG_THRESHOLD,
 };
 pub use operator::{ring0_primitives, ring1_primitives, ring3_primitives, PrimitiveDef};
+pub use view::View;
 pub use marshal::{
     TAG_SNIL, TAG_SCONS,
     TAG_SEXP_INT, TAG_SEXP_FLOAT, TAG_SEXP_BOOL, TAG_SEXP_STR,
