@@ -26,8 +26,8 @@ use crate::scheduler::CompileScheduler;
 use crate::worker::ModuleCompiler;
 
 // Re-export display functions so tests can import from session_v4 instead of repl.
-pub use cranelisp_backend::display::format_result_value;
-use cranelisp_backend::display::{format_type_qualified, format_scheme_display};
+pub use crate::display::format_result_value;
+use crate::display::{format_type_qualified, format_scheme_display};
 
 // ---------------------------------------------------------------------------
 // ReadOnlyMacroResolver — for /expand slash command
@@ -3533,7 +3533,7 @@ impl CompilerSession {
                 let tn = TypeName::from(type_name.name.as_ref());
                 let ctor_display =
                     if let Some(info) = self.tc_env().lookup_type_def(&tn) {
-                        cranelisp_backend::display::format_ctor_display(&tn, name, &info)
+                        crate::display::format_ctor_display(&tn, name, &info)
                     } else {
                         format!("{type_name}.{name}")
                     };
@@ -4432,7 +4432,7 @@ extern "C" fn repl_trace_format(val: i64, type_ptr: i64) -> i64 {
             let state = unsafe { &*state_ptr };
             let symbol_tables = unsafe { &*state.symbol_tables };
             let ty = unsafe { &*(type_ptr as *const Type) };
-            cranelisp_backend::display::format_value(val, ty, symbol_tables)
+            crate::display::format_value(val, ty, symbol_tables)
         };
         cranelisp_runtime::alloc_string(s.as_bytes()) as i64
     })

@@ -7,6 +7,7 @@ pub mod bind_chain_analysis;
 pub mod cache_writer;
 pub mod cluster;
 pub mod code;
+pub mod display;
 pub mod exe;
 pub mod expander;
 pub mod marshal;
