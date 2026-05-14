@@ -1,6 +1,6 @@
 //! Float conversion primitives.
 
-use crate::string;
+use cranelisp_intrinsics::string;
 
 /// Convert a float to its string representation.
 /// The float is received as its i64 bit pattern (IEEE 754 double).
@@ -20,7 +20,7 @@ pub extern "C" fn float_to_string(f_bits: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::alloc;
+    use cranelisp_intrinsics::alloc;
 
     fn float_bits(f: f64) -> i64 {
         f.to_bits() as i64

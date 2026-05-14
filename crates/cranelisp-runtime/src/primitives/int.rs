@@ -1,8 +1,8 @@
 //! Integer conversion primitives.
 
-use crate::alloc;
-use crate::rc;
-use crate::string;
+use cranelisp_intrinsics::alloc;
+use cranelisp_intrinsics::rc;
+use cranelisp_intrinsics::string;
 
 /// Convert an integer to its decimal string representation.
 /// Returns a new HeapString (rc=1).
@@ -154,8 +154,8 @@ mod tests {
     // Decision 24: parse_int consumes its heap arg — test releases only the result.
     #[test]
     fn test_parse_int_valid() {
-        let allocs_before = crate::alloc::alloc_count();
-        let deallocs_before = crate::alloc::dealloc_count();
+        let allocs_before = cranelisp_intrinsics::alloc::alloc_count();
+        let deallocs_before = cranelisp_intrinsics::alloc::dealloc_count();
         let s = string::alloc_string(b"42") as i64;
         let result = parse_int(s);
         // Should be Some(42): heap pointer
@@ -171,8 +171,8 @@ mod tests {
             alloc::dealloc(result as *mut u8);
         }
         // Delta-based: at least 2 allocs (string + Some), 2 deallocs (extern consumed s; test freed result).
-        assert!(crate::alloc::alloc_count() - allocs_before >= 2);
-        assert!(crate::alloc::dealloc_count() - deallocs_before >= 2);
+        assert!(cranelisp_intrinsics::alloc::alloc_count() - allocs_before >= 2);
+        assert!(cranelisp_intrinsics::alloc::dealloc_count() - deallocs_before >= 2);
     }
 
     // spec: appendix-a-builtins §A.3 — parse-int parses negative integer
@@ -228,27 +228,27 @@ mod tests {
     // spec: design/arch/CLAUDE.md Decision 24 — consuming convention, extern parse_int
     #[test]
     fn decision24_parse_int_consumes_heap_arg() {
-        let allocs_before = crate::alloc::alloc_count();
-        let deallocs_before = crate::alloc::dealloc_count();
+        let allocs_before = cranelisp_intrinsics::alloc::alloc_count();
+        let deallocs_before = cranelisp_intrinsics::alloc::dealloc_count();
         let s = string::alloc_string(b"7") as i64;
         let result = parse_int(s);
         assert!(result > 1024);
         unsafe { alloc::dealloc(result as *mut u8) };
         // 2 allocs (string + Some); 2 deallocs (extern freed string; test freed Some).
-        assert_eq!(crate::alloc::alloc_count() - allocs_before, 2);
-        assert_eq!(crate::alloc::dealloc_count() - deallocs_before, 2);
+        assert_eq!(cranelisp_intrinsics::alloc::alloc_count() - allocs_before, 2);
+        assert_eq!(cranelisp_intrinsics::alloc::dealloc_count() - deallocs_before, 2);
     }
 
     // spec: design/arch/CLAUDE.md Decision 24 — parse_int with None result still consumes arg
     #[test]
     fn decision24_parse_int_none_path_still_consumes_heap_arg() {
-        let allocs_before = crate::alloc::alloc_count();
-        let deallocs_before = crate::alloc::dealloc_count();
+        let allocs_before = cranelisp_intrinsics::alloc::alloc_count();
+        let deallocs_before = cranelisp_intrinsics::alloc::dealloc_count();
         let s = string::alloc_string(b"not a number") as i64;
         let result = parse_int(s);
         assert_eq!(result, 0); // None
         // 1 alloc (string); 1 dealloc (extern freed string).
-        assert_eq!(crate::alloc::alloc_count() - allocs_before, 1);
-        assert_eq!(crate::alloc::dealloc_count() - deallocs_before, 1);
+        assert_eq!(cranelisp_intrinsics::alloc::alloc_count() - allocs_before, 1);
+        assert_eq!(cranelisp_intrinsics::alloc::dealloc_count() - deallocs_before, 1);
     }
 }

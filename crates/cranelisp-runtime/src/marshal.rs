@@ -7,9 +7,9 @@
 //! Tag constants are imported from `cranelisp_types::marshal` (single source
 //! of truth). See that module for constructor order documentation.
 
-use crate::alloc::alloc_with_rc;
-use crate::drop::{consume_sexp, consume_slist};
-use crate::string::alloc_string;
+use cranelisp_intrinsics::alloc::alloc_with_rc;
+use cranelisp_intrinsics::drop::{consume_sexp, consume_slist};
+use cranelisp_intrinsics::string::alloc_string;
 use cranelisp_types::{
     TAG_SNIL, TAG_SCONS,
     TAG_SEXP_INT, TAG_SEXP_FLOAT, TAG_SEXP_BOOL, TAG_SEXP_STR,
@@ -276,7 +276,7 @@ fn quote_sexp_build(val: i64) -> i64 {
         _ => {
             // Unknown tag — panic at runtime.
             let msg = "unknown Sexp tag in quote-sexp";
-            crate::panic::runtime_panic(msg.as_ptr(), msg.len());
+            cranelisp_intrinsics::panic::runtime_panic(msg.as_ptr(), msg.len());
             0
         }
     }
@@ -353,8 +353,8 @@ mod tests {
     // spec: design/arch/CLAUDE.md Decision 24 — consuming convention, extern sconcat
     #[test]
     fn decision24_sconcat_rc_balanced() {
-        let allocs_before = crate::alloc::alloc_count();
-        let deallocs_before = crate::alloc::dealloc_count();
+        let allocs_before = cranelisp_intrinsics::alloc::alloc_count();
+        let deallocs_before = cranelisp_intrinsics::alloc::dealloc_count();
 
         // xs = SCons(1, SCons(2, SNil))  — 2 SCons allocs, items are bare tags.
         // ys = SCons(3, SNil)            — 1 SCons alloc.
@@ -378,12 +378,12 @@ mod tests {
         // allocs: 3 original (xs:2 + ys:1) + 2 new result SCons = 5
         // deallocs: same 5 — no leaks, no double-frees.
         assert_eq!(
-            crate::alloc::alloc_count() - allocs_before,
+            cranelisp_intrinsics::alloc::alloc_count() - allocs_before,
             5,
             "alloc count mismatch"
         );
         assert_eq!(
-            crate::alloc::dealloc_count() - deallocs_before,
+            cranelisp_intrinsics::alloc::dealloc_count() - deallocs_before,
             5,
             "dealloc count mismatch (leak or double-free)"
         );

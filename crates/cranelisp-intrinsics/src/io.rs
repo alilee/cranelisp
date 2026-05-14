@@ -10,7 +10,7 @@
 use cranelisp_platform::{IO_TAG_BIND, IO_TAG_EFFECT, IO_TAG_PAR, IO_TAG_PURE};
 use cranelisp_types::HeapHeader;
 
-use crate::alloc_with_rc;
+use crate::alloc::alloc_with_rc;
 use crate::io_trace::{self, IoTracePayload, IoTraceTag};
 
 /// Byte offset of the tag field from the base pointer.

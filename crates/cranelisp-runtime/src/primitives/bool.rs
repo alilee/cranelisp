@@ -1,6 +1,6 @@
 //! Boolean conversion primitives.
 
-use crate::string;
+use cranelisp_intrinsics::string;
 
 /// Convert a Bool (0 or 1) to "true" or "false".
 /// Returns a new HeapString (rc=1).
@@ -13,7 +13,7 @@ pub extern "C" fn bool_to_string(b: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::alloc;
+    use cranelisp_intrinsics::alloc;
 
     // spec: appendix-a-builtins §A.3 — bool-to-string converts true
     #[test]
