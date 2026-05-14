@@ -7,5 +7,6 @@ edition = "2024"
 crate-type = ["staticlib"]
 
 [dependencies]
-cranelisp-runtime = { path = "../cranelisp-runtime" }
+cranelisp-intrinsics = { path = "../cranelisp-intrinsics" }
+cranelisp-primitives = { path = "../cranelisp-primitives" }
 cranelisp-platform = { path = "../cranelisp-platform" }

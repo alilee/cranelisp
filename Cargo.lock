@@ -317,8 +317,9 @@ dependencies = [
 name = "cranelisp-exe-bundle"
 version = "0.1.0"
 dependencies = [
+ "cranelisp-intrinsics",
  "cranelisp-platform",
- "cranelisp-runtime",
+ "cranelisp-primitives",
 ]
 
 [[package]]

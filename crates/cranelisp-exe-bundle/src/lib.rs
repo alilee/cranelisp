@@ -8,20 +8,44 @@
 //! Build with: `cargo build -p cranelisp-exe-bundle`
 //!
 //! The resulting `.a` appears in `target/debug/` or `target/release/`.
+//!
+//! ## Force-link incantation
+//!
+//! The `pub use` re-exports below exist to force the linker to include all
+//! runtime symbols in the produced staticlib. Without these references, the
+//! `.a` would contain only symbols defined in this crate, and the linker
+//! would strip the `#[no_mangle]` / `#[export_name]` runtime functions from
+//! `cranelisp-intrinsics` and `cranelisp-primitives` as unreferenced.
+//!
+//! Wave 4a.pre.exe-bundle (Sprint 66) migrated these re-exports from the
+//! soon-to-be-retired `cranelisp-runtime` shim crate to the two terminal
+//! crates directly:
+//!
+//! - `cranelisp-intrinsics` — backend-emitted-call targets (alloc, drop,
+//!   io, ivar, ops, panic, rc, string-internal, trace, vec-internal).
+//! - `cranelisp-primitives` — user-callable / symbol-table-addressable
+//!   functions (string user APIs, vec_len, marshal sconcat/quote_sexp,
+//!   int/float/bool to_string, parse_int).
 
-// Force the linker to include all runtime modules by referencing them.
-// Without these re-exports, the staticlib would contain only the symbols
-// defined in this crate, and the linker would strip unreferenced runtime
-// functions.
-pub use cranelisp_runtime::alloc;
-pub use cranelisp_runtime::io;
-pub use cranelisp_runtime::marshal;
-pub use cranelisp_runtime::panic;
-pub use cranelisp_runtime::primitives;
-pub use cranelisp_runtime::rc;
-pub use cranelisp_runtime::string;
-pub use cranelisp_runtime::trace;
-pub use cranelisp_runtime::vec;
+// Force-link intrinsics submodules (backend-emitted calls).
+pub use cranelisp_intrinsics::alloc;
+pub use cranelisp_intrinsics::drop;
+pub use cranelisp_intrinsics::io;
+pub use cranelisp_intrinsics::ivar;
+pub use cranelisp_intrinsics::ops;
+pub use cranelisp_intrinsics::panic;
+pub use cranelisp_intrinsics::rc;
+pub use cranelisp_intrinsics::trace;
+pub use cranelisp_intrinsics::string as intrinsics_string;
+pub use cranelisp_intrinsics::vec as intrinsics_vec;
+
+// Force-link primitives submodules (user-callable APIs).
+pub use cranelisp_primitives::bool;
+pub use cranelisp_primitives::float;
+pub use cranelisp_primitives::int;
+pub use cranelisp_primitives::marshal;
+pub use cranelisp_primitives::string as primitives_string;
+pub use cranelisp_primitives::vec as primitives_vec;
 
 extern crate cranelisp_platform;
 
@@ -38,7 +62,7 @@ pub extern "C" fn cranelisp_init_platform(manifest_fn_ptr: i64) {
     ) -> cranelisp_platform::PlatformManifest;
     let manifest_fn: ManifestFn = unsafe { std::mem::transmute(manifest_fn_ptr) };
     let callbacks = cranelisp_platform::HostCallbacks {
-        alloc: cranelisp_runtime::alloc::heap_alloc,
+        alloc: cranelisp_intrinsics::alloc::heap_alloc,
     };
     manifest_fn(&callbacks);
 }
