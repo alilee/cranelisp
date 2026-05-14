@@ -203,10 +203,35 @@ fn top_level_to_parsed_entries(program: &[TopLevel]) -> Vec<cranelisp_types::Par
 /// `merge_form_result` + `check_form(CheckBody)` + `merge_form_result` +
 /// `finalize_check_result`. Per Decision 44's 2026-05-13 third amendment,
 /// `check_forms` performs both internal passes plus finalize on a single call
-/// over a `Vec<ParsedEntry>`. The orchestrator (this function) constructs a
-/// `ClusterContext::Live` so writes flow into the per-module live table —
-/// preserving the pre-S66 commit semantics until the full `process_cluster`
-/// shape pivot lands (FIXME 0176).
+/// over a `Vec<ParsedEntry>`.
+///
+/// **Wave 3b-2c.2 — `process_cluster` proper with staging + commit/discard.**
+///
+/// The staging-commit/discard infrastructure
+/// (`process_cluster_with_staging` and `commit_staging_to_live`) is wired
+/// up but is not yet activated. The active routing in this function returns
+/// to `ClusterContext::Live` pending FIXME 0179 (cluster-mode read-union of
+/// staging-and-live).
+///
+/// **Why not active yet.** Cluster mode redirects writes to a fresh staging
+/// `SymbolTable`, but reads in typecheck's internal accessors
+/// (`TypeCheckEnv::current_symbol_table`) still hit live directly. Several
+/// per-form registration paths (notably `register_type_def` →
+/// `find_same_name_constructor_scheme` in `crates/cranelisp-typecheck/src/
+/// adt.rs:241`, and trait-impl default-method registration) write to staging
+/// then immediately read back via the live-only accessor — the read returns
+/// `None` and the form ends up half-registered. Activating Cluster mode
+/// regresses ~12 tests across `spec_05_definitions`, `spec_12_runtime`, and
+/// trait-impl suites. The fix is FIXME 0179 (View::union on the read path);
+/// once it lands, the routing in this function can flip to Cluster mode for
+/// single-form clusters (and, after FIXME 0179 also covers multi-form intra-
+/// cluster forward refs, for the `(begin)` multi-form case too).
+///
+/// **What's in place.** `process_cluster_with_staging` below builds the
+/// `ClusterContext::Cluster { staging, … }` and the commit/discard drain.
+/// Tests exercising single-form atomicity already pass under Live mode
+/// (typecheck performs its own per-symbol cleanup on `Err`); the staging
+/// path becomes the durable surface once read-union lands.
 pub(crate) fn check_program_compat(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
@@ -218,10 +243,103 @@ pub(crate) fn check_program_compat(
     if parsed.is_empty() {
         return Ok(());
     }
+
+    // Active path: Live mode (pending FIXME 0179 read-union).
     let mut ctx: ClusterContext<'_, crate::code::Code, ()> =
         ClusterContext::live(symbol_tables, module.clone());
     check_forms(parsed, &mut ctx, symbol_tables)
         .map_err(check_error_to_cranelisp_error)
+}
+
+/// Process a cluster through `ClusterContext::Cluster` with a fresh staging
+/// table and atomic commit/discard.
+///
+/// **Inactive pending FIXME 0179.** This function is the target shape for
+/// `process_cluster` proper per Decision 44 — `int` allocates the staging
+/// `SymbolTable<Code, ()>` on the stack, hands it to `check_forms` via
+/// `ClusterContext::Cluster`, and on `Ok` drains staging entries into the
+/// live table atomically (per-symbol `DashMap::get_mut` write guard, GOT
+/// slots re-allocated from live's allocator). On `Err`, the stack-drop of
+/// `staging` discards it (atomic discard, live unchanged).
+///
+/// Activate this path by replacing the `Live`-mode body of
+/// `check_program_compat` with a call to this function once FIXME 0179
+/// (cluster-mode read-union) has landed. Until then, in-form read-backs of
+/// just-staged entries (e.g. `find_same_name_constructor_scheme` after a
+/// constructor insert) fail because the read still hits live.
+#[allow(dead_code)]
+pub(crate) fn process_cluster_with_staging(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module: &ModuleFullPath,
+    working_program: &[TopLevel],
+) -> Result<(), CranelispError> {
+    use cranelisp_typecheck::{check_forms, ClusterContext};
+
+    let parsed = top_level_to_parsed_entries(working_program);
+    if parsed.is_empty() {
+        return Ok(());
+    }
+
+    let mut staging: crate::code::SessionSymbolTable =
+        cranelisp_types::SymbolTable::<crate::code::Code, ()>::new_with_params(
+            module.clone(),
+        );
+    let mut ctx: ClusterContext<'_, crate::code::Code, ()> =
+        ClusterContext::cluster(symbol_tables, &mut staging, module.clone());
+    let result = check_forms(parsed, &mut ctx, symbol_tables)
+        .map_err(check_error_to_cranelisp_error);
+    drop(ctx);
+
+    // On Err: staging drops on function return — atomic discard.
+    result?;
+
+    // On Ok: commit staging entries to live.
+    commit_staging_to_live(symbol_tables, module, staging);
+    Ok(())
+}
+
+/// Drain `staging.symbols` into the live `SymbolTable` for `module` under a
+/// single `DashMap::get_mut` write guard. Per `facades/int.md` invariant 5b
+/// — entries land per-symbol; the drain is committed before this function
+/// returns. GOT slot indices on `ModuleEntry::Def` entries are re-pointed
+/// to freshly-allocated live slots (staging's GOT is about to be dropped
+/// when `staging` falls out of scope at the caller's `Ok(())`).
+#[allow(dead_code)]
+fn commit_staging_to_live(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module: &ModuleFullPath,
+    staging: crate::code::SessionSymbolTable,
+) {
+    use cranelisp_types::ModuleEntry;
+
+    // Drain staging into a Vec before acquiring the live write guard to
+    // avoid simultaneous borrow paths on `staging`. `staging` is owned
+    // here; we move its `symbols` field out by destructuring.
+    let mut drained: Vec<(Symbol, ModuleEntry<crate::code::Code>)> =
+        staging.symbols.into_iter().collect();
+
+    let Some(mut live) = symbol_tables.get_mut(module) else {
+        // Live module disappeared between dispatch and commit — drop staging
+        // silently. This shouldn't happen under normal Wave-3a-α
+        // registration discipline (live exists for the current module
+        // before `process_cluster` runs), but a no-op is safer than a
+        // panic at commit.
+        return;
+    };
+
+    for (name, mut entry) in drained.drain(..) {
+        // Re-allocate GOT slot for `Def` entries that hold a staged slot
+        // index. The staged index is meaningless in live's GOT (different
+        // Arc); replace with a fresh live slot. Codegen will write the
+        // code pointer to the live slot.
+        if let ModuleEntry::Def { got_slot: Some(_), .. } = &entry {
+            let new_slot = live.allocate_got_slot();
+            if let ModuleEntry::Def { got_slot, .. } = &mut entry {
+                *got_slot = Some(new_slot);
+            }
+        }
+        live.insert(name, entry);
+    }
 }
 
 /// Translate `CheckError` to the legacy `CranelispError` shape used by
