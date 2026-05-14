@@ -15,7 +15,7 @@
 //! check makes the emit hot path a no-op.
 //!
 //! FlushGuard + install_panic_hook delegate to the intrinsics-side machinery
-//! so `main.rs` can stop reaching across to `cranelisp_runtime::...` (the
+//! so `main.rs` can stop reaching across to `cranelisp_intrinsics::...` (the
 //! pre-Wave-3b path) and instead consume the int-local surface.
 
 use cranelisp_intrinsics::io_observer::{IoEvent, IoEventTag, register_io_observer};

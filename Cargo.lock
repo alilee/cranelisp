@@ -273,6 +273,7 @@ dependencies = [
  "cranelisp-frontend",
  "cranelisp-intrinsics",
  "cranelisp-platform",
+ "cranelisp-primitives",
  "cranelisp-runtime",
  "cranelisp-typecheck",
  "cranelisp-types",

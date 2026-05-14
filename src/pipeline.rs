@@ -171,11 +171,11 @@ pub fn compile_and_execute_expr(
         // SAFETY: compiled code was just generated and finalized by our JIT.
         let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code_ptr) };
         // Clear any stale error before the JIT call.
-        let _ = cranelisp_runtime::panic::take_runtime_error();
+        let _ = cranelisp_intrinsics::panic::take_runtime_error();
         let raw_value = func();
 
         // Check thread-local error flag (set by runtime_panic in JIT code).
-        if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
+        if let Some(msg) = cranelisp_intrinsics::panic::take_runtime_error() {
             return Err(CranelispError::CodegenError {
                 message: format!("runtime error: {msg}"),
                 location: ErrorLocation::from_span(expr.span()),
@@ -227,14 +227,14 @@ fn unwrap_io_inline(raw_value: i64, ty: Type) -> (i64, Type) {
         // field; a non-IO value here would indicate a typechecker bug, not
         // a safety bug in this function. Behaviour mirrors
         // `CompilerSession::trampoline`.
-        let inner_value = cranelisp_runtime::run_io_trampoline(raw_value);
+        let inner_value = cranelisp_intrinsics::run_io_trampoline(raw_value);
         // Decision 24: release the caller's tree. `consume_io_tree`
         // transitively walks Pure/Effect/Bind/Par and dec's every
         // heap-typed sub-ref (including continuation closures still owned
         // by Bind nodes). Intermediate nodes produced *inside* the
         // trampoline by continuations were already released there via
         // `dec_shallow_io` — so this final walk is not a double-free.
-        cranelisp_runtime::drop::consume_io_tree(raw_value);
+        cranelisp_intrinsics::drop::consume_io_tree(raw_value);
         let inner_type = ty.io_inner_type();
         (inner_value, inner_type)
     } else {
@@ -307,11 +307,11 @@ fn compile_and_execute_expr_with_trace(
 
     let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code_ptr) };
     // Clear any stale error before the JIT call.
-    let _ = cranelisp_runtime::panic::take_runtime_error();
+    let _ = cranelisp_intrinsics::panic::take_runtime_error();
     let raw_value = func();
 
     // Check thread-local error flag (set by runtime_panic in JIT code).
-    if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
+    if let Some(msg) = cranelisp_intrinsics::panic::take_runtime_error() {
         return Err(CranelispError::CodegenError {
             message: format!("runtime error: {msg}"),
             location: ErrorLocation::from_span(expr.span()),
@@ -378,7 +378,7 @@ mod tests {
         // closure, so trampolining it is safe here (no JIT dependency) —
         // this exercises the IO-stripping logic in isolation from the JIT
         // lifecycle concern that motivates the fix.
-        use cranelisp_runtime::alloc_with_rc;
+        use cranelisp_intrinsics::alloc_with_rc;
         const TAG_OFFSET: isize = 16;
         const FIELD_0_OFFSET: isize = 24;
         const IO_TAG_PURE: i64 = 0;
@@ -418,13 +418,13 @@ mod tests {
     /// If someone drops the `consume_io_tree` call, this test flips red.
     #[test]
     fn unwrap_io_inline_rc_balanced_for_pure_node() {
-        use cranelisp_runtime::alloc_with_rc;
+        use cranelisp_intrinsics::alloc_with_rc;
         const TAG_OFFSET: isize = 16;
         const FIELD_0_OFFSET: isize = 24;
         const IO_TAG_PURE: i64 = 0;
 
-        let allocs_before = cranelisp_runtime::alloc_count();
-        let deallocs_before = cranelisp_runtime::dealloc_count();
+        let allocs_before = cranelisp_intrinsics::alloc_count();
+        let deallocs_before = cranelisp_intrinsics::dealloc_count();
 
         // Build a bare Pure(7) node and hand it to `unwrap_io_inline`.
         // The only heap alloc in-scope is this Pure node — `unwrap_io_inline`
@@ -439,8 +439,8 @@ mod tests {
         assert_eq!(value, 7);
         assert_eq!(ty, Type::Int);
 
-        let new_allocs = cranelisp_runtime::alloc_count() - allocs_before;
-        let new_deallocs = cranelisp_runtime::dealloc_count() - deallocs_before;
+        let new_allocs = cranelisp_intrinsics::alloc_count() - allocs_before;
+        let new_deallocs = cranelisp_intrinsics::dealloc_count() - deallocs_before;
         assert_eq!(
             new_allocs, 1,
             "only 1 alloc expected (the Pure node); got {new_allocs}"

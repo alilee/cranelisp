@@ -21,7 +21,7 @@
 //! - anything else (e.g. just whitespace after `=`) → `None`. Malformed
 //!   values never panic.
 //!
-//! Timestamps come from the shared `cranelisp_runtime::trace_instant_anchor()`
+//! Timestamps come from the shared `cranelisp_intrinsics::io_trace::trace_instant_anchor()`
 //! anchor so this log and the IO trampoline log can be merge-sorted on a
 //! single timebase (per /arch Phase 3a cross-doc consistency requirement).
 //!
@@ -345,7 +345,7 @@ pub fn record_event(tag: SchedulerTraceTag, payload: SchedulerTracePayload) {
             }
         }
     }
-    let anchor = cranelisp_runtime::trace_instant_anchor();
+    let anchor = cranelisp_intrinsics::io_trace::trace_instant_anchor();
     let timestamp = anchor.elapsed().as_nanos() as u64;
     let ord = thread_ord_id();
     let event = SchedulerTraceEvent {
@@ -905,7 +905,7 @@ mod tests {
         // First call primes the anchor; second call's `elapsed` is
         // strictly positive (nanosecond resolution — a function call
         // between the two loads is orders of magnitude longer).
-        let anchor = cranelisp_runtime::trace_instant_anchor();
+        let anchor = cranelisp_intrinsics::io_trace::trace_instant_anchor();
         let first = anchor.elapsed().as_nanos();
         // Perform a small amount of work so the second read differs.
         let _ = (0u64..100).sum::<u64>();
@@ -920,8 +920,8 @@ mod tests {
     fn anchor_is_the_shared_runtime_anchor() {
         // The /int scheduler log and /backend IO log MUST reference the
         // same OnceLock<Instant>. Verify by pointer equality.
-        let a = cranelisp_runtime::trace_instant_anchor();
-        let b = cranelisp_runtime::trace_instant_anchor();
+        let a = cranelisp_intrinsics::io_trace::trace_instant_anchor();
+        let b = cranelisp_intrinsics::io_trace::trace_instant_anchor();
         assert!(std::ptr::eq(a, b), "shared anchor must be stable OnceLock");
     }
 

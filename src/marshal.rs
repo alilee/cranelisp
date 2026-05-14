@@ -158,7 +158,7 @@ fn read_slist_to_vec(mut slist: i64) -> Vec<Sexp> {
 /// Total payload = 8 (tag) + 8 (field) = 16 bytes.
 fn alloc_sexp_cell(tag: i64, field: i64) -> i64 {
     let payload_size = 16; // tag(8) + field(8)
-    let base = cranelisp_runtime::heap_alloc(payload_size);
+    let base = cranelisp_intrinsics::alloc::heap_alloc(payload_size);
     // SAFETY: base is a valid heap pointer with 16 bytes of payload space.
     // Tag at offset 16, field at offset 24.
     unsafe {
@@ -173,7 +173,7 @@ fn alloc_sexp_cell(tag: i64, field: i64) -> i64 {
 /// Total payload = 8 (tag) + 8 (head) + 8 (tail) = 24 bytes.
 fn alloc_scons(head: i64, tail: i64) -> i64 {
     let payload_size = 24; // tag(8) + head(8) + tail(8)
-    let base = cranelisp_runtime::heap_alloc(payload_size);
+    let base = cranelisp_intrinsics::alloc::heap_alloc(payload_size);
     // SAFETY: base is a valid heap pointer with 24 bytes of payload space.
     // Tag at offset 16, head at offset 24, tail at offset 32.
     unsafe {
@@ -191,7 +191,7 @@ fn alloc_scons(head: i64, tail: i64) -> i64 {
 /// Allocate a runtime string from a Rust &str. Returns the base pointer as i64.
 fn alloc_runtime_string(s: &str) -> i64 {
     let bytes = s.as_bytes();
-    cranelisp_runtime::heap_alloc_string(bytes.as_ptr(), bytes.len() as i64)
+    cranelisp_intrinsics::string::heap_alloc_string(bytes.as_ptr(), bytes.len() as i64)
 }
 
 /// Read a runtime string (HeapString) back into a Rust String.
@@ -199,7 +199,7 @@ fn read_runtime_string(str_ptr: i64) -> String {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: i64 = 0;
     // SAFETY: str_ptr is a valid HeapString base pointer.
-    cranelisp_runtime::string_read(str_ptr, &mut out_ptr, &mut out_len);
+    cranelisp_intrinsics::string::string_read(str_ptr, &mut out_ptr, &mut out_len);
     if out_ptr.is_null() || out_len == 0 {
         return String::new();
     }

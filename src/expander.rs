@@ -193,7 +193,7 @@ fn invoke_jit_protected(
 
             let func: extern "C" fn(i64) -> i64 = std::mem::transmute(func_ptr);
             // Clear any stale error before the JIT call.
-            let _ = cranelisp_runtime::panic::take_runtime_error();
+            let _ = cranelisp_intrinsics::panic::take_runtime_error();
             let result_i64 = func(args_slist);
 
             // Restore original signal handlers.
@@ -204,7 +204,7 @@ fn invoke_jit_protected(
     }));
 
     // Check thread-local error flag (set by runtime_panic in JIT code).
-    if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
+    if let Some(msg) = cranelisp_intrinsics::panic::take_runtime_error() {
         return Err(CranelispError::MacroError {
             message: format!("runtime error during macro expansion: {msg}"),
             location: ErrorLocation::from_span(span),

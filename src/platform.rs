@@ -180,7 +180,7 @@ pub fn load_platform_dll(
 
     // Step 3: Call the manifest function with host callbacks.
     let callbacks = HostCallbacks {
-        alloc: cranelisp_runtime::heap_alloc_payload,
+        alloc: cranelisp_intrinsics::heap_alloc_payload,
     };
     let manifest = unsafe { manifest_fn(&callbacks) };
 

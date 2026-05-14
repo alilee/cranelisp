@@ -295,7 +295,7 @@ fn format_string_value(value: i64) -> String {
         return format!(":primitives/String <invalid:{value}>");
     }
     // SAFETY: value is a heap pointer to a valid HeapString (produced by JIT code).
-    let s = unsafe { cranelisp_runtime::read_string_as_str(value) };
+    let s = unsafe { cranelisp_intrinsics::string::read_string_as_str(value) };
     format!(":primitives/String \"{s}\"")
 }
 
@@ -599,7 +599,7 @@ where
             } else {
                 // SAFETY: value is a heap pointer to a valid HeapString (produced by JIT code);
                 // the guard above rejects null and small (nullary tag) values.
-                let s = unsafe { cranelisp_runtime::read_string_as_str(value) };
+                let s = unsafe { cranelisp_intrinsics::string::read_string_as_str(value) };
                 format!("\"{s}\"")
             }
         }

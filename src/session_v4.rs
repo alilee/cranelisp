@@ -330,9 +330,9 @@ fn run_shell_command(cmd: &str, stdout: &mut impl Write) {
 /// a comment line with total alloc / dealloc counts and the currently-live
 /// allocation count (`allocs - deallocs`).
 fn format_mem_snapshot() -> String {
-    let allocs = cranelisp_runtime::alloc_count();
-    let deallocs = cranelisp_runtime::dealloc_count();
-    let bytes_live = cranelisp_runtime::bytes_current();
+    let allocs = cranelisp_intrinsics::alloc_count();
+    let deallocs = cranelisp_intrinsics::dealloc_count();
+    let bytes_live = cranelisp_intrinsics::bytes_current();
     let live = allocs.saturating_sub(deallocs);
     format!(
         "; live: {bytes_live} bytes ({live} allocations)\n; allocs: {allocs}  deallocs: {deallocs}"
@@ -2941,15 +2941,15 @@ impl CompilerSession {
             return format_mem_snapshot();
         }
 
-        let allocs_before = cranelisp_runtime::alloc_count();
-        let deallocs_before = cranelisp_runtime::dealloc_count();
-        let bytes_before = cranelisp_runtime::bytes_current();
+        let allocs_before = cranelisp_intrinsics::alloc_count();
+        let deallocs_before = cranelisp_intrinsics::dealloc_count();
+        let bytes_before = cranelisp_intrinsics::bytes_current();
 
         let eval_outcome = self.eval(expr_src);
 
-        let allocs_after = cranelisp_runtime::alloc_count();
-        let deallocs_after = cranelisp_runtime::dealloc_count();
-        let bytes_after = cranelisp_runtime::bytes_current();
+        let allocs_after = cranelisp_intrinsics::alloc_count();
+        let deallocs_after = cranelisp_intrinsics::dealloc_count();
+        let bytes_after = cranelisp_intrinsics::bytes_current();
 
         let d_allocs = allocs_after.saturating_sub(allocs_before);
         let d_deallocs = deallocs_after.saturating_sub(deallocs_before);
@@ -3098,7 +3098,7 @@ impl CompilerSession {
         let result_type = self.lookup_main_return_type(module_name);
 
         // Clear any stale runtime error.
-        let _ = cranelisp_runtime::panic::take_runtime_error();
+        let _ = cranelisp_intrinsics::panic::take_runtime_error();
 
         // Call main.
         // SAFETY: `code_ptr` is non-null — returned from `lookup_main_code_ptr`
@@ -3110,7 +3110,7 @@ impl CompilerSession {
         let raw_value = func();
 
         // Check for runtime panics.
-        if let Some(err) = cranelisp_runtime::panic::take_runtime_error() {
+        if let Some(err) = cranelisp_intrinsics::panic::take_runtime_error() {
             return Err(CranelispError::CodegenError {
                 message: format!("runtime panic: {}", err),
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
@@ -3119,7 +3119,7 @@ impl CompilerSession {
 
         // IO trampoline.
         if result_type.is_io() {
-            let inner_value = cranelisp_runtime::run_io_trampoline(raw_value);
+            let inner_value = cranelisp_intrinsics::run_io_trampoline(raw_value);
             // Decision 24 (consuming convention): `run_io_trampoline` is
             // non-consuming of its input tree. The caller-tree outer nodes
             // (Bind/Pure + continuation closures) must be released via
@@ -3127,7 +3127,7 @@ impl CompilerSession {
             // `(defn main ...)` that returns IO leaks its outer IO nodes.
             // Mirrors the pipeline path's `unwrap_io_inline` in pipeline.rs
             // and the extern `cranelisp_run_io` entry in runtime::io.
-            cranelisp_runtime::drop::consume_io_tree(raw_value);
+            cranelisp_intrinsics::drop::consume_io_tree(raw_value);
             let inner_type = result_type.io_inner_type();
             Ok((inner_value, inner_type))
         } else {
@@ -3474,8 +3474,8 @@ impl CompilerSession {
                     // Decision 24's consuming convention: `run_io_trampoline` is
                     // non-consuming, so `consume_io_tree` must release the outer
                     // tree afterwards. See `pipeline::unwrap_io_inline`.
-                    let inner_value = cranelisp_runtime::run_io_trampoline(*value);
-                    cranelisp_runtime::drop::consume_io_tree(*value);
+                    let inner_value = cranelisp_intrinsics::run_io_trampoline(*value);
+                    cranelisp_intrinsics::drop::consume_io_tree(*value);
                     let inner_type = ty.io_inner_type();
                     format_result_value(
                         inner_value, &inner_type, &self.shared.symbol_tables,
@@ -4158,14 +4158,14 @@ fn run_test_by_name(
 
     // Call the test function.
     let t0 = std::time::Instant::now();
-    let _ = cranelisp_runtime::panic::take_runtime_error();
+    let _ = cranelisp_intrinsics::panic::take_runtime_error();
     let value = unsafe {
         let func: extern "C" fn() -> i64 = std::mem::transmute(code_ptr);
         func()
     };
     let nanos = t0.elapsed().as_nanos() as i64;
 
-    if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
+    if let Some(msg) = cranelisp_intrinsics::panic::take_runtime_error() {
         return TestOutcome::Panic {
             name: fq_name.to_string(),
             reason: msg,
@@ -4183,7 +4183,7 @@ fn run_test_by_name(
             let string_ptr = *(base.add(
                 cranelisp_backend::heap::HeapAdt::field_offset(0) as usize,
             ) as *const i64);
-            cranelisp_runtime::read_string_as_str(string_ptr).to_string()
+            cranelisp_intrinsics::string::read_string_as_str(string_ptr).to_string()
         };
         TestOutcome::Fail {
             name: fq_name.to_string(),
@@ -4273,7 +4273,7 @@ pub(crate) fn int_intrinsics() -> [(&'static str, *const u8); 3] {
 /// Returns the base pointer (offset 0 of the allocation).
 unsafe fn alloc_heap_adt(tag: i64, fields: &[i64]) -> i64 { unsafe {
     let payload_size = 8 + fields.len() * 8; // tag + fields
-    let base = cranelisp_runtime::alloc::alloc_with_rc(payload_size);
+    let base = cranelisp_intrinsics::alloc::alloc_with_rc(payload_size);
     // Tag at offset 16 (HeapHeader::SIZE).
     *(base.add(16) as *mut i64) = tag;
     // Fields at offsets 24, 32, 40, ...
@@ -4313,11 +4313,11 @@ extern "C" fn discover_tests_extern(module_path_str: i64) -> i64 {
             .clone();
 
         let module = if module_path_str == 0
-            || unsafe { cranelisp_runtime::read_string_as_str(module_path_str) }.is_empty()
+            || unsafe { cranelisp_intrinsics::string::read_string_as_str(module_path_str) }.is_empty()
         {
             current_module
         } else {
-            let path_str = unsafe { cranelisp_runtime::read_string_as_str(module_path_str) };
+            let path_str = unsafe { cranelisp_intrinsics::string::read_string_as_str(module_path_str) };
             ModuleFullPath::from(path_str)
         };
 
@@ -4328,7 +4328,7 @@ extern "C" fn discover_tests_extern(module_path_str: i64) -> i64 {
         // SexpSym tag = 4 (Sexp enum: Int=0, Float=1, Bool=2, Str=3, Sym=4).
         let mut slist: i64 = 0; // SNil
         for name in test_names.into_iter().rev() {
-            let name_str = cranelisp_runtime::alloc_string(name.as_bytes()) as i64;
+            let name_str = cranelisp_intrinsics::string::alloc_string(name.as_bytes()) as i64;
             let sexp_sym = unsafe { alloc_heap_adt(4, &[name_str]) };
             slist = unsafe { alloc_scons(sexp_sym, slist) };
         }
@@ -4347,7 +4347,7 @@ extern "C" fn run_test_extern(sexp_sym: i64) -> i64 {
     TEST_RUNNER.with(|c| {
         let state_ptr = c.get();
         if state_ptr.is_null() {
-            let name = cranelisp_runtime::alloc_string(b"?") as i64;
+            let name = cranelisp_intrinsics::string::alloc_string(b"?") as i64;
             return unsafe { alloc_io_pure(alloc_heap_adt(0, &[name, 0])) };
         }
 
@@ -4358,9 +4358,9 @@ extern "C" fn run_test_extern(sexp_sym: i64) -> i64 {
         // SexpSym layout: [header(16) | tag=4(8) | sname(8)]
         let fq_name = if sexp_sym != 0 && (sexp_sym as usize) >= NULLARY_TAG_THRESHOLD {
             let name_ptr = unsafe { *((sexp_sym as *const u8).add(24) as *const i64) };
-            unsafe { cranelisp_runtime::read_string_as_str(name_ptr).to_string() }
+            unsafe { cranelisp_intrinsics::string::read_string_as_str(name_ptr).to_string() }
         } else {
-            let name = cranelisp_runtime::alloc_string(b"?") as i64;
+            let name = cranelisp_intrinsics::string::alloc_string(b"?") as i64;
             return unsafe { alloc_io_pure(alloc_heap_adt(0, &[name, 0])) };
         };
 
@@ -4376,17 +4376,17 @@ extern "C" fn run_test_extern(sexp_sym: i64) -> i64 {
 unsafe fn test_outcome_to_heap(outcome: &TestOutcome) -> i64 { unsafe {
     match outcome {
         TestOutcome::Pass { name, nanos } => {
-            let name_alloc = cranelisp_runtime::alloc_string(name.as_bytes()) as i64;
+            let name_alloc = cranelisp_intrinsics::string::alloc_string(name.as_bytes()) as i64;
             alloc_heap_adt(0, &[name_alloc, *nanos]) // TestPass tag=0
         }
         TestOutcome::Fail { name, nanos, reason } => {
-            let name_alloc = cranelisp_runtime::alloc_string(name.as_bytes()) as i64;
-            let reason_alloc = cranelisp_runtime::alloc_string(reason.as_bytes()) as i64;
+            let name_alloc = cranelisp_intrinsics::string::alloc_string(name.as_bytes()) as i64;
+            let reason_alloc = cranelisp_intrinsics::string::alloc_string(reason.as_bytes()) as i64;
             alloc_heap_adt(1, &[name_alloc, *nanos, reason_alloc]) // TestFail tag=1
         }
         TestOutcome::Panic { name, reason } => {
-            let name_alloc = cranelisp_runtime::alloc_string(name.as_bytes()) as i64;
-            let reason_alloc = cranelisp_runtime::alloc_string(reason.as_bytes()) as i64;
+            let name_alloc = cranelisp_intrinsics::string::alloc_string(name.as_bytes()) as i64;
+            let reason_alloc = cranelisp_intrinsics::string::alloc_string(reason.as_bytes()) as i64;
             alloc_heap_adt(1, &[name_alloc, 0, reason_alloc]) // TestFail tag=1
         }
     }
@@ -4437,7 +4437,7 @@ extern "C" fn repl_trace_format(val: i64, type_ptr: i64) -> i64 {
             let ty = unsafe { &*(type_ptr as *const Type) };
             crate::display::format_value(val, ty, symbol_tables)
         };
-        cranelisp_runtime::alloc_string(s.as_bytes()) as i64
+        cranelisp_intrinsics::string::alloc_string(s.as_bytes()) as i64
     })
 }
 
