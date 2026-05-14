@@ -191,7 +191,7 @@ impl Linker {
     /// resolve relocations, and register defined symbols.
     pub fn load_object(
         &mut self,
-        _module_name: &str,
+        module_name: &str,
         bytes: &[u8],
     ) -> Result<(), CranelispError> {
         use object::{Object, ObjectSection, ObjectSymbol, RelocationFlags, RelocationTarget, SymbolKind};
@@ -259,6 +259,33 @@ impl Linker {
                     local_symbols.insert(clean_name.to_string(), addr);
                 } else {
                     self.defined_symbols.insert(clean_name.to_string(), addr);
+
+                    // FIXME 0099 — emit a `LinkerWrite` GOT event for each
+                    // user-defined text symbol resolved from the cached .o.
+                    // The slot index is NOT known to the linker (the
+                    // per-module GOT slot lives on the int-side
+                    // `SymbolTable.got()`); the consumer correlates by
+                    // `(module, symbol)`. The publication is for trace
+                    // purposes only; the actual `got().store_slot` call still
+                    // happens on the int side after `load_object` returns
+                    // (Wave 3b-2 will move/duplicate that write).
+                    crate::got_observer::emit(
+                        crate::got_observer::GotEventTag::LinkerWrite,
+                        &crate::got_observer::GotEvent {
+                            module: cranelisp_types::ModuleFullPath::from(module_name),
+                            symbol: cranelisp_types::Symbol::from(clean_name),
+                            // Slot index is not visible at the linker
+                            // boundary; consumer correlates by name. We
+                            // publish 0 as a placeholder per facade — the
+                            // canonical slot will be added when int's write
+                            // site emits.
+                            slot: 0,
+                            ptr: addr as *const u8,
+                            provenance: crate::got_observer::GotProvenance::Linker {
+                                linker_addr: (self as *const Linker) as usize,
+                            },
+                        },
+                    );
                 }
             }
         }

@@ -18,8 +18,8 @@ pub use cranelift_object;
 pub mod codegen_types;
 pub mod exe;
 pub mod compiler;
-pub mod display;
 pub mod got;
+pub mod got_observer;
 pub mod heap;
 pub mod jit;
 pub mod operators;
@@ -645,6 +645,37 @@ where
             break;
         };
         code_ptrs.insert(defn.name.clone(), ptr);
+
+        // FIXME 0099 — emit a `JitWrite` GOT event for the freshly-finalised
+        // per-symbol code pointer. The slot index is read from the symbol
+        // table; the consumer-side ring buffer + flush-to-stderr live in
+        // `int`'s `src/got_trace/` (Wave 3b-2). When no observer is
+        // registered, `emit` is one relaxed-load null check + branch.
+        let slot_opt = symbol_tables.get(&module_path).and_then(|table| {
+            table.get(defn.name.as_ref()).and_then(|entry| match entry {
+                ModuleEntry::Def { got_slot, .. } => *got_slot,
+                _ => None,
+            })
+        });
+        if let Some(slot) = slot_opt {
+            crate::got_observer::emit(
+                crate::got_observer::GotEventTag::JitWrite,
+                &crate::got_observer::GotEvent {
+                    module: module_path.clone(),
+                    symbol: defn.name.clone(),
+                    slot,
+                    ptr,
+                    provenance: crate::got_observer::GotProvenance::Jit {
+                        // Use the JITModule address as a stable correlator —
+                        // `module` is a generic `M: Module`, so we cast via a
+                        // raw pointer to its address for diagnostic
+                        // identification only. The observer must NOT
+                        // dereference.
+                        jit_addr: (&*module) as *const M as *const () as usize,
+                    },
+                },
+            );
+        }
     }
 
     Ok(CompilationResult {

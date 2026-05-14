@@ -7,7 +7,7 @@ pub mod cranelisp_backend::cache::linker
 pub struct cranelisp_backend::cache::linker::Linker
 impl cranelisp_backend::cache::linker::Linker
 pub fn cranelisp_backend::cache::linker::Linker::get_symbol(&self, name: &str) -> core::option::Option<*const u8>
-pub fn cranelisp_backend::cache::linker::Linker::load_object(&mut self, _module_name: &str, bytes: &[u8]) -> core::result::Result<(), cranelisp_types::error::CranelispError>
+pub fn cranelisp_backend::cache::linker::Linker::load_object(&mut self, module_name: &str, bytes: &[u8]) -> core::result::Result<(), cranelisp_types::error::CranelispError>
 pub fn cranelisp_backend::cache::linker::Linker::new() -> core::result::Result<Self, cranelisp_types::error::CranelispError>
 pub fn cranelisp_backend::cache::linker::Linker::register_symbol(&mut self, name: &str, addr: *const u8)
 impl core::marker::Freeze for cranelisp_backend::cache::linker::Linker
@@ -454,7 +454,7 @@ impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::object::
 pub struct cranelisp_backend::cache::Linker
 impl cranelisp_backend::cache::linker::Linker
 pub fn cranelisp_backend::cache::linker::Linker::get_symbol(&self, name: &str) -> core::option::Option<*const u8>
-pub fn cranelisp_backend::cache::linker::Linker::load_object(&mut self, _module_name: &str, bytes: &[u8]) -> core::result::Result<(), cranelisp_types::error::CranelispError>
+pub fn cranelisp_backend::cache::linker::Linker::load_object(&mut self, module_name: &str, bytes: &[u8]) -> core::result::Result<(), cranelisp_types::error::CranelispError>
 pub fn cranelisp_backend::cache::linker::Linker::new() -> core::result::Result<Self, cranelisp_types::error::CranelispError>
 pub fn cranelisp_backend::cache::linker::Linker::register_symbol(&mut self, name: &str, addr: *const u8)
 impl core::marker::Freeze for cranelisp_backend::cache::linker::Linker
@@ -588,18 +588,72 @@ pub const cranelisp_backend::compiler::MATCH_EXHAUSTION_TRAP: u8
 pub fn cranelisp_backend::compiler::got_data_symbol_name(module_path: &cranelisp_types::newtype::ModuleFullPath) -> alloc::string::String
 pub fn cranelisp_backend::compiler::resolve_func_arity<C, L>(symbol_tables: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, current_module: &cranelisp_types::newtype::ModuleFullPath, name: &cranelisp_types::newtype::Symbol) -> core::option::Option<usize> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub fn cranelisp_backend::compiler::resolve_got_target<C, L>(symbol_tables: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, current_module: &cranelisp_types::newtype::ModuleFullPath, name: &cranelisp_types::newtype::Symbol) -> core::option::Option<(cranelisp_types::newtype::ModuleFullPath, usize)> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
-pub mod cranelisp_backend::display
-pub fn cranelisp_backend::display::format_adt_type_qualified(fqtn: &cranelisp_types::newtype::FQTypeName, type_args: &[cranelisp_types::types::Type]) -> alloc::string::String
-pub fn cranelisp_backend::display::format_ctor_display(type_name: &str, ctor_name: &str, type_info: &cranelisp_types::check::TypeDefInfo) -> alloc::string::String
-pub fn cranelisp_backend::display::format_result(value: i64, ty: &cranelisp_types::types::Type) -> alloc::string::String
-pub fn cranelisp_backend::display::format_result_value<C, L>(value: i64, ty: &cranelisp_types::types::Type, symbol_tables: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>) -> alloc::string::String where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
-pub fn cranelisp_backend::display::format_scheme_display(name: &str, scheme: &cranelisp_types::types::Scheme, module: &cranelisp_types::newtype::ModuleFullPath) -> alloc::string::String
-pub fn cranelisp_backend::display::format_type_qualified(ty: &cranelisp_types::types::Type) -> alloc::string::String
-pub fn cranelisp_backend::display::format_value<C, L>(value: i64, ty: &cranelisp_types::types::Type, symbol_tables: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>) -> alloc::string::String where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub mod cranelisp_backend::exe
 pub fn cranelisp_backend::exe::generate_startup_object(platform_manifest_names: &[alloc::string::String], main_returns_io: bool, entry_fn_name: &str) -> core::result::Result<alloc::vec::Vec<u8>, cranelisp_types::error::CranelispError>
 pub mod cranelisp_backend::got
 pub use cranelisp_backend::got::GotTable
+pub mod cranelisp_backend::got_observer
+#[non_exhaustive] #[repr(u8)] pub enum cranelisp_backend::got_observer::GotEventTag
+pub cranelisp_backend::got_observer::GotEventTag::JitWrite
+pub cranelisp_backend::got_observer::GotEventTag::LinkerWrite
+pub cranelisp_backend::got_observer::GotEventTag::Redefinition
+impl core::clone::Clone for cranelisp_backend::got_observer::GotEventTag
+pub fn cranelisp_backend::got_observer::GotEventTag::clone(&self) -> cranelisp_backend::got_observer::GotEventTag
+impl core::cmp::Eq for cranelisp_backend::got_observer::GotEventTag
+impl core::cmp::PartialEq for cranelisp_backend::got_observer::GotEventTag
+pub fn cranelisp_backend::got_observer::GotEventTag::eq(&self, other: &cranelisp_backend::got_observer::GotEventTag) -> bool
+impl core::fmt::Debug for cranelisp_backend::got_observer::GotEventTag
+pub fn cranelisp_backend::got_observer::GotEventTag::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for cranelisp_backend::got_observer::GotEventTag
+impl core::marker::StructuralPartialEq for cranelisp_backend::got_observer::GotEventTag
+impl core::marker::Freeze for cranelisp_backend::got_observer::GotEventTag
+impl core::marker::Send for cranelisp_backend::got_observer::GotEventTag
+impl core::marker::Sync for cranelisp_backend::got_observer::GotEventTag
+impl core::marker::Unpin for cranelisp_backend::got_observer::GotEventTag
+impl core::marker::UnsafeUnpin for cranelisp_backend::got_observer::GotEventTag
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::got_observer::GotEventTag
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::got_observer::GotEventTag
+#[non_exhaustive] pub enum cranelisp_backend::got_observer::GotProvenance
+pub cranelisp_backend::got_observer::GotProvenance::Jit
+pub cranelisp_backend::got_observer::GotProvenance::Jit::jit_addr: usize
+pub cranelisp_backend::got_observer::GotProvenance::Linker
+pub cranelisp_backend::got_observer::GotProvenance::Linker::linker_addr: usize
+impl core::clone::Clone for cranelisp_backend::got_observer::GotProvenance
+pub fn cranelisp_backend::got_observer::GotProvenance::clone(&self) -> cranelisp_backend::got_observer::GotProvenance
+impl core::cmp::Eq for cranelisp_backend::got_observer::GotProvenance
+impl core::cmp::PartialEq for cranelisp_backend::got_observer::GotProvenance
+pub fn cranelisp_backend::got_observer::GotProvenance::eq(&self, other: &cranelisp_backend::got_observer::GotProvenance) -> bool
+impl core::fmt::Debug for cranelisp_backend::got_observer::GotProvenance
+pub fn cranelisp_backend::got_observer::GotProvenance::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for cranelisp_backend::got_observer::GotProvenance
+impl core::marker::StructuralPartialEq for cranelisp_backend::got_observer::GotProvenance
+impl core::marker::Freeze for cranelisp_backend::got_observer::GotProvenance
+impl core::marker::Send for cranelisp_backend::got_observer::GotProvenance
+impl core::marker::Sync for cranelisp_backend::got_observer::GotProvenance
+impl core::marker::Unpin for cranelisp_backend::got_observer::GotProvenance
+impl core::marker::UnsafeUnpin for cranelisp_backend::got_observer::GotProvenance
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::got_observer::GotProvenance
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::got_observer::GotProvenance
+#[non_exhaustive] pub struct cranelisp_backend::got_observer::GotEvent
+pub cranelisp_backend::got_observer::GotEvent::module: cranelisp_types::newtype::ModuleFullPath
+pub cranelisp_backend::got_observer::GotEvent::provenance: cranelisp_backend::got_observer::GotProvenance
+pub cranelisp_backend::got_observer::GotEvent::ptr: *const u8
+pub cranelisp_backend::got_observer::GotEvent::slot: usize
+pub cranelisp_backend::got_observer::GotEvent::symbol: cranelisp_types::newtype::Symbol
+impl core::clone::Clone for cranelisp_backend::got_observer::GotEvent
+pub fn cranelisp_backend::got_observer::GotEvent::clone(&self) -> cranelisp_backend::got_observer::GotEvent
+impl core::fmt::Debug for cranelisp_backend::got_observer::GotEvent
+pub fn cranelisp_backend::got_observer::GotEvent::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for cranelisp_backend::got_observer::GotEvent
+impl core::marker::Sync for cranelisp_backend::got_observer::GotEvent
+impl core::marker::Freeze for cranelisp_backend::got_observer::GotEvent
+impl core::marker::Unpin for cranelisp_backend::got_observer::GotEvent
+impl core::marker::UnsafeUnpin for cranelisp_backend::got_observer::GotEvent
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::got_observer::GotEvent
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::got_observer::GotEvent
+pub fn cranelisp_backend::got_observer::emit(tag: cranelisp_backend::got_observer::GotEventTag, event: &cranelisp_backend::got_observer::GotEvent)
+pub fn cranelisp_backend::got_observer::register_got_observer(observer: core::option::Option<cranelisp_backend::got_observer::GotObserver>)
+pub type cranelisp_backend::got_observer::GotObserver = fn(cranelisp_backend::got_observer::GotEventTag, &cranelisp_backend::got_observer::GotEvent)
 pub mod cranelisp_backend::heap
 #[repr(C)] pub struct cranelisp_backend::heap::HeapAdt
 pub cranelisp_backend::heap::HeapAdt::header: cranelisp_types::heap::HeapHeader
