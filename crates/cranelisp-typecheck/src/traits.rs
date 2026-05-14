@@ -1371,10 +1371,26 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         let guard = self.modules.get(&state.current_module)?;
         match guard.get(name.as_ref())? {
-            ModuleEntry::Def { kind, .. } => match kind.as_ref() {
+            ModuleEntry::Def { kind, scheme, ast, .. } => match kind.as_ref() {
                 DefKind::UserFn {
                     constrained_fn: Some(cf),
                 } => Some(cf.as_ref().clone()),
+                // Pure parametric polymorphism: the scheme is still polymorphic
+                // (non-empty `vars`), no trait constraints, but the call site
+                // demands a concrete specialisation. Synthesise a
+                // `ConstrainedFn` view from the stored AST so the existing
+                // `monomorphise_call` machinery applies. The previously-stored
+                // defn AST is the source of truth for the body — it was
+                // annotated and substitution-applied during the originating
+                // Pass 2 / finalize pass for this defn.
+                DefKind::UserFn { constrained_fn: None }
+                    if !scheme.vars.is_empty() && ast.is_some() =>
+                {
+                    Some(ConstrainedFn {
+                        defn: ast.as_ref().unwrap().clone(),
+                        scheme: scheme.clone(),
+                    })
+                }
                 _ => None,
             },
             _ => None,

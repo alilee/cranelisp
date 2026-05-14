@@ -1076,10 +1076,29 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         if strategy == ModuleStrategy::Additive {
             for (name, entry) in self.current_symbol_table(state).all_symbols() {
-                if let ModuleEntry::Def { kind, .. } = entry
-                    && let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref()
-                {
-                    constrained_fn_names.insert(name.clone());
+                if let ModuleEntry::Def { kind, scheme, ast, .. } = entry {
+                    match kind.as_ref() {
+                        // Trait-constrained polymorphism: classic constrained
+                        // fn marker.
+                        DefKind::UserFn { constrained_fn: Some(_) } => {
+                            constrained_fn_names.insert(name.clone());
+                        }
+                        // Pure parametric polymorphism registered by a previous
+                        // `check_forms` call (Additive cross-call shape): the
+                        // scheme is still polymorphic (`scheme.vars` non-empty)
+                        // and we have the annotated `ast`. The current
+                        // cluster's call sites against this name need
+                        // monomorphisation just as if it were constrained —
+                        // backend codegen requires concrete CLIF types.
+                        // `get_constrained_fn` synthesises a `ConstrainedFn`
+                        // view from `ast + scheme` for this case.
+                        DefKind::UserFn { constrained_fn: None }
+                            if !scheme.vars.is_empty() && ast.is_some() =>
+                        {
+                            constrained_fn_names.insert(name.clone());
+                        }
+                        _ => {}
+                    }
                 }
             }
         }

@@ -1727,7 +1727,7 @@ where
     /// Scans all schemes (including constraint vars) in the table and ensures
     /// `next_id` is strictly greater than any ID found. This prevents ID
     /// collisions between cached schemes and freshly created type variables.
-    fn advance_next_id_past_table(&self, table: &SymbolTable<C, L>) {
+    pub(crate) fn advance_next_id_past_table(&self, table: &SymbolTable<C, L>) {
         let mut max_id: Option<TypeId> = None;
 
         for (_name, entry) in table.all_symbols() {

@@ -81,6 +81,24 @@ where
     let env = TypeCheckEnv::new(symbol_tables, &next_id);
     env.ensure_module_exists(&current_module);
 
+    // Advance `next_id` past any type variable IDs already used in stored
+    // schemes for the current module. Without this, fresh vars allocated by
+    // this `check_forms` call (which constructs a function-local AtomicU32
+    // starting at 0) collide with quantified vars from schemes registered by
+    // a previous `check_forms` call. The collision manifests inside
+    // `instantiate_scheme`: `inst_subst.insert(N, fresh_var())` may bind
+    // `Var(N)` to `Var(N)`, and `apply(inst_subst, Var(N))` then recurses
+    // forever on `Var(N) → Var(N)`. Pre-S66 the typecheck environment owned
+    // a session-spanning AtomicU32 (carried via `TypeCheckEnv` from the
+    // session); the S66 facade construction reset it per call, exposing
+    // this collision in the cross-call constrained/parametric poly case.
+    {
+        let table = symbol_tables.get(&current_module);
+        if let Some(guard) = table {
+            env.advance_next_id_past_table(&*guard);
+        }
+    }
+
     let mut state = CheckState::new(current_module.clone());
     let mut accumulator = ModuleCheckAccumulator::new();
 
@@ -495,6 +513,11 @@ mod tests {
         let modules = modules();
 
         // Call 1: (defn id [x] x) — body `x` is the param, fully poly.
+        // Spans must be unique across nested nodes — production source spans
+        // are always unique by their byte ranges. `Span::SYNTHETIC` (0..0) is
+        // not safe to share because `record_expr_type` is keyed on span and
+        // shared spans cause inferred-type collisions (the outer defn's
+        // Fn type overwrites the inner IntLit's Int).
         let id_defn = ParsedEntry::Def {
             name: Symbol::from("id"),
             variants: vec![DefnVariant {
@@ -502,14 +525,14 @@ mod tests {
                 param_annotations: vec![None],
                 body: Expr::Var {
                     name: Symbol::from("x"),
-                    span: Span::SYNTHETIC,
+                    span: Span::new(11, 12),
                     inferred_type: None,
                 },
-                span: Span::SYNTHETIC,
+                span: Span::new(10, 13),
             }],
             visibility: Visibility::Private,
             docstring: None,
-            span: Span::SYNTHETIC,
+            span: Span::new(0, 14),
         };
         {
             let mut ctx: ClusterContext<'_, (), ()> =
@@ -537,23 +560,23 @@ mod tests {
                 body: Expr::Apply {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("id"),
-                        span: Span::SYNTHETIC,
+                        span: Span::new(101, 103),
                         inferred_type: None,
                     }),
                     args: vec![Expr::IntLit {
                         value: 7,
-                        span: Span::SYNTHETIC,
+                        span: Span::new(104, 105),
                         inferred_type: None,
                     }],
-                    span: Span::SYNTHETIC,
+                    span: Span::new(100, 106),
                     inferred_type: None,
                     resolved_call: None,
                 },
-                span: Span::SYNTHETIC,
+                span: Span::new(90, 107),
             }],
             visibility: Visibility::Private,
             docstring: None,
-            span: Span::SYNTHETIC,
+            span: Span::new(80, 110),
         };
         let mut ctx2: ClusterContext<'_, (), ()> =
             ClusterContext::live(&modules, module_path());
