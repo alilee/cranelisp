@@ -1326,17 +1326,20 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         mono_expr_types: &HashMap<Span, Type>,
         resolutions: &mut MethodResolutions,
     ) {
-        let constrained_fn_names: HashSet<Symbol> = self.current_symbol_table(state).symbols
-            .iter()
-            .filter_map(|(name, entry)| {
-                if let ModuleEntry::Def { kind, .. } = entry
-                    && let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref()
-                {
-                    return Some(name.clone());
-                }
-                None
-            })
-            .collect();
+        let constrained_fn_names: HashSet<Symbol> = {
+            let r = self.current_symbol_table(state);
+            r.view()
+                .iter()
+                .filter_map(|(name, entry)| {
+                    if let ModuleEntry::Def { kind, .. } = entry
+                        && let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref()
+                    {
+                        return Some(name.clone());
+                    }
+                    None
+                })
+                .collect()
+        };
         let mut inner_calls = Vec::new();
         Self::collect_constrained_calls(defn.body(), &constrained_fn_names, &mut inner_calls);
         for (inner_fn_name, arg_spans, inner_call_span) in &inner_calls {
@@ -1369,8 +1372,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) -> Option<ConstrainedFn> {
         use cranelisp_types::{DefKind, ModuleEntry};
 
-        let guard = self.modules.get(&state.current_module)?;
-        match guard.get(name.as_ref())? {
+        // Staging-aware (FIXME 0179): read through probe so in-cluster
+        // constrained-fn registrations are visible.
+        let entry = self.probe_module_entry_owned(&state.current_module, name.as_ref())?;
+        match &entry {
             ModuleEntry::Def { kind, scheme, ast, .. } => match kind.as_ref() {
                 DefKind::UserFn {
                     constrained_fn: Some(cf),
@@ -1865,9 +1870,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state: &CheckState,
         method_name: &str,
     ) -> Option<usize> {
-        let guard = self.modules.get(&state.current_module)?;
-        for (_name, entry) in guard.all_symbols() {
-            if let Some(terminal) = self.resolve_to_terminal_entry_owned(&entry, 0)
+        // Staging-aware (FIXME 0179): iterate the unioned View so in-cluster
+        // TraitDecl registrations are visible.
+        let r = self.current_symbol_table(state);
+        for (_name, entry) in r.view().iter() {
+            if let Some(terminal) = self.resolve_to_terminal_entry_owned(entry, 0)
                 && let ModuleEntry::TraitDecl { decl, .. } = terminal
             {
                 for method in &decl.methods {

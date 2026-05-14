@@ -244,9 +244,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         type_name: &TypeName,
     ) -> Option<Scheme> {
         let ctor_sym = Symbol::from(type_name.as_ref());
-        if let Some(ModuleEntry::Constructor { scheme, .. }) =
-            self.current_symbol_table(state).get(ctor_sym.as_ref())
-        {
+        let r = self.current_symbol_table(state);
+        let v = r.view();
+        if let Some(ModuleEntry::Constructor { scheme, .. }) = v.lookup(&ctor_sym) {
             Some(scheme.clone())
         } else {
             None

@@ -593,6 +593,80 @@ mod tests {
         }
     }
 
+    /// Wave 3b-2c.3 acceptance test (FIXME 0179): in `ClusterContext::Cluster`
+    /// mode, a write then a read-back from the SAME `check_forms` call finds
+    /// the written entry — not via the live table (which is untouched per
+    /// invariant 2), but through the staging-first read union plumbed via
+    /// `TypeCheckEnv::current_symbol_table → View::union(staging, live)`.
+    ///
+    /// Concretely: register `first` and `second` as a two-form cluster where
+    /// `second`'s body calls `first`. Pass 2's body check of `second` looks up
+    /// `first` via `infer_var → lookup → lookup_in_current_module →
+    /// probe_module_entry_owned` — that probe must consult staging first to
+    /// see the just-registered `first` (which is in staging, not live).
+    ///
+    /// Pre-3b-2c.3: the live-only `current_symbol_table` accessor + direct
+    /// `self.modules.get(&state.current_module)` calls in `lookup_in_current_module`
+    /// would miss the staged `first`, and Pass 2 of `second` would fail with
+    /// "undefined variable: first".
+    ///
+    /// spec: Decision 44 (third amendment) — cluster-mode reads dispatch
+    /// `View::union(staging, live)` per FIXME 0179.
+    #[test]
+    fn check_forms_cluster_mode_intra_cluster_forward_ref_via_staging() {
+        let modules = modules();
+        let mut staging = SymbolTable::<(), ()>::new_with_params(module_path());
+        {
+            let mut ctx: ClusterContext<'_, (), ()> =
+                ClusterContext::cluster(&modules, &mut staging, module_path());
+            // first: () -> Int = 0
+            // second: () -> Int = first  (calls first)
+            let first = one_variant_defn("first");
+            let second = ParsedEntry::Def {
+                name: Symbol::from("second"),
+                variants: vec![DefnVariant {
+                    params: vec![],
+                    param_annotations: vec![],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("first"),
+                            span: Span::SYNTHETIC,
+                            inferred_type: None,
+                        }),
+                        args: vec![],
+                        span: Span::SYNTHETIC,
+                        inferred_type: None,
+                        resolved_call: None,
+                    },
+                    span: Span::SYNTHETIC,
+                }],
+                visibility: Visibility::Private,
+                docstring: None,
+                span: Span::SYNTHETIC,
+            };
+            let parsed = vec![first, second];
+            check_forms::<(), ()>(parsed, &mut ctx, &modules).expect(
+                "cluster-mode forward reference must resolve via staging read union",
+            );
+        }
+
+        // Live is byte-identical (invariant 2 — cluster mode never writes to
+        // live during the call). Both entries live on staging.
+        let live_guard = modules.get(&module_path()).expect("live module exists");
+        assert!(
+            live_guard.get("first").is_none(),
+            "first must NOT appear in live during cluster mode"
+        );
+        assert!(
+            live_guard.get("second").is_none(),
+            "second must NOT appear in live during cluster mode"
+        );
+
+        // Staging carries both registrations.
+        assert!(staging.get("first").is_some(), "first staged");
+        assert!(staging.get("second").is_some(), "second staged");
+    }
+
     /// Live mode: writes target the live per-module table directly. The
     /// staged Def is observable on the modules map after the call.
     #[test]

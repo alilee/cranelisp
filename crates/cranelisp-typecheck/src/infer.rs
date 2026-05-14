@@ -104,13 +104,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         })?;
 
         // Don't instantiate special forms -- they are not callable as values
-        if let Some(ModuleEntry::Def { kind, .. }) = self.current_symbol_table(state).get(name)
-            && matches!(kind.as_ref(), cranelisp_types::DefKind::SpecialForm { .. })
         {
-            return Err(CranelispError::TypeError {
-                message: format!("{name} is a special form, not a value"),
-                location: ErrorLocation::from_span(span),
-            });
+            let r = self.current_symbol_table(state);
+            let v = r.view();
+            if let Some(ModuleEntry::Def { kind, .. }) = v.lookup(name)
+                && matches!(kind.as_ref(), cranelisp_types::DefKind::SpecialForm { .. })
+            {
+                return Err(CranelispError::TypeError {
+                    message: format!("{name} is a special form, not a value"),
+                    location: ErrorLocation::from_span(span),
+                });
+            }
         }
 
         // Reject internal constructors (e.g. Bind) — they cannot be

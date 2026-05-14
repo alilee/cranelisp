@@ -708,10 +708,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // on REPL-transient `__expr` or regular user defns whose ast was
         // annotated by a prior evaluation.
         if is_trait_impl_mangled_name(defn.name.as_ref()) {
-            let sym_table = self.current_symbol_table(state);
-            if let Some(ModuleEntry::Def { ast: Some(_), .. }) =
-                sym_table.symbols.get(&defn.name)
-            {
+            let r = self.current_symbol_table(state);
+            let v = r.view();
+            if let Some(ModuleEntry::Def { ast: Some(_), .. }) = v.lookup(&defn.name) {
                 return Ok(FormCheckResult::empty());
             }
         }
@@ -1073,7 +1072,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         constrained_fn_names.extend(accumulator.constrained_fn_names.drain());
 
         if strategy == ModuleStrategy::Additive {
-            for (name, entry) in self.current_symbol_table(state).all_symbols() {
+            let r = self.current_symbol_table(state);
+            for (name, entry) in r.view().iter() {
                 if let ModuleEntry::Def { kind, scheme, ast, .. } = entry {
                     match kind.as_ref() {
                         // Trait-constrained polymorphism: classic constrained
@@ -1367,9 +1367,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
             TopLevel::Defn(defn) => {
                 // Look up the defn's generalized scheme from the symbol table.
-                if let Some(ModuleEntry::Def { scheme, .. }) =
-                    self.current_symbol_table(state).get(defn.name.as_ref())
-                {
+                let r = self.current_symbol_table(state);
+                if let Some(ModuleEntry::Def { scheme, .. }) = r.view().lookup(&defn.name) {
                     Some(DisplayInfo {
                         ty: scheme.ty.clone(),
                         scheme: Some(scheme.clone()),
@@ -2131,8 +2130,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let mut names = HashSet::new();
 
         for defn in defns {
-            if let Some(ModuleEntry::Def { kind, .. }) =
-                self.current_symbol_table(state).get(defn.name.as_ref())
+            let r = self.current_symbol_table(state);
+            if let Some(ModuleEntry::Def { kind, .. }) = r.view().lookup(&defn.name)
                 && let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref()
             {
                 names.insert(defn.name.clone());
@@ -2187,9 +2186,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // synthetic) or regular user defns whose ast was annotated by a prior
         // REPL evaluation.
         if is_trait_impl_mangled_name(defn.name.as_ref()) {
-            let st_ro = self.current_symbol_table(state);
+            let r = self.current_symbol_table(state);
             if let Some(ModuleEntry::Def { scheme, ast: Some(_), .. }) =
-                st_ro.symbols.get(defn.name.as_ref())
+                r.view().lookup(&defn.name)
                 && scheme.vars.is_empty()
                 && scheme.constraints.is_empty()
                 && let Type::Fn(param_types, ret_ty) = &scheme.ty
@@ -2637,17 +2636,20 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         expr: &Expr,
     ) -> Result<Vec<MonoDefn>, CranelispError> {
         // Build the set of constrained fn names from the symbol table
-        let constrained_fn_names: HashSet<Symbol> = self.current_symbol_table(state).symbols
-            .iter()
-            .filter_map(|(name, entry)| {
-                if let ModuleEntry::Def { kind, .. } = entry
-                    && let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref()
-                {
-                    return Some(name.clone());
-                }
-                None
-            })
-            .collect();
+        let constrained_fn_names: HashSet<Symbol> = {
+            let r = self.current_symbol_table(state);
+            r.view()
+                .iter()
+                .filter_map(|(name, entry)| {
+                    if let ModuleEntry::Def { kind, .. } = entry
+                        && let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref()
+                    {
+                        return Some(name.clone());
+                    }
+                    None
+                })
+                .collect()
+        };
 
         if constrained_fn_names.is_empty() {
             return Ok(Vec::new());

@@ -205,69 +205,40 @@ fn top_level_to_parsed_entries(program: &[TopLevel]) -> Vec<cranelisp_types::Par
 /// `check_forms` performs both internal passes plus finalize on a single call
 /// over a `Vec<ParsedEntry>`.
 ///
-/// **Wave 3b-2c.2 — `process_cluster` proper with staging + commit/discard.**
-///
-/// The staging-commit/discard infrastructure
-/// (`process_cluster_with_staging` and `commit_staging_to_live`) is wired
-/// up but is not yet activated. The active routing in this function returns
-/// to `ClusterContext::Live` pending FIXME 0179 (cluster-mode read-union of
-/// staging-and-live).
-///
-/// **Why not active yet.** Cluster mode redirects writes to a fresh staging
-/// `SymbolTable`, but reads in typecheck's internal accessors
-/// (`TypeCheckEnv::current_symbol_table`) still hit live directly. Several
-/// per-form registration paths (notably `register_type_def` →
-/// `find_same_name_constructor_scheme` in `crates/cranelisp-typecheck/src/
-/// adt.rs:241`, and trait-impl default-method registration) write to staging
-/// then immediately read back via the live-only accessor — the read returns
-/// `None` and the form ends up half-registered. Activating Cluster mode
-/// regresses ~12 tests across `spec_05_definitions`, `spec_12_runtime`, and
-/// trait-impl suites. The fix is FIXME 0179 (View::union on the read path);
-/// once it lands, the routing in this function can flip to Cluster mode for
-/// single-form clusters (and, after FIXME 0179 also covers multi-form intra-
-/// cluster forward refs, for the `(begin)` multi-form case too).
-///
-/// **What's in place.** `process_cluster_with_staging` below builds the
-/// `ClusterContext::Cluster { staging, … }` and the commit/discard drain.
-/// Tests exercising single-form atomicity already pass under Live mode
-/// (typecheck performs its own per-symbol cleanup on `Err`); the staging
-/// path becomes the durable surface once read-union lands.
+/// **Wave 3b-2c.3 — Cluster mode is the hot path.** FIXME 0179 (cluster-mode
+/// read-union via `View::union(staging, live)`) has landed in typecheck.
+/// `check_program_compat` now delegates unconditionally to
+/// [`process_cluster_with_staging`], which builds
+/// `ClusterContext::Cluster { staging, … }`, runs `check_forms`, and on
+/// `Ok` drains staging into live atomically (commit) or on `Err` drops
+/// staging (atomic discard, live unchanged).
 pub(crate) fn check_program_compat(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
     working_program: &[TopLevel],
 ) -> Result<(), CranelispError> {
-    use cranelisp_typecheck::{check_forms, ClusterContext};
-
-    let parsed = top_level_to_parsed_entries(working_program);
-    if parsed.is_empty() {
-        return Ok(());
-    }
-
-    // Active path: Live mode (pending FIXME 0179 read-union).
-    let mut ctx: ClusterContext<'_, crate::code::Code, ()> =
-        ClusterContext::live(symbol_tables, module.clone());
-    check_forms(parsed, &mut ctx, symbol_tables)
-        .map_err(check_error_to_cranelisp_error)
+    // Wave 3b-2c.3: FIXME 0179 (cluster-mode read-union via View::union) has
+    // landed in typecheck. Cluster mode is now activated as the hot path —
+    // writes flow to a fresh staging table, reads union staging-first with
+    // live, and on Ok the staging entries commit to live atomically. On Err
+    // staging drops and live is unchanged.
+    process_cluster_with_staging(symbol_tables, module, working_program)
 }
 
 /// Process a cluster through `ClusterContext::Cluster` with a fresh staging
 /// table and atomic commit/discard.
 ///
-/// **Inactive pending FIXME 0179.** This function is the target shape for
-/// `process_cluster` proper per Decision 44 — `int` allocates the staging
-/// `SymbolTable<Code, ()>` on the stack, hands it to `check_forms` via
-/// `ClusterContext::Cluster`, and on `Ok` drains staging entries into the
-/// live table atomically (per-symbol `DashMap::get_mut` write guard, GOT
-/// slots re-allocated from live's allocator). On `Err`, the stack-drop of
-/// `staging` discards it (atomic discard, live unchanged).
+/// **Active path (Wave 3b-2c.3).** Per Decision 44 — `int` allocates the
+/// staging `SymbolTable<Code, ()>` on the stack, hands it to `check_forms`
+/// via `ClusterContext::Cluster`, and on `Ok` drains staging entries into
+/// the live table atomically (per-symbol `DashMap::get_mut` write guard,
+/// GOT slots re-allocated from live's allocator). On `Err`, the stack-drop
+/// of `staging` discards it (atomic discard, live unchanged).
 ///
-/// Activate this path by replacing the `Live`-mode body of
-/// `check_program_compat` with a call to this function once FIXME 0179
-/// (cluster-mode read-union) has landed. Until then, in-form read-backs of
-/// just-staged entries (e.g. `find_same_name_constructor_scheme` after a
-/// constructor insert) fail because the read still hits live.
-#[allow(dead_code)]
+/// FIXME 0179 (cluster-mode read-union) is closed: typecheck reads in
+/// cluster mode dispatch `View::union(staging, live)` staging-first, so
+/// in-cluster forward references resolve through staging without leaking
+/// writes to live.
 pub(crate) fn process_cluster_with_staging(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
@@ -304,7 +275,6 @@ pub(crate) fn process_cluster_with_staging(
 /// returns. GOT slot indices on `ModuleEntry::Def` entries are re-pointed
 /// to freshly-allocated live slots (staging's GOT is about to be dropped
 /// when `staging` falls out of scope at the caller's `Ok(())`).
-#[allow(dead_code)]
 fn commit_staging_to_live(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
@@ -332,10 +302,28 @@ fn commit_staging_to_live(
         // index. The staged index is meaningless in live's GOT (different
         // Arc); replace with a fresh live slot. Codegen will write the
         // code pointer to the live slot.
+        //
+        // Redefinition discipline: if the symbol already exists in live with
+        // a GOT slot, REUSE that slot. Also CARRY OVER the prior `code` field
+        // — codegen's redefinition detection compares prior `code` against
+        // None to decide whether to emit a `Redefinition` event. If we
+        // overwrite live's prior entry (and its `code`) here, the detection
+        // would always see `None` and miss the redefinition tag.
         if let ModuleEntry::Def { got_slot: Some(_), .. } = &entry {
-            let new_slot = live.allocate_got_slot();
-            if let ModuleEntry::Def { got_slot, .. } = &mut entry {
+            let (reuse_slot, prior_code) = match live.symbols.get(&name) {
+                Some(ModuleEntry::Def { got_slot, code, .. }) => (*got_slot, code.clone()),
+                _ => (None, None),
+            };
+            let new_slot = reuse_slot.unwrap_or_else(|| live.allocate_got_slot());
+            if let ModuleEntry::Def { got_slot, code, .. } = &mut entry {
                 *got_slot = Some(new_slot);
+                // Preserve the prior code handle if staging didn't already
+                // write one (staging-side typecheck does not run codegen, so
+                // `code` is normally `None` for staged Def entries; if a
+                // future change populates it, prefer the staged value).
+                if code.is_none() {
+                    *code = prior_code;
+                }
             }
         }
         live.insert(name, entry);

@@ -32,7 +32,7 @@ use dashmap::DashMap;
 use cranelisp_types::{ErrorLocation,
     ConstructorInfo, CranelispError, ExportSpec, FQSymbol, ImportNames, ImportSpec,
     MethodResolutions, ModuleEntry, ModuleFullPath, ResolvedCall, Scheme, Span,
-    Subst, Symbol, SymbolTable, TraitName, Type, TypeDefInfo, TypeId, TypeName, Warning,
+    Subst, Symbol, SymbolTable, TraitName, Type, TypeDefInfo, TypeId, TypeName, View, Warning,
     apply,
 };
 
@@ -267,6 +267,51 @@ where
     }
 }
 
+/// Read wrapper produced by `TypeCheckEnv::current_symbol_table`.
+///
+/// In `Live` flavour holds a DashMap `Ref` guard for the per-module live
+/// table. In `Cluster` flavour holds both the staging `RefCell::borrow()`
+/// guard and the live DashMap `Ref` — `view()` returns `View::union(...)`
+/// staging-first, then live.
+///
+/// Per FIXME 0179 / Decision 44 amendments: cluster-mode reads must see
+/// in-cluster writes that landed in staging via the
+/// `current_symbol_table_mut` accessor. The wrapper is the read-side
+/// counterpart that absorbs the staging-vs-live dispatch.
+pub(crate) enum SymbolTableRead<'a, 'b, C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> {
+    /// Live mode: read guard over the per-module live table.
+    Live(dashmap::mapref::one::Ref<'a, ModuleFullPath, SymbolTable<C, L>>),
+    /// Cluster mode: staging `RefCell` borrow + live read guard.
+    Cluster {
+        staging: std::cell::Ref<'a, &'b mut SymbolTable<C, L>>,
+        live: dashmap::mapref::one::Ref<'a, ModuleFullPath, SymbolTable<C, L>>,
+    },
+}
+
+impl<'a, 'b, C, L> SymbolTableRead<'a, 'b, C, L>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    /// Construct a `View<'_, C, L>` over the held references.
+    ///
+    /// - `Live` → `View::single(live)`.
+    /// - `Cluster` → `View::union(staging, live)` — lookups dispatch
+    ///   staging-first, then live.
+    pub(crate) fn view(&self) -> View<'_, C, L> {
+        match self {
+            SymbolTableRead::Live(r) => View::single(r.value()),
+            SymbolTableRead::Cluster { staging, live } => {
+                // `staging` is `Ref<'_, &mut SymbolTable>` — deref twice to
+                // get `&SymbolTable`. `**staging` is `&mut SymbolTable`;
+                // re-borrowing gives `&SymbolTable`.
+                let staging_ref: &SymbolTable<C, L> = &**staging;
+                View::union(staging_ref, live.value())
+            }
+        }
+    }
+}
+
 
 impl<'a, C, L> TypeCheckEnv<'a, C, L>
 where
@@ -320,18 +365,43 @@ where
 
     // --- Module-scoped symbol table accessors ---
 
-    /// Get a read guard for the current module's symbol table.
+    /// Get a read wrapper for the current module's symbol table.
     ///
-    /// Returns a DashMap `Ref` guard that derefs to `SymbolTable`.
-    /// The guard holds a per-shard read lock — drop it before acquiring
-    /// another guard to avoid deadlocks (see design/typecheck/dashmap-migration.md §4.10).
-    pub(crate) fn current_symbol_table(
-        &self,
+    /// Returns a [`SymbolTableRead`] that exposes a `view()` method producing
+    /// a `View<'_, C, L>` over the held references:
+    /// - In `Live` mode (no staging or staging targets another module): the
+    ///   wrapper holds a DashMap `Ref` for the per-module live table; `view()`
+    ///   returns `View::single(live)`.
+    /// - In `Cluster` mode (staging targets the current module): the wrapper
+    ///   holds the staging `RefCell::borrow()` guard plus the DashMap `Ref`;
+    ///   `view()` returns `View::union(staging, live)` — staging-first.
+    ///
+    /// Per FIXME 0179 / Decision 44: cluster-mode reads must see in-cluster
+    /// writes that landed in staging. The 9 read sites in
+    /// `program.rs`/`adt.rs`/`infer.rs`/`traits.rs`/`checker.rs` go through
+    /// this accessor and dispatch lookups via `view().lookup(...)` or
+    /// `view().iter()`.
+    ///
+    /// The wrapper holds a per-shard read lock (Live mode) or a `RefCell`
+    /// runtime borrow (Cluster mode) — drop it before acquiring another guard
+    /// to avoid deadlocks (see design/typecheck/dashmap-migration.md §4.10) or
+    /// `RefCell` borrow-check panics.
+    pub(crate) fn current_symbol_table<'b>(
+        &'b self,
         state: &CheckState,
-    ) -> dashmap::mapref::one::Ref<'_, ModuleFullPath, SymbolTable<C, L>> {
-        self.modules
+    ) -> SymbolTableRead<'b, 'a, C, L> {
+        let live = self.modules
             .get(&state.current_module)
-            .unwrap_or_else(|| unreachable!("invariant: current_module always exists in modules map"))
+            .unwrap_or_else(|| unreachable!("invariant: current_module always exists in modules map"));
+        match &self.staging {
+            Some(staging) if staging.module == state.current_module => {
+                SymbolTableRead::Cluster {
+                    staging: staging.cell.borrow(),
+                    live,
+                }
+            }
+            _ => SymbolTableRead::Live(live),
+        }
     }
 
     /// Get a write guard for the current module's symbol table.
@@ -534,15 +604,15 @@ where
     /// Resolve a name in `module_path` to its terminal `ModuleEntry`, following
     /// `Import`/`Reexport` chains by `source.module` references (Principle 17).
     /// Returns an owned clone of the terminal entry.
+    ///
+    /// Staging-aware (FIXME 0179): consults staging first when
+    /// `module_path == staging.module`.
     pub(crate) fn resolve_entry_in_module(
         &self,
         module_path: &ModuleFullPath,
         name: &str,
     ) -> Option<ModuleEntry<C>> {
-        let entry = {
-            let guard = self.modules.get(module_path)?;
-            guard.get(name)?.clone()
-        };
+        let entry = self.probe_module_entry_owned(module_path, name)?;
         self.resolve_to_terminal_entry_owned(&entry, 0)
     }
 
@@ -641,14 +711,19 @@ where
         &self,
         module_path: &ModuleFullPath,
     ) -> Vec<(TypeName, TypeDefInfo)> {
+        // Staging-aware (FIXME 0179): collect entries via the union iter,
+        // then chain-follow Import/Reexport entries to their terminal
+        // `TypeDef`. The collect step holds clones; `resolve_to_terminal_entry_owned`
+        // runs outside the borrow.
+        let entries: Vec<ModuleEntry<C>> = {
+            let mut acc: Vec<ModuleEntry<C>> = Vec::new();
+            self.for_each_in_module(module_path, |_k, v| acc.push(v.clone()));
+            acc
+        };
         let mut result: Vec<(TypeName, TypeDefInfo)> = Vec::new();
         let mut seen: HashSet<TypeName> = HashSet::new();
-        let guard = match self.modules.get(module_path) {
-            Some(g) => g,
-            None => return result,
-        };
-        for (_name, entry) in guard.all_symbols() {
-            if let Some(terminal) = self.resolve_to_terminal_entry_owned(&entry, 0)
+        for entry in &entries {
+            if let Some(terminal) = self.resolve_to_terminal_entry_owned(entry, 0)
                 && let ModuleEntry::TypeDef { info, .. } = terminal
                 && seen.insert(info.name.name.clone())
             {
@@ -837,12 +912,80 @@ where
     ///
     /// Clone-and-drop discipline: clone the entry from the guard, drop the
     /// guard, then follow import chains (which may access other modules).
+    ///
+    /// In cluster mode (FIXME 0179): consults staging first via
+    /// [`Self::probe_module_entry_owned`], so in-cluster writes are visible
+    /// to downstream resolution.
     fn lookup_in_current_module(&self, state: &CheckState, name: &str) -> Option<Scheme> {
-        let entry = {
-            let guard = self.modules.get(&state.current_module)?;
-            guard.get(name)?.clone()
-        };
+        let entry = self.probe_module_entry_owned(&state.current_module, name)?;
         self.extract_scheme_from_entry_owned(&entry, 0)
+    }
+
+    /// Probe a name in `module_path`'s symbol table, returning an owned
+    /// clone of the `ModuleEntry`. Staging-aware: in cluster mode, when
+    /// `module_path == staging.module`, staging entries shadow live.
+    ///
+    /// Clone-and-drop discipline: clones the entry while the guard is
+    /// held, then drops the guard before returning. The orchestrator's
+    /// staging is borrowed via `RefCell::borrow()` for the duration of
+    /// the probe.
+    pub(crate) fn probe_module_entry_owned(
+        &self,
+        module_path: &ModuleFullPath,
+        name: &str,
+    ) -> Option<ModuleEntry<C>> {
+        // Staging-first when applicable. The borrow is short-lived (clone
+        // and drop).
+        if let Some(staging) = &self.staging
+            && staging.module == *module_path
+        {
+            let borrow = staging.cell.borrow();
+            if let Some(entry) = borrow.get(name) {
+                return Some(entry.clone());
+            }
+        }
+        let guard = self.modules.get(module_path)?;
+        guard.get(name).cloned()
+    }
+
+    /// Iterate over the union of staging + live for `module_path`,
+    /// invoking `f` for each (name, entry) pair. Staging entries shadow
+    /// live entries with the same key.
+    ///
+    /// Staging-aware (FIXME 0179): in cluster mode, when
+    /// `module_path == staging.module`, the iteration covers staging
+    /// first then live entries not shadowed by staging keys. The closure
+    /// receives owned clones of the names/entries to avoid borrow
+    /// entanglement between staging (RefCell::borrow) and live (DashMap
+    /// Ref).
+    pub(crate) fn for_each_in_module<F>(
+        &self,
+        module_path: &ModuleFullPath,
+        mut f: F,
+    )
+    where
+        F: FnMut(&Symbol, &ModuleEntry<C>),
+    {
+        // Snapshot staging entries first (if applicable). Drop the
+        // staging borrow before acquiring the DashMap read guard to
+        // avoid simultaneous-guard pitfalls.
+        let mut staging_keys: HashSet<Symbol> = HashSet::new();
+        if let Some(staging) = &self.staging
+            && staging.module == *module_path
+        {
+            let borrow = staging.cell.borrow();
+            for (k, v) in borrow.all_symbols() {
+                staging_keys.insert(k.clone());
+                f(k, v);
+            }
+        }
+        if let Some(guard) = self.modules.get(module_path) {
+            for (k, v) in guard.all_symbols() {
+                if !staging_keys.contains(k) {
+                    f(k, v);
+                }
+            }
+        }
     }
 
     /// Extract a Scheme from a ModuleEntry, following Import/Reexport chains.
@@ -880,27 +1023,28 @@ where
     /// module's symbol table.
     ///
     /// Clone-and-drop discipline: clone entry from guard, drop guard,
-    /// then follow chain.
+    /// then follow chain. Staging-aware (FIXME 0179): when
+    /// `fq.module == staging.module`, staging shadows live.
     fn resolve_fq_symbol(&self, fq: &FQSymbol, depth: usize) -> Option<Scheme> {
-        let entry = {
-            let guard = self.modules.get(&fq.module)?;
-            guard.get(fq.symbol.as_ref())?.clone()
-        };
+        let entry = self.probe_module_entry_owned(&fq.module, fq.symbol.as_ref())?;
         self.extract_scheme_from_entry_owned(&entry, depth)
     }
 
     /// Resolve a name in the current module to its terminal `ModuleEntry`,
     /// following Import/Reexport chains. Returns an owned clone.
+    ///
+    /// Staging-aware (FIXME 0179): consults staging first via
+    /// [`Self::probe_module_entry_owned`].
     pub(crate) fn resolve_entry_in_current_module(&self, state: &CheckState, name: &str) -> Option<ModuleEntry<C>> {
-        let entry = {
-            let guard = self.modules.get(&state.current_module)?;
-            guard.get(name)?.clone()
-        };
+        let entry = self.probe_module_entry_owned(&state.current_module, name)?;
         self.resolve_to_terminal_entry_owned(&entry, 0)
     }
 
     /// Follow Import/Reexport chains to the terminal `ModuleEntry`.
     /// Returns an owned clone. Clone-and-drop discipline applied at each step.
+    ///
+    /// Staging-aware: chain edges land on staging entries first when the
+    /// edge's source module matches the current staging target.
     pub(crate) fn resolve_to_terminal_entry_owned(
         &self,
         entry: &ModuleEntry<C>,
@@ -911,10 +1055,7 @@ where
         }
         match entry {
             ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
-                let target = {
-                    let guard = self.modules.get(&source.module)?;
-                    guard.get(source.symbol.as_ref())?.clone()
-                };
+                let target = self.probe_module_entry_owned(&source.module, source.symbol.as_ref())?;
                 self.resolve_to_terminal_entry_owned(&target, depth + 1)
             }
             other => Some(other.clone()),
@@ -931,16 +1072,16 @@ where
     /// terminal entry plus the module that hosts it (the defining module).
     /// Returns `None` if no entry exists for `name` in `module_path`, the
     /// chain is malformed, or the chain depth limit is exceeded.
+    ///
+    /// Staging-aware (FIXME 0179): consults staging first via
+    /// [`Self::probe_module_entry_owned`].
     pub(crate) fn resolve_terminal_entry_and_home(
         &self,
         module_path: &ModuleFullPath,
         name: &str,
     ) -> Option<(ModuleEntry<C>, ModuleFullPath)> {
-        let (entry, home) = {
-            let guard = self.modules.get(module_path)?;
-            (guard.get(name)?.clone(), module_path.clone())
-        };
-        self.chain_follow_to_home(entry, home, 0)
+        let entry = self.probe_module_entry_owned(module_path, name)?;
+        self.chain_follow_to_home(entry, module_path.clone(), 0)
     }
 
     /// Recursive helper for [`Self::resolve_terminal_entry_and_home`].
@@ -956,10 +1097,7 @@ where
         match &entry {
             ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
                 let next_home = source.module.clone();
-                let next_entry = {
-                    let guard = self.modules.get(&source.module)?;
-                    guard.get(source.symbol.as_ref())?.clone()
-                };
+                let next_entry = self.probe_module_entry_owned(&source.module, source.symbol.as_ref())?;
                 self.chain_follow_to_home(next_entry, next_home, depth + 1)
             }
             _ => Some((entry, home)),
@@ -985,15 +1123,16 @@ where
             .unwrap_or_else(|| module_path.clone());
 
         // Clone-and-drop discipline: clone entry from guard, drop guard,
-        // then check visibility and follow chains.
-        let entry = {
-            let guard = match self.modules.get(&resolved_path) {
-                Some(g) => g,
-                None => return Ok(None), // Module not loaded
-            };
-            match guard.get(name) {
-                Some(e) => e.clone(),
-                None => return Ok(None),
+        // then check visibility and follow chains. Staging-aware (FIXME 0179).
+        let entry = match self.probe_module_entry_owned(&resolved_path, name) {
+            Some(e) => e,
+            None => {
+                // Module not loaded or symbol absent — distinguish by checking
+                // module presence.
+                if self.modules.get(&resolved_path).is_none() {
+                    return Ok(None);
+                }
+                return Ok(None);
             }
         };
 
@@ -1539,19 +1678,21 @@ where
         // Collect candidate trait names from the current module (shape 4 —
         // bulk current-module-only introspection). Each candidate is then
         // chain-followed (shape 3) per Decision 45.
-        let candidates: Vec<TraitName> = match self.modules.get(module_path) {
-            Some(guard) => guard.all_symbols()
-                .filter_map(|(name, entry)| match entry {
-                    ModuleEntry::TraitDecl { .. } => Some(TraitName::from(name.as_ref())),
-                    // Imported/reexported traits also count — their short
-                    // name is visible from this module; chain-follow
-                    // disambiguates against non-trait entries below.
-                    ModuleEntry::Import { .. } | ModuleEntry::Reexport { .. } =>
-                        Some(TraitName::from(name.as_ref())),
-                    _ => None,
-                })
-                .collect(),
-            None => return traits,
+        // Staging-aware (FIXME 0179): iterate the union of staging + live
+        // for `module_path`.
+        let candidates: Vec<TraitName> = {
+            let mut acc = Vec::new();
+            self.for_each_in_module(module_path, |name, entry| {
+                match entry {
+                    ModuleEntry::TraitDecl { .. }
+                    | ModuleEntry::Import { .. }
+                    | ModuleEntry::Reexport { .. } => {
+                        acc.push(TraitName::from(name.as_ref()));
+                    }
+                    _ => {}
+                }
+            });
+            acc
         };
         // Track visited trait homes so we don't double-scan.
         let mut visited_homes: std::collections::HashSet<ModuleFullPath> =
@@ -1567,16 +1708,16 @@ where
             if !visited_homes.insert(trait_home.clone()) {
                 continue;
             }
-            if let Some(guard) = self.modules.get(&trait_home) {
-                for (_key, entry) in guard.all_symbols() {
-                    if let ModuleEntry::TraitImpl { trait_name, impl_type, .. } = entry
-                        && &impl_type.name == type_name
-                        && !traits.contains(&trait_name.name)
-                    {
-                        traits.push(trait_name.name.clone());
-                    }
+            // Staging-aware (FIXME 0179): trait_home may equal
+            // staging.module when the trait + impl are both in-cluster.
+            self.for_each_in_module(&trait_home, |_key, entry| {
+                if let ModuleEntry::TraitImpl { trait_name, impl_type, .. } = entry
+                    && &impl_type.name == type_name
+                    && !traits.contains(&trait_name.name)
+                {
+                    traits.push(trait_name.name.clone());
                 }
-            }
+            });
         }
         traits.sort();
         traits
@@ -1727,15 +1868,20 @@ where
         // Probe trait's home for any `impl$*$<trait_home/trait_name>` whose
         // impl_type's bare name matches `impl_type`. Iterate the trait's home
         // symbol table only (Principle 17 shape 3) — no other modules touched.
-        let guard = self.modules.get(&trait_home)?;
-        for (_key, entry) in guard.all_symbols() {
-            if let ModuleEntry::TraitImpl { trait_name: tn, impl_type: it, .. } = &entry
+        // Staging-aware (FIXME 0179): when trait_home == staging.module the
+        // for_each iter unions staging-first then live.
+        let mut found: Option<(ModuleEntry<C>, ModuleFullPath)> = None;
+        self.for_each_in_module(&trait_home, |_key, entry| {
+            if found.is_some() {
+                return;
+            }
+            if let ModuleEntry::TraitImpl { trait_name: tn, impl_type: it, .. } = entry
                 && &tn.name == trait_name && &it.name == impl_type
             {
-                return Some((entry.clone(), trait_home.clone()));
+                found = Some((entry.clone(), trait_home.clone()));
             }
-        }
-        None
+        });
+        found
     }
 
     /// Return all type names that implement a given trait.
@@ -1765,16 +1911,14 @@ where
             Some((ModuleEntry::TraitDecl { .. }, home)) => home,
             _ => return types, // trait not reachable from this module
         };
-        // Enumerate impls in the trait's home only.
-        if let Some(guard) = self.modules.get(&trait_home) {
-            for (_name, entry) in guard.all_symbols() {
-                if let ModuleEntry::TraitImpl { trait_name: tn, impl_type, .. } = entry
-                    && &tn.name == trait_name && !types.contains(&impl_type.name)
-                {
-                    types.push(impl_type.name.clone());
-                }
+        // Enumerate impls in the trait's home only. Staging-aware (FIXME 0179).
+        self.for_each_in_module(&trait_home, |_name, entry| {
+            if let ModuleEntry::TraitImpl { trait_name: tn, impl_type, .. } = entry
+                && &tn.name == trait_name && !types.contains(&impl_type.name)
+            {
+                types.push(impl_type.name.clone());
             }
-        }
+        });
         types.sort();
         types
     }
@@ -1935,7 +2079,11 @@ where
 
     /// Take a snapshot of the current state for REPL error recovery.
     pub fn snapshot(&self, state: &CheckState) -> ReplSnapshot {
-        let symbol_keys = self.current_symbol_table(state).symbols.keys().cloned().collect();
+        // Use the View read accessor so staging entries are included in the
+        // snapshot's key set in cluster mode (FIXME 0179).
+        let r = self.current_symbol_table(state);
+        let symbol_keys = r.view().iter().map(|(k, _)| k.clone()).collect();
+        drop(r);
         ReplSnapshot {
             next_type_id: self.next_id.load(Ordering::Relaxed),
             symbol_keys,
@@ -1988,12 +2136,15 @@ where
         // reachable from `module_path` via its own symbol table + chain-follow
         // on per-symbol Import/Reexport entries. Short-name lookups against
         // `result` resolve only what's actually imported into `module_path`.
-        let guard = match self.modules.get(module_path) {
-            Some(g) => g,
-            None => return result,
+        // Staging-aware (FIXME 0179): collect entries via for_each, then chain
+        // follow each.
+        let local_entries: Vec<ModuleEntry<C>> = {
+            let mut acc = Vec::new();
+            self.for_each_in_module(module_path, |_k, v| acc.push(v.clone()));
+            acc
         };
-        for (_name, entry) in guard.all_symbols() {
-            if let Some(terminal) = self.resolve_to_terminal_entry_owned(&entry, 0)
+        for entry in &local_entries {
+            if let Some(terminal) = self.resolve_to_terminal_entry_owned(entry, 0)
                 && let ModuleEntry::TypeDef { info, .. } = terminal
             {
                 result.insert(
@@ -2002,7 +2153,6 @@ where
                 );
             }
         }
-        drop(guard); // release the lock before iterating other modules
 
         // Tier 2 (universe-scoped, FQ keys): every type defined in any loaded
         // module is also addressable by its fully-qualified name (`module/name`).
