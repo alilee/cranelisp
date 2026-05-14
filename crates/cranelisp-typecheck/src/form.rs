@@ -480,4 +480,91 @@ mod tests {
         let r = check_forms::<(), ()>(parsed, &mut ctx, &modules);
         assert!(r.is_ok(), "macro-only / constructor-only cluster is a no-op: {r:?}");
     }
+
+    /// Repro: REPL `(defn id [x] x)` then `(id 7)` overflows the main-thread
+    /// stack. This isolates the bug to the typecheck surface — no int
+    /// orchestration, no frontend, no worker threads, no JIT involved. If
+    /// this test overflows or hangs, the bug is owned by typecheck.
+    ///
+    /// Call 1 registers `id` as constrained-poly in live. Call 2 typechecks
+    /// a caller that invokes `id` with an Int — `finalize_check_result`'s
+    /// Additive strategy should pick `id` up from live, run Pass 4 mono,
+    /// register `id$Int` once, and return.
+    #[test]
+    fn check_forms_cross_call_constrained_poly_mono_terminates() {
+        let modules = modules();
+
+        // Call 1: (defn id [x] x) — body `x` is the param, fully poly.
+        let id_defn = ParsedEntry::Def {
+            name: Symbol::from("id"),
+            variants: vec![DefnVariant {
+                params: vec![Symbol::from("x")],
+                param_annotations: vec![None],
+                body: Expr::Var {
+                    name: Symbol::from("x"),
+                    span: Span::SYNTHETIC,
+                    inferred_type: None,
+                },
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Private,
+            docstring: None,
+            span: Span::SYNTHETIC,
+        };
+        {
+            let mut ctx: ClusterContext<'_, (), ()> =
+                ClusterContext::live(&modules, module_path());
+            check_forms::<(), ()>(vec![id_defn], &mut ctx, &modules)
+                .expect("call 1: register id as constrained-poly");
+        }
+
+        // Sanity: `id` registered. Note: pure parametric poly `(defn id [x] x)`
+        // has no trait constraints, so `constrained_fn` will be `None`. That's
+        // fine — what matters for this repro is that call 2's mono path
+        // doesn't overflow.
+        {
+            let guard = modules.get(&module_path()).expect("module exists");
+            assert!(guard.get("id").is_some(), "id registered after call 1");
+        }
+
+        // Call 2: (defn caller [] (id 7)) — wraps a bare expr `(id 7)` the
+        // way int's `wrap_exprs_as_synthetic_defns` would for REPL input.
+        let caller_defn = ParsedEntry::Def {
+            name: Symbol::from("caller"),
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("id"),
+                        span: Span::SYNTHETIC,
+                        inferred_type: None,
+                    }),
+                    args: vec![Expr::IntLit {
+                        value: 7,
+                        span: Span::SYNTHETIC,
+                        inferred_type: None,
+                    }],
+                    span: Span::SYNTHETIC,
+                    inferred_type: None,
+                    resolved_call: None,
+                },
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Private,
+            docstring: None,
+            span: Span::SYNTHETIC,
+        };
+        let mut ctx2: ClusterContext<'_, (), ()> =
+            ClusterContext::live(&modules, module_path());
+        check_forms::<(), ()>(vec![caller_defn], &mut ctx2, &modules)
+            .expect("call 2: monomorphise (id 7) — must not overflow");
+
+        // Assert: `id$Int` mono entry is registered in live.
+        let guard = modules.get(&module_path()).expect("module exists");
+        assert!(
+            guard.get("id$Int").is_some(),
+            "id$Int should be registered after call 2 mono"
+        );
+    }
 }
