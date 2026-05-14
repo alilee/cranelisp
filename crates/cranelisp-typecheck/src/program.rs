@@ -957,10 +957,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) {
         // Write callees to ModuleEntry eagerly (Decision 21).
         if !result.call_graph_edges.is_empty() {
-            write_callees_to_module_entries(
-                &mut self.current_symbol_table_mut(state),
-                &result.call_graph_edges,
-            );
+            let mut guard = self.current_symbol_table_mut(state);
+            write_callees_to_module_entries(&mut *guard, &result.call_graph_edges);
         }
 
         accumulator.method_resolutions.extend(result.method_resolutions);
@@ -1134,10 +1132,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // merge_form_result with the final canonical version that includes any
         // edges from post-passes.
         if !accumulator.call_graph_edges.is_empty() {
-            write_callees_to_module_entries(
-                &mut self.current_symbol_table_mut(state),
-                &accumulator.call_graph_edges,
-            );
+            let mut guard = self.current_symbol_table_mut(state);
+            write_callees_to_module_entries(&mut *guard, &accumulator.call_graph_edges);
         }
 
         // Resolve all accumulated expr_types through the final substitution.

@@ -22,7 +22,9 @@
 //! `check()` calls. Module compilation locks are a scheduling concern owned
 //! by the caller, not by the typechecker.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use dashmap::DashMap;
@@ -148,6 +150,121 @@ where
     /// Each worker typechecks a different module — DashMap's per-shard locking
     /// allows concurrent reads/writes to different modules without contention.
     pub(crate) modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    /// Optional cluster-mode staging table for the current cluster's writes.
+    ///
+    /// When `Some(staging)` and a write targets `staging.module`, the write
+    /// is redirected to the orchestrator-handed staging table via the
+    /// `RefCell` interior mutability. When `None` (or when the write targets
+    /// a different module), writes flow to the per-module live table via
+    /// `DashMap`. Per Decision 44 amendments: this is the Wave 3a-α
+    /// write-redirection plumbing that makes `ClusterContext::Cluster`
+    /// staging effective from within `check_forms`.
+    ///
+    /// Holding a `RefCell` means a `TypeCheckEnv` carrying staging is
+    /// **not `Sync`** — a single cluster is processed by a single thread
+    /// (the orchestrator's `check_forms` call frame). Concurrent workers
+    /// construct their own non-staging `TypeCheckEnv` instances via the
+    /// `new` constructor; the staging variant is constructed only by
+    /// `check_forms` for the duration of one cluster.
+    ///
+    /// The inner `&mut SymbolTable` carries the same `'a` lifetime as the
+    /// rest of the env — the orchestrator's staging mutable borrow is held
+    /// across the entire `check_forms` call frame. `TypeCheckStaging` itself
+    /// carries a separate inner lifetime for invariance reasons; we collapse
+    /// them to `'a` here.
+    pub(crate) staging: Option<TypeCheckStaging<'a, 'a, C, L>>,
+}
+
+/// Per-cluster staging override carried on `TypeCheckEnv`.
+///
+/// `module` identifies which symbol-table the staging redirect applies to;
+/// writes targeting any other module fall through to live as usual. `cell`
+/// holds a `RefCell` wrapping the orchestrator-handed staging table by
+/// mutable reference, providing interior mutability so the `&self`-flavoured
+/// `current_symbol_table_mut` accessor can hand out a writable guard.
+///
+/// Two lifetimes: `'a` is the borrow of the `RefCell` (lives for the env's
+/// lifetime); `'b` is the lifetime of the `&mut SymbolTable` inside the cell
+/// (the orchestrator's mutable borrow of staging — outlives `'a`).
+pub(crate) struct TypeCheckStaging<'a, 'b, C, L>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    pub(crate) module: ModuleFullPath,
+    pub(crate) cell: &'a RefCell<&'b mut SymbolTable<C, L>>,
+}
+
+// SAFETY: `TypeCheckStaging` carries a `&RefCell<&mut SymbolTable>` which
+// `RefCell` makes `!Sync` and the inner `&mut` makes `!Send` for the
+// reborrow. The staging variant is constructed only by `check_forms` on the
+// orchestrator's single thread (the entire `check_forms` call frame is a
+// per-cluster, single-threaded ownership of staging). Concurrent workers
+// in other parts of the codebase construct their own `TypeCheckEnv`
+// instances via `new` without staging — they never share an env carrying
+// staging across threads.
+//
+// We assert `Send + Sync` so that `TypeCheckEnv` preserves its pre-S66
+// auto-impl guarantee (concurrent workers continue to construct and use
+// independent envs across threads). Sharing a single env across threads
+// while it carries staging is a single-cluster correctness violation that
+// the public-API contract prohibits — staging mode is internal to
+// `check_forms`'s call frame and not exposed to concurrent paths.
+unsafe impl<'a, 'b, C, L> Send for TypeCheckStaging<'a, 'b, C, L>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+}
+unsafe impl<'a, 'b, C, L> Sync for TypeCheckStaging<'a, 'b, C, L>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+}
+
+/// Write wrapper produced by `TypeCheckEnv::current_symbol_table_mut`.
+///
+/// In `Live` flavour, wraps the DashMap `RefMut` for the per-module live
+/// table. In `Staging` flavour, wraps the `RefCell::RefMut` for the
+/// cluster-scoped staging table. Both flavours `Deref` and `DerefMut` to
+/// `&[mut] SymbolTable<C, L>`, so the existing call sites that do
+/// `self.current_symbol_table_mut(state).insert(...)`, `.symbols.get_mut(...)`,
+/// etc. work uniformly via Deref coercion — no per-site changes required.
+pub(crate) enum SymbolTableMut<'a, 'b, C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> {
+    /// Per-module live table guard from the modules DashMap.
+    Live(dashmap::mapref::one::RefMut<'a, ModuleFullPath, SymbolTable<C, L>>),
+    /// Cluster-scoped staging table guard from the orchestrator-handed RefCell.
+    Staging(std::cell::RefMut<'a, &'b mut SymbolTable<C, L>>),
+}
+
+impl<'a, 'b, C, L> Deref for SymbolTableMut<'a, 'b, C, L>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    type Target = SymbolTable<C, L>;
+    fn deref(&self) -> &SymbolTable<C, L> {
+        match self {
+            SymbolTableMut::Live(r) => r.value(),
+            // `r` is `RefMut<'_, &'b mut SymbolTable>`; auto-deref walks
+            // both layers to `&SymbolTable`.
+            SymbolTableMut::Staging(r) => r,
+        }
+    }
+}
+
+impl<'a, 'b, C, L> DerefMut for SymbolTableMut<'a, 'b, C, L>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    fn deref_mut(&mut self) -> &mut SymbolTable<C, L> {
+        match self {
+            SymbolTableMut::Live(r) => r.value_mut(),
+            SymbolTableMut::Staging(r) => r,
+        }
+    }
 }
 
 
@@ -165,7 +282,40 @@ where
         modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
         next_id: &'a AtomicU32,
     ) -> Self {
-        TypeCheckEnv { modules, next_id }
+        TypeCheckEnv { modules, next_id, staging: None }
+    }
+
+    /// Create a `TypeCheckEnv` whose writes targeting `staging_module` flow
+    /// to the orchestrator-handed staging `SymbolTable` instead of to the
+    /// per-module live table.
+    ///
+    /// Used by `check_forms` when invoked with
+    /// `ClusterContext::Cluster { staging, current_module, .. }`. The caller
+    /// constructs a `RefCell` wrapping the cluster's `&mut SymbolTable`
+    /// staging reference and passes it here; writes targeting
+    /// `staging_module` route through `RefCell::borrow_mut`. Writes to other
+    /// modules (the rare cross-module impl write per Decision 0045) fall
+    /// through to live unchanged — `symbol_table_mut_in` is unaffected by
+    /// staging.
+    ///
+    /// The returned env is **not `Sync`** — it carries a `RefCell` reference.
+    /// Cluster mode is single-threaded by construction (the orchestrator's
+    /// `check_forms` call frame); concurrent workers use `new` without
+    /// staging instead.
+    pub(crate) fn new_with_staging(
+        modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
+        next_id: &'a AtomicU32,
+        staging_module: ModuleFullPath,
+        staging_cell: &'a RefCell<&'a mut SymbolTable<C, L>>,
+    ) -> Self {
+        TypeCheckEnv {
+            modules,
+            next_id,
+            staging: Some(TypeCheckStaging {
+                module: staging_module,
+                cell: staging_cell,
+            }),
+        }
     }
 
     // --- Module-scoped symbol table accessors ---
@@ -186,15 +336,32 @@ where
 
     /// Get a write guard for the current module's symbol table.
     ///
-    /// Returns a DashMap `RefMut` guard that derefs mutably to `SymbolTable`.
-    /// Drop before acquiring another guard.
-    pub(crate) fn current_symbol_table_mut(
-        &self,
+    /// Returns a `SymbolTableMut<'_, C, L>` wrapper that derefs mutably to
+    /// `SymbolTable<C, L>`. In cluster mode (when `self.staging` is `Some`
+    /// for the current module), the guard wraps the orchestrator-handed
+    /// staging table via `RefCell::borrow_mut`. Otherwise it wraps the
+    /// per-module live `DashMap` `RefMut`. Drop the guard before acquiring
+    /// another one (DashMap deadlock; `RefCell` runtime borrow check).
+    ///
+    /// The 91 register-call sites in `program.rs` and the in-checker write
+    /// sites continue to use this accessor uniformly — staging-vs-live is
+    /// absorbed in the wrapper's `Deref`/`DerefMut` impls.
+    pub(crate) fn current_symbol_table_mut<'b>(
+        &'b self,
         state: &CheckState,
-    ) -> dashmap::mapref::one::RefMut<'_, ModuleFullPath, SymbolTable<C, L>> {
-        self.modules
-            .get_mut(&state.current_module)
-            .unwrap_or_else(|| unreachable!("invariant: current_module always exists in modules map"))
+    ) -> SymbolTableMut<'b, 'a, C, L> {
+        if let Some(staging) = &self.staging
+            && staging.module == state.current_module
+        {
+            return SymbolTableMut::Staging(staging.cell.borrow_mut());
+        }
+        SymbolTableMut::Live(
+            self.modules
+                .get_mut(&state.current_module)
+                .unwrap_or_else(|| {
+                    unreachable!("invariant: current_module always exists in modules map")
+                }),
+        )
     }
 
     /// Get a write guard for an explicitly named module's symbol table.
@@ -1078,10 +1245,8 @@ where
             };
 
             // Now safe to get write guard on current module
-            insert_imports_detecting_ambiguity(
-                &mut self.current_symbol_table_mut(state),
-                imports_to_add,
-            );
+            let mut guard = self.current_symbol_table_mut(state);
+            insert_imports_detecting_ambiguity(&mut *guard, imports_to_add);
         }
         Ok(())
     }
@@ -1152,10 +1317,8 @@ where
             };
 
             // Now safe to get write guard on current module
-            insert_imports_detecting_ambiguity(
-                &mut self.current_symbol_table_mut(state),
-                reexports,
-            );
+            let mut guard = self.current_symbol_table_mut(state);
+            insert_imports_detecting_ambiguity(&mut *guard, reexports);
         }
         Ok(())
     }

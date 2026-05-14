@@ -21,6 +21,27 @@
 //! (`method_resolutions`, `expr_types`, `mono_defns`, `callees`) land on the
 //! staging `ModuleEntry::Def`'s existing fields (`callees`, `ast`
 //! annotations, additional staged `Def` entries for mono specialisations).
+//!
+//! ## Wave 3b-2c.1 (write-redirection plumbing)
+//!
+//! When `ctx` is `ClusterContext::Cluster { staging, current_module, .. }`,
+//! `check_forms` extracts the `&mut SymbolTable` staging reference and wraps
+//! it in a local `RefCell` whose `&` is passed to `TypeCheckEnv` via
+//! `new_with_staging`. The env's `current_symbol_table_mut(state)` accessor
+//! checks `state.current_module` against the staging module and returns
+//! `SymbolTableMut::Staging(...)` (cluster) or `SymbolTableMut::Live(...)`
+//! (other modules / live mode). This makes the 91 register-call sites
+//! redirect to staging transparently in cluster mode while remaining
+//! semantically unchanged in live mode.
+//!
+//! Reads (`current_symbol_table`) currently still hit live in both modes;
+//! union reads (staging-first-then-live, per facade `View`) are Wave 3b-2c.1
+//! follow-up — see `design/arch/fixmes/` for the read-union plumbing FIXME
+//! filed by this change. Intra-cluster forward references (Pass 2 reads a
+//! signature Pass 1 wrote into staging) therefore depend on the follow-up
+//! and are not yet exercised by `check_forms` in cluster mode.
+
+use std::cell::RefCell;
 
 use dashmap::DashMap;
 
@@ -68,18 +89,56 @@ where
     L: LinkerStore,
 {
     let current_module = ctx.current_module().clone();
-    let _ = ctx; // ClusterContext write-redirection through TypeCheckEnv is
-                 // Wave 3a-α follow-up; for now TypeCheckEnv writes via its
-                 // own DashMap accessor (which targets live). See module
-                 // docs and Decision 44 amendments.
 
     // Ensure the current module's live table exists. The orchestrator's
     // staging precondition (Cluster mode) requires the live table to exist;
     // tests using Live mode also rely on this. `ensure_module_exists` is
-    // idempotent.
+    // idempotent. We use a fresh non-staging env for this seed step so the
+    // ensure call hits live regardless of mode (staging is for cluster body
+    // writes; the live table must exist before staging can shadow it).
     let next_id = std::sync::atomic::AtomicU32::new(0);
-    let env = TypeCheckEnv::new(symbol_tables, &next_id);
-    env.ensure_module_exists(&current_module);
+    {
+        let env = TypeCheckEnv::<C, L>::new(symbol_tables, &next_id);
+        env.ensure_module_exists(&current_module);
+    }
+
+    // Extract the staging mutable reference up front so we can wrap it in a
+    // `RefCell` for the duration of this call. The `RefCell` provides
+    // interior mutability so the `&self`-flavoured `current_symbol_table_mut`
+    // accessor on `TypeCheckEnv` can hand out a writable guard pointed at
+    // staging. The `ctx` mutable borrow is consumed by this match (we
+    // re-extract `staging` as a fresh `&mut` reborrow); we don't touch
+    // `ctx` again after this point.
+    //
+    // Per Decision 44 (FIXME 0167 amendment): writes targeting
+    // `current_module` route through this RefCell; writes to other modules
+    // (e.g., cross-module trait-impl writes per Decision 0045) fall through
+    // to live unchanged. This is Wave 3b-2c.1's write-redirection plumbing
+    // — it makes the existing `Cluster` mode actually stage instead of
+    // leaking writes to live.
+    let staging_cell: Option<RefCell<&mut SymbolTable<C, L>>> = match ctx {
+        ClusterContext::Cluster { staging, .. } => {
+            // Reborrow the orchestrator's `&mut SymbolTable` into a fresh
+            // mutable reference scoped to this call frame, then wrap.
+            let reborrow: &mut SymbolTable<C, L> = staging;
+            Some(RefCell::new(reborrow))
+        }
+        ClusterContext::Live { .. } => None,
+    };
+
+    // Construct the working env. In cluster mode, route writes targeting
+    // `current_module` to staging via the RefCell. Reads via
+    // `current_symbol_table` continue to hit live (intra-cluster forward-ref
+    // visibility through staging is read-union follow-up).
+    let env = match &staging_cell {
+        Some(cell) => TypeCheckEnv::<C, L>::new_with_staging(
+            symbol_tables,
+            &next_id,
+            current_module.clone(),
+            cell,
+        ),
+        None => TypeCheckEnv::<C, L>::new(symbol_tables, &next_id),
+    };
 
     // Advance `next_id` past any type variable IDs already used in stored
     // schemes for the current module. Without this, fresh vars allocated by
@@ -459,11 +518,10 @@ mod tests {
         );
     }
 
-    /// Cluster mode: writes (via `current_symbol_table_mut` on the
-    /// `TypeCheckEnv`) currently still target live; full cluster-mode write
-    /// redirection through `ClusterContext` is Wave 3a-α follow-up. The
-    /// important invariant pinned here is that the function is reachable
-    /// in `Cluster` mode and returns a structured `Result`.
+    /// Cluster mode: smoke test that the function is reachable in `Cluster`
+    /// mode and returns a structured `Result`. Atomicity properties (live
+    /// untouched, staging populated) are verified by
+    /// `check_forms_cluster_mode_writes_go_to_staging` below.
     #[test]
     fn check_forms_cluster_mode_reachable() {
         let modules = modules();
@@ -473,6 +531,66 @@ mod tests {
         let parsed = vec![one_variant_defn("clustered")];
         let r = check_forms::<(), ()>(parsed, &mut ctx, &modules);
         assert!(r.is_ok(), "cluster-mode check_forms returns structured Result: {r:?}");
+    }
+
+    /// Wave 3b-2c.1 acceptance test: in `ClusterContext::Cluster` mode,
+    /// `check_forms` writes go to the orchestrator-handed staging table,
+    /// NOT to the per-module live table. This is the structural pre-S66
+    /// guarantee that makes whole-cluster atomic commit-or-discard
+    /// possible.
+    ///
+    /// Pre-Wave-3b-2c.1 the `let _ = ctx;` bypass in `check_forms` meant
+    /// writes leaked to live regardless of mode. This test pins the
+    /// post-bypass behaviour: live is byte-identical to its pre-call state,
+    /// and staging carries the Defn registration.
+    ///
+    /// spec: Decision 44 (amended FIXME 0167) — orchestrator-owned staging;
+    /// invariant 2: `check_forms` is pure with respect to live state.
+    #[test]
+    fn check_forms_cluster_mode_writes_go_to_staging() {
+        let modules = modules();
+        // Pre-call: live is empty (just whatever `modules()` seeded — which
+        // is the empty SymbolTable for `module_path`). Snapshot its key set.
+        let live_keys_before: std::collections::HashSet<Symbol> = {
+            let guard = modules.get(&module_path()).expect("live module exists");
+            guard.symbols.keys().cloned().collect()
+        };
+
+        let mut staging = SymbolTable::<(), ()>::new_with_params(module_path());
+        {
+            let mut ctx: ClusterContext<'_, (), ()> =
+                ClusterContext::cluster(&modules, &mut staging, module_path());
+            let parsed = vec![one_variant_defn("staged_defn")];
+            check_forms::<(), ()>(parsed, &mut ctx, &modules)
+                .expect("cluster mode check_forms succeeds");
+        }
+
+        // Live is byte-identical (key set unchanged) — the write redirect to
+        // staging worked. Pre-fix this assertion would fail because writes
+        // leaked to live.
+        let live_keys_after: std::collections::HashSet<Symbol> = {
+            let guard = modules.get(&module_path()).expect("live module exists");
+            guard.symbols.keys().cloned().collect()
+        };
+        assert_eq!(
+            live_keys_before, live_keys_after,
+            "live module must be untouched by cluster-mode check_forms"
+        );
+        let guard = modules.get(&module_path()).expect("live module exists");
+        assert!(
+            guard.get("staged_defn").is_none(),
+            "staged_defn must NOT appear in live (it should be on staging)"
+        );
+
+        // Staging carries the registration.
+        assert!(
+            staging.get("staged_defn").is_some(),
+            "staged_defn must be registered on the staging table"
+        );
+        match staging.get("staged_defn").unwrap() {
+            ModuleEntry::Def { .. } => {}
+            other => panic!("expected Def entry on staging, got {other:?}"),
+        }
     }
 
     /// Live mode: writes target the live per-module table directly. The
