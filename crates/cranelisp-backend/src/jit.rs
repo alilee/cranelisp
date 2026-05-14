@@ -88,7 +88,7 @@ pub struct IntrinsicSymbol {
 /// Convention: runtime infrastructure uses `runtime/name` prefix.
 /// User-visible primitives use spec kebab-case names.
 pub fn intrinsic_symbols() -> Vec<IntrinsicSymbol> {
-    vec![
+    let mut intrinsics = vec![
         // Runtime infrastructure (internal, not user-callable)
         IntrinsicSymbol { name: "runtime/alloc", ptr: cranelisp_intrinsics::alloc::heap_alloc as *const u8, param_count: 1, is_runtime: true, has_return: true },
         IntrinsicSymbol { name: "runtime/dealloc", ptr: cranelisp_intrinsics::alloc::heap_dealloc as *const u8, param_count: 1, is_runtime: true, has_return: true },
@@ -157,7 +157,34 @@ pub fn intrinsic_symbols() -> Vec<IntrinsicSymbol> {
         IntrinsicSymbol { name: "cranelisp_op_gt", ptr: cranelisp_intrinsics::ops::cranelisp_op_gt as *const u8, param_count: 2, is_runtime: true, has_return: true },
         IntrinsicSymbol { name: "cranelisp_op_le", ptr: cranelisp_intrinsics::ops::cranelisp_op_le as *const u8, param_count: 2, is_runtime: true, has_return: true },
         IntrinsicSymbol { name: "cranelisp_op_ge", ptr: cranelisp_intrinsics::ops::cranelisp_op_ge as *const u8, param_count: 2, is_runtime: true, has_return: true },
-    ]
+    ];
+    // Ring 0 primitive shim fns (FIXME 0174 + Decision 43). These are the
+    // user-callable, GOT-stored emission targets for the standard
+    // dispatch path. Each name in `ring0_jit_symbols()` corresponds to a
+    // `ModuleEntry::Def` in the synthetic `primitives` symbol table
+    // (allocated in `typecheck::builtins::register_primitives`) and to
+    // a per-call inline-substitution entry in
+    // `cranelisp-backend::primitives_inline::try_emit_inline_primitive`.
+    // The two paths share semantics; the inline path is a code-size +
+    // dispatch-cost optimisation.
+    //
+    // Param count = 2 for binary ops, 1 for `not`. has_return = true
+    // (Ring 0 ops never return void). is_runtime = false — these names
+    // are user-visible via the synthetic `primitives` module.
+    for (name, ptr) in cranelisp_primitives::ring0::ring0_jit_symbols() {
+        let param_count = match name {
+            "not" => 1,
+            _ => 2,
+        };
+        intrinsics.push(IntrinsicSymbol {
+            name,
+            ptr,
+            param_count,
+            is_runtime: false,
+            has_return: true,
+        });
+    }
+    intrinsics
 }
 
 /// Register all runtime intrinsics on a JITBuilder by function pointer.

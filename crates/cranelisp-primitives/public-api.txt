@@ -25,6 +25,31 @@ pub mod cranelisp_primitives::int
 pub mod cranelisp_primitives::marshal
 #[export_name = "quote-sexp"] pub c fn cranelisp_primitives::marshal::quote_sexp(val: i64) -> i64
 #[export_name = "sconcat"] pub c fn cranelisp_primitives::marshal::sconcat(xs: i64, ys: i64) -> i64
+pub mod cranelisp_primitives::ring0
+#[export_name = "add-f64"] pub c fn cranelisp_primitives::ring0::add_f64(a: i64, b: i64) -> i64
+#[export_name = "add-i64"] pub c fn cranelisp_primitives::ring0::add_i64(a: i64, b: i64) -> i64
+#[export_name = "div-f64"] pub c fn cranelisp_primitives::ring0::div_f64(a: i64, b: i64) -> i64
+#[export_name = "div-i64"] pub c fn cranelisp_primitives::ring0::div_i64(a: i64, b: i64) -> i64
+#[export_name = "eq-bool"] pub c fn cranelisp_primitives::ring0::eq_bool(a: i64, b: i64) -> i64
+#[export_name = "eq-f64"] pub c fn cranelisp_primitives::ring0::eq_f64(a: i64, b: i64) -> i64
+#[export_name = "eq-i64"] pub c fn cranelisp_primitives::ring0::eq_i64(a: i64, b: i64) -> i64
+#[export_name = "ge-f64"] pub c fn cranelisp_primitives::ring0::ge_f64(a: i64, b: i64) -> i64
+#[export_name = "ge-i64"] pub c fn cranelisp_primitives::ring0::ge_i64(a: i64, b: i64) -> i64
+#[export_name = "gt-f64"] pub c fn cranelisp_primitives::ring0::gt_f64(a: i64, b: i64) -> i64
+#[export_name = "gt-i64"] pub c fn cranelisp_primitives::ring0::gt_i64(a: i64, b: i64) -> i64
+#[export_name = "le-f64"] pub c fn cranelisp_primitives::ring0::le_f64(a: i64, b: i64) -> i64
+#[export_name = "le-i64"] pub c fn cranelisp_primitives::ring0::le_i64(a: i64, b: i64) -> i64
+#[export_name = "lt-f64"] pub c fn cranelisp_primitives::ring0::lt_f64(a: i64, b: i64) -> i64
+#[export_name = "lt-i64"] pub c fn cranelisp_primitives::ring0::lt_i64(a: i64, b: i64) -> i64
+#[export_name = "mul-f64"] pub c fn cranelisp_primitives::ring0::mul_f64(a: i64, b: i64) -> i64
+#[export_name = "mul-i64"] pub c fn cranelisp_primitives::ring0::mul_i64(a: i64, b: i64) -> i64
+#[export_name = "neq-bool"] pub c fn cranelisp_primitives::ring0::neq_bool(a: i64, b: i64) -> i64
+#[export_name = "neq-f64"] pub c fn cranelisp_primitives::ring0::neq_f64(a: i64, b: i64) -> i64
+#[export_name = "neq-i64"] pub c fn cranelisp_primitives::ring0::neq_i64(a: i64, b: i64) -> i64
+#[export_name = "not"] pub c fn cranelisp_primitives::ring0::not(b: i64) -> i64
+pub fn cranelisp_primitives::ring0::ring0_jit_symbols() -> alloc::vec::Vec<(&'static str, *const u8)>
+#[export_name = "sub-f64"] pub c fn cranelisp_primitives::ring0::sub_f64(a: i64, b: i64) -> i64
+#[export_name = "sub-i64"] pub c fn cranelisp_primitives::ring0::sub_i64(a: i64, b: i64) -> i64
 pub mod cranelisp_primitives::string
 pub use cranelisp_primitives::string::str_char_at
 pub use cranelisp_primitives::string::str_concat
@@ -48,4 +73,5 @@ pub use cranelisp_primitives::vec::vec_len
 #[export_name = "int-to-string"] pub c fn cranelisp_primitives::int_to_string(n: i64) -> i64
 #[export_name = "parse-int"] pub c fn cranelisp_primitives::parse_int(s: i64) -> i64
 #[export_name = "quote-sexp"] pub c fn cranelisp_primitives::quote_sexp(val: i64) -> i64
+pub fn cranelisp_primitives::ring0_jit_symbols() -> alloc::vec::Vec<(&'static str, *const u8)>
 #[export_name = "sconcat"] pub c fn cranelisp_primitives::sconcat(xs: i64, ys: i64) -> i64

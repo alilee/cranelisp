@@ -800,10 +800,10 @@ pub fn cranelisp_backend::jit::build_isa() -> core::result::Result<alloc::sync::
 pub fn cranelisp_backend::jit::declare_intrinsics_generic<M: cranelift_module::module::Module>(module: &mut M) -> core::result::Result<cranelisp_backend::jit::IntrinsicFuncIds, cranelisp_types::error::CranelispError>
 pub fn cranelisp_backend::jit::intrinsic_symbols() -> alloc::vec::Vec<cranelisp_backend::jit::IntrinsicSymbol>
 pub fn cranelisp_backend::jit::jit_free_memory_call_count() -> u64
-pub mod cranelisp_backend::operators
-pub fn cranelisp_backend::operators::emit_builtin_op<M: cranelift_module::module::Module>(builder: &mut cranelift_frontend::frontend::FunctionBuilder<'_>, name: &str, args: &[cranelift_codegen::ir::entities::Value], span: cranelisp_types::span::Span, module: &mut M, panic_func_id: core::option::Option<cranelift_module::module::FuncId>) -> core::result::Result<cranelift_codegen::ir::entities::Value, cranelisp_types::error::CranelispError>
-pub fn cranelisp_backend::operators::is_known_builtin(name: &str) -> bool
-pub fn cranelisp_backend::operators::primitive_for_trait_method(trait_name: &cranelisp_types::newtype::TraitName, method_name: &cranelisp_types::newtype::Symbol, impl_type: &cranelisp_types::newtype::TypeName) -> core::option::Option<&'static str>
+pub mod cranelisp_backend::primitives_inline
+pub fn cranelisp_backend::primitives_inline::is_known_builtin(name: &str) -> bool
+pub fn cranelisp_backend::primitives_inline::primitive_for_trait_method(trait_name: &cranelisp_types::newtype::TraitName, method_name: &cranelisp_types::newtype::Symbol, impl_type: &cranelisp_types::newtype::TypeName) -> core::option::Option<&'static str>
+pub fn cranelisp_backend::primitives_inline::try_emit_inline_primitive<M: cranelift_module::module::Module>(builder: &mut cranelift_frontend::frontend::FunctionBuilder<'_>, name: &str, args: &[cranelift_codegen::ir::entities::Value], span: cranelisp_types::span::Span, module: &mut M, panic_func_id: core::option::Option<cranelift_module::module::FuncId>) -> core::option::Option<core::result::Result<cranelift_codegen::ir::entities::Value, cranelisp_types::error::CranelispError>>
 pub struct cranelisp_backend::CompilationResult
 pub cranelisp_backend::CompilationResult::artifacts: std::collections::hash::map::HashMap<cranelisp_types::newtype::Symbol, cranelisp_backend::FunctionArtifacts>
 pub cranelisp_backend::CompilationResult::code_ptrs: std::collections::hash::map::HashMap<cranelisp_types::newtype::Symbol, *const u8>

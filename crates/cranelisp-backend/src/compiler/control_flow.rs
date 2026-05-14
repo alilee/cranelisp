@@ -10,7 +10,7 @@ use cranelift_module::{Linkage, Module};
 use cranelisp_types::{ErrorLocation, CranelispError, Expr, HeapCategory, ResolvedCall, Span, Symbol, Type};
 
 use crate::heap::{self, HeapAdt, HeapClosure};
-use crate::operators;
+use crate::primitives_inline;
 
 use super::FnCompiler;
 
@@ -1346,7 +1346,7 @@ where
                 } => {
                     // Check if this maps to an inline primitive (e.g., add-i64 → iadd).
                     if let Some(prim_name) =
-                        operators::primitive_for_trait_method(&trait_name.name, method_name, &impl_type.name)
+                        primitives_inline::primitive_for_trait_method(&trait_name.name, method_name, &impl_type.name)
                     {
                         if is_extern_primitive_in_wrapper(prim_name) {
                             return emit_extern_call_in_wrapper(
@@ -1362,11 +1362,18 @@ where
                             return Ok(builder.ins().bxor_imm(eq_result, 1));
                         }
 
-                        // Inline builtin (e.g., add-i64 → iadd).
-                        return operators::emit_builtin_op(
+                        // Inline builtin (e.g., add-i64 → iadd) — or fall through
+                        // to wrapper GOT-indirect call if outside the inline table.
+                        match primitives_inline::try_emit_inline_primitive(
                             builder, prim_name, all_args, span,
                             self.module, self.ctx.panic_func_id,
-                        );
+                        ) {
+                            Some(result) => return result,
+                            None => {
+                                let sym = Symbol::from(prim_name);
+                                return self.emit_wrapper_call(builder, &sym, all_args, span);
+                            }
+                        }
                     }
 
                     // Not a primitive: user-defined trait method — call by mangled name.
@@ -1380,11 +1387,20 @@ where
                             builder, self.module, jit_name, all_args, span,
                         );
                     }
-                    if operators::is_known_builtin(jit_name) {
-                        return operators::emit_builtin_op(
+                    if primitives_inline::is_known_builtin(jit_name) {
+                        match primitives_inline::try_emit_inline_primitive(
                             builder, jit_name, all_args, span,
                             self.module, self.ctx.panic_func_id,
-                        );
+                        ) {
+                            Some(result) => return result,
+                            None => {
+                                // Drift between is_known_builtin and the
+                                // inline table — fall through to wrapper
+                                // GOT-indirect call.
+                                let sym = Symbol::from(jit_name.as_ref());
+                                return self.emit_wrapper_call(builder, &sym, all_args, span);
+                            }
+                        }
                     }
                     // Unknown builtin: treat as extern.
                     return emit_extern_call_in_wrapper(

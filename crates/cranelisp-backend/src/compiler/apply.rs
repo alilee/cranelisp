@@ -10,7 +10,7 @@ use cranelift_module::Module;
 use cranelisp_types::{ErrorLocation, CranelispError, Expr, HeapCategory, ResolvedCall, Span, Symbol};
 
 use crate::heap::{self, HeapAdt, HeapClosure};
-use crate::operators;
+use crate::primitives_inline;
 
 use super::FnCompiler;
 
@@ -178,20 +178,38 @@ where
                 // JIT symbol names are resolved by the typechecker. Platform
                 // functions use consuming convention — the DLL owns heap args
                 // (e.g., CLString::own() captures the string).
-                if !operators::is_known_builtin(op_name) {
+                if !primitives_inline::is_known_builtin(op_name) {
                     let arg_vals = self.compile_consuming_arg_list(args)?;
                     self.in_tail_position = saved_tail;
                     return self.compile_extern_call(op_name, &arg_vals, span);
                 }
 
-                // Inline builtin operators (arithmetic, comparison, boolean).
+                // Inline Ring 0 primitive (arithmetic, comparison, boolean).
                 // All operands are NeverHeap (Int/Bool/Float) — no dec work.
+                //
+                // Per FIXME 0174 + `facades/backend.md` §"Non-goals / forbidden
+                // patterns": `try_emit_inline_primitive` returns `None` for
+                // names outside the inline table — the caller MUST fall
+                // through to the GOT-indirect path. `is_known_builtin` is
+                // checked above so by this point the name IS in the table,
+                // but we still pattern-match the `Some` arm conservatively;
+                // a None here would indicate the two tables drifted apart.
                 let arg_vals = self.compile_arg_list(args)?;
                 self.in_tail_position = saved_tail;
-                operators::emit_builtin_op(
+                match primitives_inline::try_emit_inline_primitive(
                     &mut self.builder, op_name, &arg_vals, span,
                     self.module, self.ctx.panic_func_id,
-                )
+                ) {
+                    Some(result) => result,
+                    None => {
+                        // Drift between `is_known_builtin` and
+                        // `try_emit_inline_primitive`: fall through to the
+                        // GOT-indirect path (Ring 0 primitives have GOT
+                        // slots per FIXME 0174 resolution).
+                        let sym = Symbol::from(op_name.as_ref());
+                        self.compile_direct_call(&sym, &arg_vals, span)
+                    }
+                }
             }
             ResolvedCall::TraitMethod {
                 ref trait_name,
@@ -201,7 +219,7 @@ where
             } => {
                 // Check if this is a known primitive trait method (inline IR).
                 if let Some(prim_name) =
-                    operators::primitive_for_trait_method(&trait_name.name, method_name, &impl_type.name)
+                    primitives_inline::primitive_for_trait_method(&trait_name.name, method_name, &impl_type.name)
                 {
                     // Decision 24 (Sprint 56 Step 2c): consuming convention —
                     // mirror the BuiltinFn arm above.
@@ -225,12 +243,21 @@ where
                     }
 
                     // Inline primitive trait method (NeverHeap operands).
+                    // Per FIXME 0174: `try_emit_inline_primitive` returns None
+                    // for names outside the inline table — fall through to
+                    // the standard GOT-indirect path for those.
                     let arg_vals = self.compile_arg_list(args)?;
                     self.in_tail_position = saved_tail;
-                    return operators::emit_builtin_op(
+                    match primitives_inline::try_emit_inline_primitive(
                         &mut self.builder, prim_name, &arg_vals, span,
                         self.module, self.ctx.panic_func_id,
-                    );
+                    ) {
+                        Some(result) => return result,
+                        None => {
+                            let sym = Symbol::from(prim_name);
+                            return self.compile_direct_call(&sym, &arg_vals, span);
+                        }
+                    }
                 }
 
                 // Not a primitive: user function — consuming convention.

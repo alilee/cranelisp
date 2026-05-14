@@ -121,6 +121,19 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             let scheme = mono(prim.ty.clone());
             let docstring = builtin_docstring(prim.name.as_ref());
 
+            // Per FIXME 0174 + `design/arch/facades/backend.md` §"Non-goals /
+            // forbidden patterns": Ring 0 primitives MUST be addressable as
+            // ordinary `ModuleEntry::Def` entries with a `got_slot: Some(_)`
+            // so the standard GOT-indirect dispatch path resolves the call.
+            // The code pointer is written to the GOT slot by the integration
+            // crate's post-`register_builtins` pass that pairs Ring 0 names
+            // with `cranelisp_primitives::ring0::ring0_jit_symbols()`.
+            //
+            // `jit_name: Some(_)` mirrors the Ring 1 extern shape: backend
+            // emits `Linkage::Import` calls to this JIT-registered symbol
+            // both as the GOT-stored code pointer and as the auto-curry
+            // extern-call wrapper target.
+            let slot = primitives_table.allocate_got_slot();
             primitives_table.insert(
                 prim.name.clone(),
                 ModuleEntry::Def {
@@ -130,10 +143,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     param_names: prim.param_names.clone(),
                     kind: Box::new(DefKind::Primitive {
                         primitive_kind: PrimitiveKind::Inline,
-                        jit_name: None,
+                        jit_name: Some(JitSymbol::from(prim.name.as_ref())),
                     }),
                     callees: Vec::new(),
-                    got_slot: None,
+                    got_slot: Some(slot),
                     trait_origin: None,
                 ast: None,
                     code: None,

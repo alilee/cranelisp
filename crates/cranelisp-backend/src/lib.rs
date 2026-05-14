@@ -22,7 +22,7 @@ pub mod got;
 pub mod got_observer;
 pub mod heap;
 pub mod jit;
-pub mod operators;
+pub mod primitives_inline;
 
 use std::collections::HashMap;
 

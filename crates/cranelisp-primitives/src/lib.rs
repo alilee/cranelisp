@@ -51,8 +51,11 @@ pub mod bool;
 pub mod float;
 pub mod int;
 pub mod marshal;
+pub mod ring0;
 pub mod string;
 pub mod vec;
+
+pub use ring0::ring0_jit_symbols;
 
 pub use string::{
     str_char_at, str_concat, str_contains, str_ends_with, str_eq, str_join, str_len,

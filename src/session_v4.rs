@@ -214,6 +214,46 @@ enum ReplCommand<'a> {
 /// Sentinel string returned by /quit to signal the REPL loop to exit.
 pub const QUIT_SENTINEL: &str = "\x00QUIT";
 
+/// Populate the `primitives` synthetic module's GOT slots with Ring 0
+/// shim-fn addresses.
+///
+/// Per FIXME 0174 + Decision 43, Ring 0 primitives (`add-i64`, …, `not`,
+/// `eq-bool`) are registered in `typecheck::builtins::register_primitives`
+/// with `got_slot: Some(_)` and `jit_name: Some(_)`. Their code pointers
+/// are written here, immediately after `register_builtins` returns, by
+/// pairing each name with the Rust shim address surfaced by
+/// `cranelisp_primitives::ring0::ring0_jit_symbols()`.
+///
+/// The standard GOT-indirect dispatch (`compile_direct_call` →
+/// `resolve_got_target` → `__cranelisp_got_primitives[slot]`) resolves the
+/// call to these shim fn ptrs. The `primitives_inline.rs` inline-substitution
+/// path is a separate code-size + dispatch-cost optimisation: identical
+/// semantics, faster code. Mappable paths
+/// (`(let [f not] (f true))`) always work via the GOT-stored shim ptr.
+///
+/// Idempotent — safe to call after every `register_builtins`; the shim
+/// pointers are stable for the process lifetime.
+fn populate_ring0_got_slots(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
+) {
+    let primitives_path = ModuleFullPath::from("primitives");
+    let Some(table) = symbol_tables.get(&primitives_path) else {
+        // primitives module not seeded — register_builtins ordering broken.
+        // Quietly skip; the regular pipeline error path will surface the
+        // missing-module condition when a Ring 0 call is compiled.
+        return;
+    };
+    for (name, ptr) in cranelisp_primitives::ring0::ring0_jit_symbols() {
+        let Some(entry) = table.get(name) else {
+            continue;
+        };
+        let cranelisp_types::ModuleEntry::Def { got_slot: Some(slot), .. } = entry else {
+            continue;
+        };
+        table.got.store_slot(*slot, ptr);
+    }
+}
+
 /// Parse a slash command from trimmed input.
 fn parse_slash_command(input: &str) -> Option<ReplCommand<'_>> {
     if !input.starts_with('/') {
@@ -843,6 +883,15 @@ impl CompilerSession {
 
         // Seed builtins into symbol tables before any user modules load.
         cranelisp_typecheck::register_builtins(&symbol_tables, &next_type_id);
+
+        // Per FIXME 0174 + Decision 43: Ring 0 primitives (`add-i64`, `not`,
+        // …) are now ordinary `ModuleEntry::Def` entries with `got_slot:
+        // Some(_)`. Pair each name with its Rust shim address and write the
+        // pointer into the primitives module's GOT slot so the standard
+        // GOT-indirect dispatch path (and the mappable-path
+        // `(let [f not] (f true))`) resolves correctly. Inline substitution
+        // in backend remains a separate optimisation.
+        populate_ring0_got_slots(&symbol_tables);
 
         // Sprint 66 Wave 3a-γ: build the session-wide TestRunnerState. The
         // `tc_modules` pointer is derived from the `symbol_tables` DashMap

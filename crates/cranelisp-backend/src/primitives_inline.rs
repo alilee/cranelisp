@@ -1,39 +1,65 @@
-// Builtin primitive codegen.
+// Ring 0 inline-substitution table — uniform-dispatch optimisation.
 //
-// Uses the monomorphic primitive names from ring0_primitives() in cranelisp-types.
-// The primitive name alone encodes the operand types — no operand_type parameter
-// is needed. For example, `add-i64` is always Int+Int→Int and `add-f64` is
-// always Float+Float→Float.
+// Per Decision 43 + FIXME 0174 (`design/arch/fixmes/0174-...uniform-primitive-dispatch.md`) +
+// `design/arch/facades/backend.md` §"Non-goals / forbidden patterns": this
+// file holds ONLY the name-keyed inline-Cranelift-IR emission table for the
+// Ring 0 primitives. It is **not** a dispatch path — the dispatch path is the
+// standard `compile_direct_call` → `resolve_got_target` → GOT-indirect call
+// that every user function uses. `try_emit_inline_primitive` is consulted
+// **before** that fallback as an opportunistic optimisation: if the call
+// site's symbol matches the inline table, emit inline CLIF; if not, return
+// `None` and let the caller fall through to the standard path.
 //
-// The 19 Ring 0 primitives:
+// The Rust shim fns in `cranelisp-primitives::ring0` are the GOT-indirect
+// emission targets. They have identical semantics to the inline CLIF;
+// the inline path is a code-size + dispatch-cost win, not a correctness
+// requirement. Mappable paths (`(let [f not] (f true))`) and call-by-symbol
+// always work because the GOT slot is populated regardless of whether the
+// call site is in the inline table.
+//
+// Ring 0 primitives covered (the 23 names that participate in inline
+// substitution; trace `cranelisp-primitives::ring0::ring0_jit_symbols`):
 //   add-i64, sub-i64, mul-i64, div-i64
 //   add-f64, sub-f64, mul-f64, div-f64
-//   eq-i64, lt-i64, gt-i64, le-i64, ge-i64
-//   eq-f64, lt-f64, gt-f64, le-f64, ge-f64
-//   not
+//   eq-i64, lt-i64, gt-i64, le-i64, ge-i64, neq-i64
+//   eq-f64, lt-f64, gt-f64, le-f64, ge-f64, neq-f64
+//   not, eq-bool, neq-bool
 
 use cranelift::prelude::*;
 use cranelift_module::{FuncId, Module};
 
 use cranelisp_types::{ErrorLocation, CranelispError, Span, Symbol, TraitName, TypeName};
 
-/// Emit inline Cranelift IR for a builtin primitive.
+/// Try to emit inline Cranelift IR for a Ring 0 primitive call.
 ///
-/// The `name` is a monomorphic primitive name such as `add-i64` or
-/// `mul-f64`. The name alone determines which Cranelift instruction
-/// is emitted — no separate operand type is needed.
+/// Returns:
+/// - `Some(Ok(value))` — the symbol matched the inline table; `value` is the
+///   result of the inline emission.
+/// - `Some(Err(_))` — the symbol matched but inline emission failed (e.g.,
+///   arity mismatch, `panic_func_id` missing for `div-i64`).
+/// - `None` — the symbol is NOT in the inline table; the caller MUST fall
+///   through to the standard GOT-indirect call path. This is not an error.
 ///
-/// Returns the result Value. All values are i64 at the Cranelift boundary;
-/// floats are bitcast to/from i64 as needed.
-pub fn emit_builtin_op<M: Module>(
+/// The `name` is a monomorphic primitive name such as `add-i64` or `mul-f64`.
+/// The name alone determines which Cranelift instruction is emitted — no
+/// separate operand type is needed.
+///
+/// All values are i64 at the Cranelift boundary; floats are bitcast to/from
+/// i64 as needed.
+///
+/// Forbidden-patterns clause (`facades/backend.md`): callers MUST handle the
+/// `None` case by falling through to GOT-indirect dispatch — they MUST NOT
+/// raise an error on `None`. Returning an error on `None` would re-introduce
+/// the name-keyed dispatch-only shape that this rename eliminated.
+pub fn try_emit_inline_primitive<M: Module>(
     builder: &mut FunctionBuilder,
     name: &str,
     args: &[Value],
     span: Span,
     module: &mut M,
     panic_func_id: Option<FuncId>,
-) -> Result<Value, CranelispError> {
-    match name {
+) -> Option<Result<Value, CranelispError>> {
+    let result = match name {
         // Integer arithmetic
         "add-i64" => emit_binary_int(builder, name, args, span, |b, l, r| b.ins().iadd(l, r)),
         "sub-i64" => emit_binary_int(builder, name, args, span, |b, l, r| b.ins().isub(l, r)),
@@ -70,17 +96,24 @@ pub fn emit_builtin_op<M: Module>(
         "neq-i64" => emit_int_cmp(builder, name, args, IntCC::NotEqual, span),
         "neq-f64" => emit_float_cmp(builder, name, args, FloatCC::NotEqual, span),
         "neq-bool" => emit_int_cmp(builder, name, args, IntCC::NotEqual, span),
-        _ => Err(CranelispError::CodegenError {
-            message: format!("unknown builtin primitive: {name}"),
-            location: ErrorLocation::from_span(span),
-        }),
-    }
+
+        // Not in the inline table — caller falls through to GOT-indirect.
+        _ => return None,
+    };
+    Some(result)
 }
 
 /// Check if a name is a known inline builtin primitive.
 ///
-/// Returns true for names handled by `emit_builtin_op`. Names not in this
-/// set are assumed to be extern calls (e.g., platform effect functions).
+/// Returns true for names handled by `try_emit_inline_primitive`. Names not
+/// in this set are either extern primitives (Ring 1 `str-concat`, …) or
+/// user-defined fns — both resolved via the standard GOT-indirect path.
+///
+/// Retained as a callable predicate for backend dispatch sites that need to
+/// branch BEFORE calling `try_emit_inline_primitive` (e.g., to choose an arg
+/// compilation strategy — NeverHeap inline operands vs consuming heap externs).
+/// New callers should prefer matching on the `Option` return of
+/// `try_emit_inline_primitive` directly.
 pub fn is_known_builtin(name: &str) -> bool {
     matches!(
         name,
