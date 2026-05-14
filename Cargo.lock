@@ -354,6 +354,7 @@ dependencies = [
 name = "cranelisp-runtime"
 version = "0.1.0"
 dependencies = [
+ "cranelisp-intrinsics",
  "cranelisp-platform",
  "cranelisp-types",
  "rayon",

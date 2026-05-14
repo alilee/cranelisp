@@ -1,1 +1,306 @@
 pub mod cranelisp_intrinsics
+pub mod cranelisp_intrinsics::io_observer
+#[non_exhaustive] pub enum cranelisp_intrinsics::io_observer::IoEvent
+pub cranelisp_intrinsics::io_observer::IoEvent::BindEnter
+pub cranelisp_intrinsics::io_observer::IoEvent::BindEnter::cont_ptr: i64
+pub cranelisp_intrinsics::io_observer::IoEvent::BindEnter::inner_ptr: i64
+pub cranelisp_intrinsics::io_observer::IoEvent::BindEnter::is_fresh: bool
+pub cranelisp_intrinsics::io_observer::IoEvent::BindExit
+pub cranelisp_intrinsics::io_observer::IoEvent::BindExit::new_current: i64
+pub cranelisp_intrinsics::io_observer::IoEvent::Cont
+pub cranelisp_intrinsics::io_observer::IoEvent::Cont::cont_ptr: i64
+pub cranelisp_intrinsics::io_observer::IoEvent::Cont::is_fresh: bool
+pub cranelisp_intrinsics::io_observer::IoEvent::Cont::new_depth: u32
+pub cranelisp_intrinsics::io_observer::IoEvent::ParBarrierForce
+pub cranelisp_intrinsics::io_observer::IoEvent::ParBarrierForce::token: i64
+pub cranelisp_intrinsics::io_observer::IoEvent::ParJoin
+pub cranelisp_intrinsics::io_observer::IoEvent::ParJoin::count: u32
+pub cranelisp_intrinsics::io_observer::IoEvent::ParJoin::parent_ptr: i64
+pub cranelisp_intrinsics::io_observer::IoEvent::ParSerialGroupEnter
+pub cranelisp_intrinsics::io_observer::IoEvent::ParSerialGroupEnter::branch_count: u32
+pub cranelisp_intrinsics::io_observer::IoEvent::ParSerialGroupEnter::token: i64
+pub cranelisp_intrinsics::io_observer::IoEvent::ParSpark
+pub cranelisp_intrinsics::io_observer::IoEvent::ParSpark::branch_idx: u32
+pub cranelisp_intrinsics::io_observer::IoEvent::ParSpark::parent_ptr: i64
+pub cranelisp_intrinsics::io_observer::IoEvent::ParSpark::token: i64
+pub cranelisp_intrinsics::io_observer::IoEvent::PlatformEffect
+pub cranelisp_intrinsics::io_observer::IoEvent::PlatformEffect::resource_token: i64
+pub cranelisp_intrinsics::io_observer::IoEvent::PlatformEffect::scheduling_class: u8
+pub cranelisp_intrinsics::io_observer::IoEvent::PlatformEffect::thunk_ptr: i64
+pub cranelisp_intrinsics::io_observer::IoEvent::PureStep
+pub cranelisp_intrinsics::io_observer::IoEvent::PureStep::is_fresh: bool
+pub cranelisp_intrinsics::io_observer::IoEvent::PureStep::value: i64
+pub cranelisp_intrinsics::io_observer::IoEvent::TrampolineEnter
+pub cranelisp_intrinsics::io_observer::IoEvent::TrampolineEnter::io_ptr: i64
+pub cranelisp_intrinsics::io_observer::IoEvent::TrampolineExit
+pub cranelisp_intrinsics::io_observer::IoEvent::TrampolineExit::result: i64
+impl core::clone::Clone for cranelisp_intrinsics::io_observer::IoEvent
+pub fn cranelisp_intrinsics::io_observer::IoEvent::clone(&self) -> cranelisp_intrinsics::io_observer::IoEvent
+impl core::cmp::Eq for cranelisp_intrinsics::io_observer::IoEvent
+impl core::cmp::PartialEq for cranelisp_intrinsics::io_observer::IoEvent
+pub fn cranelisp_intrinsics::io_observer::IoEvent::eq(&self, other: &cranelisp_intrinsics::io_observer::IoEvent) -> bool
+impl core::fmt::Debug for cranelisp_intrinsics::io_observer::IoEvent
+pub fn cranelisp_intrinsics::io_observer::IoEvent::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for cranelisp_intrinsics::io_observer::IoEvent
+impl core::marker::StructuralPartialEq for cranelisp_intrinsics::io_observer::IoEvent
+impl core::marker::Freeze for cranelisp_intrinsics::io_observer::IoEvent
+impl core::marker::Send for cranelisp_intrinsics::io_observer::IoEvent
+impl core::marker::Sync for cranelisp_intrinsics::io_observer::IoEvent
+impl core::marker::Unpin for cranelisp_intrinsics::io_observer::IoEvent
+impl core::marker::UnsafeUnpin for cranelisp_intrinsics::io_observer::IoEvent
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_intrinsics::io_observer::IoEvent
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_intrinsics::io_observer::IoEvent
+#[non_exhaustive] #[repr(u8)] pub enum cranelisp_intrinsics::io_observer::IoEventTag
+pub cranelisp_intrinsics::io_observer::IoEventTag::BindEnter
+pub cranelisp_intrinsics::io_observer::IoEventTag::BindExit
+pub cranelisp_intrinsics::io_observer::IoEventTag::ContPop
+pub cranelisp_intrinsics::io_observer::IoEventTag::ContPush
+pub cranelisp_intrinsics::io_observer::IoEventTag::ParBarrierForce
+pub cranelisp_intrinsics::io_observer::IoEventTag::ParJoin
+pub cranelisp_intrinsics::io_observer::IoEventTag::ParSerialGroupEnter
+pub cranelisp_intrinsics::io_observer::IoEventTag::ParSpark
+pub cranelisp_intrinsics::io_observer::IoEventTag::PlatformEffect
+pub cranelisp_intrinsics::io_observer::IoEventTag::PureStep
+pub cranelisp_intrinsics::io_observer::IoEventTag::TrampolineEnter
+pub cranelisp_intrinsics::io_observer::IoEventTag::TrampolineExit
+impl core::clone::Clone for cranelisp_intrinsics::io_observer::IoEventTag
+pub fn cranelisp_intrinsics::io_observer::IoEventTag::clone(&self) -> cranelisp_intrinsics::io_observer::IoEventTag
+impl core::cmp::Eq for cranelisp_intrinsics::io_observer::IoEventTag
+impl core::cmp::PartialEq for cranelisp_intrinsics::io_observer::IoEventTag
+pub fn cranelisp_intrinsics::io_observer::IoEventTag::eq(&self, other: &cranelisp_intrinsics::io_observer::IoEventTag) -> bool
+impl core::fmt::Debug for cranelisp_intrinsics::io_observer::IoEventTag
+pub fn cranelisp_intrinsics::io_observer::IoEventTag::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for cranelisp_intrinsics::io_observer::IoEventTag
+impl core::marker::StructuralPartialEq for cranelisp_intrinsics::io_observer::IoEventTag
+impl core::marker::Freeze for cranelisp_intrinsics::io_observer::IoEventTag
+impl core::marker::Send for cranelisp_intrinsics::io_observer::IoEventTag
+impl core::marker::Sync for cranelisp_intrinsics::io_observer::IoEventTag
+impl core::marker::Unpin for cranelisp_intrinsics::io_observer::IoEventTag
+impl core::marker::UnsafeUnpin for cranelisp_intrinsics::io_observer::IoEventTag
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_intrinsics::io_observer::IoEventTag
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_intrinsics::io_observer::IoEventTag
+pub fn cranelisp_intrinsics::io_observer::emit(tag: cranelisp_intrinsics::io_observer::IoEventTag, event: &cranelisp_intrinsics::io_observer::IoEvent)
+pub fn cranelisp_intrinsics::io_observer::register_io_observer(observer: core::option::Option<cranelisp_intrinsics::io_observer::IoObserver>)
+pub fn cranelisp_intrinsics::io_observer::trace_anchor() -> &'static std::time::Instant
+pub type cranelisp_intrinsics::io_observer::IoObserver = fn(cranelisp_intrinsics::io_observer::IoEventTag, &cranelisp_intrinsics::io_observer::IoEvent)
+pub mod cranelisp_intrinsics::io_trace
+pub enum cranelisp_intrinsics::io_trace::IoTracePayload
+pub cranelisp_intrinsics::io_trace::IoTracePayload::BindEnter
+pub cranelisp_intrinsics::io_trace::IoTracePayload::BindEnter::cont_ptr: i64
+pub cranelisp_intrinsics::io_trace::IoTracePayload::BindEnter::inner_ptr: i64
+pub cranelisp_intrinsics::io_trace::IoTracePayload::BindEnter::is_fresh: bool
+pub cranelisp_intrinsics::io_trace::IoTracePayload::BindExit
+pub cranelisp_intrinsics::io_trace::IoTracePayload::BindExit::new_current: i64
+pub cranelisp_intrinsics::io_trace::IoTracePayload::Cont
+pub cranelisp_intrinsics::io_trace::IoTracePayload::Cont::cont_ptr: i64
+pub cranelisp_intrinsics::io_trace::IoTracePayload::Cont::is_fresh: bool
+pub cranelisp_intrinsics::io_trace::IoTracePayload::Cont::new_depth: u32
+pub cranelisp_intrinsics::io_trace::IoTracePayload::ParBarrierForce
+pub cranelisp_intrinsics::io_trace::IoTracePayload::ParBarrierForce::token: i64
+pub cranelisp_intrinsics::io_trace::IoTracePayload::ParJoin
+pub cranelisp_intrinsics::io_trace::IoTracePayload::ParJoin::count: u32
+pub cranelisp_intrinsics::io_trace::IoTracePayload::ParJoin::parent_ptr: i64
+pub cranelisp_intrinsics::io_trace::IoTracePayload::ParSerialGroupEnter
+pub cranelisp_intrinsics::io_trace::IoTracePayload::ParSerialGroupEnter::branch_count: u32
+pub cranelisp_intrinsics::io_trace::IoTracePayload::ParSerialGroupEnter::token: i64
+pub cranelisp_intrinsics::io_trace::IoTracePayload::ParSpark
+pub cranelisp_intrinsics::io_trace::IoTracePayload::ParSpark::branch_idx: u32
+pub cranelisp_intrinsics::io_trace::IoTracePayload::ParSpark::parent_ptr: i64
+pub cranelisp_intrinsics::io_trace::IoTracePayload::ParSpark::token: i64
+pub cranelisp_intrinsics::io_trace::IoTracePayload::PlatformEffect
+pub cranelisp_intrinsics::io_trace::IoTracePayload::PlatformEffect::resource_token: i64
+pub cranelisp_intrinsics::io_trace::IoTracePayload::PlatformEffect::scheduling_class: u8
+pub cranelisp_intrinsics::io_trace::IoTracePayload::PlatformEffect::thunk_ptr: i64
+pub cranelisp_intrinsics::io_trace::IoTracePayload::PureStep
+pub cranelisp_intrinsics::io_trace::IoTracePayload::PureStep::is_fresh: bool
+pub cranelisp_intrinsics::io_trace::IoTracePayload::PureStep::value: i64
+pub cranelisp_intrinsics::io_trace::IoTracePayload::TrampolineEnter
+pub cranelisp_intrinsics::io_trace::IoTracePayload::TrampolineEnter::io_ptr: i64
+pub cranelisp_intrinsics::io_trace::IoTracePayload::TrampolineExit
+pub cranelisp_intrinsics::io_trace::IoTracePayload::TrampolineExit::result: i64
+impl core::clone::Clone for cranelisp_intrinsics::io_trace::IoTracePayload
+pub fn cranelisp_intrinsics::io_trace::IoTracePayload::clone(&self) -> cranelisp_intrinsics::io_trace::IoTracePayload
+impl core::cmp::Eq for cranelisp_intrinsics::io_trace::IoTracePayload
+impl core::cmp::PartialEq for cranelisp_intrinsics::io_trace::IoTracePayload
+pub fn cranelisp_intrinsics::io_trace::IoTracePayload::eq(&self, other: &cranelisp_intrinsics::io_trace::IoTracePayload) -> bool
+impl core::fmt::Debug for cranelisp_intrinsics::io_trace::IoTracePayload
+pub fn cranelisp_intrinsics::io_trace::IoTracePayload::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for cranelisp_intrinsics::io_trace::IoTracePayload
+impl core::marker::StructuralPartialEq for cranelisp_intrinsics::io_trace::IoTracePayload
+impl core::marker::Freeze for cranelisp_intrinsics::io_trace::IoTracePayload
+impl core::marker::Send for cranelisp_intrinsics::io_trace::IoTracePayload
+impl core::marker::Sync for cranelisp_intrinsics::io_trace::IoTracePayload
+impl core::marker::Unpin for cranelisp_intrinsics::io_trace::IoTracePayload
+impl core::marker::UnsafeUnpin for cranelisp_intrinsics::io_trace::IoTracePayload
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_intrinsics::io_trace::IoTracePayload
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_intrinsics::io_trace::IoTracePayload
+#[repr(u8)] pub enum cranelisp_intrinsics::io_trace::IoTraceTag
+pub cranelisp_intrinsics::io_trace::IoTraceTag::BindEnter
+pub cranelisp_intrinsics::io_trace::IoTraceTag::BindExit
+pub cranelisp_intrinsics::io_trace::IoTraceTag::ContPop
+pub cranelisp_intrinsics::io_trace::IoTraceTag::ContPush
+pub cranelisp_intrinsics::io_trace::IoTraceTag::ParBarrierForce
+pub cranelisp_intrinsics::io_trace::IoTraceTag::ParJoin
+pub cranelisp_intrinsics::io_trace::IoTraceTag::ParSerialGroupEnter
+pub cranelisp_intrinsics::io_trace::IoTraceTag::ParSpark
+pub cranelisp_intrinsics::io_trace::IoTraceTag::PlatformEffect
+pub cranelisp_intrinsics::io_trace::IoTraceTag::PureStep
+pub cranelisp_intrinsics::io_trace::IoTraceTag::TrampolineEnter
+pub cranelisp_intrinsics::io_trace::IoTraceTag::TrampolineExit
+impl core::clone::Clone for cranelisp_intrinsics::io_trace::IoTraceTag
+pub fn cranelisp_intrinsics::io_trace::IoTraceTag::clone(&self) -> cranelisp_intrinsics::io_trace::IoTraceTag
+impl core::cmp::Eq for cranelisp_intrinsics::io_trace::IoTraceTag
+impl core::cmp::PartialEq for cranelisp_intrinsics::io_trace::IoTraceTag
+pub fn cranelisp_intrinsics::io_trace::IoTraceTag::eq(&self, other: &cranelisp_intrinsics::io_trace::IoTraceTag) -> bool
+impl core::fmt::Debug for cranelisp_intrinsics::io_trace::IoTraceTag
+pub fn cranelisp_intrinsics::io_trace::IoTraceTag::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for cranelisp_intrinsics::io_trace::IoTraceTag
+impl core::marker::StructuralPartialEq for cranelisp_intrinsics::io_trace::IoTraceTag
+impl core::marker::Freeze for cranelisp_intrinsics::io_trace::IoTraceTag
+impl core::marker::Send for cranelisp_intrinsics::io_trace::IoTraceTag
+impl core::marker::Sync for cranelisp_intrinsics::io_trace::IoTraceTag
+impl core::marker::Unpin for cranelisp_intrinsics::io_trace::IoTraceTag
+impl core::marker::UnsafeUnpin for cranelisp_intrinsics::io_trace::IoTraceTag
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_intrinsics::io_trace::IoTraceTag
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_intrinsics::io_trace::IoTraceTag
+pub enum cranelisp_intrinsics::io_trace::TraceFilter
+pub cranelisp_intrinsics::io_trace::TraceFilter::All
+impl core::clone::Clone for cranelisp_intrinsics::io_trace::TraceFilter
+pub fn cranelisp_intrinsics::io_trace::TraceFilter::clone(&self) -> cranelisp_intrinsics::io_trace::TraceFilter
+impl core::cmp::Eq for cranelisp_intrinsics::io_trace::TraceFilter
+impl core::cmp::PartialEq for cranelisp_intrinsics::io_trace::TraceFilter
+pub fn cranelisp_intrinsics::io_trace::TraceFilter::eq(&self, other: &cranelisp_intrinsics::io_trace::TraceFilter) -> bool
+impl core::fmt::Debug for cranelisp_intrinsics::io_trace::TraceFilter
+pub fn cranelisp_intrinsics::io_trace::TraceFilter::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for cranelisp_intrinsics::io_trace::TraceFilter
+impl core::marker::StructuralPartialEq for cranelisp_intrinsics::io_trace::TraceFilter
+impl core::marker::Freeze for cranelisp_intrinsics::io_trace::TraceFilter
+impl core::marker::Send for cranelisp_intrinsics::io_trace::TraceFilter
+impl core::marker::Sync for cranelisp_intrinsics::io_trace::TraceFilter
+impl core::marker::Unpin for cranelisp_intrinsics::io_trace::TraceFilter
+impl core::marker::UnsafeUnpin for cranelisp_intrinsics::io_trace::TraceFilter
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_intrinsics::io_trace::TraceFilter
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_intrinsics::io_trace::TraceFilter
+pub struct cranelisp_intrinsics::io_trace::FlushGuard(_)
+impl cranelisp_intrinsics::io_trace::FlushGuard
+pub fn cranelisp_intrinsics::io_trace::FlushGuard::new() -> Self
+impl core::default::Default for cranelisp_intrinsics::io_trace::FlushGuard
+pub fn cranelisp_intrinsics::io_trace::FlushGuard::default() -> Self
+impl core::ops::drop::Drop for cranelisp_intrinsics::io_trace::FlushGuard
+pub fn cranelisp_intrinsics::io_trace::FlushGuard::drop(&mut self)
+impl core::marker::Freeze for cranelisp_intrinsics::io_trace::FlushGuard
+impl core::marker::Send for cranelisp_intrinsics::io_trace::FlushGuard
+impl core::marker::Sync for cranelisp_intrinsics::io_trace::FlushGuard
+impl core::marker::Unpin for cranelisp_intrinsics::io_trace::FlushGuard
+impl core::marker::UnsafeUnpin for cranelisp_intrinsics::io_trace::FlushGuard
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_intrinsics::io_trace::FlushGuard
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_intrinsics::io_trace::FlushGuard
+pub struct cranelisp_intrinsics::io_trace::IoTraceEvent
+pub cranelisp_intrinsics::io_trace::IoTraceEvent::payload: cranelisp_intrinsics::io_trace::IoTracePayload
+pub cranelisp_intrinsics::io_trace::IoTraceEvent::tag: cranelisp_intrinsics::io_trace::IoTraceTag
+pub cranelisp_intrinsics::io_trace::IoTraceEvent::thread_id: std::thread::id::ThreadId
+pub cranelisp_intrinsics::io_trace::IoTraceEvent::thread_ord_id: u64
+pub cranelisp_intrinsics::io_trace::IoTraceEvent::timestamp_ns: u64
+impl core::clone::Clone for cranelisp_intrinsics::io_trace::IoTraceEvent
+pub fn cranelisp_intrinsics::io_trace::IoTraceEvent::clone(&self) -> cranelisp_intrinsics::io_trace::IoTraceEvent
+impl core::fmt::Debug for cranelisp_intrinsics::io_trace::IoTraceEvent
+pub fn cranelisp_intrinsics::io_trace::IoTraceEvent::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for cranelisp_intrinsics::io_trace::IoTraceEvent
+impl core::marker::Freeze for cranelisp_intrinsics::io_trace::IoTraceEvent
+impl core::marker::Send for cranelisp_intrinsics::io_trace::IoTraceEvent
+impl core::marker::Sync for cranelisp_intrinsics::io_trace::IoTraceEvent
+impl core::marker::Unpin for cranelisp_intrinsics::io_trace::IoTraceEvent
+impl core::marker::UnsafeUnpin for cranelisp_intrinsics::io_trace::IoTraceEvent
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_intrinsics::io_trace::IoTraceEvent
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_intrinsics::io_trace::IoTraceEvent
+pub const cranelisp_intrinsics::io_trace::IO_TRACE_BUFFER_CAPACITY: usize
+pub fn cranelisp_intrinsics::io_trace::dump_all_buffers() -> alloc::vec::Vec<cranelisp_intrinsics::io_trace::IoTraceEvent>
+pub fn cranelisp_intrinsics::io_trace::dump_thread_buffer() -> alloc::vec::Vec<cranelisp_intrinsics::io_trace::IoTraceEvent>
+pub fn cranelisp_intrinsics::io_trace::flush_to_stderr()
+pub fn cranelisp_intrinsics::io_trace::format_event_line(e: &cranelisp_intrinsics::io_trace::IoTraceEvent) -> alloc::string::String
+pub fn cranelisp_intrinsics::io_trace::install_panic_hook()
+pub fn cranelisp_intrinsics::io_trace::publish_thread_buffer()
+pub fn cranelisp_intrinsics::io_trace::record_event(tag: cranelisp_intrinsics::io_trace::IoTraceTag, payload: cranelisp_intrinsics::io_trace::IoTracePayload)
+pub fn cranelisp_intrinsics::io_trace::trace_instant_anchor() -> &'static std::time::Instant
+#[non_exhaustive] pub enum cranelisp_intrinsics::IoEvent
+pub cranelisp_intrinsics::IoEvent::BindEnter
+pub cranelisp_intrinsics::IoEvent::BindEnter::cont_ptr: i64
+pub cranelisp_intrinsics::IoEvent::BindEnter::inner_ptr: i64
+pub cranelisp_intrinsics::IoEvent::BindEnter::is_fresh: bool
+pub cranelisp_intrinsics::IoEvent::BindExit
+pub cranelisp_intrinsics::IoEvent::BindExit::new_current: i64
+pub cranelisp_intrinsics::IoEvent::Cont
+pub cranelisp_intrinsics::IoEvent::Cont::cont_ptr: i64
+pub cranelisp_intrinsics::IoEvent::Cont::is_fresh: bool
+pub cranelisp_intrinsics::IoEvent::Cont::new_depth: u32
+pub cranelisp_intrinsics::IoEvent::ParBarrierForce
+pub cranelisp_intrinsics::IoEvent::ParBarrierForce::token: i64
+pub cranelisp_intrinsics::IoEvent::ParJoin
+pub cranelisp_intrinsics::IoEvent::ParJoin::count: u32
+pub cranelisp_intrinsics::IoEvent::ParJoin::parent_ptr: i64
+pub cranelisp_intrinsics::IoEvent::ParSerialGroupEnter
+pub cranelisp_intrinsics::IoEvent::ParSerialGroupEnter::branch_count: u32
+pub cranelisp_intrinsics::IoEvent::ParSerialGroupEnter::token: i64
+pub cranelisp_intrinsics::IoEvent::ParSpark
+pub cranelisp_intrinsics::IoEvent::ParSpark::branch_idx: u32
+pub cranelisp_intrinsics::IoEvent::ParSpark::parent_ptr: i64
+pub cranelisp_intrinsics::IoEvent::ParSpark::token: i64
+pub cranelisp_intrinsics::IoEvent::PlatformEffect
+pub cranelisp_intrinsics::IoEvent::PlatformEffect::resource_token: i64
+pub cranelisp_intrinsics::IoEvent::PlatformEffect::scheduling_class: u8
+pub cranelisp_intrinsics::IoEvent::PlatformEffect::thunk_ptr: i64
+pub cranelisp_intrinsics::IoEvent::PureStep
+pub cranelisp_intrinsics::IoEvent::PureStep::is_fresh: bool
+pub cranelisp_intrinsics::IoEvent::PureStep::value: i64
+pub cranelisp_intrinsics::IoEvent::TrampolineEnter
+pub cranelisp_intrinsics::IoEvent::TrampolineEnter::io_ptr: i64
+pub cranelisp_intrinsics::IoEvent::TrampolineExit
+pub cranelisp_intrinsics::IoEvent::TrampolineExit::result: i64
+impl core::clone::Clone for cranelisp_intrinsics::io_observer::IoEvent
+pub fn cranelisp_intrinsics::io_observer::IoEvent::clone(&self) -> cranelisp_intrinsics::io_observer::IoEvent
+impl core::cmp::Eq for cranelisp_intrinsics::io_observer::IoEvent
+impl core::cmp::PartialEq for cranelisp_intrinsics::io_observer::IoEvent
+pub fn cranelisp_intrinsics::io_observer::IoEvent::eq(&self, other: &cranelisp_intrinsics::io_observer::IoEvent) -> bool
+impl core::fmt::Debug for cranelisp_intrinsics::io_observer::IoEvent
+pub fn cranelisp_intrinsics::io_observer::IoEvent::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for cranelisp_intrinsics::io_observer::IoEvent
+impl core::marker::StructuralPartialEq for cranelisp_intrinsics::io_observer::IoEvent
+impl core::marker::Freeze for cranelisp_intrinsics::io_observer::IoEvent
+impl core::marker::Send for cranelisp_intrinsics::io_observer::IoEvent
+impl core::marker::Sync for cranelisp_intrinsics::io_observer::IoEvent
+impl core::marker::Unpin for cranelisp_intrinsics::io_observer::IoEvent
+impl core::marker::UnsafeUnpin for cranelisp_intrinsics::io_observer::IoEvent
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_intrinsics::io_observer::IoEvent
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_intrinsics::io_observer::IoEvent
+#[non_exhaustive] #[repr(u8)] pub enum cranelisp_intrinsics::IoEventTag
+pub cranelisp_intrinsics::IoEventTag::BindEnter
+pub cranelisp_intrinsics::IoEventTag::BindExit
+pub cranelisp_intrinsics::IoEventTag::ContPop
+pub cranelisp_intrinsics::IoEventTag::ContPush
+pub cranelisp_intrinsics::IoEventTag::ParBarrierForce
+pub cranelisp_intrinsics::IoEventTag::ParJoin
+pub cranelisp_intrinsics::IoEventTag::ParSerialGroupEnter
+pub cranelisp_intrinsics::IoEventTag::ParSpark
+pub cranelisp_intrinsics::IoEventTag::PlatformEffect
+pub cranelisp_intrinsics::IoEventTag::PureStep
+pub cranelisp_intrinsics::IoEventTag::TrampolineEnter
+pub cranelisp_intrinsics::IoEventTag::TrampolineExit
+impl core::clone::Clone for cranelisp_intrinsics::io_observer::IoEventTag
+pub fn cranelisp_intrinsics::io_observer::IoEventTag::clone(&self) -> cranelisp_intrinsics::io_observer::IoEventTag
+impl core::cmp::Eq for cranelisp_intrinsics::io_observer::IoEventTag
+impl core::cmp::PartialEq for cranelisp_intrinsics::io_observer::IoEventTag
+pub fn cranelisp_intrinsics::io_observer::IoEventTag::eq(&self, other: &cranelisp_intrinsics::io_observer::IoEventTag) -> bool
+impl core::fmt::Debug for cranelisp_intrinsics::io_observer::IoEventTag
+pub fn cranelisp_intrinsics::io_observer::IoEventTag::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for cranelisp_intrinsics::io_observer::IoEventTag
+impl core::marker::StructuralPartialEq for cranelisp_intrinsics::io_observer::IoEventTag
+impl core::marker::Freeze for cranelisp_intrinsics::io_observer::IoEventTag
+impl core::marker::Send for cranelisp_intrinsics::io_observer::IoEventTag
+impl core::marker::Sync for cranelisp_intrinsics::io_observer::IoEventTag
+impl core::marker::Unpin for cranelisp_intrinsics::io_observer::IoEventTag
+impl core::marker::UnsafeUnpin for cranelisp_intrinsics::io_observer::IoEventTag
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_intrinsics::io_observer::IoEventTag
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_intrinsics::io_observer::IoEventTag
+pub fn cranelisp_intrinsics::register_io_observer(observer: core::option::Option<cranelisp_intrinsics::io_observer::IoObserver>)
+pub fn cranelisp_intrinsics::trace_anchor() -> &'static std::time::Instant
+pub type cranelisp_intrinsics::IoObserver = fn(cranelisp_intrinsics::io_observer::IoEventTag, &cranelisp_intrinsics::io_observer::IoEvent)

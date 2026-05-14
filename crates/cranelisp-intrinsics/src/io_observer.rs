@@ -1,0 +1,312 @@
+//! IO observation extension point per Decision 40 / `facades/intrinsics.md`
+//! §"IO observation (extension point)".
+//!
+//! Intrinsics defines the observation taxonomy and a registration API;
+//! all consumer-side state (ring buffers, panic hooks, formatters,
+//! dump-to-stderr, merge-sort) lives in `int`'s `src/io_trace/`. The IO
+//! trampoline (currently in `cranelisp-runtime::io`; moves into this crate
+//! at Wave 3b-2 / FIXME 0150 Phase 2) emits events through the registered
+//! observer via a relaxed-load null check on the hot path.
+//!
+//! Production batch (`--link`, non-trace `--run`) does NOT register an
+//! observer and pays one relaxed-load null check per IO call site
+//! (one conditional branch after optimisation).
+//!
+//! ## Threading
+//!
+//! `register_io_observer` is thread-safe. The slot is an
+//! `AtomicPtr<()>`; readers use `Ordering::Acquire` so any observer state
+//! published before registration is visible to the reading thread. Writers
+//! use `Ordering::Release`. Last write wins under happens-before order.
+//!
+//! Pass `None` to unregister; subsequent IO events are no-ops on the hot
+//! path until another observer registers.
+
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicPtr, Ordering};
+use std::time::Instant;
+
+// ---------------------------------------------------------------------------
+// Event taxonomy
+// ---------------------------------------------------------------------------
+
+/// IO trampoline event tag — the variants reflect the trampoline's state
+/// machine transitions (per `design/backend/io-trampoline-trace.md §3`).
+///
+/// `#[non_exhaustive]` per facade — adding a new tag is a minor revision
+/// (consumers must not match-exhaustively on this enum without a default
+/// arm).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+#[non_exhaustive]
+pub enum IoEventTag {
+    /// Top of `cranelisp_run_io` / `run_io_trampoline`.
+    TrampolineEnter,
+    /// Return from `run_io_trampoline`.
+    TrampolineExit,
+    /// `IO_TAG_PURE` arm hit — value extracted.
+    PureStep,
+    /// `IO_TAG_BIND` arm — continuation pushed onto stack.
+    BindEnter,
+    /// Continuation has been invoked and a new `current` installed.
+    BindExit,
+    /// Just before `call_effect_thunk` — platform effect dispatched.
+    PlatformEffect,
+    /// `cont_stack.push`.
+    ContPush,
+    /// `cont_stack.pop`.
+    ContPop,
+    /// `dispatch_par_branches` launched a single branch.
+    ParSpark,
+    /// Serial-group `WorkItem` started.
+    ParSerialGroupEnter,
+    /// `dispatch_par_branches` completed; results assembled.
+    ParJoin,
+    /// Reserved — resource-token barrier hit (Slice 4 / not currently
+    /// emitted).
+    ParBarrierForce,
+}
+
+/// IO trampoline event payload — one variant per `IoEventTag` family.
+///
+/// `#[non_exhaustive]` per facade. All variants are plain POD; no heap
+/// allocation. The full struct (tag + payload + per-thread sequencing
+/// metadata that the consumer adds) is intended to fit in a 64-byte
+/// cache line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum IoEvent {
+    /// `TrampolineEnter` — root tree pointer.
+    TrampolineEnter { io_ptr: i64 },
+    /// `TrampolineExit` — final result value returned from the trampoline.
+    TrampolineExit { result: i64 },
+    /// `PureStep` — the value extracted from the Pure node and whether
+    /// the Pure node itself was produced inside the trampoline (fresh)
+    /// or came from the caller's tree.
+    PureStep { value: i64, is_fresh: bool },
+    /// `BindEnter` — pointers to the Bind node's inner subtree and
+    /// continuation closure, plus the fresh flag.
+    BindEnter { inner_ptr: i64, cont_ptr: i64, is_fresh: bool },
+    /// `BindExit` — the new `current` installed after calling the
+    /// continuation.
+    BindExit { new_current: i64 },
+    /// `PlatformEffect` — thunk pointer, resource token, and scheduling
+    /// class (as `u8`; `cranelisp_types::SchedulingClass::from_u32`
+    /// decodes the discriminant at dump time).
+    PlatformEffect { thunk_ptr: i64, resource_token: i64, scheduling_class: u8 },
+    /// `ContPush` / `ContPop` — pointer to the continuation closure,
+    /// the fresh flag, and the resulting stack depth after the op.
+    Cont { cont_ptr: i64, is_fresh: bool, new_depth: u32 },
+    /// `ParSpark` — parent Par node, branch index within the parent,
+    /// resource token grouping this branch.
+    ParSpark { parent_ptr: i64, branch_idx: u32, token: i64 },
+    /// `ParSerialGroupEnter` — the shared token and the number of
+    /// branches this group will execute sequentially.
+    ParSerialGroupEnter { token: i64, branch_count: u32 },
+    /// `ParJoin` — parent Par node and the total branch count joined.
+    ParJoin { parent_ptr: i64, count: u32 },
+    /// `ParBarrierForce` — reserved; carries only the blocked token.
+    ParBarrierForce { token: i64 },
+}
+
+/// IO observer callback signature.
+///
+/// The observer is invoked synchronously by the IO trampoline at every
+/// instrumented call site. It MUST be panic-free (or use `catch_unwind`
+/// internally); a panic in the observer propagates out of the JIT-emitted
+/// call path with undefined behaviour.
+///
+/// Calling convention is `extern "C"`-equivalent fn pointer — the observer
+/// runs in the calling thread.
+pub type IoObserver = fn(IoEventTag, &IoEvent);
+
+// ---------------------------------------------------------------------------
+// Observer slot
+// ---------------------------------------------------------------------------
+
+/// Atomic pointer to the currently-registered observer. Null = unregistered.
+///
+/// Stored as `AtomicPtr<()>` carrying a transmuted fn pointer because
+/// `AtomicPtr<fn(_,_)>` is not directly representable. The transmute is
+/// sound: function pointers are `*const ()` on every supported platform
+/// (Decision 11 ABI assumes pointer-sized fn pointers).
+static OBSERVER_SLOT: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Replace the registered observer atomically.
+///
+/// Pass `Some(f)` to register `f` (any previous observer is replaced).
+/// Pass `None` to unregister — subsequent events become no-ops on the
+/// trampoline hot path until another observer registers.
+///
+/// Thread-safe from any thread; last write wins under happens-before
+/// ordering. Callers do not reason about Acquire/Release — the API
+/// commits to the contract.
+///
+/// Cost when unregistered: one relaxed `AtomicPtr` load + null check
+/// per emit site (one conditional branch after optimisation).
+pub fn register_io_observer(observer: Option<IoObserver>) {
+    let ptr: *mut () = match observer {
+        Some(f) => f as *mut (),
+        None => std::ptr::null_mut(),
+    };
+    OBSERVER_SLOT.store(ptr, Ordering::Release);
+}
+
+/// Internal hot-path emit. Called by the IO trampoline at every
+/// instrumented site. When no observer is registered, costs one
+/// `Acquire` load + null check + branch.
+///
+/// Made `pub` so the trampoline (currently in `cranelisp-runtime::io`,
+/// later relocated into this crate per FIXME 0150 Phase 2) can call it
+/// without going through any indirection.
+#[inline]
+pub fn emit(tag: IoEventTag, event: &IoEvent) {
+    let raw = OBSERVER_SLOT.load(Ordering::Acquire);
+    if raw.is_null() {
+        return;
+    }
+    // SAFETY: `raw` was written by `register_io_observer` from a valid
+    // `IoObserver` fn pointer. Function pointers are pointer-sized on every
+    // supported platform; transmute round-trips losslessly.
+    let observer: IoObserver = unsafe { std::mem::transmute::<*mut (), IoObserver>(raw) };
+    observer(tag, event);
+}
+
+// ---------------------------------------------------------------------------
+// Shared monotonic anchor
+// ---------------------------------------------------------------------------
+
+/// Process-origin anchor for timestamping IO events. First call sets it
+/// to `Instant::now()`; every subsequent call returns the same reference.
+/// Consumers (int's IO trace ring buffer + int's scheduler trace) derive
+/// their monotonic-ns timestamps from this anchor so cross-trace
+/// merge-sort is possible.
+///
+/// Per facade §"IO observation" — kept here so int's scheduler trace
+/// and the IO trace share the same origin.
+pub fn trace_anchor() -> &'static Instant {
+    static TRACE_ANCHOR: OnceLock<Instant> = OnceLock::new();
+    TRACE_ANCHOR.get_or_init(Instant::now)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering as StdOrdering};
+
+    // Process-global observer state means these tests cannot run truly
+    // concurrently; nextest runs each test in its own process so this is
+    // safe under the project's `cargo nt` invocation. Within a single
+    // process the tests serialise via the OBSERVER_SLOT mutation +
+    // unregister-at-end discipline.
+
+    static TEST_OBSERVER_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static LAST_TAG_BITS: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+    fn record_observer(tag: IoEventTag, _event: &IoEvent) {
+        TEST_OBSERVER_CALLS.fetch_add(1, StdOrdering::Relaxed);
+        LAST_TAG_BITS.store(tag as usize, StdOrdering::Relaxed);
+    }
+
+    fn reset_counters() {
+        TEST_OBSERVER_CALLS.store(0, StdOrdering::Relaxed);
+        LAST_TAG_BITS.store(usize::MAX, StdOrdering::Relaxed);
+    }
+
+    #[test]
+    fn anchor_is_stable_across_calls() {
+        let a = trace_anchor();
+        let b = trace_anchor();
+        assert!(std::ptr::eq(a, b), "trace_anchor must return the same Instant ref");
+    }
+
+    #[test]
+    fn unregistered_emit_is_no_op() {
+        // Defensively make sure no observer is left from another test.
+        register_io_observer(None);
+        reset_counters();
+        emit(
+            IoEventTag::TrampolineEnter,
+            &IoEvent::TrampolineEnter { io_ptr: 0x1234 },
+        );
+        assert_eq!(
+            TEST_OBSERVER_CALLS.load(StdOrdering::Relaxed),
+            0,
+            "unregistered emit must not invoke any observer",
+        );
+    }
+
+    #[test]
+    fn register_then_emit_delivers_event() {
+        reset_counters();
+        register_io_observer(Some(record_observer));
+        emit(
+            IoEventTag::PlatformEffect,
+            &IoEvent::PlatformEffect {
+                thunk_ptr: 0xDEAD,
+                resource_token: 1,
+                scheduling_class: 0,
+            },
+        );
+        // Cleanup BEFORE asserting — keep the OBSERVER_SLOT clean for siblings.
+        register_io_observer(None);
+
+        assert_eq!(
+            TEST_OBSERVER_CALLS.load(StdOrdering::Relaxed),
+            1,
+            "observer must be invoked once per emit when registered",
+        );
+        assert_eq!(
+            LAST_TAG_BITS.load(StdOrdering::Relaxed),
+            IoEventTag::PlatformEffect as usize,
+            "observer must receive the correct tag",
+        );
+    }
+
+    #[test]
+    fn unregister_after_register_disables_emit() {
+        reset_counters();
+        register_io_observer(Some(record_observer));
+        emit(
+            IoEventTag::TrampolineEnter,
+            &IoEvent::TrampolineEnter { io_ptr: 1 },
+        );
+        register_io_observer(None);
+        let count_before = TEST_OBSERVER_CALLS.load(StdOrdering::Relaxed);
+        emit(
+            IoEventTag::TrampolineExit,
+            &IoEvent::TrampolineExit { result: 0 },
+        );
+        let count_after = TEST_OBSERVER_CALLS.load(StdOrdering::Relaxed);
+        assert_eq!(
+            count_before, count_after,
+            "post-unregister emit must not invoke the observer",
+        );
+    }
+
+    #[test]
+    fn last_observer_wins() {
+        static FIRST_CALLS: AtomicUsize = AtomicUsize::new(0);
+        static SECOND_CALLS: AtomicUsize = AtomicUsize::new(0);
+        fn first(_t: IoEventTag, _e: &IoEvent) {
+            FIRST_CALLS.fetch_add(1, StdOrdering::Relaxed);
+        }
+        fn second(_t: IoEventTag, _e: &IoEvent) {
+            SECOND_CALLS.fetch_add(1, StdOrdering::Relaxed);
+        }
+        FIRST_CALLS.store(0, StdOrdering::Relaxed);
+        SECOND_CALLS.store(0, StdOrdering::Relaxed);
+
+        register_io_observer(Some(first));
+        register_io_observer(Some(second));
+        emit(IoEventTag::PureStep, &IoEvent::PureStep { value: 7, is_fresh: false });
+        register_io_observer(None);
+
+        assert_eq!(FIRST_CALLS.load(StdOrdering::Relaxed), 0, "old observer must not fire");
+        assert_eq!(SECOND_CALLS.load(StdOrdering::Relaxed), 1, "new observer must fire");
+    }
+}

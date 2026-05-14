@@ -6,4 +6,11 @@ edition = "2024"
 [dependencies]
 cranelisp-platform = { path = "../cranelisp-platform" }
 cranelisp-types = { path = "../cranelisp-types" }
+# Transitional Wave 3b-1: `io_trace.rs` content was relocated to
+# `cranelisp-intrinsics`. Runtime re-exports it as a thin shim until
+# consumers (int, exe-bundle) migrate their `cranelisp_runtime::io_trace::*`
+# imports to `cranelisp_intrinsics::io_trace::*` in Wave 3b-2. The dep edge
+# runtime → intrinsics is acyclic — intrinsics does NOT depend on runtime.
+# Removed at the broader D43 split (FIXME 0150) when runtime dissolves.
+cranelisp-intrinsics = { path = "../cranelisp-intrinsics" }
 rayon = "1.10"
