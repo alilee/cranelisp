@@ -11,6 +11,7 @@ use cranelisp_types::{ErrorLocation, CodegenBehaviour, CranelispError, Span};
 
 use cranelisp::observability;
 use cranelisp::session_v4::{CommandResult, CompilerSession, SessionSettings};
+use cranelisp::{got_trace, io_trace};
 
 // ---------------------------------------------------------------------------
 // Action enum (pipeline-v4.md §2.1)
@@ -42,7 +43,8 @@ fn main() {
     // `flush_traces()` call is invoked explicitly before every such call
     // site (Run-mode exit-code escape + early-error paths). See
     // `design/int/observability.md §7.1` for the wiring rationale.
-    cranelisp_runtime::io_trace_install_panic_hook();
+    io_trace::install_panic_hook();
+    got_trace::install_panic_hook();
     observability::install_panic_hook();
     // Wire the typecheck-crate `SymbolTableEnsure` trace hook through
     // to this crate's scheduler-trace sink. Cross-crate install: the
@@ -51,26 +53,98 @@ fn main() {
     // `design/int/heisenbug-race-closure.md §3d''` (Sprint 61 Wave 3,
     // H6 race-closure fix).
     observability::install_symbol_table_ensure_hook_to_scheduler_trace();
-    let _io_flush = cranelisp_runtime::IoTraceFlushGuard::new();
+    // Register observability observers per FIXMEs 0099 + 0103 (Decision 40).
+    // No-op when their respective env vars are unset; the producer-side
+    // emit hot path is a relaxed-load null check.
+    io_trace::install_if_enabled();
+    got_trace::install_if_enabled();
+    let _io_flush = io_trace::IoTraceFlushGuard::new();
+    let _got_flush = got_trace::GotTraceFlushGuard::new();
     let _sched_flush = observability::SchedulerTraceFlushGuard::new();
 
     let (action, project_root, entry_module, settings) = parse_args();
     cranelisp::style::init_color(settings.no_color);
 
     if let Err(e) = run(action, &project_root, &entry_module, settings) {
-        eprintln!("error: {e}");
+        let entry_file = project_root.join(format!("{entry_module}.cl"));
+        eprintln!("{}", format_error(&e, &entry_file));
         flush_traces();
         process::exit(1);
     }
 }
 
-/// Explicitly drain both observability traces to stderr. Must be called
+/// Format a `CranelispError` with a `file:line:col` prefix derived from the
+/// error's `ErrorLocation`. Per Decision 39 + 42 (FIXME 0104), the
+/// integration-layer formatter is the consumer-side surface that turns
+/// coordinates-as-data into user-visible source coordinates.
+///
+/// Strategy:
+/// 1. If `location.file` is set, use it. Otherwise fall back to the entry
+///    module's source file (the most common case for batch errors where
+///    location.file gets dropped along error-construction chains).
+/// 2. If `location.line_col` is set, use it. Otherwise compute line:col from
+///    `location.span.start` by reading the source file (best-effort; if the
+///    file can't be read, omit the line:col and emit just the file path).
+/// 3. Fall back to the default `Display` impl when no file is available
+///    (preserves the pre-Wave-3b error shape for non-file errors).
+fn format_error(err: &CranelispError, entry_file: &Path) -> String {
+    let Some(loc) = err.location() else {
+        return format!("error: {err}");
+    };
+    // Prefer the location's own file; fall back to the entry file.
+    let file: PathBuf = match &loc.file {
+        Some(p) => p.clone(),
+        None => entry_file.to_path_buf(),
+    };
+    // Line:col — prefer the location's own line_col; otherwise derive from
+    // span by reading the file.
+    let (line, col) = if let Some(lc) = &loc.line_col {
+        (lc.start.line, lc.start.col)
+    } else {
+        derive_line_col(&file, loc.span.start as usize)
+    };
+    // Friendly filename: prefer file name only when its parent matches cwd.
+    let display_file = match (std::env::current_dir().ok(), file.file_name()) {
+        (Some(cwd), Some(fname)) if file.parent() == Some(&cwd) => {
+            fname.to_string_lossy().into_owned()
+        }
+        _ => file.to_string_lossy().into_owned(),
+    };
+    format!("{display_file}:{line}:{col}: error: {err}")
+}
+
+/// Convert a byte offset within a source file into 1-based (line, column).
+/// Returns `(1, 1)` when the file can't be read or the offset is past EOF
+/// (best-effort fallback so the error surface always has coordinates).
+fn derive_line_col(file: &Path, byte_offset: usize) -> (u32, u32) {
+    let Ok(src) = std::fs::read_to_string(file) else {
+        return (1, 1);
+    };
+    let mut line: u32 = 1;
+    let mut col: u32 = 1;
+    for (i, ch) in src.char_indices() {
+        if i >= byte_offset {
+            return (line, col);
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    // Offset past EOF — return last position.
+    (line, col)
+}
+
+/// Explicitly drain all observability traces to stderr. Must be called
 /// immediately before any `std::process::exit` site that would otherwise
 /// bypass the RAII guards held in `main()`. Safe to call when the traces
 /// are disabled — each `flush_to_stderr` short-circuits on the filter.
 fn flush_traces() {
     observability::flush_to_stderr();
-    cranelisp_runtime::io_trace_flush_to_stderr();
+    io_trace::flush_to_stderr();
+    got_trace::flush_to_stderr();
 }
 
 // ---------------------------------------------------------------------------

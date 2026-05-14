@@ -3316,10 +3316,27 @@ pub fn inline_jit_codegen_for_names(
                 location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
             });
         };
+        // Detect REPL redefinition: if `code` was already populated, the
+        // GOT slot is being overwritten. Emit a `Redefinition` event before
+        // overwriting so observability sees the lifecycle (FIXME 0099).
+        let prior_ptr: Option<*const u8> = match code {
+            Some(crate::code::Code::Jit { ptr, .. }) => Some(*ptr),
+            Some(crate::code::Code::Linker { ptr, .. }) => Some(*ptr),
+            None => None,
+        };
         *code = Some(crate::code::Code::jit(
             std::sync::Arc::clone(&jit_arc),
             code_ptr,
         ));
+        if let Some(prior) = prior_ptr {
+            crate::got_trace::emit_redefinition(
+                module,
+                name,
+                slot,
+                code_ptr,
+                prior,
+            );
+        }
     }
 
     // 7. Route per-symbol artifacts into introspection (REPL-only).
@@ -3662,6 +3679,10 @@ pub fn priority_worker_loop_shared(shared: &crate::session_v4::SharedState) {
     // events into the dump (design/int/observability.md §7). No-op when
     // the filter is disabled.
     crate::observability::publish_thread_buffer();
+    // GOT trace events (FIXME 0099) — same pattern; worker threads emit
+    // `JitWrite` from backend's `compile_to_module` so their thread-local
+    // ring buffer must be published before the worker exits.
+    crate::got_trace::publish_thread_buffer();
 }
 
 /// Handle a Typecheck work item on a persistent priority worker.

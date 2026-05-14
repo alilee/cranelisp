@@ -271,6 +271,7 @@ dependencies = [
  "cranelift",
  "cranelisp-backend",
  "cranelisp-frontend",
+ "cranelisp-intrinsics",
  "cranelisp-platform",
  "cranelisp-runtime",
  "cranelisp-typecheck",

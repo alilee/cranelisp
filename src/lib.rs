@@ -10,6 +10,8 @@ pub mod code;
 pub mod display;
 pub mod exe;
 pub mod expander;
+pub mod got_trace;
+pub mod io_trace;
 pub mod marshal;
 pub mod observability;
 pub mod session;

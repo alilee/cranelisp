@@ -3913,6 +3913,9 @@ fn nice_worker_loop(shared: &SharedState) {
                 // `flush_to_stderr` can merge it into the dump
                 // (design/int/observability.md §7). No-op when disabled.
                 crate::observability::publish_thread_buffer();
+                // GOT trace events (FIXME 0099) — nice workers also emit
+                // GOT events (LinkerWrite during cache-hit load).
+                crate::got_trace::publish_thread_buffer();
                 return; // Shutdown signaled.
             }
         };
