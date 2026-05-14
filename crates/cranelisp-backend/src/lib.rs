@@ -1050,10 +1050,10 @@ mod tests {
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
         let ptr = jit.get_finalized_ptr(entry_id);
-        let _ = cranelisp_runtime::panic::take_runtime_error();
+        let _ = cranelisp_intrinsics::panic::take_runtime_error();
         let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
         let value = func();
-        if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
+        if let Some(msg) = cranelisp_intrinsics::panic::take_runtime_error() {
             return Err(CranelispError::CodegenError {
                 message: format!("runtime panic: {}", msg),
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
@@ -1183,10 +1183,10 @@ mod tests {
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
         let ptr = jit.get_finalized_ptr(entry_id);
-        let _ = cranelisp_runtime::panic::take_runtime_error();
+        let _ = cranelisp_intrinsics::panic::take_runtime_error();
         let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
         let value = func();
-        if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
+        if let Some(msg) = cranelisp_intrinsics::panic::take_runtime_error() {
             return Err(CranelispError::CodegenError {
                 message: format!("runtime panic: {}", msg),
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
@@ -1446,11 +1446,11 @@ mod tests {
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
 
         // Read back the string content via runtime API.
-        let s = unsafe { cranelisp_runtime::read_string_as_str(ptr) };
+        let s = unsafe { cranelisp_intrinsics::string::read_string_as_str(ptr) };
         assert_eq!(s, "hello");
 
         // Clean up the allocation.
-        cranelisp_runtime::heap_dealloc(ptr);
+        cranelisp_intrinsics::alloc::heap_dealloc(ptr);
     }
 
     // spec: 04-expressions §4.1.4 — empty string literal codegen
@@ -1468,10 +1468,10 @@ mod tests {
         let ptr = result.unwrap();
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
 
-        let s = unsafe { cranelisp_runtime::read_string_as_str(ptr) };
+        let s = unsafe { cranelisp_intrinsics::string::read_string_as_str(ptr) };
         assert_eq!(s, "");
 
-        cranelisp_runtime::heap_dealloc(ptr);
+        cranelisp_intrinsics::alloc::heap_dealloc(ptr);
     }
 
     // spec: 12-runtime §12.1.4 — data constructor heap layout [tag | fields]
@@ -1512,7 +1512,7 @@ mod tests {
             assert_eq!(val, 42, "field should be 42");
         }
 
-        cranelisp_runtime::heap_dealloc(ptr);
+        cranelisp_intrinsics::alloc::heap_dealloc(ptr);
     }
 
     // spec: 04-expressions §4.8 — match expression with constructor patterns and field extraction
@@ -1756,7 +1756,7 @@ mod tests {
         // would be false here (or the read-back would show corruption).
         #[cfg(debug_assertions)]
         assert!(
-            cranelisp_runtime::alloc::is_live(ptr as usize),
+            cranelisp_intrinsics::alloc::is_live(ptr as usize),
             "returned string pointer must still be live after lambda return; \
              this is the capture-return inc invariant"
         );
@@ -1764,13 +1764,13 @@ mod tests {
         // Readable round-trip — proves the contents survived the
         // drop-glue dec that would otherwise have corrupted or freed
         // the heap block.
-        let s = unsafe { cranelisp_runtime::read_string_as_str(ptr) };
+        let s = unsafe { cranelisp_intrinsics::string::read_string_as_str(ptr) };
         assert_eq!(s, "hello", "captured string must round-trip");
 
         // Balance the one remaining caller-side reference (we, the
         // test, are the caller). Normal runtime would emit the dec at
         // the caller's scope exit; here we dec manually.
-        cranelisp_runtime::heap_dealloc(ptr);
+        cranelisp_intrinsics::alloc::heap_dealloc(ptr);
     }
 
     // --- Vec codegen tests ---
@@ -1792,10 +1792,10 @@ mod tests {
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
 
         // Verify len == 0.
-        assert_eq!(cranelisp_runtime::vec_len(ptr), 0);
+        assert_eq!(cranelisp_primitives::vec::vec_len(ptr), 0);
 
         // Clean up.
-        cranelisp_runtime::vec_drop(ptr, 0);
+        cranelisp_intrinsics::vec::vec_drop(ptr, 0);
     }
 
     // spec: 04-expressions §4.10 — Vec literal with integer elements
@@ -1818,7 +1818,7 @@ mod tests {
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
 
         // Verify len == 3.
-        assert_eq!(cranelisp_runtime::vec_len(ptr), 3);
+        assert_eq!(cranelisp_primitives::vec::vec_len(ptr), 3);
 
         // Verify element values from data buffer.
         unsafe {
@@ -1829,7 +1829,7 @@ mod tests {
             assert_eq!(*data_ptr.add(2), 30);
         }
 
-        cranelisp_runtime::vec_drop(ptr, 0);
+        cranelisp_intrinsics::vec::vec_drop(ptr, 0);
     }
 
     // spec: 04-expressions §4.10 — single-element Vec literal
@@ -1848,7 +1848,7 @@ mod tests {
         assert!(result.is_ok(), "single-element vec should compile: {result:?}");
         let ptr = result.unwrap();
 
-        assert_eq!(cranelisp_runtime::vec_len(ptr), 1);
+        assert_eq!(cranelisp_primitives::vec::vec_len(ptr), 1);
 
         unsafe {
             let base = ptr as *const u8;
@@ -1856,7 +1856,7 @@ mod tests {
             assert_eq!(*data_ptr, 42);
         }
 
-        cranelisp_runtime::vec_drop(ptr, 0);
+        cranelisp_intrinsics::vec::vec_drop(ptr, 0);
     }
 
     // spec: 04-expressions §4.10 — Vec literal with boolean elements
@@ -1875,7 +1875,7 @@ mod tests {
         let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "bool vec should compile: {result:?}");
         let ptr = result.unwrap();
-        assert_eq!(cranelisp_runtime::vec_len(ptr), 2);
+        assert_eq!(cranelisp_primitives::vec::vec_len(ptr), 2);
 
         unsafe {
             let base = ptr as *const u8;
@@ -1884,7 +1884,7 @@ mod tests {
             assert_eq!(*data_ptr.add(1), 0); // false
         }
 
-        cranelisp_runtime::vec_drop(ptr, 0);
+        cranelisp_intrinsics::vec::vec_drop(ptr, 0);
     }
 
     // spec: appendix-a-builtins §A.3 — vec-len inline primitive codegen
@@ -2413,7 +2413,7 @@ mod tests {
         assert!(result.is_ok(), "vec with computed elements should compile: {result:?}");
         let ptr = result.unwrap();
 
-        assert_eq!(cranelisp_runtime::vec_len(ptr), 3);
+        assert_eq!(cranelisp_primitives::vec::vec_len(ptr), 3);
         unsafe {
             let base = ptr as *const u8;
             let data_ptr = *(base.add(32) as *const *const i64);
@@ -2422,7 +2422,7 @@ mod tests {
             assert_eq!(*data_ptr.add(2), 10);
         }
 
-        cranelisp_runtime::vec_drop(ptr, 0);
+        cranelisp_intrinsics::vec::vec_drop(ptr, 0);
     }
 
     // spec: 05-definitions §5.1, 04-expressions §4.10 — Vec literal as function return value
@@ -2456,9 +2456,9 @@ mod tests {
 
         let ptr = test_compile_program_and_run(&program, &check, &empty_tables()).unwrap();
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
-        assert_eq!(cranelisp_runtime::vec_len(ptr), 3);
+        assert_eq!(cranelisp_primitives::vec::vec_len(ptr), 3);
 
-        cranelisp_runtime::vec_drop(ptr, 0);
+        cranelisp_intrinsics::vec::vec_drop(ptr, 0);
     }
 
     // spec: appendix-a-builtins §A.3 — vec-get returns correct element value
@@ -2690,9 +2690,9 @@ mod tests {
         assert!(result.is_ok(), "vec in interactive mode should compile: {result:?}");
         let ptr = result.unwrap();
         assert!(ptr > 1024);
-        assert_eq!(cranelisp_runtime::vec_len(ptr), 1);
+        assert_eq!(cranelisp_primitives::vec::vec_len(ptr), 1);
 
-        cranelisp_runtime::vec_drop(ptr, 0);
+        cranelisp_intrinsics::vec::vec_drop(ptr, 0);
     }
 
     // spec: appendix-a-builtins §A.3 — vec-len on empty Vec returns 0
@@ -2889,7 +2889,7 @@ mod tests {
         assert!(result.is_ok(), "nested vec should compile: {result:?}");
         let outer_ptr = result.unwrap();
         assert!(outer_ptr > 1024);
-        assert_eq!(cranelisp_runtime::vec_len(outer_ptr), 2);
+        assert_eq!(cranelisp_primitives::vec::vec_len(outer_ptr), 2);
 
         // First inner vec.
         unsafe {
@@ -2897,17 +2897,17 @@ mod tests {
             let data = *(base.add(32) as *const *const i64);
             let inner1 = *data;
             assert!(inner1 > 1024, "inner vec should be heap pointer");
-            assert_eq!(cranelisp_runtime::vec_len(inner1), 2);
+            assert_eq!(cranelisp_primitives::vec::vec_len(inner1), 2);
         }
 
         // Clean up (inner vecs need manual cleanup since no drop glue yet).
         unsafe {
             let base = outer_ptr as *const u8;
             let data = *(base.add(32) as *const *const i64);
-            cranelisp_runtime::vec_drop(*data, 0);
-            cranelisp_runtime::vec_drop(*data.add(1), 0);
+            cranelisp_intrinsics::vec::vec_drop(*data, 0);
+            cranelisp_intrinsics::vec::vec_drop(*data.add(1), 0);
         }
-        cranelisp_runtime::vec_drop(outer_ptr, 0);
+        cranelisp_intrinsics::vec::vec_drop(outer_ptr, 0);
     }
 
     // spec: 04-expressions §4.10 — large Vec literal (10 elements)
@@ -2932,7 +2932,7 @@ mod tests {
         let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "large vec should compile: {result:?}");
         let ptr = result.unwrap();
-        assert_eq!(cranelisp_runtime::vec_len(ptr), 10);
+        assert_eq!(cranelisp_primitives::vec::vec_len(ptr), 10);
 
         unsafe {
             let base = ptr as *const u8;
@@ -2942,7 +2942,7 @@ mod tests {
             }
         }
 
-        cranelisp_runtime::vec_drop(ptr, 0);
+        cranelisp_intrinsics::vec::vec_drop(ptr, 0);
     }
 
     // --- Ring 2A: TraitMethod dispatch tests ---
