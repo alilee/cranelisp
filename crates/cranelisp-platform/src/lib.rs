@@ -847,7 +847,186 @@ macro_rules! declare_platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cranelisp_types::Span;
     use std::sync::atomic::AtomicI64;
+
+    // ---------------------------------------------------------------------
+    // PlatformError adoption — Decision 42 / FIXME 0104.
+    //
+    // These tests pin the platform crate's public error surface to the
+    // shape facades/platform.md §"Errors" specifies: each variant carries
+    // an `ErrorLocation`; `manifest_to_descriptors` returns
+    // `Result<…, PlatformError>` with `ErrorLocation::unknown()` at the
+    // construction site (callers — `int::load_platform_dll` — rewrite the
+    // location with the `(platform "name")` form's span before surfacing).
+    // ---------------------------------------------------------------------
+
+    // spec: design/arch/facades/platform.md §"Errors" — `LoadFailed`
+    // carries `dll`, `cause`, and `location`. Re-exported `PlatformError`
+    // must construct + display this variant.
+    #[test]
+    fn platform_error_load_failed_constructs_and_displays() {
+        let err = PlatformError::LoadFailed {
+            dll: std::path::PathBuf::from("nonexistent.dylib"),
+            cause: "dlopen returned NULL".to_string(),
+            location: ErrorLocation::from_span(Span::new(10, 35)),
+        };
+        let displayed = format!("{err}");
+        assert!(
+            displayed.contains("nonexistent.dylib"),
+            "Display must surface the DLL path; got: {displayed}"
+        );
+        assert!(
+            displayed.contains("dlopen returned NULL"),
+            "Display must surface the underlying cause; got: {displayed}"
+        );
+        // Location accessor works.
+        assert_eq!(err.location().span, Span::new(10, 35));
+    }
+
+    // spec: design/arch/facades/platform.md §"Errors" — `ManifestNotFound`
+    // carries `dll` and `location`.
+    #[test]
+    fn platform_error_manifest_not_found_constructs_and_displays() {
+        let err = PlatformError::ManifestNotFound {
+            dll: std::path::PathBuf::from("stale.dylib"),
+            location: ErrorLocation::from_span(Span::new(1, 9)),
+        };
+        let displayed = format!("{err}");
+        assert!(
+            displayed.contains("stale.dylib"),
+            "Display must surface the DLL path; got: {displayed}"
+        );
+        assert!(
+            displayed.contains("manifest"),
+            "Display must mention manifest; got: {displayed}"
+        );
+        assert_eq!(err.location().span, Span::new(1, 9));
+    }
+
+    // spec: design/arch/facades/platform.md §"Errors" —
+    // `AbiVersionMismatch` carries `dll`, `expected`, `found`, `location`.
+    #[test]
+    fn platform_error_abi_version_mismatch_constructs_and_displays() {
+        let err = PlatformError::AbiVersionMismatch {
+            dll: std::path::PathBuf::from("old.dylib"),
+            expected: ABI_VERSION,
+            found: 99,
+            location: ErrorLocation::from_span(Span::new(20, 30)),
+        };
+        let displayed = format!("{err}");
+        assert!(
+            displayed.contains("old.dylib"),
+            "Display must surface the DLL path; got: {displayed}"
+        );
+        // Both expected + found values must surface.
+        assert!(
+            displayed.contains(&ABI_VERSION.to_string()),
+            "Display must surface the expected ABI; got: {displayed}"
+        );
+        assert!(
+            displayed.contains("99"),
+            "Display must surface the found ABI; got: {displayed}"
+        );
+        assert_eq!(err.location().span, Span::new(20, 30));
+    }
+
+    // spec: design/arch/facades/platform.md §"Errors" — `DispatchError`
+    // carries `fn_name`, `cause`, `location`.
+    #[test]
+    fn platform_error_dispatch_error_carries_fn_name() {
+        use cranelisp_types::Symbol;
+        let err = PlatformError::DispatchError {
+            fn_name: Symbol::from("read-line"),
+            cause: "null fn pointer".to_string(),
+            location: ErrorLocation::from_span(Span::new(100, 120)),
+        };
+        let displayed = format!("{err}");
+        assert!(
+            displayed.contains("read-line"),
+            "Display must surface the fn name; got: {displayed}"
+        );
+        assert!(
+            displayed.contains("null fn pointer"),
+            "Display must surface the cause; got: {displayed}"
+        );
+        assert_eq!(err.location().span, Span::new(100, 120));
+    }
+
+    // spec: design/arch/facades/platform.md §"Errors" — DLL-author /
+    // int code constructs `PlatformError` and wraps via `CranelispError`.
+    // The `From<PlatformError> for CranelispError` blanket conversion
+    // must succeed and preserve the location.
+    #[test]
+    fn platform_error_into_cranelisp_error_preserves_location() {
+        use cranelisp_types::CranelispError;
+        let err = PlatformError::LoadFailed {
+            dll: std::path::PathBuf::from("missing.dylib"),
+            cause: "no such file".to_string(),
+            location: ErrorLocation::from_span(Span::new(7, 42)),
+        };
+        let wrapped: CranelispError = err.into();
+        assert_eq!(wrapped.span(), Span::new(7, 42));
+        // Through `CranelispError::Display`, the platform inner displays.
+        let displayed = format!("{wrapped}");
+        assert!(
+            displayed.contains("missing.dylib"),
+            "Display via CranelispError::Platform must surface inner; got: {displayed}"
+        );
+    }
+
+    // spec: design/arch/facades/platform.md §"Errors" + FIXME 0104 Phase 2
+    // — UTF-8 validation failures in `manifest_to_descriptors` construct
+    // `PlatformError::LoadFailed` with `ErrorLocation::unknown()`; the
+    // caller rewrites with the form's span before surfacing. This test
+    // confirms the construction-side behaviour.
+    #[test]
+    fn manifest_to_descriptors_utf8_failure_returns_load_failed_with_unknown_location() {
+        // Build a manifest whose name field is non-UTF-8 (a lone 0xFF byte).
+        // Use a static lifetime backing store so the test exercise is sound:
+        // the `&PlatformManifest` we pass borrows from `manifest_storage`
+        // which lives the full test scope.
+        let bad_name: &[u8] = &[0xFFu8];
+        let version: &[u8] = b"0.1.0";
+        let manifest = PlatformManifest {
+            abi_version: ABI_VERSION,
+            name: bad_name.as_ptr(),
+            name_len: bad_name.len(),
+            version: version.as_ptr(),
+            version_len: version.len(),
+            functions: std::ptr::null(),
+            function_count: 0,
+        };
+
+        // SAFETY: pointers above point at the local slices that outlive the
+        // call (`manifest_to_descriptors` is unsafe; we honour its contract
+        // here by ensuring the pointers are valid and the lengths correct).
+        let result = unsafe { manifest_to_descriptors(&manifest) };
+
+        match result {
+            Err(PlatformError::LoadFailed { cause, location, dll }) => {
+                assert!(
+                    cause.contains("UTF-8") || cause.contains("invalid"),
+                    "cause must mention UTF-8 / invalid; got: {cause}"
+                );
+                // platform-side construction uses `ErrorLocation::unknown()`
+                // → span is synthetic; int rewrites with the form's span.
+                assert_eq!(
+                    location.span,
+                    Span::SYNTHETIC,
+                    "platform crate constructs with unknown location; int rewrites at call site"
+                );
+                assert_eq!(
+                    dll,
+                    std::path::PathBuf::new(),
+                    "platform crate has no DLL path on hand; int fills it in"
+                );
+            }
+            Err(e) => panic!("expected LoadFailed, got different PlatformError: {e}"),
+            Ok(_) => panic!("expected LoadFailed, got Ok"),
+        }
+    }
+
 
     // Allocate a mock heap-layout `[alloc_size(8) | rc(8) | payload(>=0)]` with
     // initial rc=1. Returns the base pointer. The payload is zero-filled;
