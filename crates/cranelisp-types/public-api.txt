@@ -1862,6 +1862,27 @@ pub fn cranelisp_types::types::max_type_var_id(ty: &cranelisp_types::types::Type
 pub fn cranelisp_types::types::type_var_names(ty: &cranelisp_types::types::Type) -> std::collections::hash::map::HashMap<cranelisp_types::types::TypeId, alloc::string::String>
 pub type cranelisp_types::types::Subst = std::collections::hash::map::HashMap<cranelisp_types::types::TypeId, cranelisp_types::types::Type>
 pub type cranelisp_types::types::TypeId = u32
+pub mod cranelisp_types::view
+#[non_exhaustive] pub enum cranelisp_types::view::View<'a, C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore>
+pub cranelisp_types::view::View::Single
+pub cranelisp_types::view::View::Single::live: &'a cranelisp_types::module::SymbolTable<C, L>
+pub cranelisp_types::view::View::Union
+pub cranelisp_types::view::View::Union::live: &'a cranelisp_types::module::SymbolTable<C, L>
+pub cranelisp_types::view::View::Union::staging: &'a cranelisp_types::module::SymbolTable<C, L>
+impl<'a, C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore> cranelisp_types::view::View<'a, C, L>
+pub fn cranelisp_types::view::View<'a, C, L>::iter(&self) -> alloc::boxed::Box<(dyn core::iter::traits::iterator::Iterator<Item = (&'a cranelisp_types::newtype::Symbol, &'a cranelisp_types::module::ModuleEntry<C>)> + 'a)>
+pub fn cranelisp_types::view::View<'a, C, L>::lookup(&self, name: &cranelisp_types::newtype::Symbol) -> core::option::Option<&'a cranelisp_types::module::ModuleEntry<C>>
+pub fn cranelisp_types::view::View<'a, C, L>::single(live: &'a cranelisp_types::module::SymbolTable<C, L>) -> Self
+pub fn cranelisp_types::view::View<'a, C, L>::union(staging: &'a cranelisp_types::module::SymbolTable<C, L>, live: &'a cranelisp_types::module::SymbolTable<C, L>) -> Self
+impl<'a, C: core::fmt::Debug + cranelisp_types::module::CodeStore, L: core::fmt::Debug + cranelisp_types::module::LinkerStore> core::fmt::Debug for cranelisp_types::view::View<'a, C, L>
+pub fn cranelisp_types::view::View<'a, C, L>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a, C, L> core::marker::Freeze for cranelisp_types::view::View<'a, C, L>
+impl<'a, C, L> core::marker::Send for cranelisp_types::view::View<'a, C, L>
+impl<'a, C, L> core::marker::Sync for cranelisp_types::view::View<'a, C, L>
+impl<'a, C, L> core::marker::Unpin for cranelisp_types::view::View<'a, C, L>
+impl<'a, C, L> core::marker::UnsafeUnpin for cranelisp_types::view::View<'a, C, L>
+impl<'a, C, L> core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::view::View<'a, C, L> where L: core::panic::unwind_safe::RefUnwindSafe, C: core::panic::unwind_safe::RefUnwindSafe
+impl<'a, C, L> core::panic::unwind_safe::UnwindSafe for cranelisp_types::view::View<'a, C, L> where L: core::panic::unwind_safe::RefUnwindSafe, C: core::panic::unwind_safe::RefUnwindSafe
 pub macro cranelisp_types::string_newtype!
 pub enum cranelisp_types::CodegenBehaviour
 pub cranelisp_types::CodegenBehaviour::InMemoryAndObject
@@ -2514,6 +2535,26 @@ impl core::marker::Unpin for cranelisp_types::ast::TypeExpr
 impl core::marker::UnsafeUnpin for cranelisp_types::ast::TypeExpr
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::ast::TypeExpr
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::ast::TypeExpr
+#[non_exhaustive] pub enum cranelisp_types::View<'a, C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore>
+pub cranelisp_types::View::Single
+pub cranelisp_types::View::Single::live: &'a cranelisp_types::module::SymbolTable<C, L>
+pub cranelisp_types::View::Union
+pub cranelisp_types::View::Union::live: &'a cranelisp_types::module::SymbolTable<C, L>
+pub cranelisp_types::View::Union::staging: &'a cranelisp_types::module::SymbolTable<C, L>
+impl<'a, C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore> cranelisp_types::view::View<'a, C, L>
+pub fn cranelisp_types::view::View<'a, C, L>::iter(&self) -> alloc::boxed::Box<(dyn core::iter::traits::iterator::Iterator<Item = (&'a cranelisp_types::newtype::Symbol, &'a cranelisp_types::module::ModuleEntry<C>)> + 'a)>
+pub fn cranelisp_types::view::View<'a, C, L>::lookup(&self, name: &cranelisp_types::newtype::Symbol) -> core::option::Option<&'a cranelisp_types::module::ModuleEntry<C>>
+pub fn cranelisp_types::view::View<'a, C, L>::single(live: &'a cranelisp_types::module::SymbolTable<C, L>) -> Self
+pub fn cranelisp_types::view::View<'a, C, L>::union(staging: &'a cranelisp_types::module::SymbolTable<C, L>, live: &'a cranelisp_types::module::SymbolTable<C, L>) -> Self
+impl<'a, C: core::fmt::Debug + cranelisp_types::module::CodeStore, L: core::fmt::Debug + cranelisp_types::module::LinkerStore> core::fmt::Debug for cranelisp_types::view::View<'a, C, L>
+pub fn cranelisp_types::view::View<'a, C, L>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a, C, L> core::marker::Freeze for cranelisp_types::view::View<'a, C, L>
+impl<'a, C, L> core::marker::Send for cranelisp_types::view::View<'a, C, L>
+impl<'a, C, L> core::marker::Sync for cranelisp_types::view::View<'a, C, L>
+impl<'a, C, L> core::marker::Unpin for cranelisp_types::view::View<'a, C, L>
+impl<'a, C, L> core::marker::UnsafeUnpin for cranelisp_types::view::View<'a, C, L>
+impl<'a, C, L> core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::view::View<'a, C, L> where L: core::panic::unwind_safe::RefUnwindSafe, C: core::panic::unwind_safe::RefUnwindSafe
+impl<'a, C, L> core::panic::unwind_safe::UnwindSafe for cranelisp_types::view::View<'a, C, L> where L: core::panic::unwind_safe::RefUnwindSafe, C: core::panic::unwind_safe::RefUnwindSafe
 pub enum cranelisp_types::Visibility
 pub cranelisp_types::Visibility::Private
 pub cranelisp_types::Visibility::Public
