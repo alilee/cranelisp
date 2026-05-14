@@ -359,6 +359,7 @@ version = "0.1.0"
 dependencies = [
  "cranelisp-intrinsics",
  "cranelisp-platform",
+ "cranelisp-primitives",
  "cranelisp-types",
  "rayon",
 ]

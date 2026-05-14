@@ -3,22 +3,29 @@
 //! Per FIXME 0150 (Decision 43): `cranelisp-runtime` is being split into
 //! `cranelisp-primitives` (user-callable, symbol-table addressable) and
 //! `cranelisp-intrinsics` (backend-emitted-call targets). Wave 3b-1
-//! relocated the IoObserver + io_trace; Wave 3b-2d.1 (current commit)
-//! relocates the remaining backend-emitted-call targets (alloc, drop,
+//! relocated the IoObserver + io_trace; Wave 3b-2d.1 (commit `e4cc3c9`)
+//! relocated the remaining backend-emitted-call targets (alloc, drop,
 //! rc, panic, ivar, io, vec, string, trace) into `cranelisp-intrinsics`.
+//! Wave 3b-2d.2 (commit `6654a6e`) lifted user-callable string + vec
+//! functions into `cranelisp-primitives` via re-export (Cargo cycle
+//! prevented physical relocation; see FIXME 0180). Wave 3b-2d.2b (the
+//! present commit) lifts the remaining user-callable extern fns:
 //!
-//! What remains in this crate:
-//! - `marshal` — `quote-sexp`, `sconcat` (user-callable Sexp marshaling).
-//! - `primitives/{int,float,bool}` — conversion primitives + operator
-//!   wrappers (`int-to-string`, `parse-int`, `float-to-string`,
-//!   `bool-to-string`, `cranelisp_op_*`).
-//! - `io_trace` — thin shim re-exporting from `cranelisp_intrinsics::io_trace`.
-//! - Pre-existing re-exports of every relocated symbol, so consumers
-//!   (backend, int, exe-bundle, integration tests) continue to compile
-//!   against `cranelisp_runtime::*` paths.
+//! - `marshal::{sconcat, quote_sexp}` → `cranelisp_primitives::marshal`
+//! - `primitives::int::{int_to_string, parse_int}` → `cranelisp_primitives::int`
+//! - `primitives::float::float_to_string` → `cranelisp_primitives::float`
+//! - `primitives::bool::bool_to_string` → `cranelisp_primitives::bool`
+//! - `primitives::int::cranelisp_op_*` → `cranelisp_intrinsics::ops`
+//!   (backend-emitted-call targets, NOT user-callable)
 //!
-//! These remaining surfaces move to `cranelisp-primitives` in β-2 of
-//! D43's sequencing; `cranelisp-runtime` then retires.
+//! What remains in this crate is **pure forwarding** — every submodule
+//! (`marshal`, `primitives/{int,float,bool}`, `io_trace`) and every flat
+//! re-export below points at `cranelisp-primitives` or
+//! `cranelisp-intrinsics`. Consumers (backend, int, exe-bundle,
+//! integration tests) continue to compile against `cranelisp_runtime::*`
+//! paths unchanged. β-3 migrates those call sites to import from
+//! `cranelisp_primitives::*` / `cranelisp_intrinsics::*` directly and
+//! retires `cranelisp-runtime`.
 
 // Modules still hosted here (user-callable; future cranelisp-primitives).
 pub mod marshal;
@@ -70,7 +77,9 @@ pub use cranelisp_intrinsics::string::{
     str_trim, string_identity,
 };
 
-// Conversion primitives (still in runtime; move to primitives in β-2).
+// Conversion primitives (relocated to cranelisp-primitives in Wave 3b-2d.2b;
+// re-exported here transitionally so legacy `cranelisp_runtime::*` paths
+// continue to resolve until β-3 retires this crate).
 pub use primitives::bool::bool_to_string;
 pub use primitives::float::float_to_string;
 pub use primitives::int::{
@@ -79,7 +88,7 @@ pub use primitives::int::{
     int_to_string, parse_int,
 };
 
-// Marshal primitives.
+// Marshal primitives (relocated to cranelisp-primitives in Wave 3b-2d.2b).
 pub use marshal::{quote_sexp, sconcat};
 
 // IO trampoline.

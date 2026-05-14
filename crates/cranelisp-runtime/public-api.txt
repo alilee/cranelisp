@@ -9,10 +9,21 @@ pub use cranelisp_runtime::alloc
 pub use cranelisp_runtime::alloc_count
 pub use cranelisp_runtime::alloc_string
 pub use cranelisp_runtime::alloc_with_rc
+pub use cranelisp_runtime::bool_to_string
 pub use cranelisp_runtime::bytes_allocated
 pub use cranelisp_runtime::bytes_current
 pub use cranelisp_runtime::bytes_peak
 pub use cranelisp_runtime::cranelisp_collect_trace
+pub use cranelisp_runtime::cranelisp_op_add
+pub use cranelisp_runtime::cranelisp_op_div
+pub use cranelisp_runtime::cranelisp_op_eq
+pub use cranelisp_runtime::cranelisp_op_ge
+pub use cranelisp_runtime::cranelisp_op_gt
+pub use cranelisp_runtime::cranelisp_op_le
+pub use cranelisp_runtime::cranelisp_op_lt
+pub use cranelisp_runtime::cranelisp_op_mul
+pub use cranelisp_runtime::cranelisp_op_neq
+pub use cranelisp_runtime::cranelisp_op_sub
 pub use cranelisp_runtime::cranelisp_run_io
 pub use cranelisp_runtime::cranelisp_trace_children
 pub use cranelisp_runtime::cranelisp_trace_enter
@@ -27,10 +38,12 @@ pub use cranelisp_runtime::cranelisp_trace_result
 pub use cranelisp_runtime::cranelisp_trace_swap_got
 pub use cranelisp_runtime::dealloc_count
 pub use cranelisp_runtime::drop
+pub use cranelisp_runtime::float_to_string
 pub use cranelisp_runtime::heap_alloc
 pub use cranelisp_runtime::heap_alloc_payload
 pub use cranelisp_runtime::heap_alloc_string
 pub use cranelisp_runtime::heap_dealloc
+pub use cranelisp_runtime::int_to_string
 pub use cranelisp_runtime::io
 pub use cranelisp_runtime::io_trace_dump_all_buffers
 pub use cranelisp_runtime::io_trace_dump_thread_buffer
@@ -45,12 +58,15 @@ pub use cranelisp_runtime::ivar_create
 pub use cranelisp_runtime::ivar_force
 pub use cranelisp_runtime::ivar_spark
 pub use cranelisp_runtime::panic
+pub use cranelisp_runtime::parse_int
+pub use cranelisp_runtime::quote_sexp
 pub use cranelisp_runtime::rc
 pub use cranelisp_runtime::rc_underflow_check
 pub use cranelisp_runtime::read_string_as_str
 pub use cranelisp_runtime::reset_counts
 pub use cranelisp_runtime::run_io_trampoline
 pub use cranelisp_runtime::runtime_panic
+pub use cranelisp_runtime::sconcat
 pub use cranelisp_runtime::str_char_at
 pub use cranelisp_runtime::str_concat
 pub use cranelisp_runtime::str_contains
@@ -93,39 +109,23 @@ pub use cranelisp_runtime::io_trace::publish_thread_buffer
 pub use cranelisp_runtime::io_trace::record_event
 pub use cranelisp_runtime::io_trace::trace_instant_anchor
 pub mod cranelisp_runtime::marshal
-#[export_name = "quote-sexp"] pub c fn cranelisp_runtime::marshal::quote_sexp(val: i64) -> i64
-#[export_name = "sconcat"] pub c fn cranelisp_runtime::marshal::sconcat(xs: i64, ys: i64) -> i64
+pub use cranelisp_runtime::marshal::quote_sexp
+pub use cranelisp_runtime::marshal::sconcat
 pub mod cranelisp_runtime::primitives
 pub mod cranelisp_runtime::primitives::bool
-#[export_name = "bool-to-string"] pub c fn cranelisp_runtime::primitives::bool::bool_to_string(b: i64) -> i64
+pub use cranelisp_runtime::primitives::bool::bool_to_string
 pub mod cranelisp_runtime::primitives::float
-#[export_name = "float-to-string"] pub c fn cranelisp_runtime::primitives::float::float_to_string(f_bits: i64) -> i64
+pub use cranelisp_runtime::primitives::float::float_to_string
 pub mod cranelisp_runtime::primitives::int
-#[no_mangle] pub c fn cranelisp_runtime::primitives::int::cranelisp_op_add(a: i64, b: i64) -> i64
-#[no_mangle] pub c fn cranelisp_runtime::primitives::int::cranelisp_op_div(a: i64, b: i64) -> i64
-#[no_mangle] pub c fn cranelisp_runtime::primitives::int::cranelisp_op_eq(a: i64, b: i64) -> i64
-#[no_mangle] pub c fn cranelisp_runtime::primitives::int::cranelisp_op_ge(a: i64, b: i64) -> i64
-#[no_mangle] pub c fn cranelisp_runtime::primitives::int::cranelisp_op_gt(a: i64, b: i64) -> i64
-#[no_mangle] pub c fn cranelisp_runtime::primitives::int::cranelisp_op_le(a: i64, b: i64) -> i64
-#[no_mangle] pub c fn cranelisp_runtime::primitives::int::cranelisp_op_lt(a: i64, b: i64) -> i64
-#[no_mangle] pub c fn cranelisp_runtime::primitives::int::cranelisp_op_mul(a: i64, b: i64) -> i64
-#[no_mangle] pub c fn cranelisp_runtime::primitives::int::cranelisp_op_neq(a: i64, b: i64) -> i64
-#[no_mangle] pub c fn cranelisp_runtime::primitives::int::cranelisp_op_sub(a: i64, b: i64) -> i64
-#[export_name = "int-to-string"] pub c fn cranelisp_runtime::primitives::int::int_to_string(n: i64) -> i64
-#[export_name = "parse-int"] pub c fn cranelisp_runtime::primitives::int::parse_int(s: i64) -> i64
-#[export_name = "bool-to-string"] pub c fn cranelisp_runtime::bool_to_string(b: i64) -> i64
-#[no_mangle] pub c fn cranelisp_runtime::cranelisp_op_add(a: i64, b: i64) -> i64
-#[no_mangle] pub c fn cranelisp_runtime::cranelisp_op_div(a: i64, b: i64) -> i64
-#[no_mangle] pub c fn cranelisp_runtime::cranelisp_op_eq(a: i64, b: i64) -> i64
-#[no_mangle] pub c fn cranelisp_runtime::cranelisp_op_ge(a: i64, b: i64) -> i64
-#[no_mangle] pub c fn cranelisp_runtime::cranelisp_op_gt(a: i64, b: i64) -> i64
-#[no_mangle] pub c fn cranelisp_runtime::cranelisp_op_le(a: i64, b: i64) -> i64
-#[no_mangle] pub c fn cranelisp_runtime::cranelisp_op_lt(a: i64, b: i64) -> i64
-#[no_mangle] pub c fn cranelisp_runtime::cranelisp_op_mul(a: i64, b: i64) -> i64
-#[no_mangle] pub c fn cranelisp_runtime::cranelisp_op_neq(a: i64, b: i64) -> i64
-#[no_mangle] pub c fn cranelisp_runtime::cranelisp_op_sub(a: i64, b: i64) -> i64
-#[export_name = "float-to-string"] pub c fn cranelisp_runtime::float_to_string(f_bits: i64) -> i64
-#[export_name = "int-to-string"] pub c fn cranelisp_runtime::int_to_string(n: i64) -> i64
-#[export_name = "parse-int"] pub c fn cranelisp_runtime::parse_int(s: i64) -> i64
-#[export_name = "quote-sexp"] pub c fn cranelisp_runtime::quote_sexp(val: i64) -> i64
-#[export_name = "sconcat"] pub c fn cranelisp_runtime::sconcat(xs: i64, ys: i64) -> i64
+pub use cranelisp_runtime::primitives::int::cranelisp_op_add
+pub use cranelisp_runtime::primitives::int::cranelisp_op_div
+pub use cranelisp_runtime::primitives::int::cranelisp_op_eq
+pub use cranelisp_runtime::primitives::int::cranelisp_op_ge
+pub use cranelisp_runtime::primitives::int::cranelisp_op_gt
+pub use cranelisp_runtime::primitives::int::cranelisp_op_le
+pub use cranelisp_runtime::primitives::int::cranelisp_op_lt
+pub use cranelisp_runtime::primitives::int::cranelisp_op_mul
+pub use cranelisp_runtime::primitives::int::cranelisp_op_neq
+pub use cranelisp_runtime::primitives::int::cranelisp_op_sub
+pub use cranelisp_runtime::primitives::int::int_to_string
+pub use cranelisp_runtime::primitives::int::parse_int

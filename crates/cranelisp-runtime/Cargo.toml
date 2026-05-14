@@ -13,4 +13,10 @@ cranelisp-types = { path = "../cranelisp-types" }
 # runtime → intrinsics is acyclic — intrinsics does NOT depend on runtime.
 # Removed at the broader D43 split (FIXME 0150) when runtime dissolves.
 cranelisp-intrinsics = { path = "../cranelisp-intrinsics" }
+# Transitional Wave 3b-2d.2b: runtime now re-exports user-callable
+# marshal + int/float/bool conversion primitives whose bodies live in
+# `cranelisp-primitives`. Edge runtime → primitives is acyclic
+# (primitives does NOT depend on runtime). Removed when runtime retires
+# per FIXME 0150 Phase 5.
+cranelisp-primitives = { path = "../cranelisp-primitives" }
 rayon = "1.10"

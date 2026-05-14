@@ -26,14 +26,22 @@
 //!
 //! `cranelisp-runtime` keeps thin re-export shims so existing consumers
 //! (backend, int, exe-bundle, tests) continue to compile against
-//! `cranelisp_runtime::*` paths unchanged. Runtime additionally still
-//! hosts `marshal.rs` (`quote-sexp`, `sconcat`) and `primitives/` (user-
-//! callable converters and operator wrappers) — those move to
-//! `cranelisp-primitives` in β-2.
+//! `cranelisp_runtime::*` paths unchanged.
+//!
+//! Wave 3b-2d.2b (subsequent commit) absorbed the **operator-as-value
+//! wrappers** `cranelisp_op_*` (formerly in `cranelisp-runtime/src/primitives/int.rs`)
+//! into this crate at `cranelisp_intrinsics::ops`. They classify here per
+//! Decision 43: not user-callable (no `primitives/` symbol-table entry),
+//! addressed only by backend's operator-as-value codegen path in
+//! `crates/cranelisp-backend/src/compiler/literals.rs` which emits direct
+//! `Linkage::Import` calls keyed on the `cranelisp_op_*` names. The
+//! user-callable Sexp marshaling + conversion primitives (`sconcat`,
+//! `quote-sexp`, `int-to-string`, `parse-int`, `float-to-string`,
+//! `bool-to-string`) migrated to `cranelisp-primitives` in the same wave.
 //!
 //! Per Decision 43, the categorical line is: backend-emitted-call targets
 //! (this crate) vs user-callable, symbol-table addressable primitives
-//! (still in runtime; future `cranelisp-primitives`).
+//! (`cranelisp-primitives`).
 
 pub mod alloc;
 pub mod drop;
@@ -41,6 +49,7 @@ pub mod io;
 pub mod io_observer;
 pub mod io_trace;
 pub mod ivar;
+pub mod ops;
 pub mod panic;
 pub mod rc;
 pub mod string;
@@ -62,6 +71,10 @@ pub use string::{HeapString, alloc_string, heap_alloc_string, read_string_as_str
 pub use vec::{vec_drop, vec_len, vec_new, vec_push_copy, vec_push_grow, vec_set_copy};
 pub use io::{cranelisp_run_io, run_io_trampoline};
 pub use ivar::{ivar_create, ivar_force, ivar_spark};
+pub use ops::{
+    cranelisp_op_add, cranelisp_op_div, cranelisp_op_eq, cranelisp_op_ge, cranelisp_op_gt,
+    cranelisp_op_le, cranelisp_op_lt, cranelisp_op_mul, cranelisp_op_neq, cranelisp_op_sub,
+};
 pub use trace::{
     cranelisp_collect_trace, cranelisp_trace_children, cranelisp_trace_enter,
     cranelisp_trace_exit, cranelisp_trace_first_child_nanos, cranelisp_trace_format,

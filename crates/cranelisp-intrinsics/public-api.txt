@@ -251,6 +251,17 @@ pub mod cranelisp_intrinsics::ivar
 #[export_name = "cranelisp_ivar_create"] pub c fn cranelisp_intrinsics::ivar::ivar_create(thunk: i64) -> i64
 #[export_name = "cranelisp_ivar_force"] pub c fn cranelisp_intrinsics::ivar::ivar_force(ivar: i64) -> i64
 #[export_name = "cranelisp_ivar_spark"] pub c fn cranelisp_intrinsics::ivar::ivar_spark(ivar: i64) -> i64
+pub mod cranelisp_intrinsics::ops
+#[no_mangle] pub c fn cranelisp_intrinsics::ops::cranelisp_op_add(a: i64, b: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::ops::cranelisp_op_div(a: i64, b: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::ops::cranelisp_op_eq(a: i64, b: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::ops::cranelisp_op_ge(a: i64, b: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::ops::cranelisp_op_gt(a: i64, b: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::ops::cranelisp_op_le(a: i64, b: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::ops::cranelisp_op_lt(a: i64, b: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::ops::cranelisp_op_mul(a: i64, b: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::ops::cranelisp_op_neq(a: i64, b: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::ops::cranelisp_op_sub(a: i64, b: i64) -> i64
 pub mod cranelisp_intrinsics::panic
 #[export_name = "runtime/panic"] pub c fn cranelisp_intrinsics::panic::runtime_panic(msg_ptr: *const u8, msg_len: usize)
 pub fn cranelisp_intrinsics::panic::take_runtime_error() -> core::option::Option<alloc::string::String>
@@ -413,6 +424,16 @@ pub fn cranelisp_intrinsics::bytes_allocated() -> usize
 pub fn cranelisp_intrinsics::bytes_current() -> usize
 pub fn cranelisp_intrinsics::bytes_peak() -> usize
 #[no_mangle] pub c fn cranelisp_intrinsics::cranelisp_collect_trace() -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::cranelisp_op_add(a: i64, b: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::cranelisp_op_div(a: i64, b: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::cranelisp_op_eq(a: i64, b: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::cranelisp_op_ge(a: i64, b: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::cranelisp_op_gt(a: i64, b: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::cranelisp_op_le(a: i64, b: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::cranelisp_op_lt(a: i64, b: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::cranelisp_op_mul(a: i64, b: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::cranelisp_op_neq(a: i64, b: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::cranelisp_op_sub(a: i64, b: i64) -> i64
 #[no_mangle] pub c fn cranelisp_intrinsics::cranelisp_run_io(io_ptr: i64) -> i64
 #[no_mangle] pub c fn cranelisp_intrinsics::cranelisp_trace_children(trace_ptr: i64) -> i64
 #[no_mangle] pub c fn cranelisp_intrinsics::cranelisp_trace_enter(name_ptr: i64, name_len: i64, params_count: i64, params_array_ptr: i64)
