@@ -348,6 +348,7 @@ dependencies = [
 name = "cranelisp-primitives"
 version = "0.1.0"
 dependencies = [
+ "cranelisp-intrinsics",
  "cranelisp-types",
  "serde",
 ]

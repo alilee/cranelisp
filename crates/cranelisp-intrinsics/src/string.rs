@@ -7,6 +7,28 @@
 //!
 //! Layout: `[alloc_size(0) | rc(8) | len(16) | bytes(24)...]`
 //! All offsets are from the base pointer (positive-only, base-pointer convention).
+//!
+//! ## Wave 3b-2d.2 note (FIXME 0150)
+//!
+//! Per `design/arch/facades/primitives.md`, the user-callable string
+//! operations (`str-concat`, `str-eq`, `substring`, `split`, …) are part of
+//! the **primitives** surface — addressable in user code via the synthetic
+//! `primitives` module. The actual extern fns continue to live here because
+//! `cranelisp-runtime`'s pre-D43 shims (and the legacy
+//! `cranelisp_intrinsics::string::*` paths backend's `IntrinsicSymbol`
+//! table uses) still reach them at this location. `cranelisp-primitives`
+//! re-exports the user-callable subset under `cranelisp_primitives::string`,
+//! formalising the primitives-surface presentation without breaking the
+//! transitional `runtime → intrinsics` shim chain.
+//!
+//! Moving these fns physically into `cranelisp-primitives` would require
+//! either an `intrinsics → primitives` Cargo edge (which collides with the
+//! existing `primitives → intrinsics` need for alloc helpers — Cargo cycle)
+//! or editing `cranelisp-runtime` to point its shims at `cranelisp-primitives`
+//! instead of `cranelisp-intrinsics`. Both routes are out of scope for this
+//! wave (β-3 territory — see FIXME 0150). The Rust public-API surface of
+//! `cranelisp-primitives` reflects the target shape via re-exports, which is
+//! what `cargo-public-api` baselines see.
 
 use std::mem::{self, offset_of};
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -165,25 +187,6 @@ pub extern "C" fn string_identity(s: i64) -> i64 {
     let new_rc = rc_ptr.fetch_add(1, Ordering::Release) + 1;
     rc::rc_trace("inc", s, new_rc);
     s
-}
-
-/// Read a string's bytes for display/formatting. Writes pointer and length
-/// to the provided out-parameters.
-///
-/// Used by the binary crate's ValueFormatter — NOT called from JIT code.
-#[unsafe(export_name = "runtime/string_read")]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn string_read(s: i64, out_ptr: *mut *const u8, out_len: *mut i64) {
-    // SAFETY: s is a valid HeapString base pointer; out_ptr/out_len are valid.
-    unsafe {
-        let (bytes, len) = read_string_parts(s as *const u8);
-        *out_ptr = if bytes.is_empty() {
-            std::ptr::null()
-        } else {
-            bytes.as_ptr()
-        };
-        *out_len = len as i64;
-    }
 }
 
 /// Extract a substring from `start` (inclusive) to `end` (exclusive), clamping
@@ -371,6 +374,25 @@ pub extern "C" fn str_to_lower(s: i64) -> i64 {
     let result = alloc_string(src.to_lowercase().as_bytes()) as i64;
     rc::consume_shallow(s);
     result
+}
+
+/// Read a string's bytes for display/formatting. Writes pointer and length
+/// to the provided out-parameters.
+///
+/// Used by the binary crate's ValueFormatter — NOT called from JIT code.
+#[unsafe(export_name = "runtime/string_read")]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn string_read(s: i64, out_ptr: *mut *const u8, out_len: *mut i64) {
+    // SAFETY: s is a valid HeapString base pointer; out_ptr/out_len are valid.
+    unsafe {
+        let (bytes, len) = read_string_parts(s as *const u8);
+        *out_ptr = if bytes.is_empty() {
+            std::ptr::null()
+        } else {
+            bytes.as_ptr()
+        };
+        *out_len = len as i64;
+    }
 }
 
 // ---------------------------------------------------------------------------

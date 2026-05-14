@@ -5,4 +5,5 @@ edition = "2024"
 
 [dependencies]
 cranelisp-types = { path = "../cranelisp-types" }
+cranelisp-intrinsics = { path = "../cranelisp-intrinsics" }
 serde = { version = "1", features = ["derive"] }
