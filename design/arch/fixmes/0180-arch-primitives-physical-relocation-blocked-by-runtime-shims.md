@@ -4,9 +4,12 @@ target: /arch
 filed_by: /dev
 filed_at: 2026-05-14
 sprint_filed: 66
-refers_to: design/arch/facades/primitives.md, design/arch/facades/intrinsics.md, design/arch/fixmes/0150-runtime-split-primitives-intrinsics.md, crates/cranelisp-primitives/src/{lib,string,vec}.rs, crates/cranelisp-intrinsics/src/string.rs, crates/cranelisp-runtime/src/lib.rs, crates/cranelisp-backend/src/jit.rs
-status: open
+refers_to: design/arch/facades/primitives.md, design/arch/facades/intrinsics.md, crates/cranelisp-primitives/src/{lib,string,vec}.rs, crates/cranelisp-intrinsics/src/string.rs, crates/cranelisp-backend/src/jit.rs
+status: unblocked
 ---
+
+> **2026-05-14 status update (Wave 4a.retire)** — The `cranelisp-runtime` crate has been retired (FIXME 0150 Phase 5 closed). The structural cycle blocking route (1) is now gone: `cranelisp-intrinsics` no longer has any consumer reaching `str_concat`/etc. through a runtime shim. A subsequent `/dev` (primitives) fire can now physically lift the string + vec bodies from `cranelisp-intrinsics` into `cranelisp-primitives` and add the shim in `cranelisp-intrinsics` (or, cleaner per route (1)'s spirit, retire that side entirely since no consumer remains). `/arch` review per the original three-way decision (now reduced to two: keep route (3) as terminal, OR execute route (1) — route (2) is done) is still required before the relocation lands. Leaving open for that disposition.
+
 
 # Physical primitives relocation is blocked by the runtime-shim chain
 

@@ -36,14 +36,13 @@ fn workspace_root() -> PathBuf {
 }
 
 /// Crates whose public surface S66 governs by binding facade.
-/// `cranelisp-runtime` is included transit-state; it retires by S66 close.
+/// `cranelisp-runtime` retired in Sprint 66 Wave 4a.retire (FIXME 0150 Phase 5).
 fn crates_with_baselines() -> &'static [&'static str] {
     &[
         "cranelisp-types",
         "cranelisp-frontend",
         "cranelisp-typecheck",
         "cranelisp-backend",
-        "cranelisp-runtime",
         "cranelisp-platform",
         // Live in S66 per /arch Option A — D43 binds:
         "cranelisp-primitives",
@@ -56,7 +55,7 @@ fn crates_with_baselines() -> &'static [&'static str] {
 // FIXME(/dev — multi: every crate with a facade-conformant landing in
 // S66 must commit its `public-api.txt` baseline per /qa slice §1.1).
 #[test]
-fn public_api_check_runs_against_all_eight_crates() {
+fn public_api_check_runs_against_all_seven_crates() {
     // Skip if cargo-public-api is not installed; emit instructions.
     let probe = Command::new("cargo")
         .args(["+nightly", "public-api", "--version"])

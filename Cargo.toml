@@ -5,7 +5,6 @@ members = [
     "crates/cranelisp-frontend",
     "crates/cranelisp-typecheck",
     "crates/cranelisp-backend",
-    "crates/cranelisp-runtime",
     "crates/cranelisp-primitives",
     "crates/cranelisp-intrinsics",
     "crates/cranelisp-platform",
@@ -34,7 +33,6 @@ cranelisp-types = { path = "crates/cranelisp-types" }
 cranelisp-frontend = { path = "crates/cranelisp-frontend" }
 cranelisp-typecheck = { path = "crates/cranelisp-typecheck" }
 cranelisp-backend = { path = "crates/cranelisp-backend" }
-cranelisp-runtime = { path = "crates/cranelisp-runtime" }
 cranelisp-intrinsics = { workspace = true }
 cranelisp-primitives = { workspace = true }
 cranelisp-platform = { path = "crates/cranelisp-platform" }

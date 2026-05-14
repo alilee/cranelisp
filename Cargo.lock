@@ -274,7 +274,6 @@ dependencies = [
  "cranelisp-intrinsics",
  "cranelisp-platform",
  "cranelisp-primitives",
- "cranelisp-runtime",
  "cranelisp-typecheck",
  "cranelisp-types",
  "dashmap",
@@ -354,17 +353,6 @@ dependencies = [
  "cranelisp-intrinsics",
  "cranelisp-types",
  "serde",
-]
-
-[[package]]
-name = "cranelisp-runtime"
-version = "0.1.0"
-dependencies = [
- "cranelisp-intrinsics",
- "cranelisp-platform",
- "cranelisp-primitives",
- "cranelisp-types",
- "rayon",
 ]
 
 [[package]]
