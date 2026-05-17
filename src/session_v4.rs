@@ -692,10 +692,13 @@ pub struct SharedState {
     /// row) holds. Deferred to S68 facade refresh per FIXME 0208.
     pub promote_nice_workers: AtomicBool,
 
-    /// Set of modules loaded from cache (vs. compiled from source).
-    /// Used by workers to detect cache-hit modules for Linker fast path.
-    /// Populated by try_cache_hit_load, read by workers during codegen.
-    pub cached_modules: Mutex<HashSet<ModuleFullPath>>,
+    // Sprint 67 Cluster B sub-fire 2e: `cached_modules: Mutex<HashSet<...>>`
+    // deleted. The scheduler's per-module `cached_modules` set is the single
+    // source of truth, accessed via `CompileScheduler::cached_module_insert /
+    // contains / remove` (formerly only `is_cached_module` was public). The
+    // SharedState duplicate was redundant — every write to it was paired
+    // with a `scheduler.register_module_cached` call that already populated
+    // the scheduler-side set.
 
     /// File path to module path mapping. Populated during handle_import
     /// when modules are first discovered. Used by the file watcher to
@@ -739,9 +742,12 @@ pub struct SharedState {
     /// TypeCheckEnv instances for concurrent workers.
     pub next_type_id: AtomicU32,
 
-    /// REPL carry-forward: current module path for REPL prompt and eval.
-    /// Batch compilation sets this per-worker; REPL uses it across evals.
-    pub current_module: Mutex<ModuleFullPath>,
+    // Sprint 67 Cluster B sub-fire 2d: `current_module: Mutex<ModuleFullPath>`
+    // was here. Relocated (PIF) to `CompilerSession::current_repl_module` per
+    // `design/arch/facades/int.md` L23 + L222. REPL is single-threaded
+    // against this state; the Mutex was vestigial. Workers receive their
+    // module per `PriorityWork` / `NiceWork` work item and never need to
+    // read the REPL's current namespace.
 
     /// REPL carry-forward: CheckState that persists across REPL evals.
     /// Contains substitution, scope stack, overloads, module aliases.
@@ -929,15 +935,44 @@ pub struct CompilerSession {
     /// construction. None in batch/link modes or if OS watcher unavailable.
     pub watcher: Option<crate::watch::FileWatcher>,
 
-    /// Priority worker thread handles. Sprint 57 Wave 4 G9: persistent —
-    /// spawned in `new()`, joined in `shutdown()`/`Drop`. Per
-    /// `persistent-workers.md` §4.1/§5.2.
-    priority_worker_handles: Vec<std::thread::JoinHandle<()>>,
+    /// Worker thread pool — priority + nice handles + nice-worker count.
+    /// Sprint 67 Cluster B sub-fire 2a/2b per `design/arch/facades/int.md`
+    /// L25 + L201. Replaces the three pre-S67 fields
+    /// (`priority_worker_handles`, `nice_worker_handles`, `nice_workers`).
+    /// Joined in `shutdown()` / `Drop`. The facade method surface
+    /// (`WorkerPool::shutdown`, `WorkerPool::nice_worker_count`) is the
+    /// stable touch-point for the rest of `int`; internal data shape is
+    /// free to evolve in S68.
+    worker_pool: crate::worker_pool::WorkerPool,
 
-    /// Nice worker thread handles. Joined in `shutdown()`.
-    nice_worker_handles: Vec<std::thread::JoinHandle<()>>,
-    /// Nice worker count (stored for `wait_object_complete` guard).
-    nice_workers: usize,
+    /// REPL active module — per `/mod` (Sprint 67 Cluster B sub-fire 2d).
+    /// PIF-relocated from `SharedState.current_module` per
+    /// `design/arch/facades/int.md` L23 + L222. Plain `ModuleFullPath` (no
+    /// Mutex) — initiator-only state; the REPL is single-threaded against
+    /// it. Workers don't read it — they receive their module via
+    /// `PriorityWork` / `NiceWork`.
+    current_repl_module: ModuleFullPath,
+
+    /// REPL input-active flag — per `repl/spec.md §14` / exec-flow-repl
+    /// STEP 1 / STEP 3. Shared with the watcher event handler via `Arc`
+    /// clone so the watcher can skip cascade reloads while the user is
+    /// mid-input. Sprint 67 Cluster B sub-fire 2c per
+    /// `design/arch/facades/int.md` L24 + L102.
+    ///
+    /// Today the field is the facade-prescribed home but the watcher event
+    /// handler does not yet consult it — the flag landing here is the
+    /// load-bearing structural change; wiring the watcher to read it is
+    /// FIXME 0205's broader scope (S68 facade refresh).
+    repl_input_active: std::sync::Arc<AtomicBool>,
+
+    /// Accumulated warnings — initiator-collected. Sprint 67 Cluster B
+    /// sub-fire 2c per `design/arch/facades/int.md` L26 + L140.
+    ///
+    /// Workers route warnings through the work-completion notification path
+    /// where they merge into this Vec; the field landing here gives the
+    /// facade-prescribed `warnings()` accessor a real backing store. The
+    /// worker → session warning merge wiring is FIXME 0205's broader scope.
+    warnings: Vec<Warning>,
 }
 
 impl CompilerSession {
@@ -1026,14 +1061,12 @@ impl CompilerSession {
             cache_dir: Some(cache_dir),
             compiled_o_paths: Mutex::new(Vec::new()),
             promote_nice_workers: AtomicBool::new(false),
-            cached_modules: Mutex::new(HashSet::new()),
             file_to_module: Mutex::new(HashMap::new()),
             cache_state: Mutex::new(cache_state),
             codegen_behaviour: settings.codegen_behaviour,
             symbol_tables,
             next_type_id,
-            current_module: Mutex::new(user_module.clone()),
-            repl_check_state: Mutex::new(Some(CheckState::new(user_module))),
+            repl_check_state: Mutex::new(Some(CheckState::new(user_module.clone()))),
             typecheck_products: dashmap::DashMap::new(),
             // Sprint 58 Wave 3b: kept_jits / kept_linkers dissolved per
             // Decision 35; Arc retention now lives on each Code::Jit /
@@ -1093,9 +1126,12 @@ impl CompilerSession {
             shared,
             error_modules: HashSet::new(),
             watcher: None,
-            priority_worker_handles,
-            nice_worker_handles,
-            nice_workers,
+            worker_pool: crate::worker_pool::WorkerPool::new(
+                priority_worker_handles, nice_worker_handles, nice_workers,
+            ),
+            current_repl_module: user_module,
+            repl_input_active: std::sync::Arc::new(AtomicBool::new(false)),
+            warnings: Vec::new(),
         }
     }
 
@@ -1150,26 +1186,38 @@ impl CompilerSession {
     }
 
     /// Get the current module path (REPL carry-forward).
+    ///
+    /// Sprint 67 Cluster B sub-fire 2d: reads the CompilerSession-owned
+    /// `current_repl_module` field (PIF-relocated from
+    /// `SharedState.current_module` per facade L222 — REPL is single-threaded
+    /// against this state).
     fn current_module_path(&self) -> ModuleFullPath {
-        self.shared.current_module.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.current_repl_module.clone()
     }
 
     /// Set the current module path (REPL carry-forward).
-    fn set_current_module(&self, path: ModuleFullPath) {
+    ///
+    /// Sprint 67 Cluster B sub-fire 2d: writes the CompilerSession-owned
+    /// `current_repl_module` field and mirrors the change into the
+    /// session-stable `test_runner_state.current_module` (still on
+    /// `SharedState` because the JIT-emitted test intrinsics dereference
+    /// it via a raw pointer that must outlive the session). Also resets
+    /// `shared.repl_check_state` to a fresh `CheckState` for the new
+    /// module — REPL carry-forward state (subst, env, overloads) is lost
+    /// on module switch, matching the prior behaviour.
+    fn set_current_module(&mut self, path: ModuleFullPath) {
         let tc = self.tc_env();
         tc.ensure_module_exists(&path);
-        *self.shared.current_module.lock()
-            .unwrap_or_else(|e| e.into_inner()) = path.clone();
+        self.current_repl_module = path.clone();
         // Sprint 66 Wave 3a-γ: keep the test-runner state's `current_module`
         // in sync so `discover-tests` (with empty module arg) targets the
-        // active REPL namespace after a `/mod` switch.
+        // active REPL namespace after a `/mod` switch. The
+        // `test_runner_state` lives behind the `Arc<SharedState>` so the
+        // JIT-emitted intrinsics may dereference a stable pointer; only
+        // the inner `Mutex<ModuleFullPath>` needs updating here.
         *self.shared.test_runner_state.current_module.lock()
             .unwrap_or_else(|e| e.into_inner()) = path.clone();
         // Create a new CheckState for the new module.
-        // REPL carry-forward state (subst, env, overloads) is lost on module switch.
-        // This matches the old behavior where /mod started fresh.
         *self.shared.repl_check_state.lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(CheckState::new(path));
     }
@@ -1550,10 +1598,12 @@ impl CompilerSession {
     }
 
     /// Current REPL module (per facade §"CompilerSession.current_repl_module").
-    /// Pure read against `shared.current_module`; the field's relocation to
-    /// `CompilerSession`-side state is FIXME 0176's broader scope.
-    pub fn current_repl_module(&self) -> ModuleFullPath {
-        self.current_module_path()
+    ///
+    /// Sprint 67 Cluster B sub-fire 2d: now reads the CompilerSession-owned
+    /// field directly (PIF-relocate landed). Returns a `&ModuleFullPath` per
+    /// facade L125 — no clone needed at the accessor boundary.
+    pub fn current_repl_module(&self) -> &ModuleFullPath {
+        &self.current_repl_module
     }
 
     /// Switch the REPL's active module (per `/mod NAME`). Writes
@@ -1565,14 +1615,35 @@ impl CompilerSession {
     }
 
     /// Update the watcher-input-active flag (per exec-flow-repl STEP 1 / STEP 3).
-    /// The atomic boolean is shared with the watcher event handler via `Arc`.
-    /// Sprint 67 hack-back stub: today this is a no-op because the
-    /// `repl_input_active` field lives implicitly inside the watcher's own
-    /// state. Retained as the facade-named entry point; once the field moves
-    /// onto `CompilerSession` (per the SharedState alignment plan) this body
-    /// becomes a real atomic write.
-    pub fn set_repl_input_active(&self, _active: bool) {
-        // No-op stub — see method docstring.
+    ///
+    /// Sprint 67 Cluster B sub-fire 2c: now writes the
+    /// CompilerSession-owned `repl_input_active: Arc<AtomicBool>` field
+    /// (PIF-relocate landed). The watcher event handler holds an
+    /// `Arc::clone` of this atomic and consults it before triggering
+    /// cascade reloads — wiring the watcher to actually consult the flag
+    /// is FIXME 0205's broader scope (S68 facade refresh); landing the
+    /// field + accessor here is the load-bearing structural change.
+    pub fn set_repl_input_active(&self, active: bool) {
+        self.repl_input_active.store(active, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Accumulated session warnings (per facade L140).
+    ///
+    /// Sprint 67 Cluster B sub-fire 2c: returns the CompilerSession-owned
+    /// `warnings` accumulator. Workers route warnings through this Vec via
+    /// the eventual `warnings_mut()` / work-completion merge path
+    /// (FIXME 0205); landing the accessor here is the facade method-surface
+    /// landing — S68 wires workers without changing this call site.
+    pub fn warnings(&self) -> &[Warning] {
+        &self.warnings
+    }
+
+    /// Mutable accessor for the warnings accumulator. Used by the eventual
+    /// worker → session warning merge path; for now the public method
+    /// surface is the load-bearing change.
+    #[allow(dead_code)]
+    pub fn warnings_mut(&mut self) -> &mut Vec<Warning> {
+        &mut self.warnings
     }
 
     /// Register any newly-loaded module source files with the watcher.
@@ -3749,8 +3820,10 @@ impl CompilerSession {
         &self,
     ) -> Result<(), crate::scheduler::SchedulerError> {
         // When no nice workers are running (e.g., tests with nice_workers: 0),
-        // no .o files will be produced. Skip the wait to avoid blocking forever.
-        if self.nice_workers == 0 {
+        // no .o files will be produced. Skip the wait to avoid blocking
+        // forever. Sprint 67 Cluster B sub-fire 2a/2b: nice-worker count
+        // read via the `WorkerPool` facade method.
+        if self.worker_pool.nice_worker_count() == 0 {
             return Ok(());
         }
 
@@ -3788,19 +3861,12 @@ impl CompilerSession {
     /// Sprint 57 Wave 4 G9 per `persistent-workers.md` §5.2.
     pub fn shutdown(&mut self) {
         self.shared.scheduler.shutdown();
-        // Join priority worker threads first. A worker mid-codegen will
-        // finish its current work item, re-enter `take_priority_work_blocking`
-        // at the loop top, observe shutdown, and exit. `join()` returning
-        // `Err` means the worker panicked — silently ignored to match the
-        // scoped-worker behaviour this replaces (§5.2).
-        for handle in self.priority_worker_handles.drain(..) {
-            let _ = handle.join();
-        }
-        // Then nice workers. They observe the shutdown flag via
-        // take_object_codegen() returning None and exit their loop.
-        for handle in self.nice_worker_handles.drain(..) {
-            let _ = handle.join();
-        }
+        // Sprint 67 Cluster B sub-fire 2a/2b: join routing migrated through
+        // `WorkerPool::shutdown` (the facade method-surface landing). The
+        // priority + nice handle drains live inside `WorkerPool`; this call
+        // is the load-bearing entry point — S68 may reshape internals
+        // freely without changing this call site.
+        self.worker_pool.shutdown();
     }
 
     /// §3.1: Register entry module by name. Session resolves the source

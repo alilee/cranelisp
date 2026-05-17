@@ -2028,12 +2028,9 @@ fn try_cache_hit_load(
     }
     drop(cache_state_guard);
 
-    // 8. Record in cached_modules set and file_to_module mapping.
-    shared
-        .cached_modules
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(dep.clone());
+    // 8. Record in cached_modules set (via scheduler — Sprint 67 Cluster B
+    //    sub-fire 2e) and file_to_module mapping.
+    shared.scheduler.cached_module_insert(dep.clone());
     if let Ok(canonical) = dep_file.canonicalize() {
         shared
             .file_to_module
@@ -3713,10 +3710,9 @@ fn handle_cached_codegen(
     shared_state: Option<&crate::session_v4::SharedState>,
     scheduler: &CompileScheduler,
 ) -> Result<bool, CranelispError> {
+    // Sprint 67 Cluster B sub-fire 2e: read via scheduler facade method.
     let is_cached = shared_state
-        .map(|s| s.cached_modules.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(module))
+        .map(|s| s.scheduler.cached_module_contains(module))
         .unwrap_or(false);
 
     if !is_cached {

@@ -25,6 +25,11 @@ pub mod style;
 // into the worker, these become live without further narrowing churn.
 pub mod cluster;
 
+// WorkerPool — facade entry point for the worker thread pool owned by
+// `CompilerSession`. Re-exported per `design/arch/facades/int.md` L25 + L201.
+// Sprint 67 Cluster B sub-fire 2a.
+pub mod worker_pool;
+
 // Internal — accessed only via `crate::*` paths inside the library.
 pub(crate) mod bind_chain_analysis;
 pub(crate) mod cache_writer;

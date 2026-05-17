@@ -1224,6 +1224,40 @@ impl CompileScheduler {
         state.cached_modules.contains(module)
     }
 
+    // -----------------------------------------------------------------------
+    // Sprint 67 Cluster B sub-fire 2e — cached_modules public accessors
+    //
+    // The SharedState's pre-S67 `cached_modules: Mutex<HashSet<...>>` was a
+    // duplicate of the scheduler's internal set — every write to it was
+    // paired with a `register_module_cached` call that already populated the
+    // scheduler's copy. The three methods below expose the scheduler's set
+    // directly so the SharedState duplicate can delete.
+    // -----------------------------------------------------------------------
+
+    /// Mark a module as cache-loaded. Used by `worker.rs` cache-hit paths
+    /// that record a cached dep WITHOUT going through `register_module_cached`
+    /// (which also creates a `ModuleState` entry). Idempotent — repeated
+    /// inserts are no-ops.
+    pub fn cached_module_insert(&self, module: ModuleFullPath) {
+        let mut state = self.lock();
+        state.cached_modules.insert(module);
+    }
+
+    /// `is_cached_module` alias — facade name for the lookup.
+    pub fn cached_module_contains(&self, module: &ModuleFullPath) -> bool {
+        self.is_cached_module(module)
+    }
+
+    /// Remove a module from the cache-loaded set. Used when a cached
+    /// module's source file changes and the cached artefact is invalidated.
+    /// `re_register_module` already calls this internally — exposed here
+    /// for direct callers that want to invalidate without re-enqueueing.
+    #[allow(dead_code)]
+    pub fn cached_module_remove(&self, module: &ModuleFullPath) {
+        let mut state = self.lock();
+        state.cached_modules.remove(module);
+    }
+
     /// Set the resume_from_form for a module.
     pub fn set_resume_from_form(
         &self,
@@ -1968,13 +2002,15 @@ mod tests {
             cache_dir: None,
             compiled_o_paths: Mutex::new(Vec::new()),
             promote_nice_workers: AtomicBool::new(false),
-            cached_modules: Mutex::new(std::collections::HashSet::new()),
+            // Sprint 67 Cluster B sub-fire 2e: `cached_modules` SharedState
+            // duplicate deleted — scheduler set is single source of truth.
             file_to_module: Mutex::new(std::collections::HashMap::new()),
             cache_state: Mutex::new(None),
             codegen_behaviour: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
             symbol_tables: dashmap::DashMap::new(),
             next_type_id: std::sync::atomic::AtomicU32::new(0),
-            current_module: Mutex::new(cranelisp_types::ModuleFullPath::from("user")),
+            // Sprint 67 Cluster B sub-fire 2d: `current_module` PIF-relocated
+            // to `CompilerSession::current_repl_module`.
             repl_check_state: Mutex::new(None),
             typecheck_products: dashmap::DashMap::new(),
             // Sprint 58 Wave 3b: kept_jits / kept_linkers dissolved per
