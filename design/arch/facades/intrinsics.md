@@ -82,7 +82,6 @@ pub fn consume_slist(ptr: i64);                                                 
 pub fn consume_closure(ptr: i64);                                                  // closure-shape walk: dec captures via the embedded drop_glue_ptr at offset 24 (Decision 11)
 pub fn consume_vec_of_string(ptr: i64);                                            // recursive RC dec walk over Vec<String>
 pub fn consume_vec_with(ptr: i64, elem_consume: fn(i64));                          // recursive RC dec walk over Vec<T> with caller-supplied per-element consumer
-pub fn consume_trace_call(ptr: i64);                                               // recursive RC dec walk over a TraceCall ADT (the trace.rs ADT layout — see "Trace functions" below; relocation to int per Decision 40 in S67 Wave 4)
 pub fn consume_io_tree(ptr: i64);                                                  // recursive RC dec walk over an IO tree (see Decision 29)
 pub fn consume_shallow(ptr: i64);                                                  // single-node dec for IO trampoline + general use (NOT recursive — re-owns field pointers; see Decision 29)
 pub fn dec_shallow_io(ptr: i64);                                                   // single-node dec for the IO trampoline outer-node walk — distinct from transitive consume (field pointers already re-owned by other holders during the walk; see Decision 29)
@@ -90,7 +89,7 @@ pub fn dec_shallow_io(ptr: i64);                                                
 
 Where the per-type Rust helper exists, backend emits a call to it (by Rust-name resolved at JIT-symbol registration time) in lieu of generating bespoke drop glue. Where no helper exists (user-defined `deftype`, ad-hoc closures), backend emits per-defn glue per (1).
 
-`consume_trace_call` walks the trace.rs-defined `TraceCall` ADT layout. The fn is co-resident on this crate today and stays here while `trace::cranelisp_trace_*` lives here (the pre-Wave-4 state); when Wave 4 relocates the `trace` module to int per Decision 40, `consume_trace_call` relocates with it — the ADT layout is owned by int's `src/trace/`, and a trace consumer fn does not live anywhere else.
+The `TraceCall` ADT consumer (`consume_trace_call`) was previously hosted here; it relocated to int's `src/trace.rs` at S67 Wave 4 per Decision 40 (Path B1) — the ADT layout is owned by int and the consumer fn lives with the layout. See `facades/int.md` §"Tracing helpers — `src/trace.rs`".
 
 ### Vec primitives (Cow-checked per `data-structures.md`)
 
@@ -181,7 +180,7 @@ The IO node tags consumed by the trampoline (`IO_TAG_PURE`, `IO_TAG_EFFECT`, `IO
 
 ### IO observation (extension point per Decision 40)
 
-NOT diagnostics — an extension point in the same shape as `register_alloc_callback`. Intrinsics defines the observation taxonomy and a registration API; `int` implements all observer state. The IO trampoline emits events via the registered observer (with a relaxed-load null check; no-op if unregistered). All observer state — ring buffers, panic hook, formatter, dump, merge-sort — lives in `int`'s `src/io_trace/`. Production batch (`--link`, non-trace `--run`) does not register and pays one relaxed null-check load per call site (one conditional branch after optimisation).
+NOT diagnostics — an extension point in the same shape as `register_alloc_callback`. Intrinsics defines the observation taxonomy and a registration API; `int` implements all observer state. The IO trampoline emits events via the registered observer (with a relaxed-load null check; no-op if unregistered). All observer state — ring buffers, panic hook, formatter, dump, merge-sort — lives in `int`'s `src/io_trace.rs`. Production batch (`--link`, non-trace `--run`) does not register and pays one relaxed null-check load per call site (one conditional branch after optimisation).
 
 ```rust
 #[non_exhaustive]
@@ -255,63 +254,6 @@ Also update the runtime_panic signature to reflect the `#[export_name]` linker f
 #[export_name = "runtime/panic"] pub extern "C" fn runtime_panic(msg_ptr: *const u8, msg_len: usize);
 ```
 
-### Trace functions (`trace::cranelisp_trace_*`) — RELOCATING TO `int` IN S67 WAVE 4 (Decision 40)
-
-The following 10 extern functions implement the `(trace ...)` special-form runtime support — GOT-swap orchestration, frame stack, ADT marshaling. **They are pre-Decision-40 residue on this crate** and **relocate to `int`'s `src/trace/`** at S67 Wave 4 per Decision 40 (FIXME 0103 trace half). Listed here because they are still in the pub-api baseline at Wave 1; the canonical post-Wave-4 home is `int`. See `facades/int.md` §"Tracing helpers — `src/trace/`" for the destination shape.
-
-```rust
-// Wave-1 residence — listed for facade compliance; deletion follows int hosting in Wave 4:
-#[no_mangle] pub extern "C" fn cranelisp_trace_enter(name_ptr: i64, name_len: i64, params_count: i64, params_array_ptr: i64);
-#[no_mangle] pub extern "C" fn cranelisp_trace_exit(result: i64, result_str_ptr: i64) -> i64;
-#[no_mangle] pub extern "C" fn cranelisp_trace_format(val: i64, _type_ptr: i64) -> i64;
-#[no_mangle] pub extern "C" fn cranelisp_trace_swap_got(got_base: i64, n_slots: i64, slots_ptr: i64, wrappers_ptr: i64) -> i64;
-#[no_mangle] pub extern "C" fn cranelisp_trace_restore_got(got_base: i64, saved_got: i64);
-#[no_mangle] pub extern "C" fn cranelisp_collect_trace() -> i64;
-#[no_mangle] pub extern "C" fn cranelisp_trace_name(trace_ptr: i64) -> i64;
-#[no_mangle] pub extern "C" fn cranelisp_trace_params(trace_ptr: i64) -> i64;
-#[no_mangle] pub extern "C" fn cranelisp_trace_result(trace_ptr: i64) -> i64;
-#[no_mangle] pub extern "C" fn cranelisp_trace_children(trace_ptr: i64) -> i64;
-#[no_mangle] pub extern "C" fn cranelisp_trace_nanos(trace_ptr: i64) -> i64;
-#[no_mangle] pub extern "C" fn cranelisp_trace_first_child_nanos(trace_adt: i64) -> i64;
-```
-
-The `trace_anchor()` fn under §"IO observation" is **shared** — both io_trace and trace use the same monotonic origin per Decision 40, and `trace_anchor` stays on the post-Wave-4 `io_observer` extension-point surface even after the rest of `trace::*` relocates.
-
-### `io_trace::*` — RELOCATING TO `int` IN S67 WAVE 4 (Decision 40)
-
-The following types + functions are the consumer-side observer machinery (per-thread ring buffers, formatter, dump, merge-sort, panic hook, env-var filter). **They are pre-Decision-40 residue on this crate** and **relocate to `int`'s `src/io_trace/`** at S67 Wave 4 per Decision 40 (FIXME 0103 io_trace half). Listed here for facade compliance against the Wave-1 pub-api baseline; post-Wave-4 canonical home is `int`. See `facades/int.md` §"Observability — `src/io_trace/`" for the destination shape.
-
-```rust
-// Wave-1 residence — listed for facade compliance; deletion follows int hosting in Wave 4:
-pub mod io_trace {
-    pub enum IoTracePayload { /* same variants as IoEvent above; pre-S67 duplicate name */ }
-    #[repr(u8)] pub enum IoTraceTag { /* same variants as IoEventTag */ }
-    pub enum TraceFilter { All /* env-var-driven filter; pre-S67 always-All */ }
-    pub struct IoTraceEvent {
-        pub tag: IoTraceTag,
-        pub payload: IoTracePayload,
-        pub thread_id: std::thread::ThreadId,
-        pub thread_ord_id: u64,
-        pub timestamp_ns: u64,
-    }
-    pub struct FlushGuard { /* RAII over per-thread buffer */ }
-    impl FlushGuard { pub fn new() -> Self; }
-
-    pub fn record_event(tag: IoTraceTag, payload: IoTracePayload);
-    pub fn publish_thread_buffer();
-    pub fn dump_thread_buffer() -> Vec<IoTraceEvent>;
-    pub fn dump_all_buffers() -> Vec<IoTraceEvent>;
-    pub fn flush_to_stderr();
-    pub fn format_event_line(e: &IoTraceEvent) -> String;
-    pub fn install_panic_hook();
-    pub fn trace_instant_anchor() -> &'static Instant;
-
-    pub const IO_TRACE_BUFFER_CAPACITY: usize;
-}
-```
-
-`IoTracePayload` / `IoTraceTag` duplicate the Decision-43-aligned `IoEvent` / `IoEventTag` shape under their pre-S65 names; the duplication closes at Wave 4 when the consumer-side machinery moves to int and the io_observer contract (`IoEvent` / `IoEventTag` only) becomes the single shape.
-
 ### `ops::cranelisp_op_*` — RETIRED AT S67 WAVE 2 (Decision 43 close)
 
 The following 10 extern functions are the D43-banned "operator-as-value" duplicates of `cranelisp-primitives::ring0::*` (`add-i64`, `sub-i64`, etc.). They are listed on the Wave-1 pub-api baseline; **S67 Wave 2 deletes them** following `/design (backend)` Wave 1 REV-5 audit clearance (zero current consumers in backend codegen — backend's call sites migrated to `cranelisp-primitives::ring0` per the S66 Wave 4b uniform-dispatch landing). Listed here for traceability:
@@ -346,7 +288,7 @@ Mirroring `facades/backend.md` §"Non-goals" — load-bearing prohibitions for i
 
 None. (The IO node-tag consts `IO_TAG_PURE` / `IO_TAG_EFFECT` / `IO_TAG_BIND` / `IO_TAG_PAR` live on `cranelisp-platform` — see `facades/platform.md` §"Public consts". Intrinsics consumes them.)
 
-The `IO_TRACE_BUFFER_CAPACITY` const (currently exposed via `io_trace::IO_TRACE_BUFFER_CAPACITY`) relocates to `int` at Wave 4 along with the rest of `io_trace::*` per Decision 40.
+The `IO_TRACE_BUFFER_CAPACITY` const relocated to `int` at S67 Wave 4 along with the rest of the `io_trace` ring-buffer machinery per Decision 40 (Path B1). See `facades/int.md` §"Observability — `src/io_trace.rs`".
 
 ---
 
@@ -355,13 +297,13 @@ The `IO_TRACE_BUFFER_CAPACITY` const (currently exposed via `io_trace::IO_TRACE_
 Per Principle 15 — the following are intrinsics-originated and live in `cranelisp-intrinsics`:
 
 - `HeapString` (`#[repr(C)]`; with `LEN_OFFSET`, `DATA_OFFSET`, `payload_size` impl consts)
-- `IoEvent`, `IoEventTag`, `IoObserver`, `register_io_observer`, `emit` (the IO observation contract per Decision 40)
+- `IoEvent`, `IoEventTag`, `IoObserver`, `register_io_observer`, `emit`, `trace_anchor` (the IO observation extension point per Decision 40)
 
-**Relocating to `int` at S67 Wave 4** (per Decision 40 — listed for traceability, not for permanent residence):
-- `io_trace::{IoTracePayload, IoTraceTag, TraceFilter, IoTraceEvent, FlushGuard, IO_TRACE_BUFFER_CAPACITY}` — consumer-side ring-buffer types
-- The `trace::*` extern functions (10 fns) and the `consume_trace_call` Rust helper — `(trace ...)` GOT-swap machinery + ADT walker
+**Previously here, relocated to `int` at S67 Wave 4** (per Decision 40 Path B1 — listed for traceability, not currently resident):
+- `io_trace::{IoTracePayload, IoTraceTag, TraceFilter, IoTraceEvent, FlushGuard, IO_TRACE_BUFFER_CAPACITY}` — consumer-side ring-buffer types; relocated to `int`'s `src/io_trace.rs`.
+- The `trace::*` extern functions (12 fns) and the `consume_trace_call` Rust helper — `(trace ...)` GOT-swap machinery + ADT walker; relocated to `int`'s `src/trace.rs`.
 
-Post-Wave-4 final-state: `IoTraceFlushGuard` and `SchedulerTraceFlushGuard` (and the `io_trace::FlushGuard` listed above) are `int`'s consumer-side machinery (RAII guards over the ring buffers in `src/io_trace/` and `src/scheduler_trace/`). Intrinsics exposes only the `IoObserver` extension point per Decision 40 + 43; what consumers do with observed events (ring buffers, flush guards, panic hooks, dump formatters) is consumer-specific machinery owned by `int`. See `facades/int.md` §"Observability — `src/io_trace/`" for the destination shape.
+Post-Wave-4 final-state: intrinsics exposes only the `IoObserver` extension point per Decision 40 + 43; what consumers do with observed events (ring buffers, flush guards, panic hooks, dump formatters) is consumer-specific machinery owned by `int`. See `facades/int.md` §"Observability — `src/io_trace.rs`" and §"Tracing helpers — `src/trace.rs`" for the destination shapes.
 
 The multi-consumer types intrinsics depends on (`Span`, `CranelispError`, `ErrorLocation`, marshaling tags `TAG_SNIL`/`TAG_SCONS`/etc., `SchedulingClass`) live in `cranelisp-types`. Consumers (backend codegen names them in emitted code; `int` reads them when interpreting marshaled values) import directly.
 
@@ -391,8 +333,6 @@ None implemented. Intrinsics does not implement traits from `cranelisp-types`.
 `#[non_exhaustive]`: `IoEvent`, `IoEventTag` (post-D40 IO observation contract — variants evolve as new event kinds land).
 
 `#[repr(C)]` layout types: `HeapString` (per Principle 14 — string layout is the FFI contract with platform DLLs through `CLString::as_str()`; omits `#[non_exhaustive]` and governs evolution via explicit version bump). Its public consts `LEN_OFFSET` / `DATA_OFFSET` / `payload_size` are the codegen-time access pattern.
-
-`io_trace::{IoTracePayload, IoTraceTag, TraceFilter, IoTraceEvent}` are non-`#[non_exhaustive]` enums/structs because they relocate to `int` at S67 Wave 4 (Decision 40); freezing their pre-relocation shape with a stability attribute would be premature. The post-relocation int-side types are unencumbered to evolve.
 
 ---
 
@@ -424,14 +364,15 @@ These hold across sprints — the contract `cranelisp-intrinsics` makes with the
 
 ## Sprint 67 disposition snapshot
 
-This facade was refreshed at S67 Phase 3 Wave 1 against `crates/cranelisp-intrinsics/public-api.txt` (474 lines). Disposition for every pub-api item:
+This facade was last refreshed at S67 Wave 4 close (FIXME 0207) against `crates/cranelisp-intrinsics/public-api.txt` (248 lines, down from 434 pre-Wave-4 / 474 pre-Wave-2). Disposition for every pub-api item:
 
-- **Named in facade as-of S67** (PFR): allocator family + `dealloc` + stats (rows 32 + 1–8 of the audit); RC primitives (`rc_underflow_check`, `is_rc_trace_enabled`, `rc_trace`, `consume_shallow`) — row 32; per-type Rust drop helpers (`consume_sexp/slist/closure/vec_of_string/vec_with/trace_call/io_tree`, `dec_shallow_io`) — row 29 (PFR widened); IO trampoline (`cranelisp_run_io`, `run_io_trampoline`); IVar family; Vec primitives (with element-callback signatures); String allocator + reader + user-callable `str_*` family (with FIXME 0180 relocation pending); `HeapString` `#[repr(C)]` + impl consts; `IoEvent` / `IoEventTag` / `IoObserver` / `register_io_observer` / `emit` / `trace_anchor` — row 34; `runtime_panic` / `take_runtime_error` — row 32.
-- **Named for Wave-4 relocation pending** (DEFER → PIF at Wave 4): `io_trace::*` (12 items) — row 30; `trace::cranelisp_trace_*` (12 fns) — row 33. These ARE on the current pub-api baseline; the facade names them under their "RELOCATING TO `int`" sections so the facade-compliance scan finds them. The orphan status closes at Wave 4 when `/dev (int)` hosts them and `/dev (intrinsics)` deletes the local copies.
-- **Named for Wave-2 retirement** (PIF at Wave 2): `ops::cranelisp_op_*` (10 fns) — row 31. Listed under "RETIRED AT S67 WAVE 2" so the facade-compliance scan finds them in Wave 1; deletion clears the orphans at Wave 2 close.
-- **Internal-but-exposed (no PFR or PIF action)**: none.
+- **Named in facade as-of S67**: allocator family + `dealloc` + stats; RC primitives (`rc_underflow_check`, `is_rc_trace_enabled`, `rc_trace`, `consume_shallow`); per-type Rust drop helpers (`consume_sexp/slist/closure/vec_of_string/vec_with/io_tree`, `dec_shallow_io`); IO trampoline (`cranelisp_run_io`, `run_io_trampoline`); IVar family; Vec primitives (with element-callback signatures); String allocator + reader + `HeapString` `#[repr(C)]` + impl consts (user-callable `str_*` family relocated to `cranelisp-primitives` at Wave 3 per FIXME 0180); `IoEvent` / `IoEventTag` / `IoObserver` / `register_io_observer` / `emit` / `trace_anchor`; `runtime_panic` / `take_runtime_error`.
+- **Relocated to `int` at Wave 4** (no longer here; named for traceability in §"Types originated here" and §"Drop glue"): `io_trace::*` ring-buffer machinery (12 items); `trace::cranelisp_trace_*` (12 fns); `consume_trace_call` Rust helper. Destination: `int`'s `src/io_trace.rs` + `src/trace.rs`. See `facades/int.md`.
+- **Retired at Wave 2**: `ops::cranelisp_op_*` (10 fns) — deleted per Decision 43. The Decision-43 final-state intrinsics crate has no `ops::*` module.
+- **Relocated to `cranelisp-primitives` at Wave 3**: user-callable `str_*` family (15 fns) + `vec-len` per FIXME 0180. The backend-emitted-call string allocator + reader + `HeapString` layout remain here under the `heap_string` module; the Vec runtime remains here under `vec_runtime`.
+- **Internal-but-exposed (no facade action)**: none.
 
-**Outstanding orphan accounting for Wave 1 acceptance:** the facade names every pub-api item; the facade-compliance test's intrinsics-side orphan count should drop to **zero pending Wave 2 + Wave 4 deletions** (which the facade explicitly anticipates, not hides). Items still appearing in pub-api but called out here as Wave-2-deletion or Wave-4-relocation are documented orphans, not hidden ones — and clear at the deletion/relocation wave.
+**Orphan accounting:** the facade names every pub-api item in the current baseline; the facade-compliance test's intrinsics-side orphan count is zero.
 
 ---
 
@@ -445,7 +386,7 @@ This facade was refreshed at S67 Phase 3 Wave 1 against `crates/cranelisp-intrin
 - `decisions/0047-fqtypename-binding-at-resolved-stage-boundaries.md` — FQTypeName binding; intrinsics surface verified zero-impact (BC invariant 10)
 - `facades/primitives.md` — sibling crate from the same split; re-exports the `str_*` family pending FIXME 0180
 - `facades/backend.md` §"Consumed surface" — backend names intrinsics by string at codegen
-- `facades/int.md` §"Consumed surface" — int registers intrinsic fn ptrs with the JIT at session init; §"Observability — `src/io_trace/`" + §"Tracing helpers — `src/trace/`" — destination homes for the Wave-4 relocations
+- `facades/int.md` §"Consumed surface" — int registers intrinsic fn ptrs with the JIT at session init; §"Observability — `src/io_trace.rs`" + §"Tracing helpers — `src/trace.rs`" — destination homes for the Wave-4 relocations
 - `facades/platform.md` §"Public consts" — `IO_TAG_*` consts intrinsics consumes
 - `fixmes/0103-...` — io_trace + trace relocation tracker (in-flight; closes at Wave 4)
 - `fixmes/0150-runtime-split-primitives-intrinsics.md` — D43 implementation tracker (closes alongside Wave 2 `ops::*` deletion + the previously-landed primitives_inline trait-knowledge removal)
