@@ -514,26 +514,6 @@ impl core::marker::Unpin for cranelisp_types::error::CranelispError
 impl core::marker::UnsafeUnpin for cranelisp_types::error::CranelispError
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::error::CranelispError
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::error::CranelispError
-#[non_exhaustive] pub enum cranelisp_types::error::LinkerError
-pub cranelisp_types::error::LinkerError::RelocationFailed
-pub cranelisp_types::error::LinkerError::RelocationFailed::cause: alloc::string::String
-pub cranelisp_types::error::LinkerError::RelocationFailed::name: cranelisp_types::newtype::LinkerSymbol
-pub cranelisp_types::error::LinkerError::SymbolNotFound
-pub cranelisp_types::error::LinkerError::SymbolNotFound::name: cranelisp_types::newtype::LinkerSymbol
-impl core::clone::Clone for cranelisp_types::error::LinkerError
-pub fn cranelisp_types::error::LinkerError::clone(&self) -> cranelisp_types::error::LinkerError
-impl core::error::Error for cranelisp_types::error::LinkerError
-impl core::fmt::Debug for cranelisp_types::error::LinkerError
-pub fn cranelisp_types::error::LinkerError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for cranelisp_types::error::LinkerError
-pub fn cranelisp_types::error::LinkerError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for cranelisp_types::error::LinkerError
-impl core::marker::Send for cranelisp_types::error::LinkerError
-impl core::marker::Sync for cranelisp_types::error::LinkerError
-impl core::marker::Unpin for cranelisp_types::error::LinkerError
-impl core::marker::UnsafeUnpin for cranelisp_types::error::LinkerError
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::error::LinkerError
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::error::LinkerError
 #[non_exhaustive] pub enum cranelisp_types::error::PlatformError
 pub cranelisp_types::error::PlatformError::AbiVersionMismatch
 pub cranelisp_types::error::PlatformError::AbiVersionMismatch::dll: std::path::PathBuf
@@ -798,6 +778,25 @@ impl core::marker::Unpin for cranelisp_types::module::DefKind
 impl core::marker::UnsafeUnpin for cranelisp_types::module::DefKind
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::module::DefKind
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::module::DefKind
+pub enum cranelisp_types::module::EnsureOutcome
+pub cranelisp_types::module::EnsureOutcome::AlreadyPresent
+pub cranelisp_types::module::EnsureOutcome::Created
+impl core::clone::Clone for cranelisp_types::module::EnsureOutcome
+pub fn cranelisp_types::module::EnsureOutcome::clone(&self) -> cranelisp_types::module::EnsureOutcome
+impl core::cmp::Eq for cranelisp_types::module::EnsureOutcome
+impl core::cmp::PartialEq for cranelisp_types::module::EnsureOutcome
+pub fn cranelisp_types::module::EnsureOutcome::eq(&self, other: &cranelisp_types::module::EnsureOutcome) -> bool
+impl core::fmt::Debug for cranelisp_types::module::EnsureOutcome
+pub fn cranelisp_types::module::EnsureOutcome::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for cranelisp_types::module::EnsureOutcome
+impl core::marker::StructuralPartialEq for cranelisp_types::module::EnsureOutcome
+impl core::marker::Freeze for cranelisp_types::module::EnsureOutcome
+impl core::marker::Send for cranelisp_types::module::EnsureOutcome
+impl core::marker::Sync for cranelisp_types::module::EnsureOutcome
+impl core::marker::Unpin for cranelisp_types::module::EnsureOutcome
+impl core::marker::UnsafeUnpin for cranelisp_types::module::EnsureOutcome
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::module::EnsureOutcome
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::module::EnsureOutcome
 pub enum cranelisp_types::module::ImportNames
 pub cranelisp_types::module::ImportNames::Glob
 pub cranelisp_types::module::ImportNames::MemberGlob(cranelisp_types::newtype::Symbol)
@@ -1117,10 +1116,20 @@ impl<C, L> core::marker::Unpin for cranelisp_types::module::SymbolTable<C, L> wh
 impl<C, L> core::marker::UnsafeUnpin for cranelisp_types::module::SymbolTable<C, L> where L: core::marker::UnsafeUnpin
 impl<C, L> core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::module::SymbolTable<C, L> where L: core::panic::unwind_safe::RefUnwindSafe, C: core::panic::unwind_safe::RefUnwindSafe
 impl<C, L> core::panic::unwind_safe::UnwindSafe for cranelisp_types::module::SymbolTable<C, L> where L: core::panic::unwind_safe::UnwindSafe, C: core::panic::unwind_safe::UnwindSafe
+pub const cranelisp_types::module::CHAIN_FOLLOW_DEPTH_LIMIT: usize
 pub trait cranelisp_types::module::CodeStore: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 impl<T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static> cranelisp_types::module::CodeStore for T
 pub trait cranelisp_types::module::LinkerStore: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 impl<T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static> cranelisp_types::module::LinkerStore for T
+pub fn cranelisp_types::module::ensure_module_exists<C, L>(modules: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, path: &cranelisp_types::newtype::ModuleFullPath) -> cranelisp_types::module::EnsureOutcome where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_types::module::for_each_in_module<C, L, F>(modules: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, module_path: &cranelisp_types::newtype::ModuleFullPath, f: F) where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore, F: core::ops::function::FnMut(&cranelisp_types::newtype::Symbol, &cranelisp_types::module::ModuleEntry<C>)
+pub fn cranelisp_types::module::get_implementing_types_chain<C, L>(modules: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, scope: &cranelisp_types::newtype::ModuleFullPath, trait_name: &cranelisp_types::newtype::TraitName) -> alloc::vec::Vec<cranelisp_types::newtype::TypeName> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_types::module::get_impls_for_type_chain<C, L>(modules: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, scope: &cranelisp_types::newtype::ModuleFullPath, type_name: &cranelisp_types::newtype::TypeName) -> alloc::vec::Vec<cranelisp_types::newtype::TraitName> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_types::module::install_module<C, L>(modules: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, path: cranelisp_types::newtype::ModuleFullPath, table: cranelisp_types::module::SymbolTable<C, L>) where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_types::module::lookup_trait_decl_chain<C, L>(modules: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, scope: &cranelisp_types::newtype::ModuleFullPath, trait_name: &cranelisp_types::newtype::TraitName) -> core::option::Option<cranelisp_types::ast::TraitDecl> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_types::module::lookup_type_def_chain<C, L>(modules: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, scope: &cranelisp_types::newtype::ModuleFullPath, name: &cranelisp_types::newtype::TypeName) -> core::option::Option<cranelisp_types::check::TypeDefInfo> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_types::module::resolve_module_by_name_chain<C, L>(modules: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, scope: &cranelisp_types::newtype::ModuleFullPath, name: &str) -> core::option::Option<cranelisp_types::newtype::ModuleFullPath> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_types::module::resolve_terminal_entry_and_home<C, L>(modules: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, module_path: &cranelisp_types::newtype::ModuleFullPath, name: &str) -> core::option::Option<(cranelisp_types::module::ModuleEntry<C>, cranelisp_types::newtype::ModuleFullPath)> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub mod cranelisp_types::newtype
 pub struct cranelisp_types::newtype::FQSymbol
 pub cranelisp_types::newtype::FQSymbol::module: cranelisp_types::newtype::ModuleFullPath
@@ -1963,6 +1972,25 @@ impl core::marker::Unpin for cranelisp_types::module::DefKind
 impl core::marker::UnsafeUnpin for cranelisp_types::module::DefKind
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::module::DefKind
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::module::DefKind
+pub enum cranelisp_types::EnsureOutcome
+pub cranelisp_types::EnsureOutcome::AlreadyPresent
+pub cranelisp_types::EnsureOutcome::Created
+impl core::clone::Clone for cranelisp_types::module::EnsureOutcome
+pub fn cranelisp_types::module::EnsureOutcome::clone(&self) -> cranelisp_types::module::EnsureOutcome
+impl core::cmp::Eq for cranelisp_types::module::EnsureOutcome
+impl core::cmp::PartialEq for cranelisp_types::module::EnsureOutcome
+pub fn cranelisp_types::module::EnsureOutcome::eq(&self, other: &cranelisp_types::module::EnsureOutcome) -> bool
+impl core::fmt::Debug for cranelisp_types::module::EnsureOutcome
+pub fn cranelisp_types::module::EnsureOutcome::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for cranelisp_types::module::EnsureOutcome
+impl core::marker::StructuralPartialEq for cranelisp_types::module::EnsureOutcome
+impl core::marker::Freeze for cranelisp_types::module::EnsureOutcome
+impl core::marker::Send for cranelisp_types::module::EnsureOutcome
+impl core::marker::Sync for cranelisp_types::module::EnsureOutcome
+impl core::marker::Unpin for cranelisp_types::module::EnsureOutcome
+impl core::marker::UnsafeUnpin for cranelisp_types::module::EnsureOutcome
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::module::EnsureOutcome
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::module::EnsureOutcome
 pub enum cranelisp_types::Expr
 pub cranelisp_types::Expr::Annotate
 pub cranelisp_types::Expr::Annotate::annotation: cranelisp_types::ast::TypeExpr
@@ -2096,26 +2124,6 @@ impl core::marker::Unpin for cranelisp_types::module::ImportNames
 impl core::marker::UnsafeUnpin for cranelisp_types::module::ImportNames
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::module::ImportNames
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::module::ImportNames
-#[non_exhaustive] pub enum cranelisp_types::LinkerError
-pub cranelisp_types::LinkerError::RelocationFailed
-pub cranelisp_types::LinkerError::RelocationFailed::cause: alloc::string::String
-pub cranelisp_types::LinkerError::RelocationFailed::name: cranelisp_types::newtype::LinkerSymbol
-pub cranelisp_types::LinkerError::SymbolNotFound
-pub cranelisp_types::LinkerError::SymbolNotFound::name: cranelisp_types::newtype::LinkerSymbol
-impl core::clone::Clone for cranelisp_types::error::LinkerError
-pub fn cranelisp_types::error::LinkerError::clone(&self) -> cranelisp_types::error::LinkerError
-impl core::error::Error for cranelisp_types::error::LinkerError
-impl core::fmt::Debug for cranelisp_types::error::LinkerError
-pub fn cranelisp_types::error::LinkerError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for cranelisp_types::error::LinkerError
-pub fn cranelisp_types::error::LinkerError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for cranelisp_types::error::LinkerError
-impl core::marker::Send for cranelisp_types::error::LinkerError
-impl core::marker::Sync for cranelisp_types::error::LinkerError
-impl core::marker::Unpin for cranelisp_types::error::LinkerError
-impl core::marker::UnsafeUnpin for cranelisp_types::error::LinkerError
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::error::LinkerError
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::error::LinkerError
 pub enum cranelisp_types::MacroParam
 pub cranelisp_types::MacroParam::Bracket
 pub cranelisp_types::MacroParam::Bracket::fixed: alloc::vec::Vec<cranelisp_types::newtype::Symbol>
@@ -3722,6 +3730,7 @@ impl core::marker::Unpin for cranelisp_types::error::Warning
 impl core::marker::UnsafeUnpin for cranelisp_types::error::Warning
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::error::Warning
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::error::Warning
+pub const cranelisp_types::CHAIN_FOLLOW_DEPTH_LIMIT: usize
 pub const cranelisp_types::GOT_TABLE_SIZE: usize
 pub const cranelisp_types::NULLARY_TAG_THRESHOLD: usize
 pub const cranelisp_types::TAG_SCONS: i64
@@ -3738,11 +3747,20 @@ impl<T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static> 
 pub trait cranelisp_types::LinkerStore: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 impl<T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static> cranelisp_types::module::LinkerStore for T
 pub fn cranelisp_types::apply(subst: &cranelisp_types::types::Subst, ty: &cranelisp_types::types::Type) -> cranelisp_types::types::Type
+pub fn cranelisp_types::ensure_module_exists<C, L>(modules: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, path: &cranelisp_types::newtype::ModuleFullPath) -> cranelisp_types::module::EnsureOutcome where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_types::for_each_in_module<C, L, F>(modules: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, module_path: &cranelisp_types::newtype::ModuleFullPath, f: F) where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore, F: core::ops::function::FnMut(&cranelisp_types::newtype::Symbol, &cranelisp_types::module::ModuleEntry<C>)
 pub fn cranelisp_types::format_type_display(ty: &cranelisp_types::types::Type) -> alloc::string::String
 pub fn cranelisp_types::format_type_with_vars(ty: &cranelisp_types::types::Type, var_names: &std::collections::hash::map::HashMap<cranelisp_types::types::TypeId, alloc::string::String>) -> alloc::string::String
 pub fn cranelisp_types::free_vars(ty: &cranelisp_types::types::Type) -> std::collections::hash::set::HashSet<cranelisp_types::types::TypeId>
 pub fn cranelisp_types::free_vars_expr(expr: &cranelisp_types::ast::Expr, globals: &std::collections::hash::set::HashSet<cranelisp_types::newtype::Symbol>) -> std::collections::hash::set::HashSet<cranelisp_types::newtype::Symbol>
+pub fn cranelisp_types::get_implementing_types_chain<C, L>(modules: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, scope: &cranelisp_types::newtype::ModuleFullPath, trait_name: &cranelisp_types::newtype::TraitName) -> alloc::vec::Vec<cranelisp_types::newtype::TypeName> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_types::get_impls_for_type_chain<C, L>(modules: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, scope: &cranelisp_types::newtype::ModuleFullPath, type_name: &cranelisp_types::newtype::TypeName) -> alloc::vec::Vec<cranelisp_types::newtype::TraitName> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_types::install_module<C, L>(modules: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, path: cranelisp_types::newtype::ModuleFullPath, table: cranelisp_types::module::SymbolTable<C, L>) where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_types::lookup_trait_decl_chain<C, L>(modules: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, scope: &cranelisp_types::newtype::ModuleFullPath, trait_name: &cranelisp_types::newtype::TraitName) -> core::option::Option<cranelisp_types::ast::TraitDecl> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_types::lookup_type_def_chain<C, L>(modules: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, scope: &cranelisp_types::newtype::ModuleFullPath, name: &cranelisp_types::newtype::TypeName) -> core::option::Option<cranelisp_types::check::TypeDefInfo> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub fn cranelisp_types::max_type_var_id(ty: &cranelisp_types::types::Type) -> core::option::Option<cranelisp_types::types::TypeId>
+pub fn cranelisp_types::resolve_module_by_name_chain<C, L>(modules: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, scope: &cranelisp_types::newtype::ModuleFullPath, name: &str) -> core::option::Option<cranelisp_types::newtype::ModuleFullPath> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_types::resolve_terminal_entry_and_home<C, L>(modules: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, module_path: &cranelisp_types::newtype::ModuleFullPath, name: &str) -> core::option::Option<(cranelisp_types::module::ModuleEntry<C>, cranelisp_types::newtype::ModuleFullPath)> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub fn cranelisp_types::ring0_primitives() -> alloc::vec::Vec<cranelisp_types::operator::PrimitiveDef>
 pub fn cranelisp_types::ring1_primitives() -> alloc::vec::Vec<cranelisp_types::operator::PrimitiveDef>
 pub fn cranelisp_types::ring3_primitives() -> alloc::vec::Vec<cranelisp_types::operator::PrimitiveDef>

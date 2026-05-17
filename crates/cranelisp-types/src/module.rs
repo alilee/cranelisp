@@ -754,6 +754,300 @@ pub struct ModDecl {
 
 use crate::JitSymbol;
 
+// --- Module map graph operations (Sprint 67 hack-back; FIXME 0192 + 0193) ---
+//
+// Atomic primitives over `DashMap<ModuleFullPath, SymbolTable<C, L>>` that
+// previously lived as `pub` methods on `cranelisp-typecheck::TypeCheckEnv`.
+// Relocated here per the disposition table — these are pure graph ops on
+// the module store and rightly live with the storage they operate on, not
+// in the inference engine that borrows it. Typecheck imports them back at
+// internal use sites.
+
+/// Outcome of an `ensure_module_exists` call.
+///
+/// Used by observability hooks to distinguish a fresh creation from an
+/// already-present module (the latter being the common case once the
+/// session has loaded the module map).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnsureOutcome {
+    /// The module's symbol table was created (vacant → inserted).
+    Created,
+    /// The module's symbol table was already present (no change).
+    AlreadyPresent,
+}
+
+/// Ensure a module's symbol table exists in `modules`, creating an empty
+/// table if absent. Atomic check-then-insert via DashMap's `entry()`. No
+/// seeding — per Principle 17 + FIXME 0193 amendment, modules start empty;
+/// special-form metadata lives at root `""` and is never replicated.
+///
+/// Returns the outcome so callers (observability, the orchestrator) can
+/// distinguish a fresh creation from an already-present module.
+pub fn ensure_module_exists<C, L>(
+    modules: &dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    path: &ModuleFullPath,
+) -> EnsureOutcome
+where
+    C: CodeStore,
+    L: LinkerStore,
+{
+    use dashmap::mapref::entry::Entry;
+    match modules.entry(path.clone()) {
+        Entry::Occupied(_) => EnsureOutcome::AlreadyPresent,
+        Entry::Vacant(slot) => {
+            slot.insert(SymbolTable::<C, L>::new_with_params(path.clone()));
+            EnsureOutcome::Created
+        }
+    }
+}
+
+/// Install a pre-built `SymbolTable` at `path`. Used by the cache-hit branch
+/// of `CompilerSession::introduce_module` — the cached metadata is decoded
+/// into a `SymbolTable` and installed atomically. Overwrites any existing
+/// entry at `path` (consistent with the pre-S67 `restore_cached_module`
+/// behaviour, which unconditionally inserted).
+pub fn install_module<C, L>(
+    modules: &dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    path: ModuleFullPath,
+    table: SymbolTable<C, L>,
+) where
+    C: CodeStore,
+    L: LinkerStore,
+{
+    modules.insert(path, table);
+}
+
+// --- Chain-follow primitives (Sprint 67 hack-back — FIXME 0192 methods 1, 3, 5, 7) ---
+//
+// These free fns operate purely on the `&DashMap<ModuleFullPath, SymbolTable>`
+// data home. They do NOT consult typecheck-owned cluster staging — they are
+// the live-only chain walkers, intended for cross-crate read consumers
+// (REPL display, introspection in `int`). Cluster-mode consumers (inside
+// typecheck) keep the staging-aware methods on `TypeCheckEnv`.
+
+/// Maximum chain depth for `Import`/`Reexport` follow. Mirrors the
+/// typecheck-internal limit (spec §8.6.2). Pathological cycles terminate
+/// in `None`.
+pub const CHAIN_FOLLOW_DEPTH_LIMIT: usize = 10;
+
+/// Iterate the (name, entry) pairs of `module_path`'s symbol table.
+///
+/// Live-only variant of `TypeCheckEnv::for_each_in_module`. Used by the
+/// relocated `get_impls_for_type_chain` / `get_implementing_types_chain`
+/// free fns; cross-crate consumers (REPL display) probe live state only.
+pub fn for_each_in_module<C, L, F>(
+    modules: &dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    module_path: &ModuleFullPath,
+    mut f: F,
+) where
+    C: CodeStore,
+    L: LinkerStore,
+    F: FnMut(&Symbol, &ModuleEntry<C>),
+{
+    if let Some(guard) = modules.get(module_path) {
+        for (k, v) in guard.all_symbols() {
+            f(k, v);
+        }
+    }
+}
+
+/// Chain-follow `name` starting from `module_path` to its canonical home,
+/// returning `(terminal_entry, terminal_module)`. Live-only variant of
+/// `TypeCheckEnv::resolve_terminal_entry_and_home` (Decision 45 Pattern B).
+///
+/// Walks per-symbol `ModuleEntry::Import` / `ModuleEntry::Reexport`
+/// bindings one edge at a time along `source.module` references until a
+/// canonical entry is reached or the depth limit is hit.
+pub fn resolve_terminal_entry_and_home<C, L>(
+    modules: &dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    module_path: &ModuleFullPath,
+    name: &str,
+) -> Option<(ModuleEntry<C>, ModuleFullPath)>
+where
+    C: CodeStore,
+    L: LinkerStore,
+{
+    let entry = {
+        let guard = modules.get(module_path)?;
+        guard.get(name).cloned()?
+    };
+    chain_follow_to_home(modules, entry, module_path.clone(), 0)
+}
+
+fn chain_follow_to_home<C, L>(
+    modules: &dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    entry: ModuleEntry<C>,
+    home: ModuleFullPath,
+    depth: usize,
+) -> Option<(ModuleEntry<C>, ModuleFullPath)>
+where
+    C: CodeStore,
+    L: LinkerStore,
+{
+    if depth > CHAIN_FOLLOW_DEPTH_LIMIT {
+        return None;
+    }
+    match &entry {
+        ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
+            let next_home = source.module.clone();
+            let next_entry = {
+                let guard = modules.get(&source.module)?;
+                guard.get(source.symbol.as_ref()).cloned()?
+            };
+            chain_follow_to_home(modules, next_entry, next_home, depth + 1)
+        }
+        _ => Some((entry, home)),
+    }
+}
+
+/// Look up a TypeDefInfo by chain-following `name` from `scope` (the access
+/// root). Live-only free-fn variant of the relocated method 1
+/// (`lookup_type_def_in_module` body). Returns `None` if absent or if the
+/// chain terminates on a non-TypeDef entry.
+pub fn lookup_type_def_chain<C, L>(
+    modules: &dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    scope: &ModuleFullPath,
+    name: &TypeName,
+) -> Option<TypeDefInfo>
+where
+    C: CodeStore,
+    L: LinkerStore,
+{
+    let (terminal, _home) = resolve_terminal_entry_and_home(modules, scope, name.as_ref())?;
+    match terminal {
+        ModuleEntry::TypeDef { info, .. } => Some(info),
+        _ => None,
+    }
+}
+
+/// Look up a `TraitDecl` by chain-following `name` from `scope`. Live-only
+/// free-fn variant of the relocated method 4's underlying primitive
+/// (`lookup_trait_decl_in_module` body).
+pub fn lookup_trait_decl_chain<C, L>(
+    modules: &dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    scope: &ModuleFullPath,
+    trait_name: &TraitName,
+) -> Option<TraitDecl>
+where
+    C: CodeStore,
+    L: LinkerStore,
+{
+    let (terminal, _home) =
+        resolve_terminal_entry_and_home(modules, scope, trait_name.as_ref())?;
+    match terminal {
+        ModuleEntry::TraitDecl { decl, .. } => Some(decl),
+        _ => None,
+    }
+}
+
+/// Return all trait names that have an impl registered for `type_name`,
+/// reachable from `scope`. Sorted alphabetically. Live-only free-fn
+/// variant of method 3 (`get_impls_for_type_in_module` body).
+///
+/// Per Decision 45 (Pattern B) — enumerate candidate traits in `scope`,
+/// chain-follow each to its defining module, and probe each home for
+/// impls of `type_name`. Each trait home is touched at most once.
+pub fn get_impls_for_type_chain<C, L>(
+    modules: &dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    scope: &ModuleFullPath,
+    type_name: &TypeName,
+) -> Vec<TraitName>
+where
+    C: CodeStore,
+    L: LinkerStore,
+{
+    let mut traits: Vec<TraitName> = Vec::new();
+    let candidates: Vec<TraitName> = {
+        let mut acc = Vec::new();
+        for_each_in_module(modules, scope, |name, entry| match entry {
+            ModuleEntry::TraitDecl { .. }
+            | ModuleEntry::Import { .. }
+            | ModuleEntry::Reexport { .. } => {
+                acc.push(TraitName::from(name.as_ref()));
+            }
+            _ => {}
+        });
+        acc
+    };
+    let mut visited_homes: std::collections::HashSet<ModuleFullPath> =
+        std::collections::HashSet::new();
+    for candidate in candidates {
+        let trait_home = match resolve_terminal_entry_and_home(modules, scope, candidate.as_ref()) {
+            Some((ModuleEntry::TraitDecl { .. }, home)) => home,
+            _ => continue,
+        };
+        if !visited_homes.insert(trait_home.clone()) {
+            continue;
+        }
+        for_each_in_module(modules, &trait_home, |_key, entry| {
+            if let ModuleEntry::TraitImpl { trait_name, impl_type, .. } = entry
+                && &impl_type.name == type_name
+                && !traits.contains(&trait_name.name)
+            {
+                traits.push(trait_name.name.clone());
+            }
+        });
+    }
+    traits.sort();
+    traits
+}
+
+/// Return all type names that implement `trait_name`, reachable from `scope`.
+/// Sorted alphabetically. Live-only free-fn variant of method 5
+/// (`get_implementing_types_in_module` body).
+///
+/// Per Decision 45 (Pattern B) — chain-follow the trait reference to its
+/// defining module, then enumerate `ModuleEntry::TraitImpl` entries in
+/// that one module.
+pub fn get_implementing_types_chain<C, L>(
+    modules: &dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    scope: &ModuleFullPath,
+    trait_name: &TraitName,
+) -> Vec<TypeName>
+where
+    C: CodeStore,
+    L: LinkerStore,
+{
+    let mut types: Vec<TypeName> = Vec::new();
+    let trait_home = match resolve_terminal_entry_and_home(modules, scope, trait_name.as_ref()) {
+        Some((ModuleEntry::TraitDecl { .. }, home)) => home,
+        _ => return types,
+    };
+    for_each_in_module(modules, &trait_home, |_name, entry| {
+        if let ModuleEntry::TraitImpl { trait_name: tn, impl_type, .. } = entry
+            && &tn.name == trait_name
+            && !types.contains(&impl_type.name)
+        {
+            types.push(impl_type.name.clone());
+        }
+    });
+    types.sort();
+    types
+}
+
+/// Resolve a module name to its `ModuleFullPath`, trying child-of-scope
+/// first then root. Live-only free-fn variant of method 7
+/// (`resolve_module_by_name` body).
+pub fn resolve_module_by_name_chain<C, L>(
+    modules: &dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    scope: &ModuleFullPath,
+    name: &str,
+) -> Option<ModuleFullPath>
+where
+    C: CodeStore,
+    L: LinkerStore,
+{
+    let child_path = ModuleFullPath::from(format!("{}.{}", scope, name));
+    if modules.contains_key(&child_path) {
+        return Some(child_path);
+    }
+    let root_path = ModuleFullPath::from(name);
+    if modules.contains_key(&root_path) {
+        return Some(root_path);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

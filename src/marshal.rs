@@ -191,7 +191,7 @@ fn alloc_scons(head: i64, tail: i64) -> i64 {
 /// Allocate a runtime string from a Rust &str. Returns the base pointer as i64.
 fn alloc_runtime_string(s: &str) -> i64 {
     let bytes = s.as_bytes();
-    cranelisp_intrinsics::string::heap_alloc_string(bytes.as_ptr(), bytes.len() as i64)
+    cranelisp_intrinsics::heap_string::heap_alloc_string(bytes.as_ptr(), bytes.len() as i64)
 }
 
 /// Read a runtime string (HeapString) back into a Rust String.
@@ -199,7 +199,7 @@ fn read_runtime_string(str_ptr: i64) -> String {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: i64 = 0;
     // SAFETY: str_ptr is a valid HeapString base pointer.
-    cranelisp_intrinsics::string::string_read(str_ptr, &mut out_ptr, &mut out_len);
+    cranelisp_intrinsics::heap_string::string_read(str_ptr, &mut out_ptr, &mut out_len);
     if out_ptr.is_null() || out_len == 0 {
         return String::new();
     }
@@ -258,7 +258,8 @@ pub fn rc_inc(val: i64) {
 
 /// Debug: dump the heap structure of a runtime Sexp value.
 #[cfg(test)]
-pub fn debug_dump_sexp(val: i64, depth: usize) {
+#[allow(dead_code)]
+pub(crate) fn debug_dump_sexp(val: i64, depth: usize) {
     let indent = "  ".repeat(depth);
     if val < NULLARY_THRESHOLD {
         eprintln!("{indent}[nullary tag={val}]");
@@ -286,6 +287,7 @@ pub fn debug_dump_sexp(val: i64, depth: usize) {
 
 /// Debug: dump an SList chain.
 #[cfg(test)]
+#[allow(dead_code)]
 fn debug_dump_slist(mut slist: i64, depth: usize) {
     let indent = "  ".repeat(depth);
     loop {

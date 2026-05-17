@@ -126,12 +126,18 @@ where
             return self.compile_data_constructor_as_value(name, tag, field_count, span);
         }
 
-        // Operator symbol as value: wrap the operator extern function in a closure.
+        // Operator symbol as value: wrap the primitive in a closure.
         // This implements spec §7.6 — trait methods (operators) as first-class values.
         // Must be checked before is_known_function because operators may appear
-        // in TC symbol tables (via env) but need their dedicated extern wrappers.
-        if let Some(op_extern_name) = Self::operator_extern_name(name) {
-            return self.compile_operator_as_value(op_extern_name, span);
+        // in TC symbol tables (via env) but need their dedicated wrappers.
+        //
+        // Per Decision 43 + FIXME 0183: operator-as-value resolves through the
+        // standard GOT-indirect path against the primitives module — identical
+        // shape to any other primitive call. The wrapper closure shape is
+        // unchanged; only the load mechanism (GOT slab + slot) differs from
+        // the pre-D43 `Linkage::Import` extern-name relocation.
+        if let Some(primitive_name) = Self::operator_primitive_name(name) {
+            return self.compile_operator_as_value(primitive_name, span);
         }
 
         // Named function as value: wrap in a zero-capture closure.
@@ -320,33 +326,46 @@ where
 
     // --- Operator-as-value support (spec §7.6) ---
 
-    /// Map an operator symbol to its extern "C" wrapper function name.
+    /// Map an operator symbol to the canonical Ring 0 primitive name in the
+    /// synthetic `primitives` module.
+    ///
+    /// Per Decision 43 + FIXME 0183: operator-as-value resolves through the
+    /// standard GOT-indirect dispatch path. The mapping below is the
+    /// Int-typed canonical wrapper (matching the pre-D43 `cranelisp_op_*`
+    /// shape, which itself was integer-only). A type-aware mappable-path
+    /// resolution belongs at typecheck (`ResolvedCall::TraitMethod`) — the
+    /// backend's operator-as-value path is the type-erased fallback for the
+    /// remaining bare-symbol uses.
+    ///
     /// Returns None if the symbol is not a known operator.
-    fn operator_extern_name(name: &Symbol) -> Option<&'static str> {
+    fn operator_primitive_name(name: &Symbol) -> Option<&'static str> {
         match name.as_ref() {
-            "+" => Some("cranelisp_op_add"),
-            "-" => Some("cranelisp_op_sub"),
-            "*" => Some("cranelisp_op_mul"),
-            "/" => Some("cranelisp_op_div"),
-            "=" => Some("cranelisp_op_eq"),
-            "!=" => Some("cranelisp_op_neq"),
-            "<" => Some("cranelisp_op_lt"),
-            ">" => Some("cranelisp_op_gt"),
-            "<=" => Some("cranelisp_op_le"),
-            ">=" => Some("cranelisp_op_ge"),
+            "+" => Some("add-i64"),
+            "-" => Some("sub-i64"),
+            "*" => Some("mul-i64"),
+            "/" => Some("div-i64"),
+            "=" => Some("eq-i64"),
+            "!=" => Some("neq-i64"),
+            "<" => Some("lt-i64"),
+            ">" => Some("gt-i64"),
+            "<=" => Some("le-i64"),
+            ">=" => Some("ge-i64"),
             _ => None,
         }
     }
 
-    /// Wrap an operator extern "C" function as a zero-capture closure.
+    /// Wrap a Ring 0 primitive as a zero-capture closure for operator-as-value.
     ///
-    /// Declares the extern function in the JIT module, creates a wrapper
-    /// function with signature `(env_ptr, a, b) -> i64` that ignores env_ptr
-    /// and forwards to the operator, then allocates a HeapClosure pointing
-    /// to the wrapper.
+    /// Per FIXME 0183 + `facades/backend.md` §"REV-5 audit": the wrapper
+    /// function `(env_ptr, a, b) -> i64` resolves the primitive through the
+    /// standard GOT-indirect path — `resolve_got_target` for the primitive
+    /// name yields `(primitives, slot)`, then emit `global_value` against
+    /// `__cranelisp_got_primitives` + `load(slab_base + slot * 8)` + `call_indirect`.
+    /// The closure shape is unchanged; only the load mechanism shifts from
+    /// pre-D43 `Linkage::Import` + extern-name to the uniform dispatch path.
     fn compile_operator_as_value(
         &mut self,
-        op_extern_name: &str,
+        primitive_name: &str,
         span: Span,
     ) -> Result<Value, CranelispError> {
         let alloc_id =
@@ -357,23 +376,39 @@ where
                     location: ErrorLocation::from_span(span),
                 })?;
 
-        // Declare the operator extern function: (i64, i64) -> i64
-        let mut op_sig = self.module.make_signature();
-        op_sig.params.push(AbiParam::new(types::I64));
-        op_sig.params.push(AbiParam::new(types::I64));
-        op_sig.returns.push(AbiParam::new(types::I64));
+        // Resolve the primitive to its GOT slot. The primitive lives in the
+        // synthetic `primitives` module's symbol table; resolution walks
+        // import chains starting from current_module per the standard path.
+        let prim_sym = Symbol::from(primitive_name);
+        let (target_module, slot) = crate::compiler::resolve_got_target(
+            self.ctx.symbol_tables,
+            &self.ctx.current_module,
+            &prim_sym,
+        )
+        .ok_or_else(|| CranelispError::CodegenError {
+            message: format!(
+                "operator-as-value: no GOT slot for primitive '{primitive_name}'"
+            ),
+            location: ErrorLocation::from_span(span),
+        })?;
 
-        let op_func_id = self
+        // Declare the GOT data symbol for the primitive's owning module.
+        // The data symbol's address IS the slab base (per Decision 23).
+        let got_sym = crate::compiler::got_data_symbol_name(&target_module);
+        let got_data_id = self
             .module
-            .declare_function(op_extern_name, Linkage::Import, &op_sig)
+            .declare_data(&got_sym, cranelift_module::Linkage::Import, false, false)
             .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to declare operator '{op_extern_name}': {e}"),
+                message: format!("failed to declare GOT data '{}': {e}", got_sym),
                 location: ErrorLocation::from_span(span),
             })?;
 
         // Create a wrapper function: (env_ptr, a, b) -> i64
-        // The wrapper ignores env_ptr and calls the operator function.
-        let wrapper_name = format!("__wrap_op_{op_extern_name}_{}_{}__", span.start, span.end);
+        // The wrapper ignores env_ptr and calls the primitive via GOT-indirect.
+        let wrapper_name = format!(
+            "__wrap_op_{primitive_name}_{}_{}__",
+            span.start, span.end
+        );
         let mut wrapper_sig = self.module.make_signature();
         wrapper_sig.params.push(AbiParam::new(types::I64)); // env_ptr (ignored)
         wrapper_sig.params.push(AbiParam::new(types::I64)); // a
@@ -388,7 +423,8 @@ where
                 location: ErrorLocation::from_span(span),
             })?;
 
-        // Compile wrapper body: ignore env_ptr, forward (a, b) to operator.
+        // Compile wrapper body: ignore env_ptr, resolve primitive via
+        // GOT-indirect, call_indirect with (a, b).
         {
             let mut inner_ctx = self.module.make_context();
             let mut inner_func_ctx = FunctionBuilderContext::new();
@@ -412,10 +448,30 @@ where
             let a = block_params[1];
             let b = block_params[2];
 
-            let op_ref = self
+            // GOT-indirect: slab_base = global_value(got_data_id);
+            //               fn_ptr = load(slab_base + slot * 8);
+            //               call_indirect(fn_ptr, [a, b]).
+            let gv = self
                 .module
-                .declare_func_in_func(op_func_id, builder.func);
-            let call = builder.ins().call(op_ref, &[a, b]);
+                .declare_data_in_func(got_data_id, builder.func);
+            let slab_base = builder.ins().global_value(types::I64, gv);
+            let slot_addr =
+                builder.ins().iadd_imm(slab_base, (slot * 8) as i64);
+            let fn_ptr = builder.ins().load(
+                types::I64,
+                MemFlags::trusted(),
+                slot_addr,
+                0,
+            );
+
+            // Build call_indirect signature: (i64, i64) -> i64.
+            let mut prim_sig = self.module.make_signature();
+            prim_sig.params.push(AbiParam::new(types::I64));
+            prim_sig.params.push(AbiParam::new(types::I64));
+            prim_sig.returns.push(AbiParam::new(types::I64));
+            let sig_ref = builder.import_signature(prim_sig);
+
+            let call = builder.ins().call_indirect(sig_ref, fn_ptr, &[a, b]);
             let result = builder.inst_results(call)[0];
 
             builder.ins().return_(&[result]);

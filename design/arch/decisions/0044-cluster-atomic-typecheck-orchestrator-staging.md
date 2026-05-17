@@ -160,3 +160,20 @@ Sequencing (post-FIXME 0168 amendment):
 Total Wave 3a envelope: ~6–9 days (α + β), within the Sprint 66 envelope per `sprints/SPRINT.md`.
 
 The `View<'_, C, L>` newtype is `/arch`-authored as a `cranelisp-types` addition (per "boundary types live in `cranelisp-types`"). The `ClusterContext` enum lives in `cranelisp-typecheck` (single-consumer pair: typecheck owns the structural shape; `int` constructs and threads instances). The two-pass typecheck surface is `/dev`-implemented per the facade.
+
+## Status pointer — Sprint 67 close
+
+S67 facade-text catch-up lands in Wave 1 (`/design (typecheck)` PFR
+rows 19–25 of `sprints/SPRINT.md`): `ClusterRead`/`ClusterWrite`
+wrapper layer documented (row 20 — the cluster accessor returns a
+newtype that `.view()`s to `View` in Cluster mode or derefs to
+`&mut SymbolTable` in Live mode); `CheckResult` shape comment paired
+to D44's third amendment (row 22 — side products land on staging Def
+fields, not on `CheckResult`); `register_builtins` signature documents
+the post-cluster-atomic `(modules: &DashMap, next_id: &AtomicU32)`
+shape (row 23); `SymbolTableEnsureOutcome` + hook surface documented
+(row 24); `ReplSnapshot` fields documented (row 25). No Decision
+amendment needed; the W3a-β trace implementations are downstream
+interior. Wave 3 FIXME 0179 (cluster read-union staging) closes the
+remaining interior gap that gates `ClusterContext::Cluster` mode
+activation on the hot path.

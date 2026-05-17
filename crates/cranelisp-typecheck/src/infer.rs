@@ -628,8 +628,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let resolved_scrutinee = self.apply_subst(state, &scrutinee_ty);
         if let Type::ADT(fqtn, _) = &resolved_scrutinee {
             self.check_exhaustiveness_in_module(
-                &fqtn.module,
-                &fqtn.name,
+                fqtn,
                 &covered_ctors,
                 has_wildcard,
                 span,
@@ -3033,13 +3032,16 @@ mod tests {
         let ty = tc.infer_expr_for_test(&mut expr).unwrap();
         assert_eq!(ty, Type::Int);
 
-        // Check TraitMethod resolution was recorded
+        // Check resolution was recorded — FIXME 0185: primitive trait-method
+        // resolution short-circuits to ResolvedCall::BuiltinFn instead of
+        // TraitMethod, so backend can inline the primitive without paying the
+        // impl-body call frame. (Num, +, Int) → add-i64.
         let resolution = tc.state.method_resolutions.get(&span(4500, 4507)).unwrap();
         match resolution {
-            ResolvedCall::TraitMethod { mangled_name, .. } => {
-                assert_eq!(mangled_name.as_ref(), "Num.+$Int");
+            ResolvedCall::BuiltinFn { name } => {
+                assert_eq!(name.as_ref(), "add-i64");
             }
-            _ => panic!("expected TraitMethod resolution, got {resolution:?}"),
+            _ => panic!("expected BuiltinFn resolution (primitive trait-method short-circuit per FIXME 0185), got {resolution:?}"),
         }
     }
 

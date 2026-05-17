@@ -136,3 +136,14 @@ See `design/arch/sprint-66-types-authoring-plan.md` §1.7-revised for
 the complete authoring brief; `facades/types.md` §"Symbol table — the
 single store" and Decision 41's "S66 amendment + rollback" for the
 canonical post-rollback statement.
+
+## Status pointer — Sprint 67 close
+
+S67 close — physical move to `cranelisp-backend` per /dev (backend)
+Wave 3 (row 1 of `sprints/SPRINT.md` per-row disposition table).
+Decision 35's "spirit close" by Decision 41 lands as the actual file
+relocation: `src/code.rs` → `crates/cranelisp-backend/src/code.rs`.
+Post-S67 close `Code` no longer references the integration layer in
+its physical home; the variant shape (`Code::Jit(Arc<Jit>)` /
+`Code::Linker(Arc<Linker>)`) is unchanged from the S66 rollback
+amendment above.

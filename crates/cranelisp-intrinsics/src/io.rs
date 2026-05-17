@@ -11,7 +11,7 @@ use cranelisp_platform::{IO_TAG_BIND, IO_TAG_EFFECT, IO_TAG_PAR, IO_TAG_PURE};
 use cranelisp_types::HeapHeader;
 
 use crate::alloc::alloc_with_rc;
-use crate::io_trace::{self, IoTracePayload, IoTraceTag};
+use crate::io_observer::{self, IoEvent, IoEventTag};
 
 /// Byte offset of the tag field from the base pointer.
 const TAG_OFFSET: isize = HeapHeader::SIZE as isize; // 16
@@ -96,14 +96,14 @@ pub extern "C" fn cranelisp_run_io(io_ptr: i64) -> i64 {
 /// captured from a fresh Bind are consumed; closures from the caller's
 /// tree are left alone.
 pub fn run_io_trampoline(io_ptr: i64) -> i64 {
-    io_trace::record_event(
-        IoTraceTag::TrampolineEnter,
-        IoTracePayload::TrampolineEnter { io_ptr },
+    io_observer::emit(
+        IoEventTag::TrampolineEnter,
+        &IoEvent::TrampolineEnter { io_ptr },
     );
     let result = run_io_trampoline_inner(io_ptr);
-    io_trace::record_event(
-        IoTraceTag::TrampolineExit,
-        IoTracePayload::TrampolineExit { result },
+    io_observer::emit(
+        IoEventTag::TrampolineExit,
+        &IoEvent::TrampolineExit { result },
     );
     result
 }
@@ -121,15 +121,15 @@ fn run_io_trampoline_inner(io_ptr: i64) -> i64 {
         match tag {
             t if t == IO_TAG_PURE => {
                 let val = unsafe { *((current as isize + FIELD_0_OFFSET) as *const i64) };
-                io_trace::record_event(
-                    IoTraceTag::PureStep,
-                    IoTracePayload::PureStep { value: val, is_fresh: current_is_fresh },
+                io_observer::emit(
+                    IoEventTag::PureStep,
+                    &IoEvent::PureStep { value: val, is_fresh: current_is_fresh },
                 );
                 match cont_stack.pop() {
                     Some((cont_ptr, cont_is_fresh)) => {
-                        io_trace::record_event(
-                            IoTraceTag::ContPop,
-                            IoTracePayload::Cont {
+                        io_observer::emit(
+                            IoEventTag::ContPop,
+                            &IoEvent::Cont {
                                 cont_ptr,
                                 is_fresh: cont_is_fresh,
                                 new_depth: cont_stack.len() as u32,
@@ -145,9 +145,9 @@ fn run_io_trampoline_inner(io_ptr: i64) -> i64 {
                         // Same rule for the closure we're about to invoke:
                         // consume it only if it was part of a fresh Bind.
                         let new_io = call_continuation(cont_ptr, val, cont_is_fresh);
-                        io_trace::record_event(
-                            IoTraceTag::BindExit,
-                            IoTracePayload::BindExit { new_current: new_io },
+                        io_observer::emit(
+                            IoEventTag::BindExit,
+                            &IoEvent::BindExit { new_current: new_io },
                         );
                         current = new_io;
                         current_is_fresh = true;
@@ -181,9 +181,9 @@ fn run_io_trampoline_inner(io_ptr: i64) -> i64 {
                 // events carry the real class without needing a
                 // cross-trace correlation. Deferred pending Slice 4
                 // evidence.
-                io_trace::record_event(
-                    IoTraceTag::PlatformEffect,
-                    IoTracePayload::PlatformEffect {
+                io_observer::emit(
+                    IoEventTag::PlatformEffect,
+                    &IoEvent::PlatformEffect {
                         thunk_ptr,
                         resource_token,
                         scheduling_class: 0,
@@ -192,9 +192,9 @@ fn run_io_trampoline_inner(io_ptr: i64) -> i64 {
                 let result = unsafe { cranelisp_platform::call_effect_thunk(thunk_ptr) };
                 match cont_stack.pop() {
                     Some((cont_ptr, cont_is_fresh)) => {
-                        io_trace::record_event(
-                            IoTraceTag::ContPop,
-                            IoTracePayload::Cont {
+                        io_observer::emit(
+                            IoEventTag::ContPop,
+                            &IoEvent::Cont {
                                 cont_ptr,
                                 is_fresh: cont_is_fresh,
                                 new_depth: cont_stack.len() as u32,
@@ -204,9 +204,9 @@ fn run_io_trampoline_inner(io_ptr: i64) -> i64 {
                             crate::drop::dec_shallow_io(current);
                         }
                         let new_io = call_continuation(cont_ptr, result, cont_is_fresh);
-                        io_trace::record_event(
-                            IoTraceTag::BindExit,
-                            IoTracePayload::BindExit { new_current: new_io },
+                        io_observer::emit(
+                            IoEventTag::BindExit,
+                            &IoEvent::BindExit { new_current: new_io },
                         );
                         current = new_io;
                         current_is_fresh = true;
@@ -222,9 +222,9 @@ fn run_io_trampoline_inner(io_ptr: i64) -> i64 {
             t if t == IO_TAG_BIND => {
                 let inner = unsafe { *((current as isize + FIELD_0_OFFSET) as *const i64) };
                 let cont = unsafe { *((current as isize + FIELD_1_OFFSET) as *const i64) };
-                io_trace::record_event(
-                    IoTraceTag::BindEnter,
-                    IoTracePayload::BindEnter {
+                io_observer::emit(
+                    IoEventTag::BindEnter,
+                    &IoEvent::BindEnter {
                         inner_ptr: inner,
                         cont_ptr: cont,
                         is_fresh: current_is_fresh,
@@ -235,9 +235,9 @@ fn run_io_trampoline_inner(io_ptr: i64) -> i64 {
                 // fresh Binds (produced by an outer continuation) hold
                 // fresh conts.
                 cont_stack.push((cont, current_is_fresh));
-                io_trace::record_event(
-                    IoTraceTag::ContPush,
-                    IoTracePayload::Cont {
+                io_observer::emit(
+                    IoEventTag::ContPush,
+                    &IoEvent::Cont {
                         cont_ptr: cont,
                         is_fresh: current_is_fresh,
                         new_depth: cont_stack.len() as u32,
@@ -278,9 +278,9 @@ fn run_io_trampoline_inner(io_ptr: i64) -> i64 {
                 // the fresh-Par dec at this level release them.
                 let parent_ptr = current;
                 let results = dispatch_par_branches_with_trace(&branch_ptrs, parent_ptr);
-                io_trace::record_event(
-                    IoTraceTag::ParJoin,
-                    IoTracePayload::ParJoin {
+                io_observer::emit(
+                    IoEventTag::ParJoin,
+                    &IoEvent::ParJoin {
                         parent_ptr,
                         count: count as u32,
                     },
@@ -301,9 +301,9 @@ fn run_io_trampoline_inner(io_ptr: i64) -> i64 {
                 // Pop continuation and call with results array pointer
                 match cont_stack.pop() {
                     Some((cont_ptr, cont_is_fresh)) => {
-                        io_trace::record_event(
-                            IoTraceTag::ContPop,
-                            IoTracePayload::Cont {
+                        io_observer::emit(
+                            IoEventTag::ContPop,
+                            &IoEvent::Cont {
                                 cont_ptr,
                                 is_fresh: cont_is_fresh,
                                 new_depth: cont_stack.len() as u32,
@@ -313,9 +313,9 @@ fn run_io_trampoline_inner(io_ptr: i64) -> i64 {
                             crate::drop::dec_shallow_io(current);
                         }
                         let new_io = call_continuation(cont_ptr, results_ptr, cont_is_fresh);
-                        io_trace::record_event(
-                            IoTraceTag::BindExit,
-                            IoTracePayload::BindExit { new_current: new_io },
+                        io_observer::emit(
+                            IoEventTag::BindExit,
+                            &IoEvent::BindExit { new_current: new_io },
                         );
                         current = new_io;
                         current_is_fresh = true;
@@ -419,9 +419,9 @@ fn dispatch_par_branches_with_trace(branch_ptrs: &[i64], parent_ptr: i64) -> Vec
         if token == 0 {
             // Each unrestricted branch is independent.
             for &(idx, io_ptr) in entries {
-                io_trace::record_event(
-                    IoTraceTag::ParSpark,
-                    IoTracePayload::ParSpark {
+                io_observer::emit(
+                    IoEventTag::ParSpark,
+                    &IoEvent::ParSpark {
                         parent_ptr,
                         branch_idx: idx as u32,
                         token,
@@ -431,17 +431,17 @@ fn dispatch_par_branches_with_trace(branch_ptrs: &[i64], parent_ptr: i64) -> Vec
             }
         } else {
             // Same non-zero token: run sequentially as one work item.
-            io_trace::record_event(
-                IoTraceTag::ParSerialGroupEnter,
-                IoTracePayload::ParSerialGroupEnter {
+            io_observer::emit(
+                IoEventTag::ParSerialGroupEnter,
+                &IoEvent::ParSerialGroupEnter {
                     token,
                     branch_count: entries.len() as u32,
                 },
             );
             for &(idx, _io_ptr) in entries {
-                io_trace::record_event(
-                    IoTraceTag::ParSpark,
-                    IoTracePayload::ParSpark {
+                io_observer::emit(
+                    IoEventTag::ParSpark,
+                    &IoEvent::ParSpark {
                         parent_ptr,
                         branch_idx: idx as u32,
                         token,

@@ -165,7 +165,7 @@ impl core::marker::Unpin for cranelisp_platform::HostContext
 impl core::marker::UnsafeUnpin for cranelisp_platform::HostContext
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::HostContext
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::HostContext
-pub struct cranelisp_platform::OwnedPlatformFnDescriptor
+#[non_exhaustive] pub struct cranelisp_platform::OwnedPlatformFnDescriptor
 pub cranelisp_platform::OwnedPlatformFnDescriptor::docstring: alloc::string::String
 pub cranelisp_platform::OwnedPlatformFnDescriptor::jit_name: alloc::string::String
 pub cranelisp_platform::OwnedPlatformFnDescriptor::name: alloc::string::String

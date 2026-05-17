@@ -43,11 +43,15 @@ Returns:
 pub struct CheckState { /* per-call state — type-var pool, substitution, deferred resolutions */ }
 
 impl CheckState {
-    pub fn new<C, L>(symbol_tables: &SymbolTables<C, L>) -> Self;
+    pub fn new(module: ModuleFullPath) -> Self;
+    pub fn current_module(&self) -> &ModuleFullPath;
 }
 
 pub enum ClusterContext<'a, C: CodeStore, L: LinkerStore> {
-    Live { modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>> },
+    Live {
+        modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
+        current_module: ModuleFullPath,
+    },
     Cluster {
         modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
         staging: &'a mut SymbolTable<C, L>,
@@ -56,45 +60,163 @@ pub enum ClusterContext<'a, C: CodeStore, L: LinkerStore> {
 }
 
 impl<'a, C: CodeStore, L: LinkerStore> ClusterContext<'a, C, L> {
-    pub fn current_symbol_table(&self) -> View<'_, C, L>;            // Cluster → View::union(staging, live); Live → single
-    pub fn current_symbol_table_mut(&mut self) -> &mut SymbolTable<C, L>;  // Cluster → &mut staging; Live → &mut live[current]
+    pub fn live(modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>, current_module: ModuleFullPath) -> Self;
+    pub fn cluster(modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>, staging: &'a mut SymbolTable<C, L>, current_module: ModuleFullPath) -> Self;
+    pub fn current_module(&self) -> &ModuleFullPath;
+    pub fn current_symbol_table(&self) -> ClusterRead<'_, C, L>;       // borrow guard; call `.view()` to get the unioned `View<'_, C, L>`
+    pub fn current_symbol_table_mut(&mut self) -> ClusterWrite<'_, C, L>; // Deref/DerefMut → SymbolTable<C, L>; in Live mode wraps the DashMap RefMut, in Cluster mode wraps &mut staging
+}
+
+/// Read-side borrow guard returned by `ClusterContext::current_symbol_table()`.
+/// Holds either a DashMap one-ref (Live) or both the staging-ref + a live one-ref
+/// (Cluster), and exposes `.view() -> View<'_, C, L>` to obtain the unioned
+/// staging-first `View` per Decision 44. Internal-but-exposed (a public type),
+/// because the cluster-mode return must hold two borrows simultaneously and
+/// returning `View<'_, C, L>` directly would force the caller's borrow lifetime
+/// to outlive the staging borrow it depends on. Callers obtain `View` via
+/// `ctx.current_symbol_table().view()`.
+pub enum ClusterRead<'a, C, L> {
+    Live(dashmap::mapref::one::Ref<'a, ModuleFullPath, SymbolTable<C, L>>),
+    Cluster {
+        staging: &'a SymbolTable<C, L>,
+        live: dashmap::mapref::one::Ref<'a, ModuleFullPath, SymbolTable<C, L>>,
+    },
+}
+
+impl<'a, C, L> ClusterRead<'a, C, L> {
+    pub fn view(&self) -> View<'_, C, L>;  // Cluster → View::union(staging, live); Live → View::single(live)
+}
+
+/// Write-side borrow guard returned by `ClusterContext::current_symbol_table_mut()`.
+/// Implements `Deref<Target = SymbolTable<C, L>>` and `DerefMut`, so all 91
+/// register-call sites in typecheck (`register_type_def`, `register_trait_decl`,
+/// etc.) call methods on it as if it were a direct `&mut SymbolTable`. In `Live`
+/// mode wraps a DashMap `RefMut`; in `Cluster` mode wraps `&mut staging`. The
+/// staging-vs-live distinction is absorbed inside the guard so callers don't
+/// thread it through. Internal-but-exposed for the same reason as `ClusterRead`
+/// (RAII boundary; cannot collapse to `&mut SymbolTable` without losing the
+/// DashMap lock-discipline in Live mode).
+pub enum ClusterWrite<'a, C, L> {
+    Live(dashmap::mapref::one::RefMut<'a, ModuleFullPath, SymbolTable<C, L>>),
+    Cluster(&'a mut SymbolTable<C, L>),
 }
 
 pub struct TypeCheckEnv<'a, C, L> { /* per-form environment — wraps &mut ClusterContext + read-only symbol_tables */ }
 
 impl<'a, C, L> TypeCheckEnv<'a, C, L> {
-    pub fn new(ctx: &'a mut ClusterContext<'a, C, L>, symbol_tables: &'a SymbolTables<C, L>) -> Self;
+    pub fn new(modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>, next_id: &'a AtomicU32) -> Self;
     pub fn next_type_id(&mut self) -> TypeId;
 }
 ```
 
-`CheckState`, `ClusterContext`, and `TypeCheckEnv` exist for tests and for crates that want to construct typecheck driver state directly. `int` uses `check_forms` exclusively in production. `TypeCheckEnv` carries `&mut ClusterContext<'_, C, L>` per Decision 38 + Decision 44 (amended FIXME 0167) — table access flows through `ClusterContext::current_symbol_table()` (read) / `current_symbol_table_mut()` (write) so the 91 register-call sites and 51 access sites in `program.rs` do not change individually. In production cluster-processing flow, the orchestrator hands `ClusterContext::Cluster { staging, … }`; in REPL introspection / fine-grained-test paths the caller may construct `ClusterContext::Live { modules }` for direct live access. Per-symbol writes in committed (Live) mode go through the inner DashMap's per-key locks; in cluster mode they go through the `&mut staging` exclusive borrow held by the orchestrator's stack frame.
+`CheckState`, `ClusterContext`, `ClusterRead`, `ClusterWrite`, and `TypeCheckEnv` exist for tests and for crates that want to construct typecheck driver state directly. `int` uses `check_forms` exclusively in production. `TypeCheckEnv` carries `&mut ClusterContext<'_, C, L>` per Decision 38 + Decision 44 (amended FIXME 0167) — table access flows through `ClusterContext::current_symbol_table()` (read, returning `ClusterRead`) / `current_symbol_table_mut()` (write, returning `ClusterWrite`) so the 91 register-call sites and 51 access sites in `program.rs` do not change individually. In production cluster-processing flow, the orchestrator hands `ClusterContext::Cluster { staging, … }`; in REPL introspection / fine-grained-test paths the caller may construct `ClusterContext::Live { modules, current_module }` for direct live access. Per-symbol writes in committed (Live) mode go through the inner DashMap's per-key locks; in cluster mode they go through the `&mut staging` exclusive borrow held by the orchestrator's stack frame.
+
+**`TypeCheckEnv` target shape — narrowing target (per Sprint 67 PIF row 21).** As-built `TypeCheckEnv` exposes ~30 methods (per-symbol lookups, snapshot/restore, module-table accessors, exhaustiveness checks, display-info computation, register helpers, etc. — see `crates/cranelisp-typecheck/public-api.txt` lines 164–202). The facade prescribes exactly **2 methods**:
+
+- `pub fn new(modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>, next_id: &'a AtomicU32) -> Self`
+- `pub fn next_type_id(&mut self) -> TypeId`
+
+The remaining ~28 methods drop from the public surface during /dev (typecheck) Wave 3 narrowing: per-symbol lookups (`lookup_type_def`, `lookup_trait_decl`, `lookup_constructor_type`, `get_type_constructors`, `get_implementing_types`, `get_impls_for_type`, `get_trait_methods`, `has_impl`, `method_to_trait`, `method_belongs_to_trait`, `is_internal_constructor_check`, `defining_module_for`, `fqtn_for_type`, `resolve_module_by_name`) become `pub(crate)` callee-side helpers — all callers are inside `check_forms`'s frame; module-table accessors (`module_table`, `module_table_cloned`, `modules`, `modules_ref`, `has_module`, `ensure_module_exists`, `insert_module`, `remove_module`) likewise become internal (cluster-mode access flows through `ClusterContext::current_symbol_table()`; cross-module probes follow the per-symbol shapes in Invariant 10 below); snapshot/restore (`snapshot`, `restore`, `snapshot_type_defs`, `restore_cached_module`, `restore_cached_impls`) is `pub(crate)`-scoped to typecheck-internal callers (REPL eval rollback flows through the orchestrator's staging-drop instead — Decision 44); aggregate enumerations (`all_type_defs`, `all_type_defs_map`) become `pub(crate)`; `register_imports`, `register_exports`, `clear_module_for_replace_public`, `compute_display_info_public`, `unregister_trait`, `get_got_slot`, `check_exhaustiveness` all become `pub(crate)` (called from inside `check_forms`).
+
+FIXME 0172 (short-name fallback chains in `defining_module_for` / `fqtn_for_bare_type_name`) closes alongside this narrowing — the fallback chain code is rewritten into Invariant 10's principled per-shape probes, and the two methods become `pub(crate)` chain-follow helpers (or drop entirely if every callsite is reachable from `resolve::*`'s lift). Tests that pre-S67 reached into `TypeCheckEnv` for ad-hoc probes (e.g., `module_table_cloned`) migrate to either constructing a `ClusterContext::Live` and using the public read accessor, or to inspecting `CheckResult` / `SymbolTable` directly.
 
 **No public pass discriminator.** The pre-S66 `pub enum CheckPass { Pass1Signatures, Pass2Bodies }` and the intermediate `check_form_signatures` / `check_form_body` two-function split are both removed from the public API per Decision 44's 2026-05-13 third amendment. The two-pass discipline (spec §5.13.1) is an **implementation-phase ordering inside `check_forms`** — Pass 1 sweeps `parsed`, Pass 2 sweeps `parsed` — not a facade-exposed surface. Internal multi-pass scaffolding may retain a `pub(crate)` enum or two `pub(crate)` helpers if convenient; they do not cross the crate boundary. The state-threading hole that the two-function split exposed (Pass-1-to-Pass-2 working state could not be carried across two separate calls without a public accumulator) is closed by construction: no working state crosses the facade because there is only one call.
 
 **No public accumulator type.** The pre-S66 `pub struct ModuleCheckAccumulator` and the briefly-considered relocation of that struct to `int` are both retired. Per-symbol Pass-2 side products (method resolutions, expr types, mono defns, callees) land on staging `ModuleEntry::Def` fields per invariant 3a. Pass-1-to-Pass-2 working state and cluster-scoped algorithmic aggregates (`defn_type_vars`, default-method-defn deferrals, generalisation inputs) are internal to `check_forms`'s frame and never publicly visible. Cross-symbol bookkeeping that `int` itself collects during cluster processing (warnings, resolved-import bindings, introspection records) lives on `int`-side data structures — see `facades/int.md` §"Cluster orchestration result".
 
-### Builtin registration (called once per `SymbolTable::new`)
+### Builtin registration (called once per workspace init — cluster-atomic post-S66)
 
 ```rust
-pub fn register_builtins<C, L>(table: &mut SymbolTable<C, L>);
+pub fn register_builtins<C, L>(
+    modules: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    next_id: &AtomicU32,
+)
+where C: CodeStore, L: LinkerStore;
 ```
 
-Builtin registration runs at `SymbolTable` construction time on the initiator thread, while a brief `&mut` window is held — this is one of the two `&mut SymbolTable` operations per Decision 38 (the other is `write_structural_decls` at parse-time Phase 0).
+Builtin registration now operates against the whole modules-map: it inserts the `primitives` and `macros` synthetic modules' `SymbolTable`s (per `spec/08-modules.md §8.7`) and threads `next_id` so the registration's type-var allocations remain monotonic with the rest of the session's `TypeCheckEnv`-allocated type ids. Called once per session init (the int binary's `compile_to_module` path; tests construct an empty `DashMap + AtomicU32` and call `register_builtins` themselves). Idempotent — safe to call once per fresh modules map. Per Decision 38 this remains a brief `&mut SymbolTable` write window, but the access is mediated through the DashMap's per-key lock rather than the caller-held `&mut`.
 
-Seeds the symbol table with primitive type defs (`Int`, `Bool`, `String`, `Float`, `Unit`), primitive functions (per `cranelisp_types::primitives()`), and the synthetic `primitives`/`macros` modules' contents per `spec/08-modules.md §8.7`. Idempotent — safe to call once per fresh `SymbolTable`.
+Seeds the modules-map with primitive type defs (`Int`, `Bool`, `String`, `Float`, `Unit`), primitive functions (per `cranelisp_types::primitives()`), and the synthetic `primitives`/`macros` modules' contents.
 
 ### Trace hooks (for diagnostics — observability layer)
 
 ```rust
-pub use trace::{install_symbol_table_ensure_hook, /* … */};
+pub mod trace {
+    /// Outcome enum surfaced when typecheck would create-or-find a per-module
+    /// `SymbolTable`. Two variants: `Created` (this call inserted the entry),
+    /// `AlreadyPresent` (the entry was already there). `as_u8(self) -> u8` for
+    /// numeric trace encoding. Derives Clone, Copy, Eq, PartialEq, Debug.
+    pub enum SymbolTableEnsureOutcome {
+        AlreadyPresent,
+        Created,
+    }
+
+    /// Hook signature: `fn(module: &ModuleFullPath, outcome: SymbolTableEnsureOutcome)`.
+    /// Public function-pointer type (not a trait — observability is one-shot
+    /// global install, per Principle 14 callback discipline).
+    pub type SymbolTableEnsureHook = fn(&ModuleFullPath, SymbolTableEnsureOutcome);
+
+    /// Install a global hook for `SymbolTable` ensure events. Called once at
+    /// session startup by int's observability layer (per FIXME 0103 trace plan,
+    /// Decision 40). Re-installing overwrites the previous hook — no
+    /// composition; observers chain externally.
+    pub fn install_symbol_table_ensure_hook(hook: SymbolTableEnsureHook);
+
+    /// Emit a `SymbolTableEnsure` event to the installed hook (if any).
+    /// Called by typecheck whenever it would touch a per-module `SymbolTable`
+    /// during cluster check or builtin registration. No-op if no hook is
+    /// installed.
+    pub fn emit_symbol_table_ensure(module: &ModuleFullPath, outcome: SymbolTableEnsureOutcome);
+}
+
+// re-exported at crate root for convenience:
+pub use trace::{
+    SymbolTableEnsureOutcome,
+    SymbolTableEnsureHook,
+    install_symbol_table_ensure_hook,
+};
 ```
 
-Exposes the cross-crate trace-install hook described in `design/int/heisenbug-race-closure.md §3d''` — `int`'s observability layer wires this to its scheduler trace sink at startup.
+Exposes the cross-crate trace-install hook described in `design/int/heisenbug-race-closure.md §3d''` — `int`'s observability layer wires this to its scheduler trace sink at startup. The three submodule items + the two crate-root re-exports (`SymbolTableEnsureOutcome`, `install_symbol_table_ensure_hook`) form the observable surface; `emit_symbol_table_ensure` is called only from inside typecheck but is pub so the observability split (per Decision 40) is consistent across crates.
 
 ### Public consts
 
 None.
+
+### Module-lifecycle free functions (S67 hack-back — FIXME 0192)
+
+```rust
+pub fn register_imports<C, L>(
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    next_id: &AtomicU32,
+    state: &mut CheckState,
+    specs: &[ImportSpec],
+) -> Result<(), CranelispError>;
+
+pub fn register_exports<C, L>(
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    next_id: &AtomicU32,
+    state: &mut CheckState,
+    specs: &[ExportSpec],
+) -> Result<(), CranelispError>;
+
+pub fn advance_next_id_past_table<C, L>(
+    next_id: &AtomicU32,
+    table: &SymbolTable<C, L>,
+);
+```
+
+Free fns that perform module-lifecycle work without requiring a fully-constructed `TypeCheckEnv` borrow. `register_imports` / `register_exports` were lifted off `TypeCheckEnv` in the Sprint 67 hack-back (FIXME 0192) so cross-crate callers (`int`'s import-form handler) do not need to construct a typecheck env. `advance_next_id_past_table` is the TypeId-consistency primitive split out of the pre-S67 `restore_cached_module` — composed by the `int`-side cache-hit branch alongside `cranelisp_types::install_module` (see `facades/types.md` §"Module-lifecycle primitives").
+
+The data-home counterpart of `register_imports`/`register_exports` is `cranelisp_types::install_module` + `ensure_module_exists`; together these form the lifecycle pair used by `CompilerSession::introduce_module`'s four-branch orchestration.
+
+---
+
+## FQTypeName binding at typecheck boundaries
+
+Per Decision 0047 + `facades/types.md` §"FQTypeName migration plan (Sprint 67)" §"typecheck", every resolved-stage API on the typecheck surface that names a type uses `FQTypeName`; bare `TypeName` is reserved for the three exception classes (syntactic-lift sites, receiver-pinned helpers, reverse-lookup primitives). The per-API direction list lives in the types-facade migration plan, NOT duplicated here — that table is the single source of truth for both /dev (typecheck) execution and /review acceptance at Wave 5. Typecheck carries the largest /dev burden of the six crates' migration (per Decision 0047 §"Status pointer"): ~7 PIF conversions + ~3 syntactic-lift-site keeps + ~5 receiver-pinned keeps.
+
+Most of those APIs become `pub(crate)` per the `TypeCheckEnv` narrowing above and stop crossing the facade boundary entirely. The hits that remain at the public surface after Wave 3 narrowing are: (a) `register_builtins`'s internal allocations (receiver-pinned, exception 2), (b) `resolve::*`'s syntactic-stage entry points if kept public (exception 1: syntactic lift site), (c) any debug/introspection helper escape hatches if kept (each must cite an exception by name in a code comment per the Wave 5 /review checkpoint).
 
 ---
 
@@ -104,15 +226,34 @@ Per Principle 15's placement heuristic — `CheckResult`, `CheckError`, `CheckSt
 
 ```rust
 // In cranelisp-typecheck:
-pub struct CheckResult { /* annotated_ast, scheme, callees, method_resolutions, type_defs, mono_defns */ }
+//
+// Per Decision 44's 2026-05-13 third amendment, CheckResult is pared to
+// the two cross-cluster items that the orchestrator surfaces to the REPL
+// display layer; per-symbol Pass-2 side products land on staging
+// ModuleEntry::Def fields per invariant 3a, NOT on CheckResult.
+pub struct CheckResult {
+    pub display: Option<DisplayInfo>,      // last-form display info for REPL value-printing
+    pub warnings: Vec<Warning>,             // cluster-scope warnings (e.g., unused imports)
+}
 pub enum   CheckError { Gap(ResolutionGap), TypeError { message, location: ErrorLocation } }
 // CheckPass, FormCheckResult, ModuleCheckAccumulator are removed from the public surface
 // per Decision 44's 2026-05-13 third amendment — pass ordering and cross-pass state are
 // internal to check_forms's frame.
-pub struct CheckState { /* … */ }
+pub struct CheckState { /* current_module + per-call state — type-var pool, substitution, deferred resolutions */ }
 pub enum   ClusterContext<'a, C, L> { Live { … }, Cluster { … } }   // Decision 44 (amended FIXME 0167) — staging-vs-live abstraction
+pub enum   ClusterRead<'a, C, L>  { Live(...), Cluster { staging, live } }  // Decision 44 — read-side borrow guard; `.view()` yields View<'_, C, L>
+pub enum   ClusterWrite<'a, C, L> { Live(...), Cluster(&'a mut SymbolTable<C, L>) }  // Decision 44 — write-side borrow guard; Deref/DerefMut → SymbolTable<C, L>
 pub struct TypeCheckEnv<'a, C, L> { /* … */ }
-pub struct ReplSnapshot { /* … */ }                   // typecheck snapshot/restore primitive for REPL eval rollback
+/// REPL eval rollback primitive. Captured before a cluster check; restored
+/// on cluster Err to wind back type-var pool + substitution + per-symbol
+/// staging state. Per invariant 7 — typecheck provides the primitive, the
+/// caller (REPL eval) drives the snapshot/restore.
+pub struct ReplSnapshot {
+    pub next_type_id: TypeId,                       // restores TypeCheckEnv's monotonic type-var counter
+    pub scope_depth: usize,                         // restores CheckState's scope stack depth
+    pub subst_len: usize,                           // restores the substitution log length (truncation rolls back unifications)
+    pub symbol_keys: HashSet<Symbol>,               // symbols that existed in the current module pre-cluster — survivors after rollback
+}
 
 // In cranelisp-types (multi-consumer):
 pub enum ResolutionGap {
@@ -135,9 +276,11 @@ pub enum ResolutionGap {
 }
 ```
 
-The multi-consumer types `CheckResult` depends on (`Scheme`, `Subst`, `Type`, `TypeId`, `ResolvedCall`, `MethodResolutions`, `ConstructorInfo`, `FieldInfo`, `TypeDefInfo`, `DisplayInfo`, `MonoDefn`) live in `cranelisp-types` because backend codegen also consumes them — see Principle 15's placement heuristic. `CheckError::TypeError.location: ErrorLocation` carries Decision 39's coordinates-as-data carrier; `int`'s formatter resolves through `shared.introspection[fq].source` for inline source snippets in REPL/trace mode (per Decision 38's mode-conditional Introspection store).
+The multi-consumer types `CheckResult` depends on (`Scheme`, `Subst`, `Type`, `TypeId`, `ResolvedCall`, `MethodResolutions`, `ConstructorInfo`, `FieldInfo`, `TypeDefInfo`, `DisplayInfo`, `MonoDefn`, `Warning`, `TraitDecl`) live in `cranelisp-types` because backend codegen also consumes them — see Principle 15's placement heuristic. `CheckResult.warnings: Vec<Warning>` and the public `lookup_trait_decl(..) -> Option<TraitDecl>` (and other queries that surface `TraitDecl`) reference types-hosted definitions; `TraitDecl` carries the trait header (name, type params, method signatures) that typecheck reads during impl resolution and that REPL introspection (`/info <trait>`) renders. `CheckError::TypeError.location: ErrorLocation` carries Decision 39's coordinates-as-data carrier; `int`'s formatter resolves through `shared.introspection[fq].source` for inline source snippets in REPL/trace mode (per Decision 38's mode-conditional Introspection store).
 
-No re-exports of `cranelisp-types` items per Principle 15 — `int` imports `Type`, `Scheme`, `Symbol`, `ResolutionGap` etc. from `cranelisp-types` and `CheckResult`, `CheckError`, etc. from `cranelisp-typecheck`.
+**Two legacy crate-root re-exports** (`pub use cranelisp_types::CranelispError` and `pub use cranelisp_types::TopLevel`) appear at `cranelisp_typecheck::CranelispError` / `cranelisp_typecheck::TopLevel`. Internal-but-exposed convenience re-exports: callers that import `cranelisp_typecheck::*` for the typecheck surface also reach for these types in error-handling and AST-input paths. Per Principle 15 these are not endorsed at the facade level — new callers should import `CranelispError` / `TopLevel` directly from `cranelisp-types`. Removal is a /dev (typecheck) Wave 3 follow-on once external import sites are confirmed clean (no S67 close requirement; tracked as housekeeping).
+
+Otherwise no re-exports of `cranelisp-types` items per Principle 15 — `int` imports `Type`, `Scheme`, `Symbol`, `ResolutionGap`, `Warning`, `TraitDecl` etc. from `cranelisp-types` and `CheckResult`, `CheckError`, etc. from `cranelisp-typecheck`.
 
 ---
 

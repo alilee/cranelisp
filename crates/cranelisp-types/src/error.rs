@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::{FQSymbol, FQTypeName, LinkerSymbol, Span, Symbol};
+use crate::{FQSymbol, FQTypeName, Span, Symbol};
 
 // ---------------------------------------------------------------------------
 // Error location — Decision 39 / Decision 42
@@ -320,37 +320,12 @@ impl std::fmt::Display for PlatformError {
 impl std::error::Error for PlatformError {}
 
 // ---------------------------------------------------------------------------
-// LinkerError — FIXME 0154
+// LinkerError — relocated to `cranelisp-backend` per Sprint 67 REV-4.
+// See `crates/cranelisp-backend/src/error.rs` for the canonical enum and
+// `design/arch/facades/backend.md` §"Errors" for the facade specification.
+// `design/arch/facades/types.md` §"Errors and warnings" carries the cross-ref
+// pointer authored at S67 Wave 0.
 // ---------------------------------------------------------------------------
-
-/// Typed result of `Linker::get_symbol`. Hosted in `cranelisp-types` because
-/// backend constructs and `int` matches at cache-hit failure (multi-consumer
-/// per Principle 15). Per FIXME 0154 — 2-variant baseline; additional variants
-/// added as evidence accrues.
-#[non_exhaustive]
-#[derive(Debug, Clone)]
-pub enum LinkerError {
-    /// The cache `Linker`'s symbol table does not contain the requested name.
-    SymbolNotFound { name: LinkerSymbol },
-    /// Object relocation pass produced an error during `load_object` or
-    /// per-symbol resolution.
-    RelocationFailed { name: LinkerSymbol, cause: String },
-}
-
-impl std::fmt::Display for LinkerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LinkerError::SymbolNotFound { name } => {
-                write!(f, "linker symbol not found: {}", &**name)
-            }
-            LinkerError::RelocationFailed { name, cause } => {
-                write!(f, "relocation of {} failed: {}", &**name, cause)
-            }
-        }
-    }
-}
-
-impl std::error::Error for LinkerError {}
 
 // ---------------------------------------------------------------------------
 // ResolutionGap — FIXME 0098

@@ -154,7 +154,7 @@ where
     {
         let table = symbol_tables.get(&current_module);
         if let Some(guard) = table {
-            env.advance_next_id_past_table(&*guard);
+            crate::checker::advance_next_id_past_table(&next_id, &*guard);
         }
     }
 

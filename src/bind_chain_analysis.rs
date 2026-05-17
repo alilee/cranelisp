@@ -53,7 +53,12 @@ pub fn auto_schedule_defn(
 }
 
 /// Transform bind chains in a standalone expression (REPL eval path).
-pub fn auto_schedule_expr(
+///
+/// Sprint 67 hack-back: REPL eval-expression path currently does not invoke
+/// auto-scheduling (only `auto_schedule_defn` runs in `session.rs`). Retained
+/// for future activation; narrowed + `#[allow(dead_code)]`.
+#[allow(dead_code)]
+pub(crate) fn auto_schedule_expr(
     expr: &mut Expr,
     symbol_tables: &SymbolTables,
     current_module: &ModuleFullPath,
@@ -66,7 +71,11 @@ pub fn auto_schedule_expr(
 }
 
 /// Transform bind chains in an owned expression (for DefnVariant bodies).
-pub fn auto_schedule_expr_owned(
+///
+/// Sprint 67 hack-back: no current consumer. Retained as a primitive; narrowed
+/// + `#[allow(dead_code)]`.
+#[allow(dead_code)]
+pub(crate) fn auto_schedule_expr_owned(
     expr: Expr,
     symbol_tables: &SymbolTables,
     current_module: &ModuleFullPath,
@@ -491,7 +500,11 @@ fn recurse_children(
 /// Accepts either a qualified form (`platform.stdio/print`) or a bare name
 /// that resolves via the current module's imports. Returns `Sequential` when
 /// the name does not resolve to a `PlatformEffect` primitive.
-pub fn scheduling_of(
+///
+/// Sprint 67 hack-back: no current external consumer (used only by tests in
+/// this module). Narrowed + `#[allow(dead_code)]`.
+#[allow(dead_code)]
+pub(crate) fn scheduling_of(
     symbol_tables: &SymbolTables,
     current_module: &ModuleFullPath,
     name: &str,

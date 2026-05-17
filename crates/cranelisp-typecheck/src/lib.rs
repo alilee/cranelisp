@@ -44,7 +44,9 @@ mod unify;
 
 // Public API
 pub use builtins::register_builtins;
-pub use checker::{CheckState, TypeCheckEnv};
+pub use checker::{
+    CheckState, TypeCheckEnv, advance_next_id_past_table, register_exports, register_imports,
+};
 pub use cluster::{ClusterContext, ClusterRead, ClusterWrite};
 pub use form::check_forms;
 pub use result::{CheckError, CheckResult, ReplSnapshot};

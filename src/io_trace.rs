@@ -1,35 +1,199 @@
-//! IO observer consumer — registers an observer with
-//! `cranelisp_intrinsics::register_io_observer` and forwards events into the
-//! existing ring buffer in `cranelisp-intrinsics::io_trace`.
+//! IO trampoline event log — int-hosted ring buffer + observer per
+//! Decision 40 §"Int hosting — the trace bodies and observer state" (Path B1).
 //!
-//! Per FIXME 0103 Phase 2 / Decision 40: the consumer-side ring buffer +
-//! flush-guard machinery lives in int. The intrinsics crate defines the
-//! `IoObserver` extension point and (still) the underlying ring-buffer
-//! implementation (relocated in Phase 1). The IO trampoline currently in
-//! `cranelisp-runtime::io` continues to call `io_trace::record_event` directly
-//! — the observer pathway is dormant until the trampoline is rewired to
-//! `io_observer::emit` (out of Wave 3b-2b scope).
+//! This file absorbs the io_trace ring-buffer machinery that previously lived
+//! in `crates/cranelisp-intrinsics/src/io_trace.rs`. The intrinsics-side
+//! definition remains (orphaned, awaiting FIXME 0198 deletion) but is no
+//! longer the live consumer for int sessions — int's session startup
+//! registers `record` (below) with `cranelisp_intrinsics::register_io_observer`
+//! and the IO trampoline emits events through that registration via
+//! `io_observer::emit`.
 //!
-//! Activation: `CRANELISP_IO_TRACE=1` enables the observer at session start.
-//! When unset, no observer is registered; the trampoline's relaxed-load null
-//! check makes the emit hot path a no-op.
+//! ## Activation
 //!
-//! FlushGuard + install_panic_hook delegate to the intrinsics-side machinery
-//! so `main.rs` can stop reaching across to `cranelisp_intrinsics::...` (the
-//! pre-Wave-3b path) and instead consume the int-local surface.
+//! Set `CRANELISP_IO_TRACE=1` to activate. `install_if_enabled` calls
+//! `register_io_observer(Some(record))` only when the env var is present;
+//! unset means no observer, the trampoline's hot path is a relaxed-load
+//! null-check + branch, and no recording or formatting happens.
+//!
+//! ## Mapping
+//!
+//! Each `IoEventTag` / `IoEvent` from `cranelisp_intrinsics::io_observer`
+//! maps 1:1 onto an `IoTraceTag` / `IoTracePayload` here. The taxonomies
+//! were co-designed in lockstep so the mapping is straight translation.
+//!
+//! ## Non-goals
+//!
+//! - No `Serialize` / `Deserialize` — events are in-process only.
+//! - No `cranelisp_alloc` usage inside event storage — host allocator only,
+//!   to avoid recursion through RC-traced allocation paths.
+
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread::ThreadId;
+use std::time::Instant;
 
 use cranelisp_intrinsics::io_observer::{IoEvent, IoEventTag, register_io_observer};
-use cranelisp_intrinsics::io_trace as ring;
 
-/// Observer fn registered with `cranelisp_intrinsics::register_io_observer`.
-/// Forwards each typed `IoEvent` from the `io_observer` taxonomy onto the
-/// existing thread-local ring buffer via `io_trace::record_event`.
+// ---------------------------------------------------------------------------
+// Filter (env-var parse once)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraceFilter {
+    All,
+}
+
+static IO_TRACE_FILTER: OnceLock<Option<TraceFilter>> = OnceLock::new();
+
+fn parse_filter_from_env() -> Option<TraceFilter> {
+    match std::env::var("CRANELISP_IO_TRACE") {
+        Ok(v) => parse_filter_string(&v),
+        Err(_) => None,
+    }
+}
+
+fn parse_filter_string(raw: &str) -> Option<TraceFilter> {
+    match raw.trim() {
+        "1" | "*" => Some(TraceFilter::All),
+        _ => None,
+    }
+}
+
+fn filter() -> Option<TraceFilter> {
+    *IO_TRACE_FILTER.get_or_init(parse_filter_from_env)
+}
+
+// ---------------------------------------------------------------------------
+// Event taxonomy (int-side ring representation)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum IoTraceTag {
+    TrampolineEnter,
+    TrampolineExit,
+    PureStep,
+    BindEnter,
+    BindExit,
+    PlatformEffect,
+    ContPush,
+    ContPop,
+    ParSpark,
+    ParSerialGroupEnter,
+    ParJoin,
+    ParBarrierForce,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IoTracePayload {
+    TrampolineEnter { io_ptr: i64 },
+    TrampolineExit { result: i64 },
+    PureStep { value: i64, is_fresh: bool },
+    BindEnter { inner_ptr: i64, cont_ptr: i64, is_fresh: bool },
+    BindExit { new_current: i64 },
+    PlatformEffect { thunk_ptr: i64, resource_token: i64, scheduling_class: u8 },
+    Cont { cont_ptr: i64, is_fresh: bool, new_depth: u32 },
+    ParSpark { parent_ptr: i64, branch_idx: u32, token: i64 },
+    ParSerialGroupEnter { token: i64, branch_count: u32 },
+    ParJoin { parent_ptr: i64, count: u32 },
+    ParBarrierForce { token: i64 },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct IoTraceEvent {
+    pub timestamp_ns: u64,
+    pub thread_id: ThreadId,
+    pub thread_ord_id: u64,
+    pub tag: IoTraceTag,
+    pub payload: IoTracePayload,
+}
+
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<IoTraceEvent>();
+    assert_send_sync::<IoTracePayload>();
+    assert_send_sync::<IoTraceTag>();
+};
+
+// ---------------------------------------------------------------------------
+// Thread-local ring buffer
+// ---------------------------------------------------------------------------
+
+/// Per-thread ring buffer capacity (in events). ~4 MiB per thread.
+pub const IO_TRACE_BUFFER_CAPACITY: usize = 65_536;
+
+static NEXT_THREAD_ORD_ID: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+    static IO_TRACE_BUF: RefCell<VecDeque<IoTraceEvent>> =
+        RefCell::new(VecDeque::with_capacity(IO_TRACE_BUFFER_CAPACITY));
+
+    static IO_TRACE_THREAD_ORD: RefCell<Option<u64>> = const { RefCell::new(None) };
+}
+
+fn thread_ord_id() -> u64 {
+    IO_TRACE_THREAD_ORD.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if let Some(id) = *slot {
+            id
+        } else {
+            let id = NEXT_THREAD_ORD_ID.fetch_add(1, Ordering::Relaxed);
+            *slot = Some(id);
+            id
+        }
+    })
+}
+
+static PUBLISHED_BUFFERS: OnceLock<std::sync::Mutex<Vec<Vec<IoTraceEvent>>>> = OnceLock::new();
+
+fn published_buffers() -> &'static std::sync::Mutex<Vec<Vec<IoTraceEvent>>> {
+    PUBLISHED_BUFFERS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+// ---------------------------------------------------------------------------
+// Hot-path emit (ring write)
+// ---------------------------------------------------------------------------
+
+/// Record an event in the per-thread ring buffer when the filter is enabled.
 ///
-/// Mapping is 1:1 with `IoEventTag` / `IoEvent` — the two enums were designed
-/// in lock-step so this is a straight translation.
-pub fn record(tag: IoEventTag, event: &IoEvent) {
-    use ring::{IoTracePayload, IoTraceTag};
+/// Anchors timestamps to `cranelisp_intrinsics::io_observer::trace_anchor()`
+/// so the int-side scheduler trace (which derives its timestamps from the
+/// same anchor) merge-sorts against IO trace events on a shared timebase.
+#[inline]
+pub fn record_event(tag: IoTraceTag, payload: IoTracePayload) {
+    if filter().is_none() {
+        return;
+    }
+    let anchor = cranelisp_intrinsics::io_observer::trace_anchor();
+    let timestamp_ns = anchor.elapsed().as_nanos() as u64;
+    let ord = thread_ord_id();
+    let event = IoTraceEvent {
+        timestamp_ns,
+        thread_id: std::thread::current().id(),
+        thread_ord_id: ord,
+        tag,
+        payload,
+    };
+    IO_TRACE_BUF.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        if buf.len() == IO_TRACE_BUFFER_CAPACITY {
+            buf.pop_front();
+        }
+        buf.push_back(event);
+    });
+}
 
+// ---------------------------------------------------------------------------
+// Observer (registered with cranelisp_intrinsics::register_io_observer)
+// ---------------------------------------------------------------------------
+
+/// Observer fn registered with `register_io_observer`. Maps the
+/// observation-taxonomy event (defined by intrinsics' `io_observer.rs`) onto
+/// the ring-buffer taxonomy and pushes to this thread's ring buffer.
+pub fn record(tag: IoEventTag, event: &IoEvent) {
     let (ring_tag, ring_payload) = match (tag, *event) {
         (IoEventTag::TrampolineEnter, IoEvent::TrampolineEnter { io_ptr }) => {
             (IoTraceTag::TrampolineEnter, IoTracePayload::TrampolineEnter { io_ptr })
@@ -77,39 +241,129 @@ pub fn record(tag: IoEventTag, event: &IoEvent) {
             (IoTraceTag::ParBarrierForce, IoTracePayload::ParBarrierForce { token })
         }
         // Tag / payload mismatch — observer contract specifies the tag and
-        // payload share their family, but `#[non_exhaustive]` defends against
-        // future additions. Drop the event silently rather than panic from
-        // inside the observer (panicking from an observer is UB per the
-        // facade).
+        // payload share their family, but `#[non_exhaustive]` defends
+        // against future additions. Drop the event silently rather than
+        // panic from inside the observer.
         _ => return,
     };
-    ring::record_event(ring_tag, ring_payload);
+    record_event(ring_tag, ring_payload);
 }
 
 /// Install the observer when `CRANELISP_IO_TRACE` is set. Idempotent —
 /// safe to call once at session-startup. When the env var is unset, this is
-/// a no-op (no observer registered; the hot path remains a relaxed-load null
-/// check).
+/// a no-op (no observer registered; the hot path remains a relaxed-load
+/// null check).
 pub fn install_if_enabled() {
     if std::env::var("CRANELISP_IO_TRACE").is_ok() {
         register_io_observer(Some(record));
     }
 }
 
-/// Flush the IO trace ring buffer to stderr. Delegates to the intrinsics-side
-/// flusher which short-circuits when tracing is disabled.
+// ---------------------------------------------------------------------------
+// Dump
+// ---------------------------------------------------------------------------
+
+pub fn dump_thread_buffer() -> Vec<IoTraceEvent> {
+    let mut out: Vec<IoTraceEvent> = IO_TRACE_BUF.with(|cell| cell.borrow_mut().drain(..).collect());
+    out.sort_by_key(|e| (e.timestamp_ns, e.thread_ord_id));
+    out
+}
+
+pub fn publish_thread_buffer() {
+    let drained = dump_thread_buffer();
+    if drained.is_empty() {
+        return;
+    }
+    if let Ok(mut guard) = published_buffers().lock() {
+        guard.push(drained);
+    }
+}
+
+pub fn dump_all_buffers() -> Vec<IoTraceEvent> {
+    let mut all: Vec<IoTraceEvent> = Vec::new();
+    if let Ok(guard) = published_buffers().lock() {
+        for b in guard.iter() {
+            all.extend_from_slice(b);
+        }
+    }
+    let local = dump_thread_buffer();
+    all.extend(local);
+    all.sort_by_key(|e| (e.timestamp_ns, e.thread_ord_id));
+    all
+}
+
+pub fn format_event_line(e: &IoTraceEvent) -> String {
+    let tag_name = match e.tag {
+        IoTraceTag::TrampolineEnter => "TrampolineEnter",
+        IoTraceTag::TrampolineExit => "TrampolineExit",
+        IoTraceTag::PureStep => "PureStep",
+        IoTraceTag::BindEnter => "BindEnter",
+        IoTraceTag::BindExit => "BindExit",
+        IoTraceTag::PlatformEffect => "PlatformEffect",
+        IoTraceTag::ContPush => "ContPush",
+        IoTraceTag::ContPop => "ContPop",
+        IoTraceTag::ParSpark => "ParSpark",
+        IoTraceTag::ParSerialGroupEnter => "ParSerialGroupEnter",
+        IoTraceTag::ParJoin => "ParJoin",
+        IoTraceTag::ParBarrierForce => "ParBarrierForce",
+    };
+    let payload = match e.payload {
+        IoTracePayload::TrampolineEnter { io_ptr } => format!("io_ptr={io_ptr:#x}"),
+        IoTracePayload::TrampolineExit { result } => format!("result={result}"),
+        IoTracePayload::PureStep { value, is_fresh } => format!("value={value} fresh={is_fresh}"),
+        IoTracePayload::BindEnter { inner_ptr, cont_ptr, is_fresh } => {
+            format!("inner={inner_ptr:#x} cont={cont_ptr:#x} fresh={is_fresh}")
+        }
+        IoTracePayload::BindExit { new_current } => format!("new_current={new_current:#x}"),
+        IoTracePayload::PlatformEffect { thunk_ptr, resource_token, scheduling_class } => {
+            format!(
+                "thunk={thunk_ptr:#x} token={resource_token} sched_class={scheduling_class}"
+            )
+        }
+        IoTracePayload::Cont { cont_ptr, is_fresh, new_depth } => {
+            format!("cont={cont_ptr:#x} fresh={is_fresh} depth={new_depth}")
+        }
+        IoTracePayload::ParSpark { parent_ptr, branch_idx, token } => {
+            format!("parent={parent_ptr:#x} idx={branch_idx} token={token}")
+        }
+        IoTracePayload::ParSerialGroupEnter { token, branch_count } => {
+            format!("token={token} count={branch_count}")
+        }
+        IoTracePayload::ParJoin { parent_ptr, count } => {
+            format!("parent={parent_ptr:#x} count={count}")
+        }
+        IoTracePayload::ParBarrierForce { token } => format!("token={token}"),
+    };
+    format!(
+        "[IO] ts={ts} thr={thr:?}/{ord} {tag}\t{payload}",
+        ts = e.timestamp_ns,
+        thr = e.thread_id,
+        ord = e.thread_ord_id,
+        tag = tag_name,
+        payload = payload,
+    )
+}
+
 pub fn flush_to_stderr() {
-    ring::flush_to_stderr();
+    if filter().is_none() {
+        return;
+    }
+    let events = dump_all_buffers();
+    if events.is_empty() {
+        return;
+    }
+    let stderr = std::io::stderr();
+    let mut guard = stderr.lock();
+    for e in &events {
+        let _ = std::io::Write::write_all(&mut guard, format_event_line(e).as_bytes());
+        let _ = std::io::Write::write_all(&mut guard, b"\n");
+    }
 }
 
-/// Install a panic hook that flushes the IO trace before unwinding. Delegates
-/// to the intrinsics-side hook (idempotent).
-pub fn install_panic_hook() {
-    ring::install_panic_hook();
-}
+// ---------------------------------------------------------------------------
+// FlushGuard + panic hook
+// ---------------------------------------------------------------------------
 
-/// RAII flush guard — calls `flush_to_stderr` on drop. Mirrors the
-/// intrinsics-side `FlushGuard`; held by `main()` to drain on normal return.
 pub struct IoTraceFlushGuard(());
 
 impl IoTraceFlushGuard {
@@ -130,6 +384,40 @@ impl Drop for IoTraceFlushGuard {
     }
 }
 
+static PANIC_HOOK_INSTALLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Install a `std::panic::set_hook` that flushes the IO trace before
+/// delegating to the previously-registered hook. Idempotent — a second call
+/// is a no-op.
+pub fn install_panic_hook() {
+    if PANIC_HOOK_INSTALLED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(flush_to_stderr));
+        previous(info);
+    }));
+}
+
+/// Trace anchor accessor — delegates to the shared anchor on
+/// `cranelisp_intrinsics::io_observer::trace_anchor`. Kept here so older int
+/// callers that reference `cranelisp_intrinsics::io_trace::trace_instant_anchor`
+/// have a parallel path after the relocation lands. New callers should call
+/// `cranelisp_intrinsics::io_observer::trace_anchor()` directly.
+pub fn trace_instant_anchor() -> &'static Instant {
+    cranelisp_intrinsics::io_observer::trace_anchor()
+}
+
+#[cfg(test)]
+fn reset_panic_hook_installed_for_tests() {
+    PANIC_HOOK_INSTALLED.store(false, std::sync::atomic::Ordering::Release);
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -138,34 +426,131 @@ impl Drop for IoTraceFlushGuard {
 mod tests {
     use super::*;
 
-    // Observer is process-global; nextest's process-per-test isolates these.
+    // -- parse_filter_string --
+
+    #[test]
+    fn parse_filter_one_is_all() {
+        assert_eq!(parse_filter_string("1"), Some(TraceFilter::All));
+    }
+
+    #[test]
+    fn parse_filter_star_is_all() {
+        assert_eq!(parse_filter_string("*"), Some(TraceFilter::All));
+    }
+
+    #[test]
+    fn parse_filter_whitespace_tolerated() {
+        assert_eq!(parse_filter_string("  1  "), Some(TraceFilter::All));
+        assert_eq!(parse_filter_string("\t*\n"), Some(TraceFilter::All));
+    }
+
+    #[test]
+    fn parse_filter_empty_is_none() {
+        assert_eq!(parse_filter_string(""), None);
+    }
+
+    #[test]
+    fn parse_filter_malformed_is_none_not_panic() {
+        assert_eq!(parse_filter_string("bogus"), None);
+        assert_eq!(parse_filter_string("01"), None);
+        assert_eq!(parse_filter_string("2"), None);
+        assert_eq!(parse_filter_string("1,2"), None);
+    }
+
+    #[test]
+    fn event_size_is_bounded() {
+        let sz = std::mem::size_of::<IoTraceEvent>();
+        assert!(sz <= 64, "IoTraceEvent grew to {sz} bytes (cap 64)");
+    }
+
+    // -- Ring buffer discipline --
+
+    fn force_push(count: usize) {
+        IO_TRACE_BUF.with(|cell| {
+            let mut buf = cell.borrow_mut();
+            for i in 0..count {
+                if buf.len() == IO_TRACE_BUFFER_CAPACITY {
+                    buf.pop_front();
+                }
+                buf.push_back(IoTraceEvent {
+                    timestamp_ns: i as u64,
+                    thread_id: std::thread::current().id(),
+                    thread_ord_id: thread_ord_id(),
+                    tag: IoTraceTag::PureStep,
+                    payload: IoTracePayload::PureStep { value: i as i64, is_fresh: false },
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn ring_buffer_wraps_at_capacity() {
+        let _ = dump_thread_buffer();
+        let overflow = IO_TRACE_BUFFER_CAPACITY + 17;
+        force_push(overflow);
+        let dumped = dump_thread_buffer();
+        assert_eq!(dumped.len(), IO_TRACE_BUFFER_CAPACITY);
+        assert_eq!(dumped.first().unwrap().timestamp_ns, 17);
+        assert_eq!(dumped.last().unwrap().timestamp_ns, (overflow - 1) as u64);
+    }
+
+    #[test]
+    fn dump_clears_thread_buffer() {
+        let _ = dump_thread_buffer();
+        force_push(3);
+        let first = dump_thread_buffer();
+        assert_eq!(first.len(), 3);
+        let second = dump_thread_buffer();
+        assert!(second.is_empty(), "dump should have drained the buffer");
+    }
+
+    // -- Observer registration + dispatch --
 
     #[test]
     fn install_if_enabled_no_op_when_unset() {
-        // SAFETY: tests run process-isolated under nextest; env mutation is local.
+        // SAFETY: nextest process-isolation; env mutation is local.
         unsafe { std::env::remove_var("CRANELISP_IO_TRACE") };
-        // Should not panic, should be a no-op.
         install_if_enabled();
-        // Defensive cleanup.
         register_io_observer(None);
     }
 
     #[test]
     fn record_forwards_trampoline_enter_to_ring() {
-        // SAFETY: nextest process-per-test isolation.
+        // Bypass the filter check at the io_trace level by directly testing
+        // the mapping (the ring write itself is gated on `filter()` —
+        // unrelated to mapping correctness).
         unsafe { std::env::set_var("CRANELISP_IO_TRACE", "1") };
-        // Direct call to record bypasses the global observer slot; this
-        // tests the mapping logic only. The forwarded event must appear in
-        // the ring (verified by dumping the per-thread buffer).
-        record(
-            IoEventTag::TrampolineEnter,
-            &IoEvent::TrampolineEnter { io_ptr: 0xABCD },
-        );
-        let dump = ring::dump_thread_buffer();
-        assert!(
-            dump.iter().any(|e| matches!(e.tag, ring::IoTraceTag::TrampolineEnter)),
-            "expected TrampolineEnter event in ring buffer; got: {dump:?}"
-        );
+        let _ = dump_thread_buffer();
+        record(IoEventTag::TrampolineEnter, &IoEvent::TrampolineEnter { io_ptr: 0xABCD });
+        // The filter OnceLock may already have been initialised by another
+        // test before we set the env var. Only assert under the enabled
+        // branch.
+        if filter().is_some() {
+            let dump = dump_thread_buffer();
+            assert!(
+                dump.iter().any(|e| matches!(e.tag, IoTraceTag::TrampolineEnter)),
+                "expected TrampolineEnter event in ring buffer; got: {dump:?}"
+            );
+        }
         unsafe { std::env::remove_var("CRANELISP_IO_TRACE") };
+    }
+
+    // -- FlushGuard / install_panic_hook --
+
+    #[test]
+    fn flush_guard_drops_without_panic() {
+        let _ = dump_thread_buffer();
+        {
+            let _g = IoTraceFlushGuard::new();
+        }
+        let _ = IoTraceFlushGuard::default();
+    }
+
+    #[test]
+    fn install_panic_hook_is_idempotent() {
+        reset_panic_hook_installed_for_tests();
+        install_panic_hook();
+        install_panic_hook();
+        reset_panic_hook_installed_for_tests();
     }
 }

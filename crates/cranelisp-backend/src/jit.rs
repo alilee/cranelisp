@@ -94,34 +94,26 @@ pub fn intrinsic_symbols() -> Vec<IntrinsicSymbol> {
         IntrinsicSymbol { name: "runtime/dealloc", ptr: cranelisp_intrinsics::alloc::heap_dealloc as *const u8, param_count: 1, is_runtime: true, has_return: true },
         IntrinsicSymbol { name: "runtime/panic", ptr: cranelisp_intrinsics::panic::runtime_panic as *const u8, param_count: 2, is_runtime: true, has_return: true },
         IntrinsicSymbol { name: "runtime/rc_underflow_check", ptr: cranelisp_intrinsics::rc::rc_underflow_check as *const u8, param_count: 1, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "runtime/alloc_string", ptr: cranelisp_intrinsics::string::heap_alloc_string as *const u8, param_count: 2, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "runtime/string_read", ptr: cranelisp_intrinsics::string::string_read as *const u8, param_count: 1, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "runtime/vec_new", ptr: cranelisp_intrinsics::vec::vec_new as *const u8, param_count: 1, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "runtime/vec_drop", ptr: cranelisp_intrinsics::vec::vec_drop as *const u8, param_count: 2, is_runtime: true, has_return: false },
+        IntrinsicSymbol { name: "runtime/alloc_string", ptr: cranelisp_intrinsics::heap_string::heap_alloc_string as *const u8, param_count: 2, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "runtime/string_read", ptr: cranelisp_intrinsics::heap_string::string_read as *const u8, param_count: 1, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "runtime/vec_new", ptr: cranelisp_intrinsics::vec_runtime::vec_new as *const u8, param_count: 1, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "runtime/vec_drop", ptr: cranelisp_intrinsics::vec_runtime::vec_drop as *const u8, param_count: 2, is_runtime: true, has_return: false },
         IntrinsicSymbol { name: "runtime/run_io", ptr: cranelisp_intrinsics::io::cranelisp_run_io as *const u8, param_count: 1, is_runtime: true, has_return: true },
         // IVar intrinsics for lenient evaluation
         IntrinsicSymbol { name: "cranelisp_ivar_create", ptr: cranelisp_intrinsics::ivar::ivar_create as *const u8, param_count: 1, is_runtime: true, has_return: true },
         IntrinsicSymbol { name: "cranelisp_ivar_spark", ptr: cranelisp_intrinsics::ivar::ivar_spark as *const u8, param_count: 1, is_runtime: true, has_return: true },
         IntrinsicSymbol { name: "cranelisp_ivar_force", ptr: cranelisp_intrinsics::ivar::ivar_force as *const u8, param_count: 1, is_runtime: true, has_return: true },
-        // Trace runtime symbols
-        IntrinsicSymbol { name: "cranelisp_trace_enter", ptr: cranelisp_intrinsics::trace::cranelisp_trace_enter as *const u8, param_count: 4, is_runtime: true, has_return: false },
-        IntrinsicSymbol { name: "cranelisp_trace_exit", ptr: cranelisp_intrinsics::trace::cranelisp_trace_exit as *const u8, param_count: 2, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "cranelisp_trace_swap_got", ptr: cranelisp_intrinsics::trace::cranelisp_trace_swap_got as *const u8, param_count: 4, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "cranelisp_trace_restore_got", ptr: cranelisp_intrinsics::trace::cranelisp_trace_restore_got as *const u8, param_count: 2, is_runtime: true, has_return: false },
-        IntrinsicSymbol { name: "cranelisp_collect_trace", ptr: cranelisp_intrinsics::trace::cranelisp_collect_trace as *const u8, param_count: 0, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "cranelisp_trace_first_child_nanos", ptr: cranelisp_intrinsics::trace::cranelisp_trace_first_child_nanos as *const u8, param_count: 1, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "cranelisp_trace_format", ptr: cranelisp_intrinsics::trace::cranelisp_trace_format as *const u8, param_count: 2, is_runtime: true, has_return: true },
-        // Trace ADT field accessors
-        IntrinsicSymbol { name: "cranelisp_trace_name", ptr: cranelisp_intrinsics::trace::cranelisp_trace_name as *const u8, param_count: 1, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "cranelisp_trace_params", ptr: cranelisp_intrinsics::trace::cranelisp_trace_params as *const u8, param_count: 1, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "cranelisp_trace_result", ptr: cranelisp_intrinsics::trace::cranelisp_trace_result as *const u8, param_count: 1, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "cranelisp_trace_children", ptr: cranelisp_intrinsics::trace::cranelisp_trace_children as *const u8, param_count: 1, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "cranelisp_trace_nanos", ptr: cranelisp_intrinsics::trace::cranelisp_trace_nanos as *const u8, param_count: 1, is_runtime: true, has_return: true },
+        // Trace runtime symbols — RELOCATED to int per Decision 40 / Path B1
+        // (S67 W4, FIXME 0197). The 12 `cranelisp_trace_*` JIT-emitted-call
+        // targets now register via `crate::session_v4::int_intrinsics()` at
+        // every JIT-build site in the int crate. Backend stops contributing
+        // these symbols; `--link` mode rejects `(trace ...)` at compile
+        // time per FIXME 0199 so the static archive needs none of them.
         // Vec extern primitives (user-visible and internal)
         IntrinsicSymbol { name: "vec-len", ptr: cranelisp_primitives::vec::vec_len as *const u8, param_count: 1, is_runtime: false, has_return: true },
-        IntrinsicSymbol { name: "vec-set-copy", ptr: cranelisp_intrinsics::vec::vec_set_copy as *const u8, param_count: 4, is_runtime: false, has_return: true },
-        IntrinsicSymbol { name: "vec-push-copy", ptr: cranelisp_intrinsics::vec::vec_push_copy as *const u8, param_count: 3, is_runtime: false, has_return: true },
-        IntrinsicSymbol { name: "vec-push-grow", ptr: cranelisp_intrinsics::vec::vec_push_grow as *const u8, param_count: 2, is_runtime: false, has_return: true },
+        IntrinsicSymbol { name: "vec-set-copy", ptr: cranelisp_intrinsics::vec_runtime::vec_set_copy as *const u8, param_count: 4, is_runtime: false, has_return: true },
+        IntrinsicSymbol { name: "vec-push-copy", ptr: cranelisp_intrinsics::vec_runtime::vec_push_copy as *const u8, param_count: 3, is_runtime: false, has_return: true },
+        IntrinsicSymbol { name: "vec-push-grow", ptr: cranelisp_intrinsics::vec_runtime::vec_push_grow as *const u8, param_count: 2, is_runtime: false, has_return: true },
         // Extern primitives (user-visible via primitives module)
         IntrinsicSymbol { name: "str-concat", ptr: cranelisp_primitives::string::str_concat as *const u8, param_count: 2, is_runtime: false, has_return: true },
         IntrinsicSymbol { name: "str-eq", ptr: cranelisp_primitives::string::str_eq as *const u8, param_count: 2, is_runtime: false, has_return: true },
@@ -146,17 +138,10 @@ pub fn intrinsic_symbols() -> Vec<IntrinsicSymbol> {
         // Marshal primitives (macros module + primitives module)
         IntrinsicSymbol { name: "sconcat", ptr: cranelisp_primitives::marshal::sconcat as *const u8, param_count: 2, is_runtime: false, has_return: true },
         IntrinsicSymbol { name: "quote-sexp", ptr: cranelisp_primitives::marshal::quote_sexp as *const u8, param_count: 1, is_runtime: false, has_return: true },
-        // Operator wrapper functions (for trait methods as first-class values, spec §7.6)
-        IntrinsicSymbol { name: "cranelisp_op_add", ptr: cranelisp_intrinsics::ops::cranelisp_op_add as *const u8, param_count: 2, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "cranelisp_op_sub", ptr: cranelisp_intrinsics::ops::cranelisp_op_sub as *const u8, param_count: 2, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "cranelisp_op_mul", ptr: cranelisp_intrinsics::ops::cranelisp_op_mul as *const u8, param_count: 2, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "cranelisp_op_div", ptr: cranelisp_intrinsics::ops::cranelisp_op_div as *const u8, param_count: 2, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "cranelisp_op_eq", ptr: cranelisp_intrinsics::ops::cranelisp_op_eq as *const u8, param_count: 2, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "cranelisp_op_neq", ptr: cranelisp_intrinsics::ops::cranelisp_op_neq as *const u8, param_count: 2, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "cranelisp_op_lt", ptr: cranelisp_intrinsics::ops::cranelisp_op_lt as *const u8, param_count: 2, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "cranelisp_op_gt", ptr: cranelisp_intrinsics::ops::cranelisp_op_gt as *const u8, param_count: 2, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "cranelisp_op_le", ptr: cranelisp_intrinsics::ops::cranelisp_op_le as *const u8, param_count: 2, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "cranelisp_op_ge", ptr: cranelisp_intrinsics::ops::cranelisp_op_ge as *const u8, param_count: 2, is_runtime: true, has_return: true },
+        // (Operator wrapper extern fns `cranelisp_op_*` retired per FIXME 0183 — operator-as-value
+        // now resolves through the standard GOT-indirect path against the canonical Ring 0
+        // primitive entries in `ring0_jit_symbols()` below. See
+        // `crates/cranelisp-backend/src/compiler/literals.rs::compile_operator_as_value`.)
     ];
     // Ring 0 primitive shim fns (FIXME 0174 + Decision 43). These are the
     // user-callable, GOT-stored emission targets for the standard
@@ -171,6 +156,30 @@ pub fn intrinsic_symbols() -> Vec<IntrinsicSymbol> {
     // Param count = 2 for binary ops, 1 for `not`. has_return = true
     // (Ring 0 ops never return void). is_runtime = false — these names
     // are user-visible via the synthetic `primitives` module.
+    //
+    // FIXME 0191 status (Sprint 67 Wave 4): the migration to read
+    // (Symbol → fn-ptr) pairs from `cranelisp_primitives::PRIMITIVES_TABLE`
+    // is structurally blocked at this fire by two gaps:
+    //   1. `PRIMITIVES_TABLE` is populated from `cranelisp_types::ring0_primitives()`
+    //      (20 entries) and DOES NOT carry the 3 `neq-*` shims
+    //      (`neq-i64`/`neq-f64`/`neq-bool`) that `ring0_jit_symbols()`
+    //      surfaces and that `traits.rs::primitive_for_trait_method`
+    //      resolves `Eq.!=` to. The 23-vs-20 gap is asserted in
+    //      `crates/cranelisp-primitives/src/lib.rs` (test
+    //      `primitives_table_entries_carry_got_slot_and_ptr`).
+    //   2. Lines 121-148 above register ~22 non-Ring-0 primitive shims by
+    //      direct Rust path (`str-concat`, `vec-len`, `int-to-string`,
+    //      etc.). These have no `ModuleEntry::Def` in `PRIMITIVES_TABLE`
+    //      today — the table is Ring-0-only. Migrating the Ring 0 loop in
+    //      isolation does not let `primitives` narrow extern fns to
+    //      `pub(crate)` (FIXME 0182's gating condition) because the
+    //      ~22 non-Ring-0 paths still depend on the `pub` extern fns.
+    //
+    // The migration becomes legitimate when (a) `PRIMITIVES_TABLE` grows
+    // to cover `neq-*` (a primitives-side change) and (b) the non-Ring-0
+    // primitive shims gain `ModuleEntry::Def` entries in `PRIMITIVES_TABLE`
+    // OR the ~22 direct Rust paths are otherwise re-sourced. Both are
+    // outside `/dev (backend)`'s narrow-deployment scope.
     for (name, ptr) in cranelisp_primitives::ring0::ring0_jit_symbols() {
         let param_count = match name {
             "not" => 1,

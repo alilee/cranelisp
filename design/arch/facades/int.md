@@ -19,11 +19,12 @@ pub struct CompilerSession {
     pub shared: Arc<SharedState>,                                                  // worker-shareable subset — see next section
 
     // Initiator-thread-only state — never crosses thread boundary
-    watcher: Option<WatcherChannel>,                                               // notify::Event receiver
-    current_repl_module: ModuleFullPath,                                           // /mod state
+    watcher: Option<WatcherChannel>,                                               // notify::Event receiver (impl: src/watch.rs:22 `FileWatcher`)
+    current_repl_module: ModuleFullPath,                                           // /mod state; W3 PIF target — relocated from `SharedState.current_module` per SharedState alignment plan
     repl_input_active: Arc<AtomicBool>,                                            // shared with watcher event handler via Arc clone
     worker_pool: WorkerPool,                                                       // joins on Drop
     warnings: Vec<Warning>,                                                        // initiator-collected, never cross-thread
+    error_modules: HashSet<ModuleFullPath>,                                        // accumulated REPL eval failures; consulted by /list + diagnostic surfacing; impl: session_v4.rs:814
 }
 
 impl CompilerSession {
@@ -33,7 +34,7 @@ impl CompilerSession {
     // Module registration (entry point — fire-and-forget per exec-flow-compilation)
     // Phase 0 (parse + write_structural_decls) runs synchronously here, before dispatching PriorityWork::Typecheck.
     pub fn register_module(&mut self, module: &ModuleFullPath) -> Result<(), CranelispError>;
-    pub fn re_register_module(&mut self, module: &ModuleFullPath) -> Result<bool, CranelispError>;       // file watcher path
+    pub fn re_register_module(&mut self, module: &ModuleFullPath) -> Result<bool, CranelispError>;       // file watcher path; Sprint 67 W1 PIF target — thin forward to `self.shared.scheduler.re_register_module(module)` (currently only `CompileScheduler::re_register_module` exists at `scheduler.rs:412`; the `CompilerSession`-level forward lands in W3)
 
     // Shared cluster-processing entry — used by both compilation worker and eval (per exec-flow-compilation + exec-flow-repl).
     // Per Decision 44 (amended FIXME 0167 for Approach B + ClusterContext; 2026-05-13 third amendment collapsing the
@@ -43,8 +44,21 @@ impl CompilerSession {
     // `cranelisp_typecheck::check_forms` call (typecheck mutates staging via ctx.current_symbol_table_mut() — the same
     // accessor used in committed-mode; the two-pass discipline is internal to check_forms), and commits atomically on
     // success by draining staging into the live SymbolTable.
-    pub fn process_cluster(&mut self, forms: Vec<Sexp>, scope: &ModuleFullPath) -> Result<ProcessedCluster, CranelispError>;
-    pub fn insert_cluster(&mut self, processed: &ProcessedCluster, target: &ModuleFullPath);
+    //
+    // Sprint 67 W1 PFR — `process_cluster` and `insert_cluster` are NOT
+    // `CompilerSession` methods; they are free functions in `src/cluster.rs`
+    // (lines 177 / 248) that take `&SharedState`. Workers call the free-fn
+    // form directly with their `Arc<SharedState>` clone; the initiator thread
+    // calls it via `&self.shared`. This is the durable shape and matches the
+    // "process_cluster — the cluster-atomic orchestration loop" section
+    // further down in this file (free-fn definition). The pre-S67 facade
+    // text showed `CompilerSession` methods; that shape never landed in
+    // source. The free-fn form is canonical.
+    //
+    // ```rust
+    // pub fn process_cluster(shared: &SharedState, forms: Vec<Sexp>, scope: &ModuleFullPath) -> Result<ProcessedCluster, CranelispError>;
+    // pub fn insert_cluster(shared: &SharedState, processed: ProcessedCluster, target: &ModuleFullPath);
+    // ```
 
     // REPL eval — composes process_cluster + insert_cluster (defns) or process_cluster + temp-closure JIT (expressions).
     // Eval unwraps a top-level `(begin ...)` into its inner forms before constructing the cluster; non-`begin` inputs
@@ -58,8 +72,13 @@ impl CompilerSession {
     pub fn trampoline(&mut self, module_name: &str) -> Result<(i64, Type), CranelispError>;              // Run mode + REPL eval expression form
 
     // Cli pre-exit affordances (per exec-flow-run, exec-flow-link, exec-flow-repl)
-    pub fn wait_for_inmem_codegen(&self) -> Result<(), CranelispError>;
-    pub fn wait_for_object_codegen(&self) -> Result<(), CranelispError>;
+    // Sprint 67 W1 PFR — names canonicalised against `scheduler.rs:930/1021`
+    // (`CompileScheduler::wait_inmem_complete` / `wait_object_complete`); the
+    // `CompilerSession` forwarders adopt the same shorter name. Pre-S67 facade
+    // text said `wait_for_inmem_codegen` / `wait_for_object_codegen` — those
+    // names never landed in source.
+    pub fn wait_inmem_complete(&self) -> Result<(), CranelispError>;
+    pub fn wait_object_complete(&self) -> Result<(), CranelispError>;
 
     // Link mode entry
     pub fn link_by_name(&mut self, module_name: &str) -> Result<(), CranelispError>;
@@ -86,12 +105,25 @@ impl CompilerSession {
     pub fn regenerate_backing_file(&mut self, module: &ModuleFullPath) -> Result<(), CranelispError>;    // iterates SymbolTable::defn_order, emits introspection[fq].source per entry — per repl/spec.md §15
 
     // Introspection accessors (used by slash commands — see Composed introspection flows below)
+    //
+    // Sprint 67 W1 PIF target — the whole introspection-accessor family is
+    // absent from `src/` pre-S67. /dev Wave 3 authors the bodies. Per the
+    // REV-3 discipline (read-side-only accessors), every accessor reads from
+    // `shared.symbol_tables` and `shared.introspection` ONLY — no
+    // `SharedState` restructure is required to land them, and no `&mut self`
+    // is required on the reads (the two mutating methods —
+    // `set_current_repl_module`, `set_repl_input_active` — write to
+    // `CompilerSession`-side state per the SharedState alignment plan's PIF
+    // direction for `current_module` and `repl_check_state`). The accessors
+    // are pure projections; FQSymbol resolution from a bare `&str` is shared
+    // through a `resolve_symbol_name(&self, name: &str) -> Option<FQSymbol>`
+    // helper that consults `current_repl_module()` for unqualified lookups.
     pub fn list_user_definitions(&self) -> Vec<SymbolInfo>;
     pub fn describe_symbol(&self, name: &str) -> Option<SymbolDescription>;
     pub fn module_imports(&self, module: &ModuleFullPath) -> Vec<ImportSpec>;
     pub fn module_exports(&self, module: &ModuleFullPath) -> Vec<(Symbol, ModuleEntry<Code>)>;
     pub fn current_repl_module(&self) -> &ModuleFullPath;
-    pub fn set_current_repl_module(&mut self, module: ModuleFullPath);                                   // /mod implementation
+    pub fn set_current_repl_module(&mut self, module: ModuleFullPath);                                   // /mod implementation; writes CompilerSession.current_repl_module per SharedState plan PIF direction
 
     // Per-symbol introspection accessors — read from shared.introspection (None outside REPL/trace mode)
     pub fn symbol_source(&self, fq: &FQSymbol) -> Option<String>;                                        // /source — replaces module_source
@@ -157,7 +189,12 @@ pub struct SharedState {
 
 #[non_exhaustive]
 pub struct WatcherChannel {
-    /* opaque — receiver side of notify::Event mpsc */
+    /* opaque — receiver side of notify::Event mpsc.
+       Impl is `src/watch.rs:22 pub struct FileWatcher`. The facade name
+       `WatcherChannel` is documentary; source uses `FileWatcher`. W3 may
+       PFR-rename source to `WatcherChannel` for facade alignment, or
+       widen this facade entry to admit the source name; both work — choice
+       cosmetic. */
 }
 
 #[non_exhaustive]
@@ -186,8 +223,48 @@ pub struct DllHandle {
 | `repl_input_active` | CompilerSession (with `Arc<AtomicBool>` clone passed to watcher event handler) | Initiator-side coordination of watcher windowing |
 | `worker_pool` | CompilerSession | Joining on shutdown is initiator's job |
 | `warnings` | CompilerSession | Initiator-collected; workers route warnings back via the work-completion notification, where they merge into this Vec |
+| `error_modules` | CompilerSession | REPL-eval failures accumulator. Read by `/list` diagnostic surfacing and by `eval` to block subsequent evals against a known-bad module. Workers don't need it — they report failures via the scheduler. Initiator-only. |
 
 **Worker access pattern**: workers receive `Arc<SharedState>` at spawn time (one Arc clone per worker). All reads through `&shared.*` — never `&mut`. All mutations through interior mutability of the contained types. No worker-side merge step; mutations are immediately visible to other workers as soon as the per-cell lock releases.
+
+## SharedState facade alignment plan (Sprint 67)
+
+The facade (§"SharedState" above) prescribes an 8-field worker-shared subset; `src/session_v4.rs:573` defines ~17 fields. Per Phase 2 audit the gap is edge drift (not interior), pulled into S67 scope by the user's second challenge ("how do those deferrals not break the premise?"). Per-field disposition below; `/dev (int)` executes the listed direction in Wave 3.
+
+Direction discipline:
+- **PFR (pull facade to reality)**: current field is structurally correct + worker-shared in nature; facade widens to admit it.
+- **PIF (push implementation to facade)**: current field is per-form transient or carries initiator-only state; relocate off `SharedState` (typically to `CompilerSession` or to a local frame).
+- **PFR-rename**: same role, different name; canonicalise to facade.
+- **Cross-field**: two impl fields merge / split.
+
+| Field (impl side) | Current location | Direction | Rationale | Owning /dev task |
+|---|---|---|---|---|
+| `scheduler: CompileScheduler` | `SharedState` | PFR-rename — facade has `scheduler: Arc<CompileScheduler>` | Worker coordination is genuine worker-shared. Facade's `Arc<>` wrapper is the canonical shape (allows `Arc::clone` per worker without holding `Arc<SharedState>` ref). Adapt impl to `Arc<CompileScheduler>`. | /dev (int) Wave 3 |
+| `project_root: PathBuf` | `SharedState` | PFR | Read-only config; worker-shared per facade §"Read-only configuration". Already aligned. | none — no-op |
+| `lib_dirs: Mutex<Vec<PathBuf>>` | `SharedState` | PFR — facade widens to admit `Mutex` | Facade prescribes plain `Vec<PathBuf>`; impl wraps in `Mutex` for runtime reconfiguration (tests + future). The `Mutex` IS the right shape — facade narrows from "read-only after construction" to "interior-mutable plain config". Document the test-driven reconfiguration use case. | /dev (int) Wave 3 (facade text + impl unchanged) |
+| `platform_dirs: Mutex<Vec<PathBuf>>` | `SharedState` | PFR — same as `lib_dirs` | Same rationale. | /dev (int) Wave 3 |
+| `module_sexps: Mutex<HashMap<ModuleFullPath, Vec<Sexp>>>` | `SharedState` | **PIF** — relocate | Per-form parse-time transient. Module sexps are produced by `register_module_with_source` and consumed by the priority worker that picks up the module; they do NOT need to survive past `check_forms` completion. The cluster-atomic typecheck refactor (Decision 44 third amendment) makes this an in-call-stack value: `process_cluster` parses → builds `Vec<ParsedEntry>` → passes to `check_forms` → drops. The `SharedState` field is a `Mutex<HashMap>` only because pre-cluster-atomic workers might race on the same module; cluster-atomic eliminates the race. **Move to `process_cluster`-local Vec; delete the field.** | /dev (int) Wave 3 |
+| `suspend_states: Mutex<HashMap<ModuleFullPath, ModuleSuspendState>>` | `SharedState` | **PIF** — relocate or eliminate | Worker-resume scaffolding from the pre-cluster-atomic shape. Per the same Decision-44 amendment, cluster atomicity eliminates partial-typecheck resumption: a cluster either succeeds (commits to live) or fails (whole-cluster retry on `Gap`). There is no "module half-typechecked, resume on dep arrival" state to retain. **Field deletes once cluster mode activates** (gated by FIXME 0179 read-union landing — same release as `module_sexps`). | /dev (int) Wave 3 (post-0179) |
+| `cache_dir: Option<PathBuf>` | `SharedState` | PFR — facade widens | Worker-shared (nice worker writes `.o` to it). Facade should list under §"Read-only configuration" alongside `project_root`. | /dev (int) Wave 3 (facade text only) |
+| `compiled_o_paths: Mutex<Vec<PathBuf>>` | `SharedState` | PFR — facade widens | Nice-worker output collection (path-list for `--link` mode). Worker-shared by nature. Facade adds field. | /dev (int) Wave 3 (facade text only) |
+| `promote_nice_workers: AtomicBool` | `SharedState` | PFR — facade widens | Hot-flush priority signal; workers atomically read. Worker-shared. Facade adds field. | /dev (int) Wave 3 (facade text only) |
+| `cached_modules: Mutex<HashSet<ModuleFullPath>>` | `SharedState` | PFR — facade widens | Read by workers during codegen to decide Linker fast path. Worker-shared by nature. Facade adds field. | /dev (int) Wave 3 (facade text only) |
+| `file_to_module: Mutex<HashMap<PathBuf, ModuleFullPath>>` | `SharedState` | PFR — facade widens | File watcher cascade needs this from any worker that resolves imports. Worker-shared. Facade adds field. | /dev (int) Wave 3 (facade text only) |
+| `cache_state: Mutex<Option<CacheState>>` | `SharedState` | PFR — facade widens | Manifest + hash-records snapshot. Workers update via `record_cache_hit`. Worker-shared. Facade adds field. | /dev (int) Wave 3 (facade text only) |
+| `symbol_tables: DashMap<ModuleFullPath, SessionSymbolTable>` | `SharedState` | PFR-rename | Facade names `DashMap<ModuleFullPath, SymbolTable<Code, ()>>`. Impl uses `SessionSymbolTable` alias (= `SymbolTable<Code, ()>`). Already aligned modulo the alias spelling. Document the alias OR replace it in the impl. | /dev (int) Wave 3 (facade text only) |
+| `next_type_id: AtomicU32` | `SharedState` | PFR — facade widens | Per Decision 44 + facade `typecheck.md` `register_builtins(modules: &DashMap, next_id: &AtomicU32)` — workers need shared access to allocate fresh type-var IDs. Worker-shared. Facade adds field. | /dev (int) Wave 3 (facade text only) |
+| `current_module: Mutex<ModuleFullPath>` | `SharedState` | **PIF** — relocate to `CompilerSession` | REPL-only state (`/mod` switches it). Workers don't need it — they receive `module` per `PriorityWork`/`NiceWork` work item. Facade's `CompilerSession.current_repl_module: ModuleFullPath` is the right home (no `Mutex` needed — REPL is single-threaded against this field; initiator-only). **Move to `CompilerSession`.** | /dev (int) Wave 3 |
+| `repl_check_state: Mutex<Option<CheckState>>` | `SharedState` | **PIF** — relocate to `CompilerSession` | REPL-only carry-forward across evals. Workers do not use this. **Move to `CompilerSession`.** | /dev (int) Wave 3 |
+| `typecheck_products: DashMap<ModuleFullPath, TypecheckProduct>` | `SharedState` | PFR — facade widens OR cross-field merge | Post-S66 the staging product is folded into `SymbolTable` entries directly; `typecheck_products` is a parallel store. Need cross-check: if all current consumers can read from `symbol_tables[m].defined_symbols()` instead, **eliminate the field**; otherwise document under §"The single store". Wave 3 task: audit consumers, then decide. | /dev (int) Wave 3 |
+| `kept_dlls: Mutex<Vec<LoadedPlatform>>` | `SharedState` | PFR-rename + cross-field | Facade prescribes `kept_dlls: DashMap<PathBuf, Arc<DllHandle>>`. Impl uses `Mutex<Vec<LoadedPlatform>>` — different shape. The DashMap-by-path shape supports per-manifest deduplication (load-once); the Vec shape requires linear scan for dedup. **Convert impl to facade shape.** | /dev (int) Wave 3 |
+| `introspection: DashMap<FQSymbol, Introspection>` | `SharedState` | PFR-rename | Facade prescribes `Option<DashMap<FQSymbol, Introspection>>` — None in production batch (zero overhead per Decision 38). Impl uses plain `DashMap` (always allocated). **Convert to `Option`.** Per Decision 38, the mode discriminator IS `Option::is_some()`. | /dev (int) Wave 3 |
+| `test_runner_state: Box<TestRunnerState>` | `SharedState` | **PFR — facade widens** | Test-intrinsic backing per Wave 3a-γ. Session-stable pointer for thread-local indirection. Worker-shared by nature (the intrinsic fires from JIT-emitted code). Facade adds field; document the session-stable-Box discipline + the `current_module: Mutex<ModuleFullPath>` sub-field for `/mod`. | /dev (int) Wave 3 (facade text only) |
+| `cache: Arc<ObjectCache>` | absent in impl (sketched at facade) | **PIF — author** (alternative: PFR-keep the four scattered fields) | Facade prescribes `cache: Arc<ObjectCache>`; impl has `cache_dir`+`cache_state`+`compiled_o_paths`+`cached_modules` as four scattered fields. The facade's `ObjectCache` is a cohesion target — merge the four impl fields into a single `ObjectCache` type owned by `int::cache`. **Reconciliation note (S67 W1):** the four-field rows above list PFR direction (admit each field individually); this row lists PIF-author (merge into one). The two are alternatives; /dev Wave 3 picks one and the other rows update accordingly. The preferred direction is PIF-author IFF the four fields are genuinely accessed together at every call site — Wave 3 audit decides. If the call-site audit finds the fields are accessed independently, PFR-keep the four-field shape and delete this row. | /dev (int) Wave 3 |
+| `settings: SessionSettings` | impl HAS `pub struct SessionSettings` at `session_v4.rs:98` (5 fields: `no_color`, `no_cache`, `codegen_behaviour`, `priority_workers`, `nice_workers`) — matches facade §"Settings and config" exactly; what's absent is a `SharedState.settings: SessionSettings` field threading it through | **PIF — relocate to `SharedState`** | Currently `SessionSettings` is constructed in `main.rs` and passed to `CompilerSession::new`, which destructures it into the individual fields on `SharedState`. The facade target is to hold it as one cohesive struct on `SharedState` for read access. /dev Wave 3 adds the field; the destructure-then-store pattern collapses to one assignment. (This row was previously titled "PIF-author" — corrected to PIF-relocate per W1 source inspection. The struct already exists; only the per-field destructure on `SharedState` needs collapsing.) | /dev (int) Wave 3 |
+
+Net direction (S67 W1 reconciliation): ~12 PFR (facade text catches up to impl reality), 4 PIF (impl narrows to facade — `module_sexps`, `suspend_states`, `current_module`, `repl_check_state`), 1 PIF-author-or-keep (`ObjectCache` cohesion — Wave 3 audit decides; alternative: PFR-keep the four scattered fields), 1 PIF-relocate (`SessionSettings` onto `SharedState` — the struct already exists, only the destructure-then-store collapses), 2 PFR-rename (`kept_dlls` shape, `introspection` `Option` wrap).
+
+After Wave 3 the post-S67 `SharedState` field count lands at ~16–18 fields (down from ~17, up from facade's 8). Both moves close edge drift; the field count is not the metric — facade-alignment is.
 
 ### Settings and config
 
@@ -557,9 +634,20 @@ pub enum CliError {
 }
 ```
 
-### Observability — `src/io_trace/`, `src/scheduler_trace/`, `src/got_trace/` (per Decision 40 + FIXME 0099 + FIXME 0103)
+### Observability — `src/io_trace.rs`, `src/observability.rs` (scheduler trace), `src/got_trace.rs` (per Decision 40 + FIXME 0099 + FIXME 0103)
 
 Per Decision 40, the consumer-side ring buffers and formatters that pre-S65 lived in `cranelisp-runtime` (`trace.rs`, `io_trace.rs`) relocate to int. Per Decision 43, the `IoObserver` registration API lives in `cranelisp-intrinsics`; int registers an observer at session init. Per FIXME 0099, the `GotObserver` registration API lives in `cranelisp-backend`; int registers similarly. All three follow the same shape — env-var-gated activation, per-thread `VecDeque` ring buffer with FIFO overflow, end-of-session flush formatter, RAII guards over the buffers.
+
+**Source-tree hosting (post-Wave 4 of Sprint 67 — proposal).** The facade names three sibling modules; current `src/` has flat-file equivalents:
+
+| Facade name | Source file | Note |
+|---|---|---|
+| `io_trace::*` | `src/io_trace.rs` (exists) | Hosts the post-Decision-40 consumer-side ring buffer. The `record`/`install_if_enabled`/`flush_to_stderr`/`install_panic_hook` shape already lands. Wave 4 task is to ensure the registration call to `cranelisp_intrinsics::register_io_observer` happens at session init. |
+| `scheduler_trace::*` | `src/observability.rs` (exists) | The pre-existing `observability` module IS the scheduler trace consumer (`SchedulerTraceTag`, `SchedulerTracePayload`, `record_event`, `flush_to_stderr`, `SchedulerTraceFlushGuard`, `TraceFilter`). The facade name `scheduler_trace` is a rename target for clarity; the source can either rename the module or re-export `pub use observability as scheduler_trace`. |
+| `got_trace::*` | `src/got_trace.rs` (exists) | Hosts the post-FIXME-0099 GOT observer ring buffer. The `record`/`install_if_enabled`/`flush_to_stderr`/`install_panic_hook`/`GotTraceFlushGuard` shape already lands. Wave 4 task is to ensure the registration call to `cranelisp_backend::register_got_observer` happens at session init. |
+| `trace::cranelisp_trace_*` (the `(trace ...)` special-form runtime helpers) | proposed `src/trace.rs` | Per Decision 40 + the int CLAUDE.md "Int-owned JIT intrinsics" section, `repl_trace_format` (JIT symbol `cranelisp_trace_format`) is the int-owned intrinsic that lives in `session_v4.rs` today. Wave 4 PIF target: relocate `repl_trace_format` + the `TraceDisplayState` thread-local + `clear_trace_display_state` (currently at `session_v4.rs:4468`) into a dedicated `src/trace.rs` per Decision 40, keeping the JIT-symbol registration path unchanged. |
+
+**Naming reconciliation.** The pre-S65 facade text said `src/io_trace/` (directory-style); current source has flat `src/io_trace.rs` (file-style). Both shapes satisfy the facade — directory-style is only required when the module grows multiple sub-files. No PFR/PIF needed; the facade text is updated to name the actual file paths.
 
 ```rust
 pub mod io_trace {
@@ -678,7 +766,40 @@ pub struct TracedFnInfo {
 
 ```rust
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const QUIT_SENTINEL: &str = "\x00QUIT";    // session_v4.rs:215 — sentinel returned by `process_commands` on /quit; consumed by main.rs REPL loop. Internal-but-exposed: the binary entry point reads it. /dev Wave 3 may relocate to `pub(crate)` if no out-of-crate caller exists.
 ```
+
+---
+
+## Internal-but-exposed `src/` items
+
+The following items are `pub` in `src/` (via `pub mod` re-export from `lib.rs`) but are not part of the application-layer facade above. They are exposed by `src/lib.rs` for test access and per-module cohesion; they are NOT promised to consumers outside `src/`. Sprint 67 W1 coverage check — every such item is enumerated here so the facade↔src delta is auditable.
+
+| Source location | Items | Disposition |
+|---|---|---|
+| `src/code.rs` | `Code` enum (variants + `jit`/`linker`/`ptr` ctors), `SessionSymbolTable` alias, `SessionModuleEntry` alias | Re-exported from `cranelisp-backend` per Decision 41; the int-side alias `SessionSymbolTable = SymbolTable<Code, ()>` is the session-boundary instantiation per facade §"`Code` — the per-entry retention root". Internal-but-exposed: `pub` so worker.rs and cluster.rs can refer to it. |
+| `src/cluster.rs` | `ProcessedCluster::{is_empty, into_iter, warnings, resolved_imports, introspection_records, from_parts (pub(crate)), empty (pub(crate))}` | Already in facade §"Cluster orchestration result". `from_parts` + `empty` are construction helpers; `pub(crate)`. |
+| `src/expander.rs` | `MacroClauseEntry`, `MacroEntry`, `MacroResolver`, `clause_matches`, `find_matching_clause`, `invoke_clause`, `rewrite_spans`, `expand_sexp_recursive`, `expand_macro_call_with_entry`, `EXPANSION_DEPTH_LIMIT` | All `pub(crate)`. Internal cooperation between the cluster orchestrator and the expander host. NOT facade. |
+| `src/marshal.rs` | `sexp_to_runtime`, `runtime_to_sexp`, `build_runtime_slist`, `rc_inc`, `debug_dump_sexp` | Sexp ADT marshalling for macro intrinsics. Internal cooperation between codegen and macro expansion. Not a stable boundary; relocates to `cranelisp-intrinsics` if/when the macro-Sexp ABI is formalised across the boundary (no near-term plan). |
+| `src/pipeline.rs` | `resolve_module_file`, `compile_and_execute_expr` | Internal — `compile_and_execute_expr` is the temp-closure JIT for eval-expression `EvalResult::Value`. Wave 3 may PIF to `pub(crate)` if no out-of-crate caller exists. |
+| `src/save.rs` | `generate_module_source`, `atomic_write` | `regenerate_backing_file`'s helpers. `generate_module_source` writes per-defn Introspection source by iterating `SymbolTable::defn_order`; `atomic_write` is the temp+rename file IO primitive. Internal; not facade. |
+| `src/platform.rs` | `LoadedPlatform` (struct + fields), `resolve_platform_path`, `load_platform_dll`, `register_platform_in_tc`, `is_platform_form`, `extract_platform_name`, `load_and_register_platform` | Platform-loading lifecycle from int's side. `LoadedPlatform` is the type stored in `SharedState.kept_dlls` per the alignment plan; the load helpers compose with `cranelisp_platform::{load_manifest, parse_type_sig, derive_jit_name}`. Internal cooperation, not facade. |
+| `src/style.rs` | `Style` enum, `init_color`, `is_color_enabled`, `styled` | ANSI styling for the REPL prompt and pretty-printed display. Internal display helpers (`display.rs` + `process_commands` reach in); not exposed across the crate boundary. |
+| `src/watch.rs` | `FileWatcher::{new, watch_file, poll_changes, update_content_hash, clear_all}` | The `notify::Event` mpsc wrapper; `WatcherChannel` of the facade is the opaque view. Internal-but-exposed for `CompilerSession::init_watcher` + `sync_watcher` + `poll_and_reload`. |
+| `src/session.rs` | `CacheState::{new, cache_dir, record_recompiled, source_hashes, source_hashes_mut, record_module, flush, flush_manifest, is_cache_valid, record_cache_hit}`, `load_project_config_lib_dirs`, `assemble_lib_dirs`, `assemble_platform_dirs`, `resolve_prelude`, `determine_exit_code`, `inject_prelude_import (pub(crate))`, `apply_bind_chain_analysis (pub(crate))` | `CacheState` is the per-session manifest + hash records held under `SharedState.cache_state`. The free functions are session-init helpers consumed by `CompilerSession::new`. Internal; absorbed into the SharedState plan's `ObjectCache` cohesion target (PIF-author). |
+| `src/observability.rs` | `SchedulerTraceTag`, `SchedulerTracePayload`, `SchedulerTraceEvent`, `TraceFilter`, `parse_filter_from_env_value`, `record_event`, `record_module_event(_with_state)`, `record_bulk_event`, `record_symbol_table_ensure_forward`, `install_symbol_table_ensure_hook_to_scheduler_trace`, `dump_thread_buffer`, `publish_thread_buffer`, `dump_all_buffers`, `format_event_line`, `flush_to_stderr`, `SchedulerTraceFlushGuard`, `install_panic_hook`, `SCHEDULER_TRACE_BUFFER_CAPACITY` | The scheduler-trace consumer named `scheduler_trace::*` in the facade. Internal cooperation between the scheduler (producer) and the `--scheduler-trace` end-of-session flush (consumer). Wave 4 may add `pub use observability as scheduler_trace` for facade-name alignment. |
+| `src/io_trace.rs` | `record`, `install_if_enabled`, `flush_to_stderr`, `install_panic_hook`, `IoTraceFlushGuard` | Already covered by facade §"Observability". |
+| `src/got_trace.rs` | `StoredGotEvent` (struct + fields), `record`, `install_if_enabled`, `publish_thread_buffer`, `flush_to_stderr`, `GotTraceFlushGuard`, `install_panic_hook`, `emit_redefinition` | Already covered by facade §"Observability"; `StoredGotEvent`/`publish_thread_buffer`/`emit_redefinition` are the on-record per-thread buffer surface, internal cooperation, not facade. |
+| `src/exe.rs` | `MainReturnKind`, `validate_main`, `generate_main_alias_object`, `entry_main_got_slot`, `link_executable`, `find_platform_rlibs`, `find_bundle_lib`, `collect_platform_manifest_names`, `pub use cranelisp_backend::exe::generate_startup_object` | The `--link` orchestration helpers. The facade names `generate_startup_object` already. The other helpers are internal to `Sess::link_by_name`. Internal; not facade. |
+| `src/cache_writer.rs` | `CacheWriterHandle::{new, queue_write, flush}`, `CacheWritePacket` (already in facade), `process_cache_packet (pub(crate))` | `CacheWriterHandle` is the background thread that drains the queue; internal pump helper, not facade. `CacheWritePacket` already in facade. |
+| `src/thread_util.rs` | `set_nice_priority`, `set_normal_priority` | OS thread-priority helpers for nice-worker promotion. Internal. |
+| `src/display.rs` | `format_value`, `format_result_value`, `format_result`, `format_type_qualified` (in facade), `format_scheme_display` (in facade), `format_ctor_display`, `format_adt_type_qualified` | The facade covers `format_type_qualified` and `format_scheme_display`. The other helpers are display utilities composed inside `format_eval_result`; internal. |
+| `src/pretty.rs` | `pretty_print`, `pretty_print_str` | Sexp pretty-printer used by `Sess::pretty_print`. Internal helper. |
+| `src/bind_chain_analysis.rs` | `SymbolTables` alias, `auto_schedule_defn`, `auto_schedule_expr`, `auto_schedule_expr_owned`, `scheduling_of` | Per-defn `SchedulingClass` annotation pass executed at register-form time. Internal cooperation between cluster orchestrator and scheduler. Not facade. |
+| `src/worker.rs` | `ModuleCheckAccumulator` (still present pre-W3a-β collapse follow-up), `ModuleCompiler<'a>`, `priority_worker_loop_shared`, `process_module_forms`, `compile_macro_for_repl`, `collect_jit_setup_public`, `derive_codegen_batch`, `inline_jit_codegen_for_module`, `inline_jit_codegen_for_names`, `ModuleSuspendState`, plus ~15 `pub(crate)` helpers | The worker module is genuinely interior per FIXME 0109 (no `pub` surface change planned); the listed `pub` items are exposed only across the int crate boundary. `ModuleCheckAccumulator` is a pre-S66 type that survives in source pending the W3a-β follow-up resolution; per Decision 44's third amendment + `src/CLAUDE.md` "Cluster-Atomic Orchestration", the type is fully retired in the cluster-mode flip. Wave 3 deletes it. The worker file decomposition is FIXME 0109 (long-running, NOT in S67 scope). |
+| `src/session_v4.rs` | `SessionSettings` (in facade), `CommandResult` (in facade), `EvalResult` (in facade) + `EvalResult::warnings`/`warnings_mut`/`value`/`ty`/`is_def`, `QUIT_SENTINEL` (above), `parens_balanced_pub`, `TypecheckProduct`, `Introspection` (in facade), `SharedState` (in facade + SharedState alignment plan), `CompilerSession` (in facade) + ~40 methods (most in facade; the additional pub methods: `set_lib_dirs`, `set_platform_dirs`, `push_platform_dir`, `poll_and_reload`, `current_module_name`, `register_module_with_source`, `register_entry_module`, `error_modules: HashSet<ModuleFullPath>`), `spawn_nice_workers`, `TestRunnerState::stub`, `clear_trace_display_state` | The main bulk is the facade; the additional pub methods listed are extension/test-driven helpers. Wave 3 may PIF-narrow `error_modules` (currently `pub`) to `pub(crate)` if no out-of-crate caller exists; `register_module_with_source` is the source-text variant of `register_module` and stays facade (file watcher invokes it). |
+
+This table is the W1 reconciliation snapshot. As `src/` evolves, the table updates in step with the facade above per the W0 baseline-diff discipline (`design/arch/CLAUDE.md §"Baseline-diff discipline"`).
 
 ---
 
@@ -825,7 +946,7 @@ fn ensure_registered(shared: &SharedState, module: &ModuleFullPath) -> Result<()
 }
 ```
 
-(`process_cluster` is shown as a free function for clarity — the actual Rust may keep it as a `CompilerSession` method that immediately delegates to a free function `worker::process_cluster(&self.shared, …)`. Workers invoke the free-function form directly with their `&SharedState` reference.)
+(Sprint 67 W1 PFR — `process_cluster` and `insert_cluster` are free functions hosted in `src/cluster.rs:177/248`, NOT `CompilerSession` methods. They take `&SharedState`. Workers invoke them with their `Arc<SharedState>` clone; the initiator thread invokes them through `&self.shared`. The previous facade text presented them as `CompilerSession` methods with a parenthetical note allowing a delegation shape; the actual implementation skipped the delegating method and exposes the free fns directly. This is the durable shape.)
 
 **Atomicity guarantees**:
 - A failure at any point — `expand` Gap that the scheduler resolves to a cycle, `check_forms` Gap, `check_forms` TypeError — drops the staging `SymbolTable` on the floor when the function frame returns. The live `SymbolTable` is byte-identical to its pre-cluster state. The live invariant ("if it's in the live table, it's checked AND committed") holds across cluster boundaries; only completed clusters are visible to other workers.
@@ -904,7 +1025,7 @@ This flow uses no new facade surface. `Sess::trampoline` (already exposed for Ru
 3. **Emit `_main` alias `.o`.** Backend's `compile_to_object` does NOT emit `_main` (per Decision 36 — backend stays uniform: bare-Local for every function including `main`). `int` constructs a tiny additional `.o` whose only content is:
    - An `Linkage::Export` symbol named `_main` (or `main` on Linux) declared as a code symbol whose body is a single relocation: `jmp [__cranelisp_got_{entry_module} + main_slot * 8]` (or the equivalent indirect call). Lives in `crates/cranelisp-exe-bundle/`.
 
-4. **Collect `.o` paths.** For the entry module + every transitively-loaded module, read the `.o` path from `ObjectCache`. (The `wait_for_object_codegen()` call earlier in `exec-flow-link` ensures all `.o` files are written.)
+4. **Collect `.o` paths.** For the entry module + every transitively-loaded module, read the `.o` path from `ObjectCache`. (The `wait_object_complete()` call earlier in `exec-flow-link` ensures all `.o` files are written.)
 
 5. **Spawn system linker.** `std::process::Command::new("ld")` (macOS / Linux) or `"link.exe"` (Windows) with arguments:
    - `-o {project_root}/target/{entry_module}` (executable output path; `.exe` on Windows)
@@ -1009,7 +1130,7 @@ These hold across sprints — the contract `int` makes with the rest of the work
 
 7. **REPL never calls `wait_for_*` at startup.** Per the `exec-flow-repl` rewrite — startup is `register_module` only. The first iteration's STEP 4 wait catches up the entry module's in-mem code. This keeps the prompt responsive immediately.
 
-8. **Watcher events processed concurrently with prompt-wait.** Per `exec-flow-repl` STEP 1–STEP 3 — `set_repl_input_active(true)` opens the watcher window during `read_line`; `set_repl_input_active(false)` closes it on input submission. STEP 4's `wait_for_inmem_codegen()` catches up everything triggered during the prompt.
+8. **Watcher events processed concurrently with prompt-wait.** Per `exec-flow-repl` STEP 1–STEP 3 — `set_repl_input_active(true)` opens the watcher window during `read_line`; `set_repl_input_active(false)` closes it on input submission. STEP 4's `wait_inmem_complete()` catches up everything triggered during the prompt.
 
 9. **Definitions append to `current_repl_module`, not `user`.** Per `exec-flow-repl` — `current_repl_module` is the session-scoped target for `eval`'s defining forms. Defaults to the entry module from `parse_args`. `/mod` changes it. `"user"` is a default name, not architecturally special.
 

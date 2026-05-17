@@ -16,23 +16,43 @@ The shared ABI between platform DLLs and runtime. Every Cranelisp value crosses 
 
 ```rust
 pub trait CLType: Copy {
-    fn type_signature() -> &'static str;
-    fn from_repr(repr: i64) -> Self;
-    fn to_repr(self) -> i64;
+    fn to_raw(self) -> i64;                                                        // S67 W1 PFR — narrowed from {type_signature, from_repr, to_repr} to to_raw only.
+                                                                                   // Rationale: host-side code never constructs a CL* from a raw i64 (DLL boundary
+                                                                                   // hands them back as i64 and the host doesn't reverse the construction);
+                                                                                   // `type_signature` would belong to the manifest, not the value wrapper, and the
+                                                                                   // type-sig string lives on PlatformFn.type_sig (C-ABI string) and
+                                                                                   // OwnedPlatformFnDescriptor.type_sig (owned Rust string) — both at the
+                                                                                   // descriptor level, not the value level. `to_raw` (formerly `to_repr`) is
+                                                                                   // sufficient for the lowering side of the boundary.
 }
 
-#[non_exhaustive] pub struct CLInt(pub i64);
-#[non_exhaustive] pub struct CLString(pub i64);                                    // i64 = ptr to cranelisp_intrinsics::HeapString (Decision 43 — string layout owned by intrinsics)
-#[non_exhaustive] pub struct CLBool(pub i64);                                      // 0 = false, 1 = true
-#[non_exhaustive] pub struct CLFloat(pub i64);                                     // bit-cast f64
+#[repr(transparent)] pub struct CLInt(i64);                                        // S67 W1 PFR — Principle 14 exemption: #[repr(transparent)] over i64 is the ABI.
+#[repr(transparent)] pub struct CLString(i64);                                     // i64 = ptr to a HeapString allocation (layout owned by cranelisp-intrinsics per Decision 12 + 43).
+#[repr(transparent)] pub struct CLBool(i64);                                       // 0 = false, 1 = true
+#[repr(transparent)] pub struct CLFloat(i64);                                      // bit-cast f64
 
-impl CLType for CLInt { /* … */ }
-impl CLType for CLString { /* … */ }
-impl CLType for CLBool { /* … */ }
-impl CLType for CLFloat { /* … */ }
+impl CLType for CLInt { fn to_raw(self) -> i64; }
+impl CLType for CLString { fn to_raw(self) -> i64; }
+impl CLType for CLBool { fn to_raw(self) -> i64; }
+impl CLType for CLFloat { fn to_raw(self) -> i64; }
 
-#[non_exhaustive]
-pub struct CLIO<CL: CLType>(pub i64, PhantomData<CL>);                             // IO node — ptr to heap-allocated Pure | Effect | Bind | Par
+// Convenience conversions (all four primitive wrappers carry From-impls
+// in both directions where they make sense; CLIO<CL> additionally carries
+// From<CL>, From<i64> for CLInt's case, From<f64> for CLFloat, etc.):
+impl From<i64> for CLInt;          impl From<CLInt> for i64;
+impl From<bool> for CLBool;        impl From<CLBool> for bool;
+impl From<f64> for CLFloat;        impl From<CLFloat> for f64;
+impl From<&str> for CLString;      impl From<String> for CLString;
+impl From<CLString> for String;
+impl<CL: CLType> From<CLIO<CL>> for i64;
+impl From<CLInt> for CLIO<CLInt>;     impl From<i64> for CLIO<CLInt>;
+impl From<CLBool> for CLIO<CLBool>;   impl From<bool> for CLIO<CLBool>;
+impl From<CLFloat> for CLIO<CLFloat>; impl From<f64> for CLIO<CLFloat>;
+impl From<CLString> for CLIO<CLString>; impl From<String> for CLIO<CLString>;
+impl From<CLInt> for CLIO<CLInt>;
+
+#[repr(transparent)]
+pub struct CLIO<CL: CLType>(i64, PhantomData<CL>);                                 // IO node — ptr to heap-allocated Pure | Effect | Bind | Par
 
 impl<CL: CLType> CLIO<CL> {
     pub fn pure(val: CL) -> Self;                                                  // build a Pure node
@@ -80,32 +100,44 @@ impl CLString {
 ```rust
 #[repr(C)]
 pub struct PlatformManifest {
-    pub name: *const u8,                                                           // null-terminated C string
-    pub fns: *const PlatformFn,
-    pub fn_count: usize,
-    pub abi_version: u32,
+    pub abi_version: u32,                                                          // must match cranelisp_platform::ABI_VERSION
+    pub name: *const u8,                                                           // platform name (e.g. "stdio")
+    pub name_len: usize,                                                           // S67 W1 PFR — length-prefixed (NOT null-terminated) because manifest crosses DLL boundary; null-terminator parsing would force the DLL author to guarantee null-termination across compiler/linker toolchains
+    pub version: *const u8,                                                        // S67 W1 PFR — added: platform version string; surfaces in `manifest_to_descriptors` return tuple as the 2nd element
+    pub version_len: usize,
+    pub functions: *const PlatformFn,                                              // S67 W1 PFR — renamed from `fns` to match implementation; array of function descriptors
+    pub function_count: usize,                                                     // S67 W1 PFR — renamed from `fn_count` to match implementation
 }
 
 #[repr(C)]
 pub struct PlatformFn {
-    pub name: *const u8,                                                           // null-terminated, kebab-case (the user-visible name)
-    pub jit_name: *const u8,                                                       // mangled JIT name per derive_jit_name
-    pub ptr: *const u8,                                                            // fn pointer — type-erased
-    pub param_count: usize,
-    pub type_sig: *const u8,                                                       // null-terminated type signature string
-    pub docstring: *const u8,                                                      // null-terminated, may be empty
-    pub scheduling_class: SchedulingClass,                                         // per Decision 26 — platform fns declare their scheduling class
+    pub name: *const u8,                                                           // kebab-case user-visible name (e.g. "print")
+    pub name_len: usize,                                                           // S67 W1 PFR — length-prefixed alongside the pointer (rationale: same as PlatformManifest.name_len)
+    pub jit_name: *const u8,                                                       // mangled JIT name per derive_jit_name (e.g. "cranelisp_print")
+    pub jit_name_len: usize,                                                       // S67 W1 PFR
+    pub ptr: *const u8,                                                            // fn pointer — type-erased (extern "C", all i64 params/returns)
+    pub param_count: u32,                                                          // S67 W1 PFR — `u32` not `usize`; ABI is fixed-width across host/DLL pairs and `u32` is sufficient for any sane param count
+    pub type_sig: *const u8,                                                       // type signature as S-expression string (e.g. "(Fn [String] (IO Int))")
+    pub type_sig_len: usize,                                                       // S67 W1 PFR
+    pub docstring: *const u8,                                                      // may be empty
+    pub docstring_len: usize,                                                      // S67 W1 PFR
+    pub param_names: *const *const u8,                                             // S67 W1 PFR — array of parameter name pointers (rationale: `/sig` / `/doc` REPL introspection surfaces named-parameter signatures; the DLL author writes the names in `declare_platform!` and they cross the boundary alongside the function pointer)
+    pub param_name_lens: *const usize,                                             // S67 W1 PFR — parallel array of lengths
+    pub param_name_count: usize,                                                   // S67 W1 PFR — count for both parallel arrays
+    pub scheduling_class: u32,                                                     // S67 W1 PFR — `u32` discriminant (NOT `SchedulingClass` directly): the host re-interprets via `SchedulingClass::from(u32)`. Rationale: keep the C-ABI struct entirely free of Rust-typed fields so the DLL author's `cbindgen`-generated header is faithful. 0=Sequential, 1=Commutative, 2=ResourceSerial per Decision 26.
 }
 
 pub fn derive_jit_name(cl_name: &str) -> String;                                   // kebab-case → JIT mangled form
 ```
+
+The `_len` fields throughout `PlatformFn` and `PlatformManifest` exist because length-prefixed strings (rather than null-terminated) avoid forcing every DLL author's toolchain to guarantee null-termination. The host reads `(ptr, len)` pairs and constructs UTF-8 slices via `std::slice::from_raw_parts` + `std::str::from_utf8`, which fails fast on malformed bytes. Any `_len` field change is a breaking change governed by `ABI_VERSION` per Principle 14.
 
 Every platform DLL defines a static `PlatformManifest` and exports it via the `declare_platform!` macro (next section). The host (`cranelisp-platform::load_manifest`) reads the manifest and converts to safe `OwnedPlatformFnDescriptor` form.
 
 ### Host-side descriptors (safe Rust, post-load)
 
 ```rust
-#[non_exhaustive]
+#[non_exhaustive]                                                                  // FIXME 0107 — currently missing in source; tracked as PIF for /dev (platform) Wave 2
 pub struct OwnedPlatformFnDescriptor {
     pub name: String,
     pub jit_name: String,
@@ -113,12 +145,13 @@ pub struct OwnedPlatformFnDescriptor {
     pub param_count: usize,
     pub type_sig: String,
     pub docstring: String,
-    pub scheduling_class: SchedulingClass,
+    pub param_names: Vec<String>,                                                  // S67 W1 PFR — added: owned form of the C-ABI parallel `param_names` / `param_name_lens` arrays. Surfaces in `/sig` and `/doc` introspection at the REPL.
+    pub scheduling_class: SchedulingClass,                                         // owned form lifts the C-ABI `u32` to the typed enum via `SchedulingClass::from(u32)`
 }
 
-pub fn manifest_to_descriptors(
+pub unsafe fn manifest_to_descriptors(
     manifest: &PlatformManifest,
-) -> Result<Vec<OwnedPlatformFnDescriptor>, PlatformError>;
+) -> Result<(String, String, Vec<OwnedPlatformFnDescriptor>), PlatformError>;      // S67 W1 PFR — return tuple `(platform_name, platform_version, descriptors)`. The two leading strings come from `PlatformManifest.name` / `PlatformManifest.version` (each `(ptr, len)` pair lifted to an owned `String`); the descriptor vector comes from `PlatformManifest.functions`. `unsafe` because it dereferences the raw `PlatformFn` array.
 ```
 
 `manifest_to_descriptors` is the public C-ABI → typed-Rust bridge: given a raw `PlatformManifest` (already located in a loaded DLL by the caller), it copies the descriptor list into safe Rust shapes and returns. Per BC §5, DLL lifecycle orchestration (`dlopen` + `libloading::Library` retention via `SharedState.kept_dlls`) is `int`'s job — the platform crate does not own DLL lifecycle. `int`'s session holds `Vec<OwnedPlatformFnDescriptor>` per loaded platform; the JIT registers each fn pointer via `JITBuilder::symbol` keyed by `jit_name`.
@@ -145,15 +178,23 @@ Platform-fn invocation is via direct GOT lookup, NOT a centralised dispatch wrap
 ```rust
 #[repr(C)]
 pub struct HostCallbacks {
-    pub alloc: extern "C" fn(size: usize) -> *mut u8,                              // → cranelisp_intrinsics::cranelisp_alloc (Decision 43 — allocator owned by intrinsics)
-    pub dec: extern "C" fn(ptr: *mut u8),                                          // → cranelisp_intrinsics::rc_dec (debug helper)
-    pub rc_inc: extern "C" fn(ptr: *mut u8),                                       // → cranelisp_intrinsics::rc_inc (atomic_rmw helper)
-    pub invoke_closure: extern "C" fn(closure_ptr: *mut u8, args: *const i64, n_args: usize) -> i64,  // GOT-indirect dispatch through closure's code_ptr (Decision 31 callback support)
-    /* … */
+    pub alloc: extern "C" fn(size: i64) -> i64,                                    // S67 W1 PFR — narrowed to alloc-only.
+                                                                                   // Returns payload pointer (base + HEAP_HEADER_SIZE) as i64; size is the payload size, host adds the 16-byte heap header. Wires to `cranelisp_intrinsics::cranelisp_alloc` per Decision 43.
+                                                                                   //
+                                                                                   // The earlier facade text speculatively listed `dec` / `rc_inc` / `invoke_closure` to support
+                                                                                   // Decision 31's "Callback support (forward commitment)" — i.e. when the spec adds `Fn a b` to the
+                                                                                   // platform-ABI permitted-types list in §10.10.1, the DLL author needs to retain user-supplied
+                                                                                   // closures across calls (rc_inc on store, rc_dec on release) and invoke them via the GOT
+                                                                                   // (invoke_closure dispatches through the closure heap layout's code_ptr field).
+                                                                                   //
+                                                                                   // Status: DEFERRED to whenever `Fn a b` ABI lands. Not a current-facade deferral — the wider
+                                                                                   // HostCallbacks shape is conditional on a future spec amendment. Per S67 Phase 2 verdict, the
+                                                                                   // present-day implementation correctly exposes only `alloc`; bounded-context invariant 3
+                                                                                   // below describes the Fn-a-b shape that will land alongside the spec amendment.
 }
 ```
 
-Platform DLL code uses these callbacks to allocate heap values (e.g., to produce a `CLString` result), to retain user-supplied closures across calls, to invoke retained closures. Each callback's behaviour is documented as part of the platform ABI (`bounded-contexts.md` §5 references `spec/10-io.md §10.10.3`). Per Decision 43, the underlying allocator and RC primitives live in `cranelisp-intrinsics`; `int` resolves the fn pointers at session init.
+Platform DLL code currently uses `alloc` to allocate heap values (e.g. to produce a `CLString` result). When the `Fn a b` callback ABI lands, the struct widens to include `rc_inc`, `rc_dec`, and `invoke_closure` — see invariant 3 below for the durable contract. Per Decision 43, the underlying allocator and RC primitives live in `cranelisp-intrinsics`; `int` resolves the fn pointers at session init.
 
 ### Type signature parser — internal only
 
@@ -198,6 +239,17 @@ pub const IO_TAG_EFFECT: i64;                                                   
 pub const IO_TAG_BIND: i64;                                                        // IO node tag — Bind (spec §10)
 pub const IO_TAG_PAR: i64;                                                         // IO node tag — Par (spec §10.12)
 pub const IO_EFFECT_RESOURCE_OFFSET: i64;                                          // byte offset of resource token in Effect node payload
+pub const HEAP_HEADER_SIZE: i64;                                                   // S67 W1 PFR — = HeapHeader::SIZE (16 bytes: total_size@+0 + rc@+8). Host allocator returns payload pointer = base + HEAP_HEADER_SIZE. DLL authors need this to compute payload pointers from base pointers in raw CLIO/CLString construction paths.
+pub const STRING_HEADER_BYTES: usize;                                              // S67 W1 PFR — = 8 (i64 length prefix). String payload layout is [i64 len][u8 bytes…] starting at base + HEAP_HEADER_SIZE. Both consts exposed for DLL authors writing CLString builders that allocate via the host callback and lay out the payload by hand.
+```
+
+### Free functions
+
+```rust
+pub unsafe fn call_effect_thunk(thunk_ptr: i64) -> i64;                            // S67 W1 PFR — internal IO trampoline helper used by `CLIO::effect` and `CLIO::effect_on_resource` to invoke the boxed `FnOnce() -> CL` closure stored in the Effect node payload.
+                                                                                   // Exposed because the IO trampoline (in cranelisp-intrinsics per Decision 43) calls back into platform to drive effect-node thunks; the function is `unsafe` because it takes ownership of the boxed closure via `Box::from_raw` and must be called exactly once per Effect node. Not a DLL-author API — DLL authors use `CLIO::effect{,_on_resource}` to build Effect nodes; the trampoline drives them.
+
+pub fn derive_jit_name(cl_name: &str) -> String;                                   // kebab-case → JIT mangled form (named in §"Platform manifest and fn descriptor")
 ```
 
 ---
@@ -218,6 +270,10 @@ No other re-exports.
 
 ---
 
+## FQTypeName migration (Decision 47)
+
+Per Decision 47 + `facades/types.md` §"FQTypeName migration plan (Sprint 67)", platform has **zero public-surface changes** under the FQTypeName binding migration. The single keep is the reverse-lookup at IO marker emission (an internal helper that decodes IO node tags back to a printable type label) — that path uses `Type::type_name` or equivalent reverse-lookup, which falls under D47's second named exception. No public type identifier crosses the platform boundary as a `FQTypeName` because the platform-DLL ABI uses S-expression type-signature strings (`PlatformFn.type_sig`) rather than resolved-stage type identifiers; resolution happens int-side in `parse_type_sig` after `manifest_to_descriptors` returns.
+
 ## Consumed surface
 
 The platform crate imports from:
@@ -233,11 +289,17 @@ External:
 
 ## Sealed traits
 
-`CLType` is the sealed trait — only the four primitive wrappers (`CLInt`, `CLString`, `CLBool`, `CLFloat`) and `CLIO<T>` may implement it from inside this crate. `CLHeap` is sealed via `CLType` super-bound (since `CLType` is sealed, `CLHeap` is too). Platform DLL authors implement neither; they use the existing wrappers.
+`CLType` and `CLHeap` are convention-sealed: only the four primitive wrappers (`CLInt`, `CLString`, `CLBool`, `CLFloat`) and `CLIO<T>` implement `CLType`; only `CLString` implements `CLHeap` (it is currently the only heap-typed wrapper). Platform DLL authors implement neither; they use the existing wrappers. The S67 W1 review confirmed there is no `mod sealed { pub trait Sealed {} }` super-bound in source — the `Copy` super-bound suffices in practice because DLL authors do not own any `Copy` type that could satisfy the i64 + ABI contract. Adding the `Sealed` super-bound is a candidate refinement; tracked as a future cleanup, not S67 scope.
 
 ```rust
-mod sealed { pub trait Sealed {} }
-pub trait CLType: sealed::Sealed + Copy { /* … */ }
+pub trait CLType: Copy { fn to_raw(self) -> i64; }
+pub trait CLHeap: CLType + Copy {
+    fn rc_inc(&self);
+    fn dec_rc(&self);                                                              // method name in source is `dec_rc` (not `rc_dec` — the asymmetry in spelling vs `rc_inc` is intentional, matching the historical name from `cranelisp-intrinsics`)
+    fn raw_ptr(&self) -> i64;
+    fn own(&self) -> CLOwned<Self>;                                                // non-consuming: takes &self, returns owning wrapper (does NOT consume the borrowed CLHeap)
+    fn into_owned_consuming(self) -> CLOwned<Self>;                                // consuming: takes self by value
+}
 ```
 
 ---

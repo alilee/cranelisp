@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use dashmap::DashMap;
 
 use cranelisp_types::{ErrorLocation,
-    ConstructorInfo, CranelispError, ExportSpec, FQSymbol, ImportNames, ImportSpec,
+    CranelispError, ExportSpec, FQSymbol, ImportNames, ImportSpec,
     MethodResolutions, ModuleEntry, ModuleFullPath, ResolvedCall, Scheme, Span,
     Subst, Symbol, SymbolTable, TraitName, Type, TypeDefInfo, TypeId, TypeName, View, Warning,
     apply,
@@ -454,126 +454,34 @@ where
 
     /// Ensure a module's symbol table exists, creating it if needed.
     ///
-    /// Uses DashMap interior mutation — safe with `&self`. Seeds new modules
-    /// with imports from `primitives` and seedable entries from `user`.
+    /// Uses DashMap interior mutation — safe with `&self`. Creates an empty
+    /// `SymbolTable` if the module does not exist. Does NOT seed special
+    /// forms (per Principle 17 + FIXME 0193 amendment — special-form
+    /// metadata lives once at root `""`; other modules start empty).
     /// Does NOT set `self.state.current_module` — callers set the module
     /// on their own `CheckState`.
     ///
-    // FIXME(/typecheck) — cross-skill hybrid ownership per
-    // `design/int/heisenbug-race-closure.md §3d''` (/arch mini-review,
-    // Sprint 61 Wave 3, 2026-04-22). /int authored this rewrite under an
-    // explicit /arch cross-skill grant to close the H6 non-atomic
-    // compare-then-set race. /typecheck reviews the diff before commit.
-    // Ownership boundary unchanged: the public signature of
-    // `ensure_module_exists` is untouched; this precedent is NARROW and
-    // does NOT authorise further /int → crates/ edits without /arch
-    // arbitration.
-    //
-    // Mechanism (option d per §8.3.1 + /arch §3d'' mandatory variant):
-    //   1. Hoist the `user`-seed clone OUTSIDE `entry()` so the
-    //      `or_insert_with` closure performs NO nested DashMap access.
-    //      DashMap v6's `entry` guard holds a shard write-lock across
-    //      the closure; a nested `get` on the same shard would deadlock.
-    //      Pre-computing the seed is zero-cost (the same Vec<(Symbol,
-    //      ModuleEntry)> was allocated before; it is simply materialised
-    //      one statement earlier).
-    //   2. `entry(path).or_insert_with(|| {...})` performs the
-    //      check-then-insert atomically under the shard write-lock, so
-    //      no concurrent thread can insert between the check and the
-    //      store. Replaces the prior unconditional `self.modules.insert`
-    //      at old line 237 that overwrote populated tables built by the
-    //      priority worker's concurrent ensure.
-    //   3. Emit `SymbolTableEnsure { module, outcome }` so post-fix
-    //      traces make the atomicity observable. `Created` fires inside
-    //      the closure (we built and inserted); `AlreadyPresent` fires
-    //      on the fall-through (another caller won the race).
+    /// **Sprint 67 hack-back (FIXME 0192 + 0193)**: thin shim for backwards
+    /// compatibility — atomic create-if-absent via
+    /// `cranelisp-types::ensure_module_exists`. Per Principle 17 amendment
+    /// (FIXME 0193), regular modules start empty; special-form metadata
+    /// lives once at root `""` and is NOT seeded into other modules.
+    /// Internal typecheck callers continue to use this shim; cross-crate
+    /// callers should call the cranelisp-types free fn directly.
     pub fn ensure_module_exists(&self, path: &ModuleFullPath) {
-        // (1) Hoist seed clone OUTSIDE the `entry()` critical section.
-        // Read `user` under its own shard read-lock; clone; drop the
-        // guard BEFORE we take the `entry()` write-lock on `path`. This
-        // avoids any risk of shard-collision deadlock between
-        // `modules[path]` and `modules[user]`, and keeps the closure
-        // below free of nested DashMap access.
-        let user_path = ModuleFullPath::from("user");
-        let seed_entries: Vec<(Symbol, ModuleEntry<C>)> = self.modules.get(&user_path)
-            .map(|guard| {
-                // Special forms only: language keywords universally
-                // available per spec §11.1. Everything else requires
-                // explicit import or qualified access (spec §8.9.1,
-                // §8.9.4).
-                guard.all_symbols()
-                    .filter(|(_name, entry)| {
-                        matches!(entry, ModuleEntry::Def { kind, .. }
-                            if matches!(kind.as_ref(),
-                                cranelisp_types::DefKind::SpecialForm { .. }
-                            )
-                        )
-                    })
-                    .map(|(name, entry)| (name.clone(), entry.clone()))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        // (2) Atomic check-then-insert. `entry(...).or_insert_with(...)`
-        // holds the shard write-lock on `path`'s shard across the
-        // closure; a concurrent ensure on the same path is serialised
-        // behind it and observes the entry as Occupied.
-        //
-        // Outcome determination: DashMap v6 does not surface
-        // "was-inserted" from `or_insert_with` directly, so we use
-        // the pattern `match entry {}` — Occupied means the key was
-        // already present (AlreadyPresent); Vacant means we're about
-        // to build and insert (Created).
-        //
-        // Use the generic `new_with_params` constructor so the table
-        // matches the parameterised flavour `<C, L>` of `self.modules`.
-        use dashmap::mapref::entry::Entry;
-        let outcome = match self.modules.entry(path.clone()) {
-            Entry::Occupied(_) => {
+        let outcome = cranelisp_types::ensure_module_exists(self.modules, path);
+        let trace_outcome = match outcome {
+            cranelisp_types::EnsureOutcome::AlreadyPresent => {
                 crate::trace::SymbolTableEnsureOutcome::AlreadyPresent
             }
-            Entry::Vacant(slot) => {
-                let mut table = SymbolTable::<C, L>::new_with_params(path.clone());
-                for (name, entry) in seed_entries {
-                    table.insert(name, entry);
-                }
-                slot.insert(table);
+            cranelisp_types::EnsureOutcome::Created => {
                 crate::trace::SymbolTableEnsureOutcome::Created
             }
         };
-        // (3) Emit observability event. Fires AFTER the shard
-        // write-lock has been released (both Occupied guard and the
-        // Vacant-insert's guard are dropped by the match arm's end).
-        // Hot-path cost when no sink is installed: single relaxed
-        // OnceLock load + null check.
-        crate::trace::emit_symbol_table_ensure(path, outcome);
+        crate::trace::emit_symbol_table_ensure(path, trace_outcome);
     }
 
-    /// Check whether a module has been registered.
-    pub fn has_module(&self, path: &ModuleFullPath) -> bool {
-        self.modules.contains_key(path)
-    }
-
-    /// Look up a TypeDefInfo by bare TypeName.
-    ///
-    /// Per Principle 17 (Module locality in typecheck) — short-name resolution
-    /// is current-module-only. Resolves in the conventional default module
-    /// (`user`) only: looks up `name` in `user`'s symbol table; if the entry
-    /// is `ModuleEntry::Import`/`Reexport`, chain-follows `source.module` one
-    /// edge at a time until a `TypeDef` (canonical) is reached. There is no
-    /// universal scan and no fallback to other modules — universally-feeling
-    /// symbols (`Int`, `Bool`, …) reach user code via the prelude's per-symbol
-    /// `ModuleEntry::Import` bindings, which the chain-follow carries.
-    ///
-    /// Public default-rooted variant. Internal typecheck callers honour the
-    /// active module via [`Self::lookup_type_def_with_state`] /
-    /// [`Self::lookup_type_def_in_module`].
-    pub fn lookup_type_def(&self, name: &TypeName) -> Option<TypeDefInfo> {
-        let user_path = ModuleFullPath::from("user");
-        self.lookup_type_def_in_module(&user_path, name)
-    }
-
-    /// Module-rooted variant of [`Self::lookup_type_def`].
+    /// Module-rooted lookup of a `TypeDefInfo` by bare `TypeName`.
     ///
     /// Probes `module_path`'s symbol table for `name`; if absent or if the
     /// entry is an `Import`/`Reexport`, chain-follows per Principle 17. No
@@ -624,7 +532,8 @@ where
     /// of the parent type. Also handles product types where the constructor
     /// has the same name as the type — in that case the
     /// `ModuleEntry::TypeDef` with `constructor_scheme` is the authority.
-    pub fn lookup_constructor_type(&self, ctor_name: &str) -> Option<TypeName> {
+    #[allow(dead_code)] // default-rooted accessor pair; exercised via TestFixture in `#[cfg(test)]`.
+    pub(crate) fn lookup_constructor_type(&self, ctor_name: &str) -> Option<TypeName> {
         let user_path = ModuleFullPath::from("user");
         self.lookup_constructor_type_in_module(&user_path, ctor_name)
     }
@@ -659,7 +568,8 @@ where
     ///
     /// Per Principle 17 — routes through the principled lookups above.
     /// Public default-rooted variant defaults to `user`.
-    pub fn is_internal_constructor_check(&self, ctor_name: &str) -> bool {
+    #[allow(dead_code)] // default-rooted accessor pair; exercised via TestFixture in `#[cfg(test)]`.
+    pub(crate) fn is_internal_constructor_check(&self, ctor_name: &str) -> bool {
         let user_path = ModuleFullPath::from("user");
         self.is_internal_constructor_check_in_module(&user_path, ctor_name)
     }
@@ -696,7 +606,8 @@ where
     /// table (and chain-follows `Import`/`Reexport` entries to their canonical
     /// `TypeDef`). Multi-module aggregation for REPL `/list` etc. is the
     /// session/REPL layer's concern, not typecheck's.
-    pub fn all_type_defs(&self) -> Vec<(TypeName, TypeDefInfo)> {
+    #[allow(dead_code)] // default-rooted accessor pair; exercised internally + via TestFixture.
+    pub(crate) fn all_type_defs(&self) -> Vec<(TypeName, TypeDefInfo)> {
         let user_path = ModuleFullPath::from("user");
         self.all_type_defs_in_module(&user_path)
     }
@@ -745,12 +656,14 @@ where
     /// Build a map of all type definitions (TypeName -> TypeDefInfo).
     ///
     /// Used by external consumers that need the old HashMap-based API.
-    pub fn all_type_defs_map(&self) -> HashMap<TypeName, TypeDefInfo> {
+    #[allow(dead_code)] // delegates to all_type_defs; called by snapshot_type_defs.
+    pub(crate) fn all_type_defs_map(&self) -> HashMap<TypeName, TypeDefInfo> {
         self.all_type_defs().into_iter().collect()
     }
 
     /// Access the per-module symbol tables (for display, introspection).
-    pub fn modules(&self) -> &DashMap<ModuleFullPath, SymbolTable<C, L>> {
+    #[allow(dead_code)] // accessor pair; exercised via TestFixture in `#[cfg(test)]`.
+    pub(crate) fn modules(&self) -> &DashMap<ModuleFullPath, SymbolTable<C, L>> {
         self.modules
     }
 
@@ -761,7 +674,8 @@ where
     ///
     /// NOTE: These maps will be eliminated when the backend reads from
     /// SharedState SymbolTables directly (FQTypeName migration wave C).
-    pub fn snapshot_type_defs(&self) -> (HashMap<TypeName, TypeDefInfo>, HashMap<Symbol, TypeName>) {
+    #[allow(dead_code)] // accessor pair; exercised via TestFixture in `#[cfg(test)]`.
+    pub(crate) fn snapshot_type_defs(&self) -> (HashMap<TypeName, TypeDefInfo>, HashMap<Symbol, TypeName>) {
         let type_defs = self.all_type_defs_map();
         let constructor_to_type: HashMap<Symbol, TypeName> = type_defs.iter()
             .flat_map(|(type_name, info)| {
@@ -773,19 +687,31 @@ where
 
     /// Look up a specific module's symbol table by path.
     /// Returns a DashMap read guard that derefs to `SymbolTable`.
-    /// Used by `/imports` to resolve type signatures of imported symbols.
-    pub fn module_table(&self, path: &ModuleFullPath) -> Option<dashmap::mapref::one::Ref<'_, ModuleFullPath, SymbolTable<C, L>>> {
+    ///
+    /// Sprint 67 hack-back (FIXME 0187 partial close — /dev (int)): narrowed
+    /// to `pub(crate)`. No external consumers: REPL introspection paths in
+    /// `src/session_v4.rs` read `self.shared.symbol_tables.get(path)`
+    /// directly via the `CompilerSession::module_table` accessor, which is
+    /// the facade-aligned shape per `design/arch/facades/int.md` §"introspection
+    /// accessors".
+    ///
+    /// Kept for potential internal use by future typecheck code paths;
+    /// `#[allow(dead_code)]` while no callers exist.
+    #[allow(dead_code)]
+    pub(crate) fn module_table(&self, path: &ModuleFullPath) -> Option<dashmap::mapref::one::Ref<'_, ModuleFullPath, SymbolTable<C, L>>> {
         self.modules.get(path)
     }
 
     /// Look up a specific module's symbol table by path, returning an owned clone.
     /// Used by callers that need to own the symbol table (e.g., serialization).
-    pub fn module_table_cloned(&self, path: &ModuleFullPath) -> Option<SymbolTable<C, L>> {
+    #[allow(dead_code)] // accessor pair; exercised via TestFixture in `#[cfg(test)]`.
+    pub(crate) fn module_table_cloned(&self, path: &ModuleFullPath) -> Option<SymbolTable<C, L>> {
         self.modules.get(path).map(|guard| guard.clone())
     }
 
     /// Look up a symbol's GOT slot in a specific module's symbol table.
-    pub fn get_got_slot(&self, module: &ModuleFullPath, name: &Symbol) -> Option<usize> {
+    #[allow(dead_code)] // accessor pair; exercised via TestFixture in `#[cfg(test)]`.
+    pub(crate) fn get_got_slot(&self, module: &ModuleFullPath, name: &Symbol) -> Option<usize> {
         let guard = self.modules.get(module)?;
         match guard.get(name.as_ref())? {
             ModuleEntry::Def { got_slot, .. } => *got_slot,
@@ -796,7 +722,8 @@ where
     /// Get a reference to the underlying modules DashMap.
     /// Used by the integration layer to construct a `CompilationEnv` that
     /// resolves GOT slots by reading symbol tables directly.
-    pub fn modules_ref(&self) -> &dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>> {
+    #[allow(dead_code)] // accessor pair; exercised via TestFixture in `#[cfg(test)]`.
+    pub(crate) fn modules_ref(&self) -> &dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>> {
         self.modules
     }
 
@@ -815,34 +742,23 @@ where
         cranelisp_types::FQTypeName::new(module, type_name.clone())
     }
 
-    /// Look up the defining module for a symbol. Checks the `primitives` module
-    /// first (for core traits and builtins), then falls back to the current module.
-    pub fn defining_module_for(&self, state: &CheckState, name: &str) -> ModuleFullPath {
-        let primitives_path = ModuleFullPath::from("primitives");
-        let found = self.modules.get(&primitives_path)
-            .map(|guard| guard.get(name).is_some())
-            .unwrap_or(false);
-        if found {
-            return primitives_path;
-        }
-        state.current_module.clone()
-    }
-
     /// Resolve the defining module of a trait reference reachable from
     /// `state.current_module` via per-symbol chain-follow (Principle 17
-    /// shape 1 + Decision 45 Pattern B). Returns the chain-followed home if
-    /// the name resolves to a `TraitDecl`; otherwise falls back to
-    /// [`Self::defining_module_for`] for compatibility with call sites that
-    /// pre-date trait registration (e.g., builtins-bootstrap, which writes
-    /// `TraitDecl` and impls in the same orchestrator pass and may probe
-    /// for the trait before its `TraitDecl` lands).
-    pub(crate) fn trait_home_for(&self, state: &CheckState, trait_name: &str) -> ModuleFullPath {
-        if let Some((ModuleEntry::TraitDecl { .. }, home)) =
-            self.resolve_terminal_entry_and_home(&state.current_module, trait_name)
-        {
-            return home;
+    /// shape 1 + Decision 45 Pattern B). Returns the chain-followed home iff
+    /// the name resolves to a `TraitDecl`.
+    ///
+    /// Sprint 67 hack-back (FIXME 0192 method 6): the prior
+    /// `defining_module_for` fallback (probe `primitives` then `current_module`)
+    /// was an architectural workaround for incomplete prelude injection and has
+    /// been deleted. Callers MUST first validate the trait exists via
+    /// `lookup_trait_decl_with_state` (or equivalent); only then is the
+    /// chain-follow guaranteed to succeed. Unresolvable trait → caller-emitted
+    /// type error.
+    pub(crate) fn trait_home_for(&self, state: &CheckState, trait_name: &str) -> Option<ModuleFullPath> {
+        match self.resolve_terminal_entry_and_home(&state.current_module, trait_name) {
+            Some((ModuleEntry::TraitDecl { .. }, home)) => Some(home),
+            _ => None,
         }
-        self.defining_module_for(state, trait_name)
     }
 
     // --- Scope operations (delegate to CheckState.env) ---
@@ -1163,6 +1079,23 @@ where
     }
 
     // --- Fresh variable generation ---
+
+    /// Allocate the next fresh `TypeId`, advancing the monotonic atomic counter.
+    ///
+    /// Per `design/arch/facades/typecheck.md` §"Cluster check scaffolding" —
+    /// one of the two facade-prescribed `TypeCheckEnv` public methods (the
+    /// other being `new`). External callers use this when threading the
+    /// shared `next_id` atomic into their own driver state.
+    ///
+    /// Uses `fetch_add` on the atomic counter — safe for `&self`. The
+    /// `&mut self` receiver in the facade text is the as-designed
+    /// signature; the implementation uses interior mutability for the
+    /// atomic so the receiver discipline doesn't actually require
+    /// exclusive borrow. Kept `&mut self` for consistency with the facade
+    /// API ledger.
+    pub fn next_type_id(&mut self) -> TypeId {
+        self.next_id.fetch_add(1, Ordering::Relaxed)
+    }
 
     /// Generate a fresh type variable.
     ///
@@ -1642,33 +1575,16 @@ where
 
     // --- REPL query methods for output formatting ---
 
-    /// Look up a type definition and return its constructors.
-    pub fn get_type_constructors(&self, type_name: &TypeName) -> Option<Vec<ConstructorInfo>> {
-        self.lookup_type_def(type_name)
-            .map(|info| info.constructors)
-    }
-
     /// Look up the FQTypeName for a bare type name via SymbolTables.
     /// Used for display formatting and diagnostics.
-    pub fn fqtn_for_type(&self, type_name: &TypeName) -> Option<cranelisp_types::FQTypeName> {
-        self.lookup_type_def(type_name)
+    #[allow(dead_code)] // accessor pair; exercised via TestFixture in `#[cfg(test)]`.
+    pub(crate) fn fqtn_for_type(&self, type_name: &TypeName) -> Option<cranelisp_types::FQTypeName> {
+        let user_path = ModuleFullPath::from("user");
+        self.lookup_type_def_in_module(&user_path, type_name)
             .map(|info| info.name)
     }
 
-    /// Return all trait names that have an impl registered for `type_name`.
-    /// Results are sorted alphabetically.
-    ///
-    /// Per Decision 45 (Pattern B) — enumerate traits visible from the
-    /// (default `user`) module via shape-4 current-module introspection,
-    /// chain-follow each to its defining module, and probe each home for
-    /// impls of `type_name`. No universe scan; each trait home is touched
-    /// at most once.
-    pub fn get_impls_for_type(&self, type_name: &TypeName) -> Vec<TraitName> {
-        let user_path = ModuleFullPath::from("user");
-        self.get_impls_for_type_in_module(&user_path, type_name)
-    }
-
-    /// Module-rooted variant of [`Self::get_impls_for_type`].
+    /// Module-rooted variant of trait-impl enumeration.
     pub(crate) fn get_impls_for_type_in_module(
         &self,
         module_path: &ModuleFullPath,
@@ -1735,23 +1651,7 @@ where
         self.get_impls_for_type_in_module(&state.current_module, type_name)
     }
 
-    /// Return the method names declared in a trait.
-    pub fn get_trait_methods(&self, trait_name: &TraitName) -> Option<Vec<Symbol>> {
-        self.lookup_trait_decl(trait_name)
-            .map(|decl| decl.methods.iter().map(|m| m.name.clone()).collect())
-    }
-
-    /// Look up a TraitDecl by bare TraitName.
-    ///
-    /// Per Principle 17 — current-module-only short-name lookup, with
-    /// per-symbol chain-follow on `Import`/`Reexport` entries. Public
-    /// default-rooted variant defaults to `user`.
-    pub fn lookup_trait_decl(&self, trait_name: &TraitName) -> Option<cranelisp_types::TraitDecl> {
-        let user_path = ModuleFullPath::from("user");
-        self.lookup_trait_decl_in_module(&user_path, trait_name)
-    }
-
-    /// Module-rooted variant of [`Self::lookup_trait_decl`].
+    /// Module-rooted lookup of a `TraitDecl` by bare `TraitName`.
     pub(crate) fn lookup_trait_decl_in_module(
         &self,
         module_path: &ModuleFullPath,
@@ -1780,7 +1680,7 @@ where
     /// (default `user`) module for `method_name`; if it resolves to a
     /// canonical `ModuleEntry::Def` carrying `trait_origin`, returns the
     /// bare trait name. No universe scan.
-    pub fn method_to_trait(&self, method_name: &Symbol) -> Option<TraitName> {
+    pub(crate) fn method_to_trait(&self, method_name: &Symbol) -> Option<TraitName> {
         let user_path = ModuleFullPath::from("user");
         self.method_to_trait_in_module(&user_path, method_name)
     }
@@ -1808,7 +1708,8 @@ where
     }
 
     /// Check if a method belongs to a specific trait, via trait_origin on ModuleEntry::Def.
-    pub fn method_belongs_to_trait(&self, method: &Symbol, trait_name: &TraitName) -> bool {
+    #[allow(dead_code)] // accessor pair; exercised via TestFixture in `#[cfg(test)]`.
+    pub(crate) fn method_belongs_to_trait(&self, method: &Symbol, trait_name: &TraitName) -> bool {
         self.method_to_trait(method).as_ref() == Some(trait_name)
     }
 
@@ -1818,7 +1719,8 @@ where
     /// the (default `user`) module to its defining module, then probe that
     /// one module's symbol table for the synthetic key
     /// `impl$<FQTypeName>$<FQTraitName>`. No universe scan.
-    pub fn has_impl(&self, trait_name: &TraitName, impl_type: &TypeName) -> bool {
+    #[allow(dead_code)] // accessor pair; exercised via TestFixture in `#[cfg(test)]`.
+    pub(crate) fn has_impl(&self, trait_name: &TraitName, impl_type: &TypeName) -> bool {
         let user_path = ModuleFullPath::from("user");
         self.has_impl_in_module(&user_path, trait_name, impl_type)
     }
@@ -1884,19 +1786,7 @@ where
         found
     }
 
-    /// Return all type names that implement a given trait.
-    /// Results are sorted alphabetically.
-    ///
-    /// Per Decision 45 (Pattern B) — chain-follow the trait reference to
-    /// its defining module, then enumerate `ModuleEntry::TraitImpl` entries
-    /// in that one module's symbol table. The trait's home owns the complete
-    /// impl set; no other modules are consulted.
-    pub fn get_implementing_types(&self, trait_name: &TraitName) -> Vec<TypeName> {
-        let user_path = ModuleFullPath::from("user");
-        self.get_implementing_types_in_module(&user_path, trait_name)
-    }
-
-    /// Module-rooted variant of [`Self::get_implementing_types`].
+    /// Module-rooted variant of trait-impl-type enumeration (Decision 45 Pattern B).
     pub(crate) fn get_implementing_types_in_module(
         &self,
         module_path: &ModuleFullPath,
@@ -1934,22 +1824,6 @@ where
         self.get_implementing_types_in_module(&state.current_module, trait_name)
     }
 
-    /// Resolve a module name: try as child of current module first, then as
-    /// root module. Returns `None` if not found.
-    pub fn resolve_module_by_name(&self, state: &CheckState, name: &str) -> Option<ModuleFullPath> {
-        let child_path =
-            ModuleFullPath::from(format!("{}.{}", state.current_module, name));
-        if self.has_module(&child_path) {
-            return Some(child_path);
-        }
-        // Try as root module
-        let root_path = ModuleFullPath::from(name);
-        if self.has_module(&root_path) {
-            return Some(root_path);
-        }
-        None
-    }
-
     // --- Module state management ---
 
     /// Unregister a trait.
@@ -1960,7 +1834,8 @@ where
     /// This method is now a no-op but kept for API compatibility.
     ///
     /// Used during module hot-reload (repl/spec.md §14.2).
-    pub fn unregister_trait(&self, _trait_name: &TraitName) {
+    #[allow(dead_code)] // no-op kept for symmetry with remove_module; exercised via TestFixture.
+    pub(crate) fn unregister_trait(&self, _trait_name: &TraitName) {
         // TraitImpl entries live on module SymbolTables — removing the module
         // (done by remove_module before this is called) removes them.
     }
@@ -1975,7 +1850,8 @@ where
     ///
     /// Returns the removed symbol table, or None if the module was not found.
     /// Used during module hot-reload (repl/spec.md §14.2).
-    pub fn remove_module(&self, module_path: &ModuleFullPath) -> Option<SymbolTable<C, L>> {
+    #[allow(dead_code)] // reserved for REPL `/reload` cache invalidation path.
+    pub(crate) fn remove_module(&self, module_path: &ModuleFullPath) -> Option<SymbolTable<C, L>> {
         let (_, table) = self.modules.remove(module_path)?;
 
         // Unregister traits defined by this module.
@@ -2003,77 +1879,23 @@ where
     ///
     /// Used after `remove_module` to re-establish the module path before
     /// recompilation populates it with fresh definitions.
-    pub fn insert_module(&self, table: SymbolTable<C, L>) {
+    #[allow(dead_code)] // reserved for REPL `/reload` cache invalidation path.
+    pub(crate) fn insert_module(&self, table: SymbolTable<C, L>) {
         self.modules.insert(table.path.clone(), table);
     }
 
     // --- Cache restoration ---
-
-    /// Restore a module's symbol table from cached metadata.
-    ///
-    /// Installs the given symbol table into the modules map.
-    /// All definitions (types, traits, constructors) are stored directly
-    /// on the SymbolTable, so no separate registry reconstruction is needed.
-    /// Trait method resolution uses `trait_origin` on `ModuleEntry::Def` entries.
-    ///
-    /// Used by the pipeline's cache-hit path (src/pipeline.rs).
-    pub fn restore_cached_module(&self, table: SymbolTable<C, L>) {
-        let path = table.path.clone();
-
-        // Advance next_id past any type variable IDs used in the cached
-        // module's schemes. Without this, instantiate_constrained may create
-        // fresh vars with IDs that collide with vars already in cached schemes,
-        // causing infinite recursion in apply_subst.
-        self.advance_next_id_past_table(&table);
-
-        self.modules.insert(path, table);
-    }
-
-    /// Advance `next_id` past the maximum type variable ID found in a symbol table.
-    ///
-    /// Scans all schemes (including constraint vars) in the table and ensures
-    /// `next_id` is strictly greater than any ID found. This prevents ID
-    /// collisions between cached schemes and freshly created type variables.
-    pub(crate) fn advance_next_id_past_table(&self, table: &SymbolTable<C, L>) {
-        let mut max_id: Option<TypeId> = None;
-
-        for (_name, entry) in table.all_symbols() {
-            let scheme = match entry {
-                ModuleEntry::Def { scheme, .. } => Some(scheme),
-                ModuleEntry::Constructor { scheme, .. } => Some(scheme),
-                _ => None,
-            };
-            if let Some(s) = scheme {
-                // Check vars in the scheme's type.
-                if let Some(id) = cranelisp_types::max_type_var_id(&s.ty) {
-                    max_id = Some(max_id.map_or(id, |m: TypeId| m.max(id)));
-                }
-                // Check quantified vars (they may not appear in the type
-                // after substitution, but we reserved those IDs).
-                for &v in &s.vars {
-                    max_id = Some(max_id.map_or(v, |m| m.max(v)));
-                }
-                // Check constraint keys.
-                for &v in s.constraints.keys() {
-                    max_id = Some(max_id.map_or(v, |m| m.max(v)));
-                }
-            }
-        }
-
-        if let Some(id) = max_id {
-            self.next_id.fetch_max(id + 1, Ordering::Relaxed);
-        }
-    }
-
-    /// Restore trait implementation registrations from cached data.
-    ///
-    /// After registry elimination, `ModuleEntry::TraitImpl` entries are stored
-    /// directly on the module's SymbolTable and restored with it via
-    /// `restore_cached_module`. This method is now a no-op but kept for API
-    /// compatibility with the caller in `src/worker.rs`.
-    pub fn restore_cached_impls(&self, _mangled_names: &[String]) {
-        // TraitImpl entries are on the SymbolTable — no separate reconstruction needed.
-    }
+    //
+    // Sprint 67 hack-back (FIXME 0192 method 11 split): `restore_cached_module`
+    // and `restore_cached_impls` are deleted. Callers (currently
+    // `CompilerSession::introduce_module`'s cache-hit branch in
+    // `src/session_v4.rs`) compose primitives directly:
+    //   1. `cranelisp_typecheck::advance_next_id_past_table(next_id, &table)`
+    //      to preserve the TypeId-consistency invariant.
+    //   2. `cranelisp_types::install_module(modules, path, table)` to atomically
+    //      install the decoded `SymbolTable`.
+    // `restore_cached_impls` was a no-op (trait impls live on the cached
+    // `SymbolTable` and arrive with it) — deleted with no replacement.
 
     // --- REPL snapshot/restore ---
 
@@ -2202,6 +2024,98 @@ where
         self.is_internal_constructor_check_with_state(state, bare_name)
     }
 
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 67 hack-back (FIXME 0192 methods 9 + 10): free-fn entry points
+// for `register_imports` / `register_exports`. Cross-crate callers avoid
+// constructing a transient `TypeCheckEnv` per spec change; instead they
+// hand in the live `next_id` + `&DashMap` + `&mut CheckState` directly.
+// Implementation delegates to the existing methods to preserve semantics
+// (visibility checks, ambiguity detection, staging-aware writes via
+// `current_symbol_table_mut`); only the API shape changes.
+// ---------------------------------------------------------------------------
+
+/// Advance `next_id` past the maximum TypeId found in `table`'s schemes.
+///
+/// Sprint 67 hack-back (FIXME 0192 method 11 split): the cache-hit branch
+/// of `CompilerSession::introduce_module` calls this free fn against the
+/// shared `next_id` atomic before `cranelisp_types::install_module` is
+/// invoked. The TypeId-consistency invariant is typecheck-internal (it
+/// prevents fresh vars from colliding with cached vars during
+/// `apply_subst`), so the work stays in this crate; the orchestration is
+/// hoisted to `int` per the FIXME 0192 disposition.
+pub fn advance_next_id_past_table<C, L>(
+    next_id: &AtomicU32,
+    table: &SymbolTable<C, L>,
+) where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    let mut max_id: Option<TypeId> = None;
+    for (_name, entry) in table.all_symbols() {
+        let scheme = match entry {
+            ModuleEntry::Def { scheme, .. } => Some(scheme),
+            ModuleEntry::Constructor { scheme, .. } => Some(scheme),
+            _ => None,
+        };
+        if let Some(s) = scheme {
+            if let Some(id) = cranelisp_types::max_type_var_id(&s.ty) {
+                max_id = Some(max_id.map_or(id, |m: TypeId| m.max(id)));
+            }
+            for &v in &s.vars {
+                max_id = Some(max_id.map_or(v, |m| m.max(v)));
+            }
+            for &v in s.constraints.keys() {
+                max_id = Some(max_id.map_or(v, |m| m.max(v)));
+            }
+        }
+    }
+    if let Some(id) = max_id {
+        next_id.fetch_max(id + 1, Ordering::Relaxed);
+    }
+}
+
+/// Register import specs for the current module (free-fn entry point).
+///
+/// Per the FIXME 0192 disposition for method 9 (`register_imports`): the work
+/// is genuinely typecheck-pass — interprets `ImportSpec` / `ImportNames` AST
+/// variants, applies visibility + ambiguity rules per spec §8.6, mutates
+/// `state.module_aliases`, produces typecheck diagnostics. The method-on-
+/// `TypeCheckEnv` shape forced cross-crate callers to construct transient
+/// envs; this free fn closes that smell while keeping the substance in
+/// typecheck.
+pub fn register_imports<C, L>(
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    next_id: &AtomicU32,
+    state: &mut CheckState,
+    specs: &[ImportSpec],
+) -> Result<(), CranelispError>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    let env = TypeCheckEnv::<C, L>::new(symbol_tables, next_id);
+    env.register_imports(state, specs)
+}
+
+/// Register export (re-export) specs for the current module (free-fn entry).
+///
+/// Mirror of [`register_imports`] for `ExportSpec` / `Reexport` entries with
+/// path-resolution (try-as-is or child-of-current per spec §8.6.x relative
+/// form). Same disposition as method 10.
+pub fn register_exports<C, L>(
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    next_id: &AtomicU32,
+    state: &mut CheckState,
+    specs: &[ExportSpec],
+) -> Result<(), CranelispError>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    let env = TypeCheckEnv::<C, L>::new(symbol_tables, next_id);
+    env.register_exports(state, specs)
 }
 
 // ---------------------------------------------------------------------------
@@ -2526,13 +2440,11 @@ impl TestFixture {
         has_wildcard: bool,
         span: Span,
     ) -> Result<(), CranelispError> {
-        self.env().check_exhaustiveness_in_module(
-            &self.state.current_module,
-            type_name,
-            covered,
-            has_wildcard,
-            span,
-        )
+        let fqtn = cranelisp_types::FQTypeName::new(
+            self.state.current_module.clone(),
+            type_name.clone(),
+        );
+        self.env().check_exhaustiveness_in_module(&fqtn, covered, has_wildcard, span)
     }
 
     /// Check exhaustiveness in a specific module (test convenience).
@@ -2544,13 +2456,8 @@ impl TestFixture {
         has_wildcard: bool,
         span: Span,
     ) -> Result<(), CranelispError> {
-        self.env().check_exhaustiveness_in_module(
-            module_path,
-            type_name,
-            covered,
-            has_wildcard,
-            span,
-        )
+        let fqtn = cranelisp_types::FQTypeName::new(module_path.clone(), type_name.clone());
+        self.env().check_exhaustiveness_in_module(&fqtn, covered, has_wildcard, span)
     }
 
     /// Fresh var id (test convenience).
@@ -2847,22 +2754,31 @@ mod tests {
         assert_eq!(tf.state.current_module.as_ref(), "user");
     }
 
-    // spec: 11-stdlib §11.1, 08-modules §8.9 — bare module has root module contents only
+    // spec: 11-stdlib §11.1, 08-modules §8.9 — special-form metadata lives at
+    // root `""` only (Principle 17 amendment, FIXME 0193). Regular modules
+    // are empty after ensure_module_exists.
     #[test]
     fn test_bare_module_has_root_contents_only() {
         let mut tf = TestFixture::new();
         tf.set_current_module(ModuleFullPath::from("bare"));
 
-        // --- Root module: special forms ---
-        assert!(tf.symbol_table().get("if").is_some(), "if should be available");
-        assert!(tf.symbol_table().get("let").is_some(), "let should be available");
-        assert!(tf.symbol_table().get("defn").is_some(), "defn should be available");
-        assert!(tf.symbol_table().get("fn").is_some(), "fn should be available");
-        assert!(tf.symbol_table().get("match").is_some(), "match should be available");
-        assert!(tf.symbol_table().get("deftype").is_some(), "deftype should be available");
-        assert!(tf.symbol_table().get("deftrait").is_some(), "deftrait should be available");
-        assert!(tf.symbol_table().get("impl").is_some(), "impl should be available");
-        assert!(tf.symbol_table().get("defmacro").is_some(), "defmacro should be available");
+        // --- Special forms live at root `""` ---
+        let root_path = ModuleFullPath::from("");
+        let root_table = tf.modules.get(&root_path).expect("root \"\" should exist");
+        assert!(root_table.get("if").is_some(), "if should be at root \"\"");
+        assert!(root_table.get("let").is_some(), "let should be at root \"\"");
+        assert!(root_table.get("defn").is_some(), "defn should be at root \"\"");
+        assert!(root_table.get("fn").is_some(), "fn should be at root \"\"");
+        assert!(root_table.get("match").is_some(), "match should be at root \"\"");
+        assert!(root_table.get("deftype").is_some(), "deftype should be at root \"\"");
+        assert!(root_table.get("deftrait").is_some(), "deftrait should be at root \"\"");
+        assert!(root_table.get("impl").is_some(), "impl should be at root \"\"");
+        assert!(root_table.get("defmacro").is_some(), "defmacro should be at root \"\"");
+        drop(root_table);
+
+        // --- Bare module is empty (no special forms seeded — FIXME 0193) ---
+        assert!(tf.symbol_table().get("if").is_none(), "if not seeded into bare modules");
+        assert!(tf.symbol_table().get("let").is_none(), "let not seeded into bare modules");
 
         // --- NOT available without import (spec §8.9.1) ---
         assert!(tf.symbol_table().get("Int").is_none(), "Int needs import");
@@ -2890,25 +2806,27 @@ mod tests {
         assert!(prims_table.get("run-test").is_some(), "run-test in primitives");
     }
 
-    // spec: 08-modules §8.9 — new modules get root contents, nothing else
+    // spec: 08-modules §8.9 — new modules are empty; special forms live at
+    // root `""` (Principle 17 amendment, FIXME 0193).
     #[test]
     fn test_set_current_module_creates_new() {
         let mut tf = TestFixture::new();
         tf.set_current_module(ModuleFullPath::from("math"));
         assert_eq!(tf.state.current_module.as_ref(), "math");
-        assert!(tf.symbol_table().get("if").is_some());
+        assert!(tf.symbol_table().get("if").is_none(), "special forms at root \"\", not seeded");
         assert!(tf.symbol_table().get("Int").is_none());
         assert!(tf.symbol_table().get("add-i64").is_none());
         assert!(tf.symbol_table().get("+").is_none());
     }
 
-    // spec: 08-modules §8.6 — switching modules preserves existing module state
+    // spec: 08-modules §8.6 — switching modules preserves existing module state.
+    // Per FIXME 0193 amendment: `user` has no special status.
     #[test]
     fn test_switch_back_to_user_preserves_builtins() {
         let mut tf = TestFixture::new();
         tf.set_current_module(ModuleFullPath::from("other"));
         tf.set_current_module(ModuleFullPath::from("user"));
-        assert!(tf.symbol_table().get("if").is_some());
+        assert!(tf.symbol_table().get("if").is_none(), "user not architecturally privileged");
         assert!(tf.symbol_table().get("add-i64").is_none());
     }
 
@@ -3314,14 +3232,15 @@ mod tests {
 
     // --- Builtin seeding in new modules ---
 
-    // spec: 08-modules §8.9 — new module seeded with builtin imports as Import entries
+    // spec: 08-modules §8.9 — new module is empty (Principle 17 amendment,
+    // FIXME 0193). Special forms at root `""`, not seeded.
     #[test]
     fn test_new_module_does_not_have_primitives() {
         let mut tf = TestFixture::new();
         tf.set_current_module(ModuleFullPath::from("mymod"));
         assert!(tf.symbol_table().get("add-i64").is_none(), "add-i64 needs import");
         assert!(tf.symbol_table().get("bind").is_none(), "bind needs import");
-        assert!(tf.symbol_table().get("if").is_some(), "if should be available");
+        assert!(tf.symbol_table().get("if").is_none(), "special forms at root \"\"");
         assert!(tf.symbol_table().get("Int").is_none(), "Int needs import");
     }
 
@@ -3388,8 +3307,10 @@ mod tests {
     // Tests use `TestFixture` which already populates `user` with
     // special forms so the seed clone is non-trivial.
 
+    // Per Principle 17 amendment (FIXME 0193): `ensure_module_exists` creates
+    // an empty `SymbolTable`. Special forms live at root `""` only.
     #[test]
-    fn ensure_module_exists_seeds_special_forms_on_first_call() {
+    fn ensure_module_exists_creates_empty_table() {
         let tf = TestFixture::new();
         let path = ModuleFullPath::from("fresh-mod-a");
         assert!(
@@ -3399,14 +3320,13 @@ mod tests {
         tf.env().ensure_module_exists(&path);
         let guard = tf.modules.get(&path).expect("module must be present");
         assert!(
-            guard.get("if").is_some(),
-            "special forms must be seeded"
+            guard.get("if").is_none(),
+            "special forms not seeded (FIXME 0193) — live at root \"\""
         );
         assert!(
-            guard.get("defn").is_some(),
-            "special forms must be seeded"
+            guard.get("defn").is_none(),
+            "special forms not seeded (FIXME 0193) — live at root \"\""
         );
-        // And NOT builtin types (those require explicit import).
         assert!(
             guard.get("Int").is_none(),
             "builtin types must NOT leak via ensure"
@@ -3457,9 +3377,10 @@ mod tests {
             "pre-existing helper-val MUST NOT be overwritten by second ensure \
              (H6 regression guard — design/int/heisenbug-race-closure.md §8.3)"
         );
+        // Per FIXME 0193: special forms NOT seeded into regular modules.
         assert!(
-            guard.get("if").is_some(),
-            "seeded special forms still present"
+            guard.get("if").is_none(),
+            "special forms live at root \"\", not seeded into regular modules"
         );
     }
 
@@ -3529,11 +3450,12 @@ mod tests {
             h.join().unwrap();
         }
 
-        // Post-condition: the table is present AND seeded.
+        // Post-condition: the table is present and empty. Special forms
+        // live at root `""` (FIXME 0193).
         let guard = tf.modules.get(&path).expect("module must be present");
         assert!(
-            guard.get("if").is_some(),
-            "special forms must be seeded even under concurrency"
+            guard.get("if").is_none(),
+            "special forms at root \"\", not seeded under concurrency"
         );
 
         // Sink invariants (only valid if our hook was the active

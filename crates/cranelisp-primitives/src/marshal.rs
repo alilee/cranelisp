@@ -16,7 +16,7 @@
 
 use cranelisp_intrinsics::alloc::alloc_with_rc;
 use cranelisp_intrinsics::drop::{consume_sexp, consume_slist};
-use cranelisp_intrinsics::string::alloc_string;
+use cranelisp_intrinsics::heap_string::alloc_string;
 use cranelisp_types::{
     TAG_SNIL, TAG_SCONS,
     TAG_SEXP_INT, TAG_SEXP_FLOAT, TAG_SEXP_BOOL, TAG_SEXP_STR,

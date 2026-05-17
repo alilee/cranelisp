@@ -14,27 +14,27 @@ pub mod serialize;
 pub mod object;
 pub mod linker;
 
-pub use manifest::{
-    CacheManifest, CachedModuleRef, CacheInvalidReason, check_manifest, hash_source,
-    read_manifest, write_manifest, binary_fingerprint,
-};
-// Authoritative cache API (Sprint 58 Step 5b — `module-caching.md` §14):
-// `.meta.json` IS a serialised `SymbolTable`; `CacheStale` is the
-// failure-mode discriminator caller logs / branches on.
-pub use serialize::{
-    deserialise_meta, load_meta, serialise_meta, write_meta, CacheStale,
-};
-// Deprecated shims — present so `/int`-owned (`src/session_v4.rs`) and
-// `/qa`-owned (`tests/cache.rs`) call sites continue to compile during the
-// Wave 2b parallel migration. Migrate to the authoritative API above.
-#[allow(deprecated)]
-pub use serialize::{CacheMetadata, read_cached_metadata, write_cached_metadata};
-pub use object::{
-    ObjectCompileInput, IntrinsicTable, IntrinsicEntry,
-    CacheWritePacket, build_cache_packet, process_cache_packet,
-    got_data_symbol_name,
-};
-pub use linker::Linker;
+// Doubled root re-export layer retired (Sprint 67 Wave 4 narrowing per
+// `design/arch/facades/backend-cache.md` §"Wave 4 checklist"). Every item
+// formerly re-exported here has a canonical home in a submodule
+// (`manifest`, `serialize`, `object`, `linker`); the root-level
+// re-exports were a pre-S67 convenience layer that doubled the published
+// surface. External callers route through the canonical submodule paths:
+//
+//   - `cranelisp_backend::cache::manifest::{CacheManifest, CachedModuleRef,
+//      CacheInvalidReason, check_manifest, hash_source, read_manifest,
+//      write_manifest, binary_fingerprint}`
+//   - `cranelisp_backend::cache::serialize::{CacheMetadata, CacheStale,
+//      serialise_meta, deserialise_meta, write_meta, load_meta,
+//      read_cached_metadata, write_cached_metadata}`
+//   - `cranelisp_backend::cache::object::{CacheWritePacket,
+//      ObjectCompileInput, IntrinsicTable, IntrinsicEntry, FnSlotInfo,
+//      build_cache_packet, process_cache_packet, got_data_symbol_name,
+//      build_isa}`
+//   - `cranelisp_backend::cache::linker::Linker`
+//
+// In-crate use sites within `cranelisp-backend` itself use the submodule
+// paths directly (`crate::cache::linker::Linker`, …).
 
 /// Cache schema version (Decision 34, Sprint 58 §14.2).
 ///
@@ -284,7 +284,7 @@ pub fn load_cached_object(
     let mut fn_addrs = std::collections::HashMap::new();
     for (name, entry) in cached.symbol_table().all_symbols() {
         if matches!(entry, cranelisp_types::ModuleEntry::Def { got_slot: Some(_), .. })
-            && let Some(addr) = linker.get_symbol(name.as_ref())
+            && let Ok(addr) = linker.get_symbol(name.as_ref())
         {
             fn_addrs.insert(name.as_ref().to_string(), addr);
         }
@@ -315,6 +315,7 @@ pub(crate) fn atomic_write(
 #[allow(deprecated)]
 mod tests {
     use super::*;
+    use crate::cache::linker::Linker;
     use cranelisp_types::{ModuleFullPath, SymbolTable};
 
     /// Helper: write a fresh-build SymbolTable to the cache path using the

@@ -70,7 +70,7 @@ impl FileWatcher {
         if let Ok(canonical) = path.canonicalize() {
             if !self.content_hashes.contains_key(&canonical) {
                 if let Ok(content) = std::fs::read_to_string(&canonical) {
-                    let hash = cranelisp_backend::cache::hash_source(&content);
+                    let hash = cranelisp_backend::cache::manifest::hash_source(&content);
                     self.content_hashes.insert(canonical, hash);
                 }
             }
@@ -145,7 +145,7 @@ impl FileWatcher {
             Ok(c) => c,
             Err(_) => return false, // File gone (deleted or in-flight); skip.
         };
-        let new_hash = cranelisp_backend::cache::hash_source(&content);
+        let new_hash = cranelisp_backend::cache::manifest::hash_source(&content);
 
         match self.content_hashes.get(path) {
             Some(old_hash) if old_hash == &new_hash => false, // Same content; skip.

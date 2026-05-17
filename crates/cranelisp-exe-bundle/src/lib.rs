@@ -32,18 +32,21 @@ pub use cranelisp_intrinsics::alloc;
 pub use cranelisp_intrinsics::drop;
 pub use cranelisp_intrinsics::io;
 pub use cranelisp_intrinsics::ivar;
-pub use cranelisp_intrinsics::ops;
 pub use cranelisp_intrinsics::panic;
 pub use cranelisp_intrinsics::rc;
-pub use cranelisp_intrinsics::trace;
-pub use cranelisp_intrinsics::string as intrinsics_string;
-pub use cranelisp_intrinsics::vec as intrinsics_vec;
+// `cranelisp_intrinsics::trace` re-export DELETED per Decision 40 / Path B1
+// (S67 W4, FIXME 0202): `--link` mode rejects `(trace ...)` at compile time
+// (FIXME 0199), so the static archive `libcranelisp_exe_bundle.a` does not
+// need trace symbols.
+pub use cranelisp_intrinsics::heap_string as intrinsics_string;
+pub use cranelisp_intrinsics::vec_runtime as intrinsics_vec;
 
-// Force-link primitives submodules (user-callable APIs).
+// Force-link primitives submodules (user-callable APIs + Ring 0 ops).
 pub use cranelisp_primitives::bool;
 pub use cranelisp_primitives::float;
 pub use cranelisp_primitives::int;
 pub use cranelisp_primitives::marshal;
+pub use cranelisp_primitives::ring0;
 pub use cranelisp_primitives::string as primitives_string;
 pub use cranelisp_primitives::vec as primitives_vec;
 

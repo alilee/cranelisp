@@ -4,9 +4,43 @@ target: /typecheck
 filed_by: /sprint
 filed_at: 2026-05-11
 sprint_filed: 66
-refers_to: crates/cranelisp-typecheck/src/checker.rs (defining_module_for ~L578, fqtn_for_bare_type_name ~L563), design/arch/principles/17-module-locality-in-typecheck.md, design/arch/decisions/0045-traitimpl-storage-in-trait-defining-module.md
-status: open
+refers_to: crates/cranelisp-typecheck/src/checker.rs (defining_module_for ~L578, fqtn_for_bare_type_name ~L563), design/arch/principles/17-module-locality-in-typecheck.md, design/arch/decisions/0045-traitimpl-storage-in-trait-defining-module.md, design/arch/fixmes/0187-int-migrate-typecheckenv-consumers-off-narrowed-helpers.md
+status: deferred-with-named-residue
 ---
+
+# S67 W3 update — deferred-with-named-residue
+
+Sprint 67 Wave 3 /dev (typecheck) narrowed TypeCheckEnv from 37 public
+methods toward the facade target of 2 (`new` + `next_type_id`). Per the
+PIF row 21 expectation in `design/arch/facades/typecheck.md` §"TypeCheckEnv
+target shape — narrowing target", ~28 of the ~30 helper methods drop to
+`pub(crate)`.
+
+Final state: 17 methods remain `pub` because `int` consumes them
+cross-crate (`src/session_v4.rs`, `src/worker.rs`, `src/platform.rs`,
+`src/session.rs`). Narrowing those would break the consumer build.
+
+The remaining migration burden is captured in `design/arch/fixmes/0187-int-migrate-typecheckenv-consumers-off-narrowed-helpers.md`,
+which lists each remaining `pub` method, its cross-crate consumer site(s),
+and the suggested migration path (most consumers can migrate to direct
+`SymbolTable::get` reads with per-symbol chain-follow per Principle 17).
+
+Once /dev (int) lands FIXME 0187, the typecheck-side narrowing of these
+methods is a mechanical follow-up — change `pub` → `pub(crate)` and the
+facade compliance test (`row_21_*`) flips green at threshold ≤4.
+
+The original substance of FIXME 0172 (Principle 17 short-name fallback
+chain in `defining_module_for` and `fqtn_for_bare_type_name`) is **also**
+captured by 0187's "Phase A — REPL introspection migration": when
+`session_v4.rs:3693` (the consumer of `defining_module_for`) migrates to
+direct chain-follow, the helper itself either narrows to `pub(crate)` or
+deletes. `fqtn_for_bare_type_name` is already `pub(crate)`; its remaining
+substantive issue (the hardcoded primitive type list at lines 810–814) is
+also follow-up work — the chain-follow becomes principled when the
+prelude's per-symbol Import bindings reach every callsite, which is a
+bootstrap-ordering concern downstream of the consumer migration.
+
+
 
 # 0172 — Eliminate short-name fallback chains in typecheck bootstrap (Principle 17 follow-up)
 

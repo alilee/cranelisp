@@ -180,8 +180,13 @@ pub fn process_cluster(
     scope: &ModuleFullPath,
 ) -> Result<ProcessedCluster, CranelispError> {
     // Build the cluster's `Vec<TopLevel>` via the new `build_form` /
-    // `build_expr` boundary (replacing the retired `build_program`).
-    let working_program = crate::worker::build_program_compat(&forms)?;
+    // `build_expr` boundary (replacing the retired `build_program`). Per
+    // Decision 40 / Path B1 (FIXMEs 0199 + 0204): `build_program_compat`
+    // runs `link_mode::validate_*` against each parsed entry. Mode comes
+    // from `shared.codegen_behaviour` — `--link` rejects `(trace ...)`
+    // here; REPL/`--run` accepts it.
+    let working_program =
+        crate::worker::build_program_compat(&forms, shared.codegen_behaviour)?;
 
     // Wrap any bare `Expr` form as a synthetic `__expr` defn so it flows
     // through the typecheck dispatch.

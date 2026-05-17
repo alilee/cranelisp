@@ -161,45 +161,13 @@ impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_typecheck::ReplSnapsh
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_typecheck::ReplSnapshot
 pub struct cranelisp_typecheck::TypeCheckEnv<'a, C, L> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 impl<'a, C, L> cranelisp_typecheck::TypeCheckEnv<'a, C, L> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::all_type_defs(&self) -> alloc::vec::Vec<(cranelisp_types::newtype::TypeName, cranelisp_types::check::TypeDefInfo)>
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::all_type_defs_map(&self) -> std::collections::hash::map::HashMap<cranelisp_types::newtype::TypeName, cranelisp_types::check::TypeDefInfo>
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::defining_module_for(&self, state: &cranelisp_typecheck::CheckState, name: &str) -> cranelisp_types::newtype::ModuleFullPath
 pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::ensure_module_exists(&self, path: &cranelisp_types::newtype::ModuleFullPath)
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::fqtn_for_type(&self, type_name: &cranelisp_types::newtype::TypeName) -> core::option::Option<cranelisp_types::newtype::FQTypeName>
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::get_got_slot(&self, module: &cranelisp_types::newtype::ModuleFullPath, name: &cranelisp_types::newtype::Symbol) -> core::option::Option<usize>
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::get_implementing_types(&self, trait_name: &cranelisp_types::newtype::TraitName) -> alloc::vec::Vec<cranelisp_types::newtype::TypeName>
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::get_impls_for_type(&self, type_name: &cranelisp_types::newtype::TypeName) -> alloc::vec::Vec<cranelisp_types::newtype::TraitName>
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::get_trait_methods(&self, trait_name: &cranelisp_types::newtype::TraitName) -> core::option::Option<alloc::vec::Vec<cranelisp_types::newtype::Symbol>>
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::get_type_constructors(&self, type_name: &cranelisp_types::newtype::TypeName) -> core::option::Option<alloc::vec::Vec<cranelisp_types::check::ConstructorInfo>>
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::has_impl(&self, trait_name: &cranelisp_types::newtype::TraitName, impl_type: &cranelisp_types::newtype::TypeName) -> bool
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::has_module(&self, path: &cranelisp_types::newtype::ModuleFullPath) -> bool
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::insert_module(&self, table: cranelisp_types::module::SymbolTable<C, L>)
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::is_internal_constructor_check(&self, ctor_name: &str) -> bool
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::lookup_constructor_type(&self, ctor_name: &str) -> core::option::Option<cranelisp_types::newtype::TypeName>
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::lookup_trait_decl(&self, trait_name: &cranelisp_types::newtype::TraitName) -> core::option::Option<cranelisp_types::ast::TraitDecl>
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::lookup_type_def(&self, name: &cranelisp_types::newtype::TypeName) -> core::option::Option<cranelisp_types::check::TypeDefInfo>
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::method_belongs_to_trait(&self, method: &cranelisp_types::newtype::Symbol, trait_name: &cranelisp_types::newtype::TraitName) -> bool
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::method_to_trait(&self, method_name: &cranelisp_types::newtype::Symbol) -> core::option::Option<cranelisp_types::newtype::TraitName>
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::module_table(&self, path: &cranelisp_types::newtype::ModuleFullPath) -> core::option::Option<dashmap::mapref::one::Ref<'_, cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>>
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::module_table_cloned(&self, path: &cranelisp_types::newtype::ModuleFullPath) -> core::option::Option<cranelisp_types::module::SymbolTable<C, L>>
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::modules(&self) -> &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::modules_ref(&self) -> &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>
 pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::new(modules: &'a dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, next_id: &'a core::sync::atomic::AtomicU32) -> Self
+pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::next_type_id(&mut self) -> cranelisp_types::types::TypeId
 pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::register_exports(&self, state: &mut cranelisp_typecheck::CheckState, specs: &[cranelisp_types::module::ExportSpec]) -> core::result::Result<(), cranelisp_types::error::CranelispError>
 pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::register_imports(&self, state: &mut cranelisp_typecheck::CheckState, specs: &[cranelisp_types::module::ImportSpec]) -> core::result::Result<(), cranelisp_types::error::CranelispError>
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::remove_module(&self, module_path: &cranelisp_types::newtype::ModuleFullPath) -> core::option::Option<cranelisp_types::module::SymbolTable<C, L>>
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::resolve_module_by_name(&self, state: &cranelisp_typecheck::CheckState, name: &str) -> core::option::Option<cranelisp_types::newtype::ModuleFullPath>
 pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::restore(&self, state: &mut cranelisp_typecheck::CheckState, snapshot: cranelisp_typecheck::ReplSnapshot)
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::restore_cached_impls(&self, _mangled_names: &[alloc::string::String])
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::restore_cached_module(&self, table: cranelisp_types::module::SymbolTable<C, L>)
 pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::snapshot(&self, state: &cranelisp_typecheck::CheckState) -> cranelisp_typecheck::ReplSnapshot
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::snapshot_type_defs(&self) -> (std::collections::hash::map::HashMap<cranelisp_types::newtype::TypeName, cranelisp_types::check::TypeDefInfo>, std::collections::hash::map::HashMap<cranelisp_types::newtype::Symbol, cranelisp_types::newtype::TypeName>)
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::unregister_trait(&self, _trait_name: &cranelisp_types::newtype::TraitName)
-impl<C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore> cranelisp_typecheck::TypeCheckEnv<'_, C, L>
-pub fn cranelisp_typecheck::TypeCheckEnv<'_, C, L>::check_exhaustiveness(&self, type_name: &cranelisp_types::newtype::TypeName, covered_ctors: &[cranelisp_types::newtype::Symbol], has_wildcard: bool, span: cranelisp_types::span::Span) -> core::result::Result<(), cranelisp_types::error::CranelispError>
-impl<C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore> cranelisp_typecheck::TypeCheckEnv<'_, C, L>
-pub fn cranelisp_typecheck::TypeCheckEnv<'_, C, L>::clear_module_for_replace_public(&self, state: &mut cranelisp_typecheck::CheckState)
-pub fn cranelisp_typecheck::TypeCheckEnv<'_, C, L>::compute_display_info_public(&self, state: &cranelisp_typecheck::CheckState, original_program: &[cranelisp_types::ast::TopLevel], defn_type_vars: &std::collections::hash::map::HashMap<cranelisp_types::newtype::Symbol, (alloc::vec::Vec<cranelisp_types::types::Type>, cranelisp_types::types::Type)>) -> core::option::Option<cranelisp_types::check::DisplayInfo>
 impl<'a, C, L> core::marker::Freeze for cranelisp_typecheck::TypeCheckEnv<'a, C, L>
 impl<'a, C, L> core::marker::Send for cranelisp_typecheck::TypeCheckEnv<'a, C, L>
 impl<'a, C, L> core::marker::Sync for cranelisp_typecheck::TypeCheckEnv<'a, C, L>
@@ -207,7 +175,10 @@ impl<'a, C, L> core::marker::Unpin for cranelisp_typecheck::TypeCheckEnv<'a, C, 
 impl<'a, C, L> core::marker::UnsafeUnpin for cranelisp_typecheck::TypeCheckEnv<'a, C, L>
 impl<'a, C, L> !core::panic::unwind_safe::RefUnwindSafe for cranelisp_typecheck::TypeCheckEnv<'a, C, L>
 impl<'a, C, L> !core::panic::unwind_safe::UnwindSafe for cranelisp_typecheck::TypeCheckEnv<'a, C, L>
+pub fn cranelisp_typecheck::advance_next_id_past_table<C, L>(next_id: &core::sync::atomic::AtomicU32, table: &cranelisp_types::module::SymbolTable<C, L>) where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub fn cranelisp_typecheck::check_forms<C, L>(parsed: alloc::vec::Vec<cranelisp_types::parsed::ParsedEntry>, ctx: &mut cranelisp_typecheck::ClusterContext<'_, C, L>, symbol_tables: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>) -> core::result::Result<(), cranelisp_typecheck::CheckError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub fn cranelisp_typecheck::install_symbol_table_ensure_hook(hook: cranelisp_typecheck::trace::SymbolTableEnsureHook)
 pub fn cranelisp_typecheck::register_builtins<C, L>(modules: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, next_id: &core::sync::atomic::AtomicU32) where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_typecheck::register_exports<C, L>(symbol_tables: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, next_id: &core::sync::atomic::AtomicU32, state: &mut cranelisp_typecheck::CheckState, specs: &[cranelisp_types::module::ExportSpec]) -> core::result::Result<(), cranelisp_types::error::CranelispError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_typecheck::register_imports<C, L>(symbol_tables: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, next_id: &core::sync::atomic::AtomicU32, state: &mut cranelisp_typecheck::CheckState, specs: &[cranelisp_types::module::ImportSpec]) -> core::result::Result<(), cranelisp_types::error::CranelispError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub type cranelisp_typecheck::SymbolTableEnsureHook = fn(module: &cranelisp_types::newtype::ModuleFullPath, outcome: cranelisp_typecheck::trace::SymbolTableEnsureOutcome)

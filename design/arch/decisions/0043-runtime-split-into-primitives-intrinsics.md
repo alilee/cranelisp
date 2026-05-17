@@ -101,3 +101,25 @@ Rejected alternatives:
 Largest single migration scheduled in the architecture. Touches workspace structure, two BCs, three Decisions (this one + retracts 14 + reframes 15), multiple crates, and stdlib. Suggested as a Sprint-65+ wave gated on this Decision's acceptance — too big to bundle alongside facade-adoption work in S65's current scope.
 
 Decision 40's IoObserver API can land in `cranelisp-runtime` first (S65 scope) and migrate to `cranelisp-intrinsics` when this Decision's wave lands; no gating dependency between the two.
+
+## Status pointer — Sprint 67 FULL CLOSE
+
+S67 close — D43 closes completely. The trait-keyed dispatch ban
+that this Decision instituted has now been removed at every named
+residue:
+
+- **`primitive_for_trait_method(TraitName, Symbol, TypeName) -> Option<&'static str>`** — DELETED from `crates/cranelisp-backend/src/primitives_inline.rs` per Wave 3 row 6.
+- **`operators.rs`** — RETIRED at Wave 3 row 7. The rename to `primitives_inline.rs` from Wave 4 of the original D43 close (Sprint 65) is the only surviving file; the original `operators.rs::emit_builtin_op` shape is gone, and the surviving substitution table inside `primitives_inline.rs` is name-keyed only (`add-i64 → iadd`, etc. — Symbol-only, never `(TraitName, Symbol, TypeName)` triples).
+- **`cranelisp_op_*` family** — RETIRED at Wave 3 row 31. The 10
+  intrinsics-side fns (`cranelisp_op_add`, `cranelisp_op_eq`,
+  `cranelisp_op_lt`, etc.) deleted from `cranelisp-intrinsics::ops`;
+  their callers in backend's codegen had already migrated to
+  `cranelisp-primitives::ring0` per the S66 Wave 4b uniform
+  dispatch landing.
+
+FIXME 0150 closes alongside this Decision. Backend has no trait
+knowledge at S67 close; every primitive call site emits a uniform
+GOT-indirect dispatch (optionally with name-keyed inline substitution
+per the substitution table). Principle 17 (uniform dispatch — every
+callable goes through the GOT) holds at every callsite in the
+workspace.

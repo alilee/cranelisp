@@ -4,6 +4,13 @@
 // .o writes via this writer so the pipeline is never blocked by cache I/O.
 //
 // See design/arch/pipeline-v2.md §16.12 for the full design.
+//
+// Sprint 67 hack-back: the whole module is dormant — no current call sites
+// instantiate `CacheWriterHandle`. The writer thread + handle are retained
+// as the canonical pipeline-v2 §16.12 shape for the future `--link` background
+// .o write path. Suppress dead-code lints at module scope.
+
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::sync::mpsc;

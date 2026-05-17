@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{ErrorLocation,
-    CranelispError, DefKind, Defn, ExportSpec, ImportNames, ImportSpec,
+    CodegenBehaviour, CranelispError, DefKind, Defn, ExportSpec, ImportNames, ImportSpec,
     MacroClauseInfo, ModuleEntry, ModuleFullPath, ModuleStrategy,
     PlatformSpec, PrimitiveKind, Sexp, Span, Symbol, TopLevel, Visibility,
 };
@@ -64,8 +64,16 @@ impl ModuleCheckAccumulator {
 /// Per Decision 44's 2026-05-13 third amendment + FIXME 0156: `build_form`
 /// returns the parsed entries; the worker side still tracks `TopLevel` for
 /// downstream codegen, so we transcode at this boundary.
+///
+/// `mode` selects the build-mode validator pass per Decision 40 / Path B1
+/// (FIXMEs 0199 + 0204). Under `CodegenBehaviour::ObjectOnly` (`--link`),
+/// any `Expr::Trace` node reached during build is a compile-time error
+/// — see `cranelisp_frontend::link_mode`. Under
+/// `CodegenBehaviour::InMemoryAndObject` (REPL/`--run`), the validator is
+/// a no-op.
 pub(crate) fn build_program_compat(
     sexps: &[Sexp],
+    mode: CodegenBehaviour,
 ) -> Result<Vec<TopLevel>, CranelispError> {
     let mut out: Vec<TopLevel> = Vec::with_capacity(sexps.len());
     for sexp in sexps {
@@ -80,12 +88,14 @@ pub(crate) fn build_program_compat(
             // list-with-head-symbol top-level form.
             if !is_top_level_form(&inner) {
                 let expr = cranelisp_frontend::build_expr(&inner)?;
+                cranelisp_frontend::validate_expr_for_build_mode(&expr, mode)?;
                 out.push(TopLevel::Expr(expr));
                 continue;
             }
 
             let entries = cranelisp_frontend::build_form(&inner)?;
             for entry in entries {
+                cranelisp_frontend::validate_parsed_entry_for_build_mode(&entry, mode)?;
                 if let Some(tl) = parsed_entry_to_top_level(entry) {
                     out.push(tl);
                 }
@@ -621,8 +631,14 @@ fn compile_macro_clause_with_state(
     // Step 2: Expand quasiquotes.
     let expanded_sexp = cranelisp_frontend::expand_quasiquotes(&synth_sexp)?;
 
-    // Step 3: Build AST.
-    let program = build_program_compat(&[expanded_sexp])?;
+    // Step 3: Build AST. Macro clause synthesis emits compiler-generated
+    // bodies whose Sexp tree comes from `synthesize_macro_clause_defn`; user
+    // `(trace ...)` cannot reach this synthesis path. `InMemoryAndObject`
+    // bypasses the validator.
+    let program = build_program_compat(
+        &[expanded_sexp],
+        CodegenBehaviour::InMemoryAndObject,
+    )?;
 
     // Step 4: Typecheck via the collapsed `check_forms` surface (Decision 44
     // 2026-05-13 third amendment). `check_program_compat` runs the internal
@@ -1168,8 +1184,17 @@ pub fn process_module_forms(
 
         let (regular_sexps, macro_infos) = separate_macros(sexps, module)?;
 
-        // Build AST for regular (non-macro) forms.
-        let program = build_program_compat(&regular_sexps)?;
+        // Build AST for regular (non-macro) forms. Per Decision 40 / Path B1
+        // (FIXMEs 0199 + 0204): the cluster-orchestrator-equivalent path
+        // here runs the `(trace ...)`-in-`--link` validator pass before
+        // typecheck dispatch. Mode flows from `SharedState.codegen_behaviour`;
+        // REPL paths without `shared_state` default to `InMemoryAndObject`
+        // (validator is a no-op).
+        let mode = ctx
+            .shared_state
+            .map(|s| s.codegen_behaviour)
+            .unwrap_or(CodegenBehaviour::InMemoryAndObject);
+        let program = build_program_compat(&regular_sexps, mode)?;
         let working_program = wrap_exprs_as_defns(&program);
 
         pass1_register(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, &working_program, &mut state.accumulator)?;
@@ -1425,7 +1450,11 @@ fn process_regular_form(
         return Ok(());
     }
 
-    let built = build_program_compat(&regular_sexps)?;
+    let mode = ctx
+        .shared_state
+        .map(|s| s.codegen_behaviour)
+        .unwrap_or(CodegenBehaviour::InMemoryAndObject);
+    let built = build_program_compat(&regular_sexps, mode)?;
     let working = wrap_exprs_as_defns(&built);
 
     // Per Decision 44's 2026-05-13 third amendment, the per-form
@@ -1615,7 +1644,7 @@ fn handle_import(
                 crate::observability::SchedulerTraceTag::RegisterImportsLookup,
                 dep.as_ref(),
             );
-            cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).register_imports(&mut ctx.check_state,std::slice::from_ref(spec))?;
+            cranelisp_typecheck::register_imports(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, std::slice::from_ref(spec))?;
             continue;
         }
 
@@ -1641,7 +1670,7 @@ fn handle_import(
 
         // Cache check: try to load from disk cache before parsing.
         if try_cache_hit_load(ctx, dep, &dep_file) {
-            cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).register_imports(&mut ctx.check_state,std::slice::from_ref(spec))?;
+            cranelisp_typecheck::register_imports(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, std::slice::from_ref(spec))?;
             continue;
         }
 
@@ -1747,7 +1776,7 @@ fn register_dep(
 
     // 3. record source hash in CacheState for manifest generation.
     if let Some(shared) = ctx.shared_state {
-        let hash = cranelisp_backend::cache::hash_source(&source);
+        let hash = cranelisp_backend::cache::manifest::hash_source(&source);
         let mut cs_guard = shared.cache_state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(cs) = cs_guard.as_mut() {
             cs.source_hashes_mut().insert(dep.clone(), hash);
@@ -1811,6 +1840,7 @@ fn try_cache_hit_load(
     dep_file: &Path,
 ) -> bool {
     use cranelisp_backend::cache;
+    use cranelisp_backend::cache::manifest as cache_manifest;
     use std::collections::{HashMap as StdHashMap, HashSet as StdHashSet};
 
     let shared = match ctx.shared_state {
@@ -1838,7 +1868,7 @@ fn try_cache_hit_load(
         Ok(s) => s,
         Err(_) => return false,
     };
-    let source_hash = cache::hash_source(&dep_source);
+    let source_hash = cache_manifest::hash_source(&dep_source);
 
     // Check manifest (source hash only, no dep hashes yet).
     let dep_hashes: StdHashMap<ModuleFullPath, String> = StdHashMap::new();
@@ -1900,13 +1930,26 @@ fn try_cache_hit_load(
     // Sprint 58 Wave 3b: cached `<()>` table is converted to `<Code, ()>`
     // via `into_concrete` (every entry's `code` becomes `None::<Code>`;
     // codegen will populate fresh `Code::Jit` / `Code::Linker` entries).
-    cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id)
-        .restore_cached_module(
-            cached.metadata.symbol_table.into_concrete::<crate::code::Code, ()>(),
-        );
-
-    // Restore trait impl registrations from cached symbol table.
-    cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).restore_cached_impls(&mangled_names);
+    //
+    // Sprint 67 hack-back (FIXME 0192 method 11 split): the prior
+    // `restore_cached_module` method is deleted. Compose the two primitives
+    // directly: advance `next_type_id` past any TypeId vars in the cached
+    // schemes (preserves the consistency invariant — fresh vars must not
+    // collide with cached vars during `apply_subst`), then atomically
+    // install the decoded table via the `cranelisp-types` primitive.
+    //
+    // `restore_cached_impls` was a no-op (TraitImpl entries arrive on the
+    // SymbolTable) and is also deleted; `mangled_names` is preserved here
+    // as a marker for the cached-fn set in case future audits need it.
+    let _ = &mangled_names;
+    let concrete_table =
+        cached.metadata.symbol_table.into_concrete::<crate::code::Code, ()>();
+    cranelisp_typecheck::advance_next_id_past_table(ctx.next_type_id, &concrete_table);
+    cranelisp_types::install_module(
+        ctx.symbol_tables,
+        dep.clone(),
+        concrete_table,
+    );
 
     // Sprint 58 Step 5b §3.2 — re-resolve platform fn ptrs for each
     // (platform …) declaration recorded on the cached SymbolTable. The GOT
@@ -2116,7 +2159,7 @@ fn handle_export(
 
         // Already loaded — register the re-export and continue.
         if ctx.symbol_tables.contains_key(dep) {
-            cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).register_exports(&mut ctx.check_state,std::slice::from_ref(spec))?;
+            cranelisp_typecheck::register_exports(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, std::slice::from_ref(spec))?;
             continue;
         }
 
@@ -2173,7 +2216,7 @@ fn handle_export(
     }
 
     // All source modules loaded — register the re-exports.
-    cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).register_exports(&mut ctx.check_state,specs)?;
+    cranelisp_typecheck::register_exports(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, specs)?;
     Ok(BlockAction::Continue)
 }
 
@@ -2520,8 +2563,12 @@ fn compile_macro_clause_inline(
     let expanded_sexp = cranelisp_frontend::expand_quasiquotes(&synth_sexp)?;
 
     // Step 3: Build AST (macro clause bodies use quasiquote constructs,
-    // not other macros, so no expander is needed).
-    let program = build_program_compat(&[expanded_sexp])?;
+    // not other macros, so no expander is needed). Macro clause synthesis is
+    // compiler-generated; user `(trace ...)` cannot reach this path.
+    let program = build_program_compat(
+        &[expanded_sexp],
+        CodegenBehaviour::InMemoryAndObject,
+    )?;
 
     // Step 4: Typecheck via the collapsed `check_forms` surface (Decision 44
     // 2026-05-13 third amendment) — single call runs Pass 1 + Pass 2 + finalize.
@@ -2718,7 +2765,7 @@ fn inject_prelude_if_needed(
                     names: ImportNames::Glob,
                     span: Span::SYNTHETIC,
                 };
-                cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).register_imports(&mut ctx.check_state,&[prelude_spec])?;
+                cranelisp_typecheck::register_imports(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, &[prelude_spec])?;
                 return Ok(None);
             }
 
@@ -2762,7 +2809,7 @@ fn inject_prelude_if_needed(
             names: ImportNames::Glob,
             span: Span::SYNTHETIC,
         };
-        cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).register_imports(&mut ctx.check_state,&[prelude_spec])?;
+        cranelisp_typecheck::register_imports(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, &[prelude_spec])?;
     }
 
     Ok(None)
@@ -3425,11 +3472,7 @@ pub fn inline_jit_codegen_for_names(
         // Detect REPL redefinition: if `code` was already populated, the
         // GOT slot is being overwritten. Emit a `Redefinition` event before
         // overwriting so observability sees the lifecycle (FIXME 0099).
-        let prior_ptr: Option<*const u8> = match code {
-            Some(crate::code::Code::Jit { ptr, .. }) => Some(*ptr),
-            Some(crate::code::Code::Linker { ptr, .. }) => Some(*ptr),
-            None => None,
-        };
+        let prior_ptr: Option<*const u8> = code.as_ref().map(|c| c.ptr());
         *code = Some(crate::code::Code::jit(
             std::sync::Arc::clone(&jit_arc),
             code_ptr,
@@ -3534,7 +3577,7 @@ fn load_cached_module_via_linker(
     }
 
     // Build Linker with all known symbols.
-    let mut linker = cache::Linker::new()?;
+    let mut linker = cache::linker::Linker::new()?;
 
     // Register runtime intrinsics.
     for sym in cranelisp_backend::jit::intrinsic_symbols() {
@@ -5022,7 +5065,7 @@ mod tests {
         st.schema_version = 0;
 
         let (meta_path, _o_path) = cache::module_cache_path(dir.path(), &module);
-        cache::write_meta(&meta_path, &st, cache::CACHE_SCHEMA_VERSION)
+        cache::serialize::write_meta(&meta_path, &st, cache::CACHE_SCHEMA_VERSION)
             .expect("write_meta succeeds");
 
         // The worker's call shape (this is exactly how
@@ -5030,7 +5073,7 @@ mod tests {
         // A subsequent `load_meta` must reflect the stamped version AND
         // recover the structural decls verbatim — proving (a) the API
         // contract and (b) the symmetry invariant per §14.6.
-        let loaded = cache::load_meta(&meta_path).expect("load_meta succeeds");
+        let loaded = cache::serialize::load_meta(&meta_path).expect("load_meta succeeds");
         assert_eq!(
             loaded.schema_version,
             cache::CACHE_SCHEMA_VERSION,
@@ -5460,5 +5503,64 @@ mod tests {
             result.is_ok(),
             "top-level module 'toplevel' has no parent — privacy check is a no-op"
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // Decision 40 / Path B1 — link-mode (trace ...) rejection wiring
+    // ---------------------------------------------------------------------
+
+    // spec: spec/04-expressions.md §4.12.9 — `(trace ...)` rejected in --link mode.
+    // Verifies the int-side wiring of
+    // `cranelisp_frontend::validate_parsed_entry_for_build_mode` /
+    // `validate_expr_for_build_mode` invoked from
+    // `worker::build_program_compat` per FIXMEs 0199 + 0204.
+    #[test]
+    fn build_program_compat_rejects_trace_under_link_mode() {
+        let sexps = cranelisp_frontend::parse("(trace 42)").expect("parse");
+        let err = build_program_compat(&sexps, CodegenBehaviour::ObjectOnly)
+            .expect_err("expected (trace ...) to be rejected under --link");
+        match err {
+            cranelisp_types::CranelispError::ParseError { ref message, .. } => {
+                assert!(
+                    message.contains("(trace ...)"),
+                    "error message should name the form; got: {message}"
+                );
+                assert!(
+                    message.contains("--link"),
+                    "error message should name --link mode; got: {message}"
+                );
+            }
+            other => panic!("expected ParseError, got: {other:?}"),
+        }
+    }
+
+    // spec: spec/04-expressions.md §4.12.1-4.12.8 — `(trace ...)` is legal in
+    // REPL/`--run` modes. Validator must be a no-op there.
+    #[test]
+    fn build_program_compat_accepts_trace_under_inmem_mode() {
+        let sexps = cranelisp_frontend::parse("(trace 42)").expect("parse");
+        let prog = build_program_compat(&sexps, CodegenBehaviour::InMemoryAndObject)
+            .expect("trace must be accepted under InMemoryAndObject mode");
+        assert!(!prog.is_empty(), "build should produce at least one TopLevel");
+    }
+
+    // `(trace ...)` nested inside a `defn` body is rejected under --link.
+    #[test]
+    fn build_program_compat_rejects_trace_in_defn_body_under_link_mode() {
+        let sexps = cranelisp_frontend::parse("(defn f [] (trace 42))").expect("parse");
+        let err = build_program_compat(&sexps, CodegenBehaviour::ObjectOnly)
+            .expect_err("expected (trace ...) inside defn body to be rejected under --link");
+        assert!(
+            matches!(err, cranelisp_types::CranelispError::ParseError { .. }),
+            "expected ParseError, got: {err:?}"
+        );
+    }
+
+    // Programs with no `(trace ...)` form build cleanly under --link.
+    #[test]
+    fn build_program_compat_no_trace_passes_link_mode() {
+        let sexps = cranelisp_frontend::parse("(defn g [] 42)").expect("parse");
+        build_program_compat(&sexps, CodegenBehaviour::ObjectOnly)
+            .expect("plain defn must build under --link mode");
     }
 }

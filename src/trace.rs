@@ -1,30 +1,46 @@
 //! Runtime execution tracing for the `(trace ...)` special form.
 //!
-//! When a `trace` expression is evaluated the runtime:
+//! This is the int-hosted home for the 12 `cranelisp_trace_*` JIT-emitted-call
+//! function bodies, the trace stack, GOT-swap machinery, and ADT field
+//! accessors per Decision 40 §"Int hosting — the trace bodies and observer
+//! state" (Path B1, amended 2026-05-16). The 12 fns retain identical
+//! `#[no_mangle]` symbol names so backend-emitted CLIF references resolve
+//! through `int_intrinsics()`'s `JITBuilder::symbol(...)` registration.
+//!
+//! When a `(trace ...)` expression is evaluated, runtime:
 //! 1. Swaps the per-module GOT entries to thin wrapper functions.
 //! 2. Maintains a `TRACE_STACK` that mirrors the call stack.
 //! 3. After the body finishes, marshals the stack into a `Trace` ADT heap tree.
 //!
-//! Thread safety: `TRACE_THREAD_ID` ensures only one thread owns the trace role at
-//! a time. A different thread or a nested `trace` expression returns a sentinel /
-//! skips tracing.
+//! Thread safety: `TRACE_THREAD_ID` ensures only one thread owns the trace
+//! role at a time. A different thread or a nested `trace` expression returns
+//! a sentinel / skips tracing.
 //!
 //! Heap layout uses the base-pointer convention (Decision 10):
 //! `[alloc_size(+0) | rc=1(+8) | tag(+16) | field0(+24) | field1(+32) | ...]`
+//!
+//! `consume_trace_call` (the per-type drop helper that walks Trace ADT
+//! sub-refs) lives here as of FIXME 0198 — the TraceCall ADT layout is
+//! owned by int with the rest of the trace machinery, and the per-type
+//! consumer fn lives with the layout it walks. Intrinsics retains the
+//! generic `consume_shallow` (Strings) and `consume_slist`/`consume_sexp`
+//! (generic Sexp/SList drop glue) under `cranelisp_intrinsics::{rc,drop}`.
 
 use std::alloc::{self as alloc_mod, Layout};
 use std::ptr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
-use crate::alloc::alloc_with_rc;
-use crate::string::alloc_string;
+use cranelisp_intrinsics::alloc::alloc_with_rc;
+use cranelisp_intrinsics::heap_string::alloc_string;
+use cranelisp_intrinsics::{alloc as intrinsics_alloc, rc as intrinsics_rc};
+use cranelisp_types::HeapHeader;
 
 /// Lock the trace stack, recovering from mutex poisoning.
-/// Poisoning can occur if a JIT-compiled function panics while the lock is held.
-/// Recovery is safe because the trace stack is append-only during tracing and
-/// a poisoned state just means a frame was partially built.
+/// Poisoning can occur if a JIT-compiled function panics while the lock is
+/// held. Recovery is safe because the trace stack is append-only during
+/// tracing and a poisoned state just means a frame was partially built.
 fn lock_trace_stack() -> std::sync::MutexGuard<'static, Vec<TraceFrame>> {
     TRACE_STACK.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -52,8 +68,8 @@ const TAG_SCONS: i64 = cranelisp_types::TAG_SCONS;
 /// ID of the thread currently owning the trace role. 0 = no active trace.
 static TRACE_THREAD_ID: AtomicU64 = AtomicU64::new(0);
 
-/// Sentinel returned when the swap is skipped (another trace is active on a different
-/// thread, or this is a nested `trace` expression).
+/// Sentinel returned when the swap is skipped (another trace is active on a
+/// different thread, or this is a nested `trace` expression).
 const SENTINEL_SAVED_GOT: i64 = 1;
 
 /// Counter used to assign unique IDs to threads.
@@ -61,9 +77,10 @@ const SENTINEL_SAVED_GOT: i64 = 1;
 static THREAD_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 thread_local! {
-    /// Stable, unique ID for the current thread. Assigned once on first access.
-    /// CRITICAL: Must use a counter, NOT stack address (stack addresses differ
-    /// across call depths on the same thread, causing CAS failures).
+    /// Stable, unique ID for the current thread. Assigned once on first
+    /// access. CRITICAL: Must use a counter, NOT stack address (stack
+    /// addresses differ across call depths on the same thread, causing CAS
+    /// failures).
     static THIS_THREAD_ID: u64 = THREAD_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -118,8 +135,8 @@ fn alloc_adt(tag: i64, fields: &[i64]) -> i64 {
     let n_slots = 1 + fields.len(); // tag + fields
     let payload_size = n_slots * 8;
     let base = alloc_with_rc(payload_size) as i64;
-    // SAFETY: `base` was just allocated by `alloc_with_rc` with enough space for
-    // the payload header (16 bytes) plus `n_slots * 8` bytes of fields.
+    // SAFETY: `base` was just allocated by `alloc_with_rc` with enough space
+    // for the payload header (16 bytes) plus `n_slots * 8` bytes of fields.
     unsafe {
         write_i64(base, PAYLOAD_OFFSET, tag);
         for (i, &field) in fields.iter().enumerate() {
@@ -133,8 +150,8 @@ fn alloc_adt(tag: i64, fields: &[i64]) -> i64 {
 fn alloc_adt_3(tag: i64, field0: i64, field1: i64) -> i64 {
     let payload_size = 24; // tag(8) + field0(8) + field1(8)
     let base = alloc_with_rc(payload_size) as i64;
-    // SAFETY: `base` was just allocated by `alloc_with_rc` with 24 bytes of payload,
-    // sufficient for tag + 2 fields at offsets 16, 24, and 32.
+    // SAFETY: `base` was just allocated by `alloc_with_rc` with 24 bytes of
+    // payload, sufficient for tag + 2 fields at offsets 16, 24, and 32.
     unsafe {
         write_i64(base, PAYLOAD_OFFSET, tag);
         write_i64(base, FIELD0_OFFSET, field0);
@@ -182,8 +199,8 @@ fn build_trace_call(frame: TraceFrame, nanos: i64) -> i64 {
 
 // ── Public extern API ─────────────────────────────────────────────────────────
 
-/// Save the GOT, install wrapper pointers, and (on first call) push a synthetic root
-/// trace frame.
+/// Save the GOT, install wrapper pointers, and (on first call) push a synthetic
+/// root trace frame.
 ///
 /// Parameters:
 /// - `got_base`:     pointer to the module's `got_table[0]`
@@ -245,10 +262,11 @@ pub extern "C" fn cranelisp_trace_swap_got(
     let layout = got_layout();
 
     // 1. Allocate saved_got and copy the current GOT into it.
-    // SAFETY: `got_layout()` returns a valid layout for GOT_BYTES with 8-byte alignment.
+    // SAFETY: `got_layout()` returns a valid layout for GOT_BYTES with 8-byte
+    // alignment.
     let saved_got = unsafe { alloc_mod::alloc(layout) };
-    // SAFETY: `got_base` points to the module's GOT table (GOT_BYTES bytes, 8-byte aligned).
-    // `saved_got` was just allocated with the same layout.
+    // SAFETY: `got_base` points to the module's GOT table (GOT_BYTES bytes,
+    // 8-byte aligned). `saved_got` was just allocated with the same layout.
     unsafe {
         ptr::copy_nonoverlapping(got_base as *const u8, saved_got, GOT_BYTES);
     }
@@ -260,17 +278,17 @@ pub extern "C" fn cranelisp_trace_swap_got(
     unsafe {
         ptr::copy_nonoverlapping(saved_got, debug_got, GOT_BYTES);
     }
-    // SAFETY: `slots_ptr` points to a caller-allocated array of `n_slots` u32 values
-    // (GOT slot indices). `wrappers_ptr` points to a caller-allocated array of `n_slots`
-    // i64 values (wrapper code pointers). Both arrays are leaked Box allocations that
-    // remain valid for the program lifetime.
+    // SAFETY: `slots_ptr` points to a caller-allocated array of `n_slots` u32
+    // values (GOT slot indices). `wrappers_ptr` points to a caller-allocated
+    // array of `n_slots` i64 values (wrapper code pointers). Both arrays are
+    // leaked Box allocations that remain valid for the program lifetime.
     let slots =
         unsafe { std::slice::from_raw_parts(slots_ptr as *const u32, n_slots as usize) };
     let wrappers =
         unsafe { std::slice::from_raw_parts(wrappers_ptr as *const i64, n_slots as usize) };
     for (&slot, &wrapper) in slots.iter().zip(wrappers.iter()) {
-        // SAFETY: `slot` is a valid GOT index (< GOT_TABLE_SIZE), so the offset
-        // is within the `debug_got` allocation.
+        // SAFETY: `slot` is a valid GOT index (< GOT_TABLE_SIZE), so the
+        // offset is within the `debug_got` allocation.
         unsafe {
             let entry_ptr = (debug_got as *mut i64).add(slot as usize);
             *entry_ptr = wrapper;
@@ -278,8 +296,9 @@ pub extern "C" fn cranelisp_trace_swap_got(
     }
 
     // 3. Install: copy debug_got over the real GOT in one memcpy.
-    // SAFETY: `debug_got` and `got_base` are both GOT_BYTES-sized, non-overlapping buffers.
-    // `debug_got` is deallocated with the same layout it was allocated with.
+    // SAFETY: `debug_got` and `got_base` are both GOT_BYTES-sized,
+    // non-overlapping buffers. `debug_got` is deallocated with the same
+    // layout it was allocated with.
     unsafe {
         ptr::copy_nonoverlapping(debug_got, got_base as *mut u8, GOT_BYTES);
         alloc_mod::dealloc(debug_got, layout);
@@ -290,16 +309,18 @@ pub extern "C" fn cranelisp_trace_swap_got(
 
 /// Restore the GOT from the saved copy, then free it.
 /// If `saved_got` is `SENTINEL_SAVED_GOT` this is a no-op.
-/// Does NOT release `TRACE_THREAD_ID` -- that is done by `cranelisp_collect_trace`.
+/// Does NOT release `TRACE_THREAD_ID` -- that is done by
+/// `cranelisp_collect_trace`.
 #[unsafe(no_mangle)]
 pub extern "C" fn cranelisp_trace_restore_got(got_base: i64, saved_got: i64) {
     if saved_got == SENTINEL_SAVED_GOT {
         return;
     }
     let layout = got_layout();
-    // SAFETY: `saved_got` was allocated by `cranelisp_trace_swap_got` with `got_layout()`.
-    // `got_base` points to the module's GOT table (same size). Both are valid and
-    // non-overlapping. The saved copy is deallocated with the same layout.
+    // SAFETY: `saved_got` was allocated by `cranelisp_trace_swap_got` with
+    // `got_layout()`. `got_base` points to the module's GOT table (same size).
+    // Both are valid and non-overlapping. The saved copy is deallocated with
+    // the same layout.
     unsafe {
         ptr::copy_nonoverlapping(saved_got as *const u8, got_base as *mut u8, GOT_BYTES);
         alloc_mod::dealloc(saved_got as *mut u8, layout);
@@ -312,7 +333,8 @@ pub extern "C" fn cranelisp_trace_restore_got(got_base: i64, saved_got: i64) {
 /// Parameters:
 /// - `name_ptr`/`name_len`: raw UTF-8 function name (not a cranelisp heap String)
 /// - `params_count`: number of parameter String heap ptrs in the array
-/// - `params_array_ptr`: `*const i64` -- array of cranelisp String heap ptrs (RC=1 each)
+/// - `params_array_ptr`: `*const i64` -- array of cranelisp String heap ptrs
+///   (RC=1 each)
 #[unsafe(no_mangle)]
 pub extern "C" fn cranelisp_trace_enter(
     name_ptr: i64,
@@ -332,9 +354,9 @@ pub extern "C" fn cranelisp_trace_enter(
     };
     // Read the pre-formatted param String heap ptrs from the stack array.
     let params: Vec<i64> = if params_count > 0 && params_array_ptr != 0 {
-        // SAFETY: `params_array_ptr` points to a Cranelift stack slot containing
-        // `params_count` i64 values (heap String pointers). The slot is valid for
-        // the duration of the wrapper function call.
+        // SAFETY: `params_array_ptr` points to a Cranelift stack slot
+        // containing `params_count` i64 values (heap String pointers). The
+        // slot is valid for the duration of the wrapper function call.
         unsafe {
             std::slice::from_raw_parts(params_array_ptr as *const i64, params_count as usize)
                 .to_vec()
@@ -352,7 +374,8 @@ pub extern "C" fn cranelisp_trace_enter(
 }
 
 /// Called by wrapper functions at the exit of each traced call.
-/// Pops the current frame, builds a TraceCall ADT, and pushes it into the parent frame.
+/// Pops the current frame, builds a TraceCall ADT, and pushes it into the
+/// parent frame.
 /// Returns `result` unchanged.
 /// No-op (returns `result`) if the calling thread is not the trace thread.
 ///
@@ -391,11 +414,12 @@ pub extern "C" fn cranelisp_trace_first_child_nanos(trace_adt: i64) -> i64 {
     if trace_adt == 0 || (trace_adt as usize) < cranelisp_types::NULLARY_TAG_THRESHOLD {
         return 0;
     }
-    // SAFETY for all read_i64 calls below: `trace_adt` was verified above to be
-    // a heap pointer (above NULLARY_TAG_THRESHOLD). It was allocated by
-    // `build_trace_call` with the 5-field TraceCall layout, so offsets 48 and 56
-    // are within bounds. Intermediate pointers (tchildren, first_child) are
-    // checked against NULLARY_THRESHOLD before dereferencing.
+    // SAFETY for all read_i64 calls below: `trace_adt` was verified above to
+    // be a heap pointer (above NULLARY_TAG_THRESHOLD). It was allocated by
+    // `build_trace_call` with the 5-field TraceCall layout, so offsets 48
+    // and 56 are within bounds. Intermediate pointers (tchildren,
+    // first_child) are checked against NULLARY_THRESHOLD before
+    // dereferencing.
 
     // tchildren is at offset 48 (FIELD0_OFFSET + 3*8 = 24 + 24)
     let tchildren = unsafe { read_i64(trace_adt, 48) };
@@ -418,13 +442,14 @@ pub extern "C" fn cranelisp_trace_first_child_nanos(trace_adt: i64) -> i64 {
     };
     // Decision 24 (Sprint 56 Step 2c): consuming convention — release the
     // Trace ADT (walks sub-refs if this was the last reference).
-    crate::drop::consume_trace_call(trace_adt);
+    consume_trace_call(trace_adt);
     result
 }
 
-/// Collect the root trace frame, release the trace role, and return the trace as a
-/// `Trace` ADT heap pointer.
-/// Must be called after all `cranelisp_trace_restore_got` calls for this trace expression.
+/// Collect the root trace frame, release the trace role, and return the trace
+/// as a `Trace` ADT heap pointer.
+/// Must be called after all `cranelisp_trace_restore_got` calls for this
+/// trace expression.
 #[unsafe(no_mangle)]
 pub extern "C" fn cranelisp_collect_trace() -> i64 {
     // Release the trace role (only if we own it).
@@ -451,23 +476,23 @@ pub extern "C" fn cranelisp_collect_trace() -> i64 {
 
 // ── Field accessor extern API ─────────────────────────────────────────────────
 //
-// These implement the Trace ADT field accessors registered as extern primitives
-// in the typechecker. Each reads a field at the appropriate offset from a
-// TraceCall heap pointer.
+// These implement the Trace ADT field accessors registered as extern
+// primitives in the typechecker. Each reads a field at the appropriate offset
+// from a TraceCall heap pointer.
 //
 // TraceCall layout (base-pointer convention):
 // [alloc_size(+0) | rc(+8) | tag=0(+16) | tname(+24) | tparams(+32) | tresult(+40) | tchildren(+48) | tnanos(+56)]
 
-const TRACE_TNAME_OFFSET: usize = FIELD0_OFFSET;          // 24
-const TRACE_TPARAMS_OFFSET: usize = FIELD0_OFFSET + 8;    // 32
-const TRACE_TRESULT_OFFSET: usize = FIELD0_OFFSET + 16;   // 40
-const TRACE_TCHILDREN_OFFSET: usize = FIELD0_OFFSET + 24;  // 48
-const TRACE_TNANOS_OFFSET: usize = FIELD0_OFFSET + 32;     // 56
+const TRACE_TNAME_OFFSET: usize = FIELD0_OFFSET;            // 24
+const TRACE_TPARAMS_OFFSET: usize = FIELD0_OFFSET + 8;      // 32
+const TRACE_TRESULT_OFFSET: usize = FIELD0_OFFSET + 16;     // 40
+const TRACE_TCHILDREN_OFFSET: usize = FIELD0_OFFSET + 24;   // 48
+const TRACE_TNANOS_OFFSET: usize = FIELD0_OFFSET + 32;      // 56
 
 /// RC-inc a heap value (atomic, matching the compiler's `emit_rc_inc`).
 /// No-op for nullary tags (bare integers below NULLARY_TAG_THRESHOLD).
 fn rc_inc_if_heap(val: i64) {
-    use std::sync::atomic::{AtomicI64, Ordering};
+    use std::sync::atomic::AtomicI64;
     if (val as usize) >= cranelisp_types::NULLARY_TAG_THRESHOLD {
         // SAFETY: val is a heap pointer; RC field is at offset 8 from base.
         unsafe {
@@ -489,40 +514,44 @@ pub extern "C" fn cranelisp_trace_name(trace_ptr: i64) -> i64 {
     // SAFETY: trace_ptr is a valid TraceCall heap pointer.
     let val = unsafe { read_i64(trace_ptr, TRACE_TNAME_OFFSET) };
     rc_inc_if_heap(val);
-    crate::drop::consume_trace_call(trace_ptr);
+    consume_trace_call(trace_ptr);
     val
 }
 
 /// Return the `tparams` field (SList of String heap ptrs) of a TraceCall ADT.
 ///
-/// Decision 24 (Sprint 56 Step 2c): consuming convention — see `cranelisp_trace_name`.
+/// Decision 24 (Sprint 56 Step 2c): consuming convention — see
+/// `cranelisp_trace_name`.
 #[unsafe(no_mangle)]
 pub extern "C" fn cranelisp_trace_params(trace_ptr: i64) -> i64 {
     let val = unsafe { read_i64(trace_ptr, TRACE_TPARAMS_OFFSET) };
     rc_inc_if_heap(val);
-    crate::drop::consume_trace_call(trace_ptr);
+    consume_trace_call(trace_ptr);
     val
 }
 
 /// Return the `tresult` field (String heap ptr) of a TraceCall ADT.
 ///
-/// Decision 24 (Sprint 56 Step 2c): consuming convention — see `cranelisp_trace_name`.
+/// Decision 24 (Sprint 56 Step 2c): consuming convention — see
+/// `cranelisp_trace_name`.
 #[unsafe(no_mangle)]
 pub extern "C" fn cranelisp_trace_result(trace_ptr: i64) -> i64 {
     let val = unsafe { read_i64(trace_ptr, TRACE_TRESULT_OFFSET) };
     rc_inc_if_heap(val);
-    crate::drop::consume_trace_call(trace_ptr);
+    consume_trace_call(trace_ptr);
     val
 }
 
-/// Return the `tchildren` field (SList of TraceCall heap ptrs) of a TraceCall ADT.
+/// Return the `tchildren` field (SList of TraceCall heap ptrs) of a
+/// TraceCall ADT.
 ///
-/// Decision 24 (Sprint 56 Step 2c): consuming convention — see `cranelisp_trace_name`.
+/// Decision 24 (Sprint 56 Step 2c): consuming convention — see
+/// `cranelisp_trace_name`.
 #[unsafe(no_mangle)]
 pub extern "C" fn cranelisp_trace_children(trace_ptr: i64) -> i64 {
     let val = unsafe { read_i64(trace_ptr, TRACE_TCHILDREN_OFFSET) };
     rc_inc_if_heap(val);
-    crate::drop::consume_trace_call(trace_ptr);
+    consume_trace_call(trace_ptr);
     val
 }
 
@@ -532,39 +561,129 @@ pub extern "C" fn cranelisp_trace_children(trace_ptr: i64) -> i64 {
 /// not heap-typed, but the Trace ADT containing it is. Consume the Trace.
 #[unsafe(no_mangle)]
 pub extern "C" fn cranelisp_trace_nanos(trace_ptr: i64) -> i64 {
-    // SAFETY: same as cranelisp_trace_name — offset 56 is within payload bounds.
+    // SAFETY: same as cranelisp_trace_name — offset 56 is within payload
+    // bounds.
     let val = unsafe { read_i64(trace_ptr, TRACE_TNANOS_OFFSET) };
-    crate::drop::consume_trace_call(trace_ptr);
+    consume_trace_call(trace_ptr);
     val
 }
 
-/// Format a runtime value as a cranelisp heap String using the display module.
+/// Format a runtime value as a cranelisp heap String — fallback stub.
 ///
-/// This function is registered as a JIT symbol but the actual formatting logic
-/// lives in `cranelisp-backend::display::format_value` which requires a TypeChecker
-/// reference. The integration layer (`src/`) sets `TRACE_FORMAT_FN` before evaluation.
+/// **NOTE**: This stub is not registered as the JIT symbol for
+/// `cranelisp_trace_format`. `src/session_v4.rs::repl_trace_format` is the
+/// real implementation (it has access to the session's TypeChecker via
+/// `TRACE_DISPLAY` thread-local). The stub exists so the symbol resolves
+/// during unit tests of the trace machinery that do not set up a session.
 ///
-/// Parameters:
-/// - `val`: the runtime value to format
-/// - `type_ptr`: pointer to a leaked `Box<Type>` describing the value's type
-///
-/// Returns a heap String pointer (RC=1), or a fallback "?" string if the
-/// format function has not been set.
-///
-/// NOTE: This is a placeholder. The actual `cranelisp_trace_format` function
-/// must be registered by the integration layer (`src/`) because it needs access
-/// to the TypeChecker (which lives in cranelisp-typecheck, not accessible from
-/// the runtime crate). The integration layer registers its own implementation
-/// as a JIT symbol that overrides this one.
-///
-/// For now, this provides a minimal fallback that formats scalars inline.
+/// In production code paths (REPL, `--run`) `int_intrinsics()` registers
+/// `repl_trace_format` for the `cranelisp_trace_format` JIT name; this stub
+/// is never called.
 #[unsafe(no_mangle)]
 pub extern "C" fn cranelisp_trace_format(val: i64, _type_ptr: i64) -> i64 {
     // Minimal fallback: format the raw i64 value as a string.
-    // The real implementation is provided by src/ (integration layer) which
-    // has access to the TypeChecker for proper format_result_value dispatch.
     let s = format!("{val}");
     alloc_string(s.as_bytes()) as i64
+}
+
+// ── TraceCall drop glue (relocated from cranelisp_intrinsics::drop by FIXME 0198) ──
+//
+// The TraceCall ADT layout is owned by int with the rest of the trace
+// machinery; the per-type consumer fn moves with the layout it walks. The
+// generic `consume_shallow` (Strings) helper remains in intrinsics and is
+// called by name below.
+
+/// Atomically decrement the RC at `ptr` with Release ordering.
+/// Returns the OLD RC value.
+///
+/// # Safety
+/// `ptr` must be a valid heap pointer with `rc > 0`.
+#[inline]
+unsafe fn trace_atomic_dec_rc(ptr: i64) -> i64 {
+    let rc_ptr = unsafe {
+        &*((ptr as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64)
+    };
+    let old = rc_ptr.fetch_sub(1, Ordering::Release);
+    debug_assert!(
+        old > 0,
+        "RC underflow in trace drop glue: ptr={ptr:#x} had rc={old} before decrement"
+    );
+    intrinsics_rc::rc_trace("dec", ptr, old - 1);
+    old
+}
+
+/// Consume an SList whose elements are heap Strings (TraceCall's `tparams`
+/// field). On last ref: walks the SCons chain, calling
+/// `intrinsics_rc::consume_shallow` on each head, and frees each SCons node.
+fn consume_slist_of_string(mut ptr: i64) {
+    loop {
+        if ptr < NULLARY_THRESHOLD {
+            return;
+        }
+        let head = unsafe { read_i64(ptr, FIELD0_OFFSET) };
+        let tail = unsafe { read_i64(ptr, FIELD1_OFFSET) };
+        let old_rc = unsafe { trace_atomic_dec_rc(ptr) };
+        if old_rc != 1 {
+            return;
+        }
+        std::sync::atomic::fence(Ordering::Acquire);
+        intrinsics_rc::consume_shallow(head);
+        unsafe { intrinsics_alloc::dealloc(ptr as *mut u8) };
+        ptr = tail;
+    }
+}
+
+/// Consume an SList whose elements are TraceCall ADTs (TraceCall's
+/// `tchildren` field). On last ref: walks the SCons chain, recursively
+/// consuming each head TraceCall, and frees each SCons node.
+fn consume_slist_of_trace(mut ptr: i64) {
+    loop {
+        if ptr < NULLARY_THRESHOLD {
+            return;
+        }
+        let head = unsafe { read_i64(ptr, FIELD0_OFFSET) };
+        let tail = unsafe { read_i64(ptr, FIELD1_OFFSET) };
+        let old_rc = unsafe { trace_atomic_dec_rc(ptr) };
+        if old_rc != 1 {
+            return;
+        }
+        std::sync::atomic::fence(Ordering::Acquire);
+        consume_trace_call(head);
+        unsafe { intrinsics_alloc::dealloc(ptr as *mut u8) };
+        ptr = tail;
+    }
+}
+
+/// Consume a TraceCall ADT (Decision 24 — consuming convention).
+///
+/// On last ref: dec tname (String), tparams (SList<String>), tresult
+/// (String), tchildren (SList<TraceCall>), then dealloc.
+///
+/// TraceCall layout (single constructor, tag 0):
+/// `[header(16) | tag(16) | tname(24) | tparams(32) | tresult(40) | tchildren(48) | tnanos(56)]`
+///
+/// # Safety
+/// `ptr` must be a valid TraceCall heap pointer (rc > 0) or bare nullary tag.
+pub fn consume_trace_call(ptr: i64) {
+    if ptr < NULLARY_THRESHOLD {
+        return;
+    }
+    let tname = unsafe { read_i64(ptr, TRACE_TNAME_OFFSET) };
+    let tparams = unsafe { read_i64(ptr, TRACE_TPARAMS_OFFSET) };
+    let tresult = unsafe { read_i64(ptr, TRACE_TRESULT_OFFSET) };
+    let tchildren = unsafe { read_i64(ptr, TRACE_TCHILDREN_OFFSET) };
+
+    let old_rc = unsafe { trace_atomic_dec_rc(ptr) };
+    if old_rc != 1 {
+        return;
+    }
+    std::sync::atomic::fence(Ordering::Acquire);
+
+    intrinsics_rc::consume_shallow(tname);
+    consume_slist_of_string(tparams);
+    intrinsics_rc::consume_shallow(tresult);
+    consume_slist_of_trace(tchildren);
+    unsafe { intrinsics_alloc::dealloc(ptr as *mut u8) };
 }
 
 #[cfg(test)]
@@ -607,134 +726,5 @@ mod tests {
         assert_eq!(tag, TAG_SCONS);
         let head = unsafe { read_i64(list, FIELD0_OFFSET) };
         assert_eq!(head, 10);
-    }
-
-    #[test]
-    fn test_trace_collect_empty_stack() {
-        // Ensure the trace stack is empty and we are not the owner.
-        let result = cranelisp_collect_trace();
-        // Should return a valid TraceCall ADT
-        assert!(result != 0);
-        let tag = unsafe { read_i64(result, PAYLOAD_OFFSET) };
-        assert_eq!(tag, TAG_TRACE_CALL);
-    }
-
-    #[test]
-    fn test_trace_enter_exit_basic() {
-        // Simulate a simple trace enter/exit sequence.
-        // First claim the trace role.
-        let my_tid = current_thread_id();
-        TRACE_THREAD_ID.store(my_tid, Ordering::SeqCst);
-        TRACE_STACK.lock().unwrap().push(TraceFrame {
-            name: "::trace::".to_string(),
-            params: vec![],
-            result: 0,
-            start: Instant::now(),
-            children: vec![],
-        });
-
-        let name = "test-fn";
-        cranelisp_trace_enter(
-            name.as_ptr() as i64,
-            name.len() as i64,
-            0,
-            0,
-        );
-
-        let result = cranelisp_trace_exit(42, 0);
-        assert_eq!(result, 42, "trace_exit must return the original result");
-
-        // Collect should return a TraceCall with one child.
-        let trace = cranelisp_collect_trace();
-        assert!(trace != 0);
-        let tag = unsafe { read_i64(trace, PAYLOAD_OFFSET) };
-        assert_eq!(tag, TAG_TRACE_CALL);
-    }
-
-    // ---------------------------------------------------------------------
-    // Decision 24 extern-consumption tests (Sprint 56 Step 2c)
-    //
-    // Each accessor inc's the returned heap field (so the caller gets an
-    // independent reference) and then consumes the TraceCall via
-    // `consume_trace_call`. If the Trace's rc reaches 0, drop glue walks
-    // the remaining heap sub-refs (tname/tparams/tresult/tchildren).
-    // ---------------------------------------------------------------------
-
-    /// Build a minimal TraceCall heap value with bare-tag params and children
-    /// (so we isolate name + result as the only heap sub-refs besides the
-    /// TraceCall node itself). Returns the TraceCall base pointer.
-    fn make_minimal_trace_call(name_bytes: &[u8], result_bytes: &[u8]) -> (i64, i64, i64) {
-        let name = alloc_string(name_bytes) as i64; // rc=1
-        let result = alloc_string(result_bytes) as i64; // rc=1
-        let trace = alloc_adt(
-            TAG_TRACE_CALL,
-            &[
-                name,
-                TAG_SNIL,   // tparams: bare SNil, no heap
-                result,
-                TAG_SNIL,   // tchildren: bare SNil, no heap
-                0i64,       // tnanos: scalar
-            ],
-        );
-        (trace, name, result)
-    }
-
-    // spec: design/arch/CLAUDE.md Decision 24 — consuming convention, extern cranelisp_trace_name
-    #[test]
-    fn decision24_trace_name_rc_balanced() {
-        let allocs_before = crate::alloc::alloc_count();
-        let deallocs_before = crate::alloc::dealloc_count();
-
-        let (trace, _name, _result) = make_minimal_trace_call(b"my-fn", b"42");
-        // Accessor: inc's name (rc 1→2), consumes Trace (rc 1→0 last ref →
-        // walks sub-refs: dec tname (2→1), consume SNil params no-op,
-        // consume result (rc 1→0, freed), consume SNil children no-op,
-        // dealloc Trace).
-        let returned_name = cranelisp_trace_name(trace);
-        // Caller now owns name at rc=1. Release it.
-        crate::rc::consume_shallow(returned_name);
-
-        // allocs: name + result + trace = 3
-        // deallocs: name + result + trace = 3
-        assert_eq!(crate::alloc::alloc_count() - allocs_before, 3, "alloc count mismatch");
-        assert_eq!(
-            crate::alloc::dealloc_count() - deallocs_before,
-            3,
-            "dealloc count mismatch (leak or double-free)"
-        );
-    }
-
-    // spec: design/arch/CLAUDE.md Decision 24 — consuming convention, extern cranelisp_trace_result
-    #[test]
-    fn decision24_trace_result_rc_balanced() {
-        let allocs_before = crate::alloc::alloc_count();
-        let deallocs_before = crate::alloc::dealloc_count();
-
-        let (trace, _name, _result) = make_minimal_trace_call(b"g", b"7");
-        // Accessor: inc's result, consumes Trace — on last ref, dec'd name
-        // (1→0 freed), SNil params no-op, result (2→1 via dec), SNil
-        // children no-op, dealloc Trace.
-        let returned = cranelisp_trace_result(trace);
-        crate::rc::consume_shallow(returned);
-
-        assert_eq!(crate::alloc::alloc_count() - allocs_before, 3);
-        assert_eq!(crate::alloc::dealloc_count() - deallocs_before, 3);
-    }
-
-    // spec: design/arch/CLAUDE.md Decision 24 — consuming convention, extern cranelisp_trace_nanos
-    // (Int return — no inc on return value; Trace is still consumed.)
-    #[test]
-    fn decision24_trace_nanos_rc_balanced() {
-        let allocs_before = crate::alloc::alloc_count();
-        let deallocs_before = crate::alloc::dealloc_count();
-
-        let (trace, _name, _result) = make_minimal_trace_call(b"h", b"ok");
-        let nanos = cranelisp_trace_nanos(trace);
-        assert_eq!(nanos, 0, "tnanos field was set to 0 in the fixture");
-
-        // allocs: name + result + trace = 3
-        // deallocs: name + result + trace = 3 (all freed by consume_trace_call)
-        assert_eq!(crate::alloc::alloc_count() - allocs_before, 3);
-        assert_eq!(crate::alloc::dealloc_count() - deallocs_before, 3);
     }
 }

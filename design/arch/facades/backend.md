@@ -166,6 +166,10 @@ unsafe impl Sync for Linker {}
 
 Wrapped in `Arc<Linker>` by `load_object`; analogous lifecycle to `Jit`. `Arc<Linker>` lives on `ModuleEntry::Def.code = Code::Linker(Arc<Linker>)` for cache-hit modules (S66 amendment + rollback — the per-symbol fn ptr lives in `SymbolTable.got()` indexed by `ModuleEntry::Def.got_slot`).
 
+### Cache submodule
+
+The `cache::` submodule (linker + manifest + object + serialize) carries ~60 pub items. The per-item disposition + per-submodule public surface enumeration lives in **`facades/backend-cache.md`** — the dedicated sub-facade. Items above (`Linker`, `LinkerArtefact`, `LinkerError`) are the boundary items the parent facade names; sub-facade enumerates the full cache public surface plus the doubled root-level re-export layer (Wave 4 narrowing target).
+
 ### GOT-population observation (extension point)
 
 NOT diagnostics — an extension point in the same shape as intrinsics' `IoObserver` (Decision 40 + Decision 43 — the IoObserver registration API resides in `cranelisp-intrinsics` post-D43; see `facades/intrinsics.md` §"IO observation"). Backend defines the observation taxonomy and a registration API; `int` implements all observer state. The events fire from `compile_to_module`'s `write_code` site (where the data is in hand) and from `Linker::load_object`'s slot population. Production batch (no observer registered) pays one relaxed null-check load per call site.
@@ -196,6 +200,141 @@ pub fn register_got_observer(observer: Option<GotObserver>);
 ### Public consts
 
 None.
+
+---
+
+## Internal-but-exposed surface
+
+The items below are `pub` in `cranelisp-backend` today but are NOT part of the as-designed boundary contract. They exist as `pub` for one of two reasons: (a) test-side instantiation by integration-tier or unit-tier tests in the workspace (the three-tier helpers reference internal codegen state); (b) cross-submodule consumers within backend itself that haven't yet been narrowed to `pub(crate)`. Each item is named here so `tests/facade_compliance.rs` recognises it as a known internal exposure; Wave 3+ `/dev (backend)` is the agent that may choose to narrow further to `pub(crate)` once consumers are mapped.
+
+Per the Sprint 67 brief: items in this section are PFR (pull facade to reality — internal surface that exists by design, not by oversight) rather than PIF (push implementation to facade — surface that should disappear). The two PIF residues remaining at the time of this facade are explicit and named in §"Non-goals" + the Wave 3 PIF list below.
+
+### Codegen-orchestration internals (Row 10)
+
+These are the per-function compilation primitives. `int`'s priority/nice workers reach for them only via the free function `compile_to_module`; test code in `crates/cranelisp-backend/src/*/tests` and in `tests/legacy/` directly constructs them. They are `pub` so those tests compile.
+
+- `compiler::FnCompiler<'a, M, C, L>` — the per-function CLIF emitter; owns a `FunctionBuilder` + `&mut M: Module`. `compile_body` and `compile_expr` are its two methods. Construction goes via `compile_body` (static entry); `compile_expr` is the recursive workhorse, public for test-side AST-fragment compilation.
+- `compiler::CompileContext<'a, C, L>` — the bundle of shared state threaded into every `FnCompiler`: intrinsic `FuncId`s (`alloc_func_id`, `alloc_string_func_id`, `dealloc_func_id`, `panic_func_id`, `vec_drop_func_id`, `vec_new_func_id`), the symbol-table reference, the current module path, per-call `func_arities` + `func_ids` resolution tables, and optional `traced_fns`. The two helper methods `lookup_constructor` and `lookup_type_def` probe the symbol table for ADT metadata at codegen time.
+- `compiler::MatchContext` — per-arm state for `compile_match` (the scrutinee value `scrut_val`, optional `scrut_type`, the saved-tail flag `saved_tail`, the `merge_block` for arm-result phi, the `next_block` for fallthrough). Public for unit tests of match-arm codegen.
+- `compiler::TracedFnInfo` — per-fn trace metadata (name, arity, code_ptr, got_base, got_slot, param_types, result_type). Populated by `int`'s trace mode and threaded through `CompileContext::traced_fns`. The fields are public because trace observer code in `int` constructs the records directly.
+- `compiler::MATCH_EXHAUSTION_TRAP: u8` — the trap code emitted at match-exhaustion sites; named in CLIF and matched by `cranelisp_panic`-side decoders.
+
+### Compiler submodules (Row 10 expanded)
+
+The internal organisation of `compiler` exposes five public submodules: `apply`, `control_flow`, `literals`, `match_codegen`, `trace_codegen`, `vec_codegen`. Each holds the codegen for one syntactic category. They are `pub` because per-submodule unit tests live alongside (`#[cfg(test)] mod tests` inside each), and because cross-submodule helper functions occasionally call across (`compile_apply` reaches into `compile_match` for tail-position arms). Narrowing to `pub(crate)` is a Wave 3+ cleanup that does not affect the boundary contract; `tests/facade_compliance.rs` recognises the submodule names as covered here.
+
+### GOT-target resolution helpers (Row 11)
+
+- `compiler::resolve_func_arity` — given `(symbol_tables, current_module, name)`, returns the callee's arity. Used at every call-site to validate the call's argument count matches the callee's declared parameter count.
+- `compiler::resolve_got_target` — given `(symbol_tables, current_module, name)`, returns `(target_module, got_slot)` — the per-module GOT location for the callee. The core indirect-call resolution per Decision 23's two-GOT model.
+- `compiler::got_data_symbol_name` — duplicate name in scope of `cache::object::got_data_symbol_name` (Row 11 — the two are the same function; the cache home is canonical; the `compiler::` re-export is a convenience for the call-site that emits the relocation). Narrows to `pub(crate)` in Wave 3+ when call-site routing through `cache::object::got_data_symbol_name` is mechanical.
+- `compiler::MATCH_EXHAUSTION_TRAP` — already named above.
+
+Disposition: PFR for `resolve_func_arity` + `resolve_got_target` (they are the canonical resolution primitives — no equivalent at the `cranelisp-types` boundary because per-symbol-table probing is backend-internal); PIF candidate for `compiler::got_data_symbol_name` (duplicate naming with `cache::object::got_data_symbol_name`). Wave 3+ `/dev (backend)` may file a FIXME to narrow the `compiler::` form.
+
+### Module / submodule re-exports (Row 7 / Row 14 confirmation)
+
+- `codegen_types` — re-exports `GOT_TABLE_SIZE` + `NULLARY_TAG_THRESHOLD` from `cranelisp-types`. The submodule exists for module-level grouping of size constants that codegen sites reach for during CLIF emission. Per Principle 15 — these consts originate in `cranelisp-types`; the re-export at `cranelisp_backend::codegen_types` is a convenience-only path. Narrows to `pub(crate)` candidate.
+- `got` — exposes `GotTable` (re-export from `cranelisp-types`). Backend constructs `GotTable` at GOT initialisation; the re-export gives callers `cranelisp_backend::got::GotTable` as a convenience path. Principle 15 — `GotTable` originates in `cranelisp-types`; the re-export is `pub(crate)`-narrowable. The `got` submodule itself is `pub` so the re-exported `GotTable` name surfaces.
+- `got_observer` — already a top-level §"GOT-population observation" surface. The submodule path exposes the same names. The free function `emit` (the observer-side dispatch entry) is internal-but-exposed for backend codegen sites that invoke it; tests reach into it directly. `register_got_observer` is the canonical registration entry per Row 14.
+- `heap` — exposes RC primitives, ADT heap layout structs, last-use analysis, and emit helpers. The heap layout structs `HeapAdt`, `HeapClosure`, `HeapVec` (with `#[repr(C)]` fields `header`, `tag`, `cap`, `data_ptr`, `len`, `code_ptr`, `drop_glue_ptr` + offset consts `TAG_OFFSET`, `FIELDS_START`, `CAPTURES_START`, `CODE_PTR_OFFSET`, `DROP_GLUE_PTR_OFFSET`, `CAP_OFFSET`, `DATA_PTR_OFFSET`, `LEN_OFFSET`, and the helper consts/functions `field_offset`, `payload_size`, `capture_offset`, `NULLARY_THRESHOLD_I64`) are the runtime layout contract that intrinsics and codegen agree on. They are `pub` because `cranelisp-intrinsics` reads layouts and codegen emits offset-keyed loads using the same constants. Emit helpers `emit_alloc`, `emit_rc_inc`, `emit_rc_inc_guarded`, `emit_rc_dec`, `emit_rc_dec_guarded`, `heap_load`, `heap_store`, `compute_last_uses`, `is_mixed_adt` are the per-call-site primitives that submodules under `compiler::` reach for. Backend's internal CLIF generation calls them; no external consumer should. PFR — internal-but-exposed.
+- `exe::generate_startup_object` (Row 12) — produces the tiny `_main`-exporting `.o` consumed by the system linker in `--link` mode. Called by `int::link_by_name` (not backend codegen). PFR — link-orchestration assist. Documented as part of the `--link` entry-point exception narrative in §"Object file contract" above.
+
+### `jit::Jit` method-set (Row 9)
+
+`Jit` is named in §"Jit — the JIT retention newtype" above as the lifecycle newtype. Its method set per the as-built public-api is broader than the as-designed §"Jit" minimal surface (just `new` + `module()`). Per Row 9 — the facade widens to document the current methods as internal-but-exposed:
+
+- `Jit::new`, `Jit::new_with_symbols`, `Jit::new_with_isa` — three constructors (default JIT, JIT with extra extern symbols pre-registered, JIT with a caller-supplied `TargetIsa` + extra symbols). `new_with_symbols` is the dominant call-site; `new_with_isa` is used when an outer driver pre-builds the ISA to share across JITs.
+- `Jit::build_shared_isa` — static entry point for the shared-ISA setup pattern. Returns `Arc<dyn TargetIsa>` for sharing across multiple `Jit::new_with_isa` calls.
+- `Jit::declare_intrinsics` — declares all intrinsic externs in the JIT module before user-fn compilation. Returns `IntrinsicIds`.
+- `Jit::declare_functions`, `Jit::declare_functions_prefixed` — declare the workspace's user functions in the JIT module (`Linkage::Local`, bare names; prefixed variant is for prefix-mangled multi-module batches).
+- `Jit::declare_imported_functions` — declare imports as `Linkage::Import` for GOT-indirect cross-module calls.
+- `Jit::compile_defn` — compile one `Defn` in the JIT module given a `CompileContext`. Returns `CompileArtifacts` (clif_ir + code_size + disasm). Called from inside `compile_to_module`'s per-symbol loop.
+- `Jit::finalize`, `Jit::finalize_and_get_ptr`, `Jit::get_finalized_ptr`, `Jit::get_ptr_by_name` — finalisation and per-symbol pointer extraction. Post-finalize the JIT pages are immutable executable code.
+- `Jit::jit_module()` — `&mut JITModule` accessor (the underlying Cranelift JIT). Used by callers that need to do a Cranelift-direct operation that `Jit` doesn't wrap.
+- `Jit::build_compile_context` — convenience constructor for `CompileContext` bound to this `Jit`'s intrinsic `FuncId`s.
+- `Jit::drop` — custom `Drop` implementation per Decision 31. Public via the trait, not a freestanding fn.
+- `jit::build_isa`, `jit::declare_intrinsics_generic`, `jit::intrinsic_symbols`, `jit::jit_free_memory_call_count` — module-level free functions. `build_isa` is the freestanding ISA constructor used in the JIT path (mirrors `cache::object::build_isa` for the object path; the two have different `is_pic` defaults). `declare_intrinsics_generic<M: Module>` is the cross-module-impl helper that lets `Jit::declare_intrinsics` and the object-path declaration share one body. `intrinsic_symbols()` returns the full table of `IntrinsicSymbol { name, ptr, param_count, is_runtime, has_return }` records for JIT setup. `jit_free_memory_call_count()` returns a debug counter for Decision 31 reclaim observation (used by RC trace tests).
+
+### `jit` shape DTOs (Row 15)
+
+- `IntrinsicSymbol` — JIT setup record: `{ name: &'static str, ptr: *const u8, param_count: usize, is_runtime: bool, has_return: bool }`. Backend-internal — populated from `cranelisp-intrinsics` + `cranelisp-primitives` symbol tables at session init.
+- `IntrinsicFuncIds` — post-declare `FuncId` lookup table per intrinsic. Returned from `declare_intrinsics_generic`. Used in CLIF emission to reference declared intrinsics.
+- `IntrinsicIds` — slimmer `IntrinsicFuncIds`-like record returned from `Jit::declare_intrinsics` (non-Option fields — every intrinsic is unconditionally declared in JIT setup).
+- `CompileArtifacts` — return type of `Jit::compile_defn` — `{ clif_ir, code_size, disasm }`. Wrapped into `Introspection` by the caller post-Decision-38.
+
+PFR — internal-but-exposed. The S67 close direction is "names backend's chosen codegen toolchain"; these DTOs are part of that internal surface. Future re-shape may consolidate `IntrinsicFuncIds` + `IntrinsicIds` into one type, but that is Wave 4+ cleanup, not S67 close scope.
+
+### `CodeFinalizer` trait + impls (Row 13)
+
+Per Decision 38 — the trait is the surface that abstracts the JIT-vs-Object-Module finalisation step. The body's three methods `define_module_got_data`, `finalize_for_code_read`, `try_get_finalized_function` are the Cranelift-side adapters that `compile_to_module` calls via the `M: Module + CodeFinalizer` bound. The two impls — on `JITModule` (in-memory finalise + read) and `ObjectModule` (no-op finalise + `None` from `try_get_finalized_function`) — make the same call-site work in both modes.
+
+`CodeFinalizer` is public because `compile_to_module`'s bound `M: Module + CodeFinalizer` names the trait at the public boundary. PFR.
+
+### `CompilationResult` + `FunctionArtifacts` (Rows 2 + 15 transitional)
+
+The as-designed §"Return shapes" target post-D41 is `Result<(), CompilationError>` for `compile_to_module` (direct-write semantics; no return tuple). The as-built signature today still returns `Result<CompilationResult, CranelispError>` where `CompilationResult { artifacts: HashMap<Symbol, FunctionArtifacts>, code_ptrs: HashMap<Symbol, *const u8>, entry_func_id, func_arities, func_ids, warnings: Vec<Warning> }` is the per-batch return tuple, and `FunctionArtifacts { clif_ir, code_size, disasm }` is the per-fn introspection record before it's split out into `Introspection`. (The `Warning` type is re-used from `cranelisp-types::error::Warning` — see `facades/types.md` §"Errors and warnings"; backend forwards diagnostic warnings produced during CLIF emission through this field.)
+
+These types are PFR for the transitional window — the as-designed target removes them, but the migration to per-symbol direct-write `Result<(), CompilationError>` (Decision 41 close-out) lands at Wave 3 `/dev (backend)`. Until then, the as-built types are named here so the compliance test does not flag them.
+
+Wave 3 retirement target: delete `CompilationResult` + `FunctionArtifacts` after `compile_to_module`'s per-symbol direct-write rewrite. The introspection bookkeeping migrates to writes into `int`'s `DashMap<FQSymbol, Introspection>`.
+
+### `primitives_inline` (Rows 7 + 6)
+
+- `primitives_inline::is_known_builtin(name: &str) -> bool` — name-keyed predicate that gates the inline-substitution lookup at backend call-sites. PFR — internal but `pub` for codegen-site call. Per §"Operator special-casing is forbidden" — the predicate is name-keyed only (no `(TraitName, Symbol, TypeName)` triples).
+- `primitives_inline::try_emit_inline_primitive` — the actual emitter. Takes a `FunctionBuilder<'_>` + name + arg `Value`s + span + module + optional `panic_func_id` and returns `Option<Result<Value, CranelispError>>` (None = name didn't match, Some = either emitted or failed). PFR.
+- `primitives_inline::primitive_for_trait_method(TraitName, Symbol, TypeName) -> Option<&'static str>` — **PIF — D43 forbidden pattern; Wave 3 deletion target.** Per §"Operator special-casing is forbidden" — backend MUST NOT carry `(trait, method, type)` triples. This fn is the residue from S66 close and is named in the public surface only so the compliance test does not flag it as an unknown orphan; Wave 3 `/dev (backend)` deletes the fn body + the pub signature. Tracked by FIXME 0150 (`runtime-split-primitives-intrinsics`).
+
+### `primitives_inline.rs` retirement narrative (Row 7 + D43 full close)
+
+`primitives_inline.rs` itself is the post-rename successor to the deleted `operators.rs` (S66 rename confirmed). Per D43 full close, the file retires fully once every Ring 0 primitive is reachable through the standard GOT-indirect call path (per the synthetic `primitives` module's `ModuleEntry::Def`s with their fn-ptr slots). The inline substitution that lives in `primitives_inline.rs` today is the code-size + dispatch-cost optimisation; it remains a legitimate substitution but must be reframed as a name-keyed shortcut over the standard path (not a parallel dispatch). Wave 3 `/dev (backend)` closes FIXME 0150 by ensuring every primitive can be called via the GOT-indirect path, then the inline-substitution table becomes an optional optimisation that can be retired without breaking call sites.
+
+Wave 3 `/dev (backend)` is responsible for the full physical retirement; the facade narrative here reflects the D43 full-close target.
+
+---
+
+## PIF prep — Wave 3 targets
+
+The remaining gaps between as-designed (the §"Free functions" + §"Errors" + §"Return shapes" sections above) and as-built (the §"Internal-but-exposed surface" §"CompilationResult + FunctionArtifacts" entry) are PIF — push implementation to match the facade. Wave 3 `/dev (backend)` is the implementing agent. The targets:
+
+1. **Row 1 — `Code` enum location**. `Code` MUST live in `cranelisp-backend::code` (a `code.rs` module to be added in Wave 3). Currently it lives in `src/code.rs` (the `int` binary's source tree). Facade §"`Code` — the per-symbol lifecycle owner" describes the target. (D41/D35 close — already shaped by /arch W0 in `error.rs` + `artefact.rs`; `code.rs` is the remaining sibling W3 lands.)
+
+2. **Row 2 — `compile_to_module` return shape**. Today returns `Result<CompilationResult, CranelispError>`. Target: `Result<(), CompilationError>` with direct writes to `int`'s shared stores via Decision 38's `write_code` + per-symbol `got().store_slot`. (D41 close.)
+
+3. **Row 3 — `load_object` shape**. Today the `Linker::load_object` method exists at `cache::linker::Linker::load_object(&mut self, module_name, bytes) -> Result<(), CranelispError>`. Target: a free function `cranelisp_backend::load_object(module, object, symbol_tables) -> Result<LinkerArtefact, CranelispError>` that owns Linker construction and returns the artefact. The `Linker::load_object` method becomes `pub(crate)`. (D41 close.)
+
+4. **Row 4 — `compile_to_object` as free function**. Today the object-codegen path is internal scaffolding. Target: a free function `cranelisp_backend::compile_to_object(module, symbol_tables) -> Result<ObjectArtefact, CranelispError>` that wraps the object-mode `compile_to_module` call and packages the `.o` + sidecar. (D41 close.)
+
+5. **Row 5 — `Linker::get_symbol` return type**. Today returns `Option<*const u8>`. Target: `Result<*const u8, LinkerError>`. The typed error lives in `crates/cranelisp-backend/src/error.rs` (W0). (D37 close.)
+
+6. **Row 6 — `primitive_for_trait_method` deletion**. Per §"`primitives_inline`" above — Wave 3 deletes the fn body + the pub signature. (D43 forbidden pattern residue.)
+
+7. **Row 7 — `primitives_inline.rs` retirement / D43 full close**. Per §"`primitives_inline.rs` retirement narrative" — full close lands when every Ring 0 primitive is reachable via the standard GOT-indirect path. Closes FIXME 0150.
+
+8. **FQTypeName migration (1 PIF row)**. The `primitives_inline` boundary takes `&TypeName` today (per `primitive_for_trait_method` row above). Once that fn deletes per Row 6, the `&TypeName` boundary disappears with it. Per Decision 0047 — FQTypeName is binding at resolved-stage boundaries; the `primitive_for_trait_method` site is one of the few backend sites that named the older `TypeName` non-FQ type. Closure of Row 6 closes the FQTypeName migration on the backend side; FIXME 0151 closes at S67 W5 acceptance per Decision 0047.
+
+### REV-5 audit (backend consumers of `cranelisp_op_*`)
+
+Audit task per the Wave 1 brief: grep `crates/cranelisp-backend/src/` for `cranelisp_op_` consumers.
+
+**Result: 20 hits — NOT all-clear for D43-driven deletion.**
+
+- `crates/cranelisp-backend/src/jit.rs:150-159` — 10 entries in `intrinsic_symbols()` registering `cranelisp_intrinsics::ops::cranelisp_op_{add,sub,mul,div,eq,neq,lt,gt,le,ge}` as JIT-mode intrinsics with name strings `"cranelisp_op_add"` etc.
+- `crates/cranelisp-backend/src/compiler/literals.rs:325-339` — 10 rows in `operator_extern_name(name: &Symbol) -> Option<&'static str>` mapping operator Symbols (`"+"`, `"-"`, `"*"`, ...) to the `cranelisp_op_*` extern name strings, consumed by `compile_operator_as_value` (operator-as-value emission per spec §7.6).
+
+**Implication.** Backend's `compile_operator_as_value` path actively names + relocates against the `cranelisp_op_*` symbols at codegen. The intrinsics-side ops crate (`cranelisp-intrinsics::ops`) cannot be deleted in isolation — backend has to migrate first.
+
+Migration plan (Wave 3 sequencing):
+
+a. Add `ModuleEntry::Def` entries in the synthetic `primitives` module for the 10 operators (already part of the `ring0_primitives()` body per the FIXME 0150 narrative; the entries seed at session init in `cranelisp-primitives`/typecheck).
+
+b. Backend's `compile_operator_as_value` switches from `cranelisp_op_*` extern-relocation to GOT-indirect resolution against the primitives-module GOT slot. The wrapper-closure shape is unchanged; only the load mechanism shifts (declare-Import + extern-name → load GOT-base + offset).
+
+c. `jit::intrinsic_symbols()` drops the 10 `cranelisp_op_*` registration rows. The intrinsic-symbols table shrinks by 10 entries; JIT setup time drops correspondingly.
+
+d. Only after (a)-(c) land can `cranelisp_intrinsics::ops::*` delete safely. The order matters: deleting intrinsics first crashes backend codegen at the next call site.
+
+**FIXME filed.** Per the Wave 1 brief — "if hits exist, file FIXME for /dev to migrate". Filed `design/arch/fixmes/0183-backend-migrate-cranelisp-op-extern-to-got-indirect.md` to track the Wave 3 sequencing.
 
 ---
 
@@ -266,12 +405,12 @@ For any module `M`, the cache stores BOTH `M.meta.json` (sidecar) AND `M.o` (obj
 
 Per Principle 15 — the following are backend-originated (only `int` consumes them downstream of backend) and live in `cranelisp-backend`:
 
-- `Code` (per Decision 41 — already moved here from `cranelisp-types`)
-- `CompilationError` (see §"Errors" above)
+- `Code` (per Decision 41 — moves here from `src/code.rs` at Wave 3 `/dev (backend)`; the as-designed home is `cranelisp-backend::code`)
+- `CompilationError` (see §"Errors" above) — `crates/cranelisp-backend/src/error.rs`, W0
+- `LinkerError` (see §"Errors" above) — `crates/cranelisp-backend/src/error.rs`, W0. **Per Decision 0047 + S67 Wave 0 user-arbitrated direction, the canonical home is `cranelisp-backend` (single-consumer per Principle 15 at the backend↔int boundary).** The legacy `cranelisp-types/src/error.rs::LinkerError` row remains as a transitional duplicate; Wave 3 `/dev (backend)` + `/dev (types)` reconcile to a single home via the `cranelisp_backend::LinkerError` re-export. Pre-W0 wording (now superseded): "defined in `cranelisp-types`" — the W0 authoring of `crates/cranelisp-backend/src/error.rs` moves the canonical home to backend.
+- `LinkerArtefact`, `ObjectArtefact` (see §"Return shapes" above) — `crates/cranelisp-backend/src/artefact.rs`, W0.
 - `GotEvent`, `GotEventTag`, `GotProvenance`, `GotObserver` (see §"GOT-population observation")
 - `register_got_observer` free function
-
-`LinkerError` is the typed result of `Linker::get_symbol` (per FIXME 0154 resolution); it is **defined in `cranelisp-types`** (multi-consumer per Principle 15 — backend constructs, `int` matches at cache-hit failure) and surfaces in the backend public API via the `Linker::get_symbol` signature. See `facades/types.md` §"Errors and warnings" for the canonical definition; the §"Errors" enumeration above is the same shape repeated for facade-local readability.
 
 The multi-consumer types backend depends on (`SymbolTable`, `ModuleEntry`, `DefKind`, `Type`, `Scheme`, `Symbol`, `FQSymbol`, `ModuleFullPath`, `CranelispError`, `ResolvedCall`, `MethodResolutions`, `MonoDefn`, `OverloadVariant`, `ConstrainedFn`, `TypeDefInfo`, `ConstructorInfo`, `FieldInfo`, `Expr`, `Pattern`, `MatchArm`, `Defn`, `Span`, `Visibility`, `PrimitiveDef`, `PrimitiveKind`, `SchedulingClass`, `HeapCategory`, `HeapHeader`, `NULLARY_TAG_THRESHOLD`, `CallGraph`, `CallEdge`, `CompileContext`, `CompileResult`, `GotTable`, `GOT_TABLE_SIZE`, marshaling tags) live in `cranelisp-types`. Consumers import them from there directly.
 

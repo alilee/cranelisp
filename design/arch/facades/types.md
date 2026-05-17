@@ -19,6 +19,7 @@ pub struct ModuleName(String);          // single component, no dots — "core",
 pub struct ModuleFullPath(String);      // dotted path — "core.option", "user"
 pub struct TypeName(String);            // type name (uppercase) — "Int", "Option"
 pub struct TraitName(String);           // trait name (uppercase) — "Num", "Display"
+pub struct JitSymbol(String);           // JIT-time mangled name — pre-cache; "Display.show$Option$Int" etc.
 pub struct LinkerSymbol(String);        // mangled name in the cache `Linker`'s symbol table — "add$Int+Int"
 ```
 
@@ -242,6 +243,85 @@ The `TypeName → FQTypeName` lift happens inside `check_form` when a `TypeExpr:
 
 1. **Reverse-lookup helpers on `Type`** — `from_name(&TypeName)` for primitive recognition and `type_name(&Type) -> Option<TypeName>` for primitive emission, which operate on the small set of built-in non-ADT types where the unqualified name IS unique.
 2. **Receiver-pinned lookups** — APIs whose receiver itself supplies the module context. `SymbolTable::get_type(&TypeName)` is keyed by bare `TypeName` because the `&self` receiver IS the module; wrapping the local-to-this-table key in `FQTypeName` would re-encode information already pinned by the receiver. The fully-qualified identity is reconstructible by the caller as `FQTypeName::new(module_of(&self), name.clone())` if needed downstream. This exception is structural, not aspirational: it applies wherever the receiver's type pins the module context.
+
+## FQTypeName migration plan (Sprint 67)
+
+Per Sprint 67 second-challenge scope amendment (`sprints/SPRINT.md` §"Second user challenge applied"), FQTypeName binding migration (FIXME 0151) is edge drift, not interior. The facade above commits to `FQTypeName` at every resolved-stage boundary; source has not been migrated since the binding lift in S65 W2. /dev (per crate) executes the conversions in Wave 3 per the table below; /dev (typecheck) carries the largest share.
+
+Direction discipline:
+- **PIF — convert to `FQTypeName`**: API is a resolved-stage boundary and no exception applies. Wave 3 conversion.
+- **Keep — frontend syntactic**: inside frontend AST/parser surface (`TypeExpr::Named(TypeName)` and friends). No conversion.
+- **Keep — receiver-pinned**: `SymbolTable::get_type(&TypeName)` and any hit where `&self` IS the module-owning receiver. Exception 2.
+- **Keep — reverse-lookup**: `Type::from_name(&TypeName)` and `type_name(&Type) -> Option<TypeName>`. Exception 1.
+
+### typecheck
+
+Largest concentration; bulk of /dev (typecheck) Wave 3 burden.
+
+| API | File:line | Direction | Owning /dev task |
+|---|---|---|---|
+| `TypeCheckEnv::lookup_type_def(&self, &TypeName)` | `crates/cranelisp-typecheck/src/checker.rs:571,2497` | **Keep — receiver-pinned** | (none — exception 2; receiver IS the module-owning env) |
+| `TypeCheckEnv::lookup_type_def_in_module(&self, &ModuleFullPath, &TypeName)` | `crates/cranelisp-typecheck/src/checker.rs:584,2510` | PIF | /dev (typecheck) Wave 3 — pair of args collapses to `&FQTypeName` |
+| `TypeCheckEnv::lookup_constructor_type(&self, &str) -> Option<TypeName>` | `crates/cranelisp-typecheck/src/checker.rs:627,2516` | PIF return | /dev (typecheck) Wave 3 — return becomes `Option<FQTypeName>` |
+| `TypeCheckEnv::all_type_defs(&self) -> Vec<(TypeName, TypeDefInfo)>` | `crates/cranelisp-typecheck/src/checker.rs:699` | PIF return | /dev (typecheck) Wave 3 — Vec element becomes `(FQTypeName, TypeDefInfo)`; REPL introspection callers update |
+| `TypeCheckEnv::all_type_defs_map(&self) -> HashMap<TypeName, TypeDefInfo>` | `crates/cranelisp-typecheck/src/checker.rs:748` | PIF return | /dev (typecheck) Wave 3 |
+| `TypeCheckEnv::snapshot_type_defs(&self) -> (HashMap<TypeName, …>, HashMap<Symbol, TypeName>)` | `crates/cranelisp-typecheck/src/checker.rs:764` | PIF | /dev (typecheck) Wave 3 — both halves lift |
+| `TypeCheckEnv::register_type_def(&mut self, type_name: &TypeName, ...)` | `crates/cranelisp-typecheck/src/checker.rs:1675,2524` | Conditional: **keep** if called only post-cluster-context-set, **PIF** otherwise | /dev (typecheck) Wave 3 — audit call sites; if a receiver-pinned cluster context names the module, treat as exception 2 |
+| `TypeCheckEnv::check_exhaustiveness(&mut self, type_name: &TypeName, …)` | `crates/cranelisp-typecheck/src/checker.rs:1733,2542` | PIF | /dev (typecheck) Wave 3 — match-arm checks are post-resolution; `FQTypeName` |
+| `cranelisp_typecheck::adt::register_type_def(name: &TypeName, …)` | `crates/cranelisp-typecheck/src/adt.rs:31,107,188,209,244,260,328,346` | Conditional per call | /dev (typecheck) Wave 3 — within-module ADT registration is receiver-pinned; cross-module ADT references via `TypeExpr::Named` lift at boundary |
+| `cranelisp_typecheck::resolve::*(name: &TypeName, …)` | `crates/cranelisp-typecheck/src/resolve.rs:58,83` | **Keep — syntactic lift site** | Same call IS the lift; bare `TypeName` enters, `FQTypeName` exits |
+| `cranelisp_typecheck::traits::fqtn_for_bare_type_name(&self, state, &TypeName)` | `crates/cranelisp-typecheck/src/traits.rs:589` | **Keep — syntactic lift site** | The function's existence IS the lift; same as resolve |
+| `cranelisp_typecheck::builtins::*(... &TypeName::from("Sexp") ...)` | `crates/cranelisp-typecheck/src/builtins.rs:552,604,664,729,929,1082,…` | **Keep — receiver-pinned with module known** | Builtins-init paths construct `&TypeName::from(...)` to register into a known-module `SymbolTable`. Receiver-pinned per exception 2. |
+
+### backend
+
+Smaller surface; mostly already migrated. Outstanding hits in inline-substitution table only.
+
+| API | File:line | Direction | Owning /dev task |
+|---|---|---|---|
+| `primitives_inline::*(impl_type: &TypeName, …)` | `crates/cranelisp-backend/src/primitives_inline.rs:348` | PIF | /dev (backend) Wave 3 — boundary helper takes the trait-method-resolution target type; lift to `&FQTypeName` |
+| `primitives_inline::*(... &TypeName::from("Int|Float|Bool|String|Color"))` (test helpers) | `crates/cranelisp-backend/src/primitives_inline.rs:425,436,449,461,472,483,494,505,516,527,538,549,560` | **Keep — reverse-lookup callsites** | All hits are test-side `TypeName::from("Int")` constructions. Test code is exempt from the resolved-stage rule (synthetic test inputs aren't products of typecheck resolution); leave as-is. |
+| `cranelisp_backend::lib.rs:1200,1201,1205-1206` | `crates/cranelisp-backend/src/lib.rs:1200-1206` | **Keep — test code** | Test-internal `TypeName::from("Option")` constructions for codegen tests |
+
+### intrinsics
+
+No hits at the public surface (verified by grep). FQTypeName migration is a no-op for intrinsics.
+
+### primitives
+
+No hits at the public surface (verified by grep). FQTypeName migration is a no-op for primitives.
+
+### platform
+
+| API | File:line | Direction | Owning /dev task |
+|---|---|---|---|
+| `cranelisp_types::TypeName::from("IO")` | `src/platform.rs:426` | **Keep — reverse-lookup at primitive emission site** | Per exception 1 — `IO` is the primitive marker name; emission helpers name it directly. /dev (platform) Wave 3 verifies this is the only hit; if other primitive markers appear, same exception applies. |
+
+### int
+
+Mixed: REPL introspection paths (receiver-pinned; keep) and one synthetic-module init helper.
+
+| API | File:line | Direction | Owning /dev task |
+|---|---|---|---|
+| `pretty.rs:128` doc comment | `src/pretty.rs:128` | n/a (comment) | none |
+| `session_v4.rs:3582 — TypeName::from(type_name.name.as_ref())` | `src/session_v4.rs:3582` | **Keep — REPL introspection within known module context** | REPL `/info <type>` resolves against current module; receiver-pinned (exception 2). |
+| `session_v4.rs:3671,3712 — let tn = TypeName::from(type_name)` | `src/session_v4.rs:3671,3712` | **Keep — REPL introspection** | Same as above |
+| `worker.rs:173-176 — let type_params_tn: Vec<TypeName> = ...` | `src/worker.rs:173-176` | **Keep — syntactic conversion at parser boundary** | `worker::check_program_compat` converts `Vec<String>` type params from the parser into `Vec<TypeName>` — pre-resolution conversion |
+| `exe.rs:544,588 — TypeName::from("IO")` | `src/exe.rs:544,588` | **Keep — reverse-lookup at exe-startup primitive registration** | Synthesises the IO type marker during startup-object generation; exception 1. |
+| `pipeline.rs:345 — TypeName::from("IO")` | `src/pipeline.rs:345` | **Keep — reverse-lookup at pipeline init** | Same — synthesises IO marker during initial primitive registration |
+
+### Summary by crate
+
+| Crate | Convert (PIF) | Keep — frontend syntactic | Keep — receiver-pinned | Keep — reverse-lookup | Notes |
+|---|---|---|---|---|---|
+| typecheck | ~7 APIs | 3 (resolve, fqtn_for_bare_type_name, builtins) | ~5 (TypeCheckEnv pinned methods) | 0 | Largest /dev (typecheck) Wave 3 burden |
+| backend | 1 API | 0 | 0 | ~13 (all test code) | /dev (backend) Wave 3 — single boundary helper |
+| intrinsics | 0 | 0 | 0 | 0 | No-op |
+| primitives | 0 | 0 | 0 | 0 | No-op |
+| platform | 0 | 0 | 0 | 1 | No-op (single keep) |
+| int | 0 | 1 (worker.rs parse-time) | 3 (REPL introspection) | 3 (IO marker emission) | No-op (all keeps justified by exceptions) |
+
+Acceptance criterion (Wave 5 /review checkpoint): every API at a resolved-stage boundary uses `FQTypeName`; remaining bare `TypeName` hits MUST cite an exception by name in a code comment, e.g. `// FQTypeName exception 2 (receiver-pinned: &self IS module N)`.
 
 ```rust
 pub type TypeId = u32;
@@ -748,26 +828,10 @@ pub struct Warning {
 #[non_exhaustive]
 pub enum WarningKind { UnusedDefn, UnusedImport, ShadowedName, /* … */ }
 
-/// Per-call linker error — surfaced by `Linker::get_symbol` and other
-/// per-symbol cache-load operations. Distinct from `CranelispError::LinkError`
-/// (process-level link failure). Per §2.6 — facade embeds logic in types:
-/// asking for a symbol that's not there is a typed result, not a bare `Option`.
-/// Per FIXME 0154 resolution — the two-variant baseline is the minimum surface
-/// acceptable at S66 close; additional variants extend as evidence accrues
-/// (re-shape may be triggered during /review of a future FIXME).
-#[non_exhaustive]
-pub enum LinkerError {
-    /// The cache `Linker`'s symbol table does not contain the requested name.
-    /// Usually indicates either: (a) the `.o` was produced from a different
-    /// source state than the symbol-table consumer expects (cache mismatch);
-    /// (b) the symbol's `Linkage::Local` bare name doesn't match what the
-    /// caller asked for (Decision 36 contract violation).
-    SymbolNotFound { name: LinkerSymbol },
-    /// Object relocation pass produced an error during `load_object` or
-    /// per-symbol resolution. Signals corruption, ABI mismatch, or
-    /// unresolved external reference.
-    RelocationFailed { name: LinkerSymbol, cause: String },
-}
+// `LinkerError` was previously defined here. Per Sprint 67 REV-4 it has moved
+// to `cranelisp-backend` (single-consumer per Principle 15 — backend
+// constructs, `int` matches; no multi-consumer pull justifies hoisting to
+// types). See `facades/backend.md` §"Errors" for the canonical definition.
 
 /// Cross-cutting "this dependency isn't ready yet" signal. Carried by both
 /// `ExpansionError::Gap` (frontend `expand`) and `CheckError::Gap` (typecheck
@@ -863,6 +927,97 @@ These types are referenced from the diagrams but live elsewhere because includin
 - **`ObjectCache`, `CacheLookupResult`, `CacheError`** — cache facade. Lives in `int` (`src/cache.rs`).
 - **`EvalResult`, `EvalValue`, `CommandResult`, `SlashCommand`, `SymbolInfo`, `SymbolDescription`, `FileChangeEvent`** — REPL-side types. Live in `int`.
 - **`CLType`, `CLInt`, `CLString`, `CLBool`, `CLFloat`, `CLIO<T>`, `CLHeap`, `CLOwned`, `HostContext`, `HostCallbacks`, `PlatformFn`, `OwnedPlatformFnDescriptor`, `PlatformManifest`** — platform ABI. Live in `cranelisp-platform`.
+
+---
+
+## Item-by-item disposition (S67 Wave 1 facade-compliance baseline)
+
+Sprint 67 Wave 0 (`/qa`) introduced `tests/facade_compliance.rs` as the mechanical drift detector between `crates/cranelisp-types/public-api.txt` (as-built) and this facade (as-designed). Wave 1 (`/design (cranelisp-types)`) closes the orphan delta by naming every pub-api leaf below — either expanding a `/* … */` summary in the §"Public surface" blocks above, or recording the disposition here.
+
+The facade above intentionally keeps **shape summaries** in code blocks (e.g., `pub enum Expr { /* let / fn / if / match / … */ }`) rather than enumerating every variant + field, because the variant-level surface is internal-but-exposed: consumers pattern-match on `Expr` exhaustively only inside the crates that own the lowering (typecheck, backend) and the `#[non_exhaustive]` attribute disallows cross-crate exhaustive match anyway. This section names the leaves that the compliance grep extracts so the test passes — they remain internal-but-exposed under the shape summaries above unless promoted to top-level surface by a future facade change.
+
+### Enum variants (internal-but-exposed under shape summaries)
+
+The variant-level surface is internal-but-exposed: every variant of every `#[non_exhaustive] pub enum` listed in §"AST", §"Resolved type system", §"Typecheck output", §"Errors and warnings", §"Source-level constructs", §"View", and §"Symbol table" is part of the public surface for pattern matching by consumer crates, but the canonical shape statement is the summary in the parent code block.
+
+| Variant | Parent enum | Rationale |
+|---|---|---|
+| `Expr::Annotate`, `Expr::Apply`, `Expr::BoolLit`, `Expr::IntLit`, `Expr::FloatLit`, `Expr::StringLit`, `Expr::VecLit`, `Expr::Lambda`, `Expr::Match`, `Expr::If`, `Expr::ParBind`, `Expr::Trace` | `Expr` | Under §"AST" `pub enum Expr { /* let / fn / if / match / apply / literal / var / do / quote / quasiquote / annotate / par-bind / trace / vec-literal */ }`. Lowering crates (typecheck, backend) match on every variant; new variants are added only via /arch review. |
+| `Pattern::Wildcard` (and all sibling variants) | `Pattern` | Under §"AST" `pub enum Pattern { /* literal / var / wildcard / constructor / nested */ }`. |
+| `TypeExpr::SelfType` (and siblings) | `TypeExpr` | Under §"AST" `pub enum TypeExpr { /* … */ }`. `SelfType` is the `:Self` syntactic marker (resolved to the impl target type by typecheck). |
+| `DefKind::SpecialForm` | `DefKind` | Under §"Symbol table" `pub enum DefKind { /* … */ }`. The `SpecialForm { description: String }` variant exists alongside `UserFn`/`Macro`/`TypeDef`/`Trait`/`Primitive`/`Overloaded` and is registered for special-form introspection (`/info`, `/list`); `description` is the user-facing one-liner. |
+| `ResolvedCall::BuiltinFn` | `ResolvedCall` | Under §"Typecheck output" `pub enum ResolvedCall { TraitMethod / SigDispatch / AutoCurry / BuiltinFn }`. `BuiltinFn` is the resolved-call shape for primitive ops (`+`, `-`, `vec-push`, etc.) — pre-typecheck the call site is bare `Apply`, typecheck rewrites to `BuiltinFn` with the primitive's `cranelift_op` carrier. |
+| `ResolvedCall::TraitMethod::{method_name, mangled_name, trait_resolution}`, `ResolvedCall::SigDispatch::mangled_name`, `ResolvedCall::AutoCurry::{target_name, applied_count, total_count, trait_resolution}` | `ResolvedCall` variants' fields | Per-variant payload — backend reads `mangled_name: JitSymbol` to emit the call. `trait_resolution: Option<Box<ResolvedCall>>` chains AutoCurry → TraitMethod when a curried call's underlying body is a trait method. |
+| `ModuleEntry::Ambiguous` | `ModuleEntry` | Under §"Symbol table". Sentinel for the bare-name-resolves-to-multiple-imports case; typecheck emits a `TypeError` if a use site hits an `Ambiguous` entry. |
+| `CranelispError::MacroError` | `CranelispError` | Under §"Errors and warnings". Emitted by `int`'s macro-expansion driver when a macro invocation fails. Same `{message, location}` shape as `ParseError`/`TypeError`/`ModuleError`/`CodegenError` per Decision 39. (Facade text §"Errors and warnings" notes `LinkError`/`CacheError`/`RuntimeError` aspirationally; source has `MacroError` instead — covered here, /arch follow-up may reconcile facade body if the divergence is structural.) |
+| `LinkerError::SymbolNotFound`, `LinkerError::RelocationFailed` | `LinkerError` | **Transient — slated for removal.** Per Sprint 67 REV-4 (sprints/SPRINT.md row 5), `LinkerError` relocates to `cranelisp-backend`; see `facades/backend.md` §"Errors" for the canonical definition. The variants remain in `cranelisp-types::error` until `/dev (cranelisp-types)` removes the export sites in S67 Wave 4. After the relocation, this row deletes. |
+| `WarningKind::UnusedBinding`, `WarningKind::UnreachableArm` (and siblings) | `WarningKind` | Under §"Errors and warnings" `pub enum WarningKind { UnusedDefn, UnusedImport, ShadowedName, /* … */ }`. Concrete variant set is internal-but-exposed; new variants added as detectors are implemented. |
+| `View::Single`, `View::Union` | `View` | **Surface drift — substantive.** Source defines `View` as an **enum** with `Single { live }` and `Union { staging, live }` variants; the facade §"View" describes it as a `struct` with `union(…)` and `single(…)` constructors. The two shapes agree on the read surface (both expose `lookup`/`iter`/`single`/`union` as constructors), but the structural shape differs. **PIF candidate** — /arch follow-up to reconcile (either widen facade text to describe the enum, or PIF the source to a struct with internal enum). Tracked here for the compliance test; FIXME filing deferred until /arch decides direction. |
+
+### Struct fields (internal-but-exposed under shape summaries)
+
+The struct definitions in §"AST", §"Resolved type system", §"Symbol table", and §"Errors and warnings" include `/* … */` placeholders for fields that are not material to the cross-crate contract (e.g., per-variant payloads of enum struct-variants, internal annotation cache fields). The fields are reachable on the public surface (consumers can construct via builder methods or `Default`) but exhaustive field-by-field documentation lives in `rustdoc` on the source types. The compliance grep treats every field as a candidate name; the table below names them under the structures already cited.
+
+| Field | Parent struct/variant | Rationale |
+|---|---|---|
+| `inferred_type` (on `Expr::Annotate`, `Expr::Apply`, `Expr::BoolLit`, `Expr::FloatLit`, `Expr::If`, `Expr::IntLit`, `Expr::Lambda`, `Expr::Match`, `Expr::StringLit`, `Expr::VecLit`, `Expr::Trace`, …) | `Expr` variants | Per-variant annotation cache populated by typecheck Pass 2. `Option<Box<Type>>` — `None` pre-typecheck, `Some` after `check_form`. Per Decision 22 (AST annotation) — every `Expr` variant carries this. |
+| `annotation` | `Expr::Annotate` | The user-written `:Type` annotation; the syntactic counterpart to `inferred_type` (which is the resolved Type). |
+| `arms`, `scrutinee`, `compiler_generated` | `Expr::Match` | `scrutinee: Box<Expr>` (matched expression), `arms: Vec<MatchArm>` (clauses), `compiler_generated: bool` (distinguishes `let`-desugaring from user `match`). |
+| `then_branch`, `else_branch` | `Expr::If` | Standard if/else carriers — `Box<Expr>` each. |
+| `elements` | `Expr::VecLit` | `Vec<Expr>` of the literal's elements. |
+| `param_annotations` (on `Expr::Lambda`, `DefnVariant`) | `Expr::Lambda`, `DefnVariant` | Per-param optional `:Type` annotation — `Vec<Option<TypeExpr>>`. |
+| `type_args`, `type_constraints` | `TraitImpl` | Polymorphic impl shape — `Vec<Symbol>` (type vars introduced by `(impl Trait (TypeCtor a b) …)`) + `Vec<(Symbol, TraitName)>` (constraints — `:Display a` etc.). |
+| `type_expr` | `FieldDef` | `TypeExpr` of the constructor field (syntactic; resolved to `Type` by typecheck). |
+| `default_param_names`, `hkt_param_index`, `ret_type` | `TraitMethodSig` | `default_param_names: Vec<Symbol>` (param names for use in default body); `hkt_param_index: Option<usize>` (which param is the higher-kinded "Self" for HKT traits); `ret_type: TypeExpr` (syntactic return type). |
+| `body_sexp`, `fixed_params`, `rest_param` | `MacroClause`, `MacroClauseInfo` | Per-clause shape — `body_sexp: Sexp` (template), `fixed_params: Vec<MacroParam>` (positional), `rest_param: Option<Symbol>` (`&rest`-splice). |
+| `is_private` | `ModDecl`, `DefmacroInfo` | Visibility flag — synonym for `visibility: Visibility::Private`; the field name reflects the underlying serialisation. |
+| `inline_body` | `ModDecl` | `Option<Vec<Sexp>>` — `Some` for `(mod name forms…)` inline declarations, `None` for `(mod name)` external file references. |
+| `dll_path`, `platform_module` | `ModuleEntry::PlatformDecl` | DLL path + the platform-module's `ModuleFullPath` — written at parse-time when a `(platform …)` form binds to a DLL. |
+| `description` | `DefKind::SpecialForm` | One-line description for `/info` / `/list` REPL introspection (e.g., "let-binding form"). |
+| `trait_origin` | `ModuleEntry::Def` | `Option<FQTraitName>` — `Some(trait_fqn)` when the entry is a method-body emitted by a `(impl Trait Type …)` form; `None` for ordinary defns. |
+| `constructor_scheme` | `ModuleEntry::TypeDef` | `Option<Scheme>` — the polymorphic constructor's scheme (for parameterized ADTs like `Option a`); `None` for monomorphic ADTs. |
+| `sexp` (on `ModuleEntry::Macro`, `ModuleEntry::TraitDecl`, `ModuleEntry::TypeDef`) | various `ModuleEntry` variants | `Option<Sexp>` — the original source form, retained for REPL `/sexp`, `/expand`, and source regeneration (Decision 39). |
+| `jit_name` | `DefKind::Primitive` | `Option<JitSymbol>` — the mangled name a primitive registers under in the JIT's symbol table when it's used as a value (i.e., addressable). `None` for inline-only primitives. |
+| `mangled_name`, `param_types`, `ret_type` | `OverloadVariant` | Resolved per-variant shape for multi-sig defns — `mangled_name: Symbol` (e.g., `foo$Int+Bool`), `param_types: Vec<Type>`, `ret_type: Type`. |
+| `expr_types` | `MonoDefn` | `HashMap<Span, Type>` — the per-span annotation map for the monomorphic specialisation. Backend reads this to emit type-specialised code. |
+| `target_name`, `applied_count`, `total_count`, `trait_resolution` | `ResolvedCall::AutoCurry` | Auto-curry shape — `target_name: Symbol` (which fn is being curried), `applied_count`/`total_count: usize` (arity progress), `trait_resolution: Option<Box<ResolvedCall>>` (nested resolution when the curried target is itself a trait method). |
+| `codegen_names` | `CompileResult` | `Vec<Symbol>` of the symbols this batch produced code for — `int` matches against staging to know what to commit. |
+| `tail_position` | `CallEdge` | `bool` — TCO discrimination on the call edge per Principle 22 (TCO over self-recursive tails). |
+
+### Newtypes (string identifiers)
+
+| Item | Disposition |
+|---|---|
+| `JitSymbol` | **PIF — promote.** `JitSymbol` is generated by `string_newtype!` alongside `Symbol`, `ModuleName`, `ModuleFullPath`, `TypeName`, `TraitName`, `LinkerSymbol`. It carries JIT-time mangled names (e.g., `Display.show$Option$Int`) before they're handed to the cache linker (where they become `LinkerSymbol`). Hoisted to §"Identifier newtypes" — see addition below. |
+
+The §"Identifier newtypes" code block is amended to include `pub struct JitSymbol(String); // JIT-time mangled name — pre-cache; "Display.show$Option$Int" etc.` immediately above `LinkerSymbol`.
+
+### Modules (top-level `pub mod`)
+
+| Item | Disposition |
+|---|---|
+| `marshal` | **Internal-but-exposed module.** `cranelisp_types::marshal` hosts the Sexp ABI marshaling tags (`TAG_SNIL`, `TAG_SCONS`, `TAG_SEXP_INT`, …) already enumerated in §"Marshaling tags". The module is a namespace for those constants; no top-level surface promotion needed. |
+| `parsed` | **Internal-but-exposed module.** `cranelisp_types::parsed` hosts `ParsedEntry` + `DefmacroInfo` + `MacroClause` (the parse-time-only transient per FIXME 0156). Already enumerated in §"`ParsedEntry`". The module is a namespace for those types. |
+
+### Constants (offsets, sizes)
+
+| Item | Disposition |
+|---|---|
+| `HeapHeader::RC_OFFSET`, `HeapHeader::ALLOC_SIZE_OFFSET`, `HeapHeader.alloc_size` | **Internal-but-exposed under §"Heap layout".** The `pub struct HeapHeader { /* total_size: u64 | rc: AtomicI64 — base-pointer convention per src/CLAUDE.md */ }` summary holds; the associated constants `RC_OFFSET` and `ALLOC_SIZE_OFFSET` are backend codegen's compile-time offset constants for emitting RC inc/dec loads. The `alloc_size` field is the heap header's own size record (used by `free` to know the original allocation size for unsized-Vec deallocation). All three are surface-stable per the base-pointer ABI (Decision 10) and consumed by `cranelisp-backend`'s codegen + `cranelisp-intrinsics`' RC primitives. |
+
+### Free functions
+
+| Item | Disposition |
+|---|---|
+| `ring0_primitives()`, `ring1_primitives()`, `ring3_primitives()` | **Internal-but-exposed under §"Operator / primitive registry".** The `pub fn primitives() -> &'static [PrimitiveDef]` in the facade text is the authoritative single registry; the three `ringN_primitives()` accessors return the per-ring subsets used by the type-checker's incremental builtins-init paths (Ring 0 = bool/int arith, Ring 1 = float + string, Ring 3 = Sexp / marshal). All three return `Vec<PrimitiveDef>` (built from the same source-of-truth list) and are consumed by `cranelisp-typecheck`'s `register_builtins` at startup. The facade's `primitives()` is the union; the per-ring accessors are conveniences. |
+| `ensure_module_exists`, `install_module`, `EnsureOutcome` | **Module-lifecycle primitives** (S67 hack-back FIXME 0192). Operate on `&DashMap<ModuleFullPath, SymbolTable<C, L>>` — the data home for symbol tables. `ensure_module_exists` is the atomic check-then-insert (returns `EnsureOutcome::AlreadyPresent` or `::Created`). `install_module` is the cache-hit branch's atomic overwrite. Composed by `CompilerSession::introduce_module` (int) and `worker::try_cache_hit_load`. Replaces the pre-S67 `TypeCheckEnv::ensure_module_exists` / `restore_cached_module` methods — the data-home location of these primitives is the architectural intent (Principle 17). |
+| `lookup_type_def_chain`, `lookup_trait_decl_chain`, `get_impls_for_type_chain`, `get_implementing_types_chain`, `resolve_module_by_name_chain`, `for_each_in_module`, `resolve_terminal_entry_and_home`, `CHAIN_FOLLOW_DEPTH_LIMIT` | **Chain-follow primitives** (S67 hack-back FIXME 0192 methods 1, 3, 4, 5, 7). Live-only free fns that walk `Import`/`Reexport` chains on `&DashMap<ModuleFullPath, SymbolTable<C, L>>` plus an explicit `scope: &ModuleFullPath` access root. Used by cross-crate read consumers (REPL display, `int` introspection paths). Cluster-mode consumers inside typecheck retain the staging-aware `TypeCheckEnv` methods (`lookup_type_def_in_module`, `get_impls_for_type_in_module`, etc.). The chain-follow primitives uniformly cap depth at `CHAIN_FOLLOW_DEPTH_LIMIT = 10` (spec §8.6.2). |
+
+### Misc structs
+
+| Item | Disposition |
+|---|---|
+| `ImplSexp` | **Internal-but-exposed under §"Symbol table — ModuleEntry::TraitImpl".** `pub struct ImplSexp { sexp: Sexp }` is the parse-time wrapper carrying the original `(impl Trait Type …)` source form (separate from the constructed `TraitImpl` AST). Stored alongside `ModuleEntry::TraitImpl` for source regeneration + `/sexp` introspection. Cited here for compliance; full shape lives in source rustdoc. |
 
 ---
 

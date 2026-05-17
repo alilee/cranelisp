@@ -106,3 +106,28 @@ Sprint 63 substance-scoping resolution §1.2.
 ## Canonical location
 
 `crates/cranelisp-backend/src/lib.rs` (`compile_to_module` signature); `crates/cranelisp-backend/src/code.rs` (`Code` enum, post-move). Owner: `/arch` files Decision and authors amended Decision 31 + Decision 35 cross-amendment notes; `/arch` updates `facades/backend.md` and `facades/int.md`. `/dev` (backend) executes the `Code` move and signature refactor; `/dev` (int) deletes the post-loop and refactors call sites.
+
+## Status pointer — Sprint 67 close
+
+S67 close — all four close-out items land in Waves 0+3+4:
+
+- **Wave 0** — `CompilationError` enum + `LinkerError` enum +
+  `LinkerArtefact` + `ObjectArtefact` authored in
+  `crates/cranelisp-backend/src/{error,artefact}.rs` per REV-4
+  (single-consumer placement, not `cranelisp-types`). Verified
+  `cargo check -p cranelisp-backend` passes with the new types
+  (no consumer wiring at Wave 0).
+- **Wave 3** (`/dev (backend)`) — `Code` enum physically relocates
+  from `src/code.rs` → `crates/cranelisp-backend/src/code.rs`;
+  `compile_to_module` signature lifts to `Result<(), CompilationError>`
+  + direct per-symbol writes via Decision 38's `write_code` +
+  `got().store_slot`; `load_object` becomes a free function returning
+  `LinkerArtefact`; `compile_to_object` becomes a free function
+  returning `ObjectArtefact`; `Linker::get_symbol` returns
+  `Result<*const u8, LinkerError>` (post-S58 silent-NULL regression
+  closure).
+- **Wave 4** (`/dev (int)`) — call sites in `worker.rs` /
+  `pipeline.rs` collapse to per-symbol pattern; the previous
+  multi-step post-loop dissolves.
+
+Decision 41 closes substantively at S67 close.

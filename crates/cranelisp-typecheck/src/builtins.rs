@@ -73,10 +73,23 @@ where
         );
     }
 
+    // Sprint 67 hack-back (FIXME 0193): ensure root `""` exists before
+    // registering special-form metadata. Per Principle 17 amendment, root
+    // `""` is the canonical home for special-form introspection metadata.
+    // The root SymbolTable is populated once at bootstrap by
+    // `register_special_forms` and never modified during typecheck.
+    let root_path = ModuleFullPath::from("");
+    if !modules.contains_key(&root_path) {
+        modules.insert(
+            root_path.clone(),
+            cranelisp_types::SymbolTable::<C, L>::new_with_params(root_path.clone()),
+        );
+    }
+
     env.register_primitives();
     env.register_ring1_primitives();
     env.register_vec_primitives();
-    env.register_special_forms(&state);
+    env.register_special_forms();
     env.register_builtin_type_names();
 
     // Ring 3: Seed synthetic `macros` module with SList and Sexp ADTs + sconcat.
@@ -305,7 +318,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     }
 
     /// Register special form entries for REPL introspection.
-    fn register_special_forms(&self, state: &CheckState) {
+    ///
+    /// Per Principle 17 amendment (FIXME 0193): special-form metadata lives
+    /// at root `""`. Other modules do NOT inherit, import, or seed from `""`;
+    /// these entries are never reached by short-name resolution (special
+    /// forms bypass resolution entirely — they're recognized by the
+    /// parser/expander and lowered into AST nodes). The root's SymbolTable
+    /// serves exactly one purpose: providing a uniform location for
+    /// `/info`/`/doc` introspection of special-form metadata.
+    fn register_special_forms(&self) {
         let special_forms = vec![
             ("if", "conditional: (if cond then else)"),
             ("let", "local binding: (let [x e] body)"),
@@ -318,8 +339,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             ("defmacro", "macro definition: (defmacro name [params] body)"),
         ];
 
+        let root_path = ModuleFullPath::from("");
+        let mut root_table = self
+            .modules
+            .get_mut(&root_path)
+            .unwrap_or_else(|| unreachable!("invariant: root `\"\"` module should exist (bootstrap)"));
+
         for (name, desc) in special_forms {
-            self.current_symbol_table_mut(state).insert(
+            root_table.insert(
                 Symbol::from(name),
                 ModuleEntry::Def {
                     // Special forms don't have meaningful type schemes.
@@ -334,7 +361,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     callees: Vec::new(),
                     got_slot: None,
                     trait_origin: None,
-                ast: None,
+                    ast: None,
                     code: None,
                 },
             );
@@ -1334,15 +1361,19 @@ mod tests {
         }
     }
 
-    // spec: appendix-a-builtins §A.1 — special forms registered in symbol table
+    // spec: appendix-a-builtins §A.1 — special forms registered in root `""` table
+    // Per Principle 17 amendment (FIXME 0193): special-form metadata lives at
+    // the root module `""`, not seeded into every module.
     #[test]
     fn test_special_forms_registered() {
         let tf = TestFixture::new();
         let forms = ["if", "let", "fn", "defn", "deftype", "match", "deftrait", "impl"];
+        let root_path = ModuleFullPath::from("");
+        let root_table = tf.modules.get(&root_path)
+            .expect("root `\"\"` module should exist (bootstrap)");
         for name in forms {
-            let table_guard = tf.symbol_table();
-            let entry = table_guard.get(name);
-            assert!(entry.is_some(), "special form {name} should be registered");
+            let entry = root_table.get(name);
+            assert!(entry.is_some(), "special form {name} should be registered in root \"\"");
             if let Some(ModuleEntry::Def { kind, .. }) = entry {
                 assert!(
                     matches!(kind.as_ref(), DefKind::SpecialForm { .. }),
@@ -1499,7 +1530,12 @@ mod tests {
     fn test_no_traits_at_startup() {
         let tf = TestFixture::new();
         assert!(
-            tf.env().lookup_trait_decl(&cranelisp_types::TraitName::from("Num")).is_none(),
+            tf.env()
+                .lookup_trait_decl_in_module(
+                    &cranelisp_types::ModuleFullPath::from("user"),
+                    &cranelisp_types::TraitName::from("Num"),
+                )
+                .is_none(),
             "no traits should be registered at startup (Decision 17 eliminated)"
         );
         assert!(

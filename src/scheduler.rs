@@ -1971,6 +1971,7 @@ mod tests {
             cached_modules: Mutex::new(std::collections::HashSet::new()),
             file_to_module: Mutex::new(std::collections::HashMap::new()),
             cache_state: Mutex::new(None),
+            codegen_behaviour: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
             symbol_tables: dashmap::DashMap::new(),
             next_type_id: std::sync::atomic::AtomicU32::new(0),
             current_module: Mutex::new(cranelisp_types::ModuleFullPath::from("user")),

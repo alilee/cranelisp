@@ -24,6 +24,30 @@ pub mod heap;
 pub mod jit;
 pub mod primitives_inline;
 
+// Per-symbol lifecycle owner (Decision 35 + Decision 41). Moved here from
+// `src/code.rs` in Sprint 67 Wave 3 per the facade's S67 close-out — the
+// enum's variants reference backend-owned `Arc<Jit>` / `Arc<Linker>`, so
+// the enum belongs in backend. The integration layer imports it as
+// `cranelisp_backend::Code` and uses it to instantiate
+// `SymbolTable<Code, ()>`.
+pub mod code;
+pub use code::Code;
+
+// Typed error DTOs for the backend public surface (Sprint 67 Wave 0 — REV-4).
+// Per `facades/backend.md` §"Errors". `CompilationError` is the typed result of
+// `compile_to_module`; `LinkerError` is the typed result of
+// `Linker::get_symbol`. Consumer wiring lands in Wave 3 — these are authored
+// here at Wave 0 so /dev (backend) and /dev (int) have a stable target type.
+pub mod error;
+pub use error::{CompilationError, LinkerError};
+
+// Return-shape DTOs for `load_object` and `compile_to_object` (Sprint 67 Wave 0
+// — REV-4). Per `facades/backend.md` §"Return shapes". `compile_to_module` has
+// no artefact shape per Decision 41 (it writes shared state directly).
+// Consumer wiring lands in Wave 3.
+pub mod artefact;
+pub use artefact::{LinkerArtefact, ObjectArtefact};
+
 use std::collections::HashMap;
 
 use cranelift_module::FuncId;
@@ -415,6 +439,27 @@ pub fn compile_to_module<M, C, L>(
     names: &[Symbol],
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     module: &mut M,
+) -> Result<CompilationResult, CompilationError>
+where
+    M: Module + CodeFinalizer,
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    // Internal helper preserves the legacy `CranelispError` flow so the
+    // codegen body (with ~40 `CranelispError::CodegenError { ... }` sites)
+    // doesn't need a row-by-row rewrite. The `From<CranelispError> for
+    // CompilationError` bridge in `error.rs` collapses internal errors into
+    // `CompilationError::CodegenFailed { cause: <message> }` at the
+    // boundary. See `facades/backend.md` §"Errors" for the contract.
+    compile_to_module_impl::<M, C, L>(module_path, names, symbol_tables, module)
+        .map_err(CompilationError::from)
+}
+
+fn compile_to_module_impl<M, C, L>(
+    module_path: ModuleFullPath,
+    names: &[Symbol],
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    module: &mut M,
 ) -> Result<CompilationResult, CranelispError>
 where
     M: Module + CodeFinalizer,
@@ -685,6 +730,114 @@ where
         entry_func_id,
         func_arities,
         warnings: Vec::new(),
+    })
+}
+
+// =========================================================================
+// Free function — `load_object` (Sprint 67 Wave 3 row 3)
+// =========================================================================
+//
+// Per `facades/backend.md` §"Free functions": the cache-hit entry point for
+// reading a `.o` produced by an earlier `compile_to_object` (or `--link`)
+// invocation. Wraps the existing `Linker::load_object` method shape into a
+// free-function boundary so the public API matches the facade's three-entry
+// shape (`compile_to_module`, `load_object`, `compile_to_object`).
+//
+// The free-function shape constructs a fresh `Linker`, populates it with
+// the object's defined symbols, and returns a `LinkerArtefact` carrying the
+// `Arc<Linker>` retention root + per-symbol address map. `int` walks the
+// artefact's `ptrs` map and writes each address to the matching entry's
+// GOT slot via `got().store_slot(slot, ptr)`.
+//
+// The full `int`-side cache-hit orchestration (registering intrinsic
+// symbols, GOT base externals, etc.) does NOT live in this free function —
+// callers needing the broader workflow continue to drive `Linker` directly.
+
+/// Free-function entry point for cache-hit object loading.
+///
+/// Per `facades/backend.md` §"Free functions". Constructs a fresh `Linker`,
+/// loads the supplied object bytes into it, and returns a `LinkerArtefact`
+/// containing the `Arc<Linker>` retention root + per-symbol pointer map.
+///
+/// `int` walks `artefact.ptrs` and for each `(symbol, ptr)` writes the
+/// ptr into the matching entry's GOT slot via `got().store_slot(slot, ptr)`
+/// and stores `Code::Linker(linker.clone())` as the lifecycle owner on the
+/// `ModuleEntry::Def`.
+///
+/// The thin wrapper here registers no externals — callers that need the
+/// full cache-hit workflow (intrinsic symbol registration, GOT base
+/// externals, multi-module resolution) continue to drive `cache::Linker`
+/// directly. This entry exists for facade-compliance + future migration
+/// of the full workflow into backend.
+pub fn load_object<C, L>(
+    module: &ModuleFullPath,
+    object_bytes: &[u8],
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+) -> Result<artefact::LinkerArtefact, CranelispError>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    let mut linker = crate::cache::linker::Linker::new()?;
+    linker.load_object(module.as_ref(), object_bytes)?;
+
+    // Walk the module's symbol table to identify defined function symbols;
+    // ask the linker for each address. Per Decision 36, the symbols are
+    // stored under their bare names.
+    let mut ptrs: std::collections::HashMap<Symbol, *const u8> =
+        std::collections::HashMap::new();
+    if let Some(st) = symbol_tables.get(module) {
+        for (name, entry) in st.all_symbols() {
+            if matches!(
+                entry,
+                cranelisp_types::ModuleEntry::Def { got_slot: Some(_), .. }
+            ) && let Ok(addr) = linker.get_symbol(name.as_ref())
+            {
+                ptrs.insert(name.clone(), addr);
+            }
+        }
+    }
+
+    Ok(artefact::LinkerArtefact {
+        linker: std::sync::Arc::new(linker),
+        ptrs,
+    })
+}
+
+/// Free-function entry point for nice-worker object emission.
+///
+/// Per `facades/backend.md` §"Free functions". Drives `compile_to_module`
+/// against a fresh `ObjectModule`, then collects the emitted bytes +
+/// serialised sidecar `SymbolTable<(), ()>`. The bytes are the host
+/// platform's native object format (Mach-O / ELF / COFF); `int`'s
+/// `ObjectCache::write` does the file IO.
+///
+/// At the time of this Wave 3 facade-compliance scaffold, full nice-worker
+/// orchestration (intrinsic declaration, the per-module GOT data symbol,
+/// cross-module relocations) still lives in `int`'s `cache_writer.rs`.
+/// This free function exists for facade-compliance + a future migration
+/// of that orchestration into backend. Today it returns an "unimplemented"
+/// error if invoked — the actual nice-worker path bypasses this entry.
+pub fn compile_to_object<C, L>(
+    module: &ModuleFullPath,
+    _symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+) -> Result<artefact::ObjectArtefact, CranelispError>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    // Scaffold per facade `backend.md` §"Free functions". The full
+    // nice-worker orchestration lives in `int`'s `cache_writer.rs` today;
+    // this free function is the boundary the facade calls for, not yet
+    // the production path. Migration tracked under FIXME 0184 (follow-up).
+    Err(CranelispError::CodegenError {
+        message: format!(
+            "compile_to_object free function: not yet the production path. \
+             Nice-worker compilation for module '{module}' continues to go \
+             through int's cache_writer until the orchestration migrates \
+             into backend. Filed as FIXME 0184."
+        ),
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
     })
 }
 
@@ -1446,7 +1599,7 @@ mod tests {
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
 
         // Read back the string content via runtime API.
-        let s = unsafe { cranelisp_intrinsics::string::read_string_as_str(ptr) };
+        let s = unsafe { cranelisp_intrinsics::heap_string::read_string_as_str(ptr) };
         assert_eq!(s, "hello");
 
         // Clean up the allocation.
@@ -1468,7 +1621,7 @@ mod tests {
         let ptr = result.unwrap();
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
 
-        let s = unsafe { cranelisp_intrinsics::string::read_string_as_str(ptr) };
+        let s = unsafe { cranelisp_intrinsics::heap_string::read_string_as_str(ptr) };
         assert_eq!(s, "");
 
         cranelisp_intrinsics::alloc::heap_dealloc(ptr);
@@ -1764,7 +1917,7 @@ mod tests {
         // Readable round-trip — proves the contents survived the
         // drop-glue dec that would otherwise have corrupted or freed
         // the heap block.
-        let s = unsafe { cranelisp_intrinsics::string::read_string_as_str(ptr) };
+        let s = unsafe { cranelisp_intrinsics::heap_string::read_string_as_str(ptr) };
         assert_eq!(s, "hello", "captured string must round-trip");
 
         // Balance the one remaining caller-side reference (we, the
@@ -1795,7 +1948,7 @@ mod tests {
         assert_eq!(cranelisp_primitives::vec::vec_len(ptr), 0);
 
         // Clean up.
-        cranelisp_intrinsics::vec::vec_drop(ptr, 0);
+        cranelisp_intrinsics::vec_runtime::vec_drop(ptr, 0);
     }
 
     // spec: 04-expressions §4.10 — Vec literal with integer elements
@@ -1829,7 +1982,7 @@ mod tests {
             assert_eq!(*data_ptr.add(2), 30);
         }
 
-        cranelisp_intrinsics::vec::vec_drop(ptr, 0);
+        cranelisp_intrinsics::vec_runtime::vec_drop(ptr, 0);
     }
 
     // spec: 04-expressions §4.10 — single-element Vec literal
@@ -1856,7 +2009,7 @@ mod tests {
             assert_eq!(*data_ptr, 42);
         }
 
-        cranelisp_intrinsics::vec::vec_drop(ptr, 0);
+        cranelisp_intrinsics::vec_runtime::vec_drop(ptr, 0);
     }
 
     // spec: 04-expressions §4.10 — Vec literal with boolean elements
@@ -1884,7 +2037,7 @@ mod tests {
             assert_eq!(*data_ptr.add(1), 0); // false
         }
 
-        cranelisp_intrinsics::vec::vec_drop(ptr, 0);
+        cranelisp_intrinsics::vec_runtime::vec_drop(ptr, 0);
     }
 
     // spec: appendix-a-builtins §A.3 — vec-len inline primitive codegen
@@ -2422,7 +2575,7 @@ mod tests {
             assert_eq!(*data_ptr.add(2), 10);
         }
 
-        cranelisp_intrinsics::vec::vec_drop(ptr, 0);
+        cranelisp_intrinsics::vec_runtime::vec_drop(ptr, 0);
     }
 
     // spec: 05-definitions §5.1, 04-expressions §4.10 — Vec literal as function return value
@@ -2458,7 +2611,7 @@ mod tests {
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
         assert_eq!(cranelisp_primitives::vec::vec_len(ptr), 3);
 
-        cranelisp_intrinsics::vec::vec_drop(ptr, 0);
+        cranelisp_intrinsics::vec_runtime::vec_drop(ptr, 0);
     }
 
     // spec: appendix-a-builtins §A.3 — vec-get returns correct element value
@@ -2692,7 +2845,7 @@ mod tests {
         assert!(ptr > 1024);
         assert_eq!(cranelisp_primitives::vec::vec_len(ptr), 1);
 
-        cranelisp_intrinsics::vec::vec_drop(ptr, 0);
+        cranelisp_intrinsics::vec_runtime::vec_drop(ptr, 0);
     }
 
     // spec: appendix-a-builtins §A.3 — vec-len on empty Vec returns 0
@@ -2904,10 +3057,10 @@ mod tests {
         unsafe {
             let base = outer_ptr as *const u8;
             let data = *(base.add(32) as *const *const i64);
-            cranelisp_intrinsics::vec::vec_drop(*data, 0);
-            cranelisp_intrinsics::vec::vec_drop(*data.add(1), 0);
+            cranelisp_intrinsics::vec_runtime::vec_drop(*data, 0);
+            cranelisp_intrinsics::vec_runtime::vec_drop(*data.add(1), 0);
         }
-        cranelisp_intrinsics::vec::vec_drop(outer_ptr, 0);
+        cranelisp_intrinsics::vec_runtime::vec_drop(outer_ptr, 0);
     }
 
     // spec: 04-expressions §4.10 — large Vec literal (10 elements)
@@ -2942,15 +3095,24 @@ mod tests {
             }
         }
 
-        cranelisp_intrinsics::vec::vec_drop(ptr, 0);
+        cranelisp_intrinsics::vec_runtime::vec_drop(ptr, 0);
     }
 
     // --- Ring 2A: TraitMethod dispatch tests ---
 
-    // spec: 07-traits §7.7, appendix-a-builtins §A.3 — Num.+ trait dispatch inlines to add-i64
+    // spec: 07-traits §7.7, appendix-a-builtins §A.3 — Num.+ primitive dispatch inlines to add-i64.
+    //
+    // Per Decision 43 + FIXME 0185: backend has no trait knowledge. The
+    // pre-D43 shape (TraitMethod with `(Num, "+", Int)` → backend-side
+    // `primitive_for_trait_method` lookup → inline IR) is deleted. The
+    // post-D43 path is: typecheck emits `ResolvedCall::BuiltinFn { name:
+    // "add-i64" }` directly for primitive-implemented operators; backend's
+    // inline-substitution path matches by Symbol only. The test asserts
+    // this end-to-end: `BuiltinFn { name: "add-i64" }` → inline iadd → 7.
     #[test]
     fn test_trait_method_dispatch_inline_add() {
-        // (+ 3 4) resolved as TraitMethod Num.+ on Int → should inline as iadd.
+        // (+ 3 4) post-D43 = BuiltinFn add-i64 (typecheck resolves the
+        // primitive directly, not a TraitMethod).
         let apply_span = Span::new(100, 110);
         let expr = Expr::Apply {
             callee: Box::new(Expr::Var {
@@ -2970,23 +3132,25 @@ mod tests {
         let mut check = empty_check();
         check.method_resolutions.insert(
             apply_span,
-            cranelisp_types::ResolvedCall::TraitMethod {
-                trait_name: cranelisp_types::FQTraitName::new(ModuleFullPath::from("core.num"), "Num".into()),
-                method_name: Symbol::from("+"),
-                impl_type: cranelisp_types::FQTypeName::new(ModuleFullPath::from("primitives"), "Int".into()),
-                mangled_name: cranelisp_types::JitSymbol::from("Num.+$Int"),
+            cranelisp_types::ResolvedCall::BuiltinFn {
+                name: Symbol::from("add-i64"),
             },
         );
 
         let value = test_compile_and_run(&expr, &check, &empty_tables())
-            .expect("TraitMethod inline add should compile");
+            .expect("BuiltinFn add-i64 should compile inline");
         assert_eq!(value, 7);
     }
 
-    // spec: 07-traits §7.7, appendix-a-builtins §A.3 — Eq.= trait dispatch on Bool
+    // spec: 07-traits §7.7, appendix-a-builtins §A.3 — Eq.= primitive dispatch on Bool.
+    //
+    // Per Decision 43 + FIXME 0185: same shape change as the Num.+ test.
+    // Post-D43 typecheck emits `BuiltinFn { name: "eq-bool" }` for the
+    // primitive-implemented `=` on Bool. Backend's inline path matches by
+    // Symbol; the result is the `icmp eq` IR returning 1 (true).
     #[test]
     fn test_trait_method_dispatch_eq_bool() {
-        // (= true true) resolved as TraitMethod Eq.= on Bool → eq-bool.
+        // (= true true) post-D43 = BuiltinFn eq-bool.
         let apply_span = Span::new(200, 210);
         let expr = Expr::Apply {
             callee: Box::new(Expr::Var {
@@ -3006,16 +3170,13 @@ mod tests {
         let mut check = empty_check();
         check.method_resolutions.insert(
             apply_span,
-            cranelisp_types::ResolvedCall::TraitMethod {
-                trait_name: cranelisp_types::FQTraitName::new(ModuleFullPath::from("core.eq"), "Eq".into()),
-                method_name: Symbol::from("="),
-                impl_type: cranelisp_types::FQTypeName::new(ModuleFullPath::from("primitives"), "Bool".into()),
-                mangled_name: cranelisp_types::JitSymbol::from("Eq.=$Bool"),
+            cranelisp_types::ResolvedCall::BuiltinFn {
+                name: Symbol::from("eq-bool"),
             },
         );
 
         let value = test_compile_and_run(&expr, &check, &empty_tables())
-            .expect("TraitMethod eq-bool should compile");
+            .expect("BuiltinFn eq-bool should compile inline");
         assert_eq!(value, 1); // true == true → true (1)
     }
 
@@ -3936,7 +4097,7 @@ mod tests {
             Err(e) => e,
         };
 
-        let msg = err.message();
+        let msg = err.to_string();
         assert!(
             msg.contains(name.as_ref()),
             "error message must name the offending symbol 'stub', got: {msg}"

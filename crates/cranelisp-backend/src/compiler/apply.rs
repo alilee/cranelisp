@@ -212,55 +212,26 @@ where
                 }
             }
             ResolvedCall::TraitMethod {
-                ref trait_name,
-                ref method_name,
-                ref impl_type,
                 ref mangled_name,
+                ..
             } => {
-                // Check if this is a known primitive trait method (inline IR).
-                if let Some(prim_name) =
-                    primitives_inline::primitive_for_trait_method(&trait_name.name, method_name, &impl_type.name)
-                {
-                    // Decision 24 (Sprint 56 Step 2c): consuming convention —
-                    // mirror the BuiltinFn arm above.
-                    if is_extern_primitive(prim_name) {
-                        let arg_vals = if prim_name == "string-identity" {
-                            self.compile_arg_list(args)?
-                        } else {
-                            self.compile_consuming_arg_list(args)?
-                        };
-                        self.in_tail_position = saved_tail;
-                        return self.compile_extern_call(prim_name, &arg_vals, span);
-                    }
-
-                    // neq-string: call str-eq (extern) and negate the result.
-                    // str-eq is a simple-heap consuming extern — use consuming args.
-                    if prim_name == "neq-string" {
-                        let arg_vals = self.compile_consuming_arg_list(args)?;
-                        self.in_tail_position = saved_tail;
-                        let eq_result = self.compile_extern_call("str-eq", &arg_vals, span)?;
-                        return Ok(self.builder.ins().bxor_imm(eq_result, 1));
-                    }
-
-                    // Inline primitive trait method (NeverHeap operands).
-                    // Per FIXME 0174: `try_emit_inline_primitive` returns None
-                    // for names outside the inline table — fall through to
-                    // the standard GOT-indirect path for those.
-                    let arg_vals = self.compile_arg_list(args)?;
-                    self.in_tail_position = saved_tail;
-                    match primitives_inline::try_emit_inline_primitive(
-                        &mut self.builder, prim_name, &arg_vals, span,
-                        self.module, self.ctx.panic_func_id,
-                    ) {
-                        Some(result) => return result,
-                        None => {
-                            let sym = Symbol::from(prim_name);
-                            return self.compile_direct_call(&sym, &arg_vals, span);
-                        }
-                    }
-                }
-
-                // Not a primitive: user function — consuming convention.
+                // Per Decision 43 + FIXME 0185: backend has no trait knowledge.
+                // The pre-D43 `primitive_for_trait_method((TraitName, Symbol,
+                // TypeName))` dispatch table — keyed on `(Num, "+", Int)` →
+                // `add-i64` — is the canonical D43-forbidden pattern and has
+                // been deleted. Backend dispatches uniformly: every
+                // ResolvedCall::TraitMethod goes via the trait-impl's
+                // mangled name (e.g., `Num.+$Int`), GOT-indirect like any
+                // user function.
+                //
+                // Performance note: trait operator calls now traverse one
+                // extra call frame compared to the pre-D43 inline-IR path
+                // (the impl body is `(defn + [a b] (add-i64 a b))` — one
+                // hop to the inline-substituted primitive). FIXME 0185
+                // tracks the typecheck-side migration that restores inline
+                // optimisation by having typecheck emit `BuiltinFn { name:
+                // "add-i64" }` directly for primitive-implemented trait
+                // methods, bypassing the `TraitMethod` route entirely.
                 let sym = Symbol::from(mangled_name.as_ref());
                 let arg_vals = self.compile_consuming_arg_list(args)?;
                 self.in_tail_position = saved_tail;

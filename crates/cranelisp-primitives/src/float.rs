@@ -5,7 +5,7 @@
 //! symbol table. Wave 3b-2d.2b lifted the body from
 //! `cranelisp-runtime/src/primitives/float.rs`.
 
-use cranelisp_intrinsics::string;
+use cranelisp_intrinsics::heap_string;
 
 /// Convert a float to its string representation.
 /// The float is received as its i64 bit pattern (IEEE 754 double).
@@ -19,7 +19,7 @@ pub extern "C" fn float_to_string(f_bits: i64) -> i64 {
     } else {
         format!("{f}")
     };
-    string::alloc_string(s.as_bytes()) as i64
+    heap_string::alloc_string(s.as_bytes()) as i64
 }
 
 #[cfg(test)]
@@ -36,7 +36,7 @@ mod tests {
     fn test_float_to_string_integer() {
         let result = float_to_string(float_bits(3.0));
         unsafe {
-            assert_eq!(string::read_string_as_str(result), "3.0");
+            assert_eq!(heap_string::read_string_as_str(result), "3.0");
             alloc::dealloc(result as *mut u8);
         }
     }
@@ -46,7 +46,7 @@ mod tests {
     fn test_float_to_string_fractional() {
         let result = float_to_string(float_bits(3.14));
         unsafe {
-            assert_eq!(string::read_string_as_str(result), "3.14");
+            assert_eq!(heap_string::read_string_as_str(result), "3.14");
             alloc::dealloc(result as *mut u8);
         }
     }
@@ -56,7 +56,7 @@ mod tests {
     fn test_float_to_string_negative() {
         let result = float_to_string(float_bits(-2.5));
         unsafe {
-            assert_eq!(string::read_string_as_str(result), "-2.5");
+            assert_eq!(heap_string::read_string_as_str(result), "-2.5");
             alloc::dealloc(result as *mut u8);
         }
     }
@@ -66,7 +66,7 @@ mod tests {
     fn test_float_to_string_zero() {
         let result = float_to_string(float_bits(0.0));
         unsafe {
-            assert_eq!(string::read_string_as_str(result), "0.0");
+            assert_eq!(heap_string::read_string_as_str(result), "0.0");
             alloc::dealloc(result as *mut u8);
         }
     }

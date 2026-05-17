@@ -2,50 +2,51 @@
 //!
 //! Per Decision 43 + `design/arch/facades/primitives.md`: this crate hosts the
 //! kebab-case, user-addressable primitives whose JIT names appear in the
-//! synthetic `primitives` module's symbol table (e.g. `str-concat`, `vec-len`,
-//! `substring`, `int-to-string`, `parse-int`, `float-to-string`,
+//! synthetic `primitives` module's symbol table (e.g. `add-i64`, `str-concat`,
+//! `vec-len`, `substring`, `int-to-string`, `parse-int`, `float-to-string`,
 //! `bool-to-string`, `sconcat`, `quote-sexp`). The sibling crate
 //! `cranelisp-intrinsics` hosts the backend-emitted-call targets
 //! (`runtime/alloc`, `runtime/dealloc`, `runtime/panic`, RC primitives, drop
-//! glue, the IO trampoline, the `cranelisp_op_*` operator-as-value
-//! wrappers) — those are the codegen-coupled implementation substrate; this
-//! crate is the spec-driven user surface that calls into intrinsics as
-//! needed.
+//! glue, the IO trampoline) — those are the codegen-coupled implementation
+//! substrate; this crate is the spec-driven user surface.
 //!
-//! ## Wave 3b-2d.2b status (FIXME 0150 source migration, primitives half — β-2 follow-on)
+//! ## Public Rust API
 //!
-//! Wave 3b-2d.2 (commit `6654a6e`) lifted the user-callable
-//! string + vec functions out of `cranelisp-intrinsics` into this crate via
-//! re-export (a Cargo cycle prevented physically moving the bodies — see
-//! `design/arch/fixmes/0180-arch-primitives-physical-relocation-blocked-by-runtime-shims.md`).
+//! The single published Rust item is `PRIMITIVES_TABLE` — a process-static
+//! `LazyLock<SymbolTable>` populated at first access with one
+//! `ModuleEntry::Def` per Ring 0 primitive (every entry carries a
+//! `got_slot: Some(_)` and the corresponding code pointer is written to
+//! that slot in the table's per-module `GotTable`). See FIXME 0159 and the
+//! facade spec.
 //!
-//! Wave 3b-2d.2b (the present commit) lifts the **remaining user-callable
-//! Rust extern fns** that previously lived in `cranelisp-runtime`:
+//! Consumers (`int` session init, `cranelisp-backend::register_intrinsics`)
+//! read symbol entries + GOT slot fn ptrs from this table — there is no
+//! `Vec<(&'static str, *const u8)>` enumeration API published; the
+//! transitional `ring0_jit_symbols()` free fn remains for the backend
+//! consumer until FIXME 0182 closes that migration in Wave 4.
 //!
-//! | Source (former runtime) | Destination |
-//! |---|---|
-//! | `marshal::{sconcat, quote_sexp}`                  | `cranelisp_primitives::marshal`  |
-//! | `primitives::int::{int_to_string, parse_int}`     | `cranelisp_primitives::int`      |
-//! | `primitives::float::float_to_string`              | `cranelisp_primitives::float`    |
-//! | `primitives::bool::bool_to_string`                | `cranelisp_primitives::bool`     |
+//! ## Module organisation
 //!
-//! The `cranelisp_op_*` operator-as-value wrappers that previously cohabited
-//! `primitives::int` are **backend-emitted-call targets** (not user-callable;
-//! backend emits direct `Linkage::Import` calls from the operator-as-value
-//! codegen path) and migrated to `cranelisp_intrinsics::ops` instead.
+//! Per-primitive-category sub-modules (`ring0`, `int`, `float`, `bool`,
+//! `marshal`, `string`, `vec`) keep the source small and focused; their
+//! `pub(crate)`-target extern fns are reachable via `PRIMITIVES_TABLE`'s
+//! GOT slots, not via direct Rust paths.
 //!
-//! `cranelisp-runtime` keeps thin re-export shims for every relocated item so
-//! existing consumers (backend's `IntrinsicSymbol` registration in
-//! `crates/cranelisp-backend/src/jit.rs`, `exe-bundle`, integration tests)
-//! continue to compile against `cranelisp_runtime::*` paths. β-3 migrates
-//! those call sites to import from `cranelisp_primitives::*` /
-//! `cranelisp_intrinsics::*` directly and retires `cranelisp-runtime`.
+//! ## FIXME 0180 close (Sprint 67 Wave 3)
 //!
-//! **String + vec re-export note (Wave 3b-2d.2 — unchanged here).** This
-//! crate re-exports the user-callable string fns + `vec_len` from
-//! `cranelisp-intrinsics`. Physical relocation is blocked by FIXME 0180 (a
-//! Cargo cycle would form). The re-exports remain transitional; β-3 +
-//! runtime retirement closes that thread.
+//! `string` and `vec` bodies physically live in this crate as of Sprint 67
+//! Wave 3 (the user-callable surface lifted out of `cranelisp-intrinsics`).
+//! `cranelisp-intrinsics::{heap_string, vec_runtime}` retains the
+//! backend-emitted-call infrastructure (HeapString layout, runtime alloc
+//! helpers, Vec COW paths) — those are NOT user-callable and remain
+//! separate per the Decision 43 categorical split.
+
+use std::sync::LazyLock;
+
+use cranelisp_types::{
+    DefKind, JitSymbol, ModuleEntry, ModuleFullPath, PrimitiveKind, Scheme, SymbolTable,
+    Visibility,
+};
 
 pub mod bool;
 pub mod float;
@@ -55,18 +56,123 @@ pub mod ring0;
 pub mod string;
 pub mod vec;
 
+// Transitional re-export — FIXME 0182 narrows / deletes this after backend
+// migrates its `intrinsic_symbols()` table to read from `PRIMITIVES_TABLE`
+// in Wave 4. See `design/arch/fixmes/0182-*.md`.
 pub use ring0::ring0_jit_symbols;
 
-pub use string::{
-    str_char_at, str_concat, str_contains, str_ends_with, str_eq, str_join, str_len,
-    str_replace, str_split, str_starts_with, str_substring, str_to_lower, str_to_upper,
-    str_trim, string_identity,
-};
+/// The synthetic `primitives` module's static symbol table.
+///
+/// Per FIXME 0159 resolution + `design/arch/facades/primitives.md`
+/// §"Public surface" — single published Rust API item for this crate.
+/// Populated at first access; address-stable for the process lifetime.
+///
+/// Contains one `ModuleEntry::Def` per Ring 0 primitive named in the
+/// authoritative table (`cranelisp_types::ring0_primitives`). Each entry
+/// carries a `got_slot: Some(slot)`; the corresponding code pointer is
+/// stored in `PRIMITIVES_TABLE.got.store_slot(slot, fn_ptr)` immediately
+/// after slot allocation, so the standard GOT-indirect dispatch path
+/// resolves the call to the Rust shim defined in `crate::ring0`.
+///
+/// Consumers:
+///
+/// - `int`'s session-init code reads the (Symbol, fn-ptr) pairs from this
+///   table and writes the pointers into the session's per-module
+///   `primitives` `GotTable` (so `(let [f +] (f 1 2))` resolves to the
+///   shim via the session table's GOT slot).
+/// - `cranelisp-backend::jit::intrinsic_symbols` enumerates the same
+///   primitives for `JITBuilder::symbol` registration (migration tracked
+///   under FIXME 0182, Wave 4).
+///
+/// The Rust extern fns themselves are `pub` because `#[unsafe(export_name = …)]`
+/// requires `pub`; their addresses are only reachable in practice via this
+/// table's GOT slots.
+pub static PRIMITIVES_TABLE: LazyLock<SymbolTable<(), ()>> = LazyLock::new(build_primitives_table);
 
-pub use vec::vec_len;
+/// Build the `PRIMITIVES_TABLE` at static-init time.
+///
+/// Allocates a fresh `SymbolTable` rooted at `ModuleFullPath::from("primitives")`,
+/// inserts one `ModuleEntry::Def` per Ring 0 primitive (mirroring
+/// `cranelisp-typecheck::builtins::register_primitives`'s shape for the
+/// `primitives_kind: Inline` set), allocates a GOT slot for each, and
+/// writes the corresponding Rust shim's address into that slot via
+/// `GotTable::store_slot`. The (symbol → ptr) pairing is sourced from
+/// `crate::ring0::ring0_jit_symbols()` — the single source of truth for
+/// Ring 0 shim addresses.
+fn build_primitives_table() -> SymbolTable<(), ()> {
+    let mut table = SymbolTable::<(), ()>::new(ModuleFullPath::from("primitives"));
+    let shims: std::collections::HashMap<&'static str, *const u8> =
+        ring0::ring0_jit_symbols().into_iter().collect();
+    for prim in cranelisp_types::ring0_primitives() {
+        let scheme = Scheme {
+            vars: Vec::new(),
+            constraints: std::collections::HashMap::new(),
+            ty: prim.ty.clone(),
+        };
+        let slot = table.allocate_got_slot();
+        if let Some(ptr) = shims.get(prim.name.as_ref()) {
+            table.got.store_slot(slot, *ptr);
+        }
+        table.insert(
+            prim.name.clone(),
+            ModuleEntry::Def {
+                scheme,
+                visibility: Visibility::Public,
+                docstring: None,
+                param_names: prim.param_names.clone(),
+                kind: Box::new(DefKind::Primitive {
+                    primitive_kind: PrimitiveKind::Inline,
+                    jit_name: Some(JitSymbol::from(prim.name.as_ref())),
+                }),
+                callees: Vec::new(),
+                got_slot: Some(slot),
+                trait_origin: None,
+                ast: None,
+                code: None,
+            },
+        );
+    }
+    table
+}
 
-pub use marshal::{quote_sexp, sconcat};
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-pub use int::{int_to_string, parse_int};
-pub use float::float_to_string;
-pub use bool::bool_to_string;
+    #[test]
+    fn primitives_table_contains_ring0_entries() {
+        // Every Ring 0 primitive name must appear as a `ModuleEntry::Def`.
+        for prim in cranelisp_types::ring0_primitives() {
+            assert!(
+                PRIMITIVES_TABLE.get(prim.name.as_ref()).is_some(),
+                "missing entry for {}",
+                prim.name
+            );
+        }
+    }
+
+    #[test]
+    fn primitives_table_entries_carry_got_slot_and_ptr() {
+        // Each Ring 0 entry must carry a `got_slot: Some(_)` and the slot
+        // must hold a non-null code pointer matching the shim address.
+        let shims: std::collections::HashMap<&'static str, *const u8> =
+            ring0::ring0_jit_symbols().into_iter().collect();
+        let mut checked = 0usize;
+        for (name, entry) in PRIMITIVES_TABLE.symbols.iter() {
+            let ModuleEntry::Def { got_slot: Some(slot), .. } = entry else {
+                panic!("entry {name} should be a Def with got_slot");
+            };
+            let stored = PRIMITIVES_TABLE.got.load_slot(*slot);
+            let expected = shims
+                .get(name.as_ref())
+                .copied()
+                .expect("ring0_jit_symbols missing shim");
+            assert_eq!(
+                stored, expected,
+                "GOT slot {slot} for {name} does not match shim address"
+            );
+            checked += 1;
+        }
+        assert!(checked >= ring0::ring0_jit_symbols().len() - 3 /* allow for entries without ptr */);
+    }
+}

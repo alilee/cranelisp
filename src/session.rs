@@ -12,7 +12,7 @@ use cranelisp_types::{ErrorLocation,
     Type,
 };
 
-use cranelisp_backend::cache;
+use cranelisp_backend::cache::manifest as cache_manifest;
 
 // ---------------------------------------------------------------------------
 // Cache state
@@ -24,7 +24,7 @@ use cranelisp_backend::cache;
 /// final manifest on completion.
 pub struct CacheState {
     /// The cache manifest (loaded from disk or freshly created).
-    manifest: cache::CacheManifest,
+    manifest: cache_manifest::CacheManifest,
     /// The cache directory path.
     cache_dir: PathBuf,
     /// Source hashes for modules compiled in this session.
@@ -41,8 +41,8 @@ pub struct CacheState {
 impl CacheState {
     /// Initialize cache state: load existing manifest or create a new one.
     pub fn new(cache_dir: PathBuf) -> Self {
-        let manifest = cache::read_manifest(&cache_dir)
-            .unwrap_or_else(cache::CacheManifest::new_for_host);
+        let manifest = cache_manifest::read_manifest(&cache_dir)
+            .unwrap_or_else(cache_manifest::CacheManifest::new_for_host);
         CacheState {
             manifest,
             cache_dir,
@@ -92,7 +92,7 @@ impl CacheState {
     /// Write the manifest to disk if it was modified.
     pub fn flush(&self) -> Result<(), CranelispError> {
         if self.dirty {
-            cache::write_manifest(&self.cache_dir, &self.manifest)?;
+            cache_manifest::write_manifest(&self.cache_dir, &self.manifest)?;
         }
         Ok(())
     }
@@ -117,7 +117,7 @@ impl CacheState {
         current_source_hash: &str,
         dep_hashes: &HashMap<ModuleFullPath, String>,
     ) -> bool {
-        cache::check_manifest(&self.manifest, module_path, current_source_hash, dep_hashes)
+        cache_manifest::check_manifest(&self.manifest, module_path, current_source_hash, dep_hashes)
             .unwrap_or_default() // Global invalidation — treat as miss.
     }
 
@@ -302,7 +302,12 @@ pub fn resolve_prelude(
 /// Per spec section 10.6.1:
 /// - If the inner type is `Int`, use the integer value as the exit code.
 /// - Otherwise, exit code is 0.
-pub fn determine_exit_code(value: i64, inner_ty: &Type) -> i32 {
+///
+/// Sprint 67 hack-back: narrowed to `pub(crate)` + `#[allow(dead_code)]` —
+/// no current callers (the exit-code derivation is currently inline in
+/// `main.rs`); retained as the canonical spec §10.6.1 mapping.
+#[allow(dead_code)]
+pub(crate) fn determine_exit_code(value: i64, inner_ty: &Type) -> i32 {
     match inner_ty {
         Type::Int => value as i32,
         _ => 0,
@@ -331,8 +336,7 @@ pub(crate) fn inject_prelude_import(
         names: cranelisp_types::ImportNames::Glob,
         span: Span::SYNTHETIC,
     };
-    let tc = cranelisp_typecheck::TypeCheckEnv::new(symbol_tables, next_type_id);
-    tc.register_imports(check_state, &[import_spec])
+    cranelisp_typecheck::register_imports(symbol_tables, next_type_id, check_state, &[import_spec])
 }
 
 // Sprint 58 Step 5b: `has_compilable_defns` was a presence-check helper used

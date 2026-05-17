@@ -1,71 +1,307 @@
 ---
 number: 0040
-title: `trace.rs` and `io_trace.rs` relocate to int; runtime keeps an `IoObserver` callback contract; BC §4 unchanged
+title: `(trace ...)` is a REPL/`--run`-only special form; `trace.rs` and `io_trace.rs` relocate to int; intrinsics keeps an `IoObserver` callback contract
 status: operative
 ---
 
-# 0040 — `trace.rs` and `io_trace.rs` relocate to int; runtime keeps an `IoObserver` callback contract; BC §4 unchanged
+# 0040 — `(trace ...)` is a REPL/`--run`-only special form; `trace.rs` and `io_trace.rs` relocate to int; intrinsics keeps an `IoObserver` callback contract
 
-`trace.rs` and `io_trace.rs` (~1700 LOC of dev-tooling currently hosted in `cranelisp-runtime`) relocate to int. The runtime crate keeps a small (~50 LOC) `IoObserver` callback contract as the trampoline-side extension point for IO-state observation. The `(trace ...)` GOT-swap orchestration moves to int as ordinary integration-layer work — the same shape as any other GOT installation. `bounded-contexts.md` §4's exclusion of "diagnostics, tracing, observability" from runtime's scope is correct as written; the implementation drift is corrected by relocation, not by BC revision.
+`(trace ...)` is scoped as a REPL/`--run`-only special form: in `--link`
+standalone-binary mode the form is rejected at compile time. With that
+product constraint, `trace.rs` and `io_trace.rs` (~1700 LOC of dev-tooling
+currently hosted in `cranelisp-intrinsics` post-D43) relocate in full to
+`int` — bodies *and* JIT-emitted-call symbol registrations. The intrinsics
+crate keeps a small (~50 LOC) `IoObserver` callback contract as the IO
+trampoline's extension point for IO-state observation. `bounded-contexts.md`
+§4 / §4b's exclusion of "diagnostics, tracing, observability" from
+intrinsics' scope holds; the implementation drift is corrected by full
+relocation under the `--link`-rejects-`(trace ...)` premise.
 
 ## Shape
 
-**Runtime defines** the IO observation taxonomy and registration API as an extension point (parallel to the existing `register_alloc_callback` host-callback pattern):
+### Product-shape constraint (Path B1)
+
+`(trace ...)` is a REPL/`--run`-only special form. `--link` standalone
+binary mode rejects the form at compile time — frontend (preferred per
+Principle 7, early enforcement) or typecheck emits a `CompilationError`
+when `(trace ...)` is encountered under the `--link` build mode flag. The
+form is a syntactic distinction recognisable without type information, so
+frontend is the canonical enforcement site; `/sprint` routes the
+implementation FIXME to the actual owner.
+
+Consequence: `--link` static archives carry zero trace machinery. There is
+no degraded-but-defined runtime behaviour in `--link` — there is no runtime
+behaviour at all, because the form never reaches codegen.
+
+### Intrinsics surface — the ~50-line IoObserver contract
+
+Intrinsics defines the IO observation taxonomy and registration API as an
+extension point (parallel to the existing host-callback patterns):
 
 ```rust
-// crates/cranelisp-runtime/src/io_observer.rs (new, ~50 lines)
-pub enum IoTraceTag { TrampolineEnter, PureStep, PlatformEffect, ContPop, /* … */ }
-pub enum IoTracePayload { /* same variants as today, moved here */ }
-pub type IoObserver = fn(IoTraceTag, &IoTracePayload);
+// crates/cranelisp-intrinsics/src/io_observer.rs (~50 lines; already exists post-D43)
+#[non_exhaustive] #[repr(u8)] pub enum IoEventTag { TrampolineEnter, TrampolineExit, PureStep, BindEnter, BindExit, ContPush, ContPop, PlatformEffect, ParSpark, ParSerialGroupEnter, ParJoin, ParBarrierForce }
+#[non_exhaustive] pub enum IoEvent { /* payload variants */ }
+pub type IoObserver = fn(IoEventTag, &IoEvent);
+
 pub fn register_io_observer(observer: Option<IoObserver>);
-pub fn trace_anchor() -> &'static Instant;  // shared monotonic anchor (kept here)
+pub fn emit(tag: IoEventTag, event: &IoEvent);     // relaxed-load null check + dispatch
+pub fn trace_anchor() -> &'static Instant;         // shared monotonic anchor — kept here
 ```
 
-The ~17 inline `record_event(tag, payload)` calls in `crates/cranelisp-runtime/src/io.rs` swap to invoke the registered observer with a relaxed-load null check — no-op if unregistered. `--link` binaries pay one relaxed null-check load per call site (one conditional branch after optimisation); zero ring-buffer or formatter cost.
+The ~17 inline `io_trace::record_event(tag, payload)` calls currently in
+`crates/cranelisp-intrinsics/src/io.rs` (call sites at approximately
+lines 99, 104, 124, 130, 148, 184, 195, 207, 225, 238, 281, 304, 316,
+422, 434, 442 plus a few — line numbers may shift; canonical hit set is
+every `io_trace::record_event` call in that file) rewire to
+`io_observer::emit(tag, event)`. `emit` is a relaxed-load null check + dispatch to the
+registered observer. `--link` binaries pay one relaxed null-check load per
+call site (one conditional branch after optimisation); zero ring-buffer or
+formatter cost.
 
-**Int implements** all observer state and trace orchestration:
+### Int hosting — the trace bodies and observer state
 
-- `src/trace/` (new) absorbs `(trace ...)` special-form compilation, slash-command handlers, frame stack, ADT marshaling, and the wrapper machinery currently in `crates/cranelisp-runtime/src/trace.rs`.
-- `src/io_trace/` (new) absorbs ring buffers, thread-local buffers, env-var filter parser, panic hook, `flush_to_stderr`, formatter, dump, and merge-sort currently in `crates/cranelisp-runtime/src/io_trace.rs`.
-- Int's session startup (REPL mode or `--run` with `CRANELISP_IO_TRACE=1`) calls `runtime::register_io_observer(Some(int::io_trace::record))`. Production batch (`--link`, non-trace `--run`) does not register.
+`int` (the `src/` binary crate) hosts:
 
-`TRACE_ANCHOR` stays in runtime exposed via `trace_anchor() -> &'static Instant`. The accessor in runtime preserves the merge-sort coordination story (int's scheduler trace and the IO trace use the same monotonic origin) without forcing a callback round-trip per anchor lookup.
+1. **The 12 `cranelisp_trace_*` JIT-emitted-call function bodies.** Listed
+   in the pre-relocation residence on `facades/intrinsics.md` §"Trace
+   functions" (currently in `crates/cranelisp-intrinsics/src/trace.rs`).
+   The 12 fns (`cranelisp_trace_enter`, `_exit`, `_format`, `_swap_got`,
+   `_restore_got`, `cranelisp_collect_trace`, `_name`, `_params`,
+   `_result`, `_children`, `_nanos`, `_first_child_nanos`) relocate body
+   and `#[no_mangle]` declaration into `src/trace/` modules.
+
+2. **Registration via the `int_intrinsics()` map.** `src/session_v4.rs`'s
+   `int_intrinsics()` map (the same shape Wave 3a-γ established for
+   `discover-tests`, `run-test`, and the previously-orphan
+   `cranelisp_trace_format` per `src/CLAUDE.md` §"Int-owned JIT
+   intrinsics") registers the 12 trace symbols at every JIT-build site —
+   `JITBuilder::symbol(...)` resolves the names to the int-hosted fn ptrs
+   at session init. The registration responsibility crosses the
+   crate boundary from `cranelisp-backend` (per-`JITBuilder`-instance
+   declaration) to `cranelisp` int (per-JIT-build-site registration via
+   the int-owned symbol map).
+
+3. **Observer state.** `src/io_trace/` absorbs the ring-buffer machinery
+   that is currently in `crates/cranelisp-intrinsics/src/io_trace.rs`:
+   per-thread ring buffers, env-var filter parser, panic hook,
+   `flush_to_stderr`, formatter, dump, merge-sort, `record_event` body,
+   `IoTracePayload` / `IoTraceTag` / `IoTraceEvent` / `FlushGuard` /
+   `IO_TRACE_BUFFER_CAPACITY` const. The pre-existing observer-forwarder
+   shell at `src/io_trace.rs` (which maps `IoEventTag` → `IoTraceTag`) is
+   the destination's seed; the ring-buffer body joins it.
+
+4. **Trace orchestration.** `src/trace/` absorbs the `(trace ...)`
+   special-form compilation, ADT marshalling, slash-command handlers, and
+   any REPL-only observer wiring. Frame stack and GOT-swap machinery live
+   alongside the JIT-emitted-call bodies named in (1).
+
+`int`'s session startup (REPL mode or `--run` with `CRANELISP_IO_TRACE=1`)
+calls `intrinsics::register_io_observer(Some(int::io_trace::record))`.
+Production batch (`--link`, non-trace `--run`) does not register and does
+not host trace machinery.
+
+### Backend surface — the 12 IntrinsicSymbol entries delete
+
+`crates/cranelisp-backend/src/jit.rs:107-118` declares 12 `IntrinsicSymbol
+{ ptr: cranelisp_intrinsics::trace::cranelisp_trace_* as *const u8, ... }`
+entries that JIT setup hands to `JITBuilder::symbol`. Under B1, those
+entries delete entirely. Backend stops contributing trace symbols to the
+JIT; the registration responsibility moves to `int`'s `int_intrinsics()`
+map per (2) above. Backend's `cranelisp-intrinsics` dependency persists
+for the non-trace intrinsics it still names; only the 12 trace lines go.
+
+### exe-bundle surface — the force-link `pub use` deletes
+
+`crates/cranelisp-exe-bundle/src/lib.rs:37` carries
+`pub use cranelisp_intrinsics::trace;` as a force-link incantation. Under
+B1 — where `--link` rejects `(trace ...)` — the static archive
+`libcranelisp_exe_bundle.a` does not need trace symbols and the
+force-link line deletes. Consistent with `--link` mode rejecting the form:
+exe-bundle does not carry trace symbols.
+
+Per `sprints/SPRINT.md` Notes §"Sibling-wave breakage —
+cranelisp-exe-bundle (2026-05-16)", `cranelisp-exe-bundle` is an `/int`
+implementation detail; `/int` owns the edit.
+
+### Intrinsics-side deletions
+
+After int has hosted the bodies and registrations:
+
+- `crates/cranelisp-intrinsics/src/trace.rs` deletes entirely (~740 LOC).
+- The ring-buffer body of `crates/cranelisp-intrinsics/src/io_trace.rs`
+  deletes (~952 LOC); the registration API + `IoEvent` / `IoEventTag`
+  callback contract remain on `io_observer.rs` per the §"Intrinsics
+  surface" subsection above.
+- `consume_trace_call` (per-type drop helper for the `TraceCall` ADT
+  layout, currently on the intrinsics facade) relocates with `trace::*`
+  to int — the ADT layout is owned by int's `src/trace/`, and the
+  consumer fn does not live anywhere else.
 
 ## Why relocation, not BC revision
 
-The original `runtime.md` §10 framing leaned BC-revision (admit "diagnostics, observability" inside the runtime BC). That direction reverses on the orchestration-vs-runtime-semantics distinction:
+The original `runtime.md` §10 framing (pre-D43) leaned BC-revision —
+admit "diagnostics, observability" inside the runtime BC. That direction
+reversed on the orchestration-vs-runtime-semantics distinction, and the
+present Path-B1 amendment closes the same drift more completely:
 
-- **Orchestration** is one-time setup performed by int (the GOT swap that installs trace wrappers). It happens once, before execution; after the swap, runtime is just runtime, dispatching through whatever GOT it has.
-- **Runtime semantics** is what the program does once running, dispatching through the post-swap GOT. The runtime crate is for things programs need at runtime: builtins, RC primitives, the IO trampoline, the heap.
+- **Orchestration** is one-time setup performed by int (the GOT swap that
+  installs trace wrappers). It happens once, before execution; after the
+  swap, runtime is just runtime, dispatching through whatever GOT it has.
+- **Runtime semantics** under B1 is what the program does once running, in
+  modes where `(trace ...)` is legal (REPL, `--run`). The trace
+  JIT-emitted-call bodies ARE runtime semantics for those modes — and
+  they live where the orchestration lives, in `int`. The intrinsics crate
+  reduces to the small `IoObserver` extension-point API.
+- `--link` mode rejects the form entirely. No runtime semantics for
+  `(trace ...)` exists in `--link` because the form never reaches codegen.
 
-Diagnostic *orchestration* and diagnostic *consumer state* are int concerns. The runtime side reduces to a small extension-point API (callback registration + event taxonomy) that lets the trampoline emit events to whatever observer int has registered. The BC is correct as written; the implementation has drifted; relocation closes the drift.
+The BC is correct as written; the drift closes by full relocation.
 
 ## Consequences
 
-- `crates/cranelisp-runtime/src/trace.rs` deleted; `src/trace/` in int absorbs the orchestration + wrapper machinery.
-- `crates/cranelisp-runtime/src/io_trace.rs` deleted; `src/io_trace/` in int absorbs ring buffers, panic hook, formatter, dump, merge-sort.
-- `crates/cranelisp-runtime/src/io_observer.rs` new (~50 lines): `IoTraceTag`, `IoTracePayload`, `IoObserver` type, `register_io_observer`, `trace_anchor`.
-- `crates/cranelisp-runtime/src/io.rs` ~17 inline calls swap from `io_trace::record_event` to invoking the registered observer.
-- `crates/cranelisp-runtime/src/lib.rs` (facade) public surface gains the observer API; `facades/runtime.md` documents it as extension-point surface (NOT diagnostics).
-- `bounded-contexts.md` §4 unchanged.
-- `IoTraceTag` and `IoTracePayload` enums move with the API to runtime — they ARE the callback's type contract; they belong where the trampoline lives.
-- Net runtime LOC reduction: ~1700. Runtime focus tightens to running-program needs plus host-callback extension points.
-- `--link` binaries: zero IO-trace overhead (no observer registered).
-- REPL/dev `--run`: int's startup registers the observer; user-visible behaviour unchanged.
+- `(trace ...)` is rejected at compile time in `--link` mode. Spec
+  impact: `spec/04-expressions.md` §4.12 gains an explicit
+  `--link`-mode-rejection clause (filed as FIXME `target: /spec`).
+- `crates/cranelisp-intrinsics/src/trace.rs` deletes entirely (~740 LOC).
+- `crates/cranelisp-intrinsics/src/io_trace.rs` ring-buffer + formatter +
+  dump + merge-sort + panic hook + env-var filter delete (~952 LOC); only
+  `register_io_observer` + `emit` + the `IoEvent` / `IoEventTag` types
+  remain (on `io_observer.rs`).
+- `crates/cranelisp-intrinsics/src/io.rs` ~17 inline calls swap from
+  `io_trace::record_event` to `io_observer::emit(tag, event)`.
+- `crates/cranelisp-backend/src/jit.rs:107-118` deletes the 12
+  `cranelisp_trace_*` `IntrinsicSymbol` entries.
+- `crates/cranelisp-exe-bundle/src/lib.rs:37` deletes the
+  `pub use cranelisp_intrinsics::trace;` force-link line.
+- `src/session_v4.rs`'s `int_intrinsics()` map gains the 12
+  `cranelisp_trace_*` entries (registration responsibility crosses
+  from backend to int).
+- `src/trace/` (new) absorbs the 12 JIT-emitted-call bodies, GOT-swap
+  wrappers, frame stack, slash-command handlers, and `consume_trace_call`
+  drop helper. `(trace ...)` special-form compilation + ADT marshalling
+  live here.
+- `src/io_trace/` (new — the existing observer-forwarder shell at
+  `src/io_trace.rs` is the seed) absorbs ring buffers, panic hook,
+  formatter, dump, merge-sort, env-var filter, `record_event` body, and
+  the `IoTracePayload` / `IoTraceTag` / `IoTraceEvent` / `FlushGuard` /
+  `IO_TRACE_BUFFER_CAPACITY` types.
+- `intrinsics`'s public surface contracts to the ~50-line
+  `IoObserver` extension-point API plus the unchanged trampoline +
+  allocator + RC + drop-helper + vec + string + IVar + panic surfaces.
+  `facades/intrinsics.md` §"IO observation" already describes the
+  post-Wave-4 final shape; the §"Trace functions" and §"`io_trace::*`"
+  sections (currently marked "RELOCATING TO `int` IN S67 WAVE 4") are
+  what disappear at relocation close.
+- `--link` binaries: zero IO-trace overhead, zero trace overhead. The
+  force-link line is unnecessary because the form is unreachable.
+- REPL/dev `--run`: int's startup registers the observer; trace forms
+  evaluate via int-hosted JIT-emitted-call targets resolved through
+  `int_intrinsics()`. User-visible behaviour unchanged.
+- Net intrinsics LOC reduction: ~1700. Intrinsics focus tightens to
+  backend-emitted-call targets plus the host-callback extension point.
 
 ## Cross-references
 
-- Aligned with the existing `register_alloc_callback` host-callback pattern — runtime defines the contract, host implements.
-- §2.12 (runtime facade silences on operator + RC primitives) stays applicable: `dec_shallow_io` and operator primitives remain in scope; the scope tightening is just losing the diagnostic modules.
-- Sprint 63 substance-scoping resolution §1.1.
+- Aligned with the existing `register_alloc_callback` host-callback
+  pattern — intrinsics defines the contract, host (int) implements.
+- `facades/intrinsics.md` §"IO observation" — registration API + emit
+  contract; final post-Wave-4 shape.
+- `facades/intrinsics.md` §"Trace functions" + §"`io_trace::*`" —
+  pre-Wave-4 residence with explicit "RELOCATING TO `int`" markers.
+- `facades/int.md` §"Tracing helpers — `src/trace/`" + §"Observability —
+  `src/io_trace/`" — destination shapes (referenced post-Wave-4).
+- `src/CLAUDE.md` §"Int-owned JIT intrinsics" — the
+  `int_intrinsics()` registration pattern Wave 3a-γ established.
+- Decision 43 — the `cranelisp-runtime` split into `cranelisp-primitives`
+  + `cranelisp-intrinsics`; this Decision's registration-API host moved
+  with that split.
+- Decision 29 — IO trampoline; the trampoline is the consumer of
+  `io_observer::emit`.
 
 ## Rationale
 
-- Principle 1 (decoupling) — int's diagnostic concerns no longer drag runtime.
-- Principle 2 (narrow interfaces) — runtime's observation surface is ~50 lines.
-- Principle 3 (dependency direction unchanged) — int → runtime stays the only edge.
-- Principle 7 (single source of truth) — diagnostic state has one home, in int.
+- Principle 1 (decoupling) — int's diagnostic concerns no longer drag
+  intrinsics; intrinsics no longer drags backend into trace symbol
+  registration.
+- Principle 2 (narrow interfaces) — intrinsics' observation surface is
+  ~50 lines; the trace-symbol surface contracts to zero.
+- Principle 3 (dependency direction unchanged) — int → intrinsics stays
+  the only edge; backend's intrinsics dependency loses the trace lines
+  but persists for the rest.
+- Principle 7 (single source of truth + early enforcement) —
+  diagnostic state has one home, in int; `(trace ...)` rejection lives
+  at the earliest point that can detect it (frontend).
+- Principle 12 (design for full spec surface) — `--link` mode's
+  rejection of `(trace ...)` is an explicit product surface; not an
+  accidental limitation.
 
 ## Canonical location
 
-`crates/cranelisp-runtime/src/io_observer.rs` (new contract); `src/trace/` and `src/io_trace/` (new in int). Owner of contract: `/arch`. Owner of relocated code: `/dev` (runtime) builds the observer module and deletes the old; `/dev` (int) absorbs and registers.
+`crates/cranelisp-intrinsics/src/io_observer.rs` (the ~50-line
+extension-point contract — registration API + `emit` + `IoEvent` /
+`IoEventTag`). `src/trace/` and `src/io_trace/` (new in int — the
+relocated bodies, ring buffer, JIT-emitted-call targets,
+`int_intrinsics()` registrations). Owner of contract: `/arch`. Owner of
+relocated code: `/dev (int)` builds + registers; `/dev (intrinsics)`
+deletes the local copies once int's hosting lands. `/dev (backend)`
+deletes the 12 `IntrinsicSymbol` entries.
+
+## Status pointer — Sprint 67 close
+
+S67 close — Path B1 selected (user-arbitrated 2026-05-16, in response to
+the now-deleted FIXME 0195 — `/dev (int)`'s request for /arch
+reconciliation, filed against this Decision). The pre-amendment §"Shape"
+read B2 (orchestration moves; bodies stay in intrinsics); the prior
+§"Status pointer — Sprint 67 close" (added 2026-05-15) read B1 (full
+deletion) — internally inconsistent. The above amendment reconciles to
+B1 throughout, and the inconsistency-discovery FIXME (0195) is resolved
+by this amendment + the cascading FIXMEs 0197–0202 (the durable record
+of how 0195 closed).
+
+B1 ladder for Wave 4 sequencing (cascading FIXMEs filed 0197–0202):
+
+1. **/dev (intrinsics) — io.rs rewire** (FIXME 0201). ~17 inline
+   `io_trace::record_event` calls in `crates/cranelisp-intrinsics/src/io.rs`
+   swap to `io_observer::emit(tag, event)`. Define `emit` in
+   `io_observer.rs` as the relaxed-load null check + dispatch.
+   Architectural prerequisite for the io_trace ring-buffer relocation.
+
+2. **/dev (frontend) — `--link`-mode rejection** (FIXME 0199). Reject
+   `(trace ...)` in `--link` mode. Recommended at the frontend layer per
+   Principle 7 (early enforcement) and because the form is a syntactic
+   distinction; `/sprint` routes by canonical owner if implementation
+   reasons argue typecheck instead. Spec update (FIXME 0200) lands in
+   parallel.
+
+3. **/spec — `spec/04-expressions.md` §4.12 amendment** (FIXME 0200).
+   "In `--link` standalone-binary mode, `(trace ...)` is a compile-time
+   error; the form is REPL/`--run`-only."
+
+4. **/dev (int) — host trace bodies + observer state + register via
+   `int_intrinsics()` + exe-bundle force-link deletion** (FIXME 0202,
+   Cluster A re-fire). Now-unblocked under B1. Hosts the 12
+   `cranelisp_trace_*` bodies in `src/trace/`; hosts io_trace ring buffer
+   + formatter + dump + panic hook + filter in `src/io_trace/`;
+   registers the 12 trace symbols via `int_intrinsics()` at JIT-build
+   sites; deletes the `pub use cranelisp_intrinsics::trace;` line at
+   `crates/cranelisp-exe-bundle/src/lib.rs:37`. Depends on FIXMEs 0197
+   (backend deletion) and 0201 (io.rs rewire) landing first or in
+   concert; depends on FIXME 0199 (frontend rejection) to make the
+   exe-bundle deletion correct.
+
+5. **/dev (backend) — delete the 12 `IntrinsicSymbol` entries** (FIXME
+   0197). Backend stops contributing trace symbols to JIT; int takes
+   over via `int_intrinsics()`. Lands AFTER /dev (int) hosts the trace
+   bodies (sequencing dependency on FIXME 0202).
+
+6. **/dev (intrinsics) — delete the local trace.rs + io_trace.rs
+   bodies** (FIXME 0198). Depends on FIXME 0202 (int hosting) landing
+   first. Removes `crates/cranelisp-intrinsics/src/trace.rs` entirely
+   and the ring-buffer body of `crates/cranelisp-intrinsics/src/io_trace.rs`,
+   keeping only the registration API + `IoEvent` / `IoEventTag` types on
+   `io_observer.rs`.
+
+Wave 4 deletion of `cranelisp-intrinsics::io_trace::*` and
+`cranelisp-intrinsics::trace::*` (FIXMEs 0197, 0198, 0202) closes the
+substantive Decision. FIXME 0103 closes alongside.

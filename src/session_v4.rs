@@ -221,15 +221,19 @@ pub const QUIT_SENTINEL: &str = "\x00QUIT";
 /// `eq-bool`) are registered in `typecheck::builtins::register_primitives`
 /// with `got_slot: Some(_)` and `jit_name: Some(_)`. Their code pointers
 /// are written here, immediately after `register_builtins` returns, by
-/// pairing each name with the Rust shim address surfaced by
-/// `cranelisp_primitives::ring0::ring0_jit_symbols()`.
+/// reading them from `cranelisp_primitives::PRIMITIVES_TABLE` — the
+/// post-FIXME-0159 single source of truth for primitive entries and
+/// GOT-stored fn ptrs. The static table's GOT carries each Ring 0 shim's
+/// address at its own slot index; this fn copies them across to the
+/// session's `primitives` table at the session-allocated slot indices
+/// (the two tables index slots independently).
 ///
 /// The standard GOT-indirect dispatch (`compile_direct_call` →
 /// `resolve_got_target` → `__cranelisp_got_primitives[slot]`) resolves the
 /// call to these shim fn ptrs. The `primitives_inline.rs` inline-substitution
 /// path is a separate code-size + dispatch-cost optimisation: identical
-/// semantics, faster code. Mappable paths
-/// (`(let [f not] (f true))`) always work via the GOT-stored shim ptr.
+/// semantics, faster code. Mappable paths (`(let [f not] (f true))`)
+/// always work via the GOT-stored shim ptr.
 ///
 /// Idempotent — safe to call after every `register_builtins`; the shim
 /// pointers are stable for the process lifetime.
@@ -243,14 +247,25 @@ fn populate_ring0_got_slots(
         // missing-module condition when a Ring 0 call is compiled.
         return;
     };
-    for (name, ptr) in cranelisp_primitives::ring0::ring0_jit_symbols() {
-        let Some(entry) = table.get(name) else {
+    let static_table = &*cranelisp_primitives::PRIMITIVES_TABLE;
+    for (name, static_entry) in static_table.symbols.iter() {
+        let cranelisp_types::ModuleEntry::Def {
+            got_slot: Some(src_slot), ..
+        } = static_entry
+        else {
             continue;
         };
-        let cranelisp_types::ModuleEntry::Def { got_slot: Some(slot), .. } = entry else {
+        let ptr = static_table.got.load_slot(*src_slot);
+        let Some(session_entry) = table.get(name.as_ref()) else {
             continue;
         };
-        table.got.store_slot(*slot, ptr);
+        let cranelisp_types::ModuleEntry::Def {
+            got_slot: Some(dst_slot), ..
+        } = session_entry
+        else {
+            continue;
+        };
+        table.got.store_slot(*dst_slot, ptr);
     }
 }
 
@@ -557,6 +572,55 @@ pub struct Introspection {
 }
 
 // ---------------------------------------------------------------------------
+// Sprint 67 W3 — Facade-prescribed introspection record types
+// (FIXME 0176 partial close; `facades/int.md` §"Introspection records")
+// ---------------------------------------------------------------------------
+
+/// Symbol category for facade-level introspection. A coarser classification
+/// than `ModuleEntry` itself — used by `describe_symbol` /
+/// `list_user_definitions` to bucket symbols for REPL display.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolCategory {
+    Module,
+    Macro,
+    Trait,
+    Type,
+    Fn,
+    SpecialForm,
+    Constructor,
+}
+
+/// Brief symbol record — name + category + optional scheme + optional doc.
+/// Returned by `CompilerSession::list_user_definitions()`.
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub struct SymbolInfo {
+    pub name: Symbol,
+    pub category: SymbolCategory,
+    pub scheme: Option<cranelisp_types::Scheme>,
+    pub docstring: Option<String>,
+}
+
+/// Full symbol description — `SymbolInfo` plus source text + FQ symbol.
+/// Returned by `CompilerSession::describe_symbol(name)`.
+///
+/// The `related` field carries cross-reference FQSymbols (defn, impl, match
+/// arms, etc.) per `facades/int.md` L403 + `repl/spec.md` §3.6's
+/// related-symbol comment lines. Populated as an empty Vec at first wiring
+/// (Sprint 67 Wave 4) — full population is tracked by FIXME 0194.
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub struct SymbolDescription {
+    pub fq: FQSymbol,
+    pub category: SymbolCategory,
+    pub scheme: Option<cranelisp_types::Scheme>,
+    pub docstring: Option<String>,
+    pub source: Option<String>,
+    pub related: Vec<FQSymbol>,
+}
+
+// ---------------------------------------------------------------------------
 // CompilerSession (pipeline-v4.md §5)
 // ---------------------------------------------------------------------------
 
@@ -602,6 +666,12 @@ pub struct SharedState {
     /// module when a dependency becomes available. Worker-local logically,
     /// but stored here so a blocked module can resume on any worker. Sprint
     /// 57 Wave 4 G9 (per `persistent-workers.md` §5.3).
+    ///
+    /// **Sprint 67 Cluster B investigation verified LIVE.** The facade-plan
+    /// `PIF — relocate or eliminate` (S67 W1 row, gated on FIXME 0179
+    /// cluster-mode read-union) is correct in direction but the field is
+    /// currently load-bearing for the pre-cluster-atomic resume-on-dep-arrival
+    /// path. Deferred to S68 review per FIXME 0205 + FIXME 0208 facade refresh.
     pub suspend_states: Mutex<HashMap<ModuleFullPath, crate::worker::ModuleSuspendState>>,
 
     /// Cache directory for .o and .meta.json output (Step 10).
@@ -614,6 +684,12 @@ pub struct SharedState {
 
     /// Flag for nice worker priority promotion during hot flush (Step 10).
     /// When set to true, nice workers self-promote to normal OS priority.
+    ///
+    /// **Sprint 67 Cluster B investigation verified LIVE.** Atomic flag is
+    /// read by `spawn_nice_workers` per-iteration to detect hot-flush priority
+    /// boost requests; written by `wait_object_complete` when the initiator
+    /// thread requests a flush. Facade-plan `PFR — facade widens` (S67 W1
+    /// row) holds. Deferred to S68 facade refresh per FIXME 0208.
     pub promote_nice_workers: AtomicBool,
 
     /// Set of modules loaded from cache (vs. compiled from source).
@@ -630,6 +706,18 @@ pub struct SharedState {
     /// source hash records. Behind Mutex because workers update it
     /// (record_cache_hit) during handle_import.
     pub cache_state: Mutex<Option<crate::session::CacheState>>,
+
+    /// Compile-time codegen mode (REPL/`--run` => `InMemoryAndObject`;
+    /// `--link` => `ObjectOnly`). Captured from `SessionSettings` at
+    /// construction and read by the cluster orchestrator's `(trace ...)`
+    /// rejection pass per Decision 40 / Path B1 (FIXMEs 0199 + 0204).
+    ///
+    /// Per spec/04-expressions.md §4.12.9: `(trace ...)` is REPL/`--run`-only;
+    /// `--link` rejects the form at compile time. The validator is invoked
+    /// from `worker::build_program_compat` with this flag as the deciding
+    /// input. `CodegenBehaviour::InMemoryAndObject` makes the validator a
+    /// no-op (trace permitted).
+    pub codegen_behaviour: CodegenBehaviour,
 
     // -- Stateless TC: shared state (Sprint 51) --
     // The single source of truth for per-module symbol data. Formerly owned
@@ -658,6 +746,15 @@ pub struct SharedState {
     /// REPL carry-forward: CheckState that persists across REPL evals.
     /// Contains substitution, scope stack, overloads, module aliases.
     /// None in batch mode (CheckState is stack-local per worker).
+    ///
+    /// **Sprint 67 Cluster B investigation verified LIVE.** Read by both
+    /// REPL eval paths (`session_v4.rs:2395, 3377`) and the
+    /// `tc_snapshot`/`tc_restore` REPL error-recovery primitives; mutated
+    /// when `/mod` switches the active module (`set_current_module`,
+    /// session_v4.rs:1152). Facade-plan `PIF — relocate to CompilerSession`
+    /// (S67 W1 row) is correct in direction but currently load-bearing on
+    /// SharedState; relocation deferred to S68 review per FIXME 0208 facade
+    /// refresh + S68 cluster-atomic completion.
     pub repl_check_state: Mutex<Option<CheckState>>,
 
     // -- Target data model (session-restructure.md) --
@@ -793,6 +890,21 @@ impl Drop for EvalInFlightGuard<'_> {
     }
 }
 
+/// The outcome of `CompilerSession::introduce_module` (FIXME 0192 Residual
+/// Task 2 — 4-branch lifecycle).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleIntroductionOutcome {
+    /// The module was already present; no change.
+    AlreadyPresent,
+    /// The cached metadata + `.o` was decoded and installed atomically.
+    CachedLoad,
+    /// No cache entry but a source file is registered; caller should
+    /// schedule compilation (the orchestrator does not invoke the scheduler).
+    SourceLoad,
+    /// Neither cache nor source — an empty symbol table was created.
+    Blank,
+}
+
 /// The compiler session — scheduler-driven concurrent compilation.
 ///
 /// One session per process. Owns the TypeChecker, codegen state, and
@@ -917,6 +1029,7 @@ impl CompilerSession {
             cached_modules: Mutex::new(HashSet::new()),
             file_to_module: Mutex::new(HashMap::new()),
             cache_state: Mutex::new(cache_state),
+            codegen_behaviour: settings.codegen_behaviour,
             symbol_tables,
             next_type_id,
             current_module: Mutex::new(user_module.clone()),
@@ -1073,13 +1186,122 @@ impl CompilerSession {
         self.shared.symbol_tables.get(path)
     }
 
-    /// Resolve a module by name (for /exports command).
-    fn resolve_module_by_name(&self, name: &str) -> Option<ModuleFullPath> {
-        let tc = self.tc_env();
-        let guard = self.shared.repl_check_state.lock()
+    /// Introduce a module into the session — the 4-branch lifecycle gate.
+    ///
+    /// Sprint 67 hack-back (FIXME 0192 Residual Task 2): the single
+    /// orchestration entry point for module introduction. Routes to one of
+    /// four outcomes:
+    ///   1. **AlreadyPresent** — `path` already has a symbol table; no change.
+    ///   2. **CachedLoad** — cache reports a valid metadata + `.o` for `path`;
+    ///      decode the cached `SymbolTable`, advance the typecheck `next_id`
+    ///      past any cached TypeId vars (the consistency invariant from the
+    ///      old `restore_cached_module`), and atomically install the table
+    ///      via `cranelisp_types::install_module`.
+    ///   3. **SourceLoad** — no cache hit but a source file is registered for
+    ///      `path`; signal the caller (scheduler) to enqueue compilation.
+    ///   4. **Blank** — neither cache nor source is available; create an empty
+    ///      symbol table at `path` via `cranelisp_types::ensure_module_exists`.
+    ///
+    /// The cache-hit branch shares its install primitive with `worker.rs`'s
+    /// `try_cache_hit_load` (which retains the surrounding logic for transitive
+    /// dep walking + platform re-resolution that the worker context owns).
+    /// The source-load branch returns the outcome variant so the caller can
+    /// decide whether/how to schedule — the orchestrator does not directly
+    /// drive the scheduler (which has tighter shared-state contracts the
+    /// session does not own).
+    pub fn introduce_module(
+        &self,
+        path: &ModuleFullPath,
+    ) -> Result<ModuleIntroductionOutcome, CranelispError> {
+        // Branch 1 — already present.
+        if self.shared.symbol_tables.contains_key(path) {
+            return Ok(ModuleIntroductionOutcome::AlreadyPresent);
+        }
+
+        // Branch 2 — cache hit. Probe the backend cache for a valid entry;
+        // if present, decode and install atomically.
+        if let Some(decoded) = self.try_load_cached_for_introduction(path)? {
+            cranelisp_typecheck::advance_next_id_past_table(
+                &self.shared.next_type_id, &decoded,
+            );
+            cranelisp_types::install_module(
+                &self.shared.symbol_tables, path.clone(), decoded,
+            );
+            return Ok(ModuleIntroductionOutcome::CachedLoad);
+        }
+
+        // Branch 3 — source hit. The session has no scheduler in hand here;
+        // signal the caller. Source presence is determined by inspecting the
+        // worker's `file_to_module` reverse-mapping or by attempting source
+        // lookup via cache_state's known paths.
+        if self.find_module_source(path).is_some() {
+            return Ok(ModuleIntroductionOutcome::SourceLoad);
+        }
+
+        // Branch 4 — blank create-if-absent.
+        let _ = cranelisp_types::ensure_module_exists(
+            &self.shared.symbol_tables, path,
+        );
+        Ok(ModuleIntroductionOutcome::Blank)
+    }
+
+    /// Backwards-compatible alias for the Blank branch only. Kept for callers
+    /// that want create-if-absent semantics without inspecting the outcome.
+    #[allow(dead_code)]
+    pub fn introduce_module_blank(&self, path: &ModuleFullPath) {
+        let _ = cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, path);
+    }
+
+    /// Cache probe for `introduce_module`'s branch 2. Returns
+    /// `Some(decoded_table)` iff cache reports a valid entry with an `.o`
+    /// file present. Errors (cache read failures) bubble up as
+    /// `CranelispError::Internal` strings; absent entries return `Ok(None)`.
+    fn try_load_cached_for_introduction(
+        &self,
+        path: &ModuleFullPath,
+    ) -> Result<Option<cranelisp_types::SymbolTable<Code, ()>>, CranelispError> {
+        use cranelisp_backend::cache;
+        let cache_dir = {
+            let guard = self.shared.cache_state.lock()
+                .unwrap_or_else(|e| e.into_inner());
+            match guard.as_ref() {
+                Some(cs) => cs.cache_dir().to_path_buf(),
+                None => return Ok(None),
+            }
+        };
+        let cached = match cache::try_load_cached_module(&cache_dir, path) {
+            Ok(Some(c)) => c,
+            _ => return Ok(None),
+        };
+        if !cached.has_object {
+            return Ok(None);
+        }
+        Ok(Some(
+            cached.metadata.symbol_table.into_concrete::<Code, ()>(),
+        ))
+    }
+
+    /// Branch-3 probe: returns the source file path for `module` if one is
+    /// known to the session (registered in `file_to_module`'s reverse map).
+    fn find_module_source(&self, module: &ModuleFullPath) -> Option<std::path::PathBuf> {
+        let guard = self.shared.file_to_module.lock()
             .unwrap_or_else(|e| e.into_inner());
-        let cs = guard.as_ref()?;
-        tc.resolve_module_by_name(cs, name)
+        guard.iter()
+            .find_map(|(file, mp)| if mp == module { Some(file.clone()) } else { None })
+    }
+
+    /// Resolve a module by name (for /exports command).
+    ///
+    /// Sprint 67 hack-back (FIXME 0192 method 7): the `TypeCheckEnv` method
+    /// was deleted; the body relocated to `cranelisp_types` as a free fn.
+    /// The session passes its `current_module_path()` as the scope root
+    /// (replacing the prior `state.current_module` access).
+    fn resolve_module_by_name(&self, name: &str) -> Option<ModuleFullPath> {
+        cranelisp_types::resolve_module_by_name_chain(
+            &self.shared.symbol_tables,
+            &self.current_module_path(),
+            name,
+        )
     }
 
     /// Take a snapshot for REPL error recovery.
@@ -1121,6 +1343,236 @@ impl CompilerSession {
         drop(file_to_mod);
 
         self.watcher = Some(fw);
+    }
+
+    // -----------------------------------------------------------------------
+    // Sprint 67 W3 — Facade-prescribed introspection accessors
+    // (FIXME 0176 partial close; `facades/int.md` §"Introspection accessors")
+    //
+    // Pure read-side projections over `shared.symbol_tables` + `shared.introspection`.
+    // No `&mut self` required for reads; the two mutating REPL-state methods
+    // (`set_current_repl_module`, `set_repl_input_active`) write to
+    // `CompilerSession`-side state per the SharedState alignment plan.
+    //
+    // Today these forward to the existing slash-command handler internals
+    // (`handle_source`, `get_introspection`, etc.); subsequent /dev (int) fires
+    // will pivot the slash-command handlers to call these new accessors first
+    // so the accessors become the canonical entry points.
+    // -----------------------------------------------------------------------
+
+    /// REPL `/source` — original source text of a symbol, or `None` if the
+    /// symbol has no introspection record (production batch mode) or no
+    /// captured source. Reads `shared.introspection[fq]`.
+    pub fn symbol_source(&self, fq: &FQSymbol) -> Option<String> {
+        self.shared.introspection.get(fq)
+            .and_then(|intr| intr.source.clone())
+    }
+
+    /// REPL `/sexp` — parsed s-expression of a symbol's defining form, or
+    /// `None`. Reads `shared.introspection[fq]`.
+    pub fn symbol_sexp(&self, fq: &FQSymbol) -> Option<Sexp> {
+        self.shared.introspection.get(fq)
+            .and_then(|intr| intr.sexp.clone())
+    }
+
+    /// REPL `/clif` — CLIF IR text of a symbol's compiled body, or `None`.
+    /// Populated only when `CRANELISP_CODEGEN_TRACE` or REPL-trace mode is
+    /// active. Reads `shared.introspection[fq]`.
+    pub fn symbol_clif(&self, fq: &FQSymbol) -> Option<String> {
+        self.shared.introspection.get(fq)
+            .and_then(|intr| intr.clif_ir.clone())
+    }
+
+    /// REPL `/disasm` — disassembled native code of a symbol, or `None`.
+    /// Same trace-mode gating as `symbol_clif`. Reads `shared.introspection[fq]`.
+    pub fn symbol_disasm(&self, fq: &FQSymbol) -> Option<String> {
+        self.shared.introspection.get(fq)
+            .and_then(|intr| intr.disasm.clone())
+    }
+
+    /// REPL `/info NAME` — one-shot description of a symbol resolved from
+    /// `name` against the current REPL module. Returns the symbol's
+    /// classification (Fn / Type / Trait / Macro / Constructor / SpecialForm),
+    /// scheme (if applicable), docstring, and the captured source text.
+    ///
+    /// Pure read against `shared.symbol_tables` + `shared.introspection`.
+    /// Returns `None` if the bare `name` does not resolve in the current
+    /// module (no chain-follow performed at this layer — the caller may
+    /// chain-follow if it wants imports + reexports resolved).
+    pub fn describe_symbol(&self, name: &str) -> Option<SymbolDescription> {
+        let current = self.current_module_path();
+        // Probe current module first; if absent, fall back to root `""`
+        // (FIXME 0192 Residual Task 3 + FIXME 0193 — special-form metadata
+        // lives at root, not in user-mode tables). The fallback's resolved
+        // module reflects where the entry actually lives so the returned
+        // `FQSymbol` is correct.
+        let (entry, resolved_module) = {
+            let cur_table = self.shared.symbol_tables.get(&current);
+            let cur_hit = cur_table.as_ref().and_then(|t| t.get(name).cloned());
+            match cur_hit {
+                Some(e) => (e, current.clone()),
+                None => {
+                    let root = ModuleFullPath::from("");
+                    let root_table = self.shared.symbol_tables.get(&root)?;
+                    let root_hit = root_table.get(name).cloned()?;
+                    (root_hit, root)
+                }
+            }
+        };
+        let fq = FQSymbol {
+            module: resolved_module.clone(),
+            symbol: Symbol::from(name),
+        };
+        let (category, scheme, docstring) = match &entry {
+            ModuleEntry::Def { scheme, docstring, kind, .. } => {
+                let cat = match kind.as_ref() {
+                    DefKind::SpecialForm { .. } => SymbolCategory::SpecialForm,
+                    DefKind::Primitive { .. } => SymbolCategory::Fn,
+                    _ => SymbolCategory::Fn,
+                };
+                (cat, Some(scheme.clone()), docstring.clone())
+            }
+            ModuleEntry::TypeDef { .. } =>
+                (SymbolCategory::Type, None, None),
+            ModuleEntry::TraitDecl { decl, .. } =>
+                (SymbolCategory::Trait, None, decl.docstring.clone()),
+            ModuleEntry::Constructor { scheme, .. } =>
+                (SymbolCategory::Constructor, Some(scheme.clone()), None),
+            ModuleEntry::Macro { docstring, .. } =>
+                (SymbolCategory::Macro, None, docstring.clone()),
+            _ => return None,
+        };
+        let source = self.shared.introspection.get(&fq)
+            .and_then(|intr| intr.source.clone());
+        Some(SymbolDescription {
+            fq,
+            category,
+            scheme,
+            docstring,
+            source,
+            related: Vec::new(),
+        })
+    }
+
+    /// REPL `/list` — user-defined symbols in the current REPL module (excludes
+    /// imports + special forms). Returns a `Vec<SymbolInfo>` per facade
+    /// §"Introspection records".
+    pub fn list_user_definitions(&self) -> Vec<SymbolInfo> {
+        let current = self.current_module_path();
+        let mut out = Vec::new();
+        if let Some(table) = self.shared.symbol_tables.get(&current) {
+            for (name, entry) in table.all_symbols() {
+                // Skip imports / reexports + special forms — those are surfaced
+                // by `/imports` separately.
+                let (category, scheme, docstring) = match entry {
+                    ModuleEntry::Def { scheme, docstring, kind, .. } => {
+                        if matches!(kind.as_ref(), DefKind::SpecialForm { .. }) {
+                            continue;
+                        }
+                        (SymbolCategory::Fn, Some(scheme.clone()), docstring.clone())
+                    }
+                    ModuleEntry::TypeDef { .. } =>
+                        (SymbolCategory::Type, None, None),
+                    ModuleEntry::TraitDecl { decl, .. } =>
+                        (SymbolCategory::Trait, None, decl.docstring.clone()),
+                    ModuleEntry::Macro { docstring, .. } =>
+                        (SymbolCategory::Macro, None, docstring.clone()),
+                    ModuleEntry::Import { .. } | ModuleEntry::Reexport { .. } => continue,
+                    _ => continue,
+                };
+                out.push(SymbolInfo {
+                    name: name.clone(),
+                    category,
+                    scheme,
+                    docstring,
+                });
+            }
+        }
+        out
+    }
+
+    /// REPL `/imports [MODULE]` — list the import declarations in a target
+    /// module. Returns one `ImportSpec` per `ModuleEntry::Import`, carrying
+    /// the source module + the local binding name (per
+    /// `cranelisp_types::ImportSpec`). Reexports are listed separately by
+    /// `module_exports` when the module publishes them.
+    ///
+    /// Per-binding reconstruction shape: `ModuleEntry::Import` stores only
+    /// the source `FQSymbol` per binding; the parse-time `ImportSpec` is not
+    /// retained on the symbol table. Each returned spec is therefore a
+    /// single-name `Specific([local_name])` against the source module, with
+    /// `alias = None` and `span = Span::SYNTHETIC`. Aliased imports (local
+    /// != source.symbol) collapse to the local name on the binding side —
+    /// the source.symbol distinction is recoverable from the
+    /// `module_exports` of the source module. Threading the original
+    /// parse-time `ImportSpec` through to here is tracked by FIXME 0194.
+    pub fn module_imports(&self, module: &ModuleFullPath) -> Vec<cranelisp_types::ImportSpec> {
+        use cranelisp_types::{ImportNames, ImportSpec};
+        let mut out = Vec::new();
+        if let Some(table) = self.shared.symbol_tables.get(module) {
+            for (name, entry) in table.all_symbols() {
+                if let ModuleEntry::Import { source } = entry {
+                    out.push(ImportSpec {
+                        module_path: source.module.clone(),
+                        alias: None,
+                        names: ImportNames::Specific(vec![name.clone()]),
+                        span: Span::SYNTHETIC,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// REPL `/exports MODULE` — list the publicly-visible symbols of a module.
+    /// A symbol is public iff its `ModuleEntry` carries `Visibility::Public`
+    /// (Def / TypeDef / TraitDecl / Macro / Constructor / Reexport).
+    pub fn module_exports(&self, module: &ModuleFullPath) -> Vec<(Symbol, ModuleEntry<Code>)> {
+        let mut out = Vec::new();
+        if let Some(table) = self.shared.symbol_tables.get(module) {
+            for (name, entry) in table.all_symbols() {
+                let is_public = match entry {
+                    ModuleEntry::Def { visibility, .. } |
+                    ModuleEntry::TypeDef { visibility, .. } |
+                    ModuleEntry::TraitDecl { visibility, .. } |
+                    ModuleEntry::Macro { visibility, .. } |
+                    ModuleEntry::Constructor { visibility, .. } =>
+                        matches!(visibility, cranelisp_types::Visibility::Public),
+                    ModuleEntry::Reexport { .. } => true,
+                    _ => false,
+                };
+                if is_public {
+                    out.push((name.clone(), entry.clone()));
+                }
+            }
+        }
+        out
+    }
+
+    /// Current REPL module (per facade §"CompilerSession.current_repl_module").
+    /// Pure read against `shared.current_module`; the field's relocation to
+    /// `CompilerSession`-side state is FIXME 0176's broader scope.
+    pub fn current_repl_module(&self) -> ModuleFullPath {
+        self.current_module_path()
+    }
+
+    /// Switch the REPL's active module (per `/mod NAME`). Writes
+    /// `shared.current_module` + `shared.test_runner_state.current_module` +
+    /// resets `shared.repl_check_state` to a fresh `CheckState` for the new
+    /// module.
+    pub fn set_current_repl_module(&mut self, module: ModuleFullPath) {
+        self.set_current_module(module);
+    }
+
+    /// Update the watcher-input-active flag (per exec-flow-repl STEP 1 / STEP 3).
+    /// The atomic boolean is shared with the watcher event handler via `Arc`.
+    /// Sprint 67 hack-back stub: today this is a no-op because the
+    /// `repl_input_active` field lives implicitly inside the watcher's own
+    /// state. Retained as the facade-named entry point; once the field moves
+    /// onto `CompilerSession` (per the SharedState alignment plan) this body
+    /// becomes a real atomic write.
+    pub fn set_repl_input_active(&self, _active: bool) {
+        // No-op stub — see method docstring.
     }
 
     /// Register any newly-loaded module source files with the watcher.
@@ -1278,7 +1730,7 @@ impl CompilerSession {
         }
 
         // Compute content hash for watcher suppression.
-        let hash = cranelisp_backend::cache::hash_source(&source);
+        let hash = cranelisp_backend::cache::manifest::hash_source(&source);
 
         // Atomic write.
         if let Err(e) = crate::save::atomic_write(&file_path, &source) {
@@ -1467,6 +1919,22 @@ impl CompilerSession {
         Ok(())
     }
 
+    /// Re-register a module for typechecking (file-watcher path).
+    ///
+    /// Sprint 67 Wave 3 (FIXME 0176 closure scope) — facade-prescribed
+    /// `CompilerSession` thin forward to `CompileScheduler::re_register_module`
+    /// per `design/arch/facades/int.md` §"CompilerSession". Returns
+    /// `Ok(true)` if the module was re-registered, `Ok(false)` if the
+    /// scheduler skipped it (unknown module, or currently mid-typecheck).
+    /// The `Result` wrapper is reserved for future error propagation; the
+    /// scheduler's `re_register_module` itself is infallible today.
+    pub fn re_register_module(
+        &mut self,
+        module: &ModuleFullPath,
+    ) -> Result<bool, CranelispError> {
+        Ok(self.shared.scheduler.re_register_module(module))
+    }
+
     /// Register a module with explicit source (internal + test helpers).
     ///
     /// Enqueues sexps into `SharedState::module_sexps` and registers the
@@ -1486,7 +1954,7 @@ impl CompilerSession {
 
         // Record source hash in CacheState for manifest generation.
         {
-            let hash = cranelisp_backend::cache::hash_source(source);
+            let hash = cranelisp_backend::cache::manifest::hash_source(source);
             let mut cs_guard = self.shared.cache_state.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(cs) = cs_guard.as_mut() {
                 cs.source_hashes_mut().insert(module.clone(), hash);
@@ -2577,9 +3045,13 @@ impl CompilerSession {
 
         // Build the input through the new `build_form` / `build_expr` boundary
         // (replacing the retired `build_repl_input`). A bare-expr REPL input
-        // is wrapped as a synthetic `__expr` defn for typecheck dispatch.
-        let working_program =
-            crate::worker::build_program_compat(&[sexps[0].clone()])?;
+        // is wrapped as a synthetic `__expr` defn for typecheck dispatch. Mode
+        // comes from the session's `SharedState`; under REPL this is
+        // `InMemoryAndObject` (validator no-op).
+        let working_program = crate::worker::build_program_compat(
+            &[sexps[0].clone()],
+            self.shared.codegen_behaviour,
+        )?;
         let working_program = self.wrap_exprs_as_synthetic_defns(&working_program);
 
         // Ensure the current module exists before the live ClusterContext
@@ -2660,12 +3132,32 @@ impl CompilerSession {
             let mut types: Vec<String> = Vec::new();
             let mut fns: Vec<String> = Vec::new();
 
+            // Special forms always come from the root `""` module per
+            // Principle 17 amendment (FIXME 0193). Sprint 67 hack-back
+            // FIXME 0192 Residual Task 3 — `/imports` previously enumerated
+            // special forms by iterating the current module; once special-form
+            // registration shifted to root, that iteration stopped seeing
+            // them. Probe the root explicitly.
+            let root = ModuleFullPath::from("");
+            if let Some(root_table) = self.shared.symbol_tables.get(&root) {
+                for (sym, entry) in root_table.all_symbols() {
+                    if let ModuleEntry::Def { kind, .. } = entry
+                        && matches!(kind.as_ref(), DefKind::SpecialForm { .. })
+                    {
+                        special_forms.push(sym.to_string());
+                    }
+                }
+            }
+
             for (sym, entry) in table.all_symbols() {
                 let name = sym.to_string();
                 match entry {
                     ModuleEntry::Def { kind, .. } => {
                         if let DefKind::SpecialForm { .. } = kind.as_ref() {
-                            special_forms.push(name);
+                            // Defensive — current modules should no longer
+                            // host special forms (they live at root only).
+                            // Skip to avoid double-listing.
+                            continue;
                         }
                         // Skip locally-defined fns and primitives
                     }
@@ -3116,18 +3608,36 @@ impl CompilerSession {
     }
 
     /// Check if input is a bare special form name (for feedback display).
+    ///
+    /// Sprint 67 hack-back (FIXME 0192 Residual Task 3 — REPL regression):
+    /// special-form metadata lives in the root `""` module per Principle 17
+    /// amendment (FIXME 0193). The earlier `current_symbol_table()` probe
+    /// stopped seeing these entries when special forms moved out of `user`;
+    /// route lookups via `lookup_special_form` which probes root.
     fn special_form_feedback(&self, input: &str) -> Option<String> {
         let trimmed = input.trim();
         // Must be a single bare word (no parens, no spaces).
         if trimmed.contains('(') || trimmed.contains(' ') || trimmed.starts_with('/') {
             return None;
         }
-        let table = self.current_symbol_table();
-        if let Some(ModuleEntry::Def { kind, .. }) = table.get(trimmed)
-            && let DefKind::SpecialForm { description } = kind.as_ref() {
-                return Some(format_special_form_display(trimmed, description));
-            }
-        None
+        let desc = self.lookup_special_form(trimmed)?;
+        Some(format_special_form_display(trimmed, &desc))
+    }
+
+    /// Look up the description of a special form by name, probing the root
+    /// `""` module where special-form metadata is registered (Principle 17
+    /// amendment per FIXME 0193). Returns `None` if `name` is not a known
+    /// special form.
+    pub fn lookup_special_form(&self, name: &str) -> Option<String> {
+        let root = ModuleFullPath::from("");
+        let table = self.shared.symbol_tables.get(&root)?;
+        match table.get(name)? {
+            ModuleEntry::Def { kind, .. } => match kind.as_ref() {
+                DefKind::SpecialForm { description } => Some(description.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// Execute the entry module's main function via the trampoline.
@@ -3580,12 +4090,16 @@ impl CompilerSession {
             ModuleEntry::Constructor { type_name, scheme, .. } => {
                 let type_str = format_type_qualified(&scheme.ty);
                 let tn = TypeName::from(type_name.name.as_ref());
-                let ctor_display =
-                    if let Some(info) = self.tc_env().lookup_type_def(&tn) {
+                let ctor_display = {
+                    let scope = self.current_module_path();
+                    if let Some(info) = cranelisp_types::lookup_type_def_chain(
+                        &self.shared.symbol_tables, &scope, &tn,
+                    ) {
                         crate::display::format_ctor_display(&tn, name, &info)
                     } else {
                         format!("{type_name}.{name}")
-                    };
+                    }
+                };
                 format!(":{type_str} {module}/{ctor_display} ; deftype")
             }
             ModuleEntry::TypeDef { .. } => {
@@ -3669,12 +4183,18 @@ impl CompilerSession {
     fn format_type_display(&self, type_name: &str, module: &ModuleFullPath) -> String {
         let mut result = format!(":{module}/{type_name} ; deftype");
         let tn = TypeName::from(type_name);
-        if let Some(ctors) = self.tc_env().get_type_constructors(&tn)
-            && !ctors.is_empty() {
-                let names: Vec<&str> = ctors.iter().map(|c| c.name.as_ref()).collect();
-                result.push_str(&format_related_section("match", &names));
-            }
-        let trait_names = self.tc_env().get_impls_for_type(&tn);
+        let scope = self.current_module_path();
+        // FIXME 0192 method 2: `get_type_constructors` deleted; inline the
+        // 1-line wrapper over the relocated `lookup_type_def_chain`.
+        if let Some(info) = cranelisp_types::lookup_type_def_chain(
+            &self.shared.symbol_tables, &scope, &tn,
+        ) && !info.constructors.is_empty() {
+            let names: Vec<&str> = info.constructors.iter().map(|c| c.name.as_ref()).collect();
+            result.push_str(&format_related_section("match", &names));
+        }
+        let trait_names = cranelisp_types::get_impls_for_type_chain(
+            &self.shared.symbol_tables, &scope, &tn,
+        );
         if !trait_names.is_empty() {
             let names: Vec<&str> = trait_names.iter().map(|t| t.as_ref()).collect();
             result.push_str(&format_related_section("impl", &names));
@@ -3686,20 +4206,33 @@ impl CompilerSession {
     ///
     /// Shows `:module/TraitName ; deftrait` with `; defn:` and `; impl:` sections.
     fn format_trait_display(&self, trait_name: &str, docstring: Option<&str>) -> String {
-        let tc = self.tc_env();
-        let guard = self.shared.repl_check_state.lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let cs = guard.as_ref().expect("REPL check state must be initialized");
-        let defining_module = tc.defining_module_for(cs, trait_name);
+        let scope = self.current_module_path();
+        // FIXME 0192 method 6: `defining_module_for` deleted; substitute with
+        // the chain-follow from `resolve_terminal_entry_and_home` (Decision 45
+        // Pattern B). If the trait isn't reachable, fall back to the scope —
+        // the display layer treats unresolved chains as defined-here for
+        // diagnostic continuity (no architectural workaround; just a display
+        // fallback).
+        let defining_module = match cranelisp_types::resolve_terminal_entry_and_home(
+            &self.shared.symbol_tables, &scope, trait_name,
+        ) {
+            Some((ModuleEntry::TraitDecl { .. }, home)) => home,
+            _ => scope.clone(),
+        };
         let tn = TraitName::from(trait_name);
         let mut result = format!(":{defining_module}/{trait_name} ; deftrait");
         result = append_docstring_comment(result, docstring);
-        if let Some(methods) = self.tc_env().get_trait_methods(&tn)
-            && !methods.is_empty() {
-                let names: Vec<&str> = methods.iter().map(|m| m.as_ref()).collect();
-                result.push_str(&format_related_section("defn", &names));
-            }
-        let impl_types = self.tc_env().get_implementing_types(&tn);
+        // FIXME 0192 method 4: `get_trait_methods` deleted; inline the 1-line
+        // wrapper over `lookup_trait_decl_chain`.
+        if let Some(decl) = cranelisp_types::lookup_trait_decl_chain(
+            &self.shared.symbol_tables, &scope, &tn,
+        ) && !decl.methods.is_empty() {
+            let names: Vec<&str> = decl.methods.iter().map(|m| m.name.as_ref()).collect();
+            result.push_str(&format_related_section("defn", &names));
+        }
+        let impl_types = cranelisp_types::get_implementing_types_chain(
+            &self.shared.symbol_tables, &scope, &tn,
+        );
         if !impl_types.is_empty() {
             let names: Vec<&str> = impl_types.iter().map(|t| t.as_ref()).collect();
             result.push_str(&format_related_section("impl", &names));
@@ -3710,8 +4243,11 @@ impl CompilerSession {
     /// Format a builtin type (Int, Bool, Float, String) for display (spec §4.1.3).
     fn format_builtin_type_display(&self, type_name: &str) -> String {
         let tn = TypeName::from(type_name);
+        let scope = self.current_module_path();
         let mut result = format!(":primitives/{type_name} ; type");
-        let trait_names = self.tc_env().get_impls_for_type(&tn);
+        let trait_names = cranelisp_types::get_impls_for_type_chain(
+            &self.shared.symbol_tables, &scope, &tn,
+        );
         if !trait_names.is_empty() {
             let names: Vec<&str> = trait_names.iter().map(|t| t.as_ref()).collect();
             result.push_str(&format_related_section("impl", &names));
@@ -4060,7 +4596,7 @@ fn compile_module_object(
             // Log .o compilation errors only when CRANELISP_CODEGEN_TRACE is set.
             // These are non-fatal (in-memory compilation may have succeeded).
             if std::env::var("CRANELISP_CODEGEN_TRACE").is_ok() {
-                eprintln!("nice-worker: .o compilation failed for {}: {}", module, e.message());
+                eprintln!("nice-worker: .o compilation failed for {}: {}", module, e);
             }
             return;
         }
@@ -4098,7 +4634,7 @@ fn compile_module_object(
         .map(|guard| guard.clone())
         .unwrap_or_else(|| crate::code::SessionSymbolTable::new_with_params(module.clone()));
 
-    if let Err(e) = cache::write_meta(&meta_path, &symbol_table, cache::CACHE_SCHEMA_VERSION) {
+    if let Err(e) = cache::serialize::write_meta(&meta_path, &symbol_table, cache::CACHE_SCHEMA_VERSION) {
         eprintln!("nice-worker: .meta.json write failed for {}: {}", module, e.message());
         // Continue — the .o file was written successfully.
     }
@@ -4232,7 +4768,7 @@ fn run_test_by_name(
             let string_ptr = *(base.add(
                 cranelisp_backend::heap::HeapAdt::field_offset(0) as usize,
             ) as *const i64);
-            cranelisp_intrinsics::string::read_string_as_str(string_ptr).to_string()
+            cranelisp_intrinsics::heap_string::read_string_as_str(string_ptr).to_string()
         };
         TestOutcome::Fail {
             name: fq_name.to_string(),
@@ -4308,11 +4844,63 @@ pub(crate) fn set_test_runner_state(state: &TestRunnerState) {
 /// `TraceDisplayState`) is set just-in-time by the REPL eval path; the
 /// intrinsics themselves null-check the pointer and return harmless defaults
 /// when absent.
-pub(crate) fn int_intrinsics() -> [(&'static str, *const u8); 3] {
+pub(crate) fn int_intrinsics() -> [(&'static str, *const u8); 14] {
     [
         ("discover-tests", discover_tests_extern as *const u8),
         ("run-test", run_test_extern as *const u8),
+        // `cranelisp_trace_format` is int-hosted (REPL session has access to
+        // the TypeChecker for proper display dispatch; `crate::trace`'s body
+        // is the unit-test fallback only).
         ("cranelisp_trace_format", repl_trace_format as *const u8),
+        // Sprint 67 Wave 4 — Decision 40 Path B1: the 12 `cranelisp_trace_*`
+        // JIT-emitted-call targets relocate from `cranelisp-intrinsics::trace`
+        // to int. Backend's 12 IntrinsicSymbol entries delete in the same
+        // change-set (FIXME 0197); int hosting + registration are this fire
+        // (FIXME 0202).
+        (
+            "cranelisp_trace_enter",
+            crate::trace::cranelisp_trace_enter as *const u8,
+        ),
+        (
+            "cranelisp_trace_exit",
+            crate::trace::cranelisp_trace_exit as *const u8,
+        ),
+        (
+            "cranelisp_trace_swap_got",
+            crate::trace::cranelisp_trace_swap_got as *const u8,
+        ),
+        (
+            "cranelisp_trace_restore_got",
+            crate::trace::cranelisp_trace_restore_got as *const u8,
+        ),
+        (
+            "cranelisp_collect_trace",
+            crate::trace::cranelisp_collect_trace as *const u8,
+        ),
+        (
+            "cranelisp_trace_first_child_nanos",
+            crate::trace::cranelisp_trace_first_child_nanos as *const u8,
+        ),
+        (
+            "cranelisp_trace_name",
+            crate::trace::cranelisp_trace_name as *const u8,
+        ),
+        (
+            "cranelisp_trace_params",
+            crate::trace::cranelisp_trace_params as *const u8,
+        ),
+        (
+            "cranelisp_trace_result",
+            crate::trace::cranelisp_trace_result as *const u8,
+        ),
+        (
+            "cranelisp_trace_children",
+            crate::trace::cranelisp_trace_children as *const u8,
+        ),
+        (
+            "cranelisp_trace_nanos",
+            crate::trace::cranelisp_trace_nanos as *const u8,
+        ),
     ]
 }
 
@@ -4362,11 +4950,11 @@ extern "C" fn discover_tests_extern(module_path_str: i64) -> i64 {
             .clone();
 
         let module = if module_path_str == 0
-            || unsafe { cranelisp_intrinsics::string::read_string_as_str(module_path_str) }.is_empty()
+            || unsafe { cranelisp_intrinsics::heap_string::read_string_as_str(module_path_str) }.is_empty()
         {
             current_module
         } else {
-            let path_str = unsafe { cranelisp_intrinsics::string::read_string_as_str(module_path_str) };
+            let path_str = unsafe { cranelisp_intrinsics::heap_string::read_string_as_str(module_path_str) };
             ModuleFullPath::from(path_str)
         };
 
@@ -4377,7 +4965,7 @@ extern "C" fn discover_tests_extern(module_path_str: i64) -> i64 {
         // SexpSym tag = 4 (Sexp enum: Int=0, Float=1, Bool=2, Str=3, Sym=4).
         let mut slist: i64 = 0; // SNil
         for name in test_names.into_iter().rev() {
-            let name_str = cranelisp_intrinsics::string::alloc_string(name.as_bytes()) as i64;
+            let name_str = cranelisp_intrinsics::heap_string::alloc_string(name.as_bytes()) as i64;
             let sexp_sym = unsafe { alloc_heap_adt(4, &[name_str]) };
             slist = unsafe { alloc_scons(sexp_sym, slist) };
         }
@@ -4396,7 +4984,7 @@ extern "C" fn run_test_extern(sexp_sym: i64) -> i64 {
     TEST_RUNNER.with(|c| {
         let state_ptr = c.get();
         if state_ptr.is_null() {
-            let name = cranelisp_intrinsics::string::alloc_string(b"?") as i64;
+            let name = cranelisp_intrinsics::heap_string::alloc_string(b"?") as i64;
             return unsafe { alloc_io_pure(alloc_heap_adt(0, &[name, 0])) };
         }
 
@@ -4407,9 +4995,9 @@ extern "C" fn run_test_extern(sexp_sym: i64) -> i64 {
         // SexpSym layout: [header(16) | tag=4(8) | sname(8)]
         let fq_name = if sexp_sym != 0 && (sexp_sym as usize) >= NULLARY_TAG_THRESHOLD {
             let name_ptr = unsafe { *((sexp_sym as *const u8).add(24) as *const i64) };
-            unsafe { cranelisp_intrinsics::string::read_string_as_str(name_ptr).to_string() }
+            unsafe { cranelisp_intrinsics::heap_string::read_string_as_str(name_ptr).to_string() }
         } else {
-            let name = cranelisp_intrinsics::string::alloc_string(b"?") as i64;
+            let name = cranelisp_intrinsics::heap_string::alloc_string(b"?") as i64;
             return unsafe { alloc_io_pure(alloc_heap_adt(0, &[name, 0])) };
         };
 
@@ -4425,17 +5013,17 @@ extern "C" fn run_test_extern(sexp_sym: i64) -> i64 {
 unsafe fn test_outcome_to_heap(outcome: &TestOutcome) -> i64 { unsafe {
     match outcome {
         TestOutcome::Pass { name, nanos } => {
-            let name_alloc = cranelisp_intrinsics::string::alloc_string(name.as_bytes()) as i64;
+            let name_alloc = cranelisp_intrinsics::heap_string::alloc_string(name.as_bytes()) as i64;
             alloc_heap_adt(0, &[name_alloc, *nanos]) // TestPass tag=0
         }
         TestOutcome::Fail { name, nanos, reason } => {
-            let name_alloc = cranelisp_intrinsics::string::alloc_string(name.as_bytes()) as i64;
-            let reason_alloc = cranelisp_intrinsics::string::alloc_string(reason.as_bytes()) as i64;
+            let name_alloc = cranelisp_intrinsics::heap_string::alloc_string(name.as_bytes()) as i64;
+            let reason_alloc = cranelisp_intrinsics::heap_string::alloc_string(reason.as_bytes()) as i64;
             alloc_heap_adt(1, &[name_alloc, *nanos, reason_alloc]) // TestFail tag=1
         }
         TestOutcome::Panic { name, reason } => {
-            let name_alloc = cranelisp_intrinsics::string::alloc_string(name.as_bytes()) as i64;
-            let reason_alloc = cranelisp_intrinsics::string::alloc_string(reason.as_bytes()) as i64;
+            let name_alloc = cranelisp_intrinsics::heap_string::alloc_string(name.as_bytes()) as i64;
+            let reason_alloc = cranelisp_intrinsics::heap_string::alloc_string(reason.as_bytes()) as i64;
             alloc_heap_adt(1, &[name_alloc, 0, reason_alloc]) // TestFail tag=1
         }
     }
@@ -4486,7 +5074,7 @@ extern "C" fn repl_trace_format(val: i64, type_ptr: i64) -> i64 {
             let ty = unsafe { &*(type_ptr as *const Type) };
             crate::display::format_value(val, ty, symbol_tables)
         };
-        cranelisp_intrinsics::string::alloc_string(s.as_bytes()) as i64
+        cranelisp_intrinsics::heap_string::alloc_string(s.as_bytes()) as i64
     })
 }
 

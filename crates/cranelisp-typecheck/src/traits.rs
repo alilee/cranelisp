@@ -401,7 +401,19 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // (trait imported into the writer's module), the chain follows the
         // per-symbol `ModuleEntry::Import` binding back to the trait's home,
         // and the write lands there — not in the writer's table.
-        let trait_home = self.trait_home_for(state, impl_.trait_name.as_ref());
+        // Trait reachability was just validated by `lookup_trait_decl_with_state`
+        // above; the chain-follow must succeed. Treat absence as a typecheck
+        // invariant violation (post-FIXME 0192 method 6 deletion: no
+        // `defining_module_for` fallback).
+        let trait_home = self
+            .trait_home_for(state, impl_.trait_name.as_ref())
+            .ok_or_else(|| CranelispError::TypeError {
+                message: format!(
+                    "internal: trait {} resolved but home not reachable via chain-follow",
+                    impl_.trait_name
+                ),
+                location: ErrorLocation::from_span(impl_.span),
+            })?;
         let fq_trait_name = FQTraitName::new(trait_home.clone(), impl_.trait_name.clone());
         let fq_impl_type = self.fqtn_for_bare_type_name(state, &impl_.target_type);
 
@@ -1015,14 +1027,38 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             });
         }
 
+        // Primitive trait-method short-circuit (FIXME 0185).
+        //
+        // When the resolved (trait, method, impl_type) names a primitive
+        // operator on a primitive type (e.g., (Num, +, Int) → "add-i64"),
+        // emit `ResolvedCall::BuiltinFn` directly so backend inlines via
+        // `try_emit_inline_primitive` instead of routing through the
+        // trait-impl body wrapper. This preserves the pre-D43 inline
+        // optimisation while keeping backend trait-free (the dispatch is
+        // monomorphisation-keyed in typecheck, not trait-keyed in backend).
+        if let Some(prim_name) = primitive_for_trait_method(&trait_name, callee_name, &impl_type_name) {
+            return Ok(Some(ResolvedCall::BuiltinFn {
+                name: Symbol::from(prim_name),
+            }));
+        }
+
         let mangled = format!(
             "{}.{}${}",
             trait_name, callee_name, impl_type_name
         );
 
         // Build FQTraitName — chain-follow the trait reference to its
-        // defining module per Decision 45 Pattern B.
-        let trait_defining_module = self.trait_home_for(state, trait_name.as_ref());
+        // defining module per Decision 45 Pattern B. `has_impl_with_state`
+        // succeeded just above, so the chain-follow is guaranteed.
+        let trait_defining_module = self
+            .trait_home_for(state, trait_name.as_ref())
+            .ok_or_else(|| CranelispError::TypeError {
+                message: format!(
+                    "internal: trait {} reachable for impl probe but home not resolvable",
+                    trait_name
+                ),
+                location: ErrorLocation::from_span(span),
+            })?;
         let fq_trait_name = FQTraitName::new(trait_defining_module, trait_name);
 
         // Build FQTypeName for the impl type
@@ -1035,6 +1071,171 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             mangled_name: JitSymbol::from(mangled.as_str()),
         }))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Primitive trait-method dispatch table (FIXME 0185)
+// ---------------------------------------------------------------------------
+
+/// Map `(trait, method, impl_type) → primitive jit name` for the small set
+/// of Ring-0 operator impls that the typecheck-side optimisation collapses
+/// from `ResolvedCall::TraitMethod` to `ResolvedCall::BuiltinFn`.
+///
+/// Per FIXME 0185 (filed by /dev (backend) Sprint 67 Wave 3), this restores
+/// the inline-substitution optimisation that the backend's
+/// `primitive_for_trait_method` deletion removed (Decision 43 close — backend
+/// has no trait knowledge). The dispatch lives here because the resolution
+/// is monomorphisation-keyed (which `(impl_type, method)` resolves to which
+/// primitive name) and that information is available at typecheck time.
+///
+/// **Monomorphisation-keyed**, not **trait-keyed** — Decision 43 compatible.
+/// Backend continues to handle `ResolvedCall::BuiltinFn { name }` via
+/// `try_emit_inline_primitive(name)` without any trait knowledge.
+///
+/// The mapping mirrors the pre-D43 `primitive_for_trait_method` table in
+/// `crates/cranelisp-backend/src/primitives_inline.rs` (deleted in Wave 3 row 6).
+fn primitive_for_trait_method(
+    trait_name: &TraitName,
+    method_name: &Symbol,
+    impl_type: &TypeName,
+) -> Option<&'static str> {
+    let t = trait_name.as_ref();
+    let m = method_name.as_ref();
+    let i = impl_type.as_ref();
+
+    match (t, m, i) {
+        // Num trait: arithmetic operators
+        ("Num", "+", "Int") => Some("add-i64"),
+        ("Num", "-", "Int") => Some("sub-i64"),
+        ("Num", "*", "Int") => Some("mul-i64"),
+        ("Num", "/", "Int") => Some("div-i64"),
+        ("Num", "+", "Float") => Some("add-f64"),
+        ("Num", "-", "Float") => Some("sub-f64"),
+        ("Num", "*", "Float") => Some("mul-f64"),
+        ("Num", "/", "Float") => Some("div-f64"),
+
+        // Eq trait: equality operators
+        ("Eq", "=", "Int") => Some("eq-i64"),
+        ("Eq", "=", "Float") => Some("eq-f64"),
+        ("Eq", "=", "Bool") => Some("eq-bool"),
+        ("Eq", "=", "String") => Some("str-eq"),
+
+        // Ord trait: comparison operators
+        ("Ord", "<", "Int") => Some("lt-i64"),
+        ("Ord", "<", "Float") => Some("lt-f64"),
+        ("Ord", ">", "Int") => Some("gt-i64"),
+        ("Ord", ">", "Float") => Some("gt-f64"),
+        ("Ord", "<=", "Int") => Some("le-i64"),
+        ("Ord", "<=", "Float") => Some("le-f64"),
+        ("Ord", ">=", "Int") => Some("ge-i64"),
+        ("Ord", ">=", "Float") => Some("ge-f64"),
+
+        // Eq trait: inequality (default method)
+        ("Eq", "!=", "Int") => Some("neq-i64"),
+        ("Eq", "!=", "Float") => Some("neq-f64"),
+        ("Eq", "!=", "Bool") => Some("neq-bool"),
+        ("Eq", "!=", "String") => Some("neq-string"),
+
+        // Display trait: show (string conversion)
+        ("Display", "show", "Int") => Some("int-to-string"),
+        ("Display", "show", "Float") => Some("float-to-string"),
+        ("Display", "show", "Bool") => Some("bool-to-string"),
+        ("Display", "show", "String") => Some("string-identity"),
+
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod primitive_dispatch_tests {
+    use super::*;
+
+    // FIXME 0185 — verify the primitive-trait-method dispatch table mirrors
+    // the pre-D43 backend `primitive_for_trait_method` mapping.
+    #[test]
+    fn num_plus_int_maps_to_add_i64() {
+        let result = primitive_for_trait_method(
+            &TraitName::from("Num"),
+            &Symbol::from("+"),
+            &TypeName::from("Int"),
+        );
+        assert_eq!(result, Some("add-i64"));
+    }
+
+    #[test]
+    fn num_plus_float_maps_to_add_f64() {
+        let result = primitive_for_trait_method(
+            &TraitName::from("Num"),
+            &Symbol::from("+"),
+            &TypeName::from("Float"),
+        );
+        assert_eq!(result, Some("add-f64"));
+    }
+
+    #[test]
+    fn eq_eq_int_maps_to_eq_i64() {
+        let result = primitive_for_trait_method(
+            &TraitName::from("Eq"),
+            &Symbol::from("="),
+            &TypeName::from("Int"),
+        );
+        assert_eq!(result, Some("eq-i64"));
+    }
+
+    #[test]
+    fn eq_neq_string_maps_to_neq_string() {
+        let result = primitive_for_trait_method(
+            &TraitName::from("Eq"),
+            &Symbol::from("!="),
+            &TypeName::from("String"),
+        );
+        assert_eq!(result, Some("neq-string"));
+    }
+
+    #[test]
+    fn ord_lt_int_maps_to_lt_i64() {
+        let result = primitive_for_trait_method(
+            &TraitName::from("Ord"),
+            &Symbol::from("<"),
+            &TypeName::from("Int"),
+        );
+        assert_eq!(result, Some("lt-i64"));
+    }
+
+    #[test]
+    fn display_show_int_maps_to_int_to_string() {
+        let result = primitive_for_trait_method(
+            &TraitName::from("Display"),
+            &Symbol::from("show"),
+            &TypeName::from("Int"),
+        );
+        assert_eq!(result, Some("int-to-string"));
+    }
+
+    #[test]
+    fn unknown_combination_returns_none() {
+        let result = primitive_for_trait_method(
+            &TraitName::from("Display"),
+            &Symbol::from("show"),
+            &TypeName::from("Option"),
+        );
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn user_trait_returns_none() {
+        let result = primitive_for_trait_method(
+            &TraitName::from("MyTrait"),
+            &Symbol::from("foo"),
+            &TypeName::from("Int"),
+        );
+        assert_eq!(result, None);
+    }
+}
+
+// Continuation impl for the original trait-method block — split by the
+// primitive_for_trait_method dispatch table inserted above per FIXME 0185.
+impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
 
     /// Check if a callee name is a trait method (via trait_origin on ModuleEntry::Def).
     /// Default-rooted to `user` — for state-aware callers use

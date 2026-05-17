@@ -1339,44 +1339,19 @@ where
         if let Some(resolved) = trait_resolution {
             match resolved {
                 ResolvedCall::TraitMethod {
-                    trait_name,
-                    method_name,
-                    impl_type,
                     mangled_name,
+                    ..
                 } => {
-                    // Check if this maps to an inline primitive (e.g., add-i64 → iadd).
-                    if let Some(prim_name) =
-                        primitives_inline::primitive_for_trait_method(&trait_name.name, method_name, &impl_type.name)
-                    {
-                        if is_extern_primitive_in_wrapper(prim_name) {
-                            return emit_extern_call_in_wrapper(
-                                builder, self.module, prim_name, all_args, span,
-                            );
-                        }
-
-                        // neq-string: call str-eq (extern) and negate the result.
-                        if prim_name == "neq-string" {
-                            let eq_result = emit_extern_call_in_wrapper(
-                                builder, self.module, "str-eq", all_args, span,
-                            )?;
-                            return Ok(builder.ins().bxor_imm(eq_result, 1));
-                        }
-
-                        // Inline builtin (e.g., add-i64 → iadd) — or fall through
-                        // to wrapper GOT-indirect call if outside the inline table.
-                        match primitives_inline::try_emit_inline_primitive(
-                            builder, prim_name, all_args, span,
-                            self.module, self.ctx.panic_func_id,
-                        ) {
-                            Some(result) => return result,
-                            None => {
-                                let sym = Symbol::from(prim_name);
-                                return self.emit_wrapper_call(builder, &sym, all_args, span);
-                            }
-                        }
-                    }
-
-                    // Not a primitive: user-defined trait method — call by mangled name.
+                    // Per Decision 43 + FIXME 0185: backend has no trait
+                    // knowledge. Dispatch goes via the trait-impl's mangled
+                    // name uniformly; the pre-D43 (TraitName, Symbol,
+                    // TypeName) intercept that mapped primitive-implemented
+                    // trait methods to inline IR is deleted. See the parallel
+                    // call site in `compiler/apply.rs::compile_apply` for
+                    // the design context — FIXME 0185 tracks the typecheck
+                    // migration that restores inline optimisation by having
+                    // typecheck emit `BuiltinFn { name: "add-i64" }` for
+                    // primitive-implemented trait methods directly.
                     let sym = Symbol::from(mangled_name.as_ref());
                     return self.emit_wrapper_call(builder, &sym, all_args, span);
                 }

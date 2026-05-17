@@ -22,6 +22,7 @@
 pub mod reader;
 pub mod ast_builder;
 pub mod expand;
+pub mod link_mode;
 pub mod module_extract;
 pub mod quasiquote;
 pub mod defmacro;
@@ -30,6 +31,15 @@ use cranelisp_types::{CranelispError, Sexp};
 
 pub use ast_builder::{build_expr, build_form};
 pub use expand::ExpansionError;
+// Build-mode rejection pass for `(trace ...)` under `--link` mode.
+// Per spec/04-expressions.md §4.12.9 and Decision 40 §"Product-shape
+// constraint (Path B1)" (FIXME 0199). The integration layer's cluster
+// orchestrator calls these after `build_form`/`build_expr` to enforce
+// early rejection per Principle 7.
+pub use link_mode::{
+    validate_expr_for_build_mode, validate_parsed_entry_for_build_mode,
+    TRACE_LINK_MODE_REJECTION_MESSAGE,
+};
 // Re-export `ResolutionGap` for ergonomics — `ExpansionError::Gap` consumers
 // always need `ResolutionGap` in scope. Per the facade §"Types originated
 // here": narrow ergonomic exception to Principle 15.

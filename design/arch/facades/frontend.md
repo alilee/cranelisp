@@ -18,7 +18,7 @@ pub fn parse(source: &str) -> Result<Vec<Sexp>, CranelispError>;
 pub fn extract_module_declarations(
     containing_module: &ModuleFullPath,
     forms: Vec<Sexp>,
-) -> Result<(StructuralDecls, Vec<Sexp>), CranelispError>;
+) -> Result<(ExtractedDeclarations, Vec<Sexp>), CranelispError>;
 
 pub fn build_form(sexp: &Sexp) -> Result<Vec<ParsedEntry>, CranelispError>;
 
@@ -34,7 +34,7 @@ where
 
 `parse_import_sexp` is intentionally NOT in the public surface (per Principle 2 — narrow interfaces). Its only caller is `extract_module_declarations` internally; the REPL `/import` slash command parses through `extract_module_declarations` with a single-form input. The internal helper exists in the implementation but is `pub(crate)`.
 
-`parse` produces a flat `Vec<Sexp>` — pure source-to-sexp lowering, no structural-decl harvesting. `extract_module_declarations` is the post-parse pass that walks the form vector once, peels off `(import …)` / `(export …)` / `(mod …)` / `(platform …)` declarations into a `StructuralDecls` bundle, and returns the residual non-structural form vector. The two-call shape lets parse stay reusable for non-orchestration consumers (REPL slash commands, comment-preserving variants — see `parse_preserving_comments` below) without forcing them to construct a structural-decl store they'll never use.
+`parse` produces a flat `Vec<Sexp>` — pure source-to-sexp lowering, no structural-decl harvesting. `extract_module_declarations` is the post-parse pass that walks the form vector once, peels off `(import …)` / `(export …)` / `(mod …)` / `(platform …)` declarations into an `ExtractedDeclarations` bundle, and returns the residual non-structural form vector. The two-call shape lets parse stay reusable for non-orchestration consumers (REPL slash commands, comment-preserving variants — see `parse_preserving_comments` below) without forcing them to construct a structural-decl store they'll never use.
 
 `build_form` and `build_expr` are per-form constructors — one entry for top-level forms in the wide vocabulary (returning a list of `ParsedEntry` transients per FIXME 0156 resolution), one for inner expressions (returning `Expr`). No union AST enum bridges them. Callers know which one they want at the call site (the worker calls `build_form` for top-level forms; the REPL eval path calls `build_expr` directly for bare-expression evals).
 
@@ -48,23 +48,28 @@ where
 pub type SymbolTables<C, L> = DashMap<ModuleFullPath, Arc<SymbolTable<C, L>>>;
 ```
 
-`StructuralDecls` is the bundle:
+`ExtractedDeclarations` is the bundle (renamed from `StructuralDecls` in Sprint 67 W1 — the as-built name in `crates/cranelisp-frontend/src/module_extract.rs` is `ExtractedDeclarations`; the facade adopts the as-built name and retires the older `StructuralDecls` label):
 
 ```rust
 #[non_exhaustive]
-pub struct StructuralDecls {
-    pub imports: Vec<ImportSpec>,
-    pub exports: Vec<ExportSpec>,
-    pub platforms: Vec<PlatformSpec>,
-    pub submodules: Vec<ModDecl>,
+pub struct ExtractedDeclarations {
+    pub path: ModuleFullPath,
+    pub import_specs: Vec<ImportSpec>,
+    pub export_specs: Vec<ExportSpec>,
+    pub platform_specs: Vec<PlatformSpec>,
+    pub mod_decls: Vec<ModDecl>,
 }
 ```
+
+The struct lives at `cranelisp_frontend::module_extract::ExtractedDeclarations` and is also re-exported at the crate root as `cranelisp_frontend::ExtractedDeclarations` for caller ergonomics (the integration-layer cluster orchestrator imports it from the root). Both names are public-surface; the qualified `module_extract::` form is the home-module canonical, the root re-export is the ergonomic alias. Per Principle 15's narrowness rule, this exception is justified because `ExtractedDeclarations` is the dominant return type of `extract_module_declarations` — itself one of the four free-function entries `int` calls per form — and callers always need both names in scope. Single-import readability is the same case as `ResolutionGap` (see below).
 
 Fed directly into `SymbolTable::write_structural_decls` per Decision 33 — single source of truth for structural decls on `SymbolTable`, no parallel `ModuleStructure` store.
 
 `expand` invokes registered macros via JIT'd code addresses found through `symbol_tables`. The actual call into the macro happens through the GOT slot per Decision 23 — the frontend does not know about JITs; it only knows that when an FQ macro reference resolves to a `ModuleEntry::Macro` with `code: Some(_)`, it can dispatch.
 
 Per Decision 43's reframing of Principle 15 (legacy Decision 8 retracted), there is **no `MacroResolver` trait** mediating macro lookup. `expand` looks up macros directly against the `&SymbolTables<C, L>` parameter — the dependency-inversion shape used in earlier rings is gone. Frontend's only collaborator for macro lookup is the symbol-tables map itself; the JIT'd code address sits on `ModuleEntry::Macro.code`, reached through the standard `&SymbolTable` access path. Migration of the still-in-`src/expander.rs` implementation into `cranelisp-frontend` is tracked under FIXME 0098 Phase 2.
+
+> **Status (S66 W3a-β → S67): invocation is structurally deferred per FIXME 0175.** The frontend `expand` in `crates/cranelisp-frontend/src/expand.rs` performs the structural traversal (children recursion, macro-head detection, depth-limit enforcement, quasiquote expansion via `expand_quasiquotes`) but does NOT call into the JIT'd macro body — it returns `Err(ExpansionError::Gap(ResolutionGap::MacroInMem(fq)))` for every macro head encountered. The real invocation path remains in `src/expander.rs` until `/arch` resolves FIXME 0175 (the marshal-deps gap: `cranelisp_runtime::heap_alloc` + signal handling cannot be reached from `cranelisp-frontend` under the current BC §1 dep-allowance, and the facade as written requires invocation). When `/arch` lands a resolution (likely option (a) — a new `cranelisp-marshal` crate), this paragraph drops and the in-tree implementation deletes. The signature and uniform-Gap contract above stand and need no revision.
 
 When `expand` encounters an FQ symbol whose target isn't fully ready, it CANNOT block or call the scheduler — frontend has no `Sess` dependency (Principle 3). It surfaces the dependency uniformly via `Err(ExpansionError::Gap(ResolutionGap::MacroInMem(fq)))` regardless of whether the module is unregistered, typecheck is incomplete, or code is missing. The orchestrator (`int::process_form`) translates this into the right wait sequence and decides whether to wait for code based on what the entry turns out to be:
 
@@ -92,36 +97,39 @@ pub enum ExpansionError {
 
 The per-form sub-parsers (`parse_import_sexp`, `parse_export_sexp`, `parse_mod_sexp`, `parse_platform_sexp`) exist in the implementation as `pub(crate)` helpers consumed by `extract_module_declarations`. They are intentionally NOT in the public surface. Direct callers (REPL `/import`, etc.) route through `extract_module_declarations` with a single-form input.
 
-### Synthetic span allocator (used by macro expansion to attribute generated forms)
+### Macro-resolver helpers — pub at root, internal-but-exposed
+
+The expander and the integration-layer cluster orchestrator share a small family of shape-recognition + synthesis helpers used to drive macro expansion + defmacro compilation. These are pub at the crate root (and from `cranelisp_frontend::defmacro::` for the parsers, `cranelisp_frontend::quasiquote::` for the quasiquote pair). They are **internal-but-exposed** — facade documents them but they are not part of the four-free-function form-by-form surface. Their consumers are the in-tree `src/expander.rs` (until FIXME 0098 Phase 2 migrates the invocation path) and `src/cluster.rs` (which builds clause `Defn` instances for the backend per Decision 21).
 
 ```rust
+// Defmacro shape parsing — pub at root and via `defmacro::`.
+pub fn parse_defmacro(sexp: &Sexp) -> Result<DefmacroInfo, CranelispError>;
+pub fn is_defmacro(sexp: &Sexp) -> bool;
+pub fn synthesize_macro_clause_defn(
+    name: &str,
+    clause_idx: usize,
+    clause: &MacroClause,
+    span: Span,
+) -> Sexp;
+
+// `begin` flattening — pub at root and via `defmacro::`.
+pub fn is_begin(sexp: &Sexp) -> bool;
+pub fn flatten_begin(sexp: Sexp) -> Vec<Sexp>;
+
+// Quasiquote expansion — pub at root and via `quasiquote::`.
+pub fn expand_quasiquotes(sexp: &Sexp) -> Result<Sexp, CranelispError>;
+pub fn expand_quote_template(template: &Sexp) -> Sexp;
+
+// Synthetic span allocator — pub at root and via `quasiquote::`. Allocates
+// monotonically-increasing synthetic spans for forms produced by macro
+// expansion. Reused across the session — span uniqueness is a frontend
+// invariant (see §"Bounded-context invariants" #4).
 pub fn next_synthetic_span() -> Span;
 ```
 
-Allocates monotonically-increasing synthetic spans for forms produced by macro expansion. Reused across the session.
+Disposition history. The Sprint 66 Wave 3a-β `build_form` shape pivot opened these helpers to public visibility (a) so `src/expander.rs` could continue to function while FIXME 0098 Phase 2 migrates the JIT-invocation path into `cranelisp-frontend` (currently blocked on FIXME 0175 — the marshal-deps gap), and (b) so `src/cluster.rs::process_cluster` can build per-clause `Defn`s for the backend per Decision 21 without rebuilding the shape-checking logic outside the frontend. The expectation at FIXME 0098 Phase 2 close is that `parse_defmacro`, `is_defmacro`, `is_begin`, `flatten_begin`, and `synthesize_macro_clause_defn` narrow back to `pub(crate)` once `int` no longer calls them directly; `expand_quote_template`, `expand_quasiquotes`, and `next_synthetic_span` remain pub at root because they are the standing public quasiquote API (used by user-authored macros at expansion time and by REPL `/expand`). Until then, the public-surface inventory above is the binding facade statement.
 
-### Defmacro shape parsing — internal only
-
-```rust
-pub(crate) fn parse_defmacro(sexp: &Sexp) -> Result<DefmacroInfo, CranelispError>;
-
-pub fn synthesize_macro_clause_defn(info: &DefmacroInfo, clause_idx: usize) -> Defn;
-```
-
-Per FIXME 0156 resolution — `parse_defmacro` is `pub(crate)` (called from `build_form`'s dispatcher when the form-shape is a `defmacro`). `DefmacroInfo` itself moves from `cranelisp-frontend` to `cranelisp-types` (see `facades/types.md` §"Boundary types") because `int`'s post-`build_form` consumption path needs to name the type, and `MacroClauseInfo` / `MacroParam` already live in `cranelisp-types`. The parser dispatcher returns `DefmacroInfo` packaged inside one or more `ParsedEntry::Macro` variants per the standard `build_form` shape.
-
-`synthesize_macro_clause_defn` remains public — it builds a `Defn` (one per clause) for compilation. Each clause is compiled as a separate normal `Defn`, then registered in the `ModuleEntry::Macro` clauses list per Decision 21 cross-reference.
-
-`MacroClauseInfo` and `MacroParam` live in `cranelisp-types` (they cross the typecheck boundary). `DefmacroInfo` joins them per FIXME 0156 resolution.
-
-### `begin` / `quasiquote` helpers (called from `expand` and from `parse_defmacro`)
-
-```rust
-pub fn is_defmacro(sexp: &Sexp) -> bool;
-pub fn is_begin(sexp: &Sexp) -> bool;
-pub fn flatten_begin(sexp: Sexp) -> Vec<Sexp>;
-pub fn expand_quasiquotes(sexp: Sexp) -> Result<Sexp, CranelispError>;
-```
+`MacroClause`, `MacroClauseInfo`, `MacroParam`, and `DefmacroInfo` live in `cranelisp-types` (they cross the typecheck boundary). `DefmacroInfo` joined them per FIXME 0156 resolution. `synthesize_macro_clause_defn` takes a `&MacroClause` parameter — the type comes from `cranelisp_types::parsed::MacroClause`.
 
 ### Comment-preserving parse (REPL slash commands like `/source` need this)
 
@@ -131,17 +139,48 @@ pub fn parse_preserving_comments(source: &str) -> Result<Vec<Sexp>, CranelispErr
 
 ### Public consts
 
-None.
+```rust
+pub const EXPANSION_DEPTH_LIMIT: usize;
+```
+
+Maximum recursion depth for nested macro expansion within a single `expand` call. The expander aborts with `ExpansionError::Malformed { message: "expansion depth limit exceeded", … }` rather than letting a pathological macro (mutual recursion, accidental fix-point) run the call stack out. The exact value is an implementation detail of `/dev`; the constant is published so test fixtures and the REPL `/expand` slash command can probe + report the limit without re-declaring it. Internal-but-exposed: the bounded-context invariant (BC #5 "`expand` is re-entrant") promises only that recursive expansion is supported; the depth bound is an operational safeguard, not a contract.
 
 ---
 
 ## Types originated here
 
-Per Principle 15 — frontend's facade-originated types live here. None currently: `Sexp`, `Expr`, `TopLevel`, `Defn`, `Pattern`, `MatchArm`, `TypeExpr`, `Ast`, `Program`, `ImportSpec`, `ExportSpec`, `ImportNames`, `MacroClauseInfo`, `MacroParam`, `ModDecl`, `PlatformSpec`, `ResolutionGap`, `ParsedEntry`, `DefmacroInfo` (per FIXME 0156 resolution) are all multi-consumer types (frontend produces; typecheck/backend/int consume) and live in `cranelisp-types`.
+Per Principle 15 — frontend's facade-originated types live here. The frontend originates exactly one type that is fully its own: `ExpansionError`. `ExtractedDeclarations` is the second public DTO published by the frontend, but it is structural sugar over `cranelisp-types` items (every field is a `cranelisp-types` newtype or spec record); its identity is "the bundle returned by `extract_module_declarations`" rather than a domain concept.
 
-Frontend is a pure transform from source text to AST: its public surface is the free functions (`parse`, `extract_module_declarations`, `build_form`, `build_expr`, `expand`, `parse_preserving_comments`) plus `StructuralDecls` and `ExpansionError`. No re-exports of `cranelisp-types` items per Principle 15 — consumers import boundary types directly from `cranelisp_types::*`.
+`Sexp`, `Expr`, `TopLevel`, `Defn`, `Pattern`, `MatchArm`, `TypeExpr`, `Ast`, `Program`, `ImportSpec`, `ExportSpec`, `ImportNames`, `MacroClauseInfo`, `MacroParam`, `ModDecl`, `PlatformSpec`, `ResolutionGap`, `ParsedEntry`, `DefmacroInfo`, `MacroClause` (per FIXME 0156 resolution) are all multi-consumer types (frontend produces; typecheck/backend/int consume) and live in `cranelisp-types`.
 
-**`ResolutionGap` re-exported (narrow ergonomic exception per FIXME 0098).** `ExpansionError::Gap(ResolutionGap)` is the dominant variant of the public error enum, and consumers pattern-matching on it always need `ResolutionGap` in scope. The frontend re-exports `cranelisp_types::ResolutionGap` from its `lib.rs` so `use cranelisp_frontend::{expand, ExpansionError, ResolutionGap}` works in one import. This is an inline-justified instance of Principle 15's narrowness — limited to the gap-orchestration retry loop's pattern-match readability; not a general license.
+Frontend is a pure transform from source text to AST: its public surface is the four free functions of the form-by-form boundary (`parse`, `extract_module_declarations`, `build_form`, `build_expr`) plus `expand`, `parse_preserving_comments`, the macro-resolver helpers (§"Macro-resolver helpers"), `EXPANSION_DEPTH_LIMIT`, and the DTOs `ExtractedDeclarations` + `ExpansionError`.
+
+### Module layout
+
+The crate's public module structure mirrors its functional decomposition:
+
+| Module | Contains | Root re-exports |
+|---|---|---|
+| `cranelisp_frontend::reader` | `parse`, `parse_preserving_comments` — source-text to `Vec<Sexp>` lowering | yes (both fns re-exported at the crate root) |
+| `cranelisp_frontend::ast_builder` | `build_form`, `build_expr` — per-form AST construction | yes (both fns re-exported at the crate root) |
+| `cranelisp_frontend::module_extract` | `extract_module_declarations`, `ExtractedDeclarations` — structural-decl peeling | yes (both items re-exported at the crate root) |
+| `cranelisp_frontend::defmacro` | `parse_defmacro`, `is_defmacro`, `is_begin`, `flatten_begin`, `synthesize_macro_clause_defn`, plus the `DefmacroInfo` and `MacroClause` re-exports from `cranelisp-types` | yes (fns and re-exports surfaced at the crate root) |
+| `cranelisp_frontend::quasiquote` | `expand_quasiquotes`, `expand_quote_template`, `next_synthetic_span` | yes (all three re-exported at the crate root) |
+| `cranelisp_frontend::expand` | `expand`, `ExpansionError`, `EXPANSION_DEPTH_LIMIT`, `SymbolTables<C, L>` type alias | yes (`ExpansionError` re-exported at the crate root) |
+
+The qualified `module::` paths are the canonical homes; the crate-root re-exports exist so the four-free-function boundary entry point reads as `cranelisp_frontend::{parse, build_form, build_expr, extract_module_declarations, expand}` in one import. The double-naming is **intentional surface duplication** — see `cranelisp_frontend::ExtractedDeclarations` vs `cranelisp_frontend::module_extract::ExtractedDeclarations`, both pub-api lines. Tooling that audits public-API drift (`cargo public-api`) will report both; the facade endorses the duplication for boundary ergonomics.
+
+### Re-export policy
+
+Per Principle 15 — narrow interfaces — frontend does NOT generally re-export `cranelisp-types` items. Consumers import boundary types directly from `cranelisp_types::*`. Three inline-justified exceptions stand, each because the re-exported type is intrinsic to a frontend public-surface signature and forcing two imports per call site is friction with no compensating clarity:
+
+1. **`ResolutionGap` re-exported (per FIXME 0098).** `ExpansionError::Gap(ResolutionGap)` is the dominant variant of the public error enum; consumers pattern-matching on it always need `ResolutionGap` in scope. `use cranelisp_frontend::{expand, ExpansionError, ResolutionGap}` works in one import.
+
+2. **`DefmacroInfo` re-exported (per FIXME 0156).** `parse_defmacro` returns `Result<DefmacroInfo, CranelispError>`; the macro-resolver-helper call sites in `src/cluster.rs` always need both names. The type itself lives in `cranelisp_types::parsed::DefmacroInfo` per /arch's W0 boundary-types work.
+
+3. **`MacroClause` re-exported (per FIXME 0156).** `synthesize_macro_clause_defn` takes a `&MacroClause` parameter; same one-import argument as `DefmacroInfo`. The type lives in `cranelisp_types::parsed::MacroClause`.
+
+These three re-exports + the `ExtractedDeclarations` qualified/root parallel form (see §"Free functions") are the totality of frontend's re-export licence. New re-exports require explicit `/arch` approval — adding "convenience" re-exports erodes the dependency-graph clarity Principle 15 protects.
 
 (Optional ergonomic alias: `pub type Ast = cranelisp_types::TopLevel;` — a type alias, not a re-export, kept for readability at frontend call sites and consumer code.)
 
@@ -169,10 +208,10 @@ None implemented. The frontend does not implement traits from `cranelisp-types`.
 
 All public DTOs published by the frontend are `#[non_exhaustive]`:
 
-- `StructuralDecls`
+- `ExtractedDeclarations`
 - `ExpansionError`
 
-(Types re-exported from `cranelisp-types` are `#[non_exhaustive]` per the types-crate facade. `DefmacroInfo` and `ParsedEntry` live in `cranelisp-types` per FIXME 0156 resolution.)
+(Types re-exported from `cranelisp-types` are `#[non_exhaustive]` per the types-crate facade. `DefmacroInfo`, `MacroClause`, and `ParsedEntry` live in `cranelisp-types` per FIXME 0156 resolution.)
 
 ---
 

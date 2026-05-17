@@ -5,56 +5,54 @@
 //! called by JIT-emitted code or by the IO trampoline. NOT callable from
 //! user code; ABI tightly coupled to backend's codegen choices.
 //!
-//! ## Wave 3b-2d.1 status (FIXME 0150 source migration, intrinsics half)
+//! ## Sprint 67 Wave 3 — FIXME 0180 close (string/vec relocation)
 //!
-//! Wave 3b-1 (commit 9e4d9b1) relocated `io_observer.rs` + `io_trace.rs`
-//! from `cranelisp-runtime` into this crate. Wave 3b-2d.1 (the present
-//! commit) absorbs the remaining backend-emitted-call targets from
-//! `cranelisp-runtime/src/`:
+//! The user-callable string operations (15 fns: `str-concat`, `str-len`, …)
+//! and `vec-len` physically lived here until Sprint 67 Wave 3. They have
+//! now been lifted into `cranelisp-primitives::{string, vec}` per Decision 43
+//! and `design/arch/facades/primitives.md`. The backend-emitted-call
+//! infrastructure remains here under renamed modules:
 //!
-//! | Source (former runtime) | Destination |
+//! | Was | Now | Why |
+//! |---|---|---|
+//! | `cranelisp_intrinsics::string::*` | `cranelisp_intrinsics::heap_string::*` | Avoid public-api confusion with `cranelisp_primitives::string` |
+//! | `cranelisp_intrinsics::vec::*`    | `cranelisp_intrinsics::vec_runtime::*` | Same reasoning for the Vec runtime helpers |
+//!
+//! ## Sprint 67 Wave 4 — FIXMEs 0198 + 0202 (trace relocation)
+//!
+//! Per Decision 40 (Path B1, amended 2026-05-16), `(trace ...)` is a
+//! REPL/`--run`-only special form. The 12 `cranelisp_trace_*` JIT-emitted-
+//! call function bodies, the trace stack + GOT-swap machinery, the
+//! io_trace ring buffer + dump + panic-hook infrastructure, and the
+//! TraceCall ADT consumer (`consume_trace_call`) have all relocated to
+//! int (`src/trace.rs` + `src/io_trace.rs`). The surviving intrinsics
+//! surface is the IoObserver extension point on `io_observer.rs` —
+//! registration API + IoEvent/IoEventTag callback contract + the
+//! `trace_anchor` instant.
+//!
+//! ## Module inventory (post-FIXME-0198)
+//!
+//! | Module | Role |
 //! |---|---|
-//! | `alloc.rs`  | `cranelisp_intrinsics::alloc`  — heap allocator, RC header layout |
-//! | `drop.rs`   | `cranelisp_intrinsics::drop`   — consume_* drop-glue helpers |
-//! | `rc.rs`     | `cranelisp_intrinsics::rc`     — RC trace + underflow check + consume_shallow |
-//! | `panic.rs`  | `cranelisp_intrinsics::panic`  — `runtime/panic` for match-exhaustiveness |
-//! | `ivar.rs`   | `cranelisp_intrinsics::ivar`   — IVar primitives (lenient eval) |
-//! | `io.rs`     | `cranelisp_intrinsics::io`     — `cranelisp_run_io` IO trampoline |
-//! | `vec.rs`    | `cranelisp_intrinsics::vec`    — Vec layout + ops (Cow + drop) |
-//! | `string.rs` | `cranelisp_intrinsics::string` — HeapString layout + string ops |
-//! | `trace.rs`  | `cranelisp_intrinsics::trace`  — `(trace ...)` GOT-swap support |
-//!
-//! `cranelisp-runtime` keeps thin re-export shims so existing consumers
-//! (backend, int, exe-bundle, tests) continue to compile against
-//! `cranelisp_runtime::*` paths unchanged.
-//!
-//! Wave 3b-2d.2b (subsequent commit) absorbed the **operator-as-value
-//! wrappers** `cranelisp_op_*` (formerly in `cranelisp-runtime/src/primitives/int.rs`)
-//! into this crate at `cranelisp_intrinsics::ops`. They classify here per
-//! Decision 43: not user-callable (no `primitives/` symbol-table entry),
-//! addressed only by backend's operator-as-value codegen path in
-//! `crates/cranelisp-backend/src/compiler/literals.rs` which emits direct
-//! `Linkage::Import` calls keyed on the `cranelisp_op_*` names. The
-//! user-callable Sexp marshaling + conversion primitives (`sconcat`,
-//! `quote-sexp`, `int-to-string`, `parse-int`, `float-to-string`,
-//! `bool-to-string`) migrated to `cranelisp-primitives` in the same wave.
-//!
-//! Per Decision 43, the categorical line is: backend-emitted-call targets
-//! (this crate) vs user-callable, symbol-table addressable primitives
-//! (`cranelisp-primitives`).
+//! | `alloc`        | Heap allocator, RC header layout |
+//! | `drop`         | `consume_*` drop-glue helpers (Sexp/SList/Vec/IO/closure) |
+//! | `io`           | `cranelisp_run_io` IO trampoline |
+//! | `io_observer`  | IoObserver registration + `IoEvent`/`IoEventTag` + `trace_anchor` |
+//! | `ivar`         | IVar primitives (lenient eval) |
+//! | `panic`        | `runtime/panic` for match-exhaustiveness |
+//! | `rc`           | RC trace + underflow check + consume_shallow |
+//! | `heap_string`  | HeapString layout + alloc/read helpers |
+//! | `vec_runtime`  | Vec layout + ops (Cow + drop) |
 
 pub mod alloc;
 pub mod drop;
+pub mod heap_string;
 pub mod io;
 pub mod io_observer;
-pub mod io_trace;
 pub mod ivar;
-pub mod ops;
 pub mod panic;
 pub mod rc;
-pub mod string;
-pub mod trace;
-pub mod vec;
+pub mod vec_runtime;
 
 pub use io_observer::{IoEvent, IoEventTag, IoObserver, register_io_observer, trace_anchor};
 
@@ -67,17 +65,5 @@ pub use alloc::{
 pub use alloc::is_live;
 pub use panic::{runtime_panic, take_runtime_error};
 pub use rc::{is_rc_trace_enabled, rc_underflow_check};
-pub use string::{HeapString, alloc_string, heap_alloc_string, read_string_as_str, string_read};
-pub use vec::{vec_drop, vec_len, vec_new, vec_push_copy, vec_push_grow, vec_set_copy};
 pub use io::{cranelisp_run_io, run_io_trampoline};
 pub use ivar::{ivar_create, ivar_force, ivar_spark};
-pub use ops::{
-    cranelisp_op_add, cranelisp_op_div, cranelisp_op_eq, cranelisp_op_ge, cranelisp_op_gt,
-    cranelisp_op_le, cranelisp_op_lt, cranelisp_op_mul, cranelisp_op_neq, cranelisp_op_sub,
-};
-pub use trace::{
-    cranelisp_collect_trace, cranelisp_trace_children, cranelisp_trace_enter,
-    cranelisp_trace_exit, cranelisp_trace_first_child_nanos, cranelisp_trace_format,
-    cranelisp_trace_name, cranelisp_trace_nanos, cranelisp_trace_params,
-    cranelisp_trace_restore_got, cranelisp_trace_result, cranelisp_trace_swap_got,
-};

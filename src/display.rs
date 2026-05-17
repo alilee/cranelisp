@@ -90,7 +90,12 @@ where
 }
 
 /// Convenience wrapper: format_result_value with empty symbol_tables.
-pub fn format_result(value: i64, ty: &Type) -> String {
+///
+/// Sprint 67 hack-back: callers migrated to `format_result_value` with an
+/// explicit symbol-tables ref. Retained for tests + symmetry with the wider
+/// formatter API; `#[allow(dead_code)]` while unused.
+#[allow(dead_code)]
+pub(crate) fn format_result(value: i64, ty: &Type) -> String {
     let empty: DashMap<ModuleFullPath, SymbolTable<(), ()>> = DashMap::new();
     format_result_value(value, ty, &empty)
 }
@@ -295,7 +300,7 @@ fn format_string_value(value: i64) -> String {
         return format!(":primitives/String <invalid:{value}>");
     }
     // SAFETY: value is a heap pointer to a valid HeapString (produced by JIT code).
-    let s = unsafe { cranelisp_intrinsics::string::read_string_as_str(value) };
+    let s = unsafe { cranelisp_intrinsics::heap_string::read_string_as_str(value) };
     format!(":primitives/String \"{s}\"")
 }
 
@@ -599,7 +604,7 @@ where
             } else {
                 // SAFETY: value is a heap pointer to a valid HeapString (produced by JIT code);
                 // the guard above rejects null and small (nullary tag) values.
-                let s = unsafe { cranelisp_intrinsics::string::read_string_as_str(value) };
+                let s = unsafe { cranelisp_intrinsics::heap_string::read_string_as_str(value) };
                 format!("\"{s}\"")
             }
         }

@@ -1394,12 +1394,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     }
 
     /// Public wrapper for `clear_module_for_replace` (used by v4 worker).
-    pub fn clear_module_for_replace_public(&self, state: &mut CheckState) {
+    pub(crate) fn clear_module_for_replace_public(&self, state: &mut CheckState) {
         self.clear_module_for_replace(state);
     }
 
     /// Public wrapper for `compute_display_info` (used by v4 worker).
-    pub fn compute_display_info_public(
+    pub(crate) fn compute_display_info_public(
         &self,
         state: &CheckState,
         original_program: &[TopLevel],
@@ -6338,7 +6338,11 @@ mod tests {
             "annotated ASTs should carry a resolution for + call"
         );
 
-        // Verify the AST has the same resolution
+        // Verify the AST has the same resolution. FIXME 0185: primitive
+        // trait-method resolution short-circuits to ResolvedCall::BuiltinFn
+        // when the impl_type is a Ring 0 primitive and the (trait, method,
+        // impl_type) tuple is in the inline-substitution table. (Num.+ on
+        // Int) → BuiltinFn { name: "add-i64" }.
         let st = tc.symbol_table();
         let entry = st.get("double").expect("double should be in symbol table");
         if let ModuleEntry::Def { ast: Some(defn), .. } = entry {
@@ -6346,8 +6350,10 @@ mod tests {
             let rc = find_resolved_call(body, plus_span);
             assert!(rc.is_some(), "Apply (+ x x) should have resolved_call on AST node");
             match rc.unwrap() {
-                ResolvedCall::TraitMethod { .. } => {} // expected
-                other => panic!("expected TraitMethod, got {:?}", other),
+                ResolvedCall::BuiltinFn { name } => {
+                    assert_eq!(name.as_ref(), "add-i64");
+                }
+                other => panic!("expected BuiltinFn (primitive trait-method short-circuit per FIXME 0185), got {:?}", other),
             }
 
             // All types should be concrete
@@ -6634,13 +6640,17 @@ mod tests {
                 );
             }
 
-            // The + call should have resolved_call = TraitMethod (resolved via
-            // deferred trait call resolution after the call site pins types)
+            // The + call should have resolved_call set (resolved via
+            // deferred trait call resolution after the call site pins types).
+            // FIXME 0185: (Num, +, Int) short-circuits to BuiltinFn so backend
+            // emits the primitive inline without paying the impl-body call frame.
             let rc = find_resolved_call(body, plus_span);
             assert!(rc.is_some(), "Apply (+ x x) should have resolved_call on AST node");
             match rc.unwrap() {
-                ResolvedCall::TraitMethod { .. } => {} // expected
-                other => panic!("expected TraitMethod, got {:?}", other),
+                ResolvedCall::BuiltinFn { name } => {
+                    assert_eq!(name.as_ref(), "add-i64");
+                }
+                other => panic!("expected BuiltinFn (primitive trait-method short-circuit per FIXME 0185), got {:?}", other),
             }
         } else {
             panic!("add should have ast: Some(..)");

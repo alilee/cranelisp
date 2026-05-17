@@ -15,14 +15,14 @@
 
 use cranelisp_intrinsics::alloc;
 use cranelisp_intrinsics::rc;
-use cranelisp_intrinsics::string;
+use cranelisp_intrinsics::heap_string;
 
 /// Convert an integer to its decimal string representation.
 /// Returns a new HeapString (rc=1).
 #[unsafe(export_name = "int-to-string")]
 pub extern "C" fn int_to_string(n: i64) -> i64 {
     let s = n.to_string();
-    string::alloc_string(s.as_bytes()) as i64
+    heap_string::alloc_string(s.as_bytes()) as i64
 }
 
 /// Parse an integer from a string. Returns an Option Int as a heap ADT.
@@ -39,7 +39,7 @@ pub extern "C" fn int_to_string(n: i64) -> i64 {
 #[unsafe(export_name = "parse-int")]
 pub extern "C" fn parse_int(s: i64) -> i64 {
     // SAFETY: s is a valid HeapString base pointer.
-    let str_val = unsafe { string::read_string_as_str(s) };
+    let str_val = unsafe { heap_string::read_string_as_str(s) };
 
     let result = match str_val.trim().parse::<i64>() {
         Ok(n) => {
@@ -74,7 +74,7 @@ mod tests {
     fn test_int_to_string_positive() {
         let result = int_to_string(42);
         unsafe {
-            assert_eq!(string::read_string_as_str(result), "42");
+            assert_eq!(heap_string::read_string_as_str(result), "42");
             alloc::dealloc(result as *mut u8);
         }
     }
@@ -84,7 +84,7 @@ mod tests {
     fn test_int_to_string_negative() {
         let result = int_to_string(-7);
         unsafe {
-            assert_eq!(string::read_string_as_str(result), "-7");
+            assert_eq!(heap_string::read_string_as_str(result), "-7");
             alloc::dealloc(result as *mut u8);
         }
     }
@@ -94,7 +94,7 @@ mod tests {
     fn test_int_to_string_zero() {
         let result = int_to_string(0);
         unsafe {
-            assert_eq!(string::read_string_as_str(result), "0");
+            assert_eq!(heap_string::read_string_as_str(result), "0");
             alloc::dealloc(result as *mut u8);
         }
     }
@@ -105,7 +105,7 @@ mod tests {
     fn test_parse_int_valid() {
         let allocs_before = cranelisp_intrinsics::alloc::alloc_count();
         let deallocs_before = cranelisp_intrinsics::alloc::dealloc_count();
-        let s = string::alloc_string(b"42") as i64;
+        let s = heap_string::alloc_string(b"42") as i64;
         let result = parse_int(s);
         // Should be Some(42): heap pointer
         assert!(result > 1024, "expected heap pointer, got {result}");
@@ -128,7 +128,7 @@ mod tests {
     // Decision 24: parse_int consumes its heap arg.
     #[test]
     fn test_parse_int_negative() {
-        let s = string::alloc_string(b"-123") as i64;
+        let s = heap_string::alloc_string(b"-123") as i64;
         let result = parse_int(s);
         assert!(result > 1024);
         unsafe {
@@ -144,7 +144,7 @@ mod tests {
     // Decision 24: parse_int consumes its heap arg — None return means no result heap alloc.
     #[test]
     fn test_parse_int_invalid() {
-        let s = string::alloc_string(b"not a number") as i64;
+        let s = heap_string::alloc_string(b"not a number") as i64;
         let result = parse_int(s);
         assert_eq!(result, 0); // None
         // Decision 24: extern consumed s.
@@ -154,7 +154,7 @@ mod tests {
     // Decision 24: parse_int consumes its heap arg.
     #[test]
     fn test_parse_int_whitespace() {
-        let s = string::alloc_string(b"  99  ") as i64;
+        let s = heap_string::alloc_string(b"  99  ") as i64;
         let result = parse_int(s);
         assert!(result > 1024);
         unsafe {
@@ -168,7 +168,7 @@ mod tests {
     // Decision 24: parse_int consumes its heap arg.
     #[test]
     fn test_parse_int_empty() {
-        let s = string::alloc_string(b"") as i64;
+        let s = heap_string::alloc_string(b"") as i64;
         let result = parse_int(s);
         assert_eq!(result, 0); // None
         // Decision 24: extern consumed s.
@@ -179,7 +179,7 @@ mod tests {
     fn decision24_parse_int_consumes_heap_arg() {
         let allocs_before = cranelisp_intrinsics::alloc::alloc_count();
         let deallocs_before = cranelisp_intrinsics::alloc::dealloc_count();
-        let s = string::alloc_string(b"7") as i64;
+        let s = heap_string::alloc_string(b"7") as i64;
         let result = parse_int(s);
         assert!(result > 1024);
         unsafe { alloc::dealloc(result as *mut u8) };
@@ -193,7 +193,7 @@ mod tests {
     fn decision24_parse_int_none_path_still_consumes_heap_arg() {
         let allocs_before = cranelisp_intrinsics::alloc::alloc_count();
         let deallocs_before = cranelisp_intrinsics::alloc::dealloc_count();
-        let s = string::alloc_string(b"not a number") as i64;
+        let s = heap_string::alloc_string(b"not a number") as i64;
         let result = parse_int(s);
         assert_eq!(result, 0); // None
         // 1 alloc (string); 1 dealloc (extern freed string).

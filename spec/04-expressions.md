@@ -845,3 +845,11 @@ The `Trace` value returned by `(trace expr)` is an ordinary ADT value. It can be
 ; => the Trace value -- no side effects occurred
 ```
 
+### 4.12.9 Build-Mode Restriction [R4 S68]
+
+`(trace ...)` is available only in REPL and `--run` execution modes. In `--link` standalone-binary mode, the form is a **compile-time error**: an implementation MUST reject any program containing a `(trace ...)` form when compiling under `--link`. The rejection is at compile time, not runtime -- the form never reaches code generation in `--link` mode.
+
+The rationale is product-shape: the trace edifice (runtime call-tree stack, observer pathway, indirection-table swapping, and value-display formatting) is REPL/development-only infrastructure. Standalone binaries produced by `--link` do not carry trace machinery, and a program that depends on `(trace ...)` is not portable to that mode.
+
+REPL and `--run` semantics for `(trace ...)` are unchanged by this restriction; the rules in §4.12.1 through §4.12.8 apply unmodified in those modes.
+

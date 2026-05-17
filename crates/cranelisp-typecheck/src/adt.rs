@@ -24,6 +24,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// Handles both nullary enums (Ring 0) and parameterized ADTs with data
     /// constructor fields (Ring 1). Allocates fresh type vars for type parameters,
     /// resolves field types, and produces polymorphic constructor schemes.
+    ///
+    /// **FQTypeName exception 2 (receiver-pinned).** `name: &TypeName` is
+    /// correct here per `design/arch/facades/types.md` §"FQTypeName migration
+    /// plan (Sprint 67)" §"typecheck" row 269 — the writer's module context
+    /// is supplied by `state.current_module`; the `FQTypeName` is constructed
+    /// inside this function at line 42 (`FQTypeName::new(state.current_module
+    /// .clone(), name.clone())`). The bare-name parameter encodes the
+    /// post-resolution lift point itself.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn register_type_def(
         &self,
@@ -323,7 +331,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// A match is exhaustive if:
     /// 1. All constructors of the ADT are covered, OR
     /// 2. A wildcard or variable pattern is present.
-    pub fn check_exhaustiveness(
+    #[allow(dead_code)] // default-rooted accessor pair; exercised via TestFixture in `#[cfg(test)]`.
+    pub(crate) fn check_exhaustiveness(
         &self,
         type_name: &TypeName,
         covered_ctors: &[Symbol],
@@ -331,8 +340,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         span: Span,
     ) -> Result<(), CranelispError> {
         self.check_exhaustiveness_in_module(
-            &ModuleFullPath::from("user"),
-            type_name,
+            &cranelisp_types::FQTypeName::new(ModuleFullPath::from("user"), type_name.clone()),
             covered_ctors,
             has_wildcard,
             span,
@@ -340,10 +348,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     }
 
     /// Module-rooted variant of [`Self::check_exhaustiveness`].
+    ///
+    /// **FQTypeName migration (Sprint 67 Wave 3 — FIXME 0151).** Takes
+    /// `&FQTypeName` per `design/arch/facades/types.md` §"FQTypeName migration
+    /// plan (Sprint 67)" §"typecheck" — match-arm checks are post-resolution,
+    /// so the type identifier carries its module context binding.
     pub(crate) fn check_exhaustiveness_in_module(
         &self,
-        module_path: &ModuleFullPath,
-        type_name: &TypeName,
+        fq_type_name: &cranelisp_types::FQTypeName,
         covered_ctors: &[Symbol],
         has_wildcard: bool,
         span: Span,
@@ -352,9 +364,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             return Ok(());
         }
 
-        let type_def = self.lookup_type_def_in_module(module_path, type_name).ok_or_else(|| {
+        let type_def = self.lookup_type_def_in_module(&fq_type_name.module, &fq_type_name.name).ok_or_else(|| {
             CranelispError::TypeError {
-                message: format!("unknown type in match: {type_name}"),
+                message: format!("unknown type in match: {}", fq_type_name.name),
                 location: ErrorLocation::from_span(span),
             }
         })?;
@@ -389,7 +401,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             missing_sorted.sort();
             Err(CranelispError::TypeError {
                 message: format!(
-                    "non-exhaustive match on {type_name}: missing constructor(s) {}",
+                    "non-exhaustive match on {}: missing constructor(s) {}",
+                    fq_type_name.name,
                     missing_sorted.join(", ")
                 ),
                 location: ErrorLocation::from_span(span),

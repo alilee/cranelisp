@@ -13,6 +13,14 @@
 //! - `+32`: data_ptr (i64, pointer to data buffer)
 //!
 //! All elements are i64 (uniform representation). Only indices `0..len` are live.
+//!
+//! ## Module name rationale
+//!
+//! Renamed from `vec` to `vec_runtime` in Sprint 67 Wave 3 (FIXME 0180 close).
+//! The user-callable `vec-len` accessor physically lives in
+//! `cranelisp-primitives::vec`; everything else here is backend-emitted-call
+//! infrastructure (`runtime/vec_new`, `runtime/vec_drop`, the COW paths
+//! `vec-set-copy` / `vec-push-copy` / `vec-push-grow`).
 
 use std::alloc::{self, Layout};
 
@@ -149,13 +157,9 @@ pub extern "C" fn vec_new(cap: i64) -> i64 {
     base as i64
 }
 
-/// Read the length of a Vec.
-///
-/// JIT name: "vec-len" — exported via export_name so link-mode resolves.
-#[unsafe(export_name = "vec-len")]
-pub extern "C" fn vec_len(vec: i64) -> i64 {
-    unsafe { read_len(vec as *const u8) }
-}
+// `vec-len` (user-callable Vec length accessor) physically lives in
+// `cranelisp-primitives::vec` post-FIXME-0180. It is referenced from this
+// crate only via that path; no shim here.
 
 /// Vec set — copy path.
 ///
@@ -324,13 +328,20 @@ mod tests {
     use super::*;
     use crate::alloc::{alloc_count, dealloc_count};
 
+    /// Test helper — read the `len` field of a Vec for assertions. Mirrors
+    /// `cranelisp_primitives::vec::vec_len` without crossing the crate
+    /// boundary at test time.
+    fn test_vec_len(v: i64) -> i64 {
+        unsafe { read_len(v as *const u8) }
+    }
+
     // spec: 12-runtime §12.1.5 — Vec creation with capacity, heap layout [len | cap | data_ptr]
     #[test]
     fn test_vec_new_basic() {
         let allocs_before = alloc_count();
         let v = vec_new(4);
         assert_ne!(v, 0);
-        assert_eq!(vec_len(v), 0);
+        assert_eq!(test_vec_len(v), 0);
 
         // Verify fields.
         unsafe {
@@ -350,7 +361,7 @@ mod tests {
     fn test_vec_new_zero_capacity() {
         let v = vec_new(0);
         assert_ne!(v, 0);
-        assert_eq!(vec_len(v), 0);
+        assert_eq!(test_vec_len(v), 0);
         unsafe {
             assert_eq!(read_cap(v as *const u8), 0);
             assert!(read_data_ptr(v as *const u8).is_null());
@@ -363,11 +374,11 @@ mod tests {
     #[test]
     fn test_vec_push_grow_from_empty() {
         let v = vec_new(0);
-        assert_eq!(vec_len(v), 0);
+        assert_eq!(test_vec_len(v), 0);
 
         // Push a value — should grow.
         let v = vec_push_grow(v, 42);
-        assert_eq!(vec_len(v), 1);
+        assert_eq!(test_vec_len(v), 1);
         unsafe {
             let data = read_data_ptr(v as *const u8);
             assert_eq!(*data, 42);
@@ -390,7 +401,7 @@ mod tests {
         }
 
         let v = vec_push_grow(v, 30);
-        assert_eq!(vec_len(v), 3);
+        assert_eq!(test_vec_len(v), 3);
         unsafe {
             let cap = read_cap(v as *const u8);
             assert_eq!(cap, 4); // doubled from 2
@@ -416,7 +427,7 @@ mod tests {
         }
 
         let v2 = vec_push_copy(v, 300, 0);
-        assert_eq!(vec_len(v2), 3);
+        assert_eq!(test_vec_len(v2), 3);
         unsafe {
             let data = read_data_ptr(v2 as *const u8);
             assert_eq!(*data, 100);
@@ -425,7 +436,7 @@ mod tests {
         }
 
         // Original should be unchanged.
-        assert_eq!(vec_len(v), 2);
+        assert_eq!(test_vec_len(v), 2);
 
         vec_drop(v, 0);
         vec_drop(v2, 0);
@@ -444,7 +455,7 @@ mod tests {
         }
 
         let v2 = vec_set_copy(v, 1, 99, 0);
-        assert_eq!(vec_len(v2), 3);
+        assert_eq!(test_vec_len(v2), 3);
         unsafe {
             let data = read_data_ptr(v2 as *const u8);
             assert_eq!(*data, 1);
@@ -582,7 +593,7 @@ mod tests {
         }
 
         let v = vec_push_grow(v, 999);
-        assert_eq!(vec_len(v), 5);
+        assert_eq!(test_vec_len(v), 5);
         unsafe {
             let cap = read_cap(v as *const u8);
             assert_eq!(cap, 8); // doubled from 4

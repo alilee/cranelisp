@@ -71,33 +71,114 @@ pub(crate) extern "C" fn ge_i64(a: i64, b: i64) -> i64;
 
 Symbol-table names per `src/CLAUDE.md` JIT-Symbol-Names: `add-i64`, `sub-i64`, `mul-i64`, `div-i64`, `mod-i64`, `eq-i64`, `lt-i64`, `gt-i64`, `le-i64`, `ge-i64`. (Underscore in Rust source; kebab-case at the symbol-table layer.)
 
+Integer comparison rounding-out: `neq-i64` joins the comparison set (`#[export_name = "neq-i64"] pub(crate) extern "C" fn neq_i64(a: i64, b: i64) -> i64`); kebab-case symbol-table name `neq-i64`. Symmetry with `eq-i64`; needed by the resolved trait-method codegen for `Eq` on `Int`.
+
 #### Float primitives
 
 ```rust
-pub(crate) extern "C" fn add_f64(a: f64, b: f64) -> f64;
-pub(crate) extern "C" fn sub_f64(a: f64, b: f64) -> f64;
-pub(crate) extern "C" fn mul_f64(a: f64, b: f64) -> f64;
-pub(crate) extern "C" fn div_f64(a: f64, b: f64) -> f64;
-// (plus comparison ops as the language requires; pre-implementation list will be confirmed at S67+ vertical)
+pub(crate) extern "C" fn add_f64(a: i64, b: i64) -> i64;       // f64 bits ferried through i64 per base-pointer ABI
+pub(crate) extern "C" fn sub_f64(a: i64, b: i64) -> i64;
+pub(crate) extern "C" fn mul_f64(a: i64, b: i64) -> i64;
+pub(crate) extern "C" fn div_f64(a: i64, b: i64) -> i64;
+pub(crate) extern "C" fn eq_f64(a: i64, b: i64) -> i64;        // returns 0 / 1 in i64
+pub(crate) extern "C" fn neq_f64(a: i64, b: i64) -> i64;
+pub(crate) extern "C" fn lt_f64(a: i64, b: i64) -> i64;
+pub(crate) extern "C" fn gt_f64(a: i64, b: i64) -> i64;
+pub(crate) extern "C" fn le_f64(a: i64, b: i64) -> i64;
+pub(crate) extern "C" fn ge_f64(a: i64, b: i64) -> i64;
 ```
+
+Symbol-table names: `add-f64`, `sub-f64`, `mul-f64`, `div-f64`, `eq-f64`, `neq-f64`, `lt-f64`, `gt-f64`, `le-f64`, `ge-f64`. The `i64`-typed ABI ferries `f64` bit-patterns under the uniform base-pointer ABI (Decision 10); Cranelift codegen reinterprets at the call boundary. Currently no `f64`-typed Rust extern fn signatures appear; the existing `float-to-string` takes `f_bits: i64` for the same reason.
 
 #### Boolean primitives
 
 ```rust
 pub(crate) extern "C" fn not(b: i64) -> i64;
+pub(crate) extern "C" fn eq_bool(a: i64, b: i64) -> i64;
+pub(crate) extern "C" fn neq_bool(a: i64, b: i64) -> i64;
 ```
+
+Symbol-table names: `not`, `eq-bool`, `neq-bool`. `eq-bool` + `neq-bool` mirror the integer/float comparison shape for `Eq` on `Bool`.
 
 #### Primitive type conversions
 
 ```rust
 pub(crate) extern "C" fn int_to_string(n: i64) -> i64;
 pub(crate) extern "C" fn parse_int(s: i64) -> i64;
-pub(crate) extern "C" fn float_to_string(f: f64) -> i64;
+pub(crate) extern "C" fn float_to_string(f_bits: i64) -> i64;
 pub(crate) extern "C" fn bool_to_string(b: i64) -> i64;
 // (parse_float and equivalents per the spec's primitive surface)
 ```
 
-These return heap-allocated string pointers (allocated through `cranelisp-intrinsics`'s allocator); the consuming-convention rules per Decision 24 apply at the call site.
+Symbol-table names: `int-to-string`, `parse-int`, `float-to-string`, `bool-to-string`. These return heap-allocated string pointers (allocated through `cranelisp-intrinsics`'s allocator); the consuming-convention rules per Decision 24 apply at the call site.
+
+#### Marshalling primitives
+
+```rust
+pub(crate) extern "C" fn sconcat(xs: i64, ys: i64) -> i64;
+pub(crate) extern "C" fn quote_sexp(val: i64) -> i64;
+```
+
+Symbol-table names: `sconcat`, `quote-sexp`. These are user-callable from `defmacro` clause bodies (the unquote-splice path uses `sconcat`; `quote-sexp` is the marshalling entry point for value-to-sexp embedding). Spec-driven evolution per `spec/09-macros.md`.
+
+#### String + vec primitives (transitional re-exports)
+
+The user-callable string operations (15 fns: `str-concat`, `str-len`, `str-eq`, `str-substring`, `str-char-at`, `str-contains`, `str-starts-with`, `str-ends-with`, `str-to-upper`, `str-to-lower`, `str-trim`, `str-split`, `str-join`, `str-replace`, `string-identity`) plus `vec-len` are part of the user-callable surface this crate publishes and are listed in `PRIMITIVES_TABLE` post-FIXME-0159.
+
+Rust identifier names (per `#[export_name = "…"] pub(crate) extern "C" fn`):
+
+```rust
+pub(crate) extern "C" fn str_concat(a: i64, b: i64) -> i64;
+pub(crate) extern "C" fn str_len(s: i64) -> i64;
+pub(crate) extern "C" fn str_eq(a: i64, b: i64) -> i64;
+pub(crate) extern "C" fn str_substring(s: i64, start: i64, end: i64) -> i64;
+pub(crate) extern "C" fn str_char_at(s: i64, i: i64) -> i64;
+pub(crate) extern "C" fn str_contains(haystack: i64, needle: i64) -> i64;
+pub(crate) extern "C" fn str_starts_with(s: i64, prefix: i64) -> i64;
+pub(crate) extern "C" fn str_ends_with(s: i64, suffix: i64) -> i64;
+pub(crate) extern "C" fn str_to_upper(s: i64) -> i64;
+pub(crate) extern "C" fn str_to_lower(s: i64) -> i64;
+pub(crate) extern "C" fn str_trim(s: i64) -> i64;
+pub(crate) extern "C" fn str_split(s: i64, sep: i64) -> i64;
+pub(crate) extern "C" fn str_join(strs: i64, sep: i64) -> i64;
+pub(crate) extern "C" fn str_replace(s: i64, from: i64, to: i64) -> i64;
+pub(crate) extern "C" fn string_identity(s: i64) -> i64;
+pub(crate) extern "C" fn vec_len(v: i64) -> i64;
+```
+
+Implementation bodies currently live in `cranelisp-intrinsics` (Wave 3b-2d.2 re-export pattern; FIXME 0180). FIXME 0180 status: **unblocked** post-runtime-retirement (Wave 4a.retire dissolved the Cargo cycle that previously blocked physical relocation). Wave 3 `/dev (primitives)` executes the physical lift: bodies move into `cranelisp-primitives::{string,vec}`, intrinsics drops its versions, the re-export stops. Target-stating: at acceptance, these submodules will physically host the fns under the same `pub(crate)` extern discipline as the ring0 ops; the Rust identifiers + kebab-case symbol-table names are unchanged across the relocation. The current pub-api baseline showing `pub use cranelisp_primitives::str_*` re-exports is **transitional** — post-Wave-3 those become `#[export_name = …] pub(crate)` and disappear from the published Rust API (per FIXME 0159's "one published item" target).
+
+### Module structure
+
+The crate's source is organised into one module per primitive category:
+
+- `cranelisp_primitives::ring0` — arithmetic + comparison ops on `Int`/`Float`/`Bool` (the ring-0 numeric/logical surface).
+- `cranelisp_primitives::int` — `int-to-string`, `parse-int`.
+- `cranelisp_primitives::float` — `float-to-string`.
+- `cranelisp_primitives::bool` — `bool-to-string`.
+- `cranelisp_primitives::marshal` — `sconcat`, `quote-sexp` (defmacro-clause marshalling entry points).
+- `cranelisp_primitives::string` — string operations (transitional; bodies presently re-exported from `cranelisp-intrinsics` per FIXME 0180; physical relocation in Wave 3).
+- `cranelisp_primitives::vec` — `vec-len` (same re-export note).
+
+These submodule names appear in the `cargo-public-api` baseline as `pub mod cranelisp_primitives::{ring0,int,float,bool,marshal,string,vec}` — **internal-but-exposed**. The published Rust API contract is the single `PRIMITIVES_TABLE` static (above). The submodules exist for source organisation; their `pub(crate)` extern-fn members are reachable only via the static table's GOT slots, not via direct `cranelisp_primitives::ring0::add_i64` Rust call paths from consumers. Post-FIXME-0159, individual extern fns are `pub(crate)` so the only thing the submodule namespaces publish are the names themselves (necessary for `#[export_name = "…"]` symbol export at link time).
+
+### `ring0_jit_symbols()` — internal-but-exposed
+
+```rust
+pub fn ring0_jit_symbols() -> Vec<(&'static str, *const u8)>;
+```
+
+A free function returning `(symbol-name, fn-ptr)` pairs for every ring-0 extern fn (currently consumed by `int`'s JIT-symbols seeding path during session init). **Internal-but-exposed**: pre-FIXME-0159 this is the only way `int` reaches the fn ptrs; post-FIXME-0159 it is **superseded by `PRIMITIVES_TABLE`** — the GOT-slot pattern replaces the (`&'static str`, `*const u8`) tuple stream. Wave 3 `/dev (primitives)` narrows this to `pub(crate)` (or deletes it) as part of the FIXME 0159 implementation; consumers in `int` switch to reading the static table directly. A FIXME is filed (see "Forward-target FIXMEs" below).
+
+### FQTypeName migration verification
+
+Per `facades/types.md` §"FQTypeName migration plan" — primitives has **zero hits at the public surface** for bare `TypeName`. Verification: the publicly-published item set (post-FIXME-0159 target: `PRIMITIVES_TABLE`; pre-FIXME-0159 transitional: the `pub(crate)` extern fns + `ring0_jit_symbols`) names no types — every fn ferries i64/f64 scalars or opaque heap pointers (i64 base-pointer convention per Decision 10). No `TypeName`, no `FQTypeName`, no `TypeExpr`, no `Type` appears in primitives' public-API baseline. FQTypeName migration is a no-op for this crate. (`facades/types.md` line 291 records the same verification on the types-crate side.)
+
+### Forward-target FIXMEs
+
+- FIXME 0159 — `PRIMITIVES_TABLE: LazyLock<SymbolTable>` static, demote extern fns to `pub(crate)`. Target: `/dev (primitives, int)`. Wave 3.
+- FIXME 0180 — physical relocation of string + vec bodies from `cranelisp-intrinsics` into `cranelisp-primitives::{string,vec}`. Status: unblocked post-runtime-retirement; pending `/dev (primitives)` execution. Wave 3.
+- FIXME 0182 (filed S67 W1) — `ring0_jit_symbols()` superseded by `PRIMITIVES_TABLE`; narrow to `pub(crate)` or delete after `int`'s consumer migrates to the static. Target: `/dev (primitives, int)`. Wave 3.
 
 ### Versioning policy (per FIXME 0158 resolution — dissolves into 0159)
 

@@ -28,7 +28,7 @@
 use cranelift::prelude::*;
 use cranelift_module::{FuncId, Module};
 
-use cranelisp_types::{ErrorLocation, CranelispError, Span, Symbol, TraitName, TypeName};
+use cranelisp_types::{ErrorLocation, CranelispError, Span};
 
 /// Try to emit inline Cranelift IR for a Ring 0 primitive call.
 ///
@@ -332,67 +332,16 @@ fn emit_panic_return<M: Module>(
     Ok(())
 }
 
-// --- Primitive trait method mapping ---
-
-/// Check if a trait method implementation corresponds to a known primitive.
-///
-/// Returns the primitive name that should be emitted inline (e.g., "add-i64")
-/// if this is a known primitive impl. Returns None for user-defined impls,
-/// which should be compiled as normal function calls.
-///
-/// Static mapping from (TraitName, method_name, impl_type) to primitive name.
-/// Per arch decision 14: typecheck emits TraitMethod, backend maps to primitives.
-pub fn primitive_for_trait_method(
-    trait_name: &TraitName,
-    method_name: &Symbol,
-    impl_type: &TypeName,
-) -> Option<&'static str> {
-    let t = trait_name.as_ref();
-    let m = method_name.as_ref();
-    let i = impl_type.as_ref();
-
-    match (t, m, i) {
-        // Num trait: arithmetic operators
-        ("Num", "+", "Int") => Some("add-i64"),
-        ("Num", "-", "Int") => Some("sub-i64"),
-        ("Num", "*", "Int") => Some("mul-i64"),
-        ("Num", "/", "Int") => Some("div-i64"),
-        ("Num", "+", "Float") => Some("add-f64"),
-        ("Num", "-", "Float") => Some("sub-f64"),
-        ("Num", "*", "Float") => Some("mul-f64"),
-        ("Num", "/", "Float") => Some("div-f64"),
-
-        // Eq trait: equality operators
-        ("Eq", "=", "Int") => Some("eq-i64"),
-        ("Eq", "=", "Float") => Some("eq-f64"),
-        ("Eq", "=", "Bool") => Some("eq-bool"),
-        ("Eq", "=", "String") => Some("str-eq"),
-
-        // Ord trait: comparison operators
-        ("Ord", "<", "Int") => Some("lt-i64"),
-        ("Ord", "<", "Float") => Some("lt-f64"),
-        ("Ord", ">", "Int") => Some("gt-i64"),
-        ("Ord", ">", "Float") => Some("gt-f64"),
-        ("Ord", "<=", "Int") => Some("le-i64"),
-        ("Ord", "<=", "Float") => Some("le-f64"),
-        ("Ord", ">=", "Int") => Some("ge-i64"),
-        ("Ord", ">=", "Float") => Some("ge-f64"),
-
-        // Eq trait: inequality (default method)
-        ("Eq", "!=", "Int") => Some("neq-i64"),
-        ("Eq", "!=", "Float") => Some("neq-f64"),
-        ("Eq", "!=", "Bool") => Some("neq-bool"),
-        ("Eq", "!=", "String") => Some("neq-string"),
-
-        // Display trait: show (string conversion)
-        ("Display", "show", "Int") => Some("int-to-string"),
-        ("Display", "show", "Float") => Some("float-to-string"),
-        ("Display", "show", "Bool") => Some("bool-to-string"),
-        ("Display", "show", "String") => Some("string-identity"),
-
-        _ => None,
-    }
-}
+// Per Decision 43 + FIXME 0185: backend has no trait knowledge. The
+// pre-D43 `primitive_for_trait_method((TraitName, Symbol, TypeName)) ->
+// Option<&'static str>` dispatch table — which mapped `(Num, "+", Int)` →
+// `add-i64`, etc. — has been deleted. Trait-impl dispatch now flows
+// uniformly through the impl's mangled name (e.g., `Num.+$Int`) via the
+// GOT-indirect path; the inline-substitution optimisation
+// (`try_emit_inline_primitive`) is keyed on Symbol only and applies when
+// the typecheck stage emits `ResolvedCall::BuiltinFn { name: "add-i64" }`
+// directly. FIXME 0185 tracks the typecheck-side migration that restores
+// inline optimisation for primitive-implemented trait methods.
 
 // --- Utility ---
 
@@ -410,155 +359,8 @@ fn require_args(name: &str, args: &[Value], expected: usize, span: Span) -> Resu
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // --- primitive_for_trait_method tests ---
-
-    // spec: appendix-a-builtins §A.3 — Num.+ on Int maps to add-i64 inline primitive
-    #[test]
-    fn test_num_add_int_maps_to_add_i64() {
-        let result = primitive_for_trait_method(
-            &TraitName::from("Num"),
-            &Symbol::from("+"),
-            &TypeName::from("Int"),
-        );
-        assert_eq!(result, Some("add-i64"));
-    }
-
-    // spec: appendix-a-builtins §A.3 — Num.+ on Float maps to add-f64 inline primitive
-    #[test]
-    fn test_num_add_float_maps_to_add_f64() {
-        let result = primitive_for_trait_method(
-            &TraitName::from("Num"),
-            &Symbol::from("+"),
-            &TypeName::from("Float"),
-        );
-        assert_eq!(result, Some("add-f64"));
-    }
-
-    // spec: appendix-a-builtins §A.3 — all Num trait Int methods map to i64 primitives
-    #[test]
-    fn test_num_all_int_methods() {
-        let ops = vec![("+", "add-i64"), ("-", "sub-i64"), ("*", "mul-i64"), ("/", "div-i64")];
-        for (method, expected) in ops {
-            let result = primitive_for_trait_method(
-                &TraitName::from("Num"),
-                &Symbol::from(method),
-                &TypeName::from("Int"),
-            );
-            assert_eq!(result, Some(expected), "Num.{method}$Int");
-        }
-    }
-
-    // spec: appendix-a-builtins §A.3 — Eq.= on Int maps to eq-i64
-    #[test]
-    fn test_eq_int_maps_to_eq_i64() {
-        let result = primitive_for_trait_method(
-            &TraitName::from("Eq"),
-            &Symbol::from("="),
-            &TypeName::from("Int"),
-        );
-        assert_eq!(result, Some("eq-i64"));
-    }
-
-    // spec: appendix-a-builtins §A.3 — Eq.= on Bool maps to eq-bool
-    #[test]
-    fn test_eq_bool_maps_to_eq_bool() {
-        let result = primitive_for_trait_method(
-            &TraitName::from("Eq"),
-            &Symbol::from("="),
-            &TypeName::from("Bool"),
-        );
-        assert_eq!(result, Some("eq-bool"));
-    }
-
-    // spec: appendix-a-builtins §A.3 — Eq.= on String maps to str-eq
-    #[test]
-    fn test_eq_string_maps_to_str_eq() {
-        let result = primitive_for_trait_method(
-            &TraitName::from("Eq"),
-            &Symbol::from("="),
-            &TypeName::from("String"),
-        );
-        assert_eq!(result, Some("str-eq"));
-    }
-
-    // spec: appendix-a-builtins §A.3 — Ord.< on Int maps to lt-i64
-    #[test]
-    fn test_ord_lt_int_maps_to_lt_i64() {
-        let result = primitive_for_trait_method(
-            &TraitName::from("Ord"),
-            &Symbol::from("<"),
-            &TypeName::from("Int"),
-        );
-        assert_eq!(result, Some("lt-i64"));
-    }
-
-    // spec: 07-traits §7.7 — Display.show on Int maps to int-to-string
-    #[test]
-    fn test_display_show_int_maps_to_int_to_string() {
-        let result = primitive_for_trait_method(
-            &TraitName::from("Display"),
-            &Symbol::from("show"),
-            &TypeName::from("Int"),
-        );
-        assert_eq!(result, Some("int-to-string"));
-    }
-
-    // spec: 07-traits §7.7 — Display.show on Float maps to float-to-string
-    #[test]
-    fn test_display_show_float_maps_to_float_to_string() {
-        let result = primitive_for_trait_method(
-            &TraitName::from("Display"),
-            &Symbol::from("show"),
-            &TypeName::from("Float"),
-        );
-        assert_eq!(result, Some("float-to-string"));
-    }
-
-    // spec: 07-traits §7.7 — Display.show on Bool maps to bool-to-string
-    #[test]
-    fn test_display_show_bool_maps_to_bool_to_string() {
-        let result = primitive_for_trait_method(
-            &TraitName::from("Display"),
-            &Symbol::from("show"),
-            &TypeName::from("Bool"),
-        );
-        assert_eq!(result, Some("bool-to-string"));
-    }
-
-    // spec: 07-traits §7.7 — Display.show on String maps to string-identity
-    #[test]
-    fn test_display_show_string_maps_to_string_identity() {
-        let result = primitive_for_trait_method(
-            &TraitName::from("Display"),
-            &Symbol::from("show"),
-            &TypeName::from("String"),
-        );
-        assert_eq!(result, Some("string-identity"));
-    }
-
-    // spec: 07-traits §7.7 — unknown trait has no inline primitive mapping
-    #[test]
-    fn test_unknown_trait_returns_none() {
-        let result = primitive_for_trait_method(
-            &TraitName::from("Hashable"),
-            &Symbol::from("hash"),
-            &TypeName::from("Int"),
-        );
-        assert_eq!(result, None);
-    }
-
-    // spec: 07-traits §7.7 — unknown impl type has no inline primitive mapping
-    #[test]
-    fn test_unknown_impl_type_returns_none() {
-        let result = primitive_for_trait_method(
-            &TraitName::from("Num"),
-            &Symbol::from("+"),
-            &TypeName::from("Color"),
-        );
-        assert_eq!(result, None);
-    }
-}
+// Per Decision 43 + FIXME 0185: the `primitive_for_trait_method` test
+// suite (14 tests) has been retired alongside the function — backend has
+// no trait knowledge, so test coverage for the `(TraitName, Symbol,
+// TypeName)` mapping moves to whichever crate owns the resolution
+// (typecheck, per FIXME 0185).

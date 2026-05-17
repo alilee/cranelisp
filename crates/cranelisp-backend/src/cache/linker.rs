@@ -33,7 +33,9 @@
 
 use std::collections::HashMap;
 
-use cranelisp_types::{ErrorLocation, CranelispError, Span};
+use cranelisp_types::{ErrorLocation, CranelispError, LinkerSymbol, Span};
+
+use crate::error::LinkerError;
 
 /// Mach-O aarch64 relocation types (from mach-o/arm64/reloc.h).
 #[allow(dead_code)]
@@ -180,11 +182,21 @@ impl Linker {
     }
 
     /// Get a defined symbol's address (from a loaded .o file or registered externals).
-    pub fn get_symbol(&self, name: &str) -> Option<*const u8> {
+    ///
+    /// Per Decisions 36 + 37 (and `facades/backend.md` §"Linker — the cache-load
+    /// retention newtype"): bare-name lookup; returns a typed `LinkerError`
+    /// (not a bare `Option`) when the symbol is absent. This makes the
+    /// pre-S58 silent-NULL regression net visible at the type level — callers
+    /// match on `LinkerError::SymbolNotFound` rather than seeing `None` and
+    /// silently substituting a 0 pointer.
+    pub fn get_symbol(&self, name: &str) -> Result<*const u8, LinkerError> {
         self.defined_symbols
             .get(name)
             .or_else(|| self.symbols.get(name))
             .map(|&addr| addr as *const u8)
+            .ok_or_else(|| LinkerError::SymbolNotFound {
+                name: LinkerSymbol::from(name),
+            })
     }
 
     /// Load an object file: parse sections, copy code to executable memory,
@@ -735,14 +747,16 @@ mod tests {
         let mut linker = Linker::new().unwrap();
         let addr = 0x1234usize as *const u8;
         linker.register_symbol("runtime/alloc", addr);
-        assert_eq!(linker.get_symbol("runtime/alloc"), Some(addr));
+        assert_eq!(linker.get_symbol("runtime/alloc").ok(), Some(addr));
     }
 
-    // spec: design/backend/module-caching.md §9 — linker returns None for unknown symbol
+    // spec: design/backend/module-caching.md §9 — linker returns LinkerError::SymbolNotFound
+    //       for unknown symbols (Decision 37; typed-error contract).
     #[test]
     fn test_linker_unknown_symbol() {
         let linker = Linker::new().unwrap();
-        assert_eq!(linker.get_symbol("nonexistent"), None);
+        let result = linker.get_symbol("nonexistent");
+        assert!(matches!(result, Err(LinkerError::SymbolNotFound { .. })));
     }
 
     // spec: design/backend/module-caching.md §9 — linker creation succeeds
@@ -1025,7 +1039,7 @@ mod tests {
         );
         // `get_symbol` must return the externally-registered address.
         assert_eq!(
-            linker.get_symbol("__cranelisp_got_imported"),
+            linker.get_symbol("__cranelisp_got_imported").ok(),
             Some(authoritative_ptr),
             "get_symbol for __cranelisp_got_* must return the \
              externally-registered SymbolTable GOT base"

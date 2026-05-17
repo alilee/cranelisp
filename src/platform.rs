@@ -428,7 +428,13 @@ fn parse_io_type(elems: &[Sexp], fn_name: &str) -> Result<Type, CranelispError> 
 }
 
 /// Check if a Sexp is a `(platform name)` form.
-pub fn is_platform_form(sexp: &Sexp) -> bool {
+///
+/// Sprint 67 hack-back: predicate is currently unused — structural-decl
+/// extraction in `worker::extract_module_declarations` inlines the shape
+/// check. Retained for symmetry with `extract_platform_name`; narrowed +
+/// `#[allow(dead_code)]`.
+#[allow(dead_code)]
+pub(crate) fn is_platform_form(sexp: &Sexp) -> bool {
     if let Sexp::List(elems, _) = sexp
         && elems.len() == 2
         && let Sexp::Symbol(head, _) = &elems[0]
@@ -439,7 +445,12 @@ pub fn is_platform_form(sexp: &Sexp) -> bool {
 }
 
 /// Extract the platform name from a `(platform name)` form.
-pub fn extract_platform_name(sexp: &Sexp) -> Option<(String, Span)> {
+///
+/// Sprint 67 hack-back: extractor currently unused (call sites inlined into
+/// worker decl extraction). Retained for the canonical shape; narrowed +
+/// `#[allow(dead_code)]`.
+#[allow(dead_code)]
+pub(crate) fn extract_platform_name(sexp: &Sexp) -> Option<(String, Span)> {
     if let Sexp::List(elems, span) = sexp
         && elems.len() == 2
         && let Sexp::Symbol(head, _) = &elems[0]

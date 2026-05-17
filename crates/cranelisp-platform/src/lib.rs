@@ -587,6 +587,7 @@ impl HostContext {
 /// Safe Rust descriptor for a platform function, converted from C-ABI.
 ///
 /// Used by the host after loading a DLL manifest.
+#[non_exhaustive]
 pub struct OwnedPlatformFnDescriptor {
     pub name: String,
     pub jit_name: String,

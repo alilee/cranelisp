@@ -23,15 +23,16 @@
 //!   an SList field)
 //! - `consume_vec_of_heap` — Vec whose elements are heap-typed String
 //!   pointers (walks elements, dec's each, frees data buffer, frees Vec)
-//! - `consume_trace_call` — TraceCall ADT (String + SList<String> +
-//!   String + SList<TraceCall> + Int)
 //! - `consume_io_tree` — IO ADT (tag-dispatched: Pure has a payload (may
 //!   be heap-typed by context); Effect holds a thunk + token; Bind has
 //!   inner IO + continuation closure; Par has N branches)
 //!
 //! Integration: each complex-heap extern (`sconcat`, `quote_sexp`,
-//! `str_join`, `cranelisp_trace_*`, `cranelisp_run_io`) calls the
-//! appropriate consume function on its heap arguments before returning.
+//! `str_join`, `cranelisp_run_io`) calls the appropriate consume function
+//! on its heap arguments before returning. The TraceCall consumer
+//! (`consume_trace_call`) lives in `src/trace.rs` per FIXME 0198 — the
+//! TraceCall ADT layout is owned by int with the rest of the trace
+//! machinery.
 //! Callers compile those args through `compile_consuming_arg_list`, incing
 //! heap-typed Vars. See `design/backend/ring2-rc.md` §3.3.
 
@@ -225,91 +226,6 @@ pub fn consume_vec_of_string(ptr: i64) {
 }
 
 // ---------------------------------------------------------------------------
-// TraceCall consumption
-// ---------------------------------------------------------------------------
-
-/// TraceCall ADT layout (single constructor, tag 0):
-/// `[header(16) | tag(16) | tname(24) | tparams(32) | tresult(40) | tchildren(48) | tnanos(56)]`
-///
-/// - `tname`: String heap pointer
-/// - `tparams`: SList<String>
-/// - `tresult`: String heap pointer
-/// - `tchildren`: SList<TraceCall>
-/// - `tnanos`: i64 (scalar)
-const TRACE_TNAME_OFFSET: usize = 24;
-const TRACE_TPARAMS_OFFSET: usize = 32;
-const TRACE_TRESULT_OFFSET: usize = 40;
-const TRACE_TCHILDREN_OFFSET: usize = 48;
-
-/// Consume a TraceCall ADT.
-///
-/// On last ref: dec tname (String), tparams (SList<String>), tresult
-/// (String), tchildren (SList<TraceCall>), then dealloc.
-///
-/// # Safety
-/// `ptr` must be a valid TraceCall heap pointer (rc > 0) or bare nullary
-/// tag.
-pub fn consume_trace_call(ptr: i64) {
-    if ptr < NULLARY_THRESHOLD {
-        return;
-    }
-    let tname = unsafe { read_i64(ptr, TRACE_TNAME_OFFSET) };
-    let tparams = unsafe { read_i64(ptr, TRACE_TPARAMS_OFFSET) };
-    let tresult = unsafe { read_i64(ptr, TRACE_TRESULT_OFFSET) };
-    let tchildren = unsafe { read_i64(ptr, TRACE_TCHILDREN_OFFSET) };
-
-    let old_rc = unsafe { atomic_dec_rc(ptr) };
-    if old_rc != 1 {
-        return;
-    }
-    std::sync::atomic::fence(Ordering::Acquire);
-
-    rc::consume_shallow(tname);
-    consume_slist_of_string(tparams);
-    rc::consume_shallow(tresult);
-    consume_slist_of_trace(tchildren);
-    unsafe { alloc::dealloc(ptr as *mut u8) };
-}
-
-/// Consume an SList whose elements are heap Strings.
-fn consume_slist_of_string(mut ptr: i64) {
-    loop {
-        if ptr < NULLARY_THRESHOLD {
-            return;
-        }
-        let head = unsafe { read_i64(ptr, FIELD0_OFFSET) };
-        let tail = unsafe { read_i64(ptr, FIELD1_OFFSET) };
-        let old_rc = unsafe { atomic_dec_rc(ptr) };
-        if old_rc != 1 {
-            return;
-        }
-        std::sync::atomic::fence(Ordering::Acquire);
-        rc::consume_shallow(head);
-        unsafe { alloc::dealloc(ptr as *mut u8) };
-        ptr = tail;
-    }
-}
-
-/// Consume an SList whose elements are TraceCall ADTs.
-fn consume_slist_of_trace(mut ptr: i64) {
-    loop {
-        if ptr < NULLARY_THRESHOLD {
-            return;
-        }
-        let head = unsafe { read_i64(ptr, FIELD0_OFFSET) };
-        let tail = unsafe { read_i64(ptr, FIELD1_OFFSET) };
-        let old_rc = unsafe { atomic_dec_rc(ptr) };
-        if old_rc != 1 {
-            return;
-        }
-        std::sync::atomic::fence(Ordering::Acquire);
-        consume_trace_call(head);
-        unsafe { alloc::dealloc(ptr as *mut u8) };
-        ptr = tail;
-    }
-}
-
-// ---------------------------------------------------------------------------
 // IO tree consumption
 // ---------------------------------------------------------------------------
 
@@ -490,7 +406,7 @@ pub fn consume_closure(ptr: i64) {
 mod tests {
     use super::*;
     use crate::alloc::{alloc_count, alloc_with_rc, dealloc_count};
-    use crate::string::alloc_string;
+    use crate::heap_string::alloc_string;
     use cranelisp_types::TAG_SCONS;
 
     // Helpers -----------------------------------------------------------------
@@ -651,36 +567,6 @@ mod tests {
         consume_vec_of_string(vec);
         assert_eq!(alloc_count() - allocs, 4); // vec struct + 3 strings
         assert_eq!(dealloc_count() - deallocs, 4);
-    }
-
-    // spec: design/arch/CLAUDE.md Decision 24 — consume_trace_call frees all heap fields
-    #[test]
-    fn decision24_consume_trace_call_frees_heap_fields() {
-        let allocs = alloc_count();
-        let deallocs = dealloc_count();
-
-        let name = alloc_string(b"fn-a") as i64;
-
-        // tparams: SCons("p1" : SNil)
-        let p1 = alloc_string(b"p1") as i64;
-        let tparams = make_scons(p1, 0);
-
-        let result = alloc_string(b"42") as i64;
-        let tchildren: i64 = 0; // SNil
-
-        // Allocate TraceCall: 6 slots (tag + 5 fields) = 48 bytes payload
-        let base = alloc_slot(48);
-        write_field(base, TAG_OFFSET, 0); // TAG_TRACE_CALL
-        write_field(base, TRACE_TNAME_OFFSET, name);
-        write_field(base, TRACE_TPARAMS_OFFSET, tparams);
-        write_field(base, TRACE_TRESULT_OFFSET, result);
-        write_field(base, TRACE_TCHILDREN_OFFSET, tchildren);
-        write_field(base, TRACE_TCHILDREN_OFFSET + 8, 123_i64); // tnanos
-
-        consume_trace_call(base);
-        // TraceCall + name + p1 + SCons(tparams) + result = 5
-        assert_eq!(alloc_count() - allocs, 5);
-        assert_eq!(dealloc_count() - deallocs, 5);
     }
 
     // spec: design/arch/CLAUDE.md Decision 24 — consume_io_tree Pure is scalar
@@ -855,7 +741,6 @@ mod tests {
         consume_slist(0); // SNil
         consume_sexp(0);
         consume_vec_of_string(0);
-        consume_trace_call(0);
         consume_io_tree(0);
         consume_closure(0);
         assert_eq!(alloc_count() - allocs, 0);

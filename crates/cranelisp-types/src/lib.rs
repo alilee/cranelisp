@@ -30,7 +30,7 @@ pub mod view;
 // Re-export key types at crate root for convenience.
 pub use span::Span;
 pub use error::{
-    CranelispError, ErrorLocation, LineCol, LineColRange, LinkerError, PlatformError,
+    CranelispError, ErrorLocation, LineCol, LineColRange, PlatformError,
     ResolutionGap, Warning, WarningKind,
 };
 pub use parsed::{DefmacroInfo, MacroClause, ParsedEntry};
@@ -54,9 +54,12 @@ pub use check::{
 // layer's `Code` enum at `src/code.rs` is the replacement.
 pub use scheduling::SchedulingClass;
 pub use module::{
-    CodeStore, ConstrainedFn, DefKind, ExportSpec, ImplSexp, ImportNames, ImportSpec,
-    LinkerStore, MacroClauseInfo, MacroParam, ModDecl, ModuleEntry, OverloadVariant,
-    PlatformSpec, PrimitiveKind, SymbolTable,
+    CHAIN_FOLLOW_DEPTH_LIMIT, CodeStore, ConstrainedFn, DefKind, EnsureOutcome, ExportSpec,
+    ImplSexp, ImportNames, ImportSpec, LinkerStore, MacroClauseInfo, MacroParam, ModDecl,
+    ModuleEntry, OverloadVariant, PlatformSpec, PrimitiveKind, SymbolTable, ensure_module_exists,
+    for_each_in_module, get_impls_for_type_chain, get_implementing_types_chain, install_module,
+    lookup_trait_decl_chain, lookup_type_def_chain, resolve_module_by_name_chain,
+    resolve_terminal_entry_and_home,
 };
 pub use got::GotTable;
 pub use heap::{HeapCategory, HeapHeader};
