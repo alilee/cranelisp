@@ -65,12 +65,14 @@ impl ModuleCheckAccumulator {
 /// returns the parsed entries; the worker side still tracks `TopLevel` for
 /// downstream codegen, so we transcode at this boundary.
 ///
-/// `mode` selects the build-mode validator pass per Decision 40 / Path B1
-/// (FIXMEs 0199 + 0204). Under `CodegenBehaviour::ObjectOnly` (`--link`),
-/// any `Expr::Trace` node reached during build is a compile-time error
-/// — see `cranelisp_frontend::link_mode`. Under
-/// `CodegenBehaviour::InMemoryAndObject` (REPL/`--run`), the validator is
-/// a no-op.
+/// `mode` selects the build-mode rejection inside `build_expr` / `build_form`
+/// per Decision 40 / Path B1 (FIXME 0199; supersedes FIXMEs 0202–0204).
+/// Under `CodegenBehaviour::ObjectOnly` (`--link`), any `(trace ...)` form
+/// reached during AST build is a compile-time error at the recognition site
+/// (`ast_builder::build_trace`). Under `CodegenBehaviour::InMemoryAndObject`
+/// (REPL/`--run`), the check is a no-op branch. There is no separate
+/// validator walking pass — the rejection inlined into the AST builder at
+/// Sprint 67 Wave 4 follow-up.
 pub(crate) fn build_program_compat(
     sexps: &[Sexp],
     mode: CodegenBehaviour,
@@ -87,15 +89,13 @@ pub(crate) fn build_program_compat(
             // expressions (`TopLevel::Expr`). `build_form` requires a
             // list-with-head-symbol top-level form.
             if !is_top_level_form(&inner) {
-                let expr = cranelisp_frontend::build_expr(&inner)?;
-                cranelisp_frontend::validate_expr_for_build_mode(&expr, mode)?;
+                let expr = cranelisp_frontend::build_expr(&inner, mode)?;
                 out.push(TopLevel::Expr(expr));
                 continue;
             }
 
-            let entries = cranelisp_frontend::build_form(&inner)?;
+            let entries = cranelisp_frontend::build_form(&inner, mode)?;
             for entry in entries {
-                cranelisp_frontend::validate_parsed_entry_for_build_mode(&entry, mode)?;
                 if let Some(tl) = parsed_entry_to_top_level(entry) {
                     out.push(tl);
                 }
@@ -5492,10 +5492,12 @@ mod tests {
     // ---------------------------------------------------------------------
 
     // spec: spec/04-expressions.md §4.12.9 — `(trace ...)` rejected in --link mode.
-    // Verifies the int-side wiring of
-    // `cranelisp_frontend::validate_parsed_entry_for_build_mode` /
-    // `validate_expr_for_build_mode` invoked from
-    // `worker::build_program_compat` per FIXMEs 0199 + 0204.
+    // Verifies the int-side wiring of the build-mode rejection inlined inside
+    // `cranelisp_frontend::ast_builder::build_trace` (Sprint 67 Wave 4
+    // follow-up; supersedes the retired `link_mode` validator pass from
+    // FIXMEs 0199 + 0204) — `build_program_compat` threads
+    // `CodegenBehaviour` into `build_form` / `build_expr` which propagate it
+    // through to the trace recognition site.
     #[test]
     fn build_program_compat_rejects_trace_under_link_mode() {
         let sexps = cranelisp_frontend::parse("(trace 42)").expect("parse");

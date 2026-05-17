@@ -181,10 +181,12 @@ pub fn process_cluster(
 ) -> Result<ProcessedCluster, CranelispError> {
     // Build the cluster's `Vec<TopLevel>` via the new `build_form` /
     // `build_expr` boundary (replacing the retired `build_program`). Per
-    // Decision 40 / Path B1 (FIXMEs 0199 + 0204): `build_program_compat`
-    // runs `link_mode::validate_*` against each parsed entry. Mode comes
-    // from `shared.codegen_behaviour` — `--link` rejects `(trace ...)`
-    // here; REPL/`--run` accepts it.
+    // Decision 40 / Path B1 (FIXME 0199; supersedes 0202–0204):
+    // `build_program_compat` threads `shared.codegen_behaviour` into
+    // `build_form` / `build_expr`; under `CodegenBehaviour::ObjectOnly`
+    // (`--link`) the `(trace ...)` form is rejected at the AST-recognition
+    // site inside `ast_builder::build_trace`. Sprint 67 Wave 4 follow-up
+    // retired the pre-pass walker that previously sat at this seam.
     let working_program =
         crate::worker::build_program_compat(&forms, shared.codegen_behaviour)?;
 

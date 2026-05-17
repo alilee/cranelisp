@@ -715,14 +715,15 @@ pub struct SharedState {
 
     /// Compile-time codegen mode (REPL/`--run` => `InMemoryAndObject`;
     /// `--link` => `ObjectOnly`). Captured from `SessionSettings` at
-    /// construction and read by the cluster orchestrator's `(trace ...)`
-    /// rejection pass per Decision 40 / Path B1 (FIXMEs 0199 + 0204).
+    /// construction and read by `worker::build_program_compat` per Decision
+    /// 40 / Path B1 (FIXME 0199; supersedes 0202–0204).
     ///
     /// Per spec/04-expressions.md §4.12.9: `(trace ...)` is REPL/`--run`-only;
-    /// `--link` rejects the form at compile time. The validator is invoked
-    /// from `worker::build_program_compat` with this flag as the deciding
-    /// input. `CodegenBehaviour::InMemoryAndObject` makes the validator a
-    /// no-op (trace permitted).
+    /// `--link` rejects the form at compile time. The flag threads through
+    /// `cranelisp_frontend::build_form` / `build_expr` to the rejection
+    /// inlined inside `ast_builder::build_trace`.
+    /// `CodegenBehaviour::InMemoryAndObject` makes the rejection a no-op
+    /// branch (trace permitted).
     pub codegen_behaviour: CodegenBehaviour,
 
     // -- Stateless TC: shared state (Sprint 51) --
@@ -3123,7 +3124,8 @@ impl CompilerSession {
         // (replacing the retired `build_repl_input`). A bare-expr REPL input
         // is wrapped as a synthetic `__expr` defn for typecheck dispatch. Mode
         // comes from the session's `SharedState`; under REPL this is
-        // `InMemoryAndObject` (validator no-op).
+        // `InMemoryAndObject` so the inline `build_trace` rejection is a
+        // no-op branch (trace permitted).
         let working_program = crate::worker::build_program_compat(
             &[sexps[0].clone()],
             self.shared.codegen_behaviour,
