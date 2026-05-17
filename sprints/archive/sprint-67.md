@@ -1,6 +1,6 @@
 # Sprint 67: Edge settlement — facade definition + implementation reconciled
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE)
+**Status**: PHASE 7 CLOSE PREP (AWAITING USER REVIEW)
 
 **Goal**: Settle the facade definition AND the implementation at every crate/component edge — completely and with confidence — by reconciling every facade↔`cargo public-api` drift identified in the post-S66 audit. After this sprint, edges are a frozen contract enforced by `cargo public-api` baselines; interior uplift can proceed without surprise at the seams.
 
@@ -534,4 +534,107 @@ S66 close-out audit (delegated to research subagent 2026-05-15) identified:
 
 ## Outcome (Phase 7)
 
-_To be filled at close._
+### Delivered
+
+**Wave 4 trace cascade** (Decision 40 Path B1 close):
+- User-arbitrated `(trace ...)` as REPL/`--run`-only special form; `--link` mode rejects at link time via the architecture's natural missing-symbol detection (trace bodies live in `src/trace.rs` int-side; not force-linked into exe-bundle staticlib)
+- Decision 40 amended to Path B1 internal consistency (§Shape, §Consequences, §Status pointer)
+- 12 `cranelisp_trace_*` bodies relocated `cranelisp-intrinsics::trace` → `src/trace.rs`; registered via `int_intrinsics()` map at JIT-build sites
+- io_trace ring buffer + machinery relocated `cranelisp-intrinsics::io_trace` → `src/io_trace.rs`
+- Backend's 12 trace `IntrinsicSymbol` entries deleted from `jit.rs:107-118`
+- exe-bundle force-link for trace deleted
+- `consume_trace_call` helper relocated `cranelisp-intrinsics::drop` → `src/trace.rs`
+- ~17 inline `io_trace::record_event` calls in intrinsics `io.rs` rewired through `io_observer::emit` indirection
+- `cranelisp-intrinsics` public-api shrunk 434 → 248 lines (-186)
+- Spec §4.12.9 authored (rejection clause)
+- FIXMEs resolved + deleted: 0192, 0193, 0195, 0197, 0198, 0199 (→ 0203 facade-refresh → retired by subtraction), 0200, 0201, 0202, 0203, 0204
+
+**Cluster C — introspection records PIF** (4 drifts on int facade):
+- `SymbolInfoBrief` → `SymbolInfo` rename
+- `SymbolCategoryDescribed` → `SymbolCategory` rename + `Module` variant added
+- `SymbolDescription.related: Vec<FQSymbol>` field added (population deferred — FIXME 0194)
+- `module_imports() -> Vec<ImportSpec>` per facade
+- Companion: CompilerSession `introduce_module` 4-branch lifecycle landed; root `""` SymbolTable for special-form metadata (Principle 17 amendment)
+
+**Cluster B — SharedState reconciliation** (3 sub-fires):
+- Sub-fire 1: investigation closure for 3 LIVE rows (`suspend_states`, `promote_nice_workers`, `repl_check_state` — all confirmed live with documented rationale)
+- Sub-fire 2: CompilerSession reshape — `WorkerPool` authored (collapses 3 worker fields); `current_repl_module` relocated from SharedState; `warnings` + `repl_input_active` added; `cached_modules` SharedState duplicate deleted (rewired through scheduler accessor)
+- Sub-fire 3: `ObjectCache` thin wrapper authored; cache cluster fold (`cache_dir`, `cache_state`, `compiled_o_paths` → `cache: Arc<ObjectCache>`); 13 caller migrations; 9 unit tests
+- Net: SharedState 21 → 16 fields; CompilerSession 6 → 7 fields; facade `cache: Arc<ObjectCache>` finally landed
+
+**link_mode validator: retired + subtracted** (architectural lesson):
+- FIXME 0199 introduced separate pre-pass validator surface
+- User identified the shape as over-engineered → refactored to inline at `build_trace` (commit `4191374`)
+- User identified the inline check ALSO as over-engineered ("architecture already produces the failure naturally")
+- Subtraction landed (commit `e435742`) — full revert of mode parameter threading, deletion of 8 frontend + 4 worker unit tests, retirement of `SharedState.codegen_behaviour` (no remaining consumers)
+- Net delta from the link_mode iteration: -220 LOC; frontend pub-API shrunk; `CodegenBehaviour` orphan closed
+- Spec §4.12.9 reword pending — FIXME 0209 to /spec
+
+**Facade refresh** (4 /design fires + 1 subtraction-driven update):
+- `/design (int)` — int.md: SharedState 17→16 fields enumerated; CompilerSession 7-field shape; int_intrinsics() table 3→14 entries; trace edifice section; ObjectCache surface
+- `/design (backend)` — backend.md: 12 trace IntrinsicSymbol entries removed; cross-reference to int.md
+- `/design (intrinsics)` — intrinsics.md: §"Trace functions" + §"io_trace::*" sections deleted; module inventory updated
+- `/design (primitives)` — primitives.md: 3 string query orphans (`contains?`, `ends-with?`, `starts-with?`) added
+- FIXMEs resolved + deleted: 0205, 0206, 0207, 0208
+
+**Facade compliance final state**: **0 orphans across all 7 lib crates** (was 4 mid-sprint; 1 closed by subtraction, 3 closed by primitives facade refresh). `tests/facade_compliance.rs` passes for all 7 lib crates.
+
+**exe-bundle descoped**: confirmed as `/int` implementation detail (force-link manifest for staticlib, not a public-API surface). Facade-coverage count remains 7 lib crates + int binary = 8 surfaces. Sibling-wave breakage from Wave 4b ops retirement fixed (intrinsics::ops → primitives::ring0 force-link line resync).
+
+**Commit ladder** (this session):
+- `d832f9e` mid-flight checkpoint (Wave 4 trace cascade + Cluster C drift + Cluster B sub-fire 1)
+- `0de6d3f` Cluster B sub-fire 2 (CompilerSession reshape with WorkerPool)
+- `aea2038` Cluster B sub-fire 3 (ObjectCache thin wrapper)
+- `4191374` link_mode validator retired; inline at build_trace [largely cancelled by `e435742`]
+- `98b715b` /design (backend) facade refresh
+- `442c0d8` /design (intrinsics) facade refresh
+- `b772501` /design (int) facade refresh
+- `e435742` subtraction — trust architecture's natural trace-in-link failure
+- `db21c0b` /design (primitives) facade refresh
+- `f4c8f8f` FIXME 0210 filed (primitives as uniform module, S68+)
+
+### Deferred — to S68 (with rationale)
+
+**SharedState PIF moves not landed this sprint** (per "minimal-attach-to-facade with weight" discipline):
+- `module_sexps` redesign — 20+ sites cross-thread dep-publishing handshake; cluster-atomic flip incomplete (per `src/CLAUDE.md` "Wave 3a-β collapse" notes); structural redesign needed
+- `typecheck_products` migration onto SymbolTable — vestigial struct (Sprint 56 gutted); 2 surviving fields need to relocate per Decision 33 pattern; requires `cranelisp-types` edits + /arch coordination
+- `kept_dlls` type narrowing — `Mutex<Vec<LoadedPlatform>>` → `DashMap<PathBuf, Arc<DllHandle>>` per facade L171; fails weight-on-facade-triggers test for minimal scope (cosmetic; touches every populate site without caller-method weight)
+- `introspection: DashMap<>` Option<> wrap — Decision 38 zero-overhead-batch story; touches every populate site
+- `lib_dirs` / `platform_dirs` Mutex narrowing — verify tests don't reconfig at runtime first; cosmetic
+- `scheduler` Arc<> wrap — cosmetic; touches all consumers
+- `file_to_module` relocation to CompilerSession — facade exposes no method for it
+- `codegen_behaviour` fold into `SessionSettings` (now n/a — field retired entirely via subtraction)
+
+**ObjectCache internal restructure** — sub-fire 3 landed thin wrapper (4 interior fields wrapped + caller migration to method surface); S68 refactors the interior data model freely behind the now-stable facade methods.
+
+**Wave 5 /review × 8** — skipped this sprint. In-flight test green (facade_compliance + crate-narrow nextest + integration tests) + per-FIXME landings provide partial review coverage. Defer formal /review × 8 to S68 alongside any cleanup.
+
+**Primitives architectural narrowing** — captured as FIXME 0210 for S68+: `primitives` should be a uniform module with SymbolTable + GOT dispatch like every other module (intrinsics correctly stays special — runtime infrastructure, not a user module). Multi-sprint architectural work.
+
+**Spec §4.12.9 reword** — FIXME 0209 to /spec: "compile-time error" → "link-time rejection" framing to align with actual architecture behavior.
+
+**Carry-over single-line FIXMEs**:
+- 0157 (primitives NOT classification)
+- 0172 (typecheck short-name fallback chains)
+- 0182 (primitives ring0_jit_symbols disposition)
+- 0186 (qa PIF tests non-exhaustive prefix)
+- 0187 (int TypeCheckEnv consumers migrate off narrowed helpers)
+- 0188 (qa row 21 + FQTypeName PIF tests threshold)
+- 0189 (design primitives facade export-name coverage)
+- 0190 (design intrinsics facade renamed module coverage)
+- 0191 (dev backend Ring 0 JIT symbols migrate to primitives table)
+- 0194 (int SymbolDescription.related population)
+- 0196 (design int SymbolCategory inline-comment drift)
+- Some/all of these may be obsoleted or subsumed by the Wave 4 cascade; /sprint S68 Phase 1 audits.
+
+### Findings
+
+**The "engineering around the architecture" lesson** — the link_mode validator iteration is the sprint's most instructive moment. The original FIXME 0199 brief assumed a frontend pre-pass validator was the right shape for spec §4.12.9 rejection. Three iterations later, the right answer was "do nothing; the architecture's natural missing-symbol detection at finalize/link IS the rejection." Net delta from -210 LOC (link_mode refactor) + -220 LOC (subtraction) ≈ -430 LOC of churn. The lesson: when adding a check, first verify the architecture isn't already producing the failure mode you want. Decision 40 + the Module<T> generic + JITBuilder::symbol + Linkage::Import + exe-bundle force-link compose to make trace-in-link fail naturally; no Rust-level rejection needed.
+
+**Facade as binding contract, not refinement frontier** — user repeatedly pushed back on facade-widening as escape hatch. Discipline locked in: "repoint or delete; escalate as last resort." int-internal SharedState gets documentation hygiene (additions allowed because internal); cross-crate facades narrow only. The "weight on facade triggers" test (callers must invoke through facade methods, not just match shape) clarified what counts as "connecting" to a facade.
+
+**ObjectCache thin-wrapper strategy** — Sprint 67 landed the method surface (the trigger weight) without the internal restructure. S68 now has the freedom to refactor ObjectCache internals without touching call paths. This pattern (interim wrapper for weight; defer real refactor) is reusable for other "facade prescribes X; impl carries Y" cases.
+
+**Primitives architectural question** — surfaced organically while investigating 3 facade orphans; led to a substantial S68 design item (FIXME 0210). Today's special-casing of primitives (pub extern "C" per function + JITBuilder::symbol direct registration + exe-bundle force-link `pub use`) diverges from the standard per-module SymbolTable + GOT dispatch user code uses. Intrinsics correctly stays special; primitives shouldn't.
+
+**Architectural principles assessment** — `design/arch/principles.md` adequately served the sprint. Principle 7 (early enforcement) was the misapplied lens for link_mode; Principle 8 (interim architecture risk) correctly forbid building intermediate shapes; Principle 17 (module locality) amended successfully. No new principles needed; one tweak suggestion for /arch to consider: add a principle around "verify the architecture isn't already producing the failure mode before adding a check" — the link_mode lesson generalizes.
