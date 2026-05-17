@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{ErrorLocation,
-    CodegenBehaviour, CranelispError, DefKind, Defn, ExportSpec, ImportNames, ImportSpec,
+    CranelispError, DefKind, Defn, ExportSpec, ImportNames, ImportSpec,
     MacroClauseInfo, ModuleEntry, ModuleFullPath, ModuleStrategy,
     PlatformSpec, PrimitiveKind, Sexp, Span, Symbol, TopLevel, Visibility,
 };
@@ -65,17 +65,13 @@ impl ModuleCheckAccumulator {
 /// returns the parsed entries; the worker side still tracks `TopLevel` for
 /// downstream codegen, so we transcode at this boundary.
 ///
-/// `mode` selects the build-mode rejection inside `build_expr` / `build_form`
-/// per Decision 40 / Path B1 (FIXME 0199; supersedes FIXMEs 0202–0204).
-/// Under `CodegenBehaviour::ObjectOnly` (`--link`), any `(trace ...)` form
-/// reached during AST build is a compile-time error at the recognition site
-/// (`ast_builder::build_trace`). Under `CodegenBehaviour::InMemoryAndObject`
-/// (REPL/`--run`), the check is a no-op branch. There is no separate
-/// validator walking pass — the rejection inlined into the AST builder at
-/// Sprint 67 Wave 4 follow-up.
+/// Build is mode-agnostic. `(trace ...)` in `--link` standalone-binary mode
+/// fails at link time via the architecture's natural missing-symbol detection
+/// (the trace runtime is not bundled into the staticlib produced by
+/// exe-bundle); no frontend pre-pass check is needed. See
+/// spec/04-expressions.md §4.12.9.
 pub(crate) fn build_program_compat(
     sexps: &[Sexp],
-    mode: CodegenBehaviour,
 ) -> Result<Vec<TopLevel>, CranelispError> {
     let mut out: Vec<TopLevel> = Vec::with_capacity(sexps.len());
     for sexp in sexps {
@@ -89,12 +85,12 @@ pub(crate) fn build_program_compat(
             // expressions (`TopLevel::Expr`). `build_form` requires a
             // list-with-head-symbol top-level form.
             if !is_top_level_form(&inner) {
-                let expr = cranelisp_frontend::build_expr(&inner, mode)?;
+                let expr = cranelisp_frontend::build_expr(&inner)?;
                 out.push(TopLevel::Expr(expr));
                 continue;
             }
 
-            let entries = cranelisp_frontend::build_form(&inner, mode)?;
+            let entries = cranelisp_frontend::build_form(&inner)?;
             for entry in entries {
                 if let Some(tl) = parsed_entry_to_top_level(entry) {
                     out.push(tl);
@@ -635,10 +631,7 @@ fn compile_macro_clause_with_state(
     // bodies whose Sexp tree comes from `synthesize_macro_clause_defn`; user
     // `(trace ...)` cannot reach this synthesis path. `InMemoryAndObject`
     // bypasses the validator.
-    let program = build_program_compat(
-        &[expanded_sexp],
-        CodegenBehaviour::InMemoryAndObject,
-    )?;
+    let program = build_program_compat(&[expanded_sexp])?;
 
     // Step 4: Typecheck via the collapsed `check_forms` surface (Decision 44
     // 2026-05-13 third amendment). `check_program_compat` runs the internal
@@ -1184,17 +1177,11 @@ pub fn process_module_forms(
 
         let (regular_sexps, macro_infos) = separate_macros(sexps, module)?;
 
-        // Build AST for regular (non-macro) forms. Per Decision 40 / Path B1
-        // (FIXMEs 0199 + 0204): the cluster-orchestrator-equivalent path
-        // here runs the `(trace ...)`-in-`--link` validator pass before
-        // typecheck dispatch. Mode flows from `SharedState.codegen_behaviour`;
-        // REPL paths without `shared_state` default to `InMemoryAndObject`
-        // (validator is a no-op).
-        let mode = ctx
-            .shared_state
-            .map(|s| s.codegen_behaviour)
-            .unwrap_or(CodegenBehaviour::InMemoryAndObject);
-        let program = build_program_compat(&regular_sexps, mode)?;
+        // Build AST for regular (non-macro) forms. Build is mode-agnostic;
+        // `(trace ...)` in `--link` standalone-binary mode fails at link time
+        // via the architecture's natural missing-symbol detection — no
+        // frontend pre-pass check is needed.
+        let program = build_program_compat(&regular_sexps)?;
         let working_program = wrap_exprs_as_defns(&program);
 
         pass1_register(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, &working_program, &mut state.accumulator)?;
@@ -1450,11 +1437,7 @@ fn process_regular_form(
         return Ok(());
     }
 
-    let mode = ctx
-        .shared_state
-        .map(|s| s.codegen_behaviour)
-        .unwrap_or(CodegenBehaviour::InMemoryAndObject);
-    let built = build_program_compat(&regular_sexps, mode)?;
+    let built = build_program_compat(&regular_sexps)?;
     let working = wrap_exprs_as_defns(&built);
 
     // Per Decision 44's 2026-05-13 third amendment, the per-form
@@ -2547,10 +2530,7 @@ fn compile_macro_clause_inline(
     // Step 3: Build AST (macro clause bodies use quasiquote constructs,
     // not other macros, so no expander is needed). Macro clause synthesis is
     // compiler-generated; user `(trace ...)` cannot reach this path.
-    let program = build_program_compat(
-        &[expanded_sexp],
-        CodegenBehaviour::InMemoryAndObject,
-    )?;
+    let program = build_program_compat(&[expanded_sexp])?;
 
     // Step 4: Typecheck via the collapsed `check_forms` surface (Decision 44
     // 2026-05-13 third amendment) — single call runs Pass 1 + Pass 2 + finalize.
@@ -5487,64 +5467,4 @@ mod tests {
         );
     }
 
-    // ---------------------------------------------------------------------
-    // Decision 40 / Path B1 — link-mode (trace ...) rejection wiring
-    // ---------------------------------------------------------------------
-
-    // spec: spec/04-expressions.md §4.12.9 — `(trace ...)` rejected in --link mode.
-    // Verifies the int-side wiring of the build-mode rejection inlined inside
-    // `cranelisp_frontend::ast_builder::build_trace` (Sprint 67 Wave 4
-    // follow-up; supersedes the retired `link_mode` validator pass from
-    // FIXMEs 0199 + 0204) — `build_program_compat` threads
-    // `CodegenBehaviour` into `build_form` / `build_expr` which propagate it
-    // through to the trace recognition site.
-    #[test]
-    fn build_program_compat_rejects_trace_under_link_mode() {
-        let sexps = cranelisp_frontend::parse("(trace 42)").expect("parse");
-        let err = build_program_compat(&sexps, CodegenBehaviour::ObjectOnly)
-            .expect_err("expected (trace ...) to be rejected under --link");
-        match err {
-            cranelisp_types::CranelispError::ParseError { ref message, .. } => {
-                assert!(
-                    message.contains("(trace ...)"),
-                    "error message should name the form; got: {message}"
-                );
-                assert!(
-                    message.contains("--link"),
-                    "error message should name --link mode; got: {message}"
-                );
-            }
-            other => panic!("expected ParseError, got: {other:?}"),
-        }
-    }
-
-    // spec: spec/04-expressions.md §4.12.1-4.12.8 — `(trace ...)` is legal in
-    // REPL/`--run` modes. Validator must be a no-op there.
-    #[test]
-    fn build_program_compat_accepts_trace_under_inmem_mode() {
-        let sexps = cranelisp_frontend::parse("(trace 42)").expect("parse");
-        let prog = build_program_compat(&sexps, CodegenBehaviour::InMemoryAndObject)
-            .expect("trace must be accepted under InMemoryAndObject mode");
-        assert!(!prog.is_empty(), "build should produce at least one TopLevel");
-    }
-
-    // `(trace ...)` nested inside a `defn` body is rejected under --link.
-    #[test]
-    fn build_program_compat_rejects_trace_in_defn_body_under_link_mode() {
-        let sexps = cranelisp_frontend::parse("(defn f [] (trace 42))").expect("parse");
-        let err = build_program_compat(&sexps, CodegenBehaviour::ObjectOnly)
-            .expect_err("expected (trace ...) inside defn body to be rejected under --link");
-        assert!(
-            matches!(err, cranelisp_types::CranelispError::ParseError { .. }),
-            "expected ParseError, got: {err:?}"
-        );
-    }
-
-    // Programs with no `(trace ...)` form build cleanly under --link.
-    #[test]
-    fn build_program_compat_no_trace_passes_link_mode() {
-        let sexps = cranelisp_frontend::parse("(defn g [] 42)").expect("parse");
-        build_program_compat(&sexps, CodegenBehaviour::ObjectOnly)
-            .expect("plain defn must build under --link mode");
-    }
 }

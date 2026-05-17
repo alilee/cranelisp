@@ -21,20 +21,18 @@
 use std::collections::HashSet;
 
 use cranelisp_types::{ErrorLocation,
-    CodegenBehaviour, CranelispError, ConstructorDef, Defn, DefnVariant, Expr, FieldDef, MatchArm,
+    CranelispError, ConstructorDef, Defn, DefnVariant, Expr, FieldDef, MatchArm,
     ParsedEntry, Pattern, Sexp, Span, Symbol, TraitDecl, TraitImpl,
     TraitMethodSig, TraitName, TypeExpr, TypeName, Visibility,
 };
 
-// Build-mode rejection message for `(trace ...)` under `--link` standalone-binary
-// mode. Per spec/04-expressions.md §4.12.9 and Decision 40 (Path B1): `(trace ...)`
-// is a REPL/`--run`-only special form; under `CodegenBehaviour::ObjectOnly` the
-// AST builder rejects it at recognition time inside `build_trace`. The check is
-// inlined at the build site (one branch, no separate walking pass) — see the
-// retired `link_mode.rs` pre-pass validator (Sprint 67 Wave 4 follow-up).
-const TRACE_LINK_MODE_REJECTION_MESSAGE: &str =
-    "(trace ...) is not available in --link standalone-binary mode; \
-     use REPL or --run to trace. See spec/04-expressions.md §4.12.9.";
+// `(trace ...)` build is mode-agnostic. Under `--link` standalone-binary mode
+// the architecture's natural missing-symbol failure rejects programs that use
+// `(trace ...)`: backend emits `cranelisp_collect_trace` as `Linkage::Import`,
+// and the system linker errors with "undefined symbol cranelisp_collect_trace"
+// because the trace runtime is not bundled into the staticlib produced for
+// standalone binaries (exe-bundle force-link for trace deleted in commit 0202).
+// No frontend pre-pass check is needed; see spec/04-expressions.md §4.12.9.
 // `Defn` is used by `build_impl_method` to package a method into the
 // `TraitImpl.methods` list. Other AST union types (`TopLevel`, `Program`)
 // are no longer named by frontend code post-FIXME-0156; tests inside this
@@ -127,7 +125,7 @@ fn parse_def_visibility(head: &str) -> Option<(&str, Visibility)> {
 /// expressions, structural decls (`mod`/`mod-`/`import`/`export`/`platform`),
 /// and `begin` clusters must be handled by the orchestrator BEFORE calling
 /// `build_form`. See `design/frontend/wave-3a-build-form.md` §2.3.
-pub fn build_form(sexp: &Sexp, mode: CodegenBehaviour) -> Result<Vec<ParsedEntry>, CranelispError> {
+pub fn build_form(sexp: &Sexp) -> Result<Vec<ParsedEntry>, CranelispError> {
     let (children, span) = match sexp {
         Sexp::List(c, s) if !c.is_empty() => (c.as_slice(), *s),
         Sexp::Comment(_, span) => {
@@ -181,13 +179,13 @@ pub fn build_form(sexp: &Sexp, mode: CodegenBehaviour) -> Result<Vec<ParsedEntry
 
     // impl: no private variant.
     if head == "impl" {
-        return parse_impl(children, span, mode).map(|e| vec![e]);
+        return parse_impl(children, span).map(|e| vec![e]);
     }
 
     // defn / deftype / deftrait (with visibility suffix `-`).
     if let Some((base, vis)) = parse_def_visibility(head) {
         return match base {
-            "defn" => parse_defn(children, span, vis, mode).map(|e| vec![e]),
+            "defn" => parse_defn(children, span, vis).map(|e| vec![e]),
             "deftype" => parse_deftype(children, span, vis),
             "deftrait" => parse_deftrait(children, span, vis).map(|e| vec![e]),
             _ => unreachable!("invariant: parse_def_visibility returns known base"),
@@ -242,7 +240,6 @@ pub(crate) fn parse_defn(
     children: &[Sexp],
     span: Span,
     visibility: Visibility,
-    mode: CodegenBehaviour,
 ) -> Result<ParsedEntry, CranelispError> {
     // (defn name "doc"? [params] body)      -- single
     // (defn name "doc"? ([p] b) ([p] b))    -- multi
@@ -265,7 +262,7 @@ pub(crate) fn parse_defn(
             if body_start >= children.len() {
                 return Err(parse_err("defn missing body", span));
             }
-            let (body, consumed) = build_one_expr_at(children, body_start, mode)?;
+            let (body, consumed) = build_one_expr_at(children, body_start)?;
             if body_start + consumed != children.len() {
                 return Err(parse_err("defn has extra forms after body", span));
             }
@@ -279,7 +276,7 @@ pub(crate) fn parse_defn(
         Sexp::List(..) => {
             children[next..]
                 .iter()
-                .map(|s| build_defn_variant(s, mode))
+                .map(build_defn_variant)
                 .collect::<Result<Vec<_>, _>>()?
         }
         _ => return Err(parse_err(
@@ -304,16 +301,13 @@ fn get_defn_name(sexp: &Sexp) -> Result<Symbol, CranelispError> {
     }
 }
 
-fn build_defn_variant(
-    sexp: &Sexp,
-    mode: CodegenBehaviour,
-) -> Result<DefnVariant, CranelispError> {
+fn build_defn_variant(sexp: &Sexp) -> Result<DefnVariant, CranelispError> {
     let (children, span) = expect_list(sexp)?;
     if children.len() != 2 {
         return Err(parse_err("defn variant requires params and body", span));
     }
     let (params, param_annotations) = build_annotated_params(&children[0])?;
-    let body = build_expr(&children[1], mode)?;
+    let body = build_expr(&children[1])?;
     Ok(DefnVariant {
         params,
         param_annotations,
@@ -741,7 +735,6 @@ fn build_method_sig(
 pub(crate) fn parse_impl(
     children: &[Sexp],
     span: Span,
-    mode: CodegenBehaviour,
 ) -> Result<ParsedEntry, CranelispError> {
     // (impl TraitName impl_target method_def+)
     // impl_target = Type | (Type :Constraint var ...)
@@ -761,7 +754,7 @@ pub(crate) fn parse_impl(
 
     let methods = children[3..]
         .iter()
-        .map(|s| build_impl_method(s, mode))
+        .map(build_impl_method)
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(ParsedEntry::TraitImpl {
@@ -846,10 +839,7 @@ fn build_impl_target(
 
 /// Parse a method definition inside an impl block.
 /// (defn method_name [params] body)
-fn build_impl_method(
-    sexp: &Sexp,
-    mode: CodegenBehaviour,
-) -> Result<Defn, CranelispError> {
+fn build_impl_method(sexp: &Sexp) -> Result<Defn, CranelispError> {
     let (children, span) = expect_list(sexp)?;
     if children.is_empty() {
         return Err(parse_err("empty method definition", span));
@@ -866,7 +856,7 @@ fn build_impl_method(
     }
     let name = get_defn_name(&children[1])?;
     let (params, param_annotations) = build_annotated_params(&children[2])?;
-    let body = build_expr(&children[3], mode)?;
+    let body = build_expr(&children[3])?;
 
     Ok(Defn {
         name,
@@ -891,12 +881,12 @@ fn build_impl_method(
 /// Pure structural transform — no symbol-tables lookup, no gap returns.
 /// Callers must expand macros before calling `build_expr`.
 ///
-/// `mode` selects the build-mode rejection in `build_trace`: under
-/// `CodegenBehaviour::ObjectOnly` (`--link`), `(trace ...)` is rejected at
-/// AST-recognition time per spec/04-expressions.md §4.12.9 and Decision 40
-/// (Path B1). REPL/`--run` (`CodegenBehaviour::InMemoryAndObject`) accepts
-/// trace; the check is one branch at the recognition site, no separate pass.
-pub fn build_expr(sexp: &Sexp, mode: CodegenBehaviour) -> Result<Expr, CranelispError> {
+/// `build_expr` is mode-agnostic. `(trace ...)` in `--link` standalone-binary
+/// mode fails at link time via the architecture's natural missing-symbol
+/// detection (the trace runtime is not bundled into the staticlib produced by
+/// exe-bundle); no frontend pre-pass check is needed. See
+/// spec/04-expressions.md §4.12.9.
+pub fn build_expr(sexp: &Sexp) -> Result<Expr, CranelispError> {
     match sexp {
         Sexp::Int(v, span) => Ok(Expr::IntLit {
             value: *v,
@@ -926,8 +916,8 @@ pub fn build_expr(sexp: &Sexp, mode: CodegenBehaviour) -> Result<Expr, Cranelisp
                 inferred_type: None,
             })
         }
-        Sexp::List(children, span) => build_list_expr(children, *span, mode),
-        Sexp::Bracket(children, span) => build_vec_lit(children, *span, mode),
+        Sexp::List(children, span) => build_list_expr(children, *span),
+        Sexp::Bracket(children, span) => build_vec_lit(children, *span),
         Sexp::Comment(_, span) => Err(CranelispError::ParseError {
             message: "unexpected comment in expression position".to_string(),
             location: ErrorLocation::from_span(*span),
@@ -938,7 +928,6 @@ pub fn build_expr(sexp: &Sexp, mode: CodegenBehaviour) -> Result<Expr, Cranelisp
 fn build_list_expr(
     children: &[Sexp],
     span: Span,
-    mode: CodegenBehaviour,
 ) -> Result<Expr, CranelispError> {
     if children.is_empty() {
         return Err(parse_err("empty application", span));
@@ -947,10 +936,10 @@ fn build_list_expr(
     // Check if first child is a keyword symbol
     if let Sexp::Symbol(head, head_span) = &children[0] {
         match head.as_str() {
-            "let" => return build_let(children, span, mode),
-            "if" => return build_if(children, span, mode),
-            "fn" | "lambda" => return build_fn(children, span, mode),
-            "match" => return build_match(children, span, mode),
+            "let" => return build_let(children, span),
+            "if" => return build_if(children, span),
+            "fn" | "lambda" => return build_fn(children, span),
+            "match" => return build_match(children, span),
             // Reader-macro forms — should be handled by the expander before reaching AST builder
             "quote" => {
                 return Err(parse_err("unexpected quote form — should have been expanded", *head_span))
@@ -974,9 +963,9 @@ fn build_list_expr(
                 ))
             }
             // Non-Ring-0 expression forms
-            "trace" => return build_trace(children, span, mode),
+            "trace" => return build_trace(children, span),
             "discover-tests" => return build_discover_tests(children, span),
-            "run-test" => return build_run_or_trace_test(children, span, "run-test", mode),
+            "run-test" => return build_run_or_trace_test(children, span, "run-test"),
             // "vec" is handled by the prelude vec macro — no AST intercept needed.
             "par-let" => {
                 return Err(parse_err("par-let not yet supported (Ring 4)", *head_span))
@@ -989,7 +978,7 @@ fn build_list_expr(
     }
 
     // Generic Apply
-    build_apply(children, span, mode)
+    build_apply(children, span)
 }
 
 // ---------------------------------------------------------------------------
@@ -999,31 +988,26 @@ fn build_list_expr(
 fn build_trace(
     children: &[Sexp],
     span: Span,
-    mode: CodegenBehaviour,
 ) -> Result<Expr, CranelispError> {
     // (trace expr)
     //
-    // Build-mode rejection (Decision 40 Path B1 / spec/04-expressions.md §4.12.9):
-    // under `--link` standalone-binary mode (`CodegenBehaviour::ObjectOnly`),
-    // `(trace ...)` is a compile-time error. The check fires here at the
-    // AST-recognition site — no separate validator pass walks the AST.
-    // Quoted occurrences (`'(trace x)`, `` `(trace x) ``) are desugared by the
-    // expander into `Sexp` constructor calls before reaching this builder, so
-    // they appear as `Expr::Apply` to those constructors (not `Expr::Trace`)
-    // and pass through correctly.
-    if mode == CodegenBehaviour::ObjectOnly {
-        return Err(CranelispError::ParseError {
-            message: TRACE_LINK_MODE_REJECTION_MESSAGE.to_string(),
-            location: ErrorLocation::from_span(span),
-        });
-    }
+    // Build is mode-agnostic. `(trace ...)` in `--link` standalone-binary mode
+    // fails at link time via the architecture's natural missing-symbol
+    // detection: backend emits `cranelisp_collect_trace` as `Linkage::Import`,
+    // and the system linker errors with "undefined symbol
+    // cranelisp_collect_trace" because the trace runtime is not bundled into
+    // the staticlib produced by exe-bundle (force-link for trace deleted in
+    // commit 0202). See spec/04-expressions.md §4.12.9. Quoted occurrences
+    // (`'(trace x)`, `` `(trace x) ``) are desugared by the expander into
+    // `Sexp` constructor calls before reaching this builder, so they appear as
+    // `Expr::Apply` to those constructors (not `Expr::Trace`).
     if children.len() != 2 {
         return Err(parse_err(
             "trace requires exactly one expression",
             span,
         ));
     }
-    let body = build_expr(&children[1], mode)?;
+    let body = build_expr(&children[1])?;
     Ok(Expr::Trace {
         modules: vec![],
         body: Box::new(body),
@@ -1071,7 +1055,6 @@ fn build_run_or_trace_test(
     children: &[Sexp],
     span: Span,
     form_name: &str,
-    mode: CodegenBehaviour,
 ) -> Result<Expr, CranelispError> {
     // (run-test user/test-add)   — bare qualified symbol
     // (run-test sym-expr)        — variable or expression
@@ -1110,11 +1093,11 @@ fn build_run_or_trace_test(
             }
         } else {
             // Unqualified symbol: treat as variable reference (Sexp value).
-            build_expr(arg, mode)?
+            build_expr(arg)?
         }
     } else {
         // Not a symbol (e.g., a list expression): evaluate as Sexp expression.
-        build_expr(arg, mode)?
+        build_expr(arg)?
     };
 
     Ok(Expr::Apply {
@@ -1133,10 +1116,9 @@ fn build_run_or_trace_test(
 fn build_apply(
     children: &[Sexp],
     span: Span,
-    mode: CodegenBehaviour,
 ) -> Result<Expr, CranelispError> {
-    let callee = build_expr(&children[0], mode)?;
-    let args = build_args_with_annotations(&children[1..], mode)?;
+    let callee = build_expr(&children[0])?;
+    let args = build_args_with_annotations(&children[1..])?;
     Ok(Expr::Apply {
         callee: Box::new(callee),
         args,
@@ -1153,15 +1135,14 @@ fn build_apply(
 fn build_let(
     children: &[Sexp],
     span: Span,
-    mode: CodegenBehaviour,
 ) -> Result<Expr, CranelispError> {
     // (let [name val name val ...] body)
     if children.len() != 3 {
         return Err(parse_err("let requires bindings and body", span));
     }
     let (bracket_items, _) = expect_bracket(&children[1])?;
-    let bindings = build_let_bindings(bracket_items, mode)?;
-    let body = build_expr(&children[2], mode)?;
+    let bindings = build_let_bindings(bracket_items)?;
+    let body = build_expr(&children[2])?;
     Ok(Expr::Let {
         bindings,
         body: Box::new(body),
@@ -1172,7 +1153,6 @@ fn build_let(
 
 fn build_let_bindings(
     items: &[Sexp],
-    mode: CodegenBehaviour,
 ) -> Result<Vec<(cranelisp_types::Symbol, Expr)>, CranelispError> {
     let mut bindings = Vec::new();
     let mut i = 0;
@@ -1182,7 +1162,7 @@ fn build_let_bindings(
         if i >= items.len() {
             return Err(parse_err("let binding missing value", items[i - 1].span()));
         }
-        let (value, consumed) = build_one_expr_at(items, i, mode)?;
+        let (value, consumed) = build_one_expr_at(items, i)?;
         i += consumed;
         bindings.push((name.into(), value));
     }
@@ -1196,7 +1176,6 @@ fn build_let_bindings(
 fn build_if(
     children: &[Sexp],
     span: Span,
-    mode: CodegenBehaviour,
 ) -> Result<Expr, CranelispError> {
     // (if cond then else)
     if children.len() != 4 {
@@ -1205,9 +1184,9 @@ fn build_if(
             span,
         ));
     }
-    let cond = build_expr(&children[1], mode)?;
-    let then_branch = build_expr(&children[2], mode)?;
-    let else_branch = build_expr(&children[3], mode)?;
+    let cond = build_expr(&children[1])?;
+    let then_branch = build_expr(&children[2])?;
+    let else_branch = build_expr(&children[3])?;
     Ok(Expr::If {
         cond: Box::new(cond),
         then_branch: Box::new(then_branch),
@@ -1224,14 +1203,13 @@ fn build_if(
 fn build_fn(
     children: &[Sexp],
     span: Span,
-    mode: CodegenBehaviour,
 ) -> Result<Expr, CranelispError> {
     // (fn [params] body) or (lambda [params] body)
     if children.len() != 3 {
         return Err(parse_err("fn requires param list and body", span));
     }
     let (params, param_annotations) = build_annotated_params(&children[1])?;
-    let body = build_expr(&children[2], mode)?;
+    let body = build_expr(&children[2])?;
     Ok(Expr::Lambda {
         params,
         param_annotations,
@@ -1248,13 +1226,12 @@ fn build_fn(
 fn build_match(
     children: &[Sexp],
     span: Span,
-    mode: CodegenBehaviour,
 ) -> Result<Expr, CranelispError> {
     // (match scrutinee [pattern body pattern body ...])
     if children.len() != 3 {
         return Err(parse_err("match requires scrutinee and arms", span));
     }
-    let scrutinee = build_expr(&children[1], mode)?;
+    let scrutinee = build_expr(&children[1])?;
     let (bracket_items, bracket_span) = expect_bracket(&children[2])?;
     if bracket_items.len() % 2 != 0 {
         return Err(parse_err(
@@ -1262,7 +1239,7 @@ fn build_match(
             bracket_span,
         ));
     }
-    let arms = build_match_arms(bracket_items, mode)?;
+    let arms = build_match_arms(bracket_items)?;
     Ok(Expr::Match {
         scrutinee: Box::new(scrutinee),
         arms,
@@ -1274,7 +1251,6 @@ fn build_match(
 
 fn build_match_arms(
     items: &[Sexp],
-    mode: CodegenBehaviour,
 ) -> Result<Vec<MatchArm>, CranelispError> {
     let mut arms = Vec::new();
     let mut i = 0;
@@ -1285,7 +1261,7 @@ fn build_match_arms(
         if i >= items.len() {
             return Err(parse_err("match arm missing body", pat_span));
         }
-        let body = build_expr(&items[i], mode)?;
+        let body = build_expr(&items[i])?;
         let arm_span = Span::new(pat_span.start, items[i].span().end);
         i += 1;
         arms.push(MatchArm {
@@ -1346,9 +1322,8 @@ fn build_pattern(sexp: &Sexp) -> Result<Pattern, CranelispError> {
 fn build_vec_lit(
     children: &[Sexp],
     span: Span,
-    mode: CodegenBehaviour,
 ) -> Result<Expr, CranelispError> {
-    let elements = build_args_with_annotations(children, mode)?;
+    let elements = build_args_with_annotations(children)?;
     Ok(Expr::VecLit { elements, span, inferred_type: None })
 }
 
@@ -1401,14 +1376,13 @@ fn parse_annotation_name(name: &str) -> TypeExpr {
 fn build_one_expr_at(
     items: &[Sexp],
     pos: usize,
-    mode: CodegenBehaviour,
 ) -> Result<(Expr, usize), CranelispError> {
     if let Some((annotation, consumed)) = try_consume_annotation(items, pos) {
         let expr_pos = pos + consumed;
         if expr_pos >= items.len() {
             return Err(parse_err("annotation missing expression", items[pos].span()));
         }
-        let inner = build_expr(&items[expr_pos], mode)?;
+        let inner = build_expr(&items[expr_pos])?;
         let span = Span::new(items[pos].span().start, items[expr_pos].span().end);
         Ok((
             Expr::Annotate {
@@ -1420,7 +1394,7 @@ fn build_one_expr_at(
             consumed + 1,
         ))
     } else {
-        let expr = build_expr(&items[pos], mode)?;
+        let expr = build_expr(&items[pos])?;
         Ok((expr, 1))
     }
 }
@@ -1428,12 +1402,11 @@ fn build_one_expr_at(
 /// Build argument list, handling inline annotations (`:Type expr` -> `Annotate`).
 fn build_args_with_annotations(
     items: &[Sexp],
-    mode: CodegenBehaviour,
 ) -> Result<Vec<Expr>, CranelispError> {
     let mut args = Vec::new();
     let mut i = 0;
     while i < items.len() {
-        let (expr, consumed) = build_one_expr_at(items, i, mode)?;
+        let (expr, consumed) = build_one_expr_at(items, i)?;
         args.push(expr);
         i += consumed;
     }
@@ -1633,9 +1606,6 @@ mod tests {
         false
     }
 
-    /// Test-default build mode — REPL-equivalent, accepts `(trace ...)`.
-    const TEST_MODE: CodegenBehaviour = CodegenBehaviour::InMemoryAndObject;
-
     fn parse_and_build_program(input: &str) -> Result<Program, CranelispError> {
         let sexps = crate::reader::parse(input)?;
         let mut out = Vec::new();
@@ -1648,7 +1618,7 @@ mod tests {
                 // errors. Drop per-deftype Constructor entries — they were
                 // not in the legacy `Program` shape; the TypeDef entry
                 // alone carries the constructor list inline for assertion.
-                let entries = build_form(&s, TEST_MODE)?;
+                let entries = build_form(&s)?;
                 for entry in entries {
                     if matches!(entry, ParsedEntry::Constructor { .. }) {
                         continue;
@@ -1656,7 +1626,7 @@ mod tests {
                     out.push(parsed_entry_to_top_level(entry));
                 }
             } else {
-                let expr = build_expr(&s, TEST_MODE)?;
+                let expr = build_expr(&s)?;
                 out.push(TopLevel::Expr(expr));
             }
         }
@@ -1667,12 +1637,12 @@ mod tests {
         let sexps = crate::reader::parse(input)?;
         assert!(!sexps.is_empty(), "expected at least one sexp");
         if is_top_level_form(&sexps[0]) {
-            let mut entries = build_form(&sexps[0], TEST_MODE)?;
+            let mut entries = build_form(&sexps[0])?;
             entries.retain(|e| !matches!(e, ParsedEntry::Constructor { .. }));
             assert!(!entries.is_empty(), "expected at least one TopLevel-shaped entry");
             Ok(parsed_entry_to_top_level(entries.remove(0)))
         } else {
-            let expr = build_expr(&sexps[0], TEST_MODE)?;
+            let expr = build_expr(&sexps[0])?;
             Ok(TopLevel::Expr(expr))
         }
     }
@@ -1680,28 +1650,7 @@ mod tests {
     fn parse_and_build_expr(input: &str) -> Result<Expr, CranelispError> {
         let sexps = crate::reader::parse(input)?;
         assert!(!sexps.is_empty(), "expected at least one sexp");
-        build_expr(&sexps[0], TEST_MODE)
-    }
-
-    /// Build a single `Expr` from `input` under the given mode. Used by the
-    /// link-mode rejection tests below to assert build-mode behavior.
-    fn parse_and_build_expr_with_mode(
-        input: &str,
-        mode: CodegenBehaviour,
-    ) -> Result<Expr, CranelispError> {
-        let sexps = crate::reader::parse(input)?;
-        assert!(!sexps.is_empty(), "expected at least one sexp");
-        build_expr(&sexps[0], mode)
-    }
-
-    /// Build a single top-level form's `Vec<ParsedEntry>` under the given mode.
-    fn parse_and_build_form_with_mode(
-        input: &str,
-        mode: CodegenBehaviour,
-    ) -> Result<Vec<ParsedEntry>, CranelispError> {
-        let sexps = crate::reader::parse(input)?;
-        assert!(!sexps.is_empty(), "expected at least one sexp");
-        build_form(&sexps[0], mode)
+        build_expr(&sexps[0])
     }
 
     // -- Literals --
@@ -3089,7 +3038,7 @@ mod tests {
     // yields exactly one ParsedEntry::Def.
     #[test]
     fn build_form_defn_yields_single_def() {
-        let entries = build_form(&parse_one("(defn add [a b] (add-i64 a b))"), TEST_MODE).unwrap();
+        let entries = build_form(&parse_one("(defn add [a b] (add-i64 a b))")).unwrap();
         assert_eq!(entries.len(), 1, "defn should yield 1 entry");
         match &entries[0] {
             ParsedEntry::Def { name, variants, visibility, .. } => {
@@ -3105,7 +3054,7 @@ mod tests {
     // spec: 02-grammar §2.6 — defn- yields Private visibility.
     #[test]
     fn build_form_defn_private() {
-        let entries = build_form(&parse_one("(defn- helper [x] x)"), TEST_MODE).unwrap();
+        let entries = build_form(&parse_one("(defn- helper [x] x)")).unwrap();
         match &entries[0] {
             ParsedEntry::Def { visibility, .. } => {
                 assert_eq!(*visibility, Visibility::Private);
@@ -3119,7 +3068,7 @@ mod tests {
     #[test]
     fn build_form_deftype_yields_typedef_plus_per_constructor() {
         // 3 variants → 4 entries.
-        let entries = build_form(&parse_one("(deftype Color Red Green Blue)"), TEST_MODE).unwrap();
+        let entries = build_form(&parse_one("(deftype Color Red Green Blue)")).unwrap();
         assert_eq!(entries.len(), 4, "1 TypeDef + 3 Constructors expected");
         match &entries[0] {
             ParsedEntry::TypeDef { name, constructors, .. } => {
@@ -3144,7 +3093,7 @@ mod tests {
     // yields 1 TypeDef + 1 Constructor.
     #[test]
     fn build_form_deftype_product_yields_two_entries() {
-        let entries = build_form(&parse_one("(deftype Point [:Int x :Int y])"), TEST_MODE).unwrap();
+        let entries = build_form(&parse_one("(deftype Point [:Int x :Int y])")).unwrap();
         assert_eq!(entries.len(), 2);
         assert!(matches!(&entries[0], ParsedEntry::TypeDef { .. }));
         match &entries[1] {
@@ -3160,7 +3109,7 @@ mod tests {
     // spec: 02-grammar §2.2.3 — deftrait yields exactly one TraitDecl.
     #[test]
     fn build_form_deftrait_yields_single_trait_decl() {
-        let entries = build_form(&parse_one("(deftrait Display (show [self] String))"), TEST_MODE).unwrap();
+        let entries = build_form(&parse_one("(deftrait Display (show [self] String))")).unwrap();
         assert_eq!(entries.len(), 1);
         match &entries[0] {
             ParsedEntry::TraitDecl { decl } => {
@@ -3176,7 +3125,6 @@ mod tests {
     fn build_form_impl_yields_single_trait_impl() {
         let entries = build_form(
             &parse_one("(impl Display Int (defn show [x] (int-to-string x)))"),
-            TEST_MODE,
         )
         .unwrap();
         assert_eq!(entries.len(), 1);
@@ -3195,7 +3143,6 @@ mod tests {
     fn build_form_defmacro_yields_single_macro_with_all_clauses() {
         let entries = build_form(
             &parse_one("(defmacro when ([cond body] (if cond body 0)))"),
-            TEST_MODE,
         )
         .unwrap();
         assert_eq!(entries.len(), 1);
@@ -3215,7 +3162,6 @@ mod tests {
     fn build_form_multi_clause_defmacro_yields_single_macro() {
         let entries = build_form(
             &parse_one("(defmacro pick ([x] x) ([x y] x) ([x y z] x))"),
-            TEST_MODE,
         )
         .unwrap();
         assert_eq!(entries.len(), 1);
@@ -3231,7 +3177,7 @@ mod tests {
     // `build_form` is a caller bug.
     #[test]
     fn build_form_rejects_begin() {
-        let err = build_form(&parse_one("(begin 1 2)"), TEST_MODE).unwrap_err();
+        let err = build_form(&parse_one("(begin 1 2)")).unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("begin") && msg.contains("flatten"),
@@ -3242,7 +3188,7 @@ mod tests {
     // facade — structural decls must be peeled by extract_module_declarations.
     #[test]
     fn build_form_rejects_import() {
-        let err = build_form(&parse_one("(import [user [foo]])"), TEST_MODE).unwrap_err();
+        let err = build_form(&parse_one("(import [user [foo]])")).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("structural"), "got: {msg}");
     }
@@ -3251,7 +3197,7 @@ mod tests {
     #[test]
     fn build_form_rejects_bare_expression() {
         // A bare int isn't a top-level form vocabulary entry.
-        let err = build_form(&parse_one("42"), TEST_MODE).unwrap_err();
+        let err = build_form(&parse_one("42")).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("top-level form"), "got: {msg}");
     }
@@ -3259,7 +3205,7 @@ mod tests {
     // facade — unknown top-level head produces a clear error.
     #[test]
     fn build_form_rejects_unknown_head() {
-        let err = build_form(&parse_one("(woot foo bar)"), TEST_MODE).unwrap_err();
+        let err = build_form(&parse_one("(woot foo bar)")).unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("unknown top-level form"),
@@ -3270,129 +3216,8 @@ mod tests {
     // facade — `build_expr` is a pure structural transform; no macro lookup.
     #[test]
     fn build_expr_pure_int_literal() {
-        let expr = build_expr(&parse_one("42"), TEST_MODE).unwrap();
+        let expr = build_expr(&parse_one("42")).unwrap();
         assert!(matches!(expr, Expr::IntLit { value: 42, .. }));
     }
 
-    // ---------------------------------------------------------------------
-    // Build-mode rejection — `(trace ...)` under `CodegenBehaviour::ObjectOnly`
-    // ---------------------------------------------------------------------
-    // Per spec/04-expressions.md §4.12.9 and Decision 40 (Path B1):
-    // `(trace ...)` is REPL/`--run`-only. The check is inlined at the
-    // `build_trace` AST-recognition site — no separate validator pass.
-
-    // spec: spec/04-expressions.md §4.12.9 — `(trace ...)` rejected in --link mode.
-    #[test]
-    fn trace_at_top_rejected_under_link_mode() {
-        let err = parse_and_build_expr_with_mode("(trace 42)", CodegenBehaviour::ObjectOnly)
-            .expect_err("trace must be rejected under --link mode");
-        match err {
-            CranelispError::ParseError { ref message, .. } => {
-                assert!(
-                    message.contains("(trace ...)"),
-                    "error message should name the form, got: {message}"
-                );
-                assert!(
-                    message.contains("§4.12.9"),
-                    "error message should cite spec §4.12.9, got: {message}"
-                );
-                assert!(
-                    message.contains("--link"),
-                    "error message should name --link mode, got: {message}"
-                );
-            }
-            other => panic!("expected ParseError, got: {other:?}"),
-        }
-        // The error's span must point at the trace form itself (not span::SYNTHETIC).
-        assert_ne!(err.span(), Span::SYNTHETIC);
-    }
-
-    // spec: spec/04-expressions.md §4.12.1-4.12.8 — `(trace ...)` is legal
-    // in REPL/`--run` modes. The build-mode check is a no-op there.
-    #[test]
-    fn trace_accepted_under_inmem_mode() {
-        let expr = parse_and_build_expr_with_mode(
-            "(trace 42)",
-            CodegenBehaviour::InMemoryAndObject,
-        )
-        .expect("trace must be accepted under REPL/--run mode");
-        assert!(matches!(expr, Expr::Trace { .. }));
-    }
-
-    // spec: spec/04-expressions.md §4.12.9 — rejection fires regardless of
-    // depth. Nested `(trace ...)` inside a let-binding is equally rejected.
-    #[test]
-    fn nested_trace_in_let_rejected_under_link_mode() {
-        let err = parse_and_build_expr_with_mode(
-            "(let [x (trace 42)] x)",
-            CodegenBehaviour::ObjectOnly,
-        )
-        .expect_err("nested trace must be rejected under --link mode");
-        assert!(
-            matches!(err, CranelispError::ParseError { .. }),
-            "expected ParseError variant"
-        );
-    }
-
-    // Nested `(trace ...)` inside an if-branch is rejected.
-    #[test]
-    fn nested_trace_in_if_branch_rejected_under_link_mode() {
-        let err = parse_and_build_expr_with_mode(
-            "(if true (trace 1) 2)",
-            CodegenBehaviour::ObjectOnly,
-        )
-        .expect_err("trace in if-branch must be rejected under --link mode");
-        assert!(matches!(err, CranelispError::ParseError { .. }));
-    }
-
-    // Trace inside an `Apply` (function call argument) is rejected.
-    #[test]
-    fn nested_trace_in_apply_arg_rejected_under_link_mode() {
-        // `+` is just an arbitrary callee; the recognition site is structure-blind.
-        let err = parse_and_build_expr_with_mode(
-            "(+ 1 (trace 2))",
-            CodegenBehaviour::ObjectOnly,
-        )
-        .expect_err("trace in apply-arg must be rejected under --link mode");
-        assert!(matches!(err, CranelispError::ParseError { .. }));
-    }
-
-    // Programs with no `(trace ...)` form are accepted in any mode.
-    #[test]
-    fn no_trace_accepted_under_link_mode() {
-        let expr = parse_and_build_expr_with_mode("(+ 1 2)", CodegenBehaviour::ObjectOnly)
-            .expect("plain expression must be accepted under --link mode");
-        assert!(matches!(expr, Expr::Apply { .. }));
-    }
-
-    // spec: spec/04-expressions.md §4.12.9 — `(trace ...)` inside a `defn`
-    // body is rejected — the inline check inside `build_trace` fires during
-    // `build_form` -> `parse_defn` -> ... -> `build_trace`.
-    #[test]
-    fn trace_in_defn_body_rejected_under_link_mode() {
-        let err = parse_and_build_form_with_mode(
-            "(defn f [] (trace 42))",
-            CodegenBehaviour::ObjectOnly,
-        )
-        .expect_err("trace in defn body must be rejected under --link mode");
-        match err {
-            CranelispError::ParseError { ref message, .. } => {
-                assert!(message.contains("(trace ...)"));
-                assert!(message.contains("§4.12.9"));
-            }
-            other => panic!("expected ParseError, got: {other:?}"),
-        }
-    }
-
-    // Top-level forms that contain no expressions (typedefs, etc.) accept any
-    // build mode — the recognition site is only inside `build_trace`.
-    #[test]
-    fn typedef_accepted_under_link_mode() {
-        let entries = parse_and_build_form_with_mode(
-            "(deftype Color Red Green Blue)",
-            CodegenBehaviour::ObjectOnly,
-        )
-        .expect("typedef-shaped entries must be accepted under --link mode");
-        assert!(!entries.is_empty());
-    }
 }

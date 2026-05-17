@@ -264,16 +264,12 @@ pub struct SharedState {
     pub typecheck_products: DashMap<ModuleFullPath, TypecheckProduct>,
 
     // ──────────── Configuration ────────────
-    /// Compile-time codegen mode (REPL/`--run` → `InMemoryAndObject`;
-    /// `--link` → `ObjectOnly`). Captured from `SessionSettings` at session
-    /// construction. **Post-`4191374`**: the frontend threads
-    /// `CodegenBehaviour` via a `build_form` parameter — `build_trace`
-    /// rejects the `(trace ...)` form inline at AST-build time when the
-    /// caller passes `ObjectOnly`. The SharedState field still holds the
-    /// session-construction value for any other consumer that reads it (no
-    /// `--link` mode toggle exists today). S68 may fold under
-    /// `SessionSettings` if/when settings migrates whole.
-    pub codegen_behaviour: CodegenBehaviour,
+    // Sprint 67 Wave 4 follow-up: `codegen_behaviour: CodegenBehaviour` was
+    // here. Retired. The frontend `build_form` / `build_expr` boundary is
+    // mode-agnostic; `(trace ...)` in `--link` standalone-binary mode fails at
+    // link time via the architecture's natural missing-symbol detection. The
+    // session-construction value still lives on `SessionSettings` for
+    // potential future consumers; no projection onto `SharedState` is needed.
 
     /// Project root directory (read-only after construction).
     pub project_root: PathBuf,
@@ -290,10 +286,10 @@ pub struct SharedState {
     pub platform_dirs: Mutex<Vec<PathBuf>>,
 
     // `settings: SessionSettings` — not currently held as one cohesive
-    // struct on SharedState; the relevant fields (`codegen_behaviour`)
-    // are projected as individual SharedState fields above. The S67 W1
-    // PIF-relocate row for `settings` lands in S68 along with the
-    // remaining alignment work.
+    // struct on SharedState; with `codegen_behaviour` retired in the
+    // Sprint 67 Wave 4 follow-up subtraction, no SessionSettings field is
+    // currently projected onto SharedState. The S67 W1 PIF-relocate row for
+    // `settings` lands in S68 along with the remaining alignment work.
 }
 
 #[non_exhaustive]
@@ -334,7 +330,6 @@ pub struct DllHandle {
 | `module_sexps` | SharedState (S68 PIF — delete via redesign) | Pre-cluster-atomic cross-thread dep-publishing; in-call-stack value after FIXME 0179 |
 | `suspend_states` | SharedState (S68 PIF — delete via redesign) | Pre-cluster-atomic resume-on-dep-arrival; eliminated by cluster atomicity |
 | `typecheck_products` | SharedState (S68 PIF — vestigial; ~2 fields left) | Sprint 56 gutted; remaining fields migrate onto `SymbolTable` |
-| `codegen_behaviour` | SharedState | Captured at session construction; consumed by `build_trace` rejection path (frontend now threads via parameter post `4191374`) |
 | `project_root` / `lib_dirs` / `platform_dirs` | SharedState | Read by workers (e.g., for cache path resolution); `lib_dirs` / `platform_dirs` `Mutex`-wrapped for runtime reconfiguration |
 | `error_modules` | CompilerSession | REPL-eval failure accumulator; read by `/list` + `eval` (blocks against a known-bad module). Workers report failures via the scheduler. Initiator-only. |
 | `watcher` | CompilerSession | mpsc receiver — only the initiator thread reads from it |
@@ -388,11 +383,11 @@ Net direction (S67 W1 reconciliation): ~12 PFR (facade text catches up to impl r
 - **PIF taken** for `current_repl_module` (sub-fire 2d) — relocated from `SharedState.current_module: Mutex<ModuleFullPath>` to `CompilerSession.current_repl_module: ModuleFullPath`. The `Mutex` was vestigial (REPL is single-threaded against this field).
 - **PIF deferred to S68** for `repl_check_state`, `module_sexps`, `suspend_states` — all three are confirmed load-bearing in S67 source inspection; relocation/deletion is gated on cluster-atomic completion (FIXME 0179 read-union).
 - **PFR taken** for `cache: Arc<ObjectCache>` field row (facade reflects the landed shape).
-- **PFR deferred** for the listed widening rows (`next_type_id`, `test_runner_state`, `promote_nice_workers`, `file_to_module`, `lib_dirs`/`platform_dirs` Mutex shapes, `codegen_behaviour` added per FIXME 0205) — addressed by this fire's §"SharedState" facade-text refresh; impl shapes unchanged.
+- **PFR deferred** for the listed widening rows (`next_type_id`, `test_runner_state`, `promote_nice_workers`, `file_to_module`, `lib_dirs`/`platform_dirs` Mutex shapes) — addressed by this fire's §"SharedState" facade-text refresh; impl shapes unchanged. (`codegen_behaviour` had been added per FIXME 0205; retired in the Sprint 67 Wave 4 follow-up subtraction.)
 - **PFR-rename deferred to S68** for `kept_dlls` (still `Mutex<Vec<LoadedPlatform>>`; facade prescribes `DashMap<PathBuf, Arc<DllHandle>>`) and `introspection` (still bare `DashMap`; facade prescribes `Option<DashMap>` per Decision 38). Drift documented in §"SharedState" rather than masked.
 - **PIF-relocate deferred to S68** for `SessionSettings` — still destructured into individual fields on construction.
 
-After S67 close the impl `SharedState` field count stands at 17 (no net change from W1 audit; `cached_modules`/`cache_dir`/`cache_state`/`compiled_o_paths`/`current_module` removed = 5 deletions; `cache`/`codegen_behaviour` added = 2 additions; the net narrowing of 3 is absorbed by `ObjectCache`/`CompilerSession.current_repl_module` relocations, not deletions). The field count is not the metric — **facade-alignment is**, and the §"SharedState" block above now enumerates all 17 with disposition notes per residual.
+After S67 close the impl `SharedState` field count stands at 16 (`cached_modules`/`cache_dir`/`cache_state`/`compiled_o_paths`/`current_module` removed = 5 deletions; `cache` added = 1 addition; `codegen_behaviour` was added per FIXME 0205 then retired in the Sprint 67 Wave 4 follow-up subtraction = net 0). The field count is not the metric — **facade-alignment is**, and the §"SharedState" block above now enumerates all 16 with disposition notes per residual.
 
 ### Settings and config
 
@@ -883,7 +878,7 @@ Per `src/CLAUDE.md` §"Int-owned JIT intrinsics", `src/session_v4.rs::int_intrin
 
 The 11 new entries land via FIXMEs 0197 (backend deletion) + 0202 (int registration) + 0204 (host migration). Backend's `IntrinsicSymbol` registry shrinks by 12 entries in the same change-set; the JIT-resolution path for these symbols flips from `cranelisp_intrinsics::trace::*` (pre-S67) to `crate::trace::*` (post-S67).
 
-**Build-mode validation (S67 W4 — `4191374`).** Per `spec/04-expressions.md §4.12.9`, `(trace ...)` is REPL/`--run`-only; `--link` rejects the form at compile time. The rejection is **inlined inside `cranelisp_frontend::ast_builder::build_trace`** — the frontend threads `CodegenBehaviour` via a `build_form` / `build_expr` parameter. The pre-S67 separate `link_mode::validate_*` validator (introduced as a sketch path for the FIXME-0199 validator wiring) was retired in `4191374` once the inline rejection replaced it. `SharedState.codegen_behaviour` still holds the session-construction value but is not re-read on the trace-rejection hot path.
+**Trace-in-`--link` rejection (S67 W4 follow-up — subtraction).** Per `spec/04-expressions.md §4.12.9`, `(trace ...)` is REPL/`--run`-only; `--link` rejects programs that use the form. The rejection is **the architecture's natural missing-symbol failure** — there is no frontend pre-pass check, no inline `build_trace` rejection, no `CodegenBehaviour` parameter threaded through `build_form` / `build_expr`. Backend emits `cranelisp_collect_trace` as `Linkage::Import` regardless of mode (one codegen source path; Module as generic param). The JIT path (REPL, `--run`) resolves the import at finalize via `JITBuilder::symbol()` (int_intrinsics() provides the trace runtime symbols). The object path (`--link`) writes the import to `.o`; exe-bundle force-link for trace was deleted in commit 0202, so the trace runtime is not present in the staticlib produced for standalone binaries; the system linker errors with "undefined symbol cranelisp_collect_trace". That link-time error IS the rejection. The earlier `link_mode::validate_*` validator (introduced via FIXME 0199, retired in `4191374`) and its successor inline `build_trace` rejection (commit `4191374`, retired in the Sprint 67 Wave 4 follow-up subtraction) were both engineering around a failure mode the architecture already produces. FIXME 0209 reframes the spec wording from "compile-time error" to "link-time rejection" to align with this mechanism.
 
 **Unconditional registration is mandatory.** Every JIT-build site in this crate folds `int_intrinsics()` into the `JITBuilder::symbol` set before calling `Jit::new_with_symbols`. The two current sites are `worker::inline_jit_codegen_for_names` and `pipeline::compile_and_execute_expr` (plus its trace variant). No syntactic gating — the pre-S66 `program_uses_test_forms` / `program_needs_trace` / `any_compiled_defn_uses_test_forms` helpers were deleted in Wave 3a-γ (see `src/CLAUDE.md`'s forbidden-patterns note + FIXME 0178).
 

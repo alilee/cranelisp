@@ -28,12 +28,11 @@ pub mod defmacro;
 
 use cranelisp_types::{CranelispError, Sexp};
 
-// `build_form` and `build_expr` take a `CodegenBehaviour` parameter — under
-// `CodegenBehaviour::ObjectOnly` (`--link`), `(trace ...)` is rejected at the
-// AST-recognition site inside `build_trace` per spec/04-expressions.md §4.12.9
-// and Decision 40 (Path B1). The check is inline; no separate validator pass.
-// Sprint 67 Wave 4 follow-up retired the pre-pass walker at
-// `crates/cranelisp-frontend/src/link_mode.rs`.
+// `build_form` and `build_expr` are mode-agnostic. `(trace ...)` in `--link`
+// standalone-binary mode fails at link time via the architecture's natural
+// missing-symbol detection (the trace runtime is not bundled into the staticlib
+// produced by exe-bundle); no frontend pre-pass check is needed. See
+// spec/04-expressions.md §4.12.9.
 pub use ast_builder::{build_expr, build_form};
 pub use expand::ExpansionError;
 // Re-export `ResolutionGap` for ergonomics — `ExpansionError::Gap` consumers

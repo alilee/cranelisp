@@ -180,15 +180,12 @@ pub fn process_cluster(
     scope: &ModuleFullPath,
 ) -> Result<ProcessedCluster, CranelispError> {
     // Build the cluster's `Vec<TopLevel>` via the new `build_form` /
-    // `build_expr` boundary (replacing the retired `build_program`). Per
-    // Decision 40 / Path B1 (FIXME 0199; supersedes 0202–0204):
-    // `build_program_compat` threads `shared.codegen_behaviour` into
-    // `build_form` / `build_expr`; under `CodegenBehaviour::ObjectOnly`
-    // (`--link`) the `(trace ...)` form is rejected at the AST-recognition
-    // site inside `ast_builder::build_trace`. Sprint 67 Wave 4 follow-up
-    // retired the pre-pass walker that previously sat at this seam.
-    let working_program =
-        crate::worker::build_program_compat(&forms, shared.codegen_behaviour)?;
+    // `build_expr` boundary (replacing the retired `build_program`). Build is
+    // mode-agnostic. `(trace ...)` in `--link` standalone-binary mode fails at
+    // link time via the architecture's natural missing-symbol detection — the
+    // trace runtime is not bundled into the staticlib produced by exe-bundle.
+    // See spec/04-expressions.md §4.12.9.
+    let working_program = crate::worker::build_program_compat(&forms)?;
 
     // Wrap any bare `Expr` form as a synthetic `__expr` defn so it flows
     // through the typecheck dispatch.

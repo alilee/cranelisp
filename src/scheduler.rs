@@ -2006,7 +2006,6 @@ mod tests {
             // Sprint 67 Cluster B sub-fire 2e: `cached_modules` SharedState
             // duplicate deleted — scheduler set is single source of truth.
             file_to_module: Mutex::new(std::collections::HashMap::new()),
-            codegen_behaviour: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
             symbol_tables: dashmap::DashMap::new(),
             next_type_id: std::sync::atomic::AtomicU32::new(0),
             // Sprint 67 Cluster B sub-fire 2d: `current_module` PIF-relocated

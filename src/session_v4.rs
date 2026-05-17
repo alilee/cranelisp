@@ -713,18 +713,14 @@ pub struct SharedState {
     // was here. Folded into `ObjectCache` (above) as interior state — callers
     // now dispatch through `shared.cache.*` methods.
 
-    /// Compile-time codegen mode (REPL/`--run` => `InMemoryAndObject`;
-    /// `--link` => `ObjectOnly`). Captured from `SessionSettings` at
-    /// construction and read by `worker::build_program_compat` per Decision
-    /// 40 / Path B1 (FIXME 0199; supersedes 0202–0204).
-    ///
-    /// Per spec/04-expressions.md §4.12.9: `(trace ...)` is REPL/`--run`-only;
-    /// `--link` rejects the form at compile time. The flag threads through
-    /// `cranelisp_frontend::build_form` / `build_expr` to the rejection
-    /// inlined inside `ast_builder::build_trace`.
-    /// `CodegenBehaviour::InMemoryAndObject` makes the rejection a no-op
-    /// branch (trace permitted).
-    pub codegen_behaviour: CodegenBehaviour,
+    // Sprint 67 Wave 4 follow-up: `codegen_behaviour: CodegenBehaviour` was
+    // here. Retired. The frontend `build_form` / `build_expr` boundary is
+    // mode-agnostic; `(trace ...)` in `--link` standalone-binary mode fails at
+    // link time via the architecture's natural missing-symbol detection (the
+    // trace runtime is not bundled into the staticlib produced by exe-bundle).
+    // The session-construction value still lives on `SessionSettings` for
+    // potential future consumers; no projection onto `SharedState` is needed.
+    // See spec/04-expressions.md §4.12.9.
 
     // -- Stateless TC: shared state (Sprint 51) --
     // The single source of truth for per-module symbol data. Formerly owned
@@ -1073,7 +1069,6 @@ impl CompilerSession {
             cache: object_cache,
             promote_nice_workers: AtomicBool::new(false),
             file_to_module: Mutex::new(HashMap::new()),
-            codegen_behaviour: settings.codegen_behaviour,
             symbol_tables,
             next_type_id,
             repl_check_state: Mutex::new(Some(CheckState::new(user_module.clone()))),
@@ -3122,14 +3117,12 @@ impl CompilerSession {
 
         // Build the input through the new `build_form` / `build_expr` boundary
         // (replacing the retired `build_repl_input`). A bare-expr REPL input
-        // is wrapped as a synthetic `__expr` defn for typecheck dispatch. Mode
-        // comes from the session's `SharedState`; under REPL this is
-        // `InMemoryAndObject` so the inline `build_trace` rejection is a
-        // no-op branch (trace permitted).
-        let working_program = crate::worker::build_program_compat(
-            &[sexps[0].clone()],
-            self.shared.codegen_behaviour,
-        )?;
+        // is wrapped as a synthetic `__expr` defn for typecheck dispatch.
+        // Build is mode-agnostic; `(trace ...)` in `--link` standalone-binary
+        // mode (not reachable via REPL) fails at link time via the
+        // architecture's natural missing-symbol detection.
+        let working_program =
+            crate::worker::build_program_compat(&[sexps[0].clone()])?;
         let working_program = self.wrap_exprs_as_synthetic_defns(&working_program);
 
         // Ensure the current module exists before the live ClusterContext
