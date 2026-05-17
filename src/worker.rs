@@ -1774,14 +1774,11 @@ fn register_dep(
     // 2. parse.
     let dep_sexps = cranelisp_frontend::parse(&source)?;
 
-    // 3. record source hash in CacheState for manifest generation.
+    // 3. record source hash for manifest generation. Sprint 67 Cluster B
+    //    sub-fire 3: ObjectCache facade.
     if let Some(shared) = ctx.shared_state {
         let hash = cranelisp_backend::cache::manifest::hash_source(&source);
-        let mut cs_guard = shared.cache_state.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(cs) = cs_guard.as_mut() {
-            cs.source_hashes_mut().insert(dep.clone(), hash);
-        }
-        drop(cs_guard);
+        shared.cache.record_source_hash(dep, hash);
     }
 
     // 4. store source text for /source introspection (--repl).
@@ -1857,12 +1854,11 @@ fn try_cache_hit_load(
     }
 
     // 1. Check cache validity: read source, compute hash, check manifest.
-    let cache_state_guard = shared.cache_state.lock().unwrap_or_else(|e| e.into_inner());
-    let cache_dir = match cache_state_guard.as_ref() {
-        Some(cs) => cs.cache_dir().to_path_buf(),
+    //    Sprint 67 Cluster B sub-fire 3: ObjectCache facade.
+    let cache_dir = match shared.cache.cache_dir() {
+        Some(d) => d,
         None => return false,
     };
-    drop(cache_state_guard);
 
     let dep_source = match std::fs::read_to_string(dep_file) {
         Ok(s) => s,
@@ -1872,14 +1868,7 @@ fn try_cache_hit_load(
 
     // Check manifest (source hash only, no dep hashes yet).
     let dep_hashes: StdHashMap<ModuleFullPath, String> = StdHashMap::new();
-    let cache_state_guard = shared.cache_state.lock().unwrap_or_else(|e| e.into_inner());
-    let is_valid = match cache_state_guard.as_ref() {
-        Some(cs) => cs.is_cache_valid(dep, &source_hash, &dep_hashes),
-        None => return false,
-    };
-    drop(cache_state_guard);
-
-    if !is_valid {
+    if !shared.cache.is_cache_valid(dep, &source_hash, &dep_hashes) {
         return false;
     }
 
@@ -2021,12 +2010,8 @@ fn try_cache_hit_load(
     // 6. Create typecheck product with GOT table for cached module.
     ensure_typecheck_product(ctx.typecheck_products, dep);
 
-    // 7. Record cache hit in cache state.
-    let mut cache_state_guard = shared.cache_state.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(cs) = cache_state_guard.as_mut() {
-        cs.record_cache_hit(dep, source_hash);
-    }
-    drop(cache_state_guard);
+    // 7. Record cache hit. Sprint 67 Cluster B sub-fire 3: ObjectCache facade.
+    shared.cache.record_cache_hit(dep, source_hash);
 
     // 8. Record in cached_modules set (via scheduler — Sprint 67 Cluster B
     //    sub-fire 2e) and file_to_module mapping.
@@ -3554,13 +3539,14 @@ fn load_cached_module_via_linker(
 ) -> Result<Vec<Symbol>, CranelispError> {
     use cranelisp_backend::cache;
 
-    let cache_dir = shared_state.cache_dir.as_ref().ok_or_else(|| CranelispError::ModuleError {
+    // Sprint 67 Cluster B sub-fire 3: cache dir via ObjectCache facade.
+    let cache_dir = shared_state.cache.cache_dir().ok_or_else(|| CranelispError::ModuleError {
         message: format!("no cache directory for cache-hit loading of '{}'", module),
         location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
     })?;
 
     // Load metadata from disk.
-    let cached = cache::try_load_cached_module(cache_dir, module)?
+    let cached = cache::try_load_cached_module(&cache_dir, module)?
         .ok_or_else(|| CranelispError::ModuleError {
             message: format!("cache metadata missing for module '{}'", module),
             location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),

@@ -1999,13 +1999,13 @@ mod tests {
             platform_dirs: Mutex::new(Vec::new()),
             module_sexps: Mutex::new(std::collections::HashMap::new()),
             suspend_states: Mutex::new(std::collections::HashMap::new()),
-            cache_dir: None,
-            compiled_o_paths: Mutex::new(Vec::new()),
+            // Sprint 67 Cluster B sub-fire 3: ObjectCache facade. Disabled
+            // (None) for this unit test — no .o compilation runs here.
+            cache: std::sync::Arc::new(crate::cache::ObjectCache::new(None, None)),
             promote_nice_workers: AtomicBool::new(false),
             // Sprint 67 Cluster B sub-fire 2e: `cached_modules` SharedState
             // duplicate deleted — scheduler set is single source of truth.
             file_to_module: Mutex::new(std::collections::HashMap::new()),
-            cache_state: Mutex::new(None),
             codegen_behaviour: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
             symbol_tables: dashmap::DashMap::new(),
             next_type_id: std::sync::atomic::AtomicU32::new(0),

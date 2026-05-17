@@ -674,13 +674,17 @@ pub struct SharedState {
     /// path. Deferred to S68 review per FIXME 0205 + FIXME 0208 facade refresh.
     pub suspend_states: Mutex<HashMap<ModuleFullPath, crate::worker::ModuleSuspendState>>,
 
-    /// Cache directory for .o and .meta.json output (Step 10).
-    /// None when caching is disabled (e.g., `--run` without `--link`).
-    pub cache_dir: Option<PathBuf>,
-
-    /// Collected .o file paths written by nice workers (Step 10).
-    /// Used by `--link` to pass all .o files to the system linker.
-    pub compiled_o_paths: Mutex<Vec<PathBuf>>,
+    /// Object cache — on-disk `.o` + sidecar pair facade per
+    /// `design/arch/facades/int.md` L166 + L519-549. Sprint 67 Cluster B
+    /// sub-fire 3 replaces the three pre-S67 SharedState fields
+    /// (`cache_dir: Option<PathBuf>`, `cache_state: Mutex<Option<CacheState>>`,
+    /// `compiled_o_paths: Mutex<Vec<PathBuf>>`) with this single facade
+    /// owner. Workers and the initiator dispatch through `ObjectCache`
+    /// methods (`is_enabled`, `cache_dir`, `record_source_hash`,
+    /// `is_cache_valid`, `record_cache_hit`, `record_compiled`,
+    /// `source_hash`, `flush_manifest`, `append_o_path`, `all_paths`) —
+    /// the method surface is the load-bearing facade landing.
+    pub cache: std::sync::Arc<crate::cache::ObjectCache>,
 
     /// Flag for nice worker priority promotion during hot flush (Step 10).
     /// When set to true, nice workers self-promote to normal OS priority.
@@ -705,10 +709,9 @@ pub struct SharedState {
     /// identify which module changed.
     pub file_to_module: Mutex<HashMap<PathBuf, ModuleFullPath>>,
 
-    /// Cache validity state. Holds the manifest, cache directory, and
-    /// source hash records. Behind Mutex because workers update it
-    /// (record_cache_hit) during handle_import.
-    pub cache_state: Mutex<Option<crate::session::CacheState>>,
+    // Sprint 67 Cluster B sub-fire 3: `cache_state: Mutex<Option<CacheState>>`
+    // was here. Folded into `ObjectCache` (above) as interior state — callers
+    // now dispatch through `shared.cache.*` methods.
 
     /// Compile-time codegen mode (REPL/`--run` => `InMemoryAndObject`;
     /// `--link` => `ObjectOnly`). Captured from `SessionSettings` at
@@ -1000,14 +1003,22 @@ impl CompilerSession {
         // Platform dirs: extra search locations from env var (§8.11.5).
         let platform_dirs = crate::session::assemble_platform_dirs();
 
-        let cache_dir = project_root.join(".cranelisp-cache");
-        let _ = std::fs::create_dir_all(&cache_dir);
-
-        let cache_state = if settings.no_cache {
+        // Sprint 67 Cluster B sub-fire 3: cache directory + state are folded
+        // into the `ObjectCache` facade. `Some(_)` when caching is enabled;
+        // `None` under `--no-cache`. The directory is created eagerly because
+        // the worker writes happen on the hot path.
+        let cache_dir_opt = if settings.no_cache {
             None
         } else {
-            Some(crate::session::CacheState::new(cache_dir.clone()))
+            let dir = project_root.join(".cranelisp-cache");
+            let _ = std::fs::create_dir_all(&dir);
+            Some(dir)
         };
+        let cache_state = cache_dir_opt.as_ref()
+            .map(|d| crate::session::CacheState::new(d.clone()));
+        let object_cache = std::sync::Arc::new(
+            crate::cache::ObjectCache::new(cache_dir_opt, cache_state),
+        );
 
         // Priority-worker count: 0 = auto-detect, else explicit. Clamp to
         // [1, 8] per `persistent-workers.md` §5.1.
@@ -1058,11 +1069,9 @@ impl CompilerSession {
             platform_dirs: Mutex::new(platform_dirs),
             module_sexps: Mutex::new(HashMap::new()),
             suspend_states: Mutex::new(HashMap::new()),
-            cache_dir: Some(cache_dir),
-            compiled_o_paths: Mutex::new(Vec::new()),
+            cache: object_cache,
             promote_nice_workers: AtomicBool::new(false),
             file_to_module: Mutex::new(HashMap::new()),
-            cache_state: Mutex::new(cache_state),
             codegen_behaviour: settings.codegen_behaviour,
             symbol_tables,
             next_type_id,
@@ -1309,13 +1318,11 @@ impl CompilerSession {
         path: &ModuleFullPath,
     ) -> Result<Option<cranelisp_types::SymbolTable<Code, ()>>, CranelispError> {
         use cranelisp_backend::cache;
-        let cache_dir = {
-            let guard = self.shared.cache_state.lock()
-                .unwrap_or_else(|e| e.into_inner());
-            match guard.as_ref() {
-                Some(cs) => cs.cache_dir().to_path_buf(),
-                None => return Ok(None),
-            }
+        // Sprint 67 Cluster B sub-fire 3: read cache directory via the
+        // ObjectCache facade method (was: locking `shared.cache_state`).
+        let cache_dir = match self.shared.cache.cache_dir() {
+            Some(d) => d,
+            None => return Ok(None),
         };
         let cached = match cache::try_load_cached_module(&cache_dir, path) {
             Ok(Some(c)) => c,
@@ -2023,13 +2030,11 @@ impl CompilerSession {
         let module = ModuleFullPath::from(module_name);
         let sexps = cranelisp_frontend::parse(source)?;
 
-        // Record source hash in CacheState for manifest generation.
+        // Record source hash for manifest generation. Sprint 67 Cluster B
+        // sub-fire 3: dispatch via the `ObjectCache` facade method.
         {
             let hash = cranelisp_backend::cache::manifest::hash_source(source);
-            let mut cs_guard = self.shared.cache_state.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(cs) = cs_guard.as_mut() {
-                cs.source_hashes_mut().insert(module.clone(), hash);
-            }
+            self.shared.cache.record_source_hash(&module, hash);
         }
 
         // Publish sexps to workers BEFORE registering, so a worker that wakes
@@ -3837,13 +3842,9 @@ impl CompilerSession {
 
         let result = self.shared.scheduler.wait_object_complete();
 
-        // Flush the cache manifest to disk so the next session can detect cache hits.
-        {
-            let cs_guard = self.shared.cache_state.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(cs) = cs_guard.as_ref() {
-                cs.flush_manifest();
-            }
-        }
+        // Flush the cache manifest to disk so the next session can detect
+        // cache hits. Sprint 67 Cluster B sub-fire 3: ObjectCache facade.
+        self.shared.cache.flush_manifest();
 
         result
     }
@@ -3932,10 +3933,9 @@ impl CompilerSession {
 
         let main_returns_io = main_return == crate::exe::MainReturnKind::Io;
 
-        // Collect .o paths from nice workers.
-        let o_paths = self.shared.compiled_o_paths.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
+        // Collect .o paths from nice workers. Sprint 67 Cluster B sub-fire 3:
+        // ObjectCache facade.
+        let o_paths = self.shared.cache.all_paths();
 
         if o_paths.is_empty() {
             return Err(CranelispError::ModuleError {
@@ -3967,7 +3967,8 @@ impl CompilerSession {
             &entry_fn_name,
         )?;
 
-        let cache_dir = self.shared.cache_dir.as_ref().ok_or_else(|| {
+        // Sprint 67 Cluster B sub-fire 3: cache dir via ObjectCache facade.
+        let cache_dir = self.shared.cache.cache_dir().ok_or_else(|| {
             CranelispError::ModuleError {
                 message: "cache directory not configured — cannot write startup .o".into(),
                 location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
@@ -4534,9 +4535,10 @@ pub fn spawn_nice_workers<'scope, 'env>(
 /// Runs at reduced OS scheduling priority. Claims TypecheckDone modules
 /// from the scheduler, compiles them to `.o` files via Cranelift
 /// ObjectModule, writes the `.o` to the cache directory, and appends
-/// the path to `shared.compiled_o_paths` for the linker.
+/// the path to the `ObjectCache` facade (`shared.cache.append_o_path`)
+/// for the linker.
 ///
-/// When caching is disabled (`shared.cache_dir` is None) or no
+/// When caching is disabled (`shared.cache.cache_dir()` is None) or no
 /// program is available for a module, the worker skips
 /// `.o` compilation and just marks the module as object-complete.
 ///
@@ -4571,9 +4573,10 @@ fn nice_worker_loop(shared: &SharedState) {
             }
         };
 
-        // Attempt .o compilation if caching is enabled.
-        if let Some(cache_dir) = &shared.cache_dir {
-            compile_module_object(shared, &module, cache_dir);
+        // Attempt .o compilation if caching is enabled. Sprint 67 Cluster B
+        // sub-fire 3: cache dir via ObjectCache facade.
+        if let Some(cache_dir) = shared.cache.cache_dir() {
+            compile_module_object(shared, &module, &cache_dir);
         }
 
         // Notify scheduler that object codegen is done for this module.
@@ -4706,22 +4709,17 @@ fn compile_module_object(
     }
 
     // Record module in manifest for cache-hit detection on next session.
+    // Sprint 67 Cluster B sub-fire 3: ObjectCache facade — `source_hash` +
+    // `record_compiled` replace the manual cache_state lock + record_module.
     {
-        let mut cs_guard = shared.cache_state.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(cs) = cs_guard.as_mut() {
-            let source_hash = cs.source_hashes()
-                .get(module)
-                .cloned()
-                .unwrap_or_default();
-            // dep_hashes: empty for now — full dependency tracking is a future enhancement.
-            cs.record_module(module, source_hash, std::collections::HashMap::new());
-        }
+        let source_hash = shared.cache.source_hash(module).unwrap_or_default();
+        // dep_hashes: empty for now — full dependency tracking is a future enhancement.
+        shared.cache.record_compiled(module, source_hash, std::collections::HashMap::new());
     }
 
-    // Append the .o path for the linker.
-    if let Ok(mut paths) = shared.compiled_o_paths.lock() {
-        paths.push(o_path);
-    }
+    // Append the .o path for the linker. Sprint 67 Cluster B sub-fire 3:
+    // ObjectCache facade.
+    shared.cache.append_o_path(o_path);
 }
 
 // ---------------------------------------------------------------------------

@@ -30,6 +30,11 @@ pub mod cluster;
 // Sprint 67 Cluster B sub-fire 2a.
 pub mod worker_pool;
 
+// ObjectCache — facade entry point for the on-disk `.o` + sidecar cache
+// owned by `SharedState`. Re-exported per `design/arch/facades/int.md`
+// L519-549. Sprint 67 Cluster B sub-fire 3.
+pub mod cache;
+
 // Internal — accessed only via `crate::*` paths inside the library.
 pub(crate) mod bind_chain_analysis;
 pub(crate) mod cache_writer;
