@@ -19,12 +19,18 @@ pub struct CompilerSession {
     pub shared: Arc<SharedState>,                                                  // worker-shareable subset — see next section
 
     // Initiator-thread-only state — never crosses thread boundary
-    watcher: Option<WatcherChannel>,                                               // notify::Event receiver (impl: src/watch.rs:22 `FileWatcher`)
-    current_repl_module: ModuleFullPath,                                           // /mod state; W3 PIF target — relocated from `SharedState.current_module` per SharedState alignment plan
-    repl_input_active: Arc<AtomicBool>,                                            // shared with watcher event handler via Arc clone
-    worker_pool: WorkerPool,                                                       // joins on Drop
-    warnings: Vec<Warning>,                                                        // initiator-collected, never cross-thread
-    error_modules: HashSet<ModuleFullPath>,                                        // accumulated REPL eval failures; consulted by /list + diagnostic surfacing; impl: session_v4.rs:814
+    // Sprint 67 Cluster B sub-fire 2 (per `src/session_v4.rs:923-980`) collapsed
+    // the prior 3 worker-handle fields (`priority_worker_handles`,
+    // `nice_worker_handles`, `nice_workers`) into the single `WorkerPool` facade
+    // entry (sub-fire 2a/2b), relocated `current_repl_module` off SharedState
+    // (sub-fire 2d), and added `repl_input_active` + `warnings` to give the
+    // facade-prescribed accessors a real backing store (sub-fire 2c).
+    error_modules: HashSet<ModuleFullPath>,                                        // REPL-eval failure accumulator; consulted by /list + diagnostic surfacing
+    watcher: Option<WatcherChannel>,                                               // notify::Event receiver (impl: `src/watch.rs:22 FileWatcher`)
+    worker_pool: WorkerPool,                                                       // priority + nice handles + nice-count; joined on shutdown / Drop
+    current_repl_module: ModuleFullPath,                                           // /mod state; PIF-relocated from `SharedState.current_module` in sub-fire 2d (REPL is single-threaded — no Mutex)
+    repl_input_active: Arc<AtomicBool>,                                            // shared with watcher event handler via Arc clone; watcher-windowing read pending (FIXME residual; S68)
+    warnings: Vec<Warning>,                                                        // initiator-collected accumulator; worker → session merge wiring pending (FIXME residual; S68)
 }
 
 impl CompilerSession {
@@ -154,37 +160,140 @@ pub struct SharedState {
     /// inner DashMap per-entry locks for symbol mutation.
     /// Phase 0 (parse-time) is the only [&mut SymbolTable] hold; everything
     /// after takes shared [&SymbolTable] + per-entry inner locks.
+    /// Impl uses the `SessionSymbolTable` alias (= `SymbolTable<Code, ()>`).
     pub symbol_tables: DashMap<ModuleFullPath, SymbolTable<Code, ()>>,
+
+    /// Monotonic counter for fresh type variable IDs. Per Decision 44 +
+    /// `facades/typecheck.md::register_builtins(modules, next_id)`, all
+    /// TypeCheckEnv instances borrow this `&AtomicU32` to allocate fresh
+    /// vars across concurrent workers. **Int-internal — no clean alternative
+    /// carrier**; typecheck APIs take the reference directly. S68: PFR
+    /// remains stable.
+    pub next_type_id: AtomicU32,
 
     // ──────────── Coordination ────────────
     /// Work dispatch + per-module/per-symbol readiness coordination.
     /// Workers call notify_* on completion and wait_for_* on dependencies.
-    pub scheduler: Arc<CompileScheduler>,
+    pub scheduler: CompileScheduler,                                               // facade ideally prescribes `Arc<CompileScheduler>`; impl holds it inline — S68 PFR may wrap. Drift noted (cosmetic).
 
     /// Object cache — workers read sidecars + .o on cache-hit, write on
-    /// cache-miss codegen.
+    /// cache-miss codegen. **Sprint 67 Cluster B sub-fire 3 landing**: the
+    /// pre-S67 four scattered fields (`cache_dir: Option<PathBuf>`,
+    /// `cache_state: Mutex<Option<CacheState>>`, `compiled_o_paths:
+    /// Mutex<Vec<PathBuf>>`, `cached_modules: Mutex<HashSet>`) collapse
+    /// here. `cached_modules` deletes entirely (scheduler-only via
+    /// `CompileScheduler::cached_module_*`). See §"ObjectCache" below.
     pub cache: Arc<ObjectCache>,
 
     // ──────────── Long-lived runtime state ────────────
     /// Loaded platform DLLs — session-global, kept alive for the session's
-    /// lifetime (per /platform addendum §A3). Indexed by manifest path.
-    pub kept_dlls: DashMap<PathBuf, Arc<DllHandle>>,
+    /// lifetime (per /platform addendum §A3). **Facade prescribes
+    /// `DashMap<PathBuf, Arc<DllHandle>>` for per-manifest dedup; impl
+    /// is `Mutex<Vec<LoadedPlatform>>` (linear-scan dedup)** — S68 PFR-rename
+    /// + cross-field convert to facade shape. Drift noted.
+    pub kept_dlls: Mutex<Vec<LoadedPlatform>>,
+
+    /// File path → module path mapping for the file-watcher cascade.
+    /// Populated during `handle_import` when modules are first discovered;
+    /// read by `try_pop_changes` to identify which module a changed file
+    /// belongs to. Worker-shared by nature. **Int-internal — S68 PFR**
+    /// (S67 W1 plan row: facade widens).
+    pub file_to_module: Mutex<HashMap<PathBuf, ModuleFullPath>>,
+
+    /// Flag for nice worker priority promotion during hot flush (Step 10).
+    /// Set by `wait_object_complete` (initiator); read per-iteration by
+    /// `spawn_nice_workers`. Worker-shared atomic. **Int-internal — S68 PFR**
+    /// (S67 W1 plan row: facade widens).
+    pub promote_nice_workers: AtomicBool,
+
+    /// Test runner state used by the `run-test` / `discover-tests` JIT
+    /// intrinsics (Sprint 66 Wave 3a-γ; src/CLAUDE.md §"Int-owned JIT
+    /// intrinsics"). **Boxed for session-lifetime pointer stability** — the
+    /// `TEST_RUNNER` thread-local stores `*const TestRunnerState` derived
+    /// from this Box, so the alloc must not move. Lifted from per-compile
+    /// init to session-wide init so the test intrinsics may be registered
+    /// unconditionally at every JIT setup (architectural answer to
+    /// FIXME 0177). **Int-internal — S68 PFR** (S67 W1 plan row: facade
+    /// widens). `current_module: Mutex<ModuleFullPath>` sub-field carries
+    /// the REPL `/mod` indirection.
+    pub test_runner_state: Box<TestRunnerState>,
 
     // ──────────── REPL / trace introspection (Decision 38) ────────────
     /// Per-symbol introspection metadata — sexp, source, clif_ir, disasm,
-    /// code_size, compile_duration. Some(map) iff REPL mode OR trace mode
-    /// (CRANELISP_CODEGEN_TRACE) is enabled; None in production batch
-    /// (zero overhead — Run/Link batch carries no per-symbol metadata).
-    /// Codegen and parse paths populate via .as_ref().map(|m| m.insert(...)).
+    /// code_size, compile_duration. **Facade prescribes
+    /// `Option<DashMap<FQSymbol, Introspection>>`** (None outside REPL/trace
+    /// mode — zero overhead per Decision 38). **Impl is `DashMap` direct
+    /// (always allocated)** — S68 PFR-rename to wrap in `Option`. Drift noted.
     /// Per-defn source lives here per Decision 39 — there is no separate
     /// module_sources field.
-    pub introspection: Option<DashMap<FQSymbol, Introspection>>,
+    pub introspection: DashMap<FQSymbol, Introspection>,
 
-    // ──────────── Read-only configuration ────────────
-    pub settings: SessionSettings,
+    // ──────────── REPL-only carry-forward (S68 PIF — relocate to CompilerSession) ────────────
+    /// REPL carry-forward: CheckState that persists across REPL evals
+    /// (substitution, scope stack, overloads, module aliases). None in
+    /// batch mode (CheckState is stack-local per worker). **Live in S67**:
+    /// read by both REPL eval paths (`session_v4.rs:2395, 3377`) + the
+    /// `tc_snapshot`/`tc_restore` REPL error-recovery primitives; mutated
+    /// by `/mod` (`session_v4.rs:1152`). Facade-plan `PIF — relocate to
+    /// CompilerSession`; deferred to S68 (gated on cluster-atomic
+    /// completion).
+    pub repl_check_state: Mutex<Option<CheckState>>,
+
+    // ──────────── Cluster-atomic transition residuals (S68 PIF — delete via redesign) ────────────
+    /// Sexps awaiting typecheck, keyed by module. Populated by
+    /// `register_module_with_source` / `reload_module` on the main thread;
+    /// read (and removed when complete) by persistent priority workers.
+    /// **Cross-thread dep-publishing handshake**; the cluster-atomic flip
+    /// (Decision 44, FIXME 0179) eliminates the need (in-call-stack value
+    /// only). Currently load-bearing; S68 redesign deletes.
+    pub module_sexps: Mutex<HashMap<ModuleFullPath, Vec<Sexp>>>,
+
+    /// Per-module suspension state for resuming a partially-typechecked
+    /// module when a dependency becomes available. **Load-bearing in S67**
+    /// for the pre-cluster-atomic resume-on-dep-arrival path (see
+    /// `src/CLAUDE.md` "Known regressions from Wave 3a-β collapse"). The
+    /// facade-plan direction `PIF — relocate or eliminate` is correct;
+    /// cluster atomicity (gated on FIXME 0179 read-union) eliminates this
+    /// state by construction.
+    pub suspend_states: Mutex<HashMap<ModuleFullPath, ModuleSuspendState>>,
+
+    /// Per-module typecheck products. **Vestigial — Sprint 56 gutted most
+    /// fields; 2 thin fields survive** (the parallel-store role is replaced
+    /// by reads off `symbol_tables[m].defined_symbols()`). S68 migrates the
+    /// last residuals onto `SymbolTable` and deletes the field.
+    pub typecheck_products: DashMap<ModuleFullPath, TypecheckProduct>,
+
+    // ──────────── Configuration ────────────
+    /// Compile-time codegen mode (REPL/`--run` → `InMemoryAndObject`;
+    /// `--link` → `ObjectOnly`). Captured from `SessionSettings` at session
+    /// construction. **Post-`4191374`**: the frontend threads
+    /// `CodegenBehaviour` via a `build_form` parameter — `build_trace`
+    /// rejects the `(trace ...)` form inline at AST-build time when the
+    /// caller passes `ObjectOnly`. The SharedState field still holds the
+    /// session-construction value for any other consumer that reads it (no
+    /// `--link` mode toggle exists today). S68 may fold under
+    /// `SessionSettings` if/when settings migrates whole.
+    pub codegen_behaviour: CodegenBehaviour,
+
+    /// Project root directory (read-only after construction).
     pub project_root: PathBuf,
-    pub lib_dirs: Vec<PathBuf>,
-    pub platform_dirs: Vec<PathBuf>,
+
+    /// Lib directories for module resolution (§8.11.2 tier 3). **Wrapped
+    /// in `Mutex` to support runtime reconfiguration (tests + future
+    /// reload)** — workers hold the lock only for a single read per
+    /// compile. Facade prescribed plain `Vec`; the `Mutex` shape is the
+    /// reality and the right shape. S67 W1 PFR: facade widens.
+    pub lib_dirs: Mutex<Vec<PathBuf>>,
+
+    /// Extra platform DLL search directories (§8.11.3 tier 3). Same Mutex
+    /// rationale as `lib_dirs`.
+    pub platform_dirs: Mutex<Vec<PathBuf>>,
+
+    // `settings: SessionSettings` — not currently held as one cohesive
+    // struct on SharedState; the relevant fields (`codegen_behaviour`)
+    // are projected as individual SharedState fields above. The S67 W1
+    // PIF-relocate row for `settings` lands in S68 along with the
+    // remaining alignment work.
 }
 
 #[non_exhaustive]
@@ -213,17 +322,26 @@ pub struct DllHandle {
 | Field | On | Why |
 |---|---|---|
 | `symbol_tables` | SharedState | Per-symbol mutation by workers; per-entry locks via inner DashMap |
+| `next_type_id` | SharedState | Workers borrow `&AtomicU32` to allocate fresh type-var IDs per Decision 44 |
 | `scheduler` | SharedState | Workers call `notify_*` and `wait_for_*` |
 | `cache` | SharedState | Worker reads sidecars + writes `.o`; the underlying file IO is internally synchronised |
 | `kept_dlls` | SharedState | Platform calls happen on workers (during JIT registration + IO trampoline) |
+| `file_to_module` | SharedState | File-watcher cascade needs the inverse map from any worker that resolves imports |
+| `promote_nice_workers` | SharedState | Initiator sets during hot flush; nice workers read per-iteration to self-promote OS priority |
+| `test_runner_state` | SharedState | JIT-emitted-call intrinsics (`run-test` / `discover-tests`) dereference the session-stable Box from worker threads via thread-local pointer |
 | `introspection` | SharedState | Codegen workers populate `clif_ir`/`disasm`/`compile_duration` |
-| `settings` / `project_root` / `lib_dirs` / `platform_dirs` | SharedState | Read by workers (e.g., for cache path resolution); never mutated post-construction |
+| `repl_check_state` | SharedState (S68 PIF to CompilerSession) | REPL-only carry-forward; deferred relocation pending cluster-atomic completion |
+| `module_sexps` | SharedState (S68 PIF — delete via redesign) | Pre-cluster-atomic cross-thread dep-publishing; in-call-stack value after FIXME 0179 |
+| `suspend_states` | SharedState (S68 PIF — delete via redesign) | Pre-cluster-atomic resume-on-dep-arrival; eliminated by cluster atomicity |
+| `typecheck_products` | SharedState (S68 PIF — vestigial; ~2 fields left) | Sprint 56 gutted; remaining fields migrate onto `SymbolTable` |
+| `codegen_behaviour` | SharedState | Captured at session construction; consumed by `build_trace` rejection path (frontend now threads via parameter post `4191374`) |
+| `project_root` / `lib_dirs` / `platform_dirs` | SharedState | Read by workers (e.g., for cache path resolution); `lib_dirs` / `platform_dirs` `Mutex`-wrapped for runtime reconfiguration |
+| `error_modules` | CompilerSession | REPL-eval failure accumulator; read by `/list` + `eval` (blocks against a known-bad module). Workers report failures via the scheduler. Initiator-only. |
 | `watcher` | CompilerSession | mpsc receiver — only the initiator thread reads from it |
-| `current_repl_module` | CompilerSession | Mutated by `/mod` (initiator-only); workers don't need it |
-| `repl_input_active` | CompilerSession (with `Arc<AtomicBool>` clone passed to watcher event handler) | Initiator-side coordination of watcher windowing |
-| `worker_pool` | CompilerSession | Joining on shutdown is initiator's job |
-| `warnings` | CompilerSession | Initiator-collected; workers route warnings back via the work-completion notification, where they merge into this Vec |
-| `error_modules` | CompilerSession | REPL-eval failures accumulator. Read by `/list` diagnostic surfacing and by `eval` to block subsequent evals against a known-bad module. Workers don't need it — they report failures via the scheduler. Initiator-only. |
+| `worker_pool` | CompilerSession | Joining on shutdown is initiator's job. Sub-fire 2a/2b collapsed 3 worker fields into one facade |
+| `current_repl_module` | CompilerSession (sub-fire 2d — PIF-relocated from SharedState) | Mutated by `/mod` (initiator-only — REPL is single-threaded; no Mutex). Workers receive module per `PriorityWork` / `NiceWork` |
+| `repl_input_active` | CompilerSession (with `Arc<AtomicBool>` clone for watcher event handler) | Initiator-side coordination of watcher windowing; watcher-read wiring is S68 residual |
+| `warnings` | CompilerSession | Initiator-collected; worker → session merge wiring is S68 residual |
 
 **Worker access pattern**: workers receive `Arc<SharedState>` at spawn time (one Arc clone per worker). All reads through `&shared.*` — never `&mut`. All mutations through interior mutability of the contained types. No worker-side merge step; mutations are immediately visible to other workers as soon as the per-cell lock releases.
 
@@ -264,7 +382,17 @@ Direction discipline:
 
 Net direction (S67 W1 reconciliation): ~12 PFR (facade text catches up to impl reality), 4 PIF (impl narrows to facade — `module_sexps`, `suspend_states`, `current_module`, `repl_check_state`), 1 PIF-author-or-keep (`ObjectCache` cohesion — Wave 3 audit decides; alternative: PFR-keep the four scattered fields), 1 PIF-relocate (`SessionSettings` onto `SharedState` — the struct already exists, only the destructure-then-store collapses), 2 PFR-rename (`kept_dlls` shape, `introspection` `Option` wrap).
 
-After Wave 3 the post-S67 `SharedState` field count lands at ~16–18 fields (down from ~17, up from facade's 8). Both moves close edge drift; the field count is not the metric — facade-alignment is.
+**S67 Cluster B landing (sub-fires 1–3, 2026-05-17).** What actually landed in S67 vs what carries to S68:
+
+- **PIF-author taken** for `ObjectCache` (sub-fire 3) — the four scattered cache fields (`cache_dir`, `cache_state`, `compiled_o_paths`, `cached_modules`) collapse. `cached_modules` deletes outright (scheduler-only via `CompileScheduler::cached_module_*` accessors — sub-fire 2e). The remaining three fold into `Arc<ObjectCache>` (the thin wrapper at `src/cache.rs`); call sites dispatch through the method surface (`is_enabled`, `cache_dir`, `record_source_hash`, `record_cache_hit`, `record_compiled`, `source_hash`, `is_cache_valid`, `flush_manifest`, `append_o_path`, `all_paths`). Internals are interim (pass-through to `CacheState`); the facade-prescribed `open` / `lookup_sidecar` / `load_object` / `write` constructor + cache-protocol methods are S68 cohesion work.
+- **PIF taken** for `current_repl_module` (sub-fire 2d) — relocated from `SharedState.current_module: Mutex<ModuleFullPath>` to `CompilerSession.current_repl_module: ModuleFullPath`. The `Mutex` was vestigial (REPL is single-threaded against this field).
+- **PIF deferred to S68** for `repl_check_state`, `module_sexps`, `suspend_states` — all three are confirmed load-bearing in S67 source inspection; relocation/deletion is gated on cluster-atomic completion (FIXME 0179 read-union).
+- **PFR taken** for `cache: Arc<ObjectCache>` field row (facade reflects the landed shape).
+- **PFR deferred** for the listed widening rows (`next_type_id`, `test_runner_state`, `promote_nice_workers`, `file_to_module`, `lib_dirs`/`platform_dirs` Mutex shapes, `codegen_behaviour` added per FIXME 0205) — addressed by this fire's §"SharedState" facade-text refresh; impl shapes unchanged.
+- **PFR-rename deferred to S68** for `kept_dlls` (still `Mutex<Vec<LoadedPlatform>>`; facade prescribes `DashMap<PathBuf, Arc<DllHandle>>`) and `introspection` (still bare `DashMap`; facade prescribes `Option<DashMap>` per Decision 38). Drift documented in §"SharedState" rather than masked.
+- **PIF-relocate deferred to S68** for `SessionSettings` — still destructured into individual fields on construction.
+
+After S67 close the impl `SharedState` field count stands at 17 (no net change from W1 audit; `cached_modules`/`cache_dir`/`cache_state`/`compiled_o_paths`/`current_module` removed = 5 deletions; `cache`/`codegen_behaviour` added = 2 additions; the net narrowing of 3 is absorbed by `ObjectCache`/`CompilerSession.current_repl_module` relocations, not deletions). The field count is not the metric — **facade-alignment is**, and the §"SharedState" block above now enumerates all 17 with disposition notes per residual.
 
 ### Settings and config
 
@@ -520,12 +648,45 @@ pub enum SchedulerError {
 
 ### `ObjectCache` — on-disk `.o` + sidecar pair
 
+**Sprint 67 Cluster B sub-fire 3 landing (`src/cache.rs`).** The four pre-S67 scattered cache fields on `SharedState` (`cache_dir`, `cache_state`, `compiled_o_paths`, `cached_modules`) collapse into a single `Arc<ObjectCache>` owner. `cached_modules` deletes outright (scheduler-only via `CompileScheduler::cached_module_*`). The remaining three are hoisted as `Mutex`-wrapped private state inside `ObjectCache`; callers depend on the method surface.
+
+**Two-tier surface:**
+
+1. **Pass-through method surface (landed S67 W4 — call sites depend on this)** — wraps the existing `crate::session::CacheState` semantics behind one owner. S68 may reshape internals freely without changing call sites.
+
 ```rust
 pub struct ObjectCache {
-    /* opens {project_root}/target/.cache or equivalent */
+    /* opaque — interior:
+         dir: Option<PathBuf>,                           // None when caching disabled
+         state: Mutex<Option<CacheState>>,               // manifest + source hashes
+         compiled_o_paths: Mutex<Vec<PathBuf>>,          // nice-worker .o output collection
+    */
 }
 
 impl ObjectCache {
+    /// Construct from already-resolved cache state. `CompilerSession::new` is the
+    /// sole caller; passes the directory plus initial `CacheState`. The
+    /// facade-prescribed `open(project_root)` constructor (below) is S68 work.
+    pub fn new(dir: Option<PathBuf>, state: Option<CacheState>) -> Self;
+
+    pub fn is_enabled(&self) -> bool;                                              // dir.is_some() && state loaded
+    pub fn cache_dir(&self) -> Option<PathBuf>;
+    pub fn record_source_hash(&self, module: &ModuleFullPath, hash: String);       // dep hash tracking
+    pub fn is_cache_valid(&self, module: &ModuleFullPath, current_source_hash: &str, dep_hashes: &HashMap<ModuleFullPath, String>) -> bool;
+    pub fn record_cache_hit(&self, module: &ModuleFullPath, source_hash: String);
+    pub fn record_compiled(&self, module: &ModuleFullPath, source_hash: String, dep_hashes: HashMap<String, String>);
+    pub fn source_hash(&self, module: &ModuleFullPath) -> Option<String>;
+    pub fn flush_manifest(&self);
+    pub fn append_o_path(&self, path: PathBuf);                                    // nice-worker output collection
+    pub fn all_paths(&self) -> Vec<PathBuf>;                                       // for `--link` collection
+}
+```
+
+2. **Cohesion target (S68 — facade-prescribed cache-protocol surface)** — the canonical `open` / `lookup_sidecar` / `load_object` / `write` surface that hides `CacheState` internals entirely and consolidates per Decision 43 + the BC §"Object cache" alignment. Sub-fire 3 deliberately landed the thin-wrapper shape first per the user's "no premature performance workarounds" + "target state first" disciplines: the method surface is the load-bearing structural change; the cohesion refactor is interim S68 work.
+
+```rust
+impl ObjectCache {
+    // S68 — facade-prescribed surface (NOT YET LANDED):
     pub fn open(project_root: &Path) -> Result<Self, CacheError>;
     pub fn lookup_sidecar<C: CodeStore, L: LinkerStore>(&self, module: &ModuleFullPath, source_hash: u64) -> CacheLookupResult<C, L>;
     pub fn load_object(&self, module: &ModuleFullPath) -> Result<Vec<u8>, CacheError>;
@@ -638,14 +799,14 @@ pub enum CliError {
 
 Per Decision 40, the consumer-side ring buffers and formatters that pre-S65 lived in `cranelisp-runtime` (`trace.rs`, `io_trace.rs`) relocate to int. Per Decision 43, the `IoObserver` registration API lives in `cranelisp-intrinsics`; int registers an observer at session init. Per FIXME 0099, the `GotObserver` registration API lives in `cranelisp-backend`; int registers similarly. All three follow the same shape — env-var-gated activation, per-thread `VecDeque` ring buffer with FIFO overflow, end-of-session flush formatter, RAII guards over the buffers.
 
-**Source-tree hosting (post-Wave 4 of Sprint 67 — proposal).** The facade names three sibling modules; current `src/` has flat-file equivalents:
+**Source-tree hosting (post-Sprint 67 Wave 4 — landed).** Decision 40 Path B1 (user-arbitrated 2026-05-16 amendment) is now complete int-side. The trace edifice lives in int in full:
 
 | Facade name | Source file | Note |
 |---|---|---|
-| `io_trace::*` | `src/io_trace.rs` (exists) | Hosts the post-Decision-40 consumer-side ring buffer. The `record`/`install_if_enabled`/`flush_to_stderr`/`install_panic_hook` shape already lands. Wave 4 task is to ensure the registration call to `cranelisp_intrinsics::register_io_observer` happens at session init. |
+| `io_trace::*` | `src/io_trace.rs` (landed) | Post-Decision-40 consumer-side ring buffer + observer-record + flush + panic hook hosted here in full. Public surface: `record_event`, `record` (the observer callback registered with `cranelisp_intrinsics::register_io_observer`), `install_if_enabled` (env-var gate on `CRANELISP_IO_TRACE=1`), `flush_to_stderr`, `IoTraceFlushGuard`, `install_panic_hook`, plus internal per-thread buffer publishing (`publish_thread_buffer`, `dump_thread_buffer`, `dump_all_buffers`). |
 | `scheduler_trace::*` | `src/observability.rs` (exists) | The pre-existing `observability` module IS the scheduler trace consumer (`SchedulerTraceTag`, `SchedulerTracePayload`, `record_event`, `flush_to_stderr`, `SchedulerTraceFlushGuard`, `TraceFilter`). The facade name `scheduler_trace` is a rename target for clarity; the source can either rename the module or re-export `pub use observability as scheduler_trace`. |
-| `got_trace::*` | `src/got_trace.rs` (exists) | Hosts the post-FIXME-0099 GOT observer ring buffer. The `record`/`install_if_enabled`/`flush_to_stderr`/`install_panic_hook`/`GotTraceFlushGuard` shape already lands. Wave 4 task is to ensure the registration call to `cranelisp_backend::register_got_observer` happens at session init. |
-| `trace::cranelisp_trace_*` (the `(trace ...)` special-form runtime helpers) | proposed `src/trace.rs` | Per Decision 40 + the int CLAUDE.md "Int-owned JIT intrinsics" section, `repl_trace_format` (JIT symbol `cranelisp_trace_format`) is the int-owned intrinsic that lives in `session_v4.rs` today. Wave 4 PIF target: relocate `repl_trace_format` + the `TraceDisplayState` thread-local + `clear_trace_display_state` (currently at `session_v4.rs:4468`) into a dedicated `src/trace.rs` per Decision 40, keeping the JIT-symbol registration path unchanged. |
+| `got_trace::*` | `src/got_trace.rs` (exists) | Hosts the post-FIXME-0099 GOT observer ring buffer. The `record`/`install_if_enabled`/`flush_to_stderr`/`install_panic_hook`/`GotTraceFlushGuard` shape already lands. Registration call to `cranelisp_backend::register_got_observer` at session init. |
+| `trace::cranelisp_trace_*` (the `(trace ...)` special-form runtime helpers) | `src/trace.rs` (landed — Decision 40 Path B1) | **Sprint 67 Wave 4 landing**: all 12 `cranelisp_trace_*` JIT-emitted-call bodies relocated from `cranelisp-intrinsics::trace` to int (per FIXMEs 0197 + 0202 + 0204; backend's 12 `IntrinsicSymbol` entries deleted in the same change-set). The file hosts: `cranelisp_trace_enter`, `cranelisp_trace_exit`, `cranelisp_trace_swap_got`, `cranelisp_trace_restore_got`, `cranelisp_collect_trace`, `cranelisp_trace_first_child_nanos`, `cranelisp_trace_name`, `cranelisp_trace_params`, `cranelisp_trace_result`, `cranelisp_trace_children`, `cranelisp_trace_nanos`, plus the int-side fallback `cranelisp_trace_format` (the production symbol is the `repl_trace_format` shim at `session_v4.rs` — the REPL session has access to the TypeChecker for proper display dispatch; `trace.rs`'s body is the unit-test fallback). The `TraceDisplayState` thread-local + `clear_trace_display_state` companion machinery remains at `session_v4.rs` for session-state proximity; trace.rs is host for the 12 JIT-emitted bodies. Registration is via `int_intrinsics()` — see §"Int-owned JIT intrinsics" below. |
 
 **Naming reconciliation.** The pre-S65 facade text said `src/io_trace/` (directory-style); current source has flat `src/io_trace.rs` (file-style). Both shapes satisfy the facade — directory-style is only required when the module grows multiple sub-files. No PFR/PIF needed; the facade text is updated to name the actual file paths.
 
@@ -696,6 +857,35 @@ pub fn install_panic_hook();
 ```
 
 `IoTraceFlushGuard` and `SchedulerTraceFlushGuard` are int's own types (per Principle 15 they live where the consumer state lives — int's `src/io_trace/` and `src/scheduler_trace/`). They are NOT intrinsics surface (intrinsics owns only the `IoObserver` extension-point API per Decision 40 + 43). Tests that need to flush at end-of-test use these guards; production binaries activate them implicitly on session init when REPL/trace mode is on.
+
+### Int-owned JIT intrinsics — `int_intrinsics()` (post-Decision-40 Path B1)
+
+Per `src/CLAUDE.md` §"Int-owned JIT intrinsics", `src/session_v4.rs::int_intrinsics()` returns the array of `(JIT-symbol, fn-ptr)` pairs that **every** JIT-build site in int must register with `JITBuilder::symbol(...)` before constructing the `Jit`. Backend-emitted CLIF declares these as `Linkage::Import`; without uniform registration the JIT fails to resolve them.
+
+**Post-Sprint 67 Wave 4 (Decision 40 Path B1 amendment, 2026-05-16) — the trace edifice is complete int-side.** The inventory grew from 3 entries (pre-S67) to 14 entries:
+
+| JIT symbol | Rust fn (host) | Reader / use |
+|---|---|---|
+| `discover-tests` | `discover_tests_extern` (`session_v4.rs`) | `(run-tests ...)` special form (Wave 3a-γ) |
+| `run-test` | `run_test_extern` (`session_v4.rs`) | `(run-tests ...)` special form (Wave 3a-γ) |
+| `cranelisp_trace_format` | `repl_trace_format` (`session_v4.rs`) | `(trace ...)` — display-state-aware wrapper (production); `src/trace.rs`'s `cranelisp_trace_format` is the unit-test fallback |
+| `cranelisp_trace_enter` | `crate::trace::cranelisp_trace_enter` | `(trace ...)` — frame entry |
+| `cranelisp_trace_exit` | `crate::trace::cranelisp_trace_exit` | `(trace ...)` — frame exit |
+| `cranelisp_trace_swap_got` | `crate::trace::cranelisp_trace_swap_got` | `(trace ...)` — GOT-swap wrapper install |
+| `cranelisp_trace_restore_got` | `crate::trace::cranelisp_trace_restore_got` | `(trace ...)` — GOT-swap wrapper teardown |
+| `cranelisp_collect_trace` | `crate::trace::cranelisp_collect_trace` | `(trace ...)` — collect frame tree as ADT |
+| `cranelisp_trace_first_child_nanos` | `crate::trace::cranelisp_trace_first_child_nanos` | `(trace ...)` — first-child timing accessor |
+| `cranelisp_trace_name` | `crate::trace::cranelisp_trace_name` | `(trace ...)` — name field accessor |
+| `cranelisp_trace_params` | `crate::trace::cranelisp_trace_params` | `(trace ...)` — params field accessor |
+| `cranelisp_trace_result` | `crate::trace::cranelisp_trace_result` | `(trace ...)` — result field accessor |
+| `cranelisp_trace_children` | `crate::trace::cranelisp_trace_children` | `(trace ...)` — children list accessor |
+| `cranelisp_trace_nanos` | `crate::trace::cranelisp_trace_nanos` | `(trace ...)` — total-nanos field accessor |
+
+The 11 new entries land via FIXMEs 0197 (backend deletion) + 0202 (int registration) + 0204 (host migration). Backend's `IntrinsicSymbol` registry shrinks by 12 entries in the same change-set; the JIT-resolution path for these symbols flips from `cranelisp_intrinsics::trace::*` (pre-S67) to `crate::trace::*` (post-S67).
+
+**Build-mode validation (S67 W4 — `4191374`).** Per `spec/04-expressions.md §4.12.9`, `(trace ...)` is REPL/`--run`-only; `--link` rejects the form at compile time. The rejection is **inlined inside `cranelisp_frontend::ast_builder::build_trace`** — the frontend threads `CodegenBehaviour` via a `build_form` / `build_expr` parameter. The pre-S67 separate `link_mode::validate_*` validator (introduced as a sketch path for the FIXME-0199 validator wiring) was retired in `4191374` once the inline rejection replaced it. `SharedState.codegen_behaviour` still holds the session-construction value but is not re-read on the trace-rejection hot path.
+
+**Unconditional registration is mandatory.** Every JIT-build site in this crate folds `int_intrinsics()` into the `JITBuilder::symbol` set before calling `Jit::new_with_symbols`. The two current sites are `worker::inline_jit_codegen_for_names` and `pipeline::compile_and_execute_expr` (plus its trace variant). No syntactic gating — the pre-S66 `program_uses_test_forms` / `program_needs_trace` / `any_compiled_defn_uses_test_forms` helpers were deleted in Wave 3a-γ (see `src/CLAUDE.md`'s forbidden-patterns note + FIXME 0178).
 
 ### Display surface — `src/display.rs` (per FIXME 0108)
 
