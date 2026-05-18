@@ -25,3 +25,4 @@ Each Principle is one file at `principles/NN-{slug}.md`. Index:
 - [Principle 15](principles/15-facade-types-live-with-behavior.md) — Facade types live with their behavior
 - [Principle 16](principles/16-punctuation-symbols-are-not-special.md) — Punctuation symbols are not special
 - [Principle 17](principles/17-module-locality-in-typecheck.md) — Module locality in typecheck
+- [Principle 18](principles/18-enforce-invariants-structurally.md) — Enforce architectural invariants structurally where possible (S68 — motivating context: Decision 0048 §"Structural invariant — backend dep-ban", user-arbitrated revision 2026-05-17)

@@ -79,16 +79,25 @@ pub struct IntrinsicSymbol {
     pub has_return: bool,
 }
 
-/// Return the authoritative list of all runtime and primitive intrinsic symbols.
+/// Return the authoritative list of runtime intrinsic symbols.
 ///
-/// Single source of truth for the JIT name -> function pointer mapping.
-/// Addresses cache audit HIGH-1: one authoritative registry for JIT,
-/// Linker, and ObjectModule paths.
+/// Per Decision 0048 §"Structural invariant — backend dep-ban" (S68 Wave 4):
+/// this enumeration is **intrinsics-only**. User-callable primitives
+/// (`add-i64`, `str-concat`, `vec-len`, `not`, …) are reached through the
+/// standard cross-module GOT-indirect dispatch path against the synthetic
+/// `primitives` module's `SymbolTable<Code, ()>` (statically constructed
+/// in `cranelisp-primitives::PRIMITIVES_TABLE`; Arc-cloned into every
+/// `CompilerSession`'s symbol tables at init by the int crate).
 ///
-/// Convention: runtime infrastructure uses `runtime/name` prefix.
-/// User-visible primitives use spec kebab-case names.
+/// Backend has no Rust-path visibility into primitives' fns — the workspace
+/// DAG forbids the `cranelisp-backend → cranelisp-primitives` dep edge.
+/// The dispatch invariant ("primitives reach code via GOT, never via direct
+/// extern") is enforced structurally per Principle 18.
+///
+/// Convention: runtime infrastructure uses `runtime/name` prefix. Intrinsics
+/// not following that convention (`cranelisp_ivar_*`) are spec'd by name.
 pub fn intrinsic_symbols() -> Vec<IntrinsicSymbol> {
-    let mut intrinsics = vec![
+    vec![
         // Runtime infrastructure (internal, not user-callable)
         IntrinsicSymbol { name: "runtime/alloc", ptr: cranelisp_intrinsics::alloc::heap_alloc as *const u8, param_count: 1, is_runtime: true, has_return: true },
         IntrinsicSymbol { name: "runtime/dealloc", ptr: cranelisp_intrinsics::alloc::heap_dealloc as *const u8, param_count: 1, is_runtime: true, has_return: true },
@@ -103,97 +112,17 @@ pub fn intrinsic_symbols() -> Vec<IntrinsicSymbol> {
         IntrinsicSymbol { name: "cranelisp_ivar_create", ptr: cranelisp_intrinsics::ivar::ivar_create as *const u8, param_count: 1, is_runtime: true, has_return: true },
         IntrinsicSymbol { name: "cranelisp_ivar_spark", ptr: cranelisp_intrinsics::ivar::ivar_spark as *const u8, param_count: 1, is_runtime: true, has_return: true },
         IntrinsicSymbol { name: "cranelisp_ivar_force", ptr: cranelisp_intrinsics::ivar::ivar_force as *const u8, param_count: 1, is_runtime: true, has_return: true },
-        // Trace runtime symbols — RELOCATED to int per Decision 40 / Path B1
-        // (S67 W4, FIXME 0197). The 12 `cranelisp_trace_*` JIT-emitted-call
-        // targets now register via `crate::session_v4::int_intrinsics()` at
-        // every JIT-build site in the int crate. Backend stops contributing
-        // these symbols; `--link` mode rejects `(trace ...)` at compile
-        // time per FIXME 0199 so the static archive needs none of them.
-        // Vec extern primitives (user-visible and internal)
-        IntrinsicSymbol { name: "vec-len", ptr: cranelisp_primitives::vec::vec_len as *const u8, param_count: 1, is_runtime: false, has_return: true },
+        // Vec runtime helpers (backend-emitted-call targets — internal, not
+        // user-callable via the primitives module). `vec-len` is user-callable
+        // and lives in PRIMITIVES_TABLE; it reaches backend codegen through
+        // the GOT, not through this enumeration.
         IntrinsicSymbol { name: "vec-set-copy", ptr: cranelisp_intrinsics::vec_runtime::vec_set_copy as *const u8, param_count: 4, is_runtime: false, has_return: true },
         IntrinsicSymbol { name: "vec-push-copy", ptr: cranelisp_intrinsics::vec_runtime::vec_push_copy as *const u8, param_count: 3, is_runtime: false, has_return: true },
         IntrinsicSymbol { name: "vec-push-grow", ptr: cranelisp_intrinsics::vec_runtime::vec_push_grow as *const u8, param_count: 2, is_runtime: false, has_return: true },
-        // Extern primitives (user-visible via primitives module)
-        IntrinsicSymbol { name: "str-concat", ptr: cranelisp_primitives::string::str_concat as *const u8, param_count: 2, is_runtime: false, has_return: true },
-        IntrinsicSymbol { name: "str-eq", ptr: cranelisp_primitives::string::str_eq as *const u8, param_count: 2, is_runtime: false, has_return: true },
-        IntrinsicSymbol { name: "str-len", ptr: cranelisp_primitives::string::str_len as *const u8, param_count: 1, is_runtime: false, has_return: true },
-        IntrinsicSymbol { name: "string-identity", ptr: cranelisp_primitives::string::string_identity as *const u8, param_count: 1, is_runtime: false, has_return: true },
-        IntrinsicSymbol { name: "int-to-string", ptr: cranelisp_primitives::int::int_to_string as *const u8, param_count: 1, is_runtime: false, has_return: true },
-        IntrinsicSymbol { name: "float-to-string", ptr: cranelisp_primitives::float::float_to_string as *const u8, param_count: 1, is_runtime: false, has_return: true },
-        IntrinsicSymbol { name: "bool-to-string", ptr: cranelisp_primitives::bool::bool_to_string as *const u8, param_count: 1, is_runtime: false, has_return: true },
-        IntrinsicSymbol { name: "parse-int", ptr: cranelisp_primitives::int::parse_int as *const u8, param_count: 1, is_runtime: false, has_return: true },
-        // Extended string primitives
-        IntrinsicSymbol { name: "substring", ptr: cranelisp_primitives::string::str_substring as *const u8, param_count: 3, is_runtime: false, has_return: true },
-        IntrinsicSymbol { name: "char-at", ptr: cranelisp_primitives::string::str_char_at as *const u8, param_count: 2, is_runtime: false, has_return: true },
-        IntrinsicSymbol { name: "split", ptr: cranelisp_primitives::string::str_split as *const u8, param_count: 2, is_runtime: false, has_return: true },
-        IntrinsicSymbol { name: "join", ptr: cranelisp_primitives::string::str_join as *const u8, param_count: 2, is_runtime: false, has_return: true },
-        IntrinsicSymbol { name: "replace", ptr: cranelisp_primitives::string::str_replace as *const u8, param_count: 3, is_runtime: false, has_return: true },
-        IntrinsicSymbol { name: "trim", ptr: cranelisp_primitives::string::str_trim as *const u8, param_count: 1, is_runtime: false, has_return: true },
-        IntrinsicSymbol { name: "starts-with?", ptr: cranelisp_primitives::string::str_starts_with as *const u8, param_count: 2, is_runtime: false, has_return: true },
-        IntrinsicSymbol { name: "ends-with?", ptr: cranelisp_primitives::string::str_ends_with as *const u8, param_count: 2, is_runtime: false, has_return: true },
-        IntrinsicSymbol { name: "contains?", ptr: cranelisp_primitives::string::str_contains as *const u8, param_count: 2, is_runtime: false, has_return: true },
-        IntrinsicSymbol { name: "to-upper", ptr: cranelisp_primitives::string::str_to_upper as *const u8, param_count: 1, is_runtime: false, has_return: true },
-        IntrinsicSymbol { name: "to-lower", ptr: cranelisp_primitives::string::str_to_lower as *const u8, param_count: 1, is_runtime: false, has_return: true },
-        // Marshal primitives (macros module + primitives module)
-        IntrinsicSymbol { name: "sconcat", ptr: cranelisp_primitives::marshal::sconcat as *const u8, param_count: 2, is_runtime: false, has_return: true },
-        IntrinsicSymbol { name: "quote-sexp", ptr: cranelisp_primitives::marshal::quote_sexp as *const u8, param_count: 1, is_runtime: false, has_return: true },
-        // (Operator wrapper extern fns `cranelisp_op_*` retired per FIXME 0183 — operator-as-value
-        // now resolves through the standard GOT-indirect path against the canonical Ring 0
-        // primitive entries in `ring0_jit_symbols()` below. See
-        // `crates/cranelisp-backend/src/compiler/literals.rs::compile_operator_as_value`.)
-    ];
-    // Ring 0 primitive shim fns (FIXME 0174 + Decision 43). These are the
-    // user-callable, GOT-stored emission targets for the standard
-    // dispatch path. Each name in `ring0_jit_symbols()` corresponds to a
-    // `ModuleEntry::Def` in the synthetic `primitives` symbol table
-    // (allocated in `typecheck::builtins::register_primitives`) and to
-    // a per-call inline-substitution entry in
-    // `cranelisp-backend::primitives_inline::try_emit_inline_primitive`.
-    // The two paths share semantics; the inline path is a code-size +
-    // dispatch-cost optimisation.
-    //
-    // Param count = 2 for binary ops, 1 for `not`. has_return = true
-    // (Ring 0 ops never return void). is_runtime = false — these names
-    // are user-visible via the synthetic `primitives` module.
-    //
-    // FIXME 0191 status (Sprint 67 Wave 4): the migration to read
-    // (Symbol → fn-ptr) pairs from `cranelisp_primitives::PRIMITIVES_TABLE`
-    // is structurally blocked at this fire by two gaps:
-    //   1. `PRIMITIVES_TABLE` is populated from `cranelisp_types::ring0_primitives()`
-    //      (20 entries) and DOES NOT carry the 3 `neq-*` shims
-    //      (`neq-i64`/`neq-f64`/`neq-bool`) that `ring0_jit_symbols()`
-    //      surfaces and that `traits.rs::primitive_for_trait_method`
-    //      resolves `Eq.!=` to. The 23-vs-20 gap is asserted in
-    //      `crates/cranelisp-primitives/src/lib.rs` (test
-    //      `primitives_table_entries_carry_got_slot_and_ptr`).
-    //   2. Lines 121-148 above register ~22 non-Ring-0 primitive shims by
-    //      direct Rust path (`str-concat`, `vec-len`, `int-to-string`,
-    //      etc.). These have no `ModuleEntry::Def` in `PRIMITIVES_TABLE`
-    //      today — the table is Ring-0-only. Migrating the Ring 0 loop in
-    //      isolation does not let `primitives` narrow extern fns to
-    //      `pub(crate)` (FIXME 0182's gating condition) because the
-    //      ~22 non-Ring-0 paths still depend on the `pub` extern fns.
-    //
-    // The migration becomes legitimate when (a) `PRIMITIVES_TABLE` grows
-    // to cover `neq-*` (a primitives-side change) and (b) the non-Ring-0
-    // primitive shims gain `ModuleEntry::Def` entries in `PRIMITIVES_TABLE`
-    // OR the ~22 direct Rust paths are otherwise re-sourced. Both are
-    // outside `/dev (backend)`'s narrow-deployment scope.
-    for (name, ptr) in cranelisp_primitives::ring0::ring0_jit_symbols() {
-        let param_count = match name {
-            "not" => 1,
-            _ => 2,
-        };
-        intrinsics.push(IntrinsicSymbol {
-            name,
-            ptr,
-            param_count,
-            is_runtime: false,
-            has_return: true,
-        });
-    }
-    intrinsics
+        // Trace runtime symbols — RELOCATED to int per Decision 40 / Path B1
+        // (S67 W4, FIXME 0197). Backend stops contributing these symbols;
+        // `--link` mode rejects `(trace ...)` at link time per FIXME 0199.
+    ]
 }
 
 /// Register all runtime intrinsics on a JITBuilder by function pointer.

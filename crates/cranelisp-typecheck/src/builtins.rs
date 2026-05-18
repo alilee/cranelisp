@@ -185,6 +185,25 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             let scheme = mono(prim.ty.clone());
             let docstring = builtin_docstring(prim.name.as_ref());
 
+            // Per Decision 0048 §"Structural invariant — backend dep-ban":
+            // every primitive — Ring 0 AND Ring 1 — must dispatch via the
+            // standard GOT-indirect path so the cache-mode in-process linker
+            // (`cranelisp-backend::cache::linker::Linker`) can resolve the
+            // call. The session-wide `populate_ring0_got_slots` (see
+            // `src/session_v4.rs`) copies the static `PRIMITIVES_TABLE`'s
+            // fn ptrs into each session-allocated slot. That copy only
+            // happens for entries that already carry `got_slot: Some(_)`,
+            // so Ring 1 entries (str-eq, int-to-string, float-to-string,
+            // bool-to-string, the string ops) must allocate a slot here —
+            // mirroring `register_primitives` for Ring 0 directly above.
+            // `code: Some(Code::Primitive)` would be the static-lifecycle
+            // marker per Decision 0048 A2; the typecheck side keeps `code:
+            // None` because typecheck has no `Code` type parameter binding,
+            // and the session-init copy from `PRIMITIVES_TABLE` already
+            // carried the marker before this overwrite. The post-overwrite
+            // gap on `code` is the lifecycle metadata — `populate_ring0_got_slots`
+            // still uses got_slot alone to find the destination slot.
+            let slot = primitives_table.allocate_got_slot();
             primitives_table.insert(
                 prim.name.clone(),
                 ModuleEntry::Def {
@@ -197,7 +216,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         jit_name: Some(JitSymbol::from(prim.name.as_ref())),
                     }),
                     callees: Vec::new(),
-                    got_slot: None,
+                    got_slot: Some(slot),
                     trait_origin: None,
                 ast: None,
                     code: None,
@@ -278,6 +297,19 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         for (name, param_names, scheme) in vec_prims {
             let docstring = builtin_docstring(name);
+            // Only `vec-len` is in PRIMITIVES_TABLE (the others — vec-get,
+            // vec-set, vec-push — are handled inline by backend's
+            // `compile_vec_op` and call the corresponding intrinsics
+            // `vec-set-copy` / `vec-push-copy` / `vec-push-grow`, which are
+            // registered via `JITBuilder::symbol()` rather than through
+            // the primitives module). `vec-len` needs a session GOT slot
+            // for the same reason Ring 1/3 primitives do — see
+            // `register_ring1_primitives`.
+            let got_slot = if name == "vec-len" {
+                Some(primitives_table.allocate_got_slot())
+            } else {
+                None
+            };
             primitives_table.insert(
                 Symbol::from(name),
                 ModuleEntry::Def {
@@ -290,7 +322,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         jit_name: Some(JitSymbol::from(name)),
                     }),
                     callees: Vec::new(),
-                    got_slot: None,
+                    got_slot,
                     trait_origin: None,
                 ast: None,
                     code: None,
@@ -427,6 +459,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             let scheme = mono(prim.ty.clone());
             let docstring = builtin_docstring(prim.name.as_ref());
 
+            // Per Decision 0048 §"Structural invariant — backend dep-ban":
+            // Ring 3 primitives (quote-sexp, sconcat) must allocate a
+            // session GOT slot so `populate_ring0_got_slots` can copy the
+            // static fn ptr in. See `register_ring1_primitives` above for
+            // the full rationale — same shape, same reason.
+            let slot = primitives_table.allocate_got_slot();
             primitives_table.insert(
                 prim.name.clone(),
                 ModuleEntry::Def {
@@ -439,7 +477,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         jit_name: Some(JitSymbol::from(prim.name.as_ref())),
                     }),
                     callees: Vec::new(),
-                    got_slot: None,
+                    got_slot: Some(slot),
                     trait_origin: None,
                 ast: None,
                     code: None,

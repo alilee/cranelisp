@@ -247,7 +247,9 @@ fn populate_ring0_got_slots(
         // missing-module condition when a Ring 0 call is compiled.
         return;
     };
-    let static_table = &*cranelisp_primitives::PRIMITIVES_TABLE;
+    // PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<Code, ()>>>. Deref the
+    // LazyLock to the Arc, then `.as_ref()` to get `&SymbolTable`.
+    let static_table = (*cranelisp_primitives::PRIMITIVES_TABLE).as_ref();
     for (name, static_entry) in static_table.symbols.iter() {
         let cranelisp_types::ModuleEntry::Def {
             got_slot: Some(src_slot), ..
@@ -1034,6 +1036,36 @@ impl CompilerSession {
         symbol_tables.insert(
             user_module.clone(),
             SessionSymbolTable::new_with_params(user_module.clone()),
+        );
+
+        // S68 Wave 4 (Decision 0048): Arc-clone the statically-constructed
+        // `PRIMITIVES_TABLE` into the session's symbol tables at
+        // `ModuleFullPath::from("primitives")`. The session's primitives
+        // module then *shares* the static `Arc<GotTable>` with every other
+        // session in the process. `(*PRIMITIVES_TABLE).clone()` clones the
+        // `SymbolTable<Code, ()>` by value; the inner `got: Arc<GotTable>`
+        // field is an Arc-clone, so the underlying GotTable is shared with
+        // the static. From this point on, primitives dispatch is functionally
+        // equivalent to any other module via the standard cross-module
+        // GOT-indirect call path.
+        //
+        // `register_builtins` (next call) short-circuits the primitives-
+        // module creation (its `if !contains_key` check finds the entry).
+        // Subsequent `register_primitives` / `register_ring1_primitives` /
+        // etc. `get_mut` the same module and *overwrite* the Symbol entries
+        // by name — the typecheck-side metadata (scheme, docstring) reflects
+        // the typecheck registry's view. The shared `Arc<GotTable>` carries
+        // through unchanged because `register_primitives` mutates only the
+        // session-local `next_got_slot` counter, allocating fresh slots that
+        // `populate_ring0_got_slots` (called below) populates from the
+        // static table's slot ↔ fn-ptr mapping. The dispatch invariant is
+        // preserved: every primitive call lands on a GOT slot that holds
+        // the static `extern "C" fn` ptr.
+        symbol_tables.insert(
+            ModuleFullPath::from("primitives"),
+            (*cranelisp_primitives::PRIMITIVES_TABLE)
+                .as_ref()
+                .clone(),
         );
 
         // Seed builtins into symbol tables before any user modules load.

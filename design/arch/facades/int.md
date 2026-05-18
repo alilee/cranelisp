@@ -508,7 +508,7 @@ pub enum SlashCommand {
 #[non_exhaustive]
 pub struct SymbolInfo {
     pub name: Symbol,
-    pub category: SymbolCategory,                                                  // Module | Macro | Trait | Type | Fn
+    pub category: SymbolCategory,                                                  // Module | Macro | Trait | Type | Fn | SpecialForm | Constructor
     pub scheme: Option<Scheme>,
     pub docstring: Option<String>,
 }
@@ -954,6 +954,26 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const QUIT_SENTINEL: &str = "\x00QUIT";    // session_v4.rs:215 — sentinel returned by `process_commands` on /quit; consumed by main.rs REPL loop. Internal-but-exposed: the binary entry point reads it. /dev Wave 3 may relocate to `pub(crate)` if no out-of-crate caller exists.
 ```
 
+### Session init — referencing the static `PRIMITIVES_TABLE` (Decision 48)
+
+Per Decision 48 (Sprint 68), `cranelisp-primitives` owns a single pub static `PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<Code, ()>>>`. The static's `Arc<GotTable>` (reachable via `.got()`) is populated at `LazyLock` init time with raw `*const u8` fn ptrs at prescribed slot indices for every non-inlined primitive. `CompilerSession`'s constructor references this static during `register_builtins` (or its successor) — `Arc::clone(&*cranelisp_primitives::PRIMITIVES_TABLE)` and `shared.symbol_tables.insert(ModuleFullPath::primitives(), cloned)`.
+
+```rust
+// src/session_v4.rs — sketch of the post-S68 shape (replaces the pre-S68
+// `populate_ring0_got_slots` cross-table copy loop, which retires).
+fn register_builtins(symbol_tables: &DashMap<ModuleFullPath, SymbolTable<Code, ()>>, next_id: &AtomicU32) {
+    let primitives = Arc::clone(&*cranelisp_primitives::PRIMITIVES_TABLE);
+    symbol_tables.insert(ModuleFullPath::primitives(), (*primitives).clone());
+    // … other builtins (special forms on "user", trait registration, etc.)
+}
+```
+
+From the instant `register_builtins` returns, primitives are dispatched through the standard cross-module GOT path (Decision 23 + Decision 31): backend's CLIF emits `global_value` on `Linkage::Import __cranelisp_got_primitives`; the JIT-mode `Module::symbol_lookup_fn` resolves the name to `symbol_tables[primitives()].got().base_ptr()` — which is the static `GotTable`'s base. **No primitives special-case in backend's `symbol_lookup_fn`.** The per-process static `Arc<GotTable>` IS the SymbolTable-GOT row of Decision 23's two-GOT model — no third "static GOT" category introduced (Decision 48 Alt B2 rejected).
+
+The pre-S68 cross-table copy loop (`populate_ring0_got_slots`, which reads pointers out of the static GOT and writes them back into a separate session-allocated GOT) retires — it was the manifestation of Decision B1's per-batch redundancy (Principle 7 — single source of truth). The Arc-clone is the post-S68 replacement: one GOT for primitives in the process, regardless of how many sessions exist concurrently.
+
+The session's primitives `ModuleEntry`s hold `code = Some(Code::Primitive)` — the marker variant for process-static lifecycle per Decision 0048 (A2, revised S68 Phase 3, 2026-05-17). The variant carries no payload; the raw `*const u8` continues to live in the GOT slot per Decision 35 (GOT is the single source of truth for callable addresses). Decision 30's cache-hit reload path does not run for the primitives module — primitives are never cached.
+
 ---
 
 ## Internal-but-exposed `src/` items
@@ -1224,6 +1244,27 @@ This flow uses no new facade surface. `Sess::trampoline` (already exposed for Ru
 
 The system linker invocation is opaque to the facade — `std::process::Command` is not wrapped in a Cranelisp facade type. The contract is: backend's `.o` files conform to the Object file contract (see `facades/backend.md`), and `int` invokes ld with them plus the alias. The two-GOT model in Decision 23 means the `.o` data section GOT (`Linkage::Export __cranelisp_got_{module}`) is what ld resolves; the in-memory GOT is irrelevant in `--link` mode.
 
+### Exe-bundle startup contract — `cranelisp_init_primitives()` (Decision 48)
+
+Per Decision 48 (S68 — `/arch` Phase 2 recommendation), `cranelisp-exe-bundle` exposes an explicit startup hook `cranelisp_init_primitives()` — a `pub extern "C" fn` with a no-op body that forces `LazyLock::force(&cranelisp_primitives::PRIMITIVES_TABLE)`. The standalone binary's startup stub calls it (alongside `cranelisp_init_platform(...)`) before any user code runs, so the static's `LazyLock` init runs and the `.o` data-section GOT — `Linkage::Export __cranelisp_got_primitives` — is populated with the raw fn ptrs at the prescribed slot indices before any backend-emitted import resolves through it.
+
+```rust
+// crates/cranelisp-exe-bundle/src/lib.rs — sketch of the post-S68 shape.
+#[unsafe(no_mangle)]
+pub extern "C" fn cranelisp_init_primitives() {
+    // Force the LazyLock to initialise so PRIMITIVES_TABLE's static
+    // GotTable is populated before any compiled call site resolves
+    // through `__cranelisp_got_primitives`.
+    LazyLock::force(&cranelisp_primitives::PRIMITIVES_TABLE);
+}
+```
+
+This **replaces** the pre-S68 force-link `pub use cranelisp_primitives::{bool, float, int, marshal, ring0, string as primitives_string, vec as primitives_vec};` re-exports that lived in `cranelisp-exe-bundle/src/lib.rs` to coax the linker into retaining `#[no_mangle]` runtime functions. Those re-exports relied on **implicit** discipline (`#[used]` annotations + `pub use` referencing) and made the dependency invisible at the call site that needed it. The explicit `cranelisp_init_primitives()` call makes the dependency **legible at the site** — the startup stub names what it needs, and the link-time symbol resolution is the natural enforcement (a missing primitives symbol fails the link cleanly). Per /arch's Phase 2 recommendation, the explicit init-hook shape is preferred over implicit `#[used]` discipline.
+
+The `cranelisp-primitives` per-fn `pub extern "C"` items demote to `pub(crate)` post-S68 (with `#[used]` on each function as a belt-and-suspenders DCE guard); the only pub item the crate publishes is `PRIMITIVES_TABLE`. The static archive `libcranelisp_exe_bundle.a` retains the runtime functions because the static `PRIMITIVES_TABLE`'s `LazyLock` init code references them at compile time — the linker preserves them as transitive dependencies of the static-init body. `cranelisp_init_primitives()`'s sole runtime effect is forcing that LazyLock — once forced, the symbols are referenced from the GotTable slots, which `__cranelisp_got_primitives` indexes into.
+
+Intrinsics force-link re-exports (`cranelisp_intrinsics::{alloc, drop, io, ivar, panic, rc, heap_string, vec_runtime}`) remain — intrinsics are not a module (Decision 43) and have no SymbolTable/GotTable to seed; their runtime symbols are JITBuilder-registered by-name in JIT mode and linker-resolved by-name in `--link` mode (same shape as `--link` mode user fns reaching extern intrinsics).
+
 ---
 
 ## Re-exports from `cranelisp-types`
@@ -1254,9 +1295,9 @@ The integration crate imports from:
 - **`cranelisp-typecheck`** — `check_forms` (per Decision 44's 2026-05-13 third amendment — single-call cluster surface; the internal two-pass discipline does not cross the facade), `register_builtins`, `CheckResult`, `CheckError`, `CheckState`, `ClusterContext`, `TypeCheckEnv`, the trace install hook.
 - **`cranelisp-backend`** — `compile_to_module` (returns `Result<(), CompilationError>` per Decision 41; writes `Code::Jit` and `Introspection` directly into the passed-in shared stores via `&self`-interior-mutable methods), `load_object`, `compile_to_object`, `Code` (re-exported per Decision 41), `LinkerArtefact`, `ObjectArtefact`, `Jit`, `Linker`, `CompilationError` (with `SymbolNotCompilable` variant per §2.7), `GotObserver` + `GotEvent` + `GotEventTag` + `GotProvenance` + `register_got_observer` (per FIXME 0099 — backend-originated observer types, int registers consumer state). Cranelift `Module`, `JITModule`, `ObjectModule`, `JITBuilder` (via cranelift crates re-exported from backend).
 - **`cranelisp-intrinsics`** — backend-emitted intrinsic extern functions registered with the JIT (via `JITBuilder::symbol`) per Decision 43: `cranelisp_alloc`, `heap_alloc_payload`, `heap_dealloc`, `rc_inc`, `rc_dec`, `consume_shallow`, `dec_shallow_io`, `vec_*`, `heap_alloc_string`, `string_read`, `sconcat`, `quote_sexp`, `cranelisp_run_io`, `io_run`, `run_io_trampoline`, `ivar_*`, `runtime_panic`. Stats accessors (`alloc_count`, `dealloc_count`, `bytes_allocated`, `bytes_current`, `bytes_peak`, `reset_counts`) for `/mem`. The IO observer extension point (`IoEvent`, `IoEventTag`, `IoObserver`, `register_io_observer`, `trace_anchor`) per Decision 40 — int registers an `IoObserver` at session init when REPL/trace mode is on or `CRANELISP_IO_TRACE=1`.
-- **`cranelisp-primitives`** — user-callable primitive extern functions registered with the JIT and seeded into the synthetic `primitives` module's symbol table by `int` at session init per Decision 43: integer ops (`add_i64`, `sub_i64`, `mul_i64`, `div_i64`, `mod_i64`, `eq_i64`, `lt_i64`, `gt_i64`, `le_i64`, `ge_i64`), float ops, `not`, conversions (`int_to_string`, `parse_int`, `float_to_string`, `bool_to_string`). Each primitive gets a GOT slot (so `(let [f +] (f 1 2))` resolves through the slot).
+- **`cranelisp-primitives`** — one pub item consumed: the static `PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<Code, ()>>>` (per Decision 48 — S68). Session init `Arc::clone`s it into `shared.symbol_tables` at `ModuleFullPath::primitives()`. The cloned table carries its own `Arc<GotTable>` (populated at static-init with raw `*const u8` fn ptrs for every non-inlined primitive: string ops, marshal, per-type to-string, int/float/bool conversions, `not`). From the instant session-init completes, primitives dispatch is functionally equivalent to any other module — the standard cross-module GOT-indirect path (Decision 23, Decision 31) resolves `(let [f +] (f 1 2))` via `__cranelisp_got_primitives[slot]`. **No special case in backend's `symbol_lookup_fn`** — the per-process static `Arc<GotTable>` IS the SymbolTable-GOT row of Decision 23's two-GOT model. The pre-S68 per-fn `pub extern "C"` items demote to `pub(crate)` (with explicit init-hook discipline; see "Link orchestration" below for exe-bundle's force-link replacement). Inline substitution in backend (`primitives_inline.rs`) remains a separate code-size + dispatch-cost optimisation — identical semantics, faster code.
 - **`cranelisp-platform`** — `HostContext`, `HostCallbacks`, `OwnedPlatformFnDescriptor`, `PlatformFn`, `load_manifest`, `parse_type_sig`, `derive_jit_name`. `int` constructs `HostCallbacks` at session init pointing at runtime fns.
-- **`cranelisp-exe-bundle`** — for `--link` mode. The crate provides the alias `.o` template + system linker invocation helpers. Per `bounded-contexts.md` §6 — exe-bundle is part of the binary surface; one D/D/R cycle covers both.
+- **`cranelisp-exe-bundle`** — for `--link` mode. The crate provides the alias `.o` template + system linker invocation helpers, plus the `cranelisp_init_platform` and `cranelisp_init_primitives` (Decision 48) startup hooks the produced standalone binary's stub calls before running user code. Per `bounded-contexts.md` §6 — exe-bundle is part of the binary surface; one D/D/R cycle covers both.
 
 External:
 - **`rustyline`** (or equivalent) — for the line editor.

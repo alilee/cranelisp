@@ -299,7 +299,6 @@ dependencies = [
  "cranelift-native",
  "cranelift-object",
  "cranelisp-intrinsics",
- "cranelisp-primitives",
  "cranelisp-types",
  "dashmap",
  "libc",
@@ -350,6 +349,7 @@ dependencies = [
 name = "cranelisp-primitives"
 version = "0.1.0"
 dependencies = [
+ "cranelisp-backend",
  "cranelisp-intrinsics",
  "cranelisp-types",
  "serde",

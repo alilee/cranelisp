@@ -85,6 +85,17 @@ pub enum Code {
         linker: Arc<Linker>,
         ptr: *const u8,
     },
+    /// Process-static lifecycle marker for primitives (Decision 0048 A2,
+    /// revised S68 Phase 3 2026-05-17). No payload — Decision 35's
+    /// "GOT is the single source of truth for callable addresses; no
+    /// per-entry pointer field" invariant is preserved. The marker
+    /// expresses the *lifecycle category* (process-static, externally
+    /// owned by the primitives crate's `PRIMITIVES_TABLE` `LazyLock`)
+    /// at every `match` site over `Code`; the fn ptr continues to live
+    /// in the per-module `GotTable` indexed by `ModuleEntry::Def.got_slot`.
+    /// Wave 3 of S68 constructs primitives' `ModuleEntry::Def` entries
+    /// with `code = Some(Code::Primitive)`.
+    Primitive,
 }
 
 impl std::fmt::Debug for Code {
@@ -92,6 +103,7 @@ impl std::fmt::Debug for Code {
         match self {
             Code::Jit { ptr, .. } => f.debug_struct("Code::Jit").field("ptr", ptr).finish(),
             Code::Linker { ptr, .. } => f.debug_struct("Code::Linker").field("ptr", ptr).finish(),
+            Code::Primitive => f.write_str("Code::Primitive"),
         }
     }
 }
@@ -123,9 +135,20 @@ impl Code {
     /// Read the per-symbol code pointer. Uniform across `Code::Jit` and
     /// `Code::Linker` — every read site that previously did `c.ptr` on
     /// the pre-Wave-3b struct now calls `c.ptr()` on the enum.
+    ///
+    /// For `Code::Primitive` (the process-static marker variant added by
+    /// Decision 0048 §"Shape" S68 Phase 3 amendment), this returns
+    /// `std::ptr::null()` — the variant carries no payload because
+    /// Decision 35's "GOT is the single source of truth for callable
+    /// addresses" invariant places the primitives' fn ptr in the
+    /// per-module `GotTable` indexed by `ModuleEntry::Def.got_slot`,
+    /// NOT inside `Code`. Callers needing the primitive's fn ptr must
+    /// read the GOT slot directly via
+    /// `symbol_table.got().load_slot(entry.got_slot.unwrap())`.
     pub fn ptr(&self) -> *const u8 {
         match self {
             Code::Jit { ptr, .. } | Code::Linker { ptr, .. } => *ptr,
+            Code::Primitive => std::ptr::null(),
         }
     }
 }
@@ -207,5 +230,79 @@ mod tests {
     fn code_implements_code_store() {
         fn _requires_code_store<T: cranelisp_types::CodeStore>() {}
         _requires_code_store::<Code>();
+    }
+
+    // spec: design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md
+    //       §"Shape" (S68 Phase 3 amendment, 2026-05-17 user revision) —
+    //       `Code::Primitive` marker variant added; no payload (Decision 35
+    //       invariant preserved); expresses process-static lifecycle category
+    //       only. Construction, pattern-matching, and distinctness from
+    //       `Code::Jit` / `Code::Linker` all required.
+    #[test]
+    fn code_primitive_marker_variant_constructible_and_distinct() {
+        // 1. Construction — no payload, no constructor fn needed.
+        let prim = Code::Primitive;
+
+        // 2. Pattern-match against `Code::Primitive` succeeds for a
+        //    Primitive value.
+        let matched_prim = matches!(prim, Code::Primitive);
+        assert!(matched_prim, "Code::Primitive must pattern-match itself");
+
+        // 3. A `Code::Jit { .. }` value MUST NOT pattern-match `Code::Primitive`.
+        let jit_val = Code::jit(
+            Arc::new(Jit::new().expect("Jit::new must succeed for test")),
+            0xDEADBEEFusize as *const u8,
+        );
+        assert!(
+            !matches!(jit_val, Code::Primitive),
+            "Code::Jit value must NOT pattern-match Code::Primitive"
+        );
+        assert!(
+            matches!(jit_val, Code::Jit { .. }),
+            "Code::Jit value must pattern-match Code::Jit"
+        );
+
+        // 4. A `Code::Linker { .. }` value MUST NOT pattern-match `Code::Primitive`.
+        let linker_val = Code::linker(
+            Arc::new(
+                crate::cache::linker::Linker::new().expect("Linker::new must succeed for test"),
+            ),
+            0xCAFEF00Dusize as *const u8,
+        );
+        assert!(
+            !matches!(linker_val, Code::Primitive),
+            "Code::Linker value must NOT pattern-match Code::Primitive"
+        );
+        assert!(
+            matches!(linker_val, Code::Linker { .. }),
+            "Code::Linker value must pattern-match Code::Linker"
+        );
+
+        // 5. `Code::Primitive` value MUST NOT pattern-match Jit or Linker.
+        assert!(
+            !matches!(prim, Code::Jit { .. }),
+            "Code::Primitive must NOT pattern-match Code::Jit"
+        );
+        assert!(
+            !matches!(prim, Code::Linker { .. }),
+            "Code::Primitive must NOT pattern-match Code::Linker"
+        );
+
+        // 6. `Code::Primitive::ptr()` returns null per the Decision 35
+        //    invariant — the GOT is the single source of truth; the
+        //    primitive's fn ptr lives in `SymbolTable.got()`, not inside
+        //    `Code`. Callers needing the ptr read the GOT slot directly.
+        assert!(
+            prim.ptr().is_null(),
+            "Code::Primitive::ptr() returns null per Decision 35 \
+             (GOT is single source of truth; no per-entry pointer field)"
+        );
+
+        // 7. `Code::Primitive` Clone is no-op (no payload to refcount).
+        let prim_clone = prim.clone();
+        assert!(
+            matches!(prim_clone, Code::Primitive),
+            "Code::Primitive clones to Code::Primitive"
+        );
     }
 }

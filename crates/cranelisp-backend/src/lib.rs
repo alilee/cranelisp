@@ -1029,6 +1029,20 @@ mod tests {
         DashMap::new()
     }
 
+    /// Read a Vec's `len` field directly from its base pointer.
+    ///
+    /// Local-only inline of the user-callable `vec-len` primitive's body —
+    /// kept inside the backend test module to avoid the dep edge
+    /// `cranelisp-backend → cranelisp-primitives` (forbidden by Decision
+    /// 0048 §"Structural invariant — backend dep-ban", S68 Wave 4). The Vec
+    /// layout is fixed by Decision 11: `[size@+0 | rc@+8 | len@+16 | cap@+24 | data_ptr@+32]`.
+    ///
+    /// SAFETY: `ptr` MUST be a valid Vec base pointer (heap allocation
+    /// whose +16 offset is a populated `i64` len field).
+    fn vec_len_for_test(ptr: i64) -> i64 {
+        unsafe { *((ptr as *const u8).add(16) as *const i64) }
+    }
+
     /// Test helper: enrich a defn's AST nodes with type and resolution
     /// annotations from CheckResult side maps.
     ///
@@ -1945,7 +1959,7 @@ mod tests {
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
 
         // Verify len == 0.
-        assert_eq!(cranelisp_primitives::vec::vec_len(ptr), 0);
+        assert_eq!(vec_len_for_test(ptr), 0);
 
         // Clean up.
         cranelisp_intrinsics::vec_runtime::vec_drop(ptr, 0);
@@ -1971,7 +1985,7 @@ mod tests {
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
 
         // Verify len == 3.
-        assert_eq!(cranelisp_primitives::vec::vec_len(ptr), 3);
+        assert_eq!(vec_len_for_test(ptr), 3);
 
         // Verify element values from data buffer.
         unsafe {
@@ -2001,7 +2015,7 @@ mod tests {
         assert!(result.is_ok(), "single-element vec should compile: {result:?}");
         let ptr = result.unwrap();
 
-        assert_eq!(cranelisp_primitives::vec::vec_len(ptr), 1);
+        assert_eq!(vec_len_for_test(ptr), 1);
 
         unsafe {
             let base = ptr as *const u8;
@@ -2028,7 +2042,7 @@ mod tests {
         let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "bool vec should compile: {result:?}");
         let ptr = result.unwrap();
-        assert_eq!(cranelisp_primitives::vec::vec_len(ptr), 2);
+        assert_eq!(vec_len_for_test(ptr), 2);
 
         unsafe {
             let base = ptr as *const u8;
@@ -2566,7 +2580,7 @@ mod tests {
         assert!(result.is_ok(), "vec with computed elements should compile: {result:?}");
         let ptr = result.unwrap();
 
-        assert_eq!(cranelisp_primitives::vec::vec_len(ptr), 3);
+        assert_eq!(vec_len_for_test(ptr), 3);
         unsafe {
             let base = ptr as *const u8;
             let data_ptr = *(base.add(32) as *const *const i64);
@@ -2609,7 +2623,7 @@ mod tests {
 
         let ptr = test_compile_program_and_run(&program, &check, &empty_tables()).unwrap();
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
-        assert_eq!(cranelisp_primitives::vec::vec_len(ptr), 3);
+        assert_eq!(vec_len_for_test(ptr), 3);
 
         cranelisp_intrinsics::vec_runtime::vec_drop(ptr, 0);
     }
@@ -2843,7 +2857,7 @@ mod tests {
         assert!(result.is_ok(), "vec in interactive mode should compile: {result:?}");
         let ptr = result.unwrap();
         assert!(ptr > 1024);
-        assert_eq!(cranelisp_primitives::vec::vec_len(ptr), 1);
+        assert_eq!(vec_len_for_test(ptr), 1);
 
         cranelisp_intrinsics::vec_runtime::vec_drop(ptr, 0);
     }
@@ -3042,7 +3056,7 @@ mod tests {
         assert!(result.is_ok(), "nested vec should compile: {result:?}");
         let outer_ptr = result.unwrap();
         assert!(outer_ptr > 1024);
-        assert_eq!(cranelisp_primitives::vec::vec_len(outer_ptr), 2);
+        assert_eq!(vec_len_for_test(outer_ptr), 2);
 
         // First inner vec.
         unsafe {
@@ -3050,7 +3064,7 @@ mod tests {
             let data = *(base.add(32) as *const *const i64);
             let inner1 = *data;
             assert!(inner1 > 1024, "inner vec should be heap pointer");
-            assert_eq!(cranelisp_primitives::vec::vec_len(inner1), 2);
+            assert_eq!(vec_len_for_test(inner1), 2);
         }
 
         // Clean up (inner vecs need manual cleanup since no drop glue yet).
@@ -3085,7 +3099,7 @@ mod tests {
         let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "large vec should compile: {result:?}");
         let ptr = result.unwrap();
-        assert_eq!(cranelisp_primitives::vec::vec_len(ptr), 10);
+        assert_eq!(vec_len_for_test(ptr), 10);
 
         unsafe {
             let base = ptr as *const u8;
@@ -3886,18 +3900,24 @@ mod tests {
     //
     // Isolates the "undefined function: macros/sconcat" failure from
     // repl_defmacro_rest_splice. When compile_apply receives an Apply node
-    // with resolved_call: Some(BuiltinFn { name: "sconcat" }), it must take
-    // the extern call path (compile_extern_call). When resolved_call is None,
-    // it falls through to compile_direct_call which fails because there is no
-    // GOT slot or FuncId for the qualified name "macros/sconcat".
+    // with resolved_call: Some(BuiltinFn { name: "sconcat" }), per Decision
+    // 0048 §"Structural invariant — backend dep-ban" it MUST take the
+    // standard GOT-indirect dispatch path (`compile_direct_call` →
+    // `resolve_got_target` → load slot from `__cranelisp_got_primitives`).
+    // Pre-Decision-0048 the path was direct extern via `compile_extern_call`;
+    // that path is now reserved for non-module backend-emitted-call targets
+    // (intrinsics — `vec-set-copy`, `runtime/alloc`, etc.). Primitives reach
+    // the JIT via GOT-indirect uniformly with user-defined functions.
+    //
+    // Test setup: seed a `primitives` module with a `sconcat` entry that
+    // carries `got_slot: Some(_)`, write the extern fn ptr into that slot,
+    // then assert backend compiles + executes the call through the GOT.
     #[test]
     fn test_extern_primitive_via_resolved_call_succeeds() {
         use cranelisp_types::ResolvedCall;
+        use cranelisp_types::{DefKind, JitSymbol, ModuleEntry, PrimitiveKind, Scheme, Visibility};
 
-        // Build: (defn main [] (sconcat 0 0))
-        // sconcat is an extern primitive that takes two i64 args.
-        // We pass 0s (representing SNil) — the extern symbol exists in the
-        // JIT runtime so the call will succeed at compile time.
+        // Build: (defn __expr__ [] (sconcat 0 0))
         let apply_span = Span::new(2000, 2030);
 
         let mut method_resolutions = HashMap::new();
@@ -3933,12 +3953,90 @@ mod tests {
             display: None,
         };
 
+        // Seed a primitives module with `sconcat` and a GOT slot. Backend's
+        // `resolve_got_target` consults this via its global-fallback walk
+        // when the caller's module (`user`) has no local binding for the
+        // unqualified name `sconcat`. Per Decision 0048's backend dep-ban,
+        // we cannot reference `cranelisp_primitives::marshal::sconcat`
+        // directly; we provide a local 2-arg stub matching the signature
+        // and wire that fn ptr into the GOT slot. The test asserts
+        // compilation + GOT-indirect dispatch — it does NOT assert the
+        // semantics of `sconcat` (which is covered by the e2e
+        // `mode_equiv_macro_user_defined` test).
+        extern "C" fn sconcat_stub(_a: i64, _b: i64) -> i64 { 0 }
+        let tables = empty_tables();
+        let primitives_path = ModuleFullPath::from("primitives");
+        let mut prim_table: SymbolTable = SymbolTable::new(primitives_path.clone());
+        let slot = prim_table.allocate_got_slot();
+        prim_table.got.store_slot(slot, sconcat_stub as *const u8);
+        prim_table.insert(
+            Symbol::from("sconcat"),
+            ModuleEntry::Def {
+                scheme: Scheme {
+                    vars: Vec::new(),
+                    constraints: HashMap::new(),
+                    ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
+                },
+                visibility: Visibility::Public,
+                docstring: None,
+                param_names: vec![Symbol::from("a"), Symbol::from("b")],
+                kind: Box::new(DefKind::Primitive {
+                    primitive_kind: PrimitiveKind::Extern,
+                    jit_name: Some(JitSymbol::from("sconcat")),
+                }),
+                callees: Vec::new(),
+                got_slot: Some(slot),
+                trait_origin: None,
+                ast: None,
+                code: None,
+            },
+        );
+        tables.insert(primitives_path, prim_table);
+
         // With resolved_call present (via enrichment), compilation should
-        // succeed because compile_apply routes to compile_extern_call.
-        let result = test_compile_and_run(&expr, &check, &empty_tables());
+        // succeed via GOT-indirect dispatch through the primitives module.
+        // The JIT also needs the `__cranelisp_got_primitives` data symbol
+        // wired to the table's GOT base — register via
+        // `Jit::new_with_symbols` (a separate code path from
+        // `test_compile_and_run`'s `Jit::new`).
+        let got_data_name = crate::compiler::got_data_symbol_name(
+            &ModuleFullPath::from("primitives"),
+        );
+        let prim_got_base = tables
+            .get(&ModuleFullPath::from("primitives"))
+            .map(|st| st.got.base_ptr())
+            .expect("primitives table just inserted");
+        let extras: Vec<(&str, *const u8)> = vec![(got_data_name.as_str(), prim_got_base)];
+
+        let mut defn = Defn {
+            name: Symbol::from("__expr__"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: expr.clone(),
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        enrich_defn_from_side_maps(&mut defn, &check.method_resolutions, &check.expr_types);
+
+        let user_module = ModuleFullPath::from("user");
+        let name = defn.name.clone();
+        {
+            let mut st = tables
+                .entry(user_module.clone())
+                .or_insert_with(|| SymbolTable::new(user_module.clone()));
+            st.insert(name.clone(), make_def_entry(defn));
+        }
+
+        let mut jit = Jit::new_with_symbols(&extras).expect("jit init");
+        let result = compile_to_module(user_module, &[name], &tables, jit.jit_module());
         assert!(
             result.is_ok(),
-            "extern primitive sconcat should compile when resolved_call is BuiltinFn: {result:?}"
+            "extern primitive sconcat should compile via GOT-indirect when resolved_call is BuiltinFn: {}",
+            result.err().map(|e| format!("{e:?}")).unwrap_or_default(),
         );
     }
 

@@ -170,14 +170,55 @@ where
                         self.compile_consuming_arg_list(args)?
                     };
                     self.in_tail_position = saved_tail;
+                    // Per Decision 0048 §"Structural invariant — backend
+                    // dep-ban": every PRIMITIVE call site MUST emit
+                    // GOT-indirect dispatch against `__cranelisp_got_primitives`
+                    // — never a `Linkage::Import` direct extern, which the
+                    // cache-mode in-process linker (`cache::linker::Linker`)
+                    // cannot resolve via dlsym. Primitives registered in
+                    // `PRIMITIVES_TABLE` (see `cranelisp-primitives::PRIMITIVES_TABLE`)
+                    // resolve through `resolve_got_target`'s global-fallback
+                    // walk of `symbol_tables`.
+                    //
+                    // `is_extern_primitive` also covers Trace ADT field
+                    // accessors (`cranelisp_trace_name`, `_params`, `_result`,
+                    // `_children`, `_nanos`, `_first_child_nanos`) which are
+                    // **int-hosted intrinsics**, registered via
+                    // `JITBuilder::symbol()` from `int_intrinsics()` (see
+                    // `src/session_v4.rs`). They are NOT in any module's
+                    // SymbolTable. For those names, fall back to direct
+                    // extern — the JIT's symbol_lookup_fn resolves them.
+                    // The cache linker similarly registers them at load
+                    // time via `linker.register_symbol(name, ptr)`.
+                    let sym = Symbol::from(op_name.as_ref());
+                    if crate::compiler::resolve_got_target(
+                        self.ctx.symbol_tables,
+                        &self.ctx.current_module,
+                        &sym,
+                    )
+                    .is_some()
+                    {
+                        return self.compile_direct_call(&sym, &arg_vals, span);
+                    }
                     return self.compile_extern_call(op_name, &arg_vals, span);
                 }
 
                 // Unrecognized builtin: treat as extern call.
-                // This covers platform effect functions (PlatformEffect) whose
-                // JIT symbol names are resolved by the typechecker. Platform
-                // functions use consuming convention — the DLL owns heap args
-                // (e.g., CLString::own() captures the string).
+                // This covers platform effect functions (PlatformEffect)
+                // whose JIT symbol names (e.g. `cranelisp_print`) are
+                // resolved by the typechecker as the `BuiltinFn { name }`
+                // value. The name here is the platform's mangled jit_name —
+                // NOT a `ModuleEntry`'s symbol name (which would be the bare
+                // form, e.g. `print`) — so `resolve_got_target` would fail
+                // to find an entry. The platform fn ptr reaches the JIT via
+                // `JITBuilder::symbol(jit_name, ptr)` registration (see
+                // `src/worker.rs::collect_jit_setup`), and the cache linker
+                // registers it identically via
+                // `linker.register_symbol(jit_name, ptr)` (worker.rs §3571).
+                // Direct extern is the correct shape for this branch.
+                // Platform functions use consuming convention — the DLL
+                // owns heap args (e.g., `CLString::own()` captures the
+                // string).
                 if !primitives_inline::is_known_builtin(op_name) {
                     let arg_vals = self.compile_consuming_arg_list(args)?;
                     self.in_tail_position = saved_tail;

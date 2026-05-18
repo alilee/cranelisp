@@ -1160,3 +1160,36 @@ Tracked at /dev-unit tier (compile_fail doc-test inside `cranelisp-platform`); n
 | `tests/stdlib_trait_impls.rs::stdlib_not_mappable_path` | spec/appendix-a-builtins.md §"not" + spec/07-traits.md §"Operators as first-class values" | `[S66 W3-W4]` | FIXME 0150 Phase 4 + primitives-side seeding |
 | `tests/stdlib_trait_impls.rs::stdlib_link_mode_against_intrinsics_archive` | structural — Phase 5 retirement | `[S66 W4]` | FIXME 0150 Phase 5 |
 | `tests/stdlib_trait_impls.rs::cranelisp_runtime_crate_absent_post_phase_5_neg` (negative) | structural — Phase 5 retirement | `[S66 W4]` | FIXME 0150 Phase 5 |
+
+## Sprint 68 Phase 5 Stage 1 — primitives-as-uniform-module failing tests (2026-05-17)
+
+Per `sprints/SPRINT.md` Phase 4 Wave 1, `/qa` authored 16 failing-not-ignored
+tests at S68 Phase 5 Stage 1 open. The rows below trace each test to its
+spec / Decision anchor and resolving wave.
+
+Decision anchors:
+- 0048 — primitives' SymbolTable + GotTable statically constructed in
+  the primitives crate; backend dep-ban (S68 Phase 3 amendment).
+- 0047 — FQTypeName at resolved-stage cross-crate boundaries.
+- 0040 — `(trace ...)` `--link`-mode link-time rejection (Path B1).
+
+### S68 — primitives uniform module + facade lockdown + FQTypeName completion
+
+| # | Test | Spec / Decision | Status | Resolves at |
+|---|---|---|---|---|
+| 1 | `tests/spec_appendix_a_builtins.rs::primitive_not_true` | spec/appendix-a-builtins.md §A.3 (not) + Decision 0048 §"The invariant" | `[Tested]` | pre-existing; passes today; remains green post-S68 via PRIMITIVES_TABLE GOT path |
+| 2 | `tests/spec_appendix_a_builtins.rs::primitive_not_false` | spec/appendix-a-builtins.md §A.3 (not) + Decision 0048 §"The invariant" | `[Tested]` | pre-existing; passes today |
+| 3 | `tests/s68_primitives_uniform.rs::s68_not_primitive_works_in_link_mode_sentinel` | spec/appendix-a-builtins.md §A.3 + Decision 0048 §"The invariant" | `[Tested]` (sentinel) | GREEN today via force-link; GREEN post-Wave-4 via cranelisp_init_primitives() |
+| 4 | `crates/cranelisp-backend/tests/no_primitives_dep.rs::s68_backend_does_not_depend_on_primitives` | Decision 0048 §"Structural invariant — backend dep-ban"; Principle 18 | `[S68 W4]` | Wave 4 — atomic edit pair: delete backend's dep on primitives |
+| 5 | `tests/s68_primitives_uniform.rs::s68_primitives_table_is_arc_symboltable_code_unit` | Decision 0048 §"Shape" | `[S68 W3]` | Wave 3 — primitives slice lands the typed shape |
+| 6 | `tests/s68_primitives_uniform.rs::s68_facade_compliance_test_exists_for_s68_touched_crates` | design/arch/CLAUDE.md §"Baseline-diff discipline" | `[Tested]` (meta-sentinel) | GREEN today; remains green through Wave 6 lockdown |
+| 7 | `tests/s68_primitives_uniform.rs::s68_ring0_jit_symbols_free_fn_is_retired` | FIXME 0182 + Decision 0048 §Consequences | `[S68 W3]` | Wave 3 — primitives slice deletes the free fn and its re-export |
+| 8 | `tests/s68_primitives_uniform.rs::s68_exe_bundle_publishes_cranelisp_init_primitives_hook` | Decision 0048 §Cascade; SPRINT.md Phase 2 outcomes (/arch recommendation) | `[S68 W3]` | Wave 3 — int slice authors the hook in exe-bundle, called from cranelisp_init_platform |
+| 9 | `tests/s68_primitives_uniform.rs::s68_backend_intrinsic_symbols_drops_primitives_paths` | FIXME 0191 + Decision 0048 §dep-ban | `[S68 W4]` | Wave 4 — backend slice deletes all `cranelisp_primitives::*` Rust-path refs (atomic with #4) |
+| 10 | `tests/s68_primitives_uniform.rs::s68_code_enum_has_primitive_marker_variant` | Decision 0048 §"Shape" (S68 Phase 3 amendment) | `[S68 W2]` | Wave 2 — backend additive prep authors `Code::Primitive` |
+| 11 | `tests/s68_primitives_uniform.rs::s68_primitives_entries_carry_code_primitive_marker` | Decision 0048 §"Shape" | `[S68 W3]` | Wave 3 — primitives slice constructs entries with `code = Some(Code::Primitive)` |
+| 12 | ~~`tests/s68_primitives_uniform.rs::s68_fqtypename_int_exe_io_adt_boundary`~~ | Decision 0047 | REMOVED 2026-05-17 | Non-applicable target — `src/` is a binary (no `public-api.txt`); the flagged `TypeName::from("IO")` is a constructor argument inside `FQTypeName::new(...)`, exactly the lift-site pattern Decision 0047 permits. Test confused argument for free-standing violation. |
+| 13 | ~~`tests/s68_primitives_uniform.rs::s68_fqtypename_int_pipeline_io_adt_boundary`~~ | Decision 0047 | REMOVED 2026-05-17 | Same as #12 — `src/pipeline.rs` site is a constructor argument inside `FQTypeName::new(...)`. |
+| 14 | ~~`tests/s68_primitives_uniform.rs::s68_fqtypename_int_platform_io_adt_boundary`~~ | Decision 0047 | REMOVED 2026-05-17 | Same as #12 — `src/platform.rs` site is a constructor argument inside `FQTypeName::new(...)`. |
+| 15 | `tests/s68_primitives_uniform.rs::s68_fqtypename_backend_uses_fqtypename_at_resolved_edges` | Decision 0047 + facades/types.md §"FQTypeName" | `[Tested]` | Shape A — scans `crates/cranelisp-backend/public-api.txt` for any `pub fn` signature using bare `TypeName` (FQTypeName masked first). Asserts zero occurrences. |
+| 16 | `tests/s68_primitives_uniform.rs::s68_trace_in_link_mode_rejected_at_link_time` | spec/04-expressions.md §4.12.9 (post-S68 rework, FIXME 0209) + Decision 0040 Path B1 | `[S68 W3-W4]` | Wave 3/4 — trace runtime fully retired from staticlib; link-time failure becomes the architectural enforcement |

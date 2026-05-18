@@ -26,7 +26,7 @@ const LEN_OFFSET: usize = 16;
 ///
 /// JIT name: `vec-len` (exported via `export_name`).
 #[unsafe(export_name = "vec-len")]
-pub extern "C" fn vec_len(vec: i64) -> i64 {
+pub(crate) extern "C" fn vec_len(vec: i64) -> i64 {
     // SAFETY: `vec` is a valid Vec base pointer from JIT code; len field is at +16.
     unsafe { *((vec as *const u8).add(LEN_OFFSET) as *const i64) }
 }

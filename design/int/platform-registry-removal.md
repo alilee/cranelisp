@@ -1,19 +1,24 @@
 # Platform Registry Removal — G8 Design
 
-**Sprint**: 57 (Phase 4 Step 4a of `design/arch/pipeline-v4-roadmap.md`).
+**Sprint**: 57 (Phase 4 Step 4a of `design/arch/pipeline-v4-roadmap.md`); refreshed Sprint 68 per FIXME 0162 to reflect the S66 fn_ptr unification (commit `b09ec76`) and its same-day rollback (`1dc57ae`).
 **Owner**: `/int` + `/platform` (co-design).
-**Status**: Design (Wave 1 prerequisite for Wave 3 implementation).
+**Status**: Implemented + refreshed-for-coherence post-S66 rollback. The substance — delete `PlatformRegistry`; cross-module platform-fn resolution follows Import chains to the defining `ModuleEntry::Def` — landed in Sprint 57 Wave 3 and remains correct. **Only the storage location of the runtime call pointer has moved**: it is no longer a `platform_fn_ptr: Option<*const u8>` field on `ModuleEntry::Def` (that field briefly existed via the S66 unification and was rolled back the same day). Per Decision 35's post-rollback canonical statement, the **GOT is the single source of truth for callable addresses**. The platform-fn pointer for a `PrimitiveKind::PlatformEffect` entry lives in the per-module `GotTable`, indexed by `ModuleEntry::Def.got_slot`. Read via `entry_owning_module.got().load_slot(entry.got_slot.unwrap())`; written via `symbol_table.got().store_slot(slot, desc.ptr)`.
 
-This document covers the Phase 4 G8 migration: platform function pointers move from the `PlatformRegistry` DashMap to a `#[serde(skip)] platform_fn_ptr: Option<*const u8>` field on `ModuleEntry::Def` entries with `PrimitiveKind::PlatformEffect`. `PlatformRegistry` is deleted. Cross-module platform-fn resolution becomes identical to every other cross-module symbol lookup: follow Import chains to the defining `ModuleEntry::Def`, read the pointer.
+This document covers the original G8 migration plus the post-S66 rollback storage location. The PlatformRegistry-deletion substance is unchanged; the §"platform_fn_ptr field" language across this doc is updated below to read against the per-module GOT.
 
-`/arch` Decision 26 establishes the shape. This doc fixes the `scheduling_class` placement (§3 below), the registration path (§4), the IO trampoline migration (§5), and error handling (§5.3).
+`/arch` Decision 26 establishes the shape. This doc fixes the `scheduling_class` placement (§3 below), the registration path (§4), the IO trampoline migration (§5), and error handling (§5.3). For the post-rollback canonical statement see `design/arch/decisions/0035-code-enum-integration-layer.md` §"Amendment (Sprint 66 — rollback, 2026-05-09)" and `design/arch/decisions/0041-compile-to-module-per-symbol-jit-direct-writes.md` §"S66 amendment + rollback".
 
 ## 1. References
 
+- `design/arch/decisions/0035-code-enum-integration-layer.md` §"Amendment (Sprint 66 — rollback, 2026-05-09)" — **the post-rollback canonical statement: GOT is the single source of truth for callable addresses; no per-entry pointer field.**
+- `design/arch/decisions/0041-compile-to-module-per-symbol-jit-direct-writes.md` §"S66 amendment + rollback" — same post-rollback canon for primitive/JIT cardinality interactions.
+- `design/arch/legacy/decisions/0026-platform-fn-pointers-on-moduleentry-def.md` §"Postscript (Sprint 66 — fn_ptr unification + rollback)" — superseded; the original `platform_fn_ptr` field location.
+- `design/arch/facades/types.md` §"Symbol table — the single store" (`got_slot` doc on `ModuleEntry::Def`).
+- `crates/cranelisp-types/src/module.rs` `ModuleEntry::Def` (no `fn_ptr` field, no `platform_fn_ptr` field — just `got_slot: Option<usize>`).
+- `crates/cranelisp-types/src/got.rs` (`GotTable` API — `load_slot`, `store_slot`, `base_ptr`).
+- `src/worker.rs` `handle_platform` and `collect_jit_setup` — the GOT-slot read/write patterns landed per the rollback commit.
 - `design/arch/pipeline-v4.md` §3.4 (platform loading), §9.1 (SymbolTable single store), §9.6 (introspection separate).
 - `design/arch/pipeline-v4-roadmap.md` Phase 4 Step 4a (G8).
-- `design/arch/CLAUDE.md` Decision 26 (`platform_fn_ptr` on `ModuleEntry::Def`; registry deleted; `scheduling_class` placement open for Wave 1).
-- `design/arch/interfaces.md:914–927` (`platform_fn_ptr` field landed on target shape).
 - `sprints/SPRINT.md` §Architecture Review condition 3 (scheduling_class placement decided in Wave 1).
 - `design/int/bind-chain-analysis.md` — downstream consumer of `scheduling_class`.
 - `design/int/io-integration.md` — platform DLL loading and registration handshake.
@@ -77,11 +82,11 @@ A fourth reader exists in tests (`PlatformRegistry::with_test_entries`) and is a
 | `register` | `handle_platform` (worker.rs:1481) | DELETED — worker writes to the symbol-table entry directly. |
 | `scheduling_class(&Symbol)` | `bind_chain_analysis.rs` | DELETED — `bind_chain_analysis` reads from symbol table (see §3 for exact shape). |
 | `jit_symbols()` / `jit_symbols_owned()` | Only `collect_jit_setup` reads these via `fn_ptr_by_jit_name` lookups; pure `jit_symbols()` / `_owned()` are now only referenced by dead "legacy" code per the doc-comments on lines 69 and 81. | DELETED. |
-| `fn_ptr_by_jit_name(&JitSymbol)` | `collect_jit_setup` (worker.rs:2129, 2142) | DELETED — `collect_jit_setup` reads `platform_fn_ptr` directly off the entry it already visits. |
+| `fn_ptr_by_jit_name(&JitSymbol)` | `collect_jit_setup` (worker.rs:2129, 2142) | DELETED — `collect_jit_setup` reads the entry's `got_slot`, then `entry_owning_module.got().load_slot(slot)` for the runtime address. (Post-S66 rollback: there is no `platform_fn_ptr` field on `ModuleEntry::Def`; the GOT slot is the single source of truth per Decision 35.) |
 | `is_empty()` | Test helpers only | DELETED with the struct. |
 | `with_test_entries` (cfg(test)) | Tests | DELETED; test rewiring covered in §7. |
 
-After G8, no surviving Rust type named `PlatformRegistry` exists. The `PlatformFunction` DTO is also deleted — its fields split: `jit_name` is already on `DefKind::Primitive.jit_name`, `fn_ptr` moves to the entry field, `scheduling_class` moves per §3.
+After G8, no surviving Rust type named `PlatformRegistry` exists. The `PlatformFunction` DTO is also deleted — its fields split: `jit_name` is on `DefKind::Primitive.jit_name`; `fn_ptr` is written to the per-module `GotTable` slot indexed by `ModuleEntry::Def.got_slot` (no `platform_fn_ptr` entry-field — see post-S66 rollback note in §1); `scheduling_class` moves per §3.
 
 ## 3. `scheduling_class` placement — Option A vs Option B
 
@@ -92,7 +97,12 @@ After G8, no surviving Rust type named `PlatformRegistry` exists. The `PlatformF
   ModuleEntry::Def {
       // …
       scheduling_class: Option<SchedulingClass>,
-      platform_fn_ptr: Option<*const u8>,
+      // (no `platform_fn_ptr` sibling — post-S66 rollback, the runtime fn ptr
+      // lives in the per-module GotTable slot indexed by got_slot. The S66
+      // unification briefly introduced a sibling `fn_ptr` field; it was
+      // rolled back the same day per `1dc57ae` because the GOT is the single
+      // source of truth — Decision 35 post-rollback canon.)
+      got_slot: Option<usize>,
       // …
   }
   ```
@@ -127,7 +137,7 @@ Rationale:
 
 1. Every constructor of `PrimitiveKind::PlatformEffect` must now pass a `scheduling_class`. Audit: currently only one constructor — the `register_platform_primitives` path in `src/platform.rs` (and sketch lineage). The `SchedulingClass` is already in scope there from the manifest; no new plumbing needed.
 2. Pattern matches that destructure `PrimitiveKind::PlatformEffect` (today there are two in `bind_chain_analysis.rs` and one in `collect_jit_setup`) must bind `scheduling_class` explicitly (or `..`). Trivial diff.
-3. Serialization: `SchedulingClass` derives `Serialize + Deserialize` (it is `#[repr(u32)]` on a small enum in `cranelisp-platform`). The variant field will serialise naturally — no `#[serde(skip)]` because `scheduling_class` is static manifest data, not runtime state. This is different from `platform_fn_ptr`, which IS `#[serde(skip)]` because it is a runtime pointer into a DLL (rediscovered on cache-hit load).
+3. Serialization: `SchedulingClass` derives `Serialize + Deserialize` (it is `#[repr(u32)]` on a small enum in `cranelisp-platform`). The variant field will serialise naturally — no `#[serde(skip)]` because `scheduling_class` is static manifest data, not runtime state. This is different from the runtime fn pointer, which is **not persisted at all** post-S66 rollback — `GotTable` slots hold `AtomicPtr<u8>` runtime addresses in non-serialised memory, re-populated on every session start (cold start: by `handle_platform`; cache-hit load: by the platform-reload pass that walks the persisted `PlatformDecl` list).
 
 ### 3.3 `/arch` Decision 26 alignment
 
@@ -146,19 +156,19 @@ Decision 26's preference is Option B (tighter scope), with the call deferred to 
      - `scheme`: the function type (from the type string in the manifest).
      - `kind: Box::new(DefKind::Primitive { primitive_kind: PrimitiveKind::PlatformEffect { scheduling_class: desc.scheduling_class }, jit_name: Some(JitSymbol::from(desc.jit_name.clone())) })`. **This is where Option B's `scheduling_class` flows in.**
      - `ast: None` (platform primitives have no Cranelisp body).
-     - `got_slot: Some(_)` — GOT slot assigned for cross-module calls.
+     - `got_slot: Some(slot)` — GOT slot allocated via `SymbolTable::allocate_got_slot()` for cross-module calls; the slot itself starts holding a null `AtomicPtr<u8>`, populated in step 3.
      - `code: None` — no compiled Cranelisp code (the DLL owns the native code).
-     - `platform_fn_ptr: None` — populated in step 3.
    - Stores the DLL handle in `loaded_platforms` (keeps the DLL alive).
-3. After `load_and_register_platform` returns, the worker iterates `platform.descriptors` a second time (or folds this into the loop in `load_and_register_platform`; see §4.2) and for each descriptor:
+3. After `load_and_register_platform` returns, the worker iterates `platform.descriptors` a second time (or folds this into the loop in `load_and_register_platform`; see §4.2) and for each descriptor reads the entry's `got_slot` and writes the runtime fn ptr to the per-module `GotTable`:
    ```rust
    let module_path = ModuleFullPath::from(format!("platform.{}", platform.name));
-   let mut table = symbol_tables.get_mut(&module_path)
+   let table = symbol_tables.get(&module_path)
        .ok_or_else(|| /* internal error: platform module missing */)?;
-   if let Some(ModuleEntry::Def { platform_fn_ptr, .. }) = table.get_mut(desc.name.as_ref()) {
-       *platform_fn_ptr = Some(desc.ptr);
+   if let Some(ModuleEntry::Def { got_slot: Some(slot), .. }) = table.get(desc.name.as_ref()) {
+       table.got().store_slot(*slot, desc.ptr);
    }
    ```
+   (Post-S66 rollback: there is no `platform_fn_ptr` field on `ModuleEntry::Def`. The GOT-store is via the per-module `Arc<GotTable>` reached through `SymbolTable.got()`, which is the canonical `AtomicPtr<u8>` write per Decision 35.)
 4. No registry write. `ctx.platform_registry` field vanishes.
 
 ### 4.2 `/platform` surface — where the write lands
@@ -170,13 +180,13 @@ The write belongs in `crate::platform::load_and_register_platform` (owned by `/p
 
 The signature of `load_and_register_platform` likely gains a `&DashMap<ModuleFullPath, SymbolTable>` parameter or evolves to return the `Vec<PlatformFn>` descriptors for the caller to loop. `/platform` makes the call in its Wave 1 design.
 
-<!-- FIXME(/platform): confirm the write-site for platform_fn_ptr — inside load_and_register_platform (one loop, atomic) vs in handle_platform (two loops, looser). /int preference is the former; /platform owns the decision. -->
+(Historical: the inline `FIXME(/platform)` that lived here is resolved — write lands inside `load_and_register_platform` per the rollback commit's worker.rs changes; the inline FIXME protocol is retired per Sprint 63 M7 anyway.)
 
 ### 4.3 Invariant
 
-**Typecheck-time invariant**: every `ModuleEntry::Def { kind: Primitive { primitive_kind: PlatformEffect { .. }, .. }, .. }` has `platform_fn_ptr: Some(_)`. Violation = internal error. Rationale: a `PlatformEffect` entry exists only after the DLL has been loaded and the manifest parsed; the `fn_ptr` is in the descriptor alongside every other field. Writing both fields in the same loop is the only way to create a `PlatformEffect` entry. The symbol table cannot observe `PlatformEffect { .. }, platform_fn_ptr: None` except transiently between steps 2 and 3 of §4.1, and those steps run under the same guard (§4.2).
+**Typecheck-time invariant**: every `ModuleEntry::Def { kind: Primitive { primitive_kind: PlatformEffect { .. }, .. }, .. }` has `got_slot: Some(slot)`, and `entry_owning_module.got().load_slot(slot)` returns a non-null ptr post-`handle_platform`. Violation = internal error. The transient between slot allocation (§4.1 step 2) and pointer write (§4.1 step 3) is guarded by the same lock that gates the platform-form processing; once `handle_platform` returns successfully, the slot's `AtomicPtr<u8>` is populated.
 
-This means **runtime** readers (bind-chain analysis, codegen's effect-thunk builder, IO trampoline codegen) can read `platform_fn_ptr.unwrap()` and trust it. The only check is the kind discriminant. `None` on a `PlatformEffect` is an internal bug, not a user-facing error.
+This means **runtime** readers (bind-chain analysis, codegen's effect-thunk builder, IO trampoline codegen) can read `entry_owning_module.got().load_slot(entry.got_slot.unwrap())` and trust it is non-null. The only check is the kind discriminant. A null slot for a `PlatformEffect` is an internal bug, not a user-facing error.
 
 ## 5. IO trampoline migration
 
@@ -205,12 +215,12 @@ if let DefKind::Primitive {
 }
 ```
 
-After G8:
+After G8 (post-S66 rollback shape):
 
 ```rust
 if let ModuleEntry::Def {
     kind,
-    platform_fn_ptr: Some(ptr),
+    got_slot: Some(slot),
     ..
 } = entry
     && let DefKind::Primitive {
@@ -218,19 +228,22 @@ if let ModuleEntry::Def {
         jit_name: Some(jit_name),
     } = kind.as_ref()
 {
-    jit_symbols.push((jit_name.0.clone(), *ptr));
+    let ptr = entry_owning_module.got().load_slot(*slot);
+    if !ptr.is_null() {
+        jit_symbols.push((jit_name.0.clone(), ptr));
+    }
 }
 ```
 
-The `platform_registry` parameter disappears from both functions' signatures (and from every caller — `inline_jit_codegen_for_names`, `inline_jit_codegen_for_module`, `collect_jit_setup_public`, `ModuleCompiler`, etc.).
+The `platform_registry` parameter disappears from both functions' signatures (and from every caller — `inline_jit_codegen_for_names`, `inline_jit_codegen_for_module`, `collect_jit_setup_public`, `ModuleCompiler`, etc.). The runtime fn ptr is read from the per-module `GotTable` slot indexed by `got_slot` — no `platform_fn_ptr` field is read from the entry (it doesn't exist; see §1 post-S66-rollback note).
 
-### 5.3 Error handling — `platform_fn_ptr.unwrap()` vs graceful fall-through
+### 5.3 Error handling — null GOT slot vs graceful fall-through
 
-Per §4.3 invariant, `platform_fn_ptr` is `Some` on every `PlatformEffect` entry. The read path matches on `Some(ptr)` inside the same `let` chain that checks the kind, so a missing pointer silently skips the entry (no registration). This preserves today's behaviour (`fn_ptr_by_jit_name` returning `None` skips too) and does not panic.
+Per §4.3 invariant, the slot indexed by `entry.got_slot.unwrap()` is non-null on every `PlatformEffect` entry post-`handle_platform`. The read path checks the kind discriminant first, then the slot's load; a null slot silently skips the entry (no registration). This preserves the pre-G8 behaviour (`fn_ptr_by_jit_name` returning `None` skipped too) and does not panic.
 
 The more visible error site is in the **typecheck** path: if the user writes `(import [platform.stdio [print]])` but `print` does not exist in the `platform.stdio` symbol table, resolution fails at typecheck time with the existing "symbol not found" error. This is unchanged by G8.
 
-The *only* failure mode unique to G8 would be an internal consistency bug: a `PlatformEffect` entry exists with `platform_fn_ptr: None`. Per §4.3 this cannot happen transiently — step 2 of §4.1 creates the entry with `platform_fn_ptr: None` and step 3 populates it before the scheduler progresses past the platform form. If a future refactor separates the two steps, add a `debug_assert!` inside `load_and_register_platform`'s caller verifying `platform_fn_ptr.is_some()` before marking platform loading complete.
+The *only* failure mode unique to G8 would be an internal consistency bug: a `PlatformEffect` entry exists with `got().load_slot(slot)` returning null. Per §4.3 this cannot happen transiently — step 2 of §4.1 creates the entry with a null slot and step 3 stores the pointer before the scheduler progresses past the platform form. If a future refactor separates the two steps, add a `debug_assert!` inside `load_and_register_platform`'s caller verifying `!got.load_slot(slot).is_null()` before marking platform loading complete.
 
 ## 6. Sketch comparison
 
@@ -273,24 +286,24 @@ What goes away:
 - The `Mutex<PlatformRegistry>` swap-in/swap-out dance in `register_module_with_source` (`src/session_v4.rs:993–1026`) and `reload_module` (`src/session_v4.rs:1088–1128`).
 
 What `/platform` must confirm:
-- The DLL-load loop inside `load_and_register_platform` can take a `&DashMap<ModuleFullPath, SymbolTable>` (or equivalent) and write both the type-signature entry AND the `platform_fn_ptr` in one pass. No reason this is blocked — the function already writes to the symbol table today; the only new behaviour is also writing one more field on the same entry before the next iteration.
+- The DLL-load loop inside `load_and_register_platform` can take a `&DashMap<ModuleFullPath, SymbolTable>` (or equivalent) and write both the symbol-table entry AND the per-module GOT slot (via `symbol_table.got().store_slot(slot, desc.ptr)`) in one pass. No reason this is blocked — the function already writes to the symbol table today; the only new behaviour is also storing one pointer in the entry's GOT slot before the next iteration.
 - No DLL currently pre-registers a `PlatformRegistry` object via the `declare_platform!` macro. (Spot-check: `crates/cranelisp-platform/src/lib.rs` shows the macro produces `PlatformFn` descriptors, not registry entries. No coupling.)
 
-<!-- FIXME(/platform): confirm the two bullets above in your Wave 1 response — (1) load_and_register_platform can take a symbol_tables handle and write platform_fn_ptr inline; (2) no DLL code or ABI surface references PlatformRegistry. If (2) is false, file the call-site path and we'll coordinate. -->
+(Historical: the inline `FIXME(/platform)` that confirmed these bullets is resolved — both bullets confirmed in Sprint 57 Wave 1 review; the inline FIXME protocol is retired per Sprint 63 M7.)
 
-## 8. Cache interaction — `platform_fn_ptr = None` on cache-hit load
+## 8. Cache interaction — null GOT slot on cache-hit load
 
-`platform_fn_ptr` is `#[serde(skip)]`. On cache-hit load (`try_cache_hit_load`), every cached `PlatformEffect` entry deserialises with `platform_fn_ptr: None`. The entry's `kind` preserves `PrimitiveKind::PlatformEffect { scheduling_class }` (serialised normally). For the pointer to become callable, the platform DLL must be reloaded and the pointer rewritten.
+`GotTable` slots are not serialised — they hold `AtomicPtr<u8>` runtime addresses in non-serialised memory, allocated fresh on every session start. On cache-hit load (`try_cache_hit_load`), every restored `PlatformEffect` entry deserialises with its `got_slot: Some(slot)` preserved (the slot index is stable), and `kind: PrimitiveKind::PlatformEffect { scheduling_class }` preserved, but the underlying `GotTable`'s slot starts null. For the pointer to become callable, the platform DLL must be reloaded and the slot re-populated.
 
-**Mechanism**: the `SymbolTable.platforms: Vec<PlatformDecl>` field (per `pipeline-v4.md` §9.1 — a serialised record of `(platform "name")` forms) stores the DLL name. On cache-hit load, the scheduler or session iterates each restored module's `platforms` list, reloads the DLL, and walks its manifest to rewrite each `PlatformEffect` entry's `platform_fn_ptr`. This is the same loop as cold-start but triggered by cache restore rather than form processing.
+**Mechanism**: the `SymbolTable.platforms: Vec<PlatformDecl>` field (per `pipeline-v4.md` §9.1 — a serialised record of `(platform "name")` forms) stores the DLL name. On cache-hit load, the scheduler or session iterates each restored module's `platforms` list, reloads the DLL, and walks its manifest to rewrite each `PlatformEffect` entry's GOT slot via `symbol_table.got().store_slot(slot, desc.ptr)`. This is the same loop as cold-start but triggered by cache restore rather than form processing.
 
-Today the `SymbolTable.platforms` field may not yet be persisted — it lands properly in Phase 5 (Step 5a: structural declarations on `SymbolTable`). Until Phase 5, cache restore of platform-using modules is incomplete: the restore succeeds but `platform_fn_ptr` stays `None`, which breaks the next `collect_jit_setup` iteration. Phase 4 G8 therefore either:
+Today the `SymbolTable.platforms` field may not yet be persisted — it lands properly in Phase 5 (Step 5a: structural declarations on `SymbolTable`). Until Phase 5, cache restore of platform-using modules is incomplete: the restore succeeds but the GOT slot stays null, which breaks the next `collect_jit_setup` iteration. Phase 4 G8 therefore either:
 - **(a)** Gates full platform-cache support behind Phase 5 (accept that cache-hit platform modules require a full re-platform-load from the `PlatformDecl` stored on disk). This matches today's behaviour — the sketch also did not cache platform state because DLL load is `O(1)` anyway; and
-- **(b)** Temporarily retains the `(platform "name")` form re-execution path inside the cache-hit codepath for the module (worker sees cache hit → still runs `handle_platform` for each `PlatformDecl` in the manifest → writes `platform_fn_ptr`).
+- **(b)** Temporarily retains the `(platform "name")` form re-execution path inside the cache-hit codepath for the module (worker sees cache hit → still runs `handle_platform` for each `PlatformDecl` in the manifest → writes the GOT slot).
 
 **/int position**: option (a) — Phase 5 is the right time to close this gap. Phase 4 G8 scope is the `PlatformRegistry` deletion; ambitious cache-restore behaviours expand the wave surface unnecessarily. If the 5 v4_platform failures in the 14-failure baseline are cache-dependent (triage TBD; see §9), option (b) may be required this sprint as a minimal glue.
 
-<!-- FIXME(/platform): triage the 5 v4_platform failures — do any exercise cache restore of a platform-loaded module? If yes, (b) glue is required this sprint; if no, (a) is sufficient and the cache-restore gap moves to Phase 5. -->
+(Historical: the inline `FIXME(/platform)` here triaged the 5 v4_platform failures; resolved in Sprint 57 Wave 3.)
 
 ## 9. Test strategy
 
@@ -299,7 +312,7 @@ Per `src/CLAUDE.md` and the sprint's testing ownership clause, `/int` writes uni
 ### 9.1 Unit tests (owned by `/int`, written in Wave 3)
 
 - `src/worker.rs::tests` — `collect_jit_setup_finds_platform_fn_via_entry`:
-  1. Build a synthetic `SymbolTable` with one `PlatformEffect` entry carrying `platform_fn_ptr: Some(0x1000 as *const u8)` and `kind.jit_name: Some("cranelisp_print")`.
+  1. Build a synthetic `SymbolTable` with one `PlatformEffect` entry carrying `got_slot: Some(slot)`; pre-populate the table's `GotTable` via `table.got().store_slot(slot, 0x1000 as *const u8)` and set `kind.jit_name: Some("cranelisp_print")`.
   2. Call `collect_jit_setup` (no `platform_registry` parameter in the G8 signature).
   3. Assert `jit_symbols` contains `("cranelisp_print", 0x1000 as *const u8)`.
 
@@ -315,7 +328,7 @@ Per `src/CLAUDE.md` and the sprint's testing ownership clause, `/int` writes uni
 
 ### 9.2 Integration tests (owned by `/qa`, written in Wave 3 or Wave 5)
 
-- `tests/v4_platform/platform_fn_on_entry.rs` — register a platform module, assert the symbol-table entry carries `platform_fn_ptr: Some(_)` after form processing.
+- `tests/v4_platform/platform_fn_on_entry.rs` — register a platform module, assert the symbol-table entry carries `got_slot: Some(slot)` AND `symbol_table.got().load_slot(slot)` returns a non-null ptr after form processing.
 - `tests/v4_platform/cross_module_platform_resolution.rs` — user module imports a platform fn, call it, assert behaviour matches direct call.
 - The 5 v4_platform failure triage: classify each failure against §8 (cache-dependent vs pure-G8). Expected to clear under G8 (perhaps with §8's option (b) glue for cache-interacting cases).
 
@@ -344,7 +357,7 @@ Cross-check: `grep -n PlatformRegistry src/` returns zero matches after Wave 3.
 ## 11. Acceptance (Wave 3 gate criteria, additions to SPRINT.md Wave 3)
 
 1. `PlatformRegistry` struct, field, constructor, all call sites deleted — confirmed by grep.
-2. Every platform-fn lookup goes through `symbol_tables[module].get(name).platform_fn_ptr` (or `scheduling_class` on the `PrimitiveKind::PlatformEffect` variant per Option B).
+2. Every platform-fn lookup goes through `symbol_tables[module].got().load_slot(entry.got_slot.unwrap())` for the runtime ptr (post-S66 rollback canonical path; no `platform_fn_ptr` field exists), or `scheduling_class` on the `PrimitiveKind::PlatformEffect` variant per Option B for the metadata.
 3. 5 v4_platform failures pass (or triaged per §8 into Phase 5 scope with rationale).
 4. IO regression suite passes: `examples/*.cl` using `print`, `read-line`, `time`, etc. unchanged.
 5. `bind-chain` auto-scheduling still classifies Commutative and ResourceSerial calls correctly — existing Ring 4 integration tests pass.

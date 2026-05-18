@@ -1,0 +1,11 @@
+pub mod cranelisp_exe_bundle
+pub use cranelisp_exe_bundle::alloc
+pub use cranelisp_exe_bundle::drop
+pub use cranelisp_exe_bundle::intrinsics_string
+pub use cranelisp_exe_bundle::intrinsics_vec
+pub use cranelisp_exe_bundle::io
+pub use cranelisp_exe_bundle::ivar
+pub use cranelisp_exe_bundle::panic
+pub use cranelisp_exe_bundle::rc
+#[no_mangle] pub c fn cranelisp_exe_bundle::cranelisp_init_platform(manifest_fn_ptr: i64)
+#[no_mangle] pub c fn cranelisp_exe_bundle::cranelisp_init_primitives()

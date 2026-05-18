@@ -16,6 +16,20 @@ This spec is **target-stating**. Drift detection between as-designed and as-buil
 
 The intrinsics crate's public surface is exposed primarily as **fn pointers registered with the JIT** (via `JITBuilder::symbol` — `int`'s session init resolves names to fn ptrs and registers them) and as **named extern symbols in `.o` files** (resolved at link time by the system linker against the `cranelisp-intrinsics` archive). Backend emits Cranelift IR that calls these by string name; nothing in the symbol table; nothing in any GOT.
 
+### `JITBuilder::symbol(name, ptr)` narrows to intrinsics-only — post-S68
+
+**Post-S68 / Decision 0048**, the `JITBuilder::symbol(name, ptr)` direct-registration dispatch path is reserved **exclusively for intrinsics**. Intrinsics are runtime infrastructure — RC inc/dec underflow check, `heap_alloc` / `heap_dealloc`, `runtime_panic`, per-type drop helpers, IO trampoline (`cranelisp_run_io`), Vec runtime, allocator family, IVar primitives, IO-observation `emit` registration — none of which is a module, none of which has user-visible symbol-table entries, none of which has GOT slots. They cannot route through a per-module GOT because **there is no `intrinsics` module**: intrinsics are backend-emitted-call targets categorically distinct from user-callable surfaces (BC §4b).
+
+Primitives (`add-i64`, `int-to-string`, `str-concat`, `parse-int`, `not`, the full Decision-43 primitive set) **no longer use `JITBuilder::symbol`** as of S68. They flow through the standard cross-module GOT-indirect dispatch path (Decision 23 two-GOT model, Decision 31 GOT-indirect emission) against `cranelisp-primitives`' statically-constructed `PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable>>` (Decision 0048). The session's primitives `ModuleEntry`s reach fn pointers via `symbol_table.got().load_slot(entry.got_slot.unwrap())` — byte-identical to any user-module dispatch.
+
+#### Asymmetry justification
+
+The asymmetry between primitives (GOT-uniform) and intrinsics (`JITBuilder::symbol`-direct) is **load-bearing** and intentional, not residual. Decision 0048 is the boundary-of-asymmetry document: primitives have become uniform via the static `Arc<GotTable>` shape because primitives **are** a module (the synthetic `primitives` module); intrinsics retain `JITBuilder::symbol` because intrinsics are genuinely runtime-special — they aren't a module, they have no `SymbolTable` entries, they have no GOT slots, they're called by emitted IR using extern-name relocation only. Forcing intrinsics through a synthetic GOT would introduce a categorical fiction (a module that has no user-visible surface) for no semantic gain. The categorical line traces directly back to Decision 43 (primitives are user-callable; intrinsics are backend-emitted-call targets) and crystallises at Decision 0048 — post-S68 the asymmetry becomes the explicit binding shape.
+
+#### Public-API impact
+
+**None at S68.** The `JITBuilder::symbol` narrowing is a **consumer-side change** — `int`'s session-init path stops registering primitives via `JITBuilder::symbol` and starts referencing `cranelisp_primitives::PRIMITIVES_TABLE` instead. The intrinsics crate's published Rust API is unchanged: every fn enumerated below remains pub with the same signature; the registration call site that names them remains in `int`. This facade refresh is doc-level only; no pub-api items are added, changed, or removed by S68 on this crate. The S68 facade-compliance test for `cranelisp-intrinsics` should be green with no baseline regeneration required.
+
 ### Heap allocator (Decision-11 base-pointer convention)
 
 ```rust
@@ -280,6 +294,8 @@ Mirroring `facades/backend.md` §"Non-goals" — load-bearing prohibitions for i
 
 1. **No conditional registration of intrinsics.** Every intrinsic enumerated in this facade MUST be registered with the JIT unconditionally at session setup (`JITBuilder::symbol(...)` per `int`'s init path). Per-program syntactic scans gating which intrinsic to register are forbidden — they have repeatedly drifted (Sprint 59 Defect 8; S66 Wave 3a-β regression). The JIT's `Linkage::Import` set is the only correct scope; the cost of registering an unused intrinsic is one `HashMap` entry, the cost of missing one is a JIT-finalize panic. (Per FIXME 0178; implementation half landed in S66 Wave 3a-γ.)
 
+   **Post-S68 narrowing**: only intrinsics enumerated on this facade are eligible for `JITBuilder::symbol` direct registration. Primitives — even the user-callable ops currently physically resident in this crate pending FIXME 0180 (the `str_*` family) — flow through the standard GOT-indirect dispatch path against `cranelisp_primitives::PRIMITIVES_TABLE` (Decision 0048). Adding a primitive to `JITBuilder::symbol` registration is a regression of the post-S68 categorical line.
+
 2. **No trait-knowledge keys in inline-substitution tables.** Per Decision 43 — backend's `primitives_inline.rs` substitution table is keyed on `Symbol` only (`add-i64 → iadd`), never on `(TraitName, Symbol, TypeName)` triples. The post-D43 final-state forbids the pattern; the `cranelisp_op_*` family above (Wave 2 deletes) was its last residue.
 
 3. **No backend-emitted-call functions exposed on the primitives crate's public surface.** Per BC §4b — intrinsics are NOT callable from user code; they are not in any symbol table or GOT. The `cranelisp-primitives` crate re-exports a subset of intrinsics for cross-link convenience (notably the `str_*` family, pending FIXME 0180 physical relocation); that is a build-system convenience, not a user-callable promotion. User code never references intrinsic names.
@@ -356,7 +372,7 @@ These hold across sprints — the contract `cranelisp-intrinsics` makes with the
 
 8. **No state across sessions.** Stats accessors (`alloc_count`, etc.) are process-global — `int`'s `reset_counts` should be called at session start in test contexts. Production runs do not call `reset_counts`.
 
-9. **Backend-driven evolution.** Intrinsics changes are typically driven by backend codegen choices (a new RC inlining strategy, a new IO node, a new trampoline shape). The crate does not accrete intrinsics for spec convenience; spec-defined operations live in `cranelisp-primitives`. The categorical line is the load-bearing distinction Decision 43 formalised.
+9. **Backend-driven evolution.** Intrinsics changes are typically driven by backend codegen choices (a new RC inlining strategy, a new IO node, a new trampoline shape). The crate does not accrete intrinsics for spec convenience; spec-defined operations live in `cranelisp-primitives`. The categorical line is the load-bearing distinction Decision 43 formalised — and Decision 0048 reinforces post-S68 by binding the dispatch asymmetry: intrinsics use `JITBuilder::symbol` direct registration; primitives use the standard GOT-indirect path. The dispatch shape is the runtime embodiment of the categorical line; drifting either side toward the other reopens the BC overlap Decision 43 closed.
 
 10. **No `FQTypeName` at the intrinsics public surface.** Per `/arch` Sprint 67 Phase 3 Wave 0 verification — zero pub-api items on this crate name `FQTypeName` or `TypeName`. Intrinsics operates on raw heap pointers + marshaling tags (Sexp tags, IO tags) drawn from `cranelisp-types`; types are never named at the surface. This holds across the FQTypeName-migration sweep (FIXME 0151); no boundary lifts on this crate.
 
@@ -379,14 +395,16 @@ This facade was last refreshed at S67 Wave 4 close (FIXME 0207) against `crates/
 ## Cross-references
 
 - `bounded-contexts.md` §4b — Intrinsics BC (full statement)
-- `decisions/0043-runtime-split-into-primitives-intrinsics.md` — the split decision
+- `decisions/0043-runtime-split-into-primitives-intrinsics.md` — the split decision (primitives vs intrinsics categorical line)
+- `decisions/0048-primitives-static-symboltable-and-got-in-crate.md` — **the boundary-of-asymmetry document for S68**: primitives go GOT-uniform via `PRIMITIVES_TABLE`; intrinsics retain `JITBuilder::symbol` direct registration as the load-bearing exception
 - `decisions/0040-runtime-trace-io-trace-relocate-to-int.md` — IoObserver callback contract; the registration API resides here post-D43; `trace::*` and `io_trace::*` relocate to `int` at S67 Wave 4
 - `decisions/0011-embedded-drop-glue-ptr-in-closures.md` — drop-glue layout
 - `decisions/0013-atomic-rc-from-ring-1.md` (legacy) — atomic RC discipline (subsumed into BC invariant 3 above)
 - `decisions/0047-fqtypename-binding-at-resolved-stage-boundaries.md` — FQTypeName binding; intrinsics surface verified zero-impact (BC invariant 10)
 - `facades/primitives.md` — sibling crate from the same split; re-exports the `str_*` family pending FIXME 0180
-- `facades/backend.md` §"Consumed surface" — backend names intrinsics by string at codegen
-- `facades/int.md` §"Consumed surface" — int registers intrinsic fn ptrs with the JIT at session init; §"Observability — `src/io_trace.rs`" + §"Tracing helpers — `src/trace.rs`" — destination homes for the Wave-4 relocations
+- `facades/primitives.md` — sibling cascade target (S68): single-pub-item shape (`PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable>>`) is the GOT-uniform counterpart to this crate's `JITBuilder::symbol`-intrinsics-only narrowing
+- `facades/backend.md` §"Consumed surface" — backend names intrinsics by string at codegen; §"`intrinsic_symbols()`" body shrinks at S68 (primitives entries retire; FIXME 0191) as the consumer-side embodiment of the asymmetry confirmed here
+- `facades/int.md` §"Consumed surface" — int registers intrinsic fn ptrs with the JIT at session init (and at S68 references `cranelisp_primitives::PRIMITIVES_TABLE` directly for primitives — no `JITBuilder::symbol` route for those); §"Observability — `src/io_trace.rs`" + §"Tracing helpers — `src/trace.rs`" — destination homes for the Wave-4 relocations
 - `facades/platform.md` §"Public consts" — `IO_TAG_*` consts intrinsics consumes
 - `fixmes/0103-...` — io_trace + trace relocation tracker (in-flight; closes at Wave 4)
 - `fixmes/0150-runtime-split-primitives-intrinsics.md` — D43 implementation tracker (closes alongside Wave 2 `ops::*` deletion + the previously-landed primitives_inline trait-knowledge removal)

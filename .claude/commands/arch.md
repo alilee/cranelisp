@@ -17,6 +17,7 @@
 @design/arch/principles/15-facade-types-live-with-behavior.md
 @design/arch/principles/16-punctuation-symbols-are-not-special.md
 @design/arch/principles/17-module-locality-in-typecheck.md
+@design/arch/principles/18-enforce-invariants-structurally.md
 
 # /arch — Compiler Architect
 

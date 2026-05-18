@@ -1,56 +1,9 @@
 pub mod cranelisp_primitives
 pub mod cranelisp_primitives::bool
-#[export_name = "bool-to-string"] pub c fn cranelisp_primitives::bool::bool_to_string(b: i64) -> i64
 pub mod cranelisp_primitives::float
-#[export_name = "float-to-string"] pub c fn cranelisp_primitives::float::float_to_string(f_bits: i64) -> i64
 pub mod cranelisp_primitives::int
-#[export_name = "int-to-string"] pub c fn cranelisp_primitives::int::int_to_string(n: i64) -> i64
-#[export_name = "parse-int"] pub c fn cranelisp_primitives::int::parse_int(s: i64) -> i64
 pub mod cranelisp_primitives::marshal
-#[export_name = "quote-sexp"] pub c fn cranelisp_primitives::marshal::quote_sexp(val: i64) -> i64
-#[export_name = "sconcat"] pub c fn cranelisp_primitives::marshal::sconcat(xs: i64, ys: i64) -> i64
 pub mod cranelisp_primitives::ring0
-#[export_name = "add-f64"] pub c fn cranelisp_primitives::ring0::add_f64(a: i64, b: i64) -> i64
-#[export_name = "add-i64"] pub c fn cranelisp_primitives::ring0::add_i64(a: i64, b: i64) -> i64
-#[export_name = "div-f64"] pub c fn cranelisp_primitives::ring0::div_f64(a: i64, b: i64) -> i64
-#[export_name = "div-i64"] pub c fn cranelisp_primitives::ring0::div_i64(a: i64, b: i64) -> i64
-#[export_name = "eq-bool"] pub c fn cranelisp_primitives::ring0::eq_bool(a: i64, b: i64) -> i64
-#[export_name = "eq-f64"] pub c fn cranelisp_primitives::ring0::eq_f64(a: i64, b: i64) -> i64
-#[export_name = "eq-i64"] pub c fn cranelisp_primitives::ring0::eq_i64(a: i64, b: i64) -> i64
-#[export_name = "ge-f64"] pub c fn cranelisp_primitives::ring0::ge_f64(a: i64, b: i64) -> i64
-#[export_name = "ge-i64"] pub c fn cranelisp_primitives::ring0::ge_i64(a: i64, b: i64) -> i64
-#[export_name = "gt-f64"] pub c fn cranelisp_primitives::ring0::gt_f64(a: i64, b: i64) -> i64
-#[export_name = "gt-i64"] pub c fn cranelisp_primitives::ring0::gt_i64(a: i64, b: i64) -> i64
-#[export_name = "le-f64"] pub c fn cranelisp_primitives::ring0::le_f64(a: i64, b: i64) -> i64
-#[export_name = "le-i64"] pub c fn cranelisp_primitives::ring0::le_i64(a: i64, b: i64) -> i64
-#[export_name = "lt-f64"] pub c fn cranelisp_primitives::ring0::lt_f64(a: i64, b: i64) -> i64
-#[export_name = "lt-i64"] pub c fn cranelisp_primitives::ring0::lt_i64(a: i64, b: i64) -> i64
-#[export_name = "mul-f64"] pub c fn cranelisp_primitives::ring0::mul_f64(a: i64, b: i64) -> i64
-#[export_name = "mul-i64"] pub c fn cranelisp_primitives::ring0::mul_i64(a: i64, b: i64) -> i64
-#[export_name = "neq-bool"] pub c fn cranelisp_primitives::ring0::neq_bool(a: i64, b: i64) -> i64
-#[export_name = "neq-f64"] pub c fn cranelisp_primitives::ring0::neq_f64(a: i64, b: i64) -> i64
-#[export_name = "neq-i64"] pub c fn cranelisp_primitives::ring0::neq_i64(a: i64, b: i64) -> i64
-#[export_name = "not"] pub c fn cranelisp_primitives::ring0::not(b: i64) -> i64
-pub fn cranelisp_primitives::ring0::ring0_jit_symbols() -> alloc::vec::Vec<(&'static str, *const u8)>
-#[export_name = "sub-f64"] pub c fn cranelisp_primitives::ring0::sub_f64(a: i64, b: i64) -> i64
-#[export_name = "sub-i64"] pub c fn cranelisp_primitives::ring0::sub_i64(a: i64, b: i64) -> i64
 pub mod cranelisp_primitives::string
-#[export_name = "char-at"] pub c fn cranelisp_primitives::string::str_char_at(s: i64, idx: i64) -> i64
-#[export_name = "str-concat"] pub c fn cranelisp_primitives::string::str_concat(a: i64, b: i64) -> i64
-#[export_name = "contains?"] pub c fn cranelisp_primitives::string::str_contains(s: i64, needle: i64) -> i64
-#[export_name = "ends-with?"] pub c fn cranelisp_primitives::string::str_ends_with(s: i64, suffix: i64) -> i64
-#[export_name = "str-eq"] pub c fn cranelisp_primitives::string::str_eq(a: i64, b: i64) -> i64
-#[export_name = "join"] pub c fn cranelisp_primitives::string::str_join(sep: i64, vec: i64) -> i64
-#[export_name = "str-len"] pub c fn cranelisp_primitives::string::str_len(s: i64) -> i64
-#[export_name = "replace"] pub c fn cranelisp_primitives::string::str_replace(s: i64, from: i64, to: i64) -> i64
-#[export_name = "split"] pub c fn cranelisp_primitives::string::str_split(s: i64, sep: i64) -> i64
-#[export_name = "starts-with?"] pub c fn cranelisp_primitives::string::str_starts_with(s: i64, prefix: i64) -> i64
-#[export_name = "substring"] pub c fn cranelisp_primitives::string::str_substring(s: i64, start: i64, end: i64) -> i64
-#[export_name = "to-lower"] pub c fn cranelisp_primitives::string::str_to_lower(s: i64) -> i64
-#[export_name = "to-upper"] pub c fn cranelisp_primitives::string::str_to_upper(s: i64) -> i64
-#[export_name = "trim"] pub c fn cranelisp_primitives::string::str_trim(s: i64) -> i64
-#[export_name = "string-identity"] pub c fn cranelisp_primitives::string::string_identity(s: i64) -> i64
 pub mod cranelisp_primitives::vec
-#[export_name = "vec-len"] pub c fn cranelisp_primitives::vec::vec_len(vec: i64) -> i64
-pub static cranelisp_primitives::PRIMITIVES_TABLE: std::sync::lazy_lock::LazyLock<cranelisp_types::module::SymbolTable<(), ()>>
-pub fn cranelisp_primitives::ring0_jit_symbols() -> alloc::vec::Vec<(&'static str, *const u8)>
+pub static cranelisp_primitives::PRIMITIVES_TABLE: std::sync::lazy_lock::LazyLock<alloc::sync::Arc<cranelisp_types::module::SymbolTable<cranelisp_backend::code::Code, ()>>>

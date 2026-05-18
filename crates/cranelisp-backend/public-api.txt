@@ -2,11 +2,84 @@ pub mod cranelisp_backend
 pub use cranelisp_backend::TargetIsa
 pub use cranelisp_backend::cranelift_module
 pub use cranelisp_backend::cranelift_object
+pub mod cranelisp_backend::artefact
+#[non_exhaustive] pub struct cranelisp_backend::artefact::LinkerArtefact
+pub cranelisp_backend::artefact::LinkerArtefact::linker: alloc::sync::Arc<cranelisp_backend::cache::linker::Linker>
+pub cranelisp_backend::artefact::LinkerArtefact::ptrs: std::collections::hash::map::HashMap<cranelisp_types::newtype::Symbol, *const u8>
+impl core::marker::Send for cranelisp_backend::artefact::LinkerArtefact
+impl core::marker::Sync for cranelisp_backend::artefact::LinkerArtefact
+impl core::marker::Freeze for cranelisp_backend::artefact::LinkerArtefact
+impl core::marker::Unpin for cranelisp_backend::artefact::LinkerArtefact
+impl core::marker::UnsafeUnpin for cranelisp_backend::artefact::LinkerArtefact
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::artefact::LinkerArtefact
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::artefact::LinkerArtefact
+impl<T, U> core::convert::Into<U> for cranelisp_backend::artefact::LinkerArtefact where U: core::convert::From<T>
+pub fn cranelisp_backend::artefact::LinkerArtefact::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::artefact::LinkerArtefact where U: core::convert::Into<T>
+pub type cranelisp_backend::artefact::LinkerArtefact::Error = core::convert::Infallible
+pub fn cranelisp_backend::artefact::LinkerArtefact::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::artefact::LinkerArtefact where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::artefact::LinkerArtefact::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::artefact::LinkerArtefact::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for cranelisp_backend::artefact::LinkerArtefact where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::artefact::LinkerArtefact::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::artefact::LinkerArtefact where T: ?core::marker::Sized
+pub fn cranelisp_backend::artefact::LinkerArtefact::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::artefact::LinkerArtefact where T: ?core::marker::Sized
+pub fn cranelisp_backend::artefact::LinkerArtefact::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for cranelisp_backend::artefact::LinkerArtefact
+pub fn cranelisp_backend::artefact::LinkerArtefact::from(t: T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::artefact::LinkerArtefact
+pub type cranelisp_backend::artefact::LinkerArtefact::Init = T
+pub const cranelisp_backend::artefact::LinkerArtefact::ALIGN: usize
+pub unsafe fn cranelisp_backend::artefact::LinkerArtefact::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::artefact::LinkerArtefact::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::artefact::LinkerArtefact::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::artefact::LinkerArtefact::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::artefact::LinkerArtefact
+impl<T> typenum::type_operators::Same for cranelisp_backend::artefact::LinkerArtefact
+pub type cranelisp_backend::artefact::LinkerArtefact::Output = T
+#[non_exhaustive] pub struct cranelisp_backend::artefact::ObjectArtefact
+pub cranelisp_backend::artefact::ObjectArtefact::object: alloc::vec::Vec<u8>
+pub cranelisp_backend::artefact::ObjectArtefact::sidecar: cranelisp_types::module::SymbolTable<(), ()>
+impl core::marker::Freeze for cranelisp_backend::artefact::ObjectArtefact
+impl core::marker::Send for cranelisp_backend::artefact::ObjectArtefact
+impl core::marker::Sync for cranelisp_backend::artefact::ObjectArtefact
+impl core::marker::Unpin for cranelisp_backend::artefact::ObjectArtefact
+impl core::marker::UnsafeUnpin for cranelisp_backend::artefact::ObjectArtefact
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::artefact::ObjectArtefact
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::artefact::ObjectArtefact
+impl<T, U> core::convert::Into<U> for cranelisp_backend::artefact::ObjectArtefact where U: core::convert::From<T>
+pub fn cranelisp_backend::artefact::ObjectArtefact::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::artefact::ObjectArtefact where U: core::convert::Into<T>
+pub type cranelisp_backend::artefact::ObjectArtefact::Error = core::convert::Infallible
+pub fn cranelisp_backend::artefact::ObjectArtefact::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::artefact::ObjectArtefact where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::artefact::ObjectArtefact::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::artefact::ObjectArtefact::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for cranelisp_backend::artefact::ObjectArtefact where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::artefact::ObjectArtefact::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::artefact::ObjectArtefact where T: ?core::marker::Sized
+pub fn cranelisp_backend::artefact::ObjectArtefact::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::artefact::ObjectArtefact where T: ?core::marker::Sized
+pub fn cranelisp_backend::artefact::ObjectArtefact::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for cranelisp_backend::artefact::ObjectArtefact
+pub fn cranelisp_backend::artefact::ObjectArtefact::from(t: T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::artefact::ObjectArtefact
+pub type cranelisp_backend::artefact::ObjectArtefact::Init = T
+pub const cranelisp_backend::artefact::ObjectArtefact::ALIGN: usize
+pub unsafe fn cranelisp_backend::artefact::ObjectArtefact::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::artefact::ObjectArtefact::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::artefact::ObjectArtefact::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::artefact::ObjectArtefact::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::artefact::ObjectArtefact
+impl<T> typenum::type_operators::Same for cranelisp_backend::artefact::ObjectArtefact
+pub type cranelisp_backend::artefact::ObjectArtefact::Output = T
 pub mod cranelisp_backend::cache
 pub mod cranelisp_backend::cache::linker
 pub struct cranelisp_backend::cache::linker::Linker
 impl cranelisp_backend::cache::linker::Linker
-pub fn cranelisp_backend::cache::linker::Linker::get_symbol(&self, name: &str) -> core::option::Option<*const u8>
+pub fn cranelisp_backend::cache::linker::Linker::get_symbol(&self, name: &str) -> core::result::Result<*const u8, cranelisp_backend::error::LinkerError>
 pub fn cranelisp_backend::cache::linker::Linker::load_object(&mut self, module_name: &str, bytes: &[u8]) -> core::result::Result<(), cranelisp_types::error::CranelispError>
 pub fn cranelisp_backend::cache::linker::Linker::new() -> core::result::Result<Self, cranelisp_types::error::CranelispError>
 pub fn cranelisp_backend::cache::linker::Linker::register_symbol(&mut self, name: &str, addr: *const u8)
@@ -17,6 +90,32 @@ impl core::marker::Unpin for cranelisp_backend::cache::linker::Linker
 impl core::marker::UnsafeUnpin for cranelisp_backend::cache::linker::Linker
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::linker::Linker
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::linker::Linker
+impl<T, U> core::convert::Into<U> for cranelisp_backend::cache::linker::Linker where U: core::convert::From<T>
+pub fn cranelisp_backend::cache::linker::Linker::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::cache::linker::Linker where U: core::convert::Into<T>
+pub type cranelisp_backend::cache::linker::Linker::Error = core::convert::Infallible
+pub fn cranelisp_backend::cache::linker::Linker::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::cache::linker::Linker where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::cache::linker::Linker::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::cache::linker::Linker::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for cranelisp_backend::cache::linker::Linker where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::cache::linker::Linker::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::cache::linker::Linker where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::linker::Linker::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::cache::linker::Linker where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::linker::Linker::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for cranelisp_backend::cache::linker::Linker
+pub fn cranelisp_backend::cache::linker::Linker::from(t: T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::cache::linker::Linker
+pub type cranelisp_backend::cache::linker::Linker::Init = T
+pub const cranelisp_backend::cache::linker::Linker::ALIGN: usize
+pub unsafe fn cranelisp_backend::cache::linker::Linker::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::cache::linker::Linker::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::cache::linker::Linker::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::cache::linker::Linker::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::cache::linker::Linker
+impl<T> typenum::type_operators::Same for cranelisp_backend::cache::linker::Linker
+pub type cranelisp_backend::cache::linker::Linker::Output = T
 pub mod cranelisp_backend::cache::manifest
 pub enum cranelisp_backend::cache::manifest::CacheInvalidReason
 pub cranelisp_backend::cache::manifest::CacheInvalidReason::CompilerChanged
@@ -40,6 +139,34 @@ impl core::marker::Unpin for cranelisp_backend::cache::manifest::CacheInvalidRea
 impl core::marker::UnsafeUnpin for cranelisp_backend::cache::manifest::CacheInvalidReason
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::manifest::CacheInvalidReason
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::manifest::CacheInvalidReason
+impl<T, U> core::convert::Into<U> for cranelisp_backend::cache::manifest::CacheInvalidReason where U: core::convert::From<T>
+pub fn cranelisp_backend::cache::manifest::CacheInvalidReason::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::cache::manifest::CacheInvalidReason where U: core::convert::Into<T>
+pub type cranelisp_backend::cache::manifest::CacheInvalidReason::Error = core::convert::Infallible
+pub fn cranelisp_backend::cache::manifest::CacheInvalidReason::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::cache::manifest::CacheInvalidReason where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::cache::manifest::CacheInvalidReason::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::cache::manifest::CacheInvalidReason::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::string::ToString for cranelisp_backend::cache::manifest::CacheInvalidReason where T: core::fmt::Display + ?core::marker::Sized
+pub fn cranelisp_backend::cache::manifest::CacheInvalidReason::to_string(&self) -> alloc::string::String
+impl<T> core::any::Any for cranelisp_backend::cache::manifest::CacheInvalidReason where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::cache::manifest::CacheInvalidReason::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::cache::manifest::CacheInvalidReason where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::manifest::CacheInvalidReason::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::cache::manifest::CacheInvalidReason where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::manifest::CacheInvalidReason::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for cranelisp_backend::cache::manifest::CacheInvalidReason
+pub fn cranelisp_backend::cache::manifest::CacheInvalidReason::from(t: T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::cache::manifest::CacheInvalidReason
+pub type cranelisp_backend::cache::manifest::CacheInvalidReason::Init = T
+pub const cranelisp_backend::cache::manifest::CacheInvalidReason::ALIGN: usize
+pub unsafe fn cranelisp_backend::cache::manifest::CacheInvalidReason::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::cache::manifest::CacheInvalidReason::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::cache::manifest::CacheInvalidReason::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::cache::manifest::CacheInvalidReason::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::cache::manifest::CacheInvalidReason
+impl<T> typenum::type_operators::Same for cranelisp_backend::cache::manifest::CacheInvalidReason
+pub type cranelisp_backend::cache::manifest::CacheInvalidReason::Output = T
 pub struct cranelisp_backend::cache::manifest::CacheManifest
 pub cranelisp_backend::cache::manifest::CacheManifest::cache_format_version: u32
 pub cranelisp_backend::cache::manifest::CacheManifest::compiler_mtime: alloc::string::String
@@ -67,6 +194,41 @@ impl core::marker::Unpin for cranelisp_backend::cache::manifest::CacheManifest
 impl core::marker::UnsafeUnpin for cranelisp_backend::cache::manifest::CacheManifest
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::manifest::CacheManifest
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::manifest::CacheManifest
+impl<T, U> core::convert::Into<U> for cranelisp_backend::cache::manifest::CacheManifest where U: core::convert::From<T>
+pub fn cranelisp_backend::cache::manifest::CacheManifest::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::cache::manifest::CacheManifest where U: core::convert::Into<T>
+pub type cranelisp_backend::cache::manifest::CacheManifest::Error = core::convert::Infallible
+pub fn cranelisp_backend::cache::manifest::CacheManifest::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::cache::manifest::CacheManifest where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::cache::manifest::CacheManifest::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::cache::manifest::CacheManifest::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for cranelisp_backend::cache::manifest::CacheManifest where T: core::clone::Clone
+pub type cranelisp_backend::cache::manifest::CacheManifest::Owned = T
+pub fn cranelisp_backend::cache::manifest::CacheManifest::clone_into(&self, target: &mut T)
+pub fn cranelisp_backend::cache::manifest::CacheManifest::to_owned(&self) -> T
+impl<T> core::any::Any for cranelisp_backend::cache::manifest::CacheManifest where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::cache::manifest::CacheManifest::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::cache::manifest::CacheManifest where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::manifest::CacheManifest::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::cache::manifest::CacheManifest where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::manifest::CacheManifest::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for cranelisp_backend::cache::manifest::CacheManifest where T: core::clone::Clone
+pub unsafe fn cranelisp_backend::cache::manifest::CacheManifest::clone_to_uninit(&self, dest: *mut u8)
+impl<T> core::convert::From<T> for cranelisp_backend::cache::manifest::CacheManifest
+pub fn cranelisp_backend::cache::manifest::CacheManifest::from(t: T) -> T
+impl<T> cranelisp_types::module::CodeStore for cranelisp_backend::cache::manifest::CacheManifest where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> cranelisp_types::module::LinkerStore for cranelisp_backend::cache::manifest::CacheManifest where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::cache::manifest::CacheManifest
+pub type cranelisp_backend::cache::manifest::CacheManifest::Init = T
+pub const cranelisp_backend::cache::manifest::CacheManifest::ALIGN: usize
+pub unsafe fn cranelisp_backend::cache::manifest::CacheManifest::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::cache::manifest::CacheManifest::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::cache::manifest::CacheManifest::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::cache::manifest::CacheManifest::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::cache::manifest::CacheManifest
+impl<T> serde_core::de::DeserializeOwned for cranelisp_backend::cache::manifest::CacheManifest where T: for<'de> serde_core::de::Deserialize<'de>
+impl<T> typenum::type_operators::Same for cranelisp_backend::cache::manifest::CacheManifest
+pub type cranelisp_backend::cache::manifest::CacheManifest::Output = T
 pub struct cranelisp_backend::cache::manifest::CachedModuleRef
 pub cranelisp_backend::cache::manifest::CachedModuleRef::dependency_hashes: std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>
 pub cranelisp_backend::cache::manifest::CachedModuleRef::source_hash: alloc::string::String
@@ -85,6 +247,41 @@ impl core::marker::Unpin for cranelisp_backend::cache::manifest::CachedModuleRef
 impl core::marker::UnsafeUnpin for cranelisp_backend::cache::manifest::CachedModuleRef
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::manifest::CachedModuleRef
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::manifest::CachedModuleRef
+impl<T, U> core::convert::Into<U> for cranelisp_backend::cache::manifest::CachedModuleRef where U: core::convert::From<T>
+pub fn cranelisp_backend::cache::manifest::CachedModuleRef::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::cache::manifest::CachedModuleRef where U: core::convert::Into<T>
+pub type cranelisp_backend::cache::manifest::CachedModuleRef::Error = core::convert::Infallible
+pub fn cranelisp_backend::cache::manifest::CachedModuleRef::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::cache::manifest::CachedModuleRef where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::cache::manifest::CachedModuleRef::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::cache::manifest::CachedModuleRef::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for cranelisp_backend::cache::manifest::CachedModuleRef where T: core::clone::Clone
+pub type cranelisp_backend::cache::manifest::CachedModuleRef::Owned = T
+pub fn cranelisp_backend::cache::manifest::CachedModuleRef::clone_into(&self, target: &mut T)
+pub fn cranelisp_backend::cache::manifest::CachedModuleRef::to_owned(&self) -> T
+impl<T> core::any::Any for cranelisp_backend::cache::manifest::CachedModuleRef where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::cache::manifest::CachedModuleRef::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::cache::manifest::CachedModuleRef where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::manifest::CachedModuleRef::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::cache::manifest::CachedModuleRef where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::manifest::CachedModuleRef::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for cranelisp_backend::cache::manifest::CachedModuleRef where T: core::clone::Clone
+pub unsafe fn cranelisp_backend::cache::manifest::CachedModuleRef::clone_to_uninit(&self, dest: *mut u8)
+impl<T> core::convert::From<T> for cranelisp_backend::cache::manifest::CachedModuleRef
+pub fn cranelisp_backend::cache::manifest::CachedModuleRef::from(t: T) -> T
+impl<T> cranelisp_types::module::CodeStore for cranelisp_backend::cache::manifest::CachedModuleRef where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> cranelisp_types::module::LinkerStore for cranelisp_backend::cache::manifest::CachedModuleRef where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::cache::manifest::CachedModuleRef
+pub type cranelisp_backend::cache::manifest::CachedModuleRef::Init = T
+pub const cranelisp_backend::cache::manifest::CachedModuleRef::ALIGN: usize
+pub unsafe fn cranelisp_backend::cache::manifest::CachedModuleRef::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::cache::manifest::CachedModuleRef::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::cache::manifest::CachedModuleRef::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::cache::manifest::CachedModuleRef::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::cache::manifest::CachedModuleRef
+impl<T> serde_core::de::DeserializeOwned for cranelisp_backend::cache::manifest::CachedModuleRef where T: for<'de> serde_core::de::Deserialize<'de>
+impl<T> typenum::type_operators::Same for cranelisp_backend::cache::manifest::CachedModuleRef
+pub type cranelisp_backend::cache::manifest::CachedModuleRef::Output = T
 pub fn cranelisp_backend::cache::manifest::binary_fingerprint() -> alloc::string::String
 pub fn cranelisp_backend::cache::manifest::check_manifest(manifest: &cranelisp_backend::cache::manifest::CacheManifest, module_path: &cranelisp_types::newtype::ModuleFullPath, current_source_hash: &str, dependency_source_hashes: &std::collections::hash::map::HashMap<cranelisp_types::newtype::ModuleFullPath, alloc::string::String>) -> core::result::Result<bool, cranelisp_backend::cache::manifest::CacheInvalidReason>
 pub fn cranelisp_backend::cache::manifest::hash_source(source: &str) -> alloc::string::String
@@ -108,6 +305,32 @@ impl core::marker::Unpin for cranelisp_backend::cache::object::CacheWritePacket
 impl core::marker::UnsafeUnpin for cranelisp_backend::cache::object::CacheWritePacket
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::object::CacheWritePacket
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::object::CacheWritePacket
+impl<T, U> core::convert::Into<U> for cranelisp_backend::cache::object::CacheWritePacket where U: core::convert::From<T>
+pub fn cranelisp_backend::cache::object::CacheWritePacket::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::cache::object::CacheWritePacket where U: core::convert::Into<T>
+pub type cranelisp_backend::cache::object::CacheWritePacket::Error = core::convert::Infallible
+pub fn cranelisp_backend::cache::object::CacheWritePacket::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::cache::object::CacheWritePacket where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::cache::object::CacheWritePacket::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::cache::object::CacheWritePacket::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for cranelisp_backend::cache::object::CacheWritePacket where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::cache::object::CacheWritePacket::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::cache::object::CacheWritePacket where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::object::CacheWritePacket::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::cache::object::CacheWritePacket where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::object::CacheWritePacket::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for cranelisp_backend::cache::object::CacheWritePacket
+pub fn cranelisp_backend::cache::object::CacheWritePacket::from(t: T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::cache::object::CacheWritePacket
+pub type cranelisp_backend::cache::object::CacheWritePacket::Init = T
+pub const cranelisp_backend::cache::object::CacheWritePacket::ALIGN: usize
+pub unsafe fn cranelisp_backend::cache::object::CacheWritePacket::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::cache::object::CacheWritePacket::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::cache::object::CacheWritePacket::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::cache::object::CacheWritePacket::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::cache::object::CacheWritePacket
+impl<T> typenum::type_operators::Same for cranelisp_backend::cache::object::CacheWritePacket
+pub type cranelisp_backend::cache::object::CacheWritePacket::Output = T
 pub struct cranelisp_backend::cache::object::FnSlotInfo
 pub cranelisp_backend::cache::object::FnSlotInfo::param_count: usize
 pub cranelisp_backend::cache::object::FnSlotInfo::slot: usize
@@ -126,6 +349,41 @@ impl core::marker::Unpin for cranelisp_backend::cache::object::FnSlotInfo
 impl core::marker::UnsafeUnpin for cranelisp_backend::cache::object::FnSlotInfo
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::object::FnSlotInfo
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::object::FnSlotInfo
+impl<T, U> core::convert::Into<U> for cranelisp_backend::cache::object::FnSlotInfo where U: core::convert::From<T>
+pub fn cranelisp_backend::cache::object::FnSlotInfo::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::cache::object::FnSlotInfo where U: core::convert::Into<T>
+pub type cranelisp_backend::cache::object::FnSlotInfo::Error = core::convert::Infallible
+pub fn cranelisp_backend::cache::object::FnSlotInfo::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::cache::object::FnSlotInfo where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::cache::object::FnSlotInfo::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::cache::object::FnSlotInfo::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for cranelisp_backend::cache::object::FnSlotInfo where T: core::clone::Clone
+pub type cranelisp_backend::cache::object::FnSlotInfo::Owned = T
+pub fn cranelisp_backend::cache::object::FnSlotInfo::clone_into(&self, target: &mut T)
+pub fn cranelisp_backend::cache::object::FnSlotInfo::to_owned(&self) -> T
+impl<T> core::any::Any for cranelisp_backend::cache::object::FnSlotInfo where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::cache::object::FnSlotInfo::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::cache::object::FnSlotInfo where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::object::FnSlotInfo::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::cache::object::FnSlotInfo where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::object::FnSlotInfo::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for cranelisp_backend::cache::object::FnSlotInfo where T: core::clone::Clone
+pub unsafe fn cranelisp_backend::cache::object::FnSlotInfo::clone_to_uninit(&self, dest: *mut u8)
+impl<T> core::convert::From<T> for cranelisp_backend::cache::object::FnSlotInfo
+pub fn cranelisp_backend::cache::object::FnSlotInfo::from(t: T) -> T
+impl<T> cranelisp_types::module::CodeStore for cranelisp_backend::cache::object::FnSlotInfo where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> cranelisp_types::module::LinkerStore for cranelisp_backend::cache::object::FnSlotInfo where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::cache::object::FnSlotInfo
+pub type cranelisp_backend::cache::object::FnSlotInfo::Init = T
+pub const cranelisp_backend::cache::object::FnSlotInfo::ALIGN: usize
+pub unsafe fn cranelisp_backend::cache::object::FnSlotInfo::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::cache::object::FnSlotInfo::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::cache::object::FnSlotInfo::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::cache::object::FnSlotInfo::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::cache::object::FnSlotInfo
+impl<T> serde_core::de::DeserializeOwned for cranelisp_backend::cache::object::FnSlotInfo where T: for<'de> serde_core::de::Deserialize<'de>
+impl<T> typenum::type_operators::Same for cranelisp_backend::cache::object::FnSlotInfo
+pub type cranelisp_backend::cache::object::FnSlotInfo::Output = T
 pub struct cranelisp_backend::cache::object::IntrinsicEntry
 pub cranelisp_backend::cache::object::IntrinsicEntry::jit_name: alloc::string::String
 pub cranelisp_backend::cache::object::IntrinsicEntry::param_count: usize
@@ -141,6 +399,40 @@ impl core::marker::Unpin for cranelisp_backend::cache::object::IntrinsicEntry
 impl core::marker::UnsafeUnpin for cranelisp_backend::cache::object::IntrinsicEntry
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::object::IntrinsicEntry
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::object::IntrinsicEntry
+impl<T, U> core::convert::Into<U> for cranelisp_backend::cache::object::IntrinsicEntry where U: core::convert::From<T>
+pub fn cranelisp_backend::cache::object::IntrinsicEntry::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::cache::object::IntrinsicEntry where U: core::convert::Into<T>
+pub type cranelisp_backend::cache::object::IntrinsicEntry::Error = core::convert::Infallible
+pub fn cranelisp_backend::cache::object::IntrinsicEntry::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::cache::object::IntrinsicEntry where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::cache::object::IntrinsicEntry::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::cache::object::IntrinsicEntry::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for cranelisp_backend::cache::object::IntrinsicEntry where T: core::clone::Clone
+pub type cranelisp_backend::cache::object::IntrinsicEntry::Owned = T
+pub fn cranelisp_backend::cache::object::IntrinsicEntry::clone_into(&self, target: &mut T)
+pub fn cranelisp_backend::cache::object::IntrinsicEntry::to_owned(&self) -> T
+impl<T> core::any::Any for cranelisp_backend::cache::object::IntrinsicEntry where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::cache::object::IntrinsicEntry::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::cache::object::IntrinsicEntry where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::object::IntrinsicEntry::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::cache::object::IntrinsicEntry where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::object::IntrinsicEntry::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for cranelisp_backend::cache::object::IntrinsicEntry where T: core::clone::Clone
+pub unsafe fn cranelisp_backend::cache::object::IntrinsicEntry::clone_to_uninit(&self, dest: *mut u8)
+impl<T> core::convert::From<T> for cranelisp_backend::cache::object::IntrinsicEntry
+pub fn cranelisp_backend::cache::object::IntrinsicEntry::from(t: T) -> T
+impl<T> cranelisp_types::module::CodeStore for cranelisp_backend::cache::object::IntrinsicEntry where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> cranelisp_types::module::LinkerStore for cranelisp_backend::cache::object::IntrinsicEntry where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::cache::object::IntrinsicEntry
+pub type cranelisp_backend::cache::object::IntrinsicEntry::Init = T
+pub const cranelisp_backend::cache::object::IntrinsicEntry::ALIGN: usize
+pub unsafe fn cranelisp_backend::cache::object::IntrinsicEntry::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::cache::object::IntrinsicEntry::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::cache::object::IntrinsicEntry::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::cache::object::IntrinsicEntry::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::cache::object::IntrinsicEntry
+impl<T> typenum::type_operators::Same for cranelisp_backend::cache::object::IntrinsicEntry
+pub type cranelisp_backend::cache::object::IntrinsicEntry::Output = T
 pub struct cranelisp_backend::cache::object::IntrinsicTable
 pub cranelisp_backend::cache::object::IntrinsicTable::global_names: std::collections::hash::set::HashSet<cranelisp_types::newtype::Symbol>
 pub cranelisp_backend::cache::object::IntrinsicTable::platform_fns: alloc::vec::Vec<cranelisp_backend::cache::object::IntrinsicEntry>
@@ -161,6 +453,40 @@ impl core::marker::Unpin for cranelisp_backend::cache::object::IntrinsicTable
 impl core::marker::UnsafeUnpin for cranelisp_backend::cache::object::IntrinsicTable
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::object::IntrinsicTable
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::object::IntrinsicTable
+impl<T, U> core::convert::Into<U> for cranelisp_backend::cache::object::IntrinsicTable where U: core::convert::From<T>
+pub fn cranelisp_backend::cache::object::IntrinsicTable::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::cache::object::IntrinsicTable where U: core::convert::Into<T>
+pub type cranelisp_backend::cache::object::IntrinsicTable::Error = core::convert::Infallible
+pub fn cranelisp_backend::cache::object::IntrinsicTable::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::cache::object::IntrinsicTable where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::cache::object::IntrinsicTable::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::cache::object::IntrinsicTable::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for cranelisp_backend::cache::object::IntrinsicTable where T: core::clone::Clone
+pub type cranelisp_backend::cache::object::IntrinsicTable::Owned = T
+pub fn cranelisp_backend::cache::object::IntrinsicTable::clone_into(&self, target: &mut T)
+pub fn cranelisp_backend::cache::object::IntrinsicTable::to_owned(&self) -> T
+impl<T> core::any::Any for cranelisp_backend::cache::object::IntrinsicTable where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::cache::object::IntrinsicTable::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::cache::object::IntrinsicTable where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::object::IntrinsicTable::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::cache::object::IntrinsicTable where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::object::IntrinsicTable::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for cranelisp_backend::cache::object::IntrinsicTable where T: core::clone::Clone
+pub unsafe fn cranelisp_backend::cache::object::IntrinsicTable::clone_to_uninit(&self, dest: *mut u8)
+impl<T> core::convert::From<T> for cranelisp_backend::cache::object::IntrinsicTable
+pub fn cranelisp_backend::cache::object::IntrinsicTable::from(t: T) -> T
+impl<T> cranelisp_types::module::CodeStore for cranelisp_backend::cache::object::IntrinsicTable where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> cranelisp_types::module::LinkerStore for cranelisp_backend::cache::object::IntrinsicTable where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::cache::object::IntrinsicTable
+pub type cranelisp_backend::cache::object::IntrinsicTable::Init = T
+pub const cranelisp_backend::cache::object::IntrinsicTable::ALIGN: usize
+pub unsafe fn cranelisp_backend::cache::object::IntrinsicTable::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::cache::object::IntrinsicTable::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::cache::object::IntrinsicTable::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::cache::object::IntrinsicTable::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::cache::object::IntrinsicTable
+impl<T> typenum::type_operators::Same for cranelisp_backend::cache::object::IntrinsicTable
+pub type cranelisp_backend::cache::object::IntrinsicTable::Output = T
 pub struct cranelisp_backend::cache::object::ObjectCompileInput
 pub cranelisp_backend::cache::object::ObjectCompileInput::cross_module_fns: alloc::vec::Vec<(cranelisp_types::newtype::Symbol, usize)>
 pub cranelisp_backend::cache::object::ObjectCompileInput::defns: alloc::vec::Vec<(cranelisp_types::ast::Defn, cranelisp_types::types::Scheme)>
@@ -182,6 +508,40 @@ impl core::marker::Unpin for cranelisp_backend::cache::object::ObjectCompileInpu
 impl core::marker::UnsafeUnpin for cranelisp_backend::cache::object::ObjectCompileInput
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::object::ObjectCompileInput
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::object::ObjectCompileInput
+impl<T, U> core::convert::Into<U> for cranelisp_backend::cache::object::ObjectCompileInput where U: core::convert::From<T>
+pub fn cranelisp_backend::cache::object::ObjectCompileInput::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::cache::object::ObjectCompileInput where U: core::convert::Into<T>
+pub type cranelisp_backend::cache::object::ObjectCompileInput::Error = core::convert::Infallible
+pub fn cranelisp_backend::cache::object::ObjectCompileInput::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::cache::object::ObjectCompileInput where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::cache::object::ObjectCompileInput::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::cache::object::ObjectCompileInput::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for cranelisp_backend::cache::object::ObjectCompileInput where T: core::clone::Clone
+pub type cranelisp_backend::cache::object::ObjectCompileInput::Owned = T
+pub fn cranelisp_backend::cache::object::ObjectCompileInput::clone_into(&self, target: &mut T)
+pub fn cranelisp_backend::cache::object::ObjectCompileInput::to_owned(&self) -> T
+impl<T> core::any::Any for cranelisp_backend::cache::object::ObjectCompileInput where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::cache::object::ObjectCompileInput::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::cache::object::ObjectCompileInput where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::object::ObjectCompileInput::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::cache::object::ObjectCompileInput where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::object::ObjectCompileInput::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for cranelisp_backend::cache::object::ObjectCompileInput where T: core::clone::Clone
+pub unsafe fn cranelisp_backend::cache::object::ObjectCompileInput::clone_to_uninit(&self, dest: *mut u8)
+impl<T> core::convert::From<T> for cranelisp_backend::cache::object::ObjectCompileInput
+pub fn cranelisp_backend::cache::object::ObjectCompileInput::from(t: T) -> T
+impl<T> cranelisp_types::module::CodeStore for cranelisp_backend::cache::object::ObjectCompileInput where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> cranelisp_types::module::LinkerStore for cranelisp_backend::cache::object::ObjectCompileInput where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::cache::object::ObjectCompileInput
+pub type cranelisp_backend::cache::object::ObjectCompileInput::Init = T
+pub const cranelisp_backend::cache::object::ObjectCompileInput::ALIGN: usize
+pub unsafe fn cranelisp_backend::cache::object::ObjectCompileInput::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::cache::object::ObjectCompileInput::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::cache::object::ObjectCompileInput::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::cache::object::ObjectCompileInput::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::cache::object::ObjectCompileInput
+impl<T> typenum::type_operators::Same for cranelisp_backend::cache::object::ObjectCompileInput
+pub type cranelisp_backend::cache::object::ObjectCompileInput::Output = T
 pub struct cranelisp_backend::cache::object::ProcessedPacket
 pub cranelisp_backend::cache::object::ProcessedPacket::dependency_hashes: std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>
 pub cranelisp_backend::cache::object::ProcessedPacket::is_stdlib: bool
@@ -194,6 +554,32 @@ impl core::marker::Unpin for cranelisp_backend::cache::object::ProcessedPacket
 impl core::marker::UnsafeUnpin for cranelisp_backend::cache::object::ProcessedPacket
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::object::ProcessedPacket
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::object::ProcessedPacket
+impl<T, U> core::convert::Into<U> for cranelisp_backend::cache::object::ProcessedPacket where U: core::convert::From<T>
+pub fn cranelisp_backend::cache::object::ProcessedPacket::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::cache::object::ProcessedPacket where U: core::convert::Into<T>
+pub type cranelisp_backend::cache::object::ProcessedPacket::Error = core::convert::Infallible
+pub fn cranelisp_backend::cache::object::ProcessedPacket::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::cache::object::ProcessedPacket where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::cache::object::ProcessedPacket::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::cache::object::ProcessedPacket::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for cranelisp_backend::cache::object::ProcessedPacket where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::cache::object::ProcessedPacket::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::cache::object::ProcessedPacket where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::object::ProcessedPacket::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::cache::object::ProcessedPacket where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::object::ProcessedPacket::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for cranelisp_backend::cache::object::ProcessedPacket
+pub fn cranelisp_backend::cache::object::ProcessedPacket::from(t: T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::cache::object::ProcessedPacket
+pub type cranelisp_backend::cache::object::ProcessedPacket::Init = T
+pub const cranelisp_backend::cache::object::ProcessedPacket::ALIGN: usize
+pub unsafe fn cranelisp_backend::cache::object::ProcessedPacket::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::cache::object::ProcessedPacket::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::cache::object::ProcessedPacket::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::cache::object::ProcessedPacket::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::cache::object::ProcessedPacket
+impl<T> typenum::type_operators::Same for cranelisp_backend::cache::object::ProcessedPacket
+pub type cranelisp_backend::cache::object::ProcessedPacket::Output = T
 pub fn cranelisp_backend::cache::object::build_cache_packet(cache_dir: &std::path::Path, module_path: &cranelisp_types::newtype::ModuleFullPath, source_hash: &str, is_stdlib: bool, dependency_hashes: std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>, metadata: &cranelisp_backend::cache::serialize::CacheMetadata, object_compile_input: cranelisp_backend::cache::object::ObjectCompileInput) -> core::result::Result<cranelisp_backend::cache::object::CacheWritePacket, cranelisp_types::error::CranelispError>
 pub fn cranelisp_backend::cache::object::build_isa(is_pic: bool) -> core::result::Result<alloc::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>, cranelisp_types::error::CranelispError>
 pub fn cranelisp_backend::cache::object::got_data_symbol_name(module_path: &cranelisp_types::newtype::ModuleFullPath) -> alloc::string::String
@@ -235,6 +621,42 @@ impl core::marker::Unpin for cranelisp_backend::cache::serialize::CacheStale
 impl core::marker::UnsafeUnpin for cranelisp_backend::cache::serialize::CacheStale
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::serialize::CacheStale
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::serialize::CacheStale
+impl<T, U> core::convert::Into<U> for cranelisp_backend::cache::serialize::CacheStale where U: core::convert::From<T>
+pub fn cranelisp_backend::cache::serialize::CacheStale::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::cache::serialize::CacheStale where U: core::convert::Into<T>
+pub type cranelisp_backend::cache::serialize::CacheStale::Error = core::convert::Infallible
+pub fn cranelisp_backend::cache::serialize::CacheStale::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::cache::serialize::CacheStale where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::cache::serialize::CacheStale::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::cache::serialize::CacheStale::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for cranelisp_backend::cache::serialize::CacheStale where T: core::clone::Clone
+pub type cranelisp_backend::cache::serialize::CacheStale::Owned = T
+pub fn cranelisp_backend::cache::serialize::CacheStale::clone_into(&self, target: &mut T)
+pub fn cranelisp_backend::cache::serialize::CacheStale::to_owned(&self) -> T
+impl<T> alloc::string::ToString for cranelisp_backend::cache::serialize::CacheStale where T: core::fmt::Display + ?core::marker::Sized
+pub fn cranelisp_backend::cache::serialize::CacheStale::to_string(&self) -> alloc::string::String
+impl<T> core::any::Any for cranelisp_backend::cache::serialize::CacheStale where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::cache::serialize::CacheStale::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::cache::serialize::CacheStale where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::serialize::CacheStale::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::cache::serialize::CacheStale where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::serialize::CacheStale::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for cranelisp_backend::cache::serialize::CacheStale where T: core::clone::Clone
+pub unsafe fn cranelisp_backend::cache::serialize::CacheStale::clone_to_uninit(&self, dest: *mut u8)
+impl<T> core::convert::From<T> for cranelisp_backend::cache::serialize::CacheStale
+pub fn cranelisp_backend::cache::serialize::CacheStale::from(t: T) -> T
+impl<T> cranelisp_types::module::CodeStore for cranelisp_backend::cache::serialize::CacheStale where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> cranelisp_types::module::LinkerStore for cranelisp_backend::cache::serialize::CacheStale where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::cache::serialize::CacheStale
+pub type cranelisp_backend::cache::serialize::CacheStale::Init = T
+pub const cranelisp_backend::cache::serialize::CacheStale::ALIGN: usize
+pub unsafe fn cranelisp_backend::cache::serialize::CacheStale::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::cache::serialize::CacheStale::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::cache::serialize::CacheStale::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::cache::serialize::CacheStale::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::cache::serialize::CacheStale
+impl<T> typenum::type_operators::Same for cranelisp_backend::cache::serialize::CacheStale
+pub type cranelisp_backend::cache::serialize::CacheStale::Output = T
 pub struct cranelisp_backend::cache::serialize::CacheMetadata
 pub cranelisp_backend::cache::serialize::CacheMetadata::dependencies: alloc::vec::Vec<alloc::string::String>
 pub cranelisp_backend::cache::serialize::CacheMetadata::symbol_table: cranelisp_types::module::SymbolTable
@@ -253,132 +675,47 @@ impl core::marker::Unpin for cranelisp_backend::cache::serialize::CacheMetadata
 impl core::marker::UnsafeUnpin for cranelisp_backend::cache::serialize::CacheMetadata
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::serialize::CacheMetadata
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::serialize::CacheMetadata
+impl<T, U> core::convert::Into<U> for cranelisp_backend::cache::serialize::CacheMetadata where U: core::convert::From<T>
+pub fn cranelisp_backend::cache::serialize::CacheMetadata::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::cache::serialize::CacheMetadata where U: core::convert::Into<T>
+pub type cranelisp_backend::cache::serialize::CacheMetadata::Error = core::convert::Infallible
+pub fn cranelisp_backend::cache::serialize::CacheMetadata::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::cache::serialize::CacheMetadata where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::cache::serialize::CacheMetadata::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::cache::serialize::CacheMetadata::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for cranelisp_backend::cache::serialize::CacheMetadata where T: core::clone::Clone
+pub type cranelisp_backend::cache::serialize::CacheMetadata::Owned = T
+pub fn cranelisp_backend::cache::serialize::CacheMetadata::clone_into(&self, target: &mut T)
+pub fn cranelisp_backend::cache::serialize::CacheMetadata::to_owned(&self) -> T
+impl<T> core::any::Any for cranelisp_backend::cache::serialize::CacheMetadata where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::cache::serialize::CacheMetadata::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::cache::serialize::CacheMetadata where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::serialize::CacheMetadata::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::cache::serialize::CacheMetadata where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::serialize::CacheMetadata::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for cranelisp_backend::cache::serialize::CacheMetadata where T: core::clone::Clone
+pub unsafe fn cranelisp_backend::cache::serialize::CacheMetadata::clone_to_uninit(&self, dest: *mut u8)
+impl<T> core::convert::From<T> for cranelisp_backend::cache::serialize::CacheMetadata
+pub fn cranelisp_backend::cache::serialize::CacheMetadata::from(t: T) -> T
+impl<T> cranelisp_types::module::CodeStore for cranelisp_backend::cache::serialize::CacheMetadata where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> cranelisp_types::module::LinkerStore for cranelisp_backend::cache::serialize::CacheMetadata where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::cache::serialize::CacheMetadata
+pub type cranelisp_backend::cache::serialize::CacheMetadata::Init = T
+pub const cranelisp_backend::cache::serialize::CacheMetadata::ALIGN: usize
+pub unsafe fn cranelisp_backend::cache::serialize::CacheMetadata::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::cache::serialize::CacheMetadata::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::cache::serialize::CacheMetadata::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::cache::serialize::CacheMetadata::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::cache::serialize::CacheMetadata
+impl<T> serde_core::de::DeserializeOwned for cranelisp_backend::cache::serialize::CacheMetadata where T: for<'de> serde_core::de::Deserialize<'de>
+impl<T> typenum::type_operators::Same for cranelisp_backend::cache::serialize::CacheMetadata
+pub type cranelisp_backend::cache::serialize::CacheMetadata::Output = T
 pub fn cranelisp_backend::cache::serialize::deserialise_meta(bytes: &[u8], expected_schema_version: u32, path: &std::path::Path) -> core::result::Result<cranelisp_types::module::SymbolTable, cranelisp_backend::cache::serialize::CacheStale>
 pub fn cranelisp_backend::cache::serialize::load_meta(meta_path: &std::path::Path) -> core::result::Result<cranelisp_types::module::SymbolTable, cranelisp_backend::cache::serialize::CacheStale>
 pub fn cranelisp_backend::cache::serialize::read_cached_metadata(meta_path: &std::path::Path) -> core::result::Result<cranelisp_backend::cache::serialize::CacheMetadata, cranelisp_types::error::CranelispError>
 pub fn cranelisp_backend::cache::serialize::serialise_meta<C, L>(table: &cranelisp_types::module::SymbolTable<C, L>, schema_version: u32) -> core::result::Result<alloc::vec::Vec<u8>, cranelisp_types::error::CranelispError> where C: cranelisp_types::module::CodeStore + core::clone::Clone, L: cranelisp_types::module::LinkerStore + core::clone::Clone
 pub fn cranelisp_backend::cache::serialize::write_cached_metadata(meta_path: &std::path::Path, metadata: &cranelisp_backend::cache::serialize::CacheMetadata) -> core::result::Result<(), cranelisp_types::error::CranelispError>
 pub fn cranelisp_backend::cache::serialize::write_meta<C, L>(meta_path: &std::path::Path, table: &cranelisp_types::module::SymbolTable<C, L>, schema_version: u32) -> core::result::Result<(), cranelisp_types::error::CranelispError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
-pub enum cranelisp_backend::cache::CacheInvalidReason
-pub cranelisp_backend::cache::CacheInvalidReason::CompilerChanged
-pub cranelisp_backend::cache::CacheInvalidReason::CraneliftVersion
-pub cranelisp_backend::cache::CacheInvalidReason::CraneliftVersion::cached: alloc::string::String
-pub cranelisp_backend::cache::CacheInvalidReason::CraneliftVersion::current: alloc::string::String
-pub cranelisp_backend::cache::CacheInvalidReason::FormatVersion
-pub cranelisp_backend::cache::CacheInvalidReason::FormatVersion::cached: u32
-pub cranelisp_backend::cache::CacheInvalidReason::FormatVersion::current: u32
-pub cranelisp_backend::cache::CacheInvalidReason::TargetTriple
-pub cranelisp_backend::cache::CacheInvalidReason::TargetTriple::cached: alloc::string::String
-pub cranelisp_backend::cache::CacheInvalidReason::TargetTriple::current: alloc::string::String
-impl core::fmt::Debug for cranelisp_backend::cache::manifest::CacheInvalidReason
-pub fn cranelisp_backend::cache::manifest::CacheInvalidReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for cranelisp_backend::cache::manifest::CacheInvalidReason
-pub fn cranelisp_backend::cache::manifest::CacheInvalidReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for cranelisp_backend::cache::manifest::CacheInvalidReason
-impl core::marker::Send for cranelisp_backend::cache::manifest::CacheInvalidReason
-impl core::marker::Sync for cranelisp_backend::cache::manifest::CacheInvalidReason
-impl core::marker::Unpin for cranelisp_backend::cache::manifest::CacheInvalidReason
-impl core::marker::UnsafeUnpin for cranelisp_backend::cache::manifest::CacheInvalidReason
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::manifest::CacheInvalidReason
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::manifest::CacheInvalidReason
-pub enum cranelisp_backend::cache::CacheStale
-pub cranelisp_backend::cache::CacheStale::BuildIdMismatch
-pub cranelisp_backend::cache::CacheStale::BuildIdMismatch::expected: alloc::string::String
-pub cranelisp_backend::cache::CacheStale::BuildIdMismatch::found: alloc::string::String
-pub cranelisp_backend::cache::CacheStale::BuildIdMismatch::path: std::path::PathBuf
-pub cranelisp_backend::cache::CacheStale::Deserialise
-pub cranelisp_backend::cache::CacheStale::Deserialise::message: alloc::string::String
-pub cranelisp_backend::cache::CacheStale::Deserialise::path: std::path::PathBuf
-pub cranelisp_backend::cache::CacheStale::Io
-pub cranelisp_backend::cache::CacheStale::Io::message: alloc::string::String
-pub cranelisp_backend::cache::CacheStale::Io::path: std::path::PathBuf
-pub cranelisp_backend::cache::CacheStale::Missing
-pub cranelisp_backend::cache::CacheStale::Missing::path: std::path::PathBuf
-pub cranelisp_backend::cache::CacheStale::PathMismatch
-pub cranelisp_backend::cache::CacheStale::PathMismatch::expected: cranelisp_types::newtype::ModuleFullPath
-pub cranelisp_backend::cache::CacheStale::PathMismatch::found: cranelisp_types::newtype::ModuleFullPath
-pub cranelisp_backend::cache::CacheStale::PathMismatch::path: std::path::PathBuf
-pub cranelisp_backend::cache::CacheStale::SchemaMismatch
-pub cranelisp_backend::cache::CacheStale::SchemaMismatch::expected: u32
-pub cranelisp_backend::cache::CacheStale::SchemaMismatch::found: u32
-pub cranelisp_backend::cache::CacheStale::SchemaMismatch::path: std::path::PathBuf
-impl cranelisp_backend::cache::serialize::CacheStale
-pub fn cranelisp_backend::cache::serialize::CacheStale::reason(&self) -> &'static str
-impl core::clone::Clone for cranelisp_backend::cache::serialize::CacheStale
-pub fn cranelisp_backend::cache::serialize::CacheStale::clone(&self) -> cranelisp_backend::cache::serialize::CacheStale
-impl core::fmt::Debug for cranelisp_backend::cache::serialize::CacheStale
-pub fn cranelisp_backend::cache::serialize::CacheStale::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for cranelisp_backend::cache::serialize::CacheStale
-pub fn cranelisp_backend::cache::serialize::CacheStale::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for cranelisp_backend::cache::serialize::CacheStale
-impl core::marker::Send for cranelisp_backend::cache::serialize::CacheStale
-impl core::marker::Sync for cranelisp_backend::cache::serialize::CacheStale
-impl core::marker::Unpin for cranelisp_backend::cache::serialize::CacheStale
-impl core::marker::UnsafeUnpin for cranelisp_backend::cache::serialize::CacheStale
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::serialize::CacheStale
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::serialize::CacheStale
-pub struct cranelisp_backend::cache::CacheManifest
-pub cranelisp_backend::cache::CacheManifest::cache_format_version: u32
-pub cranelisp_backend::cache::CacheManifest::compiler_mtime: alloc::string::String
-pub cranelisp_backend::cache::CacheManifest::cranelift_version: alloc::string::String
-pub cranelisp_backend::cache::CacheManifest::modules: std::collections::hash::map::HashMap<alloc::string::String, cranelisp_backend::cache::manifest::CachedModuleRef>
-pub cranelisp_backend::cache::CacheManifest::target_triple: alloc::string::String
-impl cranelisp_backend::cache::manifest::CacheManifest
-pub fn cranelisp_backend::cache::manifest::CacheManifest::get_module(&self, module_path: &cranelisp_types::newtype::ModuleFullPath) -> core::option::Option<&cranelisp_backend::cache::manifest::CachedModuleRef>
-pub fn cranelisp_backend::cache::manifest::CacheManifest::new(target_triple: &str) -> Self
-pub fn cranelisp_backend::cache::manifest::CacheManifest::new_for_host() -> Self
-pub fn cranelisp_backend::cache::manifest::CacheManifest::remove_module(&mut self, module_path: &cranelisp_types::newtype::ModuleFullPath)
-pub fn cranelisp_backend::cache::manifest::CacheManifest::upsert_module(&mut self, module_path: &cranelisp_types::newtype::ModuleFullPath, source_hash: alloc::string::String, dependency_hashes: std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>)
-impl core::clone::Clone for cranelisp_backend::cache::manifest::CacheManifest
-pub fn cranelisp_backend::cache::manifest::CacheManifest::clone(&self) -> cranelisp_backend::cache::manifest::CacheManifest
-impl core::fmt::Debug for cranelisp_backend::cache::manifest::CacheManifest
-pub fn cranelisp_backend::cache::manifest::CacheManifest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl serde_core::ser::Serialize for cranelisp_backend::cache::manifest::CacheManifest
-pub fn cranelisp_backend::cache::manifest::CacheManifest::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for cranelisp_backend::cache::manifest::CacheManifest
-pub fn cranelisp_backend::cache::manifest::CacheManifest::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for cranelisp_backend::cache::manifest::CacheManifest
-impl core::marker::Send for cranelisp_backend::cache::manifest::CacheManifest
-impl core::marker::Sync for cranelisp_backend::cache::manifest::CacheManifest
-impl core::marker::Unpin for cranelisp_backend::cache::manifest::CacheManifest
-impl core::marker::UnsafeUnpin for cranelisp_backend::cache::manifest::CacheManifest
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::manifest::CacheManifest
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::manifest::CacheManifest
-pub struct cranelisp_backend::cache::CacheMetadata
-pub cranelisp_backend::cache::CacheMetadata::dependencies: alloc::vec::Vec<alloc::string::String>
-pub cranelisp_backend::cache::CacheMetadata::symbol_table: cranelisp_types::module::SymbolTable
-impl core::clone::Clone for cranelisp_backend::cache::serialize::CacheMetadata
-pub fn cranelisp_backend::cache::serialize::CacheMetadata::clone(&self) -> cranelisp_backend::cache::serialize::CacheMetadata
-impl core::fmt::Debug for cranelisp_backend::cache::serialize::CacheMetadata
-pub fn cranelisp_backend::cache::serialize::CacheMetadata::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl serde_core::ser::Serialize for cranelisp_backend::cache::serialize::CacheMetadata
-pub fn cranelisp_backend::cache::serialize::CacheMetadata::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for cranelisp_backend::cache::serialize::CacheMetadata
-pub fn cranelisp_backend::cache::serialize::CacheMetadata::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for cranelisp_backend::cache::serialize::CacheMetadata
-impl core::marker::Send for cranelisp_backend::cache::serialize::CacheMetadata
-impl core::marker::Sync for cranelisp_backend::cache::serialize::CacheMetadata
-impl core::marker::Unpin for cranelisp_backend::cache::serialize::CacheMetadata
-impl core::marker::UnsafeUnpin for cranelisp_backend::cache::serialize::CacheMetadata
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::serialize::CacheMetadata
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::serialize::CacheMetadata
-pub struct cranelisp_backend::cache::CacheWritePacket
-pub cranelisp_backend::cache::CacheWritePacket::cache_dir: std::path::PathBuf
-pub cranelisp_backend::cache::CacheWritePacket::dependency_hashes: std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>
-pub cranelisp_backend::cache::CacheWritePacket::is_stdlib: bool
-pub cranelisp_backend::cache::CacheWritePacket::meta_json_bytes: alloc::vec::Vec<u8>
-pub cranelisp_backend::cache::CacheWritePacket::meta_path: std::path::PathBuf
-pub cranelisp_backend::cache::CacheWritePacket::module_path: cranelisp_types::newtype::ModuleFullPath
-pub cranelisp_backend::cache::CacheWritePacket::object_compile_input: cranelisp_backend::cache::object::ObjectCompileInput
-pub cranelisp_backend::cache::CacheWritePacket::object_path: std::path::PathBuf
-pub cranelisp_backend::cache::CacheWritePacket::source_hash: alloc::string::String
-impl core::marker::Send for cranelisp_backend::cache::object::CacheWritePacket
-impl core::marker::Freeze for cranelisp_backend::cache::object::CacheWritePacket
-impl core::marker::Sync for cranelisp_backend::cache::object::CacheWritePacket
-impl core::marker::Unpin for cranelisp_backend::cache::object::CacheWritePacket
-impl core::marker::UnsafeUnpin for cranelisp_backend::cache::object::CacheWritePacket
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::object::CacheWritePacket
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::object::CacheWritePacket
 pub struct cranelisp_backend::cache::CachedModule
 pub cranelisp_backend::cache::CachedModule::has_object: bool
 pub cranelisp_backend::cache::CachedModule::meta_path: std::path::PathBuf
@@ -398,113 +735,104 @@ impl core::marker::Unpin for cranelisp_backend::cache::CachedModule
 impl core::marker::UnsafeUnpin for cranelisp_backend::cache::CachedModule
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::CachedModule
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::CachedModule
-pub struct cranelisp_backend::cache::CachedModuleRef
-pub cranelisp_backend::cache::CachedModuleRef::dependency_hashes: std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>
-pub cranelisp_backend::cache::CachedModuleRef::source_hash: alloc::string::String
-impl core::clone::Clone for cranelisp_backend::cache::manifest::CachedModuleRef
-pub fn cranelisp_backend::cache::manifest::CachedModuleRef::clone(&self) -> cranelisp_backend::cache::manifest::CachedModuleRef
-impl core::fmt::Debug for cranelisp_backend::cache::manifest::CachedModuleRef
-pub fn cranelisp_backend::cache::manifest::CachedModuleRef::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl serde_core::ser::Serialize for cranelisp_backend::cache::manifest::CachedModuleRef
-pub fn cranelisp_backend::cache::manifest::CachedModuleRef::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for cranelisp_backend::cache::manifest::CachedModuleRef
-pub fn cranelisp_backend::cache::manifest::CachedModuleRef::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for cranelisp_backend::cache::manifest::CachedModuleRef
-impl core::marker::Send for cranelisp_backend::cache::manifest::CachedModuleRef
-impl core::marker::Sync for cranelisp_backend::cache::manifest::CachedModuleRef
-impl core::marker::Unpin for cranelisp_backend::cache::manifest::CachedModuleRef
-impl core::marker::UnsafeUnpin for cranelisp_backend::cache::manifest::CachedModuleRef
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::manifest::CachedModuleRef
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::manifest::CachedModuleRef
-pub struct cranelisp_backend::cache::IntrinsicEntry
-pub cranelisp_backend::cache::IntrinsicEntry::jit_name: alloc::string::String
-pub cranelisp_backend::cache::IntrinsicEntry::param_count: usize
-pub cranelisp_backend::cache::IntrinsicEntry::user_name: cranelisp_types::newtype::Symbol
-impl core::clone::Clone for cranelisp_backend::cache::object::IntrinsicEntry
-pub fn cranelisp_backend::cache::object::IntrinsicEntry::clone(&self) -> cranelisp_backend::cache::object::IntrinsicEntry
-impl core::fmt::Debug for cranelisp_backend::cache::object::IntrinsicEntry
-pub fn cranelisp_backend::cache::object::IntrinsicEntry::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for cranelisp_backend::cache::object::IntrinsicEntry
-impl core::marker::Send for cranelisp_backend::cache::object::IntrinsicEntry
-impl core::marker::Sync for cranelisp_backend::cache::object::IntrinsicEntry
-impl core::marker::Unpin for cranelisp_backend::cache::object::IntrinsicEntry
-impl core::marker::UnsafeUnpin for cranelisp_backend::cache::object::IntrinsicEntry
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::object::IntrinsicEntry
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::object::IntrinsicEntry
-pub struct cranelisp_backend::cache::IntrinsicTable
-pub cranelisp_backend::cache::IntrinsicTable::global_names: std::collections::hash::set::HashSet<cranelisp_types::newtype::Symbol>
-pub cranelisp_backend::cache::IntrinsicTable::platform_fns: alloc::vec::Vec<cranelisp_backend::cache::object::IntrinsicEntry>
-pub cranelisp_backend::cache::IntrinsicTable::primitive_fns: alloc::vec::Vec<cranelisp_backend::cache::object::IntrinsicEntry>
-pub cranelisp_backend::cache::IntrinsicTable::runtime_fns: alloc::vec::Vec<cranelisp_backend::cache::object::IntrinsicEntry>
-impl cranelisp_backend::cache::object::IntrinsicTable
-pub fn cranelisp_backend::cache::object::IntrinsicTable::new() -> Self
-impl core::clone::Clone for cranelisp_backend::cache::object::IntrinsicTable
-pub fn cranelisp_backend::cache::object::IntrinsicTable::clone(&self) -> cranelisp_backend::cache::object::IntrinsicTable
-impl core::default::Default for cranelisp_backend::cache::object::IntrinsicTable
-pub fn cranelisp_backend::cache::object::IntrinsicTable::default() -> Self
-impl core::fmt::Debug for cranelisp_backend::cache::object::IntrinsicTable
-pub fn cranelisp_backend::cache::object::IntrinsicTable::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for cranelisp_backend::cache::object::IntrinsicTable
-impl core::marker::Send for cranelisp_backend::cache::object::IntrinsicTable
-impl core::marker::Sync for cranelisp_backend::cache::object::IntrinsicTable
-impl core::marker::Unpin for cranelisp_backend::cache::object::IntrinsicTable
-impl core::marker::UnsafeUnpin for cranelisp_backend::cache::object::IntrinsicTable
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::object::IntrinsicTable
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::object::IntrinsicTable
-pub struct cranelisp_backend::cache::Linker
-impl cranelisp_backend::cache::linker::Linker
-pub fn cranelisp_backend::cache::linker::Linker::get_symbol(&self, name: &str) -> core::option::Option<*const u8>
-pub fn cranelisp_backend::cache::linker::Linker::load_object(&mut self, module_name: &str, bytes: &[u8]) -> core::result::Result<(), cranelisp_types::error::CranelispError>
-pub fn cranelisp_backend::cache::linker::Linker::new() -> core::result::Result<Self, cranelisp_types::error::CranelispError>
-pub fn cranelisp_backend::cache::linker::Linker::register_symbol(&mut self, name: &str, addr: *const u8)
-impl core::marker::Freeze for cranelisp_backend::cache::linker::Linker
-impl core::marker::Send for cranelisp_backend::cache::linker::Linker
-impl core::marker::Sync for cranelisp_backend::cache::linker::Linker
-impl core::marker::Unpin for cranelisp_backend::cache::linker::Linker
-impl core::marker::UnsafeUnpin for cranelisp_backend::cache::linker::Linker
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::linker::Linker
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::linker::Linker
-pub struct cranelisp_backend::cache::ObjectCompileInput
-pub cranelisp_backend::cache::ObjectCompileInput::cross_module_fns: alloc::vec::Vec<(cranelisp_types::newtype::Symbol, usize)>
-pub cranelisp_backend::cache::ObjectCompileInput::defns: alloc::vec::Vec<(cranelisp_types::ast::Defn, cranelisp_types::types::Scheme)>
-pub cranelisp_backend::cache::ObjectCompileInput::expr_types: std::collections::hash::map::HashMap<cranelisp_types::span::Span, cranelisp_types::types::Type>
-pub cranelisp_backend::cache::ObjectCompileInput::fn_slot_assignments: std::collections::hash::map::HashMap<cranelisp_types::newtype::Symbol, cranelisp_backend::cache::object::FnSlotInfo>
-pub cranelisp_backend::cache::ObjectCompileInput::fn_to_module: std::collections::hash::map::HashMap<cranelisp_types::newtype::Symbol, cranelisp_types::newtype::ModuleFullPath>
-pub cranelisp_backend::cache::ObjectCompileInput::intrinsics: cranelisp_backend::cache::object::IntrinsicTable
-pub cranelisp_backend::cache::ObjectCompileInput::method_resolutions: cranelisp_types::check::MethodResolutions
-pub cranelisp_backend::cache::ObjectCompileInput::module_path: cranelisp_types::newtype::ModuleFullPath
-pub cranelisp_backend::cache::ObjectCompileInput::next_got_slot: usize
-impl core::clone::Clone for cranelisp_backend::cache::object::ObjectCompileInput
-pub fn cranelisp_backend::cache::object::ObjectCompileInput::clone(&self) -> cranelisp_backend::cache::object::ObjectCompileInput
-impl core::fmt::Debug for cranelisp_backend::cache::object::ObjectCompileInput
-pub fn cranelisp_backend::cache::object::ObjectCompileInput::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for cranelisp_backend::cache::object::ObjectCompileInput
-impl core::marker::Send for cranelisp_backend::cache::object::ObjectCompileInput
-impl core::marker::Sync for cranelisp_backend::cache::object::ObjectCompileInput
-impl core::marker::Unpin for cranelisp_backend::cache::object::ObjectCompileInput
-impl core::marker::UnsafeUnpin for cranelisp_backend::cache::object::ObjectCompileInput
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::object::ObjectCompileInput
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::object::ObjectCompileInput
+impl<T, U> core::convert::Into<U> for cranelisp_backend::cache::CachedModule where U: core::convert::From<T>
+pub fn cranelisp_backend::cache::CachedModule::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::cache::CachedModule where U: core::convert::Into<T>
+pub type cranelisp_backend::cache::CachedModule::Error = core::convert::Infallible
+pub fn cranelisp_backend::cache::CachedModule::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::cache::CachedModule where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::cache::CachedModule::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::cache::CachedModule::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for cranelisp_backend::cache::CachedModule where T: core::clone::Clone
+pub type cranelisp_backend::cache::CachedModule::Owned = T
+pub fn cranelisp_backend::cache::CachedModule::clone_into(&self, target: &mut T)
+pub fn cranelisp_backend::cache::CachedModule::to_owned(&self) -> T
+impl<T> core::any::Any for cranelisp_backend::cache::CachedModule where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::cache::CachedModule::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::cache::CachedModule where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::CachedModule::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::cache::CachedModule where T: ?core::marker::Sized
+pub fn cranelisp_backend::cache::CachedModule::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for cranelisp_backend::cache::CachedModule where T: core::clone::Clone
+pub unsafe fn cranelisp_backend::cache::CachedModule::clone_to_uninit(&self, dest: *mut u8)
+impl<T> core::convert::From<T> for cranelisp_backend::cache::CachedModule
+pub fn cranelisp_backend::cache::CachedModule::from(t: T) -> T
+impl<T> cranelisp_types::module::CodeStore for cranelisp_backend::cache::CachedModule where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> cranelisp_types::module::LinkerStore for cranelisp_backend::cache::CachedModule where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::cache::CachedModule
+pub type cranelisp_backend::cache::CachedModule::Init = T
+pub const cranelisp_backend::cache::CachedModule::ALIGN: usize
+pub unsafe fn cranelisp_backend::cache::CachedModule::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::cache::CachedModule::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::cache::CachedModule::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::cache::CachedModule::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::cache::CachedModule
+impl<T> typenum::type_operators::Same for cranelisp_backend::cache::CachedModule
+pub type cranelisp_backend::cache::CachedModule::Output = T
 pub const cranelisp_backend::cache::BUILD_ID: &str
 pub const cranelisp_backend::cache::CACHE_FORMAT_VERSION: u32
 pub const cranelisp_backend::cache::CACHE_SCHEMA_VERSION: u32
-pub fn cranelisp_backend::cache::binary_fingerprint() -> alloc::string::String
-pub fn cranelisp_backend::cache::build_cache_packet(cache_dir: &std::path::Path, module_path: &cranelisp_types::newtype::ModuleFullPath, source_hash: &str, is_stdlib: bool, dependency_hashes: std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>, metadata: &cranelisp_backend::cache::serialize::CacheMetadata, object_compile_input: cranelisp_backend::cache::object::ObjectCompileInput) -> core::result::Result<cranelisp_backend::cache::object::CacheWritePacket, cranelisp_types::error::CranelispError>
-pub fn cranelisp_backend::cache::check_manifest(manifest: &cranelisp_backend::cache::manifest::CacheManifest, module_path: &cranelisp_types::newtype::ModuleFullPath, current_source_hash: &str, dependency_source_hashes: &std::collections::hash::map::HashMap<cranelisp_types::newtype::ModuleFullPath, alloc::string::String>) -> core::result::Result<bool, cranelisp_backend::cache::manifest::CacheInvalidReason>
-pub fn cranelisp_backend::cache::deserialise_meta(bytes: &[u8], expected_schema_version: u32, path: &std::path::Path) -> core::result::Result<cranelisp_types::module::SymbolTable, cranelisp_backend::cache::serialize::CacheStale>
-pub fn cranelisp_backend::cache::got_data_symbol_name(module_path: &cranelisp_types::newtype::ModuleFullPath) -> alloc::string::String
-pub fn cranelisp_backend::cache::hash_source(source: &str) -> alloc::string::String
 pub fn cranelisp_backend::cache::load_cached_object(linker: &mut cranelisp_backend::cache::linker::Linker, cached: &cranelisp_backend::cache::CachedModule) -> core::result::Result<std::collections::hash::map::HashMap<alloc::string::String, *const u8>, cranelisp_types::error::CranelispError>
-pub fn cranelisp_backend::cache::load_meta(meta_path: &std::path::Path) -> core::result::Result<cranelisp_types::module::SymbolTable, cranelisp_backend::cache::serialize::CacheStale>
 pub fn cranelisp_backend::cache::module_cache_path(cache_dir: &std::path::Path, module_path: &cranelisp_types::newtype::ModuleFullPath) -> (std::path::PathBuf, std::path::PathBuf)
-pub fn cranelisp_backend::cache::process_cache_packet(packet: &cranelisp_backend::cache::object::CacheWritePacket, symbol_tables: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable>) -> core::result::Result<cranelisp_backend::cache::object::ProcessedPacket, cranelisp_types::error::CranelispError>
-pub fn cranelisp_backend::cache::read_cached_metadata(meta_path: &std::path::Path) -> core::result::Result<cranelisp_backend::cache::serialize::CacheMetadata, cranelisp_types::error::CranelispError>
-pub fn cranelisp_backend::cache::read_manifest(cache_dir: &std::path::Path) -> core::option::Option<cranelisp_backend::cache::manifest::CacheManifest>
-pub fn cranelisp_backend::cache::serialise_meta<C, L>(table: &cranelisp_types::module::SymbolTable<C, L>, schema_version: u32) -> core::result::Result<alloc::vec::Vec<u8>, cranelisp_types::error::CranelispError> where C: cranelisp_types::module::CodeStore + core::clone::Clone, L: cranelisp_types::module::LinkerStore + core::clone::Clone
 pub fn cranelisp_backend::cache::try_load_cached_module(cache_dir: &std::path::Path, module_path: &cranelisp_types::newtype::ModuleFullPath) -> core::result::Result<core::option::Option<cranelisp_backend::cache::CachedModule>, cranelisp_types::error::CranelispError>
-pub fn cranelisp_backend::cache::write_cached_metadata(meta_path: &std::path::Path, metadata: &cranelisp_backend::cache::serialize::CacheMetadata) -> core::result::Result<(), cranelisp_types::error::CranelispError>
-pub fn cranelisp_backend::cache::write_manifest(cache_dir: &std::path::Path, manifest: &cranelisp_backend::cache::manifest::CacheManifest) -> core::result::Result<(), cranelisp_types::error::CranelispError>
-pub fn cranelisp_backend::cache::write_meta<C, L>(meta_path: &std::path::Path, table: &cranelisp_types::module::SymbolTable<C, L>, schema_version: u32) -> core::result::Result<(), cranelisp_types::error::CranelispError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub mod cranelisp_backend::code
+#[non_exhaustive] pub enum cranelisp_backend::code::Code
+pub cranelisp_backend::code::Code::Jit
+pub cranelisp_backend::code::Code::Jit::jit: alloc::sync::Arc<cranelisp_backend::jit::Jit>
+pub cranelisp_backend::code::Code::Jit::ptr: *const u8
+pub cranelisp_backend::code::Code::Linker
+pub cranelisp_backend::code::Code::Linker::linker: alloc::sync::Arc<cranelisp_backend::cache::linker::Linker>
+pub cranelisp_backend::code::Code::Linker::ptr: *const u8
+pub cranelisp_backend::code::Code::Primitive
+impl cranelisp_backend::code::Code
+pub fn cranelisp_backend::code::Code::jit(jit: alloc::sync::Arc<cranelisp_backend::jit::Jit>, ptr: *const u8) -> Self
+pub fn cranelisp_backend::code::Code::linker(linker: alloc::sync::Arc<cranelisp_backend::cache::linker::Linker>, ptr: *const u8) -> Self
+pub fn cranelisp_backend::code::Code::ptr(&self) -> *const u8
+impl core::clone::Clone for cranelisp_backend::code::Code
+pub fn cranelisp_backend::code::Code::clone(&self) -> cranelisp_backend::code::Code
+impl core::fmt::Debug for cranelisp_backend::code::Code
+pub fn cranelisp_backend::code::Code::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for cranelisp_backend::code::Code
+impl core::marker::Sync for cranelisp_backend::code::Code
+impl core::marker::Freeze for cranelisp_backend::code::Code
+impl core::marker::Unpin for cranelisp_backend::code::Code
+impl core::marker::UnsafeUnpin for cranelisp_backend::code::Code
+impl !core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::code::Code
+impl !core::panic::unwind_safe::UnwindSafe for cranelisp_backend::code::Code
+impl<T, U> core::convert::Into<U> for cranelisp_backend::code::Code where U: core::convert::From<T>
+pub fn cranelisp_backend::code::Code::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::code::Code where U: core::convert::Into<T>
+pub type cranelisp_backend::code::Code::Error = core::convert::Infallible
+pub fn cranelisp_backend::code::Code::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::code::Code where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::code::Code::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::code::Code::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for cranelisp_backend::code::Code where T: core::clone::Clone
+pub type cranelisp_backend::code::Code::Owned = T
+pub fn cranelisp_backend::code::Code::clone_into(&self, target: &mut T)
+pub fn cranelisp_backend::code::Code::to_owned(&self) -> T
+impl<T> core::any::Any for cranelisp_backend::code::Code where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::code::Code::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::code::Code where T: ?core::marker::Sized
+pub fn cranelisp_backend::code::Code::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::code::Code where T: ?core::marker::Sized
+pub fn cranelisp_backend::code::Code::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for cranelisp_backend::code::Code where T: core::clone::Clone
+pub unsafe fn cranelisp_backend::code::Code::clone_to_uninit(&self, dest: *mut u8)
+impl<T> core::convert::From<T> for cranelisp_backend::code::Code
+pub fn cranelisp_backend::code::Code::from(t: T) -> T
+impl<T> cranelisp_types::module::CodeStore for cranelisp_backend::code::Code where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> cranelisp_types::module::LinkerStore for cranelisp_backend::code::Code where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::code::Code
+pub type cranelisp_backend::code::Code::Init = T
+pub const cranelisp_backend::code::Code::ALIGN: usize
+pub unsafe fn cranelisp_backend::code::Code::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::code::Code::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::code::Code::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::code::Code::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::code::Code
+impl<T> typenum::type_operators::Same for cranelisp_backend::code::Code
+pub type cranelisp_backend::code::Code::Output = T
 pub mod cranelisp_backend::codegen_types
 pub use cranelisp_backend::codegen_types::GOT_TABLE_SIZE
 pub use cranelisp_backend::codegen_types::NULLARY_TAG_THRESHOLD
@@ -539,6 +867,40 @@ impl<'a, C, L> core::marker::Unpin for cranelisp_backend::compiler::CompileConte
 impl<'a, C, L> core::marker::UnsafeUnpin for cranelisp_backend::compiler::CompileContext<'a, C, L>
 impl<'a, C, L> !core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::compiler::CompileContext<'a, C, L>
 impl<'a, C, L> !core::panic::unwind_safe::UnwindSafe for cranelisp_backend::compiler::CompileContext<'a, C, L>
+impl<T, U> core::convert::Into<U> for cranelisp_backend::compiler::CompileContext<'a, C, L> where U: core::convert::From<T>
+pub fn cranelisp_backend::compiler::CompileContext<'a, C, L>::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::compiler::CompileContext<'a, C, L> where U: core::convert::Into<T>
+pub type cranelisp_backend::compiler::CompileContext<'a, C, L>::Error = core::convert::Infallible
+pub fn cranelisp_backend::compiler::CompileContext<'a, C, L>::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::compiler::CompileContext<'a, C, L> where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::compiler::CompileContext<'a, C, L>::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::compiler::CompileContext<'a, C, L>::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for cranelisp_backend::compiler::CompileContext<'a, C, L> where T: core::clone::Clone
+pub type cranelisp_backend::compiler::CompileContext<'a, C, L>::Owned = T
+pub fn cranelisp_backend::compiler::CompileContext<'a, C, L>::clone_into(&self, target: &mut T)
+pub fn cranelisp_backend::compiler::CompileContext<'a, C, L>::to_owned(&self) -> T
+impl<T> core::any::Any for cranelisp_backend::compiler::CompileContext<'a, C, L> where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::compiler::CompileContext<'a, C, L>::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::compiler::CompileContext<'a, C, L> where T: ?core::marker::Sized
+pub fn cranelisp_backend::compiler::CompileContext<'a, C, L>::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::compiler::CompileContext<'a, C, L> where T: ?core::marker::Sized
+pub fn cranelisp_backend::compiler::CompileContext<'a, C, L>::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for cranelisp_backend::compiler::CompileContext<'a, C, L> where T: core::clone::Clone
+pub unsafe fn cranelisp_backend::compiler::CompileContext<'a, C, L>::clone_to_uninit(&self, dest: *mut u8)
+impl<T> core::convert::From<T> for cranelisp_backend::compiler::CompileContext<'a, C, L>
+pub fn cranelisp_backend::compiler::CompileContext<'a, C, L>::from(t: T) -> T
+impl<T> cranelisp_types::module::CodeStore for cranelisp_backend::compiler::CompileContext<'a, C, L> where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> cranelisp_types::module::LinkerStore for cranelisp_backend::compiler::CompileContext<'a, C, L> where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::compiler::CompileContext<'a, C, L>
+pub type cranelisp_backend::compiler::CompileContext<'a, C, L>::Init = T
+pub const cranelisp_backend::compiler::CompileContext<'a, C, L>::ALIGN: usize
+pub unsafe fn cranelisp_backend::compiler::CompileContext<'a, C, L>::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::compiler::CompileContext<'a, C, L>::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::compiler::CompileContext<'a, C, L>::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::compiler::CompileContext<'a, C, L>::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::compiler::CompileContext<'a, C, L>
+impl<T> typenum::type_operators::Same for cranelisp_backend::compiler::CompileContext<'a, C, L>
+pub type cranelisp_backend::compiler::CompileContext<'a, C, L>::Output = T
 pub struct cranelisp_backend::compiler::FnCompiler<'a, M: cranelift_module::module::Module, C, L> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub cranelisp_backend::compiler::FnCompiler::builder: cranelift_frontend::frontend::FunctionBuilder<'a>
 pub cranelisp_backend::compiler::FnCompiler::module: &'a mut M
@@ -552,6 +914,32 @@ impl<'a, M, C, L> core::marker::Unpin for cranelisp_backend::compiler::FnCompile
 impl<'a, M, C, L> core::marker::UnsafeUnpin for cranelisp_backend::compiler::FnCompiler<'a, M, C, L>
 impl<'a, M, C, L> !core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::compiler::FnCompiler<'a, M, C, L>
 impl<'a, M, C, L> !core::panic::unwind_safe::UnwindSafe for cranelisp_backend::compiler::FnCompiler<'a, M, C, L>
+impl<T, U> core::convert::Into<U> for cranelisp_backend::compiler::FnCompiler<'a, M, C, L> where U: core::convert::From<T>
+pub fn cranelisp_backend::compiler::FnCompiler<'a, M, C, L>::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::compiler::FnCompiler<'a, M, C, L> where U: core::convert::Into<T>
+pub type cranelisp_backend::compiler::FnCompiler<'a, M, C, L>::Error = core::convert::Infallible
+pub fn cranelisp_backend::compiler::FnCompiler<'a, M, C, L>::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::compiler::FnCompiler<'a, M, C, L> where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::compiler::FnCompiler<'a, M, C, L>::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::compiler::FnCompiler<'a, M, C, L>::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for cranelisp_backend::compiler::FnCompiler<'a, M, C, L> where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::compiler::FnCompiler<'a, M, C, L>::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::compiler::FnCompiler<'a, M, C, L> where T: ?core::marker::Sized
+pub fn cranelisp_backend::compiler::FnCompiler<'a, M, C, L>::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::compiler::FnCompiler<'a, M, C, L> where T: ?core::marker::Sized
+pub fn cranelisp_backend::compiler::FnCompiler<'a, M, C, L>::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for cranelisp_backend::compiler::FnCompiler<'a, M, C, L>
+pub fn cranelisp_backend::compiler::FnCompiler<'a, M, C, L>::from(t: T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::compiler::FnCompiler<'a, M, C, L>
+pub type cranelisp_backend::compiler::FnCompiler<'a, M, C, L>::Init = T
+pub const cranelisp_backend::compiler::FnCompiler<'a, M, C, L>::ALIGN: usize
+pub unsafe fn cranelisp_backend::compiler::FnCompiler<'a, M, C, L>::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::compiler::FnCompiler<'a, M, C, L>::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::compiler::FnCompiler<'a, M, C, L>::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::compiler::FnCompiler<'a, M, C, L>::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::compiler::FnCompiler<'a, M, C, L>
+impl<T> typenum::type_operators::Same for cranelisp_backend::compiler::FnCompiler<'a, M, C, L>
+pub type cranelisp_backend::compiler::FnCompiler<'a, M, C, L>::Output = T
 pub struct cranelisp_backend::compiler::MatchContext
 pub cranelisp_backend::compiler::MatchContext::merge_block: cranelift_codegen::ir::entities::Block
 pub cranelisp_backend::compiler::MatchContext::next_block: cranelift_codegen::ir::entities::Block
@@ -565,6 +953,32 @@ impl core::marker::Unpin for cranelisp_backend::compiler::MatchContext
 impl core::marker::UnsafeUnpin for cranelisp_backend::compiler::MatchContext
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::compiler::MatchContext
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::compiler::MatchContext
+impl<T, U> core::convert::Into<U> for cranelisp_backend::compiler::MatchContext where U: core::convert::From<T>
+pub fn cranelisp_backend::compiler::MatchContext::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::compiler::MatchContext where U: core::convert::Into<T>
+pub type cranelisp_backend::compiler::MatchContext::Error = core::convert::Infallible
+pub fn cranelisp_backend::compiler::MatchContext::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::compiler::MatchContext where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::compiler::MatchContext::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::compiler::MatchContext::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for cranelisp_backend::compiler::MatchContext where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::compiler::MatchContext::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::compiler::MatchContext where T: ?core::marker::Sized
+pub fn cranelisp_backend::compiler::MatchContext::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::compiler::MatchContext where T: ?core::marker::Sized
+pub fn cranelisp_backend::compiler::MatchContext::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for cranelisp_backend::compiler::MatchContext
+pub fn cranelisp_backend::compiler::MatchContext::from(t: T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::compiler::MatchContext
+pub type cranelisp_backend::compiler::MatchContext::Init = T
+pub const cranelisp_backend::compiler::MatchContext::ALIGN: usize
+pub unsafe fn cranelisp_backend::compiler::MatchContext::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::compiler::MatchContext::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::compiler::MatchContext::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::compiler::MatchContext::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::compiler::MatchContext
+impl<T> typenum::type_operators::Same for cranelisp_backend::compiler::MatchContext
+pub type cranelisp_backend::compiler::MatchContext::Output = T
 pub struct cranelisp_backend::compiler::TracedFnInfo
 pub cranelisp_backend::compiler::TracedFnInfo::arity: usize
 pub cranelisp_backend::compiler::TracedFnInfo::code_ptr: i64
@@ -584,10 +998,148 @@ impl core::marker::Unpin for cranelisp_backend::compiler::TracedFnInfo
 impl core::marker::UnsafeUnpin for cranelisp_backend::compiler::TracedFnInfo
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::compiler::TracedFnInfo
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::compiler::TracedFnInfo
+impl<T, U> core::convert::Into<U> for cranelisp_backend::compiler::TracedFnInfo where U: core::convert::From<T>
+pub fn cranelisp_backend::compiler::TracedFnInfo::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::compiler::TracedFnInfo where U: core::convert::Into<T>
+pub type cranelisp_backend::compiler::TracedFnInfo::Error = core::convert::Infallible
+pub fn cranelisp_backend::compiler::TracedFnInfo::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::compiler::TracedFnInfo where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::compiler::TracedFnInfo::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::compiler::TracedFnInfo::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for cranelisp_backend::compiler::TracedFnInfo where T: core::clone::Clone
+pub type cranelisp_backend::compiler::TracedFnInfo::Owned = T
+pub fn cranelisp_backend::compiler::TracedFnInfo::clone_into(&self, target: &mut T)
+pub fn cranelisp_backend::compiler::TracedFnInfo::to_owned(&self) -> T
+impl<T> core::any::Any for cranelisp_backend::compiler::TracedFnInfo where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::compiler::TracedFnInfo::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::compiler::TracedFnInfo where T: ?core::marker::Sized
+pub fn cranelisp_backend::compiler::TracedFnInfo::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::compiler::TracedFnInfo where T: ?core::marker::Sized
+pub fn cranelisp_backend::compiler::TracedFnInfo::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for cranelisp_backend::compiler::TracedFnInfo where T: core::clone::Clone
+pub unsafe fn cranelisp_backend::compiler::TracedFnInfo::clone_to_uninit(&self, dest: *mut u8)
+impl<T> core::convert::From<T> for cranelisp_backend::compiler::TracedFnInfo
+pub fn cranelisp_backend::compiler::TracedFnInfo::from(t: T) -> T
+impl<T> cranelisp_types::module::CodeStore for cranelisp_backend::compiler::TracedFnInfo where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> cranelisp_types::module::LinkerStore for cranelisp_backend::compiler::TracedFnInfo where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::compiler::TracedFnInfo
+pub type cranelisp_backend::compiler::TracedFnInfo::Init = T
+pub const cranelisp_backend::compiler::TracedFnInfo::ALIGN: usize
+pub unsafe fn cranelisp_backend::compiler::TracedFnInfo::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::compiler::TracedFnInfo::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::compiler::TracedFnInfo::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::compiler::TracedFnInfo::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::compiler::TracedFnInfo
+impl<T> typenum::type_operators::Same for cranelisp_backend::compiler::TracedFnInfo
+pub type cranelisp_backend::compiler::TracedFnInfo::Output = T
 pub const cranelisp_backend::compiler::MATCH_EXHAUSTION_TRAP: u8
 pub fn cranelisp_backend::compiler::got_data_symbol_name(module_path: &cranelisp_types::newtype::ModuleFullPath) -> alloc::string::String
 pub fn cranelisp_backend::compiler::resolve_func_arity<C, L>(symbol_tables: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, current_module: &cranelisp_types::newtype::ModuleFullPath, name: &cranelisp_types::newtype::Symbol) -> core::option::Option<usize> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub fn cranelisp_backend::compiler::resolve_got_target<C, L>(symbol_tables: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, current_module: &cranelisp_types::newtype::ModuleFullPath, name: &cranelisp_types::newtype::Symbol) -> core::option::Option<(cranelisp_types::newtype::ModuleFullPath, usize)> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub mod cranelisp_backend::error
+#[non_exhaustive] pub enum cranelisp_backend::error::CompilationError
+pub cranelisp_backend::error::CompilationError::CodegenFailed
+pub cranelisp_backend::error::CompilationError::CodegenFailed::cause: alloc::string::String
+pub cranelisp_backend::error::CompilationError::CodegenFailed::location: cranelisp_types::error::ErrorLocation
+pub cranelisp_backend::error::CompilationError::CodegenFailed::module: cranelisp_types::newtype::ModuleFullPath
+pub cranelisp_backend::error::CompilationError::CodegenFailed::symbol: cranelisp_types::newtype::Symbol
+pub cranelisp_backend::error::CompilationError::ModuleError
+pub cranelisp_backend::error::CompilationError::ModuleError::cause: alloc::string::String
+pub cranelisp_backend::error::CompilationError::ModuleError::module: cranelisp_types::newtype::ModuleFullPath
+pub cranelisp_backend::error::CompilationError::ModuleError::symbol: cranelisp_types::newtype::Symbol
+pub cranelisp_backend::error::CompilationError::SymbolNotCompilable
+pub cranelisp_backend::error::CompilationError::SymbolNotCompilable::module: cranelisp_types::newtype::ModuleFullPath
+pub cranelisp_backend::error::CompilationError::SymbolNotCompilable::symbol: cranelisp_types::newtype::Symbol
+impl core::convert::From<cranelisp_backend::error::CompilationError> for cranelisp_types::error::CranelispError
+pub fn cranelisp_types::error::CranelispError::from(err: cranelisp_backend::error::CompilationError) -> Self
+impl core::convert::From<cranelisp_types::error::CranelispError> for cranelisp_backend::error::CompilationError
+pub fn cranelisp_backend::error::CompilationError::from(err: cranelisp_types::error::CranelispError) -> Self
+impl core::error::Error for cranelisp_backend::error::CompilationError
+impl core::fmt::Debug for cranelisp_backend::error::CompilationError
+pub fn cranelisp_backend::error::CompilationError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for cranelisp_backend::error::CompilationError
+pub fn cranelisp_backend::error::CompilationError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for cranelisp_backend::error::CompilationError
+impl core::marker::Send for cranelisp_backend::error::CompilationError
+impl core::marker::Sync for cranelisp_backend::error::CompilationError
+impl core::marker::Unpin for cranelisp_backend::error::CompilationError
+impl core::marker::UnsafeUnpin for cranelisp_backend::error::CompilationError
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::error::CompilationError
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::error::CompilationError
+impl<T, U> core::convert::Into<U> for cranelisp_backend::error::CompilationError where U: core::convert::From<T>
+pub fn cranelisp_backend::error::CompilationError::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::error::CompilationError where U: core::convert::Into<T>
+pub type cranelisp_backend::error::CompilationError::Error = core::convert::Infallible
+pub fn cranelisp_backend::error::CompilationError::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::error::CompilationError where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::error::CompilationError::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::error::CompilationError::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::string::ToString for cranelisp_backend::error::CompilationError where T: core::fmt::Display + ?core::marker::Sized
+pub fn cranelisp_backend::error::CompilationError::to_string(&self) -> alloc::string::String
+impl<T> core::any::Any for cranelisp_backend::error::CompilationError where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::error::CompilationError::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::error::CompilationError where T: ?core::marker::Sized
+pub fn cranelisp_backend::error::CompilationError::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::error::CompilationError where T: ?core::marker::Sized
+pub fn cranelisp_backend::error::CompilationError::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for cranelisp_backend::error::CompilationError
+pub fn cranelisp_backend::error::CompilationError::from(t: T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::error::CompilationError
+pub type cranelisp_backend::error::CompilationError::Init = T
+pub const cranelisp_backend::error::CompilationError::ALIGN: usize
+pub unsafe fn cranelisp_backend::error::CompilationError::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::error::CompilationError::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::error::CompilationError::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::error::CompilationError::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::error::CompilationError
+impl<T> typenum::type_operators::Same for cranelisp_backend::error::CompilationError
+pub type cranelisp_backend::error::CompilationError::Output = T
+#[non_exhaustive] pub enum cranelisp_backend::error::LinkerError
+pub cranelisp_backend::error::LinkerError::RelocationFailed
+pub cranelisp_backend::error::LinkerError::RelocationFailed::cause: alloc::string::String
+pub cranelisp_backend::error::LinkerError::RelocationFailed::name: cranelisp_types::newtype::LinkerSymbol
+pub cranelisp_backend::error::LinkerError::SymbolNotFound
+pub cranelisp_backend::error::LinkerError::SymbolNotFound::name: cranelisp_types::newtype::LinkerSymbol
+impl core::error::Error for cranelisp_backend::error::LinkerError
+impl core::fmt::Debug for cranelisp_backend::error::LinkerError
+pub fn cranelisp_backend::error::LinkerError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for cranelisp_backend::error::LinkerError
+pub fn cranelisp_backend::error::LinkerError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for cranelisp_backend::error::LinkerError
+impl core::marker::Send for cranelisp_backend::error::LinkerError
+impl core::marker::Sync for cranelisp_backend::error::LinkerError
+impl core::marker::Unpin for cranelisp_backend::error::LinkerError
+impl core::marker::UnsafeUnpin for cranelisp_backend::error::LinkerError
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::error::LinkerError
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::error::LinkerError
+impl<T, U> core::convert::Into<U> for cranelisp_backend::error::LinkerError where U: core::convert::From<T>
+pub fn cranelisp_backend::error::LinkerError::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::error::LinkerError where U: core::convert::Into<T>
+pub type cranelisp_backend::error::LinkerError::Error = core::convert::Infallible
+pub fn cranelisp_backend::error::LinkerError::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::error::LinkerError where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::error::LinkerError::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::error::LinkerError::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::string::ToString for cranelisp_backend::error::LinkerError where T: core::fmt::Display + ?core::marker::Sized
+pub fn cranelisp_backend::error::LinkerError::to_string(&self) -> alloc::string::String
+impl<T> core::any::Any for cranelisp_backend::error::LinkerError where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::error::LinkerError::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::error::LinkerError where T: ?core::marker::Sized
+pub fn cranelisp_backend::error::LinkerError::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::error::LinkerError where T: ?core::marker::Sized
+pub fn cranelisp_backend::error::LinkerError::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for cranelisp_backend::error::LinkerError
+pub fn cranelisp_backend::error::LinkerError::from(t: T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::error::LinkerError
+pub type cranelisp_backend::error::LinkerError::Init = T
+pub const cranelisp_backend::error::LinkerError::ALIGN: usize
+pub unsafe fn cranelisp_backend::error::LinkerError::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::error::LinkerError::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::error::LinkerError::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::error::LinkerError::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::error::LinkerError
+impl<T> typenum::type_operators::Same for cranelisp_backend::error::LinkerError
+pub type cranelisp_backend::error::LinkerError::Output = T
 pub mod cranelisp_backend::exe
 pub fn cranelisp_backend::exe::generate_startup_object(platform_manifest_names: &[alloc::string::String], main_returns_io: bool, entry_fn_name: &str) -> core::result::Result<alloc::vec::Vec<u8>, cranelisp_types::error::CranelispError>
 pub mod cranelisp_backend::got
@@ -613,6 +1165,48 @@ impl core::marker::Unpin for cranelisp_backend::got_observer::GotEventTag
 impl core::marker::UnsafeUnpin for cranelisp_backend::got_observer::GotEventTag
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::got_observer::GotEventTag
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::got_observer::GotEventTag
+impl<Q, K> equivalent::Equivalent<K> for cranelisp_backend::got_observer::GotEventTag where Q: core::cmp::Eq + ?core::marker::Sized, K: core::borrow::Borrow<Q> + ?core::marker::Sized
+pub fn cranelisp_backend::got_observer::GotEventTag::equivalent(&self, key: &K) -> bool
+impl<Q, K> hashbrown::Equivalent<K> for cranelisp_backend::got_observer::GotEventTag where Q: core::cmp::Eq + ?core::marker::Sized, K: core::borrow::Borrow<Q> + ?core::marker::Sized
+impl<Q, K> hashbrown::Equivalent<K> for cranelisp_backend::got_observer::GotEventTag where Q: core::cmp::Eq + ?core::marker::Sized, K: core::borrow::Borrow<Q> + ?core::marker::Sized
+impl<Q, K> hashbrown::Equivalent<K> for cranelisp_backend::got_observer::GotEventTag where Q: core::cmp::Eq + ?core::marker::Sized, K: core::borrow::Borrow<Q> + ?core::marker::Sized
+pub fn cranelisp_backend::got_observer::GotEventTag::equivalent(&self, key: &K) -> bool
+pub fn cranelisp_backend::got_observer::GotEventTag::equivalent(&self, key: &K) -> bool
+pub fn cranelisp_backend::got_observer::GotEventTag::equivalent(&self, key: &K) -> bool
+impl<T, U> core::convert::Into<U> for cranelisp_backend::got_observer::GotEventTag where U: core::convert::From<T>
+pub fn cranelisp_backend::got_observer::GotEventTag::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::got_observer::GotEventTag where U: core::convert::Into<T>
+pub type cranelisp_backend::got_observer::GotEventTag::Error = core::convert::Infallible
+pub fn cranelisp_backend::got_observer::GotEventTag::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::got_observer::GotEventTag where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::got_observer::GotEventTag::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::got_observer::GotEventTag::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for cranelisp_backend::got_observer::GotEventTag where T: core::clone::Clone
+pub type cranelisp_backend::got_observer::GotEventTag::Owned = T
+pub fn cranelisp_backend::got_observer::GotEventTag::clone_into(&self, target: &mut T)
+pub fn cranelisp_backend::got_observer::GotEventTag::to_owned(&self) -> T
+impl<T> core::any::Any for cranelisp_backend::got_observer::GotEventTag where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::got_observer::GotEventTag::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::got_observer::GotEventTag where T: ?core::marker::Sized
+pub fn cranelisp_backend::got_observer::GotEventTag::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::got_observer::GotEventTag where T: ?core::marker::Sized
+pub fn cranelisp_backend::got_observer::GotEventTag::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for cranelisp_backend::got_observer::GotEventTag where T: core::clone::Clone
+pub unsafe fn cranelisp_backend::got_observer::GotEventTag::clone_to_uninit(&self, dest: *mut u8)
+impl<T> core::convert::From<T> for cranelisp_backend::got_observer::GotEventTag
+pub fn cranelisp_backend::got_observer::GotEventTag::from(t: T) -> T
+impl<T> cranelisp_types::module::CodeStore for cranelisp_backend::got_observer::GotEventTag where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> cranelisp_types::module::LinkerStore for cranelisp_backend::got_observer::GotEventTag where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::got_observer::GotEventTag
+pub type cranelisp_backend::got_observer::GotEventTag::Init = T
+pub const cranelisp_backend::got_observer::GotEventTag::ALIGN: usize
+pub unsafe fn cranelisp_backend::got_observer::GotEventTag::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::got_observer::GotEventTag::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::got_observer::GotEventTag::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::got_observer::GotEventTag::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::got_observer::GotEventTag
+impl<T> typenum::type_operators::Same for cranelisp_backend::got_observer::GotEventTag
+pub type cranelisp_backend::got_observer::GotEventTag::Output = T
 #[non_exhaustive] pub enum cranelisp_backend::got_observer::GotProvenance
 pub cranelisp_backend::got_observer::GotProvenance::Jit
 pub cranelisp_backend::got_observer::GotProvenance::Jit::jit_addr: usize
@@ -634,6 +1228,48 @@ impl core::marker::Unpin for cranelisp_backend::got_observer::GotProvenance
 impl core::marker::UnsafeUnpin for cranelisp_backend::got_observer::GotProvenance
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::got_observer::GotProvenance
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::got_observer::GotProvenance
+impl<Q, K> equivalent::Equivalent<K> for cranelisp_backend::got_observer::GotProvenance where Q: core::cmp::Eq + ?core::marker::Sized, K: core::borrow::Borrow<Q> + ?core::marker::Sized
+pub fn cranelisp_backend::got_observer::GotProvenance::equivalent(&self, key: &K) -> bool
+impl<Q, K> hashbrown::Equivalent<K> for cranelisp_backend::got_observer::GotProvenance where Q: core::cmp::Eq + ?core::marker::Sized, K: core::borrow::Borrow<Q> + ?core::marker::Sized
+impl<Q, K> hashbrown::Equivalent<K> for cranelisp_backend::got_observer::GotProvenance where Q: core::cmp::Eq + ?core::marker::Sized, K: core::borrow::Borrow<Q> + ?core::marker::Sized
+impl<Q, K> hashbrown::Equivalent<K> for cranelisp_backend::got_observer::GotProvenance where Q: core::cmp::Eq + ?core::marker::Sized, K: core::borrow::Borrow<Q> + ?core::marker::Sized
+pub fn cranelisp_backend::got_observer::GotProvenance::equivalent(&self, key: &K) -> bool
+pub fn cranelisp_backend::got_observer::GotProvenance::equivalent(&self, key: &K) -> bool
+pub fn cranelisp_backend::got_observer::GotProvenance::equivalent(&self, key: &K) -> bool
+impl<T, U> core::convert::Into<U> for cranelisp_backend::got_observer::GotProvenance where U: core::convert::From<T>
+pub fn cranelisp_backend::got_observer::GotProvenance::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::got_observer::GotProvenance where U: core::convert::Into<T>
+pub type cranelisp_backend::got_observer::GotProvenance::Error = core::convert::Infallible
+pub fn cranelisp_backend::got_observer::GotProvenance::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::got_observer::GotProvenance where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::got_observer::GotProvenance::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::got_observer::GotProvenance::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for cranelisp_backend::got_observer::GotProvenance where T: core::clone::Clone
+pub type cranelisp_backend::got_observer::GotProvenance::Owned = T
+pub fn cranelisp_backend::got_observer::GotProvenance::clone_into(&self, target: &mut T)
+pub fn cranelisp_backend::got_observer::GotProvenance::to_owned(&self) -> T
+impl<T> core::any::Any for cranelisp_backend::got_observer::GotProvenance where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::got_observer::GotProvenance::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::got_observer::GotProvenance where T: ?core::marker::Sized
+pub fn cranelisp_backend::got_observer::GotProvenance::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::got_observer::GotProvenance where T: ?core::marker::Sized
+pub fn cranelisp_backend::got_observer::GotProvenance::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for cranelisp_backend::got_observer::GotProvenance where T: core::clone::Clone
+pub unsafe fn cranelisp_backend::got_observer::GotProvenance::clone_to_uninit(&self, dest: *mut u8)
+impl<T> core::convert::From<T> for cranelisp_backend::got_observer::GotProvenance
+pub fn cranelisp_backend::got_observer::GotProvenance::from(t: T) -> T
+impl<T> cranelisp_types::module::CodeStore for cranelisp_backend::got_observer::GotProvenance where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> cranelisp_types::module::LinkerStore for cranelisp_backend::got_observer::GotProvenance where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::got_observer::GotProvenance
+pub type cranelisp_backend::got_observer::GotProvenance::Init = T
+pub const cranelisp_backend::got_observer::GotProvenance::ALIGN: usize
+pub unsafe fn cranelisp_backend::got_observer::GotProvenance::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::got_observer::GotProvenance::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::got_observer::GotProvenance::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::got_observer::GotProvenance::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::got_observer::GotProvenance
+impl<T> typenum::type_operators::Same for cranelisp_backend::got_observer::GotProvenance
+pub type cranelisp_backend::got_observer::GotProvenance::Output = T
 #[non_exhaustive] pub struct cranelisp_backend::got_observer::GotEvent
 pub cranelisp_backend::got_observer::GotEvent::module: cranelisp_types::newtype::ModuleFullPath
 pub cranelisp_backend::got_observer::GotEvent::provenance: cranelisp_backend::got_observer::GotProvenance
@@ -651,6 +1287,40 @@ impl core::marker::Unpin for cranelisp_backend::got_observer::GotEvent
 impl core::marker::UnsafeUnpin for cranelisp_backend::got_observer::GotEvent
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::got_observer::GotEvent
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::got_observer::GotEvent
+impl<T, U> core::convert::Into<U> for cranelisp_backend::got_observer::GotEvent where U: core::convert::From<T>
+pub fn cranelisp_backend::got_observer::GotEvent::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::got_observer::GotEvent where U: core::convert::Into<T>
+pub type cranelisp_backend::got_observer::GotEvent::Error = core::convert::Infallible
+pub fn cranelisp_backend::got_observer::GotEvent::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::got_observer::GotEvent where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::got_observer::GotEvent::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::got_observer::GotEvent::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for cranelisp_backend::got_observer::GotEvent where T: core::clone::Clone
+pub type cranelisp_backend::got_observer::GotEvent::Owned = T
+pub fn cranelisp_backend::got_observer::GotEvent::clone_into(&self, target: &mut T)
+pub fn cranelisp_backend::got_observer::GotEvent::to_owned(&self) -> T
+impl<T> core::any::Any for cranelisp_backend::got_observer::GotEvent where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::got_observer::GotEvent::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::got_observer::GotEvent where T: ?core::marker::Sized
+pub fn cranelisp_backend::got_observer::GotEvent::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::got_observer::GotEvent where T: ?core::marker::Sized
+pub fn cranelisp_backend::got_observer::GotEvent::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for cranelisp_backend::got_observer::GotEvent where T: core::clone::Clone
+pub unsafe fn cranelisp_backend::got_observer::GotEvent::clone_to_uninit(&self, dest: *mut u8)
+impl<T> core::convert::From<T> for cranelisp_backend::got_observer::GotEvent
+pub fn cranelisp_backend::got_observer::GotEvent::from(t: T) -> T
+impl<T> cranelisp_types::module::CodeStore for cranelisp_backend::got_observer::GotEvent where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> cranelisp_types::module::LinkerStore for cranelisp_backend::got_observer::GotEvent where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::got_observer::GotEvent
+pub type cranelisp_backend::got_observer::GotEvent::Init = T
+pub const cranelisp_backend::got_observer::GotEvent::ALIGN: usize
+pub unsafe fn cranelisp_backend::got_observer::GotEvent::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::got_observer::GotEvent::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::got_observer::GotEvent::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::got_observer::GotEvent::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::got_observer::GotEvent
+impl<T> typenum::type_operators::Same for cranelisp_backend::got_observer::GotEvent
+pub type cranelisp_backend::got_observer::GotEvent::Output = T
 pub fn cranelisp_backend::got_observer::emit(tag: cranelisp_backend::got_observer::GotEventTag, event: &cranelisp_backend::got_observer::GotEvent)
 pub fn cranelisp_backend::got_observer::register_got_observer(observer: core::option::Option<cranelisp_backend::got_observer::GotObserver>)
 pub type cranelisp_backend::got_observer::GotObserver = fn(cranelisp_backend::got_observer::GotEventTag, &cranelisp_backend::got_observer::GotEvent)
@@ -670,6 +1340,32 @@ impl core::marker::Unpin for cranelisp_backend::heap::HeapAdt
 impl core::marker::UnsafeUnpin for cranelisp_backend::heap::HeapAdt
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::heap::HeapAdt
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::heap::HeapAdt
+impl<T, U> core::convert::Into<U> for cranelisp_backend::heap::HeapAdt where U: core::convert::From<T>
+pub fn cranelisp_backend::heap::HeapAdt::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::heap::HeapAdt where U: core::convert::Into<T>
+pub type cranelisp_backend::heap::HeapAdt::Error = core::convert::Infallible
+pub fn cranelisp_backend::heap::HeapAdt::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::heap::HeapAdt where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::heap::HeapAdt::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::heap::HeapAdt::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for cranelisp_backend::heap::HeapAdt where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::heap::HeapAdt::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::heap::HeapAdt where T: ?core::marker::Sized
+pub fn cranelisp_backend::heap::HeapAdt::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::heap::HeapAdt where T: ?core::marker::Sized
+pub fn cranelisp_backend::heap::HeapAdt::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for cranelisp_backend::heap::HeapAdt
+pub fn cranelisp_backend::heap::HeapAdt::from(t: T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::heap::HeapAdt
+pub type cranelisp_backend::heap::HeapAdt::Init = T
+pub const cranelisp_backend::heap::HeapAdt::ALIGN: usize
+pub unsafe fn cranelisp_backend::heap::HeapAdt::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::heap::HeapAdt::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::heap::HeapAdt::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::heap::HeapAdt::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::heap::HeapAdt
+impl<T> typenum::type_operators::Same for cranelisp_backend::heap::HeapAdt
+pub type cranelisp_backend::heap::HeapAdt::Output = T
 #[repr(C)] pub struct cranelisp_backend::heap::HeapClosure
 pub cranelisp_backend::heap::HeapClosure::code_ptr: i64
 pub cranelisp_backend::heap::HeapClosure::drop_glue_ptr: i64
@@ -687,6 +1383,32 @@ impl core::marker::Unpin for cranelisp_backend::heap::HeapClosure
 impl core::marker::UnsafeUnpin for cranelisp_backend::heap::HeapClosure
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::heap::HeapClosure
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::heap::HeapClosure
+impl<T, U> core::convert::Into<U> for cranelisp_backend::heap::HeapClosure where U: core::convert::From<T>
+pub fn cranelisp_backend::heap::HeapClosure::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::heap::HeapClosure where U: core::convert::Into<T>
+pub type cranelisp_backend::heap::HeapClosure::Error = core::convert::Infallible
+pub fn cranelisp_backend::heap::HeapClosure::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::heap::HeapClosure where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::heap::HeapClosure::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::heap::HeapClosure::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for cranelisp_backend::heap::HeapClosure where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::heap::HeapClosure::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::heap::HeapClosure where T: ?core::marker::Sized
+pub fn cranelisp_backend::heap::HeapClosure::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::heap::HeapClosure where T: ?core::marker::Sized
+pub fn cranelisp_backend::heap::HeapClosure::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for cranelisp_backend::heap::HeapClosure
+pub fn cranelisp_backend::heap::HeapClosure::from(t: T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::heap::HeapClosure
+pub type cranelisp_backend::heap::HeapClosure::Init = T
+pub const cranelisp_backend::heap::HeapClosure::ALIGN: usize
+pub unsafe fn cranelisp_backend::heap::HeapClosure::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::heap::HeapClosure::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::heap::HeapClosure::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::heap::HeapClosure::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::heap::HeapClosure
+impl<T> typenum::type_operators::Same for cranelisp_backend::heap::HeapClosure
+pub type cranelisp_backend::heap::HeapClosure::Output = T
 #[repr(C)] pub struct cranelisp_backend::heap::HeapVec
 pub cranelisp_backend::heap::HeapVec::cap: i64
 pub cranelisp_backend::heap::HeapVec::data_ptr: i64
@@ -704,6 +1426,32 @@ impl core::marker::Unpin for cranelisp_backend::heap::HeapVec
 impl core::marker::UnsafeUnpin for cranelisp_backend::heap::HeapVec
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::heap::HeapVec
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::heap::HeapVec
+impl<T, U> core::convert::Into<U> for cranelisp_backend::heap::HeapVec where U: core::convert::From<T>
+pub fn cranelisp_backend::heap::HeapVec::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::heap::HeapVec where U: core::convert::Into<T>
+pub type cranelisp_backend::heap::HeapVec::Error = core::convert::Infallible
+pub fn cranelisp_backend::heap::HeapVec::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::heap::HeapVec where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::heap::HeapVec::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::heap::HeapVec::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for cranelisp_backend::heap::HeapVec where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::heap::HeapVec::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::heap::HeapVec where T: ?core::marker::Sized
+pub fn cranelisp_backend::heap::HeapVec::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::heap::HeapVec where T: ?core::marker::Sized
+pub fn cranelisp_backend::heap::HeapVec::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for cranelisp_backend::heap::HeapVec
+pub fn cranelisp_backend::heap::HeapVec::from(t: T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::heap::HeapVec
+pub type cranelisp_backend::heap::HeapVec::Init = T
+pub const cranelisp_backend::heap::HeapVec::ALIGN: usize
+pub unsafe fn cranelisp_backend::heap::HeapVec::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::heap::HeapVec::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::heap::HeapVec::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::heap::HeapVec::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::heap::HeapVec
+impl<T> typenum::type_operators::Same for cranelisp_backend::heap::HeapVec
+pub type cranelisp_backend::heap::HeapVec::Output = T
 pub const cranelisp_backend::heap::NULLARY_THRESHOLD_I64: i64
 pub fn cranelisp_backend::heap::compute_last_uses(expr: &cranelisp_types::ast::Expr) -> std::collections::hash::map::HashMap<(cranelisp_types::newtype::Symbol, cranelisp_types::span::Span), bool>
 pub fn cranelisp_backend::heap::emit_alloc<M: cranelift_module::module::Module>(builder: &mut cranelift_frontend::frontend::FunctionBuilder<'_>, module: &mut M, alloc_func_id: cranelift_module::module::FuncId, payload_size: i64) -> cranelift_codegen::ir::entities::Value
@@ -726,6 +1474,32 @@ impl core::marker::Unpin for cranelisp_backend::jit::CompileArtifacts
 impl core::marker::UnsafeUnpin for cranelisp_backend::jit::CompileArtifacts
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::jit::CompileArtifacts
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::jit::CompileArtifacts
+impl<T, U> core::convert::Into<U> for cranelisp_backend::jit::CompileArtifacts where U: core::convert::From<T>
+pub fn cranelisp_backend::jit::CompileArtifacts::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::jit::CompileArtifacts where U: core::convert::Into<T>
+pub type cranelisp_backend::jit::CompileArtifacts::Error = core::convert::Infallible
+pub fn cranelisp_backend::jit::CompileArtifacts::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::jit::CompileArtifacts where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::jit::CompileArtifacts::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::jit::CompileArtifacts::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for cranelisp_backend::jit::CompileArtifacts where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::jit::CompileArtifacts::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::jit::CompileArtifacts where T: ?core::marker::Sized
+pub fn cranelisp_backend::jit::CompileArtifacts::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::jit::CompileArtifacts where T: ?core::marker::Sized
+pub fn cranelisp_backend::jit::CompileArtifacts::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for cranelisp_backend::jit::CompileArtifacts
+pub fn cranelisp_backend::jit::CompileArtifacts::from(t: T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::jit::CompileArtifacts
+pub type cranelisp_backend::jit::CompileArtifacts::Init = T
+pub const cranelisp_backend::jit::CompileArtifacts::ALIGN: usize
+pub unsafe fn cranelisp_backend::jit::CompileArtifacts::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::jit::CompileArtifacts::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::jit::CompileArtifacts::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::jit::CompileArtifacts::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::jit::CompileArtifacts
+impl<T> typenum::type_operators::Same for cranelisp_backend::jit::CompileArtifacts
+pub type cranelisp_backend::jit::CompileArtifacts::Output = T
 pub struct cranelisp_backend::jit::IntrinsicFuncIds
 pub cranelisp_backend::jit::IntrinsicFuncIds::alloc: core::option::Option<cranelift_module::module::FuncId>
 pub cranelisp_backend::jit::IntrinsicFuncIds::alloc_string: core::option::Option<cranelift_module::module::FuncId>
@@ -743,6 +1517,32 @@ impl core::marker::Unpin for cranelisp_backend::jit::IntrinsicFuncIds
 impl core::marker::UnsafeUnpin for cranelisp_backend::jit::IntrinsicFuncIds
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::jit::IntrinsicFuncIds
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::jit::IntrinsicFuncIds
+impl<T, U> core::convert::Into<U> for cranelisp_backend::jit::IntrinsicFuncIds where U: core::convert::From<T>
+pub fn cranelisp_backend::jit::IntrinsicFuncIds::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::jit::IntrinsicFuncIds where U: core::convert::Into<T>
+pub type cranelisp_backend::jit::IntrinsicFuncIds::Error = core::convert::Infallible
+pub fn cranelisp_backend::jit::IntrinsicFuncIds::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::jit::IntrinsicFuncIds where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::jit::IntrinsicFuncIds::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::jit::IntrinsicFuncIds::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for cranelisp_backend::jit::IntrinsicFuncIds where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::jit::IntrinsicFuncIds::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::jit::IntrinsicFuncIds where T: ?core::marker::Sized
+pub fn cranelisp_backend::jit::IntrinsicFuncIds::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::jit::IntrinsicFuncIds where T: ?core::marker::Sized
+pub fn cranelisp_backend::jit::IntrinsicFuncIds::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for cranelisp_backend::jit::IntrinsicFuncIds
+pub fn cranelisp_backend::jit::IntrinsicFuncIds::from(t: T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::jit::IntrinsicFuncIds
+pub type cranelisp_backend::jit::IntrinsicFuncIds::Init = T
+pub const cranelisp_backend::jit::IntrinsicFuncIds::ALIGN: usize
+pub unsafe fn cranelisp_backend::jit::IntrinsicFuncIds::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::jit::IntrinsicFuncIds::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::jit::IntrinsicFuncIds::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::jit::IntrinsicFuncIds::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::jit::IntrinsicFuncIds
+impl<T> typenum::type_operators::Same for cranelisp_backend::jit::IntrinsicFuncIds
+pub type cranelisp_backend::jit::IntrinsicFuncIds::Output = T
 pub struct cranelisp_backend::jit::IntrinsicIds
 pub cranelisp_backend::jit::IntrinsicIds::alloc: cranelift_module::module::FuncId
 pub cranelisp_backend::jit::IntrinsicIds::alloc_string: cranelift_module::module::FuncId
@@ -757,6 +1557,32 @@ impl core::marker::Unpin for cranelisp_backend::jit::IntrinsicIds
 impl core::marker::UnsafeUnpin for cranelisp_backend::jit::IntrinsicIds
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::jit::IntrinsicIds
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::jit::IntrinsicIds
+impl<T, U> core::convert::Into<U> for cranelisp_backend::jit::IntrinsicIds where U: core::convert::From<T>
+pub fn cranelisp_backend::jit::IntrinsicIds::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::jit::IntrinsicIds where U: core::convert::Into<T>
+pub type cranelisp_backend::jit::IntrinsicIds::Error = core::convert::Infallible
+pub fn cranelisp_backend::jit::IntrinsicIds::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::jit::IntrinsicIds where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::jit::IntrinsicIds::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::jit::IntrinsicIds::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for cranelisp_backend::jit::IntrinsicIds where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::jit::IntrinsicIds::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::jit::IntrinsicIds where T: ?core::marker::Sized
+pub fn cranelisp_backend::jit::IntrinsicIds::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::jit::IntrinsicIds where T: ?core::marker::Sized
+pub fn cranelisp_backend::jit::IntrinsicIds::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for cranelisp_backend::jit::IntrinsicIds
+pub fn cranelisp_backend::jit::IntrinsicIds::from(t: T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::jit::IntrinsicIds
+pub type cranelisp_backend::jit::IntrinsicIds::Init = T
+pub const cranelisp_backend::jit::IntrinsicIds::ALIGN: usize
+pub unsafe fn cranelisp_backend::jit::IntrinsicIds::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::jit::IntrinsicIds::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::jit::IntrinsicIds::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::jit::IntrinsicIds::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::jit::IntrinsicIds
+impl<T> typenum::type_operators::Same for cranelisp_backend::jit::IntrinsicIds
+pub type cranelisp_backend::jit::IntrinsicIds::Output = T
 pub struct cranelisp_backend::jit::IntrinsicSymbol
 pub cranelisp_backend::jit::IntrinsicSymbol::has_return: bool
 pub cranelisp_backend::jit::IntrinsicSymbol::is_runtime: bool
@@ -770,6 +1596,32 @@ impl core::marker::Unpin for cranelisp_backend::jit::IntrinsicSymbol
 impl core::marker::UnsafeUnpin for cranelisp_backend::jit::IntrinsicSymbol
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::jit::IntrinsicSymbol
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::jit::IntrinsicSymbol
+impl<T, U> core::convert::Into<U> for cranelisp_backend::jit::IntrinsicSymbol where U: core::convert::From<T>
+pub fn cranelisp_backend::jit::IntrinsicSymbol::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::jit::IntrinsicSymbol where U: core::convert::Into<T>
+pub type cranelisp_backend::jit::IntrinsicSymbol::Error = core::convert::Infallible
+pub fn cranelisp_backend::jit::IntrinsicSymbol::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::jit::IntrinsicSymbol where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::jit::IntrinsicSymbol::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::jit::IntrinsicSymbol::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for cranelisp_backend::jit::IntrinsicSymbol where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::jit::IntrinsicSymbol::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::jit::IntrinsicSymbol where T: ?core::marker::Sized
+pub fn cranelisp_backend::jit::IntrinsicSymbol::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::jit::IntrinsicSymbol where T: ?core::marker::Sized
+pub fn cranelisp_backend::jit::IntrinsicSymbol::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for cranelisp_backend::jit::IntrinsicSymbol
+pub fn cranelisp_backend::jit::IntrinsicSymbol::from(t: T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::jit::IntrinsicSymbol
+pub type cranelisp_backend::jit::IntrinsicSymbol::Init = T
+pub const cranelisp_backend::jit::IntrinsicSymbol::ALIGN: usize
+pub unsafe fn cranelisp_backend::jit::IntrinsicSymbol::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::jit::IntrinsicSymbol::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::jit::IntrinsicSymbol::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::jit::IntrinsicSymbol::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::jit::IntrinsicSymbol
+impl<T> typenum::type_operators::Same for cranelisp_backend::jit::IntrinsicSymbol
+pub type cranelisp_backend::jit::IntrinsicSymbol::Output = T
 pub struct cranelisp_backend::jit::Jit
 impl cranelisp_backend::jit::Jit
 pub fn cranelisp_backend::jit::Jit::build_compile_context<'a, C, L>(&self, func_ids: &'a std::collections::hash::map::HashMap<cranelisp_types::newtype::Symbol, cranelift_module::module::FuncId>, func_arities: &'a std::collections::hash::map::HashMap<cranelisp_types::newtype::Symbol, usize>, symbol_tables: &'a dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, current_module: cranelisp_types::newtype::ModuleFullPath) -> cranelisp_backend::compiler::CompileContext<'a, C, L> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
@@ -796,14 +1648,199 @@ impl core::marker::Unpin for cranelisp_backend::jit::Jit
 impl core::marker::UnsafeUnpin for cranelisp_backend::jit::Jit
 impl !core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::jit::Jit
 impl !core::panic::unwind_safe::UnwindSafe for cranelisp_backend::jit::Jit
+impl<T, U> core::convert::Into<U> for cranelisp_backend::jit::Jit where U: core::convert::From<T>
+pub fn cranelisp_backend::jit::Jit::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::jit::Jit where U: core::convert::Into<T>
+pub type cranelisp_backend::jit::Jit::Error = core::convert::Infallible
+pub fn cranelisp_backend::jit::Jit::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::jit::Jit where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::jit::Jit::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::jit::Jit::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for cranelisp_backend::jit::Jit where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::jit::Jit::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::jit::Jit where T: ?core::marker::Sized
+pub fn cranelisp_backend::jit::Jit::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::jit::Jit where T: ?core::marker::Sized
+pub fn cranelisp_backend::jit::Jit::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for cranelisp_backend::jit::Jit
+pub fn cranelisp_backend::jit::Jit::from(t: T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::jit::Jit
+pub type cranelisp_backend::jit::Jit::Init = T
+pub const cranelisp_backend::jit::Jit::ALIGN: usize
+pub unsafe fn cranelisp_backend::jit::Jit::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::jit::Jit::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::jit::Jit::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::jit::Jit::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::jit::Jit
+impl<T> typenum::type_operators::Same for cranelisp_backend::jit::Jit
+pub type cranelisp_backend::jit::Jit::Output = T
 pub fn cranelisp_backend::jit::build_isa() -> core::result::Result<alloc::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>, cranelisp_types::error::CranelispError>
 pub fn cranelisp_backend::jit::declare_intrinsics_generic<M: cranelift_module::module::Module>(module: &mut M) -> core::result::Result<cranelisp_backend::jit::IntrinsicFuncIds, cranelisp_types::error::CranelispError>
 pub fn cranelisp_backend::jit::intrinsic_symbols() -> alloc::vec::Vec<cranelisp_backend::jit::IntrinsicSymbol>
 pub fn cranelisp_backend::jit::jit_free_memory_call_count() -> u64
 pub mod cranelisp_backend::primitives_inline
 pub fn cranelisp_backend::primitives_inline::is_known_builtin(name: &str) -> bool
-pub fn cranelisp_backend::primitives_inline::primitive_for_trait_method(trait_name: &cranelisp_types::newtype::TraitName, method_name: &cranelisp_types::newtype::Symbol, impl_type: &cranelisp_types::newtype::TypeName) -> core::option::Option<&'static str>
 pub fn cranelisp_backend::primitives_inline::try_emit_inline_primitive<M: cranelift_module::module::Module>(builder: &mut cranelift_frontend::frontend::FunctionBuilder<'_>, name: &str, args: &[cranelift_codegen::ir::entities::Value], span: cranelisp_types::span::Span, module: &mut M, panic_func_id: core::option::Option<cranelift_module::module::FuncId>) -> core::option::Option<core::result::Result<cranelift_codegen::ir::entities::Value, cranelisp_types::error::CranelispError>>
+#[non_exhaustive] pub enum cranelisp_backend::Code
+pub cranelisp_backend::Code::Jit
+pub cranelisp_backend::Code::Jit::jit: alloc::sync::Arc<cranelisp_backend::jit::Jit>
+pub cranelisp_backend::Code::Jit::ptr: *const u8
+pub cranelisp_backend::Code::Linker
+pub cranelisp_backend::Code::Linker::linker: alloc::sync::Arc<cranelisp_backend::cache::linker::Linker>
+pub cranelisp_backend::Code::Linker::ptr: *const u8
+pub cranelisp_backend::Code::Primitive
+impl cranelisp_backend::code::Code
+pub fn cranelisp_backend::code::Code::jit(jit: alloc::sync::Arc<cranelisp_backend::jit::Jit>, ptr: *const u8) -> Self
+pub fn cranelisp_backend::code::Code::linker(linker: alloc::sync::Arc<cranelisp_backend::cache::linker::Linker>, ptr: *const u8) -> Self
+pub fn cranelisp_backend::code::Code::ptr(&self) -> *const u8
+impl core::clone::Clone for cranelisp_backend::code::Code
+pub fn cranelisp_backend::code::Code::clone(&self) -> cranelisp_backend::code::Code
+impl core::fmt::Debug for cranelisp_backend::code::Code
+pub fn cranelisp_backend::code::Code::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for cranelisp_backend::code::Code
+impl core::marker::Sync for cranelisp_backend::code::Code
+impl core::marker::Freeze for cranelisp_backend::code::Code
+impl core::marker::Unpin for cranelisp_backend::code::Code
+impl core::marker::UnsafeUnpin for cranelisp_backend::code::Code
+impl !core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::code::Code
+impl !core::panic::unwind_safe::UnwindSafe for cranelisp_backend::code::Code
+impl<T, U> core::convert::Into<U> for cranelisp_backend::code::Code where U: core::convert::From<T>
+pub fn cranelisp_backend::code::Code::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::code::Code where U: core::convert::Into<T>
+pub type cranelisp_backend::code::Code::Error = core::convert::Infallible
+pub fn cranelisp_backend::code::Code::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::code::Code where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::code::Code::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::code::Code::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for cranelisp_backend::code::Code where T: core::clone::Clone
+pub type cranelisp_backend::code::Code::Owned = T
+pub fn cranelisp_backend::code::Code::clone_into(&self, target: &mut T)
+pub fn cranelisp_backend::code::Code::to_owned(&self) -> T
+impl<T> core::any::Any for cranelisp_backend::code::Code where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::code::Code::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::code::Code where T: ?core::marker::Sized
+pub fn cranelisp_backend::code::Code::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::code::Code where T: ?core::marker::Sized
+pub fn cranelisp_backend::code::Code::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for cranelisp_backend::code::Code where T: core::clone::Clone
+pub unsafe fn cranelisp_backend::code::Code::clone_to_uninit(&self, dest: *mut u8)
+impl<T> core::convert::From<T> for cranelisp_backend::code::Code
+pub fn cranelisp_backend::code::Code::from(t: T) -> T
+impl<T> cranelisp_types::module::CodeStore for cranelisp_backend::code::Code where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> cranelisp_types::module::LinkerStore for cranelisp_backend::code::Code where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::code::Code
+pub type cranelisp_backend::code::Code::Init = T
+pub const cranelisp_backend::code::Code::ALIGN: usize
+pub unsafe fn cranelisp_backend::code::Code::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::code::Code::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::code::Code::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::code::Code::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::code::Code
+impl<T> typenum::type_operators::Same for cranelisp_backend::code::Code
+pub type cranelisp_backend::code::Code::Output = T
+#[non_exhaustive] pub enum cranelisp_backend::CompilationError
+pub cranelisp_backend::CompilationError::CodegenFailed
+pub cranelisp_backend::CompilationError::CodegenFailed::cause: alloc::string::String
+pub cranelisp_backend::CompilationError::CodegenFailed::location: cranelisp_types::error::ErrorLocation
+pub cranelisp_backend::CompilationError::CodegenFailed::module: cranelisp_types::newtype::ModuleFullPath
+pub cranelisp_backend::CompilationError::CodegenFailed::symbol: cranelisp_types::newtype::Symbol
+pub cranelisp_backend::CompilationError::ModuleError
+pub cranelisp_backend::CompilationError::ModuleError::cause: alloc::string::String
+pub cranelisp_backend::CompilationError::ModuleError::module: cranelisp_types::newtype::ModuleFullPath
+pub cranelisp_backend::CompilationError::ModuleError::symbol: cranelisp_types::newtype::Symbol
+pub cranelisp_backend::CompilationError::SymbolNotCompilable
+pub cranelisp_backend::CompilationError::SymbolNotCompilable::module: cranelisp_types::newtype::ModuleFullPath
+pub cranelisp_backend::CompilationError::SymbolNotCompilable::symbol: cranelisp_types::newtype::Symbol
+impl core::convert::From<cranelisp_backend::error::CompilationError> for cranelisp_types::error::CranelispError
+pub fn cranelisp_types::error::CranelispError::from(err: cranelisp_backend::error::CompilationError) -> Self
+impl core::convert::From<cranelisp_types::error::CranelispError> for cranelisp_backend::error::CompilationError
+pub fn cranelisp_backend::error::CompilationError::from(err: cranelisp_types::error::CranelispError) -> Self
+impl core::error::Error for cranelisp_backend::error::CompilationError
+impl core::fmt::Debug for cranelisp_backend::error::CompilationError
+pub fn cranelisp_backend::error::CompilationError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for cranelisp_backend::error::CompilationError
+pub fn cranelisp_backend::error::CompilationError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for cranelisp_backend::error::CompilationError
+impl core::marker::Send for cranelisp_backend::error::CompilationError
+impl core::marker::Sync for cranelisp_backend::error::CompilationError
+impl core::marker::Unpin for cranelisp_backend::error::CompilationError
+impl core::marker::UnsafeUnpin for cranelisp_backend::error::CompilationError
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::error::CompilationError
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::error::CompilationError
+impl<T, U> core::convert::Into<U> for cranelisp_backend::error::CompilationError where U: core::convert::From<T>
+pub fn cranelisp_backend::error::CompilationError::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::error::CompilationError where U: core::convert::Into<T>
+pub type cranelisp_backend::error::CompilationError::Error = core::convert::Infallible
+pub fn cranelisp_backend::error::CompilationError::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::error::CompilationError where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::error::CompilationError::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::error::CompilationError::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::string::ToString for cranelisp_backend::error::CompilationError where T: core::fmt::Display + ?core::marker::Sized
+pub fn cranelisp_backend::error::CompilationError::to_string(&self) -> alloc::string::String
+impl<T> core::any::Any for cranelisp_backend::error::CompilationError where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::error::CompilationError::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::error::CompilationError where T: ?core::marker::Sized
+pub fn cranelisp_backend::error::CompilationError::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::error::CompilationError where T: ?core::marker::Sized
+pub fn cranelisp_backend::error::CompilationError::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for cranelisp_backend::error::CompilationError
+pub fn cranelisp_backend::error::CompilationError::from(t: T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::error::CompilationError
+pub type cranelisp_backend::error::CompilationError::Init = T
+pub const cranelisp_backend::error::CompilationError::ALIGN: usize
+pub unsafe fn cranelisp_backend::error::CompilationError::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::error::CompilationError::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::error::CompilationError::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::error::CompilationError::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::error::CompilationError
+impl<T> typenum::type_operators::Same for cranelisp_backend::error::CompilationError
+pub type cranelisp_backend::error::CompilationError::Output = T
+#[non_exhaustive] pub enum cranelisp_backend::LinkerError
+pub cranelisp_backend::LinkerError::RelocationFailed
+pub cranelisp_backend::LinkerError::RelocationFailed::cause: alloc::string::String
+pub cranelisp_backend::LinkerError::RelocationFailed::name: cranelisp_types::newtype::LinkerSymbol
+pub cranelisp_backend::LinkerError::SymbolNotFound
+pub cranelisp_backend::LinkerError::SymbolNotFound::name: cranelisp_types::newtype::LinkerSymbol
+impl core::error::Error for cranelisp_backend::error::LinkerError
+impl core::fmt::Debug for cranelisp_backend::error::LinkerError
+pub fn cranelisp_backend::error::LinkerError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for cranelisp_backend::error::LinkerError
+pub fn cranelisp_backend::error::LinkerError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for cranelisp_backend::error::LinkerError
+impl core::marker::Send for cranelisp_backend::error::LinkerError
+impl core::marker::Sync for cranelisp_backend::error::LinkerError
+impl core::marker::Unpin for cranelisp_backend::error::LinkerError
+impl core::marker::UnsafeUnpin for cranelisp_backend::error::LinkerError
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::error::LinkerError
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::error::LinkerError
+impl<T, U> core::convert::Into<U> for cranelisp_backend::error::LinkerError where U: core::convert::From<T>
+pub fn cranelisp_backend::error::LinkerError::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::error::LinkerError where U: core::convert::Into<T>
+pub type cranelisp_backend::error::LinkerError::Error = core::convert::Infallible
+pub fn cranelisp_backend::error::LinkerError::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::error::LinkerError where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::error::LinkerError::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::error::LinkerError::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::string::ToString for cranelisp_backend::error::LinkerError where T: core::fmt::Display + ?core::marker::Sized
+pub fn cranelisp_backend::error::LinkerError::to_string(&self) -> alloc::string::String
+impl<T> core::any::Any for cranelisp_backend::error::LinkerError where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::error::LinkerError::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::error::LinkerError where T: ?core::marker::Sized
+pub fn cranelisp_backend::error::LinkerError::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::error::LinkerError where T: ?core::marker::Sized
+pub fn cranelisp_backend::error::LinkerError::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for cranelisp_backend::error::LinkerError
+pub fn cranelisp_backend::error::LinkerError::from(t: T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::error::LinkerError
+pub type cranelisp_backend::error::LinkerError::Init = T
+pub const cranelisp_backend::error::LinkerError::ALIGN: usize
+pub unsafe fn cranelisp_backend::error::LinkerError::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::error::LinkerError::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::error::LinkerError::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::error::LinkerError::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::error::LinkerError
+impl<T> typenum::type_operators::Same for cranelisp_backend::error::LinkerError
+pub type cranelisp_backend::error::LinkerError::Output = T
 pub struct cranelisp_backend::CompilationResult
 pub cranelisp_backend::CompilationResult::artifacts: std::collections::hash::map::HashMap<cranelisp_types::newtype::Symbol, cranelisp_backend::FunctionArtifacts>
 pub cranelisp_backend::CompilationResult::code_ptrs: std::collections::hash::map::HashMap<cranelisp_types::newtype::Symbol, *const u8>
@@ -818,6 +1855,32 @@ impl core::marker::Unpin for cranelisp_backend::CompilationResult
 impl core::marker::UnsafeUnpin for cranelisp_backend::CompilationResult
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::CompilationResult
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::CompilationResult
+impl<T, U> core::convert::Into<U> for cranelisp_backend::CompilationResult where U: core::convert::From<T>
+pub fn cranelisp_backend::CompilationResult::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::CompilationResult where U: core::convert::Into<T>
+pub type cranelisp_backend::CompilationResult::Error = core::convert::Infallible
+pub fn cranelisp_backend::CompilationResult::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::CompilationResult where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::CompilationResult::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::CompilationResult::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for cranelisp_backend::CompilationResult where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::CompilationResult::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::CompilationResult where T: ?core::marker::Sized
+pub fn cranelisp_backend::CompilationResult::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::CompilationResult where T: ?core::marker::Sized
+pub fn cranelisp_backend::CompilationResult::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for cranelisp_backend::CompilationResult
+pub fn cranelisp_backend::CompilationResult::from(t: T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::CompilationResult
+pub type cranelisp_backend::CompilationResult::Init = T
+pub const cranelisp_backend::CompilationResult::ALIGN: usize
+pub unsafe fn cranelisp_backend::CompilationResult::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::CompilationResult::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::CompilationResult::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::CompilationResult::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::CompilationResult
+impl<T> typenum::type_operators::Same for cranelisp_backend::CompilationResult
+pub type cranelisp_backend::CompilationResult::Output = T
 pub struct cranelisp_backend::FunctionArtifacts
 pub cranelisp_backend::FunctionArtifacts::clif_ir: alloc::string::String
 pub cranelisp_backend::FunctionArtifacts::code_size: u32
@@ -829,6 +1892,104 @@ impl core::marker::Unpin for cranelisp_backend::FunctionArtifacts
 impl core::marker::UnsafeUnpin for cranelisp_backend::FunctionArtifacts
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::FunctionArtifacts
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::FunctionArtifacts
+impl<T, U> core::convert::Into<U> for cranelisp_backend::FunctionArtifacts where U: core::convert::From<T>
+pub fn cranelisp_backend::FunctionArtifacts::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::FunctionArtifacts where U: core::convert::Into<T>
+pub type cranelisp_backend::FunctionArtifacts::Error = core::convert::Infallible
+pub fn cranelisp_backend::FunctionArtifacts::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::FunctionArtifacts where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::FunctionArtifacts::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::FunctionArtifacts::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for cranelisp_backend::FunctionArtifacts where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::FunctionArtifacts::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::FunctionArtifacts where T: ?core::marker::Sized
+pub fn cranelisp_backend::FunctionArtifacts::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::FunctionArtifacts where T: ?core::marker::Sized
+pub fn cranelisp_backend::FunctionArtifacts::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for cranelisp_backend::FunctionArtifacts
+pub fn cranelisp_backend::FunctionArtifacts::from(t: T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::FunctionArtifacts
+pub type cranelisp_backend::FunctionArtifacts::Init = T
+pub const cranelisp_backend::FunctionArtifacts::ALIGN: usize
+pub unsafe fn cranelisp_backend::FunctionArtifacts::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::FunctionArtifacts::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::FunctionArtifacts::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::FunctionArtifacts::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::FunctionArtifacts
+impl<T> typenum::type_operators::Same for cranelisp_backend::FunctionArtifacts
+pub type cranelisp_backend::FunctionArtifacts::Output = T
+#[non_exhaustive] pub struct cranelisp_backend::LinkerArtefact
+pub cranelisp_backend::LinkerArtefact::linker: alloc::sync::Arc<cranelisp_backend::cache::linker::Linker>
+pub cranelisp_backend::LinkerArtefact::ptrs: std::collections::hash::map::HashMap<cranelisp_types::newtype::Symbol, *const u8>
+impl core::marker::Send for cranelisp_backend::artefact::LinkerArtefact
+impl core::marker::Sync for cranelisp_backend::artefact::LinkerArtefact
+impl core::marker::Freeze for cranelisp_backend::artefact::LinkerArtefact
+impl core::marker::Unpin for cranelisp_backend::artefact::LinkerArtefact
+impl core::marker::UnsafeUnpin for cranelisp_backend::artefact::LinkerArtefact
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::artefact::LinkerArtefact
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::artefact::LinkerArtefact
+impl<T, U> core::convert::Into<U> for cranelisp_backend::artefact::LinkerArtefact where U: core::convert::From<T>
+pub fn cranelisp_backend::artefact::LinkerArtefact::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::artefact::LinkerArtefact where U: core::convert::Into<T>
+pub type cranelisp_backend::artefact::LinkerArtefact::Error = core::convert::Infallible
+pub fn cranelisp_backend::artefact::LinkerArtefact::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::artefact::LinkerArtefact where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::artefact::LinkerArtefact::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::artefact::LinkerArtefact::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for cranelisp_backend::artefact::LinkerArtefact where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::artefact::LinkerArtefact::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::artefact::LinkerArtefact where T: ?core::marker::Sized
+pub fn cranelisp_backend::artefact::LinkerArtefact::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::artefact::LinkerArtefact where T: ?core::marker::Sized
+pub fn cranelisp_backend::artefact::LinkerArtefact::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for cranelisp_backend::artefact::LinkerArtefact
+pub fn cranelisp_backend::artefact::LinkerArtefact::from(t: T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::artefact::LinkerArtefact
+pub type cranelisp_backend::artefact::LinkerArtefact::Init = T
+pub const cranelisp_backend::artefact::LinkerArtefact::ALIGN: usize
+pub unsafe fn cranelisp_backend::artefact::LinkerArtefact::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::artefact::LinkerArtefact::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::artefact::LinkerArtefact::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::artefact::LinkerArtefact::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::artefact::LinkerArtefact
+impl<T> typenum::type_operators::Same for cranelisp_backend::artefact::LinkerArtefact
+pub type cranelisp_backend::artefact::LinkerArtefact::Output = T
+#[non_exhaustive] pub struct cranelisp_backend::ObjectArtefact
+pub cranelisp_backend::ObjectArtefact::object: alloc::vec::Vec<u8>
+pub cranelisp_backend::ObjectArtefact::sidecar: cranelisp_types::module::SymbolTable<(), ()>
+impl core::marker::Freeze for cranelisp_backend::artefact::ObjectArtefact
+impl core::marker::Send for cranelisp_backend::artefact::ObjectArtefact
+impl core::marker::Sync for cranelisp_backend::artefact::ObjectArtefact
+impl core::marker::Unpin for cranelisp_backend::artefact::ObjectArtefact
+impl core::marker::UnsafeUnpin for cranelisp_backend::artefact::ObjectArtefact
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::artefact::ObjectArtefact
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::artefact::ObjectArtefact
+impl<T, U> core::convert::Into<U> for cranelisp_backend::artefact::ObjectArtefact where U: core::convert::From<T>
+pub fn cranelisp_backend::artefact::ObjectArtefact::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_backend::artefact::ObjectArtefact where U: core::convert::Into<T>
+pub type cranelisp_backend::artefact::ObjectArtefact::Error = core::convert::Infallible
+pub fn cranelisp_backend::artefact::ObjectArtefact::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_backend::artefact::ObjectArtefact where U: core::convert::TryFrom<T>
+pub type cranelisp_backend::artefact::ObjectArtefact::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_backend::artefact::ObjectArtefact::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for cranelisp_backend::artefact::ObjectArtefact where T: 'static + ?core::marker::Sized
+pub fn cranelisp_backend::artefact::ObjectArtefact::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_backend::artefact::ObjectArtefact where T: ?core::marker::Sized
+pub fn cranelisp_backend::artefact::ObjectArtefact::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_backend::artefact::ObjectArtefact where T: ?core::marker::Sized
+pub fn cranelisp_backend::artefact::ObjectArtefact::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for cranelisp_backend::artefact::ObjectArtefact
+pub fn cranelisp_backend::artefact::ObjectArtefact::from(t: T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for cranelisp_backend::artefact::ObjectArtefact
+pub type cranelisp_backend::artefact::ObjectArtefact::Init = T
+pub const cranelisp_backend::artefact::ObjectArtefact::ALIGN: usize
+pub unsafe fn cranelisp_backend::artefact::ObjectArtefact::deref<'a>(ptr: usize) -> &'a T
+pub unsafe fn cranelisp_backend::artefact::ObjectArtefact::deref_mut<'a>(ptr: usize) -> &'a mut T
+pub unsafe fn cranelisp_backend::artefact::ObjectArtefact::drop(ptr: usize)
+pub unsafe fn cranelisp_backend::artefact::ObjectArtefact::init(init: <T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> either::into_either::IntoEither for cranelisp_backend::artefact::ObjectArtefact
+impl<T> typenum::type_operators::Same for cranelisp_backend::artefact::ObjectArtefact
+pub type cranelisp_backend::artefact::ObjectArtefact::Output = T
 pub trait cranelisp_backend::CodeFinalizer
 pub fn cranelisp_backend::CodeFinalizer::define_module_got_data(&mut self, name: &str, slot_count: usize, slot_funcs: &[(usize, cranelift_module::module::FuncId)]) -> core::result::Result<(), cranelisp_types::error::CranelispError>
 pub fn cranelisp_backend::CodeFinalizer::finalize_for_code_read(&mut self) -> core::result::Result<(), cranelisp_types::error::CranelispError>
@@ -842,4 +2003,6 @@ pub fn cranelift_object::backend::ObjectModule::define_module_got_data(&mut self
 pub fn cranelift_object::backend::ObjectModule::finalize_for_code_read(&mut self) -> core::result::Result<(), cranelisp_types::error::CranelispError>
 pub fn cranelift_object::backend::ObjectModule::try_get_finalized_function(&self, _func_id: cranelift_module::module::FuncId) -> core::option::Option<*const u8>
 pub fn cranelisp_backend::build_isa(is_pic: bool) -> core::result::Result<alloc::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>, cranelisp_types::error::CranelispError>
-pub fn cranelisp_backend::compile_to_module<M, C, L>(module_path: cranelisp_types::newtype::ModuleFullPath, names: &[cranelisp_types::newtype::Symbol], symbol_tables: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, module: &mut M) -> core::result::Result<cranelisp_backend::CompilationResult, cranelisp_types::error::CranelispError> where M: cranelift_module::module::Module + cranelisp_backend::CodeFinalizer, C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_backend::compile_to_module<M, C, L>(module_path: cranelisp_types::newtype::ModuleFullPath, names: &[cranelisp_types::newtype::Symbol], symbol_tables: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, module: &mut M) -> core::result::Result<cranelisp_backend::CompilationResult, cranelisp_backend::error::CompilationError> where M: cranelift_module::module::Module + cranelisp_backend::CodeFinalizer, C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_backend::compile_to_object<C, L>(module: &cranelisp_types::newtype::ModuleFullPath, _symbol_tables: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>) -> core::result::Result<cranelisp_backend::artefact::ObjectArtefact, cranelisp_types::error::CranelispError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_backend::load_object<C, L>(module: &cranelisp_types::newtype::ModuleFullPath, object_bytes: &[u8], symbol_tables: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>) -> core::result::Result<cranelisp_backend::artefact::LinkerArtefact, cranelisp_types::error::CranelispError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore

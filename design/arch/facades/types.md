@@ -293,13 +293,11 @@ No hits at the public surface (verified by grep). FQTypeName migration is a no-o
 
 ### platform
 
-| API | File:line | Direction | Owning /dev task |
-|---|---|---|---|
-| `cranelisp_types::TypeName::from("IO")` | `src/platform.rs:426` | **Keep — reverse-lookup at primitive emission site** | Per exception 1 — `IO` is the primitive marker name; emission helpers name it directly. /dev (platform) Wave 3 verifies this is the only hit; if other primitive markers appear, same exception applies. |
+No hits at the public surface (verified by grep — `cranelisp-platform` crate has zero `TypeName`/`FQTypeName` references in source). FQTypeName migration is a no-op for platform.
 
 ### int
 
-Mixed: REPL introspection paths (receiver-pinned; keep) and one synthetic-module init helper.
+Mixed: REPL introspection paths (receiver-pinned; keep) and synthetic-module init helpers.
 
 | API | File:line | Direction | Owning /dev task |
 |---|---|---|---|
@@ -309,6 +307,7 @@ Mixed: REPL introspection paths (receiver-pinned; keep) and one synthetic-module
 | `worker.rs:173-176 — let type_params_tn: Vec<TypeName> = ...` | `src/worker.rs:173-176` | **Keep — syntactic conversion at parser boundary** | `worker::check_program_compat` converts `Vec<String>` type params from the parser into `Vec<TypeName>` — pre-resolution conversion |
 | `exe.rs:544,588 — TypeName::from("IO")` | `src/exe.rs:544,588` | **Keep — reverse-lookup at exe-startup primitive registration** | Synthesises the IO type marker during startup-object generation; exception 1. |
 | `pipeline.rs:345 — TypeName::from("IO")` | `src/pipeline.rs:345` | **Keep — reverse-lookup at pipeline init** | Same — synthesises IO marker during initial primitive registration |
+| `platform.rs:426 — TypeName::from("IO")` | `src/platform.rs:426` | **Keep — reverse-lookup at primitive emission site** | Synthesises the IO type marker; exception 1. (Lives in the `src/` int binary, not in `crates/cranelisp-platform/`.) |
 
 ### Summary by crate
 
@@ -318,8 +317,8 @@ Mixed: REPL introspection paths (receiver-pinned; keep) and one synthetic-module
 | backend | 1 API | 0 | 0 | ~13 (all test code) | /dev (backend) Wave 3 — single boundary helper |
 | intrinsics | 0 | 0 | 0 | 0 | No-op |
 | primitives | 0 | 0 | 0 | 0 | No-op |
-| platform | 0 | 0 | 0 | 1 | No-op (single keep) |
-| int | 0 | 1 (worker.rs parse-time) | 3 (REPL introspection) | 3 (IO marker emission) | No-op (all keeps justified by exceptions) |
+| platform | 0 | 0 | 0 | 0 | No-op (zero hits) |
+| int | 0 | 1 (worker.rs parse-time) | 3 (REPL introspection) | 4 (IO marker emission) | No-op (all keeps justified by exceptions) |
 
 Acceptance criterion (Wave 5 /review checkpoint): every API at a resolved-stage boundary uses `FQTypeName`; remaining bare `TypeName` hits MUST cite an exception by name in a code comment, e.g. `// FQTypeName exception 2 (receiver-pinned: &self IS module N)`.
 
@@ -474,7 +473,10 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         ///     `Some(Code::Linker(_))`.
         ///   - `DefKind::Primitive { primitive_kind: Inline | Extern }` —
         ///     slot populated at static-init by
-        ///     `cranelisp-primitives::PRIMITIVES_TABLE`; `code = None`.
+        ///     `cranelisp-primitives::PRIMITIVES_TABLE`;
+        ///     `code = Some(Code::Primitive)` (marker variant per Decision
+        ///     0048 (A2, revised 2026-05-17) — no payload; lifecycle is
+        ///     process-static, owned by the `LazyLock`).
         ///   - `DefKind::Primitive { primitive_kind: PlatformEffect { .. } }`
         ///     — slot populated at platform-load time from
         ///     `OwnedPlatformFnDescriptor.ptr`; `code = None` (DLL handle
@@ -491,10 +493,12 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         docstring: Option<String>,
         /// Lifecycle owner only — `Code::Jit(Arc<Jit>)` for JIT-compiled user fns (Decision 31
         /// Scenario 2 — per-redefinition reclaim fires when the last `Arc<Jit>` clone drops),
-        /// `Code::Linker(Arc<Linker>)` for cache-hit user fns. `None` for primitives (process
-        /// lifetime) and platform DLL fns (DLL handle held elsewhere). **The call address is in
-        /// the GOT (read via `got_slot`), not in the `Code` variant.** Decision 25 + Decision 41
-        /// + Decision 35 (S66 amendment, slimmed variants).
+        /// `Code::Linker(Arc<Linker>)` for cache-hit user fns, `Code::Primitive` for primitives
+        /// (marker variant; no payload; lifecycle is process-static, owned by the `LazyLock`
+        /// in `cranelisp-primitives` — Decision 0048 (A2, revised S68 Phase 3)). `None` for
+        /// platform DLL fns (DLL handle held elsewhere). **The call address is in the GOT
+        /// (read via `got_slot`), not in the `Code` variant.** Decision 25 + Decision 41 +
+        /// Decision 35 (S66 amendment, slimmed variants) + Decision 0048 (S68 Phase 3 revision).
         #[serde(skip)] code: Option<C>,
     },
     Macro { name: Symbol, clauses: Vec<MacroClauseInfo>, callees: Vec<FQSymbol>, got_slot: usize, visibility: Visibility, docstring: Option<String>, #[serde(skip)] code: Option<C> },
