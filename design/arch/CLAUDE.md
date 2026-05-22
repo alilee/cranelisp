@@ -2,7 +2,7 @@
 
 Architecture deliverables for the Cranelisp reimplementation. Owned by `/arch`.
 
-Per `sprints/METHOD_PROPOSED.md` §14.1, this `CLAUDE.md` carries domain-local content only — local conventions, the Decisions index, and pointers to canonical documents. Methodology rules live in `METHOD_PROPOSED.md`; architectural principles live in `principles.md`; skill workflows live in `.claude/commands/arch.md`.
+Per `sprints/METHOD_PROPOSED.md` §14.1, this `CLAUDE.md` carries domain-local content only — local conventions, the in-progress Decisions-drain backlog, and pointers to canonical documents. Methodology rules live in `METHOD_PROPOSED.md`; architectural principles live in `principles.md`; skill workflows live in `.claude/commands/arch.md`. **Architectural commitments manifest at their natural home in the permanent set** (facades / BC / principles / sequences); no separate Decision log is authored — see `.claude/commands/arch.md` §"The manifestation-site question".
 
 ## Canonical documents (the target documentation set)
 
@@ -14,7 +14,6 @@ Per `sprints/METHOD_PROPOSED.md` §14.1, this `CLAUDE.md` carries domain-local c
 | `bounded-contexts.md` | Per-surface bounded-context full statements (Frontend, Typecheck, Backend, Runtime, Platform, Binary/int, plus types crate). |
 | `facades/{crate}.md` | Per-surface facade specs — as-designed public surface. One file per surface. |
 | `interfaces.md` | Narrative companion to `crates/cranelisp-types/`. |
-| `decisions/` | Decisions register; one file per Decision; index in this CLAUDE.md (see "## Decisions" below). |
 | `fixmes/` | FIXMEs register; one file per FIXME (`design/arch/fixmes/NNNN-name.md`). |
 | `sequences/` | Current target sequence diagrams (`.mmd` + rendered `.svg`). |
 
@@ -22,6 +21,8 @@ Per `sprints/METHOD_PROPOSED.md` §14.1, this `CLAUDE.md` carries domain-local c
 
 | Directory | Purpose |
 |---|---|
+| `decisions/` | **Draining.** Existing Decision files migrate into the facade / BC / principle section where they manifest, then delete. No new Decisions authored — see `.claude/commands/arch.md` §"No separate Decision log". When the directory is empty it is removed. |
+| `legacy/decisions/` | **Draining.** Same as above for outcome-fully-embodied Decisions kept for narrative continuity. Same disposition: migrate substance into the manifestation site (if not already there), delete the file. |
 | `legacy/` | Documents not part of the approved configuration but kept for reference. `/arch` and the per-crate `/design` skills pull back content (or re-author from it) when needed; otherwise files here are triaged into top-level (if they prove still load-bearing) or down to `archive/` (if confirmed superseded). Not a permanent home. |
 | `archive/` | Frozen historical content — superseded by canonical work, kept for context only. See "## Archive" below. |
 
@@ -48,17 +49,18 @@ Historical pipeline designs (v1, v2, v3) and superseded migration artefacts. Ref
 - `archive/sequence-diagram/` — pre-S63 v4-target sequence diagrams; superseded by `sequences/` (S65 Phase 2 legacy triage)
 - `archive/facades-runtime.md` — pre-D43 runtime facade; content migrated to `facades/primitives.md` + `facades/intrinsics.md` (S65 W1 — Decision 43 crate split)
 
-## Decisions
+## Decisions drain backlog
 
-Each Decision is one file at `decisions/NNNN-{slug}.md`. Index:
+**This register is being drained.** Per `.claude/commands/arch.md` §"The manifestation-site question", each Decision's substance migrates into the facade / BC / principles section where a reader expects to find it. The Decision file deletes once migrated. New architectural commitments are NOT filed here; they go directly to their manifestation site.
 
-The active register holds Decisions whose outcome is NOT yet fully embodied in the architecture (facade + BC + sequence diagrams + Principles). Once a Decision's commitment lands fully into the architecture, the Decision becomes vestigial and moves to `legacy/decisions/` (or deletes if also retracted/superseded). The principle: re-derivation from the canonical set + Principles should be sufficient for fully-landed work; explicit Decisions persist only for environmental constraints, pre-implementation commitments, and forward handoffs.
+**Per-Decision target identification format:** As each Decision is queued for drain, mark it `[→ {manifestation-site}]` inline. Then in a follow-up fire: migrate substance, sweep cross-references, delete the file, strike the line here. When the section hits zero lines it is removed.
+
+Current backlog:
 
 - [0010](decisions/0010-base-pointer-abi.md) — Base-pointer ABI (environmental — captures rejected interior-pointer alternative)
 - [0011](decisions/0011-embedded-drop-glue-ptr-in-closures.md) — Embedded drop_glue_ptr in closures (environmental — captures rejected side-table alternative + cross-module closure constraint)
 - [0027](decisions/0027-g8-lands-before-g9.md) — G8 lands before G9 (environmental — borrow-checker sequencing rationale)
 - [0030](decisions/0030-form-by-form-scheduler-mutual-imports.md) — Form-by-form scheduler deadlocks on mutual imports (environmental — coordination constraint future readers will hit)
-- [0031](decisions/0031-one-jitmodule-per-compile-batch.md) — One `JITModule` per compile batch; `Arc<Jit>` on `ModuleEntry::Def.code`; custom `Drop` calls `unsafe free_memory()` (environmental — Cranelift `Memory::drop` evidence; amended Sprint 64 per Decision 41)
 - [0035](decisions/0035-code-enum-integration-layer.md) — `Code` enum location (operative; amended Sprint 64 per Decision 41 — Code now in `cranelisp-backend`; amended Sprint 66 — variants slim to lifecycle owner only `Code::Jit(Arc<Jit>)` / `Code::Linker(Arc<Linker>)`. The S66 unification (`b09ec76`) briefly relocated the per-entry `ptr` to a sibling `ModuleEntry::Def.fn_ptr` field; the same-day rollback `1dc57ae` removed that field as redundant with the per-module `GotTable`. **Post-rollback canonical statement: GOT is the single source of truth for callable addresses; `ptr` lives in `SymbolTable.got()` indexed by `ModuleEntry::Def.got_slot`. No per-entry pointer field.**)
 - [0040](decisions/0040-runtime-trace-io-trace-relocate-to-int.md) — `(trace ...)` is a REPL/`--run`-only special form; `trace.rs` and `io_trace.rs` relocate **in full** (bodies + symbol registrations) to int; `--link` mode rejects the form at compile time. `IoObserver` callback registration API resides in `cranelisp-intrinsics` post-Decision-43 (originally specified to remain in runtime; the registration-site host moved with the D43 split — see `facades/intrinsics.md` §"IO observation"). BC §4b carries the contract. Amended 2026-05-16 (S67 W4) to Path B1 (full deletion; user-arbitrated) — supersedes the earlier B2-flavoured §"Shape" reading. Pre-implementation; tracked by FIXME 0103 + cascading FIXMEs 0197–0202.
 - [0041](decisions/0041-compile-to-module-per-symbol-jit-direct-writes.md) — `compile_to_module` per-symbol JIT cardinality; `Code` moves to `cranelisp-backend`; backend writes shared state directly; `Result<(), CompilationError>` (pre-implementation; amends 31, 35)
@@ -70,7 +72,7 @@ The active register holds Decisions whose outcome is NOT yet fully embodied in t
 - [0047](decisions/0047-fqtypename-binding-at-resolved-stage-boundaries.md) — FQTypeName is binding as the cross-crate boundary type for resolved-stage type identifiers; two exceptions named (reverse-lookup; receiver-pinned). Closes FIXME 0151 at S67 W5 acceptance. Filed Sprint 67 (Phase 3 W0 — second user-challenge scope amendment).
 - [0048](decisions/0048-primitives-static-symboltable-and-got-in-crate.md) — `cranelisp-primitives` owns a statically-constructed `SymbolTable` + `Arc<GotTable>` referenced from CompilerSession at startup; from session-init onward primitives dispatch is functionally equivalent to any other module (pre-implementation, S68; **amended 2026-05-17** — `Code::Primitive` marker variant replaces `code: None`; new §"Structural invariant — backend dep-ban" — `cranelisp-backend` MUST NOT depend on `cranelisp-primitives`, workspace DAG enforces the GOT-dispatch invariant structurally; motivates Principle 18).
 
-Legacy Decisions (outcome fully embodied in architecture; preserved in `legacy/decisions/` for narrative continuity) — `0001`–`0006`, `0008`–`0009`, `0012`–`0013`, `0016`, `0018`–`0019`, `0021`–`0026`, `0029`, `0032`–`0034`, `0036`–`0039`. Retracted/superseded Decisions deleted (rely on git for history): `0007`, `0014` (retracted by 43; commit `754d525`), `0015` (reframed by 43; commit `754d525`), `0017`, `0020`, `0028`.
+Legacy Decisions (outcome fully embodied in architecture; preserved in `legacy/decisions/` for narrative continuity) — `0001`–`0006`, `0008`–`0009`, `0012`–`0013`, `0016`, `0018`–`0019`, `0021`–`0026`, `0029`, `0032`–`0034`, `0036`–`0038`. Retracted/superseded Decisions deleted (rely on git for history): `0007`, `0014` (retracted by 43; commit `754d525`), `0015` (reframed by 43; commit `754d525`), `0017`, `0020`, `0028`, `0031` (substance fully amended into 0041 at Sprint 64; Cranelift `Memory::drop` evidence + safety invariant + callback support forward commitment relocated to 0041 at S69 Phase 3 — per-symbol JIT cardinality is the operative model; D31's stale "per batch" title was a confusion source), `0039` (commitment fully cascaded into `repl/spec.md` §15.4 + `facades/types.md` §"Symbol table" + `cranelisp-types/src/module.rs` at S69 Phase 3 — per-entry `seq: u64` + `next_seq` + `StructuralDeclEntry` upgrade; D39's `defn_order: Vec<Symbol>` shape obsoleted).
 
 ## Cross-References
 

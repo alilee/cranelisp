@@ -86,9 +86,62 @@ Decision 41's substance is unchanged: per-symbol JIT cardinality, `Code` lives i
 
 Decision 31 Scenario 2 reclaim semantics are preserved (lifecycle ownership stays inside `Code::Jit(Arc<Jit>)`; `Drop` chain unchanged; the GOT slot's stored ptr becomes invalid the instant `JITModule::free_memory()` runs). See `design/arch/sprint-66-types-authoring-plan.md` §1.7-revised + §1.8 and `design/arch/facades/{types,backend,primitives,platform}.md` for the as-designed shape.
 
+## Cranelift evidence (why custom `Drop` is required)
+
+The per-symbol reclaim model above is enabled by — and depends on — Cranelift 0.116's JIT-memory contract. The evidence that motivates the `Arc<Jit>`-with-custom-`Drop` shape (originally captured by retired Decision 31):
+
+1. `Memory::drop` leaks on purpose (`cranelift-jit-0.116.1/src/memory.rs:269-276`):
+   ```rust
+   impl Drop for Memory {
+       fn drop(&mut self) {
+           // leak memory to guarantee validity of function pointers
+           mem::replace(&mut self.allocations, Vec::new())
+               .into_iter()
+               .for_each(mem::forget);
+       }
+   }
+   ```
+   So the default drop of a `JITModule` (or our `Jit` wrapper that owns one) reclaims nothing.
+2. `JITModule::free_memory` is `unsafe` and frees everything (`cranelift-jit-0.116.1/src/backend.rs:219`):
+   ```rust
+   /// corresponding module, it should only be used when none of the functions
+   /// from that module are currently executing and none of the `fn` pointers
+   /// are called afterwards.
+   pub unsafe fn free_memory(mut self) { … }
+   ```
+   The safety contract is exactly what the per-symbol invariant below upholds — `Arc<Jit>` refcount zero means "no fn pointer reachable from this JIT".
+3. `prepare_for_function_redefine` does NOT reclaim (`cranelift-jit-0.116.1/src/backend.rs:575-596`):
+   ```rust
+   pub fn prepare_for_function_redefine(&mut self, func_id: FuncId) -> ModuleResult<()> {
+       assert!(self.hotswap_enabled, "Hotswap support is not enabled");
+       …
+       self.compiled_functions[func_id] = None;
+       // FIXME return some kind of handle that allows for deallocating the function
+       Ok(())
+   }
+   ```
+   Cranelift's own author flags the missing dealloc; we cannot reclaim per-function inside a shared JIT. Reclaim is necessarily per-`JITModule`. Per-symbol cardinality (this Decision) makes per-`JITModule` reclaim equivalent to per-symbol reclaim.
+
+**Safety invariant** for the `unsafe free_memory()` call: when an `Arc<Jit>` refcount reaches 0, no function pointer derived from that JIT is reachable. Upheld by:
+
+- Every derivative pointer lives on a `ModuleEntry::Def.code = Some(Code::Jit(Arc<Jit>))` (refcount > 0 while the entry holds it), OR is ephemeral (stack-local during compile/call, drops before return), OR is a GOT slot that is atomically swapped to the new code *before* the old `Arc<Jit>` can drop.
+- **REPL redefinition is the sole event that mutates GOT slots** (defn-of-existing-name at the REPL prompt). Between REPL evals the system is still: batch compiles append fresh GOT slots but never retarget existing ones, and the concurrent evaluation machinery (spec §12.4.3 lenient evaluation, §10.12 auto IO scheduling) is strictly fork-join, so no in-flight call outlives the prompt that issued it. On redefinition, the GOT slot is atomically swapped before the old `Arc<Jit>` drop; callers reaching the site after the swap dispatch to the new code, and no new caller can observe the old entry.
+- Language-level invariant: function values returned from user code are heap closures that call into the GOT, not raw code pointers. Eval cannot leak `__expr`'s fn pointer into the returned value.
+
+## Callback support (forward commitment)
+
+The safety invariant above assumes platforms do not retain fn pointers across calls. The current platform calling convention (spec §10.10.1) permits only `Int`, `Bool`, `String`, and `IO a` as argument types — there is no `Fn a b` row in the `i64` interpretation table, so platforms cannot today receive or retain user function values. When that row is eventually added, the rules below MUST hold so that the safety invariant survives verbatim:
+
+1. The `i64` passed for a fn-typed argument is the address of the **heap closure struct** (Decision 11 layout: `[header | code_ptr | drop_glue_ptr | captures...]`), NOT the raw code pointer the closure would dispatch to. Platforms never see raw JIT addresses.
+2. Platforms invoke the closure via a **host callback** (added to `HostCallbacks` alongside the existing `alloc` callback — spec §10.10.3 — when the feature lands; e.g., `invoke_closure(closure_addr, args...) -> i64`). The callback performs GOT-indirect dispatch through the closure's `code_ptr` slot, so every invocation hits the currently-defined code — redefinition is transparent to retained closures.
+3. Platforms that **retain** a closure beyond the dynamic extent of the call (store it for later invocation) MUST inc the heap closure on storage and dec on release via host callbacks (e.g., `rc_inc`/`rc_dec`, following the §10.10.3 host-callback pattern). Retention without refcount participation is a platform contract violation.
+4. Under these rules, REPL redefinition remains safe: the GOT swap retargets future callbacks to the new code; the old `Arc<Jit>` reaches refcount 0 only once no `ModuleEntry::Def.code` references it AND no live heap closure targets a GOT slot backed by it; `unsafe free_memory()` fires without dangling the platform's retained closure, because the retained closure calls through the GOT rather than into the freed JIT.
+
+The exact host-callback names and signatures are out of scope for this forward commitment — they will be specified by `/platform` and `/spec` when the `Fn a b` row is added to §10.10.1.
+
 ## Cross-references and amendments
 
-**Decision 31 amends.** "Per-batch JIT" → "per-symbol JIT for `compile_to_module` JIT calls; per-batch retains for object mode (one ObjectModule per `.o`)". Per-redefinition reclaim becomes immediate-per-symbol rather than coalesced-per-batch.
+**Decision 31 retracted (S69 Phase 3).** D31's substance was fully amended into this Decision at Sprint 64; the residual file existed only as a confusion source (its title still said "per batch" while the body's amendment paragraph + D41's cross-references established per-symbol cardinality as operative). The Cranelift evidence + callback-support forward commitment that D31 was the canonical home for relocate verbatim into this Decision (§"Cranelift evidence" + §"Callback support" above). Per-symbol JIT cardinality is the operative model — both for `compile_to_module` JIT calls and for per-redefinition reclaim semantics. Per-batch cardinality retains only for object mode (one `ObjectModule` per `.o`).
 
 **Decision 35 amends.** Layer 2 Option B retracts; `Code` location moves from `src/` to `cranelisp-backend`; "the integration layer is the sole crate that names `Code`" relaxes (int names it at the session boundary; backend names it in its own crate). The Principle 3 protection (no `cranelisp-types → cranelisp-backend` dep) survives intact.
 

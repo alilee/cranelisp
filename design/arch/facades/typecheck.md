@@ -17,6 +17,7 @@ pub fn check_forms<C, L>(
     parsed: Vec<ParsedEntry>,
     ctx: &mut ClusterContext<'_, C, L>,           // staging-or-live access via accessor; see Decision 44 + ClusterContext
     symbol_tables: &SymbolTables<C, L>,
+    module_aliases: &ModuleAliases,               // parallel session-level table — required for §8.6.6 qualified-name resolution that may traverse import/export aliases
 ) -> Result<(), CheckError>;
 ```
 
@@ -24,6 +25,7 @@ Parameters:
 - `parsed` — the full cluster's `ParsedEntry` list, produced by repeated `cranelisp_frontend::build_form` calls (per FIXME 0156 resolution) accumulated by the orchestrator across every form in the cluster. One `build_form` call may produce multiple `ParsedEntry` items (e.g., a multi-clause `defmacro` yields one per clause); the orchestrator hands the concatenated list to `check_forms`. `check_forms` internally drives Pass 1 (register signatures into staging via the accessor) over every entry, then Pass 2 (check bodies against the unioned staging+live view) over every entry. Pass-1-to-Pass-2 working state (e.g., `defn_type_vars`, default-method-defn deferrals, generalisation inputs) is internal to `check_forms`'s frame — never crosses the facade.
 - `ctx` — `&mut ClusterContext<'_, C, L>` constructed by the orchestrator. In `ClusterContext::Cluster` mode (the cluster-processing flow), `ctx.current_symbol_table()` returns a `View<'_, C, L>` unioning staging + live (staging-first); `ctx.current_symbol_table_mut()` returns `&mut staging`. Typecheck calls these accessors uniformly — the 91 register-call sites in `program.rs` (e.g., `register_type_def`, `register_trait_decl`, `register_defn_signature`, `register_mono_entry`) and the 51 read access sites continue to use the existing API; the staging-vs-live distinction is absorbed inside the accessors. `ClusterContext` lives in `cranelisp-typecheck`.
 - `symbol_tables` — read-only access to all other modules' tables for resolving FQ symbol references (`m2/foo`) and FQ type references (`m2/SomeType`). Generic over `<C, L>` per Decision 32 — typecheck is C/L-blind in production (caller passes `SymbolTables<Code, ()>`), and tests / fine-grained drivers pass `SymbolTables<(), ()>`.
+- `module_aliases` — read-only access to the session-level `ModuleAliases` table (parallel to `symbol_tables`). Required because §8.6.6 qualified-name resolution may need to substitute an import/export alias for a prefix of the queried `module_path` before the bare `Symbol` lookup completes. Threaded alongside `symbol_tables` rather than bundled into a single parameter to keep the boundary narrow (per Principle 2): typecheck-internal sites that touch only one module's local bindings continue to read from `ctx` without needing alias-resolution capability. See `facades/types.md` §"Symbol table — the single store" for the algorithm.
 
 Returns:
 - `Ok(())` on success — Pass 1 staged signature shells, Pass 2 staged body-checked entries that superseded the shells, per-symbol Pass-2 side products landed on staging `ModuleEntry::Def` fields per invariant 3a. The orchestrator commits the whole staging table atomically into live on cluster completion.
@@ -187,14 +189,16 @@ None.
 
 ```rust
 pub fn register_imports<C, L>(
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    symbol_tables: &SymbolTables<C, L>,
+    module_aliases: &ModuleAliases,
     next_id: &AtomicU32,
     state: &mut CheckState,
     specs: &[ImportSpec],
 ) -> Result<(), CranelispError>;
 
 pub fn register_exports<C, L>(
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    symbol_tables: &SymbolTables<C, L>,
+    module_aliases: &ModuleAliases,
     next_id: &AtomicU32,
     state: &mut CheckState,
     specs: &[ExportSpec],
@@ -207,6 +211,8 @@ pub fn advance_next_id_past_table<C, L>(
 ```
 
 Free fns that perform module-lifecycle work without requiring a fully-constructed `TypeCheckEnv` borrow. `register_imports` / `register_exports` were lifted off `TypeCheckEnv` in the Sprint 67 hack-back (FIXME 0192) so cross-crate callers (`int`'s import-form handler) do not need to construct a typecheck env. `advance_next_id_past_table` is the TypeId-consistency primitive split out of the pre-S67 `restore_cached_module` — composed by the `int`-side cache-hit branch alongside `cranelisp_types::install_module` (see `facades/types.md` §"Module-lifecycle primitives").
+
+`register_imports` / `register_exports` are the **writers** for the session-level `ModuleAliases` table: for every spec whose `alias.is_some()`, they insert a `ModuleAliasEntry` at `owner_path + "." + alias_name` (Private visibility for imports, Public for exports) and perform the cross-table mount-vs-submodule conflict check against `symbol_tables` per `facades/types.md` invariant 8. They are passed `&ModuleAliases` rather than constructing it: ownership lives at session level (`SharedState.module_aliases` per `facades/int.md`).
 
 The data-home counterpart of `register_imports`/`register_exports` is `cranelisp_types::install_module` + `ensure_module_exists`; together these form the lifecycle pair used by `CompilerSession::introduce_module`'s four-branch orchestration.
 
@@ -288,7 +294,7 @@ Otherwise no re-exports of `cranelisp-types` items per Principle 15 — `int` im
 
 The typecheck crate imports from:
 
-- **`cranelisp-types`** — the full set: `Sexp`, `Expr`, `TopLevel`, `Defn`, `Pattern`, `MatchArm`, `TypeExpr`, `Type`, `Scheme`, `TypeId`, `Subst`, `Span`, `CranelispError`, `Symbol`, `ModuleFullPath`, `FQSymbol`, `FQTypeName`, `TypeName`, `TraitName`, `ImportSpec`, `ExportSpec`, `ImportNames`, `SymbolTable`, `ModuleEntry`, `DefKind`, `PrimitiveKind`, `MacroClauseInfo`, `MacroParam`, `Visibility`, `CallGraph`, `CallEdge`, `CallInfo`, `PrimitiveDef`, `primitives`, `apply`, `free_vars`, `max_type_var_id`, `type_var_names`, `format_type_display`, `format_type_with_vars`.
+- **`cranelisp-types`** — the full set: `Sexp`, `Expr`, `TopLevel`, `Defn`, `Pattern`, `MatchArm`, `TypeExpr`, `Type`, `Scheme`, `TypeId`, `Subst`, `Span`, `CranelispError`, `Symbol`, `ModuleFullPath`, `FQSymbol`, `FQTypeName`, `TypeName`, `TraitName`, `ImportSpec`, `ExportSpec`, `ImportNames`, `SymbolTable`, `SymbolTables`, `ModuleAliases`, `ModuleAliasEntry`, `ModuleEntry`, `DefKind`, `PrimitiveKind`, `MacroClauseInfo`, `MacroParam`, `Visibility`, `CallGraph`, `CallEdge`, `CallInfo`, `PrimitiveDef`, `primitives`, `apply`, `free_vars`, `max_type_var_id`, `type_var_names`, `format_type_display`, `format_type_with_vars`.
 
 The typecheck crate imports from no other workspace crate — not `cranelisp-frontend`, not `cranelisp-backend`. (Frontend builds the input; backend consumes the output. Typecheck is a pure transform between them.)
 
@@ -360,3 +366,20 @@ These hold across sprints — the contract `cranelisp-typecheck` makes with the 
     ```
 
     Mutating writes always go through `ctx.current_symbol_table_mut()` — a typecheck pass MUST NOT mutate a foreign module's table directly. `ModuleEntry::TraitImpl` writes target the **trait's defining module** per Decision 0045; the orchestrator selects the target table by chain-following the trait reference at write time, identically to the read side. Cross-module impl writes that pre-S66 source carries (~6 sites in `builtins.rs` + `checker.rs`, audited 2026-05-12) are Wave 3a-α retargets per Decision 0046 — the redo retargets to the trait's home, not the writer's home. This invariant is the structural prerequisite for invariant 2's cluster-atomic guarantee — the `ClusterContext` accessor surgery only delivers cluster atomicity if every read and write actually flows through it; the absence of orphaned `self.modules.X` pierces is what makes that the case.
+
+---
+
+## Typing rule for `Expr::ConstrADT`
+
+`Expr::ConstrADT { type_name, tag, fields, span }` is a language-level AST node for ADT construction (see `facades/types.md` §"AST" for the node shape, §"Symbol table — the single store" §"DefKind" for the ctor-as-Def relationship). The typing rule:
+
+1. Look up `type_name` in the symbol tables → `ModuleEntry::TypeDef { info }`.
+2. Sanity-check `tag < info.constructors.len()`; the constructor at `info.constructors[tag]` is the ctor symbol (e.g., `Some`).
+3. Look up that ctor symbol's `ModuleEntry::Def` to retrieve its `scheme` — instantiate with fresh type variables for the ADT's `type_params`.
+4. The instantiated function-type signature `t0 → t1 → ... → ADT(type_name, instantiated_params)` tells the typing rule the type to check each `fields[i]` against.
+5. Type-check each `fields[i]: ti`.
+6. The Expr's `inferred_type` is `Type::ADT(type_name, instantiated_params)`.
+
+Scheme inference for the *constructor's own Defn* (computing `Some : ∀a. a → Option a`) remains the deftype-expansion path: typecheck takes the deftype's type params + per-field annotations, builds the universally-quantified scheme, and stores it on the synthesised `Def.scheme`. Only the codegen path unifies under the ctor-as-Def shape — typecheck's scheme inference logic for ctors is structurally unchanged.
+
+`constructor_to_type` reverse-index retires — every constructor Def carries its owning `type_name` on `DefKind::Constructor`.

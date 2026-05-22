@@ -1499,11 +1499,12 @@ This design unifies interactive and file-based development:
 The regenerated source file MUST satisfy the following invariants:
 
 1. **Round-trip correctness:** Loading the regenerated file through the compiler MUST produce the same types, values, and module exports as the interactive session. [R4 S52]
-2. **Dependency ordering:** Definitions MUST appear in dependency order so that the file compiles in a single pass without forward references. [R4 S52]
+2. **Authorship ordering:** Definitions MUST appear in the order they were registered with the session — file-loaded modules in source declaration order; REPL-introduced symbols appended in the order they were entered. Redefinition MUST NOT reorder; a redefined symbol keeps its original position. Cranelisp's cluster-atomic typecheck handles forward references natively, so dependency ordering is not a correctness requirement — the regenerated file reflects authorship intent. [R4 S52]
 3. **Symbol qualification preservation:** The regenerated source MUST preserve the user's original qualification style. If the user wrote a fully-qualified reference (`core.option/Some`), it MUST remain fully-qualified. If the user wrote a bare name (`Some`) that was resolved via an import, it MUST remain bare. The regenerator MUST NOT rewrite bare names to qualified or vice versa. [R4 S52]
-4. **Import preservation:** All `(import ...)` forms entered during the session MUST appear at the top of the regenerated file. [R4 S52]
+4. **Structural sections at top in fixed order:** Structural sections MUST appear at the top of the regenerated file in this fixed order: (a) platforms — `(declare-platform ...)` forms; (b) submodules — `(mod ...)` declarations; (c) exports — `(export ...)` forms; (d) imports — `(import ...)` forms. Within each section, items appear in authorship order (file parse order + REPL append). Definitions follow the four structural sections. [R4 S52]
 5. **Comments:** The behaviour of comments in regenerated source is unspecified. The implementation MAY strip comments, preserve them, or handle them in any other way. [R4 S52]
 6. **Source in cache metadata:** The `.meta.json` cache file MUST include all source text needed for regeneration, so that the REPL can restore the backing file from cache alone. [R4 S52]
+7. **Authorship-intent rationale:** The regeneration invariants above (authorship ordering, fixed structural-section order, redef in place) collectively express a single intent — *principle of least surprise*. The regenerated file is a faithful record of what the user typed and when, not a derived form computed from compilation properties. The compiler's pipeline already handles forward references and dependency resolution; regeneration's job is authorship fidelity, not re-deriving correctness. [R4 S52]
 
 ### 15.5 File Watching Integration [R4 S52]
 

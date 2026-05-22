@@ -47,7 +47,12 @@ pub enum ParsedEntry {
     /// Parsed `(impl Trait Type method-defns…)` form.
     TraitImpl { impl_: TraitImpl },
     /// Parsed `(defmacro name clauses…)` form. Each clause downstream becomes
-    /// a `ModuleEntry::Macro` clause via `synthesize_macro_clause_defn`.
+    /// a `Def { kind: UserFn }` body under the mangled name
+    /// `{macro-name}$clause-{N}` (via `synthesize_macro_clause_defn`), with a
+    /// parent `Def { kind: DefKind::Macro { clauses_meta, sexp, source } }`
+    /// holding metadata only. See `facades/types.md` §"DefKind" `DefKind::Macro`
+    /// for the unified shape; the prior sibling `ModuleEntry::Macro` variant
+    /// retires in the S69 concurrency-cluster /dev brief.
     Macro { info: DefmacroInfo },
     /// Synthetic per-constructor entry — emitted by `build_form` for each
     /// constructor of a `TypeDef`. Pre-typecheck shape; `check_form` lifts
@@ -71,8 +76,12 @@ pub enum ParsedEntry {
 /// Carries `body_sexp` per clause because the frontend's
 /// `synthesize_macro_clause_defn` consumes it after parsing to produce the
 /// per-clause `defn` Sexp. The canonical resolved-stage shape (after macro
-/// codegen) is `ModuleEntry::Macro { clauses: Vec<MacroClauseInfo>, … }` —
-/// `MacroClauseInfo` carries no body because the clause defn is what runs.
+/// codegen) is `Def { kind: DefKind::Macro { clauses_meta: Vec<MacroClauseInfo>,
+/// sexp, source } }` parent + N `Def { kind: UserFn }` clause bodies under
+/// `{macro-name}$clause-{N}` names — `MacroClauseInfo` carries no body because
+/// each clause body lives as its own GOT-dispatched Def. See `facades/types.md`
+/// §"DefKind" `DefKind::Macro` for the unified shape; the prior sibling
+/// `ModuleEntry::Macro` variant retires in the S69 concurrency-cluster /dev brief.
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct DefmacroInfo {

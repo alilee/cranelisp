@@ -1,9 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use crate::{
-    ConstructorInfo, Defn, FQSymbol, FQTraitName, FQTypeName, GotTable, ModuleFullPath,
+    Defn, FQSymbol, FQTraitName, FQTypeName, GotTable, ModuleFullPath,
     ModuleName, Scheme, SchedulingClass, Sexp, Span, Symbol, TraitDecl, TraitName, Type,
     TypeDefInfo, TypeName, Visibility,
 };
@@ -105,6 +104,28 @@ pub struct SymbolTable<C: CodeStore = (), L: LinkerStore = ()> {
     /// Module-local: slot 0, 1, 2... independently per module.
     #[serde(default)]
     pub next_got_slot: usize,
+    /// Monotonic per-entry sequence allocator. Every newly-inserted
+    /// `ModuleEntry::Def` receives `seq = next_seq` and the field is bumped.
+    /// Used by `regenerate_backing_file` to emit defns in authorship order
+    /// per `repl/spec.md` §15.4(2). Redefinition does NOT reorder:
+    /// `insert_or_update` (consumer-side, in `int`) preserves the existing
+    /// entry's `seq` value alongside Decision 31's `code` carry-forward.
+    /// Replaces the prior `defn_order: Vec<Symbol>` side-table (Decision 39
+    /// design upgrade — eliminates side-table drift, matches the
+    /// `next_got_slot` allocation pattern).
+    ///
+    /// Source-side this is plain `u64` mutated under the existing
+    /// `&mut SymbolTable` discipline (mirrors `next_got_slot: usize`). The
+    /// facade target is `AtomicU64` (peer of facade's `next_got_slot:
+    /// AtomicUsize`); the conversion lands as part of the broader
+    /// SymbolTable concurrency cascade (S-DRIFT-19/20/21), not in this
+    /// change-set.
+    ///
+    /// `#[serde(default)]` so pre-existing caches deserialise as `0` and the
+    /// loader re-derives the high-water mark from the maximum `seq` across
+    /// loaded entries (consumer-side reconstruction).
+    #[serde(default)]
+    pub next_seq: u64,
     /// Per-module Global Offset Table. Created when the `SymbolTable` is
     /// constructed (at module registration). Base address is stable for
     /// the module's lifetime. Slot indices are assigned by
@@ -129,7 +150,10 @@ pub struct SymbolTable<C: CodeStore = (), L: LinkerStore = ()> {
     /// `src/save.rs::generate_imports`, spec §6.4); compiler-injected imports
     /// (e.g., the implicit `(import [prelude [*]])` injection) do NOT appear
     /// here. The **effective import set** (per-name resolved bindings) lives
-    /// on per-symbol `ModuleEntry::Import` / `ModuleEntry::Reexport` entries.
+    /// on per-symbol `ModuleEntry::Import` entries (`visibility` discriminates
+    /// private `(import …)`-edge from public `(export [foreign-sym])`-edge
+    /// — see facades/types.md §"Symbol table — the single store" `Import`
+    /// variant docstring).
     /// Consumers that need the effective set (transitive impl-resolution;
     /// module-locality short-name lookups) walk both stores — see
     /// `transitive_import_closure` in `crates/cranelisp-typecheck/src/checker.rs`.
@@ -232,6 +256,7 @@ impl SymbolTable<(), ()> {
             path,
             symbols: HashMap::new(),
             next_got_slot: 0,
+            next_seq: 0,
             got: std::sync::Arc::new(GotTable::new()),
             imports: Vec::new(),
             exports: Vec::new(),
@@ -269,6 +294,7 @@ impl SymbolTable<(), ()> {
             path: self.path,
             symbols,
             next_got_slot: self.next_got_slot,
+            next_seq: self.next_seq,
             got: self.got,
             imports: self.imports,
             exports: self.exports,
@@ -289,32 +315,35 @@ impl ModuleEntry<()> {
         match self {
             ModuleEntry::Def {
                 scheme, visibility, docstring, param_names, kind, callees,
-                got_slot, trait_origin, ast, code: _,
+                got_slot, trait_origin, seq, ast, code: _,
             } => ModuleEntry::Def {
                 scheme, visibility, docstring, param_names, kind, callees,
-                got_slot, trait_origin, ast, code: None,
+                got_slot, trait_origin, seq, ast, code: None,
             },
-            ModuleEntry::Import { source } => ModuleEntry::Import { source },
-            ModuleEntry::Reexport { source } => ModuleEntry::Reexport { source },
+            ModuleEntry::Import { source, visibility } => ModuleEntry::Import { source, visibility },
             ModuleEntry::TypeDef { info, visibility, constructor_scheme, sexp } => {
                 ModuleEntry::TypeDef { info, visibility, constructor_scheme, sexp }
             }
             ModuleEntry::TraitDecl { decl, visibility, sexp } => {
                 ModuleEntry::TraitDecl { decl, visibility, sexp }
             }
-            ModuleEntry::Constructor { type_name, info, scheme, visibility } => {
-                ModuleEntry::Constructor { type_name, info, scheme, visibility }
+            // ModuleEntry::Constructor variant retired — constructors are now
+            // ModuleEntry::Def entries with kind: DefKind::Constructor { .. }
+            // and synthesised Defn bodies whose body expression is
+            // Expr::ConstrADT (see facades/types.md §"Symbol table — the
+            // single store" §"DefKind").
+            // ModuleEntry::Macro variant retired (Submission 22) — macros are
+            // now ModuleEntry::Def entries with kind: DefKind::Macro
+            // { clauses_meta, sexp, source } (see facades/types.md §"DefKind").
+            // ModuleEntry::PlatformDecl variant retired (Submission 22) —
+            // platforms register as synthetic modules at
+            // symbol_tables["platform.<name>"] per spec §8.9.3; the DLL handle
+            // lives on the platform module's own SymbolTable.dll
+            // (see facades/types.md §"Symbol table — the single store").
+            ModuleEntry::TraitImpl { trait_name, impl_type, methods, visibility } => {
+                ModuleEntry::TraitImpl { trait_name, impl_type, methods, visibility }
             }
-            ModuleEntry::Macro { name, clauses, docstring, visibility, sexp, source, callees } => {
-                ModuleEntry::Macro { name, clauses, docstring, visibility, sexp, source, callees }
-            }
-            ModuleEntry::PlatformDecl { dll_path, platform_module } => {
-                ModuleEntry::PlatformDecl { dll_path, platform_module }
-            }
-            ModuleEntry::TraitImpl { trait_name, impl_type, methods } => {
-                ModuleEntry::TraitImpl { trait_name, impl_type, methods }
-            }
-            ModuleEntry::Ambiguous => ModuleEntry::Ambiguous,
+            ModuleEntry::Ambiguous { visibility } => ModuleEntry::Ambiguous { visibility },
         }
     }
 }
@@ -338,6 +367,7 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
             path,
             symbols: HashMap::new(),
             next_got_slot: 0,
+            next_seq: 0,
             got: std::sync::Arc::new(GotTable::new()),
             imports: Vec::new(),
             exports: Vec::new(),
@@ -353,6 +383,22 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
         let slot = self.next_got_slot;
         self.next_got_slot += 1;
         slot
+    }
+
+    /// REPL append path — extends the appropriate structural Vec with one new
+    /// entry. Used for `(import …)` / `(export …)` / `(declare-platform …)` /
+    /// `(mod …)` forms entered interactively at the REPL prompt. File-loaded
+    /// modules use a bulk-load shape (`write_structural_decls`, facade-target —
+    /// not present source-side yet) instead. Brief per-eval `&mut`
+    /// window — one enum-carrier method, no parallel per-section append
+    /// methods. Per `repl/spec.md` §15.4 and Decision 39 (S69 Phase 3 upgrade).
+    pub fn append_structural_decl(&mut self, entry: StructuralDeclEntry) {
+        match entry {
+            StructuralDeclEntry::Import(spec) => self.imports.push(spec),
+            StructuralDeclEntry::Export(spec) => self.exports.push(spec),
+            StructuralDeclEntry::Platform(spec) => self.platforms.push(spec),
+            StructuralDeclEntry::Mod(decl) => self.submodules.push(decl),
+        }
     }
 
     pub fn get(&self, name: &str) -> Option<&ModuleEntry<C>> {
@@ -449,9 +495,11 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         /// The slot is `None` only for entries that are **never** called or
         /// referenced as values: special forms (`if`, `let`, `defn` — pure
         /// syntax, no runtime address), `Overloaded` base entries (the
-        /// mangled variants carry the slots), `TypeDef`/`TraitDecl`/`Macro`
-        /// (no callable position), and constrained-fn templates whose mono
-        /// specialisations carry the slots.
+        /// mangled variants carry the slots), `TypeDef`/`TraitDecl` and
+        /// `Def { kind: DefKind::Macro }` parent entries (no callable
+        /// position; per-clause variant Defs carry the slots), and
+        /// constrained-fn templates whose mono specialisations carry the
+        /// slots.
         ///
         /// Direct-call inlining at known call sites does not require a GOT
         /// lookup, but having a slot does not preclude a direct call — the
@@ -463,6 +511,20 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         /// `None` for non-trait-method definitions.
         #[serde(default)]
         trait_origin: Option<FQTraitName>,
+        /// Per-entry monotonic ordering token, allocated via
+        /// `SymbolTable.next_seq` fetch-and-bump at first registration.
+        /// Used by `regenerate_backing_file` to emit defns in authorship order
+        /// per `repl/spec.md` §15.4(2). On redefinition, `insert_or_update`
+        /// (consumer-side, in `int`) preserves the existing `seq` value
+        /// alongside the `code` carry-forward per Decision 31 — a redefined
+        /// defn keeps its original authorship position across REPL redef
+        /// (principle of least surprise).
+        ///
+        /// Per Decision 39 design upgrade (S69 Phase 3): replaces the prior
+        /// `SymbolTable.defn_order: Vec<Symbol>` side-table — eliminates
+        /// side-table drift, matches the `got_slot` allocation pattern.
+        #[serde(default)]
+        seq: u64,
         /// Typechecked function body. Written by typecheck after check_form(CheckBody).
         /// Read by codegen. None for primitives, special forms, and pre-body-check entries.
         #[serde(default)]
@@ -488,9 +550,26 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         code: Option<C>,
     },
     /// An imported name from another module (Ring 2).
-    Import { source: FQSymbol },
-    /// A re-exported name from another module (Ring 2).
-    Reexport { source: FQSymbol },
+    ///
+    /// **Covers both edge kinds.** `visibility` discriminates provenance (see
+    /// facades/types.md §"Symbol table — the single store" §"Rejected
+    /// alternatives — per-entry visibility"):
+    /// - `Visibility::Private` — the `(import …)`-form effect. The local
+    ///   binding is reachable from this module's scope but does not escape via
+    ///   the public surface. Spec §8.3.
+    /// - `Visibility::Public` — the `(export [foreign-sym])`-form effect (the
+    ///   prior `ModuleEntry::Reexport` variant, retired in the per-entry
+    ///   visibility collapse). The local binding is reachable from this
+    ///   module AND from downstream importers (re-export edge). Spec §8.4.
+    ///
+    /// Chain-follow per Decision 45 walks `Import` edges regardless of
+    /// visibility — the variant collapse simplifies the pattern-match
+    /// (`ModuleEntry::Import { source, .. }` covers both edges that were
+    /// previously a two-arm match).
+    Import {
+        source: FQSymbol,
+        visibility: Visibility,
+    },
     /// A type definition (deftype).
     TypeDef {
         info: TypeDefInfo,
@@ -504,31 +583,37 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         visibility: Visibility,
         sexp: Option<Sexp>,
     },
-    /// A constructor (from a deftype).
-    Constructor {
-        type_name: FQTypeName,
-        info: ConstructorInfo,
-        scheme: Scheme,
-        visibility: Visibility,
-    },
-    /// A macro definition (defmacro, Ring 3).
-    Macro {
-        name: Symbol,
-        clauses: Vec<MacroClauseInfo>,
-        docstring: Option<String>,
-        visibility: Visibility,
-        sexp: Option<Sexp>,
-        source: Option<String>,
-        /// Fully-qualified callees discovered during typechecking (Decision 21).
-        /// Populated by `finalize_check_result()` for macro clause bodies.
-        #[serde(default)]
-        callees: Vec<FQSymbol>,
-    },
-    /// A platform DLL declaration (Ring 4).
-    PlatformDecl {
-        dll_path: PathBuf,
-        platform_module: ModuleFullPath,
-    },
+    // ModuleEntry::Constructor variant retired. Constructors are now
+    // ModuleEntry::Def entries with kind: DefKind::Constructor { type_name,
+    // tag, field_count, internal } and synthesised Defn bodies whose body
+    // expression is Expr::ConstrADT (see facades/types.md §"Symbol table —
+    // the single store" §"DefKind" for the ctor-as-Def shape and rejected
+    // alternatives). See crates/cranelisp-types/src/check.rs for the
+    // retirement of ConstructorInfo struct and TypeDefInfo.constructors:
+    // Vec<Symbol> shape.
+    // ModuleEntry::Macro variant retired (Submission 22 — 2026-05-21).
+    // Macros are now ModuleEntry::Def entries with
+    // kind: DefKind::Macro { clauses_meta, sexp, source } (see
+    // facades/types.md §"DefKind" `DefKind::Macro`). Per-clause bodies are
+    // ordinary Def entries with mangled names `{macro-name}$clause-{N}`
+    // parallel to multi-sig fn variants like `add$Int+Int`. The session-level
+    // `MacroEnv` sidecar retires alongside this variant (consumer cascade in
+    // /dev wave-3). The `MacroClauseInfo` / `MacroParam` support types below
+    // continue to exist because `DefKind::Macro` still references them; their
+    // own retirement (if any) is a separate cascade item.
+    //
+    // ModuleEntry::PlatformDecl variant retired (Submission 22 — 2026-05-21).
+    // Per spec §8.9.3, `(platform <name>)` registers a synthetic module at
+    // `symbol_tables["platform.<name>"]` — a normal module per the existing
+    // module map. The DLL handle is retained on that platform module's own
+    // `SymbolTable.dll: Option<D>` field (via the `D: DllStore` generic; see
+    // facades/types.md §"Symbol table — the single store" SymbolTable shape).
+    // The variant previously stored a per-platform DLL record AS AN ENTRY
+    // WITHIN the declaring module, which contradicted spec §8.9.3 — platforms
+    // are modules of their own, not entries within other modules. The
+    // form-record `PlatformSpec` on the entry module's `SymbolTable.platforms`
+    // continues to record what the user wrote (for `.cl` regeneration per
+    // `repl/spec.md` §15.4).
     /// A trait implementation for a specific type (Ring 2).
     /// Keyed by synthetic name `impl$FQTypeName$FQTraitName` on the SymbolTable.
     /// Always public (spec §5.11: impls are visible wherever both trait and type are in scope).
@@ -555,9 +640,23 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         impl_type: FQTypeName,
         /// Method names defined in this impl (local names, not mangled).
         methods: Vec<Symbol>,
+        /// Always `Public` per spec §5.11.1 (impls are visible wherever both
+        /// trait and type are in scope). The field is present so that every
+        /// `ModuleEntry` variant carries `visibility` — the
+        /// resolution-algorithm visibility filter is uniform (see
+        /// facades/types.md §"Symbol table — the single store"). Marking
+        /// `Public` on `TraitImpl` is lossless.
+        visibility: Visibility,
     },
     /// A bare name that became ambiguous (two different sources registered it, Ring 2).
-    Ambiguous,
+    ///
+    /// Sentinel variant. Carries `visibility: Visibility` for variant
+    /// uniformity (see facades/types.md §"Symbol table — the single store");
+    /// `Public` is the lossless mark (the sentinel itself never resolves to a
+    /// payload, so visibility is informational only).
+    Ambiguous {
+        visibility: Visibility,
+    },
 }
 
 // SAFETY: `ModuleEntry::Def` carries no raw pointer fields directly —
@@ -587,26 +686,34 @@ impl<C: CodeStore> ModuleEntry<C> {
     /// from the call graph design (Decision 21).
     pub fn callees(&self) -> &[FQSymbol] {
         match self {
-            ModuleEntry::Def { callees, .. } | ModuleEntry::Macro { callees, .. } => callees,
+            ModuleEntry::Def { callees, .. } => callees,
             // TraitImpl has no callees — it's an index/metadata entry.
             // The actual method Def entries carry their own callees.
+            // (Per Submission 22, macro clause bodies are now Def entries
+            // with mangled names, so their callees surface via the Def arm.)
             _ => &[],
         }
     }
 
     /// Returns true if this entry is publicly visible.
+    ///
+    /// Every `ModuleEntry` variant carries `visibility: Visibility` —
+    /// public-ness consults that one field uniformly (see facades/types.md
+    /// §"Symbol table — the single store"). The prior special-cases
+    /// (`Import`/`Reexport`/`TraitImpl` always public, `Ambiguous` always
+    /// false) collapse to the uniform `visibility` check.
+    /// `TraitImpl` is constructed with `Visibility::Public` per spec §5.11.1;
+    /// `Ambiguous` carries `Visibility::Public` as a lossless mark (the
+    /// sentinel never resolves to a payload, so the visibility value is
+    /// informational only).
     pub fn is_public(&self) -> bool {
         match self {
             ModuleEntry::Def { visibility, .. }
             | ModuleEntry::TypeDef { visibility, .. }
             | ModuleEntry::TraitDecl { visibility, .. }
-            | ModuleEntry::Constructor { visibility, .. }
-            | ModuleEntry::Macro { visibility, .. } => *visibility == Visibility::Public,
-            ModuleEntry::Import { .. } | ModuleEntry::Reexport { .. } => true,
-            ModuleEntry::PlatformDecl { .. } => true,
-            // Spec §5.11: trait implementations are always public.
-            ModuleEntry::TraitImpl { .. } => true,
-            ModuleEntry::Ambiguous => false,
+            | ModuleEntry::Import { visibility, .. }
+            | ModuleEntry::TraitImpl { visibility, .. }
+            | ModuleEntry::Ambiguous { visibility } => *visibility == Visibility::Public,
         }
     }
 }
@@ -631,6 +738,27 @@ pub enum DefKind {
     Overloaded {
         variants: Vec<OverloadVariant>,
     },
+    /// An ADT constructor (see facades/types.md §"Symbol table — the single
+    /// store" §"DefKind" for the ctor-as-Def shape and rejected alternatives).
+    ///
+    /// The Def's `ast` field carries a synthesised `Defn` whose body expression
+    /// is `Expr::ConstrADT { type_name, tag, fields, span }`. The metadata on
+    /// this variant (`type_name`, `tag`, `field_count`, `internal`) is read by
+    /// pattern matching (`Pattern::Constructor` → consult `DefKind::Constructor.tag`)
+    /// and by REPL introspection (`/info` displays the owning ADT + constructor
+    /// metadata). Backend codegen lowers the synthesised body's `Expr::ConstrADT`
+    /// node — it never reads this variant's metadata for code emission.
+    ///
+    /// `internal: true` for compiler-internal constructors that users cannot
+    /// directly construct or pattern-match (e.g., `IO.Bind` is constructed only
+    /// by `bind`).
+    Constructor {
+        type_name: FQTypeName,
+        tag: usize,
+        field_count: usize,
+        #[serde(default)]
+        internal: bool,
+    },
 }
 
 /// Classification of primitive functions.
@@ -648,12 +776,12 @@ pub enum PrimitiveKind {
     /// class") are unrepresentable. See Decision 26 in `design/arch/CLAUDE.md`.
     ///
     /// The variant serialises normally: `scheduling_class` is static manifest
-    /// data (re-read from the DLL manifest on cache-hit load via `PlatformDecl`
-    /// reconstruction, not a runtime pointer). Contrast with the runtime
-    /// pointer for the entry, which lives in the module's GOT slot
-    /// (`SymbolTable.got.load_slot(entry.got_slot?)`); the GOT itself is
-    /// `#[serde(skip)]` and re-populated on cache-hit by re-resolving each
-    /// platform DLL.
+    /// data (re-read from the DLL manifest on cache-hit load via the platform
+    /// module's `SymbolTable.dll` reconstruction per spec §8.9.3, not a runtime
+    /// pointer). Contrast with the runtime pointer for the entry, which lives
+    /// in the module's GOT slot (`SymbolTable.got.load_slot(entry.got_slot?)`);
+    /// the GOT itself is `#[serde(skip)]` and re-populated on cache-hit by
+    /// re-resolving each platform DLL.
     PlatformEffect {
         scheduling_class: SchedulingClass,
     },
@@ -734,7 +862,28 @@ pub struct ImplSexp {
 
 // --- Platform Declarations ---
 
-/// A `(platform name)` declaration extracted from top-level forms.
+/// A `(platform <name>)` declaration extracted from top-level forms.
+///
+/// **Form-record** per Decision 33 — parallel to `ImportSpec` / `ExportSpec` /
+/// `ModDecl`. Carries only what the user wrote in source order, for `.cl`
+/// regeneration per `repl/spec.md` §15.4. Resolved data (manifest path,
+/// loaded DLL handle) is NOT carried here.
+///
+/// **Spec grounding.** Per spec §2.2.9 grammar
+/// (`platform_form = '(' 'platform' SYMBOL ')'`) the form takes a single
+/// bare symbol — no alias is permitted. Per spec §10.9 the form is valid
+/// only in the entry module; non-entry modules use
+/// `(import [platform.<name> [*]])`. Per spec §8.9.3 the form registers a
+/// synthetic module at `symbol_tables["platform.<name>"]` whose
+/// `SymbolTable.dll` retains the loaded DLL handle (see
+/// `facades/types.md` §"Symbol table — the single store").
+///
+/// **Target narrow (Submission 21).** `name: String → name: ModuleName`
+/// per the newtype rule (`design/arch/CLAUDE.md` §"String Newtypes"). The
+/// retired-shape fields `manifest_path` and `alias` are NOT introduced —
+/// `manifest_path` is resolved data (belongs elsewhere); `alias` is
+/// excluded by spec §2.2.9 grammar. Source migration in the /dev
+/// wave-3 concurrency-cluster brief.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlatformSpec {
     pub name: String,
@@ -750,6 +899,21 @@ pub struct ModDecl {
     pub is_private: bool,
     pub inline_body: Option<Vec<Sexp>>,
     pub span: Span,
+}
+
+/// REPL append-path carrier — one variant per structural Vec field on
+/// `SymbolTable`. Consumed by `SymbolTable::append_structural_decl`. Per
+/// `repl/spec.md` §15.4: structural forms entered at the REPL prompt extend
+/// the corresponding section in authorship order (no dedup, mirroring the
+/// file-load discipline). Per Decision 39 (S69 Phase 3 upgrade) — one
+/// enum-carrier replaces four parallel `append_*` methods.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum StructuralDeclEntry {
+    Import(ImportSpec),
+    Export(ExportSpec),
+    Platform(PlatformSpec),
+    Mod(ModDecl),
 }
 
 use crate::JitSymbol;
@@ -825,9 +989,13 @@ pub fn install_module<C, L>(
 // (REPL display, introspection in `int`). Cluster-mode consumers (inside
 // typecheck) keep the staging-aware methods on `TypeCheckEnv`.
 
-/// Maximum chain depth for `Import`/`Reexport` follow. Mirrors the
+/// Maximum chain depth for `Import` follow. Mirrors the
 /// typecheck-internal limit (spec §8.6.2). Pathological cycles terminate
 /// in `None`.
+///
+/// `Import` covers both edge kinds (the prior `Reexport` variant retired —
+/// see facades/types.md §"Symbol table — the single store" `Import` variant
+/// docstring); chain-follow walks `Import` edges regardless of visibility.
 pub const CHAIN_FOLLOW_DEPTH_LIMIT: usize = 10;
 
 /// Iterate the (name, entry) pairs of `module_path`'s symbol table.
@@ -855,9 +1023,13 @@ pub fn for_each_in_module<C, L, F>(
 /// returning `(terminal_entry, terminal_module)`. Live-only variant of
 /// `TypeCheckEnv::resolve_terminal_entry_and_home` (Decision 45 Pattern B).
 ///
-/// Walks per-symbol `ModuleEntry::Import` / `ModuleEntry::Reexport`
-/// bindings one edge at a time along `source.module` references until a
-/// canonical entry is reached or the depth limit is hit.
+/// Walks per-symbol `ModuleEntry::Import` bindings one edge at a time
+/// along `source.module` references until a canonical entry is reached or
+/// the depth limit is hit. `Import` covers both private (`(import …)`-form
+/// effect) and public (`(export [foreign-sym])`-form effect) edges (see
+/// facades/types.md §"Symbol table — the single store" `Import` variant
+/// docstring); chain-follow proceeds regardless of `visibility` (the prior
+/// `Reexport` variant retired).
 pub fn resolve_terminal_entry_and_home<C, L>(
     modules: &dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>,
     module_path: &ModuleFullPath,
@@ -888,7 +1060,7 @@ where
         return None;
     }
     match &entry {
-        ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
+        ModuleEntry::Import { source, .. } => {
             let next_home = source.module.clone();
             let next_entry = {
                 let guard = modules.get(&source.module)?;
@@ -960,9 +1132,7 @@ where
     let candidates: Vec<TraitName> = {
         let mut acc = Vec::new();
         for_each_in_module(modules, scope, |name, entry| match entry {
-            ModuleEntry::TraitDecl { .. }
-            | ModuleEntry::Import { .. }
-            | ModuleEntry::Reexport { .. } => {
+            ModuleEntry::TraitDecl { .. } | ModuleEntry::Import { .. } => {
                 acc.push(TraitName::from(name.as_ref()));
             }
             _ => {}
@@ -1077,6 +1247,7 @@ mod tests {
             callees: Vec::new(),
             got_slot: None,
             trait_origin: None,
+            seq: 0,
             ast,
             code: None,
         }
@@ -1170,6 +1341,7 @@ mod tests {
                     module: ModuleFullPath::from("primitives"),
                     symbol: Symbol::from("some-prim"),
                 },
+                visibility: Visibility::Private,
             },
         );
 
@@ -1341,6 +1513,7 @@ mod tests {
             callees: Vec::new(),
             got_slot: None,
             trait_origin: None,
+            seq: 0,
             ast: Some(trivial_defn("with_code")),
             // `()` flavour — Some/None of the unit type. Serde discipline
             // is the same regardless of `C`.
@@ -1467,6 +1640,7 @@ mod tests {
             callees: Vec::new(),
             got_slot: None,
             trait_origin: None,
+            seq: 0,
             ast: None,
             code: None,
         };
@@ -1662,6 +1836,7 @@ mod tests {
                     module: ModuleFullPath::from("primitives"),
                     symbol: Symbol::from("foo"),
                 },
+                visibility: Visibility::Private,
             },
         );
         st.insert(
@@ -1671,6 +1846,7 @@ mod tests {
                     module: ModuleFullPath::from("primitives"),
                     symbol: Symbol::from("bar"),
                 },
+                visibility: Visibility::Private,
             },
         );
 
@@ -1688,7 +1864,7 @@ mod tests {
                         )
                     });
                     match entry {
-                        ModuleEntry::Import { source } => {
+                        ModuleEntry::Import { source, .. } => {
                             assert_eq!(
                                 source.module, spec.module_path,
                                 "ModuleEntry::Import source module must match imports entry"
@@ -2005,6 +2181,7 @@ mod tests {
             callees: Vec::new(),
             got_slot: None,
             trait_origin: None,
+            seq: 0,
             ast: Some(trivial_defn("synthetic")),
             code: Some(42i64),
         };

@@ -65,9 +65,8 @@ These documents are mutually consistent and audited together:
 - `design/arch/overview.md` — newcomer bridge
 - `design/arch/principles.md` (index) + `design/arch/principles/NN-*.md` (one file per principle)
 - `design/arch/bounded-contexts.md` — per-surface bounded-context statements
-- `design/arch/facades/{crate}.md` — per-surface facade specs (one per crate-shaped surface)
+- `design/arch/facades/{crate}.md` — per-surface facade specs (one per crate-shaped surface) — **including intent, rationale, and load-bearing rejected alternatives**
 - `design/arch/interfaces.md` — narrative companion to `crates/cranelisp-types/`
-- `design/arch/decisions/NNNN-*.md` — active Decisions register; index in `design/arch/CLAUDE.md`
 - `design/arch/sequences/*.mmd` + `*.svg` — sequence diagrams (two families: concurrency-invariant + execution-flow); index at `design/arch/sequences/README.md`
 - `design/arch/CLAUDE.md` — the index / cross-reference document itself
 
@@ -76,16 +75,29 @@ Outside the canonical set:
 - `design/arch/fixmes/NNNN-*.md` — open work items by definition; their existence indicates a gap to close, not a current statement of the architecture.
 - `design/arch/legacy/`, `design/arch/archive/` — history; not the target.
 
-### Audit checklist
+### The manifestation-site question
 
-When you edit any canonical document, before committing:
+Before any edit lands, ask: **if this commitment, correction, or invariant had already been resolved, where in the permanent set would a future reader expect to find it?** That location is the target. Update that location. Do not create alternative homes (notes files, side-tables, separate "rationale" documents). The permanent set is the only durable home; interim artefacts (audit findings, walk-through-log entries, working migration docs) must resolve into it.
+
+**The permanent set:**
+- `facades/{crate}.md` — per-surface shape + intent + rationale + load-bearing rejected alternatives + cross-surface commitments
+- `bounded-contexts.md` — cross-surface narrative ("why these surfaces exist as separate surfaces")
+- `principles.md` + `principles/NN-*.md` — cross-cutting architectural axioms
+- `sequences/*.mmd` — dynamic cross-crate interaction
+- `crates/cranelisp-types/src/*.rs` — code IS the contract for cross-crate types; doc-comments anchor against facade sections by name (not against Decision numbers)
+- `overview.md` — newcomer bridge
+
+**Process/sequencing content that has no manifestation site in the permanent set dies** (sprint archives preserve the temporal record). If you cannot identify a natural manifestation site, that content is sprint-bound and does not become a canonical artefact.
+
+### Audit sweep (after the manifestation-site edit lands)
+
+When the primary edit has landed at its manifestation site, sweep the canonical set for consequences:
 
 1. **Cross-references** — every link/reference in the edited doc still resolves; every doc that links INTO the edited region still has accurate language.
-2. **Decisions register** — the edit doesn't contradict any active Decision; if it amends one, that Decision's body reflects the amendment.
-3. **Principles register** — the edit honours every Principle; if it surfaces a new principle, file as a numbered principle.
-4. **Facades + bounded-contexts** — every cross-crate type/contract referenced in the edit resolves to a facade entry; the relevant BC statement matches.
-5. **Sequence diagrams** — if the edit changes a public-API surface or a flow, the corresponding sequence diagram (if any) reflects it.
-6. **`overview.md`** — high-level claims still match the canonical detail.
+2. **Principles register** — the edit honours every Principle; if it surfaces a new principle, file as a numbered principle.
+3. **Facades + bounded-contexts** — every cross-crate type/contract referenced in the edit resolves to a facade entry; the relevant BC statement matches.
+4. **Sequence diagrams** — if the edit changes a public-API surface or a flow, the corresponding sequence diagram (if any) reflects it.
+5. **`overview.md`** — high-level claims still match the canonical detail.
 
 If the audit surfaces a gap, fix in the same commit. If the gap is large enough to be a separate sprint's work, flag explicitly in the commit body and file a FIXME — but do not let inconsistency persist silently.
 
@@ -193,13 +205,15 @@ The facade is `lib.rs`. We groom `lib.rs` rather than introducing a separate `fa
 - Notes over multiple participants describe invariants; Notes over single participants describe local state.
 - For long-running flows, a single `loop` block with a Note explaining the iteration condition is preferred to multiple sequential repetitions.
 
-## Decision log
+## No separate Decision log
 
-`design/arch/decisions/NNNN-name.md` — one file per architectural decision that crosses crate or skill boundaries. Each entry: status, context, decision, consequences. The decision log is `/arch`'s normative output for cross-crate choices. Per-crate design choices (within one bounded context) belong in `design/{crate}/{crate}.md` and are `/design`'s.
+Architectural commitments manifest at their natural home in the permanent set (§The manifestation-site question). The facade carries shape + intent + rationale + load-bearing rejected alternatives; the bounded context carries cross-surface narrative; principles carry cross-cutting axioms. **No separate Decision file is authored** — the architectural commitment IS the facade prose (or BC / principle / sequence as appropriate).
 
-**Directory standup**: `design/arch/decisions/` was created in S63 (M0 W2.5). The store is **live** — file new decisions there as `NNNN-name.md` (numbering sequential from 0001; scan max + 1 at filing time). Frontmatter: status (proposed/accepted/superseded), context, decision, consequences, sprint_filed.
+**Drain in progress.** Existing `design/arch/decisions/` and `design/arch/legacy/decisions/` directories are being drained: each Decision's substance migrates into the facade / BC / principle section where a reader expects it, and the file is deleted. Opportunistic during normal /arch fires — when an edit touches a section that an existing Decision grounds, fold the Decision's substance into that section and delete the file in the same change-set. When the directories hit zero files, they are removed.
 
-**Decisions 0001–0039** are filed at `design/arch/decisions/NNNN-*.md` with proper frontmatter; the index lives in `design/arch/CLAUDE.md` under "## Decisions". Cite decisions by their `NNNN` filename stem.
+**Process/sequencing content** (sprint-bound sequencing like "G8 lands before G9", coordination invariants like "form-by-form scheduler deadlocks on mutual imports") either migrates to a facade section where it's load-bearing for future readers, or dies (sprint archives preserve the temporal record). Content with no natural manifestation site in the permanent set is not preserved.
+
+Per-crate design choices (within one bounded context) belong in `design/{crate}/{crate}.md` and are `/design`'s; those documents describe crate interiors, not the facade.
 
 ## Target documentation set
 
@@ -212,8 +226,6 @@ The facade is `lib.rs`. We groom `lib.rs` rather than introducing a separate `fa
 | `design/arch/overview.md` | The bridge document. How the language (spec) is realized through the surfaces, tested by `/qa`'s integration suite, and embodied in the crates. Newcomer entry point. |
 | `design/arch/principles.md` | Architectural Principles index; per-Principle bodies live at `design/arch/principles/NN-*.md`. |
 | `design/arch/principles/` | Architectural Principles register; one file per Principle; index in `principles.md`. |
-| `design/arch/decisions/` | Decisions register; one file per Decision; index in `design/arch/CLAUDE.md`. |
-| `design/arch/decisions/NNNN-*.md` | Decision log (see above). |
 | `design/arch/fixmes/` | FIXMEs register; one file per FIXME (`design/arch/fixmes/NNNN-name.md`). |
 | `design/arch/bounded-contexts.md` | Per-surface bounded-context full statements. |
 | `design/arch/facades/{crate}.md` | Per-surface facade specs — as-designed public surface (free functions, re-exports, `pub`/`pub(crate)` decisions). One file per surface. |
@@ -244,7 +256,7 @@ Subsystem docs describe a feature's architecture below the level of the overview
 ## Sprint participation
 
 - **Phase 2 (Architecture review)** — review proposed sprint scope for technical coherence, interim-architecture risk (Principle 8), public-API impact, and debt-first weighting. Update `crates/cranelisp-types/` if new cross-crate interfaces are needed. Triage `design/arch/` against the target documentation set: archive what is ready; fold lessons into canonical docs. Sign-off gates Phase 3.
-- **Phase 3 (Design)** — author or extend cross-crate types and traits; update `design/arch/decisions/` for new architectural choices; approve all anticipated public-API changes. Review per-crate design docs from `/design` for cross-crate coherence (file FIXME `target: /design` for findings). **Update `overview.md`** if the sprint changes architectural shape. Drift in `overview.md` is a defect, not a deferral candidate.
+- **Phase 3 (Design)** — author or extend cross-crate types and traits; update the facade / BC / principles section where the architectural choice manifests (§The manifestation-site question); approve all anticipated public-API changes. Review per-crate design docs from `/design` for cross-crate coherence (file FIXME `target: /design` for findings). **Update `overview.md`** if the sprint changes architectural shape. Drift in `overview.md` is a defect, not a deferral candidate.
 - **Phase 5 (Language)** — `/review` (narrow per crate) escalates cross-crate or public-API concerns via FIXME `target: /arch`. Decide; resolution flows back to `/dev` or `/design` via FIXME.
 - **Phase 7 (Close) — principles review.** When `/sprint` reaches close, `/arch` reviews `design/arch/principles.md` against the sprint's experience: *did the principles serve this sprint well?* Three outcomes:
   1. **Confirmed** — the principles held up. Note in the sprint outcome report that they applied without strain.
@@ -266,7 +278,7 @@ FIXMEs are files in `design/arch/fixmes/NNNN-name.md` per METHOD_PROPOSED §6.1.
 - `target: /qa` — when test coverage gaps surface during architecture review.
 - `target: /sprint` — when scope arbitration is needed.
 
-`/arch` resolves FIXMEs `target: /arch` (cross-crate interface needs, public-API changes, decision-log entries) by editing owned artefacts (types crate, `design/arch/`, root Cargo.toml) and deleting the FIXME file once resolved.
+`/arch` resolves FIXMEs `target: /arch` (cross-crate interface needs, public-API changes, facade-section authoring or amendment) by editing owned artefacts (types crate, `design/arch/`, root Cargo.toml) and deleting the FIXME file once resolved.
 
 ## Next skills
 

@@ -7,7 +7,7 @@ Sprint 56 audit found 100 `[Tested ...]` annotations in spec/ and 11 in repl/spe
 Wave 5 increments: §3.7 HKT, §5.4.2 / §5.4.3 ADT impls, §12.4.2 Lazy Sequences, appendix-a string primitives, repl §1.5 List display, repl §11.1 /expand, repl §4.1.3 related trait impls, repl §4.1.7 primitive lookup — all promoted to `[Tested+Neg ...]` this sprint.
 
 Remaining negative-coverage priority order (for future sprints):
-1. Module/import boundaries (§8) — what MUST NOT leak across modules; prioritize private visibility (§8.5) + super import depth boundary (§8.3.7) + primitives-not-in-user-category absence tests
+1. Module/import boundaries (§8) — what MUST NOT leak across modules; prioritize private visibility (§8.5) + super import depth boundary (§8.3.8) + primitives-not-in-user-category absence tests
 2. Match exhaustiveness (§6.5) — non-ADT scrutinee wildcard requirement, ADT non-exhaustive rejection
 3. Visibility / private variants (§5) — `defn-` / `deftype-` / `deftrait-` / `mod-` cross-module negative tests
 4. Trait dispatch (§7) — which types MUST NOT satisfy a trait, ambiguous-dispatch rejection

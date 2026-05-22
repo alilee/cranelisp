@@ -364,6 +364,11 @@ names_list   = '[' name+ ']'                         (* specific names *)
              | '[' '*' ']'                            (* glob import *)
              | '[' SYMBOL '.*' ']'                   (* member glob *)
              | '[' ']'                                (* alias-only *)
+
+name         = SYMBOL                                (* bare — local = source *)
+             | DOTTED_SYMBOL                         (* selective member *)
+             | '(' SYMBOL SYMBOL ')'                 (* rename: (source local) *)
+             | '(' DOTTED_SYMBOL SYMBOL ')'          (* rename of selective member *)
 ```
 
 The `import` form brings names from other modules into the current scope. The body is a bracket containing pairs of module references and name lists.
@@ -375,28 +380,38 @@ The `import` form brings names from other modules into the current scope. The bo
 - `[*]` -- import all public names from the module
 - `[Display.*]` -- import all members (methods/constructors) of a type or trait
 - `[]` -- import nothing; used with aliases for qualified access
+- `[(source local)]` -- import `source` as the local bare name `local` (rename)
 
 ```clojure
 (import [core.option [Some None Option]
          core.string [concat]
          (core.io io) [*]
+         core.option [(Some Maybe-Just)]
          math []])
 ```
+
+See [§8.3](08-modules.md#83-import) for full import semantics including renames (§8.3.5) and accessibility-after-import (§8.3.11).
 
 ### 2.2.8 `export` -- Module Export [Tested crates/cranelisp-frontend/src/module_extract.rs::test_export_specific]
 
 ```ebnf
 export_form  = '(' 'export' '[' export_spec+ ']' ')'
 
-export_spec  = MODULE_PATH names_list
+export_spec  = module_ref names_list                 (* same module_ref + names_list as import *)
 ```
 
-The `export` form re-exports names from child or imported modules as part of the current module's public interface. The syntax is the same as `import` but without aliases.
+The `export` form re-exports names from child or imported modules as part of the current module's public interface. The grammar is **symmetric with `import`**: any module-alias or symbol-rename form valid in an import is also valid in an export.
+
+- `(export [(core.string str) [concat join]])` — re-exports `concat`, `join` AND mounts `core.string` at `current-module/str` (full transparent mount, public).
+- `(export [m [(Some Just)]])` — re-exports `Some` from `m` under the local name `Just`.
 
 ```clojure
 (export [core.option [Some None Option]
-         core.string [*]])
+         core.string [*]
+         (core.io io) [*]])
 ```
+
+See [§8.4](08-modules.md#84-export) for full export semantics including module mounting (§8.4.4) and renamed re-exports (§8.4.5).
 
 ### 2.2.9 `platform` -- Platform Declaration [R4 S10]
 

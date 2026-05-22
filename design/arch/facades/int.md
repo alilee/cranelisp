@@ -161,7 +161,22 @@ pub struct SharedState {
     /// Phase 0 (parse-time) is the only [&mut SymbolTable] hold; everything
     /// after takes shared [&SymbolTable] + per-entry inner locks.
     /// Impl uses the `SessionSymbolTable` alias (= `SymbolTable<Code, ()>`).
-    pub symbol_tables: DashMap<ModuleFullPath, SymbolTable<Code, ()>>,
+    /// Materialised as the canonical `SymbolTables<Code, ()>` typedef in
+    /// `cranelisp-types` (see `facades/types.md` §"Symbol table — the single
+    /// store").
+    pub symbol_tables: SymbolTables<Code, ()>,
+
+    /// Session-level module-alias storage — parallel to `symbol_tables`,
+    /// keyed by the alias's full path (e.g., `m.n.str` for an alias `str`
+    /// declared inside module `m.n`). Written by `register_imports` /
+    /// `register_exports` at parse-time; read by §8.6.6 qualified-name
+    /// resolution everywhere a qualified name might traverse an alias.
+    /// Cross-table mount-vs-submodule conflict check applies at insert time
+    /// (see `facades/types.md` invariant 8). Per Decision pending S69 W3
+    /// — full path keying chosen over per-module-segment storage so the
+    /// resolver does single-table longest-prefix-match rather than
+    /// segmenting per-module.
+    pub module_aliases: ModuleAliases,
 
     /// Monotonic counter for fresh type variable IDs. Per Decision 44 +
     /// `facades/typecheck.md::register_builtins(modules, next_id)`, all
@@ -187,10 +202,22 @@ pub struct SharedState {
 
     // ──────────── Long-lived runtime state ────────────
     /// Loaded platform DLLs — session-global, kept alive for the session's
-    /// lifetime (per /platform addendum §A3). **Facade prescribes
-    /// `DashMap<PathBuf, Arc<DllHandle>>` for per-manifest dedup; impl
-    /// is `Mutex<Vec<LoadedPlatform>>` (linear-scan dedup)** — S68 PFR-rename
-    /// + cross-field convert to facade shape. Drift noted.
+    /// lifetime (per /platform addendum §A3). **Target shape (post-Submission-21):
+    /// the DLL handle relocates to the platform module's own
+    /// `SymbolTable.dll: Option<D>` field** per spec §8.9.3 (see
+    /// `facades/types.md` §"Symbol table — the single store" SymbolTable
+    /// shape + `D: DllStore` generic; `ModuleEntry::PlatformDecl`
+    /// retires alongside). The interim `kept_dlls` field is retained
+    /// only as the transitional carrier; once the source migration in
+    /// the /dev wave-3 concurrency-cluster brief lands the `D` generic
+    /// + `dll: Option<D>` field on the platform module's SymbolTable,
+    /// the platform-load path writes the handle there and `kept_dlls`
+    /// retires entirely. **There is NO separate session-level
+    /// `platform_dlls` field** — earlier sketches that proposed one
+    /// are superseded by the SymbolTable-co-location architecture.
+    /// Platform-module introduction flows through the existing
+    /// `ensure_module_exists` path against the `platform.<name>` key;
+    /// idempotency by `ModuleFullPath` uniqueness in `symbol_tables`.
     pub kept_dlls: Mutex<Vec<LoadedPlatform>>,
 
     /// File path → module path mapping for the file-watcher cascade.
@@ -318,6 +345,7 @@ pub struct DllHandle {
 | Field | On | Why |
 |---|---|---|
 | `symbol_tables` | SharedState | Per-symbol mutation by workers; per-entry locks via inner DashMap |
+| `module_aliases` | SharedState | Session-level parallel table per `facades/types.md` §"Symbol table — the single store". Workers read during §8.6.6 qualified-name resolution; the parse-time installer writes via `register_imports` / `register_exports` |
 | `next_type_id` | SharedState | Workers borrow `&AtomicU32` to allocate fresh type-var IDs per Decision 44 |
 | `scheduler` | SharedState | Workers call `notify_*` and `wait_for_*` |
 | `cache` | SharedState | Worker reads sidecars + writes `.o`; the underlying file IO is internally synchronised |
@@ -364,7 +392,8 @@ Direction discipline:
 | `cached_modules: Mutex<HashSet<ModuleFullPath>>` | `SharedState` | PFR — facade widens | Read by workers during codegen to decide Linker fast path. Worker-shared by nature. Facade adds field. | /dev (int) Wave 3 (facade text only) |
 | `file_to_module: Mutex<HashMap<PathBuf, ModuleFullPath>>` | `SharedState` | PFR — facade widens | File watcher cascade needs this from any worker that resolves imports. Worker-shared. Facade adds field. | /dev (int) Wave 3 (facade text only) |
 | `cache_state: Mutex<Option<CacheState>>` | `SharedState` | PFR — facade widens | Manifest + hash-records snapshot. Workers update via `record_cache_hit`. Worker-shared. Facade adds field. | /dev (int) Wave 3 (facade text only) |
-| `symbol_tables: DashMap<ModuleFullPath, SessionSymbolTable>` | `SharedState` | PFR-rename | Facade names `DashMap<ModuleFullPath, SymbolTable<Code, ()>>`. Impl uses `SessionSymbolTable` alias (= `SymbolTable<Code, ()>`). Already aligned modulo the alias spelling. Document the alias OR replace it in the impl. | /dev (int) Wave 3 (facade text only) |
+| `symbol_tables: DashMap<ModuleFullPath, SessionSymbolTable>` | `SharedState` | PFR-rename | Facade now names `SymbolTables<Code, ()>` (the materialised typedef in `cranelisp-types` per S69 audit F-1 + the session-level alias-table cascade). Impl uses `SessionSymbolTable` alias (= `SymbolTable<Code, ()>`). Adopt `SymbolTables<Code, ()>` in the impl. | /dev (int) Wave 3 (facade text only) |
+| `module_aliases: ModuleAliases` | `SharedState` | New — session-level table | Parallel to `symbol_tables` per `facades/types.md` §"Symbol table — the single store". Keyed by `ModuleFullPath` (alias's full path). Constructed empty at session init; written by `register_imports` / `register_exports` at parse-time. /dev (int) Wave 3 — add the field; cascade the param to `expand` / `check_forms` / `compile_to_module` / `load_object` / `compile_to_object` / `register_imports` / `register_exports` call sites. | /dev (int) Wave 3 |
 | `next_type_id: AtomicU32` | `SharedState` | PFR — facade widens | Per Decision 44 + facade `typecheck.md` `register_builtins(modules: &DashMap, next_id: &AtomicU32)` — workers need shared access to allocate fresh type-var IDs. Worker-shared. Facade adds field. | /dev (int) Wave 3 (facade text only) |
 | `current_module: Mutex<ModuleFullPath>` | `SharedState` | **PIF** — relocate to `CompilerSession` | REPL-only state (`/mod` switches it). Workers don't need it — they receive `module` per `PriorityWork`/`NiceWork` work item. Facade's `CompilerSession.current_repl_module: ModuleFullPath` is the right home (no `Mutex` needed — REPL is single-threaded against this field; initiator-only). **Move to `CompilerSession`.** | /dev (int) Wave 3 |
 | `repl_check_state: Mutex<Option<CheckState>>` | `SharedState` | **PIF** — relocate to `CompilerSession` | REPL-only carry-forward across evals. Workers do not use this. **Move to `CompilerSession`.** | /dev (int) Wave 3 |
@@ -717,7 +746,7 @@ Backend is no longer C-blind — it constructs `Code::Jit(Arc<Jit>)` directly in
 ```rust
 for sym in defined_symbols(&shared.symbol_tables[scope]) {
     let jit = Jit::new_with_symbols(&extra)?;
-    compile_to_module(scope, &[sym], &shared.symbol_tables, shared.introspection.as_ref(), jit.jit_module())?;
+    compile_to_module(scope, &[sym], &shared.symbol_tables, &shared.module_aliases, shared.introspection.as_ref(), jit.jit_module())?;
 }
 ```
 
@@ -961,7 +990,7 @@ Per Decision 48 (Sprint 68), `cranelisp-primitives` owns a single pub static `PR
 ```rust
 // src/session_v4.rs — sketch of the post-S68 shape (replaces the pre-S68
 // `populate_ring0_got_slots` cross-table copy loop, which retires).
-fn register_builtins(symbol_tables: &DashMap<ModuleFullPath, SymbolTable<Code, ()>>, next_id: &AtomicU32) {
+fn register_builtins(symbol_tables: &SymbolTables<Code, ()>, next_id: &AtomicU32) {
     let primitives = Arc::clone(&*cranelisp_primitives::PRIMITIVES_TABLE);
     symbol_tables.insert(ModuleFullPath::primitives(), (*primitives).clone());
     // … other builtins (special forms on "user", trait registration, etc.)
@@ -984,7 +1013,7 @@ The following items are `pub` in `src/` (via `pub mod` re-export from `lib.rs`) 
 |---|---|---|
 | `src/code.rs` | `Code` enum (variants + `jit`/`linker`/`ptr` ctors), `SessionSymbolTable` alias, `SessionModuleEntry` alias | Re-exported from `cranelisp-backend` per Decision 41; the int-side alias `SessionSymbolTable = SymbolTable<Code, ()>` is the session-boundary instantiation per facade §"`Code` — the per-entry retention root". Internal-but-exposed: `pub` so worker.rs and cluster.rs can refer to it. |
 | `src/cluster.rs` | `ProcessedCluster::{is_empty, into_iter, warnings, resolved_imports, introspection_records, from_parts (pub(crate)), empty (pub(crate))}` | Already in facade §"Cluster orchestration result". `from_parts` + `empty` are construction helpers; `pub(crate)`. |
-| `src/expander.rs` | `MacroClauseEntry`, `MacroEntry`, `MacroResolver`, `clause_matches`, `find_matching_clause`, `invoke_clause`, `rewrite_spans`, `expand_sexp_recursive`, `expand_macro_call_with_entry`, `EXPANSION_DEPTH_LIMIT` | All `pub(crate)`. Internal cooperation between the cluster orchestrator and the expander host. NOT facade. |
+| `src/expander.rs` | `MacroClauseEntry`, `MacroEntry`, `MacroResolver`, `clause_matches`, `find_matching_clause`, `invoke_clause`, `rewrite_spans`, `expand_sexp_recursive`, `expand_macro_call_with_entry`, `EXPANSION_DEPTH_LIMIT` | All `pub(crate)`. Internal cooperation between the cluster orchestrator and the expander host. NOT facade. **Status (Submission 13):** `MacroEnv` sidecar retires with the macro-unification cascade — `MacroEntry`/`MacroClauseEntry` (the in-source expander's sidecar lookup shapes) are restructured so that clause-body dispatch reads through the unified `Def { kind: DefKind::Macro { clauses_meta }, … }` parent and GOT-dispatches to each `{macro-name}$clause-{N}` mangled-variant Def. The `clause_matches` / `find_matching_clause` / `invoke_clause` clause-walk-and-match logic is unchanged in substance; only the storage it reads from moves. Tracked in the concurrency-cluster /dev brief alongside the `ModuleEntry::Macro` source retirement. |
 | `src/marshal.rs` | `sexp_to_runtime`, `runtime_to_sexp`, `build_runtime_slist`, `rc_inc`, `debug_dump_sexp` | Sexp ADT marshalling for macro intrinsics. Internal cooperation between codegen and macro expansion. Not a stable boundary; relocates to `cranelisp-intrinsics` if/when the macro-Sexp ABI is formalised across the boundary (no near-term plan). |
 | `src/pipeline.rs` | `resolve_module_file`, `compile_and_execute_expr` | Internal — `compile_and_execute_expr` is the temp-closure JIT for eval-expression `EvalResult::Value`. Wave 3 may PIF to `pub(crate)` if no out-of-crate caller exists. |
 | `src/save.rs` | `generate_module_source`, `atomic_write` | `regenerate_backing_file`'s helpers. `generate_module_source` writes per-defn Introspection source by iterating `SymbolTable::defn_order`; `atomic_write` is the temp+rename file IO primitive. Internal; not facade. |
@@ -1054,7 +1083,7 @@ pub fn process_cluster(shared: &SharedState, forms: Vec<Sexp>, scope: &ModuleFul
         let mut parsed_list: Vec<ParsedEntry> = Vec::new();
         let mut needs_retry_after_expand = false;
         for form in &forms {
-            let expanded = match cranelisp_frontend::expand(form.clone(), &shared.symbol_tables) {
+            let expanded = match cranelisp_frontend::expand(form.clone(), &shared.symbol_tables, &shared.module_aliases) {
                 Ok(s) => s,
                 Err(ExpansionError::Gap(gap)) => {
                     handle_gap(shared, gap)?;
@@ -1081,7 +1110,7 @@ pub fn process_cluster(shared: &SharedState, forms: Vec<Sexp>, scope: &ModuleFul
         //    against ctx.current_symbol_table() = View::union(staging, live)).
         //    Per-symbol Pass-2 side products land on staging Def fields.
         //    Pass-1-to-Pass-2 working state is internal to the call.
-        match cranelisp_typecheck::check_forms(parsed_list, &mut ctx, &shared.symbol_tables) {
+        match cranelisp_typecheck::check_forms(parsed_list, &mut ctx, &shared.symbol_tables, &shared.module_aliases) {
             Ok(()) => {}
             Err(CheckError::Gap(gap)) => {
                 drop(ctx);            // release &mut staging — staging dissolves
@@ -1342,7 +1371,7 @@ These hold across sprints — the contract `int` makes with the rest of the work
 
 2. **Workers are persistent.** Per Decision 27 — priority workers are spawned once per session and parked on condvars; not respawned per work item. (The G9 persistent-worker refactor is Sprint 57's work; this facade reflects the post-G9 target.)
 
-3. **`Code` lives in `cranelisp-backend` (Decision 41 amends Decision 35; S66 amendment slims variants — preserved through same-day rollback `1dc57ae`).** The concrete `C` parameter for `SymbolTable<C, L>` is `Code` — the enum lives in `cranelisp-backend/src/code.rs` (moved per Decision 41 from the previous `src/code.rs` location). `cranelisp-types` stays Cranelift-ignorant — Principle 3 protection intact. Backend constructs `Code::Jit(Arc<Jit>)` directly and writes via Decision 38's `write_code(&self, sym, code)` (interior-mutable; no `&mut` flow needed), and writes the resulting fn pointer to the entry's GOT slot via `symbol_table.got().store_slot(entry.got_slot.unwrap(), ptr)` — the GOT is the post-rollback single source of truth for callable addresses (the briefly-considered sibling `fn_ptr` field landed in `b09ec76` and was rolled back the same day in `1dc57ae`). `Code` carries lifecycle owner only. Decision 35 Layer 2 Option B retracts. `int` re-exports `Code` for session-boundary `SymbolTable<Code, ()>` instantiation; the previous worker-side post-loop (iterate-over-names + GOT-store + `Code::Jit`-construct + three error cascades) collapses into the per-symbol call-site loop documented in `facades/backend.md` §"`Code` — the per-symbol lifecycle owner". Backend signatures use `&DashMap<ModuleFullPath, SymbolTable<Code, ()>>` (non-blind for `C`); non-codegen crates (frontend, typecheck) stay generic on `SymbolTable<(), ()>` per Decision 32's empty-marker traits.
+3. **`Code` lives in `cranelisp-backend` (Decision 41 amends Decision 35; S66 amendment slims variants — preserved through same-day rollback `1dc57ae`).** The concrete `C` parameter for `SymbolTable<C, L>` is `Code` — the enum lives in `cranelisp-backend/src/code.rs` (moved per Decision 41 from the previous `src/code.rs` location). `cranelisp-types` stays Cranelift-ignorant — Principle 3 protection intact. Backend constructs `Code::Jit(Arc<Jit>)` directly and writes via Decision 38's `write_code(&self, sym, code)` (interior-mutable; no `&mut` flow needed), and writes the resulting fn pointer to the entry's GOT slot via `symbol_table.got().store_slot(entry.got_slot.unwrap(), ptr)` — the GOT is the post-rollback single source of truth for callable addresses (the briefly-considered sibling `fn_ptr` field landed in `b09ec76` and was rolled back the same day in `1dc57ae`). `Code` carries lifecycle owner only. Decision 35 Layer 2 Option B retracts. `int` re-exports `Code` for session-boundary `SymbolTable<Code, ()>` instantiation; the previous worker-side post-loop (iterate-over-names + GOT-store + `Code::Jit`-construct + three error cascades) collapses into the per-symbol call-site loop documented in `facades/backend.md` §"`Code` — the per-symbol lifecycle owner". Backend signatures use `&SymbolTables<Code, ()>` + `&ModuleAliases` (non-blind for `C`; alias-table threaded for §8.6.6 qualified-name resolution); non-codegen crates (frontend, typecheck) stay generic on `SymbolTables<(), ()>` per Decision 32's empty-marker traits.
 
 4. **Scheduler is sole coordination authority.** Per the runtime/platform diagrams' explicit merge — `CompileScheduler` owns BOTH work dispatch AND per-symbol/per-module wait/release. There is no separate `DependencyService`.
 

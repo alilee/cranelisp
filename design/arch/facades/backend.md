@@ -16,7 +16,8 @@ These are the entire backend boundary used by `int`'s priority workers (JIT path
 pub fn compile_to_module<M: Module>(
     scope: &ModuleFullPath,
     names: &[Symbol],
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<Code, ()>>,
+    symbol_tables: &SymbolTables<Code, ()>,
+    module_aliases: &ModuleAliases,
     introspection: Option<&DashMap<FQSymbol, Introspection>>,
     module: M,
 ) -> Result<(), CompilationError>;
@@ -24,12 +25,14 @@ pub fn compile_to_module<M: Module>(
 pub fn load_object(
     module: &ModuleFullPath,
     object: &[u8],
-    symbol_tables: &SymbolTables,
+    symbol_tables: &SymbolTables<Code, ()>,
+    module_aliases: &ModuleAliases,
 ) -> Result<LinkerArtefact, CranelispError>;
 
 pub fn compile_to_object(
     module: &ModuleFullPath,
-    symbol_tables: &SymbolTables,
+    symbol_tables: &SymbolTables<Code, ()>,
+    module_aliases: &ModuleAliases,
 ) -> Result<ObjectArtefact, CranelispError>;
 ```
 
@@ -73,13 +76,13 @@ unsafe impl Send for Code {}
 unsafe impl Sync for Code {}
 ```
 
-**`Code` carries lifecycle ownership ONLY.** The fn ptr for an indirect call lives in the per-module `GotTable` — read via `symbol_table.got().load_slot(entry.got_slot.unwrap())`. The S66 unification (`b09ec76`) briefly relocated the per-entry ptr to a sibling `ModuleEntry::Def.fn_ptr` field; the same-day rollback `1dc57ae` removed that field as redundant with the GOT (which was already authoritative — every callable entry already had a `got_slot`, and JIT-emitted code reads addresses from `got_base + slot * 8`). Post-rollback the GOT is the single source of truth for callable addresses — multi-origin: JIT user fn, linker-loaded user fn, primitive, platform DLL fn (see `facades/types.md` §"Symbol table — the single store"). Variants here distinguish JIT-side reclaim semantics (Decision 31 Scenario 2 — `Arc<Jit>::Drop` calls `JITModule::free_memory()` once refcount hits 0), linker-loaded persistence (cache-hit reload — `Arc<Linker>` holds the mmap'd object alive), and process-static category (`Code::Primitive` — no payload; the marker variant per Decision 0048 (A2, revised 2026-05-17) expresses primitives' lifecycle category at every match site over `Code` without naming an owned resource). Primitives' `ModuleEntry::Def.code = Some(Code::Primitive)` post-revision (the earlier `code: None` framing is superseded). Platform DLL fns set `code = None` because their lifecycle owners live elsewhere (`SharedState.kept_dlls` for platform).
+**`Code` carries lifecycle ownership ONLY.** The fn ptr for an indirect call lives in the per-module `GotTable` — read via `symbol_table.got().load_slot(entry.got_slot.unwrap())`. The S66 unification (`b09ec76`) briefly relocated the per-entry ptr to a sibling `ModuleEntry::Def.fn_ptr` field; the same-day rollback `1dc57ae` removed that field as redundant with the GOT (which was already authoritative — every callable entry already had a `got_slot`, and JIT-emitted code reads addresses from `got_base + slot * 8`). Post-rollback the GOT is the single source of truth for callable addresses — multi-origin: JIT user fn, linker-loaded user fn, primitive, platform DLL fn (see `facades/types.md` §"Symbol table — the single store"). Variants here distinguish JIT-side reclaim semantics (per Decision 41 — `Arc<Jit>::Drop` calls `JITModule::free_memory()` once refcount hits 0; D31 retired with substance amended into D41), linker-loaded persistence (cache-hit reload — `Arc<Linker>` holds the mmap'd object alive), and process-static category (`Code::Primitive` — no payload; the marker variant per Decision 0048 (A2, revised 2026-05-17) expresses primitives' lifecycle category at every match site over `Code` without naming an owned resource). Primitives' `ModuleEntry::Def.code = Some(Code::Primitive)` post-revision (the earlier `code: None` framing is superseded). Platform DLL fns set `code = None` because their lifecycle owners live elsewhere (`SharedState.kept_dlls` for platform).
 
 To extract the fn ptr from a callable entry, **read the GOT slot**: `symbol_table.got().load_slot(entry.got_slot.unwrap())`. Do NOT match on `Code` variants for ptr access. The variant-uniform `Code::ptr()` accessor that previously lived here is removed — there is no ptr inside `Code` to accessor over.
 
 `Code` is the integration layer's concrete `C` for `SymbolTable<C, L>`, but its definition lives in `cranelisp-backend` because both variants reference backend-owned types (`Jit`, `Linker`). Decision 35's Principle-3 protection (no `cranelisp-types → cranelisp-backend` dep) survives intact — `Code` does NOT live in `cranelisp-types`. Decision 35 Layer 2 Option B retracts: backend now constructs `Code` directly (per Decision 41), so the integration layer is no longer the sole crate that names `Code`.
 
-**Decision 31 Scenario 2 preserved.** Lifecycle ownership stays inside `Code::Jit(Arc<Jit>)`. When a user redefines a fn, the old `ModuleEntry::Def` drops, its `Code::Jit(Arc<Jit>)` drops, refcount → 0 if last reference, custom `Drop` on `Jit` fires, `JITModule::free_memory()` runs. The GOT slot's stored ptr becomes invalid the instant the JIT pages are freed — same lifecycle semantics as either of the considered field placements (in-variant ptr or sibling `fn_ptr`); the address now has its single home in the GOT.
+**Per-symbol redefinition reclaim preserved (Decision 41).** Lifecycle ownership stays inside `Code::Jit(Arc<Jit>)`. When a user redefines a fn, the old `ModuleEntry::Def` drops, its `Code::Jit(Arc<Jit>)` drops, refcount → 0 if last reference, custom `Drop` on `Jit` fires, `JITModule::free_memory()` runs — for that one defn's JIT pages, immediately (per-symbol JIT cardinality per D41). The GOT slot's stored ptr becomes invalid the instant the JIT pages are freed — same lifecycle semantics as either of the considered field placements (in-variant ptr or sibling `fn_ptr`); the address now has its single home in the GOT. (D31 retired — Cranelift evidence + safety invariant amended into D41 at S69 Phase 3.)
 
 ### Errors
 
@@ -122,7 +125,7 @@ pub enum LinkerError {
 
 `LinkerError` is the typed result of `Linker::get_symbol` (Decision 36 — bare-name lookup) and other per-symbol cache-load operations. Per Decision 37, asking for a symbol that isn't there is a typed error, not a bare `Option`. The two-variant baseline is the minimum surface acceptable at S66 close — additional variants (e.g., `MmapFailed`, `MachOParseError`, `AbiMismatch`) extend as evidence accrues from production traces; the `#[non_exhaustive]` attribute admits future additions without a public-API break. Re-shape may be triggered during /review of a future FIXME if the variant set proves insufficient.
 
-### `Jit` — the JIT retention newtype (Decision 31)
+### `Jit` — the JIT retention newtype (Decision 41 — formerly D31, retired)
 
 ```rust
 pub struct Jit {
@@ -136,10 +139,10 @@ impl Jit {
 
 impl Drop for Jit {
     fn drop(&mut self) {
-        // Decision 31 — Cranelift 0.116's default Memory::drop leaks on purpose.
+        // Decision 41 §"Cranelift evidence" — Cranelift 0.116's default Memory::drop leaks on purpose.
         // Custom Drop calls unsafe { self.inner.free_memory() } to reclaim executable pages.
         // SAFETY: Arc<Jit> refcount reaching 0 means no derived fn pointer is reachable —
-        // see Decision 31 evidence + safety invariant.
+        // see Decision 41 §"Cranelift evidence" + §"Safety invariant" (D31 retired — substance amended into D41 at S69 Phase 3).
     }
 }
 
@@ -147,7 +150,7 @@ unsafe impl Send for Jit {}
 unsafe impl Sync for Jit {}
 ```
 
-Wrapped in `Arc<Jit>` by `compile_to_module`; the Arc lives on `ModuleEntry::Def.code = Code::Jit(Arc<Jit>)` per Decision 35 (S66 amendment + rollback — variant carries lifecycle owner only; the fn ptr lives in `SymbolTable.got()` indexed by `ModuleEntry::Def.got_slot`). When the last clone drops (REPL redefinition or session shutdown), executable memory is reclaimed.
+Wrapped in `Arc<Jit>` by `compile_to_module`; the Arc lives on `ModuleEntry::Def.code = Code::Jit(Arc<Jit>)` per Decision 35 (S66 amendment + rollback — variant carries lifecycle owner only; the fn ptr lives in `SymbolTable.got()` indexed by `ModuleEntry::Def.got_slot`). When the last clone drops (REPL redefinition or session shutdown), executable memory is reclaimed — per-symbol-immediate under D41 cardinality (one `JITModule` per defn, so reclaiming one Arc drops one defn's pages).
 
 ### `Linker` — the cache-load retention newtype
 
@@ -226,8 +229,8 @@ The internal organisation of `compiler` exposes five public submodules: `apply`,
 
 ### GOT-target resolution helpers (Row 11)
 
-- `compiler::resolve_func_arity` — given `(symbol_tables, current_module, name)`, returns the callee's arity. Used at every call-site to validate the call's argument count matches the callee's declared parameter count.
-- `compiler::resolve_got_target` — given `(symbol_tables, current_module, name)`, returns `(target_module, got_slot)` — the per-module GOT location for the callee. The core indirect-call resolution per Decision 23's two-GOT model.
+- `compiler::resolve_func_arity` — given `(symbol_tables, module_aliases, current_module, name)`, returns the callee's arity. Used at every call-site to validate the call's argument count matches the callee's declared parameter count. Takes both session-level tables because `name` may be qualified and resolution per §8.6.6 can traverse an import/export alias before reaching the defining module.
+- `compiler::resolve_got_target` — given `(symbol_tables, module_aliases, current_module, name)`, returns `(target_module, got_slot)` — the per-module GOT location for the callee. The core indirect-call resolution per Decision 23's two-GOT model.
 - `compiler::got_data_symbol_name` — duplicate name in scope of `cache::object::got_data_symbol_name` (Row 11 — the two are the same function; the cache home is canonical; the `compiler::` re-export is a convenience for the call-site that emits the relocation). Narrows to `pub(crate)` in Wave 3+ when call-site routing through `cache::object::got_data_symbol_name` is mechanical.
 - `compiler::MATCH_EXHAUSTION_TRAP` — already named above.
 
@@ -254,8 +257,8 @@ Disposition: PFR for `resolve_func_arity` + `resolve_got_target` (they are the c
 - `Jit::finalize`, `Jit::finalize_and_get_ptr`, `Jit::get_finalized_ptr`, `Jit::get_ptr_by_name` — finalisation and per-symbol pointer extraction. Post-finalize the JIT pages are immutable executable code.
 - `Jit::jit_module()` — `&mut JITModule` accessor (the underlying Cranelift JIT). Used by callers that need to do a Cranelift-direct operation that `Jit` doesn't wrap.
 - `Jit::build_compile_context` — convenience constructor for `CompileContext` bound to this `Jit`'s intrinsic `FuncId`s.
-- `Jit::drop` — custom `Drop` implementation per Decision 31. Public via the trait, not a freestanding fn.
-- `jit::build_isa`, `jit::declare_intrinsics_generic`, `jit::intrinsic_symbols`, `jit::jit_free_memory_call_count` — module-level free functions. `build_isa` is the freestanding ISA constructor used in the JIT path (mirrors `cache::object::build_isa` for the object path; the two have different `is_pic` defaults). `declare_intrinsics_generic<M: Module>` is the cross-module-impl helper that lets `Jit::declare_intrinsics` and the object-path declaration share one body. `intrinsic_symbols()` returns the table of `IntrinsicSymbol { name, ptr, param_count, is_runtime, has_return }` records for `JITBuilder::symbol(name, ptr)` direct registration at JIT setup. **Signature unchanged at S68; body shrinks.** Post-Decision-48 (S68 — `cranelisp-primitives` owns a process-static `LazyLock<Arc<SymbolTable>>` whose `Arc<GotTable>` is populated at static-init, see `facades/primitives.md`), primitives reach the JIT via the standard per-module GOT-indirect dispatch path that every other module uses (Decision 23 two-GOT model; Decision 31 GOT-indirect dispatch). `intrinsic_symbols()` therefore enumerates ONLY genuinely-intrinsic targets — items that are NOT a module and so cannot ride the GOT path: heap alloc / dealloc / panic / RC underflow check (`runtime/alloc`, `runtime/dealloc`, `runtime/panic`, `runtime/rc_underflow_check`), heap-string alloc + read (`runtime/alloc_string`, `runtime/string_read`), vec runtime support (`runtime/vec_new`, `runtime/vec_drop`), IO entry (`runtime/run_io`), IVar create/spark/force (`cranelisp_ivar_*`). The previous primitives enumeration (Ring 0 shims via `ring0_jit_symbols()` plus ~22 non-Ring-0 string/marshal/vec/int/float/bool shims by direct Rust path) retires — those names now resolve through `PRIMITIVES_TABLE.got()` at the standard GOT-indirect call site. **Phase 5 Wave 4 deletion targets (S68 Phase 3 revision per Decision 0048 §"Structural invariant — backend dep-ban")**: every `cranelisp_primitives::*` Rust-path reference inside `intrinsic_symbols()` (the `ring0_jit_symbols()` call and the ~22 individual extern fn references) is deleted; the `cranelisp-primitives` line in `crates/cranelisp-backend/Cargo.toml` then comes out, converting the GOT-dispatch invariant from a behavioral assertion into a structural property of the workspace DAG. The structural enforcement is strictly stronger than CLIF-shape inspection — it forecloses direct-call emission across all compilation paths. The asymmetry becomes load-bearing post-S68: primitives are a module (Decision 48 wires them in as one); intrinsics are not (Decision 43; `JITBuilder::symbol` direct registration is canonical and only path for intrinsics). Aligns with Decision 35's post-rollback statement (GOT is the single source of truth for callable addresses; no per-entry pointer field) and Decision 48 (primitives' static GotTable is the SymbolTable-GOT row of Decision 23's two-GOT model, instantiated in static memory rather than per-session heap). **Trace symbols deliberately excluded.** Per Decision 40 Path B1 (S67 W4, FIXME 0197), the 12 `cranelisp_trace_*` JIT-emitted-call targets that backend previously contributed were deleted from `intrinsic_symbols()`; registration now lives in `int`'s `int_intrinsics()` map (`src/session_v4.rs`) pointing at the relocated `src/trace.rs` bodies. `--link` mode rejects `(trace ...)` at compile time per FIXME 0199 so the static archive needs none of them. See `facades/int.md` §"Tracing helpers — `src/trace/`" for the int-side hosting. Closes FIXME 0191 + FIXME 0182 (S68 close). `jit_free_memory_call_count()` returns a debug counter for Decision 31 reclaim observation (used by RC trace tests).
+- `Jit::drop` — custom `Drop` implementation per Decision 41 §"Cranelift evidence" (formerly Decision 31, retired). Public via the trait, not a freestanding fn.
+- `jit::build_isa`, `jit::declare_intrinsics_generic`, `jit::intrinsic_symbols`, `jit::jit_free_memory_call_count` — module-level free functions. `build_isa` is the freestanding ISA constructor used in the JIT path (mirrors `cache::object::build_isa` for the object path; the two have different `is_pic` defaults). `declare_intrinsics_generic<M: Module>` is the cross-module-impl helper that lets `Jit::declare_intrinsics` and the object-path declaration share one body. `intrinsic_symbols()` returns the table of `IntrinsicSymbol { name, ptr, param_count, is_runtime, has_return }` records for `JITBuilder::symbol(name, ptr)` direct registration at JIT setup. **Signature unchanged at S68; body shrinks.** Post-Decision-48 (S68 — `cranelisp-primitives` owns a process-static `LazyLock<Arc<SymbolTable>>` whose `Arc<GotTable>` is populated at static-init, see `facades/primitives.md`), primitives reach the JIT via the standard per-module GOT-indirect dispatch path that every other module uses (Decision 23 two-GOT model; Decision 41 reclaim semantics). `intrinsic_symbols()` therefore enumerates ONLY genuinely-intrinsic targets — items that are NOT a module and so cannot ride the GOT path: heap alloc / dealloc / panic / RC underflow check (`runtime/alloc`, `runtime/dealloc`, `runtime/panic`, `runtime/rc_underflow_check`), heap-string alloc + read (`runtime/alloc_string`, `runtime/string_read`), vec runtime support (`runtime/vec_new`, `runtime/vec_drop`), IO entry (`runtime/run_io`), IVar create/spark/force (`cranelisp_ivar_*`). The previous primitives enumeration (Ring 0 shims via `ring0_jit_symbols()` plus ~22 non-Ring-0 string/marshal/vec/int/float/bool shims by direct Rust path) retires — those names now resolve through `PRIMITIVES_TABLE.got()` at the standard GOT-indirect call site. **Phase 5 Wave 4 deletion targets (S68 Phase 3 revision per Decision 0048 §"Structural invariant — backend dep-ban")**: every `cranelisp_primitives::*` Rust-path reference inside `intrinsic_symbols()` (the `ring0_jit_symbols()` call and the ~22 individual extern fn references) is deleted; the `cranelisp-primitives` line in `crates/cranelisp-backend/Cargo.toml` then comes out, converting the GOT-dispatch invariant from a behavioral assertion into a structural property of the workspace DAG. The structural enforcement is strictly stronger than CLIF-shape inspection — it forecloses direct-call emission across all compilation paths. The asymmetry becomes load-bearing post-S68: primitives are a module (Decision 48 wires them in as one); intrinsics are not (Decision 43; `JITBuilder::symbol` direct registration is canonical and only path for intrinsics). Aligns with Decision 35's post-rollback statement (GOT is the single source of truth for callable addresses; no per-entry pointer field) and Decision 48 (primitives' static GotTable is the SymbolTable-GOT row of Decision 23's two-GOT model, instantiated in static memory rather than per-session heap). **Trace symbols deliberately excluded.** Per Decision 40 Path B1 (S67 W4, FIXME 0197), the 12 `cranelisp_trace_*` JIT-emitted-call targets that backend previously contributed were deleted from `intrinsic_symbols()`; registration now lives in `int`'s `int_intrinsics()` map (`src/session_v4.rs`) pointing at the relocated `src/trace.rs` bodies. `--link` mode rejects `(trace ...)` at compile time per FIXME 0199 so the static archive needs none of them. See `facades/int.md` §"Tracing helpers — `src/trace/`" for the int-side hosting. Closes FIXME 0191 + FIXME 0182 (S68 close). `jit_free_memory_call_count()` returns a debug counter for Decision 41 reclaim observation — formerly Decision 31, retired (used by RC trace tests).
 
 ### `jit` shape DTOs (Row 15)
 
@@ -408,7 +411,7 @@ No re-exports of `cranelisp-types` items per Principle 15. Third-party re-export
 
 The backend imports from:
 
-- **`cranelisp-types`** — the full set above plus internals: `Expr`, `Pattern`, `MatchArm`, `Defn`, `Span`, `Visibility`, `ConstrainedFn`, `MonoDefn`, `OverloadVariant`, `TypeDefInfo`, `ConstructorInfo`, `FieldInfo`.
+- **`cranelisp-types`** — the full set above plus internals: `Expr`, `Pattern`, `MatchArm`, `Defn`, `Span`, `Visibility`, `ConstrainedFn`, `MonoDefn`, `OverloadVariant`, `TypeDefInfo`, `ConstructorInfo`, `FieldInfo`, `SymbolTables`, `ModuleAliases`, `ModuleAliasEntry`.
 
 - **`cranelisp-intrinsics`** — backend emits Cranelift IR that calls intrinsic extern functions (per Decision 43, the post-split home of all backend-emitted-call targets). Not a code dependency in the Rust sense (backend doesn't `use cranelisp_intrinsics::*`) but a relocation-time dependency: the JIT registers intrinsic fn pointers via `JITBuilder::symbol`, and the `.o` files contain unresolved relocations against intrinsic symbol names that `--link`'s system linker resolves against the `cranelisp-intrinsics` archive. Backend names the intrinsic symbols by string at codegen time:
   - `cranelisp_alloc`, `heap_alloc_payload`, `heap_dealloc`
@@ -453,8 +456,21 @@ These hold across sprints — the contract `cranelisp-backend` makes with the re
 
 4. **`defined_symbols()` is the codegen-compilable predicate.** Per Decision 22 — `compile_to_module` trusts the contract: if a name in `names` resolves to an entry where `defined_symbols()` would not include it, return `Err(CodegenError)` rather than synthesising. One filter, exposed on `SymbolTable`, consumed identically by callers and the backend's internal loop.
 
-5. **Decision 31 reclaim safety.** Custom `Drop for Jit` calls `unsafe JITModule::free_memory()`. The safety invariant — "no derived fn pointer reachable when refcount hits 0" — is upheld by: (a) every derivative pointer lives on a `ModuleEntry::Def.code` (the Arc keeps the Jit alive), (b) GOT slots are atomic-swapped on REPL redefinition before the old Arc can drop, (c) language-level fn values are heap closures that dispatch through GOT, not raw code pointers. Backend does not need to enforce these; it relies on `int`'s discipline (Decisions 23, 31).
+5. **Per-symbol reclaim safety (Decision 41 §"Safety invariant"; formerly Decision 31, retired).** Custom `Drop for Jit` calls `unsafe JITModule::free_memory()`. The safety invariant — "no derived fn pointer reachable when refcount hits 0" — is upheld by: (a) every derivative pointer lives on a `ModuleEntry::Def.code` (the Arc keeps the Jit alive), (b) GOT slots are atomic-swapped on REPL redefinition before the old Arc can drop, (c) language-level fn values are heap closures that dispatch through GOT, not raw code pointers. Backend does not need to enforce these; it relies on `int`'s discipline (Decisions 23, 41).
 
 6. **Two-GOT model, one CLIF.** Per Decision 23 — same data-symbol reference (`Linkage::Import` against `__cranelisp_got_{M}`) appears in every CLIF emission. JIT mode resolves via `int`'s `JITBuilder::symbol_lookup_fn` returning `SymbolTable[M].got.base_ptr()`. `--link` mode resolves via the `.o` data section GOT defined as `Linkage::Export` per Decision 36. Backend does not branch on mode; the `Module` impl supplied at finalize determines resolution.
 
 7. **Bare-name + Local linkage uniformly.** Per Decision 36 — every user function is `Linkage::Local` with bare-name symbol. No `user`/`main` special case. The `--link` mode `_main` alias is `int`'s job, not backend's.
+
+---
+
+## Constructor codegen
+
+ADT constructors are `ModuleEntry::Def` entries with `kind: DefKind::Constructor { type_name, tag, field_count, internal }` and synthesised `Defn` bodies whose body expression is `Expr::ConstrADT { type_name, tag, fields, span }` (see `facades/types.md` §"Symbol table — the single store" §"DefKind" for the ctor-as-Def shape and rejected alternatives). Backend handles ctors via:
+
+- **`compile_constr_adt`** — lowers `Expr::ConstrADT` to alloc+tag+stores IR. Single handler replacing today's `compile_data_constructor_call`, `compile_data_constructor_as_value`, `nullary_constructor_tag`, `data_constructor_info` family. Nullary (zero-fields) case folds at the lowering site to `iconst tag`.
+- **Direct call** `(Some 42)` lowers through the standard Apply path → finds the synthesised ctor Def → lowers its body (an `Expr::ConstrADT` node) via `compile_constr_adt`.
+- **First-class use** `(map Some list)` passes the ctor Def's `got_slot` address — same path as any other callable. No on-demand closure synthesis.
+- **Pattern matching** unchanged: `Pattern::Constructor` consults `DefKind::Constructor.tag` from the symbol table (replaces today's `lookup_constructor` returning `ConstructorInfo.tag`).
+
+Implementation deletion targets (Sprint 69 Wave 3): `compile_data_constructor_call`, `compile_data_constructor_as_value`, `nullary_constructor_tag`, `data_constructor_info` (~200 LOC removed). `compile_constr_adt` (~50 LOC added) replaces them. The net delta simplifies `compiler/literals.rs` + `compiler/apply.rs` substantially.

@@ -1,7 +1,12 @@
 use serde::{Deserialize, Serialize};
 
 /// Byte range in source text. Carried on every AST node and every error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// `Default` derives to `Span { start: 0, end: 0 }` — structurally identical
+/// to `Span::SYNTHETIC`. Useful for `#[serde(default)]` on newly-added span
+/// fields where the on-disk cache pre-dates the field (e.g. `FieldDef::span`,
+/// added Submission 25 per Decision 39 per-field-span arc).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Span {
     pub start: u32,
     pub end: u32,

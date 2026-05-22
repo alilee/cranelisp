@@ -58,9 +58,9 @@ sequenceDiagram
 
                 rect rgb(255, 220, 220)
                     Note over PWa, Entry_m1_foo: PHASE 1 write — sole writer of m1/foo via INNER DashMap per-entry write lock<br/>insert_or_update is [&self] — outer ST_m1 lock stays SHARED throughout
-                    PWa ->> ST_m1: SymbolTable::insert_or_update(<br/>  sym: Symbol("foo"),<br/>  entry: ModuleEntry::Def {<br/>    name, kind, scheme: Some(_), ast: Some(_),<br/>    callees, got_slot: Some(slot), visibility, docstring,<br/>    code: existing.as_ref().and_then(|e| e.code.clone()),  ← Decision 31 CARRY-FORWARD<br/>  })<br/>S66 post-rollback (1dc57ae): no fn_ptr field — call address lives in SymbolTable.got() at got_slot
+                    PWa ->> ST_m1: SymbolTable::insert_or_update(<br/>  sym: Symbol("foo"),<br/>  entry: ModuleEntry::Def {<br/>    name, kind, scheme: Some(_), ast: Some(_),<br/>    callees, got_slot: Some(slot), visibility, docstring,<br/>    code: existing.as_ref().and_then(|e| e.code.clone()),  ← Decision 41 CARRY-FORWARD (formerly D31, retired)<br/>  })<br/>S66 post-rollback (1dc57ae): no fn_ptr field — call address lives in SymbolTable.got() at got_slot
                     activate Entry_m1_foo
-                    Note right of Entry_m1_foo: per-entry write lock — held briefly across upsert<br/>(microseconds, not a per-form hold)<br/>REPL redefinition: clone existing.code forward (Decision 31 + Decision 32 Clone bound)
+                    Note right of Entry_m1_foo: per-entry write lock — held briefly across upsert<br/>(microseconds, not a per-form hold)<br/>REPL redefinition: clone existing.code forward (Decision 41 + Decision 32 Clone bound; formerly D31 carry-forward, retired)
                     deactivate Entry_m1_foo
                 end
 
@@ -102,7 +102,7 @@ sequenceDiagram
     Note right of SessST: Ref[SymbolTable] (m1) — SHARED<br/>(other codegen workers may stack here)
     SessST -->> PWa: Some(Ref[SymbolTable])
     rect rgb(220, 255, 220)
-        Note over PWa, Slot: PHASE 3 write — sole writer of m1/foo's code field<br/>write_code is [&self] + INNER DashMap per-entry write lock<br/>(Decision 31 — GOT swap MUST precede any old-Arc[Jit] drop)
+        Note over PWa, Slot: PHASE 3 write — sole writer of m1/foo's code field<br/>write_code is [&self] + INNER DashMap per-entry write lock<br/>(Decision 41 — GOT swap MUST precede any old-Arc[Jit] drop; formerly D31, retired)
         alt fresh JIT path (cache miss)
             PWa ->> ST_m1: SymbolTable::write_code(<br/>  sym: &Symbol("foo"),<br/>  code: Code::Jit(Arc[Jit])) + got().store_slot(entry.got_slot, ptr)<br/>S66 post-rollback — Code carries lifecycle owner only — call address lives in the GOT (single source of truth)
         else cache-hit path (Decision 35)

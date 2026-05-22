@@ -53,17 +53,20 @@ use std::sync::{Arc, LazyLock};
 
 use cranelisp_backend::Code;
 use cranelisp_types::{
-    DefKind, JitSymbol, ModuleEntry, ModuleFullPath, PrimitiveDef, PrimitiveKind, Scheme,
-    SymbolTable, Visibility, ring0_primitives, ring1_primitives, ring3_primitives,
+    DefKind, JitSymbol, ModuleEntry, ModuleFullPath, PrimitiveKind, Scheme, SymbolTable,
+    Visibility,
 };
 
 pub mod bool;
 pub mod float;
 pub mod int;
 pub mod marshal;
+pub(crate) mod operator;
 pub mod ring0;
 pub mod string;
 pub mod vec;
+
+use operator::{PrimitiveDef, ring0_primitives, ring1_primitives, ring3_primitives};
 
 /// The synthetic `primitives` module's statically-constructed symbol table
 /// and GOT.

@@ -749,7 +749,7 @@ Note: There is no mechanism for disambiguating same-named methods from different
 This rule has three consequences for trait method resolution (see §7.4):
 
 1. **Impl discovery is bounded by the import graph, not the universe of compiled modules.** When the typechecker resolves a trait method call, it looks for impls only among modules reachable from the current module's import closure.
-2. **Re-exporting a trait or type implicitly re-exports its impls.** See [§8.4.6](08-modules.md#846-implicit-impl-re-export). Authors do not — and cannot — enumerate impls in `export` lists.
+2. **Re-exporting a trait or type implicitly re-exports its impls.** See [§8.4.8](08-modules.md#848-implicit-impl-re-export). Authors do not — and cannot — enumerate impls in `export` lists.
 3. **Impl visibility is determined by the visibility of the trait + type pair.** An impl becomes invisible from a module only when at least one of the trait or the type is unreachable. Private declarations (`deftrait-`, `deftype-`) bound impl reach the same way they bound name reach.
 
 The full normative statement and worked example live in [§5.11.1](05-definitions.md#5111-impl-visibility--transitive-import-closure). The lookup mechanism (pre-computed index vs. on-demand walk) is implementation-defined.

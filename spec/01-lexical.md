@@ -156,7 +156,7 @@ local_name       = symbol_start symbol_char* '.' (symbol_char+ | operator_char+)
                  | operator_char+
 ```
 
-Qualified symbols reference a name in a specific module. The module path and local name are separated by `/`.
+Qualified symbols reference a name in a specific module. The module path and local name are separated by `/`. A qualified symbol contains **exactly one** `/`; `module_path` is the dot-separated form on the left side of the `/`, and `local_name` is the single (possibly dotted or operator) symbol on the right.
 
 ```clojure
 math/sin          ; function 'sin' in module 'math'
@@ -164,6 +164,8 @@ core.io/pure      ; function 'pure' in module 'core.io'
 math/+            ; operator '+' in module 'math'
 option/Option.Some ; dotted name in module 'option'
 ```
+
+Module aliases (from aliased imports per §8.3.4 and module mounts on export per §8.4.4) substitute **within `module_path`** — i.e., on dot-separated segments to the left of the single `/`. There is no two-slash notation: writing `A/str/foo` to mean "module `A`'s `str` alias, name `foo`" is a syntax error. The correct form is `A.str/foo`, where `str` is a segment of `module_path` that the resolver replaces via `A`'s alias table during resolution (see §8.6.6).
 
 ### 1.4.4 Dotted Symbols [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_dotted_symbol]
 

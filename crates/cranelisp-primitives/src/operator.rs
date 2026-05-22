@@ -1,16 +1,24 @@
-//! Ring 0 monomorphic primitive definitions.
+//! Primitive constructor inputs for `PRIMITIVES_TABLE` initialisation.
 //!
-//! 19 monomorphic named primitives replace 10 polymorphic operators.
-//! Each primitive has a fixed concrete type — no polymorphic type variables,
-//! no `operand_type` disambiguation needed.
+//! Per Decision 0048 the primitives module is a `SymbolTable` like any other —
+//! these `PrimitiveDef` rows and the `ring{0,1,3}_primitives()` builders exist
+//! only as input data for the static `PRIMITIVES_TABLE` population in
+//! `lib.rs::build_primitives_table()`. They are crate-private; consumers reach
+//! the same data via `ModuleEntry::Def { kind: DefKind::Primitive { … } }`
+//! entries in `PRIMITIVES_TABLE.symbols`.
 //!
-//! The primitive name uniquely encodes both operand types and the Cranelift instruction.
-//! `add-i64` is always Int, `add-f64` is always Float — no lookup tables.
+//! Relocated from `cranelisp-types` Sprint 69 (types audit H1 stronger
+//! disposition): the public boundary type is `ModuleEntry::Def`, not
+//! `PrimitiveDef`, so these definitions leave the cross-crate surface.
 //!
-//! Ring 2 will add `Num.+` which dispatches to `add-i64`/`add-f64` via trait resolution.
-//! These primitives survive permanently as the foundation for that dispatch.
+//! Historical context: 19 monomorphic named primitives replace 10 polymorphic
+//! operators. Each primitive has a fixed concrete type — no polymorphic type
+//! variables, no `operand_type` disambiguation. The primitive name uniquely
+//! encodes both operand types and the Cranelift instruction. `add-i64` is
+//! always Int, `add-f64` is always Float. Ring 2's `Num.+` dispatches to
+//! `add-i64`/`add-f64` via trait resolution.
 
-use crate::{ModuleFullPath, Symbol, Type, TypeName};
+use cranelisp_types::{ModuleFullPath, Symbol, Type, TypeName};
 
 /// A Ring 0 monomorphic primitive definition.
 ///
@@ -18,7 +26,7 @@ use crate::{ModuleFullPath, Symbol, Type, TypeName};
 /// Registered as `DefKind::Primitive { primitive_kind: PrimitiveKind::Inline }` in the
 /// symbol table.
 #[derive(Debug, Clone)]
-pub struct PrimitiveDef {
+pub(crate) struct PrimitiveDef {
     /// The name used in source (e.g. `add-i64`, `add-f64`, `not`).
     pub name: Symbol,
     /// The concrete monomorphic type of this primitive.
@@ -36,7 +44,7 @@ pub struct PrimitiveDef {
 /// Single authoritative source — typechecker and backend both reference this.
 /// The typechecker registers these with monomorphic schemes (`mono(prim.ty)`).
 /// The backend matches on `cranelift_op` to emit inline Cranelift IR.
-pub fn ring0_primitives() -> Vec<PrimitiveDef> {
+pub(crate) fn ring0_primitives() -> Vec<PrimitiveDef> {
     vec![
         // --- Int arithmetic: (Fn [Int Int] Int) ---
         PrimitiveDef {
@@ -175,7 +183,7 @@ pub fn ring0_primitives() -> Vec<PrimitiveDef> {
 /// function pointers.
 ///
 /// The `cranelift_op` field is the JIT symbol name (same as the spec name).
-pub fn ring1_primitives() -> Vec<PrimitiveDef> {
+pub(crate) fn ring1_primitives() -> Vec<PrimitiveDef> {
     vec![
         PrimitiveDef {
             name: Symbol::from("str-concat"),
@@ -312,7 +320,7 @@ pub fn ring1_primitives() -> Vec<PrimitiveDef> {
 ///
 /// `quote-sexp` converts a runtime Sexp value into a quoted form suitable
 /// for splicing into macro output.
-pub fn ring3_primitives() -> Vec<PrimitiveDef> {
+pub(crate) fn ring3_primitives() -> Vec<PrimitiveDef> {
     let sexp_type = Type::adt(ModuleFullPath::from("macros"), TypeName::from("Sexp"), vec![]);
     vec![
         PrimitiveDef {

@@ -22,7 +22,6 @@ pub mod module;
 pub mod got;
 pub mod heap;
 pub mod pipeline;
-pub mod operator;
 pub mod marshal;
 pub mod scheduling;
 pub mod view;
@@ -41,9 +40,11 @@ pub use ast::{
 };
 pub use types::{Scheme, Subst, Type, TypeId, apply, free_vars, max_type_var_id, format_type_display, format_type_with_vars, type_var_names};
 pub use check::{
-    ConstructorInfo, DisplayInfo, FieldInfo, MethodResolutions, MonoDefn, ResolvedCall,
-    TypeDefInfo,
+    DisplayInfo, FieldInfo, MethodResolutions, MonoDefn, ResolvedCall, TypeDefInfo,
 };
+// `ConstructorInfo` retired — see crates/cranelisp-types/src/check.rs for the
+// migration map and facades/types.md §"Symbol table — the single store"
+// §"DefKind" for the ctor-as-Def shape.
 // `CheckResult` and `ReplSnapshot` relocated to `cranelisp-typecheck` per
 // FIXME 0100 Phase 1 — single-consumer types live with their originating
 // crate (Principle 15). `CheckError` was authored directly in
@@ -56,10 +57,10 @@ pub use scheduling::SchedulingClass;
 pub use module::{
     CHAIN_FOLLOW_DEPTH_LIMIT, CodeStore, ConstrainedFn, DefKind, EnsureOutcome, ExportSpec,
     ImplSexp, ImportNames, ImportSpec, LinkerStore, MacroClauseInfo, MacroParam, ModDecl,
-    ModuleEntry, OverloadVariant, PlatformSpec, PrimitiveKind, SymbolTable, ensure_module_exists,
-    for_each_in_module, get_impls_for_type_chain, get_implementing_types_chain, install_module,
-    lookup_trait_decl_chain, lookup_type_def_chain, resolve_module_by_name_chain,
-    resolve_terminal_entry_and_home,
+    ModuleEntry, OverloadVariant, PlatformSpec, PrimitiveKind, StructuralDeclEntry, SymbolTable,
+    ensure_module_exists, for_each_in_module, get_impls_for_type_chain,
+    get_implementing_types_chain, install_module, lookup_trait_decl_chain, lookup_type_def_chain,
+    resolve_module_by_name_chain, resolve_terminal_entry_and_home,
 };
 pub use got::GotTable;
 pub use heap::{HeapCategory, HeapHeader};
@@ -67,7 +68,6 @@ pub use pipeline::{
     CallEdge, CallGraph, CallInfo, CodegenBehaviour, CompileContext, CompileResult,
     GOT_TABLE_SIZE, ModuleStrategy, NULLARY_TAG_THRESHOLD,
 };
-pub use operator::{ring0_primitives, ring1_primitives, ring3_primitives, PrimitiveDef};
 pub use view::View;
 pub use marshal::{
     TAG_SNIL, TAG_SCONS,
@@ -78,5 +78,5 @@ pub use marshal::{
 // String newtypes and fully-qualified name types
 pub use newtype::{
     FQSymbol, FQTraitName, FQTypeName, JitSymbol, LinkerSymbol, ModuleFullPath, ModuleName, Symbol,
-    TraitName, TypeName,
+    TraitName, TraitRef, TypeName, TypeRef,
 };

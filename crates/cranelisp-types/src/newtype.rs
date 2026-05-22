@@ -126,3 +126,80 @@ impl std::fmt::Display for FQTraitName {
         write!(f, "{}/{}", self.module, self.name)
     }
 }
+
+/// Syntactic-stage trait reference — captures **as-written** qualification.
+///
+/// At the AST stage:
+/// - `(impl Display ...)` → `TraitRef { module: None, name: "Display" }`
+/// - `(impl fmt/Display ...)` → `TraitRef { module: Some("fmt"), name: "Display" }`
+/// - `(impl core.fmt/Display ...)` → `TraitRef { module: Some("core.fmt"), name: "Display" }`
+///
+/// The `module` field at the syntactic stage may be an import alias OR a full
+/// path — whatever the user wrote. Typecheck resolves aliases to the
+/// canonical defining-module via the import graph, producing a `FQTraitName`
+/// at the resolved-stage boundary per Decision 47.
+///
+/// `TraitRef` is the **syntactic-stage** counterpart to `FQTraitName` — same
+/// structural shape (module + name) but with `Option<ModuleFullPath>` because
+/// the syntactic stage captures the user's input directly, including the
+/// unqualified case. See `design/arch/facades/types.md` §"Resolved type
+/// system" for the producer/consumer split and `spec/02-grammar.md` §2.3.4 /
+/// §2.5 + `spec/04-expressions.md` §4.2.2 for the qualified-reference grammar.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TraitRef {
+    pub module: Option<ModuleFullPath>,
+    pub name: TraitName,
+}
+
+impl TraitRef {
+    pub fn new(module: Option<ModuleFullPath>, name: TraitName) -> Self {
+        TraitRef { module, name }
+    }
+}
+
+impl std::fmt::Display for TraitRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.module {
+            None => write!(f, "{}", self.name),
+            Some(m) => write!(f, "{}/{}", m, self.name),
+        }
+    }
+}
+
+/// Syntactic-stage type reference — captures **as-written** qualification.
+///
+/// At the AST stage:
+/// - `(Option Int)` → `TypeRef { module: None, name: "Option" }`
+/// - `(option/Option Int)` → `TypeRef { module: Some("option"), name: "Option" }`
+/// - `(core.option/Option Int)` → `TypeRef { module: Some("core.option"), name: "Option" }`
+///
+/// Same pattern as `TraitRef`; resolves to `FQTypeName` at typecheck via the
+/// import graph per Decision 47. The unqualified case (`module: None`) is the
+/// common one; resolution looks the name up against current-scope-plus-imports
+/// at the `TypeName → FQTypeName` lift site inside `check_form`.
+///
+/// `TypeRef` is the **syntactic-stage** counterpart to `FQTypeName` — same
+/// structural shape (module + name) but with `Option<ModuleFullPath>` because
+/// the syntactic stage captures the user's input directly. See
+/// `design/arch/facades/types.md` §"Resolved type system" and `spec/02-grammar.md`
+/// §2.3.4 + `spec/04-expressions.md` §4.2.2.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TypeRef {
+    pub module: Option<ModuleFullPath>,
+    pub name: TypeName,
+}
+
+impl TypeRef {
+    pub fn new(module: Option<ModuleFullPath>, name: TypeName) -> Self {
+        TypeRef { module, name }
+    }
+}
+
+impl std::fmt::Display for TypeRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.module {
+            None => write!(f, "{}", self.name),
+            Some(m) => write!(f, "{}/{}", m, self.name),
+        }
+    }
+}

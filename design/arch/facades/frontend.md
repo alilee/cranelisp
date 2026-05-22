@@ -24,7 +24,11 @@ pub fn build_form(sexp: &Sexp) -> Result<Vec<ParsedEntry>, CranelispError>;
 
 pub fn build_expr(sexp: &Sexp) -> Result<Expr, CranelispError>;
 
-pub fn expand<C, L>(sexp: Sexp, symbol_tables: &SymbolTables<C, L>) -> Result<Sexp, ExpansionError>
+pub fn expand<C, L>(
+    sexp: Sexp,
+    symbol_tables: &SymbolTables<C, L>,
+    module_aliases: &ModuleAliases,
+) -> Result<Sexp, ExpansionError>
 where
     C: CodeStore,
     L: LinkerStore;
@@ -44,11 +48,17 @@ where
 
 `ParsedEntry` is a **transient** parse-time-only carrier defined in `cranelisp-types` (see `facades/types.md` §"Boundary types" — the `ParsedEntry` family). It carries only what the parser knows; resolved-stage fields (type, scheme, callees, code, got_slot) are populated downstream by the single-call typecheck surface `cranelisp_typecheck::check_forms` (per Decision 44's 2026-05-13 third amendment; the internal two-pass discipline lives inside `check_forms`'s frame). **`ParsedEntry` NEVER lands in `SymbolTable`.** Lifecycle: `parse` → `ParsedEntry` (transient) → orchestrator accumulates `Vec<ParsedEntry>` across the cluster → one `check_forms` call drives Pass 1 then Pass 2 internally, writing typed entries into orchestrator-handed staging → `int::insert_cluster` drains staging into the live table atomically on cluster success. The `SymbolTable` invariant — "if it's in the live table, it's checked AND committed" — holds because the post-Gap state contract (FIXME 0160 + Decision 44 third amendment) is structural: the orchestrator commits only on whole-cluster Ok and retries the whole `check_forms` call against a fresh staging frame on `Err(Gap)`.
 
-`SymbolTables<C, L>` is the generic alias per Decision 32 — frontend stays C/L-blind so the same facade serves typecheck-only callers (`SymbolTables<(), ()>`) and integration-layer callers (`SymbolTables<Code, ()>`). The alias is structural; frontend does not depend on `int` to use it.
+`SymbolTables<C, L>` and `ModuleAliases` are the session-level table aliases imported from `cranelisp-types` (see `facades/types.md` §"Symbol table — the single store"). Frontend stays C/L-blind so the same facade serves typecheck-only callers (`SymbolTables<(), ()>`) and integration-layer callers (`SymbolTables<Code, ()>`). The aliases are structural; frontend does not depend on `int` to use them.
 
 ```rust
-pub type SymbolTables<C, L> = DashMap<ModuleFullPath, Arc<SymbolTable<C, L>>>;
+// Canonical declarations in `cranelisp-types`; re-exported / imported here:
+pub type SymbolTables<C, L> = DashMap<ModuleFullPath, SymbolTable<C, L>>;
+pub type ModuleAliases = DashMap<ModuleFullPath, ModuleAliasEntry>;
 ```
+
+`expand` requires both because §8.6.6 qualified-name resolution for a macro head (`m.n.str/some-macro`) may need to traverse an import or export alias on the way to the macro's defining module — the lookup is not just a module-table get. The two tables are threaded as two parameters per the narrow-interfaces principle (Principle 2) and to keep the existing in-flight migration from inline `&DashMap<…>` shapes to a single materialised typedef (S69 audit F-1) tractable.
+
+> **Drift note.** Earlier facade text declared `pub type SymbolTables<C, L> = DashMap<ModuleFullPath, Arc<SymbolTable<C, L>>>;` (with `Arc<…>`). The canonical types-crate typedef does NOT wrap in `Arc` — the integration layer's `SharedState.symbol_tables: DashMap<ModuleFullPath, SymbolTable<Code, ()>>` holds the per-module `SymbolTable` values directly inside the DashMap shards. The `Arc` was an editorial drift on the frontend facade; the form above is the canonical shape.
 
 `ExtractedDeclarations` is the bundle (renamed from `StructuralDecls` in Sprint 67 W1 — the as-built name in `crates/cranelisp-frontend/src/module_extract.rs` is `ExtractedDeclarations`; the facade adopts the as-built name and retires the older `StructuralDecls` label):
 
@@ -67,9 +77,9 @@ The struct lives at `cranelisp_frontend::module_extract::ExtractedDeclarations` 
 
 Fed directly into `SymbolTable::write_structural_decls` per Decision 33 — single source of truth for structural decls on `SymbolTable`, no parallel `ModuleStructure` store.
 
-`expand` invokes registered macros via JIT'd code addresses found through `symbol_tables`. The actual call into the macro happens through the GOT slot per Decision 23 — the frontend does not know about JITs; it only knows that when an FQ macro reference resolves to a `ModuleEntry::Macro` with `code: Some(_)`, it can dispatch.
+`expand` invokes registered macros via JIT'd code addresses found through `symbol_tables`. The actual call into a macro clause body happens through the GOT slot per Decision 23 — the frontend does not know about JITs; it only knows that when an FQ macro reference resolves to `Def { kind: DefKind::Macro { clauses_meta, … }, … }`, it walks `clauses_meta` to pattern-match the call sexp against each clause's shape, then GOT-dispatches to the matched clause's mangled-variant Def — the per-clause body lives as its own `Def { kind: UserFn, … }` under the mangled name `{macro-name}$clause-{N}` with `got_slot` + `code: Some(_)` populated. See `facades/types.md` §"DefKind" `DefKind::Macro` for the unified shape; the prior sibling `ModuleEntry::Macro` variant retired (Submission 13).
 
-Per Decision 43's reframing of Principle 15 (legacy Decision 8 retracted), there is **no `MacroResolver` trait** mediating macro lookup. `expand` looks up macros directly against the `&SymbolTables<C, L>` parameter — the dependency-inversion shape used in earlier rings is gone. Frontend's only collaborator for macro lookup is the symbol-tables map itself; the JIT'd code address sits on `ModuleEntry::Macro.code`, reached through the standard `&SymbolTable` access path. Migration of the still-in-`src/expander.rs` implementation into `cranelisp-frontend` is tracked under FIXME 0098 Phase 2.
+Per Decision 43's reframing of Principle 15 (legacy Decision 8 retracted), there is **no `MacroResolver` trait** mediating macro lookup. `expand` looks up macros directly against the `&SymbolTables<C, L>` parameter — the dependency-inversion shape used in earlier rings is gone. Frontend's only collaborator for macro lookup is the symbol-tables map itself; the JIT'd code address sits on the matched clause's mangled-variant `Def { kind: UserFn, code, got_slot, … }`, reached through the standard `&SymbolTable` access path (parent `Def { kind: Macro, … }` entry holds metadata only — no own `code`; bodies live one symbol-table-entry deeper, under the `$clause-{N}` mangled names). Migration of the still-in-`src/expander.rs` implementation into `cranelisp-frontend` is tracked under FIXME 0098 Phase 2.
 
 > **Status (S66 W3a-β → S67): invocation is structurally deferred per FIXME 0175.** The frontend `expand` in `crates/cranelisp-frontend/src/expand.rs` performs the structural traversal (children recursion, macro-head detection, depth-limit enforcement, quasiquote expansion via `expand_quasiquotes`) but does NOT call into the JIT'd macro body — it returns `Err(ExpansionError::Gap(ResolutionGap::MacroInMem(fq)))` for every macro head encountered. The real invocation path remains in `src/expander.rs` until `/arch` resolves FIXME 0175 (the marshal-deps gap: `cranelisp_runtime::heap_alloc` + signal handling cannot be reached from `cranelisp-frontend` under the current BC §1 dep-allowance, and the facade as written requires invocation). When `/arch` lands a resolution (likely option (a) — a new `cranelisp-marshal` crate), this paragraph drops and the in-tree implementation deletes. The signature and uniform-Gap contract above stand and need no revision.
 
@@ -168,7 +178,7 @@ The crate's public module structure mirrors its functional decomposition:
 | `cranelisp_frontend::module_extract` | `extract_module_declarations`, `ExtractedDeclarations` — structural-decl peeling | yes (both items re-exported at the crate root) |
 | `cranelisp_frontend::defmacro` | `parse_defmacro`, `is_defmacro`, `is_begin`, `flatten_begin`, `synthesize_macro_clause_defn`, plus the `DefmacroInfo` and `MacroClause` re-exports from `cranelisp-types` | yes (fns and re-exports surfaced at the crate root) |
 | `cranelisp_frontend::quasiquote` | `expand_quasiquotes`, `expand_quote_template`, `next_synthetic_span` | yes (all three re-exported at the crate root) |
-| `cranelisp_frontend::expand` | `expand`, `ExpansionError`, `EXPANSION_DEPTH_LIMIT`, `SymbolTables<C, L>` type alias | yes (`ExpansionError` re-exported at the crate root) |
+| `cranelisp_frontend::expand` | `expand`, `ExpansionError`, `EXPANSION_DEPTH_LIMIT` | yes (`ExpansionError` re-exported at the crate root). `SymbolTables<C, L>` and `ModuleAliases` aliases are consumed from `cranelisp_types` (S69 cascade — types-crate is the canonical home). |
 
 The qualified `module::` paths are the canonical homes; the crate-root re-exports exist so the four-free-function boundary entry point reads as `cranelisp_frontend::{parse, build_form, build_expr, extract_module_declarations, expand}` in one import. The double-naming is **intentional surface duplication** — see `cranelisp_frontend::ExtractedDeclarations` vs `cranelisp_frontend::module_extract::ExtractedDeclarations`, both pub-api lines. Tooling that audits public-API drift (`cargo public-api`) will report both; the facade endorses the duplication for boundary ergonomics.
 
@@ -192,9 +202,9 @@ These three re-exports + the `ExtractedDeclarations` qualified/root parallel for
 
 The frontend imports from:
 
-- **`cranelisp-types`** — `Sexp`, `Expr`, `TopLevel`, `Program`, `Defn`, `DefnVariant`, `Pattern`, `MatchArm`, `TypeExpr`, `Span`, `Visibility`, `ImportSpec`, `ExportSpec`, `NamedImport`, `NamedExport`, `ImportNames`, `PlatformSpec`, `ModDecl`, `MacroClauseInfo`, `MacroParam`, `ModuleFullPath`, `Symbol`, `TypeName`, `TraitName`, `ModuleName`, `FQSymbol`, `FQTypeName`, `CranelispError`, `Warning`, `SymbolTable`, `ModuleEntry`, `DefKind`, `ResolutionGap`.
+- **`cranelisp-types`** — `Sexp`, `Expr`, `TopLevel`, `Program`, `Defn`, `DefnVariant`, `Pattern`, `MatchArm`, `TypeExpr`, `Span`, `Visibility`, `ImportSpec`, `ExportSpec`, `NamedImport`, `NamedExport`, `ImportNames`, `PlatformSpec`, `ModDecl`, `MacroClauseInfo`, `MacroParam`, `ModuleFullPath`, `Symbol`, `TypeName`, `TraitName`, `ModuleName`, `FQSymbol`, `FQTypeName`, `CranelispError`, `Warning`, `SymbolTable`, `SymbolTables`, `ModuleAliases`, `ModuleAliasEntry`, `ModuleEntry`, `DefKind`, `ResolutionGap`.
 
-- **`cranelisp` (binary)** — `SymbolTables` type alias (or equivalent), provided as input to `expand`. Frontend does not depend on `cranelisp` as a crate (would invert the DAG); the type is structural — `DashMap<ModuleFullPath, Arc<SymbolTable<C, L>>>` for any compatible `C`, `L`. The `expand` signature accepts a generic alias so the frontend remains downstream of types only.
+- **`cranelisp` (binary)** — none. The `SymbolTables` and `ModuleAliases` aliases are imported from `cranelisp-types` (canonical home — `facades/types.md` §"Symbol table — the single store"). Frontend does not depend on `cranelisp` as a crate (would invert the DAG); the integration layer constructs the two DashMaps at session init and threads `&SymbolTables<Code, ()>` + `&ModuleAliases` into each `expand` call.
 
 The frontend imports from no other workspace crate — not `cranelisp-typecheck`, not `cranelisp-backend`, not `cranelisp-primitives`, not `cranelisp-intrinsics`, not `cranelisp-platform`. (Per Decision 43, `cranelisp-runtime` retired into `cranelisp-primitives` + `cranelisp-intrinsics`; neither is a frontend dependency.)
 
@@ -229,3 +239,13 @@ These hold across sprints — the contract `cranelisp-frontend` makes with the r
 6. **`expand` is side-effect-free for dependency resolution.** When an FQ ref's target isn't ready, expand returns `Err(ExpansionError::Gap(ResolutionGap::MacroInMem(fq)))` — never calls the scheduler, never registers modules, never blocks. The frontend has no `Sess` / `CompileScheduler` dependency (Principle 3). The orchestrator (`int::process_form`) handles dispatch + retry.
 7. **`#[non_exhaustive] DTOs include all error types.** `ExpansionError` is `#[non_exhaustive]` so adding new gap kinds or genuine error variants is non-breaking.
 8. **Form-by-form, not pre-pass.** Per FIXME `sprints/fixmes/0005-spec-macro-availability-form-by-form.md`: there is NO defmacro pre-pass extraction. Each form is processed in source order; macros become available to subsequent forms only after their `defmacro` form is itself processed. The "module-wide availability" model in `spec/09-macros.md §9.3.4` is to be revised — until then, the frontend does not implement it.
+
+---
+
+## Deftype expander — ctor-as-Def synthesis
+
+The `(deftype ...)` expander produces, in addition to the `TypeDef` ModuleEntry, **one synthesised `Defn` per constructor**. The Defn's body expression is an `Expr::ConstrADT { type_name, tag, fields, span }` node (see `facades/types.md` §"AST" for the node shape, §"Symbol table — the single store" §"DefKind" for the ctor-as-Def shape and rejected alternatives). The resulting `ModuleEntry::Def` carries `kind: DefKind::Constructor { type_name, tag, field_count, internal }` and a populated `got_slot`. The body's `Expr::ConstrADT` lowers through standard backend codegen — no special path for constructors.
+
+`TypeDefInfo.constructors` is `Vec<Symbol>` (names only); per-constructor metadata (tag, field count, type_name, internal) lives uniquely on each ctor's `DefKind::Constructor`. Per-field names live on `Def.param_names`. Per-field types fold into `Def.scheme`. No parallel storage of ctor metadata.
+
+The previous "synthetic per-constructor `ParsedEntry::Constructor` transient → check_form lifts to a `ModuleEntry::Constructor`" path is replaced by "synthetic per-constructor `ParsedEntry::Constructor` transient → check_form lifts to a `ModuleEntry::Def` with `kind: DefKind::Constructor` + body `Expr::ConstrADT`". The transient ParsedEntry shape is unchanged; only the post-typecheck commit target moves.

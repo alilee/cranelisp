@@ -489,6 +489,7 @@ Imports bring names from other modules into the current scope. Exports re-export
 - Imported names are available as bare (unqualified) symbols in the current module.
 - Even without an explicit import, names from other modules can be referenced using qualified syntax: `math/sin`.
 - All non-prelude modules receive an implicit `(import [prelude [*]])`. The prelude itself and the `primitives` module are exempt.
+- The grammar above is a summary. The full grammar — including module aliases `(mod alias)`, symbol-rename pairs `(source local)`, member globs `Type.*`, and selective dotted members — is defined in [§8.3](08-modules.md#83-import) (import) and [§8.4](08-modules.md#84-export) (export). Renames and module aliases are symmetric across import and export.
 - See [Section 8: Modules](08-modules.md) for full module resolution semantics.
 
 ## 5.10 Platform Declaration [R4 S10]
@@ -529,12 +530,12 @@ All definitions are **public by default**. A `-` suffix on the definition keywor
 **Semantics:**
 
 - Private names are accessible only within the defining module and its submodule subtree. They MUST NOT be imported by other modules.
-- `impl` has no private variant. Trait implementations are always visible wherever both the trait and the type are in scope. The phrase "in scope" means **reachable through the transitive import closure of the current module** — see §5.11.1 for the precise rule and worked example, and cross-references to [§7.11](07-traits.md#711-scope-and-visibility) (trait-side) and [§8.4.6](08-modules.md#846-implicit-impl-re-export) (module-side).
+- `impl` has no private variant. Trait implementations are always visible wherever both the trait and the type are in scope. The phrase "in scope" means **reachable through the transitive import closure of the current module** — see §5.11.1 for the precise rule and worked example, and cross-references to [§7.11](07-traits.md#711-scope-and-visibility) (trait-side) and [§8.4.8](08-modules.md#848-implicit-impl-re-export) (module-side).
 - `import`, `export`, and `platform` have no private variants.
 
 ### 5.11.1 Impl Visibility — Transitive Import Closure [R4 S66]
 
-A trait implementation `(impl Trait Type ...)` declared in module L is visible in module N when **both** the trait `Trait` and the type `Type` are reachable from N through the transitive closure of N's `import` declarations. An implementation MUST NOT require N to directly import L for the impl to be visible; if L's impl is reachable through any chain of imports (or re-exports — see §8.4.6) that brings `Trait` and `Type` into N's scope, the impl is in scope at N.
+A trait implementation `(impl Trait Type ...)` declared in module L is visible in module N when **both** the trait `Trait` and the type `Type` are reachable from N through the transitive closure of N's `import` declarations. An implementation MUST NOT require N to directly import L for the impl to be visible; if L's impl is reachable through any chain of imports (or re-exports — see §8.4.8) that brings `Trait` and `Type` into N's scope, the impl is in scope at N.
 
 This matches the "instances are global within the import closure" semantics found in Haskell-family type-class systems: users do not enumerate impls in import or export lists; impls follow the trait and type wherever those names go.
 

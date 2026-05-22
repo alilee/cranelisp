@@ -56,7 +56,7 @@ Each section: bounded context (essence + why); in-scope (responsibilities, conce
 - **Outputs**: in-place AST annotations; symbol-table writes; transient warnings.
 - **Window types**: typecheck consumes a symbol-table-view window passed by the caller; it exposes no windows of its own.
 
-**Module-locality invariant.** Typecheck never iterates the universe of modules to resolve a name, type, or impl (Principle 17). Cross-module access happens via fully-qualified references (one named module) or via per-symbol point-to-point chain-follow along `ModuleEntry::Import` / `Reexport` bindings back to the symbol's defining module (no closure walk, no cycle detection). `ModuleEntry::TraitImpl` is written to the **trait's defining module** per Decision 0045; importers discover impls by chain-following the trait reference back to its home module and probing for `impl$FQTypeName$FQTraitName`. This invariant is the structural prerequisite for Decision 44's cluster-atomic two-pass shape; see `facades/typecheck.md` invariant 10 for the access-pattern shapes.
+**Module-locality invariant.** Typecheck never iterates the universe of modules to resolve a name, type, or impl (Principle 17). Cross-module access happens via fully-qualified references (one named module) or via per-symbol point-to-point chain-follow along `ModuleEntry::Import` bindings back to the symbol's defining module (no closure walk, no cycle detection). `Import` covers both private (`(import …)`-form) and public (`(export [foreign-sym])`-form, formerly `Reexport`) edges — visibility is a per-entry orthogonal axis (`visibility: Visibility` on every variant), not a separate variant (see `facades/types.md` §"Symbol table — the single store" §"Rejected alternatives — per-entry visibility"). Chain-follow walks `Import` edges regardless of visibility. `ModuleEntry::TraitImpl` is written to the **trait's defining module** per Decision 0045; importers discover impls by chain-following the trait reference back to its home module and probing for `impl$FQTypeName$FQTraitName`. This invariant is the structural prerequisite for Decision 44's cluster-atomic two-pass shape; see `facades/typecheck.md` invariant 10 for the access-pattern shapes.
 
 ---
 
@@ -80,7 +80,7 @@ Each section: bounded context (essence + why); in-scope (responsibilities, conce
 
 **What crosses the boundary.**
 - **Inputs**: a symbol-table view; a Cranelift module to emit into.
-- **Outputs**: a per-batch artefact carrying a retention root for the produced code plus per-symbol code addresses (for the integration layer to wrap in its concrete code carrier); for object mode, the object artefact and the cache pair.
+- **Outputs**: for JIT mode (per Decision 41 per-symbol cardinality — typecheck cluster commit followed by N parallel backend workers, each calling `compile_to_module` for one assigned symbol), direct writes via `SymbolTable::write_code` + per-symbol GOT-slot population (no return tuple — `Result<(), CompilationError>`); for object mode (per-module), the object artefact and the cache pair.
 - **Window types**: none.
 
 ---
@@ -247,6 +247,8 @@ Each cadence accesses shared state only through typed handles owned by the caden
 - Identifier newtypes: symbols, type names, trait names, module names, fully-qualified variants
 - Span and error: source spans, error and warning types
 - Constants: shared sizes and thresholds
+
+**Visibility is per-entry.** `Visibility` lives once, on the entry. Every `ModuleEntry` variant carries `visibility: Visibility`; there is no parallel exports-set sidecar (the prior `Reexport` variant retired — public re-export edges are `Import { source, visibility: Public }`). Cross-module slot lookups consult the per-entry visibility field directly. Same pattern at adjacent layers: `ModuleAliasEntry`, form-level `Defn` / `TraitDecl` / `ModDecl` / `ImportSpec` / `ExportSpec`. See `facades/types.md` §"Visibility" + §"Rejected alternatives — per-entry visibility" + §"Two complementary stores, two purposes" for the form-record-vs-visibility distinction.
 
 **Trait contracts (marker traits for cross-crate windows).** The crate hosts empty marker traits that downstream crates implement to supply concrete types where the boundary is generic. Concrete window types live in the owning crate, not here, so this crate stays ignorant of backend and runtime concrete state.
 

@@ -2,23 +2,56 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ResolvedCall, Sexp, Span, Symbol, TraitName, Type, TypeName};
+use crate::{FQTypeName, ResolvedCall, Span, Symbol, TraitName, TraitRef, Type, TypeName, TypeRef};
 
 // --- Type Expressions ---
 
 /// Type expression in annotations and trait signatures.
+///
+/// Syntactic-stage shape. The `Named` / `Applied` variants carry a `TypeRef`
+/// (S69 Submission 27) — i.e. `(Option<ModuleFullPath>, TypeName)` — capturing
+/// **as-written** qualification structurally. At AST construction the optional
+/// module is whatever the user wrote (`Int` → `module: None`; `option/Option`
+/// → `module: Some("option")`; `core.option/Option` → full path). Typecheck
+/// resolves the optional module via the import graph at the `TypeName →
+/// FQTypeName` lift site (`check_form` consulting current scope + imports),
+/// producing `Type::ADT(FQTypeName, …)` at the resolved-stage boundary per
+/// Decision 47.
+///
+/// The cascade from bare `TypeName` payloads to `TypeRef` payloads (S69
+/// Submission 27) sharpens Decision 47's producer/consumer split: the
+/// syntactic stage no longer carries "bare name slips through" — it carries
+/// the qualification structurally, and typecheck resolves it. The `head_ref`
+/// helper provides a uniform accessor for the head reference on `Named` and
+/// `Applied`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TypeExpr {
-    /// Named type: `Int`, `Bool`, `String`
-    Named(TypeName),
+    /// Named type with as-written qualification: `Int`, `Bool`, `option/Option`
+    Named(TypeRef),
     /// Self type in trait methods: `Self`
     SelfType,
     /// Function type: `(Fn [Int Int] Bool)`
     FnType(Vec<TypeExpr>, Box<TypeExpr>),
     /// Type variable: `:a`, `:b`
     TypeVar(Symbol),
-    /// Applied type constructor: `(Option Int)`, `(List :a)`
-    Applied(TypeName, Vec<TypeExpr>),
+    /// Applied type constructor with as-written head qualification:
+    /// `(Option Int)`, `(option/Option :a)`, `(List :a)`
+    Applied(TypeRef, Vec<TypeExpr>),
+}
+
+impl TypeExpr {
+    /// Returns the head `TypeRef` for `Named` and `Applied` variants — the
+    /// reference the typecheck resolver must lift to `FQTypeName`. Returns
+    /// `None` for `TypeVar`, `SelfType`, and `FnType` (which have no single
+    /// head identifier — `TypeVar` is a free name, `SelfType` is a marker
+    /// resolved against the enclosing impl target, and `FnType` is
+    /// structurally compound).
+    pub fn head_ref(&self) -> Option<&TypeRef> {
+        match self {
+            TypeExpr::Named(r) | TypeExpr::Applied(r, _) => Some(r),
+            _ => None,
+        }
+    }
 }
 
 // --- Patterns ---
@@ -104,9 +137,20 @@ pub enum Expr {
         #[serde(default)]
         inferred_type: Option<Box<Type>>,
     },
+    /// Lambda expression — `(fn [param ...] body)` (spec §4.5).
+    ///
+    /// Per spec §2.3.5 `fn_expr` the parameter list uses the same syntax as
+    /// `defn` (spec §2.5 `annotated_param = annotation SYMBOL | SYMBOL`) —
+    /// each parameter carries its own optional `:Type` annotation
+    /// independently. The fused tuple `params: Vec<(Symbol, Option<TypeExpr>)>`
+    /// is the structural enforcement of that invariant per Principle 18
+    /// (replaces the prior parallel-vec `params: Vec<Symbol>` +
+    /// `param_annotations: Vec<Option<TypeExpr>>` layout, whose `len()`
+    /// lockstep invariant was unenforced). Mirrors `DefnVariant`'s shape per
+    /// Principle 7 (single source of truth — the same semantic concept has
+    /// one structural form).
     Lambda {
-        params: Vec<Symbol>,
-        param_annotations: Vec<Option<TypeExpr>>,
+        params: Vec<(Symbol, Option<TypeExpr>)>,
         body: Box<Expr>,
         span: Span,
         #[serde(default)]
@@ -174,6 +218,24 @@ pub enum Expr {
         #[serde(default)]
         inferred_type: Option<Box<Type>>,
     },
+    /// ADT construction — a language-level operation. Synthesised by the
+    /// deftype expander as the body of every constructor's Defn (see
+    /// facades/types.md §"AST" + §"Symbol table — the single store"
+    /// §"DefKind" for the ctor-as-Def shape). Not user syntax; users write
+    /// `(Some 42)` (an `Apply` against the constructor's name), which resolves
+    /// to a Def whose body is this node.
+    ///
+    /// Backend lowers this however it chooses (inline alloc+tag+stores, libcall
+    /// to a runtime helper, or hybrid). Backend choice; not visible to typecheck
+    /// or to downstream readers of the AST.
+    ConstrADT {
+        type_name: FQTypeName,    // owning ADT (e.g., core.option/Option)
+        tag: usize,                // discriminant within the ADT
+        fields: Vec<Expr>,         // field value expressions
+        span: Span,
+        #[serde(default)]
+        inferred_type: Option<Box<Type>>,
+    },
 }
 
 impl Expr {
@@ -193,7 +255,8 @@ impl Expr {
             | Expr::VecLit { span, .. }
             | Expr::Annotate { span, .. }
             | Expr::Trace { span, .. }
-            | Expr::ParBind { span, .. } => *span,
+            | Expr::ParBind { span, .. }
+            | Expr::ConstrADT { span, .. } => *span,
         }
     }
 
@@ -213,7 +276,8 @@ impl Expr {
             | Expr::VecLit { inferred_type, .. }
             | Expr::Annotate { inferred_type, .. }
             | Expr::Trace { inferred_type, .. }
-            | Expr::ParBind { inferred_type, .. } => inferred_type.as_deref(),
+            | Expr::ParBind { inferred_type, .. }
+            | Expr::ConstrADT { inferred_type, .. } => inferred_type.as_deref(),
         }
     }
 
@@ -233,7 +297,8 @@ impl Expr {
             | Expr::VecLit { inferred_type, .. }
             | Expr::Annotate { inferred_type, .. }
             | Expr::Trace { inferred_type, .. }
-            | Expr::ParBind { inferred_type, .. } => *inferred_type = ty,
+            | Expr::ParBind { inferred_type, .. }
+            | Expr::ConstrADT { inferred_type, .. } => *inferred_type = ty,
         }
     }
 }
@@ -261,8 +326,14 @@ pub struct Defn {
 }
 
 impl Defn {
-    /// Returns the params of a single-sig defn. Panics if multi-sig.
-    pub fn params(&self) -> &[Symbol] {
+    /// Returns the params (name + optional `:Type` annotation per spec
+    /// §5.1.1) of a single-sig defn. Panics if multi-sig.
+    ///
+    /// The per-param `Option<TypeExpr>` carries `None` for an unannotated
+    /// parameter and `Some(TypeExpr)` for the `:Type name` or `:Trait name`
+    /// forms. Fused tuple shape per Principle 18 — see `DefnVariant`
+    /// docstring.
+    pub fn params(&self) -> &[(Symbol, Option<TypeExpr>)] {
         assert!(
             self.variants.len() == 1,
             "Defn::params() called on multi-sig defn '{}' with {} variants",
@@ -295,17 +366,6 @@ impl Defn {
         &mut self.variants[0].body
     }
 
-    /// Returns the param annotations of a single-sig defn. Panics if multi-sig.
-    pub fn param_annotations(&self) -> &[Option<TypeExpr>] {
-        assert!(
-            self.variants.len() == 1,
-            "Defn::param_annotations() called on multi-sig defn '{}' with {} variants",
-            self.name,
-            self.variants.len()
-        );
-        &self.variants[0].param_annotations
-    }
-
     /// Returns true if this defn has multiple signature variants.
     pub fn is_multi_sig(&self) -> bool {
         self.variants.len() > 1
@@ -313,19 +373,49 @@ impl Defn {
 }
 
 /// One variant of a multi-signature function.
+///
+/// Each parameter carries its own optional `:Type` annotation, fused into
+/// the `params: Vec<(Symbol, Option<TypeExpr>)>` tuple — `None` for an
+/// unannotated parameter, `Some(TypeExpr)` for the `:Type name` /
+/// `:Trait name` forms. Per spec §5.1.1 EBNF (`annotated_param =
+/// colon_prefix symbol | symbol`) the annotation is independently optional
+/// per-param; the fused tuple shape is the structural enforcement of that
+/// invariant per Principle 18 (replaces the prior parallel-vec
+/// `params: Vec<Symbol>` + `param_annotations: Vec<Option<TypeExpr>>`
+/// layout, whose `len()` lockstep invariant was unenforced).
+///
+/// There is no `return_type` field. Per spec §5.1 (L41) — "The return type
+/// is always inferred; there is no return type annotation syntax."
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DefnVariant {
-    pub params: Vec<Symbol>,
-    pub param_annotations: Vec<Option<TypeExpr>>,
+    pub params: Vec<(Symbol, Option<TypeExpr>)>,
     pub body: Expr,
     pub span: Span,
 }
 
 /// Field in a data constructor.
+///
+/// Per spec §2.2.6 + spec §5.2 (`field_def = annotation SYMBOL | SYMBOL`) the
+/// field name is always present — both grammar productions terminate in a
+/// required `SYMBOL`. The type annotation is independently optional: a bare
+/// field (`SYMBOL` only, no `:Type`) gets a synthesised `TypeExpr::TypeVar`
+/// at parse time (see `cranelisp-frontend::ast_builder` bare-detection site),
+/// so `type_expr: TypeExpr` is unconditional — ADT type-resolution consumers
+/// always have a syntactic type to resolve, with the synthesised `TypeVar`
+/// directing inference to fill in the bare case. Per Principle 7 (single
+/// source of truth) the producer-side name `type_expr` (over the prior
+/// facade's `ty`) is canonical.
+///
+/// Per Decision 39 (per-defn source coordinate system — substance manifested
+/// in `facades/types.md` §"Symbol table" and `repl/spec.md` §15.4), each
+/// field carries its own `span` so "field has wrong type" diagnostics can
+/// point at the field's source location (not the enclosing constructor).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldDef {
     pub name: Symbol,
     pub type_expr: TypeExpr,
+    #[serde(default)]
+    pub span: Span,
 }
 
 /// Data constructor definition.
@@ -338,16 +428,65 @@ pub struct ConstructorDef {
 }
 
 /// Trait method signature.
+///
+/// Per spec §5.3 EBNF:
+/// ```text
+/// required_method = '(' name docstring? '[' param+ ']' type_expr ')'
+/// default_method  = '(' name docstring? '[' param+ ']' body ')'
+/// param           = ':' type_expr symbol | symbol
+/// ```
+///
+/// Both required and default methods carry named parameters — the
+/// `param = ':' type_expr symbol | symbol` production always terminates in a
+/// `symbol`. The type annotation is independently optional per-param.
+/// Per spec §5.3.1, bare parameter names default to the implementing type;
+/// the parser synthesises `TypeExpr::SelfType` for bare params at parse time
+/// so `params: Vec<(Symbol, TypeExpr)>` is unconditional (consumers always
+/// have a name + a syntactic type per param). This mirrors the
+/// `Vec<(Symbol, Option<TypeExpr>)>` shape on `DefnVariant` (S69 Submission 23)
+/// and `Expr::Lambda` (S69 Submission 24); for traits the synthesised-`SelfType`
+/// convention means the `Option` collapses — the second element is always
+/// some `TypeExpr` (either the user-written annotation or the synthesised
+/// `SelfType`).
+///
+/// Per Principle 18 (enforce invariants structurally), name + annotation
+/// belong together on each param rather than across parallel vectors. The
+/// prior 8-field shape carried an implicit lockstep invariant —
+/// `default_param_names.is_empty() == default_body.is_none()` — that no type
+/// rule enforced; fusing names into `params` and dropping the separate
+/// `default_param_names` field eliminates that invariant by construction.
+/// Names belong with the params, not with the default body.
+///
+/// `default_body: Option<Expr>` carries the parsed AST of the default body
+/// when one is present (S69 Submission 26 — vindication of the prior facade
+/// target against the source's pre-Submission-26 `Option<Sexp>`). Building
+/// the AST at trait-decl time catches structural errors in special forms
+/// (`let`, `if`, `match`, etc.) immediately, rather than per-impl;
+/// name resolution + type-checking remain deferred (per spec §5.4.5, default
+/// bodies are typechecked against each impl's instantiated signature, so the
+/// trait declaration clones the `Expr` into per-impl typecheck context).
+///
+/// `hkt_param_index: Option<usize>` identifies the parameter position that
+/// uses the HKT constructor variable for higher-kinded traits per spec §5.3.2
+/// (e.g., the `f` in `(deftrait (Functor f) (fmap [:(Fn [a] b) f :(f a) x] (f b)))`).
+/// HKT traits forbid default-method implementations (spec §5.3.2), so
+/// `hkt_param_index.is_some() ⇒ default_body.is_none()` is a parser invariant.
+///
+/// `span: Span` per Decision 39 (per-defn source coordinate system for
+/// diagnostics; substance manifested in `facades/types.md` §"Symbol table"
+/// and `repl/spec.md` §15.4).
+///
+/// `ret_type` (not `return_type`) per Principle 7 (single source of truth —
+/// the producer-side naming is canonical).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraitMethodSig {
     pub name: Symbol,
     pub docstring: Option<String>,
-    pub params: Vec<TypeExpr>,
+    pub params: Vec<(Symbol, TypeExpr)>,
     pub ret_type: TypeExpr,
     pub span: Span,
     pub hkt_param_index: Option<usize>,
-    pub default_param_names: Vec<Symbol>,
-    pub default_body: Option<Sexp>,
+    pub default_body: Option<Expr>,
 }
 
 /// Trait declaration.
@@ -361,13 +500,49 @@ pub struct TraitDecl {
     pub span: Span,
 }
 
-/// Trait implementation.
+/// Trait implementation — syntactic-stage shape (S69 Submission 27).
+///
+/// Per spec §5.4 EBNF the `impl_form` treats `target_type` as one grammatical
+/// unit:
+/// ```text
+/// impl_form   = '(' 'impl' trait_ref constraints? target_type method_def* ')'
+/// target_type = qualified_symbol
+///             | '(' qualified_symbol type_arg+ ')'
+/// type_arg    = ':' trait_ref type_var | type_var
+/// ```
+/// The unified `target: TypeExpr` field captures that grammatical unit
+/// directly — the simple `target_type = qualified_symbol` case lowers to
+/// `TypeExpr::Named(TypeRef)` and the polymorphic
+/// `target_type = '(' qualified_symbol type_arg+ ')'` case lowers to
+/// `TypeExpr::Applied(TypeRef, Vec<TypeExpr>)`. The prior 6-field shape
+/// (`target_type: TypeName + type_args: Vec<Symbol>`) was an implementation
+/// detail with no Decision-level grounding and is replaced by the
+/// 5-field target.
+///
+/// Per spec §4.2.2 + spec §2.3.4 qualified references like `fmt/Display` or
+/// `core.option/Option` resolve via the module system. Both `trait_name:
+/// TraitRef` and the `TypeRef`s inside `target: TypeExpr` carry
+/// `Option<ModuleFullPath>` capturing as-written qualification (import alias
+/// OR full path). Typecheck resolves aliases through the import graph,
+/// producing `FQTraitName` / `FQTypeName` at the resolved-stage boundary per
+/// Decision 47. The resolved-stage counterpart of this struct is
+/// `ModuleEntry::TraitImpl { trait_name: FQTraitName, impl_type: FQTypeName,
+/// methods, visibility }` stored on the trait's defining module per Decision
+/// 45 — distinct type, FQ names throughout.
+///
+/// `type_constraints: Vec<(Symbol, TraitRef)>` carries polymorphic-impl
+/// constraints — `(impl :(Display a) (Option a) …)` produces
+/// `[("a", TraitRef::new(None, "Display"))]`. Constraints can themselves be
+/// qualified (`:(fmt/Display a)`); `TraitRef`'s optional module captures that
+/// uniformly. `type_args` (Vec<Symbol>) is no longer a separate field — the
+/// type-variable bindings live structurally inside `target` (any
+/// `TypeExpr::TypeVar` reachable from `target` is a polymorphic-impl
+/// type-var introduced by this impl).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraitImpl {
-    pub trait_name: TraitName,
-    pub target_type: TypeName,
-    pub type_args: Vec<Symbol>,
-    pub type_constraints: Vec<(Symbol, TraitName)>,
+    pub trait_name: TraitRef,
+    pub target: TypeExpr,
+    pub type_constraints: Vec<(Symbol, TraitRef)>,
     pub methods: Vec<Defn>,
     pub span: Span,
 }
@@ -452,7 +627,10 @@ pub fn free_vars_expr(expr: &Expr, globals: &HashSet<Symbol>) -> HashSet<Symbol>
 
         Expr::Lambda { params, body, .. } => {
             let body_fv = free_vars_expr(body, globals);
-            let param_set: HashSet<Symbol> = params.iter().cloned().collect();
+            // Fused tuple shape — extract the parameter name (`.0`) from each
+            // `(Symbol, Option<TypeExpr>)` entry; the optional annotation does
+            // not participate in the body's free-variable set.
+            let param_set: HashSet<Symbol> = params.iter().map(|(n, _)| n.clone()).collect();
             body_fv.into_iter().filter(|v| !param_set.contains(v)).collect()
         }
 
@@ -514,6 +692,17 @@ pub fn free_vars_expr(expr: &Expr, globals: &HashSet<Symbol>) -> HashSet<Symbol>
 
         Expr::Trace { body, .. } => free_vars_expr(body, globals),
 
+        // `ConstrADT { type_name, tag, fields, span, inferred_type }` — see
+        // facades/types.md §"AST". Free vars are the union over the field
+        // expressions; `type_name` and `tag` are compile-time constants, not
+        // value references.
+        Expr::ConstrADT { fields, .. } => {
+            let mut fv = HashSet::new();
+            for field in fields {
+                fv.extend(free_vars_expr(field, globals));
+            }
+            fv
+        }
     }
 }
 

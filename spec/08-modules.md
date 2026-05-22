@@ -120,10 +120,14 @@ import_entry = module_spec names_list
 module_spec  = symbol                            ; bare module path
              | 'super'                           ; parent module reference
              | '(' symbol symbol ')'             ; (module alias) pair
-names_list   = '[' name+ ']'                     ; specific names
-             | '[' '*' ']'                        ; all public names
-             | '[' member_glob ']'               ; all members of a type or trait
-             | '[' ']'                            ; no names (alias-only)
+names_list   = '[' name+ ']'                     ; specific names (each entry independently classified)
+             | '[' '*' ']'                        ; all public names from the source module
+             | '[' member_glob ']'                ; all members of a type or trait
+             | '[' ']'                            ; no names (alias-only or null import)
+name         = symbol                            ; bare import — local name = source export name
+             | dotted_symbol                     ; selective member import (per §1.4.4 lexical)
+             | '(' symbol symbol ')'             ; renamed bare import — (source-name local-name)
+             | '(' dotted_symbol symbol ')'      ; renamed selective member — (Type.SourceMember local-name)
 member_glob  = symbol '.*'                       ; e.g. Display.*
 ```
 
@@ -161,7 +165,43 @@ Imports all methods of trait `Display` (or all constructors of a type) as bare n
 
 Imports `concat` and `join` as bare names, and registers `str` as an alias for `core.string`. The alias can then be used for qualified references: `str/split`.
 
-### 8.3.5 Alias-Only Import
+### 8.3.5 Renamed Import
+
+```clojure
+(import [core.option [(Some Maybe-Just) None]])
+```
+
+Imports `Some` from `core.option` as the local bare name `Maybe-Just`; imports `None` unchanged. The local symbol-table entry for `Maybe-Just` is `ModuleEntry::Import { source: core.option/Some }` — the rename is a local-name aliasing layered on top of the standard import resolution. Per §8.6.2, lookups follow the source chain transitively.
+
+Renamed selective members:
+
+```clojure
+(import [core.option [(Option.Some Just)]])
+```
+
+Imports the selective member `Option.Some` as local bare `Just`. The same dotted-vs-bare classification per §8.3.11 applies — `Option` is NOT brought into scope via this entry; only `Just` is.
+
+The accessibility-matrix entries from §8.3.11 extend naturally to renamed forms — substitute the local name everywhere the source name appears.
+
+A rename of a symbol to itself (e.g. `[(Some Some)]`) MUST NOT be rejected; it is redundant but valid. An implementation MAY emit a style warning.
+
+Per §8.6.4, two import entries that produce the SAME local name (whether via rename or bare) are a duplicate-name conflict and MUST produce a compile-time error.
+
+**Composition with aliases.** Renamed forms compose with module aliases (§8.3.4):
+
+```clojure
+(import [(core.string str) [(concat join-strings) chars]])
+```
+
+Imports `concat` as local `join-strings`, imports `chars` unchanged, AND registers `str` as a local module alias for `core.string`.
+
+**Negative cases** (compile-time errors):
+
+- `(import [m [(Some X) (None X)]])` MUST be a compile-time error — duplicate local name `X` within a single import entry.
+- `(import [m [(Some X)] n [Y X]])` MUST be a compile-time error if `X` is bound twice across import entries (per §8.6.4).
+- After `(import [m [(Option.None X)]])`, writing `:Option` MUST be a compile-time error — the parent type `Option` is NOT in bare scope (only local `X` is).
+
+### 8.3.6 Alias-Only Import
 
 ```clojure
 (import [(core.option opt) []])
@@ -169,7 +209,7 @@ Imports `concat` and `join` as bare names, and registers `str` as an alias for `
 
 Registers `opt` as an alias for `core.option` without importing any bare names. Useful when you only want qualified access: `opt/Some`.
 
-### 8.3.6 Null Import
+### 8.3.7 Null Import
 
 ```clojure
 (import [core.option []])
@@ -177,7 +217,7 @@ Registers `opt` as an alias for `core.option` without importing any bare names. 
 
 Imports nothing and does not trigger module loading or resolution. Useful to suppress the implicit prelude import (§8.8.1) — an explicit `(import [prelude []])` replaces the implicit glob without loading the prelude module.
 
-### 8.3.7 Super Import [Tested+Neg tests/modules::super_import_at_root_is_rejected_neg, tests/sprint59_neg::super_import_at_repl_prompt_rejected_neg]
+### 8.3.8 Super Import [Tested+Neg tests/modules::super_import_at_root_is_rejected_neg, tests/sprint59_neg::super_import_at_repl_prompt_rejected_neg]
 
 ```clojure
 (import [super [*]])
@@ -198,7 +238,7 @@ This is the standard way for test submodules to access the code under test.
 
 > **Known limitation — mutual-import deadlock.** `super` is supported for one-directional child → parent imports. If the parent module imports anything (directly or transitively) from a child that uses `(import [super ...])`, the compiler's form-by-form scheduler deadlocks during typechecking: the parent blocks on the child's signatures while the child (via `super`) blocks on the parent's. A conforming implementation MAY reject this configuration with a diagnostic, but MUST NOT silently produce a non-terminating compilation. Authors SHOULD NOT construct parent↔child mutual-import cycles. Test submodules that need to enumerate their parent's symbols SHOULD use the `discover-tests` and `run-test` builtins (see [Appendix A](appendix-a-builtins.md)) — these observe the parent's symbol table at runtime without requiring a `super` import, avoiding the deadlock entirely. See `design/arch/CLAUDE.md` Decision 30 for the underlying pass-order constraint. A future language version may redesign the module-loading pass order to lift this restriction; no timeline is promised.
 
-### 8.3.8 Multiple Module Import
+### 8.3.9 Multiple Module Import
 
 Multiple modules MAY be imported in a single `import` form:
 
@@ -210,7 +250,7 @@ Multiple modules MAY be imported in a single `import` form:
 
 Module-names-list pairs are processed left to right.
 
-### 8.3.9 Placement [Tested+Neg tests/sprint59_neg::import_below_use_still_available_before_definitions, tests/sprint59_neg::import_inside_let_rejected_neg]
+### 8.3.10 Placement [Tested+Neg tests/sprint59_neg::import_below_use_still_available_before_definitions, tests/sprint59_neg::import_inside_let_rejected_neg]
 
 `import` forms MUST appear as top-level forms. They are extracted from the raw S-expression stream before macro expansion. An implementation MUST process `import` before compiling definitions in the same module, so that imported names are available during type checking and code generation.
 
@@ -234,14 +274,56 @@ A module MAY contain multiple `import` forms. Their effects accumulate: names im
 (defn make-point [:Int x :Int y] :Point (Point x y))
 ```
 
+### 8.3.11 Accessibility After Import [Tested+Neg]
+
+Each entry in an import name list independently affects what is in bare scope after the import resolves. The following base cases enumerate the effects for an import from a module that exports a type `Option` with constructors `Some` and `None`. Multi-entry name lists union their effects (see §8.3.10 for accumulation rules across forms; the same rules apply within a single name list).
+
+**Bare-scope effects:**
+
+| Name-list entry | Bare scope after | `:Type` annotation accessible |
+|---|---|---|
+| `Option` (bare symbol matching a top-level export) | `Option` (the type name) | `:Option` works (Option is a type) |
+| `Option.None` (dotted symbol — selective member) | `None` only | NO — `Option` is not brought into bare scope |
+| `Option.*` (member glob) | all members of Option as bare names (`Some`, `None`) | NO — `Option` is not brought into bare scope |
+| `*` (glob — all public names) | every public export of the source module brought as bare names — including `Option`, `Some`, `None` if all are public | YES — `Option` is in bare scope via the glob |
+
+A conforming implementation MUST classify each name-list entry independently per the table above. An entry of the form `Symbol` MUST bring only the top-level export `Symbol` into bare scope. An entry of the form `Symbol.member` MUST bring only `member` into bare scope and MUST NOT bring `Symbol` into bare scope. An entry of the form `Symbol.*` MUST bring all public members of `Symbol` into bare scope and MUST NOT bring `Symbol` itself into bare scope. The `*` glob entry MUST bring every public name of the source module into bare scope.
+
+**Derived dotted access** (per §8.5.2): wherever a type or trait is in bare scope, dotted access to its members works automatically. `Option.Some` and `Option.None` are accessible as dotted references in any scope where `Option` is bound — whether imported as `[Option]`, brought in via `[*]`, defined in the current module, or referenced via a qualified name. Dotted access is **not a separate import target**; it is a consequence of the parent type or trait being in bare scope.
+
+**Composition example:** `(import [m [Option Option.*]])` brings `Option`, `Some`, and `None` as bare names — equivalent to `(import [m [*]])` for a module exporting only `Option`. `(import [m [Option Some]])` brings `Option` and `Some` (but not `None`).
+
+**Negative cases** (compile-time errors):
+
+- After `(import [m [Option.None]])`, writing `:Option` MUST be a compile-time error: the type `Option` is not in bare scope.
+- After `(import [m [Option.None]])`, writing `Option.Some` as a dotted reference MUST be a compile-time error: the parent type `Option` is not in bare scope.
+- After `(import [m [Option.*]])`, writing `:Option` MUST be a compile-time error (same reason).
+- After `(import [m [Option.*]])`, writing `Option.Some` as a dotted reference MUST be a compile-time error (same reason).
+- After `(import [m [Option]])` (with no explicit member import), writing bare `Some` MUST be a compile-time error unless `Some` is brought in by another import or defined locally.
+- Multi-entry composition: `(import [m [Option Option.*]])` MUST NOT be an error; the effects union without conflict (Option as type + members as bare names, no duplicate-bare-name).
+
+**Renames in the accessibility matrix.** For any entry of the form `(source-name local-name)` (per §8.3.5), the resulting bare scope contains `local-name` (not `source-name`); the resolution chain points at the source. Accessibility-after-import substitutes the local name everywhere the source name appears in the base matrix above.
+
+Examples:
+
+- `(import [m [(Option O)]])` — `O` (type alias for `Option`) in bare scope; `:O` works as type annotation; `O.Some` and `O.None` work as dotted refs (the type `Option` is reachable through `O` via the rename).
+- `(import [m [(Option.None NoneAlias)]])` — `NoneAlias` in bare scope; `Option` NOT in scope; `:Option` MUST NOT resolve.
+- `(import [m [(Option O) Option.*]])` — `O` plus bare `Some`, `None` (members of `Option` as bare names; the parent name is reachable via the rename `O`).
+
+The same rules apply symmetrically when consumers import from a renamed re-export — they see the renamed local name in this module's public API (per §8.4.5).
+
+See §8.6.4 for the general conflict rules and §8.6.5 for the ambiguity resolution discipline.
+
 ## 8.4 Export [Tested crates/cranelisp-frontend/src/module_extract.rs::test_export_specific, crates/cranelisp-frontend/src/module_extract.rs::test_export_glob]
 
 The `export` special form re-exports names from imported modules, making them part of the current module's public API.
 
 ```ebnf
 export_form  = '(' 'export' '[' export_entry+ ']' ')'
-export_entry = symbol names_list
+export_entry = module_spec names_list      ; same module_spec and names_list as §8.3
 ```
+
+The full §8.3 grammar (`module_spec` including the `(module alias)` pair form; `names_list` including the symbol-rename forms `(symbol symbol)` and `(dotted_symbol symbol)`) applies symmetrically to exports. Anywhere an import may rename a name or alias a module, an export may do the same.
 
 ### 8.4.1 Specific Re-export
 
@@ -266,17 +348,107 @@ Re-exports all public names from `core` through the current module.
          primitives [vec-len vec-get vec-set]])
 ```
 
-### 8.4.4 Semantics
+### 8.4.4 Module Mounting on Export
+
+```clojure
+(export [(core.string str) [concat join]])
+```
+
+This form does two things:
+
+1. Re-exports `concat` and `join` as bare names in the current module's public API (semantically equivalent to `(export [core.string [concat join]])`).
+2. **Mounts** `core.string` at the dotted module-path `current-module.str` — every public name in `core.string` becomes reachable through the current module's namespace as a qualified reference `current-module.str/<name>`. The mount is **full and transparent**: downstream consumers MAY reach ANY public name of `core.string` via the alias, not only the re-exported subset.
+
+Note the form of the alias: per §1.4.3, a qualified name contains exactly one `/` separating `module_path` from `local_name`, and `module_path` is dot-separated. The mount adds `str` as a new segment within the current module's `module_path`, NOT as a separate `/`-delimited component. There is no two-slash notation in Cranelisp.
+
+Downstream consumers — modules that import from the current module — MAY write:
+
+```clojure
+(import [current-module.str [split chars]])   ; resolves split, chars from core.string via the mount
+(current-module.str/upper "x")                ; qualified ref through the mount
+```
+
+The mount is functionally a public module-path alias. An implementation MUST track it so that qualified-name resolution per §8.6.6 walks the alias chain to the underlying source module.
+
+**Worked example — resolution of a mount-aliased qualified name.** Given:
+
+```clojure
+;; Module A has (export [(core.string str) [concat]])
+;; — mounts core.string at A.str
+
+(A.str/split "hello,world" ",")
+```
+
+Resolution proceeds as follows:
+
+1. Parser sees `A.str/split` as `qualified_name` (per §1.4.3) with `module_path = A.str` (segments: `A`, `str`) and `local_name = split`.
+2. Resolver tries `lookup_module(A.str)` — miss (`A.str` is not a stored module path).
+3. Walk back the dot-separated segments: try `lookup_module(A)` — hit (`A` is a known module).
+4. Check `A`'s alias table for the next unmatched segment `str` — found, public mount alias to `core.string`.
+5. Substitute: the matched segment `str` is replaced by the alias's target, so `module_path` becomes `core.string`.
+6. Restart resolution: `lookup_module(core.string)` — hit.
+7. Look up `split` in `core.string`'s public symbol table — hit. Resolution complete.
+
+**Mount-only export** (analogous to §8.3.6 Alias-Only Import):
+
+```clojure
+(export [(core.string str) []])
+```
+
+Mounts `core.string` at `current-module.str` WITHOUT re-exporting any names as bare. Useful when the bare-name pollution is undesired but the mount is wanted.
+
+A bare-form mount without an alias (e.g. `(export [m []])`) re-exports no names and registers no mount. An implementation MAY treat this as a no-op or MAY reject it as a vacuous declaration; either is conforming.
+
+**Negative cases** (compile-time errors):
+
+- Two export forms mounting different source modules at the same alias path MUST be a compile-time error: `(export [(core.string foo) [...]] [(core.option foo) [...]])` MUST be rejected — duplicate mount alias `foo` (per §8.6.4).
+- An export mount whose alias collides with an actual submodule of the current module MUST be a compile-time error: if module `A` declares `(mod inner)` AND `(export [(other.mod inner) [...]])`, that combination MUST be rejected — `A/inner` would be ambiguous.
+
+### 8.4.5 Renamed Re-Export
+
+```clojure
+(export [core.option [(Some Just) None]])
+```
+
+Re-exports `Some` from `core.option` as `Just` in the current module's public API; re-exports `None` unchanged. The current module's symbol-table entry for `Just` is `ModuleEntry::Reexport { source: core.option/Some }`. Downstream consumers see `Just` in this module's public API and reach `core.option/Some` via chain-follow per §8.6.2.
+
+Renamed selective members:
+
+```clojure
+(export [core.option [(Option.Some MaybeJust)]])
+```
+
+**Composed forms (renaming + mounting):**
+
+```clojure
+(export [(core.option opt) [(Some Just) None]])
+```
+
+- Re-exports `Some` from `core.option` as `Just`.
+- Re-exports `None` from `core.option` unchanged.
+- Mounts `core.option` at the dotted module-path `current-module.opt` — full transparent.
+- Note: `current-module.opt/Some` (the ORIGINAL name) resolves via the mount, even though the bare name in this module is `Just`. The bare name and the mounted qualified path are independent surfaces over the same underlying source.
+
+This is the canonical pattern for "rename for bare-name ergonomics, but preserve qualified-path access for explicit callers."
+
+A rename of a symbol to itself in an export (e.g. `[(Some Some)]`) MUST NOT be rejected; it is redundant but valid.
+
+**Negative cases** (compile-time errors):
+
+- `(export [m [(Some X) (None X)]])` MUST be a compile-time error — duplicate exported name `X` (per §8.6.4).
+- Cross-entry collision: `(export [m [(Some X)] n [X])` MUST be a compile-time error if `X` would be bound by two distinct sources.
+
+### 8.4.6 Semantics
 
 A re-exported name becomes a public name of the exporting module. When another module imports from the exporting module (via `[*]` or by name), re-exported names are included.
 
 An implementation MUST track re-export provenance so that introspection can display the original defining module, not the re-exporting module. For example, if `prelude` re-exports `print` from `platform.stdio`, introspection SHOULD display `platform.stdio/print` as the origin.
 
-### 8.4.5 Placement
+### 8.4.7 Placement
 
 `export` forms MUST appear as top-level forms. They are extracted alongside `mod` and `import` before macro expansion.
 
-### 8.4.6 Implicit Impl Re-export [R4 S66]
+### 8.4.8 Implicit Impl Re-export [R4 S66]
 
 Trait implementations are NOT enumerable in `export` (or `import`) lists. An impl form `(impl Trait Type ...)` does not have a name that can appear inside `[...]`. Instead, **re-exporting a trait or a type implicitly re-exports any impl whose trait + type are reachable through the re-exporter's import closure**.
 
@@ -284,7 +456,7 @@ Concretely: if module M re-exports a trait `T` (via `(export [src [T ...]])` or 
 
 This avoids forcing authors to enumerate impls in re-export lists — a list that has no syntactic anchor to enumerate against, since impls are nameless. Users see the rule as: **impls follow their trait and type through the import graph.**
 
-See [§5.11.1](05-definitions.md#5111-impl-visibility--transitive-import-closure) for the full visibility statement (which §8.4.6 is the module-side projection of) and a worked three-module example, and [§7.11.1](07-traits.md#7111-impl-visibility--transitive-import-closure) for the trait-resolution consequences.
+See [§5.11.1](05-definitions.md#5111-impl-visibility--transitive-import-closure) for the full visibility statement (which §8.4.8 is the module-side projection of) and a worked three-module example, and [§7.11.1](07-traits.md#7111-impl-visibility--transitive-import-closure) for the trait-resolution consequences.
 
 **Example:** A standard library might organize re-exports through a shell module:
 
@@ -337,6 +509,8 @@ core.math/+             ; operator '+' in module 'core.math'
 
 The parser MUST distinguish qualified names from the division operator. A `/` is only a qualified separator when preceded by an alphabetic module path. `(/ 10 2)` remains the division operator because the `/` is not preceded by a symbol.
 
+Qualified-name resolution per §8.6.6 walks module alias chains. Alias substitution operates on the dot-separated segments of `module_path` (within the grammar above), NOT across `/`. If the current resolution scope contains a public mount alias under module `current-module` that maps the segment `str` to `core.string` (per §8.4.4), then writing `current-module.str/split` causes the resolver to walk `module_path` segment-by-segment: it finds `current-module`, looks up `str` in that module's alias table, substitutes `core.string`, and then resolves `split` in `core.string`. Mount aliases declared by `export` are public; alias-imports declared by `import` (§8.3.4) are private to the importing module.
+
 ### 8.5.2 Dotted Names
 
 The `.` within a name provides access to members of types and traits:
@@ -349,6 +523,8 @@ Num.+                   ; operator '+' of trait 'Num'
 ```
 
 Dotted names resolve directly from the parent type or trait definition, bypassing the bare-name lookup. This means they work even when the bare name is ambiguous (see Section 8.6.5).
+
+Dotted access is **derived** from the parent type or trait being in bare scope, not from a separate import. Whenever `Option` is bound in the current scope (via import, current-module definition, or qualified reference), `Option.Some` and `Option.None` are accessible as dotted references with no additional import statement required. Per §8.6.5, the dotted form is also the canonical disambiguator when bare `Some` is poisoned by simultaneous imports from multiple sources. In valid (non-ambiguous) code, bare names suffice and dotted forms are rarely needed.
 
 ### 8.5.3 Combined Qualification
 
@@ -420,6 +596,12 @@ The following conflicts MUST produce compile-time errors:
   (defn add [x y] (+ x y))           ; error: definition conflicts with import
   ```
 
+- **Rename collisions**: Two import (or export) entries — whether via rename or bare — producing the same local (or exported) name MUST produce a compile-time error. Example: `(import [m [(Some X) (None X)]])` is an error — duplicate local name `X`.
+
+- **Mount collisions**: Two export forms mounting different source modules at the same alias path MUST produce a compile-time error. Example: `(export [(core.string foo) [...]] [(core.option foo) [...]])` is an error — duplicate mount alias `foo`.
+
+- **Mount-vs-submodule collisions**: An export mount whose alias collides with an actual submodule `(mod inner)` of the current module MUST produce a compile-time error. Example: if module `A` declares `(mod inner)` AND `(export [(other.mod inner) [...]])`, that's an error — `A/inner` would be ambiguous.
+
 Same-source duplicates (the same name arriving through two re-export paths from the same original definition) are NOT ambiguous.
 
 #### Explicit Imports Shadow the Implicit Prelude [R4 S20]
@@ -451,14 +633,19 @@ Qualified names and dotted names always bypass ambiguity:
 (core.fmt/show x)     ; resolves directly via module 'core.fmt'
 ```
 
+Ambiguity disambiguation is the **only** routine reason to reach for the dotted form. In non-ambiguous code, bare names are the canonical access form and dotted access (per §8.5.2) is rarely written — it remains available as a derived consequence of the parent type or trait being in bare scope, but offers no additional reach beyond the bare name.
+
 ### 8.6.6 Qualified Name Resolution Order
 
-For a qualified name `path/sym`, resolution proceeds:
+For a qualified name `module_path/local_name` (per §1.4.3, where `module_path` is one or more dot-separated segments and `local_name` is a single symbol, dotted symbol, or operator symbol), resolution proceeds:
 
-1. If `path` matches a module alias (from an aliased import), resolve in the aliased module.
-2. If `path` matches a child module of the current module, resolve there.
-3. If `path` is a full module path (matching a known module), resolve directly.
-4. Otherwise, it is a compile-time error: unknown module.
+1. If `module_path` matches a module alias (from an aliased import, §8.3.4), resolve in the aliased module.
+2. If `module_path` (or one of its dot-separated prefixes) matches a module that declares a public mount alias (from an aliased export, §8.4.4) for the next unmatched segment, follow the alias chain through the mounted source module.
+3. If `module_path` matches a child module of the current module, resolve there.
+4. If `module_path` is a full module path matching a known module, resolve directly.
+5. Otherwise, it is a compile-time error: unknown module.
+
+**Alias substitution operates on dot-separated segments of `module_path` (per §1.4.3), NOT across `/`.** The resolver walks `module_path` segment-by-segment, looking for the longest dot-separated prefix that resolves to a known module. At that hit, it checks the resolved module's alias table for the next segment; on hit, the alias's target replaces the matched segment, and resolution restarts on the rewritten `module_path`. This continues until either a full `module_path` match resolves, the chain-follow depth limit is reached, or no further substitution is possible (unknown module). The single `/` in the qualified name is reached only AFTER `module_path` resolves to a known module; the `/` is never crossed during alias substitution.
 
 The target symbol MUST be public in the resolved module. Accessing a private name through a qualified reference is a compile-time error.
 
@@ -476,7 +663,7 @@ The lookup mechanism — whether the typechecker pre-computes a per-module impl 
 
 All definitions are public by default. Public names are accessible from other modules via `import` or qualified reference.
 
-> **Trait implementations** have no public/private split — `impl` has no `-` variant. See [§5.11.1](05-definitions.md#5111-impl-visibility--transitive-import-closure) and [§8.4.6](#846-implicit-impl-re-export) for the impl-specific visibility rule (transitive import closure of the trait + type).
+> **Trait implementations** have no public/private split — `impl` has no `-` variant. See [§5.11.1](05-definitions.md#5111-impl-visibility--transitive-import-closure) and [§8.4.8](#848-implicit-impl-re-export) for the impl-specific visibility rule (transitive import closure of the trait + type).
 
 ### 8.7.2 Private Definitions
 
@@ -738,8 +925,12 @@ Typing a module name at the REPL SHOULD display information about that module: i
 | `(mod name forms...)` | Declare inline submodule (extracted to file) | Public |
 | `(mod- name)` | Declare private submodule | Private |
 | `(import [mod [names]])` | Import names into current scope | N/A |
+| `(import [(mod alias) [names]])` | Import names + register private module alias | N/A |
+| `(import [mod [(src local) ...]])` | Renamed import — bind source name as local | N/A |
 | `(import [super [*]])` | Import from parent module | N/A |
 | `(export [mod [names]])` | Re-export names as public API | Public |
+| `(export [(mod alias) [names]])` | Re-export names + mount module at public alias | Public |
+| `(export [mod [(src local) ...]])` | Renamed re-export — exported name differs from source | Public |
 | `module/name` | Qualified name reference | N/A |
 | `Type.member` | Dotted member access | N/A |
 

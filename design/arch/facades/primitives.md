@@ -57,7 +57,7 @@ pub static PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<Code, ()>>>;
 At `LazyLock` first-access time, the initialiser performs the following population, atomically observable to all subsequent readers:
 
 1. **SymbolTable population.** One `ModuleEntry::Def` per non-inlined primitive listed in the inventory below (§"Primitives inventory") is inserted under its kebab-case `Symbol` name. Each entry's fields:
-   - `scheme` — typecheck `Scheme` from `cranelisp_types::ring0_primitives()` (the authoritative spec-aligned primitive registry).
+   - `scheme` — typecheck `Scheme` from the crate-private `operator::ring{0,1,3}_primitives()` builders. `PrimitiveDef` and the three ring builders are crate-private constructor inputs for this static init (relocated from `cranelisp-types` S69 — H1 stronger disposition; consumers reach the same data via the inserted `ModuleEntry::Def` shape, not via `PrimitiveDef` rows).
    - `kind` — `Box::new(DefKind::Primitive { primitive_kind: PrimitiveKind::Inline, jit_name: Some(JitSymbol::from(name)) })`.
    - `got_slot: Some(N)` — N is allocated deterministically via `SymbolTable::allocate_got_slot()` at init; slot indices are stable for the process lifetime.
    - `code: Some(Code::Primitive)` — per Decision 0048 (A2, revised 2026-05-17): the marker variant expresses process-static lifecycle. No payload; the GOT is the single source of truth for the `*const u8` address (Decision 35 invariant preserved).
@@ -260,7 +260,7 @@ Because the public Rust API is one item (`PRIMITIVES_TABLE`), the `cargo-public-
 
 The **semantic surface** (which primitives exist + their signatures) is governed by **spec conformance tests** (`/qa`), NOT by `cargo-public-api`. Two surfaces, two tools, no overlap:
 - Rust public-API drift detection → `cargo-public-api` baseline (one-line + seven mod lines, near-static).
-- Primitive set + signatures drift detection → spec conformance test suite + `cranelisp_types::ring0_primitives()` registry.
+- Primitive set + signatures drift detection → spec conformance test suite + the crate-private `operator::ring0_primitives()` builder (constructor input for `PRIMITIVES_TABLE`).
 
 ### Public consts
 
@@ -284,7 +284,7 @@ None. Per Principle 15 — facade types live with behaviour; primitives owns no 
 
 The primitives crate imports from:
 
-- **`cranelisp-types`** — the bulk of the dependency. The static `PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<Code, ()>>>` requires `SymbolTable`, `ModuleEntry`, `DefKind`, `PrimitiveKind`, `JitSymbol`, `Visibility`, `Symbol`, `Type`, `Scheme`, `ModuleFullPath`, `FQTypeName` — plus the `ring0_primitives()` authoritative registry for spec-aligned signature + name + scheme triples. Acyclic; types is the leaf with no workspace dependencies.
+- **`cranelisp-types`** — the bulk of the dependency. The static `PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<Code, ()>>>` requires `SymbolTable`, `ModuleEntry`, `DefKind`, `PrimitiveKind`, `JitSymbol`, `Visibility`, `Symbol`, `Type`, `Scheme`, `ModuleFullPath`, `FQTypeName`. The `PrimitiveDef` row type and `ring{0,1,3}_primitives()` builders live in the crate-private `operator` module (relocated from `cranelisp-types` S69 — H1 stronger disposition; not part of the consumed surface). Acyclic; types is the leaf with no workspace dependencies.
 
 - **`cranelisp-backend`** — for the `Code` type parameter on `SymbolTable<Code, ()>` AND for the `Code::Primitive` marker variant constructed at static-init (per Decision 0048 (A2), revised 2026-05-17). Decision 0041 placed `Code` in `cranelisp-backend`; `cranelisp-primitives` names `Code` and constructs `Code::Primitive` (the variant carries no payload — see Decision 0048 §"Shape"). The dependency edge is `cranelisp-primitives → cranelisp-backend`. **Dep-ban (Decision 0048 §"Structural invariant — backend dep-ban", S68 Phase 3 revision)**: `cranelisp-backend` MUST NOT depend on `cranelisp-primitives` — workspace `[dependencies]` and `[dev-dependencies]` alike. The reverse edge `cranelisp-backend → cranelisp-primitives` is forbidden by the workspace DAG, which structurally enforces the architectural invariant "primitives dispatch reaches code via GOT, never via direct extern". Backend consumes `PRIMITIVES_TABLE` exclusively via the session's `SymbolTables` map (`int` does the Arc-clone insertion at session init); backend has no Rust-path visibility into primitives' fns and therefore physically cannot emit a direct-call instruction targeting a primitive. Acyclic.
 

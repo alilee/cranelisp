@@ -61,26 +61,42 @@ pub struct DisplayInfo {
 // Phase 1 (Principle 15). See `crates/cranelisp-typecheck/src/result.rs`.
 
 /// Information about a user-defined type.
+///
+/// `constructors: Vec<Symbol>` carries only the constructor NAMES. The
+/// per-constructor metadata (tag, field count, type_name, internal flag)
+/// lives uniquely on each constructor's own `ModuleEntry::Def` entry at
+/// `kind: DefKind::Constructor { .. }` (see facades/types.md §"Symbol table
+/// — the single store" §"DefKind"). Field names live on the Def's
+/// `param_names`; field types fold into the Def's `scheme` (the constructor's
+/// polymorphic function-type signature, e.g., `Some : ∀a. a → Option a`).
+///
+/// Consumers needing per-ctor metadata walk each name → look up the Def →
+/// read the kind discriminator and scheme. No parallel storage; single source
+/// of truth.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypeDefInfo {
     pub name: FQTypeName,
     pub type_params: Vec<Symbol>,
-    pub constructors: Vec<ConstructorInfo>,
+    pub constructors: Vec<Symbol>,
     pub docstring: Option<String>,
 }
 
-/// Information about a single data constructor.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConstructorInfo {
-    pub name: Symbol,
-    pub tag: usize,
-    pub fields: Vec<FieldInfo>,
-    pub docstring: Option<String>,
-    /// If true, the constructor is internal to the compiler — users cannot construct
-    /// or pattern-match on it. Example: `IO.Bind` is constructed only by `bind`.
-    #[serde(default)]
-    pub internal: bool,
-}
+// `pub struct ConstructorInfo { ... }` retired — see facades/types.md
+// §"Symbol table — the single store" §"DefKind" for the ctor-as-Def shape
+// and the migration map below.
+//
+// Migration map:
+//   - .name           → ModuleEntry::Def.name (the symbol-table key)
+//   - .tag            → DefKind::Constructor.tag
+//   - .fields[i].name → Def.param_names[i]
+//   - .fields[i].ty   → folded into Def.scheme (the polymorphic function-type signature)
+//   - .docstring      → Def.docstring
+//   - .internal       → DefKind::Constructor.internal
+//
+// `FieldInfo` retained — consumed by `HeapCategory::classify` for heap-layout
+// determination. After consumer-cascade migration completes, heap classifier
+// derives `FieldInfo` instances from constructor Defs' schemes rather than
+// from a pre-built `ConstructorInfo.fields` vector.
 
 /// Information about a constructor field (resolved type, not TypeExpr).
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -58,12 +58,12 @@ impl Type {
 
     /// Extract the inner type from `IO T`.
     ///
-    /// Returns the inner type (e.g., `Int` from `IO Int`).
-    /// If the type is not IO or has no type arguments, returns the type unchanged.
-    pub fn io_inner_type(&self) -> Type {
+    /// Returns a borrow of the inner type (e.g., `&Int` from `IO Int`).
+    /// If the type is not IO or has no type arguments, returns `self` unchanged.
+    pub fn unwrap_io(&self) -> &Type {
         match self {
-            Type::ADT(_, args) if !args.is_empty() => args[0].clone(),
-            _ => self.clone(),
+            Type::ADT(_, args) if !args.is_empty() => &args[0],
+            _ => self,
         }
     }
 
@@ -132,7 +132,7 @@ impl std::fmt::Display for Type {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scheme {
     /// Quantified type variables
-    pub vars: Vec<TypeId>,
+    pub type_vars: Vec<TypeId>,
     /// Trait constraints on type variables: TypeId -> list of required fully-qualified trait names
     pub constraints: HashMap<TypeId, Vec<FQTraitName>>,
     /// The underlying type
@@ -488,21 +488,21 @@ mod tests {
         assert!(!user_io.is_io());
     }
 
-    // spec: 10-io §10.6.1 — Type::io_inner_type unwraps IO
+    // spec: 10-io §10.6.1 — Type::unwrap_io unwraps IO
     #[test]
-    fn test_io_inner_type() {
+    fn test_unwrap_io() {
         let io_int = Type::ADT(primitives_fqtn("IO"), vec![Type::Int]);
-        assert_eq!(io_int.io_inner_type(), Type::Int);
+        assert_eq!(io_int.unwrap_io(), &Type::Int);
 
         let io_string = Type::ADT(primitives_fqtn("IO"), vec![Type::String]);
-        assert_eq!(io_string.io_inner_type(), Type::String);
+        assert_eq!(io_string.unwrap_io(), &Type::String);
     }
 
-    // spec: 10-io §10.8 — Type::io_inner_type fallback for non-IO
+    // spec: 10-io §10.8 — Type::unwrap_io fallback for non-IO
     #[test]
-    fn test_io_inner_type_no_args() {
+    fn test_unwrap_io_no_args() {
         let io_bare = Type::ADT(primitives_fqtn("IO"), vec![]);
-        assert_eq!(io_bare.io_inner_type(), io_bare);
+        assert_eq!(io_bare.unwrap_io(), &io_bare);
     }
 
     // --- U1.6: type variable display name tests ---
