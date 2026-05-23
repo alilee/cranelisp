@@ -746,9 +746,16 @@ The `primitives` module contains:
 - **The IO ADT**: `(deftype (IO a) (IOVal [:a ioval]))` -- the compiler-seeded IO type
 - **Primitive functions**: The specific catalog of primitive functions is implementation-defined. See [Appendix A](appendix-a-builtins.md) for the reference implementation's catalog.
 
-Names in `primitives` are stored in qualified form only (`primitives/add-i64`). They are NOT available as bare names unless imported through the prelude chain.
+All names in `primitives` -- both primitive types (`Int`, `Bool`, `Float`, `String`) and primitive functions (`add-i64`, `vec-len`, `vec-get`, etc.) -- are stored in qualified form only. They are NOT available as bare names unless brought into scope through:
 
-In batch mode (and REPL mode), the implicit prelude import (§8.8.1) brings primitive functions into scope as bare names, provided the prelude re-exports them. A program that uses `(add-i64 2 3)` without an explicit `(import [primitives [...]])` works correctly when the prelude is loaded and re-exports `add-i64`. Without a prelude (or with a prelude that does not re-export the needed primitives), an explicit import from `primitives` is required. [R4 S52]
+1. The implicit prelude import (§8.8.1), provided the prelude re-exports the name, OR
+2. An explicit import: `(import [primitives [Int]])` or `(import [primitives [add-i64]])`.
+
+Fully-qualified references (`primitives/Int`, `primitives/add-i64`) work regardless of imports.
+
+The §8.11.4 "primitives remain available" guarantee refers to fully-qualified-reference reachability -- not bare-name scope. Without a prelude (or with a prelude that does not re-export the needed names), bare-name use is a compile-time "unknown type" or "unknown name" error; the fully-qualified form continues to work.
+
+[R4 S70]
 
 ### 8.9.2 The `macros` Module
 
@@ -850,6 +857,12 @@ Lib directory locations are assembled from the following sources, in precedence 
 4. **Default fallback**: When neither a project configuration file nor `CRANELISP_LIB` is present, the implementation SHOULD use `{project_root}/stdlib/` as the sole default lib directory, if that directory exists.
 
 If no sources yield any lib directories, the lib directory list is empty. No lib modules (including `prelude` and `core`) will be found. The language still functions — primitives and special forms remain available — but no standard library names are in scope.
+
+"Primitives remain available" means **fully-qualified** reachability (e.g., `primitives/Int`, `primitives/add-i64`). Bare-name references to primitive names require prelude re-export or explicit import; see [§3.1](03-types.md#31-primitive-types) and [§8.9.1](#891-the-primitives-module).
+
+Special forms (`defn`, `let`, `if`, `match`, etc.) are not module names and have no import requirement; they are always available as bare references regardless of prelude or imports.
+
+[R4 S70]
 
 > **Practical implication.** The project root is the directory containing the entry file. A project at `exemplar/solver.cl` has project root `exemplar/`. If `exemplar/stdlib/` does not exist and `CRANELISP_LIB` is not set, the prelude will not load. To use the standard library from a subdirectory project, either:
 > - Set `CRANELISP_LIB` to point to the stdlib location (e.g., `CRANELISP_LIB=../stdlib`), or

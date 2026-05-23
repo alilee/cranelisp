@@ -324,6 +324,9 @@ impl ModuleEntry<()> {
             ModuleEntry::TypeDef { info, visibility, constructor_scheme, sexp } => {
                 ModuleEntry::TypeDef { info, visibility, constructor_scheme, sexp }
             }
+            ModuleEntry::IntrinsicType { ty, visibility } => {
+                ModuleEntry::IntrinsicType { ty, visibility }
+            }
             ModuleEntry::TraitDecl { decl, visibility, sexp } => {
                 ModuleEntry::TraitDecl { decl, visibility, sexp }
             }
@@ -577,6 +580,37 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         constructor_scheme: Option<Scheme>,
         sexp: Option<Sexp>,
     },
+    /// Compiler-intrinsic scalar type (Int, Bool, Float, String).
+    ///
+    /// "Intrinsic" — the compiler provides this type directly; it has no
+    /// user-level definition (no constructors, no fields, no type parameters).
+    /// Spec §3.1 calls these "primitive types"; this variant uses the name
+    /// "intrinsic" to distinguish from the broader `primitives` module that
+    /// holds intrinsic types alongside primitive functions and builtin ADTs
+    /// (Vec, IO, Option). Naming reflects the structural property (compiler-
+    /// provided, no user-level definition) rather than the housing module.
+    ///
+    /// `ty` is the bare `Type` variant (`Type::Int`, etc.) for backend
+    /// codegen efficiency; the fully-qualified form (`primitives/Int`)
+    /// lives in the SymbolTable key. Resolution returns `ty.clone()`
+    /// directly — no FQTypeName special-casing.
+    ///
+    /// Per spec §3.1 / §8.9.1 (S69 /spec fire sharpening) — bare-name
+    /// access (`:Int`) requires prelude re-export or explicit `(import
+    /// [primitives [Int]])`. Fully-qualified `:primitives/Int` always
+    /// works. Without prelude / explicit import, bare `:Int` is a
+    /// compile-time "unknown type" error.
+    ///
+    /// Registered by `cranelisp-typecheck::register_primitives` (wave-3
+    /// cascade); resolved by `resolve_named` via uniform entry lookup.
+    /// Supersedes the retired `Type::from_name` / `Type::type_name`
+    /// reverse-lookup bridge (S69 Submission 30 — they made bare `:Int`
+    /// always available regardless of imports, contradicting spec §3.1 /
+    /// §8.9.1 / §8.11.4).
+    IntrinsicType {
+        ty: Type,
+        visibility: Visibility,
+    },
     /// A trait declaration (deftrait, Ring 2).
     TraitDecl {
         decl: TraitDecl,
@@ -710,6 +744,7 @@ impl<C: CodeStore> ModuleEntry<C> {
         match self {
             ModuleEntry::Def { visibility, .. }
             | ModuleEntry::TypeDef { visibility, .. }
+            | ModuleEntry::IntrinsicType { visibility, .. }
             | ModuleEntry::TraitDecl { visibility, .. }
             | ModuleEntry::Import { visibility, .. }
             | ModuleEntry::TraitImpl { visibility, .. }

@@ -3,11 +3,68 @@ use std::collections::HashMap;
 
 use crate::{Defn, FQTraitName, FQTypeName, JitSymbol, Scheme, Span, Symbol, Type};
 
-/// Map from call site span to how that call was resolved.
-pub type MethodResolutions = HashMap<Span, ResolvedCall>;
+/// Map from call site span to how that call was resolved by the typechecker.
+///
+/// Data-record DTO per `facades/types.md` §"Bounded-context invariants" #11 —
+/// the `resolved_calls` field IS the public contract; serde round-trips
+/// structurally. Wrapped (rather than type-aliased) per the facade
+/// §"`#[non_exhaustive]` policy" (every public struct/enum MUST be
+/// `#[non_exhaustive]`; the policy intent — extensibility, allow adding
+/// fields without breaking consumers — cannot apply to a type alias because
+/// Rust forbids the attribute on aliases). The wrapper admits future-field
+/// additions without breaking the public-api baseline.
+///
+/// Grounded by:
+/// - `facades/types.md` §"`#[non_exhaustive]` policy" (binding)
+/// - Principle 8 (no interim implementations — the alias was a stand-in
+///   that committed the surface to `HashMap` forever)
+/// - Principle 13 (`interfaces.md` is auditable + `cargo-public-api`-gateable
+///   — the newtype struct is the auditable surface; a type alias to a
+///   foreign generic is not)
+///
+/// Illustrative future fields (not committed): per-call-site context (e.g.,
+/// monomorphisation environment carried alongside the resolution); explicit
+/// instance-context for trait resolution (e.g., dictionary-passing metadata).
+/// Such additions land as new `pub` fields on this struct without consumer
+/// churn.
+///
+/// Closes S69 Submission 31 (audit finding S-DRIFT-8).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct MethodResolutions {
+    pub resolved_calls: HashMap<Span, ResolvedCall>,
+}
+
+impl MethodResolutions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
 
 /// How a function call was resolved by the typechecker.
+///
+/// `#[non_exhaustive]` per `facades/types.md` §"`#[non_exhaustive]` policy"
+/// (binding — every public struct/enum in `cranelisp-types` MUST be
+/// `#[non_exhaustive]`; the policy intent is extensibility, allowing new
+/// variants to be added without breaking consumers). Future variants — e.g.,
+/// distinct shapes for platform-effect dispatch, dictionary-passing trait
+/// resolution carriers, or speculative-inlining markers — land here without
+/// touching the `cargo-public-api` baseline at consumer crates.
+///
+/// Grounded by:
+/// - `facades/types.md` §"`#[non_exhaustive]` policy" (binding)
+/// - Principle 13 (`interfaces.md` is auditable + `cargo-public-api`-gateable
+///   — the attribute is the structural enforcement of evolution discipline)
+///
+/// Per-variant field documentation: see each variant's struct-variant fields.
+/// `TraitMethod` carries `trait_name: FQTraitName` + `impl_type: FQTypeName`
+/// per Decision 47 (FQ binding at resolved-stage boundaries — `facades/types.md`
+/// §"Resolved type system").
+///
+/// Closes S69 Submission 32 (audit finding S-DRIFT-9 + non_exhaustive policy
+/// catch-up).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ResolvedCall {
     /// Resolved to a trait method implementation (Ring 2)
     TraitMethod {

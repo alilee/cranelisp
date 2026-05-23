@@ -37,8 +37,9 @@ Disposition class counts (59 findings):
 
 | Class | Count | Meaning |
 |---|---|---|
-| **Source moves** (facade is target-stating per Decision / Principle / FIXME) | **27** | Source migration is owed. Wave 3+ source work. |
-| Facade moves (facade text is stale, was sloppy, or source has evolved with retroactive Decision agreement) | 16 | Mechanical facade updates. Wave 2 facade-doc work. (Reduced by 4 across S23/S25/S26/S27 reclassifications — each surfaced that source's shape had no Decision-level grounding and the configuration prefers a third option neither side held.) |
+| **Source moves** (facade is target-stating per Decision / Principle / FIXME) | **26** | Source migration is owed. Wave 3+ source work. (Reduced by 1 in S31 — S-DRIFT-8 RESOLVED in-place by source-side promotion of `MethodResolutions` type alias to `#[non_exhaustive]` struct; direction "source moves" stood, landed in S31; ~10 typecheck consumer cascade sites deferred to wave-3.) |
+| Facade moves (facade text is stale, was sloppy, or source has evolved with retroactive Decision agreement) | 13 | Mechanical facade updates. Wave 2 facade-doc work. (Reduced by 4 across S23/S25/S26/S27 reclassifications + 2 more in S30 — S-DRIFT-2 + S-DRIFT-3 reclassified from "Facade moves" to "RESOLVED by deletion" when the S69 /spec fire surfaced that the reverse-lookup bridge was spec-violating, not just facade-misaligned + 1 more in S32 — S-DRIFT-9 reclassified to "RESOLVED — facade self-reconciliation + source `#[non_exhaustive]` catch-up"; facade line 513 was correct since D47 authored, lines 512 + 1792 were un-cascaded stale text, not source-facade drift.) |
+| **RESOLVED by deletion / self-reconciliation** (audit's framing was superseded by a spec/Decision fire revealing the source was wrong, not the facade — or facade internal inconsistency where one location was correct and others were stale) | 3 | S-DRIFT-2 + S-DRIFT-3 (S69 Submission 30 — `Type::from_name` / `Type::type_name` deleted; new `ModuleEntry::IntrinsicType` variant); S-DRIFT-9 (S69 Submission 32 — facade lines 512 + 1792 self-reconciled under Decision 47; line 513 was already correct; source `#[non_exhaustive]` policy catch-up bundled). |
 | Both move | 8 | Each side adjusts; neither is wholly correct. (S-DRIFT-11 S23, S-DRIFT-12 S25, S-DRIFT-14 S26, S-DRIFT-13 S27 reclassifications + 4 prior.) |
 | Arbitration — genuine cross-skill question the configuration does not ground | 1 | A5 (View enum-vs-struct opacity). A2 closed by Submission 13 — see "Macro callable shape" bullet above. |
 | No action (auto-trait noise, already-covered) | 6 | Per audit discipline still gets a one-sentence rationale. |
@@ -90,13 +91,13 @@ After 19 walk-through submissions, the audit's per-finding dispositions have dri
 | U21 | D | Audit's disposition is "No action — derived From impl is auto-trait noise". |
 | U22 | D | Facade-side enumeration — add `HeapCategory::classify` signature with two-mode contract documentation. |
 | S-DRIFT-1 | A | Walk rows 339+340 — (a) source-side `vars → type_vars` rename + (b) facade-side `Vec<TraitName> → Vec<FQTraitName>` both approved and applied. |
-| S-DRIFT-2 | D | Facade catch-up to source's `&str` signature (Decision 47 exception 1 pragmatic implementation). |
-| S-DRIFT-3 | D | Facade catch-up to source's `Option<&'static str>` return (Decision 47 exception 1 alloc-free reverse-lookup). |
+| S-DRIFT-2 | D | **RESOLVED (Submission 30 — closed by deletion)** — `Type::from_name` deleted from source; new `ModuleEntry::IntrinsicType { ty: Type, visibility: Visibility }` variant added for uniform intrinsic-type registration. The audit's "facade moves to source's `&str`" framing was superseded — the bridge was spec-violating per S69 /spec fire (FIXME 0216 — spec §3.1 / §8.9.1 / §8.11.4 sharpening: bare `:Int` requires prelude or explicit import). |
+| S-DRIFT-3 | D | **RESOLVED (Submission 30 — closed by deletion)** — `Type::type_name` deleted from source; structural replacement via `ModuleEntry::IntrinsicType` (same as S-DRIFT-2). Audit's "facade catch-up" framing superseded — bridge was spec-violating, not just facade-misaligned. |
 | S-DRIFT-4 | A | Bundled with H11 (walk row 347). |
 | S-DRIFT-6 | D | Facade catch-up to source's `Option<Defn>` per Decision 22 (codegen-compilable predicate). |
 | S-DRIFT-7 | D | Facade catch-up to source's `Box<DefKind>` per Principle 6 (size discipline). |
-| S-DRIFT-8 | D | Source-side promotion `type MethodResolutions = …` → `#[non_exhaustive] pub struct MethodResolutions { … }` per facade non_exhaustive policy. |
-| S-DRIFT-9 | D | Facade-side correction — name 4-field `TraitMethod` shape (source's post-D47 shape); move misplaced `trait_resolution` to `AutoCurry` row. |
+| S-DRIFT-8 | D | **RESOLVED (Submission 31)** — source moves: `pub type MethodResolutions = HashMap<Span, ResolvedCall>` promoted to `#[non_exhaustive] pub struct MethodResolutions { pub resolved_calls: HashMap<Span, ResolvedCall> }` with `Default` derive + `new()` constructor. Grounded by facade §"`#[non_exhaustive]` policy" (binding) + Principle 8 (no interim implementations) + Principle 13 (`cargo-public-api`-gateable) + BC invariant 11 (data-record DTO — `resolved_calls` field IS the contract). Wave-3 cascade: ~10 consumer migration sites in `cranelisp-typecheck/src/{checker,infer}.rs` (mechanical `.X` → `.resolved_calls.X` rewrite; no semantic shift). |
+| S-DRIFT-9 | D | **RESOLVED (Submission 32)** — facade self-reconciliation under Decision 47 + source `#[non_exhaustive]` policy catch-up (scope-extended per user direction to avoid revisiting this data structure). Facade line 512 misattribution corrected (`MethodResolutions.impl_type` → `ResolvedCall::TraitMethod.impl_type`); §"Item-by-item disposition" PIF row at line 1792 rewritten with correct 4-field `TraitMethod` shape (`trait_name: FQTraitName, method_name: Symbol, impl_type: FQTypeName, mangled_name: JitSymbol`) per D47 + `trait_resolution` moved to AutoCurry attribution. Source: added `#[non_exhaustive]` to `ResolvedCall` enum per facade §"`#[non_exhaustive]` policy" (no field-set changes — source already at D47-target 4-field shape). Wave-3 cascade: ~5-10 pattern-match sites on `ResolvedCall` in typecheck + backend need `_ =>` arms (mechanical). Cross-reference: line 512 misattribution flagged in Submission 31 closure also resolved here. |
 | S-DRIFT-10 | C | Genuine arbitration A5 — Decision 44 names "opacity" intent but does not arbitrate enum-vs-struct. Tips on /typecheck audit of pattern-match consumer usage. |
 | S-DRIFT-11 | RESOLVED (Submission 23) | Both move — fused `params: Vec<(Symbol, Option<TypeExpr>)>` shape per Principle 18 (lockstep invariant folded into the type) + spec §5.1.1 EBNF (per-param independently-optional annotation) + spec §5.1 L41 (no return-type annotation syntax). User-arbitrated 2026-05-22; revises the prior audit's "facade moves" framing. |
 | S-DRIFT-12 | A | RESOLVED Submission 25 — facade editorial (`name: Symbol`, `type_expr`) + source-side `span: Span` field add per Decision 39; Option A (`TypeExpr` unconditional, synthesised-`TypeVar`-for-bare convention) user-arbitrated 2026-05-22. Consumer cascade /dev wave-3. |
@@ -425,37 +426,45 @@ Bundled with H11 + U10 closures. Per walk row 348 facade lockdown, `ExportSpec` 
 
 ---
 
-### Finding S-DRIFT-2 — `Type::from_name` signature
+### Finding S-DRIFT-2 — RESOLVED (Submission 30 — closed by deletion)
 
-**Triage bucket: D — mechanical.** Facade catch-up to source's `&str` per Decision 47 exception 1 (reverse-lookup) + Principle 6 (alloc-free hot path).
+**Triage bucket: D — RESOLVED Submission 30.** Closed by deletion + structural replacement, not facade-text catch-up.
 
-**Facade expects.** §"Resolved type system" line 343: `pub fn from_name(name: &TypeName) -> Option<Type>`.
+**Closure summary.** `Type::from_name(&str) -> Option<Type>` deleted from `crates/cranelisp-types/src/types.rs` (lines ~33–41 retired). The in-file test `test_from_name` (lines ~373–379) deleted alongside.
 
-**Source does.** `types.rs:33`: `pub fn from_name(name: &str) -> Option<Type>`.
+**Why deletion is the correct disposition (scope-correction vs. prior framing).** The audit's "facade moves to source's `&str`" disposition was superseded by today's /spec fire (S69 — FIXME 0216 + spec §3.1 / §8.9.1 / §8.11.4 sharpening). User-confirmed reading: bare `:Int` requires either prelude re-export or explicit `(import [primitives [Int]])`. Fully-qualified `:primitives/Int` always works. **Without prelude / explicit import, bare `:Int` is a compile-time "unknown type" error**. The `Type::from_name` helper made bare `:Int` always available regardless of imports — a spec violation. The bridge was not just facade-misaligned (the prior framing); it was structurally wrong for the spec semantics.
 
-**Design intent.** **Decision 47 exception 1** — "Reverse-lookup helpers on `Type`. `from_name(&TypeName) -> Option<Type>` for primitive recognition and `type_name(&Type) -> Option<TypeName>` for primitive emission. These operate on the small set of built-in non-ADT types where the unqualified name IS unique workspace-wide." Decision 47 names `&TypeName` as the signature — but the facade's §"FQTypeName migration plan" §"backend" table at line 282 + S65 W2 review § 4.1 names primitive-registration call sites that synthesise `TypeName::from("Int")` from string literals (`builtins.rs:552,604,664,729,929,1082,…`). Source's wider `&str` admits both flavours.
+**Structural replacement.** New `ModuleEntry::IntrinsicType { ty: Type, visibility: Visibility }` variant added to `ModuleEntry` in `crates/cranelisp-types/src/module.rs` (positioned after `TypeDef`, before `TraitDecl`). Compiler-intrinsic scalar types (Int, Bool, Float, String) register into the `primitives` module's SymbolTable like any other entry; resolution returns `ty.clone()` directly without FQTypeName special-casing. Wave-3 cascade lands `cranelisp-typecheck::register_primitives` extension + `resolve_named` simplification + 6 `Type::from_name` call-site fixups in `traits.rs` (+ the one in `resolve.rs`).
 
-The configuration here is **internally inconsistent**: Decision 47's exception 1 names `&TypeName` (narrow), but the migration plan + S65 W2 review accept literal-string callers (wider). Source's `&str` is the practical signature that lets the literal callers work without per-site `TypeName::from(...)` wrapping (alloc-per-call on a startup-hot path; Principle 6 — complexity has a budget — disfavours).
+**Grounding.**
+- Spec §3.1 + §8.9.1 + §8.11.4 (S69 /spec fire sharpening) — bare-name access requires prelude or explicit import.
+- FIXME 0216 — primitive-type-import-conformance, filed today.
+- `memory/feedback_facade_walk_no_interior.md` — within-crate match-arm additions (`is_public`, `into_concrete`) in scope for the walk; cross-crate consumer cascade deferred to wave-3.
 
-**Difference implies.** If facade enforces `&TypeName`, every primitive-init site adds a `TypeName::from("Int")` wrap. If source's `&str` stands, the exception-1 signature is "accepts `&str` because `&TypeName: Deref<Target=str>` auto-deref covers the typed call sites and bare-literal call sites match the same signature."
+**Manifestation pointers.**
+- Source: `crates/cranelisp-types/src/types.rs` (deletion); `crates/cranelisp-types/src/module.rs` (new variant + match-arm additions in `is_public` + `into_concrete`).
+- Facade: `design/arch/facades/types.md` §"Resolved type system" `impl Type` block (deletion + replacement comment); §"Symbol table" `ModuleEntry::IntrinsicType` variant block; §"Resolved type system" Decision 47 exception-1 retirement callout; §"Item-by-item disposition" §"Enum variants" `ModuleEntry::IntrinsicType` row.
+- Audit: this closure block + triage register row.
 
-**Disposition.** **Facade moves.** Adjust facade `Type::from_name` to `pub fn from_name(name: &str) -> Option<Type>` and add inline note: "Decision 47 exception 1 (reverse-lookup): accepts `&str` to admit both `&TypeName` (via `Deref`) and bare literal call sites (primitive registration). The wider signature is structurally consistent with exception 1's narrow scope — built-in non-ADT types where unqualified names are unique." This is **facade catch-up to source's pragmatic Decision-47-exception-1 implementation**, not facade-author preference. The catch-up should ideally be accompanied by a one-line clarification in Decision 47 itself (filed separately as `/arch` follow-up if /design surfaces the inconsistency).
+**Discipline footer.** Walk-through fire per `memory/feedback_facade_walk_no_interior.md` — facade + within-crate source aligned; cross-crate consumer cascade (6 call sites in typecheck) deferred to /dev wave-3. No workspace `cargo check`. No `public-api.txt` baseline regen. No consumer crate edits.
 
 ---
 
-### Finding S-DRIFT-3 — `Type::type_name` return type
+### Finding S-DRIFT-3 — RESOLVED (Submission 30 — closed by deletion)
 
-**Triage bucket: D — mechanical.** Facade catch-up to source's `Option<&'static str>` (bundled with S-DRIFT-2 — Decision 47 exception 1 + alloc-free reverse-lookup).
+**Triage bucket: D — RESOLVED Submission 30.** Closed by deletion + structural replacement (bundled with S-DRIFT-2).
 
-**Facade expects.** Line 344: `pub fn type_name(&self) -> Option<TypeName>`.
+**Closure summary.** `Type::type_name(&self) -> Option<&'static str>` deleted from `crates/cranelisp-types/src/types.rs` (lines ~44–52 retired). The in-file test `test_type_name` (lines ~381–385) deleted alongside.
 
-**Source does.** `types.rs:44`: `pub fn type_name(&self) -> Option<&'static str>`.
+**Why deletion is the correct disposition (scope-correction vs. prior framing).** Same as S-DRIFT-2 — the audit's "facade catch-up" framing was superseded. `Type::type_name` is the inverse of `from_name`; both formed the reverse-lookup bridge that made bare `:Int` always available regardless of imports. The bridge was spec-violating per the S69 /spec fire (FIXME 0216 + spec §3.1 / §8.9.1 / §8.11.4 sharpening), not just facade-misaligned.
 
-**Design intent.** Symmetric to S-DRIFT-2. **Decision 47 exception 1** names this as the inverse reverse-lookup helper. The `&'static str` return matches the static primitive name strings (`"Int"`, `"Bool"`, etc.); wrapping in `TypeName` forces a `String` allocation per call (TypeName is `pub struct TypeName(pub String)` per the `string_newtype!` macro — so `Option<TypeName>` is an owned alloc per call). Backend's primitive-codegen consults this for every primitive call site — startup + hot-path allocation.
+**Structural replacement.** Same as S-DRIFT-2 — `ModuleEntry::IntrinsicType` variant carries the bare `Type` for backend codegen efficiency; the fully-qualified form lives in the SymbolTable key. Reverse-lookup (Type → display name) is no longer needed as a `Type`-method bridge: display naming flows through `Type::Display` (already in source) using either the bare-variant rendering (`Type::Int` → "Int") or the FQ ADT rendering (`Type::ADT(fqtn, args)` → `fqtn` formatting). Backend's primitive-codegen consults the per-module SymbolTable entry — same lookup path as any other identifier.
 
-**Difference implies.** Same as S-DRIFT-2 — wider source signature is the practical Decision-47-exception-1 shape.
+**Grounding.** Same as S-DRIFT-2.
 
-**Disposition.** **Facade moves.** Adjust to `type_name(&self) -> Option<&'static str>`. Same rationale as S-DRIFT-2 — exception-1 reverse-lookup with alloc-free static string return.
+**Manifestation pointers.** Same as S-DRIFT-2 (resolved as a single submission, bundled in source/facade/audit edits).
+
+**Discipline footer.** Same as S-DRIFT-2.
 
 ---
 
@@ -505,36 +514,62 @@ The narrower `Expr` vs wider `Defn` question: backend's compile path consumes th
 
 ---
 
-### Finding S-DRIFT-8 — `MethodResolutions` shape
+### Finding S-DRIFT-8 — RESOLVED (Submission 31, 2026-05-23)
 
-**Triage bucket: D — mechanical.** Source-side promotion `type MethodResolutions = HashMap<…>` → `#[non_exhaustive] pub struct MethodResolutions { pub resolved_calls: HashMap<…> }` per facade non_exhaustive policy + Principles 8/13.
+**Triage bucket: D — RESOLVED Submission 31.** Source-side promotion landed: type alias replaced with `#[non_exhaustive]` newtype struct per facade `#[non_exhaustive]` policy + Principles 8/13 + BC invariant 11.
 
-**Facade expects.** §"Typecheck output" line 646:
+**Target shape (now source-canonical at `crates/cranelisp-types/src/check.rs:7–43`).**
 
 ```rust
-#[non_exhaustive] pub struct MethodResolutions { pub resolved_calls: HashMap<Span, ResolvedCall> }
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct MethodResolutions {
+    pub resolved_calls: HashMap<Span, ResolvedCall>,
+}
+
+impl MethodResolutions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
 ```
 
-**Source does.** `check.rs:7`: `pub type MethodResolutions = HashMap<Span, ResolvedCall>`.
+**Grounding (four authorities cited inline on the source rustdoc).**
 
-**Design intent.** **Facade §"`#[non_exhaustive]` policy"** (line 919) is binding: "every public struct and enum MUST be `#[non_exhaustive]`." Type aliases are exempt from `#[non_exhaustive]` in Rust (you can't apply the attribute to an alias), but the policy intent — extensibility, allow adding fields without breaking consumers — is violated by the alias: consumers see `HashMap` directly and use HashMap methods. **Principle 8** (no interim implementations) + **Principle 13** (`interfaces.md` is auditable + `cargo-public-api`-gateable) ground the newtype struct shape as the target.
+- **Facade §"`#[non_exhaustive]` policy"** (binding): "every public struct and enum in `cranelisp-types` MUST be `#[non_exhaustive]`." Type aliases are exempt from the attribute in Rust (it cannot be applied to an alias), but the policy *intent* — extensibility, allow adding fields without breaking consumers — was violated by the alias: consumers saw `HashMap` directly and committed the surface to its shape.
+- **Principle 8 (no interim implementations).** The alias was a stand-in that committed the public surface to `HashMap` forever. Promotion to a newtype struct lifts the interim into the target shape — admits future `pub` field additions (e.g., per-call-site context; instance-context for trait resolution — illustrative, not committed) without touching the public-api baseline.
+- **Principle 13 (`interfaces.md` is auditable + `cargo-public-api`-gateable).** The newtype struct is the auditable surface; a type alias to a foreign generic (`HashMap<…>`) bypasses the `cargo-public-api` baseline gate (every change to `HashMap`'s API ripples through the alias). The struct shape pins the surface to a stable, baseline-checkable boundary.
+- **BC invariant 11 (data-record DTO).** `MethodResolutions` is named explicitly in the BC invariant 11 enumeration as a DTO whose field set IS the contract; `serde` round-trips structurally. The promotion preserves this classification — `resolved_calls` is the public field.
 
-**Difference implies.** The alias commits to HashMap forever; the newtype struct admits future fields (per-call-site context, instance-context for trait resolution). The non_exhaustive policy is binding facade-text intent.
+**Scope-correction vs. prior framing.** The prior audit ("Consumers using `HashMap` methods continue via `Deref<Target=HashMap>` or via the `resolved_calls` field") considered a `Deref` impl as a possible migration aid. The landed shape does NOT add `Deref` — per Principle 8, the interim convenience would itself be a stand-in committing the surface again. Consumers migrate mechanically to `.resolved_calls.X` (the field access path), which is the durable shape.
 
-**Disposition.** **Source moves.** Promote to `#[non_exhaustive] pub struct MethodResolutions { pub resolved_calls: HashMap<Span, ResolvedCall> }`. Consumers using `HashMap` methods continue via `Deref<Target=HashMap>` or via the `resolved_calls` field. Migration: ~5–10 consumer dot-access sites in typecheck + backend. Grounded by facade non_exhaustive policy + Principles 8/13. Closes S-DRIFT-8.
+**Manifestation sites.**
+- Source: `crates/cranelisp-types/src/check.rs:7–43` (struct definition + rustdoc + `impl new()`).
+- Facade: `facades/types.md` line ~1499 (already at target shape pre-S31; no edit needed) + new PIF row at §"Struct fields" naming `resolved_calls` as the data-record DTO field.
+- Audit: this closure block; triage register row updated; per-finding RESOLVED marker.
+
+**Wave-3 cascade (deferred to /dev per `feedback_facade_walk_no_interior.md`).** ~10 consumer migration sites in `crates/cranelisp-typecheck/src/checker.rs` + `infer.rs` rewrite `state.method_resolutions.X` (HashMap method calls — `.insert`, `.contains_key`, `.get`, `.clear`) to `state.method_resolutions.resolved_calls.X`. Construction sites (`HashMap::new()`) become `MethodResolutions::new()`. Mechanical; no semantic shift.
+
+**Discipline footer.** Walk-through fire per `memory/feedback_facade_walk_no_interior.md` — facade + source aligned within `cranelisp-types`; cross-crate consumer cascade NOT performed; workspace `cargo check` NOT run (expected broken — ~10 cascade sites in typecheck); `public-api.txt` baseline regen deferred to end-of-walk; no consumer crate edits.
 
 ---
 
-### Finding S-DRIFT-9 — `ResolvedCall::TraitMethod` field set
+### Finding S-DRIFT-9 — RESOLVED (Submission 32, 2026-05-23)
 
-**Triage bucket: D — mechanical.** Facade-side correction: name source's 4-field shape (`trait_name: FQTraitName, method_name, impl_type: FQTypeName, mangled_name: JitSymbol`) per Decision 47 FQ-binding; move misplaced `trait_resolution` to `AutoCurry` row.
+**Triage bucket: D — RESOLVED Submission 32.** Facade self-reconciliation under Decision 47 (line 513 already correctly named the 4-field shape; line 512 misattribution + line 1792 PIF row stale text were the editorial drift) + source-side `#[non_exhaustive]` policy catch-up (scope-extended per user direction to avoid revisiting this data structure).
 
-**Facade expects.** §"Item-by-item disposition" §"Enum variants" describes `ResolvedCall::TraitMethod::{method_name, mangled_name, trait_resolution}` (three fields, third being `trait_resolution: Option<Box<ResolvedCall>>`).
+**Framing — neither "facade moves" nor "source moves" purely.** Pre-S32 facade had three places naming `ResolvedCall::TraitMethod`'s shape:
 
-**Source does.** `check.rs:13–18`:
+- Line 513 (§"Resolved type system"): `ResolvedCall::TraitMethod { trait_name: FQTraitName, … }` — **correct** under Decision 47 since the Decision authored.
+- Line 512 (same paragraph): `MethodResolutions.impl_type` — **misattribution** (the field lives on `ResolvedCall::TraitMethod`, NOT on `MethodResolutions` which is the per-`Span` lookup map).
+- Line 1792 (§"Item-by-item disposition" §"Enum variants"): three-field shape with misplaced `trait_resolution` — **stale text predating Decision 47's sharpening**.
+
+The mixed-correctness was facade-internal inconsistency, not source-facade drift. Source has carried the post-D47 4-field shape since D47 authored. Resolution: facade self-reconciles (lines 512 + 1792 catch up to line 513's already-correct text); source picks up the `#[non_exhaustive]` policy add bundled in.
+
+**Target shape (now facade-canonical at line 1792).**
 
 ```rust
-TraitMethod {
+ResolvedCall::TraitMethod {
     trait_name: FQTraitName,
     method_name: Symbol,
     impl_type: FQTypeName,
@@ -542,13 +577,41 @@ TraitMethod {
 }
 ```
 
-Four fields. **No `trait_resolution`** (that field lives on `AutoCurry`, per facade line 987).
+`trait_resolution` lives on `ResolvedCall::AutoCurry` only (already correct at facade line 1832; line 1792 cross-reference now explicit). Backend reads `mangled_name: JitSymbol` to emit the call; reads `trait_name` + `impl_type` for resolution-context introspection (REPL displays, error messages).
 
-**Design intent.** **Decision 47** (FQTypeName binding) target-states `trait_name: FQTraitName` + `impl_type: FQTypeName` on resolved-stage boundary types. `MethodResolutions` is a typecheck-output type → resolved stage → exception-1/-2 don't apply → FQ binding applies. Source's four-field shape IS the post-D47 target. The facade's three-field shape misnames `TraitMethod` by ascribing `trait_resolution` (which actually belongs to `AutoCurry`) and omits the trait + impl_type identifiers that Decision 47 mandates.
+**Target shape (now source-canonical at `crates/cranelisp-types/src/check.rs:46–73`).**
 
-**Difference implies.** Backend reads `mangled_name: JitSymbol` to emit the call directly; reads `impl_type` + `trait_name` for resolution-context introspection. The facade's `trait_resolution` chain is misplaced.
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum ResolvedCall {
+    TraitMethod { trait_name: FQTraitName, method_name: Symbol, impl_type: FQTypeName, mangled_name: JitSymbol },
+    SigDispatch { mangled_name: JitSymbol },
+    AutoCurry { target_name: Symbol, applied_count: usize, total_count: usize, trait_resolution: Option<Box<ResolvedCall>> },
+    BuiltinFn { name: Symbol },
+}
+```
 
-**Disposition.** **Facade moves.** Correct the §"Item-by-item disposition" §"Enum variants" row to name `TraitMethod::{trait_name: FQTraitName, method_name: Symbol, impl_type: FQTypeName, mangled_name: JitSymbol}` per source (which is the Decision-47 target). Move `trait_resolution` to the `AutoCurry` row (where it already belongs per facade line 987). Source is correct; facade documentation error. Closes S-DRIFT-9.
+**Grounding (authorities cited inline).**
+
+- **Decision 47 (FQTypeName binding at resolved-stage boundaries).** `MethodResolutions` is a typecheck-output type → resolved stage → exception-1/-2 don't apply → FQ binding applies. `trait_name: FQTraitName` + `impl_type: FQTypeName` on `TraitMethod` is the post-D47 target. Source has carried this since D47 authored; facade lines 512 + 1792 were the un-cascaded text.
+- **Facade §"`#[non_exhaustive]` policy"** (binding): "every public struct and enum in `cranelisp-types` MUST be `#[non_exhaustive]`." `ResolvedCall` was the un-cascaded source-side gap; Submission 32 lands the attribute.
+- **Principle 13 (`interfaces.md` is auditable + `cargo-public-api`-gateable).** The `#[non_exhaustive]` attribute is the structural enforcement of evolution discipline — future variant additions (e.g., platform-effect dispatch shapes, dictionary-passing trait carriers, speculative-inlining markers) land without touching the consumer-side baselines.
+- **Facade internal consistency.** Lines 512 + 513 + 1792 + 1832 must agree. Pre-S32, lines 513 + 1832 were correct; lines 512 + 1792 were stale. S32 brings 512 + 1792 in line.
+
+**Scope-extension vs. prior framing.** The audit's original disposition named only the facade-side correction (PIF row rewrite + line-512 misattribution fix). Submission 32 scope-extends to bundle the source-side `#[non_exhaustive]` add per user direction: "S-DRIFT-9 + ResolvedCall `#[non_exhaustive]` — bundled here to avoid revisiting this data structure." The bundling is scope-extension, not a redirected disposition — the facade-side correction remains the structural payload; the source attribute add is the policy-catch-up bonus.
+
+**Manifestation sites.**
+
+- Source: `crates/cranelisp-types/src/check.rs` lines 44–66 (enum + 14-line rustdoc citing `#[non_exhaustive]` policy + Principle 13 + D47 reference; `#[non_exhaustive]` attribute on line 67; 4-field `TraitMethod` variant intact at lines 70–75).
+- Facade: `design/arch/facades/types.md` line 512 (misattribution corrected to `ResolvedCall::TraitMethod.impl_type`); line 1792 (PIF row rewritten with 4-field `TraitMethod` + D47 citation + AutoCurry-only `trait_resolution` clarification). Line 1500 opaque summary unchanged (already at `TraitMethod { /* … */ }` placeholder shape — variant fields documented at the §"Item-by-item disposition" expansion).
+- Audit: this closure block; triage register row updated; per-finding RESOLVED marker.
+
+**Cross-reference.** Submission 31's closure flagged the line-512 misattribution as a follow-up; that follow-up lands here.
+
+**Wave-3 cascade (deferred to /dev per `feedback_facade_walk_no_interior.md`).** ~5-10 pattern-match sites on `ResolvedCall` outside `cranelisp-types` (typecheck consumers in `cranelisp-typecheck/src/{checker,infer,traits}.rs`; backend consumers in `cranelisp-backend/src/{compiler,primitives_inline}.rs`) need `_ =>` arms added to handle the now-non-exhaustive enum. Mechanical; no semantic shift. Within-crate consumers verified zero — no `match` on `ResolvedCall` exists inside `crates/cranelisp-types/src/` (grep-confirmed; `#[non_exhaustive]` only affects cross-crate match exhaustivity per Rust semantics).
+
+**Discipline footer.** Walk-through fire per `memory/feedback_facade_walk_no_interior.md` — facade + source aligned within `cranelisp-types`; cross-crate consumer cascade NOT performed; workspace `cargo check` NOT run (expected broken — ~5-10 cascade sites in typecheck + backend); `public-api.txt` baseline regen deferred to end-of-walk; no consumer crate edits. **Closes Group B** (all four findings resolved: S-DRIFT-2, S-DRIFT-3 — Submission 30; S-DRIFT-8 — Submission 31; S-DRIFT-9 — Submission 32).
 
 ---
 
@@ -1082,14 +1145,14 @@ Bundled with S-DRIFT-19. Source-side demotion of raw `pub` fields (`imports`, `e
 | U21 | `CranelispError::From<PlatformError>` | No action | Auto-trait noise (Decision 42 implies) |
 | U22 | `HeapCategory::classify<C, L>` | Facade moves | Principle 6 (two-mode conservative) + Principle 13 |
 | S-DRIFT-1 | `Scheme.{type_vars→vars}` + FQTraitName | Facade moves | Decision 47 (FQ binding mandates `FQTraitName`) + editorial (`vars`) |
-| S-DRIFT-2 | `Type::from_name(&str)` | Facade moves | Decision 47 exception 1 + Principle 6 |
-| S-DRIFT-3 | `Type::type_name() -> Option<&'static str>` | Facade moves | Decision 47 exception 1 + Principle 6 |
+| S-DRIFT-2 | `Type::from_name(&str)` | **RESOLVED (Submission 30) — closed by deletion** | Bridge was spec-violating per S69 /spec fire (FIXME 0216 + spec §3.1 / §8.9.1 / §8.11.4 sharpening — bare `:Int` requires prelude or explicit import). Deleted from source; structural replacement via new `ModuleEntry::IntrinsicType { ty: Type, visibility: Visibility }` variant. |
+| S-DRIFT-3 | `Type::type_name() -> Option<&'static str>` | **RESOLVED (Submission 30) — closed by deletion** | Bundled with S-DRIFT-2 — bridge was spec-violating; same retirement + structural replacement. |
 | S-DRIFT-4 | `ImportNames` / `ExportSpec` variant set | Source moves | Bundled with H11 (Decision 39) |
 | S-DRIFT-5 | `ModuleEntry::Macro` field set (GOT-callable) | **RESOLVED (Submission 13)** | Unified to `Def { kind: DefKind::Macro { clauses_meta, sexp, source } }`; per-clause GOT-callable via mangled-variant `UserFn` Defs (`{macro}$clause-{N}`), parallel to multi-sig fns; `MacroEnv` sidecar retires |
 | S-DRIFT-6 | `ModuleEntry::Def.ast: Option<Defn>` | Facade moves | Decision 22 (codegen-compilable predicate) |
 | S-DRIFT-7 | `ModuleEntry::Def.kind: Box<DefKind>` | Facade moves | Principle 6 (size discipline); editorial |
-| S-DRIFT-8 | `MethodResolutions` newtype struct | Source moves | Facade non_exhaustive policy + Principles 8/13 |
-| S-DRIFT-9 | `ResolvedCall::TraitMethod` field set | Facade moves | Decision 47 (source's FQ shape IS the target) |
+| S-DRIFT-8 | `MethodResolutions` newtype struct | **RESOLVED (Submission 31)** — source moves | Facade `#[non_exhaustive]` policy + Principles 8/13 + BC invariant 11; type alias promoted to `#[non_exhaustive]` struct with `Default` derive + `new()` constructor; wave-3 cascade ~10 sites in typecheck |
+| S-DRIFT-9 | `ResolvedCall::TraitMethod` field set | **RESOLVED (Submission 32)** — facade self-reconciliation + source `#[non_exhaustive]` catch-up | Decision 47 (source's FQ shape IS the target — facade line 513 already correct; line 512 misattribution + line 1792 PIF row stale text were the gap) + facade §"`#[non_exhaustive]` policy" (binding for `ResolvedCall` enum); scope-extended per user direction to bundle `#[non_exhaustive]` add and avoid revisiting this data structure; wave-3 cascade ~5-10 pattern-match sites in typecheck/backend |
 | S-DRIFT-10 | `View<'a, C, L>` enum vs struct | Arbitration A5 (genuine) | Decision 44 names opacity intent; doesn't arbitrate enum vs struct |
 | S-DRIFT-11 | `DefnVariant` fused params + no return_type | **RESOLVED (Submission 23) — both move** | Principle 18 (lockstep invariant folded structurally) + spec §5.1.1 EBNF + spec §5.1 L41 |
 | S-DRIFT-12 | `FieldDef` shape + missing span | **RESOLVED (Submission 25) — both move** | spec §2.2.6 + §5.2 (name always present) + Principle 7 (`type_expr` naming) + Decision 39 (per-field `span`); Option A (`TypeExpr` unconditional, synthesised-`TypeVar`-for-bare convention) user-arbitrated 2026-05-22 |
@@ -1114,8 +1177,9 @@ Bundled with S-DRIFT-19. Source-side demotion of raw `pub` fields (`imports`, `e
 
 | Class | Count |
 |---|---|
-| Source moves | 27 (H2, H3, H4, H5, H6, H7, H9, H10, H11, U11, S-DRIFT-4, S-DRIFT-8, S-DRIFT-19, S-DRIFT-20, S-DRIFT-21, C-HOLE-4, C-HOLE-5, C-HOLE-6 — plus partial source-side moves in H8, S-DRIFT-12, S-DRIFT-15, U9 = 22 hard + ~5 partial) |
-| Facade moves | 18 (U1, U2, U4, U5, U7, U8, U10, U12, U13, U14, U15, U16, U17, U19, U20, U22, S-DRIFT-1, S-DRIFT-2, S-DRIFT-3, S-DRIFT-6, S-DRIFT-7, S-DRIFT-9, S-DRIFT-17, S-DRIFT-18, S-DRIFT-22; S-DRIFT-11 reclassified to "both move" per Submission 23 + S-DRIFT-12 reclassified per Submission 25 + S-DRIFT-14 reclassified per Submission 26 + S-DRIFT-13 reclassified per Submission 27 — each surfaced that source had no Decision-level grounding and the configuration prefers a third option neither side held; the parallel S-DRIFT-11/S-DRIFT-14 reclassifications grounded on the corrected Principle 11 misattribution; S-DRIFT-22 reclassified D→"Facade moves" per Submission 29 — scope-extended editorial sharpening preserves opacity policy intact) |
+| Source moves | 26 (H2, H3, H4, H5, H6, H7, H9, H10, H11, U11, S-DRIFT-4, S-DRIFT-19, S-DRIFT-20, S-DRIFT-21, C-HOLE-4, C-HOLE-5, C-HOLE-6 — plus partial source-side moves in H8, S-DRIFT-12, S-DRIFT-15, U9 = 21 hard + ~5 partial; S-DRIFT-8 RESOLVED in-place Submission 31 — source moved as predicted; direction column unchanged; wave-3 cascade deferred) |
+| Facade moves | 15 (U1, U2, U4, U5, U7, U8, U10, U12, U13, U14, U15, U16, U17, U19, U20, U22, S-DRIFT-1, S-DRIFT-6, S-DRIFT-7, S-DRIFT-17, S-DRIFT-18, S-DRIFT-22; S-DRIFT-11 reclassified to "both move" per Submission 23 + S-DRIFT-12 reclassified per Submission 25 + S-DRIFT-14 reclassified per Submission 26 + S-DRIFT-13 reclassified per Submission 27 + S-DRIFT-2/S-DRIFT-3 reclassified to "RESOLVED by deletion" per Submission 30 + S-DRIFT-9 reclassified to "RESOLVED — facade self-reconciliation + source `#[non_exhaustive]` catch-up" per Submission 32 — each surfaced that source had no Decision-level grounding and the configuration prefers a third option neither side held; the parallel S-DRIFT-11/S-DRIFT-14 reclassifications grounded on the corrected Principle 11 misattribution; S-DRIFT-22 reclassified D→"Facade moves" per Submission 29 — scope-extended editorial sharpening preserves opacity policy intact; S-DRIFT-2/S-DRIFT-3 reclassified D→"RESOLVED by deletion" per Submission 30 — S69 /spec fire FIXME 0216 surfaced the reverse-lookup bridge was spec-violating, not facade-misaligned; S-DRIFT-9 reclassified D→"RESOLVED — facade self-reconciliation + source `#[non_exhaustive]` catch-up" per Submission 32 — facade line 513 already at D47-target since the Decision authored, lines 512 + 1792 were un-cascaded stale text within a facade-internally-inconsistent state, not source-facade drift) |
+| **RESOLVED by deletion / self-reconciliation** | 3 (S-DRIFT-2, S-DRIFT-3 — Submission 30; `Type::from_name` / `Type::type_name` deleted from source; new `ModuleEntry::IntrinsicType` variant for uniform intrinsic-type registration. S-DRIFT-9 — Submission 32; facade lines 512 + 1792 self-reconciled under Decision 47; line 513 was already correct since D47 authored; source-side `#[non_exhaustive]` policy catch-up bundled per user direction.) |
 | Both move | 8 (H1, H8, U9, S-DRIFT-11, S-DRIFT-12, S-DRIFT-13, S-DRIFT-14, S-DRIFT-15) |
 | Arbitration (genuine) | 2 (A2 = S-DRIFT-5; A5 = S-DRIFT-10) — both with default direction stated |
 | No action | 5 (U3, U6, U18, U21, S-DRIFT-16, C-HOLE-3) — S-DRIFT-22 reclassified to "Facade moves" per Submission 29 (scope-extended editorial sharpening; opacity policy intact per Principle 15) |

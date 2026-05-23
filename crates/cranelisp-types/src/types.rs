@@ -29,28 +29,6 @@ pub enum Type {
 }
 
 impl Type {
-    /// Centralized primitive name -> Type mapping.
-    pub fn from_name(name: &str) -> Option<Type> {
-        match name {
-            "Int" => Some(Type::Int),
-            "Bool" => Some(Type::Bool),
-            "String" => Some(Type::String),
-            "Float" => Some(Type::Float),
-            _ => None,
-        }
-    }
-
-    /// Centralized Type -> display name mapping.
-    pub fn type_name(&self) -> Option<&'static str> {
-        match self {
-            Type::Int => Some("Int"),
-            Type::Bool => Some("Bool"),
-            Type::String => Some("String"),
-            Type::Float => Some("Float"),
-            _ => None,
-        }
-    }
-
     /// Check whether this type is `IO _`.
     pub fn is_io(&self) -> bool {
         matches!(self, Type::ADT(fqtn, _) if fqtn.module == "primitives" && fqtn.name == "IO")
@@ -367,22 +345,6 @@ mod tests {
     /// Test helper: create an FQTypeName in the "primitives" module.
     fn primitives_fqtn(name: &str) -> FQTypeName {
         FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from(name))
-    }
-
-    #[test]
-    fn test_from_name() {
-        assert_eq!(Type::from_name("Int"), Some(Type::Int));
-        assert_eq!(Type::from_name("Bool"), Some(Type::Bool));
-        assert_eq!(Type::from_name("Float"), Some(Type::Float));
-        assert_eq!(Type::from_name("String"), Some(Type::String));
-        assert_eq!(Type::from_name("Foo"), None);
-    }
-
-    #[test]
-    fn test_type_name() {
-        assert_eq!(Type::Int.type_name(), Some("Int"));
-        assert_eq!(Type::Bool.type_name(), Some("Bool"));
-        assert_eq!(Type::Var(0).type_name(), None);
     }
 
     #[test]

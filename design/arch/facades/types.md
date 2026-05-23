@@ -509,7 +509,7 @@ impl<'a, C: CodeStore, L: LinkerStore> View<'a, C, L> {
 
 - **`TypeRef`** (syntactic stage — was bare `TypeName` pre-S69-S27) appears in positions produced by the frontend before module context is resolved: `TypeExpr::Named(TypeRef)`, `TypeExpr::Applied(TypeRef, …)`, `TraitImpl.target: TypeExpr` (and therefore any `TypeRef` reachable from it), constraint heads on impl polymorphic forms (`:(Display a)`). `TypeRef.module: Option<ModuleFullPath>` captures **what the user wrote** — unqualified (`Int`), aliased (`option/Option`), or fully-qualified (`core.option/Option`). The syntactic stage no longer carries "bare name slips through"; it carries the qualification structurally.
 - **`TraitRef`** (syntactic stage — was bare `TraitName` pre-S69-S27) is the trait counterpart: `TraitImpl.trait_name: TraitRef`, `TraitImpl.type_constraints: Vec<(Symbol, TraitRef)>`. Same `Option<ModuleFullPath>` shape, same as-written capture.
-- **`FQTypeName`** (resolved stage) appears in positions produced by typecheck after resolution against `&symbol_tables`: `Type::ADT(FQTypeName, …)`, `TypeDefInfo.name`, `MethodResolutions.impl_type`, `ResolutionGap::Type(FQTypeName)`, `int::wait_for_typecheck_type(fqt: &FQTypeName)`. Every cross-crate API past typecheck that names a type by identity uses `FQTypeName`.
+- **`FQTypeName`** (resolved stage) appears in positions produced by typecheck after resolution against `&symbol_tables`: `Type::ADT(FQTypeName, …)`, `TypeDefInfo.name`, `ResolvedCall::TraitMethod { impl_type: FQTypeName, … }`, `ResolutionGap::Type(FQTypeName)`, `int::wait_for_typecheck_type(fqt: &FQTypeName)`. Every cross-crate API past typecheck that names a type by identity uses `FQTypeName`. (Pre-S69-Submission-32 this line misattributed `impl_type` to `MethodResolutions` — the field lives on `ResolvedCall::TraitMethod`, not on `MethodResolutions` which is the per-call-site lookup map keyed by `Span`.)
 - **`FQTraitName`** (resolved stage) — the trait counterpart: `ResolvedCall::TraitMethod { trait_name: FQTraitName, … }`, `Scheme.constraints: HashMap<TypeId, Vec<FQTraitName>>`, `ModuleEntry::TraitImpl { trait_name: FQTraitName, … }`.
 
 The lift from `TypeRef → FQTypeName` (and `TraitRef → FQTraitName`) happens inside `check_form` when a `TypeExpr::Named(typeref)` (or the head of `TypeExpr::Applied`, or `TraitImpl.trait_name`) is resolved by consulting `typeref.module` against the import graph + current scope:
@@ -519,10 +519,11 @@ The lift from `TypeRef → FQTypeName` (and `TraitRef → FQTraitName`) happens 
 
 This is the architectural reason the four newtypes exist as two distinct pairs: the producer (frontend) emits the syntactic pair; the consumer (typecheck onward) emits the resolved pair. The lift is the consumer's responsibility, not the producer's.
 
-**Producer/consumer responsibility (post-S69 Submission 27).** Frontend produces `TypeExpr` carrying `TypeRef` (and `TraitImpl` carrying `TraitRef`) — the as-written qualification structurally. Typecheck consumes `TypeExpr` / `TraitImpl`, performs the lift, and produces `Type` / `TypeDefInfo` / `MethodResolutions` / `CheckResult` shapes carrying `FQTypeName` / `FQTraitName`. Backend, intrinsics, primitives, platform, and int consume only `FQTypeName` / `FQTraitName` at their public surface — no consumer past typecheck ever sees a `TypeRef` or `TraitRef` in a boundary type. Two narrow exceptions for `TypeName` (not `TypeRef`) remain, documented as principled and not extendable without `/arch` review:
+**Producer/consumer responsibility (post-S69 Submission 27).** Frontend produces `TypeExpr` carrying `TypeRef` (and `TraitImpl` carrying `TraitRef`) — the as-written qualification structurally. Typecheck consumes `TypeExpr` / `TraitImpl`, performs the lift, and produces `Type` / `TypeDefInfo` / `MethodResolutions` / `CheckResult` shapes carrying `FQTypeName` / `FQTraitName`. Backend, intrinsics, primitives, platform, and int consume only `FQTypeName` / `FQTraitName` at their public surface — no consumer past typecheck ever sees a `TypeRef` or `TraitRef` in a boundary type. One narrow `TypeName` exception (not `TypeRef`) remains, documented as principled and not extendable without `/arch` review:
 
-1. **Reverse-lookup helpers on `Type`** — `from_name(&TypeName)` for primitive recognition and `type_name(&Type) -> Option<TypeName>` for primitive emission, which operate on the small set of built-in non-ADT types where the unqualified name IS unique.
-2. **Receiver-pinned lookups** — APIs whose receiver itself supplies the module context. `SymbolTable::get_type(&TypeName)` is keyed by bare `TypeName` because the `&self` receiver IS the module; wrapping the local-to-this-table key in `FQTypeName` would re-encode information already pinned by the receiver. The fully-qualified identity is reconstructible by the caller as `FQTypeName::new(module_of(&self), name.clone())` if needed downstream. This exception is structural, not aspirational: it applies wherever the receiver's type pins the module context.
+- **Retired — reverse-lookup helpers (S69 Submission 30).** The prior `Type::from_name` / `Type::type_name` helpers (formerly Decision 47 exception 1) are removed. They were spec-violating: they made bare `:Int` always available regardless of imports, contradicting spec §3.1 / §8.9.1 / §8.11.4 as sharpened in today's /spec fire (FIXME 0216). Intrinsic-type lookup now goes through the uniform `ModuleEntry::IntrinsicType { ty: Type, visibility: Visibility }` registration in the `primitives` module (see §"Symbol table — the single store" `ModuleEntry::IntrinsicType` variant); resolution returns the stored `ty` directly without FQTypeName special-casing. Decision 47's other exceptions (receiver-pinned with module known) stand.
+
+1. **Receiver-pinned lookups** — APIs whose receiver itself supplies the module context. `SymbolTable::get_type(&TypeName)` is keyed by bare `TypeName` because the `&self` receiver IS the module; wrapping the local-to-this-table key in `FQTypeName` would re-encode information already pinned by the receiver. The fully-qualified identity is reconstructible by the caller as `FQTypeName::new(module_of(&self), name.clone())` if needed downstream. This exception is structural, not aspirational: it applies wherever the receiver's type pins the module context.
 
 ## FQTypeName migration plan (Sprint 67)
 
@@ -531,8 +532,8 @@ Per Sprint 67 second-challenge scope amendment (`sprints/SPRINT.md` §"Second us
 Direction discipline:
 - **PIF — convert to `FQTypeName`**: API is a resolved-stage boundary and no exception applies. Wave 3 conversion.
 - **Keep — frontend syntactic**: inside frontend AST/parser surface (`TypeExpr::Named(TypeRef)` and friends — post-S69 Submission 27 the AST carries `TypeRef`, not bare `TypeName`). No conversion.
-- **Keep — receiver-pinned**: `SymbolTable::get_type(&TypeName)` and any hit where `&self` IS the module-owning receiver. Exception 2.
-- **Keep — reverse-lookup**: `Type::from_name(&TypeName)` and `type_name(&Type) -> Option<TypeName>`. Exception 1.
+- **Keep — receiver-pinned**: `SymbolTable::get_type(&TypeName)` and any hit where `&self` IS the module-owning receiver. (Formerly numbered exception 2; now the sole remaining exception after S69 Submission 30 retired the reverse-lookup exception.)
+- **Retired — reverse-lookup**: `Type::from_name` / `Type::type_name` deleted in S69 Submission 30; the bridge was spec-violating. Intrinsic-type lookup goes via `ModuleEntry::IntrinsicType` in the `primitives` module.
 
 ### typecheck
 
@@ -560,7 +561,7 @@ Smaller surface; mostly already migrated. Outstanding hits in inline-substitutio
 | API | File:line | Direction | Owning /dev task |
 |---|---|---|---|
 | `primitives_inline::*(impl_type: &TypeName, …)` | `crates/cranelisp-backend/src/primitives_inline.rs:348` | PIF | /dev (backend) Wave 3 — boundary helper takes the trait-method-resolution target type; lift to `&FQTypeName` |
-| `primitives_inline::*(... &TypeName::from("Int|Float|Bool|String|Color"))` (test helpers) | `crates/cranelisp-backend/src/primitives_inline.rs:425,436,449,461,472,483,494,505,516,527,538,549,560` | **Keep — reverse-lookup callsites** | All hits are test-side `TypeName::from("Int")` constructions. Test code is exempt from the resolved-stage rule (synthetic test inputs aren't products of typecheck resolution); leave as-is. |
+| `primitives_inline::*(... &TypeName::from("Int|Float|Bool|String|Color"))` (test helpers) | `crates/cranelisp-backend/src/primitives_inline.rs:425,436,449,461,472,483,494,505,516,527,538,549,560` | **Keep — test code** | All hits are test-side `TypeName::from("Int")` constructions. Test code is exempt from the resolved-stage rule (synthetic test inputs aren't products of typecheck resolution); leave as-is. (Pre-S69-S30 these were classified under "reverse-lookup callsites"; with the `Type::from_name`/`Type::type_name` bridge retired, the test-code classification is the durable framing.) |
 | `cranelisp_backend::lib.rs:1200,1201,1205-1206` | `crates/cranelisp-backend/src/lib.rs:1200-1206` | **Keep — test code** | Test-internal `TypeName::from("Option")` constructions for codegen tests |
 
 ### intrinsics
@@ -585,22 +586,22 @@ Mixed: REPL introspection paths (receiver-pinned; keep) and synthetic-module ini
 | `session_v4.rs:3582 — TypeName::from(type_name.name.as_ref())` | `src/session_v4.rs:3582` | **Keep — REPL introspection within known module context** | REPL `/info <type>` resolves against current module; receiver-pinned (exception 2). |
 | `session_v4.rs:3671,3712 — let tn = TypeName::from(type_name)` | `src/session_v4.rs:3671,3712` | **Keep — REPL introspection** | Same as above |
 | `worker.rs:173-176 — let type_params_tn: Vec<TypeName> = ...` | `src/worker.rs:173-176` | **Keep — syntactic conversion at parser boundary** | `worker::check_program_compat` converts `Vec<String>` type params from the parser into `Vec<TypeName>` — pre-resolution conversion |
-| `exe.rs:544,588 — TypeName::from("IO")` | `src/exe.rs:544,588` | **Keep — reverse-lookup at exe-startup primitive registration** | Synthesises the IO type marker during startup-object generation; exception 1. |
-| `pipeline.rs:345 — TypeName::from("IO")` | `src/pipeline.rs:345` | **Keep — reverse-lookup at pipeline init** | Same — synthesises IO marker during initial primitive registration |
-| `platform.rs:426 — TypeName::from("IO")` | `src/platform.rs:426` | **Keep — reverse-lookup at primitive emission site** | Synthesises the IO type marker; exception 1. (Lives in the `src/` int binary, not in `crates/cranelisp-platform/`.) |
+| `exe.rs:544,588 — TypeName::from("IO")` | `src/exe.rs:544,588` | **Keep — primitive-registration site** | Synthesises the IO type marker during startup-object generation. (Pre-S69-S30 classified under "exception 1 reverse-lookup"; with that exception retired, the framing is "primitive-registration with module known" — receiver-pinned-style reasoning per the surviving exception.) |
+| `pipeline.rs:345 — TypeName::from("IO")` | `src/pipeline.rs:345` | **Keep — primitive-registration site** | Same — synthesises IO marker during initial primitive registration. |
+| `platform.rs:426 — TypeName::from("IO")` | `src/platform.rs:426` | **Keep — primitive-registration site** | Synthesises the IO type marker. (Lives in the `src/` int binary, not in `crates/cranelisp-platform/`.) Same S69-S30 re-framing as exe.rs / pipeline.rs. |
 
 ### Summary by crate
 
-| Crate | Convert (PIF) | Keep — frontend syntactic | Keep — receiver-pinned | Keep — reverse-lookup | Notes |
+| Crate | Convert (PIF) | Keep — frontend syntactic | Keep — receiver-pinned | Keep — test code / primitive-registration | Notes |
 |---|---|---|---|---|---|
 | typecheck | ~7 APIs | 3 (resolve, fqtn_for_bare_type_name, builtins) | ~5 (TypeCheckEnv pinned methods) | 0 | Largest /dev (typecheck) Wave 3 burden |
 | backend | 1 API | 0 | 0 | ~13 (all test code) | /dev (backend) Wave 3 — single boundary helper |
 | intrinsics | 0 | 0 | 0 | 0 | No-op |
 | primitives | 0 | 0 | 0 | 0 | No-op |
 | platform | 0 | 0 | 0 | 0 | No-op (zero hits) |
-| int | 0 | 1 (worker.rs parse-time) | 3 (REPL introspection) | 4 (IO marker emission) | No-op (all keeps justified by exceptions) |
+| int | 0 | 1 (worker.rs parse-time) | 3 (REPL introspection) | 4 (IO marker emission — primitive-registration) | No-op (all keeps justified by exceptions; S69-S30 retired the reverse-lookup exception column heading) |
 
-Acceptance criterion (Wave 5 /review checkpoint): every API at a resolved-stage boundary uses `FQTypeName`; remaining bare `TypeName` hits MUST cite an exception by name in a code comment, e.g. `// FQTypeName exception 2 (receiver-pinned: &self IS module N)`.
+Acceptance criterion (Wave 5 /review checkpoint): every API at a resolved-stage boundary uses `FQTypeName`; remaining bare `TypeName` hits MUST cite the receiver-pinned exception by name in a code comment, e.g. `// FQTypeName receiver-pinned exception (&self IS module N)`. (Pre-S69-S30 the comment cited "exception 2" by number alongside an "exception 1" reverse-lookup; exception 1 is retired with the `Type::from_name`/`Type::type_name` bridge.)
 
 ```rust
 pub type TypeId = u32;
@@ -620,8 +621,14 @@ pub enum Type {
 impl Type {
     pub fn adt(module: ModuleFullPath, name: TypeName, args: Vec<Type>) -> Type;     // construction helper — wraps FQTypeName::new internally
 
-    pub fn from_name(name: &TypeName) -> Option<Type>;        // primitive TypeName → Type — TypeName::new("Int") → Type::Int. Returns None for non-primitives — caller falls back to SymbolTable::get_type for ADTs (Decision 6 — centralised mapping)
-    pub fn type_name(&self) -> Option<TypeName>;              // Type → primitive TypeName — Type::Int → TypeName::new("Int"). Returns None for ADTs / fns / vars — those have FQTypeName or no single name
+    // The prior `Type::from_name(&TypeName) -> Option<Type>` and `Type::type_name(&Type) -> Option<TypeName>`
+    // reverse-lookup bridge functions are retired (S69 Submission 30). They made bare `:Int` always
+    // available regardless of imports, contradicting spec §3.1 / §8.9.1 / §8.11.4 as sharpened in the
+    // S69 /spec fire (FIXME 0216). Intrinsic-type lookup now goes through the uniform
+    // `ModuleEntry::IntrinsicType { ty: Type, visibility: Visibility }` registration in the
+    // `primitives` module; resolution returns the stored `ty` directly without FQTypeName special-casing.
+    // See §"Symbol table — the single store" `ModuleEntry::IntrinsicType` variant + Decision 47's
+    // exception-1 retirement notes further down.
 
     pub fn is_io(&self) -> bool;                              // true iff Type::ADT(fqtn, _) where fqtn.module == "primitives" && fqtn.name == "IO"
     pub fn unwrap_io(&self) -> &Type;                         // T from IO T — returns self if not IO
@@ -1063,6 +1070,22 @@ pub enum ModuleEntry<C: CodeStore = ()> {
     /// see §"Multi-legged authoring" for the target binding shape (parallel to
     /// `DefKind::Macro` and the D49 `Constructor` migration).
     TypeDef { /* … per Decision 22 */ },
+    /// Compiler-intrinsic scalar type (Int, Bool, Float, String) — registered
+    /// into the `primitives` module by `cranelisp-typecheck::register_primitives`
+    /// (wave-3 cascade); resolved by `resolve_named` via uniform entry lookup.
+    /// Spec §3.1 calls these "primitive types"; the variant uses "intrinsic" to
+    /// distinguish from the broader `primitives` module that also holds primitive
+    /// functions and builtin ADTs (Vec, IO, Option). Per spec §3.1 / §8.9.1 +
+    /// §8.11.4 (S69 /spec fire sharpening; FIXME 0216): bare-name access (`:Int`)
+    /// requires prelude re-export or explicit `(import [primitives [Int]])`; the
+    /// fully-qualified form (`:primitives/Int`) always works; without prelude /
+    /// explicit import, bare `:Int` is a compile-time "unknown type" error.
+    /// Supersedes the retired `Type::from_name` / `Type::type_name` reverse-lookup
+    /// bridge (S69 Submission 30) — that bridge made bare `:Int` always
+    /// available regardless of imports, which was a spec violation. `ty` stores
+    /// the bare `Type` variant for backend codegen efficiency; the FQ form
+    /// (`primitives/Int`) lives in the SymbolTable key.
+    IntrinsicType { /* ty: Type, visibility: Visibility */ },
     /// Pending sibling-variant unification into `Def { kind: Trait { … } }` —
     /// see §"Multi-legged authoring" for the target binding shape.
     Trait { /* … */ },
@@ -1766,10 +1789,11 @@ The variant-level surface is internal-but-exposed: every variant of every `#[non
 | `TypeExpr::SelfType` (and siblings) | `TypeExpr` | Under §"AST" `pub enum TypeExpr { /* … */ }`. `SelfType` is the `:Self` syntactic marker (resolved to the impl target type by typecheck). |
 | `DefKind::SpecialForm` | `DefKind` | Under §"Symbol table" `pub enum DefKind { /* … */ }`. The `SpecialForm { description: String }` variant exists alongside `UserFn`/`Macro`/`TypeDef`/`Trait`/`Primitive`/`Overloaded` and is registered for special-form introspection (`/info`, `/list`); `description` is the user-facing one-liner. |
 | `ResolvedCall::BuiltinFn` | `ResolvedCall` | Under §"Typecheck output" `pub enum ResolvedCall { TraitMethod / SigDispatch / AutoCurry / BuiltinFn }`. `BuiltinFn` is the resolved-call shape for primitive ops (`+`, `-`, `vec-push`, etc.) — pre-typecheck the call site is bare `Apply`, typecheck rewrites to `BuiltinFn` with the primitive's `cranelift_op` carrier. |
-| `ResolvedCall::TraitMethod::{method_name, mangled_name, trait_resolution}`, `ResolvedCall::SigDispatch::mangled_name`, `ResolvedCall::AutoCurry::{target_name, applied_count, total_count, trait_resolution}` | `ResolvedCall` variants' fields | Per-variant payload — backend reads `mangled_name: JitSymbol` to emit the call. `trait_resolution: Option<Box<ResolvedCall>>` chains AutoCurry → TraitMethod when a curried call's underlying body is a trait method. |
+| `ResolvedCall::TraitMethod::{trait_name, method_name, impl_type, mangled_name}`, `ResolvedCall::SigDispatch::mangled_name`, `ResolvedCall::AutoCurry::{target_name, applied_count, total_count, trait_resolution}` | `ResolvedCall` variants' fields | Per-variant payload. `TraitMethod` carries `trait_name: FQTraitName` + `impl_type: FQTypeName` per Decision 47 (FQ binding at resolved-stage boundaries — see §"Resolved type system"); `mangled_name: JitSymbol` is the backend code-pointer name (used by `compile_apply` to emit the call); `method_name: Symbol` is the unmangled bare method identifier (consumed by REPL introspection and error reporting). `SigDispatch.mangled_name` resolves a specific multi-sig variant. `AutoCurry.trait_resolution: Option<Box<ResolvedCall>>` chains AutoCurry → TraitMethod when a curried call's underlying body is a trait method — the field lives on `AutoCurry` only, NOT on `TraitMethod` (S69 Submission 32 corrected the prior PIF misattribution which named `trait_resolution` under `TraitMethod` and omitted `trait_name` + `impl_type`). |
 | `ModuleEntry::Ambiguous { visibility }` | `ModuleEntry` | Under §"Symbol table". Sentinel for the bare-name-resolves-to-multiple-imports case; typecheck emits a `TypeError` if a use site hits an `Ambiguous` entry. Carries `visibility: Visibility` for variant uniformity; constructed `Public` as the lossless mark (sentinel never resolves to a payload). |
 | `ModuleEntry::Import { source, visibility }` | `ModuleEntry` | Under §"Symbol table". Covers BOTH edge kinds: `visibility = Private` is the `(import …)`-form effect (spec §8.3); `visibility = Public` is the `(export [foreign-sym])`-form effect (spec §8.4 — the prior `ModuleEntry::Reexport` variant retired). Chain-follow walks `Import` edges regardless of visibility. |
 | `ModuleEntry::TraitImpl { trait_name, impl_type, methods, visibility }` | `ModuleEntry` | Under §"Symbol table". Gains `visibility: Visibility` for variant uniformity; constructed `Public` per spec §5.11.1 (impls are visible wherever both trait and type are in scope — lossless mark). |
+| `ModuleEntry::IntrinsicType { ty, visibility }` | `ModuleEntry` | Under §"Symbol table" — new variant added S69 Submission 30 (closes S-DRIFT-2 + S-DRIFT-3 by deletion + structural replacement). Compiler-intrinsic scalar types (Int, Bool, Float, String). `ty: Type` is the bare `Type` variant for backend codegen efficiency; the fully-qualified form (`primitives/Int`) lives in the SymbolTable key. `visibility: Visibility` per variant uniformity (Public for the four scalars registered into the `primitives` module). Registered by `cranelisp-typecheck::register_primitives` (wave-3 cascade); resolved by `resolve_named` via uniform entry lookup. Per spec §3.1 / §8.9.1 + §8.11.4 (S69 /spec fire sharpening; FIXME 0216) — bare-name access (`:Int`) requires prelude re-export or explicit `(import [primitives [Int]])`; fully-qualified `:primitives/Int` always works; without prelude / explicit import, bare `:Int` is a compile-time "unknown type" error. **Supersedes the retired `Type::from_name` / `Type::type_name` reverse-lookup bridge** — those helpers made bare `:Int` always available regardless of imports, contradicting the spec sections cited above. S69 Submission 30 closed S-DRIFT-2 + S-DRIFT-3 by deletion + structural replacement (not by facade-text catch-up). |
 | `Visibility { Public, Private }` | top-level enum | Under §"Symbol table — the single store" (canonical home; re-exported from `cranelisp_types::ast`). Per-entry visibility carrier — appears on every `ModuleEntry` variant, on `ModuleAliasEntry`, and on form-level constructs (`Defn`, `TraitDecl`, `ModDecl`, `ImportSpec`, `ExportSpec`, `NamedImport.rename` flow). Single source of truth: visibility lives once, on the entry. |
 | `CranelispError::MacroError` | `CranelispError` | Under §"Errors and warnings". Emitted by `int`'s macro-expansion driver when a macro invocation fails. Same `{message, location}` shape as `ParseError`/`TypeError`/`ModuleError`/`CodegenError` per Decision 39. (Facade text §"Errors and warnings" notes `LinkError`/`CacheError`/`RuntimeError` aspirationally; source has `MacroError` instead — covered here, /arch follow-up may reconcile facade body if the divergence is structural.) |
 | `LinkerError::SymbolNotFound`, `LinkerError::RelocationFailed` | `LinkerError` | **Transient — slated for removal.** Per Sprint 67 REV-4 (sprints/SPRINT.md row 5), `LinkerError` relocates to `cranelisp-backend`; see `facades/backend.md` §"Errors" for the canonical definition. The variants remain in `cranelisp-types::error` until `/dev (cranelisp-types)` removes the export sites in S67 Wave 4. After the relocation, this row deletes. |
@@ -1804,6 +1828,7 @@ The struct definitions in §"AST", §"Resolved type system", §"Symbol table", a
 | `jit_name` | `DefKind::Primitive` | `Option<JitSymbol>` — the mangled name a primitive registers under in the JIT's symbol table when it's used as a value (i.e., addressable). `None` for inline-only primitives. |
 | `mangled_name`, `param_types`, `ret_type` | `OverloadVariant` | Resolved per-variant shape for multi-sig defns — `mangled_name: Symbol` (e.g., `foo$Int+Bool`), `param_types: Vec<Type>`, `ret_type: Type`. |
 | `expr_types` | `MonoDefn` | `HashMap<Span, Type>` — the per-span annotation map for the monomorphic specialisation. Backend reads this to emit type-specialised code. |
+| `resolved_calls` | `MethodResolutions` | `HashMap<Span, ResolvedCall>` — the per-call-site resolution map populated by typecheck and consumed by backend (`compile_apply` reads it to emit trait-method calls, sig-dispatched variants, auto-curry wrappers, and inline builtins). Data-record DTO per BC invariant 11 — the field IS the public contract. S69 Submission 31 promoted `MethodResolutions` from `pub type MethodResolutions = HashMap<…>` to `#[non_exhaustive] pub struct MethodResolutions { pub resolved_calls: HashMap<…> }` per the facade `#[non_exhaustive]` policy + Principle 8 (no interim implementations — the alias committed the surface to `HashMap` forever) + Principle 13 (`cargo-public-api`-gateable — the newtype struct is the auditable surface). Closes S-DRIFT-8. |
 | `target_name`, `applied_count`, `total_count`, `trait_resolution` | `ResolvedCall::AutoCurry` | Auto-curry shape — `target_name: Symbol` (which fn is being curried), `applied_count`/`total_count: usize` (arity progress), `trait_resolution: Option<Box<ResolvedCall>>` (nested resolution when the curried target is itself a trait method). |
 | `codegen_names` | `CompileResult` | `Vec<Symbol>` of the symbols this batch produced code for — `int` matches against staging to know what to commit. |
 | `tail_position` | `CallEdge` | `bool` — TCO discrimination on the call edge per Principle 22 (TCO over self-recursive tails). |

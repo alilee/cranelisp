@@ -17,6 +17,8 @@ Cranelisp has four primitive types. All are immutable and unboxed at runtime.
 
 `Int` values use two's complement representation; arithmetic overflow wraps silently. `Float` values follow IEEE 754 semantics including `NaN`, infinities, and signed zero.
 
+Primitive types follow the same import rules as other names in the `primitives` module (see [§8.9.1](08-modules.md#891-the-primitives-module)). Bare-name references (e.g., `:Int`) MUST come into scope through either prelude re-export or an explicit import (e.g., `(import [primitives [Int Bool Float String]])`); otherwise they are a compile-time "unknown type" error. Fully-qualified references (e.g., `:primitives/Int`) are always available regardless of imports. [R4 S70]
+
 ## 3.2 Compound Types [R4 S10]
 
 ### 3.2.1 Function Types [Tested tests/repl_experience.rs::defn_with_let_infers_return_type]
