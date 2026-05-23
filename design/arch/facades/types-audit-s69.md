@@ -38,9 +38,9 @@ Disposition class counts (59 findings):
 | Class | Count | Meaning |
 |---|---|---|
 | **Source moves** (facade is target-stating per Decision / Principle / FIXME) | **27** | Source migration is owed. Wave 3+ source work. (Reduced by 1 in S31 — S-DRIFT-8 RESOLVED in-place by source-side promotion of `MethodResolutions` type alias to `#[non_exhaustive]` struct; direction "source moves" stood, landed in S31; ~10 typecheck consumer cascade sites deferred to wave-3. Incremented by 1 in S34 — S-DRIFT-10 reclassified from bucket C "arbitration genuine" to "source moves" + RESOLVED in-place by source-side rewrite of `View` from `pub enum` to `pub struct` with private fields per Decision 44 + Principle 18; typecheck ClusterContext pattern-match consumer cascade deferred to wave-3.) |
-| Facade moves (facade text is stale, was sloppy, or source has evolved with retroactive Decision agreement) | 9 | Mechanical facade updates. Wave 2 facade-doc work. (Reduced by 4 across S23/S25/S26/S27 reclassifications + 2 more in S30 — S-DRIFT-2 + S-DRIFT-3 reclassified from "Facade moves" to "RESOLVED by deletion" when the S69 /spec fire surfaced that the reverse-lookup bridge was spec-violating, not just facade-misaligned + 1 more in S32 — S-DRIFT-9 reclassified to "RESOLVED — facade self-reconciliation + source `#[non_exhaustive]` catch-up"; facade line 513 was correct since D47 authored, lines 512 + 1792 were un-cascaded stale text, not source-facade drift. Submission 33 closed U12 + U13 + U14 + U15 in-place (facade-only catch-up; source already at target shape) — count decremented by 4.) |
+| Facade moves (facade text is stale, was sloppy, or source has evolved with retroactive Decision agreement) | 8 | Mechanical facade updates. Wave 2 facade-doc work. (Reduced by 4 across S23/S25/S26/S27 reclassifications + 2 more in S30 — S-DRIFT-2 + S-DRIFT-3 reclassified from "Facade moves" to "RESOLVED by deletion" when the S69 /spec fire surfaced that the reverse-lookup bridge was spec-violating, not just facade-misaligned + 1 more in S32 — S-DRIFT-9 reclassified to "RESOLVED — facade self-reconciliation + source `#[non_exhaustive]` catch-up"; facade line 513 was correct since D47 authored, lines 512 + 1792 were un-cascaded stale text, not source-facade drift. Submission 33 closed U12 + U13 + U14 + U15 in-place (facade-only catch-up; source already at target shape) — count decremented by 4. Reduced by 1 in S35 — S-DRIFT-6 reclassified from "Facade moves" to "Both move" — source narrowed `ast: Option<Defn>` → `Option<DefnVariant>` per minimum mechanism + Principle 7; facade catches up to the narrowed shape rather than ratifying the prior wider source. S-DRIFT-7 RESOLVED in-place as "Facade moves" — facade catch-up to source's `Box<DefKind>` per Principle 6.) |
 | **RESOLVED by deletion / self-reconciliation** (audit's framing was superseded by a spec/Decision fire revealing the source was wrong, not the facade — or facade internal inconsistency where one location was correct and others were stale) | 3 | S-DRIFT-2 + S-DRIFT-3 (S69 Submission 30 — `Type::from_name` / `Type::type_name` deleted; new `ModuleEntry::IntrinsicType` variant); S-DRIFT-9 (S69 Submission 32 — facade lines 512 + 1792 self-reconciled under Decision 47; line 513 was already correct; source `#[non_exhaustive]` policy catch-up bundled). |
-| Both move | 8 | Each side adjusts; neither is wholly correct. (S-DRIFT-11 S23, S-DRIFT-12 S25, S-DRIFT-14 S26, S-DRIFT-13 S27 reclassifications + 4 prior.) |
+| Both move | 9 | Each side adjusts; neither is wholly correct. (S-DRIFT-11 S23, S-DRIFT-12 S25, S-DRIFT-14 S26, S-DRIFT-13 S27 reclassifications + 4 prior + S-DRIFT-6 reclassified S35 — scope-correction from "facade moves" to "both move"; source narrowed `Option<Defn>` → `Option<DefnVariant>` per minimum mechanism, facade catches up.) |
 | Arbitration — genuine cross-skill question the configuration does not ground | 0 | A2 closed by Submission 13 (see "Macro callable shape" bullet above). A5 (View enum-vs-struct opacity) RESOLVED (Submission 34) — source moved to struct with private fields per Decision 44 opacity intent + "newtype" terminology + Principle 18 (enforce invariants structurally); the bucket-C "arbitration genuine" framing was superseded by user direction — the discipline pattern that emerged through Group A/B (facade-as-target + Principle 18 when both options exist) settled the arbitration. |
 | No action (auto-trait noise, already-covered) | 6 | Per audit discipline still gets a one-sentence rationale. |
 
@@ -94,8 +94,8 @@ After 19 walk-through submissions, the audit's per-finding dispositions have dri
 | S-DRIFT-2 | D | **RESOLVED (Submission 30 — closed by deletion)** — `Type::from_name` deleted from source; new `ModuleEntry::IntrinsicType { ty: Type, visibility: Visibility }` variant added for uniform intrinsic-type registration. The audit's "facade moves to source's `&str`" framing was superseded — the bridge was spec-violating per S69 /spec fire (FIXME 0216 — spec §3.1 / §8.9.1 / §8.11.4 sharpening: bare `:Int` requires prelude or explicit import). |
 | S-DRIFT-3 | D | **RESOLVED (Submission 30 — closed by deletion)** — `Type::type_name` deleted from source; structural replacement via `ModuleEntry::IntrinsicType` (same as S-DRIFT-2). Audit's "facade catch-up" framing superseded — bridge was spec-violating, not just facade-misaligned. |
 | S-DRIFT-4 | A | Bundled with H11 (walk row 347). |
-| S-DRIFT-6 | D | Facade catch-up to source's `Option<Defn>` per Decision 22 (codegen-compilable predicate). |
-| S-DRIFT-7 | D | Facade catch-up to source's `Box<DefKind>` per Principle 6 (size discipline). |
+| S-DRIFT-6 | D | **RESOLVED (Submission 35) — both move (scope-corrected from prior "facade moves")** — source narrowed `ast: Option<Defn>` → `Option<DefnVariant>` per minimum mechanism (discipline #4) + Principle 7 (single source of truth — Def's own `name`/`docstring`/`visibility`/`seq` fields are canonical for that metadata; the outer `Defn` wrapper duplicated them post-decomposition). Decision 22 (codegen-compilable predicate `ast.is_some()`) preserved — the predicate is indifferent to the payload type. Facade catches up to the narrowed shape. Wave-3 cascade: ~30-50 backend + typecheck consumer sites — `defn.params()` → `variant.params`; `defn.variants[0].body` → `variant.body`. |
+| S-DRIFT-7 | D | **RESOLVED (Submission 35) — facade moves.** Adjusted facade to `kind: Box<DefKind>` with inline note citing Principle 6 (size discipline; pattern-match through `Box` is transparent). Editorial — no Decision specifically authors the boxing. |
 | S-DRIFT-8 | D | **RESOLVED (Submission 31)** — source moves: `pub type MethodResolutions = HashMap<Span, ResolvedCall>` promoted to `#[non_exhaustive] pub struct MethodResolutions { pub resolved_calls: HashMap<Span, ResolvedCall> }` with `Default` derive + `new()` constructor. Grounded by facade §"`#[non_exhaustive]` policy" (binding) + Principle 8 (no interim implementations) + Principle 13 (`cargo-public-api`-gateable) + BC invariant 11 (data-record DTO — `resolved_calls` field IS the contract). Wave-3 cascade: ~10 consumer migration sites in `cranelisp-typecheck/src/{checker,infer}.rs` (mechanical `.X` → `.resolved_calls.X` rewrite; no semantic shift). |
 | S-DRIFT-9 | D | **RESOLVED (Submission 32)** — facade self-reconciliation under Decision 47 + source `#[non_exhaustive]` policy catch-up (scope-extended per user direction to avoid revisiting this data structure). Facade line 512 misattribution corrected (`MethodResolutions.impl_type` → `ResolvedCall::TraitMethod.impl_type`); §"Item-by-item disposition" PIF row at line 1792 rewritten with correct 4-field `TraitMethod` shape (`trait_name: FQTraitName, method_name: Symbol, impl_type: FQTypeName, mangled_name: JitSymbol`) per D47 + `trait_resolution` moved to AutoCurry attribution. Source: added `#[non_exhaustive]` to `ResolvedCall` enum per facade §"`#[non_exhaustive]` policy" (no field-set changes — source already at D47-target 4-field shape). Wave-3 cascade: ~5-10 pattern-match sites on `ResolvedCall` in typecheck + backend need `_ =>` arms (mechanical). Cross-reference: line 512 misattribution flagged in Submission 31 closure also resolved here. |
 | S-DRIFT-10 | **RESOLVED (Submission 34) — source moves** | Direction: source moves from `pub enum View { Single, Union }` to `pub struct View { staging: Option<&'a SymbolTable>, live: &'a SymbolTable }` with private fields per **Decision 44** opacity intent + **"newtype" terminology** + **Principle 18** (enforce architectural invariants structurally where possible — struct-with-private-fields is the structural option that prevents consumer-side staging-vs-live observation by construction). The audit's prior "arbitration genuine" framing (bucket C) was superseded by user direction — the discipline pattern that emerged through Group A/B (facade-as-target + Principle 18 when both options exist) settled the arbitration. Internal encoding: `staging: Option<&'a SymbolTable<C, L>>` (`Some` = cluster mode, `None` = committed mode); `live: &'a SymbolTable<C, L>` unconditional. Wave-3 cascade: typecheck ClusterContext consumers that pattern-match View variants migrate to `view.lookup(name)` / `view.iter()` method calls. **Closes Group C.** |
@@ -455,35 +455,95 @@ See `facades/types.md` §"DefKind" `DefKind::Macro` for the full shape, dispatch
 
 ---
 
-### Finding S-DRIFT-6 — `ModuleEntry::Def.ast` type
+### Finding S-DRIFT-6 — `ModuleEntry::Def.ast` type — **RESOLVED (Submission 35) — both move**
 
-**Triage bucket: D — mechanical.** Facade catch-up to source's `Option<Defn>` per Decision 22 (codegen-compilable predicate consumes wider `Defn` shape).
+**Triage bucket: D — RESOLVED Submission 35.** Source narrowed (`Option<Defn>` → `Option<DefnVariant>`); facade catches up.
 
-**Facade expects.** Line 455: `ast: Option<Expr>`.
+**Closure direction.** **Both move — scope-correction from prior "facade moves" framing.**
 
-**Source does.** Pub-api 851 + `module.rs:469`: `ast: Option<Defn>`.
+**Scope-correction vs. prior audit.** The prior audit framed this as "facade moves to source's `Option<Defn>`" on the rationale that "Decision 22's predicate + backend's consumer pattern require the wider `Defn` shape." On user-questioning, that framing missed a real smell: by the time a Def reaches backend, multi-sig has already been **decomposed into per-mangled-name Defs** (`add$Int+Int`, `add$Float+Float`), each carrying a synthesised single-variant `Defn`. The outer `Defn` wrapper at the Def level carries:
 
-**Design intent.** **Decision 21** (legacy: `tc-sourced-call-graph.md`) + **Decision 22** (legacy: `defined-symbols-shared-predicate.md`) ground the `ast` field's role: codegen-compilable iff `ast: Some(_)` AND kind is not `Overloaded`/constrained-fn template. Decision 22's predicate (`defined_symbols`) consumes `ast.is_some()`.
+- `Defn.name` — duplicates the symbol-table key,
+- `Defn.docstring` — duplicates the Def's own `docstring` field,
+- `Defn.variants` — always `.len() == 1` post-decomposition (single-element `Vec` wrapping the meaningful payload),
+- `Defn.visibility` — duplicates the Def's own `visibility` field,
+- `Defn.span` — redundant with the variant's own `span`.
 
-The narrower `Expr` vs wider `Defn` question: backend's compile path consumes the multi-variant signatures (mangled-variant emission), param names + annotations (calling convention), and the original span (error reporting at the defn level). Stripping to `Expr` would force backend to retrieve those elsewhere. **Decision 22's "code-compilable predicate"** assumes the wider `Defn` shape is what's stored.
+The meaningful payload IS the single `DefnVariant`. Carrying the full `Defn` wrapper is vestigial at this layer.
 
-**Difference implies.** Source's `Option<Defn>` is what Decision 22's predicate operates on and what backend's compile path consumes. Facade's `Option<Expr>` is editorial-narrower and would not match the consumer pattern Decision 22 names.
+**Target shape (now source-canonical at `crates/cranelisp-types/src/module.rs:534`).**
 
-**Disposition.** **Facade moves.** Adjust to `ast: Option<Defn>`. Rationale: Decision 22's predicate + backend's consumer pattern require the wider `Defn` shape; facade-text narrowing is editorial. Source is the correct as-consumed shape. Closes S-DRIFT-6.
+```rust
+ast: Option<DefnVariant>,
+```
+
+**Grounding (corrected vs prior audit).**
+
+- **Decision 22** (legacy: `defined-symbols-shared-predicate.md`) preserved — the `is_some()` predicate is indifferent to the payload type. `ast.is_some() AND kind is UserFn/Constructor/etc.` reads identically against `Option<DefnVariant>`.
+- **Minimum mechanism** (audit discipline #4) — `DefnVariant` is what consumers actually read post-decomposition; `Defn` carries duplicate fields at this layer.
+- **Single source of truth (Principle 7)** — the Def's own `name`/`docstring`/`visibility`/`seq` fields are the single source; the outer `Defn` wrapper duplicates them.
+- **`Defn` continues to exist as the frontend AST node** (parser output, pre-decomposition). Typecheck's multi-sig decomposition splits the frontend `Defn` → multiple `DefnVariant`s, each landing in its own `ModuleEntry::Def.ast`. The outer `Defn` wrapper retires from the runtime model.
+
+**Internal within-crate consumer migration (Submission 35 scope).** Five within-crate test sites in `crates/cranelisp-types/src/module.rs` migrated:
+
+- `mk_def` test-helper parameter `ast: Option<Defn>` → `Option<DefnVariant>`.
+- New `trivial_variant(name) -> DefnVariant` helper alongside `trivial_defn(name) -> Defn` — the former feeds the narrowed `ast` field, the latter remains for `ConstrainedFn { defn: Defn, .. }` constructions (frontend AST node use).
+- Seven `Some(trivial_defn(...))` call sites on `mk_def` / direct `ast:` struct-field initialisers rewritten to `Some(trivial_variant(...))`. The lone `defn: trivial_defn("template")` inside `ConstrainedFn` retained — `ConstrainedFn.defn: Defn` is unchanged (frontend AST node, not the post-decomposition payload).
+- Doc-comment sweep in module.rs (lines 333–337, 655–660, 813–816): "synthesised `Defn` bodies" → "synthesised `DefnVariant` bodies" with S69 Submission 35 narrative pointer.
+
+**Manifestation pointers.**
+
+- Source: `crates/cranelisp-types/src/module.rs:534` — `ast: Option<DefnVariant>` field declaration + ~40-line rustdoc citing Decision 22 + minimum mechanism + Principle 7 + frontend-Defn-vs-runtime-DefnVariant decomposition narrative.
+- Facade: `design/arch/facades/types.md` §"Symbol table — the single store" `ModuleEntry::Def` shape summary — `ast: Option<DefnVariant>` with inline note citing Decision 22 preserved-predicate + minimum mechanism + multi-sig decomposition reality + Principle 7 single-source-of-truth.
+- Facade sibling sweep: line 1215 (`ModuleEntry::Constructor` retirement comment), line 1330 (`DefKind::Constructor` rustdoc), line 1569 (`ConstructorInfo.fields[i].span` migration comment), line 431 (`ParsedEntry::Constructor` rustdoc) — all updated to "synthesised `DefnVariant`" with Submission-35 narrative pointer.
+- Audit: this closure block; triage register row 97 updated; per-finding RESOLVED marker.
+
+**Wave-3 cascade (deferred to /dev).** ~30-50 consumer sites in backend + typecheck:
+
+- Backend `lib.rs`, `compiler/mod.rs` (~10+ sites): `defn.params()` → `variant.params`; `defn.variants[0].body` → `variant.body`; `defn.variants[0].span` → `variant.span`; the post-decomposition `defn: Defn` collection pattern `defns.push(defn.clone())` becomes a `(Symbol, DefnVariant)` collection.
+- Backend `cache/object.rs`, `cache/serialize.rs`, `cache/mod.rs` — cache reconstruction sites.
+- Typecheck `traits.rs`, `program.rs`, `infer.rs`, `checker.rs` — synthesis sites: `ast: Some(synthesised_defn)` becomes `ast: Some(synthesised_variant)` (drop the outer `Defn` wrapper — synthesise the meaningful payload directly).
+
+**Discipline calibration (vs. prior audit).** The prior audit's "facade moves" framing was correct *in direction* — facade did need to leave `Option<Expr>` — but missed the subsequent question: *narrow to what?* On user-questioning, "to source's `Option<Defn>`" was rejected as ratifying vestigial structure; the answer that survives configuration-grounding is `Option<DefnVariant>`. Audit discipline lesson: when a "facade moves" finding ratifies source, verify the source shape is itself configuration-grounded (minimum mechanism + single source of truth) — source-as-target is not automatic even when facade is editorial-stale.
+
+**Closes S-DRIFT-6.**
 
 ---
 
-### Finding S-DRIFT-7 — `ModuleEntry::Def.kind` boxing
+### Finding S-DRIFT-7 — `ModuleEntry::Def.kind` boxing — **RESOLVED (Submission 35) — facade moves**
 
-**Triage bucket: D — mechanical.** Facade catch-up to source's `Box<DefKind>` per Principle 6 (size discipline; pattern-match through Box is transparent).
+**Triage bucket: D — RESOLVED Submission 35.** Facade catch-up to source's `Box<DefKind>` per Principle 6 (size discipline; pattern-match through Box is transparent).
 
-**Facade expects.** Line 453: `kind: DefKind`.
+**Closure direction.** **Facade moves.** No source-side change owed — source already at `Box<DefKind>`.
 
-**Source does.** Pub-api 856 + `module.rs:429`: `kind: Box<DefKind>`.
+**Target shape (source-canonical at `crates/cranelisp-types/src/module.rs:478`; facade-canonical post-Submission-35).**
 
-**Design intent.** `DefKind` has heavy variants — `Overloaded { variants: Vec<OverloadVariant> }` (multi-sig dispatch) and `UserFn { constrained_fn: Option<Box<ConstrainedFn>> }` (constrained polymorphism). Boxing trims the `ModuleEntry::Def` size (per **Principle 6** — complexity has a budget; pattern-match through `Box` is transparent). **No Decision specifically authors the boxing**; it is an implementation choice that the facade did not catch up to. Editorial.
+```rust
+kind: Box<DefKind>,
+```
 
-**Disposition.** **Facade moves.** Adjust to `kind: Box<DefKind>` with one-line note: "Boxed for size discipline per Principle 6; pattern-match through the box is transparent." Closes S-DRIFT-7.
+**Grounding.**
+
+- **Principle 6** (complexity has a budget — size discipline). `DefKind` has heavy variants:
+  - `Overloaded { variants: Vec<OverloadVariant> }` — multi-sig dispatch carries the full variant set.
+  - `UserFn { constrained_fn: Option<Box<ConstrainedFn>> }` — constrained polymorphism payload.
+  - `Macro { clauses_meta, sexp, source }` — multi-clause dispatch metadata.
+
+  Boxing trims `ModuleEntry::Def`'s stack size; the heavy variant's payload lives on the heap addressed by the `Box` pointer.
+
+- **Pattern-match through `Box` is transparent.** Consumers write `match *kind { DefKind::UserFn { .. } => … }` exactly as if `kind` were an inline `DefKind`. No consumer-side migration owed.
+
+- **No Decision specifically authors the boxing.** Editorial implementation choice. The facade was sloppy in not catching up.
+
+**Manifestation pointers.**
+
+- Source: `crates/cranelisp-types/src/module.rs:478` — `kind: Box<DefKind>` field declaration (unchanged).
+- Facade: `design/arch/facades/types.md` §"Symbol table — the single store" `ModuleEntry::Def` shape summary — `kind: Box<DefKind>` with inline note citing Principle 6 + transparent-pattern-match clarification.
+- Audit: this closure block; triage register row 98 updated; per-finding RESOLVED marker.
+
+**Wave-3 cascade.** None owed — pattern-match through `Box` is transparent; consumers already write through it.
+
+**Closes S-DRIFT-7.**
 
 ---
 
@@ -1127,8 +1187,8 @@ Bundled with S-DRIFT-19. Source-side demotion of raw `pub` fields (`imports`, `e
 | S-DRIFT-3 | `Type::type_name() -> Option<&'static str>` | **RESOLVED (Submission 30) — closed by deletion** | Bundled with S-DRIFT-2 — bridge was spec-violating; same retirement + structural replacement. |
 | S-DRIFT-4 | `ImportNames` / `ExportSpec` variant set | Source moves | Bundled with H11 (Decision 39) |
 | S-DRIFT-5 | `ModuleEntry::Macro` field set (GOT-callable) | **RESOLVED (Submission 13)** | Unified to `Def { kind: DefKind::Macro { clauses_meta, sexp, source } }`; per-clause GOT-callable via mangled-variant `UserFn` Defs (`{macro}$clause-{N}`), parallel to multi-sig fns; `MacroEnv` sidecar retires |
-| S-DRIFT-6 | `ModuleEntry::Def.ast: Option<Defn>` | Facade moves | Decision 22 (codegen-compilable predicate) |
-| S-DRIFT-7 | `ModuleEntry::Def.kind: Box<DefKind>` | Facade moves | Principle 6 (size discipline); editorial |
+| S-DRIFT-6 | `ModuleEntry::Def.ast: Option<DefnVariant>` | **RESOLVED (Submission 35) — both move (scope-corrected from "facade moves")** | Source narrowed `Option<Defn>` → `Option<DefnVariant>` per minimum mechanism (discipline #4) + Principle 7 (Def's own `name`/`docstring`/`visibility`/`seq` fields are the single source — the outer `Defn` wrapper duplicated them post-decomposition); Decision 22 (codegen-compilable predicate `ast.is_some()`) preserved; facade catches up. Wave-3 cascade: ~30-50 backend + typecheck consumer sites. |
+| S-DRIFT-7 | `ModuleEntry::Def.kind: Box<DefKind>` | **RESOLVED (Submission 35) — facade moves** | Principle 6 (size discipline; pattern-match through `Box` transparent); editorial — no Decision authors the boxing. |
 | S-DRIFT-8 | `MethodResolutions` newtype struct | **RESOLVED (Submission 31)** — source moves | Facade `#[non_exhaustive]` policy + Principles 8/13 + BC invariant 11; type alias promoted to `#[non_exhaustive]` struct with `Default` derive + `new()` constructor; wave-3 cascade ~10 sites in typecheck |
 | S-DRIFT-9 | `ResolvedCall::TraitMethod` field set | **RESOLVED (Submission 32)** — facade self-reconciliation + source `#[non_exhaustive]` catch-up | Decision 47 (source's FQ shape IS the target — facade line 513 already correct; line 512 misattribution + line 1792 PIF row stale text were the gap) + facade §"`#[non_exhaustive]` policy" (binding for `ResolvedCall` enum); scope-extended per user direction to bundle `#[non_exhaustive]` add and avoid revisiting this data structure; wave-3 cascade ~5-10 pattern-match sites in typecheck/backend |
 | S-DRIFT-10 | `View<'a, C, L>` enum vs struct | **RESOLVED (Submission 34) — source moves** | Decision 44 opacity intent + "newtype" terminology + Principle 18 (enforce architectural invariants structurally — struct-with-private-fields is the structural option that prevents consumer-side staging-vs-live observation by construction). Bucket-C "arbitration genuine" framing superseded by user direction — Group A/B discipline pattern (facade-as-target + Principle 18 when both options exist) settled the arbitration. |
@@ -1156,9 +1216,9 @@ Bundled with S-DRIFT-19. Source-side demotion of raw `pub` fields (`imports`, `e
 | Class | Count |
 |---|---|
 | Source moves | 27 (H2, H3, H4, H5, H6, H7, H9, H10, H11, U11, S-DRIFT-4, S-DRIFT-10, S-DRIFT-19, S-DRIFT-20, S-DRIFT-21, C-HOLE-4, C-HOLE-5, C-HOLE-6 — plus partial source-side moves in H8, S-DRIFT-12, S-DRIFT-15, U9 = 22 hard + ~5 partial; S-DRIFT-8 RESOLVED in-place Submission 31 — source moved as predicted; direction column unchanged; wave-3 cascade deferred. S-DRIFT-10 RESOLVED in-place Submission 34 — reclassified from bucket C "arbitration genuine" to "source moves" + landed; source rewritten from `pub enum View { Single, Union }` to `pub struct View { staging: Option<&'a SymbolTable>, live: &'a SymbolTable }` with private fields per Decision 44 opacity intent + Principle 18; typecheck ClusterContext pattern-match consumer cascade deferred to wave-3.) |
-| Facade moves | 11 (U1, U2, U4, U5, U7, U8, U10, U16, U17, U19, U20, U22, S-DRIFT-1, S-DRIFT-6, S-DRIFT-7, S-DRIFT-17, S-DRIFT-18, S-DRIFT-22; S-DRIFT-11 reclassified to "both move" per Submission 23 + S-DRIFT-12 reclassified per Submission 25 + S-DRIFT-14 reclassified per Submission 26 + S-DRIFT-13 reclassified per Submission 27 + S-DRIFT-2/S-DRIFT-3 reclassified to "RESOLVED by deletion" per Submission 30 + S-DRIFT-9 reclassified to "RESOLVED — facade self-reconciliation + source `#[non_exhaustive]` catch-up" per Submission 32 — each surfaced that source had no Decision-level grounding and the configuration prefers a third option neither side held; the parallel S-DRIFT-11/S-DRIFT-14 reclassifications grounded on the corrected Principle 11 misattribution; S-DRIFT-22 reclassified D→"Facade moves" per Submission 29 — scope-extended editorial sharpening preserves opacity policy intact; S-DRIFT-2/S-DRIFT-3 reclassified D→"RESOLVED by deletion" per Submission 30 — S69 /spec fire FIXME 0216 surfaced the reverse-lookup bridge was spec-violating, not facade-misaligned; S-DRIFT-9 reclassified D→"RESOLVED — facade self-reconciliation + source `#[non_exhaustive]` catch-up" per Submission 32 — facade line 513 already at D47-target since the Decision authored, lines 512 + 1792 were un-cascaded stale text within a facade-internally-inconsistent state, not source-facade drift. U12 + U13 + U14 + U15 RESOLVED in-place per Submission 33 — facade-only catch-up (source already at target shape per Decision 35 instantiation pattern + Decisions 23 + 48 fixed-capacity GOT); count decremented by 4) |
+| Facade moves | 10 (U1, U2, U4, U5, U7, U8, U10, U16, U17, U19, U20, U22, S-DRIFT-1, S-DRIFT-7, S-DRIFT-17, S-DRIFT-18, S-DRIFT-22; S-DRIFT-11 reclassified to "both move" per Submission 23 + S-DRIFT-12 reclassified per Submission 25 + S-DRIFT-14 reclassified per Submission 26 + S-DRIFT-13 reclassified per Submission 27 + S-DRIFT-2/S-DRIFT-3 reclassified to "RESOLVED by deletion" per Submission 30 + S-DRIFT-9 reclassified to "RESOLVED — facade self-reconciliation + source `#[non_exhaustive]` catch-up" per Submission 32 — each surfaced that source had no Decision-level grounding and the configuration prefers a third option neither side held; the parallel S-DRIFT-11/S-DRIFT-14 reclassifications grounded on the corrected Principle 11 misattribution; S-DRIFT-22 reclassified D→"Facade moves" per Submission 29 — scope-extended editorial sharpening preserves opacity policy intact; S-DRIFT-2/S-DRIFT-3 reclassified D→"RESOLVED by deletion" per Submission 30 — S69 /spec fire FIXME 0216 surfaced the reverse-lookup bridge was spec-violating, not facade-misaligned; S-DRIFT-9 reclassified D→"RESOLVED — facade self-reconciliation + source `#[non_exhaustive]` catch-up" per Submission 32 — facade line 513 already at D47-target since the Decision authored, lines 512 + 1792 were un-cascaded stale text within a facade-internally-inconsistent state, not source-facade drift. U12 + U13 + U14 + U15 RESOLVED in-place per Submission 33 — facade-only catch-up (source already at target shape per Decision 35 instantiation pattern + Decisions 23 + 48 fixed-capacity GOT); count decremented by 4. S-DRIFT-6 reclassified D→"Both move" per Submission 35 — scope-corrected from prior "facade moves to source's `Option<Defn>`" framing: source narrowed `Option<Defn>` → `Option<DefnVariant>` per minimum mechanism (discipline #4) + Principle 7 (Def's own `name`/`docstring`/`visibility`/`seq` fields are canonical for that metadata — the outer `Defn` wrapper duplicated them post-decomposition); facade catches up to the narrowed shape; Decision 22 codegen-compilable predicate preserved (indifferent to payload type); count decremented by 1. S-DRIFT-7 RESOLVED in-place per Submission 35 — facade catch-up to source's `Box<DefKind>` per Principle 6 size discipline; no reclassification.) |
 | **RESOLVED by deletion / self-reconciliation** | 3 (S-DRIFT-2, S-DRIFT-3 — Submission 30; `Type::from_name` / `Type::type_name` deleted from source; new `ModuleEntry::IntrinsicType` variant for uniform intrinsic-type registration. S-DRIFT-9 — Submission 32; facade lines 512 + 1792 self-reconciled under Decision 47; line 513 was already correct since D47 authored; source-side `#[non_exhaustive]` policy catch-up bundled per user direction.) |
-| Both move | 8 (H1, H8, U9, S-DRIFT-11, S-DRIFT-12, S-DRIFT-13, S-DRIFT-14, S-DRIFT-15) |
+| Both move | 9 (H1, H8, U9, S-DRIFT-6, S-DRIFT-11, S-DRIFT-12, S-DRIFT-13, S-DRIFT-14, S-DRIFT-15) — S-DRIFT-6 added per Submission 35 (scope-corrected from "facade moves") — source narrowed `Option<Defn>` → `Option<DefnVariant>` per minimum mechanism + Principle 7; facade catches up to the narrowed shape. |
 | Arbitration (genuine) | 0 — A2 (= S-DRIFT-5) closed by Submission 13; A5 (= S-DRIFT-10) RESOLVED Submission 34 — direction defaulted to source-moves per Principle 18 (the audit's stated default), user-arbitrated to that default 2026-05-23; bucket-C "arbitration genuine" framing was superseded by user direction — the Group A/B discipline pattern (facade-as-target + Principle 18 when both options exist) settled the arbitration |
 | No action | 5 (U3, U6, U18, U21, S-DRIFT-16, C-HOLE-3) — S-DRIFT-22 reclassified to "Facade moves" per Submission 29 (scope-extended editorial sharpening; opacity policy intact per Principle 15) |
 | Requires /qa work | 2 (C-HOLE-1, C-HOLE-2) |
@@ -1240,7 +1300,7 @@ This audit re-grounds the prior re-author's dispositions against the architectur
 
 The remaining 21 dispositions match the prior audit's direction but the corrected audit adds explicit configuration citations to each. For example:
 
-- **S-DRIFT-6** (`ast: Option<Defn>`): prior audit "facade moves" stands; this audit cites Decision 22 (codegen-compilable predicate) as the grounding.
+- **S-DRIFT-6** (`ast: Option<DefnVariant>` post-Submission-35): prior audit "facade moves" was correct *in direction* (facade did need to leave `Option<Expr>`); this audit framed the destination as source's `Option<Defn>` citing Decision 22. **Reclassified Submission 35 to "both move" — scope-correction.** On user-questioning the audit's "to source's `Option<Defn>`" framing was rejected as ratifying vestigial structure (the outer `Defn` wrapper duplicates fields the Def's own `name`/`docstring`/`visibility`/`seq` already carry; post-decomposition `Defn.variants` is always `.len() == 1`). Source narrowed to `Option<DefnVariant>` per minimum mechanism (discipline #4) + Principle 7 (single source of truth); facade catches up. Decision 22's codegen-compilable predicate `ast.is_some()` preserved (indifferent to payload type). Audit-discipline lesson: when a "facade moves" finding ratifies source, verify the source shape is itself configuration-grounded — source-as-target is not automatic.
 - **S-DRIFT-8** (`MethodResolutions` newtype): prior audit "source moves" stands; this audit cites facade non_exhaustive policy + Principle 8.
 - **S-DRIFT-11** (`DefnVariant` split params): prior audit "facade moves" **revised in Submission 23 to "both move" — fused `Vec<(Symbol, Option<TypeExpr>)>` shape**. The Principle 11 citation in this audit was a misattribution (Principle 11 governs single-pipeline mode parameters, not annotation shape); the correct grounding is **Principle 18** (enforce invariants structurally — fold the parallel-vec lockstep invariant into the tuple) + spec §5.1.1 EBNF + spec §5.1 L41. See Finding S-DRIFT-11 body for closure pointer.
 - **H2** (`Type::unwrap_io`): prior audit "source moves" stands; this audit cites Principles 2 + 6.

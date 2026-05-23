@@ -428,8 +428,9 @@ pub enum ParsedEntry {
     /// Synthetic per-constructor entry — emitted by `build_form` for each constructor of a `TypeDef`.
     /// Pre-typecheck transient. `check_forms` lifts this into a `ModuleEntry::Def`
     /// with `kind: DefKind::Constructor { type_name, tag, field_count, internal }` and a synthesised
-    /// `Defn` whose body expression is `Expr::ConstrADT { type_name, tag, fields, span }`
-    /// (see §"Symbol table — the single store" for the ctor-as-Def shape).
+    /// `DefnVariant` whose body expression is `Expr::ConstrADT { type_name, tag, fields, span }`
+    /// (see §"Symbol table — the single store" for the ctor-as-Def shape;
+    /// S69 Submission 35 narrowed `ast: Option<Defn>` → `Option<DefnVariant>`).
     Constructor {
         name: Symbol,
         of_type: TypeName,
@@ -1020,9 +1021,31 @@ For single-legged forms (`(defn add [x y] …)` → one `Def { kind: UserFn }`),
 pub enum ModuleEntry<C: CodeStore = ()> {
     Def {
         name: Symbol,
-        kind: DefKind,
+        // `kind: Box<DefKind>` — boxed for size discipline per **Principle 6**
+        // (complexity has a budget). `DefKind` has heavy variants
+        // (`Overloaded { variants: Vec<OverloadVariant> }` for multi-sig dispatch
+        // and `UserFn { constrained_fn: Option<Box<ConstrainedFn>> }` for
+        // constrained polymorphism); boxing trims `ModuleEntry::Def` size.
+        // Pattern-match through `Box` is transparent — consumers write
+        // `match *kind { DefKind::UserFn { .. } => … }` exactly as if it were
+        // an inline `DefKind`. Implementation choice (S69 Submission 7); no
+        // Decision specifically authors the boxing; closes S-DRIFT-7 per
+        // Submission 35.
+        kind: Box<DefKind>,
         scheme: Option<Scheme>,
-        ast: Option<Expr>,                           // Decision 22 — codegen-compilable iff Some
+        // `ast: Option<DefnVariant>` — single meaningful payload per **Decision 22**
+        // (codegen-compilable predicate: `ast.is_some()` AND `kind` is
+        // `UserFn`/`Constructor`/etc.). **Narrowed from `Defn` to `DefnVariant`
+        // (S69 Submission 35).** Multi-sig is decomposed before reaching this
+        // layer — each mangled variant (`add$Int+Int`, `add$Float+Float`) is its
+        // own `ModuleEntry::Def` carrying a single `DefnVariant`. The outer
+        // `Defn` wrapper (frontend AST node) does NOT propagate to the runtime
+        // model; the Def's own `name`/`docstring`/`visibility`/`seq` fields are
+        // the single source of truth for that metadata (**Principle 7**).
+        // `Defn` continues to exist as the frontend AST node (parser output,
+        // pre-decomposition); only the post-decomposition `DefnVariant` lands
+        // here. Closes S-DRIFT-6 per Submission 35.
+        ast: Option<DefnVariant>,
         callees: Vec<FQSymbol>,                      // Decision 21 — TC-sourced call graph
         /// Per-entry monotonic ordering token, allocated via
         /// `SymbolTable::next_seq.fetch_add(1)` at first registration. Used by
@@ -1190,8 +1213,10 @@ pub enum ModuleEntry<C: CodeStore = ()> {
     Ambiguous { /* visibility: Visibility */ },
     // `ModuleEntry::Constructor` variant retired — ADT constructors are now
     // `ModuleEntry::Def` with `kind: DefKind::Constructor { .. }` and
-    // synthesised `Defn` bodies whose body expression is `Expr::ConstrADT`
-    // (see §"DefKind" Rejected alternatives for the migration rationale).
+    // synthesised `DefnVariant` bodies whose body expression is `Expr::ConstrADT`
+    // (S69 Submission 35 narrowed `ast` from `Option<Defn>` to
+    // `Option<DefnVariant>` — see §"DefKind" Rejected alternatives for the
+    // migration rationale and the `ModuleEntry::Def.ast` shape statement above).
     //
     // `ModuleEntry::Reexport` variant retired — public-edge re-exports now
     // land as `Import { source, visibility: Public }`; the variant collapse
@@ -1301,9 +1326,10 @@ pub enum DefKind {
     TypeDef { /* ADT shape */ },
     Trait { /* trait shape */ },
     /// ADT constructor. Constructors are `ModuleEntry::Def` entries with this
-    /// `DefKind`; the Def's `ast` field carries a synthesised `Defn` whose body
-    /// expression is `Expr::ConstrADT { type_name, tag, fields, span }` (see
-    /// §"AST"). Read by pattern matching (`Pattern::Constructor` consults
+    /// `DefKind`; the Def's `ast` field carries a synthesised `DefnVariant`
+    /// whose body expression is `Expr::ConstrADT { type_name, tag, fields, span }`
+    /// (see §"AST"). S69 Submission 35 narrowed `ast: Option<Defn>` to
+    /// `Option<DefnVariant>` — see the `ModuleEntry::Def.ast` shape statement. Read by pattern matching (`Pattern::Constructor` consults
     /// `tag`) and by REPL introspection. Backend codegen does NOT read this
     /// variant — it lowers the synthesised body's `Expr::ConstrADT` node.
     ///
@@ -1539,9 +1565,9 @@ pub enum ResolutionGap {
 // `ConstructorInfo` retired — see §"Symbol table — the single store" §"DefKind" for the migration map.
 //   .name           → ModuleEntry::Def.name
 //   .tag            → DefKind::Constructor.tag
-//   .fields[i].name → encoded in the synthesised `Defn`'s variant params (see §"AST" / §"Multi-legged authoring"); not a separate field on `Def`. (Cleanup: the historical `param_names: Vec<Symbol>` carrier on `Def` is private storage, accessed via `ModuleEntry::arity()` not by name indexing — see §"Storage detail (Def)" comment + invariant 11.)
+//   .fields[i].name → encoded in the synthesised `DefnVariant`'s `params` (see §"AST" / §"Multi-legged authoring"); not a separate field on `Def`. (Cleanup: the historical `param_names: Vec<Symbol>` carrier on `Def` is private storage, accessed via `ModuleEntry::arity()` not by name indexing — see §"Storage detail (Def)" comment + invariant 11.)
 //   .fields[i].type_expr → folded into Def.scheme (constructor's polymorphic function-type signature)
-//   .fields[i].span     → preserved as FieldDef.span on the synthesised Defn's variant params metadata (Decision 39 per-field span; Submission 25)
+//   .fields[i].span     → preserved as FieldDef.span on the synthesised DefnVariant's params metadata (Decision 39 per-field span; Submission 25; S69 Submission 35 narrowed `ast` from `Option<Defn>` to `Option<DefnVariant>`)
 //   .docstring      → Def.docstring
 //   .internal       → DefKind::Constructor.internal
 #[non_exhaustive] pub struct FieldInfo { /* per-field info — { name: Symbol, ty: Type } pair; consumed by HeapCategory::classify */ }

@@ -332,8 +332,9 @@ impl ModuleEntry<()> {
             }
             // ModuleEntry::Constructor variant retired — constructors are now
             // ModuleEntry::Def entries with kind: DefKind::Constructor { .. }
-            // and synthesised Defn bodies whose body expression is
-            // Expr::ConstrADT (see facades/types.md §"Symbol table — the
+            // and synthesised DefnVariant bodies whose body expression is
+            // Expr::ConstrADT (S69 Submission 35 narrowed ast from Option<Defn>
+            // to Option<DefnVariant>; see facades/types.md §"Symbol table — the
             // single store" §"DefKind").
             // ModuleEntry::Macro variant retired (Submission 22) — macros are
             // now ModuleEntry::Def entries with kind: DefKind::Macro
@@ -528,10 +529,44 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         /// side-table drift, matches the `got_slot` allocation pattern.
         #[serde(default)]
         seq: u64,
-        /// Typechecked function body. Written by typecheck after check_form(CheckBody).
-        /// Read by codegen. None for primitives, special forms, and pre-body-check entries.
+        /// Typechecked function body — the single meaningful payload `DefnVariant`
+        /// (params + body + span). Written by typecheck after `check_form(CheckBody)`;
+        /// read by codegen. `None` for primitives, special forms, and pre-body-check
+        /// entries (the codegen-compilable predicate per Decision 22 reads
+        /// `ast.is_some()` alongside the `kind` discriminant — see
+        /// `defined_symbols()` above).
+        ///
+        /// **Narrowed from `Defn` to `DefnVariant` (S69 Submission 35).** Each
+        /// `ModuleEntry::Def` represents one callable entry — by the time a Def
+        /// reaches backend, multi-sig has already been **decomposed into per-
+        /// mangled-name Defs** (`add$Int+Int`, `add$Float+Float`), each carrying a
+        /// synthesised single-variant payload. The outer `Defn` wrapper carries
+        /// only duplicate metadata at this layer:
+        /// - `Defn.name` duplicated the symbol-table key,
+        /// - `Defn.docstring` duplicated this entry's own `docstring` field,
+        /// - `Defn.variants` was always `.len() == 1` post-decomposition (single-
+        ///   element `Vec` wrapping the meaningful payload),
+        /// - `Defn.visibility` duplicated this entry's own `visibility` field,
+        /// - `Defn.span` was redundant with the variant's own `span`.
+        ///
+        /// The meaningful payload IS the single `DefnVariant`. Narrowing here
+        /// honours **minimum mechanism** (carry only what consumers read) and
+        /// **single source of truth (Principle 7)** — the entry's own
+        /// `name` / `visibility` / `docstring` / `seq` fields are canonical for
+        /// that metadata; the outer `Defn` wrapper retires from the runtime model.
+        ///
+        /// `Defn` continues to exist as the **frontend AST node** (parser output,
+        /// pre-decomposition). Typecheck's multi-sig decomposition splits the
+        /// frontend `Defn` into per-variant `DefnVariant`s, each landing in its
+        /// own `ModuleEntry::Def`'s `ast` field; the outer `Defn` wrapper does
+        /// not propagate past that decomposition boundary.
+        ///
+        /// **Decision 22's codegen-compilable predicate is preserved** —
+        /// `ast.is_some()` discriminates "body available" from "body not yet
+        /// available / never available"; the predicate is indifferent to the
+        /// payload type. See `defined_symbols()` above for the call-site.
         #[serde(default)]
-        ast: Option<Defn>,
+        ast: Option<DefnVariant>,
         /// Compiled-code handle written by the backend after `compile_to_module`
         /// returns. Runtime-only state (Decision 25 in `design/arch/CLAUDE.md`):
         /// `#[serde(skip)]` so cache manifests stay pointer-free, and the field
@@ -619,9 +654,10 @@ pub enum ModuleEntry<C: CodeStore = ()> {
     },
     // ModuleEntry::Constructor variant retired. Constructors are now
     // ModuleEntry::Def entries with kind: DefKind::Constructor { type_name,
-    // tag, field_count, internal } and synthesised Defn bodies whose body
-    // expression is Expr::ConstrADT (see facades/types.md §"Symbol table —
-    // the single store" §"DefKind" for the ctor-as-Def shape and rejected
+    // tag, field_count, internal } and synthesised DefnVariant bodies whose
+    // body expression is Expr::ConstrADT (S69 Submission 35 narrowed ast from
+    // Option<Defn> to Option<DefnVariant>; see facades/types.md §"Symbol table
+    // — the single store" §"DefKind" for the ctor-as-Def shape and rejected
     // alternatives). See crates/cranelisp-types/src/check.rs for the
     // retirement of ConstructorInfo struct and TypeDefInfo.constructors:
     // Vec<Symbol> shape.
@@ -776,8 +812,10 @@ pub enum DefKind {
     /// An ADT constructor (see facades/types.md §"Symbol table — the single
     /// store" §"DefKind" for the ctor-as-Def shape and rejected alternatives).
     ///
-    /// The Def's `ast` field carries a synthesised `Defn` whose body expression
-    /// is `Expr::ConstrADT { type_name, tag, fields, span }`. The metadata on
+    /// The Def's `ast` field carries a synthesised `DefnVariant` whose body
+    /// expression is `Expr::ConstrADT { type_name, tag, fields, span }` (S69
+    /// Submission 35 narrowed `ast: Option<Defn>` to `ast: Option<DefnVariant>`;
+    /// constructors synthesise the single meaningful payload directly). The metadata on
     /// this variant (`type_name`, `tag`, `field_count`, `internal`) is read by
     /// pattern matching (`Pattern::Constructor` → consult `DefKind::Constructor.tag`)
     /// and by REPL introspection (`/info` displays the owning ADT + constructor
@@ -1267,7 +1305,7 @@ mod tests {
     /// Build a minimal `ModuleEntry::Def` for test fixtures.
     fn mk_def(
         kind: DefKind,
-        ast: Option<Defn>,
+        ast: Option<DefnVariant>,
     ) -> ModuleEntry {
         ModuleEntry::Def {
             scheme: Scheme {
@@ -1288,21 +1326,31 @@ mod tests {
         }
     }
 
-    /// A trivial one-variant Defn used as an `ast` payload for tests.
+    /// A trivial `DefnVariant` used as an `ast` payload for tests (S69 Submission 35
+    /// narrowed `ModuleEntry::Def.ast` from `Option<Defn>` to `Option<DefnVariant>`).
+    /// The `_name` parameter is retained at call sites for readability but no longer
+    /// threads into the payload (the entry's own symbol-table key carries the name).
+    fn trivial_variant(_name: &str) -> DefnVariant {
+        DefnVariant {
+            params: vec![],
+            body: Expr::IntLit {
+                value: 0,
+                span: Span::SYNTHETIC,
+                inferred_type: Some(Box::new(Type::Int)),
+            },
+            span: Span::SYNTHETIC,
+        }
+    }
+
+    /// A trivial one-variant `Defn` used where a full frontend `Defn` is still
+    /// required (e.g., `ConstrainedFn { defn: Defn, .. }` continues to carry the
+    /// frontend AST node — the typecheck-side decomposition into per-variant
+    /// Defs operates on the frontend form).
     fn trivial_defn(name: &str) -> Defn {
         Defn {
             name: Symbol::from(name),
             docstring: None,
-            variants: vec![DefnVariant {
-                params: vec![],
-                param_annotations: vec![],
-                body: Expr::IntLit {
-                    value: 0,
-                    span: Span::SYNTHETIC,
-                    inferred_type: Some(Box::new(Type::Int)),
-                },
-                span: Span::SYNTHETIC,
-            }],
+            variants: vec![trivial_variant(name)],
             visibility: Visibility::Public,
             span: Span::SYNTHETIC,
         }
@@ -1318,7 +1366,7 @@ mod tests {
             Symbol::from("regular"),
             mk_def(
                 DefKind::UserFn { constrained_fn: None },
-                Some(trivial_defn("regular")),
+                Some(trivial_variant("regular")),
             ),
         );
 
@@ -1345,7 +1393,7 @@ mod tests {
             Symbol::from("template"),
             mk_def(
                 DefKind::UserFn { constrained_fn: Some(Box::new(template_cf)) },
-                Some(trivial_defn("template")),
+                Some(trivial_variant("template")),
             ),
         );
 
@@ -1385,7 +1433,7 @@ mod tests {
             Symbol::from("add$Int+Int"),
             mk_def(
                 DefKind::UserFn { constrained_fn: None },
-                Some(trivial_defn("add$Int+Int")),
+                Some(trivial_variant("add$Int+Int")),
             ),
         );
 
@@ -1456,7 +1504,7 @@ mod tests {
             Symbol::from("entry"),
             mk_def(
                 DefKind::UserFn { constrained_fn: None },
-                Some(trivial_defn("entry")),
+                Some(trivial_variant("entry")),
             ),
         );
 
@@ -1512,7 +1560,7 @@ mod tests {
     fn module_entry_def_has_code_field_none_by_default() {
         let entry = mk_def(
             DefKind::UserFn { constrained_fn: None },
-            Some(trivial_defn("fresh")),
+            Some(trivial_variant("fresh")),
         );
         match entry {
             ModuleEntry::Def { code, .. } => {
@@ -1549,7 +1597,7 @@ mod tests {
             got_slot: None,
             trait_origin: None,
             seq: 0,
-            ast: Some(trivial_defn("with_code")),
+            ast: Some(trivial_variant("with_code")),
             // `()` flavour — Some/None of the unit type. Serde discipline
             // is the same regardless of `C`.
             code: Some(()),
@@ -1593,7 +1641,7 @@ mod tests {
     fn fresh_module_entry_def_has_no_got_slot() {
         let entry = mk_def(
             DefKind::UserFn { constrained_fn: None },
-            Some(trivial_defn("fresh")),
+            Some(trivial_variant("fresh")),
         );
         match entry {
             ModuleEntry::Def { got_slot, .. } => {
@@ -1991,7 +2039,7 @@ mod tests {
             Symbol::from("entry"),
             mk_def(
                 DefKind::UserFn { constrained_fn: None },
-                Some(trivial_defn("entry")),
+                Some(trivial_variant("entry")),
             ),
         );
 
@@ -2217,7 +2265,7 @@ mod tests {
             got_slot: None,
             trait_origin: None,
             seq: 0,
-            ast: Some(trivial_defn("synthetic")),
+            ast: Some(trivial_variant("synthetic")),
             code: Some(42i64),
         };
 
