@@ -15,6 +15,33 @@
 //!
 //! See `design/arch/facades/types.md` §"`View<'a, C, L>`" for the canonical
 //! specification.
+//!
+//! ## Shape — `struct` with private fields, NOT `pub enum` (S69 Submission 34)
+//!
+//! `View` is a `struct` whose internal staging-vs-live distinction is hidden
+//! behind private fields. The shape is grounded in two places:
+//!
+//! - **Decision 44** (cluster-atomic typecheck via orchestrator-owned staging)
+//!   names the opacity intent + uses the term "newtype" (singular structural
+//!   shape) for `View`. The Decision's load-bearing claim — "typecheck reads
+//!   `ctx.current_symbol_table()` whenever it would have read `&SymbolTable`
+//!   directly; it cannot tell whether the view unions staging+live or hits live
+//!   alone" — is structurally enforced only by the struct form with private
+//!   fields. The prior `pub enum View { Single, Union }` form admitted
+//!   consumer-side `match view { View::Union { .. } => …, View::Single { .. } =>
+//!   … }`, which IS observable staging-vs-live distinction and defeats the
+//!   Decision's opacity rationale.
+//!
+//! - **Principle 18** (enforce architectural invariants structurally where
+//!   possible) directs that when both a structural option and a behavioural one
+//!   exist, the structural option is the right choice. The struct-with-private-
+//!   fields form prevents the cluster-mode shortcircuit by construction;
+//!   consumers consume `View` only through `lookup` / `iter`, which is the
+//!   read-side abstraction Decision 44 names.
+//!
+//! Internal encoding: `staging: Option<&'a SymbolTable<C, L>>` — `Some` =
+//! cluster mode (staging consulted before live); `None` = committed mode (live
+//! only). `live: &'a SymbolTable<C, L>` is unconditional.
 
 use crate::module::{CodeStore, LinkerStore, ModuleEntry, SymbolTable};
 use crate::newtype::Symbol;
@@ -30,58 +57,67 @@ use crate::newtype::Symbol;
 ///
 /// `View` exposes no write methods; staging is mutated only through the
 /// orchestrator's `&mut SymbolTable` handle outside the typecheck call.
-#[non_exhaustive]
+///
+/// **Opacity is structural.** The fields below are private; consumers cannot
+/// observe whether a given `View` was constructed via `union` or `single`. This
+/// enforces Decision 44's opacity intent + Principle 18 (enforce invariants
+/// structurally). See module-level rustdoc above for the full grounding.
+///
+/// `#[non_exhaustive]` is intentionally NOT applied — private fields already
+/// prevent external construction, so the structural non-exhaustivity is implicit.
 #[derive(Debug)]
-pub enum View<'a, C: CodeStore = (), L: LinkerStore = ()> {
-    /// Union view: staging shadows live; lookups dispatch staging-first.
-    Union {
-        staging: &'a SymbolTable<C, L>,
-        live: &'a SymbolTable<C, L>,
-    },
-    /// Single-source view over the live table alone.
-    Single { live: &'a SymbolTable<C, L> },
+pub struct View<'a, C: CodeStore = (), L: LinkerStore = ()> {
+    /// `Some(staging)` in cluster mode — staging is consulted before live.
+    /// `None` in committed mode — live only.
+    staging: Option<&'a SymbolTable<C, L>>,
+    /// The live table; always present. Lookups fall through to live when
+    /// staging (if present) does not contain the name.
+    live: &'a SymbolTable<C, L>,
 }
 
 impl<'a, C: CodeStore, L: LinkerStore> View<'a, C, L> {
     /// Construct a composite read view. Lookups dispatch staging-first, then
     /// live. Both refs must outlive `'a`; the returned `View` borrows them.
     pub fn union(staging: &'a SymbolTable<C, L>, live: &'a SymbolTable<C, L>) -> Self {
-        View::Union { staging, live }
+        View { staging: Some(staging), live }
     }
 
     /// Construct a single-source read view over `live` alone. Used by
     /// `ClusterContext::Live` (REPL introspection, fine-grained-test paths,
     /// any caller reading committed state directly).
     pub fn single(live: &'a SymbolTable<C, L>) -> Self {
-        View::Single { live }
+        View { staging: None, live }
     }
 
-    /// Read-through lookup. In `Union` mode, staging entries shadow live
-    /// entries. In `Single` mode, dispatches directly to live.
+    /// Read-through lookup. In cluster mode (staging `Some`), staging entries
+    /// shadow live entries; in committed mode (staging `None`), dispatches
+    /// directly to live. Consumers cannot tell from the return value which
+    /// side a hit came from — the staging-vs-live distinction is hidden by
+    /// construction (per Decision 44 opacity intent + Principle 18).
     pub fn lookup(&self, name: &Symbol) -> Option<&'a ModuleEntry<C>> {
-        match self {
-            View::Union { staging, live } => staging.get(name.as_ref()).or_else(|| live.get(name.as_ref())),
-            View::Single { live } => live.get(name.as_ref()),
-        }
+        self.staging
+            .and_then(|s| s.get(name.as_ref()))
+            .or_else(|| self.live.get(name.as_ref()))
     }
 
     /// Iterate the union, staging-first; live entries shadowed by staging keys
     /// are skipped (i.e., iteration produces each key exactly once). Order is
     /// iteration order of the underlying maps; not stable across runs.
     pub fn iter(&self) -> Box<dyn Iterator<Item = (&'a Symbol, &'a ModuleEntry<C>)> + 'a> {
-        match self {
-            View::Union { staging, live } => {
+        match self.staging {
+            Some(staging) => {
                 // Live entries not shadowed by staging follow staging entries.
                 let staging_iter = staging.all_symbols();
                 // Build a set of staging keys so we can filter live.
                 let staging_keys: std::collections::HashSet<Symbol> =
                     staging.symbols.keys().cloned().collect();
-                let live_iter = live
+                let live_iter = self
+                    .live
                     .all_symbols()
                     .filter(move |(k, _)| !staging_keys.contains(*k));
                 Box::new(staging_iter.chain(live_iter))
             }
-            View::Single { live } => Box::new(live.all_symbols()),
+            None => Box::new(self.live.all_symbols()),
         }
     }
 }

@@ -460,7 +460,10 @@ pub struct DefmacroInfo {
 
 ```rust
 pub struct View<'a, C: CodeStore = (), L: LinkerStore = ()> {
-    staging: &'a SymbolTable<C, L>,
+    /// `Some(staging)` in cluster mode — staging is consulted before live.
+    /// `None` in committed mode — live only.
+    staging: Option<&'a SymbolTable<C, L>>,
+    /// The live table; always present.
     live: &'a SymbolTable<C, L>,
 }
 
@@ -496,10 +499,11 @@ impl<'a, C: CodeStore, L: LinkerStore> View<'a, C, L> {
 - No allocation per lookup — the newtype holds two references and dispatches.
 - Read-only — `View` exposes no write methods; staging is mutated only through the orchestrator's direct `&mut SymbolTable` handle outside the typecheck call.
 - Lifetime-bounded — the `View` borrows both tables for `'a`; it cannot outlive either.
+- **Opacity is structural** (per **Decision 44** opacity intent + **Principle 18** enforce-invariants-structurally; settled S69 Submission 34). The fields are private; consumers cannot observe whether a `View` was constructed via `union` or `single`. The prior `pub enum View { Single, Union }` shape admitted consumer-side `match view { View::Union { .. } => …, View::Single { .. } => … }`, which IS observable staging-vs-live distinction and defeats Decision 44's "typecheck cannot tell whether the view unions staging+live or hits live alone" claim. The internal encoding `staging: Option<&'a SymbolTable<C, L>>` (`Some` = cluster mode, `None` = committed mode) is the structural realisation: cluster vs. committed mode is encoded as a single private `Option`, not as a public variant tag.
 
 **Why a newtype rather than a trait or a method on `SymbolTable`**. The orchestrator passes a 2-level composite read view today. A trait abstraction (`SymbolTableView`) would generalise to N-level staging or alternate read shapes, but adds a trait surface to support a single production caller pattern. A method on `SymbolTable` returning a `View` is fine but the construction call (`View::union`) reads cleaner at the orchestrator site. If future needs require N-level staging or other compositions, a trait can be introduced then; the current shape is the minimum surface that satisfies cluster-atomic Pass 1 / Pass 2 visibility.
 
-`#[non_exhaustive]`. Derived traits: `Debug` (best-effort — delegates to underlying tables). Not `Clone` (a `View` is constructed at the call site; cloning the borrow has no value). Not `Serialize/Deserialize` — never persisted; the `'a` lifetime makes this physically impossible at the boundary.
+**`#[non_exhaustive]` deliberately NOT applied** — private fields already prevent external construction, so the structural non-exhaustivity is implicit. Derived traits: `Debug` (best-effort — delegates to underlying tables). Not `Clone` (a `View` is constructed at the call site; cloning the borrow has no value). Not `Serialize/Deserialize` — never persisted; the `'a` lifetime makes this physically impossible at the boundary.
 
 ### Resolved type system (output of typecheck, consumed by backend)
 
@@ -752,6 +756,18 @@ pub struct SymbolTable<C: CodeStore = (), L: LinkerStore = (), D: DllStore = ()>
 
     pub path: ModuleFullPath,
     pub schema_version: u32,                  // Decision 34 — bumped on serialised-shape change
+    /// Per-module Linker retention root — the lifecycle-owner slot for cache-restored
+    /// `.o`-mapped code in `--run` / REPL mode after cache-hit. `L = ()` integration-side
+    /// per **Decision 35** (the current integration-layer choice: per-symbol
+    /// `Code::Linker.linker: Arc<Linker>` retention covers every case where a Linker
+    /// must outlive its construction); `L` is **reserved per Decision 35** for future
+    /// scenarios where a Linker must outlive its construction without any `Code::Linker`
+    /// referencing it — reactivating the slot then would not require further generics
+    /// churn. `#[serde(skip)]` — runtime state; cache-hit re-derives by re-loading
+    /// the `.o`. Parallel to `dll: Option<D>` (this slot is for Linker retention,
+    /// `dll` is for the platform-module DLL handle); same lifecycle-owner discipline.
+    #[serde(skip)]
+    pub linker: Option<L>,
     /// DLL handle for platform-module SymbolTables. Spec §8.9.3:
     /// `(platform stdio)` registers a synthetic module named
     /// `platform.stdio`; the loaded DLL handle lives on **that
@@ -764,8 +780,7 @@ pub struct SymbolTable<C: CodeStore = (), L: LinkerStore = (), D: DllStore = ()>
     /// `platform_fn_ptr` on a Def in `symbols` is valid for exactly
     /// the SymbolTable's lifetime.
     ///
-    /// Parallel to `linker: Option<L>` (whose docstring lives on
-    /// `SymbolTable<C, L>`'s pre-existing `LinkerStore` field): both
+    /// Parallel to `linker: Option<L>` above (per Decision 35): both
     /// are lifecycle-owner slots for runtime state attached to one
     /// module's address space. `#[serde(skip)]` — runtime state, not
     /// part of the cached module shape; re-populated on cache-hit by
@@ -784,9 +799,30 @@ pub struct SymbolTable<C: CodeStore = (), L: LinkerStore = (), D: DllStore = ()>
 
 impl SymbolTable {
     pub fn new(path: ModuleFullPath) -> Self;                                                      // SymbolTable<(), (), ()>
+    /// Cache-restore bridge per **Decision 35**. The module cache deserialises
+    /// a `<(), (), ()>`-flavoured table (because `code: Option<C>` is
+    /// `#[serde(skip)]`, `linker: Option<L>` is `#[serde(skip)]`, and
+    /// `dll: Option<D>` is `#[serde(skip)]`, the serialised form is
+    /// parameter-independent); the integration layer installs it as a
+    /// `<Code, (), ()>`-flavoured table for its session via `into_concrete`.
+    /// Mechanically copies fields, threading the new type parameters through —
+    /// every entry's `code: Option<()>` becomes `None::<C2>` and the parent
+    /// `linker: Option<()>` / `dll: Option<()>` become `None::<L2>` /
+    /// `None::<D2>`. Field-by-field; no work beyond type-parameter conversion.
+    pub fn into_concrete<C2: CodeStore, L2: LinkerStore, D2: DllStore>(self) -> SymbolTable<C2, L2, D2>;
 }
 
 impl<C: CodeStore, L: LinkerStore, D: DllStore> SymbolTable<C, L, D> {
+    /// Generic constructor for cross-instantiation use. Required because Rust's
+    /// default type parameter inference does not propagate to associated function
+    /// calls; integration-layer call sites (e.g., `SymbolTable::<Code, ()>::new_with_params(path)`)
+    /// need the generic form even when `SymbolTable::new(path) -> SymbolTable<(), (), ()>`
+    /// exists for the default-pinned case. Per **Decision 35** instantiation pattern —
+    /// both constructors produce identical structural state (empty maps, fresh GOT,
+    /// `code: None` / `linker: None` / `dll: None`); they differ only in the type
+    /// parameters Rust infers.
+    pub fn new_with_params(path: ModuleFullPath) -> Self;
+
     // ────── Phase 0 — brief [&mut SymbolTable] window at parse-time ──────
     /// Called once per module at parse-time, when the module is initialised from
     /// a file source. The integration layer holds a brief RefMut from
@@ -1164,6 +1200,19 @@ pub enum ModuleEntry<C: CodeStore = ()> {
     // visibility" below).
 }
 
+impl ModuleEntry<()> {
+    /// Cache-restore bridge per **Decision 35**. The cache deserialises
+    /// `ModuleEntry<()>` (because `code: Option<C>` is `#[serde(skip)]`,
+    /// the serialised form is parameter-independent); the integration
+    /// layer installs entries as `ModuleEntry<Code>` for its session via
+    /// `into_concrete`. Mechanically copies every variant's fields,
+    /// setting `code: None::<C>` on the `Def` variant (the only field
+    /// that depends on `C`); all other variants are parameter-independent
+    /// and carry over as-is. Called by `SymbolTable<(), (), ()>::into_concrete`
+    /// during cache-restore.
+    pub fn into_concrete<C: CodeStore>(self) -> ModuleEntry<C>;
+}
+
 impl<C: CodeStore> ModuleEntry<C> {
     /// Arity of this entry as a callable, if it has a single well-defined
     /// arity at this entry.
@@ -1522,18 +1571,21 @@ Empty marker traits with blanket impls. The `Clone` super-bound is load-bearing 
 ```rust
 #[non_exhaustive]
 pub struct GotTable {
-    slots: Vec<AtomicPtr<()>>,                    // single-writer per slot, atomic-readable by many
+    slots: Box<[AtomicPtr<u8>; GOT_TABLE_SIZE]>,  // fixed-capacity; single-writer per slot, atomic-readable by many
 }
 
 impl GotTable {
-    pub fn new(capacity: usize) -> Self;
+    pub fn new() -> Self;                                     // no capacity parameter — see fixed-capacity note below
+    pub fn default() -> Self;                                 // structurally equivalent to `new()` (Default derive)
     pub fn load_slot(&self, slot: usize) -> *const u8;        // Ordering::Acquire
     pub fn store_slot(&self, slot: usize, ptr: *const u8);    // Ordering::Release — Decision 41 atomic swap
     pub fn base_ptr(&self) -> *const u8;                      // backend reads this for __cranelisp_got_{module} resolution
 }
 
-pub const GOT_TABLE_SIZE: usize;
+pub const GOT_TABLE_SIZE: usize;                              // 1024 slots — see `crates/cranelisp-types/src/pipeline.rs:39`
 ```
+
+**Capacity is fixed at compile time** per the `GOT_TABLE_SIZE` constant (1024 slots; canonical home at `crates/cranelisp-types/src/pipeline.rs:39`; surfaced in §"Constants"). **Decisions 23 (two-GOT model)** and **48 (primitives static GOT in `cranelisp-primitives`)** both specify fixed-capacity GOTs as a structural choice — avoids dynamic-sizing semantics + the `AtomicPtr`-vector growth question (a growing `Vec<AtomicPtr<_>>` would invalidate `base_ptr()` on resize, breaking JIT-generated code that holds the base pointer as a compile-time relocation). No Decision authorises a configurable surface; the constructor takes no capacity argument.
 
 ### Heap layout (consumed by backend codegen)
 
@@ -1781,7 +1833,7 @@ The facade above intentionally keeps **shape summaries** in code blocks (e.g., `
 
 ### Enum variants (internal-but-exposed under shape summaries)
 
-The variant-level surface is internal-but-exposed: every variant of every `#[non_exhaustive] pub enum` listed in §"AST", §"Resolved type system", §"Typecheck output", §"Errors and warnings", §"Source-level constructs", §"View", and §"Symbol table" is part of the public surface for pattern matching by consumer crates, but the canonical shape statement is the summary in the parent code block.
+The variant-level surface is internal-but-exposed: every variant of every `#[non_exhaustive] pub enum` listed in §"AST", §"Resolved type system", §"Typecheck output", §"Errors and warnings", §"Source-level constructs", and §"Symbol table" is part of the public surface for pattern matching by consumer crates, but the canonical shape statement is the summary in the parent code block. (`View` is excluded from this list as of S69 Submission 34 — `View` is a `struct` with private fields, not an enum; consumer-side pattern-match is not available by design.)
 
 | Variant | Parent enum | Rationale |
 |---|---|---|
@@ -1798,7 +1850,7 @@ The variant-level surface is internal-but-exposed: every variant of every `#[non
 | `CranelispError::MacroError` | `CranelispError` | Under §"Errors and warnings". Emitted by `int`'s macro-expansion driver when a macro invocation fails. Same `{message, location}` shape as `ParseError`/`TypeError`/`ModuleError`/`CodegenError` per Decision 39. (Facade text §"Errors and warnings" notes `LinkError`/`CacheError`/`RuntimeError` aspirationally; source has `MacroError` instead — covered here, /arch follow-up may reconcile facade body if the divergence is structural.) |
 | `LinkerError::SymbolNotFound`, `LinkerError::RelocationFailed` | `LinkerError` | **Transient — slated for removal.** Per Sprint 67 REV-4 (sprints/SPRINT.md row 5), `LinkerError` relocates to `cranelisp-backend`; see `facades/backend.md` §"Errors" for the canonical definition. The variants remain in `cranelisp-types::error` until `/dev (cranelisp-types)` removes the export sites in S67 Wave 4. After the relocation, this row deletes. |
 | `WarningKind::UnusedBinding`, `WarningKind::UnreachableArm` (and siblings) | `WarningKind` | Under §"Errors and warnings" `pub enum WarningKind { UnusedDefn, UnusedImport, ShadowedName, /* … */ }`. Concrete variant set is internal-but-exposed; new variants added as detectors are implemented. |
-| `View::Single`, `View::Union` | `View` | **Surface drift — substantive.** Source defines `View` as an **enum** with `Single { live }` and `Union { staging, live }` variants; the facade §"View" describes it as a `struct` with `union(…)` and `single(…)` constructors. The two shapes agree on the read surface (both expose `lookup`/`iter`/`single`/`union` as constructors), but the structural shape differs. **PIF candidate** — /arch follow-up to reconcile (either widen facade text to describe the enum, or PIF the source to a struct with internal enum). Tracked here for the compliance test; FIXME filing deferred until /arch decides direction. |
+| `View` (struct; no public variants) | `View` | **RESOLVED (S69 Submission 34) — source moved to struct form.** Pre-S34 source was `pub enum View { Single, Union }`; S34 rewrote to `pub struct View { staging: Option<&'a SymbolTable>, live: &'a SymbolTable }` with private fields per Decision 44 opacity intent + Principle 18 (enforce invariants structurally). Consumer-side pattern-match on variants no longer applies; the read surface is consumed only through `View::lookup` / `View::iter` / `View::union` / `View::single` (the four public functions remain on the public-API baseline). See §"View" for the canonical shape statement and the opacity-rationale narrative. |
 
 ### Struct fields (internal-but-exposed under shape summaries)
 

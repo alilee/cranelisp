@@ -37,11 +37,11 @@ Disposition class counts (59 findings):
 
 | Class | Count | Meaning |
 |---|---|---|
-| **Source moves** (facade is target-stating per Decision / Principle / FIXME) | **26** | Source migration is owed. Wave 3+ source work. (Reduced by 1 in S31 — S-DRIFT-8 RESOLVED in-place by source-side promotion of `MethodResolutions` type alias to `#[non_exhaustive]` struct; direction "source moves" stood, landed in S31; ~10 typecheck consumer cascade sites deferred to wave-3.) |
-| Facade moves (facade text is stale, was sloppy, or source has evolved with retroactive Decision agreement) | 13 | Mechanical facade updates. Wave 2 facade-doc work. (Reduced by 4 across S23/S25/S26/S27 reclassifications + 2 more in S30 — S-DRIFT-2 + S-DRIFT-3 reclassified from "Facade moves" to "RESOLVED by deletion" when the S69 /spec fire surfaced that the reverse-lookup bridge was spec-violating, not just facade-misaligned + 1 more in S32 — S-DRIFT-9 reclassified to "RESOLVED — facade self-reconciliation + source `#[non_exhaustive]` catch-up"; facade line 513 was correct since D47 authored, lines 512 + 1792 were un-cascaded stale text, not source-facade drift.) |
+| **Source moves** (facade is target-stating per Decision / Principle / FIXME) | **27** | Source migration is owed. Wave 3+ source work. (Reduced by 1 in S31 — S-DRIFT-8 RESOLVED in-place by source-side promotion of `MethodResolutions` type alias to `#[non_exhaustive]` struct; direction "source moves" stood, landed in S31; ~10 typecheck consumer cascade sites deferred to wave-3. Incremented by 1 in S34 — S-DRIFT-10 reclassified from bucket C "arbitration genuine" to "source moves" + RESOLVED in-place by source-side rewrite of `View` from `pub enum` to `pub struct` with private fields per Decision 44 + Principle 18; typecheck ClusterContext pattern-match consumer cascade deferred to wave-3.) |
+| Facade moves (facade text is stale, was sloppy, or source has evolved with retroactive Decision agreement) | 9 | Mechanical facade updates. Wave 2 facade-doc work. (Reduced by 4 across S23/S25/S26/S27 reclassifications + 2 more in S30 — S-DRIFT-2 + S-DRIFT-3 reclassified from "Facade moves" to "RESOLVED by deletion" when the S69 /spec fire surfaced that the reverse-lookup bridge was spec-violating, not just facade-misaligned + 1 more in S32 — S-DRIFT-9 reclassified to "RESOLVED — facade self-reconciliation + source `#[non_exhaustive]` catch-up"; facade line 513 was correct since D47 authored, lines 512 + 1792 were un-cascaded stale text, not source-facade drift. Submission 33 closed U12 + U13 + U14 + U15 in-place (facade-only catch-up; source already at target shape) — count decremented by 4.) |
 | **RESOLVED by deletion / self-reconciliation** (audit's framing was superseded by a spec/Decision fire revealing the source was wrong, not the facade — or facade internal inconsistency where one location was correct and others were stale) | 3 | S-DRIFT-2 + S-DRIFT-3 (S69 Submission 30 — `Type::from_name` / `Type::type_name` deleted; new `ModuleEntry::IntrinsicType` variant); S-DRIFT-9 (S69 Submission 32 — facade lines 512 + 1792 self-reconciled under Decision 47; line 513 was already correct; source `#[non_exhaustive]` policy catch-up bundled). |
 | Both move | 8 | Each side adjusts; neither is wholly correct. (S-DRIFT-11 S23, S-DRIFT-12 S25, S-DRIFT-14 S26, S-DRIFT-13 S27 reclassifications + 4 prior.) |
-| Arbitration — genuine cross-skill question the configuration does not ground | 1 | A5 (View enum-vs-struct opacity). A2 closed by Submission 13 — see "Macro callable shape" bullet above. |
+| Arbitration — genuine cross-skill question the configuration does not ground | 0 | A2 closed by Submission 13 (see "Macro callable shape" bullet above). A5 (View enum-vs-struct opacity) RESOLVED (Submission 34) — source moved to struct with private fields per Decision 44 opacity intent + "newtype" terminology + Principle 18 (enforce invariants structurally); the bucket-C "arbitration genuine" framing was superseded by user direction — the discipline pattern that emerged through Group A/B (facade-as-target + Principle 18 when both options exist) settled the arbitration. |
 | No action (auto-trait noise, already-covered) | 6 | Per audit discipline still gets a one-sentence rationale. |
 
 **Prior re-author disposition flips**: 23 of the prior audit's "facade moves" recommendations are flipped to **source moves** under design-intent grounding. The calibration table in §7 enumerates them.
@@ -79,10 +79,10 @@ After 19 walk-through submissions, the audit's per-finding dispositions have dri
 | U3 | D | Audit's own disposition is "No action — already aligned"; nothing to do. |
 | U10 | A | Walk row 348 — `U10 + alias-symmetry` resolved; `ExportSpec` gains `alias` + structurally identical to `ImportSpec`. |
 | U11 | A | Bundled with H11 (walk row 347). |
-| U12 | D | Facade-side documentation catch-up — add `linker: Option<L>` field to shape summary per Decision 35. |
-| U13 | D | Facade-side documentation catch-up — enumerate `new_with_params` constructor per Decision 35. |
-| U14 | D | Facade-side documentation catch-up — enumerate `into_concrete` conversions per Decision 35 (cache-restore). |
-| U15 | D | Facade-side fix — drop `(capacity: usize)` from `GotTable::new()` to match fixed-capacity source. |
+| U12 | D | **RESOLVED (Submission 33)** — facade `linker: Option<L>` field added to §"Symbol table" shape summary with Decision 35 grounding (reserved-for-future-Linker-retention rationale). |
+| U13 | D | **RESOLVED (Submission 33)** — facade `new_with_params(path)` enumerated in §"Symbol table" `impl<C, L, D>` block with Decision 35 instantiation-pattern grounding + Rust-default-type-param-inference rationale. |
+| U14 | D | **RESOLVED (Submission 33)** — facade `into_concrete` enumerated on both `impl SymbolTable` (concrete `<(), (), ()>`) and `impl ModuleEntry<()>` blocks with Decision 35 cache-restore grounding. |
+| U15 | D | **RESOLVED (Submission 33)** — facade `GotTable::new()` signature corrected to no-arg (matching source); fixed-capacity `GOT_TABLE_SIZE` paragraph added citing Decisions 23 + 48 (no Decision authorises a configurable surface). |
 | U16 | D | Facade-side enumeration — name three `ErrorLocation` constructors per Decisions 39 + 42. |
 | U17 | D | Facade-side enumeration — name `LineCol::new` / `LineColRange::new` (bundled with U16). |
 | U18 | D | Audit's disposition is "No action — auto-derive Default::default() = Sequential". |
@@ -98,7 +98,7 @@ After 19 walk-through submissions, the audit's per-finding dispositions have dri
 | S-DRIFT-7 | D | Facade catch-up to source's `Box<DefKind>` per Principle 6 (size discipline). |
 | S-DRIFT-8 | D | **RESOLVED (Submission 31)** — source moves: `pub type MethodResolutions = HashMap<Span, ResolvedCall>` promoted to `#[non_exhaustive] pub struct MethodResolutions { pub resolved_calls: HashMap<Span, ResolvedCall> }` with `Default` derive + `new()` constructor. Grounded by facade §"`#[non_exhaustive]` policy" (binding) + Principle 8 (no interim implementations) + Principle 13 (`cargo-public-api`-gateable) + BC invariant 11 (data-record DTO — `resolved_calls` field IS the contract). Wave-3 cascade: ~10 consumer migration sites in `cranelisp-typecheck/src/{checker,infer}.rs` (mechanical `.X` → `.resolved_calls.X` rewrite; no semantic shift). |
 | S-DRIFT-9 | D | **RESOLVED (Submission 32)** — facade self-reconciliation under Decision 47 + source `#[non_exhaustive]` policy catch-up (scope-extended per user direction to avoid revisiting this data structure). Facade line 512 misattribution corrected (`MethodResolutions.impl_type` → `ResolvedCall::TraitMethod.impl_type`); §"Item-by-item disposition" PIF row at line 1792 rewritten with correct 4-field `TraitMethod` shape (`trait_name: FQTraitName, method_name: Symbol, impl_type: FQTypeName, mangled_name: JitSymbol`) per D47 + `trait_resolution` moved to AutoCurry attribution. Source: added `#[non_exhaustive]` to `ResolvedCall` enum per facade §"`#[non_exhaustive]` policy" (no field-set changes — source already at D47-target 4-field shape). Wave-3 cascade: ~5-10 pattern-match sites on `ResolvedCall` in typecheck + backend need `_ =>` arms (mechanical). Cross-reference: line 512 misattribution flagged in Submission 31 closure also resolved here. |
-| S-DRIFT-10 | C | Genuine arbitration A5 — Decision 44 names "opacity" intent but does not arbitrate enum-vs-struct. Tips on /typecheck audit of pattern-match consumer usage. |
+| S-DRIFT-10 | **RESOLVED (Submission 34) — source moves** | Direction: source moves from `pub enum View { Single, Union }` to `pub struct View { staging: Option<&'a SymbolTable>, live: &'a SymbolTable }` with private fields per **Decision 44** opacity intent + **"newtype" terminology** + **Principle 18** (enforce architectural invariants structurally where possible — struct-with-private-fields is the structural option that prevents consumer-side staging-vs-live observation by construction). The audit's prior "arbitration genuine" framing (bucket C) was superseded by user direction — the discipline pattern that emerged through Group A/B (facade-as-target + Principle 18 when both options exist) settled the arbitration. Internal encoding: `staging: Option<&'a SymbolTable<C, L>>` (`Some` = cluster mode, `None` = committed mode); `live: &'a SymbolTable<C, L>` unconditional. Wave-3 cascade: typecheck ClusterContext consumers that pattern-match View variants migrate to `view.lookup(name)` / `view.iter()` method calls. **Closes Group C.** |
 | S-DRIFT-11 | RESOLVED (Submission 23) | Both move — fused `params: Vec<(Symbol, Option<TypeExpr>)>` shape per Principle 18 (lockstep invariant folded into the type) + spec §5.1.1 EBNF (per-param independently-optional annotation) + spec §5.1 L41 (no return-type annotation syntax). User-arbitrated 2026-05-22; revises the prior audit's "facade moves" framing. |
 | S-DRIFT-12 | A | RESOLVED Submission 25 — facade editorial (`name: Symbol`, `type_expr`) + source-side `span: Span` field add per Decision 39; Option A (`TypeExpr` unconditional, synthesised-`TypeVar`-for-bare convention) user-arbitrated 2026-05-22. Consumer cascade /dev wave-3. |
 | S-DRIFT-13 | RESOLVED (Submission 27) | **Both move** — 5-field `pub struct TraitImpl { trait_name: TraitRef, target: TypeExpr, type_constraints: Vec<(Symbol, TraitRef)>, methods, span }` + new syntactic-stage newtypes `TraitRef { module: Option<ModuleFullPath>, name: TraitName }` and `TypeRef { module: Option<ModuleFullPath>, name: TypeName }` (in `cranelisp-types::newtype`) capture as-written qualification structurally. `TypeExpr::Named(TypeName)` / `Applied(TypeName, …)` cascade to `TypeRef` payloads. Two scope-corrections vs. prior framing: (1) source's `trait_name: TraitName` was wrong — `(impl fmt/Display ...)` requires qualification structurally; (2) the `target_type + type_args` split had no Decision-level grounding — spec §5.4 EBNF treats target as one grammatical unit. See finding closure below. |
@@ -264,67 +264,40 @@ Bundled with H11 + U10 closures. Per walk row 348 facade lockdown, `ExportSpec` 
 
 ---
 
-### Finding U12 — `SymbolTable.linker: Option<L>` field
+### Finding U12 — RESOLVED (Submission 33) — `SymbolTable.linker: Option<L>` field
 
-**Triage bucket: D — mechanical.** Facade-side documentation catch-up: add `linker: Option<L>` field to §"Symbol table" shape summary per Decision 35.
-
-**Facade expects.** §"Symbol table" shape summary names `pub got`, `pub next_got_slot`, `pub imports/exports/platforms/submodules`, `pub defn_order`, `pub path`, `pub schema_version`. No `linker`.
-
-**Source does.** Pub-api 1085: `pub linker: Option<L>`.
-
-**Design intent.** Per **Decision 35** (`Code` enum location): "Per Decision 35, the current integration-layer choice is `L = ()` because per-symbol `Code::Linker.linker: Arc<Linker>` retention covers every case where a Linker must outlive its construction; `L` is reserved for future scenarios where a Linker must outlive its construction without any `Code::Linker` referencing it." The field's existence is forward-compatibility per Decision 35.
-
-**Difference implies.** Without the field documented, a reader cannot tell why `L` exists. Decision 35 grounds the field; facade enumeration lags.
-
-**Disposition.** **Facade moves.** Add `linker: Option<L>` to §"Symbol table" shape summary with brief note: "Per-module Linker retention root; `L = ()` integration-side, reserved per Decision 35." Closes U12.
+**Closure.** Facade §"Symbol table" shape summary updated: `linker: Option<L>` field added alongside `dll: Option<D>` with full rustdoc citing **Decision 35** (`Code` enum location): `L = ()` integration-side because per-symbol `Code::Linker.linker: Arc<Linker>` retention covers every current case; `L` is **reserved per Decision 35** for future scenarios where a Linker must outlive its construction without any `Code::Linker` referencing it — reactivating the slot then would not require further generics churn. `#[serde(skip)]` discipline preserved (runtime state, cache-hit re-derives by re-loading the `.o`). Parallel-lifecycle-owner narrative with `dll: Option<D>` documented on both fields. The `dll` field's pre-S33 docstring referring to "linker's docstring lives on `SymbolTable<C, L>`'s pre-existing `LinkerStore` field" tightened to "Parallel to `linker: Option<L>` above (per Decision 35)" — the docstring now lives ON the field, not elsewhere. **Source side**: already at target shape — `linker: Option<L>` field exists at `crates/cranelisp-types/src/module.rs:229` with `#[serde(skip)]` and full rustdoc citing Decisions 32 + 35 since the field was added in Sprint 58. **No source migration owed.** Closes U12.
 
 ---
 
-### Finding U13 — `SymbolTable::new_with_params` constructor
+### Finding U13 — RESOLVED (Submission 33) — `SymbolTable::new_with_params` constructor
 
-**Triage bucket: D — mechanical.** Facade-side documentation catch-up: enumerate `new_with_params` in the generic-impl block per Decision 35 instantiation pattern.
-
-**Facade expects.** Only `SymbolTable::new(path) -> SymbolTable<(), ()>` documented (line 399).
-
-**Source does.** Pub-api 1102: `new_with_params(path: ModuleFullPath) -> Self` — generic over `<C, L>`.
-
-**Design intent.** Per `module.rs:223–228` source rustdoc: "Rust's default type parameter inference does not propagate to associated function calls. The concrete-`()` inherent impl resolves the ergonomic gap without sacrificing the parameterisation." Integration-layer call sites (`SymbolTable::<Code, ()>::new_with_params(path)`) per **Decision 35** instantiation pattern. The constructor pair (one `<(), ()>`-pinned, one generic) is necessary by Rust language semantics; no Decision-level question.
-
-**Difference implies.** Integration consumers (`src/session_v4.rs`) call the generic form. Facade silence misleads readers.
-
-**Disposition.** **Facade moves.** Add `pub fn new_with_params(path: ModuleFullPath) -> Self` to the §"Symbol table" `impl<C: CodeStore, L: LinkerStore>` block, with the source-rustdoc rationale inline. Closes U13.
+**Closure.** Facade §"Symbol table" `impl<C: CodeStore, L: LinkerStore, D: DllStore>` block updated: `pub fn new_with_params(path: ModuleFullPath) -> Self` added at the head of the block with inline rustdoc citing **Decision 35** instantiation pattern + the Rust-default-type-param-inference rationale ("default type parameter inference does not propagate to associated function calls; integration-layer call sites like `SymbolTable::<Code, ()>::new_with_params(path)` need the generic form even when `SymbolTable::new(path) -> SymbolTable<(), (), ()>` exists for the default-pinned case"). Both constructors produce identical structural state (empty maps, fresh GOT, `code: None` / `linker: None` / `dll: None`); they differ only in the type parameters Rust infers — clarified inline. **Source side**: already at target shape — `pub fn new_with_params(path)` exists on the generic `impl<C: CodeStore, L: LinkerStore>` block at `crates/cranelisp-types/src/module.rs:368` since Sprint 58 Wave 3b. **No source migration owed.** Closes U13.
 
 ---
 
-### Finding U14 — `SymbolTable::into_concrete` + `ModuleEntry::into_concrete`
+### Finding U14 — RESOLVED (Submission 33) — `SymbolTable::into_concrete` + `ModuleEntry::into_concrete`
 
-**Triage bucket: D — mechanical.** Facade-side documentation catch-up: name both `into_concrete` conversions per Decision 35 (cache-restore bridge from `<()>` to `<C, L>`).
+**Closure.** Facade `into_concrete` enumerated on both shape summaries:
 
-**Facade expects.** Not named.
+- §"Symbol table" `impl SymbolTable` block (the concrete `<(), (), ()>` instantiation): `pub fn into_concrete<C2: CodeStore, L2: LinkerStore, D2: DllStore>(self) -> SymbolTable<C2, L2, D2>` with inline rustdoc citing **Decision 35** cache-restore role ("cache deserialises a `<(), (), ()>`-flavoured table because `code` / `linker` / `dll` are all `#[serde(skip)]`, the serialised form is parameter-independent; the integration layer installs it as a `<Code, (), ()>`-flavoured table for its session via `into_concrete`; mechanically copies fields, threading the new type parameters through — every entry's `code: Option<()>` becomes `None::<C2>` and `linker` / `dll` likewise; field-by-field, no work beyond type-parameter conversion").
+- §"Symbol table" new `impl ModuleEntry<()>` block: `pub fn into_concrete<C: CodeStore>(self) -> ModuleEntry<C>` with rustdoc citing Decision 35 + the per-variant mechanical-copy contract ("`code: None::<C>` on the `Def` variant — the only field that depends on `C`; all other variants are parameter-independent and carry over as-is; called by `SymbolTable<(), (), ()>::into_concrete` during cache-restore").
 
-**Source does.** Pub-api 1093, 890. Conversion from `<(), ()>` to `<C, L>` (or `ModuleEntry<()>` to `ModuleEntry<C>`).
-
-**Design intent.** **Decision 35** + cache-restore path: "the cache deserialises a `<()>`-flavoured table (because `code` is `#[serde(skip)]` and `linker` is `#[serde(skip)]`, the serialised form is parameter-independent); the integration layer needs to install it as a `<Code, ()>`-flavoured table for its session." The `into_concrete` conversion is the bridge. Decision 35 grounds the structural need.
-
-**Difference implies.** The conversion is load-bearing for cache-restore. Facade silence means a reader cannot tell how cache-restore bridges the type-parameter gap.
-
-**Disposition.** **Facade moves.** Add `into_concrete` to the §"Symbol table" + `ModuleEntry` shape summaries with note about cache-restore role per Decision 35. Closes U14.
+**Source side**: both `into_concrete` methods already exist at target shape — `SymbolTable<(), ()>::into_concrete` at `crates/cranelisp-types/src/module.rs:288` (signature `<C: CodeStore, L: LinkerStore>` — facade documents the target `<C, L, D>` shape including the `D` parameter per the post-D-introduction target); `ModuleEntry<()>::into_concrete` at `module.rs:314`. The source signatures lack the `D2` parameter on `SymbolTable::into_concrete` because the source-side `D: DllStore` rollout is in-flight (per the `dll: Option<D>` field cascade); the facade names the post-cascade target shape. **No source migration owed for the U14 surface itself**; the `D2` parameter trails the broader `D` rollout. Closes U14.
 
 ---
 
-### Finding U15 — `GotTable::default()` and `GotTable::new()` (no capacity arg)
+### Finding U15 — RESOLVED (Submission 33) — `GotTable::default()` and `GotTable::new()` (no capacity arg)
 
-**Triage bucket: D — mechanical.** Facade-side fix: drop the `(capacity: usize)` parameter from `GotTable::new()` signature; document fixed-capacity `GOT_TABLE_SIZE` constant per Decision 23.
+**Closure.** Facade §"GOT" updated:
 
-**Facade expects.** §"GOT" line 676 `pub fn new(capacity: usize) -> Self`.
+- `pub fn new(capacity: usize) -> Self` → `pub fn new() -> Self` (no capacity parameter).
+- `pub fn default() -> Self` added (structurally equivalent; `Default` derive on the source side per `crates/cranelisp-types/src/got.rs` — observable in `public-api.txt` line 683).
+- Struct-shape summary updated: `slots: Vec<AtomicPtr<()>>` → `slots: Box<[AtomicPtr<u8>; GOT_TABLE_SIZE]>` (matches source `got.rs:27`).
+- `pub const GOT_TABLE_SIZE: usize` line annotated: "1024 slots — see `crates/cranelisp-types/src/pipeline.rs:39`" (the constant's canonical home).
+- New paragraph below the code block: **"Capacity is fixed at compile time per the `GOT_TABLE_SIZE` constant (1024 slots; canonical home at `crates/cranelisp-types/src/pipeline.rs:39`; surfaced in §"Constants"). Decisions 23 (two-GOT model) and 48 (primitives static GOT in `cranelisp-primitives`) both specify fixed-capacity GOTs as a structural choice — avoids dynamic-sizing semantics + the AtomicPtr-vector growth question (a growing `Vec<AtomicPtr<_>>` would invalidate `base_ptr()` on resize, breaking JIT-generated code that holds the base pointer as a compile-time relocation). No Decision authorises a configurable surface; the constructor takes no capacity argument."**
 
-**Source does.** `crates/cranelisp-types/src/got.rs:38`: `pub fn new() -> Self` (no args). `GOT_TABLE_SIZE` constant (`pipeline.rs:39`) defines the fixed capacity (1024).
-
-**Design intent.** Fixed-capacity GOTs are a structural choice — avoids dynamic-sizing semantics + the AtomicPtr-vector growth question. **Decision 23's two-GOT model** (per `facades/types.md` lines 668–683) names the GOT as a fixed-capacity `Vec<AtomicPtr<()>>`. Decision 48's primitives static GOT is fixed-capacity. No Decision authors a configurable-capacity surface; the facade's `(capacity: usize)` is sloppy facade authoring with no Decision grounding.
-
-**Difference implies.** Consumers cannot supply a custom capacity even if they wanted to. The fixed-capacity property is by design.
-
-**Disposition.** **Facade moves.** Fix `GotTable::new()` signature in §"GOT" — no capacity parameter; document the fixed `GOT_TABLE_SIZE` constant. Closes U15.
+**Source side**: already at target shape — `pub fn new() -> Self` at `got.rs:38` (no args); `Default` derive present (observable at public-api line 682); `GOT_TABLE_SIZE = 1024` at `pipeline.rs:39`. **No source migration owed.** The pre-S33 facade `(capacity: usize)` parameter was sloppy facade authoring with no Decision grounding (confirmed by the audit's design-intent block — Decisions 23 + 48 both name fixed-capacity); the disposition is firmly facade-moves. Closes U15.
 
 ---
 
@@ -615,58 +588,63 @@ pub enum ResolvedCall {
 
 ---
 
-### Finding S-DRIFT-10 — `View<'a, C, L>` shape
+### Finding S-DRIFT-10 — `View<'a, C, L>` shape — **RESOLVED (Submission 34)**
 
-**Triage bucket: C — arbitration genuine.** Decision 44 names opacity intent + "newtype" (singular) but does not arbitrate enum-vs-struct; needs /typecheck audit of consumer-side pattern-match usage (and/or /arch Decision-44 amendment) to settle direction.
+**Direction: source moves to struct with private fields.** User-arbitrated 2026-05-23. The audit's prior bucket-C "arbitration genuine" framing was superseded by user direction — the discipline pattern that emerged through Group A/B (facade-as-target + Principle 18 when both options exist) settled the arbitration.
 
-**Facade expects.** §"View" lines 188–219:
+**Target shape (landed in `crates/cranelisp-types/src/view.rs` + `facades/types.md` §"View"):**
 
 ```rust
 pub struct View<'a, C: CodeStore = (), L: LinkerStore = ()> {
-    staging: &'a SymbolTable<C, L>,
+    staging: Option<&'a SymbolTable<C, L>>,
     live: &'a SymbolTable<C, L>,
 }
-impl ... {
-    pub fn union(staging, live) -> Self;
-    pub fn single(live) -> Self;
-    pub fn lookup(...);
-    pub fn iter(...);
+
+impl<'a, C: CodeStore, L: LinkerStore> View<'a, C, L> {
+    pub fn union(staging: &'a SymbolTable<C, L>, live: &'a SymbolTable<C, L>) -> Self {
+        Self { staging: Some(staging), live }
+    }
+    pub fn single(live: &'a SymbolTable<C, L>) -> Self {
+        Self { staging: None, live }
+    }
+    pub fn lookup(&self, name: &Symbol) -> Option<&ModuleEntry<C>> {
+        self.staging
+            .and_then(|s| s.get(name.as_ref()))
+            .or_else(|| self.live.get(name.as_ref()))
+    }
+    pub fn iter(&self) -> Box<dyn Iterator<Item = (&'a Symbol, &'a ModuleEntry<C>)> + 'a> {
+        match self.staging {
+            Some(staging) => /* chain staging.all_symbols() with live.all_symbols()
+                                filtered to skip names already in staging */
+            None => Box::new(self.live.all_symbols()),
+        }
+    }
 }
 ```
 
-Newtype struct with `union`/`single` constructors. §"Properties" claim: consumers don't know which side a lookup hit (staging vs live).
+**Grounding** (manifestation in `crates/cranelisp-types/src/view.rs` module rustdoc + struct rustdoc + `facades/types.md` §"View" §"Properties" §"Opacity is structural" bullet):
 
-**Source does.** `view.rs:33–43`:
+- **Decision 44** (cluster-atomic typecheck via orchestrator-owned staging) — names the opacity intent ("typecheck reads `ctx.current_symbol_table()` whenever it would have read `&SymbolTable` directly; it cannot tell whether the view unions staging+live or hits live alone") + uses "newtype" terminology (singular structural shape) for `View`. The opacity claim is structurally enforced only by the struct form with private fields. The prior `pub enum View { Single, Union }` form admitted consumer-side `match view { View::Union { .. } => …, View::Single { .. } => … }`, which IS observable staging-vs-live distinction — defeating the Decision's rationale.
 
-```rust
-#[non_exhaustive]
-pub enum View<'a, C, L> {
-    Single { live: &'a SymbolTable<C, L> },
-    Union { staging: &'a SymbolTable<C, L>, live: &'a SymbolTable<C, L> },
-}
-```
+- **Principle 18** (enforce architectural invariants structurally where possible) — when both a structural option and a behavioural one exist, the structural option is the right choice. The struct-with-private-fields form prevents the cluster-mode shortcircuit by construction; consumers consume `View` only through `lookup` / `iter`, which is the read-side abstraction Decision 44 names. The audit's prior framing — "(a) Source moves vs (b) Facade moves — both grounded; /arch arbitration" — over-weighted the configuration's permissive "newtype" wording at the expense of Principle 18.
 
-**Public enum with visible variants.**
+**Internal encoding choice.** `staging: Option<&'a SymbolTable<C, L>>` (`Some` = cluster mode, staging consulted before live; `None` = committed mode, live only) + `live: &'a SymbolTable<C, L>` (unconditional). The `Option` encoding is the structural realisation of the cluster-vs-committed mode that the prior enum tag carried: cluster vs. committed is encoded as a single private `Option`, not as a public variant tag. The lookup / iter dispatch is straightforward `Option`-based logic (`self.staging.and_then(...).or_else(...)` for lookup; `match self.staging { Some(...) => chain, None => live-only }` for iter).
 
-**Design intent.** **Decision 44** (cluster-atomic typecheck via orchestrator-owned staging) names the View shape and the staging-vs-live opacity claim:
+**`#[non_exhaustive]` deliberately NOT applied** — private fields already prevent external construction, so the structural non-exhaustivity is implicit. The struct shape supersedes the prior enum's `#[non_exhaustive]` attribute.
 
-> A `View<'a, C, L>` is the read-side abstraction: a thin newtype on `cranelisp-types` that holds two `&SymbolTable` references (staging + live) and routes lookups (staging-first, then live). `View` is constructed inside `ClusterContext::current_symbol_table()` for cluster mode; in committed (`Live`) mode the same method returns a single-source view. Typecheck reads `ctx.current_symbol_table()` whenever it would have read `&SymbolTable` directly; it cannot tell whether the view unions staging+live or hits live alone.
+**Within-crate consumer migration.** The four match-arm sites inside `view.rs` itself (constructors + `lookup` + `iter`) are rewritten in the same edit. Grep of `crates/cranelisp-types/src/` confirms zero other within-crate pattern-match consumers on `View::Single` / `View::Union`.
 
-The Decision 44 text uses "newtype" — singular structural shape — not "enum." The opacity claim ("cannot tell whether the view unions staging+live or hits live alone") is structurally enforced only by the struct form with private internal state. Source's public enum admits consumer-side `match view { Union { .. } => …, Single { .. } => … }` which IS observable distinction. The enum vs struct shape is **mid-implementation drift**, not a Decision-arbitrated alternative.
+**Discipline calibration note.** The audit's bucket-C "arbitration genuine" framing was superseded by user direction. The configuration loaded at audit time correctly identified Principle 18 as the tipping consideration ("the principled default" — see §6 A5 brief); user-arbitration settled to that default. The discipline pattern that emerged through Group A/B fires (facade-as-target by default; Principle 18 grounds the structural option when both exist) directly applies here — the prior "two paths, both grounded" framing under-weighted Principle 18's "the structural option is the right choice when both exist" claim. See `memory/feedback_facade_walk_no_interior.md` (within-crate consumer migration in scope) + `memory/feedback_hold_to_facade_default.md` (source-moves default when source has no Decision-level grounding for its current shape — the prior enum had no Decision-level grounding beyond the permissive "newtype" wording).
 
-However: Decision 44 specifies the *intent* (opacity) but not the *concrete shape*. The §"Item-by-item disposition" §"PIF candidate" line 959 already self-flags this finding as the enum-vs-struct PIF candidate. So the configuration acknowledges the inconsistency.
+**Manifestation pointers**:
 
-**Difference implies.** The opacity claim is structurally undermined by the enum form. Consumer-side staging-vs-live shortcircuits become possible, which defeats Decision 44's "typecheck cannot distinguish staging from live because the accessor abstracts the difference" rationale (per Decision 44 §"Statement"). The structural enforcement that Decision 44 names is currently absent.
+- Source: `crates/cranelisp-types/src/view.rs` (full file) — struct definition + impl block + module rustdoc + struct rustdoc citing Decision 44 + Principle 18 + opacity rationale + internal `Option` encoding rationale.
+- Facade: `design/arch/facades/types.md` §"View" — struct shape with private `staging: Option<&'a SymbolTable<C, L>>` + `live: &'a SymbolTable<C, L>` fields documented; §"Properties" §"Opacity is structural" bullet added with full Decision 44 + Principle 18 grounding + opacity-defeat-by-prior-enum-form narrative; §"`#[non_exhaustive]` deliberately NOT applied" paragraph rewritten (was "`#[non_exhaustive]`" alone); §"Item-by-item disposition" §"Enum variants" introductory paragraph updated to exclude `View` from the enum-variants list (S-DRIFT-10 Submission-34 note inline); PIF row at §"Enum variants" rewritten — was "`View::Single`, `View::Union`" with PIF-candidate narrative; now "`View` (struct; no public variants)" with RESOLVED Submission-34 closure narrative + cross-reference to §"View" for the canonical shape statement.
+- Audit: this closure block; triage register row updated; top-of-doc disposition-class table updated (Arbitration count 1 → 0 with A5-RESOLVED narrative; Source moves count 26 → 27 with S-DRIFT-10 reclassification rationale); §"Item-by-item disposition" summary table row updated; A5 brief in §6 marked RESOLVED.
 
-**Disposition.** **Arbitration A5 (genuine — configuration names opacity intent but does not arbitrate enum vs struct).** Two paths:
+**Wave-3 cascade (deferred to /dev per `memory/feedback_facade_walk_no_interior.md`).** Typecheck `ClusterContext` consumer pattern-match sites on `View::Single` / `View::Union` migrate to `view.lookup(name)` / `view.iter()` method calls. Per the audit's prior consumer trace (§6 A5 brief), these are minimal in typecheck — the typecheck pass code consumes `View` through `ctx.current_symbol_table()` and forwards to `lookup` / `iter` already. The mechanical-rewrite sites are the ones that did pattern-match (if any). Mechanical; no semantic shift.
 
-- **(a) Source moves** — re-author `View` as a `struct` with a private enum-shaped inner state (or `(staging: Option<&_>, live: &_)`). Expose `union` / `single` constructors, `lookup` / `iter` methods. Hide the staging-vs-live distinction. **Tips toward (a):** Decision 44's opacity claim is the binding intent; the struct form is the structural enforcement Principle 18 names; the consumer-side pattern-match shortcircuit is a hazard Decision 44 explicitly speaks against.
-
-- **(b) Facade moves** — re-author the facade to describe `View` as the enum, with the §"Properties" opacity claim retracted via a Decision-44 amendment. Document that consumers MAY pattern-match the variant when they need to know the mode (REPL introspection that wants to skip cluster-staging).
-
-**What tips.** /arch on whether Decision-44 amendment is preferred over source rework. Per **Principle 18** (enforce invariants structurally where possible — the structural option is the right choice when both exist), (a) is the principled default. But the configuration genuinely does not name "struct" explicitly — only "newtype" — and (b) is consistent with a more permissive reading of Decision 44.
-
-Schedule deferral acceptable; A5 brief in §6.
+**Discipline footer.** Walk-through fire per `memory/feedback_facade_walk_no_interior.md` — facade + source aligned within `cranelisp-types`; cross-crate consumer cascade NOT performed; workspace `cargo check` NOT run (expected broken — typecheck `ClusterContext` pattern-match sites on `View::Single` / `View::Union` need migration); `public-api.txt` baseline regen deferred to end-of-walk; no consumer crate edits. **Closes Group C** — all 5 findings resolved: U12, U13, U14, U15 (Submission 33); S-DRIFT-10 (Submission 34).
 
 ---
 
@@ -1133,10 +1111,10 @@ Bundled with S-DRIFT-19. Source-side demotion of raw `pub` fields (`imports`, `e
 | U9 | `ImportNames::None`/`MemberGlob` | Both move + arbitration A6 | None vs AliasOnly: Principle 7. MemberGlob: /spec on syntactic feature |
 | U10 | `ExportSpec.module_path` | Facade moves | Decision 45 (Reexport edges) |
 | U11 | `ExportSpec.names: ImportNames` | Source moves | Bundled with H11 (Decision 39) |
-| U12 | `SymbolTable.linker: Option<L>` field | Facade moves | Decision 35 |
-| U13 | `SymbolTable::new_with_params` | Facade moves | Decision 35 (instantiation pattern) |
-| U14 | `into_concrete` (SymbolTable + ModuleEntry) | Facade moves | Decision 35 (cache-restore) |
-| U15 | `GotTable::new()` (no capacity) | Facade moves | Decision 23 (fixed-capacity GOT) + Principle 6 |
+| U12 | `SymbolTable.linker: Option<L>` field | **RESOLVED (Submission 33) — facade moves** | Decision 35 (`L = ()` integration-side; `L` reserved for future Linker retention) |
+| U13 | `SymbolTable::new_with_params` | **RESOLVED (Submission 33) — facade moves** | Decision 35 (instantiation pattern; Rust default-type-param inference does not propagate to associated fn calls) |
+| U14 | `into_concrete` (SymbolTable + ModuleEntry) | **RESOLVED (Submission 33) — facade moves** | Decision 35 (cache-restore bridge — `#[serde(skip)]` on `code`/`linker`/`dll` makes serialised form parameter-independent; install layer instantiates concretely) |
+| U15 | `GotTable::new()` (no capacity) | **RESOLVED (Submission 33) — facade moves** | Decisions 23 (two-GOT model — fixed-capacity GOT) + 48 (primitives static GOT) both specify fixed-capacity; no Decision authorises configurable surface |
 | U16 | `ErrorLocation::{from_span,…}` | Facade moves | Decisions 39 + 42 |
 | U17 | `LineCol::new`/`LineColRange::new` | Facade moves | Bundled with U16 |
 | U18 | `SchedulingClass::default()` | No action | Auto-trait noise (Sequential = 0) |
@@ -1153,7 +1131,7 @@ Bundled with S-DRIFT-19. Source-side demotion of raw `pub` fields (`imports`, `e
 | S-DRIFT-7 | `ModuleEntry::Def.kind: Box<DefKind>` | Facade moves | Principle 6 (size discipline); editorial |
 | S-DRIFT-8 | `MethodResolutions` newtype struct | **RESOLVED (Submission 31)** — source moves | Facade `#[non_exhaustive]` policy + Principles 8/13 + BC invariant 11; type alias promoted to `#[non_exhaustive]` struct with `Default` derive + `new()` constructor; wave-3 cascade ~10 sites in typecheck |
 | S-DRIFT-9 | `ResolvedCall::TraitMethod` field set | **RESOLVED (Submission 32)** — facade self-reconciliation + source `#[non_exhaustive]` catch-up | Decision 47 (source's FQ shape IS the target — facade line 513 already correct; line 512 misattribution + line 1792 PIF row stale text were the gap) + facade §"`#[non_exhaustive]` policy" (binding for `ResolvedCall` enum); scope-extended per user direction to bundle `#[non_exhaustive]` add and avoid revisiting this data structure; wave-3 cascade ~5-10 pattern-match sites in typecheck/backend |
-| S-DRIFT-10 | `View<'a, C, L>` enum vs struct | Arbitration A5 (genuine) | Decision 44 names opacity intent; doesn't arbitrate enum vs struct |
+| S-DRIFT-10 | `View<'a, C, L>` enum vs struct | **RESOLVED (Submission 34) — source moves** | Decision 44 opacity intent + "newtype" terminology + Principle 18 (enforce architectural invariants structurally — struct-with-private-fields is the structural option that prevents consumer-side staging-vs-live observation by construction). Bucket-C "arbitration genuine" framing superseded by user direction — Group A/B discipline pattern (facade-as-target + Principle 18 when both options exist) settled the arbitration. |
 | S-DRIFT-11 | `DefnVariant` fused params + no return_type | **RESOLVED (Submission 23) — both move** | Principle 18 (lockstep invariant folded structurally) + spec §5.1.1 EBNF + spec §5.1 L41 |
 | S-DRIFT-12 | `FieldDef` shape + missing span | **RESOLVED (Submission 25) — both move** | spec §2.2.6 + §5.2 (name always present) + Principle 7 (`type_expr` naming) + Decision 39 (per-field `span`); Option A (`TypeExpr` unconditional, synthesised-`TypeVar`-for-bare convention) user-arbitrated 2026-05-22 |
 | S-DRIFT-13 | `TraitImpl` ast.rs shape + syntactic-stage qualification | **RESOLVED (Submission 27) — both move** | New syntactic-stage newtypes `TraitRef { module: Option<ModuleFullPath>, name: TraitName }` + `TypeRef { module: Option<ModuleFullPath>, name: TypeName }` capture as-written qualification structurally; `TypeExpr::Named` / `Applied` cascade to `TypeRef` payloads; `TraitImpl` rewritten to 5-field target `{ trait_name: TraitRef, target: TypeExpr, type_constraints: Vec<(Symbol, TraitRef)>, methods, span }`. Spec §2.3.4 + §4.2.2 (qualified references) + spec §5.4 EBNF (target as one grammatical unit — `target_type + type_args` split had no Decision-level grounding) + Decision 47 sharpening (producer/consumer split: syntactic stage carries qualification structurally; typecheck does the FQ lift) + Decision 45 (resolved-stage counterpart on trait's defining module); `feedback_hold_to_facade_default.md` directs source-moves when source has no Decision-level grounding; user-arbitrated 2026-05-22 |
@@ -1177,11 +1155,11 @@ Bundled with S-DRIFT-19. Source-side demotion of raw `pub` fields (`imports`, `e
 
 | Class | Count |
 |---|---|
-| Source moves | 26 (H2, H3, H4, H5, H6, H7, H9, H10, H11, U11, S-DRIFT-4, S-DRIFT-19, S-DRIFT-20, S-DRIFT-21, C-HOLE-4, C-HOLE-5, C-HOLE-6 — plus partial source-side moves in H8, S-DRIFT-12, S-DRIFT-15, U9 = 21 hard + ~5 partial; S-DRIFT-8 RESOLVED in-place Submission 31 — source moved as predicted; direction column unchanged; wave-3 cascade deferred) |
-| Facade moves | 15 (U1, U2, U4, U5, U7, U8, U10, U12, U13, U14, U15, U16, U17, U19, U20, U22, S-DRIFT-1, S-DRIFT-6, S-DRIFT-7, S-DRIFT-17, S-DRIFT-18, S-DRIFT-22; S-DRIFT-11 reclassified to "both move" per Submission 23 + S-DRIFT-12 reclassified per Submission 25 + S-DRIFT-14 reclassified per Submission 26 + S-DRIFT-13 reclassified per Submission 27 + S-DRIFT-2/S-DRIFT-3 reclassified to "RESOLVED by deletion" per Submission 30 + S-DRIFT-9 reclassified to "RESOLVED — facade self-reconciliation + source `#[non_exhaustive]` catch-up" per Submission 32 — each surfaced that source had no Decision-level grounding and the configuration prefers a third option neither side held; the parallel S-DRIFT-11/S-DRIFT-14 reclassifications grounded on the corrected Principle 11 misattribution; S-DRIFT-22 reclassified D→"Facade moves" per Submission 29 — scope-extended editorial sharpening preserves opacity policy intact; S-DRIFT-2/S-DRIFT-3 reclassified D→"RESOLVED by deletion" per Submission 30 — S69 /spec fire FIXME 0216 surfaced the reverse-lookup bridge was spec-violating, not facade-misaligned; S-DRIFT-9 reclassified D→"RESOLVED — facade self-reconciliation + source `#[non_exhaustive]` catch-up" per Submission 32 — facade line 513 already at D47-target since the Decision authored, lines 512 + 1792 were un-cascaded stale text within a facade-internally-inconsistent state, not source-facade drift) |
+| Source moves | 27 (H2, H3, H4, H5, H6, H7, H9, H10, H11, U11, S-DRIFT-4, S-DRIFT-10, S-DRIFT-19, S-DRIFT-20, S-DRIFT-21, C-HOLE-4, C-HOLE-5, C-HOLE-6 — plus partial source-side moves in H8, S-DRIFT-12, S-DRIFT-15, U9 = 22 hard + ~5 partial; S-DRIFT-8 RESOLVED in-place Submission 31 — source moved as predicted; direction column unchanged; wave-3 cascade deferred. S-DRIFT-10 RESOLVED in-place Submission 34 — reclassified from bucket C "arbitration genuine" to "source moves" + landed; source rewritten from `pub enum View { Single, Union }` to `pub struct View { staging: Option<&'a SymbolTable>, live: &'a SymbolTable }` with private fields per Decision 44 opacity intent + Principle 18; typecheck ClusterContext pattern-match consumer cascade deferred to wave-3.) |
+| Facade moves | 11 (U1, U2, U4, U5, U7, U8, U10, U16, U17, U19, U20, U22, S-DRIFT-1, S-DRIFT-6, S-DRIFT-7, S-DRIFT-17, S-DRIFT-18, S-DRIFT-22; S-DRIFT-11 reclassified to "both move" per Submission 23 + S-DRIFT-12 reclassified per Submission 25 + S-DRIFT-14 reclassified per Submission 26 + S-DRIFT-13 reclassified per Submission 27 + S-DRIFT-2/S-DRIFT-3 reclassified to "RESOLVED by deletion" per Submission 30 + S-DRIFT-9 reclassified to "RESOLVED — facade self-reconciliation + source `#[non_exhaustive]` catch-up" per Submission 32 — each surfaced that source had no Decision-level grounding and the configuration prefers a third option neither side held; the parallel S-DRIFT-11/S-DRIFT-14 reclassifications grounded on the corrected Principle 11 misattribution; S-DRIFT-22 reclassified D→"Facade moves" per Submission 29 — scope-extended editorial sharpening preserves opacity policy intact; S-DRIFT-2/S-DRIFT-3 reclassified D→"RESOLVED by deletion" per Submission 30 — S69 /spec fire FIXME 0216 surfaced the reverse-lookup bridge was spec-violating, not facade-misaligned; S-DRIFT-9 reclassified D→"RESOLVED — facade self-reconciliation + source `#[non_exhaustive]` catch-up" per Submission 32 — facade line 513 already at D47-target since the Decision authored, lines 512 + 1792 were un-cascaded stale text within a facade-internally-inconsistent state, not source-facade drift. U12 + U13 + U14 + U15 RESOLVED in-place per Submission 33 — facade-only catch-up (source already at target shape per Decision 35 instantiation pattern + Decisions 23 + 48 fixed-capacity GOT); count decremented by 4) |
 | **RESOLVED by deletion / self-reconciliation** | 3 (S-DRIFT-2, S-DRIFT-3 — Submission 30; `Type::from_name` / `Type::type_name` deleted from source; new `ModuleEntry::IntrinsicType` variant for uniform intrinsic-type registration. S-DRIFT-9 — Submission 32; facade lines 512 + 1792 self-reconciled under Decision 47; line 513 was already correct since D47 authored; source-side `#[non_exhaustive]` policy catch-up bundled per user direction.) |
 | Both move | 8 (H1, H8, U9, S-DRIFT-11, S-DRIFT-12, S-DRIFT-13, S-DRIFT-14, S-DRIFT-15) |
-| Arbitration (genuine) | 2 (A2 = S-DRIFT-5; A5 = S-DRIFT-10) — both with default direction stated |
+| Arbitration (genuine) | 0 — A2 (= S-DRIFT-5) closed by Submission 13; A5 (= S-DRIFT-10) RESOLVED Submission 34 — direction defaulted to source-moves per Principle 18 (the audit's stated default), user-arbitrated to that default 2026-05-23; bucket-C "arbitration genuine" framing was superseded by user direction — the Group A/B discipline pattern (facade-as-target + Principle 18 when both options exist) settled the arbitration |
 | No action | 5 (U3, U6, U18, U21, S-DRIFT-16, C-HOLE-3) — S-DRIFT-22 reclassified to "Facade moves" per Submission 29 (scope-extended editorial sharpening; opacity policy intact per Principle 15) |
 | Requires /qa work | 2 (C-HOLE-1, C-HOLE-2) |
 
@@ -1197,21 +1175,11 @@ The audit identifies **one genuine arbitration item** (A5) where the architectur
 
 Closed structurally by user-arbitrated unification of macros into `Def { kind: DefKind::Macro { clauses_meta, sexp, source } }`. The framing of A2 — "single GOT slot per macro with trampoline vs per-clause `func_ptr` via MacroEnv" — was dissolved by the third option: **per-clause GOT-callable via mangled-variant `UserFn` Defs** (`{macro-name}$clause-{N}`), parallel to multi-sig fn variants. Expansion-time clause-walk (existing logic) walks `clauses_meta` and GOT-dispatches to the matched clause's variant Def. See `facades/types.md` §"DefKind" `DefKind::Macro` for the manifestation site.
 
-### Arbitration A5 — `View<'a, C, L>` enum vs struct (S-DRIFT-10)
+### Arbitration A5 — `View<'a, C, L>` enum vs struct (S-DRIFT-10) — **RESOLVED (Submission 34)**
 
-**Question.** Is `View` a public enum (consumers MAY pattern-match the variant) or a struct with private internal mode (consumers consume only through methods)?
+**Disposition: source moves to struct with private fields.** User-arbitrated 2026-05-23 (defaulted to the audit's stated direction). The bucket-C "arbitration genuine" framing was superseded by user direction — the Group A/B discipline pattern (facade-as-target + Principle 18 when both options exist) settled the arbitration. The audit had correctly identified Principle 18 as the tipping consideration ("the principled default"); user-arbitration ratified that default without requiring a separate /typecheck audit.
 
-**Stakeholders.** /arch (Decision 44 amendment authority); /typecheck (primary consumer).
-
-**Configuration check.** Decision 44 names the opacity intent ("typecheck cannot distinguish staging from live because the accessor abstracts the difference") + uses "newtype" (singular) in the View shape description. Source has authored as `pub enum`. Principle 18 (enforce invariants structurally — the struct form is the structural enforcement of the opacity intent). Facade's own §"Item-by-item disposition" already self-flags View as the enum-vs-struct PIF candidate.
-
-**Default direction (Principle-18-grounded).** **Source moves** to struct form.
-
-**Evidence toward (a) struct.** Decision 44 opacity intent + Principle 18 + facade §"Properties" claim. Consumer-side pattern-match shortcircuits would defeat Decision 44's staging-vs-live opacity.
-
-**Evidence toward (b) enum stays.** Source has settled here; the enum form is simpler and admits cluster-aware observability hooks (e.g., counting staging vs live hits). Decision 44's "newtype" wording could be read permissively (Rust often uses "newtype" loosely to mean "thin wrapper").
-
-**What tips.** /typecheck audit on consumer-side pattern-match usage. If typecheck (the primary consumer) consistently calls `view.lookup` / `view.iter` without pattern-matching, struct form costs little and locks in opacity per Principle 18. If typecheck pattern-matches `View::Single` / `View::Union`, struct-form refactor cost is real and /arch's call.
+**Closure summary.** Source rewritten from `pub enum View { Single, Union }` to `pub struct View { staging: Option<&'a SymbolTable>, live: &'a SymbolTable }` with private fields. Decision 44's opacity intent ("typecheck cannot tell whether the view unions staging+live or hits live alone") is now structurally enforced — consumer-side `match view { View::Union { .. } => …, View::Single { .. } => … }` shortcircuit is foreclosed by construction. Internal encoding: `Option<&_>` on staging captures cluster-vs-committed mode as a private structural detail, not a public variant tag. See per-finding §"Finding S-DRIFT-10 — RESOLVED (Submission 34)" body above for the full target shape + grounding bullets + manifestation pointers + wave-3 cascade brief.
 
 ### Arbitration A6 — `ImportNames::MemberGlob(Symbol)` (U9 carry-over)
 
@@ -1289,7 +1257,7 @@ The prior audit's 23 "facade moves" dispositions were correct as facade-doc move
 
 The prior audit's 11 "requires /arch arbitration" dispositions split into:
 - **9 mis-grounded** (configuration grounds the direction; only schedule is in question): H3, H4, H5, H9, H10, H11, S-DRIFT-4, S-DRIFT-19/20/21 (one complex), C-HOLE-5. The corrected audit re-classes these as **source moves** with schedule deferral acceptable.
-- **2 genuine arbitration** (A2 = S-DRIFT-5; A5 = S-DRIFT-10). The corrected audit retains the arbitration brief but adds the default direction the configuration grounds (per Principle 13 for A2; per Principle 18 for A5).
+- **2 genuine arbitration** (A2 = S-DRIFT-5; A5 = S-DRIFT-10). The corrected audit retains the arbitration brief but adds the default direction the configuration grounds (per Principle 13 for A2; per Principle 18 for A5). Both subsequently resolved: A2 by Submission 13; A5 by Submission 34 (defaulted to source-moves per Principle 18 — the configuration-grounded direction the audit named).
 
 The over-classification to "arbitration" in the prior audit was the structural failure mode the user's 2026-05-19 direction names — the audit was not reading the architectural configuration that grounds the facade. Decisions 31, 32, 38, 41, 44 + the canonical sequence diagram + Principle 18 collectively settle the SymbolTable concurrency complex; the prior audit's "binary choice + evidence" brief was real work but the configuration had already named the binary's answer. The methodology pivot is: read the configuration first, classify against it, only then identify what remains genuinely open.
 
