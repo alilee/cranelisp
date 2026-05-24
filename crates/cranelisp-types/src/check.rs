@@ -5,7 +5,7 @@ use crate::{Defn, FQTraitName, FQTypeName, JitSymbol, Scheme, Span, Symbol, Type
 
 /// Map from call site span to how that call was resolved by the typechecker.
 ///
-/// Data-record DTO per `facades/types.md` §"Bounded-context invariants" #11 —
+/// Data-record DTO per `design/arch/bounded-contexts.md` §7 ("Field-level access on state types is discouraged outside the types crate") —
 /// the `resolved_calls` field IS the public contract; serde round-trips
 /// structurally. Wrapped (rather than type-aliased) per the facade
 /// §"`#[non_exhaustive]` policy" (every public struct/enum MUST be
@@ -15,7 +15,7 @@ use crate::{Defn, FQTraitName, FQTypeName, JitSymbol, Scheme, Span, Symbol, Type
 /// additions without breaking the public-api baseline.
 ///
 /// Grounded by:
-/// - `facades/types.md` §"`#[non_exhaustive]` policy" (binding)
+/// - `design/arch/bounded-contexts.md` §7 + crate-root `//!` `#[non_exhaustive]` policy (binding)
 /// - Principle 8 (no interim implementations — the alias was a stand-in
 ///   that committed the surface to `HashMap` forever)
 /// - Principle 13 (`interfaces.md` is auditable + `cargo-public-api`-gateable
@@ -43,7 +43,7 @@ impl MethodResolutions {
 
 /// How a function call was resolved by the typechecker.
 ///
-/// `#[non_exhaustive]` per `facades/types.md` §"`#[non_exhaustive]` policy"
+/// `#[non_exhaustive]` per `design/arch/bounded-contexts.md` §7 + crate-root `//!` `#[non_exhaustive]` policy
 /// (binding — every public struct/enum in `cranelisp-types` MUST be
 /// `#[non_exhaustive]`; the policy intent is extensibility, allowing new
 /// variants to be added without breaking consumers). Future variants — e.g.,
@@ -52,14 +52,14 @@ impl MethodResolutions {
 /// touching the `cargo-public-api` baseline at consumer crates.
 ///
 /// Grounded by:
-/// - `facades/types.md` §"`#[non_exhaustive]` policy" (binding)
+/// - `design/arch/bounded-contexts.md` §7 + crate-root `//!` `#[non_exhaustive]` policy (binding)
 /// - Principle 13 (`interfaces.md` is auditable + `cargo-public-api`-gateable
 ///   — the attribute is the structural enforcement of evolution discipline)
 ///
 /// Per-variant field documentation: see each variant's struct-variant fields.
 /// `TraitMethod` carries `trait_name: FQTraitName` + `impl_type: FQTypeName`
-/// per Decision 47 (FQ binding at resolved-stage boundaries — `facades/types.md`
-/// §"Resolved type system").
+/// per Decision 47 (FQ binding at resolved-stage boundaries — see
+/// `design/arch/bounded-contexts.md` §7 "FQTypeName binding").
 ///
 /// Closes S69 Submission 32 (audit finding S-DRIFT-9 + non_exhaustive policy
 /// catch-up).
@@ -122,8 +122,9 @@ pub struct DisplayInfo {
 /// `constructors: Vec<Symbol>` carries only the constructor NAMES. The
 /// per-constructor metadata (tag, field count, type_name, internal flag)
 /// lives uniquely on each constructor's own `ModuleEntry::Def` entry at
-/// `kind: DefKind::Constructor { .. }` (see facades/types.md §"Symbol table
-/// — the single store" §"DefKind"). Field names live on the Def's
+/// `kind: DefKind::Constructor { .. }` (see `DefKind::Constructor` rustdoc
+/// in `module.rs` and `design/arch/bounded-contexts.md` §7 "Multi-legged
+/// authoring"). Field names live on the Def's
 /// `param_names`; field types fold into the Def's `scheme` (the constructor's
 /// polymorphic function-type signature, e.g., `Some : ∀a. a → Option a`).
 ///
@@ -138,9 +139,9 @@ pub struct TypeDefInfo {
     pub docstring: Option<String>,
 }
 
-// `pub struct ConstructorInfo { ... }` retired — see facades/types.md
-// §"Symbol table — the single store" §"DefKind" for the ctor-as-Def shape
-// and the migration map below.
+// `pub struct ConstructorInfo { ... }` retired — see `DefKind::Constructor`
+// rustdoc in `module.rs` and `design/arch/bounded-contexts.md` §7
+// "Multi-legged authoring" for the ctor-as-Def shape and the migration map below.
 //
 // Migration map:
 //   - .name           → ModuleEntry::Def.name (the symbol-table key)

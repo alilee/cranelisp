@@ -220,7 +220,7 @@ pub enum Expr {
     },
     /// ADT construction — a language-level operation. Synthesised by the
     /// deftype expander as the body of every constructor's Defn (see
-    /// facades/types.md §"AST" + §"Symbol table — the single store"
+    /// `Expr` rustdoc in `ast.rs` and `bounded-contexts.md` §7
     /// §"DefKind" for the ctor-as-Def shape). Not user syntax; users write
     /// `(Some 42)` (an `Apply` against the constructor's name), which resolves
     /// to a Def whose body is this node.
@@ -407,7 +407,7 @@ pub struct DefnVariant {
 /// facade's `ty`) is canonical.
 ///
 /// Per Decision 39 (per-defn source coordinate system — substance manifested
-/// in `facades/types.md` §"Symbol table" and `repl/spec.md` §15.4), each
+/// in `design/arch/bounded-contexts.md` §7 and `repl/spec.md` §15.4), each
 /// field carries its own `span` so "field has wrong type" diagnostics can
 /// point at the field's source location (not the enclosing constructor).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -473,7 +473,7 @@ pub struct ConstructorDef {
 /// `hkt_param_index.is_some() ⇒ default_body.is_none()` is a parser invariant.
 ///
 /// `span: Span` per Decision 39 (per-defn source coordinate system for
-/// diagnostics; substance manifested in `facades/types.md` §"Symbol table"
+/// diagnostics; substance manifested in `design/arch/bounded-contexts.md` §7
 /// and `repl/spec.md` §15.4).
 ///
 /// `ret_type` (not `return_type`) per Principle 7 (single source of truth —
@@ -693,7 +693,7 @@ pub fn free_vars_expr(expr: &Expr, globals: &HashSet<Symbol>) -> HashSet<Symbol>
         Expr::Trace { body, .. } => free_vars_expr(body, globals),
 
         // `ConstrADT { type_name, tag, fields, span, inferred_type }` — see
-        // facades/types.md §"AST". Free vars are the union over the field
+        // `ast.rs` rustdoc. Free vars are the union over the field
         // expressions; `type_name` and `tag` are compile-time constants, not
         // value references.
         Expr::ConstrADT { fields, .. } => {

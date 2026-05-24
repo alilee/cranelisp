@@ -162,8 +162,8 @@ pub struct SharedState {
     /// after takes shared [&SymbolTable] + per-entry inner locks.
     /// Impl uses the `SessionSymbolTable` alias (= `SymbolTable<Code, ()>`).
     /// Materialised as the canonical `SymbolTables<Code, ()>` typedef in
-    /// `cranelisp-types` (see `facades/types.md` §"Symbol table — the single
-    /// store").
+    /// `cranelisp-types` (see `crates/cranelisp-types/src/module.rs`
+    /// `SymbolTable` rustdoc + `bounded-contexts.md` §7).
     pub symbol_tables: SymbolTables<Code, ()>,
 
     /// Session-level module-alias storage — parallel to `symbol_tables`,
@@ -172,7 +172,8 @@ pub struct SharedState {
     /// `register_exports` at parse-time; read by §8.6.6 qualified-name
     /// resolution everywhere a qualified name might traverse an alias.
     /// Cross-table mount-vs-submodule conflict check applies at insert time
-    /// (see `facades/types.md` invariant 8). Per Decision pending S69 W3
+    /// (see `bounded-contexts.md` §7 "Per-namespace insertion-time conflict
+    /// enforcement"). Per Decision pending S69 W3
     /// — full path keying chosen over per-module-segment storage so the
     /// resolver does single-table longest-prefix-match rather than
     /// segmenting per-module.
@@ -205,8 +206,8 @@ pub struct SharedState {
     /// lifetime (per /platform addendum §A3). **Target shape (post-Submission-21):
     /// the DLL handle relocates to the platform module's own
     /// `SymbolTable.dll: Option<D>` field** per spec §8.9.3 (see
-    /// `facades/types.md` §"Symbol table — the single store" SymbolTable
-    /// shape + `D: DllStore` generic; `ModuleEntry::PlatformDecl`
+    /// `crates/cranelisp-types/src/module.rs` `SymbolTable` rustdoc
+    /// + `D: DllStore` generic; `ModuleEntry::PlatformDecl`
     /// retires alongside). The interim `kept_dlls` field is retained
     /// only as the transitional carrier; once the source migration in
     /// the /dev wave-3 concurrency-cluster brief lands the `D` generic
@@ -345,7 +346,7 @@ pub struct DllHandle {
 | Field | On | Why |
 |---|---|---|
 | `symbol_tables` | SharedState | Per-symbol mutation by workers; per-entry locks via inner DashMap |
-| `module_aliases` | SharedState | Session-level parallel table per `facades/types.md` §"Symbol table — the single store". Workers read during §8.6.6 qualified-name resolution; the parse-time installer writes via `register_imports` / `register_exports` |
+| `module_aliases` | SharedState | Session-level parallel table per `bounded-contexts.md` §7 ("Module aliases live at session level"). Workers read during §8.6.6 qualified-name resolution; the parse-time installer writes via `register_imports` / `register_exports` |
 | `next_type_id` | SharedState | Workers borrow `&AtomicU32` to allocate fresh type-var IDs per Decision 44 |
 | `scheduler` | SharedState | Workers call `notify_*` and `wait_for_*` |
 | `cache` | SharedState | Worker reads sidecars + writes `.o`; the underlying file IO is internally synchronised |
@@ -393,7 +394,7 @@ Direction discipline:
 | `file_to_module: Mutex<HashMap<PathBuf, ModuleFullPath>>` | `SharedState` | PFR — facade widens | File watcher cascade needs this from any worker that resolves imports. Worker-shared. Facade adds field. | /dev (int) Wave 3 (facade text only) |
 | `cache_state: Mutex<Option<CacheState>>` | `SharedState` | PFR — facade widens | Manifest + hash-records snapshot. Workers update via `record_cache_hit`. Worker-shared. Facade adds field. | /dev (int) Wave 3 (facade text only) |
 | `symbol_tables: DashMap<ModuleFullPath, SessionSymbolTable>` | `SharedState` | PFR-rename | Facade now names `SymbolTables<Code, ()>` (the materialised typedef in `cranelisp-types` per S69 audit F-1 + the session-level alias-table cascade). Impl uses `SessionSymbolTable` alias (= `SymbolTable<Code, ()>`). Adopt `SymbolTables<Code, ()>` in the impl. | /dev (int) Wave 3 (facade text only) |
-| `module_aliases: ModuleAliases` | `SharedState` | New — session-level table | Parallel to `symbol_tables` per `facades/types.md` §"Symbol table — the single store". Keyed by `ModuleFullPath` (alias's full path). Constructed empty at session init; written by `register_imports` / `register_exports` at parse-time. /dev (int) Wave 3 — add the field; cascade the param to `expand` / `check_forms` / `compile_to_module` / `load_object` / `compile_to_object` / `register_imports` / `register_exports` call sites. | /dev (int) Wave 3 |
+| `module_aliases: ModuleAliases` | `SharedState` | New — session-level table | Parallel to `symbol_tables` per `bounded-contexts.md` §7. Keyed by `ModuleFullPath` (alias's full path). Constructed empty at session init; written by `register_imports` / `register_exports` at parse-time. /dev (int) Wave 3 — add the field; cascade the param to `expand` / `check_forms` / `compile_to_module` / `load_object` / `compile_to_object` / `register_imports` / `register_exports` call sites. | /dev (int) Wave 3 |
 | `next_type_id: AtomicU32` | `SharedState` | PFR — facade widens | Per Decision 44 + facade `typecheck.md` `register_builtins(modules: &DashMap, next_id: &AtomicU32)` — workers need shared access to allocate fresh type-var IDs. Worker-shared. Facade adds field. | /dev (int) Wave 3 (facade text only) |
 | `current_module: Mutex<ModuleFullPath>` | `SharedState` | **PIF** — relocate to `CompilerSession` | REPL-only state (`/mod` switches it). Workers don't need it — they receive `module` per `PriorityWork`/`NiceWork` work item. Facade's `CompilerSession.current_repl_module: ModuleFullPath` is the right home (no `Mutex` needed — REPL is single-threaded against this field; initiator-only). **Move to `CompilerSession`.** | /dev (int) Wave 3 |
 | `repl_check_state: Mutex<Option<CheckState>>` | `SharedState` | **PIF** — relocate to `CompilerSession` | REPL-only carry-forward across evals. Workers do not use this. **Move to `CompilerSession`.** | /dev (int) Wave 3 |

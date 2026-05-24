@@ -50,7 +50,7 @@ sequenceDiagram
             Note over UserCode, GOT: call site emitted as global_value against __cranelisp_got_m2 + slot offset, then atomic_load, then indirect call (per Decision 23)
             UserCode ->> GOT: GotTable::load_slot(slot: usize) -> *const u8 (atomic_load, Ordering::Acquire)
             GOT -->> UserCode: code_ptr — current function address for m2/foo
-            UserCode ->> UserCode: indirect call through code_ptr (transparent cross-module dispatch — REPL redefinition retargets via atomic GOT-slot store, per Decision 31)
+            UserCode ->> UserCode: indirect call through code_ptr (transparent cross-module dispatch — REPL redefinition retargets via atomic GOT-slot store, per Decision 41 (formerly Decision 31, retired))
         end
     end
 
@@ -78,11 +78,11 @@ sequenceDiagram
                         IORuntime ->> IoObs: IoObserver(IoEventTag::PureStep, &IoEvent { /* value */ })
                     end
                 else current node is Effect(fq: FQSymbol, args, continuation)
-                    Note over IORuntime: dispatch the effect via direct GOT lookup per Decision 26 — NO HostContext::dispatch wrapper (facades/platform.md §2.13).<br/>IORuntime reads got_slot off the resolved ModuleEntry::Def for fq's PrimitiveKind::PlatformEffect entry (S66 post-rollback — GOT is the single source of truth for callable addresses), and scheduling_class from the same variant.
+                    Note over IORuntime: dispatch the effect via direct GOT lookup per Decision 26 — NO HostContext::dispatch wrapper (facades/platform.md §2.13).<br/>IORuntime reads got_slot off the resolved ModuleEntry::Def for fq's DefKind::PlatformEffect entry (S66 post-rollback — GOT is the single source of truth for callable addresses), and scheduling_class from the same variant.
 
                     create participant ST_fq as ST[fq.module]<br/>SymbolTable [generic C=Code, L=()]<br/>(reached via Sess.shared.symbol_tables.get(&fq.module))
                     IORuntime ->> ST_fq: SymbolTable::get(&fq.symbol) -> Option[Ref[ModuleEntry[Code]]]
-                    ST_fq -->> IORuntime: Some(Ref[ModuleEntry::Def { got_slot: Some(slot), kind: DefKind::Primitive { primitive_kind: PrimitiveKind::PlatformEffect { scheduling_class } }, .. }])
+                    ST_fq -->> IORuntime: Some(Ref[ModuleEntry::Def { got_slot: Some(slot), kind: DefKind::PlatformEffect { scheduling_class }, .. }])
                     IORuntime ->> ST_fq: SymbolTable::got.load_slot(slot)
                     ST_fq -->> IORuntime: ptr (the platform DLL fn address, Acquire ordering)
                     Note over IORuntime: marshal args via CLType::from_repr (CLInt / CLString / CLBool / CLFloat / CLIO _)

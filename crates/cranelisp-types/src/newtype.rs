@@ -142,8 +142,8 @@ impl std::fmt::Display for FQTraitName {
 /// `TraitRef` is the **syntactic-stage** counterpart to `FQTraitName` — same
 /// structural shape (module + name) but with `Option<ModuleFullPath>` because
 /// the syntactic stage captures the user's input directly, including the
-/// unqualified case. See `design/arch/facades/types.md` §"Resolved type
-/// system" for the producer/consumer split and `spec/02-grammar.md` §2.3.4 /
+/// unqualified case. See `design/arch/bounded-contexts.md` §7
+/// "FQTypeName binding" for the producer/consumer split and `spec/02-grammar.md` §2.3.4 /
 /// §2.5 + `spec/04-expressions.md` §4.2.2 for the qualified-reference grammar.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TraitRef {
@@ -181,7 +181,7 @@ impl std::fmt::Display for TraitRef {
 /// `TypeRef` is the **syntactic-stage** counterpart to `FQTypeName` — same
 /// structural shape (module + name) but with `Option<ModuleFullPath>` because
 /// the syntactic stage captures the user's input directly. See
-/// `design/arch/facades/types.md` §"Resolved type system" and `spec/02-grammar.md`
+/// `design/arch/bounded-contexts.md` §7 "FQTypeName binding" and `spec/02-grammar.md`
 /// §2.3.4 + `spec/04-expressions.md` §4.2.2.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TypeRef {

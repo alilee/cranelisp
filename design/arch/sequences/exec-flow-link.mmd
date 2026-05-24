@@ -42,7 +42,7 @@ sequenceDiagram
         Note over Initiator, Sess: SHUTDOWN — terminate workers, exit
 
         Initiator ->> Sess: CompilerSession::shutdown()
-        Note over Sess: signals worker pools to drain + terminate, closes cache directory.<br/>(no Decision 31 JIT reclaim — ObjectOnly mode never created an Arc<Jit>.)
+        Note over Sess: signals worker pools to drain + terminate, closes cache directory.<br/>(no Decision 41 (formerly Decision 31, retired) JIT reclaim — ObjectOnly mode never created an Arc<Jit>.)
 
         Initiator ->> User: std::process::exit(0)
     end

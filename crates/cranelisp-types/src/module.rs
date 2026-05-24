@@ -152,7 +152,7 @@ pub struct SymbolTable<C: CodeStore = (), L: LinkerStore = ()> {
     /// here. The **effective import set** (per-name resolved bindings) lives
     /// on per-symbol `ModuleEntry::Import` entries (`visibility` discriminates
     /// private `(import …)`-edge from public `(export [foreign-sym])`-edge
-    /// — see facades/types.md §"Symbol table — the single store" `Import`
+    /// — see `Import` variant in this enum
     /// variant docstring).
     /// Consumers that need the effective set (transitive impl-resolution;
     /// module-locality short-name lookups) walk both stores — see
@@ -337,16 +337,16 @@ impl ModuleEntry<()> {
             // ModuleEntry::Def entries with kind: DefKind::Constructor { .. }
             // and synthesised DefnVariant bodies whose body expression is
             // Expr::ConstrADT (S69 Submission 35 narrowed ast from Option<Defn>
-            // to Option<DefnVariant>; see facades/types.md §"Symbol table — the
-            // single store" §"DefKind").
+            // to Option<DefnVariant>; see `DefKind::Constructor` rustdoc
+            // and `design/arch/bounded-contexts.md` §7).
             // ModuleEntry::Macro variant retired (Submission 22) — macros are
             // now ModuleEntry::Def entries with kind: DefKind::Macro
-            // { clauses_meta, sexp, source } (see facades/types.md §"DefKind").
+            // { clauses_meta, sexp, source } (see `DefKind` rustdoc).
             // ModuleEntry::PlatformDecl variant retired (Submission 22) —
             // platforms register as synthetic modules at
             // symbol_tables["platform.<name>"] per spec §8.9.3; the DLL handle
             // lives on the platform module's own SymbolTable.dll
-            // (see facades/types.md §"Symbol table — the single store").
+            // (see `design/arch/bounded-contexts.md` §7).
             ModuleEntry::TraitImpl { trait_name, impl_type, methods, visibility } => {
                 ModuleEntry::TraitImpl { trait_name, impl_type, methods, visibility }
             }
@@ -479,8 +479,8 @@ pub enum ModuleEntry<C: CodeStore = ()> {
     /// `ModuleEntry::SpecialForm` variant per S69 Submission 36 (a Def
     /// reads at most 4 of the ~11 fields below, so a dedicated variant
     /// fits the introspection use case cleanly — parallels Submission 30's
-    /// `IntrinsicType` shape). See `facades/types.md` §"Symbol table — the
-    /// single store" `ModuleEntry::SpecialForm` for the manifestation.
+    /// `IntrinsicType` shape). See `ModuleEntry::SpecialForm` variant below
+    /// for the manifestation.
     Def {
         scheme: Scheme,
         visibility: Visibility,
@@ -617,7 +617,7 @@ pub enum ModuleEntry<C: CodeStore = ()> {
     /// `(import [<root> [*]])` (or directly from root for unqualified
     /// resolution).
     ///
-    /// See `facades/types.md` §"Symbol table — the single store"
+    /// See `design/arch/bounded-contexts.md` §7
     /// `ModuleEntry::SpecialForm`.
     SpecialForm {
         scheme: Scheme,
@@ -629,8 +629,7 @@ pub enum ModuleEntry<C: CodeStore = ()> {
     /// An imported name from another module (Ring 2).
     ///
     /// **Covers both edge kinds.** `visibility` discriminates provenance (see
-    /// facades/types.md §"Symbol table — the single store" §"Rejected
-    /// alternatives — per-entry visibility"):
+    /// `design/arch/bounded-contexts.md` §7 "Visibility is per-entry"):
     /// - `Visibility::Private` — the `(import …)`-form effect. The local
     ///   binding is reachable from this module's scope but does not escape via
     ///   the public surface. Spec §8.3.
@@ -695,7 +694,7 @@ pub enum ModuleEntry<C: CodeStore = ()> {
     // ModuleEntry::Def entries with kind: DefKind::Constructor { type_name,
     // tag, field_count, internal } and synthesised DefnVariant bodies whose
     // body expression is Expr::ConstrADT (S69 Submission 35 narrowed ast from
-    // Option<Defn> to Option<DefnVariant>; see facades/types.md §"Symbol table
+    // Option<Defn> to Option<DefnVariant>; see `design/arch/bounded-contexts.md` §7
     // — the single store" §"DefKind" for the ctor-as-Def shape and rejected
     // alternatives). See crates/cranelisp-types/src/check.rs for the
     // retirement of ConstructorInfo struct and TypeDefInfo.constructors:
@@ -703,7 +702,7 @@ pub enum ModuleEntry<C: CodeStore = ()> {
     // ModuleEntry::Macro variant retired (Submission 22 — 2026-05-21).
     // Macros are now ModuleEntry::Def entries with
     // kind: DefKind::Macro { clauses_meta, sexp, source } (see
-    // facades/types.md §"DefKind" `DefKind::Macro`). Per-clause bodies are
+    // `DefKind::Macro` rustdoc in this file). Per-clause bodies are
     // ordinary Def entries with mangled names `{macro-name}$clause-{N}`
     // parallel to multi-sig fn variants like `add$Int+Int`. The session-level
     // `MacroEnv` sidecar retires alongside this variant (consumer cascade in
@@ -716,7 +715,7 @@ pub enum ModuleEntry<C: CodeStore = ()> {
     // `symbol_tables["platform.<name>"]` — a normal module per the existing
     // module map. The DLL handle is retained on that platform module's own
     // `SymbolTable.dll: Option<D>` field (via the `D: DllStore` generic; see
-    // facades/types.md §"Symbol table — the single store" SymbolTable shape).
+    // `design/arch/bounded-contexts.md` §7).
     // The variant previously stored a per-platform DLL record AS AN ENTRY
     // WITHIN the declaring module, which contradicted spec §8.9.3 — platforms
     // are modules of their own, not entries within other modules. The
@@ -753,14 +752,14 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         /// trait and type are in scope). The field is present so that every
         /// `ModuleEntry` variant carries `visibility` — the
         /// resolution-algorithm visibility filter is uniform (see
-        /// facades/types.md §"Symbol table — the single store"). Marking
+        /// `design/arch/bounded-contexts.md` §7). Marking
         /// `Public` on `TraitImpl` is lossless.
         visibility: Visibility,
     },
     /// A bare name that became ambiguous (two different sources registered it, Ring 2).
     ///
     /// Sentinel variant. Carries `visibility: Visibility` for variant
-    /// uniformity (see facades/types.md §"Symbol table — the single store");
+    /// uniformity (see `design/arch/bounded-contexts.md` §7);
     /// `Public` is the lossless mark (the sentinel itself never resolves to a
     /// payload, so visibility is informational only).
     Ambiguous {
@@ -807,7 +806,7 @@ impl<C: CodeStore> ModuleEntry<C> {
     /// Returns true if this entry is publicly visible.
     ///
     /// Every `ModuleEntry` variant carries `visibility: Visibility` —
-    /// public-ness consults that one field uniformly (see facades/types.md
+    /// public-ness consults that one field uniformly (see `design/arch/bounded-contexts.md` §7
     /// §"Symbol table — the single store"). The prior special-cases
     /// (`Import`/`Reexport`/`TraitImpl` always public, `Ambiguous` always
     /// false) collapse to the uniform `visibility` check.
@@ -873,7 +872,7 @@ pub enum DefKind {
     /// `ResolvedCall::BuiltinFn { name }` (set by typecheck), not on
     /// this discriminator.
     ///
-    /// See `facades/types.md` §"DefKind" `DefKind::Primitive` and
+    /// See `DefKind::Primitive` rustdoc and
     /// Decision 48 (primitives uniform module + bundled provenance).
     Primitive,
     /// A DLL-routed platform effect.
@@ -885,7 +884,7 @@ pub enum DefKind {
     /// platform module's `SymbolTable.dll`); contrast `DefKind::Primitive`
     /// whose body is bundled in `cranelisp-primitives`.
     ///
-    /// See `facades/types.md` §"DefKind" `DefKind::PlatformEffect` and
+    /// See `DefKind::PlatformEffect` rustdoc and
     /// Decision 26 (scheduling-class lives on the platform-effect variant
     /// so ill-formed states — "a user fn with a scheduling class" — are
     /// unrepresentable).
@@ -900,8 +899,8 @@ pub enum DefKind {
     Overloaded {
         variants: Vec<OverloadVariant>,
     },
-    /// An ADT constructor (see facades/types.md §"Symbol table — the single
-    /// store" §"DefKind" for the ctor-as-Def shape and rejected alternatives).
+    /// An ADT constructor (see `design/arch/bounded-contexts.md` §7
+    /// "Multi-legged authoring" for the ctor-as-Def shape and rejected alternatives).
     ///
     /// The Def's `ast` field carries a synthesised `DefnVariant` whose body
     /// expression is `Expr::ConstrADT { type_name, tag, fields, span }` (S69
@@ -948,7 +947,7 @@ pub enum DefKind {
 //   variant set; nesting `{ Primitive { primitive_kind: PrimitiveKind } }`
 //   was one level deeper than needed.
 //
-// See `facades/types.md` §"DefKind" and `types-audit-s69.md`
+// See `DefKind` rustdoc and `types-audit-s69.md`
 // §"Finding S-DRIFT-17" closure for the full settlement rationale.
 
 /// One variant of an overloaded (multi-sig) function.
@@ -1040,7 +1039,7 @@ pub struct ImplSexp {
 /// `(import [platform.<name> [*]])`. Per spec §8.9.3 the form registers a
 /// synthetic module at `symbol_tables["platform.<name>"]` whose
 /// `SymbolTable.dll` retains the loaded DLL handle (see
-/// `facades/types.md` §"Symbol table — the single store").
+/// `design/arch/bounded-contexts.md` §7).
 ///
 /// **Target narrow (Submission 21).** `name: String → name: ModuleName`
 /// per the newtype rule (`design/arch/CLAUDE.md` §"String Newtypes"). The
@@ -1175,7 +1174,7 @@ pub fn install_module<C, L>(
 /// in `None`.
 ///
 /// `Import` covers both edge kinds (the prior `Reexport` variant retired —
-/// see facades/types.md §"Symbol table — the single store" `Import` variant
+/// see `Import` variant in this enum
 /// docstring); chain-follow walks `Import` edges regardless of visibility.
 pub const CHAIN_FOLLOW_DEPTH_LIMIT: usize = 10;
 
@@ -1208,7 +1207,7 @@ pub fn for_each_in_module<C, L, F>(
 /// along `source.module` references until a canonical entry is reached or
 /// the depth limit is hit. `Import` covers both private (`(import …)`-form
 /// effect) and public (`(export [foreign-sym])`-form effect) edges (see
-/// facades/types.md §"Symbol table — the single store" `Import` variant
+/// `Import` variant in this enum
 /// docstring); chain-follow proceeds regardless of `visibility` (the prior
 /// `Reexport` variant retired).
 pub fn resolve_terminal_entry_and_home<C, L>(

@@ -13,7 +13,7 @@
 //! returns `View::union(staging, live)`; in `ClusterContext::Live` mode the
 //! accessor returns `View::single(live)`.
 //!
-//! See `design/arch/facades/types.md` §"`View<'a, C, L>`" for the canonical
+//! See `design/arch/`view.rs` rustdoc for the canonical
 //! specification.
 //!
 //! ## Shape — `struct` with private fields, NOT `pub enum` (S69 Submission 34)

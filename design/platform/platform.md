@@ -319,7 +319,7 @@ This pass files three FIXMEs (filing skill: `/design` (platform)):
 
 - `design/arch/facades/platform.md` — public-API contract (authoritative)
 - `design/arch/facades/runtime.md` — runtime's facade (consumes platform's `HostContext` for the IO trampoline; `IoObserver` per Decision 40)
-- `design/arch/facades/types.md` — `SchedulingClass`, `PlatformSpec`, `ErrorLocation`, `PlatformError` (Decision 42)
+- `crates/cranelisp-types/src/{scheduling,module,error}.rs` rustdoc — `SchedulingClass`, `PlatformSpec`, `ErrorLocation`, `PlatformError` (Decision 42); `design/arch/bounded-contexts.md` §7 for cross-type narrative
 - `design/arch/bounded-contexts.md` §5 — Platform bounded context
 - `design/arch/principles.md` — architectural principles index (Principles 6, 7, 13, 14, 15 cited above)
 - `design/arch/CLAUDE.md` — Decisions index (11, 13, 24, 26, 27, 31, 38, 39, 40, 41, 42 cited above)

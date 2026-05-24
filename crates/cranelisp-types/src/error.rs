@@ -51,7 +51,7 @@ impl LineColRange {
 ///   errors always; typecheck/codegen typically defer to introspection).
 ///
 /// See `design/arch/legacy/decisions/0039-per-defn-source-on-introspection.md`
-/// for the operative rationale and `facades/types.md` §"Errors and warnings"
+/// for the operative rationale and `design/arch/bounded-contexts.md` §7
 /// for the producer-side population matrix.
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -326,8 +326,8 @@ impl std::error::Error for PlatformError {}
 // LinkerError — relocated to `cranelisp-backend` per Sprint 67 REV-4.
 // See `crates/cranelisp-backend/src/error.rs` for the canonical enum and
 // `design/arch/facades/backend.md` §"Errors" for the facade specification.
-// `design/arch/facades/types.md` §"Errors and warnings" carries the cross-ref
-// pointer authored at S67 Wave 0.
+// (The `cranelisp-types` rustdoc on `CranelispError` notes the relocation in
+// passing; the canonical home is the backend facade above.)
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------

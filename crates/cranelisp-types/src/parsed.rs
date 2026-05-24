@@ -8,8 +8,7 @@
 //! ModuleEntry)> → SymbolTable.insert`. The SymbolTable invariant ("if it's
 //! in the table, it's checked") is preserved.
 //!
-//! Per FIXME 0156 resolution (Sprint 66 Phase 3); see
-//! `design/arch/facades/types.md` §"`ParsedEntry`" for the target shape.
+//! Per FIXME 0156 resolution (Sprint 66 Phase 3).
 
 use crate::{
     ConstructorDef, DefnVariant, FieldDef, MacroParam, Sexp, Span, Symbol, TraitDecl, TraitImpl,
@@ -50,7 +49,7 @@ pub enum ParsedEntry {
     /// a `Def { kind: UserFn }` body under the mangled name
     /// `{macro-name}$clause-{N}` (via `synthesize_macro_clause_defn`), with a
     /// parent `Def { kind: DefKind::Macro { clauses_meta, sexp, source } }`
-    /// holding metadata only. See `facades/types.md` §"DefKind" `DefKind::Macro`
+    /// holding metadata only. See `DefKind::Macro` rustdoc in this file
     /// for the unified shape; the prior sibling `ModuleEntry::Macro` variant
     /// retires in the S69 concurrency-cluster /dev brief.
     Macro { info: DefmacroInfo },
@@ -79,7 +78,7 @@ pub enum ParsedEntry {
 /// codegen) is `Def { kind: DefKind::Macro { clauses_meta: Vec<MacroClauseInfo>,
 /// sexp, source } }` parent + N `Def { kind: UserFn }` clause bodies under
 /// `{macro-name}$clause-{N}` names — `MacroClauseInfo` carries no body because
-/// each clause body lives as its own GOT-dispatched Def. See `facades/types.md`
+/// each clause body lives as its own GOT-dispatched Def. See `design/arch/bounded-contexts.md` §7
 /// §"DefKind" `DefKind::Macro` for the unified shape; the prior sibling
 /// `ModuleEntry::Macro` variant retires in the S69 concurrency-cluster /dev brief.
 #[non_exhaustive]

@@ -422,7 +422,7 @@ The contract questions surfaced by earlier refreshes have all been resolved into
 ## 10. Cross-references
 
 - `design/arch/facades/backend.md` — public surface (authoritative)
-- `design/arch/facades/types.md` — boundary types this crate consumes
+- `crates/cranelisp-types/src/lib.rs` `//!` rustdoc + per-item `///` — boundary types this crate consumes; `design/arch/bounded-contexts.md` §7 for cross-type narrative
 - `design/arch/bounded-contexts.md` §3 — bounded-context full statement
 - `design/arch/principles.md` and `design/arch/principles/NN-*.md` — principles cited above (1, 3, 4, 5, 6, 7, 11)
 - `design/arch/CLAUDE.md` Decisions 31, 35, 40, 41, 42 (active) and 22, 23, 24, 25, 26, 32, 33, 34, 36, 37, 38, 39 (legacy — embodied) — backend-relevant decisions

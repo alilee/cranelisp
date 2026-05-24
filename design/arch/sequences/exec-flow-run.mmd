@@ -42,7 +42,7 @@ sequenceDiagram
         Sess -->> Initiator: Ok(())
 
         Initiator ->> Sess: CompilerSession::shutdown()
-        Note over Sess: signals worker pools to drain + terminate, closes cache directory.<br/>drop(Sess) — Decision 31 reclaim chain — each ModuleEntry::Code drops, Arc<Jit> Drop calls unsafe JITModule::free_memory() per batch.
+        Note over Sess: signals worker pools to drain + terminate, closes cache directory.<br/>drop(Sess) — Decision 41 (formerly Decision 31, retired) reclaim chain — each ModuleEntry::Code drops, Arc<Jit> Drop calls unsafe JITModule::free_memory() per symbol.
 
         Note over Initiator: compute exit code per repl/spec.md §0.2 —<br/>if ty == Type::Int — value as i32 (the program's chosen status code)<br/>else (IO Unit, IO Bool, non-IO non-Int, ...) — 0
 

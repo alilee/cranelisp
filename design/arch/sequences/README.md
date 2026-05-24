@@ -35,7 +35,7 @@ Each diagram is a temporal walkthrough of one execution mode. The actor grain is
 3. `exec-flow-run.svg` and `exec-flow-link.svg` — narrower modes, easier once REPL is understood.
 4. `exec-flow-compilation.svg` and `exec-flow-runtime.svg` — the two cadences in isolation, when narrower depth is wanted than the per-mode flows.
 5. The five concurrency-invariant diagrams — verify the correctness claims.
-6. `../facades/{crate}.md` — once the choreography is in mind, the typed Rust signatures fall into place.
+6. Crate surfaces — once the choreography is in mind, the typed Rust signatures fall into place. For most crates: `../facades/{crate}.md` (per-surface facade specs). For `cranelisp-types`: source rustdoc — `crates/cranelisp-types/src/lib.rs` module-level `//!` is the curated entry point + per-item `///` docstrings; cross-type narrative lives at `../bounded-contexts.md` §7.
 
 ## Regenerating
 

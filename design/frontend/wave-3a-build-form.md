@@ -244,7 +244,7 @@ The wave's risk concentration is `expand` migration (§5) — ~520 LOC source po
 ## 10. Cross-references
 
 - `design/arch/facades/frontend.md` — public-API contract
-- `design/arch/facades/types.md` §"`ParsedEntry`", §"`View`" — boundary types
+- `crates/cranelisp-types/src/parsed.rs` rustdoc (`ParsedEntry`), `crates/cranelisp-types/src/view.rs` rustdoc (`View`) — boundary types
 - `design/arch/facades/int.md` §"`process_cluster` — the cluster-atomic orchestration loop" — orchestrator contract (consumer-side)
 - `design/arch/facades/typecheck.md` §"`check_form_signatures` + `check_form_body`" — consumer signatures
 - `design/arch/decisions/0044-cluster-atomic-typecheck-orchestrator-staging.md` — cluster-atomic shape

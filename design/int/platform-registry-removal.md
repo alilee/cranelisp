@@ -13,7 +13,7 @@ This document covers the original G8 migration plus the post-S66 rollback storag
 - `design/arch/decisions/0035-code-enum-integration-layer.md` §"Amendment (Sprint 66 — rollback, 2026-05-09)" — **the post-rollback canonical statement: GOT is the single source of truth for callable addresses; no per-entry pointer field.**
 - `design/arch/decisions/0041-compile-to-module-per-symbol-jit-direct-writes.md` §"S66 amendment + rollback" — same post-rollback canon for primitive/JIT cardinality interactions.
 - `design/arch/legacy/decisions/0026-platform-fn-pointers-on-moduleentry-def.md` §"Postscript (Sprint 66 — fn_ptr unification + rollback)" — superseded; the original `platform_fn_ptr` field location.
-- `design/arch/facades/types.md` §"Symbol table — the single store" (`got_slot` doc on `ModuleEntry::Def`).
+- `crates/cranelisp-types/src/module.rs` `ModuleEntry::Def.got_slot` rustdoc + `design/arch/bounded-contexts.md` §7.
 - `crates/cranelisp-types/src/module.rs` `ModuleEntry::Def` (no `fn_ptr` field, no `platform_fn_ptr` field — just `got_slot: Option<usize>`).
 - `crates/cranelisp-types/src/got.rs` (`GotTable` API — `load_slot`, `store_slot`, `base_ptr`).
 - `src/worker.rs` `handle_platform` and `collect_jit_setup` — the GOT-slot read/write patterns landed per the rollback commit.
