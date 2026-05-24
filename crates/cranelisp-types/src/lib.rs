@@ -1,14 +1,21 @@
 //! cranelisp-types: shared boundary types for the Cranelisp compiler pipeline.
 //! See design/arch/interfaces.md for the complete type catalog.
 
-pub mod span;
-pub mod newtype;
-pub mod error;
-pub mod sexp;
-pub mod ast;
-pub mod types;
-pub mod check;
-pub mod parsed;
+// Submodules narrowed to `pub(crate)` per S69 Sub 41 (C-HOLE-6) per
+// Principles 13 (interfaces.md auditable; cargo-public-api gateable) +
+// 18 (`pub(crate)` defaulting). Crate-root re-exports (further down) are
+// the sole public surface; deep paths (`cranelisp_types::module::SymbolTable`)
+// are no longer reachable for consumers. See
+// `design/arch/facades/types-audit-s69.md` C-HOLE-6 and
+// `design/arch/facades/types.md` §"Public surface" for the rationale.
+pub(crate) mod span;
+pub(crate) mod newtype;
+pub(crate) mod error;
+pub(crate) mod sexp;
+pub(crate) mod ast;
+pub(crate) mod types;
+pub(crate) mod check;
+pub(crate) mod parsed;
 // `pub mod code` removed in Sprint 58 Wave 3b (Decision 35): the old
 // pointer-only `cranelisp_types::Code` struct dissolves in favour of the
 // integration layer's `Code` enum at `src/code.rs`, which carries
@@ -18,13 +25,13 @@ pub mod parsed;
 // DAG-compatible mechanism that lets the integration layer place its
 // `Code` enum on `ModuleEntry::Def.code` without inverting the dependency
 // edge.
-pub mod module;
-pub mod got;
-pub mod heap;
-pub mod pipeline;
-pub mod marshal;
-pub mod scheduling;
-pub mod view;
+pub(crate) mod module;
+pub(crate) mod got;
+pub(crate) mod heap;
+pub(crate) mod pipeline;
+pub(crate) mod marshal;
+pub(crate) mod scheduling;
+pub(crate) mod view;
 
 // Re-export key types at crate root for convenience.
 pub use span::Span;

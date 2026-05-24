@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::{
-    Defn, FQSymbol, FQTraitName, FQTypeName, GotTable, ModuleFullPath,
+    Defn, DefnVariant, FQSymbol, FQTraitName, FQTypeName, GotTable, ModuleFullPath,
     ModuleName, Scheme, SchedulingClass, Sexp, Span, Symbol, TraitDecl, TraitName, Type,
     TypeDefInfo, TypeName, Visibility,
 };
@@ -1417,7 +1417,7 @@ mod tests {
     ) -> ModuleEntry {
         ModuleEntry::Def {
             scheme: Scheme {
-                vars: vec![],
+                type_vars: vec![],
                 constraints: HashMap::new(),
                 ty: Type::Int,
             },
@@ -1492,7 +1492,7 @@ mod tests {
         let template_cf = ConstrainedFn {
             defn: trivial_defn("template"),
             scheme: Scheme {
-                vars: vec![],
+                type_vars: vec![],
                 constraints: HashMap::new(),
                 ty: Type::Int,
             },
@@ -1693,7 +1693,7 @@ mod tests {
     fn code_serialise_round_trip_skips_field() {
         let entry: ModuleEntry<()> = ModuleEntry::Def {
             scheme: Scheme {
-                vars: vec![],
+                type_vars: vec![],
                 constraints: HashMap::new(),
                 ty: Type::Int,
             },
@@ -1809,7 +1809,7 @@ mod tests {
         // the inferred `C` would be ambiguous without context.
         let entry: ModuleEntry = ModuleEntry::Def {
             scheme: Scheme {
-                vars: vec![],
+                type_vars: vec![],
                 constraints: HashMap::new(),
                 ty: Type::Int,
             },
@@ -2364,7 +2364,7 @@ mod tests {
         // generic over the parameter, not specialised to either default.
         let entry: ModuleEntry<i64> = ModuleEntry::Def {
             scheme: Scheme {
-                vars: vec![],
+                type_vars: vec![],
                 constraints: HashMap::new(),
                 ty: Type::Int,
             },

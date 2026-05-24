@@ -10,6 +10,8 @@ This spec is **target-stating**. It describes the as-designed public surface; dr
 
 Organised by concern. All boundary types live here so the dependency edge is one-directional: every other crate depends on `cranelisp-types`; `cranelisp-types` depends on no other workspace crate (Principle 3).
 
+**Module structure.** All submodules in `crates/cranelisp-types/src/lib.rs` are declared `pub(crate)` as of S69 Sub 41 (C-HOLE-6) per Principles 13 (interfaces.md auditable; cargo-public-api gateable) + 18 (`pub(crate)` defaulting). The crate-root re-exports (e.g., `pub use module::SymbolTable;`, `pub use ast::*;`, `pub use newtype::*;`) are the sole public surface. Deep paths (`cranelisp_types::module::SymbolTable`, `cranelisp_types::types::Subst`, etc.) are no longer reachable; consumers go through the crate root. The baseline `crates/cranelisp-types/public-api.txt` shrinks by ~80% as a result (auto-trait projections per deep path collapse to one canonical form per type).
+
 ### Identifier newtypes
 
 ```rust
@@ -2027,7 +2029,7 @@ None. `cranelisp-types` is the bottom of the workspace dependency DAG.
 
 Every public struct and enum in `cranelisp-types` MUST be `#[non_exhaustive]`. Adding a variant or field is non-breaking; consumers cannot exhaustively match or destructure across crate boundaries.
 
-The newtypes (`Symbol`, `ModuleFullPath`, etc.) are an exception — they wrap a single `String` and are constructed via `From`/`From<&str>`. The wrapper is opaque; field access is not exposed. (No `#[non_exhaustive]` needed because there's nothing to add.)
+The newtypes (`Symbol`, `ModuleFullPath`, etc.) are an exception — they wrap a single `String` and are constructed via `From`/`From<&str>`. The wrapper is opaque; field access is not exposed — **structurally enforced** as of S69 Sub 41 by `pub struct $name(String);` (inner field private) in the `string_newtype!` macro at `crates/cranelisp-types/src/newtype.rs`. Consumers reach the inner string via `Deref<Target = str>` / `AsRef<str>` / `Borrow<str>` / `Display` / `PartialEq<str>` / `PartialEq<&str>`. Per Principle 18 (enforce architectural invariants structurally where possible). (No `#[non_exhaustive]` needed because there's nothing to add.)
 
 ---
 

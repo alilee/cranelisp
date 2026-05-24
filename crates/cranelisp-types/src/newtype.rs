@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 macro_rules! string_newtype {
     ($name:ident) => {
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-        pub struct $name(pub String);
+        pub struct $name(String);
 
         impl std::ops::Deref for $name {
             type Target = str;
