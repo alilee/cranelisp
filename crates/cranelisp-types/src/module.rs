@@ -181,8 +181,8 @@ pub struct SymbolTable<C: CodeStore = (), L: LinkerStore = ()> {
     #[serde(default)]
     pub platforms: Vec<PlatformSpec>,
     /// Original `(mod child)` / `(mod- child)` declarations in source order;
-    /// `is_private` distinguishes `(mod-)`. Consumed by `/int` for submodule
-    /// loading.
+    /// `visibility == Visibility::Private` distinguishes `(mod-)`. Consumed
+    /// by `/int` for submodule loading.
     #[serde(default)]
     pub submodules: Vec<ModDecl>,
 
@@ -320,6 +320,9 @@ impl ModuleEntry<()> {
                 scheme, visibility, docstring, param_names, kind, callees,
                 got_slot, trait_origin, seq, ast, code: None,
             },
+            ModuleEntry::SpecialForm { scheme, param_names, docstring, description, visibility } => {
+                ModuleEntry::SpecialForm { scheme, param_names, docstring, description, visibility }
+            }
             ModuleEntry::Import { source, visibility } => ModuleEntry::Import { source, visibility },
             ModuleEntry::TypeDef { info, visibility, constructor_scheme, sexp } => {
                 ModuleEntry::TypeDef { info, visibility, constructor_scheme, sexp }
@@ -470,7 +473,14 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub enum ModuleEntry<C: CodeStore = ()> {
-    /// A definition: function, primitive, special form.
+    /// A definition: function, primitive, or constructor.
+    ///
+    /// Special forms are NOT `Def` entries — they live in their own
+    /// `ModuleEntry::SpecialForm` variant per S69 Submission 36 (a Def
+    /// reads at most 4 of the ~11 fields below, so a dedicated variant
+    /// fits the introspection use case cleanly — parallels Submission 30's
+    /// `IntrinsicType` shape). See `facades/types.md` §"Symbol table — the
+    /// single store" `ModuleEntry::SpecialForm` for the manifestation.
     Def {
         scheme: Scheme,
         visibility: Visibility,
@@ -586,6 +596,35 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         /// primitive.
         #[serde(skip)]
         code: Option<C>,
+    },
+    /// A compiler-provided special form (`if`, `let`, `defn`, `match`, etc.).
+    ///
+    /// Per S69 Submission 36 — promoted from `DefKind::SpecialForm` to its
+    /// own `ModuleEntry` variant. A special form reads at most 4 of `Def`'s
+    /// ~11 fields (`scheme`, `param_names`, `docstring`, `description`);
+    /// a dedicated variant fits the introspection use case cleanly and
+    /// parallels Submission 30's `IntrinsicType` shape (compiler-provided
+    /// construct that has no user-level definition).
+    ///
+    /// Introspection-only. NOT JIT-registered (special forms are pure
+    /// syntax; no runtime address). NO `got_slot` field (never callable
+    /// as a value). NO `code` field (no body to compile). NO `ast` field
+    /// (no AST to codegen).
+    ///
+    /// Lives in the root module `""` per FIXME 0193 (special-form
+    /// metadata lives at root and is never replicated). Resolved by
+    /// chain-follow from the user module through the prelude's
+    /// `(import [<root> [*]])` (or directly from root for unqualified
+    /// resolution).
+    ///
+    /// See `facades/types.md` §"Symbol table — the single store"
+    /// `ModuleEntry::SpecialForm`.
+    SpecialForm {
+        scheme: Scheme,
+        param_names: Vec<Symbol>,
+        docstring: Option<String>,
+        description: String,
+        visibility: Visibility,
     },
     /// An imported name from another module (Ring 2).
     ///
@@ -779,6 +818,7 @@ impl<C: CodeStore> ModuleEntry<C> {
     pub fn is_public(&self) -> bool {
         match self {
             ModuleEntry::Def { visibility, .. }
+            | ModuleEntry::SpecialForm { visibility, .. }
             | ModuleEntry::TypeDef { visibility, .. }
             | ModuleEntry::IntrinsicType { visibility, .. }
             | ModuleEntry::TraitDecl { visibility, .. }
@@ -792,14 +832,65 @@ impl<C: CodeStore> ModuleEntry<C> {
 // --- Definition Classification ---
 
 /// What kind of definition a symbol is.
+///
+/// **S69 Submission 36 settlement.**
+/// - `SpecialForm` retired from `DefKind` — promoted to its own
+///   `ModuleEntry::SpecialForm` variant (special forms read only 4 of
+///   `Def`'s ~11 fields; dedicated variant fits the introspection use
+///   case, parallels `ModuleEntry::IntrinsicType` per Submission 30).
+/// - `Primitive` collapsed to a payload-free discriminator — the prior
+///   `PrimitiveKind { Inline, Extern, PlatformEffect }` sub-discriminator
+///   and the `jit_name: Option<JitSymbol>` sibling field are both
+///   retired. The discriminator alone signals "bundled compiler-provided
+///   body" (lives in `cranelisp-primitives`); inline-eligibility was
+///   never read from `PrimitiveKind` in production (only test assertions
+///   — verified by grep at submission time) and is encoded per-call-site
+///   in `ResolvedCall::BuiltinFn { name }` (set by typecheck), not in a
+///   `PrimitiveKind::Inline` discriminator. The retired `jit_name`
+///   field's value is the symbol-table key uniformly per `src/CLAUDE.md`
+///   §"JIT Symbol Names" — every symbol addressable as `module/symbol`
+///   (or the appropriate mangled form for trait methods / multi-sig
+///   variants); the key IS the JIT linker name. No separate `jit_name`
+///   field is needed.
+/// - `PlatformEffect { scheduling_class }` promoted from a sub-variant
+///   of `PrimitiveKind` to a sibling variant of `DefKind`. The
+///   `scheduling_class` is the cross-crate-load-bearing payload — read
+///   by `src/worker.rs` for JIT-symbol-table registration of DLL-routed
+///   effects, and carried in IO trampoline records per Decision 26.
+///   PlatformEffect's body location (DLL) is structurally distinct from
+///   bundled-primitive provenance — sibling variants under `DefKind`
+///   reflect that (provenance discriminator is on `DefKind`, not nested
+///   one level deeper).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DefKind {
-    /// A special form (if, let, defn, ...).
-    SpecialForm { description: String },
-    /// A built-in primitive (inline IR, extern FFI, or platform effect).
-    Primitive {
-        primitive_kind: PrimitiveKind,
-        jit_name: Option<JitSymbol>,
+    /// A built-in primitive bundled in `cranelisp-primitives`.
+    ///
+    /// No payload — the discriminator alone signals "bundled
+    /// compiler-provided body". The symbol-table key IS the JIT linker
+    /// name uniformly per `src/CLAUDE.md` §"JIT Symbol Names"; no
+    /// separate `jit_name` field. Inline-eligibility for arithmetic /
+    /// vec / sexp ops is encoded per-call-site in
+    /// `ResolvedCall::BuiltinFn { name }` (set by typecheck), not on
+    /// this discriminator.
+    ///
+    /// See `facades/types.md` §"DefKind" `DefKind::Primitive` and
+    /// Decision 48 (primitives uniform module + bundled provenance).
+    Primitive,
+    /// A DLL-routed platform effect.
+    ///
+    /// `scheduling_class` is the cross-crate-load-bearing payload — read
+    /// by `src/worker.rs` for JIT-symbol-table registration of DLL-routed
+    /// effects, and carried in IO trampoline records per Decision 26.
+    /// PlatformEffect's body lives in a platform DLL (loaded into the
+    /// platform module's `SymbolTable.dll`); contrast `DefKind::Primitive`
+    /// whose body is bundled in `cranelisp-primitives`.
+    ///
+    /// See `facades/types.md` §"DefKind" `DefKind::PlatformEffect` and
+    /// Decision 26 (scheduling-class lives on the platform-effect variant
+    /// so ill-formed states — "a user fn with a scheduling class" — are
+    /// unrepresentable).
+    PlatformEffect {
+        scheduling_class: SchedulingClass,
     },
     /// A user-defined function.
     UserFn {
@@ -834,31 +925,31 @@ pub enum DefKind {
     },
 }
 
-/// Classification of primitive functions.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum PrimitiveKind {
-    /// Inlined as Cranelift IR at the call site
-    Inline,
-    /// Calls an extern Rust function via JIT symbol (Ring 1+)
-    Extern,
-    /// Platform effect (dispatched through IO trampoline, Ring 4).
-    ///
-    /// `scheduling_class` lives on the variant (not on a sibling field on
-    /// `ModuleEntry::Def`) so that only `PlatformEffect` entries can carry
-    /// a scheduling class — ill-formed states ("a user fn with a scheduling
-    /// class") are unrepresentable. See Decision 26 in `design/arch/CLAUDE.md`.
-    ///
-    /// The variant serialises normally: `scheduling_class` is static manifest
-    /// data (re-read from the DLL manifest on cache-hit load via the platform
-    /// module's `SymbolTable.dll` reconstruction per spec §8.9.3, not a runtime
-    /// pointer). Contrast with the runtime pointer for the entry, which lives
-    /// in the module's GOT slot (`SymbolTable.got.load_slot(entry.got_slot?)`);
-    /// the GOT itself is `#[serde(skip)]` and re-populated on cache-hit by
-    /// re-resolving each platform DLL.
-    PlatformEffect {
-        scheduling_class: SchedulingClass,
-    },
-}
+// `PrimitiveKind` enum retired (S69 Submission 36).
+//
+// Prior shape:
+//   pub enum PrimitiveKind { Inline, Extern, PlatformEffect { scheduling_class } }
+//
+// Rationale for retirement:
+// - **Inline/Extern variants were vestigial.** No production consumer read
+//   them — verified by grep at submission time (only test assertions). Backend
+//   dispatches all bundled primitives uniformly via GOT slot per Decision 48;
+//   inline-eligibility for arithmetic / vec / sexp ops is encoded per-call-site
+//   in `ResolvedCall::BuiltinFn { name }` (set by typecheck), not in a
+//   `PrimitiveKind::Inline` discriminator.
+// - **PlatformEffect was structurally distinct from bundled-primitive
+//   provenance.** Its body location (DLL) is not a sub-classification of
+//   "primitive" — it's a sibling provenance class. Promoted to its own
+//   `DefKind::PlatformEffect { scheduling_class }` variant; the
+//   `scheduling_class` payload (the cross-crate-load-bearing data — consumed
+//   by `src/worker.rs` for JIT-symbol-table registration; carried in IO
+//   trampoline records per Decision 26) moves with it.
+// - **No replacement enum.** The provenance discriminator IS `DefKind`'s
+//   variant set; nesting `{ Primitive { primitive_kind: PrimitiveKind } }`
+//   was one level deeper than needed.
+//
+// See `facades/types.md` §"DefKind" and `types-audit-s69.md`
+// §"Finding S-DRIFT-17" closure for the full settlement rationale.
 
 /// One variant of an overloaded (multi-sig) function.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -966,10 +1057,24 @@ pub struct PlatformSpec {
 // --- Module Declarations ---
 
 /// A parsed `(mod name)` or `(mod- name)` declaration.
+///
+/// **Lifecycle of `inline_body`** (forward reference for readers tracing
+/// the spec §8.2.2 path):
+///
+/// - Frontend's `parse_mod_decl` populates `inline_body: Some(forms)` when
+///   `(mod name forms…)` is parsed with body.
+/// - Int's `worker::handle_mod` consumes the forms to write the backing
+///   submodule file via `write_inline_mod_to_disk`.
+/// - Int's source-rewriter (per `repl/spec.md` §15.4 regeneration path)
+///   MUST emit `ModDecl` as `(mod name)` form regardless of `inline_body`
+///   — closing spec §8.2.2 step 2 ("rewrite the parent file, replacing
+///   `(mod name form1 form2 ...)` with `(mod name)`"). The rewrite is
+///   currently unimplemented; tracked by
+///   `design/arch/fixmes/0217-inline-module-spec-rewrite.md` targeting `/int`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModDecl {
     pub name: ModuleName,
-    pub is_private: bool,
+    pub visibility: Visibility,
     pub inline_body: Option<Vec<Sexp>>,
     pub span: Span,
 }
@@ -989,7 +1094,10 @@ pub enum StructuralDeclEntry {
     Mod(ModDecl),
 }
 
-use crate::JitSymbol;
+// `use crate::JitSymbol;` retired (S69 Submission 36 — the `jit_name` field
+// on `DefKind::Primitive` is gone; the symbol-table key IS the JIT linker
+// name uniformly per `src/CLAUDE.md` §"JIT Symbol Names"). Re-introduce
+// only when another use site needs JitSymbol within this file.
 
 // --- Module map graph operations (Sprint 67 hack-back; FIXME 0192 + 0193) ---
 //
@@ -1656,40 +1764,33 @@ mod tests {
     }
 
     // spec: design/arch/CLAUDE.md Decision 26 (Option B — variant-internal) —
-    //       PrimitiveKind::PlatformEffect { scheduling_class } carries the class
-    //       on the variant itself, not as a sibling field on ModuleEntry::Def.
+    //       DefKind::PlatformEffect { scheduling_class } carries the class on
+    //       the variant itself, not as a sibling field on ModuleEntry::Def.
+    //       S69 Submission 36 promoted PlatformEffect from PrimitiveKind
+    //       sub-discriminator to its own DefKind variant; the substantive
+    //       Decision-26 invariant (variant-internal scheduling_class) is
+    //       preserved, restated at the DefKind level.
     #[test]
-    fn primitive_kind_platform_effect_carries_scheduling_class() {
-        // Build a platform-effect primitive entry.
+    fn def_kind_platform_effect_carries_scheduling_class() {
+        // Build a platform-effect entry.
         let entry = mk_def(
-            DefKind::Primitive {
-                primitive_kind: PrimitiveKind::PlatformEffect {
-                    scheduling_class: crate::SchedulingClass::Commutative,
-                },
-                jit_name: Some(crate::JitSymbol::from("cranelisp_get_time")),
+            DefKind::PlatformEffect {
+                scheduling_class: crate::SchedulingClass::Commutative,
             },
             None,
         );
 
         match entry {
             ModuleEntry::Def { kind, .. } => match *kind {
-                DefKind::Primitive {
-                    primitive_kind: PrimitiveKind::PlatformEffect { scheduling_class },
-                    jit_name,
-                } => {
+                DefKind::PlatformEffect { scheduling_class } => {
                     assert_eq!(
                         scheduling_class,
                         crate::SchedulingClass::Commutative,
                         "scheduling_class must be readable from the variant directly"
                     );
-                    assert_eq!(
-                        jit_name.as_deref(),
-                        Some("cranelisp_get_time"),
-                        "jit_name remains on DefKind::Primitive alongside primitive_kind"
-                    );
                 }
                 other => panic!(
-                    "expected DefKind::Primitive {{ PlatformEffect {{ .. }} }}, got {:?}",
+                    "expected DefKind::PlatformEffect {{ .. }}, got {:?}",
                     other
                 ),
             },
@@ -1699,7 +1800,8 @@ mod tests {
 
     // spec: design/arch/CLAUDE.md Sprint 66 Wave 0 amendment — `fn_ptr` field
     //       removed from `ModuleEntry::Def`; `scheduling_class` inside
-    //       `PrimitiveKind::PlatformEffect` continues to round-trip via serde
+    //       `DefKind::PlatformEffect` (S69 Submission 36 — promoted from
+    //       PrimitiveKind sub-variant) continues to round-trip via serde
     //       (it is static manifest data, not a runtime pointer).
     #[test]
     fn platform_effect_scheduling_class_round_trips() {
@@ -1714,11 +1816,8 @@ mod tests {
             visibility: Visibility::Public,
             docstring: None,
             param_names: vec![],
-            kind: Box::new(DefKind::Primitive {
-                primitive_kind: PrimitiveKind::PlatformEffect {
-                    scheduling_class: crate::SchedulingClass::ResourceSerial,
-                },
-                jit_name: Some(crate::JitSymbol::from("cranelisp_http_get")),
+            kind: Box::new(DefKind::PlatformEffect {
+                scheduling_class: crate::SchedulingClass::ResourceSerial,
             }),
             callees: Vec::new(),
             got_slot: None,
@@ -1736,6 +1835,13 @@ mod tests {
             "serialised form must not contain any `fn_ptr` field (the field has been removed entirely): {}",
             json
         );
+        // jit_name retired per S69 Submission 36 — symbol-table key IS the
+        // JIT linker name uniformly per src/CLAUDE.md §"JIT Symbol Names".
+        assert!(
+            !json.contains("jit_name"),
+            "serialised form must not contain `jit_name` (retired S69 Submission 36): {}",
+            json
+        );
 
         let rt: ModuleEntry =
             serde_json::from_str(&json).expect("entry must deserialize");
@@ -1744,18 +1850,15 @@ mod tests {
                 // scheduling_class (on the variant) MUST round-trip — it is static
                 // manifest data, not a runtime pointer.
                 match *kind {
-                    DefKind::Primitive {
-                        primitive_kind: PrimitiveKind::PlatformEffect { scheduling_class },
-                        ..
-                    } => {
+                    DefKind::PlatformEffect { scheduling_class } => {
                         assert_eq!(
                             scheduling_class,
                             crate::SchedulingClass::ResourceSerial,
-                            "scheduling_class inside PrimitiveKind::PlatformEffect must survive serde roundtrip"
+                            "scheduling_class inside DefKind::PlatformEffect must survive serde roundtrip"
                         );
                     }
                     other => panic!(
-                        "expected DefKind::Primitive with PlatformEffect, got {:?}",
+                        "expected DefKind::PlatformEffect, got {:?}",
                         other
                     ),
                 }
@@ -1795,10 +1898,10 @@ mod tests {
     }
 
     /// Build a `ModDecl` with a unique span.
-    fn mk_mod(name: &str, is_private: bool, span_start: u32) -> ModDecl {
+    fn mk_mod(name: &str, visibility: Visibility, span_start: u32) -> ModDecl {
         ModDecl {
             name: ModuleName::from(name),
-            is_private,
+            visibility,
             inline_body: None,
             span: Span::new(span_start, span_start + 8),
         }
@@ -1880,7 +1983,7 @@ mod tests {
         a.imports.push(mk_import("primitives", &["foo"], 10));
         a.exports.push(mk_export("user.a", &["bar"], 20));
         a.platforms.push(mk_platform("io", 30));
-        a.submodules.push(mk_mod("inner", false, 40));
+        a.submodules.push(mk_mod("inner", Visibility::Public, 40));
 
         // B is untouched.
         assert_eq!(b.imports.len(), 0, "B's imports MUST be empty — A's writes do not leak");
@@ -2031,8 +2134,8 @@ mod tests {
         st.platforms.push(mk_platform("stdio", 70));
         st.platforms.push(mk_platform("test_capture", 90));
 
-        st.submodules.push(mk_mod("public_child", false, 110));
-        st.submodules.push(mk_mod("private_child", true, 130));
+        st.submodules.push(mk_mod("public_child", Visibility::Public, 110));
+        st.submodules.push(mk_mod("private_child", Visibility::Private, 130));
 
         // Also add one Def entry to confirm symbols round-trip alongside.
         st.insert(
@@ -2066,9 +2169,17 @@ mod tests {
 
         assert_eq!(rt.submodules.len(), 2, "submodules.len() must round-trip");
         assert_eq!(rt.submodules[0].name.as_ref(), "public_child");
-        assert!(!rt.submodules[0].is_private, "is_private flag must round-trip (false)");
+        assert_eq!(
+            rt.submodules[0].visibility,
+            Visibility::Public,
+            "visibility must round-trip (Public)"
+        );
         assert_eq!(rt.submodules[1].name.as_ref(), "private_child");
-        assert!(rt.submodules[1].is_private, "is_private flag must round-trip (true)");
+        assert_eq!(
+            rt.submodules[1].visibility,
+            Visibility::Private,
+            "visibility must round-trip (Private)"
+        );
 
         // Schema version round-trips.
         assert_eq!(rt.schema_version, 1, "schema_version must round-trip");

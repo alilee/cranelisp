@@ -1072,25 +1072,46 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         ///     `compile_to_module` (JIT) or `load_object` (cache-hit `.o`);
         ///     paired with `code = Some(Code::Jit(_))` or
         ///     `Some(Code::Linker(_))`.
-        ///   - `DefKind::Primitive { primitive_kind: Inline | Extern }` —
+        ///   - `DefKind::Primitive` (no payload — S69 Submission 36) —
         ///     slot populated at static-init by
         ///     `cranelisp-primitives::PRIMITIVES_TABLE`;
         ///     `code = Some(Code::Primitive)` (marker variant per Decision
         ///     0048 (A2, revised 2026-05-17) — no payload; lifecycle is
-        ///     process-static, owned by the `LazyLock`).
-        ///   - `DefKind::Primitive { primitive_kind: PlatformEffect { .. } }`
-        ///     — slot populated at platform-load time from
+        ///     process-static, owned by the `LazyLock`). The discriminator
+        ///     alone signals "bundled compiler-provided body". The symbol-
+        ///     table key IS the JIT linker name uniformly per
+        ///     `src/CLAUDE.md` §"JIT Symbol Names" (no separate `jit_name`
+        ///     field — retired S69 Submission 36).
+        ///   - `DefKind::PlatformEffect { scheduling_class }` (S69
+        ///     Submission 36 — promoted from the retired
+        ///     `PrimitiveKind::PlatformEffect` sub-discriminator) — slot
+        ///     populated at platform-load time from
         ///     `OwnedPlatformFnDescriptor.ptr`; `code = None` (DLL handle
-        ///     held in `SharedState.kept_dlls`).
+        ///     held in the platform module's `SymbolTable.dll`).
+        ///
+        /// **JIT symbol naming policy.** The symbol-table key IS the JIT
+        /// linker name uniformly per `src/CLAUDE.md` §"JIT Symbol Names":
+        /// - User fn: `module/name` (the key itself)
+        /// - Trait method impl: `Trait.method$Type` (mangled key)
+        /// - Multi-sig variant: `name$Params` (mangled key)
+        /// - ADT constructor: `module/name` (the key itself) or bare `name`
+        ///   for unqualified registration
+        /// - Bundled primitive: bare `name` (kebab-case key, e.g.,
+        ///   `str-concat`)
+        /// - Runtime infrastructure: `runtime/name` (post-wave-3 rename
+        ///   pass; Rust fns drop `cranelisp_` prefix and register under
+        ///   the spec name)
+        /// - Platform DLL fn: declared name from the manifest (the key)
         ///
         /// `got_slot: None` indicates **non-callable, non-addressable**
-        /// entries: special forms (pure syntax, no runtime address);
-        /// `Overloaded` base entries (the mangled variants carry slots);
-        /// `TypeDef` / `TraitDecl` / `Macro` parent entries (no own
-        /// callable position — `DefKind::Macro` parent metadata has no
-        /// body; its per-clause mangled-variant `UserFn` Defs carry the
-        /// slots); constrained-fn templates (their mono specialisations
-        /// carry slots).
+        /// entries: `Overloaded` base entries (the mangled variants carry
+        /// slots); `TypeDef` / `TraitDecl` / `Macro` parent entries (no
+        /// own callable position — `DefKind::Macro` parent metadata has
+        /// no body; its per-clause mangled-variant `UserFn` Defs carry
+        /// the slots); constrained-fn templates (their mono
+        /// specialisations carry slots). Special forms NEVER appear here
+        /// (separate `ModuleEntry::SpecialForm` variant per S69 Submission
+        /// 36; no `got_slot` field on that variant by construction).
         got_slot: Option<usize>,
         visibility: Visibility,
         docstring: Option<String>,
@@ -1104,6 +1125,32 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         /// (read via `got_slot`), not in the `Code` variant.** Decision 25 + Decision 41 +
         /// Decision 35 (S66 amendment, slimmed variants) + Decision 0048 (S68 Phase 3 revision).
         #[serde(skip)] code: Option<C>,
+    },
+    /// A compiler-provided special form (`if`, `let`, `defn`, `match`, etc.).
+    ///
+    /// **S69 Submission 36** — promoted from `DefKind::SpecialForm` to its
+    /// own `ModuleEntry` variant. A special form reads only 4 of `Def`'s
+    /// ~11 fields (`scheme`, `param_names`, `docstring`, `description`);
+    /// a dedicated variant fits the introspection use case cleanly. Parallels
+    /// Submission 30's `IntrinsicType` shape (compiler-provided construct
+    /// with no user-level definition — distinct enough from `Def` that a
+    /// sibling variant captures the structural difference).
+    ///
+    /// Introspection-only. **No JIT registration** (special forms are pure
+    /// syntax; no runtime address). **No `got_slot`** (never callable as
+    /// a value). **No `code`** (no body to compile). **No `ast`** (no AST
+    /// to codegen).
+    ///
+    /// Lives in the root module `""` per FIXME 0193 (special-form metadata
+    /// lives at root and is never replicated). Resolved by chain-follow
+    /// from the user module through the prelude's `(import [<root> [*]])`,
+    /// or directly from root for unqualified resolution.
+    SpecialForm {
+        scheme: Scheme,
+        param_names: Vec<Symbol>,
+        docstring: Option<String>,
+        description: String,                            // user-facing one-liner for `/info` / `/list`
+        visibility: Visibility,
     },
     // **Storage detail (Def).** Source currently carries an additional
     // `param_names: Vec<Symbol>` on `Def` for historical reasons; only
@@ -1246,16 +1293,21 @@ impl<C: CodeStore> ModuleEntry<C> {
     /// - `Some(n)` for `Def { scheme, .. }` where `scheme.ty` is
     ///   `Type::Fn(params, _)` with `n = params.len()` — `UserFn`,
     ///   `Constructor` (whose `scheme` is `Fn`-shaped per D49).
-    /// - `None` for non-Def variants (`Import`, `Ambiguous`,
-    ///   `TraitImpl`). (The retired `PlatformDecl` variant no longer
-    ///   exists.)
+    /// - `None` for non-Def variants (`SpecialForm`, `Import`,
+    ///   `Ambiguous`, `TraitImpl`, `TypeDef`, `IntrinsicType`,
+    ///   `TraitDecl`). (S69 Submission 36 promoted `SpecialForm` to a
+    ///   sibling `ModuleEntry` variant — it is no longer a `DefKind`
+    ///   variant. The retired `PlatformDecl` variant no longer exists.)
     /// - `None` for multi-legged parent Defs (`Overloaded`, `Macro`) —
     ///   their parent `scheme.ty` is not `Fn`-shaped; query variants
     ///   /clauses individually via `.arity()` on each leaf sub-entry
     ///   `Def` (sub-entries live in `SymbolTable.symbols` under mangled
     ///   names like `add$Int+Int` or `{macro-name}$clause-{N}`).
-    /// - `None` for declarative DefKinds (`TypeDef`, `Trait`,
-    ///   `SpecialForm`).
+    /// - `None` for `DefKind::Primitive` and `DefKind::PlatformEffect`
+    ///   entries (S69 Submission 36 — both have schemes; arity derives
+    ///   uniformly from `scheme.ty.fn_arity()` when populated; the
+    ///   "None for declarative" framing applied to the retired
+    ///   `DefKind::SpecialForm`, which now lives on its own variant).
     ///
     /// Implementation: delegates to `scheme.ty.fn_arity()` for `Def`
     /// variants. No `DefKind`-level method exists — `DefKind` does not
@@ -1358,7 +1410,56 @@ pub enum DefKind {
     ///   dispatch. Rejected against the uniform-dispatch model in §"Symbol
     ///   table" and the per-symbol JIT cardinality discipline.
     Constructor { type_name: FQTypeName, tag: usize, field_count: usize, internal: bool },
-    Primitive { primitive_kind: PrimitiveKind },
+    /// A built-in primitive bundled in `cranelisp-primitives`.
+    ///
+    /// **S69 Submission 36** — collapsed to a payload-free discriminator.
+    /// The prior `PrimitiveKind { Inline | Extern | PlatformEffect }`
+    /// sub-discriminator and the `jit_name: Option<JitSymbol>` sibling
+    /// field on this variant are both retired:
+    ///
+    /// - **Inline/Extern variants were vestigial** — no production
+    ///   consumer read them (verified by grep at submission time, only
+    ///   test assertions). Backend dispatches all bundled primitives
+    ///   uniformly via GOT slot per Decision 48. Inline-eligibility for
+    ///   arithmetic / vec / sexp ops is encoded per-call-site in
+    ///   `ResolvedCall::BuiltinFn { name }` (set by typecheck), not in
+    ///   a `PrimitiveKind::Inline` discriminator.
+    ///
+    /// - **`jit_name` was derivable** — the symbol-table key IS the JIT
+    ///   linker name uniformly per `src/CLAUDE.md` §"JIT Symbol Names".
+    ///   For bundled primitives the key is bare kebab-case (`str-concat`,
+    ///   `vec-push`, etc.) and that bare name IS what the JIT registers
+    ///   under. No separate field is needed.
+    ///
+    /// The discriminator alone signals "bundled compiler-provided body
+    /// in `cranelisp-primitives`". Body location (DLL vs bundled crate)
+    /// is now expressed at the `DefKind` variant level (sibling
+    /// `PlatformEffect` variant), not nested one level deeper inside a
+    /// `PrimitiveKind` sub-enum.
+    Primitive,
+    /// A DLL-routed platform effect.
+    ///
+    /// **S69 Submission 36** — promoted from the retired
+    /// `PrimitiveKind::PlatformEffect { scheduling_class }` sub-variant
+    /// to a sibling `DefKind` variant. The `scheduling_class` is the
+    /// cross-crate-load-bearing payload — read by `src/worker.rs` for
+    /// JIT-symbol-table registration of DLL-routed effects, and carried
+    /// in IO trampoline records per Decision 26.
+    ///
+    /// PlatformEffect's body lives in a platform DLL (loaded into the
+    /// platform module's `SymbolTable.dll`); contrast `DefKind::Primitive`
+    /// whose body is bundled in `cranelisp-primitives`. The structural
+    /// distinctness justifies sibling-variant placement under `DefKind`
+    /// rather than nesting inside a `PrimitiveKind` sub-enum (Decision 26
+    /// — `scheduling_class` lives on the platform-effect variant so
+    /// ill-formed states "a user fn with a scheduling class" are
+    /// unrepresentable; that invariant is preserved at the `DefKind`
+    /// level after the promotion).
+    ///
+    /// The symbol-table key IS the JIT linker name uniformly (the
+    /// platform's declared symbol name from the DLL manifest); no
+    /// `jit_name` field.
+    PlatformEffect { scheduling_class: SchedulingClass },
     /// See §"Multi-legged authoring" for the parent-metadata + mangled-variant-Defs
     /// storage pattern; `Overloaded` carries `sexp` + `source` of the whole
     /// multi-clause `(defn …)` form at this metadata entry; variants are separate
@@ -1366,11 +1467,19 @@ pub enum DefKind {
     Overloaded { variants: Vec<OverloadVariant>, sexp: Option<Sexp>, source: Option<String> },           // Decision multi-sig
 }
 
-#[non_exhaustive]
-pub enum PrimitiveKind {
-    Builtin,                                                  // intrinsic — Cranelift IR emitted directly
-    PlatformEffect { scheduling_class: SchedulingClass },     // Decision 26 — class lives in the variant
-}
+// `pub enum PrimitiveKind` retired (S69 Submission 36).
+//
+// Prior shape: `pub enum PrimitiveKind { Inline, Extern, PlatformEffect { scheduling_class } }`
+//
+// Settlement rationale: see `DefKind::Primitive` and `DefKind::PlatformEffect`
+// blocks above. Inline/Extern variants were vestigial (no production consumer
+// read them — verified by grep); PlatformEffect was structurally distinct from
+// bundled-primitive provenance (sibling provenance class, not sub-classification)
+// — promoted to its own `DefKind::PlatformEffect` sibling variant carrying the
+// `scheduling_class` payload. Closes audit finding S-DRIFT-17 with scope
+// extension (the audit framed this as "facade catch-up to the source's
+// 3-variant split"; the settlement instead retired the enum entirely — neither
+// the facade-stale 2-variant nor the source-stale 3-variant shape is the target).
 
 #[non_exhaustive] pub struct ConstrainedFn { /* polymorphic defn awaiting monomorphisation */ }
 #[non_exhaustive] pub struct OverloadVariant { /* one resolved monomorphic variant of a multi-sig defn */ }
@@ -1501,8 +1610,22 @@ pub struct ExportSpec {
 pub struct ModDecl {
     pub name: ModuleName,
     pub visibility: Visibility,
+    pub inline_body: Option<Vec<Sexp>>,                                     // see lifecycle note below
     pub span: Span,                                                         // for "submodule file not found" errors
 }
+
+// `inline_body` is the parsed body of an inline `(mod name forms…)`
+// declaration. Lifecycle: frontend populates `Some(forms)` from the parsed
+// inline form → int's `worker::handle_mod` consumes via
+// `write_inline_mod_to_disk` to create the backing submodule file → int's
+// source-rewriter (per `repl/spec.md` §15.4) MUST emit the decl as
+// `(mod name)` form regardless of `inline_body`, closing spec §8.2.2 step 2
+// ("rewrite the parent file, replacing `(mod name form1 form2 ...)` with
+// `(mod name)`"). The rewrite is currently unimplemented; tracked by
+// `design/arch/fixmes/0217-inline-module-spec-rewrite.md` against `/int`.
+// The field is a real persistent carrier during the parse-write-load
+// lifecycle, not a synonym for stale data; the spec gap closes when /int
+// implements the rewrite, not by retiring the field.
 
 #[non_exhaustive]
 pub struct PlatformSpec {
@@ -1616,10 +1739,11 @@ pub const GOT_TABLE_SIZE: usize;                              // 1024 slots — 
 ### Heap layout (consumed by backend codegen)
 
 ```rust
-pub enum HeapCategory { NeverHeap, AlwaysHeap, Mixed }    // codegen drives RC discipline by category
 #[non_exhaustive] pub struct HeapHeader { /* total_size: u64 | rc: AtomicI64 — base-pointer convention per src/CLAUDE.md */ }
 pub const NULLARY_TAG_THRESHOLD: i64;                     // ADT discriminant boundary for nullary vs data ctors
 ```
+
+`HeapCategory` (heap classification for runtime values) relocated to `cranelisp-backend` per S69 Sub 38 — backend-internal codegen concern; see `facades/backend.md` §"Heap classification".
 
 ### Pipeline / orchestration types
 
@@ -1649,7 +1773,7 @@ pub const TAG_SEXP_BRACKET: i64;
 
 ### Scheduling — for IO trampoline + Effect dispatch
 
-Plain manifest data attached to platform DLL functions. Governs two things: (a) how `bind!` chains are compiled — sequential-chain vs parallel-safe; (b) how the IO trampoline schedules nodes during IO forcing. Lives in `cranelisp-types` (rather than `cranelisp-platform`) so it can appear on both `PrimitiveKind::PlatformEffect` and `cranelisp_platform::PlatformFn` without forcing a `cranelisp-types → cranelisp-platform` dependency edge (which Principle 3 forbids).
+Plain manifest data attached to platform DLL functions. Governs two things: (a) how `bind!` chains are compiled — sequential-chain vs parallel-safe; (b) how the IO trampoline schedules nodes during IO forcing. Lives in `cranelisp-types` (rather than `cranelisp-platform`) so it can appear on both `DefKind::PlatformEffect` (a sibling variant on `ModuleEntry::Def.kind` — promoted from the retired `PrimitiveKind::PlatformEffect` sub-discriminator per S69 Submission 36) and `cranelisp_platform::PlatformFn` without forcing a `cranelisp-types → cranelisp-platform` dependency edge (which Principle 3 forbids).
 
 ```rust
 #[repr(u32)]
@@ -1681,12 +1805,30 @@ pub struct LineCol {
     pub col: u32,
 }
 
+impl LineCol {
+    /// 1-based line + column coordinates.
+    pub fn new(line: u32, col: u32) -> Self;
+}
+
 #[non_exhaustive]
 pub struct LineColRange {
     pub start: LineCol,
     pub end: LineCol,
 }
 
+impl LineColRange {
+    /// Range across `LineCol` coordinates — start inclusive, end exclusive
+    /// (matches `Span`).
+    pub fn new(start: LineCol, end: LineCol) -> Self;
+}
+```
+
+> `LineCol::new` and `LineColRange::new` are currently exercised only by
+> forward-wiring per the `line_col` carrier strategy under Decision 39 —
+> kept as suggestive surface for the introspection-based formatter. Producers
+> populate when source coordinates are in hand at error-construction time.
+
+```rust
 /// Permissive error-location carrier. Producers populate the fields they have on
 /// hand; the formatter selects display strategy based on what's present.
 #[non_exhaustive]
@@ -1720,24 +1862,68 @@ pub struct ErrorLocation {
     pub context: Option<String>,
 }
 
+impl ErrorLocation {
+    /// Synthetic location — used by callers without concrete coordinates
+    /// (e.g., `cranelisp-platform::manifest_to_descriptors` constructs
+    /// `LoadFailed` with `unknown()`; int rewrites at the call site).
+    pub fn unknown() -> Self;
+
+    /// Span only — typecheck/codegen sites with a span but no file/fq/
+    /// line_col in hand at error-construction time.
+    pub fn from_span(span: Span) -> Self;
+
+    /// Span + optional file path — used when the producer knows the file
+    /// (int's session/worker layer constructing dependency/load errors).
+    /// Note: frontend's `from_span_file(span, None)` calls are
+    /// structurally equivalent to `from_span(span)` — the `_file`
+    /// convenience exists for sites that may or may not have a path.
+    pub fn from_span_file(span: Span, file: Option<PathBuf>) -> Self;
+}
+```
+
+> Fields `fq`, `line_col`, `context` are currently not populated by any
+> producer; they are retained as forward-looking suggestive surface per
+> Decision 39's introspection-based formatter strategy — producers may
+> populate them when the relevant data is in hand. The integration-layer
+> formatter falls back to span-based resolution when the optional fields
+> are `None`.
+
+```rust
 #[non_exhaustive]
 pub enum CranelispError {
     ParseError    { message: String, location: ErrorLocation },
     TypeError     { message: String, location: ErrorLocation },
     ModuleError   { message: String, location: ErrorLocation },
     CodegenError  { message: String, location: ErrorLocation },
-    LinkError     { message: String },                                          // process-level — no location
-    CacheError    { message: String },                                          // process-level — no location
-    RuntimeError  { message: String, location: Option<ErrorLocation> },         // location optional — runtime panics may originate from synthetic call sites
+    MacroError    { message: String, location: ErrorLocation },
     Platform(PlatformError),                                                    // per Decision 42 — structured platform-origin failures with location
     /* … */
 }
 
 impl CranelispError {
-    /// Single accessor used by the integration-layer formatter — returns the
-    /// error's location if it carries one. `LinkError` and `CacheError` return None.
-    pub fn location(&self) -> Option<&ErrorLocation>;
+    /// Variant's stored message — `Platform` variant delegates to a static
+    /// per-variant descriptor; other variants return their `message: String`
+    /// field. Formatter convenience to avoid per-variant pattern-matching.
+    pub fn message(&self) -> &str;
+
+    /// Variant's span — extracts `location.span` from all variants.
+    /// Formatter convenience.
+    pub fn span(&self) -> Span;
+
+    /// Variant's location — every variant carries one per Decisions 39 + 42;
+    /// returns `&ErrorLocation` (no `Option`). Symmetric with
+    /// `PlatformError::location()`. Narrowed from `Option<&ErrorLocation>`
+    /// per S69 Sub 39 — the `Option` hid the structural invariant and
+    /// created Principle 7 asymmetry; every variant's `location: ErrorLocation`
+    /// field guarantees presence.
+    pub fn location(&self) -> &ErrorLocation;
 }
+
+/// Enables `?` propagation from `Result<_, PlatformError>` contexts
+/// (cranelisp-platform's API) into functions returning
+/// `Result<_, CranelispError>`. Derives from Decision 42's
+/// `Platform(PlatformError)` variant shape.
+impl From<PlatformError> for CranelispError;
 
 #[non_exhaustive]
 pub struct Warning {
@@ -1796,6 +1982,14 @@ pub enum PlatformError {
     AbiVersionMismatch { dll: PathBuf, expected: u32, found: u32, location: ErrorLocation },
     /// A platform-fn dispatch failed at runtime (e.g., null fn ptr, panic in callee).
     DispatchError { fn_name: Symbol, cause: String, location: ErrorLocation },
+}
+
+impl PlatformError {
+    /// Single accessor — every variant carries an `ErrorLocation` per
+    /// Decision 42. Returns `&ErrorLocation` (no `Option`): every variant's
+    /// invariant guarantees presence. Symmetric with
+    /// `CranelispError::location()`.
+    pub fn location(&self) -> &ErrorLocation;
 }
 ```
 
@@ -1865,7 +2059,7 @@ The variant-level surface is internal-but-exposed: every variant of every `#[non
 |---|---|---|
 | `Pattern::Constructor`, `Pattern::Wildcard`, `Pattern::Var` | `Pattern` | Under §"AST" — three-variant enum per spec §6.2 (Constructor covers both §6.2.1 data form and §6.2.2 nullary form via empty `bindings`; Wildcard is §6.2.3; Var is §6.2.4). Spec §6.6 explicitly excludes literal/nested/or/guarded patterns — the enum closes over the spec's full pattern surface. |
 | `TypeExpr::SelfType` (and siblings) | `TypeExpr` | Under §"AST" `pub enum TypeExpr { /* … */ }`. `SelfType` is the `:Self` syntactic marker (resolved to the impl target type by typecheck). |
-| `DefKind::SpecialForm` | `DefKind` | Under §"Symbol table" `pub enum DefKind { /* … */ }`. The `SpecialForm { description: String }` variant exists alongside `UserFn`/`Macro`/`TypeDef`/`Trait`/`Primitive`/`Overloaded` and is registered for special-form introspection (`/info`, `/list`); `description` is the user-facing one-liner. |
+| `ModuleEntry::SpecialForm { scheme, param_names, docstring, description, visibility }` | `ModuleEntry` | Under §"Symbol table — the single store". **S69 Submission 36** — promoted from `DefKind::SpecialForm` to its own `ModuleEntry` variant. Special forms read only 4 of `Def`'s ~11 fields (`scheme`, `param_names`, `docstring`, `description`); a dedicated variant fits the introspection use case cleanly and parallels Submission 30's `IntrinsicType` shape. Introspection-only — no JIT registration, no `got_slot`, no `code`, no `ast`. Lives in root module `""` per FIXME 0193. `description` is the user-facing one-liner for `/info` / `/list`. |
 | `ResolvedCall::BuiltinFn` | `ResolvedCall` | Under §"Typecheck output" `pub enum ResolvedCall { TraitMethod / SigDispatch / AutoCurry / BuiltinFn }`. `BuiltinFn` is the resolved-call shape for primitive ops (`+`, `-`, `vec-push`, etc.) — pre-typecheck the call site is bare `Apply`, typecheck rewrites to `BuiltinFn` with the primitive's `cranelift_op` carrier. |
 | `ResolvedCall::TraitMethod::{trait_name, method_name, impl_type, mangled_name}`, `ResolvedCall::SigDispatch::mangled_name`, `ResolvedCall::AutoCurry::{target_name, applied_count, total_count, trait_resolution}` | `ResolvedCall` variants' fields | Per-variant payload. `TraitMethod` carries `trait_name: FQTraitName` + `impl_type: FQTypeName` per Decision 47 (FQ binding at resolved-stage boundaries — see §"Resolved type system"); `mangled_name: JitSymbol` is the backend code-pointer name (used by `compile_apply` to emit the call); `method_name: Symbol` is the unmangled bare method identifier (consumed by REPL introspection and error reporting). `SigDispatch.mangled_name` resolves a specific multi-sig variant. `AutoCurry.trait_resolution: Option<Box<ResolvedCall>>` chains AutoCurry → TraitMethod when a curried call's underlying body is a trait method — the field lives on `AutoCurry` only, NOT on `TraitMethod` (S69 Submission 32 corrected the prior PIF misattribution which named `trait_resolution` under `TraitMethod` and omitted `trait_name` + `impl_type`). |
 | `ModuleEntry::Ambiguous { visibility }` | `ModuleEntry` | Under §"Symbol table". Sentinel for the bare-name-resolves-to-multiple-imports case; typecheck emits a `TypeError` if a use site hits an `Ambiguous` entry. Carries `visibility: Visibility` for variant uniformity; constructed `Public` as the lossless mark (sentinel never resolves to a payload). |
@@ -1873,7 +2067,7 @@ The variant-level surface is internal-but-exposed: every variant of every `#[non
 | `ModuleEntry::TraitImpl { trait_name, impl_type, methods, visibility }` | `ModuleEntry` | Under §"Symbol table". Gains `visibility: Visibility` for variant uniformity; constructed `Public` per spec §5.11.1 (impls are visible wherever both trait and type are in scope — lossless mark). |
 | `ModuleEntry::IntrinsicType { ty, visibility }` | `ModuleEntry` | Under §"Symbol table" — new variant added S69 Submission 30 (closes S-DRIFT-2 + S-DRIFT-3 by deletion + structural replacement). Compiler-intrinsic scalar types (Int, Bool, Float, String). `ty: Type` is the bare `Type` variant for backend codegen efficiency; the fully-qualified form (`primitives/Int`) lives in the SymbolTable key. `visibility: Visibility` per variant uniformity (Public for the four scalars registered into the `primitives` module). Registered by `cranelisp-typecheck::register_primitives` (wave-3 cascade); resolved by `resolve_named` via uniform entry lookup. Per spec §3.1 / §8.9.1 + §8.11.4 (S69 /spec fire sharpening; FIXME 0216) — bare-name access (`:Int`) requires prelude re-export or explicit `(import [primitives [Int]])`; fully-qualified `:primitives/Int` always works; without prelude / explicit import, bare `:Int` is a compile-time "unknown type" error. **Supersedes the retired `Type::from_name` / `Type::type_name` reverse-lookup bridge** — those helpers made bare `:Int` always available regardless of imports, contradicting the spec sections cited above. S69 Submission 30 closed S-DRIFT-2 + S-DRIFT-3 by deletion + structural replacement (not by facade-text catch-up). |
 | `Visibility { Public, Private }` | top-level enum | Under §"Symbol table — the single store" (canonical home; re-exported from `cranelisp_types::ast`). Per-entry visibility carrier — appears on every `ModuleEntry` variant, on `ModuleAliasEntry`, and on form-level constructs (`Defn`, `TraitDecl`, `ModDecl`, `ImportSpec`, `ExportSpec`, `NamedImport.rename` flow). Single source of truth: visibility lives once, on the entry. |
-| `CranelispError::MacroError` | `CranelispError` | Under §"Errors and warnings". Emitted by `int`'s macro-expansion driver when a macro invocation fails. Same `{message, location}` shape as `ParseError`/`TypeError`/`ModuleError`/`CodegenError` per Decision 39. (Facade text §"Errors and warnings" notes `LinkError`/`CacheError`/`RuntimeError` aspirationally; source has `MacroError` instead — covered here, /arch follow-up may reconcile facade body if the divergence is structural.) |
+| `CranelispError::MacroError` | `CranelispError` | Under §"Errors and warnings". Emitted by `int`'s macro-expansion driver when a macro invocation fails. Same `{message, location}` shape as `ParseError`/`TypeError`/`ModuleError`/`CodegenError` per Decision 39. (Pre-S69-Sub39 the facade body noted `LinkError`/`CacheError`/`RuntimeError` aspirationally; Submission 39's U16/U20 facade refresh reconciled the enum block to match source — `MacroError` named alongside the other domain variants; the three aspirational variants do not exist in source and were removed from the facade block to remove the divergence.) |
 | `LinkerError::SymbolNotFound`, `LinkerError::RelocationFailed` | `LinkerError` | **Transient — slated for removal.** Per Sprint 67 REV-4 (sprints/SPRINT.md row 5), `LinkerError` relocates to `cranelisp-backend`; see `facades/backend.md` §"Errors" for the canonical definition. The variants remain in `cranelisp-types::error` until `/dev (cranelisp-types)` removes the export sites in S67 Wave 4. After the relocation, this row deletes. |
 | `WarningKind::UnusedBinding`, `WarningKind::UnreachableArm` (and siblings) | `WarningKind` | Under §"Errors and warnings" `pub enum WarningKind { UnusedDefn, UnusedImport, ShadowedName, /* … */ }`. Concrete variant set is internal-but-exposed; new variants added as detectors are implemented. |
 | `View` (struct; no public variants) | `View` | **RESOLVED (S69 Submission 34) — source moved to struct form.** Pre-S34 source was `pub enum View { Single, Union }`; S34 rewrote to `pub struct View { staging: Option<&'a SymbolTable>, live: &'a SymbolTable }` with private fields per Decision 44 opacity intent + Principle 18 (enforce invariants structurally). Consumer-side pattern-match on variants no longer applies; the read surface is consumed only through `View::lookup` / `View::iter` / `View::union` / `View::single` (the four public functions remain on the public-API baseline). See §"View" for the canonical shape statement and the opacity-rationale narrative. |
@@ -1895,15 +2089,16 @@ The struct definitions in §"AST", §"Resolved type system", §"Symbol table", a
 | `span` | `FieldDef` | Per-field `Span` for "field has wrong type" diagnostics — Decision 39 grounding (per-defn source coordinate system; substance in §"Symbol table" and `repl/spec.md` §15.4). Added Submission 25. `#[serde(default)]` for cache compatibility; pre-existing caches deserialise the field as `Span::SYNTHETIC`-equivalent. |
 | `params` tuple `.0: Symbol`, `.1: TypeExpr`, `hkt_param_index`, `ret_type`, `default_body` | `TraitMethodSig` | `params: Vec<(Symbol, TypeExpr)>` — per-param `(name, type)` tuple per spec §5.3 EBNF (every method has named params; `param = ':' type_expr symbol | symbol` always terminates in a `symbol`). The second tuple element is **unconditional `TypeExpr`** (not `Option<TypeExpr>`) per the spec §5.3.1 synthesised-`TypeExpr::SelfType`-for-bare convention — bare params default to the implementing type; the parser synthesises `SelfType` at parse time. Per Principle 18 the prior `default_param_names: Vec<Symbol>` sibling vector retired (S69 Submission 26 — names belong with the params, not with the default body; lockstep invariant `default_param_names.is_empty() == default_body.is_none()` folded structurally). `hkt_param_index: Option<usize>` identifies the HKT constructor parameter per spec §5.3.2. `ret_type: TypeExpr` (Principle 7 — producer-side naming canonical over the prior facade `return_type`). `default_body: Option<Expr>` — parsed AST of the default body when present (S69 Submission 26 — vindication against pre-Submission-26 source `Option<Sexp>`; AST-build catches structural errors at trait-decl time; per spec §5.4.5 the trait declaration clones the `Expr` into each impl's typecheck context for instantiated typecheck). |
 | `body_sexp`, `fixed_params`, `rest_param` | `MacroClause`, `MacroClauseInfo` | Per-clause shape — `body_sexp: Sexp` (template), `fixed_params: Vec<MacroParam>` (positional), `rest_param: Option<Symbol>` (`&rest`-splice). |
-| `is_private` | `ModDecl`, `DefmacroInfo` | Visibility flag — synonym for `visibility: Visibility::Private`; the field name reflects the underlying serialisation. |
-| `inline_body` | `ModDecl` | `Option<Vec<Sexp>>` — `Some` for `(mod name forms…)` inline declarations, `None` for `(mod name)` external file references. |
+| `is_private` | `DefmacroInfo` | Visibility flag — synonym for `visibility: Visibility::Private`; the field name reflects the underlying serialisation. (Retired from `ModDecl` per S69 Submission 40 — migrated to `visibility: Visibility` for uniformity with every other decl/entry in the family per Principle 7 single-source-of-truth + Principle 18 enforce-invariants-structurally; `Visibility` is the enum that exists for this purpose.) |
+| `visibility` | `ModDecl` | `Visibility` — `Visibility::Private` distinguishes `(mod- name)` from `(mod name)` (Public). Migrated from `is_private: bool` per S69 Submission 40; Principle 7 uniformity across decl/entry types — every other entry/decl in the family carries `visibility: Visibility` and `is_public()` consults that one field uniformly. The bool synonym was the only outlier in the family. |
+| `inline_body` | `ModDecl` | `Option<Vec<Sexp>>` — `Some` for `(mod name forms…)` inline declarations, `None` for `(mod name)` external file references. **Lifecycle**: frontend populates → int's `worker::handle_mod` consumes via `write_inline_mod_to_disk` to create the backing submodule file → int's source-rewriter (per `repl/spec.md` §15.4) MUST emit the decl as `(mod name)` form regardless of `inline_body`, closing spec §8.2.2 step 2 ("rewrite the parent file, replacing `(mod name form1 form2 ...)` with `(mod name)`"). The rewrite is currently unimplemented; tracked by `design/arch/fixmes/0217-inline-module-spec-rewrite.md` against `/int`. The field is a real persistent carrier during the parse-write-load lifecycle, NOT a synonym for stale data; the spec gap closes when /int implements the rewrite, not by retiring the field. |
 | `dll` | `SymbolTable` | `Option<D>` (where `D: DllStore`) — the loaded DLL handle on the platform module's own `SymbolTable` per spec §8.9.3. `None` for non-platform modules; `Some(dll)` for synthetic `platform.<name>` modules. `#[serde(skip)]` — runtime state; re-populated on cache-hit by re-loading the platform DLL. Replaces the retired `ModuleEntry::PlatformDecl { dll_path, platform_module }` (see retirement note above) — DLL handle is no longer a per-entry record inside another module; it lives on the platform module's own SymbolTable. |
-| `description` | `DefKind::SpecialForm` | One-line description for `/info` / `/list` REPL introspection (e.g., "let-binding form"). |
+| `description` | `ModuleEntry::SpecialForm` | One-line description for `/info` / `/list` REPL introspection (e.g., "let-binding form"). **S69 Submission 36** — relocated from `DefKind::SpecialForm.description` (variant retired) to `ModuleEntry::SpecialForm.description` (the variant was promoted to `ModuleEntry` level). |
 | `trait_origin` | `ModuleEntry::Def` | `Option<FQTraitName>` — `Some(trait_fqn)` when the entry is a method-body emitted by a `(impl Trait Type …)` form; `None` for ordinary defns. |
 | `seq` | `ModuleEntry::Def` | `u64` — per-entry authorship-order token, allocated via `SymbolTable::next_seq.fetch_add(1)` at first registration; preserved across redef by `insert_or_update`. Consumed by `regenerate_backing_file` per `repl/spec.md` §15.4(2). |
 | `constructor_scheme` | `ModuleEntry::TypeDef` | `Option<Scheme>` — the polymorphic constructor's scheme (for parameterized ADTs like `Option a`); `None` for monomorphic ADTs. |
 | `sexp` (on `DefKind::Macro`, `ModuleEntry::TraitDecl`, `ModuleEntry::TypeDef`) | various entry variants | `Option<Sexp>` — the original source form, retained for REPL `/sexp`, `/expand`, and source regeneration (Decision 39). For macros, the `sexp` field lives inside `DefKind::Macro` (per §"DefKind") — the prior sibling `ModuleEntry::Macro` variant retired (Submission 13). |
-| `jit_name` | `DefKind::Primitive` | `Option<JitSymbol>` — the mangled name a primitive registers under in the JIT's symbol table when it's used as a value (i.e., addressable). `None` for inline-only primitives. |
+| ~~`jit_name`~~ | ~~`DefKind::Primitive`~~ | **RETIRED — S69 Submission 36.** The symbol-table key IS the JIT linker name uniformly per `src/CLAUDE.md` §"JIT Symbol Names" — no separate `jit_name` field is needed. For bundled primitives, the key is bare kebab-case (`str-concat`, `vec-push`, etc.) and that bare name IS what the JIT registers under. For trait methods / multi-sig variants the key is already mangled (`Display.show$Option$Int`, `add$Int+Int`). The S66 unification + S68 D48 work landed primitives as a uniform module; the `jit_name` field outlived its purpose. Wave-3 cascade removes the field from registration sites in `cranelisp-typecheck/src/builtins.rs` and `cranelisp-primitives/`. |
 | `mangled_name`, `param_types`, `ret_type` | `OverloadVariant` | Resolved per-variant shape for multi-sig defns — `mangled_name: Symbol` (e.g., `foo$Int+Bool`), `param_types: Vec<Type>`, `ret_type: Type`. |
 | `expr_types` | `MonoDefn` | `HashMap<Span, Type>` — the per-span annotation map for the monomorphic specialisation. Backend reads this to emit type-specialised code. |
 | `resolved_calls` | `MethodResolutions` | `HashMap<Span, ResolvedCall>` — the per-call-site resolution map populated by typecheck and consumed by backend (`compile_apply` reads it to emit trait-method calls, sig-dispatched variants, auto-curry wrappers, and inline builtins). Data-record DTO per BC invariant 11 — the field IS the public contract. S69 Submission 31 promoted `MethodResolutions` from `pub type MethodResolutions = HashMap<…>` to `#[non_exhaustive] pub struct MethodResolutions { pub resolved_calls: HashMap<…> }` per the facade `#[non_exhaustive]` policy + Principle 8 (no interim implementations — the alias committed the surface to `HashMap` forever) + Principle 13 (`cargo-public-api`-gateable — the newtype struct is the auditable surface). Closes S-DRIFT-8. |

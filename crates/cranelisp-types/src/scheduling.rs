@@ -7,8 +7,10 @@
 //! 2. How the IO trampoline schedules nodes during IO forcing.
 //!
 //! The type lives at the bottom of the dependency DAG (`cranelisp-types`)
-//! so that it can appear both on `PrimitiveKind::PlatformEffect` (a variant
-//! field on `ModuleEntry::Def.kind`) and in the platform-ABI surface
+//! so that it can appear both on `DefKind::PlatformEffect` (a sibling
+//! variant on `ModuleEntry::Def.kind` — promoted from the retired
+//! `PrimitiveKind::PlatformEffect` sub-discriminator per S69 Submission 36)
+//! and in the platform-ABI surface
 //! (`cranelisp-platform::PlatformFn::scheduling_class`) without forcing a
 //! `cranelisp-types -> cranelisp-platform` dependency edge (which would
 //! violate Principle 3 — `cranelisp-types` depends on nothing).
@@ -19,10 +21,33 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Scheduling class for a platform function, declared in the platform manifest.
+/// Scheduling class for a platform function — declared in the platform manifest,
+/// read by the IO trampoline and the `bind!` chain compiler.
 ///
-/// Controls how `bind!` chains are compiled and how the IO trampoline
-/// schedules parallel execution.
+/// **If unsure, choose `Sequential`**. It is the conservative class:
+/// always correct, at the cost of foregoing parallelism. The other classes
+/// are *optimizations* you opt into when you can prove the property holds.
+///
+/// Decision guide for platform authors:
+///
+/// - **Sequential** — the function touches shared mutable state visible across
+///   calls (stdout, a global log, a shared file handle, a process-wide cache).
+///   Two calls cannot be reordered or run in parallel without changing observable
+///   behaviour. *Pick this if you are not sure.*
+///
+/// - **Commutative** — the function has no shared state across calls. Two calls
+///   to the same function with different arguments are independent (HTTP GET to
+///   different URLs, time queries, opening unrelated files). Safe to reorder
+///   and to parallelize with other Commutative effects.
+///
+/// - **ResourceSerial** — the function carries a per-resource token (set via
+///   `CLIO::effect_on_resource(token, ...)`). Calls with *different* tokens are
+///   independent; calls with the *same* token must remain ordered. (e.g. writes
+///   to per-connection sockets — independent across connections, ordered within.)
+///
+/// `Default::default()` returns `Sequential`. The variant discriminants
+/// (`Sequential = 0`, `Commutative = 1`, `ResourceSerial = 2`) are the C-ABI
+/// values carried in the platform manifest.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SchedulingClass {

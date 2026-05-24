@@ -163,15 +163,18 @@ impl CranelispError {
         }
     }
 
-    /// Return the `ErrorLocation` for this error, if any.
-    pub fn location(&self) -> Option<&ErrorLocation> {
+    /// Return the `ErrorLocation` for this error. Every variant carries a
+    /// location per Decisions 39 + 42 — the type-level invariant is enforced
+    /// structurally by the variant shape (every variant has a `location:
+    /// ErrorLocation` field; `Platform(p)` delegates to `p.location()`).
+    pub fn location(&self) -> &ErrorLocation {
         match self {
             CranelispError::ParseError { location, .. }
             | CranelispError::TypeError { location, .. }
             | CranelispError::CodegenError { location, .. }
             | CranelispError::ModuleError { location, .. }
-            | CranelispError::MacroError { location, .. } => Some(location),
-            CranelispError::Platform(p) => Some(p.location()),
+            | CranelispError::MacroError { location, .. } => location,
+            CranelispError::Platform(p) => p.location(),
         }
     }
 }

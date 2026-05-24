@@ -57,13 +57,21 @@ pub use scheduling::SchedulingClass;
 pub use module::{
     CHAIN_FOLLOW_DEPTH_LIMIT, CodeStore, ConstrainedFn, DefKind, EnsureOutcome, ExportSpec,
     ImplSexp, ImportNames, ImportSpec, LinkerStore, MacroClauseInfo, MacroParam, ModDecl,
-    ModuleEntry, OverloadVariant, PlatformSpec, PrimitiveKind, StructuralDeclEntry, SymbolTable,
+    ModuleEntry, OverloadVariant, PlatformSpec, StructuralDeclEntry, SymbolTable,
     ensure_module_exists, for_each_in_module, get_impls_for_type_chain,
     get_implementing_types_chain, install_module, lookup_trait_decl_chain, lookup_type_def_chain,
     resolve_module_by_name_chain, resolve_terminal_entry_and_home,
 };
+// `PrimitiveKind` enum retired (S69 Submission 36). PlatformEffect promoted
+// to its own `DefKind::PlatformEffect { scheduling_class }` sibling variant;
+// the prior `Inline` / `Extern` variants were vestigial — see the retirement
+// rationale in `module.rs` (block comment where `pub enum PrimitiveKind` used
+// to live) and `facades/types.md` §"DefKind".
 pub use got::GotTable;
-pub use heap::{HeapCategory, HeapHeader};
+pub use heap::HeapHeader;
+// `HeapCategory` relocated to `cranelisp-backend` per S69 Sub 38 — backend-internal
+// codegen classification, not a cross-crate substrate. See `facades/backend.md`
+// §"Heap classification".
 pub use pipeline::{
     CallEdge, CallGraph, CallInfo, CodegenBehaviour, CompileContext, CompileResult,
     GOT_TABLE_SIZE, ModuleStrategy, NULLARY_TAG_THRESHOLD,

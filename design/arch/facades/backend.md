@@ -241,8 +241,45 @@ Disposition: PFR for `resolve_func_arity` + `resolve_got_target` (they are the c
 - `codegen_types` — re-exports `GOT_TABLE_SIZE` + `NULLARY_TAG_THRESHOLD` from `cranelisp-types`. The submodule exists for module-level grouping of size constants that codegen sites reach for during CLIF emission. Per Principle 15 — these consts originate in `cranelisp-types`; the re-export at `cranelisp_backend::codegen_types` is a convenience-only path. Narrows to `pub(crate)` candidate.
 - `got` — exposes `GotTable` (re-export from `cranelisp-types`). Backend constructs `GotTable` at GOT initialisation; the re-export gives callers `cranelisp_backend::got::GotTable` as a convenience path. Principle 15 — `GotTable` originates in `cranelisp-types`; the re-export is `pub(crate)`-narrowable. The `got` submodule itself is `pub` so the re-exported `GotTable` name surfaces.
 - `got_observer` — already a top-level §"GOT-population observation" surface. The submodule path exposes the same names. The free function `emit` (the observer-side dispatch entry) is internal-but-exposed for backend codegen sites that invoke it; tests reach into it directly. `register_got_observer` is the canonical registration entry per Row 14.
-- `heap` — exposes RC primitives, ADT heap layout structs, last-use analysis, and emit helpers. The heap layout structs `HeapAdt`, `HeapClosure`, `HeapVec` (with `#[repr(C)]` fields `header`, `tag`, `cap`, `data_ptr`, `len`, `code_ptr`, `drop_glue_ptr` + offset consts `TAG_OFFSET`, `FIELDS_START`, `CAPTURES_START`, `CODE_PTR_OFFSET`, `DROP_GLUE_PTR_OFFSET`, `CAP_OFFSET`, `DATA_PTR_OFFSET`, `LEN_OFFSET`, and the helper consts/functions `field_offset`, `payload_size`, `capture_offset`, `NULLARY_THRESHOLD_I64`) are the runtime layout contract that intrinsics and codegen agree on. They are `pub` because `cranelisp-intrinsics` reads layouts and codegen emits offset-keyed loads using the same constants. Emit helpers `emit_alloc`, `emit_rc_inc`, `emit_rc_inc_guarded`, `emit_rc_dec`, `emit_rc_dec_guarded`, `heap_load`, `heap_store`, `compute_last_uses`, `is_mixed_adt` are the per-call-site primitives that submodules under `compiler::` reach for. Backend's internal CLIF generation calls them; no external consumer should. PFR — internal-but-exposed.
+- `heap` — exposes RC primitives, ADT heap layout structs, last-use analysis, emit helpers, and heap classification. The heap layout structs `HeapAdt`, `HeapClosure`, `HeapVec` (with `#[repr(C)]` fields `header`, `tag`, `cap`, `data_ptr`, `len`, `code_ptr`, `drop_glue_ptr` + offset consts `TAG_OFFSET`, `FIELDS_START`, `CAPTURES_START`, `CODE_PTR_OFFSET`, `DROP_GLUE_PTR_OFFSET`, `CAP_OFFSET`, `DATA_PTR_OFFSET`, `LEN_OFFSET`, and the helper consts/functions `field_offset`, `payload_size`, `capture_offset`, `NULLARY_THRESHOLD_I64`) are the runtime layout contract that intrinsics and codegen agree on. They are `pub` because `cranelisp-intrinsics` reads layouts and codegen emits offset-keyed loads using the same constants. Emit helpers `emit_alloc`, `emit_rc_inc`, `emit_rc_inc_guarded`, `emit_rc_dec`, `emit_rc_dec_guarded`, `heap_load`, `heap_store`, `compute_last_uses`, `is_mixed_adt` are the per-call-site primitives that submodules under `compiler::` reach for. Backend's internal CLIF generation calls them; no external consumer should. PFR — internal-but-exposed. The `HeapCategory` enum + `classify` function (relocated from `cranelisp-types` per S69 Sub 38) hosts the codegen classification surface — see §"Heap classification" below.
 - `exe::generate_startup_object` (Row 12) — produces the tiny `_main`-exporting `.o` consumed by the system linker in `--link` mode. Called by `int::link_by_name` (not backend codegen). PFR — link-orchestration assist. Documented as part of the `--link` entry-point exception narrative in §"Object file contract" above.
+
+### Heap classification
+
+`HeapCategory` is backend-internal codegen classification driving load/store, RC, and allocation paths. Hosted in `crates/cranelisp-backend/src/heap.rs`. Relocated from `cranelisp-types` per S69 Sub 38 — original placement was a bounded-context violation surfaced by consumer trace (zero production consumers outside `cranelisp-backend`). The shared cross-crate layout contract (`HeapHeader` + offset constants) remains in `cranelisp-types`; this classifier consumes the cross-crate `Type` substrate and derives codegen-internal classification from it.
+
+```rust
+pub enum HeapCategory {
+    /// Never heap-allocated: Int, Bool, Float, nullary constructors
+    NeverHeap,
+    /// Always heap-allocated: String, closures, data constructors with fields
+    AlwaysHeap,
+    /// May or may not be heap: polymorphic types, ADTs with mixed constructors
+    Mixed,
+}
+
+impl HeapCategory {
+    /// Classify a type's heap behavior. Single source of truth for backend codegen.
+    ///
+    /// Two-mode contract (interim):
+    /// - `None` — early pipeline (pre-typecheck); ADTs conservatively `Mixed`.
+    /// - `Some(tables)` — post-typecheck; ADTs classified by inspecting
+    ///   constructor definitions in the symbol tables.
+    pub fn classify<C, L>(
+        ty: &Type,
+        symbol_tables: Option<&dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>>,
+    ) -> HeapCategory
+    where
+        C: CodeStore,
+        L: LinkerStore;
+}
+```
+
+**Pending structural cascades** (named for visibility; not blocking U22 closure):
+
+- `classify_from_type_def_info` is stubbed (returns `Mixed`) pending wave-3 rebuild against the ctor-as-Def shape — per-constructor `field_count` lives on `DefKind::Constructor`, walked via symbol-table lookup of each constructor name. Existing source FIXME at `heap.rs` carries the cascade.
+- The hardcoded primitive arms (`Type::Int | Type::Bool | Type::Float` → `NeverHeap`; `Type::String` → `AlwaysHeap`; `"Vec"` name match → `AlwaysHeap`) reflect Rust-enum-variant representation of primitives. Long-trajectory unification (`Type::Int` → `Type::ADT(primitives/Int, _)`) would let the dispatcher consult primitives' SymbolTable uniformly — pending a separate structural submission.
+- The `Option<&tables>` two-mode contract was justified by "pre-typecheck classify needs to work without tables." Post-Decision 48, primitives' SymbolTable is available from session-init — the long-form signature drops the `Option` for a single-mode `&SymbolTables`. Pending the cascades above.
 
 ### `jit::Jit` method-set (Row 9)
 
