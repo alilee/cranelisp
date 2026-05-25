@@ -56,8 +56,8 @@ use std::sync::Arc;
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    CodeStore, FQSymbol, LinkerStore, ModuleEntry, ModuleFullPath, ResolutionGap, Sexp, Span,
-    Symbol, SymbolTable,
+    CodeStore, DefKind, FQSymbol, LinkerStore, ModuleEntry, ModuleFullPath, ResolutionGap, Sexp,
+    Span, Symbol, SymbolTable,
 };
 
 use crate::quasiquote::expand_quasiquotes;
@@ -266,7 +266,7 @@ where
     L: LinkerStore,
 {
     match table.get(name) {
-        Some(ModuleEntry::Macro { .. }) => true,
+        Some(ModuleEntry::Def { kind, .. }) if matches!(**kind, DefKind::Macro { .. }) => true,
         Some(ModuleEntry::Import { source, .. }) => {
             // One-hop chain follow per Principle 17 + Decision 45. Walks
             // `Import` edges regardless of visibility — the prior
@@ -275,8 +275,18 @@ where
             // recursing further: an Import-of-an-Import is treated as a
             // non-macro for resolution purposes (the typecheck-side expects
             // a single hop to a real entry).
+            //
+            // Per S69 Submission 13 (macro-unification), macro storage rotated
+            // from the retired `ModuleEntry::Macro` variant into
+            // `ModuleEntry::Def { kind: DefKind::Macro { clauses_meta }, .. }`
+            // (per-clause bodies live as separate `Def`s under mangled
+            // `{macro}$clause-{N}` names). This row is the lookup-shape
+            // rotation only — invocation-vs-Gap policy remains FIXME 0175.
             if let Some(home) = symbol_tables.get(&source.module) {
-                matches!(home.get(source.symbol.as_ref()), Some(ModuleEntry::Macro { .. }))
+                matches!(
+                    home.get(source.symbol.as_ref()),
+                    Some(ModuleEntry::Def { kind, .. }) if matches!(**kind, DefKind::Macro { .. })
+                )
             } else {
                 false
             }
@@ -293,28 +303,38 @@ where
 mod tests {
     use super::*;
     use cranelisp_types::{
-        DefKind, MacroClauseInfo, ModuleFullPath, Scheme, Span, Symbol, Type, TypeName,
-        Visibility,
+        MacroClauseInfo, ModuleFullPath, Scheme, Span, Symbol, Type, TypeName, Visibility,
     };
     use std::collections::HashMap;
 
-    /// Build a tiny `SymbolTable<(), ()>` carrying a single `ModuleEntry::Macro`.
+    /// Build a tiny `SymbolTable<(), ()>` carrying a single macro entry
+    /// (post-S69 Submission 13: `ModuleEntry::Def { kind: DefKind::Macro }`).
     fn module_with_macro(path: &str, macro_name: &str) -> (ModuleFullPath, Arc<SymbolTable<(), ()>>) {
         let module_path = ModuleFullPath::from(path);
         let mut symbols: HashMap<Symbol, ModuleEntry<()>> = HashMap::new();
         symbols.insert(
             Symbol::from(macro_name),
-            ModuleEntry::Macro {
-                name: Symbol::from(macro_name),
-                clauses: vec![MacroClauseInfo {
-                    params: vec![],
-                    rest_param: None,
-                }],
-                docstring: None,
+            ModuleEntry::Def {
+                scheme: Scheme {
+                    type_vars: vec![],
+                    constraints: HashMap::new(),
+                    ty: Type::Int,
+                },
                 visibility: Visibility::Public,
-                sexp: None,
-                source: None,
+                docstring: None,
+                param_names: vec![],
+                kind: Box::new(DefKind::Macro {
+                    clauses_meta: vec![MacroClauseInfo {
+                        params: vec![],
+                        rest_param: None,
+                    }],
+                }),
                 callees: vec![],
+                got_slot: None,
+                trait_origin: None,
+                seq: 0,
+                ast: None,
+                code: None,
             },
         );
         let table = SymbolTable {
