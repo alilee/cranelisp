@@ -747,7 +747,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 self.current_symbol_table_mut(state).symbols.get_mut(&defn.name)
             {
                 let cf = ConstrainedFn {
-                    defn: defn.clone(),
+                    variant: defn.variants[0].clone(),
                     scheme: trial_scheme,
                 };
                 **kind = DefKind::UserFn {
@@ -888,7 +888,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     self.current_symbol_table_mut(state).symbols.get_mut(&internal_name)
             {
                 let cf = ConstrainedFn {
-                    defn: internal_defn,
+                    variant: internal_defn.variants.into_iter().next().expect(
+                        "internal_defn constructed with exactly one variant above",
+                    ),
                     scheme: trial_scheme,
                 };
                 **kind = DefKind::UserFn {
@@ -2325,7 +2327,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     self.current_symbol_table_mut(state).symbols.get_mut(&defn.name)
                 {
                     let cf = ConstrainedFn {
-                        defn: (*defn).clone(),
+                        variant: defn.variants[0].clone(),
                         scheme: trial_scheme,
                     };
                     **kind = DefKind::UserFn {
@@ -2439,7 +2441,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
             if !scheme.constraints.is_empty() {
                 let cf = ConstrainedFn {
-                    defn: defn.clone(),
+                    variant: defn.variants[0].clone(),
                     scheme: scheme.clone(),
                 };
                 **kind = DefKind::UserFn {

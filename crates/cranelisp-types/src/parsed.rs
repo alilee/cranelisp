@@ -33,9 +33,24 @@ pub enum ParsedEntry {
     },
     /// Parsed `(deftype Name … | (Variant fields...))` form.
     /// Yields the type itself plus per-constructor entries downstream.
+    ///
+    /// **`type_params: Vec<Symbol>`** — type parameters are binders
+    /// (introduce a fresh name into scope; parallel to value-level
+    /// let-bindings). Per spec §5.2 EBNF: `type_var = symbol (* lowercase
+    /// by convention *)` — type parameters are *symbols*, not type names.
+    /// The newtype-discipline rule (`lib.rs` §"String Newtypes",
+    /// `design/arch/CLAUDE.md §"String Newtypes"`) maps lowercase
+    /// identifiers (locals, binders) to `Symbol` and uppercase identifiers
+    /// (ADT / builtin / constructor names) to `TypeName`. Using `TypeName`
+    /// here was a category error fixed in S70 Phase 3. Sibling sites
+    /// already correct: `TopLevel::TypeDef.type_params: Vec<Symbol>`
+    /// (`ast.rs`), `TraitDecl.type_params: Vec<Symbol>` (`ast.rs`),
+    /// `TypeDefInfo.type_params: Vec<Symbol>` (`check.rs`). This narrow
+    /// removes the prior marshalling churn at the `ast_builder` producer +
+    /// `form` consumer that converted `Symbol ↔ TypeName` round-trip.
     TypeDef {
         name: TypeName,
-        type_params: Vec<TypeName>,
+        type_params: Vec<Symbol>,
         constructors: Vec<ConstructorDef>,
         visibility: Visibility,
         docstring: Option<String>,

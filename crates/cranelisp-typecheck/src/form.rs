@@ -47,7 +47,7 @@ use dashmap::DashMap;
 
 use cranelisp_types::{
     CodeStore, Defn, ErrorLocation, LinkerStore, ModuleFullPath, ModuleStrategy, ParsedEntry,
-    Span, Symbol, SymbolTable, TopLevel,
+    Span, SymbolTable, TopLevel,
 };
 
 use crate::checker::{CheckState, TypeCheckEnv};
@@ -258,10 +258,9 @@ fn parsed_to_top_level(parsed: ParsedEntry) -> Option<TopLevel> {
             }))
         }
         ParsedEntry::TypeDef { name, type_params, constructors, visibility, docstring, span } => {
-            // `ParsedEntry::TypeDef::type_params` is `Vec<TypeName>`;
-            // `TopLevel::TypeDef` expects `Vec<Symbol>`. Reuse underlying string.
-            let type_params: Vec<Symbol> =
-                type_params.into_iter().map(|t| Symbol::from(t.as_ref())).collect();
+            // `ParsedEntry::TypeDef::type_params` now `Vec<Symbol>` (S70 step 2A
+            // newtype-discipline narrowing); pass through unchanged. The prior
+            // `TypeName → Symbol` conversion shim is retired.
             Some(TopLevel::TypeDef {
                 name,
                 docstring,

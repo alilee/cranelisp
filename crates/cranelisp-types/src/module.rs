@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::{
-    Defn, DefnVariant, FQSymbol, FQTraitName, FQTypeName, GotTable, ModuleFullPath,
+    DefnVariant, FQSymbol, FQTraitName, FQTypeName, GotTable, ModuleFullPath,
     ModuleName, Scheme, SchedulingClass, Sexp, Span, Symbol, TraitDecl, TraitName, Type,
     TypeDefInfo, TypeName, Visibility,
 };
@@ -324,14 +324,14 @@ impl ModuleEntry<()> {
                 ModuleEntry::SpecialForm { scheme, param_names, docstring, description, visibility }
             }
             ModuleEntry::Import { source, visibility } => ModuleEntry::Import { source, visibility },
-            ModuleEntry::TypeDef { info, visibility, constructor_scheme, sexp } => {
-                ModuleEntry::TypeDef { info, visibility, constructor_scheme, sexp }
+            ModuleEntry::TypeDef { info, visibility, constructor_scheme } => {
+                ModuleEntry::TypeDef { info, visibility, constructor_scheme }
             }
             ModuleEntry::IntrinsicType { ty, visibility } => {
                 ModuleEntry::IntrinsicType { ty, visibility }
             }
-            ModuleEntry::TraitDecl { decl, visibility, sexp } => {
-                ModuleEntry::TraitDecl { decl, visibility, sexp }
+            ModuleEntry::TraitDecl { decl, visibility } => {
+                ModuleEntry::TraitDecl { decl, visibility }
             }
             // ModuleEntry::Constructor variant retired — constructors are now
             // ModuleEntry::Def entries with kind: DefKind::Constructor { .. }
@@ -650,11 +650,29 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         visibility: Visibility,
     },
     /// A type definition (deftype).
+    ///
+    /// **Introspection lives elsewhere — symmetric across all
+    /// introspection-bearing variants (Decision 41 operative).** The prior
+    /// `sexp: Option<Sexp>` field was retired in S70 Phase 3 — every
+    /// construction site wrote `None` (7 sites across
+    /// `cranelisp-typecheck::builtins` + `cranelisp-typecheck::adt`); the
+    /// only reader was a dead-arm pattern-match in `src/save.rs`'s
+    /// `generate_types`. Per-symbol source / sexp / expanded / clif_ir /
+    /// disasm / code_size for type definitions live on the per-`FQSymbol`
+    /// `Introspection` record in the integration layer's
+    /// `SharedState.introspection: Option<DashMap<FQSymbol, Introspection>>`
+    /// (defined at `src/session_v4.rs:566`), written directly by frontend
+    /// during expand and by backend during `compile_to_module` (gated by
+    /// `Option<&DashMap<FQSymbol, Introspection>>` parameter — the
+    /// `Option`'s `is_some()` IS the mode discriminator, Decision 38).
+    /// Symmetric with `DefKind::Macro` (which shed the same shadow fields
+    /// pre-S70) and with `DefKind::UserFn` / `DefKind::Constructor` (which
+    /// never carried them). See the `DefKind::Macro` rustdoc below for the
+    /// full Decision-41 settlement including the cache-hit residual gap.
     TypeDef {
         info: TypeDefInfo,
         visibility: Visibility,
         constructor_scheme: Option<Scheme>,
-        sexp: Option<Sexp>,
     },
     /// Compiler-intrinsic scalar type (Int, Bool, Float, String).
     ///
@@ -688,10 +706,27 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         visibility: Visibility,
     },
     /// A trait declaration (deftrait, Ring 2).
+    ///
+    /// **Introspection lives elsewhere — symmetric across all
+    /// introspection-bearing variants (Decision 41 operative).** The prior
+    /// `sexp: Option<Sexp>` field was retired in S70 Phase 3 — both
+    /// construction sites in `cranelisp-typecheck::traits` wrote `None`; the
+    /// only reader was a dead-arm pattern-match in `src/save.rs`'s
+    /// `generate_traits`. Per-symbol source / sexp / expanded / clif_ir /
+    /// disasm / code_size for trait declarations live on the per-`FQSymbol`
+    /// `Introspection` record in the integration layer's
+    /// `SharedState.introspection: Option<DashMap<FQSymbol, Introspection>>`
+    /// (defined at `src/session_v4.rs:566`), written directly by frontend
+    /// during expand and by backend during `compile_to_module` (gated by
+    /// `Option<&DashMap<FQSymbol, Introspection>>` parameter — the
+    /// `Option`'s `is_some()` IS the mode discriminator, Decision 38).
+    /// Symmetric with `ModuleEntry::TypeDef` and `DefKind::Macro` (which all
+    /// shed the same shadow fields pre/at S70). See the `DefKind::Macro`
+    /// rustdoc below for the full Decision-41 settlement including the
+    /// cache-hit residual gap.
     TraitDecl {
         decl: TraitDecl,
         visibility: Visibility,
-        sexp: Option<Sexp>,
     },
     // ModuleEntry::Constructor variant retired. Constructors are now
     // ModuleEntry::Def entries with kind: DefKind::Constructor { type_name,
@@ -1054,9 +1089,38 @@ pub struct OverloadVariant {
 }
 
 /// A constrained polymorphic function awaiting monomorphisation (Ring 2).
+///
+/// **Single-variant invariant — structurally enforced.** The `variant:
+/// DefnVariant` field carries the body of a single-signature constrained
+/// fn. Multi-sig × constrained-poly combination is currently *rejected* by
+/// construction: `cranelisp-typecheck::program::collect_defns` filters out
+/// multi-sig defns with `if defn.is_multi_sig() { None }` (see
+/// `program.rs:2148`), and `detect_constrained_fns` (program.rs:1069) only
+/// sees the filtered single-sig set. The constrained-fn construction path
+/// and the multi-sig decomposition path are mutually-exclusive code paths
+/// — when `ConstrainedFn` is constructed, `variants.len() == 1` is a
+/// structural guarantee (`Defn::is_multi_sig()` returns
+/// `self.variants.len() > 1`, so single-sig defns have exactly one
+/// `DefnVariant`).
+///
+/// **Symmetry with `ModuleEntry::Def.ast`.** S69 Submission 35 narrowed
+/// `ModuleEntry::Def.ast: Option<Defn>` → `Option<DefnVariant>` on the
+/// observation that the outer `Defn` wrapper carries only metadata that
+/// duplicates the parent `Def` (name, docstring, variants, visibility,
+/// span — all canonical on the parent `Def`). S35 did not cascade to
+/// `ConstrainedFn.defn`, leaving the asymmetry: one of the two sibling
+/// sites holding "function body" payload narrowed; the other didn't. S70
+/// Phase 3 closes the asymmetry — `ConstrainedFn.variant: DefnVariant`
+/// matches `Def.ast: Option<DefnVariant>` in shape and Decision-grounding.
+///
+/// **Future-state note.** If multi-sig × constrained-poly combination
+/// becomes supported (currently rejected by the filter at
+/// `program.rs:2148`), this field may need to expand to `Vec<DefnVariant>`
+/// at that time. No decision pending; tracked only here as a forward
+/// pointer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConstrainedFn {
-    pub defn: Defn,
+    pub variant: DefnVariant,
     pub scheme: Scheme,
 }
 
@@ -1496,7 +1560,7 @@ where
 mod tests {
     use super::*;
     use crate::{
-        Defn, DefnVariant, Expr, FQSymbol, FQTypeName, ModuleName, Scheme, Span, Symbol, Type,
+        DefnVariant, Expr, FQSymbol, FQTypeName, ModuleName, Scheme, Span, Symbol, Type,
         TypeDefInfo, TypeName, Visibility,
     };
     use std::collections::HashMap;
@@ -1543,19 +1607,11 @@ mod tests {
         }
     }
 
-    /// A trivial one-variant `Defn` used where a full frontend `Defn` is still
-    /// required (e.g., `ConstrainedFn { defn: Defn, .. }` continues to carry the
-    /// frontend AST node — the typecheck-side decomposition into per-variant
-    /// Defs operates on the frontend form).
-    fn trivial_defn(name: &str) -> Defn {
-        Defn {
-            name: Symbol::from(name),
-            docstring: None,
-            variants: vec![trivial_variant(name)],
-            visibility: Visibility::Public,
-            span: Span::SYNTHETIC,
-        }
-    }
+    // `trivial_defn` test helper retired in S70 Phase 3 alongside
+    // `ConstrainedFn { defn: Defn }` → `{ variant: DefnVariant }` narrow.
+    // Tests construct `ConstrainedFn { variant: trivial_variant(name), .. }`
+    // directly — the outer `Defn` wrapper duplicated metadata already on the
+    // parent `Def` entry (parallel to S69 Submission 35's `Def.ast` narrow).
 
     // spec: design/typecheck/ast-annotation.md §9.5 — defined_symbols filter predicate
     #[test]
@@ -1583,7 +1639,7 @@ mod tests {
         // (c) UserFn template with constrained_fn: Some(_) — MUST NOT appear,
         // even if ast happens to be Some(_) (§9.5 filter excludes templates by kind).
         let template_cf = ConstrainedFn {
-            defn: trivial_defn("template"),
+            variant: trivial_variant("template"),
             scheme: Scheme {
                 type_vars: vec![],
                 constraints: HashMap::new(),
@@ -1613,7 +1669,6 @@ mod tests {
                 },
                 visibility: Visibility::Public,
                 constructor_scheme: None,
-                sexp: None,
             },
         );
 

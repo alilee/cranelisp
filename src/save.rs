@@ -78,13 +78,13 @@ pub fn generate_module_source(
     }
 
     // 5. Trait declarations (alphabetical)
-    let trait_section = generate_traits(symbol_table);
+    let trait_section = generate_traits(symbol_table, introspection, module_path);
     if !trait_section.is_empty() {
         sections.push(trait_section);
     }
 
     // 6. Type definitions (alphabetical)
-    let type_section = generate_types(symbol_table);
+    let type_section = generate_types(symbol_table, introspection, module_path);
     if !type_section.is_empty() {
         sections.push(type_section);
     }
@@ -217,12 +217,36 @@ fn generate_exports(specs: &[ExportSpec]) -> String {
     format!("(export [{}])", parts.join(" "))
 }
 
-fn generate_traits(st: &crate::code::SessionSymbolTable) -> String {
+/// Look up the canonical `sexp` for a symbol from the Introspection DashMap
+/// (per Decision 41: `Introspection` is the single store for source/sexp/
+/// expanded/clif_ir/disasm/code_size across all `DefKind` variants and
+/// `ModuleEntry::{TypeDef, TraitDecl}`). Returns `None` for cache-loaded
+/// modules whose Introspection has not been rehydrated — tracked at
+/// FIXME 0220 (lazy re-read on demand); the symmetric None-skip is the
+/// correct behaviour at this site.
+fn introspection_sexp(
+    introspection: &DashMap<FQSymbol, Introspection>,
+    module_path: &ModuleFullPath,
+    name: &cranelisp_types::Symbol,
+) -> Option<Sexp> {
+    let fq = FQSymbol {
+        module: module_path.clone(),
+        symbol: name.clone(),
+    };
+    introspection
+        .get(&fq)
+        .and_then(|intro| intro.sexp.clone())
+}
+
+fn generate_traits(
+    st: &crate::code::SessionSymbolTable,
+    introspection: &DashMap<FQSymbol, Introspection>,
+    module_path: &ModuleFullPath,
+) -> String {
     let mut items: Vec<(String, String)> = Vec::new();
     for (name, entry) in st.all_symbols() {
-        if let ModuleEntry::TraitDecl {
-            sexp: Some(sexp), ..
-        } = entry
+        if let ModuleEntry::TraitDecl { .. } = entry
+            && let Some(sexp) = introspection_sexp(introspection, module_path, name)
         {
             items.push((name.to_string(), sexp.format_indented(0)));
         }
@@ -235,12 +259,15 @@ fn generate_traits(st: &crate::code::SessionSymbolTable) -> String {
         .join("\n\n")
 }
 
-fn generate_types(st: &crate::code::SessionSymbolTable) -> String {
+fn generate_types(
+    st: &crate::code::SessionSymbolTable,
+    introspection: &DashMap<FQSymbol, Introspection>,
+    module_path: &ModuleFullPath,
+) -> String {
     let mut items: Vec<(String, String)> = Vec::new();
     for (name, entry) in st.all_symbols() {
-        if let ModuleEntry::TypeDef {
-            sexp: Some(sexp), ..
-        } = entry
+        if let ModuleEntry::TypeDef { .. } = entry
+            && let Some(sexp) = introspection_sexp(introspection, module_path, name)
         {
             items.push((name.to_string(), sexp.format_indented(0)));
         }
@@ -273,32 +300,29 @@ fn generate_fns_and_macros(
     let mut items: Vec<(String, Sexp)> = Vec::new();
 
     for (name, entry) in st.all_symbols() {
-        // Skip mangled names (impl methods like `show$Int`)
+        // Skip mangled names (impl methods like `show$Int`, macro clause
+        // variants like `m$clause-0`)
         if name.contains('$') {
             continue;
         }
-        match entry {
-            ModuleEntry::Def { kind, .. } => {
-                // Only user-defined functions, not primitives or special forms
-                if !matches!(kind.as_ref(), cranelisp_types::DefKind::UserFn { .. }) {
-                    continue;
-                }
-                // Get sexp from introspection
-                let fq = FQSymbol {
-                    module: module_path.clone(),
-                    symbol: name.clone(),
-                };
-                if let Some(intro) = introspection.get(&fq)
-                    && let Some(ref sexp) = intro.sexp {
-                        items.push((name.to_string(), sexp.clone()));
-                    }
-            }
-            ModuleEntry::Macro {
-                sexp: Some(sexp), ..
-            } => {
-                items.push((name.to_string(), sexp.clone()));
-            }
-            _ => {}
+        // Predicate: include both UserFn and Macro Def entries for
+        // regeneration; skip primitives, constructors, platform effects,
+        // overloaded base entries, etc. Per FIXME 0219 — macros surface
+        // through the same `ModuleEntry::Def` arm symmetric with UserFn.
+        let include = matches!(
+            entry,
+            ModuleEntry::Def { kind, .. }
+                if matches!(
+                    kind.as_ref(),
+                    cranelisp_types::DefKind::UserFn { .. }
+                        | cranelisp_types::DefKind::Macro { .. }
+                )
+        );
+        if !include {
+            continue;
+        }
+        if let Some(sexp) = introspection_sexp(introspection, module_path, name) {
+            items.push((name.to_string(), sexp));
         }
     }
 

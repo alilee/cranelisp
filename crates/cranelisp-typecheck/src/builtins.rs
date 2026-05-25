@@ -344,7 +344,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 },
                 visibility: Visibility::Public,
                 constructor_scheme: None,
-                sexp: None,
             },
         );
     }
@@ -435,7 +434,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     },
                     visibility: Visibility::Public,
                     constructor_scheme: None,
-                    sexp: None,
                 },
             );
         }
@@ -579,7 +577,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     },
                     visibility: Visibility::Public,
                     constructor_scheme: None,
-                    sexp: None,
                 },
             );
         }
@@ -645,7 +642,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     },
                     visibility: Visibility::Public,
                     constructor_scheme: None,
-                    sexp: None,
                 },
             );
         }

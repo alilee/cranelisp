@@ -64,7 +64,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 },
                 visibility,
                 constructor_scheme: None,
-                sexp: None,
             },
         );
 
@@ -136,7 +135,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 },
                 visibility,
                 constructor_scheme: None,
-                sexp: None,
             },
         );
 
@@ -168,7 +166,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 info: type_def_info,
                 visibility,
                 constructor_scheme: ctor_scheme,
-                sexp: None,
             },
         );
     }

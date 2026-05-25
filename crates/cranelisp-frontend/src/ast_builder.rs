@@ -362,18 +362,12 @@ pub(crate) fn parse_deftype(
         }
     };
 
-    // ParsedEntry::TypeDef carries type_params as `Vec<TypeName>` (per the
-    // canonical types-crate shape); convert from `Vec<Symbol>` produced
-    // by desugar_type_def.
-    let type_params_as_names: Vec<TypeName> = resolved_params
-        .iter()
-        .map(|s| TypeName::from(s.as_ref()))
-        .collect();
-
+    // ParsedEntry::TypeDef carries type_params as `Vec<Symbol>` per the
+    // canonical types-crate shape (S70 Phase 3 step 2A); pass through.
     let mut out = Vec::with_capacity(constructors.len() + 1);
     out.push(ParsedEntry::TypeDef {
         name: type_name.clone(),
-        type_params: type_params_as_names,
+        type_params: resolved_params.clone(),
         constructors: constructors.clone(),
         visibility,
         docstring,

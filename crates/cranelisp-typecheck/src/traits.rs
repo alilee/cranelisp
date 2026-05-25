@@ -134,7 +134,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             cranelisp_types::ModuleEntry::TraitDecl {
                 decl: decl.clone(),
                 visibility: decl.visibility,
-                sexp: None,
             },
         );
 
@@ -224,7 +223,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             cranelisp_types::ModuleEntry::TraitDecl {
                 decl: modified_decl,
                 visibility: decl.visibility,
-                sexp: None,
             },
         );
 
@@ -1315,7 +1313,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         };
 
         let scheme = constrained_fn.scheme.clone();
-        let defn = constrained_fn.defn.clone();
+        let defn = constrained_fn.variant.clone();
 
         // Instantiate, unify with arg types, and resolve concrete types
         let resolved = self.instantiate_and_resolve(state, &scheme, arg_types, call_span)?;
@@ -1593,7 +1591,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     if !scheme.vars.is_empty() && ast.is_some() =>
                 {
                     Some(ConstrainedFn {
-                        defn: ast.as_ref().unwrap().clone(),
+                        variant: ast.as_ref().unwrap().clone(),
                         scheme: scheme.clone(),
                     })
                 }
