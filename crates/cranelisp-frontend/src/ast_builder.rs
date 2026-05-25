@@ -257,7 +257,7 @@ pub(crate) fn parse_defn(
     // Detect single vs multi: Bracket -> single, List -> multi
     let variants = match &children[next] {
         Sexp::Bracket(..) => {
-            let (params, param_annotations) = build_annotated_params(&children[next])?;
+            let params = build_annotated_params(&children[next])?;
             let body_start = next + 1;
             if body_start >= children.len() {
                 return Err(parse_err("defn missing body", span));
@@ -268,7 +268,6 @@ pub(crate) fn parse_defn(
             }
             vec![DefnVariant {
                 params,
-                param_annotations,
                 body,
                 span,
             }]
@@ -306,11 +305,10 @@ fn build_defn_variant(sexp: &Sexp) -> Result<DefnVariant, CranelispError> {
     if children.len() != 2 {
         return Err(parse_err("defn variant requires params and body", span));
     }
-    let (params, param_annotations) = build_annotated_params(&children[0])?;
+    let params = build_annotated_params(&children[0])?;
     let body = build_expr(&children[1])?;
     Ok(DefnVariant {
         params,
-        param_annotations,
         body,
         span,
     })
@@ -852,7 +850,7 @@ fn build_impl_method(sexp: &Sexp) -> Result<Defn, CranelispError> {
         return Err(parse_err("method defn requires name, params, and body", span));
     }
     let name = get_defn_name(&children[1])?;
-    let (params, param_annotations) = build_annotated_params(&children[2])?;
+    let params = build_annotated_params(&children[2])?;
     let body = build_expr(&children[3])?;
 
     Ok(Defn {
@@ -860,7 +858,6 @@ fn build_impl_method(sexp: &Sexp) -> Result<Defn, CranelispError> {
         docstring: None,
         variants: vec![DefnVariant {
             params,
-            param_annotations,
             body,
             span,
         }],
@@ -1205,11 +1202,10 @@ fn build_fn(
     if children.len() != 3 {
         return Err(parse_err("fn requires param list and body", span));
     }
-    let (params, param_annotations) = build_annotated_params(&children[1])?;
+    let params = build_annotated_params(&children[1])?;
     let body = build_expr(&children[2])?;
     Ok(Expr::Lambda {
         params,
-        param_annotations,
         body: Box::new(body),
         span,
         inferred_type: None,
@@ -1415,13 +1411,16 @@ fn build_args_with_annotations(
 // ---------------------------------------------------------------------------
 
 /// Build annotated parameter list from a Bracket sexp.
-/// Returns (names, annotations).
+///
+/// Returns the fused `Vec<(Symbol, Option<TypeExpr>)>` shape per S69
+/// Submission 23 / 24 (Principle 18 — enforce invariants structurally;
+/// the prior parallel-vec `(Vec<Symbol>, Vec<Option<TypeExpr>>)` shape
+/// carried an unenforced `len()` lockstep invariant).
 fn build_annotated_params(
     sexp: &Sexp,
-) -> Result<(Vec<Symbol>, Vec<Option<TypeExpr>>), CranelispError> {
+) -> Result<Vec<(Symbol, Option<TypeExpr>)>, CranelispError> {
     let (items, _) = expect_bracket(sexp)?;
-    let mut names: Vec<Symbol> = Vec::new();
-    let mut annotations = Vec::new();
+    let mut params: Vec<(Symbol, Option<TypeExpr>)> = Vec::new();
     let mut i = 0;
 
     while i < items.len() {
@@ -1435,13 +1434,11 @@ fn build_annotated_params(
                 ));
             }
             let (name, _) = expect_symbol(&items[name_pos])?;
-            names.push(name.into());
-            annotations.push(Some(te));
+            params.push((name.into(), Some(te)));
             i = name_pos + 1;
         } else {
             let (name, _) = expect_symbol(&items[i])?;
-            names.push(name.into());
-            annotations.push(None);
+            params.push((name.into(), None));
             i += 1;
         }
     }
@@ -1449,7 +1446,7 @@ fn build_annotated_params(
     // Check for duplicate parameter names (spec §5.1.1 — defn params must be distinct,
     // except `_` which is a discard parameter exempt from the uniqueness check)
     let mut seen = HashSet::new();
-    for name in &names {
+    for (name, _) in &params {
         if name == "_" {
             continue;
         }
@@ -1461,8 +1458,7 @@ fn build_annotated_params(
         }
     }
 
-    let has_any = annotations.iter().any(|a| a.is_some());
-    Ok((names, if has_any { annotations } else { vec![] }))
+    Ok(params)
 }
 
 // ---------------------------------------------------------------------------
