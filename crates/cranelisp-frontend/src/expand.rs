@@ -267,11 +267,14 @@ where
 {
     match table.get(name) {
         Some(ModuleEntry::Macro { .. }) => true,
-        Some(ModuleEntry::Import { source } | ModuleEntry::Reexport { source }) => {
-            // One-hop chain follow per Principle 17. Avoids infinite loops
-            // by NOT recursing further: an Import-of-an-Import is treated
-            // as a non-macro for resolution purposes (the typecheck-side
-            // expects a single hop to a real entry).
+        Some(ModuleEntry::Import { source, .. }) => {
+            // One-hop chain follow per Principle 17 + Decision 45. Walks
+            // `Import` edges regardless of visibility — the prior
+            // `ModuleEntry::Reexport` variant collapsed into
+            // `Import { visibility: Public }`. Avoids infinite loops by NOT
+            // recursing further: an Import-of-an-Import is treated as a
+            // non-macro for resolution purposes (the typecheck-side expects
+            // a single hop to a real entry).
             if let Some(home) = symbol_tables.get(&source.module) {
                 matches!(home.get(source.symbol.as_ref()), Some(ModuleEntry::Macro { .. }))
             } else {
@@ -448,6 +451,7 @@ mod tests {
                     module: home.clone(),
                     symbol: Symbol::from("when"),
                 },
+                visibility: Visibility::Public,
             },
         );
         let user_table = SymbolTable {

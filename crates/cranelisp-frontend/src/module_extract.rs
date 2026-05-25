@@ -4,9 +4,9 @@
 //! forms into `ExtractedDeclarations`, returning remaining sexps for further processing.
 //! This runs before macro expansion per spec §8.12.1.
 
-use cranelisp_types::{ErrorLocation, 
+use cranelisp_types::{ErrorLocation,
     CranelispError, ExportSpec, ImportNames, ImportSpec, ModDecl, ModuleFullPath, ModuleName,
-    PlatformSpec, Sexp, Span,
+    PlatformSpec, Sexp, Span, Visibility,
 };
 
 /// Extracted module-level declarations from top-level S-expressions.
@@ -41,7 +41,12 @@ pub fn extract_module_declarations(
                 if let Sexp::Symbol(head, _) = &elems[0] {
                     match head.as_str() {
                         "mod" | "mod-" => {
-                            let decl = parse_mod_decl(elems, *span, head == "mod-")?;
+                            let visibility = if head == "mod-" {
+                                Visibility::Private
+                            } else {
+                                Visibility::Public
+                            };
+                            let decl = parse_mod_decl(elems, *span, visibility)?;
                             mod_decls.push(decl);
                             continue;
                         }
@@ -85,7 +90,7 @@ pub fn extract_module_declarations(
 // ---------------------------------------------------------------------------
 
 /// Parse `(mod name)`, `(mod name form...)`, `(mod- name)`, or `(mod- name form...)`.
-fn parse_mod_decl(elems: &[Sexp], span: Span, is_private: bool) -> Result<ModDecl, CranelispError> {
+fn parse_mod_decl(elems: &[Sexp], span: Span, visibility: Visibility) -> Result<ModDecl, CranelispError> {
     if elems.len() < 2 {
         return Err(CranelispError::ModuleError {
             message: "mod declaration requires a name".to_string(),
@@ -103,7 +108,7 @@ fn parse_mod_decl(elems: &[Sexp], span: Span, is_private: bool) -> Result<ModDec
 
     Ok(ModDecl {
         name: ModuleName::from(name),
-        is_private,
+        visibility,
         inline_body,
         span,
     })
@@ -408,8 +413,12 @@ pub(crate) fn parse_mod_sexp(sexp: &Sexp) -> Result<ModDecl, CranelispError> {
     match sexp {
         Sexp::List(elems, span) if !elems.is_empty() => {
             if let Sexp::Symbol(head, _) = &elems[0] {
-                let is_private = head == "mod-";
-                parse_mod_decl(elems, *span, is_private)
+                let visibility = if head == "mod-" {
+                    Visibility::Private
+                } else {
+                    Visibility::Public
+                };
+                parse_mod_decl(elems, *span, visibility)
             } else {
                 Err(CranelispError::ModuleError {
                     message: "expected (mod ...) or (mod- ...) form".to_string(),
@@ -460,7 +469,7 @@ fn expect_symbol(sexp: &Sexp, context: &str) -> Result<String, CranelispError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::Sexp;
+    use cranelisp_types::{Sexp, Visibility};
 
     /// Helper: parse source text into sexps via the reader.
     fn parse(src: &str) -> Vec<Sexp> {
@@ -484,7 +493,7 @@ mod tests {
         let (ms, remaining) = extract("(mod util)");
         assert_eq!(ms.mod_decls.len(), 1);
         assert_eq!(&*ms.mod_decls[0].name, "util");
-        assert!(!ms.mod_decls[0].is_private);
+        assert!(matches!(ms.mod_decls[0].visibility, Visibility::Public));
         assert!(ms.mod_decls[0].inline_body.is_none());
         assert!(remaining.is_empty());
     }
@@ -495,7 +504,7 @@ mod tests {
         let (ms, remaining) = extract("(mod- internal)");
         assert_eq!(ms.mod_decls.len(), 1);
         assert_eq!(&*ms.mod_decls[0].name, "internal");
-        assert!(ms.mod_decls[0].is_private);
+        assert!(matches!(ms.mod_decls[0].visibility, Visibility::Private));
         assert!(ms.mod_decls[0].inline_body.is_none());
         assert!(remaining.is_empty());
     }
@@ -508,7 +517,7 @@ mod tests {
         );
         assert_eq!(ms.mod_decls.len(), 1);
         assert_eq!(&*ms.mod_decls[0].name, "test");
-        assert!(!ms.mod_decls[0].is_private);
+        assert!(matches!(ms.mod_decls[0].visibility, Visibility::Public));
         let body = ms.mod_decls[0].inline_body.as_ref().unwrap();
         assert_eq!(body.len(), 2); // import + defn
         assert!(remaining.is_empty());
@@ -713,9 +722,9 @@ mod tests {
         let (ms, remaining) = extract(src);
         assert_eq!(ms.mod_decls.len(), 2);
         assert_eq!(&*ms.mod_decls[0].name, "util");
-        assert!(!ms.mod_decls[0].is_private);
+        assert!(matches!(ms.mod_decls[0].visibility, Visibility::Public));
         assert_eq!(&*ms.mod_decls[1].name, "internal");
-        assert!(ms.mod_decls[1].is_private);
+        assert!(matches!(ms.mod_decls[1].visibility, Visibility::Private));
         assert_eq!(ms.import_specs.len(), 1);
         assert_eq!(ms.export_specs.len(), 1);
         assert_eq!(remaining.len(), 2); // two defn forms
