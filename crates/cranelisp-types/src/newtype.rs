@@ -166,6 +166,54 @@ impl std::fmt::Display for TraitRef {
     }
 }
 
+/// Syntactic-stage symbol reference — captures **as-written** qualification.
+///
+/// At the AST stage:
+/// - `(Some x)` → `SymbolRef { module: None, name: "Some" }`
+/// - `(option/Some x)` → `SymbolRef { module: Some("option"), name: "Some" }`
+/// - `(core.option/Some x)` → `SymbolRef { module: Some("core.option"), name: "Some" }`
+///
+/// `SymbolRef` is the **syntactic-stage** counterpart to `FQSymbol` — same
+/// structural shape (module + name) but with `Option<ModuleFullPath>` because
+/// the syntactic stage captures the user's input directly, including the
+/// unqualified case. Resolves to `FQSymbol` at typecheck via the import graph
+/// per Decision 47. The unqualified case (`module: None`) is the common one;
+/// resolution looks the name up against current-scope-plus-imports at the
+/// `SymbolRef → FQSymbol` lift site inside `check_form` / match-typing.
+///
+/// Same pattern as `TraitRef` and `TypeRef`. See
+/// `design/arch/bounded-contexts.md` §7 "FQTypeName binding" and Decision 47
+/// for the producer/consumer split.
+///
+/// The first consumer is `Pattern::Constructor.name` (constructor pattern in
+/// `match` arms) — the bare-`Symbol` payload there was the last "bare name
+/// slips through past typecheck" site flagged by the S70 cranelisp-types
+/// solidness sweep (finding #4); the resolved-stage `FQSymbol` materialises
+/// in a sidecar (`MethodResolutions.pattern_ctors`) rather than as an
+/// annotation field on `Pattern`, mirroring the producer/consumer split for
+/// `TraitRef` and `TypeRef` where the syntactic-stage type stays on the AST
+/// and the resolved-stage data lives in adjacent data structures.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SymbolRef {
+    pub module: Option<ModuleFullPath>,
+    pub name: Symbol,
+}
+
+impl SymbolRef {
+    pub fn new(module: Option<ModuleFullPath>, name: Symbol) -> Self {
+        SymbolRef { module, name }
+    }
+}
+
+impl std::fmt::Display for SymbolRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.module {
+            None => write!(f, "{}", self.name),
+            Some(m) => write!(f, "{}/{}", m, self.name),
+        }
+    }
+}
+
 /// Syntactic-stage type reference — captures **as-written** qualification.
 ///
 /// At the AST stage:

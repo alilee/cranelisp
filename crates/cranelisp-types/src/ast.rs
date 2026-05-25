@@ -2,7 +2,9 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{FQTypeName, ResolvedCall, Span, Symbol, TraitName, TraitRef, Type, TypeName, TypeRef};
+use crate::{
+    FQTypeName, ResolvedCall, Span, Symbol, SymbolRef, TraitName, TraitRef, Type, TypeName, TypeRef,
+};
 
 // --- Type Expressions ---
 
@@ -59,10 +61,31 @@ impl TypeExpr {
 /// Pattern in a match expression.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Pattern {
-    /// Constructor pattern: `(Some x)`, `None`, `(Cons h t)`
-    /// Ring 0: nullary constructors only (empty bindings)
+    /// Constructor pattern: `(Some x)`, `None`, `(Cons h t)`,
+    /// `(option/Some x)`, `(core.option/Some x)`.
+    ///
+    /// `name: SymbolRef` carries **as-written** qualification at the
+    /// syntactic stage — the same shape that `TraitRef` and `TypeRef`
+    /// use for trait and type references. The unqualified case
+    /// (`module: None`) is the common one; explicit qualification is
+    /// captured structurally rather than letting a "bare name slip
+    /// through" the AST.
+    ///
+    /// The resolved-stage `FQSymbol` for the constructor lives in a
+    /// **sidecar** (`MethodResolutions.pattern_ctors`, keyed by `span`)
+    /// rather than as an annotation field on this variant — mirrors the
+    /// producer/consumer split for `TraitRef`/`TypeRef` per Decision 47
+    /// (FQ binding at resolved-stage boundaries). Pattern matching is
+    /// consumed *post-typecheck* by backend codegen — that IS a
+    /// resolved-stage boundary; the sidecar carries the FQ resolution
+    /// without inflating the syntactic-stage AST shape. See
+    /// `design/arch/bounded-contexts.md` §7 "FQTypeName binding" and
+    /// `design/arch/cranelisp-types-solidness-sweep-s70.md` finding #4
+    /// for the design grounding.
+    ///
+    /// Ring 0: nullary constructors only (empty bindings).
     Constructor {
-        name: Symbol,
+        name: SymbolRef,
         bindings: Vec<Symbol>,
         span: Span,
     },

@@ -1,21 +1,43 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::{Defn, FQTraitName, FQTypeName, JitSymbol, Scheme, Span, Symbol, Type};
+use crate::{Defn, FQSymbol, FQTraitName, FQTypeName, JitSymbol, Scheme, Span, Symbol, Type};
 
-/// Map from call site span to how that call was resolved by the typechecker.
+/// Per-Span resolved-stage data produced by typecheck, consumed by backend.
+///
+/// Each field maps an AST-node span to the resolved-stage information that
+/// typecheck materialised for that node. The original payload — `resolved_calls`
+/// — carries call-site resolution (which `Apply` expression resolved to which
+/// trait method / sig variant / curried wrapper / builtin). `pattern_ctors`
+/// (S70 finding #4) extends the same pattern to constructor patterns inside
+/// `match` arms: the syntactic-stage `Pattern::Constructor.name: SymbolRef`
+/// stays on the AST; the resolved-stage `FQSymbol` materialises here, keyed
+/// by the pattern's span.
+///
+/// **Why one struct rather than two.** Pattern-constructor resolution and
+/// call-site resolution share the same lifecycle (produced post-typecheck;
+/// consumed by backend codegen), the same access shape (per-Span lookup),
+/// and the same DTO discipline (data-record; field set IS the contract).
+/// Splitting into a sibling `PatternResolutions` would multiply the plumbing
+/// through `CheckResult` / `MonoDefn` / cache without adding semantic
+/// distinction. The sidecar choice (vs. embedding `Option<FQSymbol>` on
+/// `Pattern::Constructor`) was user-arbitrated to mirror the producer/consumer
+/// split for `TraitRef` and `TypeRef`: the syntactic-stage type stays on the
+/// AST, the resolved-stage data lives adjacent.
 ///
 /// Data-record DTO per `design/arch/bounded-contexts.md` §7 ("Field-level access on state types is discouraged outside the types crate") —
-/// the `resolved_calls` field IS the public contract; serde round-trips
-/// structurally. Wrapped (rather than type-aliased) per the facade
-/// §"`#[non_exhaustive]` policy" (every public struct/enum MUST be
-/// `#[non_exhaustive]`; the policy intent — extensibility, allow adding
-/// fields without breaking consumers — cannot apply to a type alias because
-/// Rust forbids the attribute on aliases). The wrapper admits future-field
-/// additions without breaking the public-api baseline.
+/// each field IS the public contract; serde round-trips structurally. Wrapped
+/// (rather than type-aliased) per the facade §"`#[non_exhaustive]` policy"
+/// (every public struct/enum MUST be `#[non_exhaustive]`; the policy intent —
+/// extensibility, allow adding fields without breaking consumers — cannot
+/// apply to a type alias because Rust forbids the attribute on aliases). The
+/// wrapper admits future-field additions without breaking the public-api
+/// baseline; the `pattern_ctors` field landed in S70 step 3 (finding #4) is
+/// the first such addition, vindicating the wrapper choice.
 ///
 /// Grounded by:
 /// - `design/arch/bounded-contexts.md` §7 + crate-root `//!` `#[non_exhaustive]` policy (binding)
+/// - Decision 47 (FQ binding at resolved-stage boundaries — `pattern_ctors`)
 /// - Principle 8 (no interim implementations — the alias was a stand-in
 ///   that committed the surface to `HashMap` forever)
 /// - Principle 13 (`interfaces.md` is auditable + `cargo-public-api`-gateable
@@ -28,11 +50,24 @@ use crate::{Defn, FQTraitName, FQTypeName, JitSymbol, Scheme, Span, Symbol, Type
 /// Such additions land as new `pub` fields on this struct without consumer
 /// churn.
 ///
-/// Closes S69 Submission 31 (audit finding S-DRIFT-8).
+/// Closes S69 Submission 31 (audit finding S-DRIFT-8); extended in S70 step 3
+/// (sweep finding #4) with `pattern_ctors` for `Pattern::Constructor` FQ
+/// resolution at the post-typecheck boundary.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct MethodResolutions {
+    /// Per-`Apply`-span resolution: how typecheck resolved each call site.
     pub resolved_calls: HashMap<Span, ResolvedCall>,
+    /// Per-`Pattern::Constructor`-span FQ resolution: the constructor's
+    /// fully-qualified symbol (module-defining-the-ADT-constructor +
+    /// constructor name) as resolved by typecheck against the scrutinee
+    /// type. The syntactic-stage `Pattern::Constructor.name: SymbolRef`
+    /// stays on the AST; backend codegen reads this map by pattern span to
+    /// recover the FQ identity for tag/layout lookup. Per Decision 47 —
+    /// pattern matching is a resolved-stage boundary, and the bare
+    /// `Symbol` slipping through was the D47-violation pattern flagged by
+    /// the S70 cranelisp-types solidness sweep finding #4.
+    pub pattern_ctors: HashMap<Span, FQSymbol>,
 }
 
 impl MethodResolutions {

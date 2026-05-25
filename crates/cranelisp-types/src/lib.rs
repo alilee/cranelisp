@@ -19,10 +19,13 @@
 //!   as the cross-crate boundary type for resolved-stage type identifiers,
 //!   with two narrow exceptions (syntactic-lift sites at `check_form`;
 //!   receiver-pinned helpers where `&self` is the module context).
-//! - **Syntactic-stage references** ([`TraitRef`], [`TypeRef`]) — the
-//!   `Option<ModuleFullPath>` counterparts to `FQTraitName` / `FQTypeName`
-//!   capturing **as-written** qualification before typecheck lifts to the FQ
-//!   form.
+//! - **Syntactic-stage references** ([`TraitRef`], [`TypeRef`], [`SymbolRef`])
+//!   — the `Option<ModuleFullPath>` counterparts to `FQTraitName` /
+//!   `FQTypeName` / `FQSymbol` capturing **as-written** qualification before
+//!   typecheck lifts to the FQ form. `SymbolRef` is the syntactic-stage
+//!   payload for `Pattern::Constructor.name`; resolved-stage `FQSymbol` for
+//!   the constructor materialises in `MethodResolutions.pattern_ctors` per
+//!   Decision 47.
 //! - **AST** ([`Sexp`], [`Expr`], [`Pattern`], [`MatchArm`], [`Defn`],
 //!   [`DefnVariant`], [`FieldDef`], [`ConstructorDef`], [`TraitDecl`],
 //!   [`TraitImpl`], [`TraitMethodSig`], [`TypeExpr`], [`TopLevel`],
@@ -214,5 +217,5 @@ pub use marshal::{
 // String newtypes and fully-qualified name types
 pub use newtype::{
     FQSymbol, FQTraitName, FQTypeName, JitSymbol, LinkerSymbol, ModuleFullPath, ModuleName, Symbol,
-    TraitName, TraitRef, TypeName, TypeRef,
+    SymbolRef, TraitName, TraitRef, TypeName, TypeRef,
 };

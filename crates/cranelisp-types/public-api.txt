@@ -1,3 +1,51 @@
+ Documenting cranelisp-types v0.1.0 (/Users/alilee/Projects.nosync/rust/cranelisp/crates/cranelisp-types)
+warning: unclosed HTML tag `Symbol`
+   --> crates/cranelisp-types/src/ast.rs:560:32
+    |
+560 | /// uniformly. `type_args` (Vec<Symbol>) is no longer a separate field — the
+    |                                ^^^^^^^^
+    |
+    = note: `#[warn(rustdoc::invalid_html_tags)]` on by default
+help: try marking as source code
+    |
+560 | /// uniformly. `type_args` (`Vec<Symbol>`) is no longer a separate field — the
+    |                             +           +
+
+warning: unclosed HTML tag `String`
+ --> crates/cranelisp-types/src/newtype.rs:6:35
+  |
+6 | /// Impls: Deref<Target=str>, From<String>, From<&str>, AsRef<str>, Display, Borrow<str>
+  |                                   ^^^^^^^^
+  |
+help: try marking as source code
+  |
+6 | /// Impls: Deref<Target=str>, `From<String>`, From<&str>, AsRef<str>, Display, Borrow<str>
+  |                               +            +
+
+warning: unclosed HTML tag `str`
+ --> crates/cranelisp-types/src/newtype.rs:6:62
+  |
+6 | /// Impls: Deref<Target=str>, From<String>, From<&str>, AsRef<str>, Display, Borrow<str>
+  |                                                              ^^^^^
+  |
+help: try marking as source code
+  |
+6 | /// Impls: Deref<Target=str>, From<String>, From<&str>, `AsRef<str>`, Display, Borrow<str>
+  |                                                         +          +
+
+warning: unclosed HTML tag `str`
+ --> crates/cranelisp-types/src/newtype.rs:6:84
+  |
+6 | /// Impls: Deref<Target=str>, From<String>, From<&str>, AsRef<str>, Display, Borrow<str>
+  |                                                                                    ^^^^^
+  |
+help: try marking as source code
+  |
+6 | /// Impls: Deref<Target=str>, From<String>, From<&str>, AsRef<str>, Display, `Borrow<str>`
+  |                                                                              +           +
+
+warning: `cranelisp-types` (lib doc) generated 4 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.28s
 pub mod cranelisp_types
 pub macro cranelisp_types::string_newtype!
 pub enum cranelisp_types::CodegenBehaviour
@@ -606,7 +654,7 @@ impl<T> cranelisp_types::LinkerStore for cranelisp_types::ParsedEntry where T: c
 pub enum cranelisp_types::Pattern
 pub cranelisp_types::Pattern::Constructor
 pub cranelisp_types::Pattern::Constructor::bindings: alloc::vec::Vec<cranelisp_types::Symbol>
-pub cranelisp_types::Pattern::Constructor::name: cranelisp_types::Symbol
+pub cranelisp_types::Pattern::Constructor::name: cranelisp_types::SymbolRef
 pub cranelisp_types::Pattern::Constructor::span: cranelisp_types::Span
 pub cranelisp_types::Pattern::Var
 pub cranelisp_types::Pattern::Var::name: cranelisp_types::Symbol
@@ -2536,6 +2584,7 @@ impl<T> cranelisp_types::CodeStore for cranelisp_types::MatchArm where T: core::
 impl<T> cranelisp_types::LinkerStore for cranelisp_types::MatchArm where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 impl<T> serde_core::de::DeserializeOwned for cranelisp_types::MatchArm where T: for<'de> serde_core::de::Deserialize<'de>
 #[non_exhaustive] pub struct cranelisp_types::MethodResolutions
+pub cranelisp_types::MethodResolutions::pattern_ctors: std::collections::hash::map::HashMap<cranelisp_types::Span, cranelisp_types::FQSymbol>
 pub cranelisp_types::MethodResolutions::resolved_calls: std::collections::hash::map::HashMap<cranelisp_types::Span, cranelisp_types::ResolvedCall>
 impl cranelisp_types::MethodResolutions
 pub fn cranelisp_types::MethodResolutions::new() -> Self
@@ -3080,6 +3129,63 @@ pub fn cranelisp_types::Symbol::from(t: T) -> T
 impl<T> cranelisp_types::CodeStore for cranelisp_types::Symbol where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 impl<T> cranelisp_types::LinkerStore for cranelisp_types::Symbol where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 impl<T> serde_core::de::DeserializeOwned for cranelisp_types::Symbol where T: for<'de> serde_core::de::Deserialize<'de>
+pub struct cranelisp_types::SymbolRef
+pub cranelisp_types::SymbolRef::module: core::option::Option<cranelisp_types::ModuleFullPath>
+pub cranelisp_types::SymbolRef::name: cranelisp_types::Symbol
+impl cranelisp_types::SymbolRef
+pub fn cranelisp_types::SymbolRef::new(module: core::option::Option<cranelisp_types::ModuleFullPath>, name: cranelisp_types::Symbol) -> Self
+impl core::clone::Clone for cranelisp_types::SymbolRef
+pub fn cranelisp_types::SymbolRef::clone(&self) -> cranelisp_types::SymbolRef
+impl core::cmp::Eq for cranelisp_types::SymbolRef
+impl core::cmp::PartialEq for cranelisp_types::SymbolRef
+pub fn cranelisp_types::SymbolRef::eq(&self, other: &cranelisp_types::SymbolRef) -> bool
+impl core::fmt::Debug for cranelisp_types::SymbolRef
+pub fn cranelisp_types::SymbolRef::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for cranelisp_types::SymbolRef
+pub fn cranelisp_types::SymbolRef::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for cranelisp_types::SymbolRef
+pub fn cranelisp_types::SymbolRef::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::StructuralPartialEq for cranelisp_types::SymbolRef
+impl serde_core::ser::Serialize for cranelisp_types::SymbolRef
+pub fn cranelisp_types::SymbolRef::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for cranelisp_types::SymbolRef
+pub fn cranelisp_types::SymbolRef::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for cranelisp_types::SymbolRef
+impl core::marker::Send for cranelisp_types::SymbolRef
+impl core::marker::Sync for cranelisp_types::SymbolRef
+impl core::marker::Unpin for cranelisp_types::SymbolRef
+impl core::marker::UnsafeUnpin for cranelisp_types::SymbolRef
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::SymbolRef
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::SymbolRef
+impl<Q, K> hashbrown::Equivalent<K> for cranelisp_types::SymbolRef where Q: core::cmp::Eq + ?core::marker::Sized, K: core::borrow::Borrow<Q> + ?core::marker::Sized
+pub fn cranelisp_types::SymbolRef::equivalent(&self, key: &K) -> bool
+impl<T, U> core::convert::Into<U> for cranelisp_types::SymbolRef where U: core::convert::From<T>
+pub fn cranelisp_types::SymbolRef::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for cranelisp_types::SymbolRef where U: core::convert::Into<T>
+pub type cranelisp_types::SymbolRef::Error = core::convert::Infallible
+pub fn cranelisp_types::SymbolRef::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for cranelisp_types::SymbolRef where U: core::convert::TryFrom<T>
+pub type cranelisp_types::SymbolRef::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn cranelisp_types::SymbolRef::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for cranelisp_types::SymbolRef where T: core::clone::Clone
+pub type cranelisp_types::SymbolRef::Owned = T
+pub fn cranelisp_types::SymbolRef::clone_into(&self, target: &mut T)
+pub fn cranelisp_types::SymbolRef::to_owned(&self) -> T
+impl<T> alloc::string::ToString for cranelisp_types::SymbolRef where T: core::fmt::Display + ?core::marker::Sized
+pub fn cranelisp_types::SymbolRef::to_string(&self) -> alloc::string::String
+impl<T> core::any::Any for cranelisp_types::SymbolRef where T: 'static + ?core::marker::Sized
+pub fn cranelisp_types::SymbolRef::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for cranelisp_types::SymbolRef where T: ?core::marker::Sized
+pub fn cranelisp_types::SymbolRef::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for cranelisp_types::SymbolRef where T: ?core::marker::Sized
+pub fn cranelisp_types::SymbolRef::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for cranelisp_types::SymbolRef where T: core::clone::Clone
+pub unsafe fn cranelisp_types::SymbolRef::clone_to_uninit(&self, dest: *mut u8)
+impl<T> core::convert::From<T> for cranelisp_types::SymbolRef
+pub fn cranelisp_types::SymbolRef::from(t: T) -> T
+impl<T> cranelisp_types::CodeStore for cranelisp_types::SymbolRef where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> cranelisp_types::LinkerStore for cranelisp_types::SymbolRef where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+impl<T> serde_core::de::DeserializeOwned for cranelisp_types::SymbolRef where T: for<'de> serde_core::de::Deserialize<'de>
 pub struct cranelisp_types::SymbolTable<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore>
 pub cranelisp_types::SymbolTable::exports: alloc::vec::Vec<cranelisp_types::ExportSpec>
 pub cranelisp_types::SymbolTable::got: alloc::sync::Arc<cranelisp_types::GotTable>
