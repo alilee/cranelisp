@@ -71,6 +71,19 @@ pub enum Pattern {
     /// captured structurally rather than letting a "bare name slip
     /// through" the AST.
     ///
+    /// **Current parser status (S70):** the frontend `build_pattern`
+    /// preserves the source string verbatim — `(option/Some x)` lands
+    /// in `SymbolRef { module: None, name: "option/Some" }`, NOT
+    /// `module: Some("option"), name: "Some"`. The structural split at
+    /// `/` is a follow-on lift tracked under the FQTypeName /
+    /// qualified-pattern work (spec §6.2 EBNF currently treats
+    /// `symbol-with-slashes` as a single `symbol` token; the parser
+    /// follows). The `SymbolRef` shape on this variant is the
+    /// **destination** for that lift — the type slot is ready before
+    /// the parser populates it. Until the lift lands, qualified
+    /// pattern names round-trip through the unqualified arm of the
+    /// `SymbolRef` enum.
+    ///
     /// The resolved-stage `FQSymbol` for the constructor lives in a
     /// **sidecar** (`MethodResolutions.pattern_ctors`, keyed by `span`)
     /// rather than as an annotation field on this variant — mirrors the

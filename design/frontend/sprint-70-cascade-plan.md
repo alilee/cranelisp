@@ -1,8 +1,20 @@
 # Sprint 70 — Frontend cascade plan
 
-**Status**: Authored Phase 3 (A2), awaiting Wave A3 `/arch` review.
+**Status**: Authored Phase 3 (A2), awaiting Wave A3 `/arch` review. **Amended at Phase 3 close** to absorb the S70 step-3 cascade (row #14 — `SymbolRef` newtype follow-on; see "Step 3 cascade absorption" below).
 **Author**: `/design` narrow-deployed for `cranelisp-frontend`.
-**Inputs frozen at**: current commit on `main`. `cargo check -p cranelisp-frontend` enumerates **33 errors across 13 distinct S69-origin shape changes**, matching the SPRINT.md Phase A probe table exactly.
+**Inputs frozen at**: current commit on `main` (Phase 3 close — commits 4cfd01e step 1, 0c202e3 step 2, b291a38 step 3 landed in `cranelisp-types`). `cargo check -p cranelisp-frontend` now enumerates **35 errors across 14 distinct S69/S70-origin shape changes**: 33 errors / 13 rows were the original Phase 1 probe baseline; 2 additional errors / 1 new row (row #14) are S70 step-3's `Pattern::Constructor.name: Symbol → SymbolRef` lift (Decision 47).
+
+## Step 3 cascade absorption
+
+The original probe was Phase 1 (sprint open). Sprint 70 Phase 3 then introduced three further `cranelisp-types` changes via the solidness-arc commits:
+
+- **step 1** (4cfd01e): `MethodResolutions.pattern_ctors: HashMap<Span, FQSymbol>` sidecar added — post-typecheck consumed by backend; **not a frontend concern**.
+- **step 2** (0c202e3): no frontend-visible shape change (typecheck-interior cleanup).
+- **step 3** (b291a38): `SymbolRef` newtype added to `cranelisp-types::newtype` (`Option<ModuleFullPath>` + `Symbol`, no `From<&str>` impl per Principle 18 newtype opacity); `Pattern::Constructor.name` lifted from `Symbol` to `SymbolRef`. This **does cascade into frontend** — at the 2 `Pattern::Constructor` construction sites in `ast_builder.rs::build_pattern`, the bare `name.as_str().into()` / `name.into()` calls fail to compile because `SymbolRef: From<&str>` is not implemented.
+
+Row #14 captures the step-3 cascade as a frontend-narrow addition. It is the same shape of fix as rows #12 + #13 (`TypeRef` + `TraitRef` newtype-opacity follow-ons) — explicit `SymbolRef::new(None, Symbol::from(...))` construction at each site. No design refresh is required; `SymbolRef` is purely additive at the type level and `Pattern::Constructor`'s role in frontend (parse to AST node with as-written qualification captured structurally) doesn't change — just the name field becomes richer.
+
+The original 13 rows are unchanged.
 
 ## Scope
 
@@ -76,8 +88,8 @@ Probe sites are grouped by class. Sites are listed file:line per `cargo check -p
 
 ### Row #6 — `ModuleEntry::Macro` deletion → `Def { kind: DefKind::Macro { … } }` (Submission 13 macro-unification)
 
-- **Probe sites**: `expand.rs:269` (`Some(ModuleEntry::Macro { .. }) => true` in `macro_entry_present`), `expand.rs:276` (`matches!(home.get(...), Some(ModuleEntry::Macro { .. }))` — the chain-follow leg). 2 production sites. Test sites at `expand.rs:304` (fixture construction `ModuleEntry::Macro { name, clauses, docstring, visibility, sexp, source, callees }`) are inside the crate and within /dev's remit.
-- **S69 origin**: Submission 13 macro-unification cascade — `ModuleEntry::Macro` retired (Submission 22 deleted the variant from `crates/cranelisp-types/src/module.rs`); destination is `ModuleEntry::Def { kind: DefKind::Macro { clauses_meta, sexp, source }, … }` per S69 Submission 13 design + frontend facade §80–82 (existing target text: "when an FQ macro reference resolves to `Def { kind: DefKind::Macro { clauses_meta, … }, … }`, it walks `clauses_meta` to pattern-match the call sexp against each clause's shape, then GOT-dispatches to the matched clause's mangled-variant Def").
+- **Probe sites**: `expand.rs:269` (`Some(ModuleEntry::Macro { .. }) => true` in `macro_entry_present`), `expand.rs:276` (`matches!(home.get(...), Some(ModuleEntry::Macro { .. }))` — the chain-follow leg). 2 production sites. Test sites at `expand.rs:304` (fixture construction of the retired `ModuleEntry::Macro { … }` variant) are inside the crate and within /dev's remit.
+- **S69 origin**: Submission 13 macro-unification cascade — `ModuleEntry::Macro` retired (Submission 22 deleted the variant from `crates/cranelisp-types/src/module.rs`); destination is `ModuleEntry::Def { kind: Box<DefKind::Macro { clauses_meta }>, … }` per S69 Submission 13 design + frontend facade §80–82 (existing target text: "when an FQ macro reference resolves to `Def { kind: DefKind::Macro { clauses_meta, … }, … }`, it walks `clauses_meta` to pattern-match the call sexp against each clause's shape, then GOT-dispatches to the matched clause's mangled-variant Def"). Per D41 (no shadow fields on Def variants), `DefKind::Macro` carries `clauses_meta` only — the `sexp` / `source` shadow fields named in the original S69 narration were removed at step 1 close (user-led re-examination); per-clause `MacroClauseInfo` itself also carries no `sexp`/`source` shadows.
 - **Disposition**: **design refresh, capped at lookup-shape rotation per Phase 2 arch ruling.**
 - **Cap reaffirmed**: this row is the **dispatcher lookup shape** only. Specifically:
   - `macro_entry_present` returns `bool` on whether the entry-at-name is a macro. The post-cascade reading is "is the entry `ModuleEntry::Def { kind: DefKind::Macro { … }, .. }`". The two `matches!` patterns rotate; the function's signature, return type, and the surrounding `lookup_macro_fq` walk do not change.
@@ -86,20 +98,9 @@ Probe sites are grouped by class. Sites are listed file:line per `cargo check -p
 - **Source pattern change**:
   - `Some(ModuleEntry::Macro { .. }) => true` → `Some(ModuleEntry::Def { kind, .. }) if matches!(**kind, DefKind::Macro { .. }) => true` (note `kind: Box<DefKind>` — see `crates/cranelisp-types/src/module.rs:489`; double-deref required). Or use an `if let` pattern. /dev's call on the precise Rust shape.
   - `matches!(home.get(source.symbol.as_ref()), Some(ModuleEntry::Macro { .. }))` rotates the same way: `matches!(home.get(...), Some(ModuleEntry::Def { kind, .. }) if matches!(**kind, DefKind::Macro { .. }))`. (`matches!` with `if`-guard is supported in current Rust; alternatively unfold to an explicit match.)
-  - Test fixture at `:304` rebuilds: instead of `ModuleEntry::Macro { name, clauses, docstring, visibility, sexp, source, callees }`, construct `ModuleEntry::Def { scheme, visibility, docstring, param_names, kind: Box::new(DefKind::Macro { clauses_meta, sexp, source }), callees, got_slot, trait_origin, ast, code }` with the macro-relevant fields filled and irrelevant ones at sensible defaults. The test asserts only that `lookup_macro_fq` returns `Some(_)` for the registered name → the fixture can be minimal.
+  - Test fixture at `:304` rebuilds: instead of constructing the retired `ModuleEntry::Macro { … }` variant, construct `ModuleEntry::Def { scheme, visibility, docstring, param_names, kind: Box::new(DefKind::Macro { clauses_meta }), callees, got_slot, trait_origin, ast, code }` with the macro-relevant fields filled and irrelevant ones at sensible defaults. The test asserts only that `lookup_macro_fq` returns `Some(_)` for the registered name → the fixture can be minimal.
 
-- **CRITICAL FINDING — escalate to /arch at A3**: `DefKind::Macro` is referenced in `cranelisp-types` rustdoc (`module.rs:343, :513, :704, :705, :710`; `parsed.rs:51, :52, :78, :82`) and was the S69 Submission 13 destination shape — **but the `DefKind` enum at `crates/cranelisp-types/src/module.rs:864–925` does NOT include a `Macro` variant**. It defines `Primitive`, `PlatformEffect`, `UserFn`, `Overloaded`, `Constructor` only. The S69 Submission 22 source catch-up deleted `ModuleEntry::Macro` but did **not** add `DefKind::Macro`.
-
-  This is a **cross-crate blocker** for #6's source touches: /dev cannot rotate to `DefKind::Macro` at A4 because the variant does not exist in `cranelisp-types`. The probe-discovered errors at `expand.rs:269, :276` confirm — the compiler reports "no variant named `Macro` found for enum `ModuleEntry<_>`" not "missing field on `DefKind::Macro`".
-
-  **Disposition options for /arch arbitration at A3**:
-  - **(a)** S70 scope expands to add `DefKind::Macro { clauses_meta: Vec<MacroClauseInfo>, sexp: Option<Sexp>, source: Option<String> }` to `cranelisp-types` as a hot-fix paired with the frontend cascade. This violates frontend-narrow scope (S70 § "Out-of-scope" lists wave-3 consumer cascade for the 5 other crates as deferred to S71+ — but `cranelisp-types` itself is a Phase A dependency, not a consumer). The S69 close is the natural manifestation site; if S69 omitted it, S70 absorbing is /arch's call.
-  - **(b)** S70 files FIXME `target: /arch` for the missing `DefKind::Macro` variant, and dispositions row #6 as **blocked-on-types-side**. The 2 expand.rs sites remain failing-to-compile until /types-narrow lands the variant. This violates Phase A exit gate row 1 (frontend nextest green) unless the gating is renegotiated.
-  - **(c)** Re-confirm that S69 Submission 13's design actually retired the storage-shape rotation in favour of an alternative (e.g., macro metadata lives somewhere other than `DefKind`). Cross-check `facades/types.md` §"DefKind" + the rest of `module.rs` for the actual destination.
-
-  My (`/design`-frontend) reading of the configuration points at (a) — every rustdoc reference, every S69 archive entry, the frontend facade §80–82, and the wave-3a-build-form §6 reference `Def { kind: DefKind::Macro { … } }` with full field list. The variant's substance is fully specified in writing; only the enum declaration is missing. But **adding a variant to `cranelisp-types` is `/arch`'s prerogative**, not `/design`'s. Filing FIXME `target: /arch` is the protocol; A3 should pull this question forward in its scope.
-
-  **Recommendation for A3**: confirm the destination shape (a) or (b) or (c) before A4 fires. If (a), the FIXME closes on `/arch`'s in-sprint cascade (S70 absorbs the types-side variant add, since the missing variant blocks the frontend cascade the sprint scopes). If (b), the SPRINT.md scope amends to defer row #6 to S71's types-side wave.
+- **Destination shape exists.** S70 Phase 3 step 1 (commit `4cfd01e`, 2026-05-24) authored `DefKind::Macro { clauses_meta: Vec<MacroClauseInfo> }` per D41-compliant single-field shape (the originally-narrated `{ clauses_meta, sexp, source }` triple was reduced to `clauses_meta` only during step 1's user-led re-examination — no shadow fields on Def variants). The variant is declared at `crates/cranelisp-types/src/module.rs:1052–1054`; the `MacroClauseInfo` struct at `:1131–1134` likewise carries no `sexp`/`source` shadows. /dev at A4 rotates the two `expand.rs` sites (`:269`, `:276`) plus the test fixture at `:304` to read through `Def { kind: DefKind::Macro { .. } }`; no cross-crate blocker remains.
 
 - **Design refresh required**: yes — see "Design-doc refreshes" section below. `design/frontend/frontend.md` §3.3 + §5.1 + §5.4 + Decision 21 row reference `ModuleEntry::Macro`; `design/frontend/wave-3a-build-form.md` §6.1.1 + Phase 2 §"Frontend reads" reference it; `design/frontend/macro-plan.md` is heavily stale (Sprint-50-era; Decision 8 retraction predates this row; row #6 doesn't add new staleness, only intensifies existing).
 
@@ -214,6 +215,66 @@ Probe sites are grouped by class. Sites are listed file:line per `cargo check -p
 - **Action**: at `:762`, replace `trait_name: trait_name.into()` with `trait_name: TraitRef::new(None, TraitName::from(trait_name))`. Subsumed by #10's full restructure of the construction site.
 - **Design refresh**: none. Same as #12.
 
+### Row #14 — `SymbolRef: From<&str>` not implemented (newtype-opacity follow-on; S70 step-3 cascade)
+
+- **Probe sites**: `ast_builder.rs:1278` (nullary-constructor branch — `name.as_str().into()` inside `Pattern::Constructor { ... }`) and `ast_builder.rs:1303` (data-constructor branch — `name.into()` inside `Pattern::Constructor { ... }`). 2 production sites, both inside `build_pattern` (`ast_builder.rs:1270–1310`). No test fixtures construct `Pattern::Constructor` directly in this crate.
+- **S70 origin**: Sprint 70 Phase 3 step 3 (commit b291a38) — `Pattern::Constructor.name` lifted from `Symbol` to `SymbolRef` per Decision 47 (FQ binding at resolved-stage boundaries; syntactic-stage carries as-written qualification structurally). See `crates/cranelisp-types/src/ast.rs:62–96`:
+
+  > Constructor pattern: `(Some x)`, `None`, `(Cons h t)`, `(option/Some x)`, `(core.option/Some x)`. `name: SymbolRef` carries **as-written** qualification at the syntactic stage — the same shape that `TraitRef` and `TypeRef` use for trait and type references. The unqualified case (`module: None`) is the common one; explicit qualification is captured structurally rather than letting a "bare name slip through" the AST.
+
+  And `crates/cranelisp-types/src/newtype.rs:169–199`:
+
+  > `SymbolRef` is the **syntactic-stage** counterpart to `FQSymbol` — same structural shape (module + name) but with `Option<ModuleFullPath>` because the syntactic stage captures the user's input directly, including the unqualified case. Resolves to `FQSymbol` at typecheck via the import graph per Decision 47.
+
+  Like `TypeRef` (#12) and `TraitRef` (#13), `SymbolRef` is constructed via `SymbolRef::new(module: Option<ModuleFullPath>, name: Symbol)`. No `From<&str>` impl is provided — the newtype-opacity Hard Rule (`design/arch/CLAUDE.md` §"String Newtypes") forbids constructing without naming the module/name structure.
+
+- **Disposition**: **mechanical** (parallel to #12 + #13 — pure construction-call rotation). No design refresh required. `SymbolRef` is purely additive at the type level; `Pattern::Constructor`'s role in frontend (parse `match`-arm patterns to AST nodes) is unchanged; only the name field's shape becomes richer.
+
+- **Source pattern change** (per current `ast_builder.rs:1270–1310`, `build_pattern`):
+
+  ```rust
+  // before (broken — name was Symbol, now SymbolRef)
+  // :1277–1281 (nullary-constructor branch)
+  Ok(Pattern::Constructor {
+      name: name.as_str().into(),
+      bindings: vec![],
+      span: *span,
+  })
+
+  // before (broken — same)
+  // :1302–1306 (data-constructor branch)
+  Ok(Pattern::Constructor {
+      name: name.into(),
+      bindings,
+      span: *span,
+  })
+
+  // after — unqualified case (the common case, spec §6.2 EBNF-conforming)
+  Ok(Pattern::Constructor {
+      name: SymbolRef::new(None, Symbol::from(name)),  // or name.as_str() per site
+      bindings: vec![],  // or bindings
+      span: *span,
+  })
+  ```
+
+  At both sites `name` is a `&str` borrowed from the `Sexp::Symbol` payload — `:1272` (`Sexp::Symbol(name, span)`) for the nullary branch, `:1294` (`expect_symbol(&children[0])?` returns `(&str, Span)`) for the data branch. `SymbolRef::new(None, Symbol::from(name))` is the destination shape.
+
+- **Spec §6.2 qualified-pattern check** (verified):
+  - Spec `06-pattern-matching.md` §6.2 EBNF: `ctor_pattern = '(' symbol symbol* ')' | symbol`. The pattern grammar reads as plain `symbol` — **no explicit qualified-pattern production in the EBNF**.
+  - Spec §6.2.2 prose says "A bare symbol that names a known nullary constructor". Examples throughout §6.2 are unqualified only.
+  - However, the `Pattern::Constructor` rustdoc (`ast.rs:64–66`) cites qualified forms (`(option/Some x)`, `(core.option/Some x)`) as legitimate inputs, and the sexp reader (`reader.rs:562` "Check for qualified symbol: `first/rest`") parses qualified symbols into a single `Sexp::Symbol` token whose payload string contains `/`. Frontend's `build_pattern` does NOT decompose this — it passes the whole string through, so `option/Some` would land in `SymbolRef.name` as the string `"option/Some"` with `module: None`. This is a partial truth from the AST's structural perspective: the qualifier is present in the source text but not captured in the `Option<ModuleFullPath>` slot.
+  - **Reading**: spec EBNF treats this as "symbol-with-slashes is a symbol"; the structural splitting at `'/'` is downstream-of-parse work. Row #14 does NOT do that split — it preserves current behaviour exactly (whatever the existing `name.into()` would have produced lands in `SymbolRef.name` with `module: None`). The qualified-pattern lift to `Some(module)` is **out-of-scope for S70** per the no-incidental-changes constraint (same disposition as #12's qualified-name note). Tracked implicitly under FIXME 0151 (FQTypeName) territory + the broader producer/consumer split: it's a parser-decomposition concern, not a newtype-construction concern. If a follow-up sprint wants to capture qualification structurally at parse time, the lift would happen inside `build_pattern` at the same `name.into()` site: `if let Some((mod_part, name_part)) = name.rsplit_once('/') { SymbolRef::new(Some(ModuleFullPath::from(mod_part)), Symbol::from(name_part)) } else { SymbolRef::new(None, Symbol::from(name)) }` — parallel to the existing pattern in `expand.rs:229–230`. Not for S70.
+
+- **What this row explicitly does NOT do**:
+  - Does NOT split qualified pattern names (`option/Some`) into `(Some(module), name)` — preserves current pass-through behaviour.
+  - Does NOT populate `MethodResolutions.pattern_ctors` — that sidecar is typecheck's responsibility at match-typing per Decision 47 (the `SymbolRef → FQSymbol` lift site is in typecheck's `check_form`, not frontend).
+  - Does NOT change how `build_pattern` distinguishes nullary-constructor vs variable-pattern (the `is_uppercase_start(name)` check at `:1275` remains; Pattern::Var / Pattern::Wildcard branches unchanged).
+  - Does NOT widen the Pattern grammar — bracketed patterns / nested patterns / literal patterns remain out of scope.
+
+- **Design refresh**: none. The newtype-opacity rule is grounded in Principle 18 + the newtype Hard Rule (`design/arch/CLAUDE.md` §"String Newtypes"); the `Pattern::Constructor` shape change is grounded in Decision 47 (`design/arch/decisions/47-*` or wherever the resolved-stage FQ-binding decision lives; cross-referenced from `ast.rs:62–96` rustdoc). No frontend design doc names `SymbolRef::From<&str>` (it never existed) or the bare-`Symbol` payload on `Pattern::Constructor` (the pre-S70 shape was unannotated in frontend's docs). Nothing to retract.
+
+- **S70 origin overlap**: this row is the Phase 3 step-3 cascade addition; it has no Phase 1 probe-row antecedent. Folds naturally into the newtype-opacity cluster (#1 / #2 / #12 / #13) as a fourth `*::From<&str>` retirement.
+
 ---
 
 ## Design-doc refreshes
@@ -229,13 +290,13 @@ Decision: refresh **inline now** for the `ModuleEntry::Macro` → `Def { kind: D
 2. /dev at A4 reads this doc as design context; the refresh-now timing keeps the doc consistent with the source it will produce.
 3. The change is bounded: rotate ~6 sentences from `ModuleEntry::Macro` to the destination shape; cite the row #6 cap.
 
-Status: **PENDING-A4** (deferred). The design refresh requires the `DefKind::Macro` variant to actually exist (see #6 CRITICAL FINDING). Without /arch arbitration on disposition (a)/(b)/(c) at A3, refreshing `frontend.md` to cite the destination shape is **premature** — if A3 routes via (b) (FIXME-to-arch + defer row #6), this doc should NOT yet rotate. **Deferred to A4 conditional on A3's #6 ruling**. If A3 confirms (a) — types-side variant add lands in S70 — /dev refreshes `frontend.md` §3.3/§5.1/§5.4/§8 in the same A4 commit. If A3 routes via (b), the refresh waits for the S71 wave that lands `DefKind::Macro` on the types side.
+Status: **PENDING-A4 (unconditional)**. `DefKind::Macro { clauses_meta }` was authored at step 1 (commit `4cfd01e`); the destination shape exists and the row #6 cascade is unblocked. /dev at A4 refreshes `frontend.md` §3.3/§5.1/§5.4/§8 in the same commit as the source touches — rotate the ~6 sentences from `ModuleEntry::Macro` to `Def { kind: DefKind::Macro { clauses_meta }, .. }`, cite the row #6 cap.
 
-### `design/frontend/wave-3a-build-form.md` — PENDING-A4 (conditional on #6 ruling)
+### `design/frontend/wave-3a-build-form.md` — PENDING-A4 (unconditional)
 
 Affects: §6.1.1 ("`ModuleEntry::Macro` entries are reachable through `SymbolTables[module].get(&name)`"); §6 list of types-side items names `ModuleEntry::Macro` indirectly.
 
-Decision: same conditional as `frontend.md`. If A3 rules (a) — refresh inline at A4 to cite the new shape. If (b) — defer to post-types-side wave.
+Decision: refresh inline at A4 alongside the `frontend.md` rotation. Rotate the `ModuleEntry::Macro` references to `Def { kind: DefKind::Macro }` and confirm the lookup-shape cap (no invocation-path or Gap-emission edits).
 
 ### `design/frontend/macro-plan.md` — already stale; defer per `frontend.md` §9
 
@@ -261,12 +322,13 @@ A minor update to §9: rotate the `ast-builder.md` and `macro-plan.md` rows to a
 
 `/arch` at A3 should verify:
 
-- [ ] **All 13 probe rows dispositioned.** No `TBD`. (Confirm.)
+- [ ] **All 14 rows dispositioned** (13 Phase 1 probe + 1 Phase 3 step-3 cascade addition). No `TBD`. (Confirm.)
+- [ ] **Row #14 — `SymbolRef` newtype-opacity cascade accepted.** 2 sites (`ast_builder.rs:1278, :1303`) inside `build_pattern`; same mechanical shape as #12 + #13. Confirm the explicit no-qualified-pattern-split scoping (preserve current pass-through behaviour; defer structural split to a follow-up).
 - [ ] **#6 cap intact.** No proposed work touches `expand`'s invocation path, Gap-emission, `is_macro_head` logic, or marshal/runtime deps. (Re-read row #6's "What this plan explicitly does NOT do" section.)
-- [ ] **#6 CRITICAL FINDING resolution.** Arbitrate disposition (a) / (b) / (c) on the missing `DefKind::Macro` variant in `cranelisp-types`. This is the single arch-arbitration point this plan surfaces. **A3 cannot pass without resolving this** — /dev cannot execute row #6 at A4 against a variant that does not exist.
+- [ ] **#6 unblocked.** `DefKind::Macro { clauses_meta }` was authored at S70 Phase 3 step 1 (commit `4cfd01e`); destination shape exists; rotation is mechanical-with-design-refresh, no cross-crate arbitration outstanding.
 - [ ] **No incidental public-API surface changes.** The plan proposes zero `pub`-visibility narrowing, zero helper extraction with re-export, zero "tidying". The `build_annotated_params` return-type change (#7) is `pub(crate)` — internal only.
-- [ ] **Frontend-narrow.** No proposed change to `cranelisp-types`, `cranelisp-typecheck`, any other consumer crate, or to `facades/frontend.md`. (Row #6's CRITICAL FINDING flags a cross-crate need but does not propose to satisfy it inside this plan; the FIXME is the next step.)
-- [ ] **Design-doc refresh strategy is sound.** Inline refresh of `frontend.md` deferred to A4 + conditional on #6 ruling; staleness register update at §9 is a minor follow-up; deeper-stale docs (`macro-plan.md`, `macro-resolver-trait.md`, `ast-builder.md`) deferred per existing staleness register.
+- [ ] **Frontend-narrow.** No proposed change to `cranelisp-types`, `cranelisp-typecheck`, any other consumer crate, or to `facades/frontend.md`. (The `DefKind::Macro` variant add landed in Phase 3 step 1; no further types-side touch is needed for the row #6 cascade.)
+- [ ] **Design-doc refresh strategy is sound.** Inline refresh of `frontend.md` §3.3/§5.1/§5.4/§8 + `wave-3a-build-form.md` §6.1.1 at A4 (unconditional — destination shape exists); staleness register update at §9 is a minor follow-up; deeper-stale docs (`macro-plan.md`, `macro-resolver-trait.md`, `ast-builder.md`) deferred per existing staleness register.
 - [ ] **S69 audit-s69 overlap reviewed.** Frontend audit-s69's H1/H2/S1/S2/U0 findings are not in S70's Phase A scope — they live in `lib.rs` × facade × public-api triple (S70 Phase B audit-walk territory) and the SPRINT.md scope explicitly sequences Phase A first. C1/C2/C3 are /qa-S70 brief, not in either phase. No new overlap surfaced.
 - [ ] **Row #2 re-attribution accepted.** Confirm folding `TypeName.0` under #12 is coherent given current source (no direct `.0` sites surfaced by `cargo check`).
 - [ ] **Trait-method spec reading (#9) confirmed.** Confirm reading (ii) — required methods carry param names per spec §5.3 EBNF — is the spec-grounded answer for the no-default branch. (If `/spec` arbitration is needed, FIXME `target: /spec`; surface at A3.)
@@ -276,28 +338,98 @@ A minor update to §9: rotate the `ast-builder.md` and `macro-plan.md` rows to a
 
 ## Open questions for /arch
 
-1. **#6 — Missing `DefKind::Macro` variant in `cranelisp-types`.** S70 absorb in-sprint (a), defer-via-FIXME (b), or re-confirm an alternative destination shape (c)? *Blocks A4 execution of row #6 unless resolved.*
-2. **#9 reading on no-default trait-method param names.** Reading (ii) — required methods carry param names per spec §5.3 EBNF — is `/spec`-grounded; if A3 disagrees, route via FIXME `target: /spec`.
-3. **Row #2 re-attribution.** Accept folding `TypeName.0` under #12 (no direct `.0` sites in current `cargo check`)? If A3 reads the SPRINT.md probe as binding a distinct row, please clarify.
+1. **#9 reading on no-default trait-method param names.** Reading (ii) — required methods carry param names per spec §5.3 EBNF — is `/spec`-grounded; if A3 disagrees, route via FIXME `target: /spec`.
+2. **Row #2 re-attribution.** Accept folding `TypeName.0` under #12 (no direct `.0` sites in current `cargo check`)? If A3 reads the SPRINT.md probe as binding a distinct row, please clarify.
 
-No other open questions. Rows #1, #3, #4, #5, #7, #8, #10, #11, #12, #13 are settled per the configuration; row #6 has a single named blocker; rows #2 and #9 have small clarifications.
+Row #6's prior "Missing `DefKind::Macro` variant" blocker was resolved by Phase 3 step 1 (commit `4cfd01e`); the variant now exists and row #6 is unblocked. No other open questions. Rows #1, #3, #4, #5, #6, #7, #8, #10, #11, #12, #13, #14 are settled per the configuration; rows #2 and #9 have small clarifications. Row #14 is a Phase 3 step-3 cascade addition (`SymbolRef` newtype-opacity follow-on) — purely mechanical, joins the #12/#13 cluster.
 
 ---
 
-## Sequencing for /dev at A4
+## Sequencing for /dev at A4 — feature-progress groups
 
-Recommended ordering, in execution order:
+The 14 per-row dispositions above are the durable per-row record; the section that follows organises them by **what language feature works end-to-end after each group lands**, rather than by error-shape cluster. /dev executes the groups in order; /sprint uses the group boundaries as commit-cadence checkpoints (one commit per group transition, with intra-group splits where a group is large).
 
-1. **Row #6 first** — once /arch's A3 ruling is known. The lookup-shape rotation in `expand.rs:269, :276` (and the fixture at `:304`) compiles in isolation if `DefKind::Macro` exists (disposition (a)) or is FIXME-deferred (b). Doing #6 first surfaces any secondary errors that the rotation reveals — if any test fixtures break in unexpected ways, isolate before mixing with the other rows.
-2. **Rows #1, #3, #11, #12, #13 — pure mechanical** — in any order. These are the lowest-risk fixes. Doing them together compresses the cargo-check feedback loop. Recommended bundle as a single commit ("mechanical newtype + span + visibility cascade").
-3. **Rows #7 + #8 + helper API rotation** — `build_annotated_params` return-shape change cascades through 5 call sites + 2 struct-construction sites. Single commit; compile-clean per call site as you go.
-4. **Row #9 + #10 — trait/impl shape rework** — the largest semantic change. Spec-grounded; carry the new `params: Vec<(Symbol, TypeExpr)>` shape from `TraitMethodSig` through to the surrounding `parse_deftrait` glue. Then row #10's `TraitImpl` restructure folds in (sharing the type-name → TypeExpr lift logic from #12).
-5. **Row #4 + #5 — `ModuleEntry::Import` cascade** — likely subsumed by the #6 fixture rebuild. Confirm the `expand.rs:270` arm-collapse is clean; add `visibility:` field to the few fixture builders.
-6. **Test fixture pass** — after production source is green, run `cargo nextest run -p cranelisp-frontend` and chase any test-only construction sites the cascade missed.
-7. **Public-API baseline regen** — last step before A4 hand-off. `cargo public-api -p cranelisp-frontend > crates/cranelisp-frontend/public-api.txt`. Confirm every diff line traces to a row in this plan (Phase A exit gate row 5).
-8. **Design-doc inline refresh** — if #6 routed via (a), refresh `frontend.md` §3.3/§5.1/§5.4/§8 + §9 staleness register update in the same commit as the row #6 source touches. If (b), skip — defer to S71.
+The baseline at A4 open is **35 `cargo check -p cranelisp-frontend` errors** spread across the 14 rows. The error-count drop after each group is the most legible observable progress; per-group descriptions also name the language feature that becomes parseable end-to-end.
 
-Rationale: surface secondary errors early (step 1), bundle mechanical for compile-loop speed (step 2), tackle semantic cascades together where they share helpers (steps 3–4), pick up the small remaining sites last (step 5), then close discipline gates (steps 6–8).
+### Group A — Foundational newtype + span discipline
+
+**Rows**: #1 (`Symbol.0` private), #11 (`FieldDef.span` required), #12 (`TypeRef::new`), #13 (`TraitRef::new`), #14 (`SymbolRef::new` at `Pattern::Constructor`).
+
+**What changes.** Every site in the frontend that constructs a string-newtype-bearing value (`Symbol`, `TypeName`, `TraitName`, `SymbolRef`, `TypeRef`, `TraitRef`) rotates to the explicit `Newtype::new(None, InnerName::from(name))` idiom. Every `FieldDef` literal threads the field-name's source span through. These are construction-shape rotations only — no struct shape changes, no helper signatures change.
+
+**What works after.** The parser produces correctly-shaped AST nodes for every newtype and span-bearing structure that downstream consumers (typecheck, backend) read. This is the foundational types-layer adoption — once Group A lands, every other group's edits operate on already-correctly-typed name fields. Match-pattern constructor names (`Pattern::Constructor`) carry as-written qualification structurally per Decision 47. Field-error diagnostics will point at the field's own source location (not the enclosing constructor) once typecheck consumes the span.
+
+**Cascade exposure.** Internal-only — Group A's edits do not change any pub surface, so no consumer-crate re-fire. The mechanical sites the cascade plan probes (`ast_builder.rs:516, :523, :527, :1278, :1303, :1368, :1481, :1520`, plus `:762` `TraitRef::new` shared with Group E) all resolve in a tight cargo-check feedback loop.
+
+**Observable progress.** Error count drops from 35 to roughly **22** (Group A clears ~13 errors across rows #1, #11, #12, #13, #14 — the highest-density mechanical bundle). After Group A, every remaining error in the build belongs to a structural shape change (rows #3–#10), not to opacity / construction-call drift.
+
+**Recommended commit shape.** Single commit titled along the lines of "frontend Group A — newtype construction + span discipline". Row #1's `field_to_var` storage choice (newtype-throughout vs `String`-bridge) is /dev's local call inside the commit.
+
+### Group B — Module declarations
+
+**Rows**: #3 (`ModDecl.is_private → visibility`), #4 (`ModuleEntry::Import { visibility }` field add), #5 (`ModuleEntry::Reexport` variant collapse into `Import`).
+
+**What changes.** Visibility flows from a boolean `is_private` on `ModDecl` to a `Visibility::{Public, Private}` enum, and the same enum threads onto `ModuleEntry::Import` to discriminate `(import)` vs the prior `Reexport` semantics. The `Reexport` variant disappears entirely — its job is now `Import { visibility: Public }`. `parse_mod_decl`'s signature flips from `is_private: bool` to `visibility: Visibility`; the `expand.rs:270` pattern collapses its `Import | Reexport` alternation to a single `Import { source, .. }` arm. Five test-side reads of `.is_private` rotate to `matches!(visibility, Visibility::Private)` or equivalent.
+
+**What works after.** Module-level declarations — `(mod …)`, `(mod- …)`, `(import …)`, `(export …)` — parse and pattern-match correctly through the entire frontend. The macro-resolver's import-chain walk operates on the unified `Import` edge regardless of public/private visibility (per Decision 51 + Principle 17 — chain-follow does not filter by visibility); private-mod-decl detection works through the enum's `Private` variant. The visibility cascade settles at the frontend's edge — downstream consumers (typecheck) read a single field.
+
+**Cascade exposure.** Light. The `expand.rs:270` arm collapse depends on Group C (row #6) landing the macro-Def rotation in the SAME pattern-match; sequencing Group B before Group C lets the arm-collapse + macro-rotation share a single rebuild of `macro_entry_present` / `lookup_macro_fq`. No new errors surface downstream.
+
+**Observable progress.** Error count drops from ~22 to roughly **18** (Group B clears ~4 errors across rows #3, #4, #5; minus 1 for the shared `expand.rs:270` site that will fully clean only with Group C). After Group B, every module-declaration-shaped AST node compiles in isolation; the remaining errors are all in the macro / function-body / trait surface.
+
+**Recommended commit shape.** Single commit "frontend Group B — module-declaration visibility cascade".
+
+### Group C — Macros
+
+**Rows**: #6 (`ModuleEntry::Macro` → `Def { kind: DefKind::Macro { clauses_meta } }` lookup-shape rotation).
+
+**What changes.** The two `expand.rs` sites that ask "is this entry a macro?" (`:269` `macro_entry_present`, `:276` chain-follow leg of `lookup_macro_fq`) rotate their pattern from `ModuleEntry::Macro { .. }` to `ModuleEntry::Def { kind, .. }` with an `if matches!(**kind, DefKind::Macro { .. })` guard. The test fixture at `:304` rebuilds to construct a `ModuleEntry::Def` with `kind: Box::new(DefKind::Macro { clauses_meta })` (single-field shape, no `sexp` / `source` shadow fields per D41). The dispatcher's behaviour, signature, and return shape are unchanged — the rotation is **lookup-shape only**, capped at the Phase 2 arch ruling boundary (no invocation-path or Gap-emission edits; FIXME 0175 owns that work).
+
+**What works after.** The macro dispatcher reads through the unified `Def { kind: DefKind::Macro }` representation that Submission 13 / 22 settled. `MacroEnv`-side macro storage is gone from the frontend — clause bodies live in the symbol table under mangled names per the post-S69 architecture. `expand_recursive` continues to emit `Err(ExpansionError::Gap(ResolutionGap::MacroInMem(fq)))` for every macro head; nothing in the gap-emission path changes. After Group C, macro-head detection (bare + FQ) routes through the destination shape end-to-end at the frontend's edge.
+
+**Cascade exposure.** Localised. The `Box<DefKind>` deref pattern (note `**kind` per `module.rs:489`) is the only Rust-shape subtlety; the rest is a one-for-one variant rotation. `frontend.md` §3.3 / §5.1 / §5.4 / §8 design-doc refresh lands in the same commit (rotate ~6 sentences from `ModuleEntry::Macro` to the destination shape; cite the row #6 cap); `wave-3a-build-form.md` §6.1.1 likewise.
+
+**Observable progress.** Error count drops from ~18 to roughly **15** (Group C clears the 3 row-#6 errors and tidies the shared `expand.rs:270` arm). After Group C, macro-related sites in `expand.rs` are structurally consistent with the rest of the symbol-table reading surface; the remaining errors are all in `ast_builder.rs`'s function / trait / impl building logic.
+
+**Recommended commit shape.** Single commit "frontend Group C — macro lookup-shape rotation + design-doc refresh".
+
+### Group D — Function bodies (defn + lambda)
+
+**Rows**: #7 (`DefnVariant.{params, param_annotations}` fused into `params: Vec<(Symbol, Option<TypeExpr>)>`), #8 (`Expr::Lambda.{params, param_annotations}` fused — mirror of #7).
+
+**What changes.** The `build_annotated_params` helper in `ast_builder.rs` rotates its return type from the parallel-vec `(Vec<Symbol>, Vec<Option<TypeExpr>>)` to the fused single-vec `Vec<(Symbol, Option<TypeExpr>)>`. Five call sites (`:260, :309, :688, :858, :1211`) take the single-return shape. Two struct-construction sites (`DefnVariant { … }` at `:864–866`, `Expr::Lambda { … }` at `:1214–1215`) drop their `param_annotations` field and pass the fused `params` directly. The duplicate-name check inside the helper rotates to iterate the fused vec.
+
+**What works after.** Function definitions (`defn`, including multi-clause) and lambda expressions (`fn`) parse with the post-S69 fused param shape. The lockstep invariant `params.len() == param_annotations.len()` — previously unenforced at the type level and a recurring source of bugs — is structurally enforced by construction per Principle 18. After Group D, every callable form's parameter list reads as a single iterable `Vec<(Symbol, Option<TypeExpr>)>` end-to-end through typecheck monomorphisation.
+
+**Cascade exposure.** Internal — `build_annotated_params` is `pub(crate)`, so the helper-API rotation does not touch the public surface. No new errors expected downstream; the change is shape-internal at function/lambda boundaries.
+
+**Observable progress.** Error count drops from ~15 to roughly **11**. After Group D, `defn` and `fn` forms compile cleanly in isolation; the remaining errors live in trait-decl and impl-form parsing (Group E).
+
+**Recommended commit shape.** Single commit "frontend Group D — fused param shape (defn + lambda)". /dev compile-cleans per call site as the helper signature is rotated.
+
+### Group E — Trait declarations + impls
+
+**Rows**: #9 (`TraitMethodSig.default_param_names` deletion + `default_body: Option<Expr>` lift; bare-param defaulting folds into fused `params: Vec<(Symbol, TypeExpr)>`), #10 (`TraitImpl.{type_args, target_type}` → unified `target: TypeExpr`; `type_constraints: Vec<(Symbol, TraitRef)>`).
+
+**What changes.** Trait-method parsing in `parse_deftrait_method` rotates on two axes: the param shape unifies into `Vec<(Symbol, TypeExpr)>` (bare params synthesise `TypeExpr::SelfType` per spec §5.3.1; both default-body and no-default branches now use `build_annotated_params`), and `default_body` lifts from `Option<Sexp>` to `Option<Expr>` (parser calls `build_expr` instead of `clone`). Trait-impl parsing in `parse_impl` rotates: `build_impl_target` returns `(TypeExpr, Vec<(Symbol, TraitRef)>)` instead of the prior 3-tuple; `TraitImpl` construction drops `type_args` + `target_type` in favour of a unified `target: TypeExpr` field; `trait_name` becomes an explicit `TraitRef::new(None, TraitName::from(name))` per Group A's idiom.
+
+**What works after.** Trait declarations (`deftrait`) and trait impls (`impl`) parse with the post-S69 unified shape. Required methods carry param names structurally per spec §5.3 EBNF (reading (ii) — `param = ':' type_expr symbol | symbol` — confirmed via types-side rustdoc). Polymorphic impl targets like `(impl Display (Option a) …)` lower naturally to `TypeExpr::Applied(TypeRef::new(None, "Option"), [TypeExpr::Var(a)])`; concrete targets to `TypeExpr::Named(TypeRef::new(None, "Foo"))`. After Group E, the entire trait/impl surface compiles end-to-end at the frontend's edge.
+
+**Cascade exposure.** The largest single semantic rotation of the cascade. The `build_impl_target` helper shape change shares the `name → TypeRef::new` idiom from Group A (#12) and the `name → TraitRef::new` from Group A (#13); Group A landing first compresses Group E's edits. No new errors expected downstream once both axes land in the same commit. Design-doc refresh for `ast-builder.md` is **deferred** per the existing staleness register (the doc is comprehensively stale on ring-gating); /dev implements against spec + types-side rustdoc directly.
+
+**Observable progress.** Error count drops from ~11 to **0**. After Group E, `cargo check -p cranelisp-frontend` is clean. Test fixtures may surface a small additional batch of construction sites the production cascade missed (covered in the test-fixture pass below).
+
+**Recommended commit shape.** Single commit "frontend Group E — trait/impl shape rework", possibly split into two if /dev finds the trait-method-side and impl-side rotations are large enough to want isolated cargo-check feedback (rows #9 vs #10).
+
+### Group F — Closing discipline (post-cascade)
+
+After Groups A–E land production source green, /dev closes the Phase A exit gate:
+
+1. **Test fixture pass.** Run `cargo nextest run -p cranelisp-frontend` and chase any test-only construction sites the cascade missed (most likely the `expand.rs:447` import-fixture builder if Group B's coverage was incomplete, and any `Pattern::Constructor` constructions in test bodies).
+2. **Public-API baseline regen.** `cargo public-api -p cranelisp-frontend > crates/cranelisp-frontend/public-api.txt`. Confirm every diff line traces to a row in this plan (Phase A exit gate row 5; per `design/arch/CLAUDE.md` §"Baseline-diff discipline").
+3. **Design-doc inline refresh sweep.** Confirm `frontend.md` §3.3/§5.1/§5.4/§8 was rotated alongside Group C (and `wave-3a-build-form.md` §6.1.1 likewise). Apply the §9 staleness-register single-paragraph touch confirming the new stale-dimensions for `ast-builder.md` (S69 fused-tuple cascade) and `macro-plan.md` (S69 macro-unification cascade); the deeper refresh of those docs is deferred per the existing register.
+
+This is a closing pass, not a feature-progress group — it has no per-row source rotation, just discipline gates.
 
 ---
 
@@ -313,7 +445,33 @@ Rationale: surface secondary errors early (step 1), bundle mechanical for compil
 - `crates/cranelisp-types/src/ast.rs:378–419` — `Defn` / `DefnVariant` / `FieldDef` shapes (#7, #11)
 - `crates/cranelisp-types/src/ast.rs:430–490` — `TraitMethodSig` shape (#9)
 - `crates/cranelisp-types/src/ast.rs:503–548` — `TraitImpl` shape (#10)
-- `crates/cranelisp-types/src/module.rs:475–828` — `ModuleEntry` + `DefKind` (#4, #5, #6 — note `DefKind::Macro` referenced in rustdoc but not present in enum declaration — CRITICAL FINDING for #6)
+- `crates/cranelisp-types/src/module.rs:475–828` — `ModuleEntry` + `DefKind` (#4, #5, #6). `DefKind::Macro { clauses_meta }` declared at `:1052–1054`; `MacroClauseInfo` at `:1131–1134` (no shadow fields on either, per D41).
 - `crates/cranelisp-types/src/module.rs:1074–1079` — `ModDecl.visibility` (#3)
 - `crates/cranelisp-types/src/newtype.rs:8–70` — string-newtype API surface (#1, #2)
 - `crates/cranelisp-types/src/newtype.rs:149–195` — `TraitRef::new` / `TypeRef::new` (#12, #13)
+- `crates/cranelisp-types/src/newtype.rs:169–215` — `SymbolRef::new` (#14)
+- `crates/cranelisp-types/src/ast.rs:62–96` — `Pattern::Constructor.name: SymbolRef` (#14)
+- `spec/06-pattern-matching.md` §6.2 — EBNF + nullary/data constructor grammar (#14 — qualified-pattern scope decision)
+
+---
+
+## Summary table
+
+| Row | Shape change | Probe sites | Disposition | Cluster | S-origin |
+|---|---|---|---|---|---|
+| #1 | `Symbol.0` private | ast_builder:516, :523 | mechanical | newtype-opacity | S69 Group H |
+| #2 | `TypeName.0` private (folded under #12) | (none direct) | mechanical (folded) | newtype-opacity | S69 Group H |
+| #3 | `ModDecl.is_private → visibility` | module_extract:106, :411–412, +5 test | mechanical | D51 visibility | S69 Sub 12 |
+| #4 | `ModuleEntry::Import { visibility }` field add | expand:270, :447 | mechanical | D51 visibility | S69 Sub 12 |
+| #5 | `ModuleEntry::Reexport` retired (collapse) | expand:270 | mechanical | D51 visibility | S69 Sub 22 |
+| #6 | `ModuleEntry::Macro` → `Def { kind: DefKind::Macro { clauses_meta } }` | expand:269, :276, :304 | design refresh | macro-unification | S69 Sub 13/22 |
+| #7 | `DefnVariant.{params,param_annotations}` fused | ast_builder:864–866, +helper | design refresh | fused-tuple | S69 Sub 23 |
+| #8 | `Expr::Lambda.{params,param_annotations}` fused | ast_builder:1214–1215 | design refresh (folded w/ #7) | fused-tuple | S69 Sub 24 |
+| #9 | `TraitMethodSig.default_param_names` deletion + `default_body: Expr` | ast_builder:708, :725 | design refresh | trait-cascade | S69 Sub 26 |
+| #10 | `TraitImpl.{type_args,target_type}` → `target: TypeExpr` | ast_builder:753, :762–765 | design refresh | trait-cascade | S69 Sub 27 |
+| #11 | `FieldDef.span` required | ast_builder:527 (+2) | mechanical | span-discipline | S69 D39 |
+| #12 | `TypeRef: From<&str>` retired → `TypeRef::new` | ast_builder:1368, :1481, :1520 | mechanical | newtype-construction | S69 Group H |
+| #13 | `TraitRef: From<&str>` retired → `TraitRef::new` | ast_builder:762 | mechanical (folded w/ #10) | newtype-construction | S69 Group H |
+| **#14** | **`Pattern::Constructor.name: Symbol → SymbolRef` (no `From<&str>`) → `SymbolRef::new`** | **ast_builder:1278, :1303** | **mechanical** | **newtype-construction** | **S70 Phase 3 step 3 (Decision 47)** |
+
+**Totals**: 14 rows. Mechanical: #1, #2, #3, #4, #5, #11, #12, #13, **#14**. Design refresh: #6 (blocked), #7, #8, #9, #10. Probe error count: 33 baseline + 2 step-3 = **35**.
