@@ -22,8 +22,8 @@ use std::collections::HashSet;
 
 use cranelisp_types::{ErrorLocation,
     CranelispError, ConstructorDef, Defn, DefnVariant, Expr, FieldDef, MatchArm,
-    ParsedEntry, Pattern, Sexp, Span, Symbol, TraitDecl, TraitImpl,
-    TraitMethodSig, TraitName, TypeExpr, TypeName, Visibility,
+    ParsedEntry, Pattern, Sexp, Span, Symbol, SymbolRef, TraitDecl, TraitImpl,
+    TraitMethodSig, TraitName, TypeExpr, TypeName, TypeRef, Visibility,
 };
 
 // `(trace ...)` build is mode-agnostic. Under `--link` standalone-binary mode
@@ -346,19 +346,19 @@ pub(crate) fn parse_deftype(
         Sexp::Bracket(..) => {
             let fields = build_field_list(&children[next])?;
             let ctor = ConstructorDef {
-                name: type_name.0.clone().into(),
+                name: Symbol::from(type_name.as_ref()),
                 docstring: None,
                 fields,
                 span,
             };
-            desugar_type_def(&type_name.0, &type_params, &[ctor])
+            desugar_type_def(type_name.as_ref(), &type_params, &[ctor])
         }
         _ => {
             let ctors = children[next..]
                 .iter()
                 .map(build_constructor_def)
                 .collect::<Result<Vec<_>, _>>()?;
-            desugar_type_def(&type_name.0, &type_params, &ctors)
+            desugar_type_def(type_name.as_ref(), &type_params, &ctors)
         }
     };
 
@@ -462,18 +462,20 @@ fn build_field_list(sexp: &Sexp) -> Result<Vec<FieldDef>, CranelispError> {
                     items[i].span(),
                 ));
             }
-            let (name, _) = expect_symbol(&items[name_pos])?;
+            let (name, name_span) = expect_symbol(&items[name_pos])?;
             fields.push(FieldDef {
                 name: name.into(),
                 type_expr: te,
+                span: name_span,
             });
             i = name_pos + 1;
         } else {
             // Bare name -- shortcut syntax (fresh type var)
-            let (name, _) = expect_symbol(&items[i])?;
+            let (name, name_span) = expect_symbol(&items[i])?;
             fields.push(FieldDef {
                 name: name.into(),
                 type_expr: TypeExpr::TypeVar("".into()),
+                span: name_span,
             });
             i += 1;
         }
@@ -507,20 +509,21 @@ fn desugar_type_def(
                         if v.is_empty() {
                             // Check if this field name already has an assigned var
                             let var_name = if let Some((_, var)) =
-                                field_to_var.iter().find(|(fname, _)| fname == &f.name.0)
+                                field_to_var.iter().find(|(fname, _)| fname.as_str() == f.name.as_ref())
                             {
                                 var.clone()
                             } else {
                                 // Assign next sequential letter
                                 let letter = sequential_type_var(inferred_params.len());
                                 let var: Symbol = letter.into();
-                                field_to_var.push((f.name.0.clone(), var.clone()));
+                                field_to_var.push((f.name.as_ref().to_string(), var.clone()));
                                 inferred_params.push(var.clone());
                                 var
                             };
                             FieldDef {
                                 name: f.name.clone(),
                                 type_expr: TypeExpr::TypeVar(var_name),
+                                span: f.span,
                             }
                         } else {
                             f.clone()
@@ -1275,7 +1278,7 @@ fn build_pattern(sexp: &Sexp) -> Result<Pattern, CranelispError> {
             } else if is_uppercase_start(name) {
                 // Nullary constructor
                 Ok(Pattern::Constructor {
-                    name: name.as_str().into(),
+                    name: SymbolRef::new(None, Symbol::from(name.as_str())),
                     bindings: vec![],
                     span: *span,
                 })
@@ -1300,7 +1303,7 @@ fn build_pattern(sexp: &Sexp) -> Result<Pattern, CranelispError> {
                 })
                 .collect::<Result<Vec<_>, CranelispError>>()?;
             Ok(Pattern::Constructor {
-                name: name.into(),
+                name: SymbolRef::new(None, Symbol::from(name)),
                 bindings,
                 span: *span,
             })
@@ -1359,7 +1362,7 @@ fn parse_annotation_name(name: &str) -> TypeExpr {
     if name == "self" {
         TypeExpr::SelfType
     } else if is_uppercase_start(name) {
-        TypeExpr::Named(name.into())
+        TypeExpr::Named(TypeRef::new(None, TypeName::from(name)))
     } else {
         TypeExpr::TypeVar(name.into())
     }
@@ -1472,7 +1475,7 @@ fn build_type_expr(sexp: &Sexp) -> Result<TypeExpr, CranelispError> {
             if name == "self" {
                 Ok(TypeExpr::SelfType)
             } else if is_uppercase_start(name) {
-                Ok(TypeExpr::Named(name.as_str().into()))
+                Ok(TypeExpr::Named(TypeRef::new(None, TypeName::from(name.as_str()))))
             } else {
                 Ok(TypeExpr::TypeVar(name.as_str().into()))
             }
@@ -1511,7 +1514,7 @@ fn build_type_expr_from_list(
             .iter()
             .map(build_type_expr)
             .collect::<Result<Vec<_>, _>>()?;
-        return Ok(TypeExpr::Applied(head.as_str().into(), args));
+        return Ok(TypeExpr::Applied(TypeRef::new(None, TypeName::from(head.as_str())), args));
     }
     Err(parse_err("invalid type expression", span))
 }
