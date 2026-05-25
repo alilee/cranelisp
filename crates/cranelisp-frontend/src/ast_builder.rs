@@ -23,7 +23,7 @@ use std::collections::HashSet;
 use cranelisp_types::{ErrorLocation,
     CranelispError, ConstructorDef, Defn, DefnVariant, Expr, FieldDef, MatchArm,
     ParsedEntry, Pattern, Sexp, Span, Symbol, SymbolRef, TraitDecl, TraitImpl,
-    TraitMethodSig, TraitName, TypeExpr, TypeName, TypeRef, Visibility,
+    TraitMethodSig, TraitName, TraitRef, TypeExpr, TypeName, TypeRef, Visibility,
 };
 
 // `(trace ...)` build is mode-agnostic. Under `--link` standalone-binary mode
@@ -645,7 +645,7 @@ fn build_method_sig(
     let (name, _) = expect_symbol(&children[0])?;
     let (docstring, next) = extract_optional_docstring(children, 1);
 
-    let (bracket_items, _) = expect_bracket(&children[next])?;
+    expect_bracket(&children[next])?;
     let ret_pos = next + 1;
     if ret_pos >= children.len() {
         return Err(parse_err("method signature missing return type", span));
@@ -661,66 +661,51 @@ fn build_method_sig(
         ));
     }
 
-    // Detect HKT param index: find which parameter position uses the
-    // constructor variable (e.g., `(f a)` where f is the HKT var).
+    // Both required and default methods carry named params per spec §5.3
+    // EBNF (`param = ':' type_expr symbol | symbol`). Bare names default
+    // to `TypeExpr::SelfType` per spec §5.3.1; annotated names use the
+    // annotation. Fused `params: Vec<(Symbol, TypeExpr)>` per S69 Sub 26
+    // (Principle 18 — the prior `default_param_names` parallel-vec carried
+    // an unenforced lockstep with `default_body`).
+    let annotated = build_annotated_params(&children[next])?;
+    let params: Vec<(Symbol, TypeExpr)> = annotated
+        .into_iter()
+        .map(|(name, annotation)| (name, annotation.unwrap_or(TypeExpr::SelfType)))
+        .collect();
+
+    // Detect HKT param index: find which **parameter position** uses the
+    // constructor variable (e.g., `(f a)` where f is the HKT var). With the
+    // fused param shape (S69 Sub 26), the index counts parsed params, not
+    // raw bracket items (annotations are not separate items now). The HKT
+    // variable manifests as a `TypeExpr::Applied(TypeRef { name == hkt_var,
+    // module: None }, _)` annotation per spec §5.3.2.
     let hkt_param_index = if let Some(hkt_var) = hkt_param_name {
-        bracket_items.iter().position(|item| {
-            if let Sexp::List(inner, _) = item
-                && let Some(Sexp::Symbol(s, _)) = inner.first()
-            {
-                return s.as_str() == hkt_var.as_ref();
-            }
-            false
+        params.iter().position(|(_, ty)| {
+            matches!(ty, TypeExpr::Applied(head, _)
+                if head.module.is_none() && head.name.as_ref() == hkt_var.as_ref())
         })
     } else {
         None
     };
 
-    if has_default_body {
-        // Default body: bracket items are param names with optional type annotations.
-        // Use build_annotated_params (same as sketch) to support `:Type name` syntax.
-        // Bare names default to SelfType; annotated names use the annotation.
-        let (param_names, annotations) = build_annotated_params(&children[next])?;
-        let params: Vec<TypeExpr> = if annotations.is_empty() {
-            param_names.iter().map(|_| TypeExpr::SelfType).collect()
-        } else {
-            annotations
-                .iter()
-                .map(|a| a.clone().unwrap_or(TypeExpr::SelfType))
-                .collect()
-        };
-
-        // The default body is the raw sexp after the return type
-        let default_body = Some(children[ret_pos + 1].clone());
-
-        Ok(TraitMethodSig {
-            name: name.into(),
-            docstring,
-            params,
-            ret_type,
-            span,
-            hkt_param_index,
-            default_param_names: param_names,
-            default_body,
-        })
+    let default_body = if has_default_body {
+        // Default body lowered to Expr per S69 Sub 26 — building the AST at
+        // trait-decl time catches structural errors in special forms (`let`,
+        // `if`, `match`, …) immediately, rather than per-impl.
+        Some(build_expr(&children[ret_pos + 1])?)
     } else {
-        // No default: bracket items are type expressions
-        let params = bracket_items
-            .iter()
-            .map(build_type_expr)
-            .collect::<Result<Vec<_>, _>>()?;
+        None
+    };
 
-        Ok(TraitMethodSig {
-            name: name.into(),
-            docstring,
-            params,
-            ret_type,
-            span,
-            hkt_param_index,
-            default_param_names: vec![],
-            default_body: None,
-        })
-    }
+    Ok(TraitMethodSig {
+        name: name.into(),
+        docstring,
+        params,
+        ret_type,
+        span,
+        hkt_param_index,
+        default_body,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -745,7 +730,7 @@ pub(crate) fn parse_impl(
         return Err(parse_err("trait name must start with uppercase", children[1].span()));
     }
 
-    let (target_type, type_args, type_constraints) = build_impl_target(&children[2])?;
+    let (target, type_constraints) = build_impl_target(&children[2])?;
 
     let methods = children[3..]
         .iter()
@@ -754,9 +739,8 @@ pub(crate) fn parse_impl(
 
     Ok(ParsedEntry::TraitImpl {
         impl_: TraitImpl {
-            trait_name: trait_name.into(),
-            target_type,
-            type_args,
+            trait_name: TraitRef::new(None, TraitName::from(trait_name)),
+            target,
             type_constraints,
             methods,
             span,
@@ -764,8 +748,15 @@ pub(crate) fn parse_impl(
     })
 }
 
-/// Parsed impl target: (type_name, type_params, trait_constraints).
-type ImplTarget = (TypeName, Vec<Symbol>, Vec<(Symbol, TraitName)>);
+/// Parsed impl target: (target type expression, trait constraints).
+///
+/// Per S69 Submission 27 (`TraitImpl.target: TypeExpr` unified):
+/// - `Type` lowers to `TypeExpr::Named(TypeRef::new(None, TypeName::from(name)))`
+/// - `(Type :Constraint var ...)` / `(Type var ...)` lowers to
+///   `TypeExpr::Applied(TypeRef::new(None, head), args)` where each
+///   bare-symbol arg becomes `TypeExpr::TypeVar(name)` (or, if uppercase,
+///   `TypeExpr::Named(...)`); constraints carry on the side.
+type ImplTarget = (TypeExpr, Vec<(Symbol, TraitRef)>);
 
 /// Parse an impl target. Three forms:
 ///   - `Type` — concrete: bare type name
@@ -776,7 +767,8 @@ fn build_impl_target(
 ) -> Result<ImplTarget, CranelispError> {
     match sexp {
         Sexp::Symbol(name, _) if is_uppercase_start(name) => {
-            Ok((TypeName::from(name.as_str()), vec![], vec![]))
+            let target = TypeExpr::Named(TypeRef::new(None, TypeName::from(name.as_str())));
+            Ok((target, vec![]))
         }
         Sexp::List(children, span) => {
             if children.is_empty() {
@@ -790,8 +782,8 @@ fn build_impl_target(
                 ));
             }
 
-            let mut type_args = Vec::new();
-            let mut type_constraints = Vec::new();
+            let mut type_args: Vec<TypeExpr> = Vec::new();
+            let mut type_constraints: Vec<(Symbol, TraitRef)> = Vec::new();
             let mut i = 1;
 
             while i < children.len() {
@@ -807,15 +799,20 @@ fn build_impl_target(
                             ));
                         }
                         let (var_name, _) = expect_symbol(&children[i])?;
-                        type_args.push(var_name.into());
+                        type_args.push(TypeExpr::TypeVar(Symbol::from(var_name)));
                         type_constraints.push((
                             Symbol::from(var_name),
-                            TraitName::from(constraint_name),
+                            TraitRef::new(None, TraitName::from(constraint_name)),
                         ));
                         i += 1;
                     } else {
-                        // Bare type arg (concrete type or unconstrained var)
-                        type_args.push(s.as_str().into());
+                        // Bare type arg — uppercase becomes Named, lowercase TypeVar
+                        let arg = if is_uppercase_start(s) {
+                            TypeExpr::Named(TypeRef::new(None, TypeName::from(s.as_str())))
+                        } else {
+                            TypeExpr::TypeVar(Symbol::from(s.as_str()))
+                        };
+                        type_args.push(arg);
                         i += 1;
                     }
                 } else {
@@ -826,7 +823,11 @@ fn build_impl_target(
                 }
             }
 
-            Ok((TypeName::from(type_name), type_args, type_constraints))
+            let target = TypeExpr::Applied(
+                TypeRef::new(None, TypeName::from(type_name)),
+                type_args,
+            );
+            Ok((target, type_constraints))
         }
         _ => Err(parse_err("expected impl target type", sexp.span())),
     }
@@ -1784,7 +1785,7 @@ mod tests {
         match parse_and_build_expr("(fn [x] x)").unwrap() {
             Expr::Lambda { params, body, .. } => {
                 assert_eq!(params.len(), 1);
-                assert_eq!(params[0], "x");
+                assert_eq!(params[0].0, "x");
                 match body.as_ref() {
                     Expr::Var { name, .. } => assert_eq!(name, "x"),
                     other => panic!("expected Var, got {other:?}"),
@@ -1809,17 +1810,12 @@ mod tests {
     #[test]
     fn test_build_lambda_annotated_params() {
         match parse_and_build_expr("(fn [:Int x] x)").unwrap() {
-            Expr::Lambda {
-                params,
-                param_annotations,
-                ..
-            } => {
+            Expr::Lambda { params, .. } => {
                 assert_eq!(params.len(), 1);
-                assert_eq!(params[0], "x");
-                assert_eq!(param_annotations.len(), 1);
-                assert!(param_annotations[0].is_some());
-                match param_annotations[0].as_ref().unwrap() {
-                    TypeExpr::Named(n) => assert_eq!(*n, "Int"),
+                assert_eq!(params[0].0, "x");
+                assert!(params[0].1.is_some());
+                match params[0].1.as_ref().unwrap() {
+                    TypeExpr::Named(n) => assert_eq!(n.name.as_ref(), "Int"),
                     other => panic!("expected Named(Int), got {other:?}"),
                 }
             }
@@ -1856,7 +1852,7 @@ mod tests {
                 match &args[0] {
                     Expr::Annotate { annotation, .. } => {
                         match annotation {
-                            TypeExpr::Named(n) => assert_eq!(*n, "Int"),
+                            TypeExpr::Named(n) => assert_eq!(n.name.as_ref(), "Int"),
                             other => panic!("expected Named(Int), got {other:?}"),
                         }
                     }
@@ -1877,7 +1873,7 @@ mod tests {
                 assert_eq!(arms.len(), 3);
                 match &arms[0].pattern {
                     Pattern::Constructor { name, bindings, .. } => {
-                        assert_eq!(name, "Red");
+                        assert_eq!(name.name.as_ref(), "Red");
                         assert!(bindings.is_empty());
                     }
                     other => panic!("expected Constructor, got {other:?}"),
@@ -1929,7 +1925,7 @@ mod tests {
                 assert_eq!(arms.len(), 1);
                 match &arms[0].pattern {
                     Pattern::Constructor { name, bindings, .. } => {
-                        assert_eq!(name, "Some");
+                        assert_eq!(name.name.as_ref(), "Some");
                         assert_eq!(bindings.len(), 1);
                         assert_eq!(bindings[0], "v");
                     }
@@ -2166,8 +2162,8 @@ mod tests {
                 assert_eq!(decl.methods.len(), 1);
                 assert_eq!(decl.methods[0].name, "show");
                 assert_eq!(decl.methods[0].params.len(), 1);
-                assert!(matches!(&decl.methods[0].params[0], TypeExpr::SelfType));
-                assert!(matches!(&decl.methods[0].ret_type, TypeExpr::Named(n) if n == "String"));
+                assert!(matches!(&decl.methods[0].params[0].1, TypeExpr::SelfType));
+                assert!(matches!(&decl.methods[0].ret_type, TypeExpr::Named(n) if n.name.as_ref() == "String"));
                 assert!(decl.methods[0].default_body.is_none());
             }
             other => panic!("expected TraitDecl, got {other:?}"),
@@ -2191,8 +2187,13 @@ mod tests {
     // spec: 02-grammar §2.2.3 — deftrait with multiple method signatures
     #[test]
     fn test_build_deftrait_multiple_methods() {
+        // Per spec §5.3 EBNF (`param = ':' type_expr symbol | symbol`) required-method
+        // params now carry names; bare params default to SelfType per spec §5.3.1.
+        // S70 cascade row #9 — pre-cascade test input used `[self self]` (the bare
+        // type-only no-default-branch reading) which is spec-non-compliant on the
+        // post-S69-Sub-26 fused shape. Inputs rewritten to spec-conformant `[a b]`.
         let prog = parse_and_build_program(
-            "(deftrait Num (+ [self self] self) (- [self self] self))",
+            "(deftrait Num (+ [a b] self) (- [a b] self))",
         ).unwrap();
         match &prog[0] {
             TopLevel::TraitDecl(decl) => {
@@ -2208,8 +2209,12 @@ mod tests {
     // spec: 02-grammar §2.2.3 — higher-kinded deftrait
     #[test]
     fn test_build_deftrait_hkt() {
+        // S70 cascade row #9 — pre-cascade input used bare type expressions in the
+        // bracket; spec §5.3 EBNF requires param names. The HKT param-index detect
+        // logic walks `bracket_items` looking for a `(f ...)` shape, so the param
+        // name must be annotated alongside an `(f a)` type. Use `:Type name` form.
         let prog = parse_and_build_program(
-            "(deftrait (Functor f) (fmap [(Fn [a] b) (f a)] (f b)))",
+            "(deftrait (Functor f) (fmap [:(Fn [a] b) g :(f a) x] (f b)))",
         ).unwrap();
         match &prog[0] {
             TopLevel::TraitDecl(decl) => {
@@ -2225,18 +2230,22 @@ mod tests {
     // spec: 02-grammar §2.2.3 — deftrait with default method implementation
     #[test]
     fn test_build_deftrait_with_default() {
+        // S70 cascade row #9 — `[self self]` pre-cascade input rewritten to spec
+        // conformant `[a b]` (bare params default to SelfType per spec §5.3.1).
         let prog = parse_and_build_program(
-            "(deftrait Ord (< [self self] Bool) (<= [x y] Bool (if (< x y) true (= x y))))",
+            "(deftrait Ord (< [a b] Bool) (<= [x y] Bool (if (< x y) true (= x y))))",
         ).unwrap();
         match &prog[0] {
             TopLevel::TraitDecl(decl) => {
                 assert_eq!(decl.methods.len(), 2);
                 assert!(decl.methods[0].default_body.is_none());
-                assert!(decl.methods[0].default_param_names.is_empty());
+                // Names live with params now (S69 Sub 26) — verify the no-default
+                // method has its two self-typed params.
+                assert_eq!(decl.methods[0].params.len(), 2);
                 assert!(decl.methods[1].default_body.is_some());
-                assert_eq!(decl.methods[1].default_param_names.len(), 2);
-                assert_eq!(decl.methods[1].default_param_names[0], "x");
-                assert_eq!(decl.methods[1].default_param_names[1], "y");
+                assert_eq!(decl.methods[1].params.len(), 2);
+                assert_eq!(decl.methods[1].params[0].0, "x");
+                assert_eq!(decl.methods[1].params[1].0, "y");
             }
             other => panic!("expected TraitDecl, got {other:?}"),
         }
@@ -2275,9 +2284,12 @@ mod tests {
         ).unwrap();
         match &prog[0] {
             TopLevel::TraitImpl(imp) => {
-                assert_eq!(imp.trait_name, "Display");
-                assert_eq!(imp.target_type, "Int");
-                assert!(imp.type_args.is_empty());
+                assert_eq!(imp.trait_name.name.as_ref(), "Display");
+                // Concrete target: TypeExpr::Named(Int)
+                match &imp.target {
+                    TypeExpr::Named(n) => assert_eq!(n.name.as_ref(), "Int"),
+                    other => panic!("expected Named, got {other:?}"),
+                }
                 assert!(imp.type_constraints.is_empty());
                 assert_eq!(imp.methods.len(), 1);
                 assert_eq!(imp.methods[0].name, "show");
@@ -2295,13 +2307,22 @@ mod tests {
         ).unwrap();
         match &prog[0] {
             TopLevel::TraitImpl(imp) => {
-                assert_eq!(imp.trait_name, "Display");
-                assert_eq!(imp.target_type, "Option");
-                assert_eq!(imp.type_args.len(), 1);
-                assert_eq!(imp.type_args[0], "a");
+                assert_eq!(imp.trait_name.name.as_ref(), "Display");
+                // Polymorphic target: TypeExpr::Applied(Option, [TypeVar(a)])
+                match &imp.target {
+                    TypeExpr::Applied(head, args) => {
+                        assert_eq!(head.name.as_ref(), "Option");
+                        assert_eq!(args.len(), 1);
+                        match &args[0] {
+                            TypeExpr::TypeVar(v) => assert_eq!(v, "a"),
+                            other => panic!("expected TypeVar(a), got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected Applied, got {other:?}"),
+                }
                 assert_eq!(imp.type_constraints.len(), 1);
                 assert_eq!(imp.type_constraints[0].0, "a");
-                assert_eq!(imp.type_constraints[0].1, "Display");
+                assert_eq!(imp.type_constraints[0].1.name.as_ref(), "Display");
             }
             other => panic!("expected TraitImpl, got {other:?}"),
         }
@@ -2315,9 +2336,12 @@ mod tests {
         ).unwrap();
         match &prog[0] {
             TopLevel::TraitImpl(imp) => {
-                assert_eq!(imp.trait_name, "Functor");
-                assert_eq!(imp.target_type, "Option");
-                assert!(imp.type_args.is_empty());
+                assert_eq!(imp.trait_name.name.as_ref(), "Functor");
+                // Concrete target (bare symbol form): TypeExpr::Named(Option)
+                match &imp.target {
+                    TypeExpr::Named(n) => assert_eq!(n.name.as_ref(), "Option"),
+                    other => panic!("expected Named, got {other:?}"),
+                }
             }
             other => panic!("expected TraitImpl, got {other:?}"),
         }
@@ -2330,8 +2354,11 @@ mod tests {
             "(impl Eq Int (defn = [x y] (eq-i64 x y)))",
         ).unwrap() {
             TopLevel::TraitImpl(imp) => {
-                assert_eq!(imp.trait_name, "Eq");
-                assert_eq!(imp.target_type, "Int");
+                assert_eq!(imp.trait_name.name.as_ref(), "Eq");
+                match &imp.target {
+                    TypeExpr::Named(n) => assert_eq!(n.name.as_ref(), "Int"),
+                    other => panic!("expected Named, got {other:?}"),
+                }
             }
             other => panic!("expected TraitImpl, got {other:?}"),
         }
@@ -2373,12 +2400,10 @@ mod tests {
     fn test_type_annotation_simple() {
         // (fn [:Int x] x) — annotation on param
         match parse_and_build_expr("(fn [:Int x] x)").unwrap() {
-            Expr::Lambda {
-                param_annotations, ..
-            } => {
-                assert_eq!(param_annotations.len(), 1);
-                match param_annotations[0].as_ref().unwrap() {
-                    TypeExpr::Named(n) => assert_eq!(*n, "Int"),
+            Expr::Lambda { params, .. } => {
+                assert_eq!(params.len(), 1);
+                match params[0].1.as_ref().unwrap() {
+                    TypeExpr::Named(n) => assert_eq!(n.name.as_ref(), "Int"),
                     other => panic!("expected Named, got {other:?}"),
                 }
             }
@@ -2390,11 +2415,9 @@ mod tests {
     #[test]
     fn test_type_annotation_type_var() {
         match parse_and_build_expr("(fn [:a x] x)").unwrap() {
-            Expr::Lambda {
-                param_annotations, ..
-            } => {
-                assert_eq!(param_annotations.len(), 1);
-                match param_annotations[0].as_ref().unwrap() {
+            Expr::Lambda { params, .. } => {
+                assert_eq!(params.len(), 1);
+                match params[0].1.as_ref().unwrap() {
                     TypeExpr::TypeVar(v) => assert_eq!(*v, "a"),
                     other => panic!("expected TypeVar, got {other:?}"),
                 }
@@ -2408,22 +2431,18 @@ mod tests {
     fn test_type_annotation_fn_type() {
         // (fn [: (Fn [Int] Int) f] (f 42))
         match parse_and_build_expr("(fn [: (Fn [Int] Int) f] (f 42))").unwrap() {
-            Expr::Lambda {
-                params,
-                param_annotations,
-                ..
-            } => {
+            Expr::Lambda { params, .. } => {
                 assert_eq!(params.len(), 1);
-                assert_eq!(params[0], "f");
-                match param_annotations[0].as_ref().unwrap() {
-                    TypeExpr::FnType(params, ret) => {
-                        assert_eq!(params.len(), 1);
-                        match &params[0] {
-                            TypeExpr::Named(n) => assert_eq!(*n, "Int"),
+                assert_eq!(params[0].0, "f");
+                match params[0].1.as_ref().unwrap() {
+                    TypeExpr::FnType(fn_params, ret) => {
+                        assert_eq!(fn_params.len(), 1);
+                        match &fn_params[0] {
+                            TypeExpr::Named(n) => assert_eq!(n.name.as_ref(), "Int"),
                             other => panic!("expected Named, got {other:?}"),
                         }
                         match ret.as_ref() {
-                            TypeExpr::Named(n) => assert_eq!(*n, "Int"),
+                            TypeExpr::Named(n) => assert_eq!(n.name.as_ref(), "Int"),
                             other => panic!("expected Named, got {other:?}"),
                         }
                     }
@@ -2650,7 +2669,7 @@ mod tests {
             TopLevel::Defn(defn) => {
                 assert_eq!(defn.docstring.as_deref(), Some("docstring"));
                 assert_eq!(defn.params().len(), 1);
-                assert_eq!(defn.params()[0], "x");
+                assert_eq!(defn.params()[0].0, "x");
             }
             other => panic!("expected Defn, got {other:?}"),
         }
@@ -2713,10 +2732,10 @@ mod tests {
                 match &args[0] {
                     Expr::Annotate { annotation, .. } => match annotation {
                         TypeExpr::Applied(name, type_args) => {
-                            assert_eq!(*name, "Option");
+                            assert_eq!(name.name.as_ref(), "Option");
                             assert_eq!(type_args.len(), 1);
                             match &type_args[0] {
-                                TypeExpr::Named(n) => assert_eq!(*n, "Int"),
+                                TypeExpr::Named(n) => assert_eq!(n.name.as_ref(), "Int"),
                                 other => panic!("expected Named(Int), got {other:?}"),
                             }
                         }
@@ -2739,7 +2758,7 @@ mod tests {
                 match &args[0] {
                     Expr::Annotate { annotation, .. } => match annotation {
                         TypeExpr::Applied(name, type_args) => {
-                            assert_eq!(*name, "Map");
+                            assert_eq!(name.name.as_ref(), "Map");
                             assert_eq!(type_args.len(), 2);
                         }
                         other => panic!("expected Applied, got {other:?}"),
@@ -2761,7 +2780,7 @@ mod tests {
                 assert_eq!(arms.len(), 1);
                 match &arms[0].pattern {
                     Pattern::Constructor { name, bindings, .. } => {
-                        assert_eq!(name, "Some");
+                        assert_eq!(name.name.as_ref(), "Some");
                         assert_eq!(bindings.len(), 1);
                         assert_eq!(bindings[0], "v");
                     }
@@ -2780,7 +2799,7 @@ mod tests {
                 assert_eq!(arms.len(), 1);
                 match &arms[0].pattern {
                     Pattern::Constructor { name, bindings, .. } => {
-                        assert_eq!(name, "Point");
+                        assert_eq!(name.name.as_ref(), "Point");
                         assert_eq!(bindings.len(), 2);
                         assert_eq!(bindings[0], "x");
                         assert_eq!(bindings[1], "y");
@@ -2811,12 +2830,12 @@ mod tests {
                 assert_eq!(ctor.fields.len(), 2);
                 assert_eq!(ctor.fields[0].name, "x");
                 match &ctor.fields[0].type_expr {
-                    TypeExpr::Named(n) => assert_eq!(*n, "Int"),
+                    TypeExpr::Named(n) => assert_eq!(n.name.as_ref(), "Int"),
                     other => panic!("expected Named(Int), got {other:?}"),
                 }
                 assert_eq!(ctor.fields[1].name, "y");
                 match &ctor.fields[1].type_expr {
-                    TypeExpr::Named(n) => assert_eq!(*n, "Int"),
+                    TypeExpr::Named(n) => assert_eq!(n.name.as_ref(), "Int"),
                     other => panic!("expected Named(Int), got {other:?}"),
                 }
             }
@@ -2947,7 +2966,7 @@ mod tests {
             [TopLevel::Defn(defn)] => {
                 assert_eq!(defn.name, "foo");
                 assert_eq!(defn.params().len(), 1);
-                assert_eq!(defn.params()[0], "x");
+                assert_eq!(defn.params()[0].0, "x");
             }
             other => panic!("expected single Defn, got {other:?}"),
         }
@@ -3123,8 +3142,11 @@ mod tests {
         assert_eq!(entries.len(), 1);
         match &entries[0] {
             ParsedEntry::TraitImpl { impl_ } => {
-                assert_eq!(impl_.trait_name.as_ref(), "Display");
-                assert_eq!(impl_.target_type.as_ref(), "Int");
+                assert_eq!(impl_.trait_name.name.as_ref(), "Display");
+                match &impl_.target {
+                    TypeExpr::Named(n) => assert_eq!(n.name.as_ref(), "Int"),
+                    other => panic!("expected Named(Int), got {other:?}"),
+                }
             }
             other => panic!("expected ParsedEntry::TraitImpl, got {other:?}"),
         }
