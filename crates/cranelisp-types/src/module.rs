@@ -341,7 +341,10 @@ impl ModuleEntry<()> {
             // and `design/arch/bounded-contexts.md` §7).
             // ModuleEntry::Macro variant retired (Submission 22) — macros are
             // now ModuleEntry::Def entries with kind: DefKind::Macro
-            // { clauses_meta, sexp, source } (see `DefKind` rustdoc).
+            // { clauses_meta } (see `DefKind::Macro` rustdoc). Per-symbol
+            // source / sexp / clif_ir / disasm / code_size live on the
+            // integration-layer Introspection record (Decision 41), not on
+            // the Def variant — symmetric across all DefKinds.
             // ModuleEntry::PlatformDecl variant retired (Submission 22) —
             // platforms register as synthetic modules at
             // symbol_tables["platform.<name>"] per spec §8.9.3; the DLL handle
@@ -701,14 +704,17 @@ pub enum ModuleEntry<C: CodeStore = ()> {
     // Vec<Symbol> shape.
     // ModuleEntry::Macro variant retired (Submission 22 — 2026-05-21).
     // Macros are now ModuleEntry::Def entries with
-    // kind: DefKind::Macro { clauses_meta, sexp, source } (see
-    // `DefKind::Macro` rustdoc in this file). Per-clause bodies are
-    // ordinary Def entries with mangled names `{macro-name}$clause-{N}`
-    // parallel to multi-sig fn variants like `add$Int+Int`. The session-level
-    // `MacroEnv` sidecar retires alongside this variant (consumer cascade in
-    // /dev wave-3). The `MacroClauseInfo` / `MacroParam` support types below
-    // continue to exist because `DefKind::Macro` still references them; their
-    // own retirement (if any) is a separate cascade item.
+    // kind: DefKind::Macro { clauses_meta } (see `DefKind::Macro` rustdoc
+    // in this file). Per-clause bodies are ordinary Def entries with mangled
+    // names `{macro-name}$clause-{N}` parallel to multi-sig fn variants like
+    // `add$Int+Int`. The session-level `MacroEnv` sidecar retires alongside
+    // this variant (consumer cascade in /dev wave-3). The `MacroClauseInfo`
+    // / `MacroParam` support types below continue to exist because
+    // `DefKind::Macro` still references them; their own retirement (if any)
+    // is a separate cascade item. Per-symbol source / sexp / clif_ir /
+    // disasm / code_size live on the integration-layer Introspection record
+    // (Decision 41), NOT on `DefKind::Macro` — symmetric with all other Def
+    // variants.
     //
     // ModuleEntry::PlatformDecl variant retired (Submission 22 — 2026-05-21).
     // Per spec §8.9.3, `(platform <name>)` registers a synthetic module at
@@ -922,6 +928,95 @@ pub enum DefKind {
         #[serde(default)]
         internal: bool,
     },
+    /// A multi-clause macro parent entry (S69 Submission 13 macro-unification).
+    ///
+    /// **Storage shape.** The parent `ModuleEntry::Def { kind: DefKind::Macro
+    /// { clauses_meta }, .. }` carries dispatch metadata only — per-clause
+    /// compiled bodies live as **separate** `ModuleEntry::Def` entries under
+    /// mangled names `{macro-name}$clause-{N}` with `kind: DefKind::UserFn`,
+    /// `got_slot: Some(_)`, `ast: Some(DefnVariant)`, and `code: Some(_)`
+    /// populated. The mangled-variant shape parallels multi-sig fn variants
+    /// (`add$Int+Int` etc.) per `bounded-contexts.md` §7 "Macros are Defs".
+    ///
+    /// **Parent metadata-only.** This parent entry has no callable runtime
+    /// address — `got_slot` is `None` (see the `got_slot` rustdoc on `Def`,
+    /// which names `Def { kind: DefKind::Macro }` parent entries among the
+    /// slot-less classes). Invocation dispatches to a clause-body Def via
+    /// `clauses_meta` walk + GOT-lookup on the matched variant's mangled name.
+    ///
+    /// **Fields.**
+    /// - `clauses_meta` carries per-clause `MacroClauseInfo` (`params` with
+    ///   bracket destructuring shape via `MacroParam`, `rest_param`) for the
+    ///   dispatcher's pattern-match. The dispatch order is authorship-order —
+    ///   `clauses_meta[0]` is tried first, then `[1]`, etc., per the
+    ///   multi-clause `defmacro` spec. `MacroClauseInfo` has no parallel on
+    ///   any other `DefKind` variant — it is the macro-specific dispatcher
+    ///   lookup table and the sole reason this variant exists distinct from
+    ///   `DefKind::UserFn`.
+    ///
+    /// **Introspection lives elsewhere — symmetric across all DefKind
+    /// variants (Decision 41 operative).** `source`, `sexp`, `expanded`,
+    /// `clif_ir`, `disasm`, `code_size` for ALL Def variants — macros
+    /// included — live on the per-`FQSymbol` `Introspection` record in the
+    /// integration layer's `SharedState.introspection: Option<DashMap<FQSymbol,
+    /// Introspection>>`. The struct is defined at `src/session_v4.rs:566`.
+    /// Backend writes those fields directly during `compile_to_module` via
+    /// its `introspection: Option<&DashMap<FQSymbol, Introspection>>`
+    /// parameter — the `Option`'s `is_some()` IS the mode discriminator
+    /// (Decision 38; the same discriminator that gates Introspection
+    /// population in JIT mode and skips it in `--link` object mode). See
+    /// `design/arch/sequences/exec-flow-compilation.mmd` line 111 (frontend
+    /// populates `Introspection { source, sexp, .. }` per-symbol after
+    /// expand) and lines 211-221 (backend writes
+    /// `Introspection { clif_ir, disasm, code_size, .. }` directly per Decision
+    /// 41 — int does no post-processing); `design/arch/sequences/exec-flow-repl.mmd`
+    /// line 132 (the `compile_to_module` invocation shape).
+    /// `design/arch/bounded-contexts.md` §int places introspection in the
+    /// integration layer ("development tooling: tracing, observability,
+    /// introspection").
+    ///
+    /// **Why no `sexp` / `source` field here.** Macros are not architecturally
+    /// special for introspection purposes. A future reader looking up
+    /// `/source <macro-name>` / `/sexp <macro-name>` / `/expand <macro-name>`
+    /// hits the same per-FQSymbol `Introspection` record that backs
+    /// `/source <fn-name>` for any other Def — indexed by `FQSymbol`,
+    /// mode-gated by the `Option`. Carrying `sexp` / `source` on
+    /// `DefKind::Macro` would duplicate the canonical store asymmetrically
+    /// (no other `DefKind` variant carries them — `DefKind::UserFn`,
+    /// `DefKind::Constructor`, etc. all rely on the integration-layer
+    /// `Introspection` map). This variant predates Decision 41's settlement;
+    /// the prior `sexp` / `source` fields were pre-D41 shadows carried
+    /// forward from S69 Submission 13's narrative and have been removed.
+    ///
+    /// **Cache-hit residual gap (architectural debt).** `Introspection` is
+    /// `#[derive(Default)]` (non-Serde; REPL-only per its own rustdoc) and
+    /// lives on `SharedState` per BC §int — when a module loads from cache,
+    /// the `Introspection` DashMap is NOT rehydrated. REPL editing of a
+    /// cache-loaded module therefore cannot today trigger `.cl` regeneration
+    /// for symbols whose Introspection entries are absent. Serializing the
+    /// full `Introspection` structure into the cache is NOT the answer
+    /// (mixes concerns, bloats the cache, raises invalidation questions);
+    /// the future fix is lazy re-read of the backing source file on demand
+    /// — re-parse the file region and populate Introspection for the
+    /// queried symbols only. Tracked as architectural debt; restoring
+    /// D41-violating shadow fields on `DefKind::Macro` (or any other Def
+    /// variant) is NOT the answer. See `design/arch/fixmes/` —
+    /// "int cache-hit source rehydration on demand" — for the open design
+    /// question (WHEN to re-read; HOW to map FQSymbol back to file region).
+    ///
+    /// **Retired storage.** The prior `ModuleEntry::Macro` sibling variant was
+    /// retired in Submission 22 (deleted from source 2026-05-21). The
+    /// session-level `MacroEnv` sidecar retires alongside — clause bodies live
+    /// in the symbol table under mangled names rather than in a separate
+    /// dispatch map. See the `ModuleEntry::Macro retired` comment between the
+    /// `Constructor` and `TraitImpl` variants for the cross-reference trail.
+    ///
+    /// See `facades/frontend.md` §"expand" for the dispatcher behaviour;
+    /// `design/arch/bounded-contexts.md` §7 for the bounded-context invariants
+    /// (macros are Defs; the clause-walk dispatch story).
+    Macro {
+        clauses_meta: Vec<MacroClauseInfo>,
+    },
 }
 
 // `PrimitiveKind` enum retired (S69 Submission 36).
@@ -972,7 +1067,6 @@ pub struct ConstrainedFn {
 pub struct MacroClauseInfo {
     pub params: Vec<MacroParam>,
     pub rest_param: Option<Symbol>,
-    pub source: Option<String>,
 }
 
 /// A macro parameter: either a simple name or a bracket destructuring.

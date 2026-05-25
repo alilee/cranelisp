@@ -306,7 +306,6 @@ mod tests {
                 clauses: vec![MacroClauseInfo {
                     params: vec![],
                     rest_param: None,
-                    source: None,
                 }],
                 docstring: None,
                 visibility: Visibility::Public,

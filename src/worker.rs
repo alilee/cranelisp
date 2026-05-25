@@ -1317,7 +1317,6 @@ fn register_macro_in_module(
         .map(|c| MacroClauseInfo {
             params: c.fixed_params.clone(),
             rest_param: c.rest_param.clone(),
-            source: None,
         })
         .collect();
     let visibility = if info.is_private {

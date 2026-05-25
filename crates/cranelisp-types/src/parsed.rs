@@ -48,10 +48,14 @@ pub enum ParsedEntry {
     /// Parsed `(defmacro name clauses…)` form. Each clause downstream becomes
     /// a `Def { kind: UserFn }` body under the mangled name
     /// `{macro-name}$clause-{N}` (via `synthesize_macro_clause_defn`), with a
-    /// parent `Def { kind: DefKind::Macro { clauses_meta, sexp, source } }`
-    /// holding metadata only. See `DefKind::Macro` rustdoc in this file
-    /// for the unified shape; the prior sibling `ModuleEntry::Macro` variant
-    /// retires in the S69 concurrency-cluster /dev brief.
+    /// parent `Def { kind: DefKind::Macro { clauses_meta } }` holding the
+    /// dispatcher's pattern-match metadata only. Per-symbol source / sexp /
+    /// expanded / clif_ir / disasm / code_size live on the integration-layer
+    /// `Introspection` record (Decision 41), symmetric with all other Def
+    /// variants. See `DefKind::Macro` rustdoc in `module.rs` for the unified
+    /// shape and the cache-hit residual-gap discussion; the prior sibling
+    /// `ModuleEntry::Macro` variant retires in the S69 concurrency-cluster
+    /// /dev brief.
     Macro { info: DefmacroInfo },
     /// Synthetic per-constructor entry — emitted by `build_form` for each
     /// constructor of a `TypeDef`. Pre-typecheck shape; `check_form` lifts
@@ -75,10 +79,13 @@ pub enum ParsedEntry {
 /// Carries `body_sexp` per clause because the frontend's
 /// `synthesize_macro_clause_defn` consumes it after parsing to produce the
 /// per-clause `defn` Sexp. The canonical resolved-stage shape (after macro
-/// codegen) is `Def { kind: DefKind::Macro { clauses_meta: Vec<MacroClauseInfo>,
-/// sexp, source } }` parent + N `Def { kind: UserFn }` clause bodies under
+/// codegen) is `Def { kind: DefKind::Macro { clauses_meta: Vec<MacroClauseInfo> } }`
+/// parent + N `Def { kind: UserFn }` clause bodies under
 /// `{macro-name}$clause-{N}` names — `MacroClauseInfo` carries no body because
-/// each clause body lives as its own GOT-dispatched Def. See `design/arch/bounded-contexts.md` §7
+/// each clause body lives as its own GOT-dispatched Def. Per-symbol source /
+/// sexp / clif_ir / disasm / code_size live on the integration-layer
+/// `Introspection` record per Decision 41 (NOT on the parent Def variant —
+/// symmetric across all DefKinds). See `design/arch/bounded-contexts.md` §7
 /// §"DefKind" `DefKind::Macro` for the unified shape; the prior sibling
 /// `ModuleEntry::Macro` variant retires in the S69 concurrency-cluster /dev brief.
 #[non_exhaustive]
