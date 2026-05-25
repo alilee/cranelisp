@@ -21,8 +21,11 @@
 //!   - Quasiquote desugaring (`expand_quasiquotes`) runs unconditionally
 //!     once at the top of expansion.
 //!   - Tree traversal recognises macro-head positions — bare-symbol macros
-//!     and `(macro-name args…)` forms — by looking up `ModuleEntry::Macro`
-//!     in `symbol_tables`.
+//!     and `(macro-name args…)` forms — by looking up
+//!     `ModuleEntry::Def { kind: DefKind::Macro { clauses_meta }, .. }`
+//!     in `symbol_tables` (post-S69 Submission 22: the sibling
+//!     `ModuleEntry::Macro` variant is retired; per S69 Submission 13 macro
+//!     storage is unified under the `Def` shape).
 //!   - **Every recognised macro head returns
 //!     `Err(ExpansionError::Gap(ResolutionGap::MacroInMem(fq)))`** —
 //!     uniform Gap per facade §"expand". Per the orchestrator-side retry
@@ -41,9 +44,10 @@
 //! ## Module FQ resolution
 //!
 //! Bare and FQ macro-head symbols are resolved through `symbol_tables`:
-//! - `"name"` looks up `ModuleEntry::Macro` in each module's table; an
-//!   `Import`/`Reexport` entry triggers a single chain follow to find the
-//!   home module per Principle 17.
+//! - `"name"` looks up `ModuleEntry::Def { kind: DefKind::Macro, .. }` in
+//!   each module's table; an `Import` entry (post-S69 Submission 22, the
+//!   former `Reexport` variant collapsed into `Import { visibility: Public }`)
+//!   triggers a single chain follow to find the home module per Principle 17.
 //! - `"module.path/name"` (or `"module/name"`) parses out the FQ shape
 //!   and resolves directly.
 //!
@@ -171,7 +175,9 @@ where
     match sexp {
         Sexp::List(children, span) if !children.is_empty() => {
             // Macro call: head is a bare symbol that resolves to a
-            // `ModuleEntry::Macro`.
+            // `ModuleEntry::Def { kind: DefKind::Macro { .. }, .. }` (post-S69
+            // Submission 22 — the sibling `ModuleEntry::Macro` variant is
+            // retired; per Submission 13 macros share the unified Def shape).
             if let Sexp::Symbol(ref name, sym_span) = children[0]
                 && let Some(fq) = lookup_macro_fq(name, sym_span, symbol_tables)
             {
@@ -209,13 +215,19 @@ where
 ///
 /// Recognises two shapes:
 /// 1. **FQ**: `"module.path/name"` parses out the module + name and probes
-///    `symbol_tables[module]` for a `ModuleEntry::Macro` (chasing one
-///    Import/Reexport hop if encountered, per Principle 17).
+///    `symbol_tables[module]` for a
+///    `ModuleEntry::Def { kind: DefKind::Macro { .. }, .. }` (chasing one
+///    `Import` hop if encountered, per Principle 17 — the prior `Reexport`
+///    variant collapsed into `Import { visibility: Public }` at S69
+///    Submission 22).
 /// 2. **Bare**: `"name"` probes every module in `symbol_tables` for a
-///    matching `ModuleEntry::Macro`. The first match wins.
+///    matching `Def`-shape macro entry. The first match wins.
 ///
-/// Returns `None` if no module contains a `ModuleEntry::Macro` with this
+/// Returns `None` if no module contains a `Def`-shape macro entry with this
 /// name — bare function/variable references fall through to the caller.
+/// Post-S69 Submission 13 (macro-unification), macro storage is uniformly
+/// `Def { kind: DefKind::Macro { clauses_meta }, .. }`; the retired sibling
+/// `ModuleEntry::Macro` variant is no longer probed.
 fn lookup_macro_fq<C, L>(
     name: &str,
     _span: Span,
@@ -254,8 +266,12 @@ where
     None
 }
 
-/// Returns true if the table contains a `ModuleEntry::Macro` for `name`
-/// (directly, or by chasing a single Import/Reexport hop).
+/// Returns true if the table contains a
+/// `ModuleEntry::Def { kind: DefKind::Macro { .. }, .. }` for `name`
+/// — directly, or by chasing a single `Import` hop (the prior `Reexport`
+/// variant collapsed into `Import { visibility: Public }` at S69
+/// Submission 22; macro storage unified into the `Def` shape at S69
+/// Submission 13).
 fn macro_entry_present<C, L>(
     table: &SymbolTable<C, L>,
     name: &str,
