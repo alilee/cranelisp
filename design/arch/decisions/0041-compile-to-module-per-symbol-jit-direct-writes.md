@@ -1,14 +1,81 @@
 ---
 number: 0041
-title: `compile_to_module` per-symbol JIT cardinality; `Code` moves to `cranelisp-backend`; backend writes shared state directly; `Result<(), CompilationError>`
+title: `compile_to_module` per-symbol JIT cardinality; `Code` moves to `cranelisp-backend`; backend writes shared state directly; returns `CompilationArtifacts`; `produce_disasm` is a separate on-demand backend function
 status: operative
 ---
 
-# 0041 — `compile_to_module` per-symbol JIT cardinality; `Code` moves to `cranelisp-backend`; backend writes shared state directly; `Result<(), CompilationError>`
+# 0041 — `compile_to_module` per-symbol JIT cardinality; `Code` moves to `cranelisp-backend`; backend writes shared state directly; returns `CompilationArtifacts`; `produce_disasm` is a separate on-demand backend function
 
-`compile_to_module` is per-symbol-arity for JIT mode and per-module-arity for object mode (caller controls via `names` length). `Code` enum moves from `src/code.rs` to `cranelisp-backend/src/code.rs` (Decision 35 Layer 2 Option B retracts; backend gains direct construction of `Code`; Principle 3 protected — `Code` does NOT enter `cranelisp-types`). Backend writes `Code::Jit` into symbol-table entries directly via Decision 38's `write_code(&self, sym, code)`; writes `Introspection` into `Option<&introspection>` if `Some`; returns `Result<(), CompilationError>`. Per-symbol JIT cardinality enables true per-redefinition reclaim; Decision 31 amends from per-batch to per-symbol cardinality.
+`compile_to_module` is per-symbol-arity for JIT mode and per-module-arity for object mode (caller controls via `names` length). `Code` enum moves from `src/code.rs` to `cranelisp-backend/src/code.rs` (Decision 35 Layer 2 Option B retracts; backend gains direct construction of `Code`; Principle 3 protected — `Code` does NOT enter `cranelisp-types`). Backend writes `Code::Jit` into symbol-table entries directly via Decision 38's `write_code(&self, sym, code)`; backend additionally writes the resulting fn pointer to the entry's GOT slot via `got().store_slot`. Backend returns the **always-created** introspection artefacts (`clif_ir`, `code_size`, `compile_duration`) by value as `CompilationArtifacts`; the caller decides whether to retain or discard them. The **on-demand** disassembly is produced by a separate backend function `produce_disasm(&fq, &symbol_tables)` invoked lazily (e.g., when the `/disasm` REPL command fires), operating on the persistent post-compile machine code located via the GOT. `Introspection` stays in the integration layer (no DAG inversion; backend never names it). Per-symbol JIT cardinality enables true per-redefinition reclaim; Decision 31 amends from per-batch to per-symbol cardinality.
 
-## Three coordinated changes
+## S70 Phase B amendment — direct-write of `Introspection` retracted (2026-05-26)
+
+The pre-amendment `compile_to_module` signature carried `introspection: Option<&DashMap<FQSymbol, Introspection>>` as a parameter so backend could direct-write the per-symbol introspection record. That third direct-write is **retracted**.
+
+**Why retract.** `Introspection` is an integration-layer (`int`) type — defined in `src/session_v4.rs` and target-stated by `facades/int.md` §"Introspection". For backend to accept `Option<&DashMap<FQSymbol, Introspection>>` at its public boundary, `Introspection` would have to live where `cranelisp-backend` can reach it. It does not — and putting it there inverts the DAG (Principle 3: `cranelisp-backend` does not depend on the `int` binary crate). This DAG inversion was surfaced by the Sprint 70 Phase B configuration → source completeness sweep, 5th audit lens (memo at `design/arch/cranelisp-types-settled-verdict-s70.md`). FIXME 0221 captured the question; this amendment resolves it.
+
+**New shape — categorize by always-created vs on-demand.** The user-arbitrated direction: "for those things that are always created, no harm in passing those back to the caller and having the caller discard them if not required. for those created as needed, could there be a separate call?" Applied to backend's per-symbol introspection contributions:
+
+- **Always-created** (returned in `CompilationArtifacts` by value): `clif_ir`, `code_size`, `compile_duration`. CLIF IR lives in memory during `compile_to_module`'s normal flow — Cranelift's `Function` IR is consumed by the codegen pipeline, so its capture must happen during compile or not at all; string serialization is ~tens of μs, dominated by codegen cost. Code size and compile duration are free byproducts of finalization. Always returning these in the artefact (and letting the caller drop them in production-batch mode) is cheaper than the conditional-branch + double-pointer DashMap insert the retracted shape required.
+- **Created-on-demand** (separate backend function): `disasm`. Disassembly operates on the persistent post-compile machine code — `FQSymbol → SymbolTable.got().load_slot(slot) → ptr`, plus the entry's `code_size`. Both are reachable from the integration layer at any time after `compile_to_module` returns, so the disassembly call can fire lazily when a REPL `/disasm` request arrives, not eagerly per-compile.
+
+**New canonical signatures:**
+
+```rust
+pub fn compile_to_module<M: Module>(
+    scope: &ModuleFullPath,
+    names: &[Symbol],
+    symbol_tables: &SymbolTables<Code, ()>,
+    module_aliases: &ModuleAliases,
+    module: M,
+) -> Result<CompilationArtifacts, CompilationError>;
+
+#[non_exhaustive]
+pub struct CompilationArtifacts {
+    /// CLIF IR text. Always captured during codegen; caller decides whether
+    /// to retain it (REPL/trace mode) or drop it (production batch).
+    pub clif_ir: String,
+    /// Native code size in bytes. Reported by Cranelift finalize.
+    pub code_size: usize,
+    /// Wall-clock duration of the codegen step (parse-IR → finalized code).
+    pub compile_duration: std::time::Duration,
+}
+
+pub fn produce_disasm(
+    fq: &FQSymbol,
+    symbol_tables: &SymbolTables<Code, ()>,
+) -> Result<String, CompilationError>;
+```
+
+**Caller integration shape** (illustrative; the int-side cascade will action this when its wave fires):
+
+```rust
+let artifacts = backend::compile_to_module(scope, &[sym], st, ma, jit)?;
+if shared.introspection.is_some() {
+    shared.introspection.as_ref().unwrap().insert(fq, Introspection {
+        source: ...,           // populated at parse time
+        sexp: ...,             // populated at parse + expansion
+        expanded: ...,         // (if surfaced)
+        ast: ...,              // (if surfaced)
+        clif_ir: Some(artifacts.clif_ir),
+        code_size: Some(artifacts.code_size),
+        compile_duration: Some(artifacts.compile_duration),
+        disasm: None,          // produced lazily by /disasm REPL command
+    });
+}
+// Later, on `/disasm <fn>`: let d = backend::produce_disasm(&fq, &shared.symbol_tables)?;
+```
+
+**Architectural properties this lands.**
+
+1. **Zero DAG inversion.** Backend never names `Introspection`. The integration-layer type stays in the integration-layer crate; backend's public surface stays within its bounded context.
+2. **No mode discriminator at `compile_to_module`.** Work performed by `compile_to_module` is uniform regardless of whether the caller is in REPL/trace mode or production batch. The caller controls retention by holding (or dropping) the returned `CompilationArtifacts`. The pre-amendment `Option<&DashMap<...>>::is_some()` doubling as a mode discriminator is gone.
+3. **Principle 7 — minimum mechanism.** `Introspection` lives one place (int crate). Single source of truth for the composite per-symbol metadata record; no parallel backend-side DTO + merge step.
+4. **D41 #1 (Code direct-write) and #2 (GOT slot direct-write) preserved unchanged.** Both still target types-crate types (`SymbolTable<Code, ()>`, `GotTable`); both still flow through interior-mutable `&self` methods.
+
+**Operational implication / Context.** The pre-amendment `crates/cranelisp-backend/src/` source still carries the pre-amendment signature (or, depending on which row of the Wave 3 PIF list has fired, the older `Result<CompilationResult, CranelispError>` per-batch shape). Rotating backend source to the new amendment shape (`Result<CompilationArtifacts, CompilationError>` + the new `produce_disasm` free function) is **owed work for a future sprint** — parallel to typecheck/int wave-3 cascades, where every consumer crate needs rotation. This amendment doc names the new signature shape; the source cascade lands separately. Out of S70's frontend-focused remaining scope.
+
+## Three coordinated changes (post-amendment shape — §3 is the value-returning + on-demand pair; the retracted #3 direct-write of `Introspection` is documented as §3b below)
 
 ### 1. Per-symbol JIT cardinality
 
@@ -19,7 +86,8 @@ Cardinality is determined by the `names` arity at the caller, NOT by mode at the
 ```rust
 for sym in defined_symbols(&shared.symbol_tables[scope]) {
     let jit = Jit::new_with_symbols(&extra)?;
-    compile_to_module(scope, &[sym], &shared.symbol_tables, shared.introspection.as_ref(), jit.jit_module())?;
+    let artifacts = compile_to_module(scope, &[sym], &shared.symbol_tables, &shared.module_aliases, jit.jit_module())?;
+    // Caller writes Introspection here if shared.introspection.is_some(); see §3 / §"S70 amendment" for the integration shape.
 }
 ```
 
@@ -31,23 +99,44 @@ Backend already owns `Jit` and `Linker`; it's the natural home for the type that
 
 `SymbolTable<C, L>` stays generic in `cranelisp-types`; backend instantiates `SymbolTable<Code, ()>` for its own signatures; frontend/typecheck stay on `SymbolTable<(), ()>` (no `Code` import for them either — the `C` generic continues to serve its purpose). Decision 35 Layer 2 Option B retracts: backend is no longer generic-blind; it knows about and constructs `Code`. The "integration layer is the sole crate that names `Code`" claim from Decision 35 relaxes — int still names `Code` at the session-boundary instantiation, but backend now also names it (in its own crate).
 
-### 3. Backend writes directly to symbol tables and introspection; returns `Result<(), CompilationError>`
+### 3. Backend writes directly to symbol tables; returns `Result<CompilationArtifacts, CompilationError>`; `produce_disasm` is a separate on-demand function
 
-Final signature:
+Canonical signatures (S70 Phase B amendment):
 
 ```rust
 pub fn compile_to_module<M: Module>(
     scope: &ModuleFullPath,
     names: &[Symbol],
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<Code, ()>>,
-    introspection: Option<&DashMap<FQSymbol, Introspection>>,
+    symbol_tables: &SymbolTables<Code, ()>,
+    module_aliases: &ModuleAliases,
     module: M,
-) -> Result<(), CompilationError>;
+) -> Result<CompilationArtifacts, CompilationError>;
+
+#[non_exhaustive]
+pub struct CompilationArtifacts {
+    pub clif_ir: String,
+    pub code_size: usize,
+    pub compile_duration: std::time::Duration,
+}
+
+pub fn produce_disasm(
+    fq: &FQSymbol,
+    symbol_tables: &SymbolTables<Code, ()>,
+) -> Result<String, CompilationError>;
 ```
 
-Backend writes each compiled symbol's `Code::Jit { jit, ptr }` into its entry via `symbol_tables.get(scope).unwrap().write_code(sym, Code::Jit { jit, ptr })` (Decision 38's `write_code(&self, …)` — interior mutable, no `&mut` flow needed). Backend also stores the GOT slot pointer via the entry's already-existing GOT path. Backend writes `Introspection { clif_ir, disasm, code_size, compile_duration, … }` into the introspection map if and only if `introspection.is_some()` — the `Option`'s `is_some()` IS Decision 38's mode discriminator, reaching backend directly via the parameter.
+Backend writes each compiled symbol's `Code::Jit(Arc<Jit>)` into its entry via `symbol_tables.get(scope).unwrap().write_code(sym, Code::Jit(Arc<Jit>))` (Decision 38's `write_code(&self, …)` — interior mutable, no `&mut` flow needed). Backend also stores the GOT slot pointer via `symbol_table.got().store_slot(entry.got_slot.unwrap(), ptr)`. Backend then returns the always-created introspection artefacts (`clif_ir`, `code_size`, `compile_duration`) packaged as `CompilationArtifacts`; the caller decides whether to retain (REPL/trace mode → write into `Introspection`) or drop (production batch → fall off the stack).
 
 Decision 37's "no swallowed failures" rule lands as a single `?` inside `compile_to_module` — the per-step cascade collapses; backend errors out at the first invariant breach with a typed `CompilationError` variant.
+
+### 3b. Why the direct-write of `Introspection` was retracted
+
+The pre-amendment shape passed `introspection: Option<&DashMap<FQSymbol, Introspection>>` as a third direct-write parameter, paralleling #1 (Code) and #2 (GOT slot). That third direct-write inverted the dependency DAG: `Introspection` is an integration-layer (`int`) type and putting it on backend's public boundary would require `cranelisp-backend → int` (forbidden by Principle 3). The retraction substitutes:
+
+- Backend returns `CompilationArtifacts` by value (always-created fields). Caller does the `Introspection` write itself, in its own crate, with full visibility into the integration-layer composite type.
+- `disasm` (the on-demand field) becomes a separate backend function `produce_disasm(fq, symbol_tables)` invoked when the REPL `/disasm` command fires, not eagerly per-compile.
+
+Net result: D41 #1 + #2 (direct-writes to types-crate types — `Code` into `SymbolTable<Code, ()>`, ptr into `GotTable`) survive. D41 #3 (direct-write to int-crate type `Introspection`) is gone, replaced by the value-returning artefact + on-demand call shape above. The full rationale and architectural properties are in §"S70 Phase B amendment" at the top of this Decision.
 
 ## Consequences
 
@@ -56,8 +145,8 @@ Decision 37's "no swallowed failures" rule lands as a single `?` inside `compile
 - `crates/cranelisp-backend/src/lib.rs` `compile_to_module` signature updated per §3 above; old `(Arc<Jit>, code_ptrs)` return removed.
 - `src/worker.rs:2860-3018` post-loop deleted (the iterate-over-names + GOT-store + `Code::Jit`-construct + three error cascades collapse into the per-symbol call-site loop above).
 - `Jit::compile_defn` (audit HIGH-1) confirmed deprecated — paired pin: `Jit` exposes only `new` / `module` / finalize accessors; per-function compilation is via `compile_to_module` only — there is no public `compile_defn`.
-- `facades/backend.md` §"Public surface": `compile_to_module` signature spelled per §3; the `CompilationResult` / return-tuple gone; `Code` enum surface added.
-- `facades/int.md` §"SharedState — code carrier construction": post-loop description deleted; `Code` import path updates from `src/code.rs` to `cranelisp_backend::Code`.
+- `facades/backend.md` §"Public surface": `compile_to_module` signature spelled per §3 — `Result<CompilationArtifacts, CompilationError>`; the `CompilationResult` / return-tuple (pre-amendment) gone; `CompilationArtifacts` DTO added; `produce_disasm` free function added; `Code` enum surface added; no `Introspection` parameter.
+- `facades/int.md` §"SharedState — code carrier construction": post-loop description deleted; `Code` import path updates from `src/code.rs` to `cranelisp_backend::Code`; `Introspection` struct unchanged; population narrative rotates to "caller writes the artefact-derived fields into `Introspection`" per the S70 amendment.
 - `tests/v4_jit_reclaim.rs::decision31_scenario2_per_redefinition_jit_pages_reclaimed` re-verified against per-symbol cardinality — the test's "redefine X, observe pages reclaimed" assertion strengthens (reclaim is now per-symbol-immediate rather than batch-coalesced).
 
 ## S66 amendment + rollback — GOT is single source of truth (2026-05-09)
@@ -172,9 +261,13 @@ S67 close — all four close-out items land in Waves 0+3+4:
   (no consumer wiring at Wave 0).
 - **Wave 3** (`/dev (backend)`) — `Code` enum physically relocates
   from `src/code.rs` → `crates/cranelisp-backend/src/code.rs`;
-  `compile_to_module` signature lifts to `Result<(), CompilationError>`
-  + direct per-symbol writes via Decision 38's `write_code` +
-  `got().store_slot`; `load_object` becomes a free function returning
+  `compile_to_module` signature lifts to `Result<CompilationArtifacts, CompilationError>`
+  (S70 Phase B amendment — `Result<(), CompilationError>` was the
+  pre-amendment target; the value-returning artefact replaces the third
+  direct-write per §"S70 Phase B amendment") + direct per-symbol writes
+  via Decision 38's `write_code` + `got().store_slot`; on-demand
+  `produce_disasm(fq, symbol_tables)` is a separate free function;
+  `load_object` becomes a free function returning
   `LinkerArtefact`; `compile_to_object` becomes a free function
   returning `ObjectArtefact`; `Linker::get_symbol` returns
   `Result<*const u8, LinkerError>` (post-S58 silent-NULL regression

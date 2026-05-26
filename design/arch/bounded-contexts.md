@@ -80,7 +80,7 @@ Each section: bounded context (essence + why); in-scope (responsibilities, conce
 
 **What crosses the boundary.**
 - **Inputs**: a symbol-table view; a Cranelift module to emit into.
-- **Outputs**: for JIT mode (per Decision 41 per-symbol cardinality — typecheck cluster commit followed by N parallel backend workers, each calling `compile_to_module` for one assigned symbol), direct writes via `SymbolTable::write_code` + per-symbol GOT-slot population (no return tuple — `Result<(), CompilationError>`); for object mode (per-module), the object artefact and the cache pair.
+- **Outputs**: for JIT mode (per Decision 41 per-symbol cardinality — typecheck cluster commit followed by N parallel backend workers, each calling `compile_to_module` for one assigned symbol), direct writes via `SymbolTable::write_code` + per-symbol GOT-slot population plus a value-returned `CompilationArtifacts` carrying the always-created introspection contributions (`clif_ir`, `code_size`, `compile_duration`) for the caller to retain or drop; on-demand disassembly via the separate `produce_disasm(fq, symbol_tables)` free function (per the S70 Phase B amendment to D41 — backend does not name the integration-layer `Introspection` type at its boundary; the value-returned artefact replaces what would have been a third direct-write that inverted the DAG). For object mode (per-module), the object artefact and the cache pair.
 - **Window types**: none.
 
 ---

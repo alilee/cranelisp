@@ -233,6 +233,185 @@ fn default_got_arc() -> std::sync::Arc<GotTable> {
     std::sync::Arc::new(GotTable::new())
 }
 
+// --- Session-level table aliases (Sprint 70 Phase B; F2/F3 of frontend-audit-s70) ---
+
+/// Session-level map of `ModuleFullPath → SymbolTable<C, L>` — the workspace's
+/// shared per-module store.
+///
+/// `SymbolTables<C, L>` is the canonical name of the per-session collection
+/// the integration layer constructs at startup and threads as a shared
+/// reference into frontend, typecheck, and backend. The keying domain is
+/// `ModuleFullPath`; each entry is the per-module `SymbolTable<C, L>` value
+/// held directly inside the [`DashMap`](dashmap::DashMap) shards (no
+/// `Arc<…>` wrapper — see drift note below).
+///
+/// **Why types-crate (Principle 15 — `facade-types-live-with-behavior`).**
+/// The alias is consumed by three implementation-crate facades:
+///
+/// - `cranelisp-frontend` — `expand(sexp, symbol_tables: &SymbolTables<C, L>, module_aliases: &ModuleAliases) → Result<Sexp, ExpansionError>` (see `design/arch/facades/frontend.md`)
+/// - `cranelisp-typecheck` — `check_forms(parsed, ctx, symbol_tables: &SymbolTables)` (see `design/arch/facades/typecheck.md` + Decision 0044)
+/// - `cranelisp` (the `int` integration layer) — `SharedState.symbol_tables: SymbolTables<Code, ()>` (see `design/arch/facades/int.md` + Decision 0035)
+///
+/// Three consumers → types-crate is the canonical home per the placement
+/// heuristic. Any per-frontend or per-typecheck typedef would (a) defeat
+/// the workspace-stable claim, and (b) force one consumer to invert the
+/// dep graph onto another (e.g., typecheck depending on frontend just to
+/// reach the name) — both are direct Principle-3 / Principle-15
+/// violations.
+///
+/// **Decision 32 grounds the parameterisation.** `C: CodeStore` and
+/// `L: LinkerStore` are empty marker traits with blanket impls; the
+/// integration layer chooses concrete `C = Code, L = ()` (per Decision
+/// 35); typecheck and frontend usually see `SymbolTables<(), ()>` because
+/// the `()` defaults propagate when no explicit annotation is supplied.
+/// The same alias name spans both parameterisations — there is one
+/// session-level table name across the workspace.
+///
+/// **Drift note — no `Arc<…>` wrapper.** Earlier facade text declared
+/// `pub type SymbolTables<C, L> = DashMap<ModuleFullPath, Arc<SymbolTable<C, L>>>;`
+/// (with `Arc<…>`). The canonical form is **without** `Arc` — the
+/// integration layer's `SharedState.symbol_tables: SymbolTables<Code, ()>`
+/// holds the per-module `SymbolTable` values directly inside the DashMap
+/// shards. The `Arc` was an editorial drift on the frontend facade
+/// (self-classified at `facades/frontend.md:61`); the sibling
+/// `int::SharedState.symbol_tables` is the workspace-stable shape.
+///
+/// See also `bounded-contexts.md` §7 (types-crate BC; "Module aliases live
+/// at session level"), `design/arch/principles/15-facade-types-live-with-behavior.md`,
+/// and `crates/cranelisp-types/src/module.rs` `SymbolTable` rustdoc.
+pub type SymbolTables<C, L> = dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>;
+
+/// A module-path-namespace alias entry — the resolved record of a single
+/// `(import [(target-module local-alias) …])` (§8.3.4 alias-import) or
+/// `(export [(target-module local-alias) …])` (§8.4.4 export-mount) form.
+///
+/// Aliases name **parts of a module path**, not value bindings; they live
+/// in a parallel session-level table [`ModuleAliases`], NOT on
+/// `SymbolTable.symbols`. The owning module of any alias entry is
+/// **derived from the key** of the [`ModuleAliases`] DashMap (strip the
+/// last dot-separated segment of the key; e.g. key `m.n.str` → owner
+/// `m.n`); it is **not stored on `ModuleAliasEntry`**. See
+/// `bounded-contexts.md` §7 — "Module aliases live at session level".
+///
+/// **Field set rationale.** Per spec §8.3.4 + §8.4.4 + §8.6.6, the
+/// minimum-viable record to resolve a qualified name through an alias
+/// (`current-module.str/split` → `core.string/split` in §8.4.4's worked
+/// example) is:
+///
+/// - [`Self::target`] — the `ModuleFullPath` the alias resolves to. §8.6.6
+///   step 5 substitutes the matched segment with this target before
+///   restarting resolution.
+/// - [`Self::visibility`] — `Visibility::Private` for `import`-form aliases
+///   (§8.3.4); `Visibility::Public` for `export`-mount aliases (§8.4.4).
+///   §8.6.6 consults this to decide whether downstream consumers (modules
+///   importing from the alias's owner module) may traverse the alias.
+///   Per-entry visibility per BC §7's "Visibility is per-entry"
+///   convention — the same shape as `ModuleEntry::*.visibility`.
+/// - [`Self::span`] — source span for diagnostics on conflict-detection
+///   collisions (§8.6.4 mount collision; §8.6.4 mount-vs-submodule
+///   cross-namespace collision).
+///
+/// **Why no `kind` field distinguishing import-alias from export-mount.**
+/// The two cases differ at the parse-time installer (which form produces
+/// which kind of alias and what diagnostics fire on collision), but at
+/// resolution time they are uniform: `visibility` fully captures the
+/// downstream-visibility difference, and `target` + the key fully capture
+/// the resolution semantics. Per Principle 18 (enforce invariants
+/// structurally), folding the kind into `visibility` removes a redundant
+/// degree of freedom from the data model.
+///
+/// **`#[non_exhaustive]` per Principle 18 + workspace DTO convention** —
+/// adding a field (e.g., a future per-alias docstring or provenance
+/// marker) is non-breaking; consumers cannot exhaustively match across
+/// crate boundaries.
+///
+/// See `bounded-contexts.md` §7, `spec/08-modules.md` §8.3.4 (alias
+/// import), `spec/08-modules.md` §8.4.4 (module mounting on export),
+/// `spec/08-modules.md` §8.6.6 (qualified name resolution order).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ModuleAliasEntry {
+    /// The fully-qualified module path the alias resolves to.
+    ///
+    /// For `(import [(core.string str) …])` in module `m`, this is
+    /// `core.string`. For `(export [(core.option opt) …])` in module `m`,
+    /// this is `core.option`. §8.6.6 step 5 substitutes the matched
+    /// segment of the queried `module_path` with this target before
+    /// restarting resolution.
+    pub target: ModuleFullPath,
+
+    /// Per-entry visibility (BC §7 "Visibility is per-entry").
+    ///
+    /// - `Visibility::Private` — the `(import [(target alias) …])` form
+    ///   (§8.3.4). The alias is visible only to the owning module's own
+    ///   qualified-name lookups; downstream consumers MUST NOT traverse
+    ///   it.
+    /// - `Visibility::Public` — the `(export [(target alias) …])` form
+    ///   (§8.4.4 module mounting on export). The alias is part of the
+    ///   owning module's public namespace; downstream consumers
+    ///   importing from the owner module MAY write
+    ///   `<owner>.<alias>/<name>` and have it resolve via §8.6.6.
+    pub visibility: Visibility,
+
+    /// Source span of the originating `import`/`export` form's
+    /// alias-pair node — used by §8.6.4 conflict diagnostics (mount
+    /// collision; mount-vs-submodule cross-namespace collision).
+    pub span: Span,
+}
+
+impl ModuleAliasEntry {
+    /// Construct an alias entry. Visibility selects between the two
+    /// authoring forms: `Private` for §8.3.4 import-alias, `Public` for
+    /// §8.4.4 export-mount.
+    pub fn new(target: ModuleFullPath, visibility: Visibility, span: Span) -> Self {
+        ModuleAliasEntry { target, visibility, span }
+    }
+}
+
+/// Session-level map of `ModuleFullPath → ModuleAliasEntry` — the
+/// workspace's shared module-path-namespace alias table.
+///
+/// Lives in **parallel** to [`SymbolTables`]; keyed by the alias's
+/// **full path** (e.g., key `m.n.str` for `(import [(core.string str)
+/// …])` declared in `m.n`). This keying lets §8.6.6 qualified-name
+/// resolution do a single-table longest-prefix-match against the queried
+/// `module_path` rather than segmenting and walking per-module alias
+/// sub-tables.
+///
+/// **Three keying domains, three newtypes, no conflation** (BC §7):
+///
+/// - [`ModuleFullPath`] — module / alias path (this table + `SymbolTables`)
+/// - [`Symbol`] — in-module binding (`SymbolTable.symbols`)
+/// - [`TypeName`] — receiver-pinned ADT lookup
+///
+/// **Insertion-time conflict enforcement** (spec §8.6.4):
+///
+/// - **Mount collision** (within this table) — two mounts at the same
+///   alias inside the same owner module collide; different owner modules
+///   mounting the same local alias name land at different
+///   `ModuleFullPath` keys and do NOT collide. Structurally detected by a
+///   second `module_aliases.insert(key, …)` for an already-occupied key.
+/// - **Mount-vs-submodule cross-namespace collision** (this table vs
+///   [`SymbolTables`]) — an alias path here clashes with a real loaded
+///   module path in `SymbolTables`. NOT structural via the type system;
+///   the parse-time installer MUST perform an atomic cross-table check
+///   at insert time.
+///
+/// **Owner derivation.** Strip the last dot-separated segment of the
+/// key to recover the alias's owner module. Example:
+///
+/// - key `m.n.str` → owner `m.n`, alias name `str`
+/// - key `user.opt` → owner `user`, alias name `opt`
+///
+/// Single-segment keys (an alias at the root module) are valid; the
+/// owner is then the root module `""` or the project root depending on
+/// session configuration.
+///
+/// See `bounded-contexts.md` §7 ("Module aliases live at session
+/// level"), `spec/08-modules.md` §8.3.4 (alias import), §8.4.4 (module
+/// mounting on export), §8.6.6 (qualified name resolution order).
+pub type ModuleAliases = dashmap::DashMap<ModuleFullPath, ModuleAliasEntry>;
+
 /// Inherent constructor on the `()`-defaulted instantiation. Defined on
 /// `SymbolTable<(), ()>` specifically (not on the generic `impl<C, L>`)
 /// so that the call `SymbolTable::new(path)` — which appears throughout

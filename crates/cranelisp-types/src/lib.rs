@@ -33,17 +33,27 @@
 //!   annotated in-place by typecheck; lowered by backend.
 //! - **Resolved type system** ([`Type`], [`Scheme`], [`Subst`], [`TypeId`])
 //!   — output of typecheck; consumed by backend.
-//! - **Symbol table** ([`SymbolTable`], [`ModuleEntry`], [`DefKind`],
-//!   [`OverloadVariant`], [`ConstrainedFn`], [`MacroClauseInfo`],
-//!   [`MacroParam`], [`ImportSpec`], [`ExportSpec`], [`ImportNames`],
-//!   [`PlatformSpec`], [`ModDecl`], [`StructuralDeclEntry`],
-//!   [`ensure_module_exists`], [`install_module`], [`EnsureOutcome`],
-//!   the chain-follow primitives) — THE per-module store. All per-symbol
+//! - **Symbol table** ([`SymbolTable`], [`SymbolTables`], [`ModuleEntry`],
+//!   [`DefKind`], [`OverloadVariant`], [`ConstrainedFn`],
+//!   [`MacroClauseInfo`], [`MacroParam`], [`ImportSpec`], [`ExportSpec`],
+//!   [`ImportNames`], [`PlatformSpec`], [`ModDecl`],
+//!   [`StructuralDeclEntry`], [`ensure_module_exists`], [`install_module`],
+//!   [`EnsureOutcome`], the chain-follow primitives) — THE per-module
+//!   store. [`SymbolTables<C, L>`] is the session-level collection
+//!   threaded across frontend, typecheck, and the integration layer.
+//!   All per-symbol
 //!   metadata lives on `ModuleEntry`; structural declarations live as Vec
 //!   fields on `SymbolTable`. Generic over `C: CodeStore` (per-function
 //!   code carrier) and `L: LinkerStore` (per-module linker carrier);
 //!   both default to `()` so crates that don't handle compiled code work
 //!   with `SymbolTable<(), ()>` and never see the parameters.
+//! - **Module aliases** ([`ModuleAliasEntry`], [`ModuleAliases`]) — the
+//!   parallel session-level alias table introduced by spec §8.3.4
+//!   (import alias) and §8.4.4 (export mount). Lives at session scope
+//!   alongside [`SymbolTables`], keyed by the alias's full path; §8.6.6
+//!   qualified-name resolution walks this table by longest-prefix-match.
+//!   See `design/arch/bounded-contexts.md` §7 ("Module aliases live at
+//!   session level").
 //! - **Sealed marker traits** ([`CodeStore`], [`LinkerStore`]) — empty
 //!   marker traits with blanket impls per Decision 32. Crates implement
 //!   them by virtue of their concrete `C` and `L` satisfying the bounds;
@@ -188,10 +198,11 @@ pub use scheduling::SchedulingClass;
 pub use module::{
     CHAIN_FOLLOW_DEPTH_LIMIT, CodeStore, ConstrainedFn, DefKind, EnsureOutcome, ExportSpec,
     ImplSexp, ImportNames, ImportSpec, LinkerStore, MacroClauseInfo, MacroParam, ModDecl,
-    ModuleEntry, OverloadVariant, PlatformSpec, StructuralDeclEntry, SymbolTable,
-    ensure_module_exists, for_each_in_module, get_impls_for_type_chain,
-    get_implementing_types_chain, install_module, lookup_trait_decl_chain, lookup_type_def_chain,
-    resolve_module_by_name_chain, resolve_terminal_entry_and_home,
+    ModuleAliasEntry, ModuleAliases, ModuleEntry, OverloadVariant, PlatformSpec,
+    StructuralDeclEntry, SymbolTable, SymbolTables, ensure_module_exists, for_each_in_module,
+    get_impls_for_type_chain, get_implementing_types_chain, install_module,
+    lookup_trait_decl_chain, lookup_type_def_chain, resolve_module_by_name_chain,
+    resolve_terminal_entry_and_home,
 };
 // `PrimitiveKind` enum retired (S69 Submission 36). PlatformEffect promoted
 // to its own `DefKind::PlatformEffect { scheduling_class }` sibling variant;
