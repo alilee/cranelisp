@@ -334,7 +334,7 @@ pub fn synthesize_macro_clause_defn(
     name: &str,
     clause_idx: usize,
     clause: &MacroClause,
-    _span: Span,
+    span: Span,
 ) -> Sexp {
     let fn_name = format!("__macro_{name}_clause_{clause_idx}");
     let args_name = "__args__";
@@ -380,6 +380,10 @@ pub fn synthesize_macro_clause_defn(
         next_span(),
     );
 
+    // Outer list span carries the user-source span of the originating
+    // clause per facade §114 — the underscore in the parameter was a
+    // "not yet wired" marker; the value now feeds the synthesised defn
+    // so downstream errors trace back to the source clause.
     Sexp::List(
         vec![
             Sexp::Symbol("defn-".to_string(), next_span()),
@@ -387,7 +391,7 @@ pub fn synthesize_macro_clause_defn(
             param_bracket,
             body,
         ],
-        next_span(),
+        span,
     )
 }
 

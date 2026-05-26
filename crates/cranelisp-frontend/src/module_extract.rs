@@ -11,6 +11,7 @@ use cranelisp_types::{ErrorLocation,
 
 /// Extracted module-level declarations from top-level S-expressions.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ExtractedDeclarations {
     pub path: ModuleFullPath,
     pub mod_decls: Vec<ModDecl>,
