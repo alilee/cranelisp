@@ -56,8 +56,8 @@
 //! `build_form`/`build_expr` will fail downstream with a clearer error.
 
 use cranelisp_types::{
-    CodeStore, DefKind, FQSymbol, LinkerStore, ModuleEntry, ModuleFullPath, ResolutionGap, Sexp,
-    Span, Symbol, SymbolTable, SymbolTables,
+    CodeStore, DefKind, FQSymbol, LinkerStore, ModuleAliases, ModuleEntry, ModuleFullPath,
+    ResolutionGap, Sexp, Span, Symbol, SymbolTable, SymbolTables,
 };
 
 use crate::quasiquote::expand_quasiquotes;
@@ -127,9 +127,17 @@ impl std::error::Error for ExpansionError {}
 ///
 /// Side-effect-free for dependency resolution: never blocks, never calls
 /// the scheduler, never mutates `symbol_tables`.
+///
+/// The `module_aliases` parameter carries the session-level alias table
+/// per BC §7 ("Module aliases live at session level") + spec §8.6.6.
+/// Once FIXME 0175 resolves and the live invocation path migrates into
+/// `cranelisp-frontend`, alias resolution at the macro-head lookup
+/// becomes load-bearing. For now the parameter is wiring for later.
+// FIXME 0175 — alias traversal lives in src/expander.rs until marshal-deps resolve
 pub fn expand<C, L>(
     sexp: Sexp,
     symbol_tables: &SymbolTables<C, L>,
+    module_aliases: &ModuleAliases,
 ) -> Result<Sexp, ExpansionError>
 where
     C: CodeStore,
@@ -139,12 +147,13 @@ where
         message: format!("quasiquote desugaring failed: {err}"),
         span: sexp.span(),
     })?;
-    expand_recursive(desugared, symbol_tables, 0)
+    expand_recursive(desugared, symbol_tables, module_aliases, 0)
 }
 
 fn expand_recursive<C, L>(
     sexp: Sexp,
     symbol_tables: &SymbolTables<C, L>,
+    module_aliases: &ModuleAliases,
     depth: usize,
 ) -> Result<Sexp, ExpansionError>
 where
@@ -177,7 +186,7 @@ where
             // contract guarantee).
             let expanded: Vec<Sexp> = children
                 .into_iter()
-                .map(|c| expand_recursive(c, symbol_tables, depth + 1))
+                .map(|c| expand_recursive(c, symbol_tables, module_aliases, depth + 1))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Sexp::List(expanded, span))
         }
@@ -191,7 +200,7 @@ where
         Sexp::Bracket(children, span) => {
             let expanded: Vec<Sexp> = children
                 .into_iter()
-                .map(|c| expand_recursive(c, symbol_tables, depth + 1))
+                .map(|c| expand_recursive(c, symbol_tables, module_aliases, depth + 1))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Sexp::Bracket(expanded, span))
         }
@@ -216,6 +225,15 @@ where
 /// Post-S69 Submission 13 (macro-unification), macro storage is uniformly
 /// `Def { kind: DefKind::Macro { clauses_meta }, .. }`; the retired sibling
 /// `ModuleEntry::Macro` variant is no longer probed.
+///
+/// Per facade §59 + BC §7 §"Module aliases live at session level" +
+/// spec §8.6.6 the FQ shape may need to traverse a `ModuleAliasEntry`
+/// (longest-prefix-match against the queried `module_path`) before
+/// probing `symbol_tables`. That step is structurally pending — the
+/// `module_aliases` parameter is now wired into `expand` but not yet
+/// consulted at this lookup. FIXME 0175 tracks the marshal-deps gap
+/// that keeps the live invocation path in `src/expander.rs`; alias
+/// traversal lands in this helper once the invocation path migrates.
 fn lookup_macro_fq<C, L>(
     name: &str,
     _span: Span,
@@ -372,12 +390,18 @@ mod tests {
         DashMap::new()
     }
 
+    /// Empty module aliases — FIXME 0175 keeps alias traversal in
+    /// src/expander.rs; the parameter is wiring for later.
+    fn empty_aliases() -> ModuleAliases {
+        DashMap::new()
+    }
+
     // spec: 09-macros.md §9 — `expand` is side-effect free + returns owned sexp.
     #[test]
     fn no_macros_passthrough() {
         let tables = empty_tables();
         let sexp = Sexp::Int(42, Span::SYNTHETIC);
-        let out = expand(sexp.clone(), &tables).unwrap();
+        let out = expand(sexp.clone(), &tables, &empty_aliases()).unwrap();
         match (sexp, out) {
             (Sexp::Int(a, _), Sexp::Int(b, _)) => assert_eq!(a, b),
             other => panic!("expected Int passthrough, got {other:?}"),
@@ -396,7 +420,7 @@ mod tests {
             ],
             Span::SYNTHETIC,
         );
-        let out = expand(sexp, &tables).unwrap();
+        let out = expand(sexp, &tables, &empty_aliases()).unwrap();
         match out {
             Sexp::List(children, _) => assert_eq!(children.len(), 3),
             other => panic!("expected List, got {other:?}"),
@@ -414,7 +438,7 @@ mod tests {
             ],
             Span::SYNTHETIC,
         );
-        let err = expand(sexp, &tables).unwrap_err();
+        let err = expand(sexp, &tables, &empty_aliases()).unwrap_err();
         match err {
             ExpansionError::Gap(ResolutionGap::MacroInMem(fq)) => {
                 assert_eq!(fq.module.as_ref(), "user");
@@ -429,7 +453,7 @@ mod tests {
     fn bare_symbol_zero_arg_macro_returns_gap() {
         let tables = tables_with_macro("user", "current-line");
         let sexp = Sexp::Symbol("current-line".to_string(), Span::SYNTHETIC);
-        let err = expand(sexp, &tables).unwrap_err();
+        let err = expand(sexp, &tables, &empty_aliases()).unwrap_err();
         match err {
             ExpansionError::Gap(ResolutionGap::MacroInMem(fq)) => {
                 assert_eq!(fq.symbol.as_ref(), "current-line");
@@ -451,7 +475,7 @@ mod tests {
             ],
             Span::SYNTHETIC,
         );
-        let err = expand(sexp, &tables).unwrap_err();
+        let err = expand(sexp, &tables, &empty_aliases()).unwrap_err();
         match err {
             ExpansionError::Gap(ResolutionGap::MacroInMem(fq)) => {
                 assert_eq!(fq.module.as_ref(), "macros");
@@ -506,7 +530,7 @@ mod tests {
             ],
             Span::SYNTHETIC,
         );
-        let err = expand(sexp, &tables).unwrap_err();
+        let err = expand(sexp, &tables, &empty_aliases()).unwrap_err();
         match err {
             ExpansionError::Gap(ResolutionGap::MacroInMem(fq)) => {
                 // The FQ returned should be from whatever module the
@@ -534,7 +558,7 @@ mod tests {
             )],
             Span::SYNTHETIC,
         );
-        let err = expand(sexp, &tables).unwrap_err();
+        let err = expand(sexp, &tables, &empty_aliases()).unwrap_err();
         assert!(matches!(err, ExpansionError::Gap(_)));
     }
 
@@ -590,7 +614,7 @@ mod tests {
             ],
             Span::SYNTHETIC,
         );
-        let out = expand(sexp, &tables).expect("function call must not produce Gap");
+        let out = expand(sexp, &tables, &empty_aliases()).expect("function call must not produce Gap");
         // Returned shape: the same List wrapping a Var head + Int.
         match out {
             Sexp::List(children, _) => assert_eq!(children.len(), 2),
@@ -613,7 +637,7 @@ mod tests {
         for _ in 0..(EXPANSION_DEPTH_LIMIT + 5) {
             inner = Sexp::List(vec![inner], Span::SYNTHETIC);
         }
-        let err = expand(inner, &tables).unwrap_err();
+        let err = expand(inner, &tables, &empty_aliases()).unwrap_err();
         match err {
             ExpansionError::Malformed { message, .. } => {
                 assert!(
@@ -632,7 +656,7 @@ mod tests {
         fn assert_send_sync<F: Send + Sync>(_: F) {}
         // Take a function pointer of the right shape and assert its
         // marker traits; this catches Send/Sync regressions at compile time.
-        let f: fn(Sexp, &SymbolTables<(), ()>) -> Result<Sexp, ExpansionError> =
+        let f: fn(Sexp, &SymbolTables<(), ()>, &ModuleAliases) -> Result<Sexp, ExpansionError> =
             expand::<(), ()>;
         assert_send_sync(f);
     }
@@ -664,7 +688,7 @@ mod tests {
         // We don't assert the exact desugared shape — just that expand
         // succeeds. The shape contract belongs to `expand_quasiquotes`,
         // which is tested separately in `quasiquote.rs`.
-        let _ = expand(sexp, &tables).expect("quasiquote desugaring should succeed");
+        let _ = expand(sexp, &tables, &empty_aliases()).expect("quasiquote desugaring should succeed");
         let _ = TypeName::from("Unused"); // touch import to keep the use list tidy
     }
 }
