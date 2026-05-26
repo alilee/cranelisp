@@ -1,11 +1,21 @@
-//! `defmacro` parsing and body synthesis.
+//! `defmacro` parsing and body synthesis — macro-resolver helpers.
 //!
-//! Parses `defmacro` forms from Sexp, extracts name/docstring/clauses, and
-//! synthesizes function Sexps for each clause with argument destructuring via
-//! nested match expressions.
+//! Parses `defmacro` forms from Sexp, extracts name/docstring/clauses,
+//! and synthesizes function Sexps for each clause with argument
+//! destructuring via nested match expressions. Also provides shape
+//! recognisers ([`is_defmacro`], [`is_begin`]) and the
+//! [`flatten_begin`] orchestration helper.
 //!
-//! Also provides `is_defmacro`, `is_begin`, and `flatten_begin` for pipeline
-//! orchestration.
+//! These items are **internal-but-exposed** per the crate-root preamble
+//! §"Macro-resolver helpers": pub at the crate root and via this module,
+//! but not part of the four-free-function form-by-form boundary. Their
+//! consumers today are `src/expander.rs` (until FIXME 0098 Phase 2
+//! migrates the JIT-invocation path) and `src/cluster.rs` (which builds
+//! per-clause `Defn` instances for the backend per Decision 21).
+//!
+//! At FIXME 0098 Phase 2 close, [`parse_defmacro`], [`is_defmacro`],
+//! [`is_begin`], [`flatten_begin`], and [`synthesize_macro_clause_defn`]
+//! narrow back to `pub(crate)` once `int` no longer calls them directly.
 
 use cranelisp_types::{CranelispError, ErrorLocation, MacroParam, Sexp, Span, Symbol};
 
@@ -31,6 +41,9 @@ pub use cranelisp_types::{DefmacroInfo, MacroClause};
 // ---------------------------------------------------------------------------
 
 /// Returns true if the sexp is `(defmacro ...)` or `(defmacro- ...)`.
+///
+/// Shape recogniser used by the orchestrator to route forms to the
+/// correct per-shape handler before invoking [`parse_defmacro`].
 pub fn is_defmacro(sexp: &Sexp) -> bool {
     if let Sexp::List(children, _) = sexp
         && let Some(Sexp::Symbol(head, _)) = children.first()
@@ -41,6 +54,11 @@ pub fn is_defmacro(sexp: &Sexp) -> bool {
 }
 
 /// Returns true if the sexp is `(begin ...)`.
+///
+/// Shape recogniser. `begin` forms are pre-AST: they must be flattened
+/// by [`flatten_begin`] before per-form `build_form` dispatch. The
+/// `build_form` entry point rejects `begin` directly to surface the
+/// missing flatten step early.
 pub fn is_begin(sexp: &Sexp) -> bool {
     if let Sexp::List(children, _) = sexp
         && let Some(Sexp::Symbol(head, _)) = children.first()
@@ -52,6 +70,12 @@ pub fn is_begin(sexp: &Sexp) -> bool {
 
 /// Flatten nested `(begin ...)` forms into individual top-level forms.
 /// Non-begin forms are returned as-is in a single-element vec.
+///
+/// Orchestrator-side helper: `build_form` does NOT accept `begin` forms
+/// (it errors out to surface the missing flatten step). The orchestrator
+/// must call `flatten_begin` on each parsed source form before per-form
+/// dispatch; this allows nested `(begin (begin ...))` to fully unfold to
+/// a flat sequence of definitions.
 pub fn flatten_begin(sexp: Sexp) -> Vec<Sexp> {
     if is_begin(&sexp)
         && let Sexp::List(children, _) = sexp
@@ -74,8 +98,8 @@ pub fn flatten_begin(sexp: Sexp) -> Vec<Sexp> {
 /// Supports simple names, bracket destructuring, and `& rest` syntax.
 /// Examples: `[a b]`, `[a & rest]`, `[[x y] body]`
 ///
-/// Demoted to `pub(crate)` per facade row 16; retained as a facade entry
-/// for future REPL/slash-command surfacing.
+/// Demoted to `pub(crate)`; retained as a sub-parser for future
+/// REPL/slash-command surfacing through the public boundary.
 #[allow(dead_code)]
 pub(crate) fn parse_macro_params(
     bracket: &Sexp,
@@ -171,11 +195,21 @@ fn parse_bracket_pattern(
 // defmacro parsing
 // ---------------------------------------------------------------------------
 
-/// Parse a `(defmacro name ...)` or `(defmacro- name ...)` form.
+/// Parse a `(defmacro name ...)` or `(defmacro- name ...)` form into
+/// a [`DefmacroInfo`] carrier.
 ///
-/// Handles both single-clause `(defmacro name [params] body)` and multi-clause
-/// `(defmacro name ([params] body) ([params] body))` syntax, with optional
-/// docstring.
+/// Handles both single-clause `(defmacro name [params] body)` and
+/// multi-clause `(defmacro name ([params] body) ([params] body))`
+/// syntax, with optional docstring.
+///
+/// Internal-but-exposed: pub at the crate root for `src/cluster.rs`'s
+/// per-clause `Defn` build path (per Decision 21). Narrows back to
+/// `pub(crate)` once `int` no longer calls it directly (FIXME 0098
+/// Phase 2 close).
+///
+/// `MacroParam`, `MacroClauseInfo`, and `DefmacroInfo` live in
+/// `cranelisp-types` (they cross the typecheck boundary).
+/// `DefmacroInfo` joined them per FIXME 0156 resolution.
 pub fn parse_defmacro(sexp: &Sexp) -> Result<DefmacroInfo, CranelispError> {
     let (children, span) = match sexp {
         Sexp::List(children, span) => (children, *span),
@@ -303,7 +337,20 @@ fn parse_single_clause(sexp: &Sexp) -> Result<MacroClause, CranelispError> {
 // Macro clause defn synthesis
 // ---------------------------------------------------------------------------
 
-/// Synthesize a Sexp representing a function definition for a single macro clause.
+/// Synthesize a Sexp representing a function definition for a single
+/// macro clause.
+///
+/// Internal-but-exposed (per the crate-root preamble §"Macro-resolver
+/// helpers"): pub at the crate root so `src/cluster.rs::process_cluster`
+/// can build per-clause `Defn`s for the backend per Decision 21 without
+/// rebuilding the shape-checking logic outside the frontend. Narrows
+/// back to `pub(crate)` at FIXME 0098 Phase 2 close.
+///
+/// Takes a `&MacroClause` parameter — the type comes from
+/// `cranelisp_types::parsed::MacroClause` (re-exported at crate root for
+/// ergonomics per Principle 15's narrow exception).
+///
+/// # Output shape
 ///
 /// The returned Sexp is:
 /// ```text
@@ -317,19 +364,29 @@ fn parse_single_clause(sexp: &Sexp) -> Result<MacroClause, CranelispError> {
 ///     [_ (macros/SexpInt 0)]))
 /// ```
 ///
-/// Type names in annotations are unqualified (the typechecker's `known_types`
-/// stores bare names). Constructor names in match patterns remain module-qualified
-/// (the typechecker resolves them through the module system).
+/// Type names in annotations are module-qualified (`macros/SList`,
+/// `macros/Sexp`) because Sprint 66 Wave 3a-α tightened typecheck to
+/// current-module-only short-name resolution per Principle 17 — a
+/// synthesized defn that lands in the user's module cannot resolve bare
+/// `SList` without an explicit `(import [macros [...]])` in scope.
+/// Constructor names in match patterns remain module-qualified (the
+/// typechecker resolves them through the module system).
 ///
-/// Each match on SList includes a wildcard dead arm for exhaustiveness — the
-/// typechecker requires all constructors to be covered but macro arity is
-/// validated before invocation.
+/// Each match on `SList` includes a wildcard dead arm for exhaustiveness
+/// — the typechecker requires all constructors to be covered but macro
+/// arity is validated before invocation.
 ///
-/// For bracket destructure parameters, an additional inner match peels the
-/// `SexpBracket` and destructures its inner `SList`.
+/// For bracket destructure parameters, an additional inner match peels
+/// the `SexpBracket` and destructures its inner `SList`.
 ///
-/// The caller (Phase 4's CraneliftExpander) will process this Sexp through
-/// quasiquote expansion, AST building, typechecking, and compilation.
+/// # Downstream
+///
+/// The caller (the cluster orchestrator's macro-compilation path) will
+/// process this Sexp through quasiquote expansion, AST building,
+/// typechecking, and compilation. The resulting `Def { kind: UserFn, … }`
+/// lives under the mangled name `{macro-name}$clause-{N}` and is
+/// reachable through the parent `Def { kind: Macro { clauses_meta }, … }`
+/// entry's GOT-dispatch path (per BC §7 "Macros are Defs").
 pub fn synthesize_macro_clause_defn(
     name: &str,
     clause_idx: usize,
@@ -381,9 +438,9 @@ pub fn synthesize_macro_clause_defn(
     );
 
     // Outer list span carries the user-source span of the originating
-    // clause per facade §114 — the underscore in the parameter was a
-    // "not yet wired" marker; the value now feeds the synthesised defn
-    // so downstream errors trace back to the source clause.
+    // clause — the underscore in the parameter was a "not yet wired"
+    // marker; the value now feeds the synthesised defn so downstream
+    // errors trace back to the source clause.
     Sexp::List(
         vec![
             Sexp::Symbol("defn-".to_string(), next_span()),

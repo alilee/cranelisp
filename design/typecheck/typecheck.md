@@ -454,7 +454,7 @@ Decisions not listed (3, 4, 5, 7, 10–13, 16, 18, 20, 23–29, 31, 32, 34–37,
 - `design/arch/facades/typecheck.md` — public surface (normative)
 - `design/arch/facades/types.md` §"Symbol table — the single store" — `SymbolTable` shape consumed
 - `design/arch/facades/int.md` §"process_form" — caller of `check_form`; defines the gap-orchestration retry loop
-- `design/arch/facades/frontend.md` — peer crate; defines `SymbolTables` type alias
+- `crates/cranelisp-frontend/src/lib.rs` //! preamble + `bounded-contexts.md` §1 — peer crate's public-surface contract (post-S70 B3-C facade retirement; `SymbolTables` alias canonical home is `cranelisp-types`)
 - `design/arch/bounded-contexts.md` §2 — Typecheck (the BC)
 - `design/arch/principles/` — architectural principles cited above
 - `audits/typecheck-20260423.md` — current-state audit; HIGH/MEDIUM findings drive §4

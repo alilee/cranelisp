@@ -248,7 +248,7 @@ fn default_got_arc() -> std::sync::Arc<GotTable> {
 /// **Why types-crate (Principle 15 — `facade-types-live-with-behavior`).**
 /// The alias is consumed by three implementation-crate facades:
 ///
-/// - `cranelisp-frontend` — `expand(sexp, symbol_tables: &SymbolTables<C, L>, module_aliases: &ModuleAliases) → Result<Sexp, ExpansionError>` (see `design/arch/facades/frontend.md`)
+/// - `cranelisp-frontend` — `expand(sexp, symbol_tables: &SymbolTables<C, L>, module_aliases: &ModuleAliases) → Result<Sexp, ExpansionError>` (see `crates/cranelisp-frontend/src/lib.rs` //! preamble + `bounded-contexts.md` §1; the per-crate `facades/frontend.md` document was retired in S70 Phase B group B3-C)
 /// - `cranelisp-typecheck` — `check_forms(parsed, ctx, symbol_tables: &SymbolTables)` (see `design/arch/facades/typecheck.md` + Decision 0044)
 /// - `cranelisp` (the `int` integration layer) — `SharedState.symbol_tables: SymbolTables<Code, ()>` (see `design/arch/facades/int.md` + Decision 0035)
 ///
@@ -273,7 +273,10 @@ fn default_got_arc() -> std::sync::Arc<GotTable> {
 /// integration layer's `SharedState.symbol_tables: SymbolTables<Code, ()>`
 /// holds the per-module `SymbolTable` values directly inside the DashMap
 /// shards. The `Arc` was an editorial drift on the frontend facade
-/// (self-classified at `facades/frontend.md:61`); the sibling
+/// (self-classified in the S70 Phase B frontend audit memo at
+/// `design/arch/facades/frontend-audit-s70.md`; the frontend facade
+/// itself was retired in S70 Phase B group B3-C — its narrative folded
+/// into the lib.rs //! preamble + BC §1); the sibling
 /// `int::SharedState.symbol_tables` is the workspace-stable shape.
 ///
 /// See also `bounded-contexts.md` §7 (types-crate BC; "Module aliases live
@@ -1225,9 +1228,11 @@ pub enum DefKind {
     /// dispatch map. See the `ModuleEntry::Macro retired` comment between the
     /// `Constructor` and `TraitImpl` variants for the cross-reference trail.
     ///
-    /// See `facades/frontend.md` §"expand" for the dispatcher behaviour;
-    /// `design/arch/bounded-contexts.md` §7 for the bounded-context invariants
-    /// (macros are Defs; the clause-walk dispatch story).
+    /// See `crates/cranelisp-frontend/src/expand.rs` rustdoc for the
+    /// dispatcher behaviour (post-S70 B3-C the canonical home; the
+    /// per-crate `facades/frontend.md` document was retired);
+    /// `design/arch/bounded-contexts.md` §7 for the bounded-context
+    /// invariants (macros are Defs; the clause-walk dispatch story).
     Macro {
         clauses_meta: Vec<MacroClauseInfo>,
     },

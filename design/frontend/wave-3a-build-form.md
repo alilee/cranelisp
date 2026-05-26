@@ -3,7 +3,7 @@
 > Subordinate topic doc for `crates/cranelisp-frontend/`. Owned by `/design`.
 >
 > **Master.** `design/frontend/frontend.md` (this doc is an elaboration).
-> **Facade.** `design/arch/facades/frontend.md` (target public surface; normative).
+> **Public surface contract.** `crates/cranelisp-frontend/src/lib.rs` //! preamble + per-item rustdoc; `bounded-contexts.md` §1 (target public surface; normative — the per-crate `facades/frontend.md` document was retired in S70 Phase B group B3-C).
 > **Slice.** `design/frontend/implementation-slice-s66.md` (predates FIXME 0156 resolution; rows 5/6 are SUPERSEDED by this doc — `build_ast`/`build_expr` per-form pair is collapsed into `build_form -> Vec<ParsedEntry>` plus `build_expr -> Expr`).
 > **Driving FIXMEs.** 0156 (`build_form` shape), 0098 Phase 2 (`expand` migration), 0167 + 0168 (Decision 44 amendments — cluster-atomic shape).
 
@@ -146,7 +146,7 @@ pub enum ExpansionError {
 ### 5.2 What changes from the source-of-truth in `src/expander.rs`
 
 1. **No `MacroResolver` trait.** Per Decision 8 (retracted as part of D43/Principle 15 reframing): lookup goes directly against `&symbol_tables`. Macro entries are reachable through `SymbolTables[module].get(&name)` as `ModuleEntry::Def { kind: DefKind::Macro { clauses_meta }, .. }` parent entries (per S69 Submission 13 macro-unification — `ModuleEntry::Macro` retired); the JIT'd code pointer for each clause is on its mangled-variant `ModuleEntry::Def`'s `code: Option<C>` field (`{macro}$clause-{N}` entries). Frontend never names `Jit` / `Linker` — only `Some(code)`.
-2. **Single uniform Gap variant.** Per `facades/frontend.md` §"…ExpansionError…": every dependency-not-ready case (`module unregistered`, `typecheck incomplete`, `code missing`) surfaces as `Err(ExpansionError::Gap(ResolutionGap::MacroInMem(fq)))`. The orchestrator decides what to wait on after retrieving the entry post-wait (macro-vs-fn discrimination is scheduler-side knowledge — see `facades/int.md` for the wait sequence). The frontend does NOT distinguish "module not registered" from "code not loaded" — both become the same Gap variant.
+2. **Single uniform Gap variant.** Per the BC contract (`bounded-contexts.md` §1 invariant #6 + the `ExpansionError` per-item rustdoc on `crates/cranelisp-frontend/src/expand.rs`): every dependency-not-ready case (`module unregistered`, `typecheck incomplete`, `code missing`) surfaces as `Err(ExpansionError::Gap(ResolutionGap::MacroInMem(fq)))`. The orchestrator decides what to wait on after retrieving the entry post-wait (macro-vs-fn discrimination is scheduler-side knowledge — see `facades/int.md` for the wait sequence). The frontend does NOT distinguish "module not registered" from "code not loaded" — both become the same Gap variant.
 3. **Depth limit becomes a `Malformed` diagnostic.** Per master §5.2: the existing `EXPANSION_DEPTH_LIMIT = 100` defensive guard is retained but surfaces as `ExpansionError::Malformed { message: "macro expansion depth exceeded (NN)", span }` rather than silent truncation. This is a behaviour preservation (limit fires only on runaway expansion) plus a diagnostic upgrade (the user sees what happened).
 4. **`Send + Sync` free function.** Multiple workers may call `expand` concurrently against the same `&symbol_tables` (per Decision 38 — `SymbolTable`'s inner DashMap supports concurrent read). No internal synchronisation needed beyond what `SymbolTable` provides.
 5. **`expand` IS re-entrant.** A macro expansion may produce a form that itself contains macro calls; `expand` recursively expands the output. The depth limit applies to total nesting, not per-call.
@@ -166,7 +166,7 @@ The frontend wave authors the new `cranelisp_frontend::expand` and the `SymbolTa
 
 ## 6. Frontend's facade-compliance delta
 
-Cross-referencing `crates/cranelisp-frontend/public-api.txt` (as-built) against `facades/frontend.md` (as-designed):
+Cross-referencing `crates/cranelisp-frontend/public-api.txt` (as-built) against the lib.rs //! preamble (as-designed; post-S70 B3-C the canonical home for the frontend surface contract):
 
 ### 6.1 Entries to add
 
@@ -196,7 +196,7 @@ Cross-referencing `crates/cranelisp-frontend/public-api.txt` (as-built) against 
 ### 6.4 What does not need a FIXME against `/arch`
 
 - **No new types in `cranelisp-types`.** `ParsedEntry`, `DefmacroInfo`, `MacroClause`, `ConstructorDef`, `FieldDef`, `DefnVariant`, `TraitDecl`, `TraitImpl`, `ResolutionGap`, `FQSymbol`, `ErrorLocation`, `CodeStore`, `LinkerStore`, `SymbolTable`, `ModuleEntry`, `Sexp`, `Expr`, `Span` are all already present per `cranelisp-types/src/{parsed,ast,module,error,…}.rs`. The facade is internally coherent; the implementation gap is purely producer-side.
-- **No facade-text changes.** `facades/frontend.md` already specifies `build_form -> Vec<ParsedEntry>`, `build_expr -> Expr`, `expand`/`ExpansionError`/`SymbolTables` exactly as needed. No FIXME against `/arch` for facade-edit.
+- **No public-surface-contract changes.** The lib.rs //! preamble (post-S70 B3-C facade retirement) already specifies `build_form -> Vec<ParsedEntry>`, `build_expr -> Expr`, `expand`/`ExpansionError`/`SymbolTables` exactly as needed. No FIXME against `/arch` for contract-edit.
 
 ---
 
@@ -243,7 +243,7 @@ The wave's risk concentration is `expand` migration (§5) — ~520 LOC source po
 
 ## 10. Cross-references
 
-- `design/arch/facades/frontend.md` — public-API contract
+- `crates/cranelisp-frontend/src/lib.rs` //! preamble — public-API contract (canonical home post-S70 Phase B group B3-C facade retirement)
 - `crates/cranelisp-types/src/parsed.rs` rustdoc (`ParsedEntry`), `crates/cranelisp-types/src/view.rs` rustdoc (`View`) — boundary types
 - `design/arch/facades/int.md` §"`process_cluster` — the cluster-atomic orchestration loop" — orchestrator contract (consumer-side)
 - `design/arch/facades/typecheck.md` §"`check_form_signatures` + `check_form_body`" — consumer signatures

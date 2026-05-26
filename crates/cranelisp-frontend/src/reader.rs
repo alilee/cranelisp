@@ -1,4 +1,4 @@
-//! S-expression reader: source text -> Vec<Sexp>.
+//! S-expression reader: source text → `Vec<Sexp>`.
 //!
 //! Hand-written recursive descent parser. Token precedence follows spec 1.7:
 //! float before integer (to capture decimal point), integer before operator
@@ -71,6 +71,14 @@ impl<'a> Reader<'a> {
 // ---------------------------------------------------------------------------
 
 /// Parse source text into a sequence of S-expressions.
+///
+/// One of the four free-function entries of the frontend boundary (see
+/// crate-root preamble §"Public surface — the form-by-form boundary").
+/// Pure source-to-sexp lowering with no structural-decl harvesting —
+/// the reusable building block. Orchestration consumers continue with
+/// [`crate::extract_module_declarations`]; REPL slash commands,
+/// comment-preserving variants, and test fixtures use the flat result
+/// directly.
 #[must_use = "parsing produces a result that should be checked for errors"]
 pub fn parse(source: &str) -> Result<Vec<Sexp>, CranelispError> {
     let mut reader = Reader::new(source);
@@ -85,6 +93,10 @@ pub fn parse(source: &str) -> Result<Vec<Sexp>, CranelispError> {
 }
 
 /// Parse source text, preserving comments as `Sexp::Comment` nodes.
+///
+/// Used by REPL slash commands like `/source` that need to round-trip
+/// the user's source text including comments. Otherwise equivalent to
+/// [`parse`].
 #[must_use = "parsing produces a result that should be checked for errors"]
 pub fn parse_preserving_comments(source: &str) -> Result<Vec<Sexp>, CranelispError> {
     let mut reader = Reader::new_preserving_comments(source);

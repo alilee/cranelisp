@@ -4,7 +4,7 @@ target: /dev
 filed_by: /arch
 filed_at: 2026-05-02
 sprint_filed: 64
-refers_to: design/arch/facades/types.md §"Errors and warnings" (ResolutionGap, CheckError), design/arch/facades/frontend.md §"Free functions" (expand, ExpansionError, parse, extract_module_declarations), design/arch/facades/typecheck.md §"check_form", design/arch/facades/int.md §"process_form", crates/cranelisp-frontend/, crates/cranelisp-typecheck/, crates/cranelisp-types/, src/expander.rs, src/worker.rs
+refers_to: crates/cranelisp-types/src/error.rs rustdoc (ResolutionGap, CheckError; facades/types.md retired S69 Sub 42), crates/cranelisp-frontend/src/lib.rs //! preamble + per-item rustdoc on expand/ExpansionError/parse/extract_module_declarations + bounded-contexts.md §1 (facades/frontend.md retired S70 B3-C), design/arch/facades/typecheck.md §"check_form", design/arch/facades/int.md §"process_form", crates/cranelisp-frontend/, crates/cranelisp-typecheck/, crates/cranelisp-types/, src/expander.rs, src/worker.rs
 status: open
 ---
 
@@ -26,7 +26,7 @@ The work spans three crates and is best executed as a single coordinated triad c
 
 **Phase 2 — `cranelisp-frontend`** (`/dev` narrow to frontend):
 
-1. Land `ExpansionError` enum in the frontend crate per `facades/frontend.md` §"expand". Variants: `Gap(ResolutionGap)`, `Malformed { message, span }`, `MacroAborted { fq, message, span }`. Re-export `ResolutionGap` from `cranelisp-types` for ergonomics.
+1. Land `ExpansionError` enum in the frontend crate per the lib.rs //! preamble + per-item rustdoc on `pub enum ExpansionError` (`crates/cranelisp-frontend/src/expand.rs`; post-S70 B3-C the canonical home — `facades/frontend.md` retired). Variants: `Gap(ResolutionGap)`, `Malformed { message, span }`, `MacroAborted { fq, message, span }`. Re-export `ResolutionGap` from `cranelisp-types` for ergonomics.
 2. Migrate `expand_sexp_recursive` from `src/expander.rs` (integration layer) to `crates/cranelisp-frontend/src/expand.rs`. Rename to `expand` per the facade. Drop the `MacroResolver` trait (Decision 8 retracted; replaced by direct `&SymbolTables<C, L>` lookup pattern).
 3. Update the `expand` signature to match facade — generic over `<C: CodeStore, L: LinkerStore>`, takes `&SymbolTables<C, L>`. The depth-limit reconciliation (frontend design §5.2) is a separate question; keep current behaviour pending `/arch`'s call.
 4. Update `extract_module_declarations` signature to match facade — accept `containing_module: &ModuleFullPath` parameter (this matches what the implementation already does internally; the facade now reflects it). Demote `parse_import_sexp` and the other per-form sub-parsers to `pub(crate)`.

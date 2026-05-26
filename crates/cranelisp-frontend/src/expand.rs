@@ -1,21 +1,26 @@
 //! `expand` — frontend's macro expansion entry point.
 //!
-//! Per `design/frontend/wave-3a-build-form.md` §5 and the facade
-//! (`design/arch/facades/frontend.md` §"Free functions" — `expand`):
+//! Per `design/frontend/wave-3a-build-form.md` §5 and the crate-root
+//! preamble (`crates/cranelisp-frontend/src/lib.rs` §"Expand and the
+//! FIXME 0175 invocation gap"):
 //!
 //! ```ignore
-//! pub fn expand<C, L>(sexp: Sexp, symbol_tables: &SymbolTables<C, L>)
-//!     -> Result<Sexp, ExpansionError>
+//! pub fn expand<C, L>(
+//!     sexp: Sexp,
+//!     symbol_tables: &SymbolTables<C, L>,
+//!     module_aliases: &ModuleAliases,
+//! ) -> Result<Sexp, ExpansionError>
 //! where C: CodeStore, L: LinkerStore;
 //! ```
 //!
 //! ## Wave 3a-β scope (deferred invocation; FIXME 0175)
 //!
-//! Per facade contract, `expand` should invoke registered macros via JIT'd
-//! code addresses found through `symbol_tables`. **Invocation requires
-//! `cranelisp-runtime` access (marshal + signal handling), which the
-//! frontend's allowed-deps statement forbids.** The full invocation path
-//! is therefore deferred to `/arch`'s resolution of FIXME 0175.
+//! Per the target contract `expand` should invoke registered macros via
+//! JIT'd code addresses found through `symbol_tables`. **Invocation
+//! requires `cranelisp-runtime` access (marshal + signal handling),
+//! which the frontend's allowed-deps statement (BC §1) forbids.** The
+//! full invocation path is therefore deferred to `/arch`'s resolution of
+//! FIXME 0175 (`design/arch/fixmes/0175-arch-frontend-expand-invocation-gap.md`).
 //!
 //! This Wave 3a-β delivery is the structural skeleton:
 //!   - Quasiquote desugaring (`expand_quasiquotes`) runs unconditionally
@@ -28,9 +33,10 @@
 //!     storage is unified under the `Def` shape).
 //!   - **Every recognised macro head returns
 //!     `Err(ExpansionError::Gap(ResolutionGap::MacroInMem(fq)))`** —
-//!     uniform Gap per facade §"expand". Per the orchestrator-side retry
-//!     protocol (facades/int.md §"process_form"), the orchestrator
-//!     handles the wait and re-dispatches; in Wave 3a-β, the orchestrator
+//!     uniform Gap per the BC contract (BC invariant #6). Per the
+//!     orchestrator-side retry protocol (see `design/arch/facades/int.md`
+//!     §"process_form"), the orchestrator handles the wait and
+//!     re-dispatches; in Wave 3a-β, the orchestrator
 //!     keeps calling `src/expander.rs::expand_sexp_recursive` for the
 //!     actual invocation while this skeleton stays inert in the gap
 //!     return path.
@@ -62,11 +68,20 @@ use cranelisp_types::{
 
 use crate::quasiquote::expand_quasiquotes;
 
-/// Maximum nesting depth for macro expansion.
+/// Maximum recursion depth for nested macro expansion within a single
+/// `expand` call.
 ///
-/// A defensive guard against infinite-recursive macro definitions. On
-/// reaching the limit, `expand` returns `Malformed` with a diagnostic
-/// message rather than silently truncating.
+/// The expander aborts with `ExpansionError::Malformed { message:
+/// "expansion depth limit exceeded", … }` rather than letting a
+/// pathological macro (mutual recursion, accidental fix-point) run the
+/// call stack out. The exact value is an implementation detail of the
+/// frontend; the constant is published so test fixtures and the REPL
+/// `/expand` slash command can probe + report the limit without
+/// re-declaring it.
+///
+/// **Internal-but-exposed.** The crate-level BC invariant #5 (`expand`
+/// is re-entrant) promises only that recursive expansion is supported;
+/// the depth bound is an operational safeguard, not a contract.
 pub const EXPANSION_DEPTH_LIMIT: usize = 100;
 
 /// Typed error returned by macro expansion.
@@ -75,18 +90,31 @@ pub const EXPANSION_DEPTH_LIMIT: usize = 100;
 /// gap-orchestration loop: when expansion needs an in-mem macro that
 /// has not yet been JIT'd, it returns `Gap(ResolutionGap::MacroInMem)`
 /// and `int::process_form` priority-boosts that fq + waits.
+///
+/// `#[non_exhaustive]` so adding new gap kinds or genuine error
+/// variants is non-breaking (BC invariant #7).
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum ExpansionError {
-    /// Cross-cutting "this dependency isn't ready yet" — typically
-    /// `ResolutionGap::MacroInMem(fq)` from frontend's expand path.
+    /// Dependency-not-yet-ready signal — caller dispatches via
+    /// `int::process_form`'s `handle_gap` and retries.
+    ///
+    /// Surfaced uniformly regardless of whether the underlying issue is
+    /// "module unregistered", "typecheck incomplete", or "code missing".
+    /// The orchestrator owns the macro-vs-fn discrimination after the
+    /// retry; see the crate-root preamble §"Gap protocol —
+    /// uniform single-variant".
     Gap(ResolutionGap),
-    /// Macro syntax malformed (bad params, malformed body, depth-limit
-    /// exceeded, etc.).
+    /// Genuine expansion failure — a macro body that can't be parsed
+    /// back into a Sexp tree, a malformed `defmacro` shape, or
+    /// depth-limit-exceeded ([`EXPANSION_DEPTH_LIMIT`]).
     Malformed { message: String, span: Span },
-    /// Macro body raised an error during expansion (panic in clause body,
-    /// type-failed clause). Reserved for the future-state invocation
-    /// path; not produced by the Wave 3a-β skeleton.
+    /// A macro panicked or signalled an error during execution.
+    ///
+    /// Reserved for the future-state invocation path; not produced by
+    /// the Wave 3a-β skeleton (which returns `Gap` for every recognised
+    /// macro head). Will become live when FIXME 0175 resolves and the
+    /// invocation path migrates into this crate.
     MacroAborted {
         fq: FQSymbol,
         message: String,
@@ -116,23 +144,46 @@ impl std::error::Error for ExpansionError {}
 
 /// Recursively expand macro calls in a Sexp tree.
 ///
-/// Quasiquote desugaring runs unconditionally before macro dispatch.
+/// Quasiquote desugaring runs unconditionally before macro dispatch
+/// (see [`crate::quasiquote::expand_quasiquotes`]).
 ///
-/// Per facade contract:
+/// Per the BC contract:
 /// - Returns `Err(ExpansionError::Gap(ResolutionGap::MacroInMem(fq)))` on
-///   any recognised macro head — uniform Gap.
+///   any recognised macro head — **uniform Gap**, regardless of whether
+///   the module is unregistered, typecheck is incomplete, or code is
+///   missing. The orchestrator translates this into the right wait
+///   sequence (BC invariant #6).
 /// - Returns `Err(ExpansionError::Malformed { … })` on depth-limit
-///   exceeded or other shape failures surfaced during traversal.
+///   exceeded ([`EXPANSION_DEPTH_LIMIT`]) or other shape failures
+///   surfaced during traversal.
 /// - Otherwise returns the (quasiquote-desugared) sexp unchanged.
 ///
-/// Side-effect-free for dependency resolution: never blocks, never calls
-/// the scheduler, never mutates `symbol_tables`.
+/// **Side-effect-free for dependency resolution** (BC invariant #6):
+/// never blocks, never calls the scheduler, never mutates `symbol_tables`.
+/// Frontend has no `Sess` / `CompileScheduler` dependency (Principle 3).
 ///
-/// The `module_aliases` parameter carries the session-level alias table
-/// per BC §7 ("Module aliases live at session level") + spec §8.6.6.
-/// Once FIXME 0175 resolves and the live invocation path migrates into
-/// `cranelisp-frontend`, alias resolution at the macro-head lookup
-/// becomes load-bearing. For now the parameter is wiring for later.
+/// **Re-entrant** (BC invariant #5). May invoke registered macros
+/// which may themselves expand further — depth-bounded by
+/// [`EXPANSION_DEPTH_LIMIT`].
+///
+/// # Parameters
+///
+/// - `sexp` — the input form to expand. Ownership is taken so the
+///   return value can re-use sub-trees without cloning.
+/// - `symbol_tables` — the session-level `SymbolTables<C, L>` from
+///   `cranelisp-types`. Frontend stays C/L-blind via the
+///   `CodeStore` / `LinkerStore` empty marker traits (Decision 32):
+///   the same facade serves typecheck-only callers
+///   (`SymbolTables<(), ()>`) and integration-layer callers
+///   (`SymbolTables<Code, ()>`).
+/// - `module_aliases` — the session-level alias table per BC §7
+///   ("Module aliases live at session level") + spec §8.6.6.
+///   Spec §8.6.6 qualified-name resolution for a macro head
+///   (`m.n.str/some-macro`) may need to traverse an import or export
+///   alias on the way to the macro's defining module. **Currently
+///   threaded but not consulted** at the lookup — alias traversal
+///   lands here once FIXME 0175 resolves and the live invocation path
+///   migrates from `src/expander.rs`.
 // FIXME 0175 — alias traversal lives in src/expander.rs until marshal-deps resolve
 pub fn expand<C, L>(
     sexp: Sexp,
@@ -230,7 +281,8 @@ where
 /// `Def { kind: DefKind::Macro { clauses_meta }, .. }`; the retired sibling
 /// `ModuleEntry::Macro` variant is no longer probed.
 ///
-/// Per facade §59 + BC §7 §"Module aliases live at session level" +
+/// Per BC §1 (`expand` requires both `symbol_tables` and `module_aliases`)
+/// + BC §7 §"Module aliases live at session level" +
 /// spec §8.6.6 the FQ shape may need to traverse a `ModuleAliasEntry`
 /// (longest-prefix-match against the queried `module_path`) before
 /// probing `symbol_tables`. That step is structurally pending — the

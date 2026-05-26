@@ -370,7 +370,7 @@ If `/arch` regards any of these as substantive (substantive = changes the slice'
 - `design/arch/facades/int.md` — public-API contract (this slice's target; W3-revised post-Decision-38/41/43 shape; ~810 lines)
 - `design/int/int.md` — master design (this slice's contract layer; §1 BC recap, §3 current-state, §4 SharedState architecture, §5 Code lifecycle, §6 pipeline orchestration, §7 cache+linker, §8 REPL flow, §9 error formatting, §10 concurrency, §11 observability, §13 Decision register, §14 as-designed-vs-as-built drift map, §16 open /dev work)
 - `design/arch/facades/types.md` — Decision 39 (`ErrorLocation`); FQTypeName threading per FIXME 0151; `ResolutionGap` Phase 1 home
-- `design/arch/facades/frontend.md` — `expand` post-FIXME-0098 home + `ExpansionError` enum
+- `crates/cranelisp-frontend/src/lib.rs` //! preamble + per-item rustdoc on `expand` + `ExpansionError` — `expand` post-FIXME-0098 home + `ExpansionError` enum (post-S70 B3-C facade retirement; `facades/frontend.md` retired)
 - `design/arch/facades/typecheck.md` — `check_form` free-function + `&SymbolTable<C, L>` mutability-pivot + `CheckError` post-relocation home
 - `design/arch/facades/backend.md` — Decision 41 per-symbol JIT mutref pattern; `Code` location; `CompilationError` post-relocation home; `GotObserver` (FIXME 0099 Phase 1); display departure (FIXME 0108)
 - `design/arch/facades/platform.md` — Decision 42 PlatformError + ErrorLocation; OwnedPlatformFnDescriptor `#[non_exhaustive]`

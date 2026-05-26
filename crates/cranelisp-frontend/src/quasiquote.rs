@@ -1,10 +1,18 @@
 //! Quasiquote expansion: Sexp-to-Sexp transformation.
 //!
-//! Converts template syntax (`` ` ``, `~`, `~@`) into explicit `Sexp` constructor
-//! calls using `macros/`-qualified references. This runs at the Sexp level,
-//! before AST building.
+//! Converts template syntax (`` ` ``, `~`, `~@`) into explicit `Sexp`
+//! constructor calls using `macros/`-qualified references. This runs at
+//! the Sexp level, before AST building.
 //!
-//! Also handles `(quote ...)` forms (pure structural quotation without unquote).
+//! Also handles `(quote ...)` forms (pure structural quotation without
+//! unquote).
+//!
+//! Pub-at-root items ([`expand_quasiquotes`], [`expand_quote_template`],
+//! [`next_synthetic_span`]) are the **standing public quasiquote API**
+//! per the crate-root preamble §"Macro-resolver helpers" — used by
+//! user-authored macros at expansion time and by REPL `/expand`. Unlike
+//! the [`crate::defmacro`] helpers, these do NOT narrow back at FIXME
+//! 0098 Phase 2 close.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -20,7 +28,14 @@ static SYNTHETIC_SPAN_COUNTER: AtomicU32 = AtomicU32::new(1_000_000);
 
 /// Allocate a fresh synthetic span with a unique value.
 ///
-/// Public within the crate so defmacro can share the same counter.
+/// Synthetic-span allocator for forms produced by macro expansion.
+/// Reused across the session — span uniqueness is a frontend invariant
+/// (BC invariant #4: synthetic spans are unique). Monotonically
+/// increasing; no two synthetic spans collide within a session.
+///
+/// Pub at the crate root and via this module per the standing
+/// quasiquote API. Shared by [`crate::defmacro`] through a thin
+/// delegating wrapper so the counter is single-sourced here.
 pub fn next_synthetic_span() -> Span {
     let v = SYNTHETIC_SPAN_COUNTER.fetch_add(1, Ordering::Relaxed);
     Span::new(v, v)
@@ -164,11 +179,16 @@ fn make_gensym_name(base: &str) -> String {
 // Top-level entry: expand_quasiquotes
 // ---------------------------------------------------------------------------
 
-/// Walk a Sexp tree and expand any `(quasiquote ...)` and `(quote ...)` forms
-/// into explicit `macros/`-qualified constructor calls.
+/// Walk a Sexp tree and expand any `(quasiquote ...)` and `(quote ...)`
+/// forms into explicit `macros/`-qualified constructor calls.
 ///
-/// This is a pure Sexp-to-Sexp transformation with no typechecker or backend
-/// access needed.
+/// Pure Sexp-to-Sexp transformation with no typechecker or backend
+/// access needed. Invoked unconditionally at the top of [`crate::expand()`]
+/// before macro-head dispatch, so user macros see already-desugared
+/// template syntax.
+///
+/// Pub at the crate root per the standing quasiquote API (used by REPL
+/// `/expand` and by user-authored macros at expansion time).
 pub fn expand_quasiquotes(sexp: &Sexp) -> Result<Sexp, CranelispError> {
     match sexp {
         Sexp::List(children, span) if !children.is_empty() => {
@@ -210,8 +230,11 @@ pub fn expand_quasiquotes(sexp: &Sexp) -> Result<Sexp, CranelispError> {
 
 /// Expand a `(quote ...)` form into Sexp constructor calls.
 ///
-/// Unlike quasiquote, quote is pure structural quotation -- no unquote handling.
-/// Every node is converted to its `macros/Sexp*` constructor form.
+/// Unlike quasiquote, quote is pure structural quotation — no unquote
+/// handling. Every node is converted to its `macros/Sexp*` constructor
+/// form.
+///
+/// Pub at the crate root per the standing quasiquote API.
 pub fn expand_quote_template(template: &Sexp) -> Sexp {
     match template {
         Sexp::Symbol(s, _) => make_sexp_sym(s),

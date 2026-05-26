@@ -114,17 +114,39 @@ fn parse_def_visibility(head: &str) -> Option<(&str, Visibility)> {
 // Public API — `build_form` and `build_expr` (per FIXME 0156 + facade)
 // ---------------------------------------------------------------------------
 
-/// Build per-form `ParsedEntry` values from a single top-level S-expression.
+/// Build per-form [`ParsedEntry`] values from a single top-level
+/// S-expression.
 ///
-/// Dispatches on form head and returns a `Vec<ParsedEntry>` because some
-/// shapes (notably `deftype`) yield more than one entry per source form:
-/// a `TypeDef` plus one `Constructor` per declared variant.
+/// Dispatches on form head and returns a `Vec<ParsedEntry>` because
+/// some shapes yield more than one entry per source form (notably
+/// `defmacro` with multiple clauses, and `deftype` whose constructors
+/// register independently via the ctor-as-Def synthesis path — see
+/// crate-root preamble §"Deftype expander").
 ///
-/// `build_form` is the **single public per-form dispatcher** for top-level
-/// shapes (`defn` / `deftype` / `deftrait` / `impl` / `defmacro`). Bare
-/// expressions, structural decls (`mod`/`mod-`/`import`/`export`/`platform`),
-/// and `begin` clusters must be handled by the orchestrator BEFORE calling
-/// `build_form`. See `design/frontend/wave-3a-build-form.md` §2.3.
+/// `build_form` is the **single public per-form dispatcher** for
+/// top-level shapes (`defn` / `deftype` / `deftrait` / `impl` /
+/// `defmacro`). Internally dispatches to per-shape `pub(crate)`
+/// helpers (`parse_defn`, `parse_deftype`, `parse_deftrait`,
+/// `parse_impl`, `parse_defmacro`).
+///
+/// # Caller contract
+///
+/// Bare expressions, structural decls (`mod`/`mod-`/`import`/`export`/
+/// `platform`), and `begin` clusters must be handled by the orchestrator
+/// BEFORE calling `build_form`:
+/// - structural decls are peeled by
+///   [`extract_module_declarations`](crate::extract_module_declarations);
+/// - `begin` is flattened by [`flatten_begin`](crate::flatten_begin);
+/// - bare expressions go through [`build_expr`].
+///
+/// `build_form` rejects these head shapes directly with a diagnostic
+/// message to surface the missing orchestration step early. Macros must
+/// be expanded via `expand` before calling `build_form`
+/// — unexpanded macro calls become silent generic applications and fail
+/// later with confusing diagnostics.
+///
+/// See `design/frontend/wave-3a-build-form.md` §2.3 for the detailed
+/// design.
 pub fn build_form(sexp: &Sexp) -> Result<Vec<ParsedEntry>, CranelispError> {
     let (children, span) = match sexp {
         Sexp::List(c, s) if !c.is_empty() => (c.as_slice(), *s),
@@ -871,16 +893,24 @@ fn build_impl_method(sexp: &Sexp) -> Result<Defn, CranelispError> {
 // Expression builders
 // ---------------------------------------------------------------------------
 
-/// Build an `Expr` from a single S-expression.
+/// Build an [`Expr`] from a single S-expression.
 ///
 /// Pure structural transform — no symbol-tables lookup, no gap returns.
-/// Callers must expand macros before calling `build_expr`.
+/// One of the four free-function entries of the frontend boundary (see
+/// crate-root preamble). Used by the REPL eval path for bare-expression
+/// evals and recursively by the per-shape parsers when lowering bodies.
 ///
-/// `build_expr` is mode-agnostic. `(trace ...)` in `--link` standalone-binary
-/// mode fails at link time via the architecture's natural missing-symbol
-/// detection (the trace runtime is not bundled into the staticlib produced by
-/// exe-bundle); no frontend pre-pass check is needed. See
-/// spec/04-expressions.md §4.12.9.
+/// # Caller contract
+///
+/// Callers must expand macros via `expand` before
+/// calling `build_expr`. Unexpanded macro calls become silent generic
+/// applications and fail later with confusing diagnostics.
+///
+/// `build_expr` is mode-agnostic. `(trace ...)` in `--link`
+/// standalone-binary mode fails at link time via the architecture's
+/// natural missing-symbol detection (the trace runtime is not bundled
+/// into the staticlib produced by exe-bundle); no frontend pre-pass
+/// check is needed. See `spec/04-expressions.md` §4.12.9.
 pub fn build_expr(sexp: &Sexp) -> Result<Expr, CranelispError> {
     match sexp {
         Sexp::Int(v, span) => Ok(Expr::IntLit {

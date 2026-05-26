@@ -3,10 +3,12 @@
 > Per-crate master design document for `crates/cranelisp-frontend/`. Owned by `/design`.
 >
 > **Contract sources** (canonical, normative):
-> - `design/arch/bounded-contexts.md` §1 — Frontend bounded context.
-> - `design/arch/facades/frontend.md` — as-designed public surface.
+> - `design/arch/bounded-contexts.md` §1 — Frontend bounded context (including BC invariants 1–8 and the FIXME 0175 marshal-deps note).
+> - `crates/cranelisp-frontend/src/lib.rs` //! preamble — as-designed public surface (the canonical home post-S70 Phase B group B3-C facade retirement; the per-crate `facades/frontend.md` file is retired).
+> - Per-item rustdoc on each public item — per-item contract; browse with `cargo doc -p cranelisp-frontend --no-deps`.
+> - `crates/cranelisp-frontend/public-api.txt` — authoritative as-built enumeration; gated at PR time.
 >
-> This document describes HOW the crate fulfills the contract. It does not restate facade signatures (the facade is the single source of truth for those) and does not redefine the bounded context (BC §1 is the single source). Where the design intent differs from current source, the gap is named and tracked.
+> This document describes HOW the crate fulfills the contract. It does not restate the public-surface signatures (the source rustdoc is the single source of truth for those) and does not redefine the bounded context (BC §1 is the single source). Where the design intent differs from current source, the gap is named and tracked.
 
 ---
 
@@ -22,7 +24,7 @@ The BC's "what crosses the boundary" is uniformly value-passing — no windows. 
 
 ## 2. Public surface — where it lives
 
-`design/arch/facades/frontend.md` is the canonical and normative spec for the public surface. The summary below names which facade item lives where in the source layout, and where the as-built differs from the as-designed.
+The crate-root rustdoc `crates/cranelisp-frontend/src/lib.rs` //! preamble is the canonical and normative spec for the public surface (the per-crate `facades/frontend.md` document was retired in S70 Phase B group B3-C; its content folded into the source rustdoc + BC §1). The summary below names which public-surface item lives where in the source layout, and where the as-built differs from the as-designed.
 
 | Facade item | As-designed home | As-built home | Status |
 |---|---|---|---|
@@ -291,7 +293,8 @@ The audit's recommended-remediation item 5 ("refresh or replace stale design doc
 
 ## 10. Cross-references
 
-- `design/arch/facades/frontend.md` — public-API contract (target-stating, /arch-owned)
+- `crates/cranelisp-frontend/src/lib.rs` //! preamble + per-item rustdoc — public-API contract (canonical home post-S70 Phase B group B3-C facade retirement)
+- `crates/cranelisp-frontend/public-api.txt` — authoritative as-built enumeration
 - `design/arch/facades/int.md` §"`process_form` — the gap-orchestration retry loop" — orchestration partner contract
 - `design/arch/bounded-contexts.md` §1 — bounded context statement
 - `design/arch/principles.md` — principles cited above (1, 2, 3, 4, 5, 6)

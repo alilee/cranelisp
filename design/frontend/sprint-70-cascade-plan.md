@@ -286,7 +286,7 @@ Three frontend design docs reference the soon-rotated shapes. Refresh strategy p
 Affects: §3.3 (implicit pipeline contracts), §5.1 (macro-expander internal arrangement), §5.4 ("Why MacroResolver is not the public boundary"), §8 Decision 21 row, §3.1 file partition table.
 
 Decision: refresh **inline now** for the `ModuleEntry::Macro` → `Def { kind: DefKind::Macro }` rotation. Reasons:
-1. The facade (`facades/frontend.md` §80–82) already cites the new shape ("when an FQ macro reference resolves to `Def { kind: DefKind::Macro { clauses_meta, … }, … }`"). Frontend's own design doc is now the stale half.
+1. The lib.rs //! preamble (post-S70 B3-C the canonical surface contract; the per-crate `facades/frontend.md` document was retired) already cites the new shape ("when an FQ macro reference resolves to `Def { kind: DefKind::Macro { clauses_meta, … }, … }`"). Frontend's own design doc is now the stale half.
 2. /dev at A4 reads this doc as design context; the refresh-now timing keeps the doc consistent with the source it will produce.
 3. The change is bounded: rotate ~6 sentences from `ModuleEntry::Macro` to the destination shape; cite the row #6 cap.
 
@@ -327,7 +327,7 @@ A minor update to §9: rotate the `ast-builder.md` and `macro-plan.md` rows to a
 - [ ] **#6 cap intact.** No proposed work touches `expand`'s invocation path, Gap-emission, `is_macro_head` logic, or marshal/runtime deps. (Re-read row #6's "What this plan explicitly does NOT do" section.)
 - [ ] **#6 unblocked.** `DefKind::Macro { clauses_meta }` was authored at S70 Phase 3 step 1 (commit `4cfd01e`); destination shape exists; rotation is mechanical-with-design-refresh, no cross-crate arbitration outstanding.
 - [ ] **No incidental public-API surface changes.** The plan proposes zero `pub`-visibility narrowing, zero helper extraction with re-export, zero "tidying". The `build_annotated_params` return-type change (#7) is `pub(crate)` — internal only.
-- [ ] **Frontend-narrow.** No proposed change to `cranelisp-types`, `cranelisp-typecheck`, any other consumer crate, or to `facades/frontend.md`. (The `DefKind::Macro` variant add landed in Phase 3 step 1; no further types-side touch is needed for the row #6 cascade.)
+- [ ] **Frontend-narrow.** No proposed change to `cranelisp-types`, `cranelisp-typecheck`, any other consumer crate, or to the frontend public-surface contract (lib.rs //! preamble; the `facades/frontend.md` document was retired in S70 Phase B group B3-C). (The `DefKind::Macro` variant add landed in Phase 3 step 1; no further types-side touch is needed for the row #6 cascade.)
 - [ ] **Design-doc refresh strategy is sound.** Inline refresh of `frontend.md` §3.3/§5.1/§5.4/§8 + `wave-3a-build-form.md` §6.1.1 at A4 (unconditional — destination shape exists); staleness register update at §9 is a minor follow-up; deeper-stale docs (`macro-plan.md`, `macro-resolver-trait.md`, `ast-builder.md`) deferred per existing staleness register.
 - [ ] **S69 audit-s69 overlap reviewed.** Frontend audit-s69's H1/H2/S1/S2/U0 findings are not in S70's Phase A scope — they live in `lib.rs` × facade × public-api triple (S70 Phase B audit-walk territory) and the SPRINT.md scope explicitly sequences Phase A first. C1/C2/C3 are /qa-S70 brief, not in either phase. No new overlap surfaced.
 - [ ] **Row #2 re-attribution accepted.** Confirm folding `TypeName.0` under #12 is coherent given current source (no direct `.0` sites surfaced by `cargo check`).
@@ -437,7 +437,7 @@ This is a closing pass, not a feature-progress group — it has no per-row sourc
 
 - `sprints/SPRINT.md` §"Phase A — Absorb types changes into cranelisp-frontend" — probe table + exit gate
 - `sprints/SPRINT.md` §"Architecture review (Phase 2)" — #6 boundary cap + public-API row-traceability gate
-- `design/arch/facades/frontend.md` §80–82 — target shape for `Def { kind: DefKind::Macro }` macro dispatch
+- `crates/cranelisp-frontend/src/lib.rs` //! preamble + `bounded-contexts.md` §1 — target shape for `Def { kind: DefKind::Macro }` macro dispatch (post-S70 B3-C facade retirement; `facades/frontend.md` retired)
 - `design/arch/facades/cranelisp-frontend-audit-s69.md` — frontend audit-s69 findings (Phase B-territory; not in S70 Phase A scope)
 - `design/arch/fixmes/0175-arch-frontend-expand-invocation-gap.md` — `expand` invocation path; bounded by row #6 cap
 - `design/frontend/frontend.md` §9 — subordinate-docs staleness register

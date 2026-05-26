@@ -2,9 +2,9 @@
 
 **Status.** draft
 **Author.** /design (frontend), 2026-05-06
-**Reads.** `design/arch/facades/frontend.md` (post-S65 final-state target); `design/frontend/frontend.md` (master design); `design/arch/facades/types.md`; `design/arch/facades/intrinsics.md`; `design/arch/facades/int.md` §"`process_form` — the gap-orchestration retry loop"; `design/arch/fixmes/0098-*.md` (Phase 1 — types; Phase 2 — frontend); `design/arch/decisions/{0030,0032,0038,0039,0043}.md`; `sprints/SPRINT.md` Wave Phase 4 W4a; `sprint-65-reshape-phase-2-review.md` §3 (slice template).
+**Reads.** `crates/cranelisp-frontend/src/lib.rs` //! preamble + `bounded-contexts.md` §1 (post-S65 final-state target; post-S70 B3-C the canonical home — `facades/frontend.md` retired); `design/frontend/frontend.md` (master design); `crates/cranelisp-types/src/lib.rs` //! preamble (`facades/types.md` retired S69 Sub 42); `design/arch/facades/intrinsics.md`; `design/arch/facades/int.md` §"`process_form` — the gap-orchestration retry loop"; `design/arch/fixmes/0098-*.md` (Phase 1 — types; Phase 2 — frontend); `design/arch/decisions/{0030,0032,0038,0039,0043}.md`; `sprints/SPRINT.md` Wave Phase 4 W4a; `sprint-65-reshape-phase-2-review.md` §3 (slice template).
 
-This slice enumerates the concrete delta between the post-S65 final-state `facades/frontend.md` and the current `crates/cranelisp-frontend/src/` source. It is consumed by `/sprint` as input to S66's wave plan; it is not itself a wave allocation.
+This slice enumerates the concrete delta between the post-S65 final-state frontend surface contract (then captured in `facades/frontend.md`, retired in S70 Phase B group B3-C with content folded into `crates/cranelisp-frontend/src/lib.rs` //! preamble + `bounded-contexts.md` §1) and the current `crates/cranelisp-frontend/src/` source. It is consumed by `/sprint` as input to S66's wave plan; it is not itself a wave allocation.
 
 ---
 
@@ -146,8 +146,8 @@ If `/arch` regards any of these as substantive (i.e., not editorial), the slice 
 
 ## 7. Cross-references
 
-- `design/arch/facades/frontend.md` — public-API contract (this slice's target)
-- `design/arch/facades/types.md` §"Errors and warnings" — `ResolutionGap` + `CheckError` (Phase 1 prerequisite)
+- `crates/cranelisp-frontend/src/lib.rs` //! preamble + `bounded-contexts.md` §1 — public-API contract (this slice's target; post-S70 B3-C the `facades/frontend.md` document is retired and source rustdoc is canonical)
+- `crates/cranelisp-types/src/error.rs` rustdoc — `ResolutionGap` + `CheckError` (Phase 1 prerequisite; `facades/types.md` is retired per S69 Sub 42)
 - `design/arch/facades/int.md` §"`process_form` — the gap-orchestration retry loop" — orchestrator's mirror entries
 - `design/arch/fixmes/0098-*` — multi-crate migration; this slice executes Phase 2
 - `design/arch/decisions/0030-*`, `0032-*`, `0038-*`, `0039-*`, `0043-*` — frontend-relevant Decisions

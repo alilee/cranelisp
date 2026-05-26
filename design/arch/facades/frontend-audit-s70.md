@@ -1,9 +1,11 @@
 # cranelisp-frontend facade audit — Sprint 70 Phase B
 
-**Status**: authored, awaiting user disposition per finding.
+**Status**: authored; audit findings dispositioned in B3-B (commits `ced64ab`–`f9ae663`); facade subsequently retired in B3-C (this memo survives as the historical audit-walk record).
 **Filed**: 2026-05-26
 **Filed by**: /arch (B1 — audit memo authoring; not actioning)
 **Inputs frozen at**: `a4fc9e0` (S70 Phase A close + A5 doc-refresh follow-up).
+
+> **Post-B3-C note (2026-05-26).** The facade document audited here (`design/arch/facades/frontend.md`) was retired in S70 Phase B group B3-C; its narrative folded into `crates/cranelisp-frontend/src/lib.rs` //! preamble + per-item rustdoc + `design/arch/bounded-contexts.md` §1. This audit memo references the pre-retirement facade by section/line; those references are historical records of the document state at audit time.
 
 ---
 

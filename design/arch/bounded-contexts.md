@@ -28,9 +28,30 @@ Each section: bounded context (essence + why); in-scope (responsibilities, conce
 - Spec definition (`/spec`)
 
 **What crosses the boundary.**
-- **Inputs**: source text.
-- **Outputs**: AST values (expression trees, top-level forms, structural declarations) defined in `cranelisp-types`.
+- **Inputs**: source text; the session-level `SymbolTables<C, L>` + `ModuleAliases` for macro lookup (read-only — see invariant 6).
+- **Outputs**: AST values (expression trees, top-level forms, structural declarations) defined in `cranelisp-types`; per-form `ParsedEntry` transients; `ExtractedDeclarations` bundles; `Sexp` values from macro expansion.
 - **Window types**: none.
+
+**Public surface (canonical enumeration).** The crate-root rustdoc (`crates/cranelisp-frontend/src/lib.rs` //! preamble) is the single source of truth for the frontend's as-designed public boundary; `crates/cranelisp-frontend/public-api.txt` is the authoritative as-built enumeration, gated at PR time per the baseline-diff discipline (see `design/arch/CLAUDE.md` §"Baseline-diff discipline"). Per-item rustdoc on each public item (`pub fn expand`, `pub fn parse`, `pub struct ExtractedDeclarations`, `pub enum ExpansionError`, etc.) carries the per-item contract — visit them with `cargo doc -p cranelisp-frontend --no-deps`.
+
+The four free-function form-by-form boundary — `parse`, `extract_module_declarations`, `build_form`, `build_expr`, plus `expand` for macro expansion — is the operative public-API summary; see the lib.rs preamble §"Public surface — the form-by-form boundary" for signatures and the rationale for the shape (per-form, no AST union enum).
+
+**Bounded-context invariants.** These hold across sprints — the contract `cranelisp-frontend` makes with the rest of the workspace:
+
+1. **No type inference.** Types in the frontend are `TypeExpr` (syntactic), not `Type` (resolved). Type resolution is `cranelisp-typecheck`'s job. The frontend never names `Type`, `Scheme`, or `TypeId`.
+2. **No code generation.** Macro bodies are AST nodes that `int` compiles via the backend; the frontend never invokes Cranelift and never names `cranelisp-backend`, `cranelisp-primitives`, or `cranelisp-intrinsics`.
+3. **`super` resolved at frontend.** Per `design/arch/super-import-arbitration.md`: `ImportSpec.module_path` NEVER contains the literal `"super"` past `parse` (specifically past `parse_import_sexp`). All `super`-resolution happens at parse time against the parsing module's own path.
+4. **Synthetic spans are unique.** `next_synthetic_span` issues monotonically increasing spans for compiler-generated forms. No two synthetic spans collide within a session.
+5. **`expand` is re-entrant.** May invoke registered macros which may themselves expand further. Whether the implementation imposes a defensive depth limit (and what value) is the implementing crate's call — not a BC concern; the published `EXPANSION_DEPTH_LIMIT` is an operational safeguard, not a contract.
+6. **`expand` is side-effect-free for dependency resolution.** When an FQ ref's target isn't ready, expand returns `Err(ExpansionError::Gap(ResolutionGap::MacroInMem(fq)))` — never calls the scheduler, never registers modules, never blocks. The frontend has no `Sess` / `CompileScheduler` dependency (Principle 3). The orchestrator (`int::process_form`) handles dispatch + retry.
+7. **`#[non_exhaustive]` DTOs include all error types.** `ExpansionError` is `#[non_exhaustive]` so adding new gap kinds or genuine error variants is non-breaking.
+8. **Form-by-form, not pre-pass.** Per FIXME `sprints/fixmes/0005-spec-macro-availability-form-by-form.md`: there is NO defmacro pre-pass extraction. Each form is processed in source order; macros become available to subsequent forms only after their `defmacro` form is itself processed. The "module-wide availability" model in `spec/09-macros.md` §9.3.4 is to be revised — until then, the frontend does not implement it.
+
+**FIXME 0175 — marshal-deps gap on `expand` invocation.** The `expand` function performs the structural traversal (children recursion, macro-head detection, depth-limit enforcement, quasiquote expansion) but does NOT call into the JIT'd macro body — it returns `Err(ExpansionError::Gap(ResolutionGap::MacroInMem(fq)))` for every macro head encountered. The live invocation path remains in `src/expander.rs` until `/arch` resolves FIXME 0175 (`design/arch/fixmes/0175-arch-frontend-expand-invocation-gap.md`): `cranelisp_runtime::heap_alloc` + signal handling cannot be reached from `cranelisp-frontend` under the current BC §1 dep-allowance, and the target invocation requires them. Likely resolution: a new `cranelisp-marshal` crate. When resolved, `expand` gains the body call and the `src/expander.rs` implementation deletes; the signature and uniform-Gap contract above stand and need no revision.
+
+**Relationship to consumer crates.** Frontend's outputs are consumed by `cranelisp-typecheck` (`ParsedEntry` vectors fed into `check_forms` — see §2 + Decision 44) and by the integration layer (`src/cluster.rs::process_cluster` consumes per-clause `Defn`s built via `synthesize_macro_clause_defn` per Decision 21). Macro-resolver helpers (`parse_defmacro`, `synthesize_macro_clause_defn`, et al.) are pub-at-root for these two consumers and narrow back at FIXME 0098 Phase 2 close; the quasiquote helpers (`expand_quasiquotes`, `expand_quote_template`, `next_synthetic_span`) remain pub at root as the standing public quasiquote API used by user-authored macros and REPL `/expand`. See the lib.rs preamble §"Macro-resolver helpers — internal-but-exposed" for the disposition history.
+
+**Per-surface documentation.** Like `cranelisp-types` (§7), this surface has no separate `facades/frontend.md` document — the source-side rustdoc (crate-root `//!` narrative in `crates/cranelisp-frontend/src/lib.rs` plus per-item `///` comments) IS the facade. Retired in S70 Phase B group B3-C following the S69 Sub 42 precedent per Principle 7 (single source of truth) and lived-experience cost of dual-maintenance. The `public-api.txt` baseline gates the surface at PR time; rustdoc-coverage is the source-side equivalent of the per-crate facade-compliance test for the other crates.
 
 ---
 

@@ -1,8 +1,25 @@
 //! Sexp-level module declaration extraction.
 //!
-//! Walks top-level S-expressions and extracts `mod`, `mod-`, `import`, and `export`
-//! forms into `ExtractedDeclarations`, returning remaining sexps for further processing.
-//! This runs before macro expansion per spec §8.12.1.
+//! Walks top-level S-expressions and extracts `mod`, `mod-`, `import`,
+//! `export`, and `platform` forms into [`ExtractedDeclarations`],
+//! returning remaining sexps for further processing. This runs before
+//! macro expansion per spec §8.12.1.
+//!
+//! [`extract_module_declarations`] is one of the four free-function
+//! entries of the frontend boundary (see crate-root preamble §"Public
+//! surface — the form-by-form boundary"). It is the post-parse pass:
+//! `parse` produces a flat `Vec<Sexp>`; this function peels off the
+//! structural declarations, leaving the residual non-structural forms
+//! for the per-form `build_form` / `build_expr` calls. The two-call
+//! shape lets `parse` stay reusable for non-orchestration consumers
+//! (REPL slash commands, comment-preserving variants) without forcing
+//! them to construct a structural-decl store they'll never use.
+//!
+//! Per BC invariant #3 (`super` resolved at frontend), the
+//! `containing_module` parameter is mandatory:
+//! `ImportSpec.module_path` NEVER contains the literal `"super"` past
+//! this boundary. All `super`-resolution happens against the parsing
+//! module's own path per spec §8.3.7.
 
 use cranelisp_types::{ErrorLocation,
     CranelispError, ExportSpec, ImportNames, ImportSpec, ModDecl, ModuleFullPath, ModuleName,
@@ -10,27 +27,75 @@ use cranelisp_types::{ErrorLocation,
 };
 
 /// Extracted module-level declarations from top-level S-expressions.
+///
+/// Returned by [`extract_module_declarations`]. Structural sugar over
+/// `cranelisp-types` items — every field is a `cranelisp-types` newtype
+/// or spec record. Identity is "the bundle returned by
+/// `extract_module_declarations`" rather than a domain concept.
+///
+/// Per the crate-root preamble §"Re-export policy", this struct is the
+/// second public DTO published by the frontend (the first being
+/// [`ExpansionError`](crate::ExpansionError)). It lives at
+/// `cranelisp_frontend::module_extract::ExtractedDeclarations` (this
+/// module-qualified path is the home-module canonical) and is also
+/// re-exported at the crate root as `cranelisp_frontend::ExtractedDeclarations`
+/// for caller ergonomics — the integration-layer cluster orchestrator
+/// imports it from the root. Single-import readability is the same
+/// argument as `ResolutionGap` per Principle 15's narrowness rule.
+///
+/// Fed directly into `SymbolTable::write_structural_decls` per Decision 33
+/// — single source of truth for structural decls on `SymbolTable`, no
+/// parallel `ModuleStructure` store.
+///
+/// `#[non_exhaustive]` so adding new declaration categories is
+/// non-breaking.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ExtractedDeclarations {
+    /// The containing module's full path. Preserved on return so the
+    /// orchestrator can address per-form work to the right module
+    /// without re-deriving it from the source's filesystem location.
     pub path: ModuleFullPath,
+    /// `(mod name)` / `(mod- name)` declarations in source order.
+    /// Visibility is recorded per-entry (the `mod-` head produces
+    /// `Visibility::Private`).
     pub mod_decls: Vec<ModDecl>,
+    /// `(import [...])` declarations in source order. Per BC invariant
+    /// #3 (`super` resolved at frontend), no `ImportSpec.module_path`
+    /// contains the literal `"super"` past this boundary.
     pub import_specs: Vec<ImportSpec>,
+    /// `(export [...])` declarations in source order.
     pub export_specs: Vec<ExportSpec>,
+    /// `(platform name)` declarations in source order.
     pub platform_specs: Vec<PlatformSpec>,
 }
 
 /// Extract module declarations from top-level S-expressions.
 ///
-/// Recognizes `(mod name)`, `(mod- name)`, `(import [...])`, and `(export [...])`.
-/// All other sexps pass through unchanged.
+/// Recognizes `(mod name)`, `(mod- name)`, `(import [...])`,
+/// `(export [...])`, and `(platform name)`. All other sexps pass through
+/// unchanged into `remaining_sexps`.
 ///
-/// `containing_module` is the path of the module whose source provides
-/// `sexps`; it is required to rewrite `super` to the parent module path
-/// per spec §8.3.7 and is preserved on the returned
-/// `ExtractedDeclarations.path`.
+/// One of the four free-function entries of the frontend boundary (see
+/// crate-root preamble). Invoked once per source-file's worth of
+/// parsed forms; the residual non-structural forms feed per-form
+/// `build_form` / `build_expr` calls downstream.
 ///
-/// Returns `(ExtractedDeclarations, remaining_sexps)`.
+/// # Parameters
+///
+/// - `containing_module` — the path of the module whose source provides
+///   `sexps`. **Required** because BC invariant #3 mandates `super`
+///   resolution at parse time: `ImportSpec.module_path` MUST never carry
+///   the literal `"super"` past the frontend boundary. Per spec §8.3.7,
+///   inside `a.b.c` the form `(import [super [...]])` resolves to `a.b`.
+///   The path is needed to do that rewrite. It is also preserved on the
+///   returned `ExtractedDeclarations.path`.
+/// - `sexps` — the parsed source forms in source order.
+///
+/// # Returns
+///
+/// `(ExtractedDeclarations, remaining_sexps)`. The remaining sexps
+/// preserve source order; structural-decl forms have been peeled off.
 pub fn extract_module_declarations(
     containing_module: &ModuleFullPath,
     sexps: &[Sexp],
@@ -377,12 +442,15 @@ fn parse_platform(elems: &[Sexp], span: Span) -> Result<PlatformSpec, CranelispE
 /// per spec §8.3.7. After this function returns, no
 /// `ImportSpec.module_path` contains the literal string `"super"` — the
 /// frontend-boundary invariant for `ImportSpec`.
-// Facade entry retained per `design/arch/facades/frontend.md` §"Sub-parsers
-// for structural forms — internal only" — single-form parser exposed as a
-// `pub(crate)` helper for future REPL slash-command routing through
-// `extract_module_declarations`. Currently has no in-crate callers; the
+// Sub-parser retained as `pub(crate)` for future REPL slash-command
+// routing through `extract_module_declarations`. Per the crate-root
+// preamble §"Public surface": `parse_import_sexp` is intentionally NOT
+// in the public surface (per Principle 2 — narrow interfaces). Its
+// only caller is `extract_module_declarations` internally; the REPL
+// `/import` slash command parses through `extract_module_declarations`
+// with a single-form input. Currently has no in-crate callers; the
 // `#[allow(dead_code)]` documents the intentional retention until the
-// REPL-side wiring (per facade) is in place.
+// REPL-side wiring is in place.
 #[allow(dead_code)]
 pub(crate) fn parse_import_sexp(
     sexp: &Sexp,
@@ -400,7 +468,7 @@ pub(crate) fn parse_import_sexp(
 }
 
 /// Parse a single `(export ...)` sexp into export specs.
-#[allow(dead_code)] // Facade entry — see `parse_import_sexp` doc comment.
+#[allow(dead_code)] // Sub-parser retained — see `parse_import_sexp` doc comment.
 pub(crate) fn parse_export_sexp(sexp: &Sexp) -> Result<Vec<ExportSpec>, CranelispError> {
     match sexp {
         Sexp::List(elems, span) if !elems.is_empty() => {
@@ -414,7 +482,7 @@ pub(crate) fn parse_export_sexp(sexp: &Sexp) -> Result<Vec<ExportSpec>, Cranelis
 }
 
 /// Parse a single `(mod ...)` or `(mod- ...)` sexp into a `ModDecl`.
-#[allow(dead_code)] // Facade entry — see `parse_import_sexp` doc comment.
+#[allow(dead_code)] // Sub-parser retained — see `parse_import_sexp` doc comment.
 pub(crate) fn parse_mod_sexp(sexp: &Sexp) -> Result<ModDecl, CranelispError> {
     match sexp {
         Sexp::List(elems, span) if !elems.is_empty() => {
@@ -440,7 +508,7 @@ pub(crate) fn parse_mod_sexp(sexp: &Sexp) -> Result<ModDecl, CranelispError> {
 }
 
 /// Parse a single `(platform ...)` sexp into a `PlatformSpec`.
-#[allow(dead_code)] // Facade entry — see `parse_import_sexp` doc comment.
+#[allow(dead_code)] // Sub-parser retained — see `parse_import_sexp` doc comment.
 pub(crate) fn parse_platform_sexp(sexp: &Sexp) -> Result<PlatformSpec, CranelispError> {
     match sexp {
         Sexp::List(elems, span) if !elems.is_empty() => {

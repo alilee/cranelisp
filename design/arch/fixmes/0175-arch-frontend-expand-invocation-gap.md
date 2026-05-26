@@ -4,7 +4,7 @@ target: /arch
 filed_by: /dev (frontend)
 filed_at: 2026-05-13
 sprint_filed: 66
-refers_to: design/arch/facades/frontend.md §"Free functions" (expand), design/frontend/wave-3a-build-form.md §5, design/arch/fixmes/0098-...migration.md Phase 2 step 2, crates/cranelisp-frontend/Cargo.toml, src/marshal.rs, src/expander.rs
+refers_to: crates/cranelisp-frontend/src/lib.rs //! preamble + per-item rustdoc on pub fn expand + bounded-contexts.md §1 (facades/frontend.md retired S70 B3-C), design/frontend/wave-3a-build-form.md §5, design/arch/fixmes/0098-...migration.md Phase 2 step 2, crates/cranelisp-frontend/Cargo.toml, src/marshal.rs, src/expander.rs
 status: open
 ---
 
@@ -12,8 +12,11 @@ status: open
 
 ## Issue
 
-The Wave 3a-β design (`design/frontend/wave-3a-build-form.md` §5) and the facade
-(`design/arch/facades/frontend.md` §"`expand`") direct `/dev (frontend)` to migrate
+The Wave 3a-β design (`design/frontend/wave-3a-build-form.md` §5) and the
+frontend public-surface contract (`crates/cranelisp-frontend/src/lib.rs`
+//! preamble + per-item rustdoc on `pub fn expand`; post-S70 B3-C the
+canonical home — `facades/frontend.md` retired) direct
+`/dev (frontend)` to migrate
 `expand_sexp_recursive` from `src/expander.rs` into `crates/cranelisp-frontend/`,
 giving it the signature
 
@@ -82,11 +85,14 @@ as the only path consistent with current dep rules:
 
 ## Proposed resolution
 
-`/arch` chooses one of (a)–(d) above and either revises
-`design/arch/facades/frontend.md` to match, or revises the frontend's
-allowed-deps statement in `bounded-contexts.md` §1 to permit the chosen
-dependency widening. The current wording is internally inconsistent: the
-facade requires invocation, the BC forbids the only crates that provide it.
+`/arch` chooses one of (a)–(d) above and either revises the frontend
+public-surface contract (`crates/cranelisp-frontend/src/lib.rs` //!
+preamble + per-item rustdoc on `pub fn expand`; post-S70 B3-C the
+canonical home — `facades/frontend.md` retired) to match, or revises
+the frontend's allowed-deps statement in `bounded-contexts.md` §1 to
+permit the chosen dependency widening. The current wording is
+internally inconsistent: the surface contract requires invocation, the
+BC forbids the only crates that provide it.
 
 Likely cleanest: (a) — a new `cranelisp-marshal` crate that bridges
 frontend ↔ primitives without leaking trait knowledge. The marshal logic is
