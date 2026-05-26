@@ -34,14 +34,19 @@ use cranelisp_types::{CranelispError, Sexp};
 // produced by exe-bundle); no frontend pre-pass check is needed. See
 // spec/04-expressions.md §4.12.9.
 pub use ast_builder::{build_expr, build_form};
-pub use expand::ExpansionError;
+pub use expand::{expand, ExpansionError, EXPANSION_DEPTH_LIMIT};
 // Re-export `ResolutionGap` for ergonomics — `ExpansionError::Gap` consumers
 // always need `ResolutionGap` in scope. Per the facade §"Types originated
 // here": narrow ergonomic exception to Principle 15.
+//
+// `SymbolTables` and `ModuleAliases` are NOT re-exported here per F2's
+// /arch disposition — consumers import directly from `cranelisp-types`
+// (Principle 15 placement clarity; type aliases lack the
+// enum-variant-pattern-match justification of `ResolutionGap`).
 pub use cranelisp_types::ResolutionGap;
 pub use module_extract::extract_module_declarations;
 pub use module_extract::ExtractedDeclarations;
-pub use quasiquote::{expand_quasiquotes, next_synthetic_span};
+pub use quasiquote::{expand_quasiquotes, expand_quote_template, next_synthetic_span};
 pub use defmacro::{
     is_defmacro, is_begin, flatten_begin, parse_defmacro,
     synthesize_macro_clause_defn, DefmacroInfo, MacroClause,
