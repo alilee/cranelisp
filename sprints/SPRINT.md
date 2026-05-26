@@ -1,6 +1,6 @@
 # Sprint 70: Frontend cascade absorption + facade audit walk-through
 
-**Status**: PHASE 3 DESIGN
+**Status**: PHASE 7 CLOSE
 
 **Goal**: Absorb the S69 `cranelisp-types` settlement into `cranelisp-frontend` — probed, scoped by `/design` + `/arch`, then executed by `/dev`. Follow with the S69 audit-walk discipline against the regenerated `cargo public-api` baseline. One crate only.
 
@@ -196,4 +196,55 @@ Verdict: advance to Phase 3 with both revisions folded.
 
 ## Outcome (Phase 7)
 
-{Pending close.}
+### Delivered
+
+**18 commits** across three phases. Final state: `cargo check -p cranelisp-frontend -p cranelisp-types` green; `cargo nextest run -p cranelisp-frontend` 259/259 passing; `cargo public-api -p cranelisp-frontend --simplified` byte-identical to row-traceable baseline; `cargo doc -p cranelisp-frontend --no-deps` clean (zero warnings).
+
+**Phase 3 — Types-solidness arc** (3 commits):
+- `4cfd01e` — step 1: `DefKind::Macro` variant added (was rustdoc-only at 8 sites; never reached the enum); D41-compliant single-field `{ clauses_meta }` shape (dead `MacroClauseInfo.source` removed across types + frontend + int)
+- `0c202e3` — step 2: 4 narrows per types-solidness sweep (TypeDef.sexp + TraitDecl.sexp dropped per D41; `ParsedEntry::TypeDef.type_params` Vec<TypeName>→Vec<Symbol> per spec §5.2; `ConstrainedFn { defn: Defn }` → `{ variant: DefnVariant }` per S35 cascade closure)
+- `b291a38` — step 3: `SymbolRef` type added; `Pattern::Constructor.name: Symbol` → `SymbolRef`; `MethodResolutions.pattern_ctors` sidecar per D47
+
+**Phase A — Frontend cascade absorption** (8 commits):
+- `cda7a0c` — wave A3: cascade plan refresh (5 feature-progress groups A-E) + Pattern::Constructor rustdoc clarification
+- `519ae91` → `2060ae7` — wave A4: 5 group commits absorbing 14 probe rows (newtype + span discipline; module visibility; macro lookup-shape; fused param tuple; trait/impl); 35 → 0 errors trajectory
+- `a4fc9e0` — A5 follow-up: 7 stale doc-comments in expand.rs refreshed
+
+**Phase B — Facade settlement + retirement** (7 commits):
+- `5e20405` — foundation: 3 missing types authored (SymbolTables, ModuleAliasEntry, ModuleAliases) per 5th-lens configuration→source completeness sweep; D41 amendment (Option D refined — D41 #3 Introspection-direct-write retracted; CompilationArtifacts return + produce_disasm on-demand; FIXME 0221 closed by amendment)
+- `ced64ab` → `f9ae663` — audit cascade: 6 commits actioning all 8 audit findings (F1+F2+F3 expand signature + typedef lift + Arc drop; F5 rustdoc refresh; H1+H2 S69 carries re-exports; S1 extract_module_declarations signature; S2 defmacro span wiring; F6 ExtractedDeclarations #[non_exhaustive]; clippy lint suppression)
+- `49eb483` — facade retirement: `facades/frontend.md` deleted (252 LOC); narrative folded into `lib.rs //!` preamble + per-item `///` rustdoc + `bounded-contexts.md` §1; mirrors S69 Submission 42 for types; 23 cross-references swept
+
+### Deferred (with rationale)
+
+| Item | Severity | Target sprint | Rationale |
+|---|---|---|---|
+| **FIXME 0221** — backend D41 source rotation | Important | S71+ | Per facade-first-migration discipline; consumer-cascade wash-through model. Backend source still has pre-D41 signature; rotation owed in next backend-touching sprint. |
+| **FIXME 0222** — typecheck cascade off S70 narrows | Important | S71+ | Same model. Typecheck currently at 282 errors (+5 above 277 pre-S70 baseline): 3 step-2-introduced sites (S35 invariant cascade) + 4 latent S35/S23 sites. Mechanical given S35 grounding. |
+| **FIXME 0223** — facade-text staleness | Suggestion | Opportunistic | PrimitiveKind cited 4× across facades (retired S69 Sub 36); ConstructorInfo cited 1× (retired post-S69 ctor-as-Def cascade). Narrative drift, not contract drift. |
+| **Phase 6 user-facing assessment** | Waived | N/A | Sprint touches no language-visible surface; user-proxy skills have no new behavior to validate. S69 + S65 + S63 precedent. |
+| **FIXME 0175** — `cranelisp_frontend::expand` invocation gap | Open | When /arch arbitrates dep widening | #6 boundary cap held throughout S70 — expand body stays Gap-on-every-macro-head deferred-skeleton; module_aliases parameter is structural wiring; invocation path remains in src/expander.rs. /arch ruling on (a)/(b)/(c)/(d) dep widening still owed. |
+| **Finding #6** — `Sexp::Comment` variant liveness | No-action | — | Per user direction. Variant may be aspirational reader-mode infrastructure; verification deferred to a future opportunistic trace. |
+
+### Findings (methodology lessons + skill feedback)
+
+**1. The 5th-lens audit methodology — configuration→source completeness.** Phase B introduced a new audit lens beyond S69's four (un-cascaded decisions in code; dead fields; struct-vs-rustdoc drift; D41-violation shapes). The 5th lens walks **configuration** (facades + BC + Decisions + Principles + per-crate design docs) and checks whether every named type identifier exists in source. This sweep caught 3 missing types (`SymbolTables`, `ModuleAliasEntry`, `ModuleAliases`) + 1 DAG-inversion question (`Introspection` placement) that the prior 4 lenses missed by construction (they walk source, not configuration). Worth codifying as a standing audit method.
+
+**2. Facade-retirement-into-source-rustdoc — pattern stable at 2 data points.** S69 Submission 42 retired `facades/types.md` into `cranelisp-types/src/lib.rs //!` + per-item rustdoc + `bounded-contexts.md` §7. S70 Phase B B3-C retired `facades/frontend.md` into the parallel sites. The pattern is reproducible: cross-cutting overview → //! preamble; per-item commentary → /// rustdoc; cross-type narrative not fitting a single item → BC. 6 remaining crate facades can adopt the same retirement pattern when their respective audits complete.
+
+**3. Configuration-grounds-the-facade discipline validated rigorously.** Every finding in the Phase B frontend audit cited at least one named Decision / Principle / BC / FIXME. Zero arbitrations. Zero facade-moves. The S69 calibration (arbitration count 24→2 once configuration fully loaded) repeated at Phase B (0 arbitrations from the start). The methodology holds: when configuration is canonical and grounded, dispositions emerge mechanically.
+
+**4. Un-cascaded-Decision failure mode appeared in multiple forms.** Three instances surfaced this sprint:
+- Rustdoc-vs-code drift: `DefKind::Macro` referenced at 8 rustdoc sites in cranelisp-types but missing from the enum (S69 narrative ruled the shape; variant addition never landed in code).
+- Facade-target-stating without source landing: `SymbolTables`, `ModuleAliases`, `ModuleAliasEntry` named in BC §7 + frontend/int facades but absent from source.
+- Decision-amended-without-source-rotation: D41 #3 (Introspection direct-write) committed in the Decision doc but never landed in source; created a DAG inversion the moment the audit walked it.
+
+In each case, `feedback_decision_cascade_discipline.md` (the rule that Decision changes must cascade their source/facade/sequence updates in the same change-set) was the right diagnostic. The discipline survived the sprint stress-test; the lesson is reinforced.
+
+**5. Plan-narrative-staleness as a failure mode.** The cascade plan's row #6 CRITICAL FINDING (claiming `DefKind::Macro` variant missing) persisted across 3 Phase 3 commits + Phase A entry because no one refreshed the plan after step 1 landed the variant. /arch's broad A3 review caught it. The lesson: when a step lands a change that affects an existing plan, the plan refresh is part of that step's commit. Worth a memory entry on plan-cascade discipline. The S69 Sub 42 precedent (types facade retired in same commit as the source rustdoc additions) is the model.
+
+**6. "Settled with follow-up" verdict shape.** /arch's settled-verdict memo distinguished "types-crate is structurally complete for the work this sprint will do" from "every configuration-named question resolved." That distinction matters — it's the difference between blocking-on-perfection and shipping-with-named-follow-up. The shape was useful here (FIXME 0221's Introspection question was named follow-up, not blocker; resolved later in Phase B by the D41 amendment) and worth standardizing for future per-crate audits.
+
+**7. /sprint orchestration data point — 18 agent fires across the sprint.** Multi-agent coordination worked. The single-session-with-multiple-commits pattern (A4 group execution; B3-B audit cascade) was particularly effective — one /dev agent works through a feature-progress sequence in one session, commits at each transition, reports observable progress (error-count drops). More efficient than per-group separate fires.
+
+**8. User reflection on /arch's architectural principles.** Per /sprint Phase 7 discipline. The principles invoked this sprint (3 — DAG; 7 — single source of truth; 15 — facade types live with behavior; 17 — module locality; 18 — enforce invariants structurally) all performed well. No new principles surfaced as needed. No revisions to existing principles seem warranted. The placement heuristic (Principle 15 — multi-consumer types belong in cranelisp-types) was tested by ModuleAliases authoring and held. The facade-first-migration discipline (`feedback_facade_first_migration.md`) was tested by the B3-A→B3-B→B3-C arc and held — types moved first; consumers wash through in their own time; facade retires last.
