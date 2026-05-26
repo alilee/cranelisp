@@ -150,6 +150,10 @@ where
     expand_recursive(desugared, symbol_tables, module_aliases, 0)
 }
 
+// `module_aliases` is threaded through recursion but not yet consulted at
+// the lookup — FIXME 0175 (alias traversal lives in src/expander.rs until
+// marshal-deps resolve). The parameter is structural wiring for later.
+#[allow(clippy::only_used_in_recursion)]
 fn expand_recursive<C, L>(
     sexp: Sexp,
     symbol_tables: &SymbolTables<C, L>,
