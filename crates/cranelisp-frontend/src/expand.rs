@@ -55,24 +55,12 @@
 //! entry at all), it is left in place as a possible function call —
 //! `build_form`/`build_expr` will fail downstream with a clearer error.
 
-use std::sync::Arc;
-
-use dashmap::DashMap;
-
 use cranelisp_types::{
     CodeStore, DefKind, FQSymbol, LinkerStore, ModuleEntry, ModuleFullPath, ResolutionGap, Sexp,
-    Span, Symbol, SymbolTable,
+    Span, Symbol, SymbolTable, SymbolTables,
 };
 
 use crate::quasiquote::expand_quasiquotes;
-
-/// Per-frontend type alias for the workspace-wide symbol-tables map.
-///
-/// Generic over `<C: CodeStore, L: LinkerStore>` per Decision 32 so the
-/// frontend stays C/L-blind. The alias is structural — the binary crate
-/// instantiates `SymbolTables<Code, ()>` and frontend tests typically
-/// instantiate `SymbolTables<(), ()>`.
-pub type SymbolTables<C, L> = DashMap<ModuleFullPath, Arc<SymbolTable<C, L>>>;
 
 /// Maximum nesting depth for macro expansion.
 ///
@@ -321,11 +309,13 @@ mod tests {
     use cranelisp_types::{
         MacroClauseInfo, ModuleFullPath, Scheme, Span, Symbol, Type, TypeName, Visibility,
     };
+    use dashmap::DashMap;
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     /// Build a tiny `SymbolTable<(), ()>` carrying a single macro entry
     /// (post-S69 Submission 13: `ModuleEntry::Def { kind: DefKind::Macro }`).
-    fn module_with_macro(path: &str, macro_name: &str) -> (ModuleFullPath, Arc<SymbolTable<(), ()>>) {
+    fn module_with_macro(path: &str, macro_name: &str) -> (ModuleFullPath, SymbolTable<(), ()>) {
         let module_path = ModuleFullPath::from(path);
         let mut symbols: HashMap<Symbol, ModuleEntry<()>> = HashMap::new();
         symbols.insert(
@@ -366,7 +356,7 @@ mod tests {
             linker: None,
             schema_version: 0,
         };
-        (module_path, Arc::new(table))
+        (module_path, table)
     }
 
     /// Build a `SymbolTables<(), ()>` carrying one module + one macro.
@@ -506,7 +496,7 @@ mod tests {
         };
         let tables: SymbolTables<(), ()> = DashMap::new();
         tables.insert(home, home_table);
-        tables.insert(user, Arc::new(user_table));
+        tables.insert(user, user_table);
 
         let sexp = Sexp::List(
             vec![
@@ -591,7 +581,7 @@ mod tests {
             schema_version: 0,
         };
         let tables: SymbolTables<(), ()> = DashMap::new();
-        tables.insert(path, Arc::new(table));
+        tables.insert(path, table);
 
         let sexp = Sexp::List(
             vec![
