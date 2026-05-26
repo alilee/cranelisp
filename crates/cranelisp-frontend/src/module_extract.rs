@@ -24,10 +24,15 @@ pub struct ExtractedDeclarations {
 /// Recognizes `(mod name)`, `(mod- name)`, `(import [...])`, and `(export [...])`.
 /// All other sexps pass through unchanged.
 ///
+/// `containing_module` is the path of the module whose source provides
+/// `sexps`; it is required to rewrite `super` to the parent module path
+/// per spec §8.3.7 and is preserved on the returned
+/// `ExtractedDeclarations.path`.
+///
 /// Returns `(ExtractedDeclarations, remaining_sexps)`.
 pub fn extract_module_declarations(
-    path: ModuleFullPath,
-    sexps: Vec<Sexp>,
+    containing_module: &ModuleFullPath,
+    sexps: &[Sexp],
 ) -> Result<(ExtractedDeclarations, Vec<Sexp>), CranelispError> {
     let mut mod_decls = Vec::new();
     let mut import_specs = Vec::new();
@@ -36,7 +41,7 @@ pub fn extract_module_declarations(
     let mut remaining = Vec::new();
 
     for sexp in sexps {
-        match &sexp {
+        match sexp {
             Sexp::List(elems, span) if !elems.is_empty() => {
                 if let Sexp::Symbol(head, _) = &elems[0] {
                     match head.as_str() {
@@ -51,7 +56,7 @@ pub fn extract_module_declarations(
                             continue;
                         }
                         "import" => {
-                            let specs = parse_import(elems, *span, &path)?;
+                            let specs = parse_import(elems, *span, containing_module)?;
                             import_specs.extend(specs);
                             continue;
                         }
@@ -68,14 +73,14 @@ pub fn extract_module_declarations(
                         _ => {}
                     }
                 }
-                remaining.push(sexp);
+                remaining.push(sexp.clone());
             }
-            _ => remaining.push(sexp),
+            _ => remaining.push(sexp.clone()),
         }
     }
 
     let declarations = ExtractedDeclarations {
-        path,
+        path: containing_module.clone(),
         mod_decls,
         import_specs,
         export_specs,
@@ -479,8 +484,8 @@ mod tests {
     fn extract(src: &str) -> (ExtractedDeclarations, Vec<Sexp>) {
         let sexps = parse(src);
         extract_module_declarations(
-            ModuleFullPath::from("test"),
-            sexps,
+            &ModuleFullPath::from("test"),
+            &sexps,
         )
         .expect("extraction failed")
     }
@@ -600,8 +605,8 @@ mod tests {
     fn test_import_super_rewrites_to_parent() {
         let sexps = parse("(import [super [*]])");
         let (ms, _) = extract_module_declarations(
-            ModuleFullPath::from("math.test"),
-            sexps,
+            &ModuleFullPath::from("math.test"),
+            &sexps,
         )
         .expect("extraction failed");
         assert_eq!(ms.import_specs.len(), 1);
@@ -615,8 +620,8 @@ mod tests {
     fn test_import_super_rewrites_nested_parent() {
         let sexps = parse("(import [super [helper]])");
         let (ms, _) = extract_module_declarations(
-            ModuleFullPath::from("app.handler.test"),
-            sexps,
+            &ModuleFullPath::from("app.handler.test"),
+            &sexps,
         )
         .expect("extraction failed");
         assert_eq!(ms.import_specs.len(), 1);
@@ -628,8 +633,8 @@ mod tests {
     fn test_import_super_at_root_errors() {
         let sexps = parse("(import [super [*]])");
         let result = extract_module_declarations(
-            ModuleFullPath::from("root"),
-            sexps,
+            &ModuleFullPath::from("root"),
+            &sexps,
         );
         let err = result.expect_err("expected error for super at root module");
         match err {
@@ -752,8 +757,8 @@ mod tests {
     fn test_mod_missing_name() {
         let sexps = parse("(mod)");
         let result = extract_module_declarations(
-            ModuleFullPath::from("test"),
-            sexps,
+            &ModuleFullPath::from("test"),
+            &sexps,
         );
         assert!(result.is_err());
     }
@@ -763,8 +768,8 @@ mod tests {
     fn test_import_missing_names() {
         let sexps = parse("(import [core.option])");
         let result = extract_module_declarations(
-            ModuleFullPath::from("test"),
-            sexps,
+            &ModuleFullPath::from("test"),
+            &sexps,
         );
         assert!(result.is_err());
     }
@@ -773,8 +778,8 @@ mod tests {
     #[test]
     fn test_module_path_preserved() {
         let (ms, _) = extract_module_declarations(
-            ModuleFullPath::from("app.handler"),
-            vec![],
+            &ModuleFullPath::from("app.handler"),
+            &[],
         )
         .unwrap();
         assert_eq!(&*ms.path, "app.handler");
@@ -824,8 +829,8 @@ mod tests {
     fn test_platform_wrong_arity() {
         let sexps = parse("(platform)");
         let result = extract_module_declarations(
-            ModuleFullPath::from("test"),
-            sexps,
+            &ModuleFullPath::from("test"),
+            &sexps,
         );
         assert!(result.is_err());
     }
