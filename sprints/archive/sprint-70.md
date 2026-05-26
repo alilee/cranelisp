@@ -1,6 +1,6 @@
 # Sprint 70: Frontend cascade absorption + facade audit walk-through
 
-**Status**: PHASE 7 CLOSE
+**Status**: COMPLETE
 
 **Goal**: Absorb the S69 `cranelisp-types` settlement into `cranelisp-frontend` — probed, scoped by `/design` + `/arch`, then executed by `/dev`. Follow with the S69 audit-walk discipline against the regenerated `cargo public-api` baseline. One crate only.
 
