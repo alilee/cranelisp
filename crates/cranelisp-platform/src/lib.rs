@@ -186,10 +186,28 @@ pub const IO_EFFECT_RESOURCE_OFFSET: i64 = 16;
 /// continue to import `cranelisp_platform::SchedulingClass` unchanged.
 pub use cranelisp_types::SchedulingClass;
 
-/// Per Decision 42 / FIXME 0104 — `cranelisp_types::PlatformError` is the
-/// platform crate's boundary error type for `manifest_to_descriptors` and
-/// any future platform-side helpers. Host re-exports for ergonomics; the
-/// canonical definition lives in `cranelisp-types`.
+/// Platform-boundary error type, re-exported from `cranelisp-types`.
+///
+/// Per Decision 0042 / FIXME 0104, `PlatformError` lives in
+/// `cranelisp-types` (so all crates can construct + match), with
+/// `ErrorLocation` carriers per variant. The four variants are
+/// `LoadFailed`, `ManifestNotFound`, `AbiVersionMismatch`, and
+/// `DispatchError` — each carrying `dll: PathBuf` / `cause` /
+/// `expected` / `found` / `fn_name: Symbol` as appropriate, plus a
+/// uniform `location: ErrorLocation`. See `cranelisp_types::error::PlatformError`
+/// for the canonical definition.
+///
+/// Platform-origin failures construct `PlatformError` and surface via
+/// `CranelispError::Platform(PlatformError)`; `int`'s `Sess::format_error`
+/// consumes through Decision 39's mode-conditional source-resolution
+/// path. The `(platform "name")` form's span flows into the `location`
+/// field so a missing DLL produces
+/// `lib/main.cl:42:7: error: platform "stdio" not found in search path`
+/// rather than a free-floating string.
+///
+/// Re-exported here per Principle 15's external-audience exception —
+/// out-of-tree DLL author crates depend only on `cranelisp-platform`
+/// and would not otherwise see `cranelisp-types`.
 pub use cranelisp_types::PlatformError;
 use cranelisp_types::ErrorLocation;
 
@@ -207,8 +225,59 @@ pub const STRING_HEADER_BYTES: usize = 8;
 
 /// A single platform function descriptor in the C ABI.
 ///
-/// All fields use raw pointers and lengths for C compatibility.
-/// The host converts these into safe Rust types after loading.
+/// One element of [`PlatformManifest::functions`]. Crosses the DLL
+/// boundary as a `#[repr(C)]` byte-shape; both the DLL author (writing
+/// the descriptor via [`declare_platform!`]) and the host (loading the
+/// manifest via [`manifest_to_descriptors`]) see identical layout.
+///
+/// # Length-prefixed strings (not null-terminated)
+///
+/// Every string-shaped field is a `(ptr, len)` pair (`name` +
+/// `name_len`, `jit_name` + `jit_name_len`, `type_sig` + `type_sig_len`,
+/// `docstring` + `docstring_len`). Length prefixing — rather than
+/// null-termination — avoids forcing every DLL author's toolchain to
+/// guarantee null-termination across the C-ABI surface. The host reads
+/// `(ptr, len)` pairs and constructs UTF-8 slices via
+/// `std::slice::from_raw_parts` + `std::str::from_utf8`, failing fast
+/// on malformed bytes.
+///
+/// # Parameter names — parallel arrays
+///
+/// `param_names` + `param_name_lens` + `param_name_count` form a
+/// parallel-arrays representation of the function's parameter-name
+/// list. The names surface in `/sig` and `/doc` REPL introspection on
+/// the host side. The DLL author writes the names in the `params: [...]`
+/// arm of [`declare_platform!`]; the macro emits the parallel arrays
+/// alongside the function pointer.
+///
+/// # Scheduling class
+///
+/// `scheduling_class` is a `u32` discriminant — **not** a Rust-typed
+/// [`SchedulingClass`] field. The host re-interprets the `u32` via
+/// `SchedulingClass::from(u32)`. Keeping the `#[repr(C)]` struct free of
+/// Rust-typed fields lets the DLL author's `cbindgen`-generated header
+/// match the layout exactly. Discriminants: 0 = Sequential, 1 =
+/// Commutative, 2 = ResourceSerial (per Decision 0026; spec §10.10.1).
+///
+/// # ABI versioning
+///
+/// Any field added/removed/reordered in this struct is a layout-affecting
+/// change that bumps [`ABI_VERSION`] (per Principle 14).
+///
+/// # Cross-thread invariants — `Send` + `Sync`
+///
+/// `unsafe impl Send` and `unsafe impl Sync` are below this declaration
+/// because `PlatformFn` carries raw pointers (`name`, `jit_name`, `ptr`,
+/// etc.). Safety: every pointer is read-only data with `'static`
+/// lifetime — string-literal byte arrays in the DLL's read-only
+/// segment, `Box::leak`'d descriptors from [`declare_platform!`], or the
+/// function pointer itself. None of the data behind the pointers is
+/// mutable, so concurrent reads from any thread are sound. Per BC §5
+/// invariant 6 ("no DLL unloading mid-session"), DLL pages stay mapped
+/// for the session, so pointer validity is bounded by the session
+/// lifetime. The IO trampoline (in `cranelisp-intrinsics` per Decision
+/// 0043) reads platform-fn descriptors from multiple threads when
+/// dispatching `IO_TAG_EFFECT` nodes.
 #[repr(C)]
 pub struct PlatformFn {
     /// Name as seen by cranelisp code (e.g. "print").
@@ -243,17 +312,46 @@ pub struct PlatformFn {
 unsafe impl Send for PlatformFn {}
 unsafe impl Sync for PlatformFn {}
 
-/// Host callbacks provided to the platform at init time.
+/// Host callbacks provided to the platform at init time — what platform
+/// DLL code can call back into the host runtime for.
 ///
-/// The platform stores these for later use (e.g. `read-line` needs
-/// the host allocator to return heap-allocated strings).
+/// `#[repr(C)]` layout-contract type; layout governed by [`ABI_VERSION`]
+/// per Principle 14. The host (`int`) constructs a `HostCallbacks`
+/// instance with fn pointers into `cranelisp-intrinsics` (per Decision
+/// 0043) and passes it to each loaded DLL's
+/// `cranelisp_platform_manifest` entry point; [`HostContext::init`]
+/// stores it for the DLL's lifetime.
 ///
-/// Sprint 71 (`ABI_VERSION = 2`) grew this struct by two fields —
-/// `alloc_with_tag` (for `CLAdt::<T>::construct`) and `validate_schema`
-/// (for DLL-load-time schema cross-checking). Both are "named-null"
-/// callback fields per A6 / design §5.2 — the host populates them with
-/// the in-crate `null_alloc_with_tag` / `null_validate_schema` placeholders
-/// until the host-wiring sprint (FIXME 0229) wires the real implementations.
+/// # Current shape (ABI v2)
+///
+/// As of Sprint 71 (`ABI_VERSION = 2`), the struct carries three
+/// fields: `alloc` (the original, ABI v1+), plus the two grown for the
+/// ADT-marshaling surface — `alloc_with_tag` (consumed by
+/// [`CLAdt::construct`]) and `validate_schema` (called at DLL load
+/// to cross-check the DLL's schema against the host's actual `deftype`
+/// data).
+///
+/// The two new fields use the **named-null-callback** pattern (per A6
+/// / design §5.2): until the host-wiring sprint
+/// ([FIXME 0229]) populates the real implementations, the host
+/// initialises them to the in-crate [`null_alloc_with_tag`] /
+/// [`null_validate_schema`] placeholders. `null_alloc_with_tag` panics
+/// with the R1-gate message naming FIXME 0229; `null_validate_schema`
+/// returns 0 (pass-without-checking).
+///
+/// [FIXME 0229]: ../../design/arch/fixmes/0229-int-host-side-adt-marshaling.md
+///
+/// # Future shape — Decision 0031 callback support
+///
+/// When `Fn a b` lands on the spec §10.10.1 platform-ABI permitted-types
+/// list (currently future work; not in this sprint's scope), the struct
+/// widens further with `rc_inc`, `rc_dec`, and `invoke_closure` fields.
+/// Platform DLLs retaining user-supplied closures across calls will
+/// inc-on-store / dec-on-release; invocation will dispatch through the
+/// GOT (so REPL redefinition retargets future invocations
+/// transparently). The widening is a binary-incompatible ABI bump
+/// (Principle 14). See `bounded-contexts.md` §5 invariant 3 for the
+/// durable forward-looking contract.
 #[repr(C)]
 pub struct HostCallbacks {
     /// Allocate `size` bytes, returns payload pointer (base + 16).
@@ -344,8 +442,34 @@ pub extern "C" fn null_validate_schema(
 
 /// Platform manifest returned by the DLL's entry point.
 ///
-/// Contains the platform name, version, and array of function descriptors.
-/// The host validates `abi_version` and extracts descriptors at load time.
+/// Returned by `cranelisp_platform_manifest` (emitted by
+/// [`declare_platform!`]) when the host calls into the loaded DLL.
+/// Carries the platform name, version, ABI-version stamp, and an array
+/// of [`PlatformFn`] descriptors.
+///
+/// # Load-time validation
+///
+/// The host (`int::load_platform_dll`) reads `abi_version` first and
+/// refuses mismatched DLLs with [`PlatformError::AbiVersionMismatch`].
+/// Any field added/removed/reordered in this struct is a layout-affecting
+/// change requiring an [`ABI_VERSION`] bump (per Principle 14 — see
+/// [`ABI_VERSION`] for the bump rules).
+///
+/// # Length-prefixed strings
+///
+/// Same convention as [`PlatformFn`]: `name` / `version` are
+/// `(ptr, len)` pairs, not null-terminated. See [`PlatformFn`]'s rustdoc
+/// for the rationale.
+///
+/// # Cross-thread access
+///
+/// `PlatformManifest` is `!Send + !Sync` by auto-projection (raw
+/// pointers; no `unsafe impl`). The host reads it once on the load
+/// thread via [`manifest_to_descriptors`], copies the bytes into safe
+/// owned shapes ([`OwnedPlatformFnDescriptor`]), and then discards the
+/// manifest reference. Concurrent reads from background threads are
+/// not part of the contract — the descriptor data is what crosses
+/// threads.
 #[repr(C)]
 pub struct PlatformManifest {
     /// Must match `cranelisp_platform::ABI_VERSION`.
@@ -366,22 +490,50 @@ pub struct PlatformManifest {
 // These `#[repr(transparent)]` wrappers over i64 provide type-safe
 // conversions for platform authors. All `unsafe` is encapsulated here.
 
-/// A cranelisp integer value (i64 passthrough).
+/// A cranelisp integer value — `i64` passthrough.
+///
+/// `#[repr(transparent)]` over `i64`. ABI: the `i64` is the value
+/// directly; no boxing, no header. Conversions: `From<i64>` /
+/// `From<CLInt> for i64`. JIT-emitted code that returns an integer
+/// returns the bare `i64`; the DLL author wraps in `CLInt` for type
+/// safety at the Rust source level.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug)]
 pub struct CLInt(i64);
 
-/// A cranelisp string value (pointer to `[i64 len][u8 bytes...]`).
+/// A cranelisp string value — alloc-base pointer to a heap-allocated
+/// `[total_size][rc][len][bytes...]` shape.
+///
+/// `#[repr(transparent)]` over `i64`. The stored `i64` is the
+/// **alloc base** of the heap allocation (NOT the payload pointer);
+/// the string payload begins at `base + HEAP_HEADER_SIZE` and consists
+/// of an `[i64 len][u8 bytes...]` shape. This matches the compiler's
+/// `HeapString` convention (Decision 0012 + Decision 0043 — string
+/// layout owned by `cranelisp-intrinsics`).
+///
+/// `CLString` implements [`CLHeap`]; the host-side allocator returns
+/// the alloc base via [`HostCallbacks::alloc`] (which itself returns
+/// `base + HEAP_HEADER_SIZE`; `CLString::from(&str)` then subtracts
+/// the header size to land on the base). [`CLString::as_str`] adds
+/// `HEAP_HEADER_SIZE` to reach the payload and reads `len` + bytes.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug)]
 pub struct CLString(i64);
 
-/// A cranelisp boolean value (0 = false, 1 = true).
+/// A cranelisp boolean value — 0 = false, 1 = true.
+///
+/// `#[repr(transparent)]` over `i64`. ABI: the `i64` is 0 or 1.
+/// Conversions: `From<bool>` / `From<CLBool> for bool`.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug)]
 pub struct CLBool(i64);
 
-/// A cranelisp float value (IEEE 754 f64 bitcast to i64).
+/// A cranelisp float value — IEEE 754 `f64` bit-cast into the `i64`.
+///
+/// `#[repr(transparent)]` over `i64`. ABI: the `i64` carries the
+/// native-endian bit pattern of an `f64` (via
+/// `i64::from_ne_bytes(f.to_ne_bytes())`). Conversions: `From<f64>` /
+/// `From<CLFloat> for f64`.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug)]
 pub struct CLFloat(i64);
@@ -430,8 +582,28 @@ impl From<CLFloat> for f64 {
 
 // -- CLType trait --
 
-/// Marker trait for cranelisp value types that can be IO-wrapped.
-/// Only CL* types implement this -- prevents raw i64 from being lifted.
+/// Marker trait for cranelisp value types that can cross the DLL
+/// boundary as a `#[repr(transparent)]` `i64`.
+///
+/// Convention-sealed: only the four primitive wrappers ([`CLInt`],
+/// [`CLBool`], [`CLFloat`], [`CLString`]) plus the parameterised
+/// wrappers ([`CLIO<T>`], [`CLAdt<T>`]) implement `CLType`. The `Copy`
+/// super-bound suffices in practice — DLL authors don't own any `Copy`
+/// type satisfying the `i64` + ABI contract. A `mod sealed { pub trait
+/// Sealed {} }` super-bound is a candidate future cleanup but not
+/// required (per audit F8 — the existing super-bound is consistent
+/// across declaration sites).
+///
+/// # S67 W1 narrowing — `to_raw` only
+///
+/// The trait was narrowed to a single method during the S67 baseline
+/// pass. Earlier facade drafts speculated `type_signature` / `from_repr`
+/// / `to_repr` — none of those are needed: host-side code never
+/// constructs a CL\* from a raw `i64` (the DLL hands them back as `i64`
+/// and the host doesn't reverse the construction), and `type_signature`
+/// belongs to the manifest, not the value wrapper (the type-sig string
+/// lives on [`PlatformFn::type_sig`] / [`OwnedPlatformFnDescriptor::type_sig`]
+/// — both at the descriptor level).
 pub trait CLType: Copy {
     fn to_raw(self) -> i64;
 }
@@ -459,8 +631,25 @@ impl CLType for CLFloat {
 
 // -- CLIO -- IO-wrapped return value --
 
-/// IO-wrapped return value. Allocates IO nodes on the host heap.
-/// Generic over CL type for type safety -- only CLType implementors accepted.
+/// IO-wrapped return value — base pointer to a heap-allocated IO node.
+///
+/// `#[repr(transparent)]` over `i64` with a zero-sized `PhantomData<CL>`
+/// for compile-time witness binding. The stored `i64` is the
+/// **alloc base** of a heap allocation whose payload is an IO node
+/// (one of `Pure` / `Effect` / `Bind` / `Par`, tagged by the first
+/// `i64` of the payload — see [`IO_TAG_PURE`], [`IO_TAG_EFFECT`],
+/// [`IO_TAG_BIND`], [`IO_TAG_PAR`]).
+///
+/// Platform DLL fns return `CLIO<CL>` to defer effects per spec
+/// §10.10.1; the IO trampoline (in `cranelisp-intrinsics` per Decision
+/// 0043) drives the tree at the appropriate scheduling point. See
+/// [`CLIO::pure`] / [`CLIO::effect`] / [`CLIO::effect_on_resource`] for
+/// the three constructors.
+///
+/// Per spec §10.10.1 the platform calling convention permits `Int`,
+/// `Bool`, `String`, `Float`, and `IO a` as argument and return types.
+/// `Fn a b` is reserved for future callback support per Decision 0031's
+/// "Callback support (forward commitment)" sub-section.
 #[repr(transparent)]
 #[derive(Debug)]
 pub struct CLIO<CL: CLType>(i64, std::marker::PhantomData<CL>);
@@ -682,9 +871,52 @@ impl From<&str> for CLString {
 
 // -- CLOwned -- RAII RC wrapper for heap CL* types --
 
-/// Trait for CL types that are heap-allocated with RC headers.
-/// Layout: `[total_size: i64][rc: i64][payload...]`.
-/// All CL* types store **base pointers** (matching the compiler's convention).
+/// Trait for CL types that are heap-allocated with RC headers — the
+/// platform's view of the cranelisp heap-RC discipline.
+///
+/// # Allocation layout
+///
+/// `[total_size: i64][rc: i64][payload...]` — 16-byte header
+/// ([`HEAP_HEADER_SIZE`]) followed by the type-specific payload. All
+/// CL\* types store **base pointers** (the address of the allocation
+/// header), NOT payload pointers. This matches the compiler's
+/// convention (Decision 0013) — JIT-emitted code and `CLString` /
+/// `CLAdt` value wrappers agree on what an `i64` "heap reference"
+/// means.
+///
+/// # Method receiver shape — authoritative source names
+///
+/// The receiver shape is `&self` for RC operations; the method names
+/// are [`inc_rc`](Self::inc_rc), [`dec_rc`](Self::dec_rc),
+/// [`raw_ptr`](Self::raw_ptr), [`own`](Self::own), and
+/// [`into_owned_consuming`](Self::into_owned_consuming). Per audit F5
+/// (R3 disposition — S71): the asymmetry `inc_rc` / `dec_rc` (rather
+/// than `rc_inc` / `rc_dec`) is intentional and matches the historical
+/// name from `cranelisp-intrinsics`. Renaming would propagate a
+/// consumer cascade across `platforms/stdio` + `platforms/test-capture`
+/// + intrinsics + every test using `CLHeap` directly; deferred to a
+/// future sprint with explicit consumer-cascade analysis. Source is
+/// authoritative.
+///
+/// # RC ordering — `SeqCst`, not `Relaxed`
+///
+/// [`inc_rc`](Self::inc_rc) and [`dec_rc`](Self::dec_rc) use
+/// `Ordering::SeqCst` to match the backend's Cranelift `atomic_rmw`
+/// semantics (arch decision 13). `Relaxed` is unsound for both:
+///
+/// - **`inc_rc` Relaxed** — allows the increment to be reordered
+///   relative to field reads; concurrent readers may see the inc'd
+///   refcount before the field initialisation that motivated the inc.
+/// - **`dec_rc` Relaxed** — allows the dec to be reordered before
+///   reads of object fields, potentially producing read-after-free
+///   when the dec races a concurrent dec that frees the allocation.
+///
+/// # Conventionally sealed
+///
+/// Currently only [`CLString`] and [`CLAdt<T>`] implement `CLHeap`.
+/// `CLInt` / `CLBool` / `CLFloat` are value types (no heap allocation,
+/// no RC). DLL authors do not implement `CLHeap` directly — they use
+/// the existing wrappers.
 pub trait CLHeap: CLType + Copy {
     /// Get the raw base pointer.
     fn raw_ptr(&self) -> i64;
@@ -768,8 +1000,36 @@ impl CLHeap for CLString {
     }
 }
 
-/// RAII wrapper for heap-allocated CL* values.
-/// Increments RC on creation, decrements on drop.
+/// RAII wrapper for heap-allocated CL\* values — host-side RC
+/// discipline across multiple host-callback invocations.
+///
+/// Lets platform DLL code hold a heap-typed cranelisp value across
+/// multiple host-callback invocations with correct reference-counting.
+/// [`new`](Self::new) inc's via [`CLHeap::own`]; `Drop` dec's via
+/// [`CLHeap::dec_rc`]. The consuming variant
+/// [`CLHeap::into_owned_consuming`] takes the caller's transferred ref
+/// directly (no inc on wrap) — used by platform externs capturing a
+/// heap parameter into an Effect closure per Decision 0024.
+///
+/// # Methods — what exists
+///
+/// Currently only [`new`](Self::new) and `Drop` are implemented. The
+/// pre-S71 facade speculated an `into_inner(self) -> T` method that
+/// would release ownership without dec'ing; per audit F1 (R3
+/// disposition — S71): no such method exists in source, and the
+/// marker-type design for `CLAdt<T>` does not need it. The audit's
+/// resolution stands — rustdoc records what is actually implemented;
+/// `into_inner` is not added speculatively.
+///
+/// # `#[non_exhaustive]` — deliberately absent
+///
+/// `CLOwned<T>` is plain Rust (host-side only; does not cross the DLL
+/// ABI). The pre-S71 facade speculated `#[non_exhaustive]` on it; per
+/// audit F7 (S71): the actual source carries no `#[non_exhaustive]`.
+/// The struct has one field (`inner: T`) that doesn't need source-level
+/// evolution gating because callers construct via [`new`](Self::new)
+/// and access via [`Deref`], not via direct struct-literal
+/// construction.
 pub struct CLOwned<T: CLHeap> {
     inner: T,
 }
@@ -797,11 +1057,41 @@ impl<T: CLHeap> Deref for CLOwned<T> {
 
 // -- HostContext --
 
-/// Initialization handle for platform DLLs.
+/// Initialization handle for platform DLLs — the runtime ↔ platform
+/// bridge.
 ///
 /// Exists solely to receive and store host callbacks at manifest time.
-/// Platform authors declare a static instance; the `declare_platform!`
-/// macro calls `init()` automatically.
+/// Platform authors declare a static instance (`static HOST: HostContext
+/// = HostContext::new();`); the [`declare_platform!`] macro calls
+/// [`init`](Self::init) automatically when the host invokes the
+/// DLL's `cranelisp_platform_manifest` entry point.
+///
+/// # Why no centralised dispatch wrapper
+///
+/// `HostContext` does NOT expose a `dispatch()` method. Platform-fn
+/// invocation reads the fn pointer from `SymbolTable.got()` indexed by
+/// `ModuleEntry::Def.got_slot` (per Decision 0026, S66 amendment +
+/// rollback `1dc57ae` — GOT is the single source of truth for callable
+/// addresses) and calls through it directly. Adding a `dispatch`
+/// wrapper would re-introduce a parallel call path (Principle 7
+/// violation) without buying anything the per-entry GOT slot doesn't
+/// already provide.
+///
+/// # Cross-thread invariants
+///
+/// `HostContext` is `Send + Sync` by auto-derivation (the only field,
+/// `callbacks: AtomicPtr<HostCallbacks>`, is itself `Send + Sync`). BC
+/// §5 invariant 5 holds: [`init`](Self::init) is called exactly once
+/// per session by `int`; subsequent platform-fn calls observe the same
+/// callbacks for the session's lifetime.
+///
+/// # Default — deliberately absent
+///
+/// Per audit F2 (S69) and design §8 (S71), `HostContext` does NOT
+/// implement `Default`. The pre-S71 `impl Default for HostContext` was
+/// an unannounced facade item with zero callers; deletion is a
+/// source-move with no consumer cascade. Use [`new`](Self::new)
+/// directly.
 pub struct HostContext {
     callbacks: AtomicPtr<HostCallbacks>,
 }
@@ -849,7 +1139,28 @@ impl HostContext {
 
 /// Safe Rust descriptor for a platform function, converted from C-ABI.
 ///
-/// Used by the host after loading a DLL manifest.
+/// The host-side typed form of [`PlatformFn`] — string fields are owned
+/// `String`s, `scheduling_class` is the typed [`SchedulingClass`] enum
+/// (lifted from the C-ABI `u32` via `SchedulingClass::from(u32)`),
+/// `param_names` is an owned `Vec<String>`. Produced by
+/// [`manifest_to_descriptors`] and consumed by the host's platform-load
+/// path on `int` (which writes the descriptor into the per-platform
+/// synthetic module's `SymbolTable` per spec §8.9.3).
+///
+/// # Auto-projection — `!Send + !Sync`
+///
+/// The raw `ptr: *const u8` field forces auto-projection of `!Send +
+/// !Sync` on this struct. That projection is intentional: callers who
+/// move descriptors across threads MUST wrap in `Arc<>` or similar.
+/// The fn pointer itself is invariant for the DLL's lifetime (BC §5
+/// invariant 6 — no DLL unloading mid-session), but the auto-projection
+/// keeps the boundary disciplined.
+///
+/// # `#[non_exhaustive]`
+///
+/// Plain Rust struct (not crossing the C ABI; not layout-contract). The
+/// standard facade convention applies — additional fields may be added
+/// in a non-breaking source-evolution step.
 #[non_exhaustive]
 pub struct OwnedPlatformFnDescriptor {
     pub name: String,
@@ -864,14 +1175,40 @@ pub struct OwnedPlatformFnDescriptor {
 
 /// Convert a C-ABI manifest into safe Rust descriptors.
 ///
+/// The C-ABI → typed-Rust bridge: given a raw [`PlatformManifest`]
+/// (already located in a loaded DLL by the caller), copies the
+/// descriptor list into safe Rust shapes and returns
+/// `(platform_name, platform_version, descriptors)`. The two leading
+/// strings come from `PlatformManifest.name` / `PlatformManifest.version`
+/// (each `(ptr, len)` pair lifted to an owned `String`); the descriptor
+/// vector comes from `PlatformManifest.functions`.
+///
+/// # DLL lifecycle is not this crate's concern
+///
+/// Per `bounded-contexts.md` §5 — DLL lifecycle orchestration (`dlopen`
+/// via `libloading::Library` retention) is `int`'s job; the
+/// `cranelisp-platform` crate has no `libloading` dep and does not own
+/// DLL handles. The DLL handle lands on the synthetic platform module's
+/// `SymbolTable.dll: Option<D>` field per spec §8.9.3, keyed by
+/// `symbol_tables["platform.<name>"]`; dropping the SymbolTable drops
+/// the DLL.
+///
+/// `parse_type_sig` (the platform-fn type-signature lifter) and
+/// `load_manifest` (the `libloading` open path) are NOT public surface
+/// here. Per FIXME 0155 resolution, `parse_type_sig` lives `int`-side
+/// because it requires `cranelisp-typecheck` vocabulary that platform
+/// must not depend on (Principle 3); `load_manifest`'s DLL-handle
+/// retention is `int`-side per the BC allocation.
+///
 /// # Safety
 /// All pointers in the manifest must be valid and point to UTF-8 data.
 ///
 /// # Errors
-/// UTF-8 validation failures construct `PlatformError::LoadFailed` with
-/// `ErrorLocation::unknown()` (the caller — `int::load_platform_dll` —
-/// rewrites `dll` and `location` at the call site). Per Decision 42 /
-/// FIXME 0104.
+/// UTF-8 validation failures construct [`PlatformError::LoadFailed`]
+/// with `ErrorLocation::unknown()`. The caller — `int::load_platform_dll`
+/// — rewrites `dll` and `location` at the call site (using the
+/// `(platform "name")` form's span) before surfacing via
+/// `CranelispError::Platform`. Per Decision 0042 / FIXME 0104.
 pub unsafe fn manifest_to_descriptors(
     manifest: &PlatformManifest,
 ) -> Result<(String, String, Vec<OwnedPlatformFnDescriptor>), PlatformError> {
@@ -962,8 +1299,14 @@ pub unsafe fn manifest_to_descriptors(
 
 /// Derive the JIT symbol name from a cranelisp function name.
 ///
-/// Prepends `cranelisp_` and replaces `-` with `_`.
-/// E.g. `"read-line"` -> `"cranelisp_read_line"`.
+/// Prepends `cranelisp_` and replaces `-` with `_`. E.g.
+/// `"read-line"` → `"cranelisp_read_line"`.
+///
+/// Called by [`declare_platform!`] to compute each fn's `jit_name`
+/// field at manifest-build time. The host (`int`) uses the same
+/// derivation when registering platform fn pointers via
+/// `JITBuilder::symbol` keyed by `jit_name`, so the mapping is
+/// invertible by convention.
 pub fn derive_jit_name(cl_name: &str) -> String {
     format!("cranelisp_{}", cl_name.replace('-', "_"))
 }
