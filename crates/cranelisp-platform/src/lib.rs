@@ -11,6 +11,9 @@
 use std::ops::Deref;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
+pub mod schema;
+pub use schema::{Field, FieldType, ParseLoc, Schema, SchemaParseError, TypeShape, Variant};
+
 /// Platform ABI version — bump on any layout-affecting change to the
 /// platform DLL boundary.
 ///
