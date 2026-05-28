@@ -550,12 +550,6 @@ pub struct HostContext {
     callbacks: AtomicPtr<HostCallbacks>,
 }
 
-impl Default for HostContext {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl HostContext {
     /// Create a new uninitialized context.
     pub const fn new() -> Self {
