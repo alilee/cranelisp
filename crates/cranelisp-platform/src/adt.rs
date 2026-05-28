@@ -1,20 +1,50 @@
 //! `CLAdt<T>` — the platform-DLL ADT-marshaling wrapper.
 //!
 //! Joins the `CLInt`/`CLBool`/`CLFloat`/`CLString` family as the heap-ADT
-//! crossing-the-FFI-boundary representation. Generic over a per-type
-//! **marker type** (one per declared cranelisp ADT, auto-emitted by
-//! `declare_platform!` from the schema literal), backed by a per-DLL
-//! parsed `Schema` value resolved at runtime via the per-marker-type
-//! `GetSchema` trampoline.
+//! crossing-the-FFI-boundary representation (Sprint 71; grown the
+//! platform ABI from v1 to v2). Generic over a per-type **marker type**
+//! (one per declared cranelisp ADT, auto-emitted by
+//! [`crate::declare_platform!`] from the schema literal), backed by a
+//! per-DLL parsed [`Schema`] value resolved at runtime via the
+//! per-marker-type [`GetSchema`] trampoline.
 //!
-//! See `design/platform/sprint71-redesign.md` §3–§4 for the full design.
+//! # Marker-type pattern — the layer-1 design
 //!
-//! Field-access **reads** are callback-free: the DLL computes byte
-//! offsets locally from its parsed schema and transmutes at the offset.
-//! Field-access **construction** (`CLAdt::<T>::construct(...)`) is the
-//! only path that touches host state — it routes through
-//! `HostCallbacks::alloc_with_tag` and panics under the R1 wired-or-panic
-//! gate until the host-wiring sprint (FIXME 0229) populates it.
+//! Per arbitrations A7 + A8 + the Phase 2 design walk-through, the DSL
+//! splits into two layers. **Layer 1** (in scope Sprint 71) is the
+//! schema-format-plus-marker-type-pattern landing here. **Layer 2**
+//! (deferred) is the ergonomic surface on top — a typed-newtype
+//! generator proc-macro, a `match-on-tag` macro, or whatever
+//! measurement shows useful — all three options consume the same
+//! schema this sprint settles. The choice between them is gated on
+//! usage data from real platform DLLs.
+//!
+//! DLL authors write `extern "C" fn rect_area(r: CLAdt<Rectangle>) ->
+//! CLInt { r.read_field::<CLInt>("w") ... }`. The `Rectangle` marker
+//! type is auto-emitted by the macro from the schema arm; field-name
+//! lookups consult the DLL-local parsed [`Schema`] via [`GetSchema`]
+//! to compute byte offsets.
+//!
+//! See `design/platform/sprint71-redesign.md` §3–§4 for the full
+//! design (the field-access path) and `design/arch/bounded-contexts.md`
+//! §5 for the cross-surface story.
+//!
+//! # Read vs construction paths
+//!
+//! Field-access **reads** ([`CLAdt::read_field`] /
+//! [`CLAdt::own_field`] / [`CLAdt::read_tag`]) are **callback-free**:
+//! the DLL computes byte offsets locally from its parsed schema and
+//! transmutes at the offset. No host round-trip, no FFI cost per read.
+//!
+//! Field-access **construction** ([`CLAdt::construct`]) is the only
+//! path that touches host state — it routes through
+//! [`crate::HostCallbacks::alloc_with_tag`] and panics under the **R1
+//! wired-or-panic gate** until the host-wiring sprint (FIXME 0229)
+//! populates it. The R1 gate's scope shrunk dramatically post-marker-
+//! type-pattern revision: only construction methods gate; the bulk of
+//! the API (the read methods) is fully functional this sprint without
+//! host wiring (Principle 8 — interim shape is named, enumerable, and
+//! removable as a coherent unit).
 
 use std::marker::PhantomData;
 
