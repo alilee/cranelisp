@@ -37,13 +37,13 @@
 // the facade SHOULD enumerate.
 //
 // **Per-crate facade pairs** (per SPRINT.md "Cover the 8 facade↔baseline pairs"):
-//   types       → facades/types.md
-//   frontend    → facades/frontend.md
+//   types       → facades/types.md (retired S69; crate-root rustdoc + bounded-contexts.md §7)
+//   frontend    → facades/frontend.md (retired S70 W4; crate-root rustdoc + bounded-contexts.md §1)
 //   typecheck   → facades/typecheck.md
 //   backend     → facades/backend.md + facades/backend-cache.md (sub-facade)
 //   primitives  → facades/primitives.md
 //   intrinsics  → facades/intrinsics.md
-//   platform    → facades/platform.md
+//   platform    → facades/platform.md (retired S71 W4; crate-root rustdoc + bounded-contexts.md §5)
 // `int` (binary crate) has no `public-api.txt` and is skipped here;
 // `int` surface is covered by separate integration tests below
 // (`int_facade_*` files in this directory).

@@ -1667,14 +1667,14 @@ mod tests {
     // PlatformError adoption — Decision 42 / FIXME 0104.
     //
     // These tests pin the platform crate's public error surface to the
-    // shape facades/platform.md §"Errors" specifies: each variant carries
+    // shape the PlatformError rustdoc + bounded-contexts.md §5 specify: each variant carries
     // an `ErrorLocation`; `manifest_to_descriptors` returns
     // `Result<…, PlatformError>` with `ErrorLocation::unknown()` at the
     // construction site (callers — `int::load_platform_dll` — rewrite the
     // location with the `(platform "name")` form's span before surfacing).
     // ---------------------------------------------------------------------
 
-    // spec: design/arch/facades/platform.md §"Errors" — `LoadFailed`
+    // spec: crates/cranelisp-platform/src/lib.rs PlatformError rustdoc + bounded-contexts.md §5 — `LoadFailed`
     // carries `dll`, `cause`, and `location`. Re-exported `PlatformError`
     // must construct + display this variant.
     #[test]
@@ -1697,7 +1697,7 @@ mod tests {
         assert_eq!(err.location().span, Span::new(10, 35));
     }
 
-    // spec: design/arch/facades/platform.md §"Errors" — `ManifestNotFound`
+    // spec: crates/cranelisp-platform/src/lib.rs PlatformError rustdoc + bounded-contexts.md §5 — `ManifestNotFound`
     // carries `dll` and `location`.
     #[test]
     fn platform_error_manifest_not_found_constructs_and_displays() {
@@ -1717,7 +1717,7 @@ mod tests {
         assert_eq!(err.location().span, Span::new(1, 9));
     }
 
-    // spec: design/arch/facades/platform.md §"Errors" —
+    // spec: crates/cranelisp-platform/src/lib.rs PlatformError rustdoc + bounded-contexts.md §5 —
     // `AbiVersionMismatch` carries `dll`, `expected`, `found`, `location`.
     #[test]
     fn platform_error_abi_version_mismatch_constructs_and_displays() {
@@ -1744,7 +1744,7 @@ mod tests {
         assert_eq!(err.location().span, Span::new(20, 30));
     }
 
-    // spec: design/arch/facades/platform.md §"Errors" — `DispatchError`
+    // spec: crates/cranelisp-platform/src/lib.rs PlatformError rustdoc + bounded-contexts.md §5 — `DispatchError`
     // carries `fn_name`, `cause`, `location`.
     #[test]
     fn platform_error_dispatch_error_carries_fn_name() {
@@ -1766,7 +1766,7 @@ mod tests {
         assert_eq!(err.location().span, Span::new(100, 120));
     }
 
-    // spec: design/arch/facades/platform.md §"Errors" — DLL-author /
+    // spec: crates/cranelisp-platform/src/lib.rs PlatformError rustdoc + bounded-contexts.md §5 — DLL-author /
     // int code constructs `PlatformError` and wraps via `CranelispError`.
     // The `From<PlatformError> for CranelispError` blanket conversion
     // must succeed and preserve the location.
@@ -1788,7 +1788,7 @@ mod tests {
         );
     }
 
-    // spec: design/arch/facades/platform.md §"Errors" + FIXME 0104 Phase 2
+    // spec: crates/cranelisp-platform/src/lib.rs PlatformError rustdoc + bounded-contexts.md §5 + FIXME 0104 Phase 2
     // — UTF-8 validation failures in `manifest_to_descriptors` construct
     // `PlatformError::LoadFailed` with `ErrorLocation::unknown()`; the
     // caller rewrites with the form's span before surfacing. This test
