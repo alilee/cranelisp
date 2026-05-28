@@ -11,9 +11,29 @@
 use std::ops::Deref;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
-/// ABI version -- bump on breaking changes to the platform contract.
-/// The reimplementation starts fresh at version 1 (the sketch iterated to v3).
-pub const ABI_VERSION: u32 = 1;
+/// Platform ABI version — bump on any layout-affecting change to the
+/// platform DLL boundary.
+///
+/// **Bump rules** (per `design/platform/sprint71-redesign.md` §6 / A4):
+///
+/// (i)  Any field added/removed/reordered in `HostCallbacks`,
+///      `PlatformFn`, `PlatformManifest`: BUMP.
+/// (ii) Any change to `HEAP_HEADER_SIZE`, `STRING_HEADER_BYTES`,
+///      `IO_TAG_*`, `IO_EFFECT_RESOURCE_OFFSET`: BUMP.
+/// (iii) Any new `CL_TYPE_TAG_*` const value: BUMP (DLLs built against
+///       the old ABI don't know to populate the new tag).
+/// (iv) Adding a new pub `CL<T>` wrapper variant — alone — does NOT
+///      bump (Principle 14 `#[repr(transparent)]` exemption).
+/// (v)  Adding a method on `CLAdt` (no new `HostCallbacks` field, no new
+///      const) does NOT bump.
+///
+/// Every bump rides with a `public-api.txt` regeneration and a narrative
+/// update naming the changed item (S67 close baseline-diff discipline).
+///
+/// **History**: v1 (Sprint 67-and-prior) — initial ABI; v2 (Sprint 71) —
+/// `HostCallbacks` grows `alloc_with_tag` + `validate_schema` for the
+/// ADT-marshaling surface.
+pub const ABI_VERSION: u32 = 2;
 
 /// IO task tree tags -- shared between platform DLLs and the host trampoline.
 pub const IO_TAG_PURE: i64 = 0;
