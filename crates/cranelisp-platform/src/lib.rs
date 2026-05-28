@@ -1,12 +1,132 @@
-//! Shared interface crate for the cranelisp platform ABI.
+//! Shared interface crate for the cranelisp platform ABI — the C-ABI
+//! ground-truth that lives between the cranelisp host binary and every
+//! platform DLL.
 //!
-//! Both the cranelisp host binary and every platform DLL depend on this crate.
-//! It defines the C-ABI contract types that cross the DLL boundary:
-//! struct layouts, constants, wrapper types, and the `declare_platform!` macro.
+//! # Dual audience
 //!
-//! Platform authors work with safe wrapper types (`CLInt`, `CLString`, `CLBool`,
-//! `CLFloat`) -- all `unsafe` is encapsulated here. The host uses
-//! `manifest_to_descriptors()` to convert C-ABI manifests into safe Rust types.
+//! Both consumers link against this crate:
+//!
+//! - **The host binary** (`cranelisp`) calls [`manifest_to_descriptors`]
+//!   to load a DLL's manifest into safe Rust shapes, owns the
+//!   [`HostContext`] / [`HostCallbacks`] init-time bridge, and dispatches
+//!   platform-fn calls via the per-symbol GOT slot (Decision 0026).
+//! - **Each platform DLL** (out-of-tree crates like `cranelisp-stdio`,
+//!   `cranelisp-fs`, etc.) calls the [`declare_platform!`] macro to
+//!   emit its [`PlatformManifest`] static, defines `extern "C"` functions
+//!   that take/return CL wrapper types ([`CLInt`], [`CLBool`], [`CLFloat`],
+//!   [`CLString`], [`CLIO`], [`CLAdt`]), and accesses host services
+//!   (allocator, RC, validation) through the host-installed
+//!   [`HostCallbacks`].
+//!
+//! Per Principle 15's **external-audience exception**, this crate's
+//! facade lives with its source rustdoc (after Sprint 71 the standalone
+//! `design/arch/facades/platform.md` retired into this rustdoc plus
+//! `design/arch/bounded-contexts.md` §5 — the 3rd data point of the
+//! facade-retirement pattern after `types.md` (S69) and `frontend.md`
+//! (S70)). DLL author crates need only depend on `cranelisp-platform`;
+//! re-exports from `cranelisp-types` (currently [`SchedulingClass`] and
+//! [`PlatformError`]) are surfaced here so DLL authors avoid a
+//! `cranelisp-types` dep.
+//!
+//! # CL wrapper family — the value-marshaling surface
+//!
+//! Every cranelisp value crosses the DLL boundary as a `#[repr(transparent)]`
+//! `i64` wrapped in a typed handle. The wrapper makes the boundary
+//! type-safe in Rust while preserving the bare-`i64` C ABI.
+//!
+//! | Wrapper | Underlying `i64` is | Heap? |
+//! |---|---|---|
+//! | [`CLInt`] | Cranelisp integer (passthrough) | No |
+//! | [`CLBool`] | 0 = false, 1 = true | No |
+//! | [`CLFloat`] | IEEE 754 `f64` bit-cast | No |
+//! | [`CLString`] | Base pointer to `[total_size][rc][len][bytes...]` | Yes ([`CLHeap`]) |
+//! | [`CLIO<CL>`] | Base pointer to an IO node (`Pure`/`Effect`/`Bind`/`Par`) | Yes |
+//! | [`CLAdt<T>`] | Base pointer to `[total_size][rc][tag][pad][fields...]` | Yes ([`CLHeap`]) |
+//!
+//! [`CLOwned<T>`] is the host-side RAII wrapper that holds a heap-typed
+//! value with correct RC discipline across multiple host-callback
+//! invocations: it inc's on construction (via [`CLHeap::own`]) and
+//! dec's on drop. The consuming variant [`CLHeap::into_owned_consuming`]
+//! takes the caller's transferred ref directly without re-inc'ing — used
+//! by platform externs that capture a heap parameter into an Effect
+//! closure (Decision 0024 — consuming capture-RC protocol; see
+//! `design/backend/ring2-rc.md` §10.4).
+//!
+//! # RC discipline at the boundary
+//!
+//! Cross-cutting reference-counting rules govern heap values:
+//!
+//! - All heap CL types store **base pointers** (the address of the
+//!   `[total_size][rc][...]` allocation header), NOT payload pointers.
+//!   Decision 0013 sets the allocator's payload-base convention; Decision
+//!   0024 specifies the consuming calling convention; Decision 0026
+//!   determines where the per-fn `code_ptr` lives.
+//! - [`CLHeap::inc_rc`] / [`CLHeap::dec_rc`] use `Ordering::SeqCst`
+//!   to match Cranelift's `atomic_rmw` semantics — `Relaxed` is unsound
+//!   because it allows the dec to be reordered before object-field reads
+//!   (potential read-after-free).
+//! - Drop with old RC = 1 calls `std::alloc::dealloc` against the base
+//!   pointer using the recorded `alloc_size` at offset 0.
+//!
+//! # ABI versioning
+//!
+//! [`ABI_VERSION`] is the single layout-discipline gate between host
+//! and DLL. Per Principle 14 (FFI layout discipline), any
+//! layout-affecting change to a `#[repr(C)]` struct or a const the DLL
+//! reads by hard-coded offset bumps the version; the host rejects
+//! mismatched DLLs with [`PlatformError::AbiVersionMismatch`]. See
+//! [`ABI_VERSION`]'s rustdoc for the bump-rule enumeration.
+//!
+//! # Schema mechanism + marker-type pattern (Sprint 71)
+//!
+//! For DLLs that work with cranelisp ADT values, the [`declare_platform!`]
+//! macro's `schema:` arm accepts a cranelisp-S-expression literal
+//! declaring the ADT shapes the DLL marshals across the boundary. The
+//! macro auto-emits a marker type per declared ADT (implementing
+//! [`CLAdtType`] + [`GetSchema`]) and a static `LazyLock<Schema>`
+//! initialized at first access by parsing the literal once.
+//!
+//! DLL authors write `extern "C" fn rectangle_area(r: CLAdt<Rectangle>)
+//! -> CLInt { r.read_field::<CLInt>("w") ... }`. Field-access reads are
+//! **callback-free**: [`CLAdt<T>::read_field`] consults the DLL-local
+//! parsed [`Schema`] to compute byte offsets and transmutes at that
+//! offset — no host round-trip per access. Construction
+//! ([`CLAdt::construct`]) does need host help (via the
+//! [`HostCallbacks::alloc_with_tag`] field grown in `ABI_VERSION = 2`);
+//! that path panics under the R1 wired-or-panic gate ([FIXME 0229]
+//! tracks the host-wiring sprint that will populate it).
+//!
+//! [FIXME 0229]: ../../design/arch/fixmes/0229-int-host-side-adt-marshaling.md
+//!
+//! # `#[non_exhaustive]` discipline
+//!
+//! Per Principle 14, FFI boundary types are governed by layout discipline
+//! (`ABI_VERSION`), not source-level evolution guards. Layout-contract
+//! types ([`PlatformManifest`], [`PlatformFn`], [`HostCallbacks`] —
+//! `#[repr(C)]`; [`CLInt`]/[`CLBool`]/[`CLFloat`]/[`CLString`]/[`CLIO`]/[`CLAdt`]
+//! — `#[repr(transparent)]`) are **exempt**: any field change is a
+//! breaking change requiring an `ABI_VERSION` bump, and a `#[non_exhaustive]`
+//! annotation would not catch a `#[repr(transparent)]` underlying-type
+//! swap anyway. Plain Rust structs that don't cross the C ABI
+//! ([`OwnedPlatformFnDescriptor`], [`PlatformError`] via cranelisp-types)
+//! carry `#[non_exhaustive]` under the standard facade convention.
+//!
+//! # Consumed surface
+//!
+//! Depends only on `cranelisp-types` (for [`SchedulingClass`],
+//! [`PlatformError`], `Symbol`, `Span`, layout helpers). The external
+//! `libloading` dep that opens the DLL handles lives on the `int` side
+//! per the bounded-context allocation (see
+//! `design/arch/bounded-contexts.md` §5).
+//!
+//! # See also
+//!
+//! - `design/arch/bounded-contexts.md` §5 — Platform bounded-context
+//!   full statement (cross-surface narrative + invariants).
+//! - `design/platform/sprint71-redesign.md` — Sprint 71 design doc
+//!   (schema format, marker-type pattern, ABI v2 growth).
+//! - Principles 6, 8, 14, 15, 18 — design budget, no-interim, FFI
+//!   layout, facade-types-live-with-behaviour, structural invariants.
 
 use std::ops::Deref;
 use std::sync::atomic::{AtomicPtr, Ordering};
