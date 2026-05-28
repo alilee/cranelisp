@@ -179,8 +179,17 @@ pub fn load_platform_dll(
     };
 
     // Step 3: Call the manifest function with host callbacks.
+    //
+    // FIXME(0229): Sprint 71 grew HostCallbacks by two named-null callback
+    // fields (alloc_with_tag + validate_schema). They default to in-crate
+    // panic-emitting / no-op placeholders under the R1 wired-or-panic
+    // gate. The host-wiring sprint replaces these with real callbacks
+    // (cranelisp_intrinsics::cranelisp_alloc_with_tag + a typecheck-aware
+    // schema validator).
     let callbacks = HostCallbacks {
         alloc: cranelisp_intrinsics::heap_alloc_payload,
+        alloc_with_tag: cranelisp_platform::null_alloc_with_tag,
+        validate_schema: cranelisp_platform::null_validate_schema,
     };
     let manifest = unsafe { manifest_fn(&callbacks) };
 

@@ -94,8 +94,14 @@ pub extern "C" fn cranelisp_init_platform(manifest_fn_ptr: i64) {
         *const cranelisp_platform::HostCallbacks,
     ) -> cranelisp_platform::PlatformManifest;
     let manifest_fn: ManifestFn = unsafe { std::mem::transmute(manifest_fn_ptr) };
+    // FIXME(0229): Sprint 71 grew HostCallbacks by alloc_with_tag +
+    // validate_schema. Both populated with cranelisp-platform's named-null
+    // placeholders under the R1 gate; the host-wiring sprint replaces
+    // them with real callbacks.
     let callbacks = cranelisp_platform::HostCallbacks {
         alloc: cranelisp_intrinsics::alloc::heap_alloc,
+        alloc_with_tag: cranelisp_platform::null_alloc_with_tag,
+        validate_schema: cranelisp_platform::null_validate_schema,
     };
     manifest_fn(&callbacks);
 }
