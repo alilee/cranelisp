@@ -5,7 +5,18 @@ filed_by: /int
 filed_at: 2026-05-01
 sprint_filed: 64
 refers_to: design/int/platform-registry-removal.md:173
-status: open
+status: deferred
+deferred_to: sprint after 0229 lands (host-side ADT marshaling)
+deferred_at: 2026-05-28
+deferred_by: /dev (platform)
+deferred_in_sprint: 71
+deferral_rationale: |
+  The single-pass vs two-pass write-site decision concerns
+  load_and_register_platform — host-side wiring. Sprint 71 W2 introduces
+  HostCallbacks::alloc_with_tag and validate_schema as named-null
+  callbacks, deferred to the same host-wiring sprint (FIXME 0229). The
+  platform_fn_ptr write-site disposition properly belongs to that sprint
+  alongside the broader host-side platform-as-module migration.
 migrated_from_inline: true
 ---
 

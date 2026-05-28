@@ -5,7 +5,19 @@ filed_by: /int
 filed_at: 2026-05-01
 sprint_filed: 64
 refers_to: design/int/platform-registry-removal.md:293
-status: open
+status: deferred
+deferred_to: sprint after 0229 lands (host-side ADT marshaling)
+deferred_at: 2026-05-28
+deferred_by: /dev (platform)
+deferred_in_sprint: 71
+deferral_rationale: |
+  v4_platform failures are out-of-band for Sprint 71 (scope explicitly
+  excluded per SPRINT.md — pre-existing S70 typecheck cascade breakage
+  blocks workspace-wide verification anyway). No platform-side defect
+  surfaced during W2 marker-type implementation; the W2 surface is
+  intra-crate and does not interact with v4_platform's cache-restore
+  surface. Deferring to the host-wiring sprint where cache-restore for
+  platform-as-module is naturally in scope.
 migrated_from_inline: true
 ---
 

@@ -5,7 +5,18 @@ filed_by: /int
 filed_at: 2026-05-01
 sprint_filed: 64
 refers_to: design/int/platform-registry-removal.md:279
-status: open
+status: deferred
+deferred_to: sprint after 0229 lands (host-side ADT marshaling)
+deferred_at: 2026-05-28
+deferred_by: /dev (platform)
+deferred_in_sprint: 71
+deferral_rationale: |
+  load_and_register_platform is host-side wiring. Sprint 71 W2 stages the
+  host-side hooks (HostCallbacks growth with null-callback gates per
+  FIXME 0229 + FIXME 0233 — platform-as-module + parse_type_sig removal).
+  The two bullets here naturally land alongside that host-wiring sprint's
+  work; resolving now would predict a shape that may shift under the
+  parse_type_sig removal.
 migrated_from_inline: true
 ---
 
