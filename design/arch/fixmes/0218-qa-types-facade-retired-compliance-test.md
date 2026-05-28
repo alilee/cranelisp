@@ -5,7 +5,19 @@ filed_by: /arch
 filed_at: 2026-05-24
 sprint_filed: 69
 refers_to: design/arch/facades/types.md (RETIRED), design/arch/bounded-contexts.md §7, crates/cranelisp-types/src/lib.rs, crates/cranelisp-types/public-api.txt, design/arch/CLAUDE.md §"Baseline-diff discipline"
-status: open
+status: deferred
+deferred_to: 72
+deferred_at: 2026-05-28
+deferred_rationale: |
+  Sprint 71 Wave 1 gate disposition. The facade-compliance test pivot
+  (option (a) disable vs (b) rustdoc-coverage assertion) is the same
+  axis as the C1–C5 conformance-triad-enhancement work (FIXMEs
+  0224–0228); landing them together in a future conformance-triad
+  sprint (target 72) gives the per-crate facade-compliance test
+  one coherent re-design rather than several point patches. Sprint
+  71's scope is `cranelisp-platform` API additions + facade
+  retirement; conformance-triad enhancement is the wrong work-axis
+  to conflate.
 ---
 
 # Adapt facade-compliance test for retired `facades/types.md`
