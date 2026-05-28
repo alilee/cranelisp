@@ -171,23 +171,97 @@ The four free-function form-by-form boundary — `parse`, `extract_module_declar
 
 **Bounded context.** The shared interface contract between the cranelisp host binary and platform DLLs. Both the host and every platform DLL link against this crate; that is its purpose. It defines the C-ABI types, the wrappers that present those types safely in Rust, the layout constants both sides must agree on, and the macro DLLs use to publish their manifests. The crate owns no runtime state and no cadence.
 
+**External audience — Principle 15 exception.** `cranelisp-platform` is the only implementation crate with an explicitly external audience: out-of-tree DLL authors (`cranelisp-stdio`, `cranelisp-fs`, etc.) depend only on this crate and would not otherwise see `cranelisp-types`. Per Principle 15's external-audience exception, the facade lives with the source rustdoc — Sprint 71 retired the standalone `design/arch/facades/platform.md` and folded its narrative into the crate-root `//!` preamble + per-item `///` docs (3rd data point of the facade-retirement pattern after `types.md` S69 + `frontend.md` S70). Audit F9 (S69) verified the exception's scope health: `SchedulingClass` and `PlatformError` are the only re-exports, both grounded in named multi-consumer + external-audience criteria.
+
 **In-scope.**
-- C-ABI contract types (platform manifest, function descriptor, host-callback table)
-- Safe wrappers over the C-ABI representation
-- Layout constants shared between host and DLL
-- The DLL manifest macro
-- Host-side conversion of manifests into safe Rust descriptors
+- C-ABI contract types (`PlatformManifest`, `PlatformFn`, `HostCallbacks`) — all `#[repr(C)]`, layout-governed by `ABI_VERSION` per Principle 14
+- Safe wrappers over the C-ABI representation (`CLInt`/`CLBool`/`CLFloat`/`CLString`/`CLIO`/`CLAdt`/`CLOwned`) — all `#[repr(transparent)]` over `i64`
+- Layout constants shared between host and DLL (`ABI_VERSION`, `HEAP_HEADER_SIZE`, `STRING_HEADER_BYTES`, `IO_TAG_*`, `IO_EFFECT_RESOURCE_OFFSET`)
+- The DLL manifest macro (`declare_platform!`) — the DLL-author entry point
+- Host-side conversion of manifests into safe Rust descriptors (`manifest_to_descriptors`, `OwnedPlatformFnDescriptor`)
+- Schema parser + marker-type pattern (Sprint 71) — `Schema`, `SchemaParseError`, `CLAdtType`, `AnyAdt`, `GetSchema`; the `declare_platform!` `schema:` arm auto-emits one marker type per declared ADT plus a `LazyLock<Schema>` static parsed once per DLL
 
 **Out of scope.**
-- DLL session lifecycle and retention (int)
+- DLL session lifecycle and retention (int — see §6)
 - IO trampoline implementation (intrinsics — §4b)
 - Per-DLL platform implementations (separate downstream crates)
 - Spec definition of IO semantics (`/spec`)
+- Type-signature parsing (`int`-side because it requires `cranelisp-typecheck` vocabulary that platform must not depend on per Principle 3 + FIXME 0155)
+- Sig grammar routed through frontend+typecheck — Sprint 71 deferred; tracked by FIXMEs 0230 + 0231 + 0233
+- Platform-as-module registration (each loaded platform getting its own `SymbolTable`+`GotTable`) — Sprint 71 deferred; tracked by FIXME 0233
+- `.meta.json` schema for platform symbol-table caching — Sprint 71 deferred; tracked by FIXME 0232
+- `/abi <TypeName>` REPL command — Sprint 71 deferred; tracked by FIXME 0234
 
 **What crosses the boundary.**
 - **Outward**: the C-ABI types, wrappers, constants, and macro to both host and DLL consumers.
-- **Inward**: a small set of layout types from `cranelisp-types`.
+- **Inward**: a small set of layout types from `cranelisp-types` — `SchedulingClass`, `PlatformError`, `Symbol`, `Span`, `ErrorLocation`, `HeapHeader`.
 - **Window types**: none.
+
+### Cross-cutting RC discipline
+
+All heap CL types (`CLString`, `CLAdt<T>`, `CLIO<T>`) store **alloc base pointers** (the address of the `[total_size: i64][rc: i64][...]` heap allocation), NOT payload pointers. This matches the compiler's convention (Decision 0013); JIT-emitted code, the `CLString::from(&str)` builder, and the `CLAdt::from_raw` constructor all agree on what an `i64` "heap reference" means. `inc_rc` / `dec_rc` (per `CLHeap`; method-name asymmetry preserved per audit F5 R3) use `Ordering::SeqCst` to match Cranelift's `atomic_rmw` semantics — `Relaxed` is unsound for both directions (allows reordering relative to field reads, producing potential read-after-free).
+
+`CLOwned<T>` is the host-side RAII wrapper for cross-callback RC discipline; the consuming variant `CLHeap::into_owned_consuming` is the consuming calling convention per Decision 0024 (used by platform externs that capture a heap parameter into an Effect closure — see `design/backend/ring2-rc.md` §10.4).
+
+### Schema mechanism + marker-type pattern (Sprint 71 — layer 1)
+
+`declare_platform!`'s optional `schema:` arm accepts a cranelisp-S-expression literal declaring ADT shapes. The macro auto-emits one zero-sized marker type per declared type (implementing `CLAdtType` with `const TYPE_NAME: &'static str = "..."`) plus a `LazyLock<Schema>` static parsed once at first access. DLL function signatures use `CLAdt<MarkerType>` for typed parameters; field access is `r.read_field::<CLInt>("w")` — the type-name comes from the marker via `T::TYPE_NAME`.
+
+Layer 1 (the current sprint's scope) settles the schema format, marker-type pattern, `Schema` parser, `CLAdt<T>` wrapper, and the four field-access methods (`read_tag`, `read_field`, `own_field`, `construct`). **Layer 2** (deferred) is whatever ergonomic surface DLL authors get on top of layer 1 — a typed-newtype proc-macro generator, a `match-on-tag` macro, or stay-with-layer-1 if measurement shows the verbosity is acceptable. All three layer-2 options consume the same layer-1 schema this sprint settles.
+
+### ABI versioning rationale
+
+`ABI_VERSION: u32` is the single layout-discipline gate between host and DLL (Principle 14). Any layout-affecting change to a `#[repr(C)]` struct (`PlatformManifest`, `PlatformFn`, `HostCallbacks`) or a const the DLL reads by hard-coded offset (`HEAP_HEADER_SIZE`, `STRING_HEADER_BYTES`, `IO_TAG_*`, `IO_EFFECT_RESOURCE_OFFSET`, new `CL_TYPE_TAG_*` values) bumps the version. The host validates `abi_version` at DLL load and refuses mismatched DLLs with `PlatformError::AbiVersionMismatch`. Adding a method on `CLAdt` (no new `HostCallbacks` field, no new const) does NOT bump; adding a new pub `CL<T>` wrapper variant alone does NOT bump (Principle 14's `#[repr(transparent)]` exemption — the wrapper is a host-side typing convenience over an `i64`; the ABI is the `i64`). See `crates/cranelisp-platform/src/lib.rs` `ABI_VERSION` rustdoc for the full bump-rule enumeration.
+
+Sprint 71 bumped `ABI_VERSION` from 1 to 2: `HostCallbacks` grew by `alloc_with_tag` + `validate_schema` for the ADT-marshaling surface.
+
+### Future host-wiring story (forward-looking commitment)
+
+Sprint 71 lands the platform-side API but defers the host-side wiring of `alloc_with_tag` / `validate_schema` callbacks. `HostCallbacks` is initialised with the in-crate **named-null callbacks** (`null_alloc_with_tag` panics with FIXME 0229 message; `null_validate_schema` returns 0). The construction path (`CLAdt::construct`) gates on the alloc callback via R1 wired-or-panic; read paths are callback-free (DLL-local schema lookup + transmute) and fully functional.
+
+The host-wiring sprint (tracked as **FIXMEs 0229–0235**) lands:
+
+- **0229** (`/int`) — populate `alloc_with_tag` + `validate_schema` callbacks; removes the R1 named-null-callback gates
+- **0230** (`/frontend`) — expose `parse_type_expr` as a named API for platform sig parsing
+- **0231** (`/typecheck`) — sig typechecking entry point against the importing platform's resolution context
+- **0232** (`/backend`) — `.meta.json` schema extensions for platform module symbol-table caching
+- **0233** (`/int`) — replace `parse_type_sig` with the frontend+typecheck path; register platforms as normal modules with their own `SymbolTable` + `GotTable`
+- **0234** (`/repl`) — `/abi <TypeName>` emitter implementation against the schema DSL spec
+- **0235** (`/qa`) — round-trip integration tests once host-side wiring lands
+
+When `Fn a b` lands on the spec §10.10.1 platform-ABI permitted-types list (currently future work; not in this sprint's scope), `HostCallbacks` widens further with `rc_inc` / `rc_dec` / `invoke_closure` per Decision 0031's "Callback support (forward commitment)". The widening is a binary-incompatible ABI bump.
+
+### Conformance triad coverage holes (audit C1–C5)
+
+The S69 audit identified five conformance coverage holes the current triad (compile-time check + `cargo-public-api` baseline + facade compliance test) does not catch:
+
+- **C1** — `CLHeap` method receiver/arity drift
+- **C2** — `#[non_exhaustive]` annotation appearance/removal
+- **C3** — `declare_platform!` macro arm drift (the F6 category, generalised; partially mitigated S71 Wave 2 by the new schema:-arm compile-fixture tests T17–T21)
+- **C4** — `#[repr(C)]` struct field-order changes
+- **C5** — `unsafe impl Send/Sync` removal on `PlatformFn` (the F3 category)
+
+All five are tracked by FIXMEs 0224–0228 (`target: /qa`, deferred to a future conformance-triad-enhancement sprint).
+
+### Bounded-context invariants
+
+These hold across sprints — the contract `cranelisp-platform` makes with the rest of the workspace:
+
+1. **Platform fn pointers live in `SymbolTable.got()`, indexed by `ModuleEntry::Def.got_slot`** (Decision 0026, S66 amendment + rollback `1dc57ae` — GOT is the single source of truth for callable addresses). Per spec §8.9.3, `(platform <name>)` registers a synthetic module at `symbol_tables["platform.<name>"]`; per-fn `ModuleEntry::Def` entries (with `kind: Primitive { primitive_kind: PlatformEffect { … } }` distinguishing the platform origin) live in that synthetic module's `symbols`. The DLL handle is the lifecycle owner, retained on the platform module's own `SymbolTable.dll: Option<D>` field (per `crates/cranelisp-types/src/module.rs` `SymbolTable` rustdoc — `D: DllStore` generic). Drop semantics: dropping the platform module's SymbolTable drops the DLL. `scheduling_class` lives inside `PrimitiveKind::PlatformEffect { scheduling_class }` — ill-formed states unrepresentable.
+
+2. **Stable C ABI at the DLL boundary.** `PlatformManifest`, `PlatformFn`, `HostCallbacks` are `#[repr(C)]`. Layout changes require an `ABI_VERSION` bump. `load_manifest` (int-side) validates the version on load and refuses mismatched DLLs with `PlatformError::AbiVersionMismatch`.
+
+3. **Heap closures via GOT, not raw code pointers (Decision 0031 callback support — forward commitment).** When `Fn a b` is added to spec §10.10.1 (currently future work), platform fn arguments of fn type will pass as the heap closure address (Decision 0011 layout: `[header | code_ptr | drop_glue_ptr | captures...]`), NOT raw code pointers. Platforms will invoke retained closures via `HostCallbacks::invoke_closure` which dispatches through the GOT — so REPL redefinition retargets future invocations transparently. Retention requires `rc_inc` on storage, `rc_dec` on release.
+
+4. **Marshaling tags shared with intrinsics.** The `CLType` impls use the same `i64` layout the intrinsics helpers expect. `CLString.0` is an alloc-base pointer to an intrinsics-allocated `HeapString` (Decision 0012 — string layout owned by `cranelisp-intrinsics`; Decision 0043 — intrinsics is the post-runtime-split host); `CLOwned<CLString>` participates in RC via `HostCallbacks.alloc` and the intrinsics-side dec path. There is one `i64` representation per CLType, agreed between platform and intrinsics via this crate's documented layout.
+
+5. **`HostContext` initialised once per session.** `int` constructs `HostCallbacks` (with fn pointers into `cranelisp_intrinsics`) at `CompilerSession::new` and calls `HostContext::init` exactly once. Subsequent platform fn calls see the same callbacks for the session's lifetime. `HostContext` is `Send + Sync` by auto-derivation (`AtomicPtr<HostCallbacks>` is `Send + Sync`); `HostCallbacks` auto-projects `!Send + !Sync` (extern "C" fn pointers + raw allocations); `OwnedPlatformFnDescriptor` auto-projects `!Send + !Sync` (raw `ptr: *const u8`); `PlatformFn` carries explicit `unsafe impl Send + Sync` because the IO trampoline reads descriptors from multiple threads when dispatching Effect nodes (safety justified by BC §5 invariant 6 — no DLL unloading mid-session).
+
+6. **No DLL unloading mid-session.** Once a platform DLL is loaded via `load_manifest`, it stays loaded until session shutdown. This is what makes the per-symbol GOT-slot pointer valid for the session — DLL pages are not unmapped while symbols reference them. Bounded leaks in `declare_platform!`'s `Box::leak` for `jit_name` bytes + per-fn parallel-array allocations are bounded by this invariant.
+
+7. **`scheduling_class` declared by the DLL, consumed by the IO trampoline.** Per Decision 0026 — the IO trampoline reads `scheduling_class` off the destructured `PrimitiveKind::PlatformEffect` variant when it dispatches an Effect, and uses it to decide whether to spawn the work on the IO thread pool, the CPU thread pool, etc. Platform authors choose the class statically per fn via the `scheduling:` arm of `declare_platform!`.
+
+8. **FQTypeName migration: zero-hit (Decision 0047).** Per Decision 0047 + §7 ("FQTypeName binding"), `cranelisp-platform` has zero public-surface changes and zero in-crate hits under the FQTypeName binding migration. The platform-DLL ABI uses S-expression type-signature strings (`PlatformFn.type_sig`) rather than resolved-stage type identifiers; resolution happens int-side downstream of `manifest_to_descriptors`. Migration disposition: no-op.
 
 ---
 
