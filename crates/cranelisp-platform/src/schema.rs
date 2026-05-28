@@ -30,12 +30,6 @@ pub struct ParseLoc {
     pub offset: usize,
 }
 
-impl ParseLoc {
-    fn start() -> Self {
-        ParseLoc { line: 1, col: 1, offset: 0 }
-    }
-}
-
 /// Parsed schema — owned by the DLL via a `LazyLock<Schema>` static,
 /// consulted by `CLAdt<T>::read_field` to compute byte offsets.
 ///
@@ -174,6 +168,11 @@ impl Schema {
         let mut parser = Parser::new(src);
         let mut schema = Schema { types: Vec::new(), by_name: HashMap::new() };
         let mut decl_locs: HashMap<String, ParseLoc> = HashMap::new();
+        // Shadow structure indexed identically to schema.types[i].variants[j].fields[k]
+        // — captures the original ParseLoc of each field-type identifier so
+        // pass-2 errors can report the exact source position of the bad
+        // reference (per FIXME 0237 resolution).
+        let mut field_type_locs: Vec<Vec<Vec<ParseLoc>>> = Vec::new();
 
         parser.skip_ws_and_comments();
 
@@ -186,7 +185,8 @@ impl Schema {
         let outer_open = parser.expect_lparen("'(' starting the schema's outer list")?;
 
         // Pass 1: read all top-level type-decls; capture field-type names
-        // as raw strings to be resolved in pass 2.
+        // as raw strings + their ParseLoc shadow positions to be resolved
+        // in pass 2.
         loop {
             parser.skip_ws_and_comments();
             if let Some(b')') = parser.peek() {
@@ -196,7 +196,7 @@ impl Schema {
             if parser.at_eof() {
                 return Err(SchemaParseError::UnclosedParen { opened_at: outer_open });
             }
-            let (shape, loc) = parser.parse_type_decl(&decl_locs)?;
+            let (shape, locs, loc) = parser.parse_type_decl(&decl_locs)?;
             if let Some(first_at) = decl_locs.get(&shape.name) {
                 return Err(SchemaParseError::DuplicateTypeName {
                     name: shape.name.clone(),
@@ -207,6 +207,7 @@ impl Schema {
             decl_locs.insert(shape.name.clone(), loc);
             schema.by_name.insert(shape.name.clone(), schema.types.len());
             schema.types.push(shape);
+            field_type_locs.push(locs);
         }
 
         // Reject trailing garbage after the outer list.
@@ -222,22 +223,23 @@ impl Schema {
 
         // Pass 2: resolve field-type strings against (reserved CL wrappers)
         // ∪ (declared type names). Self- and forward-references resolve here.
+        // Errors carry the original ParseLoc captured in pass-1 via
+        // `field_type_locs` (FIXME 0237 resolution).
         let known: Vec<String> = schema.types.iter().map(|t| t.name.clone()).collect();
-        for shape in &mut schema.types {
-            for variant in &mut shape.variants {
-                for field in &mut variant.fields {
+        for (ti, shape) in schema.types.iter().enumerate() {
+            for (vi, variant) in shape.variants.iter().enumerate() {
+                for (fi, field) in variant.fields.iter().enumerate() {
                     if let FieldType::Adt(name) = &field.field_type
                         && !known.iter().any(|n| n == name)
                     {
                         // Unresolved: not a CL wrapper (those resolved
                         // in pass 1) and not declared in the schema.
-                        // We don't have the original ParseLoc by this
-                        // point — emit synthetic and rely on the name
-                        // for diagnostics. The pass-1 parser will have
-                        // caught most lexical errors before reaching here.
+                        // Use the shadow ParseLoc captured during pass-1
+                        // so the error names the actual offending token.
+                        let at = field_type_locs[ti][vi][fi];
                         return Err(SchemaParseError::UnknownFieldType {
                             name: name.clone(),
-                            at: ParseLoc::start(),
+                            at,
                         });
                     }
                 }
@@ -469,12 +471,14 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse one `(type-name product-or-sum)` declaration. Returns the
-    /// parsed TypeShape + the location of its opening paren (for
-    /// duplicate-name diagnostics).
+    /// parsed TypeShape, the per-variant per-field ParseLoc shadow vector
+    /// (indexed as `[variant_idx][field_idx]`; populated for pass-2 error
+    /// reporting per FIXME 0237), and the location of its opening paren
+    /// (for duplicate-name diagnostics).
     fn parse_type_decl(
         &mut self,
         _decl_locs: &HashMap<String, ParseLoc>,
-    ) -> Result<(TypeShape, ParseLoc), SchemaParseError> {
+    ) -> Result<(TypeShape, Vec<Vec<ParseLoc>>, ParseLoc), SchemaParseError> {
         let open_at = self.expect_lparen("'(' starting a type declaration")?;
         let (type_name, name_at) = self.parse_upper_ident("type name must be UpperCamel")?;
 
@@ -483,15 +487,15 @@ impl<'a> Parser<'a> {
             return Err(SchemaParseError::ReservedTypeName { name: type_name, at: name_at });
         }
 
-        let variants = self.parse_product_or_sum(&type_name)?;
+        let (variants, locs) = self.parse_product_or_sum(&type_name)?;
         self.expect_rparen(open_at)?;
-        Ok((TypeShape { name: type_name, variants }, open_at))
+        Ok((TypeShape { name: type_name, variants }, locs, open_at))
     }
 
     fn parse_product_or_sum(
         &mut self,
         type_name: &str,
-    ) -> Result<Vec<Variant>, SchemaParseError> {
+    ) -> Result<(Vec<Variant>, Vec<Vec<ParseLoc>>), SchemaParseError> {
         self.skip_ws_and_comments();
         let at = self.loc();
         match self.peek() {
@@ -506,16 +510,22 @@ impl<'a> Parser<'a> {
                     InnerKind::Variant => {
                         // Sum: one or more variant clauses (parens or bare names)
                         let mut variants = Vec::new();
+                        let mut variant_locs = Vec::new();
                         while !self.at_close_paren() {
-                            variants.push(self.parse_variant_clause()?);
+                            let (v, locs) = self.parse_variant_clause()?;
+                            variants.push(v);
+                            variant_locs.push(locs);
                             self.skip_ws_and_comments();
                         }
-                        Ok(variants)
+                        Ok((variants, variant_locs))
                     }
                     InnerKind::FieldList => {
                         // Product: parse the single field-list
-                        let fields = self.parse_field_list()?;
-                        Ok(vec![Variant { name: type_name.to_string(), fields }])
+                        let (fields, locs) = self.parse_field_list()?;
+                        Ok((
+                            vec![Variant { name: type_name.to_string(), fields }],
+                            vec![locs],
+                        ))
                     }
                 }
             }
@@ -523,11 +533,14 @@ impl<'a> Parser<'a> {
             // (start of a sum type with nullary first variant).
             Some(b) if (b as char).is_ascii_alphabetic() || b == b'_' => {
                 let mut variants = Vec::new();
+                let mut variant_locs = Vec::new();
                 while !self.at_close_paren() {
-                    variants.push(self.parse_variant_clause()?);
+                    let (v, locs) = self.parse_variant_clause()?;
+                    variants.push(v);
+                    variant_locs.push(locs);
                     self.skip_ws_and_comments();
                 }
-                Ok(variants)
+                Ok((variants, variant_locs))
             }
             Some(b) => Err(SchemaParseError::UnexpectedToken {
                 found: (b as char).to_string(),
@@ -586,33 +599,39 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_field_list(&mut self) -> Result<Vec<Field>, SchemaParseError> {
+    fn parse_field_list(&mut self) -> Result<(Vec<Field>, Vec<ParseLoc>), SchemaParseError> {
         let open_at = self.expect_lparen("'(' starting a field list")?;
         let mut fields = Vec::new();
+        let mut field_type_locs = Vec::new();
         loop {
             self.skip_ws_and_comments();
             if let Some(b')') = self.peek() {
                 self.bump();
                 break;
             }
-            fields.push(self.parse_field_spec()?);
+            let (field, type_loc) = self.parse_field_spec()?;
+            fields.push(field);
+            field_type_locs.push(type_loc);
             if self.at_eof() {
                 return Err(SchemaParseError::UnclosedParen { opened_at: open_at });
             }
         }
-        Ok(fields)
+        Ok((fields, field_type_locs))
     }
 
-    fn parse_field_spec(&mut self) -> Result<Field, SchemaParseError> {
+    /// Parse one field-spec `(FieldType field_name)`. Returns the resolved
+    /// `Field` plus the `ParseLoc` of the field-type identifier (for
+    /// pass-2 error reporting per FIXME 0237).
+    fn parse_field_spec(&mut self) -> Result<(Field, ParseLoc), SchemaParseError> {
         let open_at = self.expect_lparen("'(' starting a field-spec '(field-type field-name)'")?;
         let (type_ident, type_at) = self.parse_upper_ident("field type must be UpperCamel")?;
         let (field_name, _name_at) = self.parse_lower_ident()?;
         self.expect_rparen(open_at)?;
         let field_type = resolve_field_type(&type_ident, type_at)?;
-        Ok(Field { name: field_name, field_type })
+        Ok((Field { name: field_name, field_type }, type_at))
     }
 
-    fn parse_variant_clause(&mut self) -> Result<Variant, SchemaParseError> {
+    fn parse_variant_clause(&mut self) -> Result<(Variant, Vec<ParseLoc>), SchemaParseError> {
         self.skip_ws_and_comments();
         let at = self.loc();
         match self.peek() {
@@ -620,14 +639,14 @@ impl<'a> Parser<'a> {
             Some(b'(') => {
                 let open_at = self.expect_lparen("'(' starting a data variant clause")?;
                 let (variant_name, _name_at) = self.parse_upper_ident("variant name must be UpperCamel")?;
-                let fields = self.parse_field_list()?;
+                let (fields, field_type_locs) = self.parse_field_list()?;
                 self.expect_rparen(open_at)?;
-                Ok(Variant { name: variant_name, fields })
+                Ok((Variant { name: variant_name, fields }, field_type_locs))
             }
             // Nullary variant: bare identifier
             Some(b) if (b as char).is_ascii_alphabetic() || b == b'_' => {
                 let (variant_name, _name_at) = self.parse_upper_ident("variant name must be UpperCamel")?;
-                Ok(Variant { name: variant_name, fields: Vec::new() })
+                Ok((Variant { name: variant_name, fields: Vec::new() }, Vec::new()))
             }
             Some(b) => Err(SchemaParseError::UnexpectedToken {
                 found: (b as char).to_string(),
@@ -832,7 +851,41 @@ mod tests {
     fn unknown_field_type_rejected() {
         let res = Schema::parse("((Foo ((Bar b))))");
         match res.expect_err("unknown field type should fail") {
-            SchemaParseError::UnknownFieldType { name, .. } => assert_eq!(name, "Bar"),
+            SchemaParseError::UnknownFieldType { name, at } => {
+                assert_eq!(name, "Bar");
+                // FIXME 0237 resolution: the error position points at the
+                // field-type identifier `Bar` (col 9 — `((Foo ((Bar …`),
+                // not a synthetic line-1-col-1 placeholder.
+                assert_eq!(at.line, 1);
+                assert_eq!(at.col, 9);
+            }
+            other => panic!("expected UnknownFieldType, got {other:?}"),
+        }
+    }
+
+    // FIXME 0237 — pass-2 error reports the actual ParseLoc of the bad
+    // reference, not a synthetic line-1-col-1 placeholder. Multi-line
+    // input with the offending token on line 3 must produce
+    // `at.line == 3`.
+    #[test]
+    fn unknown_field_type_reports_correct_line_on_multi_line_schema() {
+        let src = "((Foo ((CLInt a)))\n\
+                   (Bar ((CLInt b)))\n\
+                   (Baz ((Quux q))))";
+        let res = Schema::parse(src);
+        match res.expect_err("Quux is undeclared; pass-2 must error") {
+            SchemaParseError::UnknownFieldType { name, at } => {
+                assert_eq!(name, "Quux");
+                assert_eq!(
+                    at.line, 3,
+                    "FIXME 0237 — the offending `Quux` token is on line 3; \
+                     pass-2 must report that, not the synthetic line-1 placeholder"
+                );
+                // `Quux` starts at col 8 on line 3:
+                //   "(Baz ((Quux q))))"
+                //    1234567^
+                assert_eq!(at.col, 8);
+            }
             other => panic!("expected UnknownFieldType, got {other:?}"),
         }
     }
