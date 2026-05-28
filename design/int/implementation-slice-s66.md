@@ -373,7 +373,7 @@ If `/arch` regards any of these as substantive (substantive = changes the slice'
 - `crates/cranelisp-frontend/src/lib.rs` //! preamble + per-item rustdoc on `expand` + `ExpansionError` — `expand` post-FIXME-0098 home + `ExpansionError` enum (post-S70 B3-C facade retirement; `facades/frontend.md` retired)
 - `design/arch/facades/typecheck.md` — `check_form` free-function + `&SymbolTable<C, L>` mutability-pivot + `CheckError` post-relocation home
 - `design/arch/facades/backend.md` — Decision 41 per-symbol JIT mutref pattern; `Code` location; `CompilationError` post-relocation home; `GotObserver` (FIXME 0099 Phase 1); display departure (FIXME 0108)
-- `design/arch/facades/platform.md` — Decision 42 PlatformError + ErrorLocation; OwnedPlatformFnDescriptor `#[non_exhaustive]`
+- `crates/cranelisp-platform/src/lib.rs` //! + per-item rustdoc + `bounded-contexts.md` §5 — Decision 42 PlatformError + ErrorLocation; OwnedPlatformFnDescriptor `#[non_exhaustive]` (post-S71 W4 facade retirement; `facades/platform.md` retired)
 - `design/arch/facades/primitives.md` — D43-new crate; user-callable extern functions int seeds into the `primitives` synthetic module
 - `design/arch/facades/intrinsics.md` — D43-new crate; backend-emitted intrinsics + IoObserver registration API per Decision 40 + 43
 - `design/arch/decisions/0040-runtime-trace-io-trace-relocate-to-int.md` — D40 commitment text

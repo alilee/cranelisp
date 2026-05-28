@@ -16,7 +16,7 @@ status: open
 
 - `PlatformRegistry` is deleted from `int` (`src/platform_registry.rs` no longer exists).
 - Cache restore via `Sprint 58 Phase 5` is operational.
-- Lessons folded into Decisions 26, 27, 38; into the post-S64 facade (`facades/platform.md`); and into this directory's master `platform.md` §8.
+- Lessons folded into Decisions 26, 27, 38; into the post-S64 facade `facades/platform.md` (subsequently retired S71 W4 — narrative now in `crates/cranelisp-platform/src/lib.rs` rustdoc + `bounded-contexts.md` §5); and into this directory's master `platform.md` §8.
 
 The doc remains at the top level of `design/platform/`, where a contributor scanning the directory cannot tell which docs are live and which are historical. This mirrors the situation FIXME 0096 addressed for `design/backend/`.
 

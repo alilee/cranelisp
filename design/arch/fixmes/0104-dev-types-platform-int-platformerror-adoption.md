@@ -4,7 +4,7 @@ target: /dev
 filed_by: /design (platform)
 filed_at: 2026-05-02
 sprint_filed: 64
-refers_to: design/arch/decisions/0042-platform-error-adopts-error-location.md, design/arch/facades/platform.md §"Errors", design/arch/facades/types.md §"Errors and warnings", crates/cranelisp-platform/src/lib.rs (manifest_to_descriptors), src/platform.rs (load_platform_dll), design/platform/platform.md §3 divergence #2
+refers_to: design/arch/decisions/0042-platform-error-adopts-error-location.md, crates/cranelisp-platform/src/lib.rs (PlatformError re-export rustdoc + manifest_to_descriptors; facade retired S71 W4), design/arch/facades/types.md §"Errors and warnings", design/arch/bounded-contexts.md §5, src/platform.rs (load_platform_dll), design/platform/platform.md §3 divergence #2
 status: open
 ---
 
@@ -14,7 +14,7 @@ status: open
 
 `crates/cranelisp-platform/src/lib.rs::manifest_to_descriptors` returns `Result<…, String>`. `src/platform.rs::load_platform_dll` surfaces failures through `CranelispError::ModuleError` with stringified causes. The `(platform "name")` form's coordinates are dropped at the boundary — a user typing `(platform "stdio")` with a missing DLL gets a free-floating string, not `lib/main.cl:42:7: error: platform "stdio" not found in search path`.
 
-Decision 42 pins `PlatformError` as a `cranelisp-types`-hosted enum with `ErrorLocation` per variant, surfaced via `CranelispError::Platform(PlatformError)`. The facade (`design/arch/facades/platform.md`) re-exports `pub use cranelisp_types::PlatformError` per the Principle 15 external-audience exception. Implementation has not yet caught up.
+Decision 42 pins `PlatformError` as a `cranelisp-types`-hosted enum with `ErrorLocation` per variant, surfaced via `CranelispError::Platform(PlatformError)`. The platform crate re-exports `pub use cranelisp_types::PlatformError` per the Principle 15 external-audience exception (surfaced in `crates/cranelisp-platform/src/lib.rs` `///` rustdoc on the re-export; facade retired S71 W4). Implementation has not yet caught up.
 
 ## Proposed resolution
 

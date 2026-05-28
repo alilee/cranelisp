@@ -167,7 +167,7 @@ impl HeapString {
 }
 ```
 
-`HeapString` is `#[repr(C)]` (not `#[non_exhaustive]`) per Principle 14 — its layout is the FFI contract; evolution governed by explicit version bump. The two const offsets and `payload_size` are public because codegen sites in backend that emit string-poking sequences read them directly (without re-deriving the layout). `cranelisp-platform`'s `CLString` (`facades/platform.md` §"Wrapper types") is a `#[repr(transparent)]` `i64` newtype carrying a `*const HeapString`; platform DLL code reaches the bytes via `CLString::as_str()` which calls back through this crate's `read_string_as_str`.
+`HeapString` is `#[repr(C)]` (not `#[non_exhaustive]`) per Principle 14 — its layout is the FFI contract; evolution governed by explicit version bump. The two const offsets and `payload_size` are public because codegen sites in backend that emit string-poking sequences read them directly (without re-deriving the layout). `cranelisp-platform`'s `CLString` (see `crates/cranelisp-platform/src/lib.rs` `///` rustdoc on `CLString`; facade retired S71 W4) is a `#[repr(transparent)]` `i64` newtype carrying an alloc-base pointer to a `HeapString`; platform DLL code reaches the bytes via `CLString::as_str()` which calls back through this crate's `read_string_as_str`.
 
 A future rope upgrade is an intrinsics-only change provided the surface above stays stable.
 
@@ -186,11 +186,11 @@ pub fn run_io_trampoline(io_ptr: i64) -> i64;                                   
 
 (The pre-S67 facade-named `io_run` alternative entry has been retired; `cranelisp_run_io` is the single extern-name entry. The Rust-callable `run_io_trampoline` remains for non-extern paths.)
 
-Walks the IO tree node-by-node, dispatching `Effect` nodes through `cranelisp_platform::HostContext` (see `facades/platform.md`). `Pure` returns the inner value; `Bind` reduces lhs then continues with the continuation closure; `Par` fork-joins via rayon. Each outer node allocation is consumed via `dec_shallow_io` (single-node dec — see Decision 29) as the walker advances.
+Walks the IO tree node-by-node, dispatching `Effect` nodes through `cranelisp_platform::HostContext` (see `crates/cranelisp-platform/src/lib.rs` rustdoc + `bounded-contexts.md` §5; facade retired S71 W4). `Pure` returns the inner value; `Bind` reduces lhs then continues with the continuation closure; `Par` fork-joins via rayon. Each outer node allocation is consumed via `dec_shallow_io` (single-node dec — see Decision 29) as the walker advances.
 
 The IO trampoline is the intrinsics' bridge into platform — `int`'s `Sess::trampoline(code_ptr, expected_type)` calls into JIT'd user code which builds an IO tree, then calls `cranelisp_run_io(io_root_ptr)` to reduce it.
 
-The IO node tags consumed by the trampoline (`IO_TAG_PURE`, `IO_TAG_EFFECT`, `IO_TAG_BIND`, `IO_TAG_PAR`) are public consts on `cranelisp-platform` — see `facades/platform.md` §"Public consts". Intrinsics consumes them; the constants are NOT duplicated here.
+The IO node tags consumed by the trampoline (`IO_TAG_PURE`, `IO_TAG_EFFECT`, `IO_TAG_BIND`, `IO_TAG_PAR`) are public consts on `cranelisp-platform` — see `crates/cranelisp-platform/src/lib.rs` `IO_TAG_*` rustdoc (facade retired S71 W4). Intrinsics consumes them; the constants are NOT duplicated here.
 
 ### IO observation (extension point per Decision 40)
 
@@ -302,7 +302,7 @@ Mirroring `facades/backend.md` §"Non-goals" — load-bearing prohibitions for i
 
 ### Public consts
 
-None. (The IO node-tag consts `IO_TAG_PURE` / `IO_TAG_EFFECT` / `IO_TAG_BIND` / `IO_TAG_PAR` live on `cranelisp-platform` — see `facades/platform.md` §"Public consts". Intrinsics consumes them.)
+None. (The IO node-tag consts `IO_TAG_PURE` / `IO_TAG_EFFECT` / `IO_TAG_BIND` / `IO_TAG_PAR` live on `cranelisp-platform` — see `crates/cranelisp-platform/src/lib.rs` `IO_TAG_*` rustdoc; facade retired S71 W4. Intrinsics consumes them.)
 
 The `IO_TRACE_BUFFER_CAPACITY` const relocated to `int` at S67 Wave 4 along with the rest of the `io_trace` ring-buffer machinery per Decision 40 (Path B1). See `facades/int.md` §"Observability — `src/io_trace.rs`".
 
@@ -332,7 +332,7 @@ No re-exports of `cranelisp-types` items per Principle 15.
 The intrinsics crate imports from:
 
 - **`cranelisp-types`** — `Symbol`, `ErrorLocation`, `Span`, `CranelispError`, marshaling tags (`TAG_SNIL`, `TAG_SCONS`, `TAG_SEXP_*`), `SchedulingClass`. No types-crate trait implementations.
-- **`cranelisp-platform`** — the `IO_TAG_*` consts (`IO_TAG_PURE`, `IO_TAG_EFFECT`, `IO_TAG_BIND`, `IO_TAG_PAR`) consumed by the IO trampoline; `HostContext` for the IO trampoline's Effect dispatch path. Per `bounded-contexts.md` §4b + §5 — intrinsics is paired with platform; the IO trampoline reaches platform fns through the per-entry GOT slot on `ModuleEntry::Def` (read via `symbol_table.got().load_slot(entry.got_slot.unwrap())` per Decision 26, S66 amendment + rollback `1dc57ae` — GOT is the single source of truth for callable addresses) rather than through a centralised dispatch wrapper. See `facades/platform.md` §"Host context" — no `HostContext::dispatch` is exposed; the per-entry GOT slot IS the dispatch path.
+- **`cranelisp-platform`** — the `IO_TAG_*` consts (`IO_TAG_PURE`, `IO_TAG_EFFECT`, `IO_TAG_BIND`, `IO_TAG_PAR`) consumed by the IO trampoline; `HostContext` for the IO trampoline's Effect dispatch path. Per `bounded-contexts.md` §4b + §5 — intrinsics is paired with platform; the IO trampoline reaches platform fns through the per-entry GOT slot on `ModuleEntry::Def` (read via `symbol_table.got().load_slot(entry.got_slot.unwrap())` per Decision 26, S66 amendment + rollback `1dc57ae` — GOT is the single source of truth for callable addresses) rather than through a centralised dispatch wrapper. See `crates/cranelisp-platform/src/lib.rs` `///` rustdoc on `HostContext` (facade retired S71 W4) — no `HostContext::dispatch` is exposed; the per-entry GOT slot IS the dispatch path.
 
 Intrinsics imports from no other workspace crate — not `cranelisp-frontend`, not `cranelisp-typecheck`, not `cranelisp-backend`, not `cranelisp-primitives`. (Backend names intrinsics extern functions by string at codegen time — relocation-time dependency, not a Rust-source dependency.)
 
@@ -405,7 +405,7 @@ This facade was last refreshed at S67 Wave 4 close (FIXME 0207) against `crates/
 - `facades/primitives.md` — sibling cascade target (S68): single-pub-item shape (`PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable>>`) is the GOT-uniform counterpart to this crate's `JITBuilder::symbol`-intrinsics-only narrowing
 - `facades/backend.md` §"Consumed surface" — backend names intrinsics by string at codegen; §"`intrinsic_symbols()`" body shrinks at S68 (primitives entries retire; FIXME 0191) as the consumer-side embodiment of the asymmetry confirmed here
 - `facades/int.md` §"Consumed surface" — int registers intrinsic fn ptrs with the JIT at session init (and at S68 references `cranelisp_primitives::PRIMITIVES_TABLE` directly for primitives — no `JITBuilder::symbol` route for those); §"Observability — `src/io_trace.rs`" + §"Tracing helpers — `src/trace.rs`" — destination homes for the Wave-4 relocations
-- `facades/platform.md` §"Public consts" — `IO_TAG_*` consts intrinsics consumes
+- `crates/cranelisp-platform/src/lib.rs` `IO_TAG_*` rustdoc + `bounded-contexts.md` §5 — `IO_TAG_*` consts intrinsics consumes (facade retired S71 W4)
 - `fixmes/0103-...` — io_trace + trace relocation tracker (in-flight; closes at Wave 4)
 - `fixmes/0150-runtime-split-primitives-intrinsics.md` — D43 implementation tracker (closes alongside Wave 2 `ops::*` deletion + the previously-landed primitives_inline trait-knowledge removal)
 - `fixmes/0178-arch-intrinsics-inventory-and-forbid-conditional-registration.md` — codified in §"Forbidden patterns" above

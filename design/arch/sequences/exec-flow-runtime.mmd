@@ -78,7 +78,7 @@ sequenceDiagram
                         IORuntime ->> IoObs: IoObserver(IoEventTag::PureStep, &IoEvent { /* value */ })
                     end
                 else current node is Effect(fq: FQSymbol, args, continuation)
-                    Note over IORuntime: dispatch the effect via direct GOT lookup per Decision 26 — NO HostContext::dispatch wrapper (facades/platform.md §2.13).<br/>IORuntime reads got_slot off the resolved ModuleEntry::Def for fq's DefKind::PlatformEffect entry (S66 post-rollback — GOT is the single source of truth for callable addresses), and scheduling_class from the same variant.
+                    Note over IORuntime: dispatch the effect via direct GOT lookup per Decision 26 — NO HostContext::dispatch wrapper (see crates/cranelisp-platform HostContext rustdoc + bounded-contexts.md §5 — facade retired S71 W4).<br/>IORuntime reads got_slot off the resolved ModuleEntry::Def for fq's DefKind::PlatformEffect entry (S66 post-rollback — GOT is the single source of truth for callable addresses), and scheduling_class from the same variant.
 
                     create participant ST_fq as ST[fq.module]<br/>SymbolTable [generic C=Code, L=()]<br/>(reached via Sess.shared.symbol_tables.get(&fq.module))
                     IORuntime ->> ST_fq: SymbolTable::get(&fq.symbol) -> Option[Ref[ModuleEntry[Code]]]

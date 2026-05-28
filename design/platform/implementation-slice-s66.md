@@ -2,7 +2,7 @@
 
 **Status.** draft
 **Author.** /design (platform), 2026-05-06
-**Reads.** `design/arch/facades/platform.md` (post-S65 final-state target — D42 PlatformError + ErrorLocation, OwnedPlatformFnDescriptor `#[non_exhaustive]` per FIXME 0107, IO_TAG_* in public consts per W1 25fa73a, CLString wraps `cranelisp_intrinsics::HeapString`); `design/platform/platform.md` (master design); `design/arch/facades/types.md` §"Errors and warnings" + §"FQTypeName" — PlatformError canonical shape; `design/arch/facades/intrinsics.md` §"String primitives" + §"Heap allocator" — HeapString home post-D43; `design/arch/decisions/0042-platform-error-adopts-error-location.md`; `design/arch/decisions/0043-runtime-split-into-primitives-intrinsics.md`; `design/arch/fixmes/0104-dev-types-platform-int-platformerror-adoption.md`; `design/arch/fixmes/0107-dev-platform-owned-platform-fn-descriptor-non-exhaustive.md`; `design/arch/fixmes/0150-runtime-split-primitives-intrinsics.md`; `sprints/SPRINT.md` Wave Phase 4 W4a; `design/arch/sprint-65-reshape-phase-2-review.md` §3 (slice template).
+**Reads.** `design/arch/facades/platform.md` (retired S71 Wave 4 — canonical surface now `crates/cranelisp-platform/src/lib.rs` rustdoc + `bounded-contexts.md` §5) (post-S65 final-state target — D42 PlatformError + ErrorLocation, OwnedPlatformFnDescriptor `#[non_exhaustive]` per FIXME 0107, IO_TAG_* in public consts per W1 25fa73a, CLString wraps `cranelisp_intrinsics::HeapString`); `design/platform/platform.md` (master design); `design/arch/facades/types.md` §"Errors and warnings" + §"FQTypeName" — PlatformError canonical shape; `design/arch/facades/intrinsics.md` §"String primitives" + §"Heap allocator" — HeapString home post-D43; `design/arch/decisions/0042-platform-error-adopts-error-location.md`; `design/arch/decisions/0043-runtime-split-into-primitives-intrinsics.md`; `design/arch/fixmes/0104-dev-types-platform-int-platformerror-adoption.md`; `design/arch/fixmes/0107-dev-platform-owned-platform-fn-descriptor-non-exhaustive.md`; `design/arch/fixmes/0150-runtime-split-primitives-intrinsics.md`; `sprints/SPRINT.md` Wave Phase 4 W4a; `design/arch/sprint-65-reshape-phase-2-review.md` §3 (slice template).
 
 This slice enumerates the concrete delta between the post-S65 final-state `facades/platform.md` and the current `crates/cranelisp-platform/src/lib.rs` source. It is consumed by `/sprint` as input to S66's wave plan; it is not itself a wave allocation.
 
@@ -149,7 +149,7 @@ If `/arch` regards any of these as substantive (i.e., not editorial or wave-allo
 
 ## 7. Cross-references
 
-- `design/arch/facades/platform.md` — public-API contract (this slice's target)
+- `design/arch/facades/platform.md` (retired S71 Wave 4 — canonical surface now `crates/cranelisp-platform/src/lib.rs` rustdoc + `bounded-contexts.md` §5) — public-API contract (this slice's target)
 - `design/arch/facades/types.md` §"Errors and warnings" lines 537–620 — `PlatformError` enum canonical home + `CranelispError::Platform` variant
 - `design/arch/facades/intrinsics.md` §"String primitives" + §"Heap allocator" — post-D43 `HeapString` home + layout governance
 - `design/arch/decisions/0042-platform-error-adopts-error-location.md` — Decision 42 (PlatformError + ErrorLocation per variant)

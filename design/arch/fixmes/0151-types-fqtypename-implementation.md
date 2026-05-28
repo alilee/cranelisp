@@ -4,7 +4,7 @@ target: /dev
 filed_by: /arch
 filed_at: 2026-05-06
 sprint_filed: 65
-refers_to: design/arch/facades/types.md §"Resolved type system" + §"FQTypeName", design/arch/legacy/fqtypename.md, design/arch/facades/frontend.md, design/arch/facades/typecheck.md, design/arch/facades/backend.md, design/arch/facades/platform.md, design/arch/facades/intrinsics.md, design/arch/facades/int.md, design/arch/principles/15-facade-types-live-with-behavior.md (receiver-pinned exception), memory/project_fqtypename_priority.md
+refers_to: design/arch/facades/types.md §"Resolved type system" + §"FQTypeName", design/arch/legacy/fqtypename.md, crates/cranelisp-frontend/src/lib.rs (retired S70), design/arch/facades/typecheck.md, design/arch/facades/backend.md, crates/cranelisp-platform/src/lib.rs + design/arch/bounded-contexts.md §5 (retired S71 W4), design/arch/facades/intrinsics.md, design/arch/facades/int.md, design/arch/principles/15-facade-types-live-with-behavior.md (receiver-pinned exception), memory/project_fqtypename_priority.md
 status: open
 ---
 

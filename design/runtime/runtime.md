@@ -291,7 +291,7 @@ The Sprint 64 sweep resolved most of the prior FIXMEs in this section. What rema
 
 - `design/arch/bounded-contexts.md` §4 — Runtime bounded context.
 - `design/arch/facades/runtime.md` — Public surface (target).
-- `design/arch/facades/platform.md` — Paired platform surface (`HostContext::dispatch`, `IO_TAG_*`).
+- `crates/cranelisp-platform/src/lib.rs` `//!` + per-item `///` rustdoc + `design/arch/bounded-contexts.md` §5 — Paired platform surface (`HostContext`, `IO_TAG_*`); facade retired S71 Wave 4.
 - `design/arch/principles.md` — Architectural principles (cited throughout).
 - `design/arch/principles/14-ffi-layout-discipline.md` — `#[repr(C)]` layout policy (§2 application).
 - `design/arch/principles/15-facade-types-live-with-behavior.md` — types-originate-here policy (§2 application).

@@ -38,7 +38,7 @@ Per `design/arch/bounded-contexts.md` §5 — platform is the *shared interface 
 
 ## 2. Public surface (as-designed)
 
-`design/arch/facades/platform.md` is the authoritative public-API contract. The high-level shape:
+`crates/cranelisp-platform/src/lib.rs` `//!` + per-item `///` rustdoc plus `design/arch/bounded-contexts.md` §5 carry the authoritative public-API narrative (facade retired S71 Wave 4 — 3rd data point of the facade-retirement pattern). The high-level shape:
 
 - **Marshaling layer**: `CLType`, `CLInt`/`CLString`/`CLBool`/`CLFloat`, `CLIO<CL: CLType>`, `CLHeap`, `CLOwned<T>`. Sealed (only the four primitive wrappers + `CLIO<T>` may implement `CLType` from inside the crate; `CLHeap: CLType + Copy`).
 - **C-ABI manifest**: `PlatformManifest` + `PlatformFn` + `HostCallbacks` — all `#[repr(C)]`, layout-stable contracts governed by `ABI_VERSION` per Principle 14.
@@ -176,7 +176,7 @@ A `#[non_exhaustive] #[repr(C)]` annotation pair would mislead maintainers — t
 
 **Pure-Rust descriptor.** `OwnedPlatformFnDescriptor` is owned, post-load Rust data — not layout-bound. It SHOULD carry `#[non_exhaustive]` per the standard facade convention; FIXME 0107 captures the cleanup.
 
-**Cite**: Principle 14, facades/platform.md §`#[non_exhaustive]` DTOs.
+**Cite**: Principle 14; `crates/cranelisp-platform/src/lib.rs` crate-root `//!` (`#[non_exhaustive]` discipline section) and per-item rustdoc on `CLOwned<T>` / `OwnedPlatformFnDescriptor` (facade retired S71 Wave 4).
 
 ---
 
@@ -317,7 +317,7 @@ This pass files three FIXMEs (filing skill: `/design` (platform)):
 
 ## Cross-references
 
-- `design/arch/facades/platform.md` — public-API contract (authoritative)
+- `crates/cranelisp-platform/src/lib.rs` `//!` + per-item `///` rustdoc + `design/arch/bounded-contexts.md` §5 — public-API contract (facade retired S71 Wave 4)
 - `design/arch/facades/runtime.md` — runtime's facade (consumes platform's `HostContext` for the IO trampoline; `IoObserver` per Decision 40)
 - `crates/cranelisp-types/src/{scheduling,module,error}.rs` rustdoc — `SchedulingClass`, `PlatformSpec`, `ErrorLocation`, `PlatformError` (Decision 42); `design/arch/bounded-contexts.md` §7 for cross-type narrative
 - `design/arch/bounded-contexts.md` §5 — Platform bounded context

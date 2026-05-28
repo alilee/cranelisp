@@ -43,7 +43,7 @@ Decision 39 is the binding cross-crate rule: errors carry `ErrorLocation`. Platf
 - `cranelisp-types/src/error.rs` gains `PlatformError` enum with `ErrorLocation` carriers per variant; marked `#[non_exhaustive]`.
 - `CranelispError::Platform(PlatformError)` variant added.
 - `crates/cranelisp-platform/` refactors `manifest_to_descriptors` and DLL load paths to construct `PlatformError` rather than `String`.
-- `facades/platform.md` `PlatformError` reference moves from "specified, unimplemented" to "spec + implementation aligned".
+- `facades/platform.md` `PlatformError` reference moves from "specified, unimplemented" to "spec + implementation aligned" (facade subsequently retired S71 W4; canonical surface is now `crates/cranelisp-platform/src/lib.rs` rustdoc on the `PlatformError` re-export + `bounded-contexts.md` §5).
 - `facades/types.md` gains the `PlatformError` enum in §"Errors and warnings".
 - `Sess::format_error` (per Decision 39) gains the `PlatformError` arm.
 
@@ -61,4 +61,4 @@ Decision 39 is the binding cross-crate rule: errors carry `ErrorLocation`. Platf
 
 ## Canonical location
 
-`crates/cranelisp-types/src/error.rs` (`PlatformError` enum + `CranelispError::Platform` variant). Owner: `/arch` files Decision, authors `PlatformError` in `cranelisp-types`, updates `facades/platform.md` and `facades/types.md`. `/dev` (platform) refactors load and dispatch paths to construct the enum. `/dev` (int) extends `Sess::format_error` with the `PlatformError` arm.
+`crates/cranelisp-types/src/error.rs` (`PlatformError` enum + `CranelispError::Platform` variant). Owner: `/arch` files Decision, authors `PlatformError` in `cranelisp-types`, updates `crates/cranelisp-platform/src/lib.rs` rustdoc on the `PlatformError` re-export (post-S71 W4 facade retirement) and `facades/types.md`. `/dev` (platform) refactors load and dispatch paths to construct the enum. `/dev` (int) extends `Sess::format_error` with the `PlatformError` arm.
