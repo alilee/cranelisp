@@ -14,6 +14,9 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 pub mod schema;
 pub use schema::{Field, FieldType, ParseLoc, Schema, SchemaParseError, TypeShape, Variant};
 
+pub mod adt;
+pub use adt::{AnyAdt, CLAdt, CLAdtType, CLTypeWitness, ExpectedFieldType, GetSchema};
+
 /// Platform ABI version — bump on any layout-affecting change to the
 /// platform DLL boundary.
 ///
@@ -124,10 +127,98 @@ unsafe impl Sync for PlatformFn {}
 ///
 /// The platform stores these for later use (e.g. `read-line` needs
 /// the host allocator to return heap-allocated strings).
+///
+/// Sprint 71 (`ABI_VERSION = 2`) grew this struct by two fields —
+/// `alloc_with_tag` (for `CLAdt::<T>::construct`) and `validate_schema`
+/// (for DLL-load-time schema cross-checking). Both are "named-null"
+/// callback fields per A6 / design §5.2 — the host populates them with
+/// the in-crate `null_alloc_with_tag` / `null_validate_schema` placeholders
+/// until the host-wiring sprint (FIXME 0229) wires the real implementations.
 #[repr(C)]
 pub struct HostCallbacks {
     /// Allocate `size` bytes, returns payload pointer (base + 16).
     pub alloc: extern "C" fn(i64) -> i64,
+
+    /// Allocate a tagged heap ADT and write the variant tag + fields.
+    ///
+    /// Called by `CLAdt::<T>::construct(...)`. The host:
+    /// 1. Allocates `total_size` bytes via the runtime allocator (`alloc`).
+    /// 2. Writes the 16-byte heap header (`[total_size: i64][rc: i64]`).
+    /// 3. Writes the 4-byte tag at payload+0.
+    /// 4. Writes `field_count` i64 values from `fields_ptr` at sequential
+    ///    8-byte offsets starting payload+8 (8-byte align after the u32 tag
+    ///    with 4 bytes pad).
+    /// 5. Returns the payload base pointer as i64.
+    ///
+    /// **Wired-or-panic** (R1 gate): until populated by the host-wiring
+    /// sprint (FIXME 0229), this field points at `null_alloc_with_tag`,
+    /// which panics with the R1-gate message naming FIXME 0229. The R1
+    /// gate is removed in the host-wiring sprint by replacing the
+    /// null-callback pointer with the wired host implementation.
+    pub alloc_with_tag: extern "C" fn(
+        tag: u32,
+        field_count: u32,
+        fields_ptr: *const i64,
+    ) -> i64,
+
+    /// Validate the DLL's shipped schema against cranelisp's actual deftype
+    /// data for the named types. Called once at DLL load.
+    ///
+    /// Returns 0 on success, non-zero on failure (with an error message
+    /// written to the DLL-provided buffer).
+    ///
+    /// **Wired-or-panic** (forward-compat null): until populated by the
+    /// host-wiring sprint (FIXME 0229), this field points at
+    /// `null_validate_schema`, which returns 0 unconditionally. Schema
+    /// typos surface at field-access call sites via `SchemaLookupError`
+    /// rather than at DLL load time, until the host wires the real validator.
+    pub validate_schema: extern "C" fn(
+        schema_ptr: *const u8,
+        schema_len: usize,
+        err_msg_ptr: *mut u8,
+        err_msg_capacity: usize,
+        err_msg_len_out: *mut usize,
+    ) -> i32,
+}
+
+/// Panic-emitting placeholder for `HostCallbacks::alloc_with_tag`.
+///
+/// `HostCallbacks` initialized by the host this sprint sets this as the
+/// `alloc_with_tag` field value (until the host-wiring sprint populates
+/// the real callback per FIXME 0229). Calling this panics under the R1
+/// gate; the message names FIXME 0229 explicitly.
+///
+/// **Will be removed** in the host-wiring sprint: the host's
+/// `HostCallbacks` initializer site (in `int`) switches from
+/// `cranelisp_platform::null_alloc_with_tag` to the wired callback.
+pub extern "C" fn null_alloc_with_tag(
+    _tag: u32,
+    _field_count: u32,
+    _fields_ptr: *const i64,
+) -> i64 {
+    panic!(
+        "CLAdt construction requires HostCallbacks::alloc_with_tag, which is not \
+         yet wired by the host. See FIXME 0229 (host-side ADT marshaling — \
+         host-wiring sprint scope).\n\
+         \n\
+         If you are running tests inside cranelisp-platform, install a synthetic \
+         callback via HostContext::init in test setup."
+    )
+}
+
+/// No-op placeholder for `HostCallbacks::validate_schema`. Returns 0
+/// (passes) unconditionally — schemas are not validated against the
+/// host's actual deftype data until the host-wiring sprint populates
+/// this (per FIXME 0229). Until then, schema typos surface at
+/// field-access call sites rather than at DLL load time.
+pub extern "C" fn null_validate_schema(
+    _schema_ptr: *const u8,
+    _schema_len: usize,
+    _err_msg_ptr: *mut u8,
+    _err_msg_capacity: usize,
+    _err_msg_len_out: *mut usize,
+) -> i32 {
+    0 // pass — no validation
 }
 
 /// Platform manifest returned by the DLL's entry point.
@@ -374,6 +465,11 @@ impl From<CLFloat> for CLIO<CLFloat> {
 /// Each DLL gets its own copy of this static (separate compilation unit).
 static GLOBAL_ALLOC: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 
+/// Global tagged-ADT allocator pointer (Sprint 71). Set by
+/// `HostContext::init()` from `HostCallbacks::alloc_with_tag`. Defaults
+/// to `null_alloc_with_tag` (R1 wired-or-panic gate) when no init has run.
+static GLOBAL_ALLOC_WITH_TAG: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
+
 /// Get the global allocator function. Panics if not initialized.
 fn get_global_alloc() -> extern "C" fn(i64) -> i64 {
     let ptr = GLOBAL_ALLOC.load(Ordering::SeqCst);
@@ -384,6 +480,22 @@ fn get_global_alloc() -> extern "C" fn(i64) -> i64 {
     // SAFETY: The pointer was stored by `HostContext::init()` which cast a valid
     // `extern "C" fn(i64) -> i64` to `*mut ()`. We transmute it back to the
     // original function pointer type. The assert above ensures it is non-null.
+    unsafe { std::mem::transmute(ptr) }
+}
+
+/// Get the host's tagged-ADT allocator (Sprint 71). When no
+/// `HostContext::init` has been called (e.g. inside cranelisp-platform
+/// unit tests for read paths), falls back to `null_alloc_with_tag` so
+/// the R1 gate fires with a clear FIXME-0229 message on attempted
+/// construction.
+pub(crate) fn get_host_alloc_with_tag() -> extern "C" fn(u32, u32, *const i64) -> i64 {
+    let ptr = GLOBAL_ALLOC_WITH_TAG.load(Ordering::SeqCst);
+    if ptr.is_null() {
+        return null_alloc_with_tag;
+    }
+    // SAFETY: pointer set by `HostContext::init()` from
+    // `HostCallbacks::alloc_with_tag`, which is the canonical
+    // `extern "C" fn(u32, u32, *const i64) -> i64`.
     unsafe { std::mem::transmute(ptr) }
 }
 
@@ -596,6 +708,13 @@ impl HostContext {
         // Set the global allocator for CLString conversions.
         let alloc_fn = unsafe { (*raw).alloc };
         GLOBAL_ALLOC.store(alloc_fn as *mut (), Ordering::SeqCst);
+
+        // Sprint 71: also set the global tagged-ADT allocator used by
+        // CLAdt::<T>::construct(...). Until the host wires this
+        // (FIXME 0229), the value is `null_alloc_with_tag` which panics
+        // under the R1 gate.
+        let alloc_with_tag_fn = unsafe { (*raw).alloc_with_tag };
+        GLOBAL_ALLOC_WITH_TAG.store(alloc_with_tag_fn as *mut (), Ordering::SeqCst);
     }
 }
 
