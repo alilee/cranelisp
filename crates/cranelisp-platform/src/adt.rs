@@ -19,7 +19,7 @@
 use std::marker::PhantomData;
 
 use crate::schema::{FieldType, Schema};
-use crate::{CLHeap, CLOwned, CLType};
+use crate::{CLHeap, CLOwned, CLType, HEAP_HEADER_SIZE};
 
 // ---------------------------------------------------------------------
 // Marker-type trait family
@@ -58,10 +58,16 @@ pub trait GetSchema: CLAdtType {
 // CLAdt<T> wrapper
 // ---------------------------------------------------------------------
 
-/// Heap-ADT value crossing the FFI boundary. Layout per design §3:
-/// `#[repr(transparent)]` over an `i64` (payload base pointer) plus a
-/// zero-sized `PhantomData<T>` for compile-time witness binding. The
-/// JIT and host see exactly one `i64` payload at every call site.
+/// Heap-ADT value crossing the FFI boundary. Layout per design §3 +
+/// `CLString` convention: the stored `i64` is the **alloc base
+/// pointer** (the `[total_size: i64][rc: i64][tag: u32][pad: u32][fields...]`
+/// allocation's address). `read_tag` / `read_field` add
+/// `HEAP_HEADER_SIZE` (16) to reach the payload; `inc_rc` / `dec_rc`
+/// from `CLHeap` use `base + 8` to find the RC field.
+///
+/// `#[repr(transparent)]` over `i64` plus a zero-sized `PhantomData<T>`
+/// for compile-time witness binding; the JIT and host see exactly one
+/// `i64` payload at every call site.
 #[repr(transparent)]
 pub struct CLAdt<T: CLAdtType = AnyAdt>(i64, PhantomData<T>);
 
@@ -73,7 +79,7 @@ impl<T: CLAdtType> std::fmt::Debug for CLAdt<T> {
 
 impl<T: CLAdtType> Clone for CLAdt<T> {
     fn clone(&self) -> Self {
-        CLAdt(self.0, PhantomData)
+        *self
     }
 }
 
@@ -92,11 +98,19 @@ impl<T: CLAdtType> CLHeap for CLAdt<T> {
 }
 
 impl<T: CLAdtType> CLAdt<T> {
-    /// Construct from a raw payload base pointer. Intended for the FFI
-    /// boundary (where the JIT hands us an `i64` we know to be a tagged
-    /// heap ADT) and for tests using synthetic heap fixtures.
-    pub fn from_raw(payload_ptr: i64) -> Self {
-        CLAdt(payload_ptr, PhantomData)
+    /// Construct from a raw **alloc base** pointer (the address of the
+    /// `[total_size][rc][tag][pad][fields...]` heap allocation). Intended
+    /// for the FFI boundary (where the JIT hands us an `i64` we know to
+    /// be a tagged heap ADT) and for tests using synthetic heap fixtures.
+    ///
+    /// Mirrors `CLString`'s base-pointer convention.
+    pub fn from_raw(base_ptr: i64) -> Self {
+        CLAdt(base_ptr, PhantomData)
+    }
+
+    /// Compute the payload pointer (base + HEAP_HEADER_SIZE).
+    fn payload_ptr(&self) -> i64 {
+        self.0 + HEAP_HEADER_SIZE
     }
 }
 
@@ -114,7 +128,7 @@ impl<T: CLAdtType + GetSchema> CLAdt<T> {
         // SAFETY: the FFI invariant guarantees that any CLAdt<T> handed
         // across the boundary points at a heap-ADT layout with a u32 tag
         // at payload+0. Reading 4 bytes at that offset is sound.
-        unsafe { *(self.0 as *const u32) }
+        unsafe { *(self.payload_ptr() as *const u32) }
     }
 
     /// Read a primitive field by name. Schema lookup computes the byte
@@ -124,9 +138,9 @@ impl<T: CLAdtType + GetSchema> CLAdt<T> {
     /// Panics if the field name is not in T's schema (programmer error
     /// at the DLL-author level — typo or stale-rename per §4.5), or if
     /// the field's schema type doesn't match `F`'s witness (per §3.3).
-    pub fn read_field<F: CLType>(&self, field_name: &str) -> F
+    pub fn read_field<F>(&self, field_name: &str) -> F
     where
-        F: CLTypeWitness,
+        F: CLType + CLTypeWitness,
     {
         let schema = T::schema();
         let (offset, declared_type) = resolve_field::<T>(schema, field_name);
@@ -137,7 +151,7 @@ impl<T: CLAdtType + GetSchema> CLAdt<T> {
         // invariant guarantees the heap layout matches. Reading the i64
         // at payload+offset and transmuting to F is sound under the
         // witness check above.
-        let raw = unsafe { *((self.0 + offset as i64) as *const i64) };
+        let raw = unsafe { *((self.payload_ptr() + offset as i64) as *const i64) };
         F::from_raw_i64(raw)
     }
 
@@ -153,7 +167,7 @@ impl<T: CLAdtType + GetSchema> CLAdt<T> {
 
         // SAFETY: identical justification to `read_field` — schema-driven
         // offset, FFI invariant on layout, witness check above.
-        let raw = unsafe { *((self.0 + offset as i64) as *const i64) };
+        let raw = unsafe { *((self.payload_ptr() + offset as i64) as *const i64) };
         let f = F::from_raw_i64(raw);
         // own() does inc-on-read; CLOwned drop will dec, balancing.
         f.own()
@@ -186,7 +200,7 @@ impl CLAdt<AnyAdt> {
     /// Read the runtime tag without consulting a schema. Same fixed-offset
     /// load as the typed version.
     pub fn read_tag_any(&self) -> u32 {
-        unsafe { *(self.0 as *const u32) }
+        unsafe { *((self.0 + HEAP_HEADER_SIZE) as *const u32) }
     }
 
     /// Coerce an untyped `CLAdt<AnyAdt>` to a typed `CLAdt<T>`.
@@ -405,29 +419,35 @@ mod tests {
     // Helpers: synthetic heap fixtures for CLAdt payloads.
     // -----------------------------------------------------------------
 
-    /// Allocate a synthetic CLAdt payload: `[tag: u32][pad: u32][field0: i64]...`
-    /// at payload base. Returns the payload base pointer. Caller responsible
-    /// for freeing via std::alloc::dealloc.
+    /// Allocate a synthetic full heap-ADT:
+    ///   `[alloc_size: i64][rc: i64][tag: u32][pad: u32][field0: i64]...`
+    /// at the returned alloc base pointer. Caller responsible for
+    /// freeing via `free_cladt_payload`.
     fn alloc_cladt_payload(tag: u32, fields: &[i64]) -> i64 {
         let payload_size = 8 + fields.len() * 8;
+        let total_size = 16 + payload_size;
         // SAFETY: standard allocator path; layout aligned to 8.
         unsafe {
-            let layout = std::alloc::Layout::from_size_align_unchecked(payload_size, 8);
-            let ptr = std::alloc::alloc_zeroed(layout) as *mut u8;
-            *(ptr as *mut u32) = tag;
-            *(ptr.add(4) as *mut u32) = 0; // pad
+            let layout = std::alloc::Layout::from_size_align_unchecked(total_size, 8);
+            let base = std::alloc::alloc_zeroed(layout);
+            *(base as *mut i64) = total_size as i64; // alloc_size
+            *((base as *mut i64).add(1)) = 1;        // rc = 1
+            let payload = base.add(16);
+            *(payload as *mut u32) = tag;
+            *(payload.add(4) as *mut u32) = 0; // pad
             for (i, val) in fields.iter().enumerate() {
-                *((ptr.add(8 + i * 8)) as *mut i64) = *val;
+                *((payload.add(8 + i * 8)) as *mut i64) = *val;
             }
-            ptr as i64
+            base as i64
         }
     }
 
-    fn free_cladt_payload(payload: i64, field_count: usize) {
+    fn free_cladt_payload(base: i64, field_count: usize) {
         let payload_size = 8 + field_count * 8;
+        let total_size = 16 + payload_size;
         unsafe {
-            let layout = std::alloc::Layout::from_size_align_unchecked(payload_size, 8);
-            std::alloc::dealloc(payload as *mut u8, layout);
+            let layout = std::alloc::Layout::from_size_align_unchecked(total_size, 8);
+            std::alloc::dealloc(base as *mut u8, layout);
         }
     }
 

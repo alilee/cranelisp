@@ -226,19 +226,19 @@ impl Schema {
         for shape in &mut schema.types {
             for variant in &mut shape.variants {
                 for field in &mut variant.fields {
-                    if let FieldType::Adt(name) = &field.field_type {
-                        if !known.iter().any(|n| n == name) {
-                            // Unresolved: not a CL wrapper (those resolved
-                            // in pass 1) and not declared in the schema.
-                            // We don't have the original ParseLoc by this
-                            // point — emit synthetic and rely on the name
-                            // for diagnostics. The pass-1 parser will have
-                            // caught most lexical errors before reaching here.
-                            return Err(SchemaParseError::UnknownFieldType {
-                                name: name.clone(),
-                                at: ParseLoc::start(),
-                            });
-                        }
+                    if let FieldType::Adt(name) = &field.field_type
+                        && !known.iter().any(|n| n == name)
+                    {
+                        // Unresolved: not a CL wrapper (those resolved
+                        // in pass 1) and not declared in the schema.
+                        // We don't have the original ParseLoc by this
+                        // point — emit synthetic and rely on the name
+                        // for diagnostics. The pass-1 parser will have
+                        // caught most lexical errors before reaching here.
+                        return Err(SchemaParseError::UnknownFieldType {
+                            name: name.clone(),
+                            at: ParseLoc::start(),
+                        });
                     }
                 }
             }
