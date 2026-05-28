@@ -12,7 +12,7 @@ Per `sprints/METHOD_PROPOSED.md` §14.1, this `CLAUDE.md` carries domain-local c
 | `principles.md` | Architectural principles — index. Each Principle is one file at `principles/NN-{slug}.md`. Auto-imported by `.claude/commands/arch.md`. |
 | `principles/` | Architectural Principles register; one file per Principle; index in `principles.md`. |
 | `bounded-contexts.md` | Per-surface bounded-context full statements (Frontend, Typecheck, Backend, Runtime, Platform, Binary/int, plus types crate). |
-| `facades/{crate}.md` | Per-surface facade specs — as-designed public surface. One file per surface. **Exceptions**: `facades/types.md` is retired (S69 Sub 42); `facades/frontend.md` is retired (S70 Phase B group B3-C). For both, source rustdoc (crate-root `//!` + per-item `///`) is the canonical surface; cross-surface narrative lives in `bounded-contexts.md` (§7 for types, §1 for frontend). |
+| `facades/{crate}.md` | Per-surface facade specs — as-designed public surface. One file per surface. **Exceptions**: `facades/types.md` is retired (S69 Sub 42); `facades/frontend.md` is retired (S70 Phase B group B3-C); `facades/platform.md` is retired (S71 Wave 4). For all three, source rustdoc (crate-root `//!` + per-item `///`) is the canonical surface; cross-surface narrative lives in `bounded-contexts.md` (§7 for types, §1 for frontend, §5 for platform). |
 | `interfaces.md` | Narrative companion to `crates/cranelisp-types/`. |
 | `fixmes/` | FIXMEs register; one file per FIXME (`design/arch/fixmes/NNNN-name.md`). |
 | `sequences/` | Current target sequence diagrams (`.mmd` + rendered `.svg`). |
