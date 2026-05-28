@@ -1311,11 +1311,51 @@ pub fn derive_jit_name(cl_name: &str) -> String {
     format!("cranelisp_{}", cl_name.replace('-', "_"))
 }
 
-/// Declare a platform DLL with metadata and function registrations.
+/// Declare a platform DLL with metadata and function registrations —
+/// the DLL-author entry point.
 ///
-/// Platform functions are normal `extern "C"` Rust functions using `CL*`
-/// wrapper types -- they are defined outside the macro. The macro handles
-/// only manifest generation and host callback initialization.
+/// Every platform DLL invokes `declare_platform!` exactly once. The
+/// macro emits:
+///
+/// - The static `PlatformManifest` shape (per-fn descriptors with
+///   length-prefixed name/jit_name/type_sig/docstring; parallel
+///   `param_names` arrays; `scheduling_class` `u32` discriminant — see
+///   [`PlatformFn`]).
+/// - The exported `cranelisp_platform_manifest` extern symbol the host
+///   resolves at DLL load.
+/// - If a `schema:` arm is supplied: a `LazyLock<Schema>` static + one
+///   marker type per declared ADT (implementing [`CLAdtType`] +
+///   [`GetSchema`]) so DLL authors can write `extern "C" fn rect_area(r:
+///   CLAdt<Rectangle>) -> CLInt { ... }`.
+///
+/// Platform functions themselves are normal `extern "C"` Rust functions
+/// using `CL*` wrapper types — they are defined outside the macro. The
+/// macro handles only manifest generation, host-callback initialisation,
+/// and (with the `schema:` arm) ADT-marshaling support.
+///
+/// # F6 audit fold — current (S67 W1 PFR + S71) arm shape
+///
+/// The macro grew from the historical 3-key shape (`name:`, `host:`,
+/// `fns:`) to the current 5-key (`name:`, `version:`, `host:`,
+/// `functions:`, plus optional `schema:` + `schema_types:`) shape over
+/// two refinements:
+///
+/// - **S67 W1 PFR** added `version:`, renamed `fns:` → `functions:`,
+///   changed the brace-delimited `"name" => fn_pointer` pair shape to
+///   the bracket-delimited per-fn structured block (`fn_ident {
+///   cl_name: …, sig: …, doc: …, params: […], scheduling: … }`).
+///   The five per-fn fields are **all required** — none default-able,
+///   none optional. `sig` is the type signature read by typecheck for
+///   call-site checking; `doc` flows into `/sig`/`/doc` REPL
+///   introspection; `params` are the named parameters that surface in
+///   REPL output; `scheduling` is Decision 0026's per-fn class
+///   (Sequential / Commutative / ResourceSerial); `cl_name` is the
+///   kebab-case user-visible name.
+/// - **S71** added the optional `schema:` + `schema_types:` arms for
+///   the ADT-marshaling surface. Both are gated on
+///   `ABI_VERSION = 2`. Backward-compatibility is preserved via a
+///   second arm without the schema keys (existing DLLs continue to
+///   compile unchanged).
 ///
 /// # Macro arm structure
 ///
@@ -1330,12 +1370,33 @@ pub fn derive_jit_name(cl_name: &str) -> String {
 /// | `schema_types:` | optional (required if `schema:` is present) | `[Name1, Name2, ...]` ident list | Marker types to emit; mirrors the type names declared in the schema literal |
 /// | `functions:` | yes | `[ fn { ... }, ... ]` array | Per-fn descriptors |
 ///
+/// Each per-fn block has five required fields — `cl_name:` (kebab-case
+/// user-visible name), `sig:` (type signature S-expression),
+/// `doc:` (docstring), `params:` (named-parameter ident list),
+/// `scheduling:` ([`SchedulingClass`] expression).
+///
 /// The `schema_types:` list is required alongside `schema:` because
 /// `macro_rules!` cannot parse a string-literal to enumerate identifiers
-/// (a proc-macro upgrade is feasible — tracked as a future refinement).
-/// For correctness, every name in `schema_types:` MUST also appear as a
-/// top-level type declaration in the schema literal; runtime validation
-/// catches mismatches.
+/// (a proc-macro upgrade is feasible — tracked by FIXME 0238 as a
+/// future refinement). For correctness, every name in `schema_types:`
+/// MUST also appear as a top-level type declaration in the schema
+/// literal; runtime validation catches mismatches.
+///
+/// # Internal structure of the emitted `cranelisp_platform_manifest`
+///
+/// The shared body (see `__declare_platform_body!`) executes in three
+/// phases: **Phase 0** (schema arm only) — emit marker types +
+/// `GetSchema` impls + the `LazyLock<Schema>` static. **Phase 1** —
+/// capture each fn pointer, param-name parallel arrays, scheduling
+/// class. **Phase 2** — derive each `jit_name` via [`derive_jit_name`]
+/// and `Box::leak` the bytes for `'static` lifetime. **Phase 3** —
+/// `Box::leak` the [`PlatformFn`] descriptors slice and return the
+/// [`PlatformManifest`] with the (`abi_version`, `name`, `version`,
+/// `functions`, `function_count`) shape.
+///
+/// The `jit_name` leak is bounded by DLL lifetime — per BC §5 invariant
+/// 6 (no DLL unloading mid-session), the leaked bytes are valid for the
+/// session.
 ///
 /// # Example
 ///
