@@ -847,6 +847,26 @@ pub fn derive_jit_name(cl_name: &str) -> String {
 /// wrapper types -- they are defined outside the macro. The macro handles
 /// only manifest generation and host callback initialization.
 ///
+/// # Macro arm structure
+///
+/// `declare_platform!` has up to seven top-level keys, applied positionally:
+///
+/// | Key | Required | Shape | Purpose |
+/// |---|---|---|---|
+/// | `name:` | yes | `&'static str` literal | Platform name; surfaces in `PlatformManifest.name` and at REPL `/imports` |
+/// | `version:` | yes | `&'static str` literal | Platform version; surfaces in `PlatformManifest.version` |
+/// | `host:` | yes | identifier of a `static HOST: HostContext` | Where the macro calls `init(callbacks)` |
+/// | `schema:` | optional | `&'static str` literal (cranelisp S-expr) | ADT shape declarations; absent ⇒ no ADT marshaling |
+/// | `schema_types:` | optional (required if `schema:` is present) | `[Name1, Name2, ...]` ident list | Marker types to emit; mirrors the type names declared in the schema literal |
+/// | `functions:` | yes | `[ fn { ... }, ... ]` array | Per-fn descriptors |
+///
+/// The `schema_types:` list is required alongside `schema:` because
+/// `macro_rules!` cannot parse a string-literal to enumerate identifiers
+/// (a proc-macro upgrade is feasible — tracked as a future refinement).
+/// For correctness, every name in `schema_types:` MUST also appear as a
+/// top-level type declaration in the schema literal; runtime validation
+/// catches mismatches.
+///
 /// # Example
 ///
 /// ```ignore
@@ -874,8 +894,133 @@ pub fn derive_jit_name(cl_name: &str) -> String {
 ///     ]
 /// }
 /// ```
+///
+/// # Example — with `schema:` arm
+///
+/// ```ignore
+/// declare_platform! {
+///     name: "shapes",
+///     version: "0.1.0",
+///     host: HOST,
+///     schema: "((Rectangle ((CLInt w) (CLInt h))))",
+///     schema_types: [Rectangle],
+///     functions: [
+///         rectangle_area {
+///             cl_name: "rectangle-area",
+///             sig: "(Fn [Rectangle] Int)",
+///             doc: "Compute the area of a rectangle",
+///             params: [r],
+///             scheduling: SchedulingClass::Commutative,
+///         },
+///     ]
+/// }
+/// ```
 #[macro_export]
 macro_rules! declare_platform {
+    // Arm 1: with optional `schema:` + `schema_types:` keys.
+    (
+        name: $platform_name:literal,
+        version: $platform_version:literal,
+        host: $host:ident,
+        schema: $schema_text:literal,
+        schema_types: [$($schema_type:ident),* $(,)?],
+        functions: [
+            $(
+                $fn_ident:ident {
+                    cl_name: $cl_name:literal,
+                    sig: $sig:literal,
+                    doc: $doc:literal,
+                    params: [$($param:ident),* $(,)?],
+                    scheduling: $scheduling:expr,
+                }
+            ),* $(,)?
+        ]
+    ) => {
+        // Phase 0 — schema emission per design §7.2 + §7.4.
+        //
+        // The DLL-local schema static; LazyLock-initialized at first
+        // access; parsed once from the literal at the declare_platform!
+        // call site.
+        static DLL_SCHEMA: ::std::sync::LazyLock<$crate::Schema> =
+            ::std::sync::LazyLock::new(|| {
+                $crate::Schema::parse($schema_text)
+                    .expect("schema literal failed to parse — fix the schema in declare_platform! and rebuild")
+            });
+
+        $(
+            // Marker type — zero-sized; public so the DLL author can name
+            // it in CLAdt<TypeName> signatures.
+            #[allow(non_camel_case_types)]
+            pub struct $schema_type;
+
+            impl $crate::CLAdtType for $schema_type {
+                const TYPE_NAME: &'static str = stringify!($schema_type);
+            }
+
+            impl $crate::GetSchema for $schema_type {
+                fn schema() -> &'static $crate::Schema { &DLL_SCHEMA }
+            }
+        )*
+
+        $crate::__declare_platform_body!(
+            name: $platform_name,
+            version: $platform_version,
+            host: $host,
+            functions: [
+                $(
+                    $fn_ident {
+                        cl_name: $cl_name,
+                        sig: $sig,
+                        doc: $doc,
+                        params: [$($param),*],
+                        scheduling: $scheduling,
+                    }
+                ),*
+            ]
+        );
+    };
+
+    // Arm 2: no schema — backwards-compatible with pre-S71 callers.
+    (
+        name: $platform_name:literal,
+        version: $platform_version:literal,
+        host: $host:ident,
+        functions: [
+            $(
+                $fn_ident:ident {
+                    cl_name: $cl_name:literal,
+                    sig: $sig:literal,
+                    doc: $doc:literal,
+                    params: [$($param:ident),* $(,)?],
+                    scheduling: $scheduling:expr,
+                }
+            ),* $(,)?
+        ]
+    ) => {
+        $crate::__declare_platform_body!(
+            name: $platform_name,
+            version: $platform_version,
+            host: $host,
+            functions: [
+                $(
+                    $fn_ident {
+                        cl_name: $cl_name,
+                        sig: $sig,
+                        doc: $doc,
+                        params: [$($param),*],
+                        scheduling: $scheduling,
+                    }
+                ),*
+            ]
+        );
+    };
+}
+
+/// Shared body of `declare_platform!` — emits the `cranelisp_platform_manifest`
+/// extern fn. Internal; do not invoke directly.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __declare_platform_body {
     (
         name: $platform_name:literal,
         version: $platform_version:literal,
