@@ -161,19 +161,9 @@ FIXME 0172 (short-name fallback chains in `defining_module_for` / `fqtn_for_bare
 
 **No public accumulator type.** The pre-S66 `pub struct ModuleCheckAccumulator` and the briefly-considered relocation of that struct to `int` are both retired. Per-symbol Pass-2 side products (method resolutions, expr types, mono defns, callees) land on staging `ModuleEntry::Def` fields per invariant 3a. Pass-1-to-Pass-2 working state and cluster-scoped algorithmic aggregates (`defn_type_vars`, default-method-defn deferrals, generalisation inputs) are internal to `check_forms`'s frame and never publicly visible. Cross-symbol bookkeeping that `int` itself collects during cluster processing (warnings, resolved-import bindings, introspection records) lives on `int`-side data structures — see `facades/int.md` §"Cluster orchestration result".
 
-### Builtin registration (called once per workspace init — cluster-atomic post-S66)
+### Builtin registration — removed from typecheck
 
-```rust
-pub fn register_builtins<C, L>(
-    modules: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
-    next_id: &AtomicU32,
-)
-where C: CodeStore, L: LinkerStore;
-```
-
-Builtin registration now operates against the whole modules-map: it inserts the `primitives` and `macros` synthetic modules' `SymbolTable`s (per `spec/08-modules.md §8.7`) and threads `next_id` so the registration's type-var allocations remain monotonic with the rest of the session's `TypeCheckEnv`-allocated type ids. Called once per session init (the int binary's `compile_to_module` path; tests construct an empty `DashMap + AtomicU32` and call `register_builtins` themselves). Idempotent — safe to call once per fresh modules map. Per Decision 38 this remains a brief `&mut SymbolTable` write window, but the access is mediated through the DashMap's per-key lock rather than the caller-held `&mut`.
-
-Seeds the modules-map with primitive type defs (`Int`, `Bool`, `String`, `Float`, `Unit`), primitive functions (per `cranelisp_types::primitives()`), and the synthetic `primitives`/`macros` modules' contents.
+`register_builtins` is **not part of typecheck's public surface**. Synthetic-module assembly (seeding the `primitives`/`macros` modules and the `Option`/`IO`/`Trace`/`TestResult` ADTs) is not type-checking — it is content construction outside typecheck's bounded context (AST → typed AST; see `bounded-contexts.md` §2). The synthetic-module mount is owned by `int` at session init (see FIXME 0242); the prior `register_builtins` assembly body is recoverable from git history and serves as `int`'s reference for the mount sequence it reconstructs. No `cranelisp-types` builder vocabulary is introduced for this — `int` reconstructs the mount directly.
 
 ### Trace hooks (for diagnostics — observability layer)
 
@@ -201,8 +191,7 @@ pub mod trace {
 
     /// Emit a `SymbolTableEnsure` event to the installed hook (if any).
     /// Called by typecheck whenever it would touch a per-module `SymbolTable`
-    /// during cluster check or builtin registration. No-op if no hook is
-    /// installed.
+    /// during cluster check. No-op if no hook is installed.
     pub fn emit_symbol_table_ensure(module: &ModuleFullPath, outcome: SymbolTableEnsureOutcome);
 }
 
@@ -257,7 +246,7 @@ The data-home counterpart of `register_imports`/`register_exports` is `cranelisp
 
 Per Decision 0047 + `bounded-contexts.md` §7 ("FQTypeName binding"), every resolved-stage API on the typecheck surface that names a type uses `FQTypeName`; bare `TypeName` is reserved for the two exception classes (syntactic-lift sites at `check_form`; receiver-pinned helpers where `&self` IS the module context). The S67 per-API direction enumeration (now historical) lived in the retired types facade; the binding itself is captured at the Decision and in the source-side rustdoc on the affected APIs. Typecheck carries the largest /dev burden of the six crates' migration (per Decision 0047 §"Status pointer"): ~7 PIF conversions + ~3 syntactic-lift-site keeps + ~5 receiver-pinned keeps.
 
-Most of those APIs become `pub(crate)` per the `TypeCheckEnv` narrowing above and stop crossing the facade boundary entirely. The hits that remain at the public surface after Wave 3 narrowing are: (a) `register_builtins`'s internal allocations (receiver-pinned, exception 2), (b) `resolve::*`'s syntactic-stage entry points if kept public (exception 1: syntactic lift site), (c) any debug/introspection helper escape hatches if kept (each must cite an exception by name in a code comment per the Wave 5 /review checkpoint).
+Most of those APIs become `pub(crate)` per the `TypeCheckEnv` narrowing above and stop crossing the facade boundary entirely. The hits that remain at the public surface after Wave 3 narrowing are: (a) `resolve::*`'s syntactic-stage entry points if kept public (exception 1: syntactic lift site), (b) any debug/introspection helper escape hatches if kept (each must cite an exception by name in a code comment per the Wave 5 /review checkpoint).
 
 ---
 
@@ -403,7 +392,7 @@ These hold across sprints — the contract `cranelisp-typecheck` makes with the 
     // Multi-module aggregation is composed at the orchestrator (session/REPL) layer, not inside check_forms.
     ```
 
-    Mutating writes always go through `ctx.current_symbol_table_mut()` — a typecheck pass MUST NOT mutate a foreign module's table directly. `ModuleEntry::TraitImpl` writes target the **trait's defining module** per Decision 0045; the orchestrator selects the target table by chain-following the trait reference at write time, identically to the read side. Cross-module impl writes that pre-S66 source carries (~6 sites in `builtins.rs` + `checker.rs`, audited 2026-05-12) are Wave 3a-α retargets per Decision 0046 — the redo retargets to the trait's home, not the writer's home. This invariant is the structural prerequisite for invariant 2's cluster-atomic guarantee — the `ClusterContext` accessor surgery only delivers cluster atomicity if every read and write actually flows through it; the absence of orphaned `self.modules.X` pierces is what makes that the case.
+    Mutating writes always go through `ctx.current_symbol_table_mut()` — a typecheck pass MUST NOT mutate a foreign module's table directly. `ModuleEntry::TraitImpl` writes target the **trait's defining module** per Decision 0045; the orchestrator selects the target table by chain-following the trait reference at write time, identically to the read side. Cross-module impl writes in typecheck (`checker.rs` / `traits.rs` impl-recording sites) are retargeted to the trait's home per Decision 0046 — the write target is the trait's defining module, not the writer's home. This invariant is the structural prerequisite for invariant 2's cluster-atomic guarantee — the `ClusterContext` accessor surgery only delivers cluster atomicity if every read and write actually flows through it; the absence of orphaned `self.modules.X` pierces is what makes that the case.
 
 ---
 

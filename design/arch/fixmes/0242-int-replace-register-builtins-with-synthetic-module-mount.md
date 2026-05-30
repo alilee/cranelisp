@@ -4,7 +4,7 @@ target: /int
 filed_by: /sprint
 filed_at: 2026-05-30
 sprint_filed: 72
-refers_to: src/session_v4.rs:1072 (register_builtins call), src/platform.rs:703 (register_builtins call), crates/cranelisp-typecheck/src/builtins.rs (legacy assembly reference), design/arch/fixmes/0241-arch-synthetic-module-assembly-leaves-typecheck-builder-vocabulary.md, design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md
+refers_to: src/session_v4.rs:1072 (register_builtins call), src/platform.rs:703 (register_builtins call), crates/cranelisp-typecheck/src/builtins.rs (DELETED — assembly reference recoverable from git history), design/arch/facades/typecheck.md §"Builtin registration — removed from typecheck", design/arch/fixmes/0241-arch-synthetic-module-assembly-leaves-typecheck-builder-vocabulary.md, design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md
 status: open
 ---
 
@@ -12,9 +12,11 @@ status: open
 
 ## Issue
 
-`cranelisp_typecheck::register_builtins` was severed from the typecheck public
-interface this sprint (FIXME 0241 — synthetic-module assembly leaves typecheck's
-bounded context). `int`'s two call sites can no longer reach it:
+`cranelisp_typecheck::register_builtins` — and the entire
+`crates/cranelisp-typecheck/src/builtins.rs` synthetic-module assembly body — is
+**deleted** from typecheck (FIXME 0241 — synthetic-module assembly leaves
+typecheck's bounded context; user-arbitrated 2026-05-30). `int`'s two call sites
+can no longer reach it:
 
 - `src/session_v4.rs:1072` — production session init.
 - `src/platform.rs:703` — test fixture.
@@ -26,8 +28,12 @@ the forcing function for this migration, per `feedback_facade_first_migration`.
 
 ## Proposed resolution
 
-**Blocked by FIXME 0241** (the `cranelisp-types::SymbolTable` builder vocabulary +
-the static source builders must exist first). Once they land:
+**Not blocked.** The approved decision is narrower than the original 0241 premise:
+no `cranelisp-types::SymbolTable` builder vocabulary is built first. `int`
+reconstructs the mount sequence **directly**, using the deleted `register_builtins`
+body (recoverable from git history — the commit that removes
+`crates/cranelisp-typecheck/src/builtins.rs`) as the assembly reference. There is
+no in-tree `pub(crate)` copy to read; pull the body from git.
 
 1. Replace the `register_builtins(&symbol_tables, &next_type_id)` call at
    `session_v4.rs:1072` with the synthetic-module mount sequence — mount the
@@ -36,24 +42,25 @@ the static source builders must exist first). Once they land:
    `int` already Arc-mounts `PRIMITIVES_TABLE` a few lines above
    (`session_v4.rs:1064`). Advance `next_type_id` past each mounted table's
    type-var high-water mark via `advance_next_id_past_table` to preserve
-   monotonicity.
-2. Update `platform.rs:703` (test fixture) to the same mount path, or to the
-   `TestSource` builder per FIXME 0239.
-3. Confirm the startup ordering invariants the legacy body relied on
-   (`builtins.rs` is the reference): `primitives` seeded before special-form
-   metadata; `macros/Sexp` field types resolvable before any `.cl` parse; root
-   `""` exists before special-form registration.
+   monotonicity. `int` reconstructs the entry shapes, cross-module field
+   FQ-types, and `next_id` threading from the git-history `builtins.rs` body.
+2. Update `platform.rs:703` (test fixture) to the same mount path.
+3. Confirm the startup ordering invariants the legacy body relied on (read from
+   git history): `primitives` seeded before special-form metadata; `macros/Sexp`
+   field types resolvable before any `.cl` parse; root `""` exists before
+   special-form registration.
 
 ## Operational implication / Context
 
-- The legacy `register_builtins` body is retained `pub(crate)` +
-  `#[allow(dead_code)]` in `crates/cranelisp-typecheck/src/builtins.rs` as the
-  authoritative assembly reference — read it for the exact entry shapes,
+- The legacy `register_builtins` body is **deleted** from
+  `crates/cranelisp-typecheck/src/builtins.rs` (no in-tree `pub(crate)` copy
+  retained). The authoritative assembly reference is **git history** — the commit
+  that removes the file. Recover it from git for the exact entry shapes,
   cross-module field FQ-types, and the `next_id` threading the mount must
-  reproduce. Typecheck deletes that body (per 0241 step 4) only after this
-  migration lands.
-- Sequencing: S73 (with 0241). Not S72 — workspace-green is out of S72 scope and
-  `int` is already red from the upstream cascade.
+  reproduce. (Typecheck no longer waits on this migration to delete — the deletion
+  is the forcing function, not a follow-on.)
+- Sequencing: S73. Not S72 — workspace-green is out of S72 scope and `int` is
+  already red from the upstream cascade.
 - This is part of `int`'s broader S72 cascade repair (HeapCategory /
   ConstructorInfo / retired ModuleEntry variants); the `register_builtins`
   replacement should fold into that wave so `int` reaches green once.
