@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::{Defn, FQSymbol, FQTraitName, FQTypeName, JitSymbol, Scheme, Span, Symbol, Type};
+use crate::{
+    Defn, FQSymbol, FQTraitName, FQTypeName, JitSymbol, Scheme, Span, Symbol, TraitMethodSig,
+    TraitName, Type,
+};
 
 /// Per-Span resolved-stage data produced by typecheck, consumed by backend.
 ///
@@ -166,12 +169,52 @@ pub struct DisplayInfo {
 /// Consumers needing per-ctor metadata walk each name → look up the Def →
 /// read the kind discriminator and scheme. No parallel storage; single source
 /// of truth.
+///
+/// **No `docstring` field (S72 Phase B).** The docstring is owned directly by
+/// the wrapping `ModuleEntry::TypeDef.docstring` field — single source of
+/// truth (Principle 7). Previously `TypeDefInfo.docstring` duplicated /
+/// nested the entry's docstring; the entry now owns it canonically and
+/// `TypeDefInfo` carries only the type's structural metadata (name,
+/// type-parameter binders, constructor names). This parallels the
+/// `ModuleEntry::Def` narrowing where `docstring` is a direct entry field,
+/// not buried in the embedded AST wrapper.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypeDefInfo {
     pub name: FQTypeName,
     pub type_params: Vec<Symbol>,
     pub constructors: Vec<Symbol>,
-    pub docstring: Option<String>,
+}
+
+/// Symbol-table-stage trait metadata — the slimmed payload of
+/// `ModuleEntry::TraitDecl`.
+///
+/// **S72 Phase B.** `ModuleEntry::TraitDecl` previously embedded the full
+/// frontend AST node `crate::ast::TraitDecl`, which duplicated `visibility`
+/// and `docstring` (also carried directly on the entry / on the trait's own
+/// AST struct) and dragged the `span: Span` parser coordinate into the
+/// runtime symbol-table model. Following the `ModuleEntry::Def` precedent
+/// (which carries direct `scheme`/`visibility`/`docstring`/`seq` fields plus
+/// a slimmed `ast: Option<DefnVariant>` rather than embedding the full
+/// `Defn`), the entry now carries direct `docstring` + `visibility` fields
+/// and this slimmed `TraitDeclInfo` payload — only the structural metadata
+/// the symbol table actually needs.
+///
+/// Single source of truth (Principle 7): `docstring` and `visibility` live on
+/// the wrapping entry, NOT duplicated here. The frontend AST `TraitDecl`
+/// (in `crate::ast`) retains its own `visibility`/`docstring`/`span` — those
+/// record what the user wrote at the source layer and are legitimately
+/// per-parser-output. The fix is at the symbol-table layer: the entry stops
+/// embedding the AST node and stops nesting/duplicating the metadata.
+///
+/// `methods: Vec<TraitMethodSig>` carries the per-method signatures (name,
+/// params, return type, default body, HKT index, span) — the symbol table
+/// needs these to resolve trait-method references and typecheck impls against
+/// each declared signature (spec §5.4.5).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraitDeclInfo {
+    pub name: TraitName,
+    pub type_params: Vec<Symbol>,
+    pub methods: Vec<TraitMethodSig>,
 }
 
 // `pub struct ConstructorInfo { ... }` retired — see `DefKind::Constructor`

@@ -102,34 +102,40 @@ where
         env.ensure_module_exists(&current_module);
     }
 
-    // Extract the staging mutable reference up front so we can wrap it in a
-    // `RefCell` for the duration of this call. The `RefCell` provides
-    // interior mutability so the `&self`-flavoured `current_symbol_table_mut`
-    // accessor on `TypeCheckEnv` can hand out a writable guard pointed at
-    // staging. The `ctx` mutable borrow is consumed by this match (we
-    // re-extract `staging` as a fresh `&mut` reborrow); we don't touch
-    // `ctx` again after this point.
+    // Construct the working env. In cluster mode, route writes targeting
+    // `current_module` to a LOCAL `RefCell<&mut SymbolTable>` whose inner
+    // `&mut` reborrows the staging table out of the `ClusterContext::Cluster`
+    // variant. The local cell binds outer-borrow + inner-mut to the same
+    // call-frame lifetime, satisfying the invariance constraint on
+    // `new_with_staging`'s collapsed `'a == 'a` shape. ClusterContext's own
+    // internal `RefCell` is the same data viewed through a different label —
+    // we hold `ctx` mutably exclusive across this call frame, so handing the
+    // reborrowed inner pointer to the local cell preserves single-writer
+    // discipline (only the local cell is hit during the env's lifetime; the
+    // orchestrator-side cell becomes accessible again after `check_forms`
+    // returns).
     //
     // Per Decision 44 (FIXME 0167 amendment): writes targeting
-    // `current_module` route through this RefCell; writes to other modules
+    // `current_module` route through this `RefCell`; writes to other modules
     // (e.g., cross-module trait-impl writes per Decision 0045) fall through
     // to live unchanged. This is Wave 3b-2c.1's write-redirection plumbing
-    // — it makes the existing `Cluster` mode actually stage instead of
-    // leaking writes to live.
+    // — it makes `Cluster` mode actually stage instead of leaking writes to
+    // live.
     let staging_cell: Option<RefCell<&mut SymbolTable<C, L>>> = match ctx {
         ClusterContext::Cluster { staging, .. } => {
-            // Reborrow the orchestrator's `&mut SymbolTable` into a fresh
-            // mutable reference scoped to this call frame, then wrap.
-            let reborrow: &mut SymbolTable<C, L> = staging;
+            // `staging: &mut RefCell<&'a mut SymbolTable<C, L>>` — take a
+            // mutable handle through `get_mut`, then reborrow the inner
+            // `&mut SymbolTable` into a fresh `&mut` scoped to this call
+            // frame, then wrap in a local `RefCell`.
+            // `staging.get_mut()` yields `&mut &mut SymbolTable<C, L>`;
+            // auto-deref through both layers gives `&mut SymbolTable<C, L>`.
+            let inner: &mut &mut SymbolTable<C, L> = staging.get_mut();
+            let reborrow: &mut SymbolTable<C, L> = inner;
             Some(RefCell::new(reborrow))
         }
         ClusterContext::Live { .. } => None,
     };
 
-    // Construct the working env. In cluster mode, route writes targeting
-    // `current_module` to staging via the RefCell. Reads via
-    // `current_symbol_table` continue to hit live (intra-cluster forward-ref
-    // visibility through staging is read-union follow-up).
     let env = match &staging_cell {
         Some(cell) => TypeCheckEnv::<C, L>::new_with_staging(
             symbol_tables,
@@ -299,7 +305,7 @@ fn map_cranelisp_error(e: cranelisp_types::CranelispError) -> CheckError {
 mod tests {
     use super::*;
     use cranelisp_types::{
-        ConstructorDef, DefKind, DefnVariant, Expr, FieldDef, ModuleEntry, Span, TraitDecl,
+        ConstructorDef, DefKind, DefnVariant, Expr, FieldDef, ModuleEntry, Span, Symbol, TraitDecl,
         TraitImpl, TypeExpr, TypeName, Visibility,
     };
     use std::sync::Arc;
@@ -327,7 +333,6 @@ mod tests {
             name: Symbol::from(name),
             variants: vec![DefnVariant {
                 params: vec![],
-                param_annotations: vec![],
                 body: unit_body(),
                 span: Span::SYNTHETIC,
             }],
@@ -369,9 +374,10 @@ mod tests {
     fn empty_traitimpl(trait_name: &str, type_name: &str) -> ParsedEntry {
         ParsedEntry::TraitImpl {
             impl_: TraitImpl {
-                trait_name: cranelisp_types::TraitName::from(trait_name),
-                target_type: TypeName::from(type_name),
-                type_args: vec![],
+                trait_name: cranelisp_types::TraitRef::new(None, cranelisp_types::TraitName::from(trait_name)),
+                target: cranelisp_types::TypeExpr::Named(
+                    cranelisp_types::TypeRef::new(None, TypeName::from(type_name)),
+                ),
                 type_constraints: vec![],
                 methods: vec![],
                 span: Span::SYNTHETIC,
@@ -397,7 +403,8 @@ mod tests {
             of_type: TypeName::from("Option"),
             fields: vec![FieldDef {
                 name: Symbol::from("val"),
-                type_expr: TypeExpr::Named(TypeName::from("a")),
+                type_expr: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("a"))),
+                span: Span::SYNTHETIC,
             }],
             span: Span::SYNTHETIC,
         }
@@ -439,7 +446,6 @@ mod tests {
             name: Symbol::from("second"),
             variants: vec![DefnVariant {
                 params: vec![],
-                param_annotations: vec![],
                 body: Expr::Apply {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("first"),
@@ -625,7 +631,6 @@ mod tests {
                 name: Symbol::from("second"),
                 variants: vec![DefnVariant {
                     params: vec![],
-                    param_annotations: vec![],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("first"),
@@ -712,8 +717,7 @@ mod tests {
         let id_defn = ParsedEntry::Def {
             name: Symbol::from("id"),
             variants: vec![DefnVariant {
-                params: vec![Symbol::from("x")],
-                param_annotations: vec![None],
+                params: vec![(Symbol::from("x"), None)],
                 body: Expr::Var {
                     name: Symbol::from("x"),
                     span: Span::new(11, 12),
@@ -747,7 +751,6 @@ mod tests {
             name: Symbol::from("caller"),
             variants: vec![DefnVariant {
                 params: vec![],
-                param_annotations: vec![],
                 body: Expr::Apply {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("id"),

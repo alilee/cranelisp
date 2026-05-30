@@ -1,12 +1,11 @@
 //! `ClusterContext<'a, C, L>` — the cluster-vs-committed dispatch choke point
-//! for the two-pass per-form typecheck surface.
+//! for the per-cluster typecheck surface.
 //!
 //! Per Decision 44 (amended FIXME 0167 — Approach B + `ClusterContext`),
 //! `ClusterContext` is the single point where staging-vs-live access is
-//! decided. The two pass functions (`check_form_signatures` and
-//! `check_form_body`) accept `&mut ClusterContext` and route every read /
-//! write through the accessors `current_symbol_table()` (read) and
-//! `current_symbol_table_mut()` (write).
+//! decided. The cluster entry function (`check_forms`) accepts
+//! `&mut ClusterContext` and routes every read / write through the accessors
+//! `current_symbol_table()` (read) and `current_symbol_table_mut()` (write).
 //!
 //! Variants:
 //! - `Live { modules }` — committed mode. Used outside cluster processing
@@ -15,11 +14,16 @@
 //! - `Cluster { modules, staging, current_module }` — used by
 //!   `int::process_cluster` for the duration of one cluster's processing.
 //!   Writes redirect to the orchestrator-handed staging table; reads union
-//!   staging-first with live.
+//!   staging-first with live. Staging is wrapped in a `RefCell` so the
+//!   accessor pair can hand out runtime-checked borrow guards (the same
+//!   `SymbolTableRead` / `SymbolTableMut` types that the interior
+//!   `TypeCheckEnv` accessor pair returns — single-pair invariant).
 //!
-//! See `design/typecheck/wave-3a-check-form.md` §3 for the full design and
-//! `design/arch/facades/typecheck.md` §"Per-form-pass scaffolding" for the
-//! authorised public surface.
+//! See `design/typecheck/wave-3a-check-form.md` §3 for the design context and
+//! `design/arch/facades/typecheck.md` §"Single-pair invariant" for the
+//! authoritative configuration that constrains this module's shape.
+
+use std::cell::RefCell;
 
 use dashmap::DashMap;
 
@@ -36,9 +40,14 @@ pub enum ClusterContext<'a, C: CodeStore = (), L: LinkerStore = ()> {
         current_module: ModuleFullPath,
     },
     /// Cluster mode — used by `int::process_cluster`.
+    ///
+    /// `staging` is wrapped in a `RefCell` so the read + write accessors can
+    /// each hand out a runtime-checked borrow guard. The orchestrator's
+    /// `&'a mut SymbolTable` is consumed by the `cluster()` constructor; the
+    /// `RefCell` is owned by the `ClusterContext` value.
     Cluster {
         modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
-        staging: &'a mut SymbolTable<C, L>,
+        staging: RefCell<&'a mut SymbolTable<C, L>>,
         current_module: ModuleFullPath,
     },
 }
@@ -56,14 +65,19 @@ impl<'a, C: CodeStore, L: LinkerStore> ClusterContext<'a, C, L> {
     }
 
     /// Construct a `Cluster` mode ClusterContext. The orchestrator owns the
-    /// staging table and holds it across the cluster's processing; this
-    /// reference is the single write surface for the cluster.
+    /// staging table and lends it to the cluster's processing via `&mut`; the
+    /// constructor wraps that reference in a `RefCell` so the read + write
+    /// accessors can hand out borrow guards.
     pub fn cluster(
         modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
         staging: &'a mut SymbolTable<C, L>,
         current_module: ModuleFullPath,
     ) -> Self {
-        ClusterContext::Cluster { modules, staging, current_module }
+        ClusterContext::Cluster {
+            modules,
+            staging: RefCell::new(staging),
+            current_module,
+        }
     }
 
     /// Currently scoped module path.
@@ -74,25 +88,18 @@ impl<'a, C: CodeStore, L: LinkerStore> ClusterContext<'a, C, L> {
         }
     }
 
-    /// Read accessor: returns a `View` over the current module's symbol
-    /// table.
+    /// Read accessor: returns a `SymbolTableRead` borrow guard over the
+    /// current module's symbol table. Call `.view()` on the returned guard to
+    /// obtain the `View<'_, C, L>` used by lookup code.
     ///
-    /// - In `Cluster` mode: `View::union(staging, live)` — staging-first.
-    ///   If the current module has no live table yet, the live side is an
-    ///   empty placeholder (panic) — Wave 3a-α's registration discipline
-    ///   ensures the current module's live table exists before
-    ///   `process_cluster` constructs a `Cluster` variant.
-    /// - In `Live` mode: `View::single(live)` — single-source over live.
-    ///
-    /// Returns a `View` that borrows the underlying tables; the borrow ends
-    /// when the returned `View` is dropped.
-    ///
-    /// Note on lifetime: in `Cluster` mode the live side is read by holding
-    /// a `dashmap::mapref::one::Ref` guard for the duration of the borrow —
-    /// callers should NOT hold a `View` across calls that would re-enter
-    /// the DashMap (deadlock risk). Use the `with_view` helper for scoped
-    /// access.
-    pub fn current_symbol_table(&self) -> ClusterRead<'_, C, L> {
+    /// - In `Cluster` mode: `SymbolTableRead::Cluster { staging, live }` —
+    ///   `.view()` returns `View::union(staging, live)` (staging-first). The
+    ///   guard holds both a `RefCell` runtime borrow on staging and a DashMap
+    ///   per-shard read guard on live; drop it before acquiring another guard
+    ///   to avoid deadlocks or `RefCell` borrow-check panics.
+    /// - In `Live` mode: `SymbolTableRead::Live(...)` — `.view()` returns
+    ///   `View::single(live)`. Guard holds a DashMap per-shard read guard.
+    pub fn current_symbol_table<'b>(&'b self) -> SymbolTableRead<'b, 'a, C, L> {
         match self {
             ClusterContext::Live { modules, current_module } => {
                 let guard = modules
@@ -101,7 +108,7 @@ impl<'a, C: CodeStore, L: LinkerStore> ClusterContext<'a, C, L> {
                         "ClusterContext::current_symbol_table: current module '{}' not present in live modules",
                         current_module
                     ));
-                ClusterRead::Live(guard)
+                SymbolTableRead::Live(guard)
             }
             ClusterContext::Cluster { modules, staging, current_module } => {
                 let guard = modules
@@ -110,18 +117,20 @@ impl<'a, C: CodeStore, L: LinkerStore> ClusterContext<'a, C, L> {
                         "ClusterContext::current_symbol_table: current module '{}' not present in live modules (cluster precondition)",
                         current_module
                     ));
-                ClusterRead::Cluster { staging, live: guard }
+                SymbolTableRead::Cluster { staging: staging.borrow(), live: guard }
             }
         }
     }
 
-    /// Write accessor. In `Cluster` mode returns `&mut staging`; in `Live`
-    /// mode returns a `RefMut` guard to the per-module live table.
+    /// Write accessor: returns a `SymbolTableMut` borrow guard that
+    /// transparently derefs to `&mut SymbolTable<C, L>` via `Deref`/`DerefMut`.
     ///
-    /// The returned wrapper transparently derefs to `&mut SymbolTable<C, L>`
-    /// so the 91 register-call sites in `program.rs` continue to write
-    /// uniformly.
-    pub fn current_symbol_table_mut(&mut self) -> ClusterWrite<'_, C, L> {
+    /// - In `Cluster` mode: `SymbolTableMut::Staging(...)` — wraps the
+    ///   `RefCell::borrow_mut()` guard pointing at the orchestrator-handed
+    ///   staging table.
+    /// - In `Live` mode: `SymbolTableMut::Live(...)` — wraps the DashMap
+    ///   per-module write guard for the per-module live table.
+    pub fn current_symbol_table_mut<'b>(&'b mut self) -> SymbolTableMut<'b, 'a, C, L> {
         match self {
             ClusterContext::Live { modules, current_module } => {
                 let guard = modules
@@ -130,67 +139,100 @@ impl<'a, C: CodeStore, L: LinkerStore> ClusterContext<'a, C, L> {
                         "ClusterContext::current_symbol_table_mut: current module '{}' not present in live modules",
                         current_module
                     ));
-                ClusterWrite::Live(guard)
+                SymbolTableMut::Live(guard)
             }
-            ClusterContext::Cluster { staging, .. } => ClusterWrite::Cluster(staging),
+            ClusterContext::Cluster { staging, .. } => {
+                SymbolTableMut::Staging(staging.borrow_mut())
+            }
         }
     }
+
 }
 
-/// Read-side wrapper produced by `ClusterContext::current_symbol_table`.
+/// Read-side borrow guard returned by both `ClusterContext::current_symbol_table()`
+/// and `TypeCheckEnv::current_symbol_table()` — the single-pair invariant
+/// (per `facades/typecheck.md` §"Single-pair invariant") mandates one pair of
+/// read+write wrappers across the typecheck surface.
 ///
-/// In `Live` mode it owns a `DashMap` read guard; in `Cluster` mode it
-/// owns the live read guard plus the staging reference. The wrapper
-/// exposes a `view()` method that constructs the `View<'_, C, L>` over
-/// the held references.
-pub enum ClusterRead<'a, C: CodeStore, L: LinkerStore> {
+/// - `Live`: a DashMap per-shard read guard over the live per-module table.
+///   `.view()` returns `View::single(live)`.
+/// - `Cluster`: a `RefCell` borrow on staging plus a DashMap read guard on
+///   live. `.view()` returns `View::union(staging, live)` — staging-first.
+///
+/// The two lifetimes name the borrow's source: `'a` is the read borrow itself
+/// (the guard); `'b` is the lifetime of the orchestrator's underlying
+/// `&'b mut SymbolTable<C, L>` reference held inside the staging `RefCell`.
+/// In `Live` mode `'b` is unused on the variant payload.
+pub enum SymbolTableRead<'a, 'b, C: CodeStore, L: LinkerStore> {
     /// Live mode: read guard over the per-module live table.
     Live(dashmap::mapref::one::Ref<'a, ModuleFullPath, SymbolTable<C, L>>),
-    /// Cluster mode: staging reference + live read guard.
+    /// Cluster mode: staging `RefCell::borrow()` guard + live read guard.
     Cluster {
-        staging: &'a SymbolTable<C, L>,
+        staging: std::cell::Ref<'a, &'b mut SymbolTable<C, L>>,
         live: dashmap::mapref::one::Ref<'a, ModuleFullPath, SymbolTable<C, L>>,
     },
 }
 
-impl<'a, C: CodeStore, L: LinkerStore> ClusterRead<'a, C, L> {
-    /// Construct a `View` over the held references.
+impl<'a, 'b, C: CodeStore, L: LinkerStore> SymbolTableRead<'a, 'b, C, L> {
+    /// Construct a `View<'_, C, L>` over the held references.
+    ///
+    /// - `Live` → `View::single(live)`.
+    /// - `Cluster` → `View::union(staging, live)` — lookups dispatch
+    ///   staging-first, then live.
     pub fn view(&self) -> View<'_, C, L> {
         match self {
-            ClusterRead::Live(guard) => View::single(guard.value()),
-            ClusterRead::Cluster { staging, live } => View::union(staging, live.value()),
+            SymbolTableRead::Live(guard) => View::single(guard.value()),
+            SymbolTableRead::Cluster { staging, live } => {
+                // `staging` is `Ref<'_, &'b mut SymbolTable>`; auto-deref
+                // collapses both layers to `&SymbolTable<C, L>`.
+                let staging_ref: &SymbolTable<C, L> = staging;
+                View::union(staging_ref, live.value())
+            }
         }
     }
 }
 
-/// Write-side wrapper produced by `ClusterContext::current_symbol_table_mut`.
+/// Write-side borrow guard returned by both
+/// `ClusterContext::current_symbol_table_mut()` and
+/// `TypeCheckEnv::current_symbol_table_mut()` — the single-pair invariant
+/// counterpart to `SymbolTableRead`.
 ///
-/// Derefs transparently to `&mut SymbolTable<C, L>` so call sites that
-/// already write through `current_symbol_table_mut()` need no source
-/// changes.
-pub enum ClusterWrite<'a, C: CodeStore, L: LinkerStore> {
+/// - `Live`: a DashMap per-module write guard.
+/// - `Staging`: a `RefCell::borrow_mut()` guard over the orchestrator-handed
+///   staging table.
+///
+/// Derefs (`Deref` + `DerefMut`) to `&[mut] SymbolTable<C, L>` so the
+/// register-call sites in `program.rs`, `traits.rs`, etc. write through
+/// uniformly without per-site changes.
+///
+/// Lifetimes: `'a` is the guard borrow; `'b` is the lifetime of the
+/// underlying `&'b mut SymbolTable<C, L>` reference held inside the staging
+/// `RefCell` (unused in `Live`).
+pub enum SymbolTableMut<'a, 'b, C: CodeStore, L: LinkerStore> {
     /// Live mode: write guard from the DashMap.
     Live(dashmap::mapref::one::RefMut<'a, ModuleFullPath, SymbolTable<C, L>>),
-    /// Cluster mode: direct `&mut` to the orchestrator-handed staging
-    /// table.
-    Cluster(&'a mut SymbolTable<C, L>),
+    /// Staging mode: `RefCell::borrow_mut()` guard over the orchestrator-handed
+    /// staging table.
+    Staging(std::cell::RefMut<'a, &'b mut SymbolTable<C, L>>),
 }
 
-impl<'a, C: CodeStore, L: LinkerStore> std::ops::Deref for ClusterWrite<'a, C, L> {
+impl<'a, 'b, C: CodeStore, L: LinkerStore> std::ops::Deref for SymbolTableMut<'a, 'b, C, L> {
     type Target = SymbolTable<C, L>;
     fn deref(&self) -> &Self::Target {
         match self {
-            ClusterWrite::Live(g) => g.value(),
-            ClusterWrite::Cluster(s) => s,
+            SymbolTableMut::Live(g) => g.value(),
+            // `g` is `RefMut<'_, &'b mut SymbolTable>`; auto-deref walks both
+            // layers to `&SymbolTable`.
+            SymbolTableMut::Staging(g) => g,
         }
     }
 }
 
-impl<'a, C: CodeStore, L: LinkerStore> std::ops::DerefMut for ClusterWrite<'a, C, L> {
+impl<'a, 'b, C: CodeStore, L: LinkerStore> std::ops::DerefMut for SymbolTableMut<'a, 'b, C, L> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         match self {
-            ClusterWrite::Live(g) => g.value_mut(),
-            ClusterWrite::Cluster(s) => s,
+            SymbolTableMut::Live(g) => g.value_mut(),
+            SymbolTableMut::Staging(g) => g,
         }
     }
 }
@@ -217,6 +259,7 @@ mod tests {
                 module: ModuleFullPath::from("other"),
                 symbol: Symbol::from("x"),
             },
+            visibility: cranelisp_types::Visibility::Private,
         }
     }
 
@@ -299,6 +342,7 @@ mod tests {
                     module: ModuleFullPath::from("shadowing"),
                     symbol: Symbol::from("shadow"),
                 },
+                visibility: cranelisp_types::Visibility::Private,
             },
         );
 

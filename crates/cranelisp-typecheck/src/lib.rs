@@ -28,7 +28,7 @@
 //   the internal dispatcher working.
 
 mod adt;
-pub mod builtins;
+mod builtins;
 mod checker;
 mod cluster;
 mod form;
@@ -38,20 +38,28 @@ mod resolve;
 mod result;
 mod scheme;
 mod scope;
-pub mod trace;
+mod trace;
 mod traits;
 mod unify;
 
 // Public API
-pub use builtins::register_builtins;
+//
+// `register_builtins` is intentionally NOT re-exported. Synthetic-module
+// assembly is leaving this crate's bounded context (typecheck checks forms
+// against caller-populated symbol tables; it does not construct the language).
+// The `builtins` module body is retained `pub(crate)` as the legacy assembly
+// reference for the S73 relocation into `cranelisp-types` builders + `/int`
+// orchestration. Severing the public re-export forces `/int` to stop calling
+// it.
 pub use checker::{
     CheckState, TypeCheckEnv, advance_next_id_past_table, register_exports, register_imports,
 };
-pub use cluster::{ClusterContext, ClusterRead, ClusterWrite};
+pub use cluster::{ClusterContext, SymbolTableMut, SymbolTableRead};
 pub use form::check_forms;
-pub use result::{CheckError, CheckResult, ReplSnapshot};
+pub use result::{CheckError, CheckResult, ReplSnapshot, ResolveError};
 pub use trace::{
-    SymbolTableEnsureHook, SymbolTableEnsureOutcome, install_symbol_table_ensure_hook,
+    SymbolTableEnsureHook, SymbolTableEnsureOutcome, emit_symbol_table_ensure,
+    install_symbol_table_ensure_hook,
 };
 
 // Re-export boundary types that callers need (these stay in cranelisp-types).

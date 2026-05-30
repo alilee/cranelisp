@@ -63,9 +63,9 @@
 //!   specific dependencies. The single source of truth for callable
 //!   addresses per S66 post-rollback (`1dc57ae`).
 //! - **Typecheck output** ([`MethodResolutions`], [`ResolvedCall`],
-//!   [`MonoDefn`], [`TypeDefInfo`], [`FieldInfo`], [`DisplayInfo`]) —
-//!   produced by typecheck (in addition to in-place AST annotations);
-//!   consumed by backend.
+//!   [`MonoDefn`], [`TypeDefInfo`], [`TraitDeclInfo`], [`FieldInfo`],
+//!   [`DisplayInfo`]) — produced by typecheck (in addition to in-place AST
+//!   annotations); consumed by backend.
 //! - **Parse-time transients** ([`ParsedEntry`], [`DefmacroInfo`],
 //!   [`MacroClause`]) — `cranelisp_frontend::build_form` output consumed
 //!   by `cranelisp_typecheck::check_forms`. NEVER lands in `SymbolTable`.
@@ -183,7 +183,7 @@ pub use ast::{
 };
 pub use types::{Scheme, Subst, Type, TypeId, apply, free_vars, max_type_var_id, format_type_display, format_type_with_vars, type_var_names};
 pub use check::{
-    DisplayInfo, FieldInfo, MethodResolutions, MonoDefn, ResolvedCall, TypeDefInfo,
+    DisplayInfo, FieldInfo, MethodResolutions, MonoDefn, ResolvedCall, TraitDeclInfo, TypeDefInfo,
 };
 // `ConstructorInfo` retired — see crates/cranelisp-types/src/check.rs for the
 // migration map. `CheckResult` and `ReplSnapshot` relocated to

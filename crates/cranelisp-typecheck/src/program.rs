@@ -25,16 +25,13 @@ use std::collections::{HashMap, HashSet};
 use cranelisp_types::{ErrorLocation,
     CompileContext, ConstrainedFn, CranelispError, Defn, DefKind, DefnVariant,
     DisplayInfo, Expr, FQSymbol, JitSymbol, ModuleEntry, ModuleFullPath,
-    ModuleStrategy, MonoDefn, ResolvedCall, Scheme, Span, Symbol, SymbolTable, TopLevel, Type,
+    ModuleStrategy, MonoDefn, ResolvedCall, Scheme, Span, Subst, Symbol, SymbolTable, TopLevel, Type,
     Visibility, Warning, apply,
 };
 
 use crate::result::CheckResult;
 
-use cranelisp_types::types::Subst;
-
 use crate::checker::{CheckState, TypeCheckEnv};
-use crate::resolve::resolve_type_expr;
 use crate::scheme::mono;
 
 // --- AST annotation helpers (Step 1b) ---
@@ -86,6 +83,11 @@ fn apply_subst_to_expr(subst: &Subst, expr: &mut Expr) {
         Expr::Trace { body, .. } => {
             apply_subst_to_expr(subst, body);
         }
+        Expr::ConstrADT { fields, .. } => {
+            for field in fields {
+                apply_subst_to_expr(subst, field);
+            }
+        }
         // Leaf nodes: no children to recurse into
         Expr::IntLit { .. }
         | Expr::FloatLit { .. }
@@ -100,6 +102,14 @@ pub(crate) fn apply_subst_to_defn(subst: &Subst, defn: &mut Defn) {
     for variant in &mut defn.variants {
         apply_subst_to_expr(subst, &mut variant.body);
     }
+}
+
+/// Apply substitution to all `inferred_type` fields in a `DefnVariant`.
+/// S69 Submission 35 narrowing — `ModuleEntry::Def.ast` now carries the
+/// single meaningful `DefnVariant` payload; the outer `Defn` wrapper is the
+/// frontend AST shape, not the per-entry runtime payload.
+pub(crate) fn apply_subst_to_variant(subst: &Subst, variant: &mut DefnVariant) {
+    apply_subst_to_expr(subst, &mut variant.body);
 }
 
 /// Annotate an expression tree with types and resolved calls from side maps.
@@ -163,6 +173,11 @@ fn annotate_expr_from_maps(
         Expr::Trace { body, .. } => {
             annotate_expr_from_maps(body, expr_types, method_resolutions);
         }
+        Expr::ConstrADT { fields, .. } => {
+            for field in fields {
+                annotate_expr_from_maps(field, expr_types, method_resolutions);
+            }
+        }
         // Leaf nodes
         Expr::IntLit { .. }
         | Expr::FloatLit { .. }
@@ -181,6 +196,16 @@ pub(crate) fn annotate_defn_from_maps(
     for variant in &mut defn.variants {
         annotate_expr_from_maps(&mut variant.body, expr_types, method_resolutions);
     }
+}
+
+/// Annotate a `DefnVariant` with types and resolved calls from side maps.
+/// Sibling of `annotate_defn_from_maps` for the post-S35 narrowing.
+pub(crate) fn annotate_variant_from_maps(
+    variant: &mut DefnVariant,
+    expr_types: &HashMap<Span, Type>,
+    method_resolutions: &HashMap<Span, ResolvedCall>,
+) {
+    annotate_expr_from_maps(&mut variant.body, expr_types, method_resolutions);
 }
 
 // --- Callee write helper (Decision 21) ---
@@ -213,9 +238,11 @@ where
                 .then(a.symbol.as_ref().cmp(b.symbol.as_ref()))
         });
         callees.dedup();
-        if let Some(
-            ModuleEntry::Def { callees: c, .. } | ModuleEntry::Macro { callees: c, .. },
-        ) = sym_table.symbols.get_mut(&caller)
+        // Per Submission 22: `ModuleEntry::Macro` retired. Macros are now
+        // `ModuleEntry::Def` entries with `kind: DefKind::Macro { clauses_meta }`,
+        // so the prior OR-pattern collapses to the single Def arm.
+        if let Some(ModuleEntry::Def { callees: c, .. }) =
+            sym_table.symbols.get_mut(&caller)
         {
             *c = callees;
         }
@@ -528,6 +555,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // Builtins are always available — no codegen dependency.
                 None
             }
+            // `ResolvedCall` is `#[non_exhaustive]` per Decision 47 / S69
+            // Submission 32. Future variants land here; they default to "no
+            // call graph edge" until the call-graph maintainers wire them.
+            _ => None,
         }
     }
 
@@ -635,7 +666,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 docstring: defn.docstring.clone(),
                 variants: vec![DefnVariant {
                     params: variant.params.clone(),
-                    param_annotations: variant.param_annotations.clone(),
                     body: variant.body.clone(),
                     span: variant.span,
                 }],
@@ -662,6 +692,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 callees: Vec::new(),
                 got_slot: None,
                 trait_origin: None,
+                seq: 0,
                 ast: None,
                 code: None,
             },
@@ -725,7 +756,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         // Snapshot method_resolutions and expr_types sizes so we can extract
         // just the new entries added during this form's checking.
-        let mr_before: HashSet<Span> = state.method_resolutions.keys().copied().collect();
+        let mr_before: HashSet<Span> = state.method_resolutions.resolved_calls.keys().copied().collect();
         let et_before: HashSet<Span> = state.expr_types.keys().copied().collect();
 
         self.check_defn_body(state, defn, param_types, ret_ty)?;
@@ -761,7 +792,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         // Extract new method resolutions and expr types added during this form
         let mut form_mr = HashMap::new();
-        for (span, res) in &state.method_resolutions {
+        for (span, res) in &state.method_resolutions.resolved_calls {
             if !mr_before.contains(span) {
                 form_mr.insert(*span, res.clone());
             }
@@ -786,7 +817,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             if let Some(ModuleEntry::Def { ast, .. }) =
                 self.current_symbol_table_mut(state).symbols.get_mut(&defn.name)
             {
-                *ast = Some(annotated);
+                // S69 Submission 35: `ast: Option<DefnVariant>` (the single
+                // meaningful payload; multi-sig decomposition already split
+                // into per-mangled-name Defs upstream of this point).
+                *ast = annotated.variants.into_iter().next();
             }
         }
 
@@ -814,7 +848,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         defn: &Defn,
         accumulator: &ModuleCheckAccumulator,
     ) -> Result<FormCheckResult, CranelispError> {
-        let mr_before: HashSet<Span> = state.method_resolutions.keys().copied().collect();
+        let mr_before: HashSet<Span> = state.method_resolutions.resolved_calls.keys().copied().collect();
         let et_before: HashSet<Span> = state.expr_types.keys().copied().collect();
 
         // Check each variant body
@@ -832,7 +866,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 })?;
 
             // Snapshot for per-variant delta extraction
-            let variant_mr_before: HashSet<Span> = state.method_resolutions.keys().copied().collect();
+            let variant_mr_before: HashSet<Span> = state.method_resolutions.resolved_calls.keys().copied().collect();
             let variant_et_before: HashSet<Span> = state.expr_types.keys().copied().collect();
 
             // Build a temporary single-variant defn for body checking
@@ -841,7 +875,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 docstring: defn.docstring.clone(),
                 variants: vec![DefnVariant {
                     params: variant.params.clone(),
-                    param_annotations: variant.param_annotations.clone(),
                     body: variant.body.clone(),
                     span: variant.span,
                 }],
@@ -858,6 +891,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // Per-variant AST annotation
             {
                 let variant_mr: HashMap<Span, ResolvedCall> = state.method_resolutions
+                    .resolved_calls
                     .iter()
                     .filter(|(span, _)| !variant_mr_before.contains(span))
                     .map(|(span, res)| (*span, res.clone()))
@@ -873,7 +907,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 if let Some(ModuleEntry::Def { ast, .. }) =
                     self.current_symbol_table_mut(state).symbols.get_mut(&internal_name)
                 {
-                    *ast = Some(annotated);
+                    // S69 Submission 35 narrowing.
+                    *ast = annotated.variants.into_iter().next();
                 }
             }
 
@@ -901,7 +936,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         // Extract new method resolutions and expr types
         let mut form_mr = HashMap::new();
-        for (span, res) in &state.method_resolutions {
+        for (span, res) in &state.method_resolutions.resolved_calls {
             if !mr_before.contains(span) {
                 form_mr.insert(*span, res.clone());
             }
@@ -1041,7 +1076,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                             docstring: defn.docstring.clone(),
                             variants: vec![DefnVariant {
                                 params: variant.params.clone(),
-                                param_annotations: variant.param_annotations.clone(),
                                 body: variant.body.clone(),
                                 span: variant.span,
                             }],
@@ -1085,7 +1119,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         }
                         // Pure parametric polymorphism registered by a previous
                         // `check_forms` call (Additive cross-call shape): the
-                        // scheme is still polymorphic (`scheme.vars` non-empty)
+                        // scheme is still polymorphic (`scheme.type_vars` non-empty)
                         // and we have the annotated `ast`. The current
                         // cluster's call sites against this name need
                         // monomorphisation just as if it were constrained —
@@ -1093,7 +1127,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         // `get_constrained_fn` synthesises a `ConstrainedFn`
                         // view from `ast + scheme` for this case.
                         DefKind::UserFn { constrained_fn: None }
-                            if !scheme.vars.is_empty() && ast.is_some() =>
+                            if !scheme.type_vars.is_empty() && ast.is_some() =>
                         {
                             constrained_fn_names.insert(name.clone());
                         }
@@ -1121,7 +1155,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // resolutions into state.method_resolutions. Merge these into
         // the accumulator so it becomes the single authoritative source.
         accumulator.method_resolutions.extend(
-            std::mem::take(&mut state.method_resolutions),
+            std::mem::take(&mut state.method_resolutions).resolved_calls,
         );
         accumulator.expr_types.extend(
             std::mem::take(&mut state.expr_types),
@@ -1161,12 +1195,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                             if let Some(ModuleEntry::Def { ast: Some(existing), .. }) =
                                 sym_table.symbols.get_mut(&internal_name)
                             {
-                                annotate_defn_from_maps(
+                                annotate_variant_from_maps(
                                     existing,
                                     &resolved_expr_types,
                                     &accumulator.method_resolutions,
                                 );
-                                apply_subst_to_defn(&state.subst, existing);
+                                apply_subst_to_variant(&state.subst, existing);
                             }
                         }
                     }
@@ -1174,27 +1208,28 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         if let Some(ModuleEntry::Def { ast: Some(existing), .. }) =
                             sym_table.symbols.get_mut(&defn.name)
                         {
-                            annotate_defn_from_maps(
+                            annotate_variant_from_maps(
                                 existing,
                                 &resolved_expr_types,
                                 &accumulator.method_resolutions,
                             );
-                            apply_subst_to_defn(&state.subst, existing);
+                            apply_subst_to_variant(&state.subst, existing);
                         }
                     }
                     TopLevel::TraitImpl(ti) => {
                         for method in &ti.methods {
-                            let mangled = format!("{}.{}${}", ti.trait_name, method.name, ti.target_type);
+                            let target_name = ti.target.head_ref().map(|r| r.name.as_ref()).unwrap_or("");
+                            let mangled = format!("{}.{}${}", ti.trait_name, method.name, target_name);
                             let mangled_sym = Symbol::from(mangled.as_str());
                             if let Some(ModuleEntry::Def { ast: Some(existing), .. }) =
                                 sym_table.symbols.get_mut(&mangled_sym)
                             {
-                                annotate_defn_from_maps(
+                                annotate_variant_from_maps(
                                     existing,
                                     &resolved_expr_types,
                                     &accumulator.method_resolutions,
                                 );
-                                apply_subst_to_defn(&state.subst, existing);
+                                apply_subst_to_variant(&state.subst, existing);
                             }
                         }
                     }
@@ -1322,7 +1357,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         docstring: None,
                         variants: vec![DefnVariant {
                             params: vec![],
-                            param_annotations: vec![],
                             body: expr.clone(),
                             span,
                         }],
@@ -1475,7 +1509,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         docstring: defn.docstring.clone(),
                         variants: vec![DefnVariant {
                             params: variant.params.clone(),
-                            param_annotations: variant.param_annotations.clone(),
                             body: variant.body.clone(),
                             span: variant.span,
                         }],
@@ -1502,6 +1535,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         callees: Vec::new(),
                         got_slot: None,
                         trait_origin: None,
+                        seq: 0,
                         ast: None,
                         code: None,
                     },
@@ -1631,13 +1665,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // no re-annotation needed here.
             let mut st = self.current_symbol_table_mut(state);
             let internal_entry = st.symbols.remove(internal_name.as_ref());
-            let annotated_ast: Option<Defn> = match internal_entry {
-                Some(ModuleEntry::Def { ast, .. }) => {
-                    ast.map(|mut d| {
-                        d.name = mangled.clone();
-                        d
-                    })
-                }
+            // Post S69 Submission 35: `ast: Option<DefnVariant>`. No `name`
+            // field on DefnVariant — the symbol-table key carries the name;
+            // mangling lives at the entry insertion below.
+            let annotated_ast: Option<DefnVariant> = match internal_entry {
+                Some(ModuleEntry::Def { ast, .. }) => ast,
                 _ => None,
             };
             let slot = st.allocate_got_slot();
@@ -1647,13 +1679,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     scheme: scheme.clone(),
                     visibility: defn.visibility,
                     docstring: defn.docstring.clone(),
-                    param_names: variant.params.clone(),
+                    param_names: variant.params.iter().map(|(n, _)| n.clone()).collect(),
                     kind: Box::new(DefKind::UserFn {
                         constrained_fn: None,
                     }),
                     callees: Vec::new(),
                     got_slot: Some(slot),
                     trait_origin: None,
+                    seq: 0,
                     ast: annotated_ast,
                     code: None,
                 },
@@ -1665,7 +1698,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 docstring: defn.docstring.clone(),
                 variants: vec![DefnVariant {
                     params: variant.params.clone(),
-                    param_annotations: variant.param_annotations.clone(),
                     body: variant.body.clone(),
                     span: variant.span,
                 }],
@@ -1720,6 +1752,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 callees: Vec::new(),
                 got_slot: None,
                 trait_origin: None,
+                seq: 0,
                 ast: None,
                 code: None,
             },
@@ -1776,7 +1809,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     self.unify(state, p, a, *span)?;
                 }
                 self.unify(state, ret_type_var, ret_ty, *span)?;
-                state.method_resolutions.insert(
+                state.method_resolutions.resolved_calls.insert(
                     *span,
                     ResolvedCall::SigDispatch {
                         mangled_name: JitSymbol::from(mangled_name.as_ref()),
@@ -1879,7 +1912,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                                 docstring: defn.docstring.clone(),
                                 variants: vec![DefnVariant {
                                     params: variant.params.clone(),
-                                    param_annotations: variant.param_annotations.clone(),
                                     body: variant.body.clone(),
                                     span: variant.span,
                                 }],
@@ -1889,13 +1921,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                             annotate_defn_from_maps(
                                 &mut variant_defn,
                                 &resolved_expr_types,
-                                &state.method_resolutions,
+                                &state.method_resolutions.resolved_calls,
                             );
                             apply_subst_to_defn(&state.subst, &mut variant_defn);
                             if let Some(ModuleEntry::Def { ast, .. }) =
                                 sym_table.symbols.get_mut(&internal_name)
                             {
-                                *ast = Some(variant_defn);
+                                // S69 Submission 35: ast is Option<DefnVariant>.
+                                *ast = variant_defn.variants.into_iter().next();
                             }
                         }
                     }
@@ -1904,31 +1937,32 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         annotate_defn_from_maps(
                             &mut annotated,
                             &resolved_expr_types,
-                            &state.method_resolutions,
+                            &state.method_resolutions.resolved_calls,
                         );
                         apply_subst_to_defn(&state.subst, &mut annotated);
                         if let Some(ModuleEntry::Def { ast, .. }) =
                             sym_table.symbols.get_mut(&defn.name)
                         {
-                            *ast = Some(annotated);
+                            *ast = annotated.variants.into_iter().next();
                         }
                     }
                     TopLevel::TraitImpl(ti) => {
                         for method in &ti.methods {
-                            let mangled = format!("{}.{}${}", ti.trait_name, method.name, ti.target_type);
+                            let target_name = ti.target.head_ref().map(|r| r.name.as_ref()).unwrap_or("");
+                            let mangled = format!("{}.{}${}", ti.trait_name, method.name, target_name);
                             let mangled_sym = Symbol::from(mangled.as_str());
                             let mut annotated = method.clone();
                             annotated.name = mangled_sym.clone();
                             annotate_defn_from_maps(
                                 &mut annotated,
                                 &resolved_expr_types,
-                                &state.method_resolutions,
+                                &state.method_resolutions.resolved_calls,
                             );
                             apply_subst_to_defn(&state.subst, &mut annotated);
                             if let Some(ModuleEntry::Def { ast, .. }) =
                                 sym_table.symbols.get_mut(&mangled_sym)
                             {
-                                *ast = Some(annotated);
+                                *ast = annotated.variants.into_iter().next();
                             }
                         }
                     }
@@ -2009,13 +2043,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     annotate_defn_from_maps(
                         &mut annotated,
                         &resolved_expr_types,
-                        &state.method_resolutions,
+                        &state.method_resolutions.resolved_calls,
                     );
                     apply_subst_to_defn(&state.subst, &mut annotated);
                     if let Some(ModuleEntry::Def { ast, .. }) =
                         self.current_symbol_table_mut(state).symbols.get_mut(&defn.name)
                     {
-                        *ast = Some(annotated);
+                        *ast = annotated.variants.into_iter().next();
                     }
                 }
 
@@ -2191,7 +2225,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             let r = self.current_symbol_table(state);
             if let Some(ModuleEntry::Def { scheme, ast: Some(_), .. }) =
                 r.view().lookup(&defn.name)
-                && scheme.vars.is_empty()
+                && scheme.type_vars.is_empty()
                 && scheme.constraints.is_empty()
                 && let Type::Fn(param_types, ret_ty) = &scheme.ty
             {
@@ -2200,11 +2234,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
 
         let mut param_types = Vec::new();
-        for (i, _param) in defn.params().iter().enumerate() {
-            let param_ty = if let Some(Some(ann)) = defn.param_annotations().get(i) {
-                let known = self.known_type_names_with_state(state);
+        for (_name, ann) in defn.params().iter() {
+            let param_ty = if let Some(ann) = ann {
                 let var_map = HashMap::new();
-                resolve_type_expr(ann, &var_map, &known, defn.span)?
+                self.resolve_type_expr_in_module(
+                    ann, &var_map, &state.current_module, defn.span,
+                )?
             } else {
                 self.fresh_var()
             };
@@ -2252,13 +2287,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 scheme,
                 visibility: defn.visibility,
                 docstring: defn.docstring.clone(),
-                param_names: defn.params().to_vec(),
+                param_names: defn.params().iter().map(|(n, _)| n.clone()).collect(),
                 kind: Box::new(DefKind::UserFn {
                     constrained_fn: None,
                 }),
                 callees: Vec::new(),
                 got_slot,
                 trait_origin: None,
+                seq: 0,
                 ast: existing_ast,
                 code: existing_code,
             },
@@ -2382,7 +2418,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         self.push_scope(state);
 
         // Bind parameters
-        for (param_name, param_ty) in defn.params().iter().zip(param_types.iter()) {
+        for ((param_name, _), param_ty) in defn.params().iter().zip(param_types.iter()) {
             self.bind_local(state, param_name.clone(), mono(param_ty.clone()));
         }
 
@@ -2472,7 +2508,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 docstring: defn.docstring.clone(),
                 variants: vec![DefnVariant {
                     params: variant.params.clone(),
-                    param_annotations: variant.param_annotations.clone(),
                     body: variant.body.clone(),
                     span: variant.span,
                 }],
@@ -2498,6 +2533,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 callees: Vec::new(),
                 got_slot: None,
                 trait_origin: None,
+                seq: 0,
                 ast: None,
                 code: None,
             },
@@ -2515,7 +2551,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 docstring: defn.docstring.clone(),
                 variants: vec![DefnVariant {
                     params: variant.params.clone(),
-                    param_annotations: variant.param_annotations.clone(),
                     body: variant.body.clone(),
                     span: variant.span,
                 }],
@@ -2606,7 +2641,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
             if let Some(mangled) = seen.get(&key) {
                 // Already generated this specialization — just record dispatch
-                state.method_resolutions.insert(
+                state.method_resolutions.resolved_calls.insert(
                     *call_span,
                     ResolvedCall::SigDispatch { mangled_name: mangled.clone() },
                 );
@@ -2616,7 +2651,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             if let Some(mono) = self.monomorphise_call(state, fn_name, &arg_types, *call_span)? {
                 let mangled = JitSymbol::from(mono.defn.name.as_ref());
                 // Record dispatch for this call site
-                state.method_resolutions.insert(
+                state.method_resolutions.resolved_calls.insert(
                     *call_span,
                     ResolvedCall::SigDispatch { mangled_name: mangled.clone() },
                 );
@@ -2685,7 +2720,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 .join("+"));
 
             if let Some(mangled) = seen.get(&key) {
-                state.method_resolutions.insert(
+                state.method_resolutions.resolved_calls.insert(
                     *call_span,
                     ResolvedCall::SigDispatch { mangled_name: mangled.clone() },
                 );
@@ -2694,7 +2729,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
             if let Some(mono) = self.monomorphise_call(state, fn_name, &arg_types, *call_span)? {
                 let mangled = JitSymbol::from(mono.defn.name.as_ref());
-                state.method_resolutions.insert(
+                state.method_resolutions.resolved_calls.insert(
                     *call_span,
                     ResolvedCall::SigDispatch { mangled_name: mangled.clone() },
                 );
@@ -2770,6 +2805,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 }
                 Self::collect_constrained_calls(body, constrained_fn_names, out);
             }
+            Expr::ConstrADT { fields, .. } => {
+                for field in fields {
+                    Self::collect_constrained_calls(field, constrained_fn_names, out);
+                }
+            }
             // Leaf nodes: no children to recurse into
             Expr::IntLit { .. }
             | Expr::FloatLit { .. }
@@ -2809,7 +2849,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 }
             }
 
-            state.method_resolutions.insert(
+            state.method_resolutions.resolved_calls.insert(
                 span,
                 ResolvedCall::AutoCurry {
                     target_name: name,
@@ -2867,6 +2907,10 @@ mod tests {
     }
 
     /// Create a single-sig Defn (convenience for tests).
+    ///
+    /// Per S69 Submission 23: `DefnVariant.params: Vec<(Symbol, Option<TypeExpr>)>`
+    /// (fused) — the prior parallel-vec `params: Vec<Symbol>` +
+    /// `param_annotations: Vec<Option<TypeExpr>>` shape was eliminated.
     fn make_defn(
         name: &str,
         params: Vec<Symbol>,
@@ -2875,12 +2919,16 @@ mod tests {
         visibility: Visibility,
         span: Span,
     ) -> Defn {
+        assert_eq!(params.len(), param_annotations.len(), "params/annotations must lockstep");
+        let fused: Vec<(Symbol, Option<TypeExpr>)> = params
+            .into_iter()
+            .zip(param_annotations.into_iter())
+            .collect();
         Defn {
             name: Symbol::from(name),
             docstring: None,
             variants: vec![DefnVariant {
-                params,
-                param_annotations,
+                params: fused,
                 body,
                 span,
             }],
@@ -2974,13 +3022,12 @@ mod tests {
                 name: Symbol::from("+"),
                 docstring: None,
                 params: vec![
-                    TypeExpr::TypeVar(Symbol::from("a")),
-                    TypeExpr::TypeVar(Symbol::from("a")),
+                    (Symbol::from("lhs"), TypeExpr::TypeVar(Symbol::from("a"))),
+                    (Symbol::from("rhs"), TypeExpr::TypeVar(Symbol::from("a"))),
                 ],
                 ret_type: TypeExpr::TypeVar(Symbol::from("a")),
                 span: Span::SYNTHETIC,
                 hkt_param_index: None,
-                default_param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
                 default_body: None,
             }],
             visibility: Visibility::Public,
@@ -2990,16 +3037,16 @@ mod tests {
 
         // impl Num for Int: + → add-i64
         let impl_ = TraitImpl {
-            trait_name: TraitName::from("Num"),
-            target_type: TypeName::from("Int"),
-            type_args: vec![],
+            trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Num")),
+            target: cranelisp_types::TypeExpr::Named(
+                cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
+            ),
             type_constraints: vec![],
             methods: vec![Defn {
                 name: Symbol::from("+"),
                 docstring: None,
                 variants: vec![DefnVariant {
-                    params: vec![Symbol::from("x"), Symbol::from("y")],
-                    param_annotations: vec![None, None],
+                    params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("add-i64"),
@@ -3034,8 +3081,7 @@ mod tests {
             name: Symbol::from("add-one"),
             docstring: None,
             variants: vec![DefnVariant {
-                params: vec![Symbol::from("x")],
-                param_annotations: vec![None],
+                params: vec![(Symbol::from("x"), None)],
                 body: Expr::Apply {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("add-i64"),
@@ -3086,8 +3132,7 @@ mod tests {
             name: Symbol::from("id"),
             docstring: None,
             variants: vec![DefnVariant {
-                params: vec![Symbol::from("x")],
-                param_annotations: vec![None],
+                params: vec![(Symbol::from("x"), None)],
                 body: Expr::Var {
                     name: Symbol::from("x"),
                     span: span(14, 15),
@@ -3103,7 +3148,7 @@ mod tests {
 
         if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("id") {
             // Should be forall [a]. Fn([a], a)
-            assert_eq!(scheme.vars.len(), 1, "id should have 1 quantified var");
+            assert_eq!(scheme.type_vars.len(), 1, "id should have 1 quantified var");
             match &scheme.ty {
                 Type::Fn(params, ret) => {
                     assert_eq!(params.len(), 1);
@@ -3125,8 +3170,7 @@ mod tests {
             name: Symbol::from("fact"),
             docstring: None,
             variants: vec![DefnVariant {
-                params: vec![Symbol::from("n")],
-                param_annotations: vec![None],
+                params: vec![(Symbol::from("n"), None)],
                 body: Expr::If {
                     cond: Box::new(Expr::Apply {
                         callee: Box::new(Expr::Var {
@@ -3217,7 +3261,7 @@ mod tests {
 
         if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("fact") {
             assert!(
-                scheme.vars.is_empty(),
+                scheme.type_vars.is_empty(),
                 "fact should be monomorphic (Int -> Int)"
             );
             assert_eq!(
@@ -3259,8 +3303,7 @@ mod tests {
                 name: Symbol::from("is-red"),
                 docstring: None,
                 variants: vec![DefnVariant {
-                    params: vec![Symbol::from("c")],
-                    param_annotations: vec![None],
+                    params: vec![(Symbol::from("c"), None)],
                     body: Expr::Match {
                         scrutinee: Box::new(Expr::Var {
                             name: Symbol::from("c"),
@@ -3270,7 +3313,7 @@ mod tests {
                         arms: vec![
                             cranelisp_types::MatchArm {
                                 pattern: cranelisp_types::Pattern::Constructor {
-                                    name: Symbol::from("Red"),
+                                    name: cranelisp_types::SymbolRef::new(None, Symbol::from("Red")),
                                     bindings: vec![],
                                     span: span(33, 36),
                                 },
@@ -3332,8 +3375,7 @@ mod tests {
             name: Symbol::from("bad"),
             docstring: None,
             variants: vec![DefnVariant {
-                params: vec![Symbol::from("x")],
-                param_annotations: vec![None],
+                params: vec![(Symbol::from("x"), None)],
                 body: Expr::Apply {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("add-i64"),
@@ -3377,8 +3419,7 @@ mod tests {
             name: Symbol::from("inc"),
             docstring: None,
             variants: vec![DefnVariant {
-                params: vec![Symbol::from("x")],
-                param_annotations: vec![None],
+                params: vec![(Symbol::from("x"), None)],
                 body: Expr::Apply {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("add-i64"),
@@ -3439,8 +3480,7 @@ mod tests {
             name: Symbol::from("id"),
             docstring: None,
             variants: vec![DefnVariant {
-                params: vec![Symbol::from("x")],
-                param_annotations: vec![None],
+                params: vec![(Symbol::from("x"), None)],
                 body: Expr::Var {
                     name: Symbol::from("x"),
                     span: span(14, 15),
@@ -3455,7 +3495,7 @@ mod tests {
 
         // The scheme should be polymorphic
         let scheme = result.display.as_ref().unwrap().scheme.clone().unwrap();
-        assert_eq!(scheme.vars.len(), 1);
+        assert_eq!(scheme.type_vars.len(), 1);
     }
 
     // spec: 05-definitions §5.2 — REPL typedef registers type and constructors
@@ -3503,8 +3543,7 @@ mod tests {
                 name: Symbol::from("double"),
                 docstring: None,
                 variants: vec![DefnVariant {
-                    params: vec![Symbol::from("x")],
-                    param_annotations: vec![None],
+                    params: vec![(Symbol::from("x"), None)],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("add-self"),
@@ -3529,8 +3568,7 @@ mod tests {
                 name: Symbol::from("add-self"),
                 docstring: None,
                 variants: vec![DefnVariant {
-                    params: vec![Symbol::from("y")],
-                    param_annotations: vec![None],
+                    params: vec![(Symbol::from("y"), None)],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("add-i64"),
@@ -3565,7 +3603,7 @@ mod tests {
         // add-self is monomorphic: Fn([Int], Int) — add-i64 pins y to Int
         if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("add-self") {
             assert!(
-                scheme.vars.is_empty(),
+                scheme.type_vars.is_empty(),
                 "add-self should have no quantified vars (monomorphic via add-i64)"
             );
             assert_eq!(
@@ -3580,7 +3618,7 @@ mod tests {
         // double should also be monomorphic (calls add-self with Int)
         if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("double") {
             assert!(
-                scheme.vars.is_empty(),
+                scheme.type_vars.is_empty(),
                 "double should have no quantified vars (monomorphic via add-self)"
             );
             assert_eq!(
@@ -3605,8 +3643,7 @@ mod tests {
                 name: Symbol::from("double"),
                 docstring: None,
                 variants: vec![DefnVariant {
-                    params: vec![Symbol::from("x")],
-                    param_annotations: vec![Some(cranelisp_types::TypeExpr::Named(TypeName::from("Int")))],
+                    params: vec![(Symbol::from("x"), Some(cranelisp_types::TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")))))],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("add-self"),
@@ -3631,8 +3668,7 @@ mod tests {
                 name: Symbol::from("add-self"),
                 docstring: None,
                 variants: vec![DefnVariant {
-                    params: vec![Symbol::from("y")],
-                    param_annotations: vec![None],
+                    params: vec![(Symbol::from("y"), None)],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("add-i64"),
@@ -3694,8 +3730,7 @@ mod tests {
             name: Symbol::from("inc"),
             docstring: None,
             variants: vec![DefnVariant {
-                params: vec![Symbol::from("x")],
-                param_annotations: vec![None],
+                params: vec![(Symbol::from("x"), None)],
                 body: Expr::Apply {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("add-i64"),
@@ -3764,6 +3799,7 @@ mod tests {
                         fields: vec![cranelisp_types::FieldDef {
                             name: Symbol::from("val"),
                             type_expr: cranelisp_types::TypeExpr::TypeVar(Symbol::from("a")),
+                            span: Span::SYNTHETIC,
                         }],
                         span: Span::SYNTHETIC,
                     },
@@ -3800,6 +3836,7 @@ mod tests {
                     fields: vec![cranelisp_types::FieldDef {
                         name: Symbol::from("val"),
                         type_expr: cranelisp_types::TypeExpr::TypeVar(Symbol::from("a")),
+                        span: Span::SYNTHETIC,
                     }],
                     span: Span::SYNTHETIC,
                 },
@@ -3834,7 +3871,6 @@ mod tests {
             docstring: None,
             variants: vec![DefnVariant {
                 params: vec![],
-                param_annotations: vec![],
                 body: Expr::StringLit {
                     value: "hello".to_string(),
                     span: span(16, 23),
@@ -4011,8 +4047,7 @@ mod tests {
                 name: Symbol::from("add"),
                 docstring: None,
                 variants: vec![DefnVariant {
-                    params: vec![Symbol::from("x"), Symbol::from("y")],
-                    param_annotations: vec![None, None],
+                    params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("+"),
@@ -4037,7 +4072,6 @@ mod tests {
                 docstring: None,
                 variants: vec![DefnVariant {
                     params: vec![],
-                    param_annotations: vec![],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("add"),
@@ -4101,8 +4135,7 @@ mod tests {
             name: Symbol::from("add"),
             docstring: None,
             variants: vec![DefnVariant {
-                params: vec![Symbol::from("x"), Symbol::from("y")],
-                param_annotations: vec![None, None],
+                params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                 body: Expr::Apply {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("+"),
@@ -4159,8 +4192,7 @@ mod tests {
             name: Symbol::from("add"),
             docstring: None,
             variants: vec![DefnVariant {
-                params: vec![Symbol::from("x"), Symbol::from("y")],
-                param_annotations: vec![None, None],
+                params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                 body: Expr::Apply {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("+"),
@@ -4222,8 +4254,7 @@ mod tests {
             name: Symbol::from("add"),
             docstring: None,
             variants: vec![DefnVariant {
-                params: vec![Symbol::from("x"), Symbol::from("y")],
-                param_annotations: vec![None, None],
+                params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                 body: Expr::Apply {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("+"),
@@ -4251,7 +4282,6 @@ mod tests {
             docstring: None,
             variants: vec![DefnVariant {
                 params: vec![],
-                param_annotations: vec![],
                 body: Expr::Apply {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("add"),
@@ -4294,8 +4324,7 @@ mod tests {
             name: Symbol::from("inc"),
             docstring: None,
             variants: vec![DefnVariant {
-                params: vec![Symbol::from("x")],
-                param_annotations: vec![None],
+                params: vec![(Symbol::from("x"), None)],
                 body: Expr::Apply {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("add-i64"),
@@ -4359,8 +4388,7 @@ mod tests {
             "add",
             vec![
                 DefnVariant {
-                    params: vec![Symbol::from("x"), Symbol::from("y")],
-                    param_annotations: vec![None, None],
+                    params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("add-i64"),
@@ -4378,12 +4406,7 @@ mod tests {
                     span: span(5, 23),
                 },
                 DefnVariant {
-                    params: vec![
-                        Symbol::from("x"),
-                        Symbol::from("y"),
-                        Symbol::from("z"),
-                    ],
-                    param_annotations: vec![None, None, None],
+                    params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None), (Symbol::from("z"), None)],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("add-i64"),
@@ -4468,8 +4491,7 @@ mod tests {
             "process",
             vec![
                 DefnVariant {
-                    params: vec![Symbol::from("x")],
-                    param_annotations: vec![Some(TypeExpr::Named(TypeName::from("Int")))],
+                    params: vec![(Symbol::from("x"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")))))],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("add-i64"),
@@ -4487,8 +4509,7 @@ mod tests {
                     span: span(105, 123),
                 },
                 DefnVariant {
-                    params: vec![Symbol::from("x")],
-                    param_annotations: vec![Some(TypeExpr::Named(TypeName::from("Bool")))],
+                    params: vec![(Symbol::from("x"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool")))))],
                     body: Expr::If {
                         cond: Box::new(Expr::Var {
                             name: Symbol::from("x"),
@@ -4540,8 +4561,7 @@ mod tests {
             "dup",
             vec![
                 DefnVariant {
-                    params: vec![Symbol::from("x")],
-                    param_annotations: vec![Some(TypeExpr::Named(TypeName::from("Int")))],
+                    params: vec![(Symbol::from("x"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")))))],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("add-i64"),
@@ -4559,8 +4579,7 @@ mod tests {
                     span: span(205, 223),
                 },
                 DefnVariant {
-                    params: vec![Symbol::from("y")],
-                    param_annotations: vec![Some(TypeExpr::Named(TypeName::from("Int")))],
+                    params: vec![(Symbol::from("y"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")))))],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("add-i64"),
@@ -4607,8 +4626,7 @@ mod tests {
             "add",
             vec![
                 DefnVariant {
-                    params: vec![Symbol::from("x"), Symbol::from("y")],
-                    param_annotations: vec![None, None],
+                    params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("add-i64"),
@@ -4626,12 +4644,7 @@ mod tests {
                     span: span(305, 323),
                 },
                 DefnVariant {
-                    params: vec![
-                        Symbol::from("x"),
-                        Symbol::from("y"),
-                        Symbol::from("z"),
-                    ],
-                    param_annotations: vec![None, None, None],
+                    params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None), (Symbol::from("z"), None)],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("add-i64"),
@@ -4791,8 +4804,7 @@ mod tests {
             name: Symbol::from("is-red"),
             docstring: None,
             variants: vec![DefnVariant {
-                params: vec![Symbol::from("c")],
-                param_annotations: vec![None],
+                params: vec![(Symbol::from("c"), None)],
                 body: Expr::Match {
                     scrutinee: Box::new(Expr::Var {
                         name: Symbol::from("c"),
@@ -4802,7 +4814,7 @@ mod tests {
                     arms: vec![
                         cranelisp_types::MatchArm {
                             pattern: cranelisp_types::Pattern::Constructor {
-                                name: Symbol::from("Red"),
+                                name: cranelisp_types::SymbolRef::new(None, Symbol::from("Red")),
                                 bindings: vec![],
                                 span: span(233, 236),
                             },
@@ -4843,8 +4855,7 @@ mod tests {
                 name: Symbol::from("double"),
                 docstring: None,
                 variants: vec![DefnVariant {
-                    params: vec![Symbol::from("x")],
-                    param_annotations: vec![None],
+                    params: vec![(Symbol::from("x"), None)],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("add-self"),
@@ -4869,8 +4880,7 @@ mod tests {
                 name: Symbol::from("add-self"),
                 docstring: None,
                 variants: vec![DefnVariant {
-                    params: vec![Symbol::from("y")],
-                    param_annotations: vec![None],
+                    params: vec![(Symbol::from("y"), None)],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("add-i64"),
@@ -4930,9 +4940,7 @@ mod tests {
         let mut any_typed = false;
         let mut all_resolved = true;
         if let Some(ModuleEntry::Def { ast: Some(defn), .. }) = tc.symbol_table().get("inc") {
-            for variant in &defn.variants {
-                walk_inferred_types(&variant.body, &mut any_typed, &mut all_resolved);
-            }
+            walk_inferred_types(&defn.body, &mut any_typed, &mut all_resolved);
         }
         assert!(any_typed, "expr_types should be populated on annotated AST");
         assert!(all_resolved, "all expr_types should be resolved (no Var types)");
@@ -4978,9 +4986,7 @@ mod tests {
         let mut any_typed = false;
         let mut _all_resolved = true;
         if let Some(ModuleEntry::Def { ast: Some(defn), .. }) = tc.symbol_table().get("is-red") {
-            for variant in &defn.variants {
-                walk_inferred_types(&variant.body, &mut any_typed, &mut _all_resolved);
-            }
+            walk_inferred_types(&defn.body, &mut any_typed, &mut _all_resolved);
         }
         assert!(any_typed);
     }
@@ -5017,9 +5023,7 @@ mod tests {
         let mut any_typed = false;
         let mut _all_resolved = true;
         if let Some(ModuleEntry::Def { ast: Some(defn), .. }) = tc.symbol_table().get("add-self") {
-            for variant in &defn.variants {
-                walk_inferred_types(&variant.body, &mut any_typed, &mut _all_resolved);
-            }
+            walk_inferred_types(&defn.body, &mut any_typed, &mut _all_resolved);
         }
         assert!(any_typed);
     }
@@ -5086,9 +5090,7 @@ mod tests {
         let mut any_typed = false;
         let mut _all_resolved = true;
         if let Some(ModuleEntry::Def { ast: Some(defn), .. }) = tc.symbol_table().get("__expr") {
-            for variant in &defn.variants {
-                walk_inferred_types(&variant.body, &mut any_typed, &mut _all_resolved);
-            }
+            walk_inferred_types(&defn.body, &mut any_typed, &mut _all_resolved);
         }
         assert!(any_typed, "expr_types should contain the literal's type");
     }
@@ -5105,8 +5107,7 @@ mod tests {
             docstring: None,
             variants: vec![
                 DefnVariant {
-                    params: vec![Symbol::from("x")],
-                    param_annotations: vec![None],
+                    params: vec![(Symbol::from("x"), None)],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("add-i64"),
@@ -5124,8 +5125,7 @@ mod tests {
                     span: span(600, 623),
                 },
                 DefnVariant {
-                    params: vec![Symbol::from("x"), Symbol::from("y")],
-                    param_annotations: vec![None, None],
+                    params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("add-i64"),
@@ -5167,9 +5167,7 @@ mod tests {
         if let Some(ModuleEntry::Def { ast: Some(defn), .. }) =
             tc.symbol_table().get("add$Int+Int")
         {
-            for variant in &defn.variants {
-                walk_inferred_types(&variant.body, &mut any_typed, &mut _all_resolved);
-            }
+            walk_inferred_types(&defn.body, &mut any_typed, &mut _all_resolved);
         }
         assert!(any_typed);
     }
@@ -5297,13 +5295,12 @@ mod tests {
                 name: Symbol::from("eq"),
                 docstring: None,
                 params: vec![
-                    TypeExpr::TypeVar(Symbol::from("a")),
-                    TypeExpr::TypeVar(Symbol::from("a")),
+                    (Symbol::from("lhs"), TypeExpr::TypeVar(Symbol::from("a"))),
+                    (Symbol::from("rhs"), TypeExpr::TypeVar(Symbol::from("a"))),
                 ],
-                ret_type: TypeExpr::Named(TypeName::from("Bool")),
+                ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool"))),
                 span: Span::SYNTHETIC,
                 hkt_param_index: None,
-                default_param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
                 default_body: None,
             }],
             visibility: Visibility::Public,
@@ -5332,11 +5329,10 @@ mod tests {
             methods: vec![TraitMethodSig {
                 name: Symbol::from("show"),
                 docstring: None,
-                params: vec![TypeExpr::TypeVar(Symbol::from("a"))],
-                ret_type: TypeExpr::Named(TypeName::from("String")),
+                params: vec![(Symbol::from("x"), TypeExpr::TypeVar(Symbol::from("a")))],
+                ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("String"))),
                 span: Span::SYNTHETIC,
                 hkt_param_index: None,
-                default_param_names: vec![Symbol::from("x")],
                 default_body: None,
             }],
             visibility: Visibility::Public,
@@ -5370,13 +5366,12 @@ mod tests {
                 name: Symbol::from("eq"),
                 docstring: None,
                 params: vec![
-                    TypeExpr::TypeVar(Symbol::from("a")),
-                    TypeExpr::TypeVar(Symbol::from("a")),
+                    (Symbol::from("a"), TypeExpr::TypeVar(Symbol::from("a"))),
+                    (Symbol::from("b"), TypeExpr::TypeVar(Symbol::from("a"))),
                 ],
-                ret_type: TypeExpr::Named(TypeName::from("Bool")),
+                ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool"))),
                 span: Span::SYNTHETIC,
                 hkt_param_index: None,
-                default_param_names: vec![Symbol::from("a"), Symbol::from("b")],
                 default_body: None,
             }],
             visibility: Visibility::Public,
@@ -5387,16 +5382,16 @@ mod tests {
 
         // Now impl Eq for Int
         let impl_ = TraitImpl {
-            trait_name: TraitName::from("Eq"),
-            target_type: TypeName::from("Int"),
-            type_args: vec![],
+            trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Eq")),
+            target: cranelisp_types::TypeExpr::Named(
+                cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
+            ),
             type_constraints: vec![],
             methods: vec![Defn {
                 name: Symbol::from("eq"),
                 docstring: None,
                 variants: vec![DefnVariant {
-                    params: vec![Symbol::from("a"), Symbol::from("b")],
-                    param_annotations: vec![None, None],
+                    params: vec![(Symbol::from("a"), None), (Symbol::from("b"), None)],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("eq-i64"),
@@ -5449,7 +5444,6 @@ mod tests {
             docstring: None,
             variants: vec![DefnVariant {
                 params: vec![],
-                param_annotations: vec![],
                 body: expr,
                 span: span(700, 702),
             }],
@@ -5516,9 +5510,7 @@ mod tests {
             {
                 let mut _any = false;
                 let mut all_resolved = true;
-                for variant in &defn.variants {
-                    walk_inferred_types(&variant.body, &mut _any, &mut all_resolved);
-                }
+                walk_inferred_types(&defn.body, &mut _any, &mut all_resolved);
                 assert!(
                     all_resolved,
                     "unresolved Var in expr_types after finalize for {name}"
@@ -5610,13 +5602,12 @@ mod tests {
                 name: Symbol::from("eq"),
                 docstring: None,
                 params: vec![
-                    TypeExpr::TypeVar(Symbol::from("a")),
-                    TypeExpr::TypeVar(Symbol::from("a")),
+                    (Symbol::from("a"), TypeExpr::TypeVar(Symbol::from("a"))),
+                    (Symbol::from("b"), TypeExpr::TypeVar(Symbol::from("a"))),
                 ],
-                ret_type: TypeExpr::Named(TypeName::from("Bool")),
+                ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool"))),
                 span: Span::SYNTHETIC,
                 hkt_param_index: None,
-                default_param_names: vec![Symbol::from("a"), Symbol::from("b")],
                 default_body: None,
             }],
             visibility: Visibility::Public,
@@ -5628,16 +5619,16 @@ mod tests {
 
         // Then register TraitImpl(Eq for Int) — should succeed because decl was registered first
         let impl_ = TraitImpl {
-            trait_name: TraitName::from("Eq"),
-            target_type: TypeName::from("Int"),
-            type_args: vec![],
+            trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Eq")),
+            target: cranelisp_types::TypeExpr::Named(
+                cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
+            ),
             type_constraints: vec![],
             methods: vec![Defn {
                 name: Symbol::from("eq"),
                 docstring: None,
                 variants: vec![DefnVariant {
-                    params: vec![Symbol::from("a"), Symbol::from("b")],
-                    param_annotations: vec![None, None],
+                    params: vec![(Symbol::from("a"), None), (Symbol::from("b"), None)],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("eq-i64"),
@@ -5750,7 +5741,7 @@ mod tests {
         for name in &["f", "g", "h"] {
             if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get(*name) {
                 assert!(
-                    scheme.vars.is_empty(),
+                    scheme.type_vars.is_empty(),
                     "{} should be monomorphic (pinned to Int via shared substitution)", name
                 );
             } else {
@@ -5831,9 +5822,7 @@ mod tests {
         let mut any_typed = false;
         let mut all_resolved = true;
         if let Some(ModuleEntry::Def { ast: Some(defn), .. }) = tc.symbol_table().get("inc") {
-            for variant in &defn.variants {
-                walk_inferred_types(&variant.body, &mut any_typed, &mut all_resolved);
-            }
+            walk_inferred_types(&defn.body, &mut any_typed, &mut all_resolved);
         }
         assert!(any_typed, "finalized result should have expr_types");
         assert!(all_resolved, "all expr_types should be fully resolved");
@@ -5858,8 +5847,7 @@ mod tests {
             docstring: None,
             variants: vec![
                 DefnVariant {
-                    params: vec![Symbol::from("x")],
-                    param_annotations: vec![None],
+                    params: vec![(Symbol::from("x"), None)],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var { name: Symbol::from("add-i64"), span: span(1010, 1017), inferred_type: None, }),
                         args: vec![
@@ -5873,8 +5861,7 @@ mod tests {
                     span: span(1000, 1023),
                 },
                 DefnVariant {
-                    params: vec![Symbol::from("x"), Symbol::from("y")],
-                    param_annotations: vec![None, None],
+                    params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var { name: Symbol::from("add-i64"), span: span(1040, 1047), inferred_type: None, }),
                         args: vec![
@@ -6009,9 +5996,7 @@ mod tests {
             if let ModuleEntry::Def { ast: Some(defn), .. } = entry {
                 let mut _any = false;
                 let mut all_resolved = true;
-                for variant in &defn.variants {
-                    walk_inferred_types(&variant.body, &mut _any, &mut all_resolved);
-                }
+                walk_inferred_types(&defn.body, &mut _any, &mut all_resolved);
                 assert!(all_resolved, "unresolved Var in expr_types after check()");
             }
         }
@@ -6099,9 +6084,10 @@ mod tests {
 
         // TraitImpl referencing undeclared trait
         let impl_ = TraitImpl {
-            trait_name: TraitName::from("NonexistentTrait"),
-            target_type: TypeName::from("Int"),
-            type_args: vec![],
+            trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("NonexistentTrait")),
+            target: cranelisp_types::TypeExpr::Named(
+                cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
+            ),
             type_constraints: vec![],
             methods: vec![],
             span: Span::SYNTHETIC,
@@ -6239,7 +6225,7 @@ mod tests {
         let st = tc.symbol_table();
         let entry = st.get("double").expect("double should be in symbol table");
         if let ModuleEntry::Def { ast: Some(defn), .. } = entry {
-            let body = defn.body();
+            let body = &defn.body;
 
             // All inferred_types should be concrete (no Var)
             let mut types = Vec::new();
@@ -6348,7 +6334,7 @@ mod tests {
         let st = tc.symbol_table();
         let entry = st.get("double").expect("double should be in symbol table");
         if let ModuleEntry::Def { ast: Some(defn), .. } = entry {
-            let body = defn.body();
+            let body = &defn.body;
             let rc = find_resolved_call(body, plus_span);
             assert!(rc.is_some(), "Apply (+ x x) should have resolved_call on AST node");
             match rc.unwrap() {
@@ -6421,7 +6407,7 @@ mod tests {
         let st = tc.symbol_table();
         let entry = st.get("f").expect("f should be in symbol table");
         if let ModuleEntry::Def { ast: Some(defn), .. } = entry {
-            let body = defn.body();
+            let body = &defn.body;
 
             // All inferred_types should be concrete
             let mut types = Vec::new();
@@ -6536,7 +6522,7 @@ mod tests {
         let st = tc.symbol_table();
         let entry = st.get("fact").expect("fact should be in symbol table");
         if let ModuleEntry::Def { ast: Some(defn), .. } = entry {
-            let body = defn.body();
+            let body = &defn.body;
 
             // All inferred_types should be concrete
             let mut types = Vec::new();
@@ -6629,7 +6615,7 @@ mod tests {
         let st = tc.symbol_table();
         let entry = st.get("add").expect("add should be in symbol table");
         if let ModuleEntry::Def { ast: Some(defn), .. } = entry {
-            let body = defn.body();
+            let body = &defn.body;
 
             // All inferred_types should be concrete (Int, no Var)
             let mut types = Vec::new();
@@ -6684,7 +6670,7 @@ mod tests {
         let st = tc.symbol_table();
         let entry = st.get("concat-nils").expect("concat-nils should be in symbol table");
         if let ModuleEntry::Def { ast: Some(defn), .. } = entry {
-            let body = defn.body();
+            let body = &defn.body;
 
             // Find the Apply node (there's only one)
             fn find_any_apply(expr: &Expr) -> Option<&Expr> {
@@ -6752,11 +6738,10 @@ mod tests {
             methods: vec![TraitMethodSig {
                 name: Symbol::from("double"),
                 docstring: None,
-                params: vec![TypeExpr::TypeVar(Symbol::from("a"))],
+                params: vec![(Symbol::from("x"), TypeExpr::TypeVar(Symbol::from("a")))],
                 ret_type: TypeExpr::TypeVar(Symbol::from("a")),
                 span: Span::SYNTHETIC,
                 hkt_param_index: None,
-                default_param_names: vec![Symbol::from("x")],
                 default_body: None,
             }],
             visibility: Visibility::Public,
@@ -6768,16 +6753,16 @@ mod tests {
 
         // Impl Double for Int: (defn double [x] (+ x x))
         let impl_ = TraitImpl {
-            trait_name: TraitName::from("Double"),
-            target_type: TypeName::from("Int"),
-            type_args: vec![],
+            trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Double")),
+            target: cranelisp_types::TypeExpr::Named(
+                cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
+            ),
             type_constraints: vec![],
             methods: vec![Defn {
                 name: Symbol::from("double"),
                 docstring: None,
                 variants: vec![DefnVariant {
-                    params: vec![Symbol::from("x")],
-                    param_annotations: vec![None],
+                    params: vec![(Symbol::from("x"), None)],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("+"),
@@ -6850,7 +6835,7 @@ mod tests {
 
             // Also verify the scheme is concrete
             assert!(
-                scheme.vars.is_empty() && scheme.constraints.is_empty(),
+                scheme.type_vars.is_empty() && scheme.constraints.is_empty(),
                 "impl method scheme should be concrete (no vars/constraints), got: {:?}",
                 scheme,
             );
@@ -6860,7 +6845,7 @@ mod tests {
 
         // Verify AST annotations are concrete (no Var(N))
         if let Some(ModuleEntry::Def { ast: Some(annotated), .. }) = table.get(mangled_name.as_ref()) {
-            let body = annotated.body();
+            let body = &annotated.body;
             if let Some(ty) = body.inferred_type() {
                 assert!(
                     !ty.contains_var(),
@@ -6882,11 +6867,7 @@ mod tests {
             "add",
             vec![
                 DefnVariant {
-                    params: vec![Symbol::from("a"), Symbol::from("b")],
-                    param_annotations: vec![
-                        Some(TypeExpr::Named(TypeName::from("Int"))),
-                        Some(TypeExpr::Named(TypeName::from("Int"))),
-                    ],
+                    params: vec![(Symbol::from("a"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))))), (Symbol::from("b"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")))))],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("add-i64"),
@@ -6904,11 +6885,7 @@ mod tests {
                     span: span(505, 523),
                 },
                 DefnVariant {
-                    params: vec![Symbol::from("a"), Symbol::from("b")],
-                    param_annotations: vec![
-                        Some(TypeExpr::Named(TypeName::from("Float"))),
-                        Some(TypeExpr::Named(TypeName::from("Float"))),
-                    ],
+                    params: vec![(Symbol::from("a"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Float"))))), (Symbol::from("b"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Float")))))],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("add-f64"),
@@ -6939,16 +6916,12 @@ mod tests {
 
         let st = tc.symbol_table();
 
-        // add$Int+Int: Def entry with ast: Some(..) and ast.name == "add$Int+Int",
-        // single variant (mangled defns are per-variant).
+        // add$Int+Int: Def entry with ast: Some(DefnVariant). Per S69 Submission 35,
+        // `ast` is now `Option<DefnVariant>` (the single meaningful payload), so the
+        // name lives on the symbol-table key and "single variant" is enforced by the
+        // type itself — no `.variants` to assert against.
         match st.get("add$Int+Int") {
-            Some(ModuleEntry::Def { ast: Some(defn), kind, .. }) => {
-                assert_eq!(defn.name.as_ref(), "add$Int+Int");
-                assert_eq!(
-                    defn.variants.len(),
-                    1,
-                    "mangled variant must be a single-variant defn"
-                );
+            Some(ModuleEntry::Def { ast: Some(_defn), kind, .. }) => {
                 assert!(
                     matches!(kind.as_ref(), DefKind::UserFn { constrained_fn: None }),
                     "mangled variant kind should be UserFn(None), got {:?}",
@@ -6958,11 +6931,9 @@ mod tests {
             other => panic!("add$Int+Int should be Def {{ ast: Some(..), .. }}, got {:?}", other),
         }
 
-        // add$Float+Float: same shape, name rewritten.
+        // add$Float+Float: same shape.
         match st.get("add$Float+Float") {
-            Some(ModuleEntry::Def { ast: Some(defn), kind, .. }) => {
-                assert_eq!(defn.name.as_ref(), "add$Float+Float");
-                assert_eq!(defn.variants.len(), 1);
+            Some(ModuleEntry::Def { ast: Some(_defn), kind, .. }) => {
                 assert!(matches!(kind.as_ref(), DefKind::UserFn { constrained_fn: None }));
             }
             other => panic!("add$Float+Float should be Def {{ ast: Some(..), .. }}, got {:?}", other),
@@ -6985,7 +6956,7 @@ mod tests {
 
         // Walk every Expr node in the body; every inferred_type must be concrete
         // (no Type::Var leaks after final substitution).
-        let body = defn.body();
+        let body = &defn.body;
         let mut types = Vec::new();
         collect_inferred_types(body, &mut types);
         assert!(!types.is_empty(), "body should have at least one Expr node");

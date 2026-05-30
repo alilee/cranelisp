@@ -5,7 +5,21 @@ filed_by: /arch
 filed_at: 2026-05-02
 sprint_filed: 64
 refers_to: crates/cranelisp-types/src/error.rs rustdoc (ResolutionGap, CheckError; facades/types.md retired S69 Sub 42), crates/cranelisp-frontend/src/lib.rs //! preamble + per-item rustdoc on expand/ExpansionError/parse/extract_module_declarations + bounded-contexts.md §1 (facades/frontend.md retired S70 B3-C), design/arch/facades/typecheck.md §"check_form", design/arch/facades/int.md §"process_form", crates/cranelisp-frontend/, crates/cranelisp-typecheck/, crates/cranelisp-types/, src/expander.rs, src/worker.rs
-status: open
+status: open (Phase 3 typecheck CLOSED — Phases 2 frontend / 4 int remain)
+---
+
+# S72 W3b status — Phase 3 (typecheck) verified closed
+
+`check_forms` is the free function returning `Result<(), CheckError>` per
+`crates/cranelisp-typecheck/public-api.txt` (post-Wave 3b regen). `CheckError`
+carries `Gap(ResolutionGap)` + `TypeError { message, location }` per facade.
+`ResolveError` was added in Sprint 72 Wave 3b Part 5 as a typecheck-local
+projection target — projecting to `CheckError::TypeError` via
+`impl From<ResolveError> for CheckError`.
+
+Phase 2 (frontend `ExpansionError`) and Phase 4 (int gap-orchestration
+retry loop) remain. Refile or close when those land.
+
 ---
 
 # Multi-crate migration: ResolutionGap + CheckError + ExpansionError + expand to facade-spec homes

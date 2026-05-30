@@ -164,10 +164,13 @@ The `View<'_, C, L>` newtype is `/arch`-authored as a `cranelisp-types` addition
 ## Status pointer — Sprint 67 close
 
 S67 facade-text catch-up lands in Wave 1 (`/design (typecheck)` PFR
-rows 19–25 of `sprints/SPRINT.md`): `ClusterRead`/`ClusterWrite`
-wrapper layer documented (row 20 — the cluster accessor returns a
-newtype that `.view()`s to `View` in Cluster mode or derefs to
-`&mut SymbolTable` in Live mode); `CheckResult` shape comment paired
+rows 19–25 of `sprints/SPRINT.md`): the cluster-context wrapper layer
+documented (row 20 — the cluster accessor returns a newtype that
+`.view()`s to `View` in Cluster mode or derefs to `&mut SymbolTable` in
+Live mode). The wrappers were renamed `ClusterRead`/`ClusterWrite` →
+`SymbolTableRead`/`SymbolTableMut` at S72 W2 (/review I-2; user
+arbitration) — the type names what is being accessed (SymbolTable), not
+the access mode. See `facades/typecheck.md` §"Single-pair invariant". `CheckResult` shape comment paired
 to D44's third amendment (row 22 — side products land on staging Def
 fields, not on `CheckResult`); `register_builtins` signature documents
 the post-cluster-atomic `(modules: &DashMap, next_id: &AtomicU32)`

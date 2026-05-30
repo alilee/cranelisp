@@ -24,7 +24,6 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use dashmap::DashMap;
@@ -32,9 +31,15 @@ use dashmap::DashMap;
 use cranelisp_types::{ErrorLocation,
     CranelispError, ExportSpec, FQSymbol, ImportNames, ImportSpec,
     MethodResolutions, ModuleEntry, ModuleFullPath, ResolvedCall, Scheme, Span,
-    Subst, Symbol, SymbolTable, TraitName, Type, TypeDefInfo, TypeId, TypeName, View, Warning,
-    apply,
+    Subst, Symbol, SymbolTable, TraitName, Type, TypeDefInfo, TypeId, TypeName, Visibility,
+    Warning, apply,
 };
+
+// Per single-pair invariant (`facades/typecheck.md` §"Single-pair invariant"):
+// `SymbolTableRead` / `SymbolTableMut` are defined ONCE in `cluster.rs` and
+// reused at the `TypeCheckEnv` interior accessor surface. No parallel
+// `pub(crate)` pair lives in this file.
+pub(crate) use crate::cluster::{SymbolTableMut, SymbolTableRead};
 
 use crate::result::ReplSnapshot;
 
@@ -94,7 +99,7 @@ impl CheckState {
             subst: Subst::new(),
             env: ScopeStack::new(),
             expr_types: HashMap::new(),
-            method_resolutions: HashMap::new(),
+            method_resolutions: MethodResolutions::new(),
             warnings: Vec::new(),
             active_constraints: ActiveConstraints::default(),
             module_aliases: HashMap::new(),
@@ -167,11 +172,18 @@ where
     /// `new` constructor; the staging variant is constructed only by
     /// `check_forms` for the duration of one cluster.
     ///
-    /// The inner `&mut SymbolTable` carries the same `'a` lifetime as the
-    /// rest of the env — the orchestrator's staging mutable borrow is held
-    /// across the entire `check_forms` call frame. `TypeCheckStaging` itself
-    /// carries a separate inner lifetime for invariance reasons; we collapse
-    /// them to `'a` here.
+    /// The `TypeCheckStaging` carries two lifetimes — `'a` is the env's
+    /// borrow lifetime (the outer `&RefCell` borrow), and `'a` also names
+    /// the inner `&mut SymbolTable` reborrow held inside the cell, since
+    /// the env's lifetime parameter is the call-frame lifetime of
+    /// `check_forms` and both the outer borrow and the inner mut originate
+    /// in that same frame (the env is constructed with the cell borrowed
+    /// out of `ClusterContext`; the cell's inner `&mut` originates from
+    /// the orchestrator and lives at least as long as `check_forms`'s
+    /// frame). We keep them as distinct lifetime parameters on
+    /// `TypeCheckStaging` (the inner mut is invariant) but collapse them
+    /// to `'a` here — the env's `'a` is shrunk to the shorter of the two
+    /// when this Option is constructed.
     pub(crate) staging: Option<TypeCheckStaging<'a, 'a, C, L>>,
 }
 
@@ -222,96 +234,6 @@ where
     L: cranelisp_types::LinkerStore,
 {
 }
-
-/// Write wrapper produced by `TypeCheckEnv::current_symbol_table_mut`.
-///
-/// In `Live` flavour, wraps the DashMap `RefMut` for the per-module live
-/// table. In `Staging` flavour, wraps the `RefCell::RefMut` for the
-/// cluster-scoped staging table. Both flavours `Deref` and `DerefMut` to
-/// `&[mut] SymbolTable<C, L>`, so the existing call sites that do
-/// `self.current_symbol_table_mut(state).insert(...)`, `.symbols.get_mut(...)`,
-/// etc. work uniformly via Deref coercion — no per-site changes required.
-pub(crate) enum SymbolTableMut<'a, 'b, C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> {
-    /// Per-module live table guard from the modules DashMap.
-    Live(dashmap::mapref::one::RefMut<'a, ModuleFullPath, SymbolTable<C, L>>),
-    /// Cluster-scoped staging table guard from the orchestrator-handed RefCell.
-    Staging(std::cell::RefMut<'a, &'b mut SymbolTable<C, L>>),
-}
-
-impl<'a, 'b, C, L> Deref for SymbolTableMut<'a, 'b, C, L>
-where
-    C: cranelisp_types::CodeStore,
-    L: cranelisp_types::LinkerStore,
-{
-    type Target = SymbolTable<C, L>;
-    fn deref(&self) -> &SymbolTable<C, L> {
-        match self {
-            SymbolTableMut::Live(r) => r.value(),
-            // `r` is `RefMut<'_, &'b mut SymbolTable>`; auto-deref walks
-            // both layers to `&SymbolTable`.
-            SymbolTableMut::Staging(r) => r,
-        }
-    }
-}
-
-impl<'a, 'b, C, L> DerefMut for SymbolTableMut<'a, 'b, C, L>
-where
-    C: cranelisp_types::CodeStore,
-    L: cranelisp_types::LinkerStore,
-{
-    fn deref_mut(&mut self) -> &mut SymbolTable<C, L> {
-        match self {
-            SymbolTableMut::Live(r) => r.value_mut(),
-            SymbolTableMut::Staging(r) => r,
-        }
-    }
-}
-
-/// Read wrapper produced by `TypeCheckEnv::current_symbol_table`.
-///
-/// In `Live` flavour holds a DashMap `Ref` guard for the per-module live
-/// table. In `Cluster` flavour holds both the staging `RefCell::borrow()`
-/// guard and the live DashMap `Ref` — `view()` returns `View::union(...)`
-/// staging-first, then live.
-///
-/// Per FIXME 0179 / Decision 44 amendments: cluster-mode reads must see
-/// in-cluster writes that landed in staging via the
-/// `current_symbol_table_mut` accessor. The wrapper is the read-side
-/// counterpart that absorbs the staging-vs-live dispatch.
-pub(crate) enum SymbolTableRead<'a, 'b, C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> {
-    /// Live mode: read guard over the per-module live table.
-    Live(dashmap::mapref::one::Ref<'a, ModuleFullPath, SymbolTable<C, L>>),
-    /// Cluster mode: staging `RefCell` borrow + live read guard.
-    Cluster {
-        staging: std::cell::Ref<'a, &'b mut SymbolTable<C, L>>,
-        live: dashmap::mapref::one::Ref<'a, ModuleFullPath, SymbolTable<C, L>>,
-    },
-}
-
-impl<'a, 'b, C, L> SymbolTableRead<'a, 'b, C, L>
-where
-    C: cranelisp_types::CodeStore,
-    L: cranelisp_types::LinkerStore,
-{
-    /// Construct a `View<'_, C, L>` over the held references.
-    ///
-    /// - `Live` → `View::single(live)`.
-    /// - `Cluster` → `View::union(staging, live)` — lookups dispatch
-    ///   staging-first, then live.
-    pub(crate) fn view(&self) -> View<'_, C, L> {
-        match self {
-            SymbolTableRead::Live(r) => View::single(r.value()),
-            SymbolTableRead::Cluster { staging, live } => {
-                // `staging` is `Ref<'_, &mut SymbolTable>` — deref twice to
-                // get `&SymbolTable`. `**staging` is `&mut SymbolTable`;
-                // re-borrowing gives `&SymbolTable`.
-                let staging_ref: &SymbolTable<C, L> = &**staging;
-                View::union(staging_ref, live.value())
-            }
-        }
-    }
-}
-
 
 impl<'a, C, L> TypeCheckEnv<'a, C, L>
 where
@@ -386,7 +308,7 @@ where
     /// runtime borrow (Cluster mode) — drop it before acquiring another guard
     /// to avoid deadlocks (see design/typecheck/dashmap-migration.md §4.10) or
     /// `RefCell` borrow-check panics.
-    pub(crate) fn current_symbol_table<'b>(
+    pub fn current_symbol_table<'b>(
         &'b self,
         state: &CheckState,
     ) -> SymbolTableRead<'b, 'a, C, L> {
@@ -416,7 +338,7 @@ where
     /// The 91 register-call sites in `program.rs` and the in-checker write
     /// sites continue to use this accessor uniformly — staging-vs-live is
     /// absorbed in the wrapper's `Deref`/`DerefMut` impls.
-    pub(crate) fn current_symbol_table_mut<'b>(
+    pub fn current_symbol_table_mut<'b>(
         &'b self,
         state: &CheckState,
     ) -> SymbolTableMut<'b, 'a, C, L> {
@@ -546,7 +468,12 @@ where
     ) -> Option<TypeName> {
         let entry = self.resolve_entry_in_module(module_path, ctor_name)?;
         match entry {
-            ModuleEntry::Constructor { type_name, .. } => Some(type_name.name.clone()),
+            ModuleEntry::Def { kind, .. } => match kind.as_ref() {
+                cranelisp_types::DefKind::Constructor { type_name, .. } => {
+                    Some(type_name.name.clone())
+                }
+                _ => None,
+            },
             ModuleEntry::TypeDef { info, constructor_scheme: Some(_), .. } => {
                 // Product type: constructor has same name as type.
                 Some(info.name.name.clone())
@@ -585,7 +512,20 @@ where
             None => return false,
         };
         if let Some(info) = self.lookup_type_def_in_module(module_path, &type_name) {
-            return info.constructors.iter().any(|c| c.name.as_ref() == ctor_name && c.internal);
+            // Per S70: per-ctor `internal` lives on `DefKind::Constructor.internal`;
+            // `TypeDefInfo.constructors` is `Vec<Symbol>`. Probe the named ctor's
+            // Def to read its kind discriminator.
+            for c_sym in &info.constructors {
+                if c_sym.as_ref() == ctor_name {
+                    if let Some(entry) = self.probe_module_entry_owned(module_path, c_sym.as_ref())
+                        && let ModuleEntry::Def { kind, .. } = entry
+                        && let cranelisp_types::DefKind::Constructor { internal, .. } = kind.as_ref()
+                    {
+                        return *internal;
+                    }
+                    return false;
+                }
+            }
         }
         false
     }
@@ -679,7 +619,7 @@ where
         let type_defs = self.all_type_defs_map();
         let constructor_to_type: HashMap<Symbol, TypeName> = type_defs.iter()
             .flat_map(|(type_name, info)| {
-                info.constructors.iter().map(move |c| (c.name.clone(), type_name.clone()))
+                info.constructors.iter().map(move |c_sym| (c_sym.clone(), type_name.clone()))
             })
             .collect();
         (type_defs, constructor_to_type)
@@ -727,37 +667,140 @@ where
         self.modules
     }
 
-    /// Build an FQTypeName for a bare TypeName by looking up SymbolTables.
-    /// Falls back to the current module if the type is not found.
-    pub(crate) fn fqtn_for_bare_type_name(&self, state: &CheckState, type_name: &TypeName) -> cranelisp_types::FQTypeName {
-        if let Some(info) = self.lookup_type_def_with_state(state, type_name) {
-            return info.name.clone();
+    /// Resolve a bare type name to its `FQTypeName` via symbol-table
+    /// chain-follow from `state.current_module`. Phase B Part 5 successor
+    /// to the retired `fqtn_for_bare_type_name`: returns
+    /// `Result<FQTypeName, ResolveError>` and never silently falls back to
+    /// `current_module` or a hard-coded `primitives` map.
+    ///
+    /// Both `TypeDef` and `IntrinsicType` terminals resolve successfully —
+    /// the FQ identity for the latter is `(home, type_name)` where `home`
+    /// is the terminal module (typically `primitives`).
+    pub(crate) fn resolve_type(
+        &self,
+        state: &CheckState,
+        type_name: &TypeName,
+        span: Span,
+    ) -> Result<cranelisp_types::FQTypeName, crate::result::ResolveError> {
+        match self.resolve_terminal_entry_and_home(
+            &state.current_module,
+            type_name.as_ref(),
+        ) {
+            Some((ModuleEntry::TypeDef { info, .. }, _home)) => Ok(info.name.clone()),
+            Some((ModuleEntry::IntrinsicType { .. }, home)) => {
+                Ok(cranelisp_types::FQTypeName::new(home, type_name.clone()))
+            }
+            _ => Err(crate::result::ResolveError::TypeNotFound {
+                name: type_name.clone(),
+                from_module: state.current_module.clone(),
+                span,
+            }),
         }
-        // Primitive types
-        let module = match type_name.as_ref() {
-            "Int" | "Bool" | "Float" | "String" | "Vec" | "IO" | "Trace" | "TestResult" =>
-                ModuleFullPath::from("primitives"),
-            _ => state.current_module.clone(),
-        };
-        cranelisp_types::FQTypeName::new(module, type_name.clone())
     }
 
-    /// Resolve the defining module of a trait reference reachable from
-    /// `state.current_module` via per-symbol chain-follow (Principle 17
-    /// shape 1 + Decision 45 Pattern B). Returns the chain-followed home iff
-    /// the name resolves to a `TraitDecl`.
+    /// Resolve the concrete `Type` for an impl target's bare type name.
     ///
-    /// Sprint 67 hack-back (FIXME 0192 method 6): the prior
-    /// `defining_module_for` fallback (probe `primitives` then `current_module`)
-    /// was an architectural workaround for incomplete prelude injection and has
-    /// been deleted. Callers MUST first validate the trait exists via
-    /// `lookup_trait_decl_with_state` (or equivalent); only then is the
-    /// chain-follow guaranteed to succeed. Unresolvable trait → caller-emitted
-    /// type error.
-    pub(crate) fn trait_home_for(&self, state: &CheckState, trait_name: &str) -> Option<ModuleFullPath> {
+    /// Phase B Part 1.4(3): the impl machinery needs to produce
+    /// `Type::Int` (etc.) when the target is an intrinsic scalar, and
+    /// `Type::ADT(target_fqtn, type_args)` for ADT-shaped types. Centralises
+    /// the dispatch so `check_impl_method` / `check_hkt_impl_method` don't
+    /// each replicate the kind-probe.
+    ///
+    /// `type_args` is the resolved type-arg vector to embed in the ADT case
+    /// (empty for HKT pre-unification, populated for concrete parameterised
+    /// impls like `(impl Showable (Option Int) …)`).
+    pub(crate) fn concrete_type_for_impl_target(
+        &self,
+        state: &CheckState,
+        type_name: &TypeName,
+        type_args: Vec<Type>,
+        span: Span,
+    ) -> Result<Type, crate::result::ResolveError> {
+        match self.resolve_terminal_entry_and_home(
+            &state.current_module,
+            type_name.as_ref(),
+        ) {
+            Some((ModuleEntry::TypeDef { info, .. }, _home)) => {
+                Ok(Type::ADT(info.name.clone(), type_args))
+            }
+            Some((ModuleEntry::IntrinsicType { ty, .. }, _home)) => Ok(ty),
+            _ => Err(crate::result::ResolveError::TypeNotFound {
+                name: type_name.clone(),
+                from_module: state.current_module.clone(),
+                span,
+            }),
+        }
+    }
+
+    /// Resolve a trait reference to its defining module via per-symbol
+    /// chain-follow from `state.current_module`. Phase B Part 5 successor
+    /// to `trait_home_for` — returns `Result<ModuleFullPath, ResolveError>`.
+    ///
+    /// Per Principle 17 shape 1 + Decision 45 Pattern B. No fallback —
+    /// callers no longer need to combine this with a separate existence
+    /// probe; the typed error carries the diagnostic context.
+    pub(crate) fn resolve_trait(
+        &self,
+        state: &CheckState,
+        trait_name: &str,
+        span: Span,
+    ) -> Result<ModuleFullPath, crate::result::ResolveError> {
         match self.resolve_terminal_entry_and_home(&state.current_module, trait_name) {
-            Some((ModuleEntry::TraitDecl { .. }, home)) => Some(home),
-            _ => None,
+            Some((ModuleEntry::TraitDecl { .. }, home)) => Ok(home),
+            _ => Err(crate::result::ResolveError::TraitNotFound {
+                name: TraitName::from(trait_name),
+                from_module: state.current_module.clone(),
+                span,
+            }),
+        }
+    }
+
+    /// Resolve a constructor name to its parent type's `FQTypeName` via
+    /// chain-follow from `state.current_module`. Phase B Part 5 successor
+    /// to the `lookup_constructor_type[_in_module/_with_state]` triple.
+    ///
+    /// The old triple is retained while ~7 test fixtures and the
+    /// `infer.rs:818/821` production sites still depend on it; the rename
+    /// sweep for those sites is deferred per the plan §5.5 "minimum" form.
+    #[allow(dead_code)]
+    ///
+    /// Returns `(parent_fqtn, parent_type_bare_name)`. The bare parent name
+    /// is retained because some callers index `TypeDefInfo.constructors`
+    /// using it after the resolve. Keeping the deferred `ConstructorIdx`
+    /// augmentation for a later sprint per the plan's "minimum" variant.
+    pub(crate) fn resolve_constructor(
+        &self,
+        state: &CheckState,
+        ctor_name: &str,
+        span: Span,
+    ) -> Result<TypeName, crate::result::ResolveError> {
+        let module_path = &state.current_module;
+        let entry = self
+            .resolve_entry_in_module(module_path, ctor_name)
+            .ok_or_else(|| crate::result::ResolveError::ConstructorNotFound {
+                name: Symbol::from(ctor_name),
+                from_module: module_path.clone(),
+                span,
+            })?;
+        match entry {
+            ModuleEntry::Def { kind, .. } => match kind.as_ref() {
+                cranelisp_types::DefKind::Constructor { type_name, .. } => {
+                    Ok(type_name.name.clone())
+                }
+                _ => Err(crate::result::ResolveError::ConstructorNotFound {
+                    name: Symbol::from(ctor_name),
+                    from_module: module_path.clone(),
+                    span,
+                }),
+            },
+            ModuleEntry::TypeDef { info, constructor_scheme: Some(_), .. } => {
+                Ok(info.name.name.clone())
+            }
+            _ => Err(crate::result::ResolveError::ConstructorNotFound {
+                name: Symbol::from(ctor_name),
+                from_module: module_path.clone(),
+                span,
+            }),
         }
     }
 
@@ -920,15 +963,11 @@ where
 
         match entry {
             ModuleEntry::Def { scheme, .. } => Some(scheme.clone()),
-            ModuleEntry::Constructor { scheme, .. } => Some(scheme.clone()),
             ModuleEntry::TypeDef {
                 constructor_scheme: Some(scheme),
                 ..
             } => Some(scheme.clone()),
-            ModuleEntry::Import { source } => {
-                self.resolve_fq_symbol(source, depth + 1)
-            }
-            ModuleEntry::Reexport { source } => {
+            ModuleEntry::Import { source, .. } => {
                 self.resolve_fq_symbol(source, depth + 1)
             }
             _ => None,
@@ -970,7 +1009,7 @@ where
             return None;
         }
         match entry {
-            ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
+            ModuleEntry::Import { source, .. } => {
                 let target = self.probe_module_entry_owned(&source.module, source.symbol.as_ref())?;
                 self.resolve_to_terminal_entry_owned(&target, depth + 1)
             }
@@ -1011,7 +1050,7 @@ where
             return None;
         }
         match &entry {
-            ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
+            ModuleEntry::Import { source, .. } => {
                 let next_home = source.module.clone();
                 let next_entry = self.probe_module_entry_owned(&source.module, source.symbol.as_ref())?;
                 self.chain_follow_to_home(next_entry, next_home, depth + 1)
@@ -1173,11 +1212,11 @@ where
     /// Instantiate a scheme by replacing each quantified variable with a fresh variable.
     /// Uses atomic `fresh_var()` — safe for `&self`.
     pub(crate) fn instantiate_scheme(&self, scheme: &Scheme) -> Type {
-        if scheme.vars.is_empty() {
+        if scheme.type_vars.is_empty() {
             return scheme.ty.clone();
         }
         let mut inst_subst = Subst::new();
-        for &var_id in &scheme.vars {
+        for &var_id in &scheme.type_vars {
             let fresh = self.fresh_var();
             inst_subst.insert(var_id, fresh);
         }
@@ -1198,7 +1237,7 @@ where
 
         // Build a set of scheme vars for fast lookup
         let scheme_var_set: std::collections::HashSet<TypeId> =
-            scheme.vars.iter().copied().collect();
+            scheme.type_vars.iter().copied().collect();
 
         // Propagate constraints from active_constraints to the scheme,
         // resolving through the substitution.
@@ -1242,7 +1281,7 @@ where
     #[cfg(test)]
     pub(crate) fn clear_transient_state(state: &mut CheckState) {
         state.expr_types.clear();
-        state.method_resolutions.clear();
+        state.method_resolutions.resolved_calls.clear();
         state.active_constraints = ActiveConstraints::default();
     }
 
@@ -1429,7 +1468,7 @@ where
                     };
                     result.push((
                         name.clone(),
-                        ModuleEntry::Reexport { source: fq },
+                        ModuleEntry::Import { source: fq, visibility: Visibility::Public },
                     ));
                 }
                 None => {
@@ -1458,15 +1497,17 @@ where
         let mut result = Vec::new();
         for (name, entry) in source_table.public_symbols() {
             let is_member = match entry {
-                ModuleEntry::Constructor { type_name, .. } => {
-                    type_name.name.as_ref() == parent.as_ref()
-                }
                 ModuleEntry::Def { trait_origin, kind, .. } => {
-                    matches!(
-                        kind.as_ref(),
-                        cranelisp_types::DefKind::Primitive { .. }
-                            | cranelisp_types::DefKind::UserFn { .. }
-                    ) && trait_origin.as_ref().is_some_and(|fqtn| fqtn.name == trait_name)
+                    match kind.as_ref() {
+                        cranelisp_types::DefKind::Constructor { type_name, .. } => {
+                            type_name.name.as_ref() == parent.as_ref()
+                        }
+                        cranelisp_types::DefKind::Primitive
+                        | cranelisp_types::DefKind::UserFn { .. } => trait_origin
+                            .as_ref()
+                            .is_some_and(|fqtn| fqtn.name == trait_name),
+                        _ => false,
+                    }
                 }
                 _ => false,
             };
@@ -1477,7 +1518,7 @@ where
                 };
                 result.push((
                     name.clone(),
-                    ModuleEntry::Reexport { source: fq },
+                    ModuleEntry::Import { source: fq, visibility: Visibility::Private },
                 ));
             }
         }
@@ -1518,7 +1559,7 @@ where
                     };
                     result.push((
                         name.clone(),
-                        ModuleEntry::Import { source: fq },
+                        ModuleEntry::Import { source: fq, visibility: Visibility::Private },
                     ));
                 }
                 None => {
@@ -1547,15 +1588,17 @@ where
         let mut result = Vec::new();
         for (name, entry) in source_table.public_symbols() {
             let is_member = match entry {
-                ModuleEntry::Constructor { type_name, .. } => {
-                    type_name.name.as_ref() == parent.as_ref()
-                }
                 ModuleEntry::Def { trait_origin, kind, .. } => {
-                    matches!(
-                        kind.as_ref(),
-                        cranelisp_types::DefKind::Primitive { .. }
-                            | cranelisp_types::DefKind::UserFn { .. }
-                    ) && trait_origin.as_ref().is_some_and(|fqtn| fqtn.name == trait_name)
+                    match kind.as_ref() {
+                        cranelisp_types::DefKind::Constructor { type_name, .. } => {
+                            type_name.name.as_ref() == parent.as_ref()
+                        }
+                        cranelisp_types::DefKind::Primitive
+                        | cranelisp_types::DefKind::UserFn { .. } => trait_origin
+                            .as_ref()
+                            .is_some_and(|fqtn| fqtn.name == trait_name),
+                        _ => false,
+                    }
                 }
                 _ => false,
             };
@@ -1566,7 +1609,7 @@ where
                 };
                 result.push((
                     name.clone(),
-                    ModuleEntry::Import { source: fq },
+                    ModuleEntry::Import { source: fq, visibility: Visibility::Private },
                 ));
             }
         }
@@ -1601,8 +1644,7 @@ where
             self.for_each_in_module(module_path, |name, entry| {
                 match entry {
                     ModuleEntry::TraitDecl { .. }
-                    | ModuleEntry::Import { .. }
-                    | ModuleEntry::Reexport { .. } => {
+                    | ModuleEntry::Import { .. } => {
                         acc.push(TraitName::from(name.as_ref()));
                     }
                     _ => {}
@@ -1656,10 +1698,10 @@ where
         &self,
         module_path: &ModuleFullPath,
         trait_name: &TraitName,
-    ) -> Option<cranelisp_types::TraitDecl> {
+    ) -> Option<cranelisp_types::TraitDeclInfo> {
         let entry = self.resolve_entry_in_module(module_path, trait_name.as_ref())?;
         match entry {
-            ModuleEntry::TraitDecl { decl, .. } => Some(decl),
+            ModuleEntry::TraitDecl { info, .. } => Some(info),
             _ => None,
         }
     }
@@ -1669,7 +1711,7 @@ where
         &self,
         state: &CheckState,
         trait_name: &TraitName,
-    ) -> Option<cranelisp_types::TraitDecl> {
+    ) -> Option<cranelisp_types::TraitDeclInfo> {
         self.lookup_trait_decl_in_module(&state.current_module, trait_name)
     }
 
@@ -1858,8 +1900,8 @@ where
         let traits_to_remove: Vec<TraitName> = table
             .all_symbols()
             .filter_map(|(_, entry)| {
-                if let ModuleEntry::TraitDecl { decl, .. } = entry {
-                    Some(decl.name.clone())
+                if let ModuleEntry::TraitDecl { info, .. } = entry {
+                    Some(info.name.clone())
                 } else {
                     None
                 }
@@ -1919,7 +1961,7 @@ where
         self.next_id.store(snapshot.next_type_id, Ordering::Relaxed);
         state.subst.retain(|id, _| *id < snapshot.next_type_id);
         state.expr_types.clear();
-        state.method_resolutions.clear();
+        state.method_resolutions.resolved_calls.clear();
         state.warnings.clear();
         state.pending_auto_curry.clear();
         // Remove symbol table entries added after the snapshot was taken.
@@ -1930,84 +1972,33 @@ where
         state.env.truncate_to(snapshot.scope_depth);
     }
 
-    // --- Known types lookup (for resolve_type_expr) ---
+    // --- Type-expression resolution (for source annotations) ---
 
-    /// Build a map of known type names for type expression resolution.
+    /// Resolve a source `TypeExpr` against `module_path`'s import scope.
     ///
-    /// Per Principle 17 — bulk introspection (shape 4) is current-module-only.
-    /// Public default-rooted variant scans the `user` module's symbol table
-    /// (with chain-follow on `Import`/`Reexport` entries).
-    #[allow(dead_code)] // default-rooted convenience; called from cfg(test) TestFixture.
-    pub(crate) fn known_type_names(&self) -> crate::resolve::KnownTypes {
-        let user_path = ModuleFullPath::from("user");
-        self.known_type_names_in_module(&user_path)
-    }
-
-    /// Module-rooted variant of [`Self::known_type_names`].
+    /// Replaces the deleted `known_type_names*` snapshot builders + the
+    /// `resolve.rs` free-function-over-map convention. Resolution matches
+    /// directly on the terminal [`ModuleEntry`] reached by per-name
+    /// chain-follow (`resolve_terminal_entry_and_home`) — no intermediate map
+    /// is materialised. Bare references resolve in `module_path`; qualified
+    /// `module/Name` references (`TypeRef.module = Some(m)`) resolve in `m`.
     ///
-    /// Scans `module_path`'s symbol table; canonical `TypeDef` entries are
-    /// inserted directly, and `Import`/`Reexport` entries are chain-followed
-    /// to their terminal `TypeDef`. No other modules are consulted.
-    pub(crate) fn known_type_names_in_module(
+    /// Per Principle 17 — resolution is import-scoped to the calling module's
+    /// own symbol table + chain-follow; no other modules are consulted for a
+    /// bare name.
+    pub(crate) fn resolve_type_expr_in_module(
         &self,
+        texpr: &cranelisp_types::TypeExpr,
+        var_map: &std::collections::HashMap<Symbol, TypeId>,
         module_path: &ModuleFullPath,
-    ) -> crate::resolve::KnownTypes {
-        let mut result = crate::resolve::KnownTypes::new();
-
-        // Tier 1 (import-scoped, bare-name keys per Principle 17): types
-        // reachable from `module_path` via its own symbol table + chain-follow
-        // on per-symbol Import/Reexport entries. Short-name lookups against
-        // `result` resolve only what's actually imported into `module_path`.
-        // Staging-aware (FIXME 0179): collect entries via for_each, then chain
-        // follow each.
-        let local_entries: Vec<ModuleEntry<C>> = {
-            let mut acc = Vec::new();
-            self.for_each_in_module(module_path, |_k, v| acc.push(v.clone()));
-            acc
+        span: Span,
+    ) -> Result<Type, crate::result::ResolveError> {
+        let resolve_terminal = |tref: &cranelisp_types::TypeRef| -> Option<ModuleEntry<C>> {
+            let root = tref.module.as_ref().unwrap_or(module_path);
+            self.resolve_terminal_entry_and_home(root, tref.name.as_ref())
+                .map(|(entry, _home)| entry)
         };
-        for entry in &local_entries {
-            if let Some(terminal) = self.resolve_to_terminal_entry_owned(entry, 0)
-                && let ModuleEntry::TypeDef { info, .. } = terminal
-            {
-                result.insert(
-                    info.name.name.clone(),
-                    (info.name.clone(), info.type_params.len()),
-                );
-            }
-        }
-
-        // Tier 2 (universe-scoped, FQ keys): every type defined in any loaded
-        // module is also addressable by its fully-qualified name (`module/name`).
-        // FQ refs are explicit module specifications by the source author — NOT
-        // a fallback or graph walk, so Principle 17's "no fallback" does not
-        // apply. The bare-name keys above remain import-scoped; the FQ keys are
-        // a parallel direct-addressing surface. This is what makes
-        // `(import [macros [SList]])` redundant for FQ references — the type's
-        // own home is always reachable via `macros/SList`.
-        //
-        // Why this lives in the same `KnownTypes`: `resolve_applied` calls
-        // `known_types.get(name)`; if `name` is FQ (contains `/`), it matches
-        // the FQ key. If bare, it matches the bare key (only if import-reachable).
-        for module_entry in self.modules.iter() {
-            let home_path = module_entry.key();
-            for (_name, entry) in module_entry.value().all_symbols() {
-                if let ModuleEntry::TypeDef { info, .. } = &entry {
-                    let fq_key =
-                        cranelisp_types::TypeName::from(format!("{home_path}/{}", info.name.name));
-                    result.insert(fq_key, (info.name.clone(), info.type_params.len()));
-                }
-            }
-        }
-
-        result
-    }
-
-    /// State-rooted variant of [`Self::known_type_names`].
-    pub(crate) fn known_type_names_with_state(
-        &self,
-        state: &CheckState,
-    ) -> crate::resolve::KnownTypes {
-        self.known_type_names_in_module(&state.current_module)
+        crate::resolve::resolve_type_expr(texpr, var_map, &resolve_terminal, span)
     }
 
     /// Check whether a constructor name refers to an internal constructor.
@@ -2056,14 +2047,13 @@ pub fn advance_next_id_past_table<C, L>(
     for (_name, entry) in table.all_symbols() {
         let scheme = match entry {
             ModuleEntry::Def { scheme, .. } => Some(scheme),
-            ModuleEntry::Constructor { scheme, .. } => Some(scheme),
             _ => None,
         };
         if let Some(s) = scheme {
             if let Some(id) = cranelisp_types::max_type_var_id(&s.ty) {
                 max_id = Some(max_id.map_or(id, |m: TypeId| m.max(id)));
             }
-            for &v in &s.vars {
+            for &v in &s.type_vars {
                 max_id = Some(max_id.map_or(v, |m| m.max(v)));
             }
             for &v in s.constraints.keys() {
@@ -2138,7 +2128,7 @@ where
                 module: module_path.clone(),
                 symbol: name.clone(),
             };
-            (name.clone(), ModuleEntry::Import { source: fq })
+            (name.clone(), ModuleEntry::Import { source: fq, visibility: Visibility::Private })
         })
         .collect()
 }
@@ -2159,7 +2149,7 @@ where
                 module: module_path.clone(),
                 symbol: name.clone(),
             };
-            (name.clone(), ModuleEntry::Reexport { source: fq })
+            (name.clone(), ModuleEntry::Import { source: fq, visibility: Visibility::Public })
         })
         .collect()
 }
@@ -2180,20 +2170,8 @@ where
             // Same-source duplicate is NOT ambiguous (spec §8.6.4)
             let is_same_source = match (existing, &new_entry) {
                 (
-                    ModuleEntry::Import { source: s1 },
-                    ModuleEntry::Import { source: s2 },
-                )
-                | (
-                    ModuleEntry::Reexport { source: s1 },
-                    ModuleEntry::Reexport { source: s2 },
-                )
-                | (
-                    ModuleEntry::Import { source: s1 },
-                    ModuleEntry::Reexport { source: s2 },
-                )
-                | (
-                    ModuleEntry::Reexport { source: s1 },
-                    ModuleEntry::Import { source: s2 },
+                    ModuleEntry::Import { source: s1, .. },
+                    ModuleEntry::Import { source: s2, .. },
                 ) => s1 == s2,
                 _ => false,
             };
@@ -2211,16 +2189,14 @@ where
             // "prelude/add-i64" vs "user/add-i64") is NOT ambiguous.
             let both_indirect = matches!(
                 (existing, &new_entry),
-                (ModuleEntry::Import { .. } | ModuleEntry::Reexport { .. },
-                 ModuleEntry::Import { .. } | ModuleEntry::Reexport { .. })
+                (ModuleEntry::Import { .. }, ModuleEntry::Import { .. })
             );
             if both_indirect {
                 // If either source is from "user" or "primitives" (builtin
                 // seeding), prefer the existing entry — it's canonical.
                 let is_seeded_source = |entry: &ModuleEntry<C>| -> bool {
                     match entry {
-                        ModuleEntry::Import { source }
-                        | ModuleEntry::Reexport { source } => {
+                        ModuleEntry::Import { source, .. } => {
                             let m: &str = source.module.as_ref();
                             m == "user" || m == "primitives"
                         }
@@ -2235,7 +2211,7 @@ where
                 }
 
                 // Both from non-builtin different sources: ambiguous (spec §8.6.4).
-                table.insert(name, ModuleEntry::Ambiguous);
+                table.insert(name, ModuleEntry::Ambiguous { visibility: Visibility::Public });
                 continue;
             }
 
@@ -2270,6 +2246,12 @@ impl TestFixture {
         let current_module = ModuleFullPath::from("user");
         modules.insert(current_module.clone(), SymbolTable::new(current_module.clone()));
         crate::builtins::register_builtins(&modules, &next_id);
+        // Per S72 Wave 1 Trigger 1 (Decision 0048): production sources
+        // primitive Defs from `cranelisp-primitives::PRIMITIVES_TABLE` at
+        // session startup; typecheck no longer registers them. Tests stay
+        // self-contained via this fixture seed (no `cranelisp-primitives`
+        // dep). See `seed_test_primitives` rustdoc.
+        crate::builtins::seed_test_primitives(&modules, &next_id);
         TestFixture {
             modules,
             next_id,
@@ -2426,6 +2408,22 @@ impl TestFixture {
         self.env().lookup_type_def_in_module(module_path, name)
     }
 
+    /// Read the docstring stored on a `TypeDef` entry (test convenience).
+    ///
+    /// Docstrings live on the `ModuleEntry` directly (not inside
+    /// `TypeDefInfo`), so tests that assert a registered type's doc read it
+    /// through this accessor rather than off the returned `TypeDefInfo`.
+    pub fn lookup_type_def_docstring_in_module(
+        &self,
+        module_path: &ModuleFullPath,
+        name: &TypeName,
+    ) -> Option<String> {
+        match self.env().resolve_entry_in_module(module_path, name.as_ref())? {
+            ModuleEntry::TypeDef { docstring, .. } => docstring,
+            _ => None,
+        }
+    }
+
     /// Look up constructor type (test convenience). Uses `state.current_module`.
     pub fn lookup_constructor_type(&self, ctor_name: &str) -> Option<TypeName> {
         self.env()
@@ -2482,7 +2480,7 @@ impl TestFixture {
     }
 
     /// Lookup trait decl (test convenience). State-rooted.
-    pub fn lookup_trait_decl(&self, trait_name: &TraitName) -> Option<cranelisp_types::TraitDecl> {
+    pub fn lookup_trait_decl(&self, trait_name: &TraitName) -> Option<cranelisp_types::TraitDeclInfo> {
         self.env().lookup_trait_decl_with_state(&self.state, trait_name)
     }
 
@@ -2552,9 +2550,17 @@ impl TestFixture {
         self.env().is_internal_constructor_check(ctor_name)
     }
 
-    /// Known type names (test convenience).
-    pub fn known_type_names(&self) -> crate::resolve::KnownTypes {
-        self.env().known_type_names()
+    /// Resolve a `TypeExpr` in the `user` module (test convenience).
+    pub fn resolve_type_expr_in_user(
+        &self,
+        texpr: &cranelisp_types::TypeExpr,
+    ) -> Result<Type, crate::result::ResolveError> {
+        self.env().resolve_type_expr_in_module(
+            texpr,
+            &std::collections::HashMap::new(),
+            &ModuleFullPath::from("user"),
+            Span::SYNTHETIC,
+        )
     }
 
     /// Is trait method (test convenience).
@@ -2569,7 +2575,7 @@ impl TestFixture {
     pub fn generate_default_methods(
         &self,
         _state: &CheckState,
-        decl: &cranelisp_types::TraitDecl,
+        decl: &cranelisp_types::TraitDeclInfo,
         impl_: &cranelisp_types::TraitImpl,
     ) -> Result<Vec<cranelisp_types::Defn>, CranelispError> {
         let env = TypeCheckEnv::new(&self.modules, &self.next_id);
@@ -2594,7 +2600,7 @@ impl TestFixture {
     pub fn state_method_resolutions(
         &self,
     ) -> &std::collections::HashMap<Span, cranelisp_types::ResolvedCall> {
-        &self.state.method_resolutions
+        &self.state.method_resolutions.resolved_calls
     }
 
     /// Collect `ResolvedCall`s from annotated AST nodes across all defn bodies
@@ -2608,10 +2614,8 @@ impl TestFixture {
     ) -> std::collections::HashMap<Span, cranelisp_types::ResolvedCall> {
         let mut out = std::collections::HashMap::new();
         for (_name, entry) in self.symbol_table().all_symbols() {
-            if let cranelisp_types::ModuleEntry::Def { ast: Some(defn), .. } = entry {
-                for variant in &defn.variants {
-                    collect_resolutions_from_expr(&variant.body, &mut out);
-                }
+            if let cranelisp_types::ModuleEntry::Def { ast: Some(variant), .. } = entry {
+                collect_resolutions_from_expr(&variant.body, &mut out);
             }
         }
         out
@@ -2846,6 +2850,7 @@ mod tests {
                 callees: Vec::new(),
                 got_slot: None,
                 trait_origin: None,
+                seq: 0,
                 ast: None,
                 code: None,
             },
@@ -2876,6 +2881,7 @@ mod tests {
                     callees: Vec::new(),
                     got_slot: None,
                     trait_origin: None,
+                    seq: 0,
                     ast: None,
                     code: None,
                 },
@@ -3053,11 +3059,12 @@ mod tests {
         tf.set_current_module(ModuleFullPath::from("reexport"));
         tf.symbol_table_mut().insert(
             Symbol::from("helper"),
-            ModuleEntry::Reexport {
+            ModuleEntry::Import {
                 source: FQSymbol {
                     module: ModuleFullPath::from("lib"),
                     symbol: Symbol::from("helper"),
                 },
+                visibility: Visibility::Public,
             },
         );
 
@@ -3098,7 +3105,7 @@ mod tests {
 
         assert!(matches!(
             tf.symbol_table().get("clash"),
-            Some(ModuleEntry::Ambiguous)
+            Some(ModuleEntry::Ambiguous { .. })
         ));
         assert!(tf.lookup("clash").is_none());
     }
@@ -3360,6 +3367,7 @@ mod tests {
                     callees: Vec::new(),
                     got_slot: None,
                     trait_origin: None,
+                    seq: 0,
                     ast: None,
                     code: None,
                 },
@@ -3506,16 +3514,12 @@ mod tests {
                 name: Symbol::from(method),
                 docstring: None,
                 params: vec![
-                    TypeExpr::TypeVar(Symbol::from("a")),
-                    TypeExpr::TypeVar(Symbol::from("a")),
+                    (Symbol::from("lhs"), TypeExpr::TypeVar(Symbol::from("a"))),
+                    (Symbol::from("rhs"), TypeExpr::TypeVar(Symbol::from("a"))),
                 ],
                 ret_type: TypeExpr::TypeVar(Symbol::from("a")),
                 span: Span::SYNTHETIC,
                 hkt_param_index: None,
-                default_param_names: vec![
-                    Symbol::from("lhs"),
-                    Symbol::from("rhs"),
-                ],
                 default_body: None,
             }],
             visibility: Visibility::Public,
@@ -3526,16 +3530,16 @@ mod tests {
     /// Make a concrete `(impl T Int (defn op [lhs rhs] (add-i64 lhs rhs)))`.
     fn make_int_op_impl(trait_name: &str, method: &str) -> TraitImpl {
         TraitImpl {
-            trait_name: TraitName::from(trait_name),
-            target_type: TypeName::from("Int"),
-            type_args: vec![],
+            trait_name: cranelisp_types::TraitRef::new(None, TraitName::from(trait_name)),
+            target: cranelisp_types::TypeExpr::Named(
+                cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
+            ),
             type_constraints: vec![],
             methods: vec![Defn {
                 name: Symbol::from(method),
                 docstring: None,
                 variants: vec![DefnVariant {
-                    params: vec![Symbol::from("lhs"), Symbol::from("rhs")],
-                    param_annotations: vec![None, None],
+                    params: vec![(Symbol::from("lhs"), None), (Symbol::from("rhs"), None)],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("add-i64"),
@@ -3725,11 +3729,12 @@ mod tests {
         // a `Reexport` edge — the chain becomes N(Import) → M(Reexport) → L(TraitDecl).
         tf.symbol_table_mut().insert(
             Symbol::from("ChainTrait"),
-            ModuleEntry::Reexport {
+            ModuleEntry::Import {
                 source: FQSymbol {
                     module: l.clone(),
                     symbol: Symbol::from("ChainTrait"),
                 },
+                visibility: Visibility::Public,
             },
         );
 
@@ -3775,6 +3780,7 @@ mod tests {
                         TypeName::from("Int"),
                     ),
                     methods: vec![Symbol::from("ch-op")],
+                    visibility: Visibility::Public,
                 },
             );
         }
@@ -3877,6 +3883,7 @@ mod tests {
                     module: m.clone(),
                     symbol: Symbol::from("Foo"),
                 },
+                visibility: Visibility::Private,
             },
         );
 

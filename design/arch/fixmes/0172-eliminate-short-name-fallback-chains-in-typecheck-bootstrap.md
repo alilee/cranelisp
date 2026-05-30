@@ -8,6 +8,24 @@ refers_to: crates/cranelisp-typecheck/src/checker.rs (defining_module_for ~L578,
 status: deferred-with-named-residue
 ---
 
+# S72 W3b update — typecheck-internal portion CLOSED
+
+Sprint 72 Wave 3b Phase B Part 2 deleted the hardcoded primitive type list
+fallback in `fqtn_for_bare_type_name` (lines ~677–682). The function was
+renamed to `resolve_type` returning `Result<FQTypeName, ResolveError>`; both
+`TypeDef` and the newly-activated `IntrinsicType` entries resolve via
+symbol-table chain-follow (`resolve_terminal_entry_and_home`) with no
+hardcoded fallback. Part 2b also deleted the Tier 2 universe walk in
+`known_type_names_in_module` (lines ~1930–1939); FQ references are resolved
+on demand at the call site, not via a pre-built universe-FQ index.
+
+The remaining narrowing of typecheck's `pub` surface (the `int`-consumer
+methods named in S67 W3 below) continues to depend on FIXME 0187. When
+0187 lands and downstream consumers migrate, the affected helpers narrow
+to `pub(crate)` mechanically.
+
+---
+
 # S67 W3 update — deferred-with-named-residue
 
 Sprint 67 Wave 3 /dev (typecheck) narrowed TypeCheckEnv from 37 public

@@ -154,6 +154,7 @@ pub cranelisp_types::ModuleEntry::Import
 pub cranelisp_types::ModuleEntry::Import::source: cranelisp_types::FQSymbol
 pub cranelisp_types::ModuleEntry::Import::visibility: cranelisp_types::Visibility
 pub cranelisp_types::ModuleEntry::IntrinsicType
+pub cranelisp_types::ModuleEntry::IntrinsicType::docstring: core::option::Option<alloc::string::String>
 pub cranelisp_types::ModuleEntry::IntrinsicType::ty: cranelisp_types::Type
 pub cranelisp_types::ModuleEntry::IntrinsicType::visibility: cranelisp_types::Visibility
 pub cranelisp_types::ModuleEntry::SpecialForm
@@ -163,7 +164,8 @@ pub cranelisp_types::ModuleEntry::SpecialForm::param_names: alloc::vec::Vec<cran
 pub cranelisp_types::ModuleEntry::SpecialForm::scheme: cranelisp_types::Scheme
 pub cranelisp_types::ModuleEntry::SpecialForm::visibility: cranelisp_types::Visibility
 pub cranelisp_types::ModuleEntry::TraitDecl
-pub cranelisp_types::ModuleEntry::TraitDecl::decl: cranelisp_types::TraitDecl
+pub cranelisp_types::ModuleEntry::TraitDecl::docstring: core::option::Option<alloc::string::String>
+pub cranelisp_types::ModuleEntry::TraitDecl::info: cranelisp_types::TraitDeclInfo
 pub cranelisp_types::ModuleEntry::TraitDecl::visibility: cranelisp_types::Visibility
 pub cranelisp_types::ModuleEntry::TraitImpl
 pub cranelisp_types::ModuleEntry::TraitImpl::impl_type: cranelisp_types::FQTypeName
@@ -172,6 +174,7 @@ pub cranelisp_types::ModuleEntry::TraitImpl::trait_name: cranelisp_types::FQTrai
 pub cranelisp_types::ModuleEntry::TraitImpl::visibility: cranelisp_types::Visibility
 pub cranelisp_types::ModuleEntry::TypeDef
 pub cranelisp_types::ModuleEntry::TypeDef::constructor_scheme: core::option::Option<cranelisp_types::Scheme>
+pub cranelisp_types::ModuleEntry::TypeDef::docstring: core::option::Option<alloc::string::String>
 pub cranelisp_types::ModuleEntry::TypeDef::info: cranelisp_types::TypeDefInfo
 pub cranelisp_types::ModuleEntry::TypeDef::visibility: cranelisp_types::Visibility
 impl cranelisp_types::ModuleEntry<()>
@@ -639,6 +642,10 @@ pub cranelisp_types::TraitDecl::name: cranelisp_types::TraitName
 pub cranelisp_types::TraitDecl::span: cranelisp_types::Span
 pub cranelisp_types::TraitDecl::type_params: alloc::vec::Vec<cranelisp_types::Symbol>
 pub cranelisp_types::TraitDecl::visibility: cranelisp_types::Visibility
+pub struct cranelisp_types::TraitDeclInfo
+pub cranelisp_types::TraitDeclInfo::methods: alloc::vec::Vec<cranelisp_types::TraitMethodSig>
+pub cranelisp_types::TraitDeclInfo::name: cranelisp_types::TraitName
+pub cranelisp_types::TraitDeclInfo::type_params: alloc::vec::Vec<cranelisp_types::Symbol>
 pub struct cranelisp_types::TraitImpl
 pub cranelisp_types::TraitImpl::methods: alloc::vec::Vec<cranelisp_types::Defn>
 pub cranelisp_types::TraitImpl::span: cranelisp_types::Span
@@ -680,7 +687,6 @@ impl core::fmt::Display for cranelisp_types::TraitRef
 pub fn cranelisp_types::TraitRef::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct cranelisp_types::TypeDefInfo
 pub cranelisp_types::TypeDefInfo::constructors: alloc::vec::Vec<cranelisp_types::Symbol>
-pub cranelisp_types::TypeDefInfo::docstring: core::option::Option<alloc::string::String>
 pub cranelisp_types::TypeDefInfo::name: cranelisp_types::FQTypeName
 pub cranelisp_types::TypeDefInfo::type_params: alloc::vec::Vec<cranelisp_types::Symbol>
 pub struct cranelisp_types::TypeName(_)
@@ -744,7 +750,7 @@ pub fn cranelisp_types::free_vars_expr(expr: &cranelisp_types::Expr, globals: &s
 pub fn cranelisp_types::get_implementing_types_chain<C, L>(modules: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, scope: &cranelisp_types::ModuleFullPath, trait_name: &cranelisp_types::TraitName) -> alloc::vec::Vec<cranelisp_types::TypeName> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
 pub fn cranelisp_types::get_impls_for_type_chain<C, L>(modules: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, scope: &cranelisp_types::ModuleFullPath, type_name: &cranelisp_types::TypeName) -> alloc::vec::Vec<cranelisp_types::TraitName> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
 pub fn cranelisp_types::install_module<C, L>(modules: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, path: cranelisp_types::ModuleFullPath, table: cranelisp_types::SymbolTable<C, L>) where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
-pub fn cranelisp_types::lookup_trait_decl_chain<C, L>(modules: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, scope: &cranelisp_types::ModuleFullPath, trait_name: &cranelisp_types::TraitName) -> core::option::Option<cranelisp_types::TraitDecl> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
+pub fn cranelisp_types::lookup_trait_decl_chain<C, L>(modules: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, scope: &cranelisp_types::ModuleFullPath, trait_name: &cranelisp_types::TraitName) -> core::option::Option<cranelisp_types::TraitDeclInfo> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
 pub fn cranelisp_types::lookup_type_def_chain<C, L>(modules: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, scope: &cranelisp_types::ModuleFullPath, name: &cranelisp_types::TypeName) -> core::option::Option<cranelisp_types::TypeDefInfo> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
 pub fn cranelisp_types::max_type_var_id(ty: &cranelisp_types::Type) -> core::option::Option<cranelisp_types::TypeId>
 pub fn cranelisp_types::resolve_module_by_name_chain<C, L>(modules: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, scope: &cranelisp_types::ModuleFullPath, name: &str) -> core::option::Option<cranelisp_types::ModuleFullPath> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore

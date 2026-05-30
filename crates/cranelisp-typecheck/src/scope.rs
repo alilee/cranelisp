@@ -62,7 +62,7 @@ impl ScopeStack {
             for scheme in frame.values() {
                 // Free vars in a scheme are those in the type but NOT quantified
                 let ty_fv = free_vars(&scheme.ty);
-                let quantified: HashSet<TypeId> = scheme.vars.iter().copied().collect();
+                let quantified: HashSet<TypeId> = scheme.type_vars.iter().copied().collect();
                 for v in ty_fv {
                     if !quantified.contains(&v) {
                         result.insert(v);
@@ -104,7 +104,7 @@ mod tests {
 
     fn mono(ty: Type) -> Scheme {
         Scheme {
-            vars: vec![],
+            type_vars: vec![],
             constraints: HashMap::new(),
             ty,
         }
@@ -164,7 +164,7 @@ mod tests {
         stack.bind(
             Symbol::from("y"),
             Scheme {
-                vars: vec![1],
+                type_vars: vec![1],
                 constraints: HashMap::new(),
                 ty: Type::Fn(vec![Type::Var(1)], Box::new(Type::Var(1))),
             },

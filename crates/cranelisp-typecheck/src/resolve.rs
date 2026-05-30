@@ -1,192 +1,257 @@
 //! Resolve TypeExpr (source annotations) to Type.
 //!
 //! All resolution returns Result, never panics (addresses audit HIGH-4).
+//!
+//! Resolution matches directly on the terminal [`ModuleEntry`] reached by the
+//! injected `resolve_terminal` closure — no intermediate snapshot map. The
+//! closure (built by the caller, which owns the symbol table) performs the
+//! current-module lookup + import chain-follow and hands back the terminal
+//! entry; this module reads everything it needs off that entry: ADT
+//! `FQTypeName` and arity from `TypeDef`, the bare `Type` variant from
+//! `IntrinsicType`. Keeping resolve.rs on the boundary type `ModuleEntry`
+//! (rather than the checker's internals) preserves its decoupling.
 
 use std::collections::HashMap;
 
-use cranelisp_types::{ErrorLocation, CranelispError, FQTypeName, Span, Symbol, Type, TypeExpr, TypeId, TypeName};
+use cranelisp_types::{
+    CodeStore, ModuleEntry, Span, Symbol, Type, TypeExpr, TypeId, TypeRef,
+};
 
-/// Map of known user-defined type names to their FQTypeName and type parameter count.
-/// Used by `resolve_type_expr` for ADT lookup and arity validation.
-pub type KnownTypes = HashMap<TypeName, (FQTypeName, usize)>;
+use crate::result::ResolveError;
 
 /// Resolve a type expression to a concrete type.
 ///
 /// `var_map` maps type variable names (e.g., `:a`) to their allocated TypeIds.
-/// `known_types` maps type names to their type parameter count.
-pub fn resolve_type_expr(
+/// `resolve_terminal` resolves a [`TypeRef`] to its terminal [`ModuleEntry`]
+/// via the caller's symbol table (current-module lookup + import chain-follow),
+/// returning `None` when the name is not reachable.
+pub fn resolve_type_expr<C: CodeStore>(
     texpr: &TypeExpr,
     var_map: &HashMap<Symbol, TypeId>,
-    known_types: &KnownTypes,
+    resolve_terminal: &dyn Fn(&TypeRef) -> Option<ModuleEntry<C>>,
     span: Span,
-) -> Result<Type, CranelispError> {
+) -> Result<Type, ResolveError> {
     match texpr {
-        TypeExpr::Named(name) => resolve_named(name, known_types, span),
+        TypeExpr::Named(name) => resolve_named(name, resolve_terminal, span),
 
         TypeExpr::FnType(params, ret) => {
             let param_types: Result<Vec<Type>, _> = params
                 .iter()
-                .map(|p| resolve_type_expr(p, var_map, known_types, span))
+                .map(|p| resolve_type_expr(p, var_map, resolve_terminal, span))
                 .collect();
-            let ret_type = resolve_type_expr(ret, var_map, known_types, span)?;
+            let ret_type = resolve_type_expr(ret, var_map, resolve_terminal, span)?;
             Ok(Type::Fn(param_types?, Box::new(ret_type)))
         }
 
-        TypeExpr::TypeVar(name) => {
-            var_map
-                .get(name)
-                .map(|&id| Type::Var(id))
-                .ok_or_else(|| CranelispError::TypeError {
-                    message: format!("unresolved type variable: :{name}"),
-                    location: ErrorLocation::from_span(span),
-                })
-        }
+        TypeExpr::TypeVar(name) => var_map
+            .get(name)
+            .map(|&id| Type::Var(id))
+            .ok_or_else(|| ResolveError::TypeNotFound {
+                name: cranelisp_types::TypeName::from(name.as_ref()),
+                from_module: cranelisp_types::ModuleFullPath::from(""),
+                span,
+            }),
 
-        TypeExpr::SelfType => Err(CranelispError::TypeError {
-            message: "Self type not available outside trait implementations".into(),
-            location: ErrorLocation::from_span(span),
+        TypeExpr::SelfType => Err(ResolveError::TypeNotFound {
+            name: cranelisp_types::TypeName::from("Self"),
+            from_module: cranelisp_types::ModuleFullPath::from(""),
+            span,
         }),
 
         TypeExpr::Applied(name, args) => {
-            resolve_applied(name, args, var_map, known_types, span)
+            resolve_applied(name, args, var_map, resolve_terminal, span)
         }
     }
 }
 
-/// Resolve a named type: check primitives first, then user-defined ADTs.
-fn resolve_named(
-    name: &TypeName,
-    known_types: &KnownTypes,
+fn type_not_found(name: &TypeRef, span: Span) -> ResolveError {
+    ResolveError::TypeNotFound {
+        name: name.name.clone(),
+        from_module: name
+            .module
+            .clone()
+            .unwrap_or_else(|| cranelisp_types::ModuleFullPath::from("")),
+        span,
+    }
+}
+
+/// Resolve a named type by matching its terminal `ModuleEntry`.
+///
+/// `TypeDef` resolves to `Type::ADT(info.name, [])`; `IntrinsicType` returns
+/// its bare `Type` variant (`Type::Int`, etc.) directly.
+fn resolve_named<C: CodeStore>(
+    name: &TypeRef,
+    resolve_terminal: &dyn Fn(&TypeRef) -> Option<ModuleEntry<C>>,
     span: Span,
-) -> Result<Type, CranelispError> {
-    // Check primitive types first
-    if let Some(ty) = Type::from_name(name) {
-        return Ok(ty);
+) -> Result<Type, ResolveError> {
+    match resolve_terminal(name) {
+        Some(ModuleEntry::TypeDef { info, .. }) => Ok(Type::ADT(info.name, vec![])),
+        Some(ModuleEntry::IntrinsicType { ty, .. }) => Ok(ty),
+        _ => Err(type_not_found(name, span)),
     }
-
-    // Check user-defined ADT types (named without type args => zero-arg ADT)
-    if let Some((fqtn, _arity)) = known_types.get(name) {
-        return Ok(Type::ADT(fqtn.clone(), vec![]));
-    }
-
-    Err(CranelispError::TypeError {
-        message: format!("unknown type: {name}"),
-        location: ErrorLocation::from_span(span),
-    })
 }
 
 /// Resolve an applied type constructor: `(Option Int)`, `(List :a)`.
 ///
-/// Validates that the number of type arguments matches the declared
-/// type parameter count. Returns `TypeError` on arity mismatch.
-fn resolve_applied(
-    name: &TypeName,
+/// Validates that the number of type arguments matches the ADT's declared
+/// type-parameter count (`info.type_params.len()`).
+fn resolve_applied<C: CodeStore>(
+    name: &TypeRef,
     args: &[TypeExpr],
     var_map: &HashMap<Symbol, TypeId>,
-    known_types: &KnownTypes,
+    resolve_terminal: &dyn Fn(&TypeRef) -> Option<ModuleEntry<C>>,
     span: Span,
-) -> Result<Type, CranelispError> {
-    let (fqtn, expected_arity) = known_types.get(name).ok_or_else(|| {
-        CranelispError::TypeError {
-            message: format!("unknown type: {name}"),
-            location: ErrorLocation::from_span(span),
+) -> Result<Type, ResolveError> {
+    match resolve_terminal(name) {
+        Some(ModuleEntry::TypeDef { info, .. }) => {
+            let expected_arity = info.type_params.len();
+            if args.len() != expected_arity {
+                return Err(ResolveError::TypeNotFound {
+                    name: name.name.clone(),
+                    from_module: name
+                        .module
+                        .clone()
+                        .unwrap_or_else(|| cranelisp_types::ModuleFullPath::from("")),
+                    span,
+                });
+            }
+            let resolved_args: Vec<Type> = args
+                .iter()
+                .map(|a| resolve_type_expr(a, var_map, resolve_terminal, span))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Type::ADT(info.name, resolved_args))
         }
-    })?;
-
-    if args.len() != *expected_arity {
-        return Err(CranelispError::TypeError {
-            message: format!(
-                "type {name} expects {expected_arity} type argument(s), got {}",
-                args.len()
-            ),
-            location: ErrorLocation::from_span(span),
-        });
+        // Intrinsics are zero-arity; applied form short-circuits to the bare
+        // `Type` (the parser can emit `Applied` with empty args).
+        Some(ModuleEntry::IntrinsicType { ty, .. }) => Ok(ty),
+        _ => Err(type_not_found(name, span)),
     }
-
-    let resolved_args: Vec<Type> = args
-        .iter()
-        .map(|a| resolve_type_expr(a, var_map, known_types, span))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(Type::ADT(fqtn.clone(), resolved_args))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::ModuleFullPath;
+    use cranelisp_types::{
+        FQTypeName, ModuleFullPath, TypeDefInfo, TypeName, Visibility,
+    };
 
-    /// Test helper: create an FQTypeName in a "test" module.
+    /// Test entry type: the unit `CodeStore` marker used in the crate's
+    /// other unit tests for `ModuleEntry<()>`.
+    type Entry = ModuleEntry<()>;
+
     fn test_fqtn(name: &str) -> FQTypeName {
         FQTypeName::new(ModuleFullPath::from("test"), TypeName::from(name))
     }
 
-    // spec: 03-types §3.1 — resolve primitive type names to Type values
+    fn prim_fqtn(name: &str) -> FQTypeName {
+        FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from(name))
+    }
+
+    /// Build an `IntrinsicType` entry carrying `ty`.
+    fn intrinsic_entry(ty: Type) -> Entry {
+        ModuleEntry::IntrinsicType {
+            ty,
+            visibility: Visibility::Public,
+            docstring: None,
+        }
+    }
+
+    /// Build a `TypeDef` entry with the given arity (type-param count).
+    fn typedef_entry(name: &str, arity: usize) -> Entry {
+        ModuleEntry::TypeDef {
+            info: TypeDefInfo {
+                name: test_fqtn(name),
+                type_params: (0..arity)
+                    .map(|i| Symbol::from(format!("t{i}")))
+                    .collect(),
+                constructors: vec![],
+            },
+            visibility: Visibility::Public,
+            docstring: None,
+            constructor_scheme: None,
+        }
+    }
+
+    /// A resolver closure backed by a small fixture map keyed on bare name.
+    /// Mirrors the production chain-follow's terminal-entry result without
+    /// needing a full `TypeCheckEnv`.
+    fn resolver<'a>(
+        map: &'a HashMap<&'static str, Entry>,
+    ) -> impl Fn(&TypeRef) -> Option<Entry> + 'a {
+        move |r: &TypeRef| map.get(r.name.as_ref()).cloned()
+    }
+
+    fn intrinsics_map() -> HashMap<&'static str, Entry> {
+        let mut m = HashMap::new();
+        m.insert("Int", intrinsic_entry(Type::Int));
+        m.insert("Bool", intrinsic_entry(Type::Bool));
+        m.insert("Float", intrinsic_entry(Type::Float));
+        m.insert("String", intrinsic_entry(Type::String));
+        m
+    }
+
+    fn named(name: &str) -> TypeExpr {
+        TypeExpr::Named(TypeRef::new(None, TypeName::from(name)))
+    }
+
+    // spec: 03-types §3.1 — resolve primitive type names to bare Type values
     #[test]
     fn test_resolve_primitives() {
         let var_map = HashMap::new();
-        let known = KnownTypes::new();
+        let map = intrinsics_map();
+        let r = resolver(&map);
         let span = Span::SYNTHETIC;
 
-        assert_eq!(
-            resolve_type_expr(&TypeExpr::Named(TypeName::from("Int")), &var_map, &known, span)
-                .unwrap(),
-            Type::Int
-        );
-        assert_eq!(
-            resolve_type_expr(&TypeExpr::Named(TypeName::from("Bool")), &var_map, &known, span)
-                .unwrap(),
-            Type::Bool
-        );
-        assert_eq!(
-            resolve_type_expr(&TypeExpr::Named(TypeName::from("Float")), &var_map, &known, span)
-                .unwrap(),
-            Type::Float
-        );
-        assert_eq!(
-            resolve_type_expr(
-                &TypeExpr::Named(TypeName::from("String")),
-                &var_map,
-                &known,
-                span
-            )
-            .unwrap(),
-            Type::String
-        );
+        for (name, expected) in [
+            ("Int", Type::Int),
+            ("Bool", Type::Bool),
+            ("Float", Type::Float),
+            ("String", Type::String),
+        ] {
+            assert_eq!(
+                resolve_type_expr(&named(name), &var_map, &r, span).unwrap(),
+                expected
+            );
+        }
+    }
+
+    // spec: 03-types §3.1 — intrinsic FQ identity does not leak into the bare
+    // resolved Type (regression: a prior `KnownTypeKind::Intrinsic.fqtn` field
+    // was dead — the resolved value is the bare variant, never an ADT wrap).
+    #[test]
+    fn test_intrinsic_resolves_to_bare_not_adt() {
+        let var_map = HashMap::new();
+        let mut map = intrinsics_map();
+        // Even with an FQ home of `primitives`, resolution yields `Type::Int`.
+        map.insert("Int", intrinsic_entry(Type::Int));
+        let _ = prim_fqtn("Int"); // FQ identity is irrelevant to the result.
+        let r = resolver(&map);
+
+        let ty = resolve_type_expr(&named("Int"), &var_map, &r, Span::SYNTHETIC).unwrap();
+        assert_eq!(ty, Type::Int);
+        assert!(!matches!(ty, Type::ADT(..)));
     }
 
     // spec: 03-types §3.9.3 — unknown type name produces error
     #[test]
     fn test_resolve_unknown_type() {
         let var_map = HashMap::new();
-        let known = KnownTypes::new();
-        let span = Span::SYNTHETIC;
+        let map: HashMap<&'static str, Entry> = HashMap::new();
+        let r = resolver(&map);
 
-        let err = resolve_type_expr(
-            &TypeExpr::Named(TypeName::from("Foo")),
-            &var_map,
-            &known,
-            span,
-        )
-        .unwrap_err();
-        assert!(err.message().contains("unknown type"));
+        let err = resolve_type_expr(&named("Foo"), &var_map, &r, Span::SYNTHETIC).unwrap_err();
+        assert!(matches!(err, ResolveError::TypeNotFound { .. }));
     }
 
     // spec: 03-types §3.2.2 — resolve user-defined ADT name to ADT type
     #[test]
     fn test_resolve_user_defined_adt() {
         let var_map = HashMap::new();
-        let mut known = KnownTypes::new();
-        known.insert(TypeName::from("Color"), (test_fqtn("Color"), 0));
-        let span = Span::SYNTHETIC;
+        let mut map: HashMap<&'static str, Entry> = HashMap::new();
+        map.insert("Color", typedef_entry("Color", 0));
+        let r = resolver(&map);
 
-        let ty = resolve_type_expr(
-            &TypeExpr::Named(TypeName::from("Color")),
-            &var_map,
-            &known,
-            span,
-        )
-        .unwrap();
+        let ty = resolve_type_expr(&named("Color"), &var_map, &r, Span::SYNTHETIC).unwrap();
         assert_eq!(ty, Type::ADT(test_fqtn("Color"), vec![]));
     }
 
@@ -194,14 +259,11 @@ mod tests {
     #[test]
     fn test_resolve_fn_type() {
         let var_map = HashMap::new();
-        let known = KnownTypes::new();
-        let span = Span::SYNTHETIC;
+        let map = intrinsics_map();
+        let r = resolver(&map);
 
-        let fn_texpr = TypeExpr::FnType(
-            vec![TypeExpr::Named(TypeName::from("Int"))],
-            Box::new(TypeExpr::Named(TypeName::from("Bool"))),
-        );
-        let ty = resolve_type_expr(&fn_texpr, &var_map, &known, span).unwrap();
+        let fn_texpr = TypeExpr::FnType(vec![named("Int")], Box::new(named("Bool")));
+        let ty = resolve_type_expr(&fn_texpr, &var_map, &r, Span::SYNTHETIC).unwrap();
         assert_eq!(ty, Type::Fn(vec![Type::Int], Box::new(Type::Bool)));
     }
 
@@ -210,14 +272,14 @@ mod tests {
     fn test_resolve_type_var() {
         let mut var_map = HashMap::new();
         var_map.insert(Symbol::from("a"), 42u32);
-        let known = KnownTypes::new();
-        let span = Span::SYNTHETIC;
+        let map: HashMap<&'static str, Entry> = HashMap::new();
+        let r = resolver(&map);
 
         let ty = resolve_type_expr(
             &TypeExpr::TypeVar(Symbol::from("a")),
             &var_map,
-            &known,
-            span,
+            &r,
+            Span::SYNTHETIC,
         )
         .unwrap();
         assert_eq!(ty, Type::Var(42));
@@ -227,86 +289,82 @@ mod tests {
     #[test]
     fn test_resolve_unknown_type_var() {
         let var_map = HashMap::new();
-        let known = KnownTypes::new();
-        let span = Span::SYNTHETIC;
+        let map: HashMap<&'static str, Entry> = HashMap::new();
+        let r = resolver(&map);
 
         let err = resolve_type_expr(
             &TypeExpr::TypeVar(Symbol::from("a")),
             &var_map,
-            &known,
-            span,
+            &r,
+            Span::SYNTHETIC,
         )
         .unwrap_err();
-        assert!(err.message().contains("unresolved type variable"));
+        assert!(matches!(err, ResolveError::TypeNotFound { .. }));
     }
 
     // spec: 07-traits §7.1.1 — Self type outside trait context is error
     #[test]
     fn test_resolve_self_type_error() {
         let var_map = HashMap::new();
-        let known = KnownTypes::new();
-        let span = Span::SYNTHETIC;
+        let map: HashMap<&'static str, Entry> = HashMap::new();
+        let r = resolver(&map);
 
-        assert!(resolve_type_expr(&TypeExpr::SelfType, &var_map, &known, span).is_err());
+        assert!(resolve_type_expr(&TypeExpr::SelfType, &var_map, &r, Span::SYNTHETIC).is_err());
     }
 
     // spec: 03-types §3.2.2 — resolve applied type :(Option Int) to ADT
     #[test]
     fn test_resolve_applied_valid() {
         let var_map = HashMap::new();
-        let mut known = KnownTypes::new();
-        known.insert(TypeName::from("Option"), (test_fqtn("Option"), 1));
-        let span = Span::SYNTHETIC;
+        let mut map = intrinsics_map();
+        map.insert("Option", typedef_entry("Option", 1));
+        let r = resolver(&map);
 
         let texpr = TypeExpr::Applied(
-            TypeName::from("Option"),
-            vec![TypeExpr::Named(TypeName::from("Int"))],
+            TypeRef::new(None, TypeName::from("Option")),
+            vec![named("Int")],
         );
-        let ty = resolve_type_expr(&texpr, &var_map, &known, span).unwrap();
-        assert_eq!(
-            ty,
-            Type::ADT(test_fqtn("Option"), vec![Type::Int])
-        );
+        let ty = resolve_type_expr(&texpr, &var_map, &r, Span::SYNTHETIC).unwrap();
+        assert_eq!(ty, Type::ADT(test_fqtn("Option"), vec![Type::Int]));
     }
 
-    // spec: 03-types §3.2.2 — applied type with wrong arity fails
+    // spec: 03-types §3.2.2 — applied type with wrong arity fails (both
+    // over- and under-application), flexing the arity gate.
     #[test]
     fn test_resolve_applied_arity_mismatch() {
         let var_map = HashMap::new();
-        let mut known = KnownTypes::new();
-        known.insert(TypeName::from("Option"), (test_fqtn("Option"), 1));
-        let span = Span::SYNTHETIC;
+        let mut map = intrinsics_map();
+        map.insert("Option", typedef_entry("Option", 1));
+        let r = resolver(&map);
 
-        // Too many args
-        let texpr = TypeExpr::Applied(
-            TypeName::from("Option"),
-            vec![
-                TypeExpr::Named(TypeName::from("Int")),
-                TypeExpr::Named(TypeName::from("Bool")),
-            ],
+        let too_many = TypeExpr::Applied(
+            TypeRef::new(None, TypeName::from("Option")),
+            vec![named("Int"), named("Bool")],
         );
-        let err = resolve_type_expr(&texpr, &var_map, &known, span).unwrap_err();
-        assert!(err.message().contains("expects 1 type argument"));
+        assert!(matches!(
+            resolve_type_expr(&too_many, &var_map, &r, Span::SYNTHETIC).unwrap_err(),
+            ResolveError::TypeNotFound { .. }
+        ));
 
-        // Too few args (zero)
-        let texpr_zero = TypeExpr::Applied(TypeName::from("Option"), vec![]);
-        let err = resolve_type_expr(&texpr_zero, &var_map, &known, span).unwrap_err();
-        assert!(err.message().contains("expects 1 type argument"));
+        let too_few = TypeExpr::Applied(TypeRef::new(None, TypeName::from("Option")), vec![]);
+        assert!(matches!(
+            resolve_type_expr(&too_few, &var_map, &r, Span::SYNTHETIC).unwrap_err(),
+            ResolveError::TypeNotFound { .. }
+        ));
     }
 
     // spec: 03-types §3.9.3 — applied unknown type name fails
     #[test]
     fn test_resolve_applied_unknown_type() {
         let var_map = HashMap::new();
-        let known = KnownTypes::new();
-        let span = Span::SYNTHETIC;
+        let map: HashMap<&'static str, Entry> = HashMap::new();
+        let r = resolver(&map);
 
         let texpr = TypeExpr::Applied(
-            TypeName::from("Foo"),
-            vec![TypeExpr::Named(TypeName::from("Int"))],
+            TypeRef::new(None, TypeName::from("Foo")),
+            vec![named("Int")],
         );
-        let err = resolve_type_expr(&texpr, &var_map, &known, span).unwrap_err();
-        assert!(err.message().contains("unknown type"));
+        assert!(resolve_type_expr(&texpr, &var_map, &r, Span::SYNTHETIC).is_err());
     }
 
     // spec: 03-types §3.3 — applied type with type variable argument
@@ -314,43 +372,35 @@ mod tests {
     fn test_resolve_applied_with_type_var() {
         let mut var_map = HashMap::new();
         var_map.insert(Symbol::from("a"), 5u32);
-        let mut known = KnownTypes::new();
-        known.insert(TypeName::from("Option"), (test_fqtn("Option"), 1));
-        let span = Span::SYNTHETIC;
+        let mut map = intrinsics_map();
+        map.insert("Option", typedef_entry("Option", 1));
+        let r = resolver(&map);
 
         let texpr = TypeExpr::Applied(
-            TypeName::from("Option"),
+            TypeRef::new(None, TypeName::from("Option")),
             vec![TypeExpr::TypeVar(Symbol::from("a"))],
         );
-        let ty = resolve_type_expr(&texpr, &var_map, &known, span).unwrap();
-        assert_eq!(
-            ty,
-            Type::ADT(test_fqtn("Option"), vec![Type::Var(5)])
-        );
+        let ty = resolve_type_expr(&texpr, &var_map, &r, Span::SYNTHETIC).unwrap();
+        assert_eq!(ty, Type::ADT(test_fqtn("Option"), vec![Type::Var(5)]));
     }
 
-    // spec: 03-types §3.2.2 — applied type with multiple parameters
+    // spec: 03-types §3.2.2 — applied type with multiple parameters validates
+    // arity 2 and threads both args positionally.
     #[test]
     fn test_resolve_applied_multi_param() {
         let var_map = HashMap::new();
-        let mut known = KnownTypes::new();
-        known.insert(TypeName::from("Either"), (test_fqtn("Either"), 2));
-        let span = Span::SYNTHETIC;
+        let mut map = intrinsics_map();
+        map.insert("Either", typedef_entry("Either", 2));
+        let r = resolver(&map);
 
         let texpr = TypeExpr::Applied(
-            TypeName::from("Either"),
-            vec![
-                TypeExpr::Named(TypeName::from("Int")),
-                TypeExpr::Named(TypeName::from("String")),
-            ],
+            TypeRef::new(None, TypeName::from("Either")),
+            vec![named("Int"), named("String")],
         );
-        let ty = resolve_type_expr(&texpr, &var_map, &known, span).unwrap();
+        let ty = resolve_type_expr(&texpr, &var_map, &r, Span::SYNTHETIC).unwrap();
         assert_eq!(
             ty,
-            Type::ADT(
-                test_fqtn("Either"),
-                vec![Type::Int, Type::String]
-            )
+            Type::ADT(test_fqtn("Either"), vec![Type::Int, Type::String])
         );
     }
 }

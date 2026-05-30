@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use crate::{
     DefnVariant, FQSymbol, FQTraitName, FQTypeName, GotTable, ModuleFullPath,
-    ModuleName, Scheme, SchedulingClass, Sexp, Span, Symbol, TraitDecl, TraitName, Type,
+    ModuleName, Scheme, SchedulingClass, Sexp, Span, Symbol, TraitDeclInfo, TraitName, Type,
     TypeDefInfo, TypeName, Visibility,
 };
 
@@ -506,14 +506,14 @@ impl ModuleEntry<()> {
                 ModuleEntry::SpecialForm { scheme, param_names, docstring, description, visibility }
             }
             ModuleEntry::Import { source, visibility } => ModuleEntry::Import { source, visibility },
-            ModuleEntry::TypeDef { info, visibility, constructor_scheme } => {
-                ModuleEntry::TypeDef { info, visibility, constructor_scheme }
+            ModuleEntry::TypeDef { info, visibility, docstring, constructor_scheme } => {
+                ModuleEntry::TypeDef { info, visibility, docstring, constructor_scheme }
             }
-            ModuleEntry::IntrinsicType { ty, visibility } => {
-                ModuleEntry::IntrinsicType { ty, visibility }
+            ModuleEntry::IntrinsicType { ty, visibility, docstring } => {
+                ModuleEntry::IntrinsicType { ty, visibility, docstring }
             }
-            ModuleEntry::TraitDecl { decl, visibility } => {
-                ModuleEntry::TraitDecl { decl, visibility }
+            ModuleEntry::TraitDecl { info, visibility, docstring } => {
+                ModuleEntry::TraitDecl { info, visibility, docstring }
             }
             // ModuleEntry::Constructor variant retired — constructors are now
             // ModuleEntry::Def entries with kind: DefKind::Constructor { .. }
@@ -851,9 +851,18 @@ pub enum ModuleEntry<C: CodeStore = ()> {
     /// pre-S70) and with `DefKind::UserFn` / `DefKind::Constructor` (which
     /// never carried them). See the `DefKind::Macro` rustdoc below for the
     /// full Decision-41 settlement including the cache-hit residual gap.
+    ///
+    /// **`docstring` is a direct entry field (S72 Phase B).** The docstring
+    /// previously lived nested inside `info.docstring` (`TypeDefInfo`); it is
+    /// now a direct top-level field on the entry, matching `Def` /
+    /// `SpecialForm`. `TypeDefInfo` no longer carries a docstring — single
+    /// source of truth (Principle 7). The entry owns the docstring; the
+    /// `info` payload carries only the type's structural metadata (name,
+    /// type-parameter binders, constructor names).
     TypeDef {
         info: TypeDefInfo,
         visibility: Visibility,
+        docstring: Option<String>,
         constructor_scheme: Option<Scheme>,
     },
     /// Compiler-intrinsic scalar type (Int, Bool, Float, String).
@@ -877,15 +886,24 @@ pub enum ModuleEntry<C: CodeStore = ()> {
     /// works. Without prelude / explicit import, bare `:Int` is a
     /// compile-time "unknown type" error.
     ///
-    /// Registered by `cranelisp-typecheck::register_primitives` (wave-3
-    /// cascade); resolved by `resolve_named` via uniform entry lookup.
-    /// Supersedes the retired `Type::from_name` / `Type::type_name`
+    /// Registered by `cranelisp-typecheck::register_builtin_type_names`
+    /// (in `builtins.rs`); resolved by `resolve_named` via uniform entry
+    /// lookup. Supersedes the retired `Type::from_name` / `Type::type_name`
     /// reverse-lookup bridge (S69 Submission 30 — they made bare `:Int`
     /// always available regardless of imports, contradicting spec §3.1 /
-    /// §8.9.1 / §8.11.4).
+    /// §8.9.1 / §8.11.4). The prior `register_primitives` registration flow
+    /// was deleted in S72 (T1).
+    ///
+    /// **`docstring` is a direct entry field (S72 Phase B).** Intrinsic types
+    /// (`Int`, `Bool`, `Float`, `String`) are introspectable like any other
+    /// symbol; the field carries the compiler-provided documentation surfaced
+    /// by `/doc` / `/info`. Direct top-level field, matching `Def` /
+    /// `SpecialForm` / `TypeDef` — populated at registration (`None` when no
+    /// documentation is provided).
     IntrinsicType {
         ty: Type,
         visibility: Visibility,
+        docstring: Option<String>,
     },
     /// A trait declaration (deftrait, Ring 2).
     ///
@@ -906,9 +924,30 @@ pub enum ModuleEntry<C: CodeStore = ()> {
     /// shed the same shadow fields pre/at S70). See the `DefKind::Macro`
     /// rustdoc below for the full Decision-41 settlement including the
     /// cache-hit residual gap.
+    ///
+    /// **Slimmed payload + direct `docstring`/`visibility` (S72 Phase B).**
+    /// The entry previously embedded the full frontend AST node
+    /// `crate::ast::TraitDecl`, which duplicated `visibility` (the AST node
+    /// carries its own `visibility`) and `docstring` (nested in `decl.docstring`),
+    /// and dragged the parser `span` into the runtime symbol-table model.
+    /// Following the `ModuleEntry::Def` precedent — `Def` does NOT embed the
+    /// `Defn` AST node; it carries direct `scheme`/`visibility`/`docstring`/`seq`
+    /// fields plus a slimmed `ast: Option<DefnVariant>`, with the outer `Defn`
+    /// wrapper retiring from the runtime model — `TraitDecl` now carries direct
+    /// `docstring` + `visibility` and a slimmed `info: TraitDeclInfo`
+    /// (`name`, `type_params`, `methods`).
+    ///
+    /// Single source of truth (Principle 7): `docstring`/`visibility` live on
+    /// the entry, NOT duplicated in the payload. The frontend AST `TraitDecl`
+    /// (in `crate::ast`) keeps its own `visibility`/`docstring`/`span` — those
+    /// record what the user wrote at the source layer and remain legitimate
+    /// parser output; the symbol-table entry stops embedding/duplicating them.
+    /// The `is_public()` uniform match (below) reads the entry's direct
+    /// `visibility` exactly as for every other variant.
     TraitDecl {
-        decl: TraitDecl,
+        info: TraitDeclInfo,
         visibility: Visibility,
+        docstring: Option<String>,
     },
     // ModuleEntry::Constructor variant retired. Constructors are now
     // ModuleEntry::Def entries with kind: DefKind::Constructor { type_name,
@@ -1614,14 +1653,19 @@ where
     }
 }
 
-/// Look up a `TraitDecl` by chain-following `name` from `scope`. Live-only
+/// Look up a `TraitDeclInfo` by chain-following `name` from `scope`. Live-only
 /// free-fn variant of the relocated method 4's underlying primitive
 /// (`lookup_trait_decl_in_module` body).
+///
+/// Returns the slimmed symbol-table payload `TraitDeclInfo` (S72 Phase B) —
+/// the entry no longer embeds the full AST `TraitDecl`. Callers needing
+/// `docstring`/`visibility` read them from the entry directly (e.g. via
+/// `is_public()`); this primitive surfaces the structural trait metadata.
 pub fn lookup_trait_decl_chain<C, L>(
     modules: &dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>,
     scope: &ModuleFullPath,
     trait_name: &TraitName,
-) -> Option<TraitDecl>
+) -> Option<TraitDeclInfo>
 where
     C: CodeStore,
     L: LinkerStore,
@@ -1629,7 +1673,7 @@ where
     let (terminal, _home) =
         resolve_terminal_entry_and_home(modules, scope, trait_name.as_ref())?;
     match terminal {
-        ModuleEntry::TraitDecl { decl, .. } => Some(decl),
+        ModuleEntry::TraitDecl { info, .. } => Some(info),
         _ => None,
     }
 }
@@ -1849,9 +1893,9 @@ mod tests {
                     ),
                     type_params: vec![],
                     constructors: vec![],
-                    docstring: None,
                 },
                 visibility: Visibility::Public,
+                docstring: None,
                 constructor_scheme: None,
             },
         );

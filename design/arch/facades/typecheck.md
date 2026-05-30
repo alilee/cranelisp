@@ -65,42 +65,65 @@ impl<'a, C: CodeStore, L: LinkerStore> ClusterContext<'a, C, L> {
     pub fn live(modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>, current_module: ModuleFullPath) -> Self;
     pub fn cluster(modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>, staging: &'a mut SymbolTable<C, L>, current_module: ModuleFullPath) -> Self;
     pub fn current_module(&self) -> &ModuleFullPath;
-    pub fn current_symbol_table(&self) -> ClusterRead<'_, C, L>;       // borrow guard; call `.view()` to get the unioned `View<'_, C, L>`
-    pub fn current_symbol_table_mut(&mut self) -> ClusterWrite<'_, C, L>; // Deref/DerefMut → SymbolTable<C, L>; in Live mode wraps the DashMap RefMut, in Cluster mode wraps &mut staging
+    pub fn current_symbol_table(&self) -> SymbolTableRead<'_, '_, C, L>;       // borrow guard; call `.view()` to get the unioned `View<'_, C, L>`
+    pub fn current_symbol_table_mut(&mut self) -> SymbolTableMut<'_, '_, C, L>; // Deref/DerefMut → SymbolTable<C, L>; in Live mode wraps the DashMap RefMut, in Staging mode wraps the orchestrator-handed staging table
 }
 
-/// Read-side borrow guard returned by `ClusterContext::current_symbol_table()`.
-/// Holds either a DashMap one-ref (Live) or both the staging-ref + a live one-ref
-/// (Cluster), and exposes `.view() -> View<'_, C, L>` to obtain the unioned
-/// staging-first `View` per Decision 44. Internal-but-exposed (a public type),
-/// because the cluster-mode return must hold two borrows simultaneously and
-/// returning `View<'_, C, L>` directly would force the caller's borrow lifetime
-/// to outlive the staging borrow it depends on. Callers obtain `View` via
-/// `ctx.current_symbol_table().view()`.
-pub enum ClusterRead<'a, C, L> {
+/// Read-side borrow guard returned by `ClusterContext::current_symbol_table()` AND
+/// by `TypeCheckEnv::current_symbol_table()`. **One concept, one type** — there
+/// is exactly one pair of read+write wrappers crossing the typecheck surface; no
+/// parallel `pub(crate)` variants exist (see §"Single-pair invariant" below).
+///
+/// Holds either a DashMap one-ref (Live) or both the staging borrow + a live
+/// one-ref (Cluster), and exposes `.view() -> View<'_, C, L>` to obtain the
+/// unioned staging-first `View` per Decision 44. Internal-but-exposed (a public
+/// type), because the cluster-mode return must hold two borrows simultaneously
+/// and returning `View<'_, C, L>` directly would force the caller's borrow
+/// lifetime to outlive the staging borrow it depends on. Callers obtain `View`
+/// via `ctx.current_symbol_table().view()` or `env.current_symbol_table().view()`.
+///
+/// **Naming rationale.** The type names what is being accessed — the per-module
+/// `SymbolTable` — not the access mode. "Cluster" is a mode (one of two ways the
+/// underlying table is reached: directly when committed, via staging during a
+/// cluster check); "SymbolTable" is the thing both modes hand out. Naming flows
+/// from facade: `SymbolTableRead` / `SymbolTableMut` is what a reader of the
+/// public surface sees, and the same names are used by interior callers — no
+/// parallel pair, no aliasing.
+pub enum SymbolTableRead<'a, 'b, C, L> {
     Live(dashmap::mapref::one::Ref<'a, ModuleFullPath, SymbolTable<C, L>>),
     Cluster {
-        staging: &'a SymbolTable<C, L>,
+        staging: std::cell::Ref<'a, &'b mut SymbolTable<C, L>>,
         live: dashmap::mapref::one::Ref<'a, ModuleFullPath, SymbolTable<C, L>>,
     },
 }
 
-impl<'a, C, L> ClusterRead<'a, C, L> {
-    pub fn view(&self) -> View<'_, C, L>;  // Cluster → View::union(staging, live); Live → View::single(live)
+impl<'a, 'b, C, L> SymbolTableRead<'a, 'b, C, L> {
+    pub fn view(&self) -> View<'_, C, L>;  // Cluster → View::union(staging, live) staging-first; Live → View::single(live)
 }
 
-/// Write-side borrow guard returned by `ClusterContext::current_symbol_table_mut()`.
+/// Write-side borrow guard returned by `ClusterContext::current_symbol_table_mut()`
+/// AND by `TypeCheckEnv::current_symbol_table_mut()`. **One concept, one type** —
+/// the write-side counterpart to `SymbolTableRead`; no parallel `pub(crate)` variant
+/// exists (see §"Single-pair invariant" below).
+///
 /// Implements `Deref<Target = SymbolTable<C, L>>` and `DerefMut`, so all 91
 /// register-call sites in typecheck (`register_type_def`, `register_trait_decl`,
 /// etc.) call methods on it as if it were a direct `&mut SymbolTable`. In `Live`
-/// mode wraps a DashMap `RefMut`; in `Cluster` mode wraps `&mut staging`. The
-/// staging-vs-live distinction is absorbed inside the guard so callers don't
-/// thread it through. Internal-but-exposed for the same reason as `ClusterRead`
-/// (RAII boundary; cannot collapse to `&mut SymbolTable` without losing the
-/// DashMap lock-discipline in Live mode).
-pub enum ClusterWrite<'a, C, L> {
+/// mode wraps a DashMap `RefMut`; in `Staging` mode wraps the orchestrator-handed
+/// staging table reached through the `ClusterContext`'s interior-mutability cell.
+/// The staging-vs-live distinction is absorbed inside the guard so callers don't
+/// thread it through. Internal-but-exposed for the same reason as
+/// `SymbolTableRead` (RAII boundary; cannot collapse to `&mut SymbolTable`
+/// without losing the DashMap lock-discipline in Live mode).
+///
+/// **Naming rationale.** Same as `SymbolTableRead` — the type names the thing
+/// being accessed (the `SymbolTable`), not the access mode. The variant `Staging`
+/// names the *backing store* for cluster-mode writes (the orchestrator-handed
+/// staging table that drains into live on cluster Ok), parallel to `Live`
+/// naming the per-module live table.
+pub enum SymbolTableMut<'a, 'b, C, L> {
     Live(dashmap::mapref::one::RefMut<'a, ModuleFullPath, SymbolTable<C, L>>),
-    Cluster(&'a mut SymbolTable<C, L>),
+    Staging(std::cell::RefMut<'a, &'b mut SymbolTable<C, L>>),
 }
 
 pub struct TypeCheckEnv<'a, C, L> { /* per-form environment — wraps &mut ClusterContext + read-only symbol_tables */ }
@@ -108,10 +131,22 @@ pub struct TypeCheckEnv<'a, C, L> { /* per-form environment — wraps &mut Clust
 impl<'a, C, L> TypeCheckEnv<'a, C, L> {
     pub fn new(modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>, next_id: &'a AtomicU32) -> Self;
     pub fn next_type_id(&mut self) -> TypeId;
+
+    // Returns the SAME pair of types as `ClusterContext::current_symbol_table[_mut]()`.
+    // The single-pair invariant (§"Single-pair invariant") says these are not parallel
+    // types — they ARE the orchestrator-surface types, reused for interior callers.
+    pub fn current_symbol_table(&self) -> SymbolTableRead<'_, '_, C, L>;
+    pub fn current_symbol_table_mut(&mut self) -> SymbolTableMut<'_, '_, C, L>;
 }
 ```
 
-`CheckState`, `ClusterContext`, `ClusterRead`, `ClusterWrite`, and `TypeCheckEnv` exist for tests and for crates that want to construct typecheck driver state directly. `int` uses `check_forms` exclusively in production. `TypeCheckEnv` carries `&mut ClusterContext<'_, C, L>` per Decision 38 + Decision 44 (amended FIXME 0167) — table access flows through `ClusterContext::current_symbol_table()` (read, returning `ClusterRead`) / `current_symbol_table_mut()` (write, returning `ClusterWrite`) so the 91 register-call sites and 51 access sites in `program.rs` do not change individually. In production cluster-processing flow, the orchestrator hands `ClusterContext::Cluster { staging, … }`; in REPL introspection / fine-grained-test paths the caller may construct `ClusterContext::Live { modules, current_module }` for direct live access. Per-symbol writes in committed (Live) mode go through the inner DashMap's per-key locks; in cluster mode they go through the `&mut staging` exclusive borrow held by the orchestrator's stack frame.
+**Single-pair invariant.** There is exactly **ONE** pair of read+write wrappers crossing or touching the typecheck surface — `SymbolTableRead` and `SymbolTableMut`. Both the orchestrator-side `ClusterContext` accessors and the interior `TypeCheckEnv` accessors return these same types. No parallel `pub(crate) SymbolTableRead` / `pub(crate) SymbolTableMut` exists inside the crate; no `ClusterRead` / `ClusterWrite` alias remains. Future audits + `/review` assert against this — a duplicate read/write wrapper pair in `cranelisp-typecheck` is a structural defect.
+
+Rationale: prior to S72 the typecheck crate carried two parallel pairs — public `ClusterRead`/`ClusterWrite` exposed by `ClusterContext` (in `cluster.rs`) plus interior `pub(crate) SymbolTableRead`/`SymbolTableMut` used by `TypeCheckEnv` (in `checker.rs`). Both pairs implemented the same staging+live-overlay semantics with the same Live/Cluster discriminant. /review I-2 (S72 W2) identified the duplication; user arbitrated unification under the `SymbolTable*` names — the type names what is being accessed (the SymbolTable), not the access mode ("Cluster" was a mode, not a thing). Naming flows from the facade: the orchestrator surface and the interior callers see the same names because they handle the same concept.
+
+**Post-rename `public-api.txt` shape.** Once /dev (typecheck) lands the source change, `crates/cranelisp-typecheck/public-api.txt` regenerates with `cranelisp_typecheck::SymbolTableRead` and `cranelisp_typecheck::SymbolTableMut` in place of `ClusterRead` / `ClusterWrite` (one-for-one substitution across the ~40 baseline lines that mention the old names — type definitions, variant declarations, trait impls — see lines 61–62 + 71–99 in the current baseline). `ClusterContext::current_symbol_table` / `current_symbol_table_mut` return-type signatures update accordingly. Two new baseline lines appear for `TypeCheckEnv::current_symbol_table` / `current_symbol_table_mut` returning the same `SymbolTableRead` / `SymbolTableMut` types — these are the accessors the single-pair invariant mandates be exposed at the env-surface for the same purpose as on `ClusterContext`. No other public-API changes flow from this rename. The baseline regen lands in the same commit as the source change per `design/arch/CLAUDE.md` §"Baseline-diff discipline".
+
+`CheckState`, `ClusterContext`, `SymbolTableRead`, `SymbolTableMut`, and `TypeCheckEnv` exist for tests and for crates that want to construct typecheck driver state directly. `int` uses `check_forms` exclusively in production. `TypeCheckEnv` carries `&mut ClusterContext<'_, C, L>` per Decision 38 + Decision 44 (amended FIXME 0167) — table access flows through `ClusterContext::current_symbol_table()` / `current_symbol_table_mut()` (returning `SymbolTableRead` / `SymbolTableMut`) AND through the identical `TypeCheckEnv::current_symbol_table()` / `current_symbol_table_mut()` accessors (returning the same two types — single-pair invariant), so the 91 register-call sites and 51 access sites in `program.rs` do not change individually. In production cluster-processing flow, the orchestrator hands `ClusterContext::Cluster { staging, … }`; in REPL introspection / fine-grained-test paths the caller may construct `ClusterContext::Live { modules, current_module }` for direct live access. Per-symbol writes in committed (Live) mode go through the inner DashMap's per-key locks; in cluster mode they go through the orchestrator-handed staging table reached via the `ClusterContext`'s interior-mutability cell (which is what the `Staging` variant of `SymbolTableMut` carries).
 
 **`TypeCheckEnv` target shape — narrowing target (per Sprint 67 PIF row 21).** As-built `TypeCheckEnv` exposes ~30 methods (per-symbol lookups, snapshot/restore, module-table accessors, exhaustiveness checks, display-info computation, register helpers, etc. — see `crates/cranelisp-typecheck/public-api.txt` lines 164–202). The facade prescribes exactly **2 methods**:
 
@@ -228,7 +263,7 @@ Most of those APIs become `pub(crate)` per the `TypeCheckEnv` narrowing above an
 
 ## Types originated here
 
-Per Principle 15's placement heuristic — `CheckResult`, `CheckError`, `CheckState`, `TypeCheckEnv`, `ClusterContext`, and `ReplSnapshot` live in `cranelisp-typecheck` (referenced by `int` only — single implementation-crate consumer). `CheckPass`, `FormCheckResult`, and `ModuleCheckAccumulator` are removed from the public surface entirely per Decision 44's 2026-05-13 third amendment — `check_forms` is the single entry; pass discriminator and cross-pass working state are internal to its frame. `ResolutionGap` is the cross-cutting exception: it is referenced by the frontend facade (`ExpansionError::Gap`) and the typecheck facade (`CheckError::Gap`), so it lives in `cranelisp-types` per the multi-consumer rule. `int` pattern-matches both gap-bearing errors against the same shared variants. `View<'a, C, L>` lives in `cranelisp-types` (multi-consumer at the boundary type level — see `crates/cranelisp-types/src/view.rs` rustdoc); `ClusterContext` consumes it via the read accessor.
+Per Principle 15's placement heuristic — `CheckResult`, `CheckError`, `CheckState`, `TypeCheckEnv`, `ClusterContext`, `SymbolTableRead`, `SymbolTableMut`, and `ReplSnapshot` live in `cranelisp-typecheck` (referenced by `int` only — single implementation-crate consumer; the `SymbolTable*` borrow guards are typecheck-interior types per the single-pair invariant — they are returned at the surface but not authored elsewhere). `CheckPass`, `FormCheckResult`, and `ModuleCheckAccumulator` are removed from the public surface entirely per Decision 44's 2026-05-13 third amendment — `check_forms` is the single entry; pass discriminator and cross-pass working state are internal to its frame. `ResolutionGap` is the cross-cutting exception: it is referenced by the frontend facade (`ExpansionError::Gap`) and the typecheck facade (`CheckError::Gap`), so it lives in `cranelisp-types` per the multi-consumer rule. `int` pattern-matches both gap-bearing errors against the same shared variants. `View<'a, C, L>` lives in `cranelisp-types` (multi-consumer at the boundary type level — see `crates/cranelisp-types/src/view.rs` rustdoc); `ClusterContext` consumes it via the read accessor.
 
 ```rust
 // In cranelisp-typecheck:
@@ -247,8 +282,11 @@ pub enum   CheckError { Gap(ResolutionGap), TypeError { message, location: Error
 // internal to check_forms's frame.
 pub struct CheckState { /* current_module + per-call state — type-var pool, substitution, deferred resolutions */ }
 pub enum   ClusterContext<'a, C, L> { Live { … }, Cluster { … } }   // Decision 44 (amended FIXME 0167) — staging-vs-live abstraction
-pub enum   ClusterRead<'a, C, L>  { Live(...), Cluster { staging, live } }  // Decision 44 — read-side borrow guard; `.view()` yields View<'_, C, L>
-pub enum   ClusterWrite<'a, C, L> { Live(...), Cluster(&'a mut SymbolTable<C, L>) }  // Decision 44 — write-side borrow guard; Deref/DerefMut → SymbolTable<C, L>
+// Single-pair invariant (S72 W2 — /review I-2): one read+write wrapper pair,
+// returned by BOTH `ClusterContext::current_symbol_table[_mut]()` AND
+// `TypeCheckEnv::current_symbol_table[_mut]()`. No parallel pub(crate) variants.
+pub enum   SymbolTableRead<'a, 'b, C, L> { Live(...), Cluster { staging, live } }  // Decision 44 — read-side borrow guard; `.view()` yields View<'_, C, L>
+pub enum   SymbolTableMut<'a, 'b, C, L>  { Live(...), Staging(...) }                // Decision 44 — write-side borrow guard; Deref/DerefMut → SymbolTable<C, L>
 pub struct TypeCheckEnv<'a, C, L> { /* … */ }
 /// REPL eval rollback primitive. Captured before a cluster check; restored
 /// on cluster Err to wind back type-var pool + substitution + per-symbol
@@ -308,7 +346,7 @@ None implemented. Typecheck does not implement traits from `cranelisp-types`.
 
 ## `#[non_exhaustive]` DTOs
 
-`CheckState`, `TypeCheckEnv`, `ClusterContext` are all `#[non_exhaustive]`. (`CheckPass`, `FormCheckResult`, and `ModuleCheckAccumulator` are no longer public typecheck-side types per Decision 44's 2026-05-13 third amendment — they are internal to `check_forms`'s frame, with internal scaffolding `pub(crate)` if at all.) Types re-exported from `cranelisp-types` are `#[non_exhaustive]` per the types-crate facade.
+`CheckState`, `TypeCheckEnv`, `ClusterContext` are all `#[non_exhaustive]`. `SymbolTableRead` and `SymbolTableMut` are NOT `#[non_exhaustive]` — they are RAII borrow-guard enums whose variants are part of the runtime discriminant the orchestrator switches on (`Live` vs `Cluster` / `Staging`); the variant set is a closed binary cluster-vs-live discriminator, not an open evolution surface. Adding a third variant would itself be a single-pair invariant break, not a non-breaking field add. (`CheckPass`, `FormCheckResult`, and `ModuleCheckAccumulator` are no longer public typecheck-side types per Decision 44's 2026-05-13 third amendment — they are internal to `check_forms`'s frame, with internal scaffolding `pub(crate)` if at all.) Types re-exported from `cranelisp-types` are `#[non_exhaustive]` per the types-crate facade.
 
 ---
 

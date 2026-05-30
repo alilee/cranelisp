@@ -9,7 +9,10 @@
 
 use std::collections::HashSet;
 
-use cranelisp_types::{DisplayInfo, ErrorLocation, ResolutionGap, Symbol, TypeId, Warning};
+use cranelisp_types::{
+    DisplayInfo, ErrorLocation, ModuleFullPath, ResolutionGap, Span, Symbol, TraitName, TypeId,
+    TypeName, Visibility, Warning,
+};
 
 /// Transient output of `TypeChecker::check`.
 ///
@@ -78,3 +81,123 @@ impl std::fmt::Display for CheckError {
 }
 
 impl std::error::Error for CheckError {}
+
+/// Error type for the unified `resolve_*` family (Phase B Part 5).
+///
+/// Each variant carries enough context to produce a user-facing message
+/// without further lookups: the name being resolved, the calling module
+/// (so messages can say "from `<module>`"), and the source span.
+///
+/// Grounded in Principle 17 (module locality — resolution failures are
+/// scoped to the calling module's import frontier) and Principle 2
+/// (narrow interfaces — one Result-shaped surface per resolution kind).
+///
+/// `ResolveError` is typecheck-local (kept in `cranelisp-typecheck`, not
+/// `cranelisp-types`) per Principle 15: one producer (typecheck), one
+/// consumer that uses the typed form (typecheck). Downstream crates see
+/// only `CheckError` via the `From` projection below.
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub enum ResolveError {
+    /// Trait name is not reachable from the calling module's import scope,
+    /// nor anywhere on its chain-follow path.
+    TraitNotFound {
+        name: TraitName,
+        from_module: ModuleFullPath,
+        span: Span,
+    },
+    /// Type name is not reachable from the calling module's import scope.
+    /// Includes the intrinsic short-names (`Int`/`Bool`/`Float`/`String`)
+    /// post-Phase-B — there's no hardcoded fallback any more.
+    TypeNotFound {
+        name: TypeName,
+        from_module: ModuleFullPath,
+        span: Span,
+    },
+    /// Constructor name is not reachable, OR is reachable but is not a
+    /// constructor entry (e.g., a regular `Def` of the same name shadows it).
+    ConstructorNotFound {
+        name: Symbol,
+        from_module: ModuleFullPath,
+        span: Span,
+    },
+    /// FQ reference like `module/name` where `module` doesn't exist or
+    /// isn't loaded. Distinct from `*NotFound` because the failure is at
+    /// module-resolution, not name-resolution.
+    QualifiedModuleUnknown {
+        module: ModuleFullPath,
+        name: Symbol,
+        span: Span,
+    },
+    /// Name exists in `defining_module` but its visibility forbids access
+    /// from `from_module`. Lets the user-facing message say "X is private
+    /// to module Y" instead of "X not found".
+    PrivateInaccessible {
+        name: Symbol,
+        defining_module: ModuleFullPath,
+        from_module: ModuleFullPath,
+        visibility_found: Visibility,
+        span: Span,
+    },
+}
+
+impl std::fmt::Display for ResolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let projected: CheckError = self.clone().into();
+        std::fmt::Display::fmt(&projected, f)
+    }
+}
+
+impl std::error::Error for ResolveError {}
+
+impl From<ResolveError> for CheckError {
+    fn from(e: ResolveError) -> CheckError {
+        match e {
+            ResolveError::TraitNotFound { name, from_module, span } => CheckError::TypeError {
+                message: format!("unknown trait `{name}` (from module `{from_module}`)"),
+                location: ErrorLocation::from_span(span),
+            },
+            ResolveError::TypeNotFound { name, from_module, span } => CheckError::TypeError {
+                message: format!("unknown type `{name}` (from module `{from_module}`)"),
+                location: ErrorLocation::from_span(span),
+            },
+            ResolveError::ConstructorNotFound { name, from_module, span } => CheckError::TypeError {
+                message: format!(
+                    "unknown constructor `{name}` (from module `{from_module}`)"
+                ),
+                location: ErrorLocation::from_span(span),
+            },
+            ResolveError::QualifiedModuleUnknown { module, name, span } => CheckError::TypeError {
+                message: format!(
+                    "module `{module}` referenced by `{module}/{name}` is not loaded"
+                ),
+                location: ErrorLocation::from_span(span),
+            },
+            ResolveError::PrivateInaccessible {
+                name,
+                defining_module,
+                from_module,
+                visibility_found: _,
+                span,
+            } => CheckError::TypeError {
+                message: format!(
+                    "`{name}` is private to module `{defining_module}`; not accessible from `{from_module}`"
+                ),
+                location: ErrorLocation::from_span(span),
+            },
+        }
+    }
+}
+
+/// Convenience: a `ResolveError` projects to `CranelispError::TypeError`
+/// via the same message + location used in `CheckError`. Used by call
+/// sites still on the older `CranelispError` API (e.g., free functions
+/// in `resolve.rs`).
+impl From<ResolveError> for cranelisp_types::CranelispError {
+    fn from(e: ResolveError) -> cranelisp_types::CranelispError {
+        let CheckError::TypeError { message, location } = e.into() else {
+            unreachable!("ResolveError never projects to CheckError::Gap");
+        };
+        cranelisp_types::CranelispError::TypeError { message, location }
+    }
+}

@@ -2858,3 +2858,76 @@ fn wave6_exemplar_solver_full_run_does_not_stack_overflow() {
         String::from_utf8_lossy(&out.stderr),
     );
 }
+
+// =============================================================================
+// FIXME 0177 + FIXME 0179 — cluster-mode check_forms cross-form state and
+// staging+live read-union regressions.
+//
+// Authored Sprint 72 Wave 2 close-out as durable regression guards per
+// `memory/feedback_repros_join_suite.md`. /review S72 W2 verified both
+// FIXMEs were closed in source (see `crates/cranelisp-typecheck/src/form.rs`
+// + `crates/cranelisp-typecheck/src/cluster.rs` for the resolved shape: a
+// single `check_forms` frame threads `ModuleCheckAccumulator` across passes
+// internally, and the unified `SymbolTableRead::Cluster { staging, live }`
+// returns `View::union(staging, live)` for cluster-mode reads).
+// =============================================================================
+
+// regression-for: FIXME 0177 — check_forms cross-form state regression
+// spec: design/arch/decisions/0044-cluster-atomic-typecheck-orchestrator-staging.md
+//       §"`ClusterContext` (Approach B is canonical)"
+//
+// Pre-S66 the cross-form state hole manifested as stack-overflow when a
+// later REPL input referenced a constrained-polymorphic defn registered
+// by an earlier REPL input (Pass 4 monomorphisation re-entered the
+// constrained-fn detection against a live-registered scheme without the
+// per-call working state to terminate). Post-fix the single-frame
+// `check_forms` rebuilds working state from live correctly and
+// monomorphisation terminates with the correct `id$Int` specialisation.
+#[test]
+fn regression_0177_cross_form_state_no_bleed() {
+    // Two separate REPL inputs: form 1 registers a constrained-polymorphic
+    // `id`; form 2 (a wrapper defn `use1`) and a top-level call resolve `id`
+    // at a concrete type. The second input's check_forms call rebuilds
+    // per-call state from live and must monomorphise `id` cleanly.
+    let cap = Cranelisp::repl_prims_capture(
+        "(defn id [x] x)\n\
+         (defn use1 [n] (id n))\n\
+         (use1 7)\n",
+    );
+    // Successful eval prints `:primitives/Int 7` for the final call.
+    assert!(
+        cap.stdout.contains(":primitives/Int 7"),
+        "expected ':primitives/Int 7' in stdout; stdout=\n{}\nstderr=\n{}",
+        cap.stdout, cap.stderr,
+    );
+}
+
+// regression-for: FIXME 0179 — cluster-mode union read staging + live
+// spec: design/arch/decisions/0044-cluster-atomic-typecheck-orchestrator-staging.md
+//       §"`ClusterContext` (Approach B is canonical)"
+//
+// Pre-S66 cluster-mode reads went only to live; an intra-cluster
+// forward reference to a sibling defn staged in the same cluster but not
+// yet committed read miss. Post-fix `SymbolTableRead::Cluster` returns
+// `View::union(staging, live)` and Pass 2 body checks see staged Pass 1
+// signatures of sibling forms.
+#[test]
+fn regression_0179_cluster_union_read_staging_and_live() {
+    // Three-form cluster: deftype `Box` (form 1), defn `unwrap` matching
+    // it (form 2), defn `roundtrip` calling `unwrap` (form 3). All three
+    // are checked in one cluster — the body of `roundtrip` reads the
+    // signature `unwrap` staged in Pass 1 (cluster-mode union read), and
+    // the bodies of `unwrap` + `roundtrip` read `Box`'s `TypeDef` staged
+    // in Pass 1.
+    let cap = Cranelisp::repl_prims_capture(
+        "(deftype Box [val])\n\
+         (defn unwrap [b] (match b [(Box v) v]))\n\
+         (defn roundtrip [n] (unwrap (Box n)))\n\
+         (roundtrip 42)\n",
+    );
+    assert!(
+        cap.stdout.contains(":primitives/Int 42"),
+        "expected ':primitives/Int 42' in stdout; stdout=\n{}\nstderr=\n{}",
+        cap.stdout, cap.stderr,
+    );
+}

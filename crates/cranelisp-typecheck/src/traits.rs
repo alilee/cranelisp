@@ -10,15 +10,31 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cranelisp_types::{ErrorLocation, 
+use cranelisp_types::{ErrorLocation,
     ConstrainedFn, CranelispError, DefKind, Defn, DefnVariant, FQTraitName, FQTypeName,
     JitSymbol, MethodResolutions, ModuleEntry, ModuleFullPath, MonoDefn, ResolvedCall, Scheme,
-    Sexp, Span, Symbol, TraitDecl, TraitImpl, TraitMethodSig, TraitName, Type, TypeId, TypeName,
-    Visibility, apply,
+    Span, Symbol, TraitDecl, TraitDeclInfo, TraitImpl, TraitMethodSig, TraitName, Type, TypeId,
+    TypeName, Visibility, apply,
 };
 
 use crate::checker::{CheckState, TypeCheckEnv};
 use crate::scheme;
+
+/// Extract the head `TypeName` from an impl's `target: TypeExpr`. Used for
+/// diagnostics + lookup at sites that previously consumed the retired
+/// `TraitImpl.target_type: TypeName` field. Returns `None` for `SelfType`,
+/// `FnType`, and bare `TypeVar` targets — these have no single head name.
+/// Per spec §5.4 EBNF, an impl `target` always resolves to `Named` or
+/// `Applied`, so callers may `.expect()` in production paths.
+fn impl_target_name(target: &cranelisp_types::TypeExpr) -> Option<&TypeName> {
+    target.head_ref().map(|r| &r.name)
+}
+
+/// Extract the head TypeName, panicking if absent — for sites where spec
+/// §5.4 guarantees a head name on the impl target.
+fn impl_target_name_or_panic(target: &cranelisp_types::TypeExpr) -> &TypeName {
+    impl_target_name(target).expect("spec §5.4: impl target lowers to Named or Applied")
+}
 
 // ---------------------------------------------------------------------------
 // Active Constraints (tracked during body checking)
@@ -107,7 +123,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             && decl.methods.iter().any(|m| {
                 m.params
                     .iter()
-                    .any(|p| type_expr_uses_con_var(p, &decl.type_params))
+                    .any(|(_, p)| type_expr_uses_con_var(p, &decl.type_params))
                     || type_expr_uses_con_var(&m.ret_type, &decl.type_params)
             })
         {
@@ -132,8 +148,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         self.current_symbol_table_mut(state).insert(
             Symbol::from(decl.name.as_ref()),
             cranelisp_types::ModuleEntry::TraitDecl {
-                decl: decl.clone(),
+                info: cranelisp_types::TraitDeclInfo {
+                    name: decl.name.clone(),
+                    type_params: decl.type_params.clone(),
+                    methods: decl.methods.clone(),
+                },
                 visibility: decl.visibility,
+                docstring: decl.docstring.clone(),
             },
         );
 
@@ -160,6 +181,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         for (mi, method) in decl.methods.iter().enumerate() {
             // Determine which param index carries the type constructor
+            // find_hkt_param_index now expects &[(Symbol, TypeExpr)] per spec
+            // — pass `method.params` directly.
             let param_idx = find_hkt_param_index(&method.params, &decl.type_params);
             modified_decl.methods[mi].hkt_param_index = Some(param_idx);
 
@@ -170,7 +193,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             let param_tys: Vec<Type> = method
                 .params
                 .iter()
-                .map(|p| resolve_type_expr_hkt(p, &con_var_map, &mut type_var_map, &mut local_next_id, decl.span))
+                .map(|(_, p)| resolve_type_expr_hkt(p, &con_var_map, &mut type_var_map, &mut local_next_id, decl.span))
                 .collect::<Result<Vec<_>, _>>()?;
             let ret_ty =
                 resolve_type_expr_hkt(&method.ret_type, &con_var_map, &mut type_var_map, &mut local_next_id, decl.span)?;
@@ -189,7 +212,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
 
             let method_scheme = Scheme {
-                vars: all_vars,
+                type_vars: all_vars,
                 constraints,
                 ty: Type::Fn(param_tys, Box::new(ret_ty)),
             };
@@ -201,13 +224,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     scheme: method_scheme,
                     visibility: Visibility::Public,
                     docstring: method.docstring.clone(),
-                    param_names: method.default_param_names.clone(),
+                    param_names: method.params.iter().map(|(n, _)| n.clone()).collect(),
                     kind: Box::new(cranelisp_types::DefKind::UserFn {
                         constrained_fn: None,
                     }),
                     callees: Vec::new(),
                     got_slot: None,
                     trait_origin: Some(fq_trait_name.clone()),
+                    seq: 0,
                     ast: None,
                     code: None,
                 },
@@ -221,8 +245,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         self.current_symbol_table_mut(state).insert(
             Symbol::from(decl.name.as_ref()),
             cranelisp_types::ModuleEntry::TraitDecl {
-                decl: modified_decl,
+                info: cranelisp_types::TraitDeclInfo {
+                    name: modified_decl.name.clone(),
+                    type_params: modified_decl.type_params.clone(),
+                    methods: modified_decl.methods.clone(),
+                },
                 visibility: decl.visibility,
+                docstring: decl.docstring.clone(),
             },
         );
 
@@ -250,7 +279,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         constraints.insert(type_var_id, vec![fq_trait_name.clone()]);
 
         let method_scheme = Scheme {
-            vars: vec![type_var_id],
+            type_vars: vec![type_var_id],
             constraints,
             ty: method_type,
         };
@@ -262,13 +291,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 scheme: method_scheme,
                 visibility: Visibility::Public,
                 docstring: method.docstring.clone(),
-                param_names: method.default_param_names.clone(),
+                param_names: method.params.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
                 kind: Box::new(cranelisp_types::DefKind::UserFn {
                     constrained_fn: None,
                 }),
                 callees: Vec::new(),
                 got_slot: None,
                 trait_origin: Some(fq_trait_name),
+                seq: 0,
                 ast: None,
                 code: None,
             },
@@ -304,7 +334,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let param_types: Vec<Type> = method
             .params
             .iter()
-            .map(|p| resolve_trait_type_expr(p, &self_type, span, &mut var_map, &mut local_next_id))
+            .map(|(_, p)| resolve_trait_type_expr(p, &self_type, span, &mut var_map, &mut local_next_id))
             .collect::<Result<Vec<_>, _>>()?;
 
         let ret_type =
@@ -328,7 +358,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) -> Result<Vec<Defn>, CranelispError> {
         // Look up the trait declaration via SymbolTables
         let decl = self
-            .lookup_trait_decl_with_state(state, &impl_.trait_name)
+            .lookup_trait_decl_with_state(state, &impl_.trait_name.name)
             .ok_or_else(|| CranelispError::TypeError {
                 message: format!("unknown trait: {}", impl_.trait_name),
                 location: ErrorLocation::from_span(impl_.span),
@@ -340,7 +370,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             let is_hkt = decl.methods.iter().any(|m| {
                 m.params
                     .iter()
-                    .any(|p| type_expr_uses_con_var(p, &decl.type_params))
+                    .any(|(_, p)| type_expr_uses_con_var(p, &decl.type_params))
                     || type_expr_uses_con_var(&m.ret_type, &decl.type_params)
             });
             if is_hkt {
@@ -348,12 +378,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     if let Some(expected_arity) = con_var_arity(&decl, con_name) {
                         // Check if impl target is a primitive type
                         if expected_arity > 0 {
-                            match impl_.target_type.as_ref() {
+                            match impl_target_name_or_panic(&impl_.target).as_ref() {
                                 "Int" | "Bool" | "String" | "Float" => {
                                     return Err(CranelispError::TypeError {
                                         message: format!(
                                             "{} is not a type constructor (trait {} expects arity {})",
-                                            impl_.target_type, impl_.trait_name, expected_arity
+                                            impl_target_name_or_panic(&impl_.target), impl_.trait_name, expected_arity
                                         ),
                                         location: ErrorLocation::from_span(impl_.span),
                                     });
@@ -362,13 +392,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                             }
                         }
                         // Check arity of known ADT types
-                        if let Some(td) = self.lookup_type_def_with_state(state, &impl_.target_type)
+                        if let Some(td) = self.lookup_type_def_with_state(state, impl_target_name_or_panic(&impl_.target))
                             && td.type_params.len() != expected_arity
                         {
                             return Err(CranelispError::TypeError {
                                 message: format!(
                                     "{} has {} type parameters, but trait {} expects a constructor with arity {}",
-                                    impl_.target_type,
+                                    impl_target_name_or_panic(&impl_.target),
                                     td.type_params.len(),
                                     impl_.trait_name,
                                     expected_arity
@@ -403,17 +433,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // above; the chain-follow must succeed. Treat absence as a typecheck
         // invariant violation (post-FIXME 0192 method 6 deletion: no
         // `defining_module_for` fallback).
+        // `impl_.trait_name: TraitRef` carries `name: TraitName` + optional
+        // module qualification (Decision 47 — syntactic-stage shape).
+        let bare_trait_name = impl_.trait_name.name.clone();
         let trait_home = self
-            .trait_home_for(state, impl_.trait_name.as_ref())
-            .ok_or_else(|| CranelispError::TypeError {
-                message: format!(
-                    "internal: trait {} resolved but home not reachable via chain-follow",
-                    impl_.trait_name
-                ),
-                location: ErrorLocation::from_span(impl_.span),
-            })?;
-        let fq_trait_name = FQTraitName::new(trait_home.clone(), impl_.trait_name.clone());
-        let fq_impl_type = self.fqtn_for_bare_type_name(state, &impl_.target_type);
+            .resolve_trait(state, bare_trait_name.as_ref(), impl_.span)
+            .map_err(cranelisp_types::CranelispError::from)?;
+        let fq_trait_name = FQTraitName::new(trait_home.clone(), bare_trait_name.clone());
+        let fq_impl_type = self
+            .resolve_type(state, impl_target_name_or_panic(&impl_.target), impl_.span)
+            .map_err(cranelisp_types::CranelispError::from)?;
 
         let method_names: Vec<Symbol> = impl_.methods.iter()
             .map(|m| m.name.clone())
@@ -429,6 +458,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 trait_name: fq_trait_name,
                 impl_type: fq_impl_type,
                 methods: method_names,
+                visibility: Visibility::Public,
             },
         );
 
@@ -449,7 +479,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // Expected format: "{trait_name}.{method_name}${target_type}"
             let mangled = default_defn.name.as_ref();
             let prefix = format!("{}.", decl.name);
-            let suffix = format!("${}", impl_.target_type);
+            let suffix = format!("${}", impl_target_name_or_panic(&impl_.target));
             let method_name = mangled
                 .strip_prefix(&prefix)
                 .and_then(|s| s.strip_suffix(&suffix))
@@ -499,7 +529,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     fn check_impl_methods_present(
         &self,
         _state: &CheckState,
-        decl: &TraitDecl,
+        decl: &TraitDeclInfo,
         impl_: &TraitImpl,
     ) -> Result<(), CranelispError> {
         let provided: std::collections::HashSet<&str> = impl_
@@ -517,7 +547,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 return Err(CranelispError::TypeError {
                     message: format!(
                         "impl {} for {}: missing required method {}",
-                        decl.name, impl_.target_type, method_sig.name
+                        decl.name, impl_target_name_or_panic(&impl_.target), method_sig.name
                     ),
                     location: ErrorLocation::from_span(impl_.span),
                 });
@@ -536,7 +566,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     fn check_impl_method(
         &self,
         state: &mut CheckState,
-        decl: &TraitDecl,
+        decl: &TraitDeclInfo,
         impl_: &TraitImpl,
         method_defn: &Defn,
     ) -> Result<Defn, CranelispError> {
@@ -560,11 +590,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// `is_default_mangled` = true indicates the `method_defn.name` is already mangled
     /// (`Trait.method$Type`) as generated by `generate_default_methods`. In that case
     /// the existing name is used as the symbol-table key; otherwise the mangled name is
-    /// built from `impl_.trait_name + method_defn.name + impl_.target_type`.
+    /// built from `impl_.trait_name + method_defn.name + impl_target_name_or_panic(&impl_.target)`.
     fn check_impl_method_with_sig(
         &self,
         state: &mut CheckState,
-        decl: &TraitDecl,
+        decl: &TraitDeclInfo,
         impl_: &TraitImpl,
         method_defn: &Defn,
         method_sig: &TraitMethodSig,
@@ -577,7 +607,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             && decl.methods.iter().any(|m| {
                 m.params
                     .iter()
-                    .any(|p| type_expr_uses_con_var(p, &decl.type_params))
+                    .any(|(_, p)| type_expr_uses_con_var(p, &decl.type_params))
                     || type_expr_uses_con_var(&m.ret_type, &decl.type_params)
             });
 
@@ -588,21 +618,42 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Resolve the concrete type for Self.
         // For parameterized impls like `(impl Showable (MyOpt Int) ...)`,
         // type_args contains the concrete type arguments (e.g., ["Int"]).
-        let concrete_self = Type::from_name(impl_.target_type.as_ref())
-            .unwrap_or_else(|| {
-                let fqtn = self.fqtn_for_bare_type_name(state, &impl_.target_type);
-                let resolved_type_args: Vec<Type> = impl_.type_args.iter()
-                    .map(|arg| {
-                        Type::from_name(arg.as_ref())
-                            .unwrap_or_else(|| {
-                                // Type variable or user-defined type
-                                let arg_fqtn = self.fqtn_for_bare_type_name(state, &TypeName::from(arg.as_ref()));
-                                Type::ADT(arg_fqtn, vec![])
-                            })
-                    })
-                    .collect();
-                Type::ADT(fqtn, resolved_type_args)
-            });
+        // Phase B Part 1.4(3): when the target resolves to an intrinsic
+        // scalar (Int/Bool/Float/String), `concrete_self` becomes the
+        // intrinsic's bare `Type::Int` (etc.); ADT-shaped targets become
+        // `Type::ADT(target_fqtn, type_args)`. The dispatch is centralised
+        // in `concrete_type_for_impl_target`. C-4: `type_args` child
+        // structure lives inside `impl_.target` (TypeExpr).
+        let target_args: Vec<cranelisp_types::TypeExpr> = match &impl_.target {
+            cranelisp_types::TypeExpr::Applied(_, args) => args.clone(),
+            _ => Vec::new(),
+        };
+        let resolved_type_args: Vec<Type> = target_args
+            .iter()
+            .map(|arg| -> Result<Type, cranelisp_types::CranelispError> {
+                let head_name = arg.head_ref().map(|r| r.name.as_ref()).unwrap_or_else(|| {
+                    match arg {
+                        cranelisp_types::TypeExpr::TypeVar(name) => name.as_ref(),
+                        _ => "_",
+                    }
+                });
+                self.concrete_type_for_impl_target(
+                    state,
+                    &TypeName::from(head_name),
+                    Vec::new(),
+                    impl_.span,
+                )
+                .map_err(cranelisp_types::CranelispError::from)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let concrete_self = self
+            .concrete_type_for_impl_target(
+                state,
+                impl_target_name_or_panic(&impl_.target),
+                resolved_type_args,
+                impl_.span,
+            )
+            .map_err(cranelisp_types::CranelispError::from)?;
 
         // Pre-seed var_map: trait type params map to concrete self type.
         let mut var_map: HashMap<Symbol, Type> = HashMap::new();
@@ -614,7 +665,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let param_types: Vec<Type> = method_sig
             .params
             .iter()
-            .map(|p| resolve_trait_type_expr(p, &concrete_self, method_defn.span, &mut var_map, &mut local_next_id))
+            .map(|(_, p)| resolve_trait_type_expr(p, &concrete_self, method_defn.span, &mut var_map, &mut local_next_id))
             .collect::<Result<Vec<_>, _>>()?;
 
         let ret_ty = resolve_trait_type_expr(
@@ -628,7 +679,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         self.commit_next_id(local_next_id);
 
         // Snapshot side maps for per-defn delta extraction
-        let mr_before: HashSet<Span> = state.method_resolutions.keys().copied().collect();
+        let mr_before: HashSet<Span> = state.method_resolutions.resolved_calls.keys().copied().collect();
         let et_before: HashSet<Span> = state.expr_types.keys().copied().collect();
 
         // Clone the method defn and check the body with the mutable copy
@@ -647,13 +698,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         } else {
             let mangled = format!(
                 "{}.{}${}",
-                impl_.trait_name, method_defn.name, impl_.target_type
+                impl_.trait_name, method_defn.name, impl_target_name_or_panic(&impl_.target)
             );
             Symbol::from(mangled.as_str())
         };
 
         // Extract delta: only entries added during this method's body check
         let method_mr: HashMap<Span, ResolvedCall> = state.method_resolutions
+            .resolved_calls
             .iter()
             .filter(|(span, _)| !mr_before.contains(span))
             .map(|(span, res)| (*span, res.clone()))
@@ -671,7 +723,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             docstring: method_clone.docstring.clone(),
             variants: vec![DefnVariant {
                 params: method_clone.params().to_vec(),
-                param_annotations: method_clone.param_annotations().to_vec(),
                 body: method_clone.body().clone(),
                 span: method_clone.span,
             }],
@@ -701,8 +752,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let fn_type = Type::Fn(param_types.clone(), Box::new(ret_ty.clone()));
         let concrete_scheme = crate::scheme::mono(fn_type);
         let mut st = self.current_symbol_table_mut(state);
+        let ast_variant: Option<DefnVariant> = annotated.variants.iter().next().cloned();
         if let Some(ModuleEntry::Def { ast, .. }) = st.symbols.get_mut(&mangled_sym) {
-            *ast = Some(annotated.clone());
+            *ast = ast_variant;
         } else {
             let got_slot = Some(st.allocate_got_slot());
             st.insert(
@@ -711,12 +763,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     scheme: concrete_scheme,
                     visibility: Visibility::Public,
                     docstring: method_defn.docstring.clone(),
-                    param_names: method_defn.params().to_vec(),
+                    param_names: method_defn.params().iter().map(|(n, _)| n.clone()).collect(),
                     kind: Box::new(DefKind::UserFn { constrained_fn: None }),
                     callees: Vec::new(),
                     got_slot,
                     trait_origin: None,
-                    ast: Some(annotated.clone()),
+                    seq: 0,
+                    ast: ast_variant,
                     code: None,
                 },
             );
@@ -735,7 +788,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     fn check_hkt_impl_method(
         &self,
         state: &mut CheckState,
-        decl: &TraitDecl,
+        decl: &TraitDeclInfo,
         impl_: &TraitImpl,
         method_defn: &Defn,
         method_sig: &TraitMethodSig,
@@ -758,7 +811,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 ty
             })
             .collect();
-        let target_fqtn = self.fqtn_for_bare_type_name(state, &impl_.target_type);
+        // Phase B Part 1.4(3): HKT impls may target ADT-shaped types only
+        // (intrinsics have no type parameters and don't carry HKT shape).
+        // Still use the centralised resolver to get a typed error if the
+        // target is unknown.
+        let target_fqtn = self
+            .resolve_type(state, impl_target_name_or_panic(&impl_.target), impl_.span)
+            .map_err(cranelisp_types::CranelispError::from)?;
         let concrete_self = Type::ADT(target_fqtn.clone(), type_arg_vars);
 
         // Build param types using HKT-aware resolution that substitutes
@@ -766,7 +825,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let param_types: Vec<Type> = method_sig
             .params
             .iter()
-            .map(|p| resolve_type_expr_hkt_impl(
+            .map(|(_, p)| resolve_type_expr_hkt_impl(
                 p,
                 &decl.type_params,
                 &target_fqtn,
@@ -795,7 +854,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         self.commit_next_id(local_next_id);
 
         // Snapshot side maps for per-defn delta extraction
-        let mr_before: HashSet<Span> = state.method_resolutions.keys().copied().collect();
+        let mr_before: HashSet<Span> = state.method_resolutions.resolved_calls.keys().copied().collect();
         let et_before: HashSet<Span> = state.expr_types.keys().copied().collect();
 
         // Clone the method defn and check the body with the mutable copy
@@ -808,12 +867,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Build the mangled name and create annotated defn for symbol table
         let mangled = format!(
             "{}.{}${}",
-            impl_.trait_name, method_defn.name, impl_.target_type
+            impl_.trait_name, method_defn.name, impl_target_name_or_panic(&impl_.target)
         );
         let mangled_sym = Symbol::from(mangled.as_str());
 
         // Extract delta: only entries added during this method's body check
         let method_mr: HashMap<Span, ResolvedCall> = state.method_resolutions
+            .resolved_calls
             .iter()
             .filter(|(span, _)| !mr_before.contains(span))
             .map(|(span, res)| (*span, res.clone()))
@@ -831,7 +891,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             docstring: method_clone.docstring.clone(),
             variants: vec![DefnVariant {
                 params: method_clone.params().to_vec(),
-                param_annotations: method_clone.param_annotations().to_vec(),
                 body: method_clone.body().clone(),
                 span: method_clone.span,
             }],
@@ -853,8 +912,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let fn_type = Type::Fn(param_types.clone(), Box::new(ret_ty.clone()));
         let concrete_scheme = crate::scheme::mono(fn_type);
         let mut st = self.current_symbol_table_mut(state);
+        let ast_variant: Option<DefnVariant> = annotated.variants.iter().next().cloned();
         if let Some(ModuleEntry::Def { ast, .. }) = st.symbols.get_mut(&mangled_sym) {
-            *ast = Some(annotated.clone());
+            *ast = ast_variant;
         } else {
             let got_slot = Some(st.allocate_got_slot());
             st.insert(
@@ -863,12 +923,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     scheme: concrete_scheme,
                     visibility: Visibility::Public,
                     docstring: method_defn.docstring.clone(),
-                    param_names: method_defn.params().to_vec(),
+                    param_names: method_defn.params().iter().map(|(n, _)| n.clone()).collect(),
                     kind: Box::new(DefKind::UserFn { constrained_fn: None }),
                     callees: Vec::new(),
                     got_slot,
                     trait_origin: None,
-                    ast: Some(annotated.clone()),
+                    seq: 0,
+                    ast: ast_variant,
                     code: None,
                 },
             );
@@ -891,7 +952,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) -> Result<(), CranelispError> {
         self.push_scope(state);
 
-        for (param_name, param_ty) in
+        for ((param_name, _), param_ty) in
             defn.params().iter().zip(param_types.iter())
         {
             self.bind_local(
@@ -915,7 +976,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     pub(crate) fn generate_default_methods(
         &self,
         _state: &CheckState,
-        decl: &TraitDecl,
+        decl: &TraitDeclInfo,
         impl_: &TraitImpl,
     ) -> Result<Vec<Defn>, CranelispError> {
         let provided: std::collections::HashSet<&str> = impl_
@@ -936,19 +997,19 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // Create a mangled name for this default method
             let mangled = format!(
                 "{}.{}${}",
-                decl.name, method_sig.name, impl_.target_type
+                decl.name, method_sig.name, impl_target_name_or_panic(&impl_.target)
             );
 
             let span = impl_.span;
-            let body = if let Some(ref sexp_body) = method_sig.default_body {
-                // User-defined default body: convert Sexp to Expr
-                sexp_to_default_expr(sexp_body)?
+            let body = if let Some(ref expr_body) = method_sig.default_body {
+                // User-defined default body: pre-parsed AST (S69 Submission 26).
+                expr_body.clone()
             } else {
                 // Hard-coded builtin defaults (Eq.!=, Ord.>, etc.)
                 build_default_body(
                     decl.name.as_ref(),
                     method_sig.name.as_ref(),
-                    &method_sig.default_param_names,
+                    &method_sig.params.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
                     span,
                 )?
             };
@@ -957,8 +1018,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 name: Symbol::from(mangled.as_str()),
                 docstring: None,
                 variants: vec![DefnVariant {
-                    params: method_sig.default_param_names.clone(),
-                    param_annotations: vec![None; method_sig.default_param_names.len()],
+                    params: method_sig.params.iter().map(|(n, _)| (n.clone(), None)).collect::<Vec<_>>(),
                     body,
                     span,
                 }],
@@ -1049,18 +1109,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // defining module per Decision 45 Pattern B. `has_impl_with_state`
         // succeeded just above, so the chain-follow is guaranteed.
         let trait_defining_module = self
-            .trait_home_for(state, trait_name.as_ref())
-            .ok_or_else(|| CranelispError::TypeError {
-                message: format!(
-                    "internal: trait {} reachable for impl probe but home not resolvable",
-                    trait_name
-                ),
-                location: ErrorLocation::from_span(span),
-            })?;
+            .resolve_trait(state, trait_name.as_ref(), span)
+            .map_err(cranelisp_types::CranelispError::from)?;
         let fq_trait_name = FQTraitName::new(trait_defining_module, trait_name);
 
-        // Build FQTypeName for the impl type
-        let fq_impl_type = self.fqtn_for_bare_type_name(state, &impl_type_name);
+        // Build FQTypeName for the impl type — works for both ADT and
+        // intrinsic targets (Phase B Part 5).
+        let fq_impl_type = self
+            .resolve_type(state, &impl_type_name, span)
+            .map_err(cranelisp_types::CranelispError::from)?;
 
         Ok(Some(ResolvedCall::TraitMethod {
             trait_name: fq_trait_name,
@@ -1264,14 +1321,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state: &mut CheckState,
         scheme: &Scheme,
     ) -> Type {
-        if scheme.vars.is_empty() {
+        if scheme.type_vars.is_empty() {
             return scheme.ty.clone();
         }
 
         // Build mapping from old vars to fresh vars
         let mut inst_subst = cranelisp_types::Subst::new();
         let mut var_mapping = HashMap::new();
-        for &var_id in &scheme.vars {
+        for &var_id in &scheme.type_vars {
             let (fresh_ty, fresh_id) = self.fresh_var_id();
             inst_subst.insert(var_id, fresh_ty);
             var_mapping.insert(var_id, fresh_id);
@@ -1336,42 +1393,75 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             return Ok(None);
         };
 
-        let mut defn = defn;
+        // `defn: DefnVariant` (S70 ConstrainedFn narrowing). Wrap in a
+        // temporary single-variant `Defn` for the recheck helpers which
+        // still take `&mut Defn`.
+        let mut wrap_defn = Defn {
+            name: fn_name.clone(),
+            docstring: None,
+            variants: vec![defn.clone()],
+            visibility: Visibility::Public,
+            span: defn.span,
+        };
         let (mut resolutions, mono_expr_types) =
-            self.recheck_body_for_mono(state, &mut defn, &concrete_param_types, &concrete_ret_ty)?;
+            self.recheck_body_for_mono(state, &mut wrap_defn, &concrete_param_types, &concrete_ret_ty)?;
 
         // Add SigDispatch entries for inner constrained fn calls
         self.resolve_inner_constrained_calls(
             state,
-            &defn,
+            &wrap_defn,
             &mono_expr_types,
             &mut resolutions,
         );
 
-        // Build annotated mono defn: annotate from side maps, apply subst
+        // Build annotated mono defn: annotate from side maps, apply subst.
+        // `defn: DefnVariant` (S70 ConstrainedFn narrowing) — name/docstring/
+        // visibility no longer ride on the payload; recover them from
+        // the parent Def's ModuleEntry which is keyed by `fn_name`.
+        let parent_metadata: Option<(Option<String>, Visibility)> = {
+            let r = self.current_symbol_table(state);
+            let v = r.view();
+            v.lookup(fn_name).and_then(|e| match e {
+                ModuleEntry::Def { docstring, visibility, .. } => {
+                    Some((docstring.clone(), *visibility))
+                }
+                _ => None,
+            })
+        };
+        let (docstring, visibility) = parent_metadata.unwrap_or((None, Visibility::Public));
         let mut mono_defn_ast = Defn {
             name: Symbol::from(mangled_name.as_str()),
-            docstring: defn.docstring.clone(),
+            docstring,
             variants: vec![DefnVariant {
-                params: defn.params().to_vec(),
-                param_annotations: defn.param_annotations().to_vec(),
-                body: defn.body().clone(),
+                params: defn.params.clone(),
+                body: defn.body.clone(),
                 span: defn.span,
             }],
-            visibility: defn.visibility,
+            visibility,
             span: defn.span,
         };
         crate::program::annotate_defn_from_maps(
             &mut mono_defn_ast,
             &mono_expr_types,
-            &resolutions,
+            &resolutions.resolved_calls,
         );
         crate::program::apply_subst_to_defn(&state.subst, &mut mono_defn_ast);
 
+        // Phase B Part 3: Stop populating the per-mono side maps. The
+        // `mono_defn_ast` was just annotated by `annotate_defn_from_maps` +
+        // `apply_subst_to_defn` above — every typed expression carries its
+        // `inferred_type` and every `Expr::Apply` carries `resolved_call`
+        // directly on the AST. Backend's `is_empty()` fallthrough at
+        // `cranelisp-backend/src/lib.rs:1267` uses `&check.expr_types`
+        // / `&check.method_resolutions` when these per-mono maps are empty,
+        // and the AST annotation pass on `Defn.body` is what those overlays
+        // cached anyway. Step A of the FIXME 0033 migration; Step B (delete
+        // the struct fields) is backend-triad scope.
+        let _ = (&resolutions, &mono_expr_types); // produced for inner-call resolution but not propagated
         let mono_defn = MonoDefn {
             defn: mono_defn_ast,
-            resolutions,
-            expr_types: mono_expr_types,
+            resolutions: cranelisp_types::MethodResolutions::default(),
+            expr_types: std::collections::HashMap::new(),
         };
 
         // Wave 0 (§9.4): register the mono specialisation as a symbol-table
@@ -1419,14 +1509,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 scheme,
                 visibility: mono.defn.visibility,
                 docstring: mono.defn.docstring.clone(),
-                param_names: mono.defn.params().to_vec(),
+                param_names: mono.defn.params().iter().map(|(n, _)| n.clone()).collect(),
                 kind: Box::new(DefKind::UserFn {
                     constrained_fn: None,
                 }),
                 callees: Vec::new(),
                 got_slot,
                 trait_origin: None,
-                ast: Some(mono.defn.clone()),
+                seq: 0,
+                // S69 Submission 35: ast holds the single meaningful DefnVariant
+                // (not the parent Defn wrapper).
+                ast: mono.defn.variants.iter().next().cloned(),
                 code: None,
             },
         );
@@ -1542,7 +1635,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let mut inner_calls = Vec::new();
         Self::collect_constrained_calls(defn.body(), &constrained_fn_names, &mut inner_calls);
         for (inner_fn_name, arg_spans, inner_call_span) in &inner_calls {
-            if resolutions.contains_key(inner_call_span) {
+            if resolutions.resolved_calls.contains_key(inner_call_span) {
                 continue; // already resolved (e.g. as a trait method)
             }
             let inner_arg_types: Vec<Type> = arg_spans
@@ -1553,7 +1646,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 continue;
             }
             let inner_mangled = build_mangled_name(inner_fn_name, &inner_arg_types);
-            resolutions.insert(
+            resolutions.resolved_calls.insert(
                 *inner_call_span,
                 ResolvedCall::SigDispatch {
                     mangled_name: JitSymbol::from(inner_mangled.as_str()),
@@ -1588,7 +1681,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // annotated and substitution-applied during the originating
                 // Pass 2 / finalize pass for this defn.
                 DefKind::UserFn { constrained_fn: None }
-                    if !scheme.vars.is_empty() && ast.is_some() =>
+                    if !scheme.type_vars.is_empty() && ast.is_some() =>
                 {
                     Some(ConstrainedFn {
                         variant: ast.as_ref().unwrap().clone(),
@@ -1722,63 +1815,26 @@ fn build_default_body(
     }
 }
 
-/// Convert a Sexp (from a trait default body) into an Expr.
-///
-/// Handles the basic expression forms that can appear in default method bodies:
-/// symbols, integers, floats, booleans, strings, and function applications (lists).
-fn sexp_to_default_expr(sexp: &Sexp) -> Result<cranelisp_types::Expr, CranelispError> {
-    use cranelisp_types::Expr;
+// `sexp_to_default_expr` retired in Sprint 72 Wave 1 — per S69 Submission 26,
+// `TraitMethodSig.default_body: Option<Expr>` carries pre-parsed AST (vindication
+// of the prior facade target). The Sexp→Expr lowering at trait-decl time now
+// lives in the frontend `build_method_sig` path; the typecheck consumer simply
+// clones the Expr. Decision-grounding: S69 Submission 26 + `design/arch/facades/typecheck.md` §"Typing rule".
 
-    match sexp {
-        Sexp::Symbol(name, span) => Ok(Expr::Var {
-            name: Symbol::from(name.as_str()),
-            span: *span,
-            inferred_type: None,
-        }),
-        Sexp::Int(value, span) => Ok(Expr::IntLit {
-            value: *value,
-            span: *span,
-            inferred_type: None,
-        }),
-        Sexp::Float(value, span) => Ok(Expr::FloatLit {
-            value: *value,
-            span: *span,
-            inferred_type: None,
-        }),
-        Sexp::Bool(value, span) => Ok(Expr::BoolLit {
-            value: *value,
-            span: *span,
-            inferred_type: None,
-        }),
-        Sexp::Str(value, span) => Ok(Expr::StringLit {
-            value: value.clone(),
-            span: *span,
-            inferred_type: None,
-        }),
-        Sexp::List(children, span) => {
-            if children.is_empty() {
-                return Err(CranelispError::TypeError {
-                    message: "empty list in default method body".into(),
-                    location: ErrorLocation::from_span(*span),
-                });
-            }
-            let callee = Box::new(sexp_to_default_expr(&children[0])?);
-            let args = children[1..]
-                .iter()
-                .map(sexp_to_default_expr)
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(Expr::Apply {
-                callee,
-                args,
-                span: *span,
-                resolved_call: None,
-                inferred_type: None,
-            })
-        }
-        _ => Err(CranelispError::TypeError {
-            message: format!("unsupported sexp form in default method body: {:?}", sexp),
-            location: ErrorLocation::from_span(sexp.span()),
-        }),
+/// Map a `TypeRef` to a `Type` for intrinsic scalar names, returning `None`
+/// for non-intrinsic names. Caller decides how to handle unknown / user types.
+/// Per C-13 (`Type::from_name` retired): intrinsic-bare-names resolve directly;
+/// non-intrinsic names flow through ADT placeholders.
+fn type_from_intrinsic_ref(name: &cranelisp_types::TypeRef) -> Option<Type> {
+    if name.module.is_some() {
+        return None;
+    }
+    match name.name.as_ref() {
+        "Int" => Some(Type::Int),
+        "Bool" => Some(Type::Bool),
+        "Float" => Some(Type::Float),
+        "String" => Some(Type::String),
+        _ => None,
     }
 }
 
@@ -1794,7 +1850,7 @@ fn resolve_trait_type_expr(
 
     match texpr {
         TypeExpr::SelfType => Ok(self_type.clone()),
-        TypeExpr::Named(name) => Type::from_name(name.as_ref())
+        TypeExpr::Named(name) => type_from_intrinsic_ref(name)
             .ok_or_else(|| CranelispError::TypeError {
                 message: format!("unknown type: {name}"),
                 location: ErrorLocation::from_span(span),
@@ -1820,7 +1876,7 @@ fn resolve_trait_type_expr(
             // Regular ADT application: (Option Int), (List :a)
             // Use a placeholder FQTypeName — the bare name will be resolved
             // when the type flows through the module system.
-            let fqtn = FQTypeName::new(ModuleFullPath::from(""), name.clone());
+            let fqtn = FQTypeName::new(ModuleFullPath::from(""), name.name.clone());
             let resolved_args: Vec<Type> = args
                 .iter()
                 .map(|a| resolve_trait_type_expr(a, self_type, span, var_map, next_id))
@@ -1846,7 +1902,7 @@ fn resolve_type_expr_hkt(
 
     match texpr {
         TypeExpr::Applied(name, args) => {
-            let name_sym = Symbol::from(name.as_ref());
+            let name_sym = Symbol::from(name.name.as_ref());
             if let Some(&con_id) = con_var_map.get(&name_sym) {
                 // Constructor variable application: (f a) -> TyConApp(f_id, [a])
                 let resolved_args: Vec<Type> = args
@@ -1856,7 +1912,7 @@ fn resolve_type_expr_hkt(
                 Ok(Type::TyConApp(con_id, resolved_args))
             } else {
                 // Regular ADT application: (Option Int)
-                let fqtn = FQTypeName::new(ModuleFullPath::from(""), name.clone());
+                let fqtn = FQTypeName::new(ModuleFullPath::from(""), name.name.clone());
                 let resolved_args: Vec<Type> = args
                     .iter()
                     .map(|a| resolve_type_expr_hkt(a, con_var_map, type_var_map, next_id, span))
@@ -1877,9 +1933,7 @@ fn resolve_type_expr_hkt(
             }
         }
         TypeExpr::Named(name) => {
-            Ok(Type::from_name(name.as_ref()).unwrap_or_else(|| {
-                Type::ADT(FQTypeName::new(ModuleFullPath::from(""), name.clone()), vec![])
-            }))
+            Ok(type_from_intrinsic_ref(name).unwrap_or_else(|| { Type::ADT(FQTypeName::new(ModuleFullPath::from(""), name.name.clone()), vec![]) }))
         }
         TypeExpr::SelfType => {
             Err(CranelispError::TypeError {
@@ -1913,13 +1967,13 @@ fn resolve_type_expr_hkt_impl(
 
     match texpr {
         TypeExpr::Applied(name, args) => {
-            let name_sym = Symbol::from(name.as_ref());
+            let name_sym = Symbol::from(name.name.as_ref());
             let fqtn = if con_var_names.contains(&name_sym) {
                 // Constructor variable — resolve to the target ADT's FQTypeName.
                 target_fqtn.clone()
             } else {
                 // Non-constructor-var Applied type — use target module as fallback.
-                FQTypeName::new(target_fqtn.module.clone(), name.clone())
+                FQTypeName::new(target_fqtn.module.clone(), name.name.clone())
             };
             let resolved_args: Vec<Type> = args
                 .iter()
@@ -1937,10 +1991,8 @@ fn resolve_type_expr_hkt_impl(
             }
         }
         TypeExpr::Named(name) => {
-            Ok(Type::from_name(name.as_ref()).unwrap_or_else(|| {
-                // Use target module as fallback for user-defined types.
-                Type::ADT(FQTypeName::new(target_fqtn.module.clone(), name.clone()), vec![])
-            }))
+            Ok(type_from_intrinsic_ref(name).unwrap_or_else(|| { // Use target module as fallback for user-defined types.
+                Type::ADT(FQTypeName::new(target_fqtn.module.clone(), name.name.clone()), vec![]) }))
         }
         TypeExpr::SelfType => {
             Err(CranelispError::TypeError {
@@ -1965,7 +2017,7 @@ fn type_expr_uses_con_var(texpr: &cranelisp_types::TypeExpr, con_names: &[Symbol
 
     match texpr {
         TypeExpr::Applied(name, args) => {
-            let name_sym = Symbol::from(name.as_ref());
+            let name_sym = Symbol::from(name.name.as_ref());
             con_names.contains(&name_sym)
                 || args.iter().any(|a| type_expr_uses_con_var(a, con_names))
         }
@@ -1978,8 +2030,8 @@ fn type_expr_uses_con_var(texpr: &cranelisp_types::TypeExpr, con_names: &[Symbol
 }
 
 /// Find the first parameter index that uses a constructor variable in Applied position.
-fn find_hkt_param_index(params: &[cranelisp_types::TypeExpr], type_params: &[Symbol]) -> usize {
-    for (idx, param) in params.iter().enumerate() {
+fn find_hkt_param_index(params: &[(Symbol, cranelisp_types::TypeExpr)], type_params: &[Symbol]) -> usize {
+    for (idx, (_, param)) in params.iter().enumerate() {
         if type_expr_uses_con_var(param, type_params) {
             return idx;
         }
@@ -1988,9 +2040,9 @@ fn find_hkt_param_index(params: &[cranelisp_types::TypeExpr], type_params: &[Sym
 }
 
 /// Determine the arity (number of type args) of a constructor variable in a trait declaration.
-fn con_var_arity(decl: &TraitDecl, con_name: &Symbol) -> Option<usize> {
+fn con_var_arity(decl: &TraitDeclInfo, con_name: &Symbol) -> Option<usize> {
     for method in &decl.methods {
-        for param in &method.params {
+        for (_, param) in &method.params {
             if let Some(arity) = find_applied_arity(param, con_name) {
                 return Some(arity);
             }
@@ -2008,7 +2060,7 @@ fn find_applied_arity(texpr: &cranelisp_types::TypeExpr, con_name: &Symbol) -> O
 
     match texpr {
         TypeExpr::Applied(name, args) => {
-            let name_sym = Symbol::from(name.as_ref());
+            let name_sym = Symbol::from(name.name.as_ref());
             if &name_sym == con_name {
                 Some(args.len())
             } else {
@@ -2074,9 +2126,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let r = self.current_symbol_table(state);
         for (_name, entry) in r.view().iter() {
             if let Some(terminal) = self.resolve_to_terminal_entry_owned(entry, 0)
-                && let ModuleEntry::TraitDecl { decl, .. } = terminal
+                && let ModuleEntry::TraitDecl { info, .. } = terminal
             {
-                for method in &decl.methods {
+                for method in &info.methods {
                     if method.name.as_ref() == method_name {
                         return method.hkt_param_index;
                     }
@@ -2096,7 +2148,7 @@ mod tests {
     use super::*;
     use crate::checker::TestFixture;
     use cranelisp_types::{Defn, DefnVariant, ImportNames, ImportSpec, ModuleEntry, ModuleFullPath,
-        Sexp, Span, TraitDecl, TraitImpl, TraitMethodSig, TypeExpr, Visibility,
+        Span, TraitDecl, TraitImpl, TraitMethodSig, TypeExpr, Visibility,
     };
 
     /// Test helper: create an FQTraitName in the "test" module.
@@ -2134,16 +2186,12 @@ mod tests {
                     name: Symbol::from("test-op"),
                     docstring: None,
                     params: vec![
-                        TypeExpr::TypeVar(Symbol::from("a")),
-                        TypeExpr::TypeVar(Symbol::from("a")),
+                        (Symbol::from("lhs"), TypeExpr::TypeVar(Symbol::from("a"))),
+                        (Symbol::from("rhs"), TypeExpr::TypeVar(Symbol::from("a"))),
                     ],
                     ret_type: TypeExpr::TypeVar(Symbol::from("a")),
                     span: Span::SYNTHETIC,
                     hkt_param_index: None,
-                    default_param_names: vec![
-                        Symbol::from("lhs"),
-                        Symbol::from("rhs"),
-                    ],
                     default_body: None,
                 },
             ],
@@ -2300,12 +2348,12 @@ mod tests {
         tc.register_trait_decl_self(&decl).unwrap();
 
         if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("test-op") {
-            assert_eq!(scheme.vars.len(), 1, "test-op should have 1 quantified var");
+            assert_eq!(scheme.type_vars.len(), 1, "test-op should have 1 quantified var");
             assert!(
                 !scheme.constraints.is_empty(),
                 "test-op should have TestTrait constraint"
             );
-            let var_id = scheme.vars[0];
+            let var_id = scheme.type_vars[0];
             let traits = scheme.constraints.get(&var_id).unwrap();
             assert_eq!(traits.len(), 1);
             assert_eq!(traits[0].name.as_ref(), "TestTrait");
@@ -2322,16 +2370,14 @@ mod tests {
         tc.register_trait_decl_self(&decl).unwrap();
 
         let impl_ = TraitImpl {
-            trait_name: TraitName::from("TestTrait"),
-            target_type: TypeName::from("Int"),
-            type_args: vec![],
+            trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("TestTrait")),
+            target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
             type_constraints: vec![],
             methods: vec![Defn {
                 name: Symbol::from("test-op"),
                 docstring: None,
                 variants: vec![DefnVariant {
-                    params: vec![Symbol::from("lhs"), Symbol::from("rhs")],
-                    param_annotations: vec![None, None],
+                    params: vec![(Symbol::from("lhs"), None), (Symbol::from("rhs"), None)],
                     body: cranelisp_types::Expr::Apply {
                         callee: Box::new(cranelisp_types::Expr::Var {
                             name: Symbol::from("add-i64"),
@@ -2367,16 +2413,14 @@ mod tests {
         tc.register_trait_decl_self(&decl).unwrap();
 
         let impl_ = TraitImpl {
-            trait_name: TraitName::from("TestTrait"),
-            target_type: TypeName::from("Int"),
-            type_args: vec![],
+            trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("TestTrait")),
+            target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
             type_constraints: vec![],
             methods: vec![Defn {
                 name: Symbol::from("test-op"),
                 docstring: None,
                 variants: vec![DefnVariant {
-                    params: vec![Symbol::from("lhs"), Symbol::from("rhs")],
-                    param_annotations: vec![None, None],
+                    params: vec![(Symbol::from("lhs"), None), (Symbol::from("rhs"), None)],
                     body: cranelisp_types::Expr::Apply {
                         callee: Box::new(cranelisp_types::Expr::Var {
                             name: Symbol::from("add-i64"),
@@ -2464,16 +2508,14 @@ mod tests {
         tc.register_trait_decl_self(&decl).unwrap();
 
         let impl_ = TraitImpl {
-            trait_name: TraitName::from("TestTrait"),
-            target_type: TypeName::from("Int"),
-            type_args: vec![],
+            trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("TestTrait")),
+            target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
             type_constraints: vec![],
             methods: vec![Defn {
                 name: Symbol::from("test-op"),
                 docstring: None,
                 variants: vec![DefnVariant {
-                    params: vec![Symbol::from("lhs"), Symbol::from("rhs")],
-                    param_annotations: vec![None, None],
+                    params: vec![(Symbol::from("lhs"), None), (Symbol::from("rhs"), None)],
                     body: cranelisp_types::Expr::Apply {
                         callee: Box::new(cranelisp_types::Expr::Var {
                             name: Symbol::from("add-i64"),
@@ -2534,7 +2576,7 @@ mod tests {
         let mut var_map = HashMap::new();
         let mut next_id: TypeId = 100;
         let result = resolve_trait_type_expr(
-            &TypeExpr::Named(TypeName::from("Bool")),
+            &TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool"))),
             &Type::Int,
             Span::SYNTHETIC,
             &mut var_map,
@@ -2640,13 +2682,12 @@ mod tests {
                 name: Symbol::from("+"),
                 docstring: None,
                 params: vec![
-                    TypeExpr::TypeVar(Symbol::from("a")),
-                    TypeExpr::TypeVar(Symbol::from("a")),
+                    (Symbol::from("lhs"), TypeExpr::TypeVar(Symbol::from("a"))),
+                    (Symbol::from("rhs"), TypeExpr::TypeVar(Symbol::from("a"))),
                 ],
                 ret_type: TypeExpr::TypeVar(Symbol::from("a")),
                 span: Span::SYNTHETIC,
                 hkt_param_index: None,
-                default_param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
                 default_body: None,
             }],
             visibility: Visibility::Public,
@@ -2656,16 +2697,14 @@ mod tests {
 
         // Register impl Num for Int
         let impl_ = TraitImpl {
-            trait_name: TraitName::from("Num"),
-            target_type: TypeName::from("Int"),
-            type_args: vec![],
+            trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Num")),
+            target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
             type_constraints: vec![],
             methods: vec![Defn {
                 name: Symbol::from("+"),
                 docstring: None,
                 variants: vec![DefnVariant {
-                    params: vec![Symbol::from("x"), Symbol::from("y")],
-                    param_annotations: vec![None, None],
+                    params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                     body: Expr::Apply {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("add-i64"),
@@ -2852,35 +2891,50 @@ mod tests {
                     name: Symbol::from("="),
                     docstring: None,
                     params: vec![
-                        TypeExpr::TypeVar(Symbol::from("a")),
-                        TypeExpr::TypeVar(Symbol::from("a")),
+                        (Symbol::from("x"), TypeExpr::TypeVar(Symbol::from("a"))),
+                        (Symbol::from("y"), TypeExpr::TypeVar(Symbol::from("a"))),
                     ],
-                    ret_type: TypeExpr::Named(TypeName::from("Bool")),
+                    ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool"))),
                     span: Span::SYNTHETIC,
                     hkt_param_index: None,
-                    default_param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
                     default_body: None,
                 },
                 TraitMethodSig {
                     name: Symbol::from("!="),
                     docstring: None,
                     params: vec![
-                        TypeExpr::TypeVar(Symbol::from("a")),
-                        TypeExpr::TypeVar(Symbol::from("a")),
+                        (Symbol::from("x"), TypeExpr::TypeVar(Symbol::from("a"))),
+                        (Symbol::from("y"), TypeExpr::TypeVar(Symbol::from("a"))),
                     ],
-                    ret_type: TypeExpr::Named(TypeName::from("Bool")),
+                    ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool"))),
                     span: Span::SYNTHETIC,
                     hkt_param_index: None,
-                    default_param_names: vec![Symbol::from("x"), Symbol::from("y")],
-                    // Default body: (not (= x y))
-                    default_body: Some(Sexp::List(vec![
-                        Sexp::Symbol("not".to_string(), Span::SYNTHETIC),
-                        Sexp::List(vec![
-                            Sexp::Symbol("=".to_string(), Span::SYNTHETIC),
-                            Sexp::Symbol("x".to_string(), Span::SYNTHETIC),
-                            Sexp::Symbol("y".to_string(), Span::SYNTHETIC),
-                        ], Span::SYNTHETIC),
-                    ], Span::SYNTHETIC)),
+                    // Default body: (not (= x y)) — parsed Expr per S69 Submission 26
+                    // (default_body is now Option<Expr>, was Option<Sexp>).
+                    default_body: Some(Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("not"),
+                            span: Span::SYNTHETIC,
+                            inferred_type: None,
+                        }),
+                        args: vec![Expr::Apply {
+                            callee: Box::new(Expr::Var {
+                                name: Symbol::from("="),
+                                span: Span::SYNTHETIC,
+                                inferred_type: None,
+                            }),
+                            args: vec![
+                                Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC, inferred_type: None },
+                                Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC, inferred_type: None },
+                            ],
+                            span: Span::SYNTHETIC,
+                            resolved_call: None,
+                            inferred_type: None,
+                        }],
+                        span: Span::SYNTHETIC,
+                        resolved_call: None,
+                        inferred_type: None,
+                    }),
                 },
             ],
             visibility: Visibility::Public,
@@ -2889,16 +2943,14 @@ mod tests {
         tc.register_trait_decl_self(&eq_decl).unwrap();
 
         let impl_ = TraitImpl {
-            trait_name: TraitName::from("Eq"),
-            target_type: TypeName::from("Int"),
-            type_args: vec![],
+            trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Eq")),
+            target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
             type_constraints: vec![],
             methods: vec![Defn {
                 name: Symbol::from("="),
                 docstring: None,
                 variants: vec![DefnVariant {
-                    params: vec![Symbol::from("lhs"), Symbol::from("rhs")],
-                    param_annotations: vec![None, None],
+                    params: vec![(Symbol::from("lhs"), None), (Symbol::from("rhs"), None)],
                     body: Expr::BoolLit { value: true, span: Span::SYNTHETIC, inferred_type: None, },
                     span: Span::SYNTHETIC,
                 }],
@@ -2935,13 +2987,12 @@ mod tests {
                 name: Symbol::from("+"),
                 docstring: None,
                 params: vec![
-                    TypeExpr::TypeVar(Symbol::from("a")),
-                    TypeExpr::TypeVar(Symbol::from("a")),
+                    (Symbol::from("lhs"), TypeExpr::TypeVar(Symbol::from("a"))),
+                    (Symbol::from("rhs"), TypeExpr::TypeVar(Symbol::from("a"))),
                 ],
                 ret_type: TypeExpr::TypeVar(Symbol::from("a")),
                 span: Span::SYNTHETIC,
                 hkt_param_index: None,
-                default_param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
                 default_body: None,
             }],
             visibility: Visibility::Public,
@@ -2950,16 +3001,14 @@ mod tests {
         tc.register_trait_decl_self(&num_decl).unwrap();
 
         let impl_ = TraitImpl {
-            trait_name: TraitName::from("Num"),
-            target_type: TypeName::from("Int"),
-            type_args: vec![],
+            trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Num")),
+            target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
             type_constraints: vec![],
             methods: vec![Defn {
                 name: Symbol::from("+"),
                 docstring: None,
                 variants: vec![DefnVariant {
-                    params: vec![Symbol::from("x"), Symbol::from("y")],
-                    param_annotations: vec![None, None],
+                    params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                     body: cranelisp_types::Expr::Apply {
                         callee: Box::new(cranelisp_types::Expr::Var {
                             name: Symbol::from("add-i64"),
@@ -3054,8 +3103,7 @@ mod tests {
             name: Symbol::from("add"),
             docstring: None,
             variants: vec![DefnVariant {
-                params: vec![Symbol::from("x"), Symbol::from("y")],
-                param_annotations: vec![None, None],
+                params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                 body: Expr::Apply {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("+"),
@@ -3083,7 +3131,6 @@ mod tests {
             docstring: None,
             variants: vec![DefnVariant {
                 params: vec![],
-                param_annotations: vec![],
                 body: Expr::Apply {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("add"),
@@ -3137,20 +3184,21 @@ mod tests {
                         kind
                     );
                     let defn = ast.as_ref().expect("mono must carry ast: Some(..)");
-                    assert_eq!(defn.name.as_ref(), "add$Int+Int");
+                    // Per S69 Submission 35: ast: Option<DefnVariant>; the name lives on
+                    // the symbol-table key ("add$Int+Int" here), not on the variant.
 
                     // All inferred types on the mono body are concrete.
-                    assert_types_concrete(defn.body());
+                    assert_types_concrete(&defn.body);
 
                     // The resolved_call on the + call site must be set (SigDispatch or
                     // TraitMethod — both are valid concrete resolutions post-mono).
-                    if let Expr::Apply { resolved_call, .. } = defn.body() {
+                    if let Expr::Apply { resolved_call, .. } = &defn.body {
                         assert!(
                             resolved_call.is_some(),
                             "mono body's + call site must have resolved_call set"
                         );
                     } else {
-                        panic!("mono body should be Apply, got {:?}", defn.body());
+                        panic!("mono body should be Apply, got {:?}", defn.body);
                     }
 
                     got_slot.expect("mono must have a GOT slot assigned")

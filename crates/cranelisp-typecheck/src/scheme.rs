@@ -10,7 +10,7 @@ use crate::unify::fresh_var;
 /// Create a monomorphic scheme (no quantified variables).
 pub fn mono(ty: Type) -> Scheme {
     Scheme {
-        vars: vec![],
+        type_vars: vec![],
         constraints: HashMap::new(),
         ty,
     }
@@ -21,12 +21,12 @@ pub fn mono(ty: Type) -> Scheme {
 /// Takes `next_id` explicitly (borrow-splitting pattern).
 #[cfg(test)]
 pub fn instantiate(scheme: &Scheme, next_id: &mut TypeId) -> Type {
-    if scheme.vars.is_empty() {
+    if scheme.type_vars.is_empty() {
         return scheme.ty.clone();
     }
 
     let mut inst_subst = Subst::new();
-    for &var_id in &scheme.vars {
+    for &var_id in &scheme.type_vars {
         let fresh = fresh_var(next_id);
         inst_subst.insert(var_id, fresh);
     }
@@ -44,16 +44,16 @@ pub fn generalize(subst: &Subst, ty: &Type, env_free_vars: &std::collections::Ha
     let ty_fv = free_vars(&resolved);
 
     // Quantify variables that are free in the type but NOT in the environment
-    let mut vars: Vec<TypeId> = ty_fv
+    let mut type_vars: Vec<TypeId> = ty_fv
         .into_iter()
         .filter(|v| !env_free_vars.contains(v))
         .collect();
 
     // Sort for deterministic output
-    vars.sort();
+    type_vars.sort();
 
     Scheme {
-        vars,
+        type_vars,
         constraints: HashMap::new(),
         ty: resolved,
     }
@@ -67,7 +67,7 @@ mod tests {
     #[test]
     fn test_mono_scheme() {
         let s = mono(Type::Int);
-        assert!(s.vars.is_empty());
+        assert!(s.type_vars.is_empty());
         assert!(s.constraints.is_empty());
         assert_eq!(s.ty, Type::Int);
     }
@@ -88,7 +88,7 @@ mod tests {
     fn test_instantiate_polymorphic() {
         // forall [0]. Fn([t0], t0) -- identity
         let s = Scheme {
-            vars: vec![0],
+            type_vars: vec![0],
             constraints: HashMap::new(),
             ty: Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0))),
         };
@@ -107,7 +107,7 @@ mod tests {
     fn test_instantiate_multi_var() {
         // forall [0, 1]. Fn([t0, t1], t0)
         let s = Scheme {
-            vars: vec![0, 1],
+            type_vars: vec![0, 1],
             constraints: HashMap::new(),
             ty: Type::Fn(vec![Type::Var(0), Type::Var(1)], Box::new(Type::Var(0))),
         };
@@ -128,7 +128,7 @@ mod tests {
         // Fn([t0], t0) with no env vars -> forall [0]. Fn([t0], t0)
         let ty = Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0)));
         let scheme = generalize(&subst, &ty, &env_fv);
-        assert_eq!(scheme.vars, vec![0]);
+        assert_eq!(scheme.type_vars, vec![0]);
     }
 
     // spec: 03-types §3.5.1 — generalize skips vars free in the environment
@@ -140,7 +140,7 @@ mod tests {
         // Fn([t0], t1) with t0 in env -> forall [1]. Fn([t0], t1)
         let ty = Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(1)));
         let scheme = generalize(&subst, &ty, &env_fv);
-        assert_eq!(scheme.vars, vec![1]);
+        assert_eq!(scheme.type_vars, vec![1]);
     }
 
     // spec: 03-types §3.4 — generalize on concrete type produces mono scheme
@@ -150,7 +150,7 @@ mod tests {
         let env_fv = std::collections::HashSet::new();
         // Int has no free vars -> mono
         let scheme = generalize(&subst, &Type::Int, &env_fv);
-        assert!(scheme.vars.is_empty());
+        assert!(scheme.type_vars.is_empty());
         assert_eq!(scheme.ty, Type::Int);
     }
 
@@ -163,7 +163,7 @@ mod tests {
         let ty = Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(1)));
         let scheme = generalize(&subst, &ty, &env_fv);
         // t0 resolved to Int, t1 is still free
-        assert_eq!(scheme.vars, vec![1]);
+        assert_eq!(scheme.type_vars, vec![1]);
         assert_eq!(
             scheme.ty,
             Type::Fn(vec![Type::Int], Box::new(Type::Var(1)))

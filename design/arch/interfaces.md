@@ -930,13 +930,25 @@ pub struct FormCheckResult {
 ## ADT Support Types
 
 ```rust
-/// Information about a user-defined type.
+/// Information about a user-defined type. Symbol-table-stage structural
+/// metadata only — `docstring` lives directly on `ModuleEntry::TypeDef`
+/// (S72 Phase B; single source of truth, Principle 7), NOT here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypeDefInfo {
-    pub name: TypeName,
+    pub name: FQTypeName,
     pub type_params: Vec<Symbol>,
-    pub constructors: Vec<ConstructorInfo>,
-    pub docstring: Option<String>,
+    pub constructors: Vec<Symbol>,
+}
+
+/// Symbol-table-stage trait metadata — the slimmed payload of
+/// `ModuleEntry::TraitDecl` (S72 Phase B). `docstring` + `visibility` live
+/// directly on the entry, NOT here (single source of truth, Principle 7);
+/// the entry no longer embeds the full frontend AST `TraitDecl`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraitDeclInfo {
+    pub name: TraitName,
+    pub type_params: Vec<Symbol>,
+    pub methods: Vec<TraitMethodSig>,
 }
 
 /// Information about a single data constructor.
@@ -1205,13 +1217,13 @@ pub enum ModuleEntry<C: CodeStore = ()> {
     TypeDef {
         info: TypeDefInfo,
         visibility: Visibility,
+        docstring: Option<String>,   // S72 Phase B — direct field; un-nested from TypeDefInfo
         constructor_scheme: Option<Scheme>,
-        sexp: Option<Sexp>,
     },
     TraitDecl {
-        decl: TraitDecl,
+        info: TraitDeclInfo,         // S72 Phase B — slimmed payload; no longer embeds AST TraitDecl
         visibility: Visibility,
-        sexp: Option<Sexp>,
+        docstring: Option<String>,   // S72 Phase B — direct field; un-nested from embedded decl
     },
     Constructor {
         type_name: Symbol,
