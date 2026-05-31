@@ -181,7 +181,10 @@ impl cranelisp_types::ModuleEntry<()>
 pub fn cranelisp_types::ModuleEntry<()>::into_concrete<C: cranelisp_types::CodeStore>(self) -> cranelisp_types::ModuleEntry<C>
 impl<C: cranelisp_types::CodeStore> cranelisp_types::ModuleEntry<C>
 pub fn cranelisp_types::ModuleEntry<C>::callees(&self) -> &[cranelisp_types::FQSymbol]
+pub fn cranelisp_types::ModuleEntry<C>::def(scheme: cranelisp_types::Scheme, kind: cranelisp_types::DefKind) -> cranelisp_types::DefBuilder<C>
 pub fn cranelisp_types::ModuleEntry<C>::is_public(&self) -> bool
+impl<C: cranelisp_types::CodeStore> core::convert::From<cranelisp_types::DefBuilder<C>> for cranelisp_types::ModuleEntry<C>
+pub fn cranelisp_types::ModuleEntry<C>::from(builder: cranelisp_types::DefBuilder<C>) -> Self
 impl<C: cranelisp_types::CodeStore> core::marker::Send for cranelisp_types::ModuleEntry<C>
 impl<C: cranelisp_types::CodeStore> core::marker::Sync for cranelisp_types::ModuleEntry<C>
 pub enum cranelisp_types::ModuleStrategy
@@ -356,6 +359,17 @@ pub cranelisp_types::ConstructorDef::docstring: core::option::Option<alloc::stri
 pub cranelisp_types::ConstructorDef::fields: alloc::vec::Vec<cranelisp_types::FieldDef>
 pub cranelisp_types::ConstructorDef::name: cranelisp_types::Symbol
 pub cranelisp_types::ConstructorDef::span: cranelisp_types::Span
+pub struct cranelisp_types::DefBuilder<C: cranelisp_types::CodeStore>
+impl<C: cranelisp_types::CodeStore> cranelisp_types::DefBuilder<C>
+pub fn cranelisp_types::DefBuilder<C>::ast(self, ast: cranelisp_types::DefnVariant) -> Self
+pub fn cranelisp_types::DefBuilder<C>::build(self) -> cranelisp_types::ModuleEntry<C>
+pub fn cranelisp_types::DefBuilder<C>::docstring(self, docstring: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn cranelisp_types::DefBuilder<C>::got_slot(self, got_slot: usize) -> Self
+pub fn cranelisp_types::DefBuilder<C>::new(scheme: cranelisp_types::Scheme, kind: cranelisp_types::DefKind) -> Self
+pub fn cranelisp_types::DefBuilder<C>::param_names(self, param_names: alloc::vec::Vec<cranelisp_types::Symbol>) -> Self
+pub fn cranelisp_types::DefBuilder<C>::seq(self, seq: u64) -> Self
+pub fn cranelisp_types::DefBuilder<C>::trait_origin(self, trait_origin: cranelisp_types::FQTraitName) -> Self
+pub fn cranelisp_types::DefBuilder<C>::visibility(self, visibility: cranelisp_types::Visibility) -> Self
 #[non_exhaustive] pub struct cranelisp_types::DefmacroInfo
 pub cranelisp_types::DefmacroInfo::clauses: alloc::vec::Vec<cranelisp_types::MacroClause>
 pub cranelisp_types::DefmacroInfo::docstring: core::option::Option<alloc::string::String>

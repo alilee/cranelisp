@@ -28,12 +28,25 @@ the forcing function for this migration, per `feedback_facade_first_migration`.
 
 ## Proposed resolution
 
-**Not blocked.** The approved decision is narrower than the original 0241 premise:
-no `cranelisp-types::SymbolTable` builder vocabulary is built first. `int`
-reconstructs the mount sequence **directly**, using the deleted `register_builtins`
-body (recoverable from git history — the commit that removes
-`crates/cranelisp-typecheck/src/builtins.rs`) as the assembly reference. There is
-no in-tree `pub(crate)` copy to read; pull the body from git.
+**Not blocked.** `int` reconstructs the mount sequence **directly**, using the
+deleted `register_builtins` body (recoverable from git history — the commit that
+removes `crates/cranelisp-typecheck/src/builtins.rs`) as the assembly reference.
+There is no in-tree `pub(crate)` copy to read; pull the body from git.
+
+**Use `ModuleEntry::def` for the `Def` entries (S73 update).** The narrower
+three-tier design landed the **Tier-1 `Def` constructor** in `cranelisp-types`:
+`ModuleEntry::def(scheme, kind) -> DefBuilder<C>` (chainable `.visibility`
+[defaults `Public`] / `.docstring` / `.param_names` / `.got_slot` /
+`.trait_origin` / `.seq` / `.ast`, terminated by `.build()`). Build the mount's
+`Def` entries with it instead of hand-rolled 11-field `ModuleEntry::Def { … }`
+struct literals — the git-history `register_builtins` body remains the
+content/ordering reference, but the *construction shape* is now the builder.
+(`callees` and `code` are runtime-state and are not settable — they default; this
+matches what every legacy literal wrote.) The broader `declare_adt` /
+`declare_special_form` / `declare_trait` vocabulary was NOT built (deferred per
+FIXME 0241), so non-`Def` entries (`IntrinsicType`, `TypeDef`, `SpecialForm`,
+`TraitDecl`) are still constructed via their plain struct literals + `insert`.
+See `bounded-contexts.md` §7 ("`Def` entry construction — the builder").
 
 1. Replace the `register_builtins(&symbol_tables, &next_type_id)` call at
    `session_v4.rs:1072` with the synthetic-module mount sequence — mount the

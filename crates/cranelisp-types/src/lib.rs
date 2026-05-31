@@ -169,6 +169,16 @@ pub(crate) mod marshal;
 pub(crate) mod scheduling;
 pub(crate) mod view;
 
+// Tier-2 test-support symbol-table construction helpers. Feature-gated so
+// they are visible to OTHER crates' test suites (`cranelisp-typecheck`'s unit
+// suite) without entering the production contract: the `public-api.txt`
+// baseline is generated WITHOUT `--features test-support`, so `test_support`
+// stays out of the frozen edge. Pure `#[cfg(test)]` would be crate-local and
+// invisible downstream — hence the feature gate. See
+// `design/arch/bounded-contexts.md` §7.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
+
 // Re-export key types at crate root for convenience.
 pub use span::Span;
 pub use error::{
@@ -196,7 +206,7 @@ pub use check::{
 // layer's `Code` enum at `src/code.rs` is the replacement.
 pub use scheduling::SchedulingClass;
 pub use module::{
-    CHAIN_FOLLOW_DEPTH_LIMIT, CodeStore, ConstrainedFn, DefKind, EnsureOutcome, ExportSpec,
+    CHAIN_FOLLOW_DEPTH_LIMIT, CodeStore, ConstrainedFn, DefBuilder, DefKind, EnsureOutcome, ExportSpec,
     ImplSexp, ImportNames, ImportSpec, LinkerStore, MacroClauseInfo, MacroParam, ModDecl,
     ModuleAliasEntry, ModuleAliases, ModuleEntry, OverloadVariant, PlatformSpec,
     StructuralDeclEntry, SymbolTable, SymbolTables, ensure_module_exists, for_each_in_module,

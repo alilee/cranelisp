@@ -1050,6 +1050,49 @@ unsafe impl<C: CodeStore> Send for ModuleEntry<C> {}
 unsafe impl<C: CodeStore> Sync for ModuleEntry<C> {}
 
 impl<C: CodeStore> ModuleEntry<C> {
+    /// Begin constructing a [`ModuleEntry::Def`] with the runtime-state
+    /// fields defaulted.
+    ///
+    /// `ModuleEntry::Def` carries ~11 fields, but six of them are always
+    /// construction-time defaults at every static-table / mount call site:
+    /// `callees: Vec::new()`, `got_slot: None`, `trait_origin: None`,
+    /// `seq: 0`, `ast: None`, `code: None`. Enum variants cannot use
+    /// `..Default::default()`, so without a builder every construction spells
+    /// out all 11 fields even though it only cares about three of them
+    /// (`scheme`, `kind`, and usually `visibility`). This builder lets callers
+    /// specify only what they care about.
+    ///
+    /// `visibility` defaults to [`Visibility::Public`] — the overwhelmingly
+    /// common case for the production consumers (primitives, the int mount).
+    /// Call [`DefBuilder::visibility`] to override.
+    ///
+    /// # Consumers
+    ///
+    /// This is the single Tier-1 production constructor for `Def` entries
+    /// shared by every site that builds a symbol table by hand:
+    /// `cranelisp-primitives` static-table assembly, the integration layer's
+    /// synthetic-module mount (FIXME 0242), and the feature-gated
+    /// `cranelisp_types::test_support` helpers (compiled only under the
+    /// `test-support` feature). It is production surface (it enters
+    /// `public-api.txt`).
+    ///
+    /// It realizes the `declare_def` helper deferred by FIXME 0241; the
+    /// broader `declare_adt` / `declare_special_form` / `declare_trait`
+    /// vocabulary remains deferred (minimum mechanism — only the `Def`
+    /// constructor has two real consumers today).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let entry: ModuleEntry = ModuleEntry::def(scheme, DefKind::Primitive)
+    ///     .docstring("Add two integers")
+    ///     .param_names(vec![Symbol::from("a"), Symbol::from("b")])
+    ///     .build();
+    /// ```
+    pub fn def(scheme: Scheme, kind: DefKind) -> DefBuilder<C> {
+        DefBuilder::new(scheme, kind)
+    }
+
     /// Returns the callees for this entry, or an empty slice for variants without callees.
     ///
     /// Supports the `tc.symbol_table(module).get(name).callees()` dot-access pattern
@@ -1087,6 +1130,136 @@ impl<C: CodeStore> ModuleEntry<C> {
             | ModuleEntry::TraitImpl { visibility, .. }
             | ModuleEntry::Ambiguous { visibility } => *visibility == Visibility::Public,
         }
+    }
+}
+
+// --- Def builder (Tier-1 production constructor) ---
+
+/// Chainable builder for [`ModuleEntry::Def`] — see [`ModuleEntry::def`].
+///
+/// Construct via [`ModuleEntry::def(scheme, kind)`](ModuleEntry::def), set the
+/// fields you care about, and terminate with [`DefBuilder::build`] (or the
+/// [`From<DefBuilder<C>>`] conversion). Every field defaults to its
+/// construction-time value:
+///
+/// | Field | Default | Setter |
+/// |---|---|---|
+/// | `visibility` | [`Visibility::Public`] | [`Self::visibility`] |
+/// | `docstring` | `None` | [`Self::docstring`] |
+/// | `param_names` | `vec![]` | [`Self::param_names`] |
+/// | `got_slot` | `None` | [`Self::got_slot`] |
+/// | `trait_origin` | `None` | [`Self::trait_origin`] |
+/// | `seq` | `0` | [`Self::seq`] |
+/// | `ast` | `None` | [`Self::ast`] |
+/// | `callees` | `vec![]` | (no setter — populated by typecheck's `finalize_check_result`, never at construction) |
+/// | `code` | `None` | (no setter — runtime-only, written by backend after `compile_to_module`) |
+///
+/// `callees` and `code` deliberately have no setter: they are runtime-state
+/// fields populated downstream (callees by typecheck, code by backend), never
+/// at table-assembly time. Constraining the builder to construction-time
+/// concerns keeps the runtime-state single-source-of-truth invariants
+/// (Principle 7) intact.
+#[derive(Debug, Clone)]
+pub struct DefBuilder<C: CodeStore = ()> {
+    scheme: Scheme,
+    kind: DefKind,
+    visibility: Visibility,
+    docstring: Option<String>,
+    param_names: Vec<Symbol>,
+    got_slot: Option<usize>,
+    trait_origin: Option<FQTraitName>,
+    seq: u64,
+    ast: Option<DefnVariant>,
+    _code: std::marker::PhantomData<C>,
+}
+
+impl<C: CodeStore> DefBuilder<C> {
+    /// Start a builder with `scheme` + `kind`; all other fields default
+    /// (see [`DefBuilder`] for the default table). Prefer
+    /// [`ModuleEntry::def`] as the entry point.
+    pub fn new(scheme: Scheme, kind: DefKind) -> Self {
+        DefBuilder {
+            scheme,
+            kind,
+            visibility: Visibility::Public,
+            docstring: None,
+            param_names: Vec::new(),
+            got_slot: None,
+            trait_origin: None,
+            seq: 0,
+            ast: None,
+            _code: std::marker::PhantomData,
+        }
+    }
+
+    /// Override the visibility (defaults to [`Visibility::Public`]).
+    pub fn visibility(mut self, visibility: Visibility) -> Self {
+        self.visibility = visibility;
+        self
+    }
+
+    /// Set the docstring.
+    pub fn docstring(mut self, docstring: impl Into<String>) -> Self {
+        self.docstring = Some(docstring.into());
+        self
+    }
+
+    /// Set the parameter names.
+    pub fn param_names(mut self, param_names: Vec<Symbol>) -> Self {
+        self.param_names = param_names;
+        self
+    }
+
+    /// Set the module-local GOT slot index (normally defaulted to `None`;
+    /// callers that pre-allocate a slot via
+    /// [`SymbolTable::allocate_got_slot`] set it here).
+    pub fn got_slot(mut self, got_slot: usize) -> Self {
+        self.got_slot = Some(got_slot);
+        self
+    }
+
+    /// Set the trait this Def is a method of (normally defaulted to `None`).
+    pub fn trait_origin(mut self, trait_origin: FQTraitName) -> Self {
+        self.trait_origin = Some(trait_origin);
+        self
+    }
+
+    /// Set the per-entry sequence token (normally defaulted to `0`; the
+    /// authorship-order allocator lives on [`SymbolTable::next_seq`]).
+    pub fn seq(mut self, seq: u64) -> Self {
+        self.seq = seq;
+        self
+    }
+
+    /// Set the typechecked body (normally defaulted to `None`; primitives,
+    /// special forms, and pre-body-check entries carry `None`).
+    pub fn ast(mut self, ast: DefnVariant) -> Self {
+        self.ast = Some(ast);
+        self
+    }
+
+    /// Materialize the [`ModuleEntry::Def`]. `callees` and `code` are always
+    /// the construction-time defaults (`Vec::new()` / `None`).
+    pub fn build(self) -> ModuleEntry<C> {
+        ModuleEntry::Def {
+            scheme: self.scheme,
+            visibility: self.visibility,
+            docstring: self.docstring,
+            param_names: self.param_names,
+            kind: Box::new(self.kind),
+            callees: Vec::new(),
+            got_slot: self.got_slot,
+            trait_origin: self.trait_origin,
+            seq: self.seq,
+            ast: self.ast,
+            code: None,
+        }
+    }
+}
+
+impl<C: CodeStore> From<DefBuilder<C>> for ModuleEntry<C> {
+    fn from(builder: DefBuilder<C>) -> Self {
+        builder.build()
     }
 }
 
@@ -1788,8 +1961,8 @@ where
 mod tests {
     use super::*;
     use crate::{
-        DefnVariant, Expr, FQSymbol, FQTypeName, ModuleName, Scheme, Span, Symbol, Type,
-        TypeDefInfo, TypeName, Visibility,
+        DefnVariant, Expr, FQSymbol, FQTraitName, FQTypeName, ModuleFullPath, ModuleName, Scheme,
+        Span, Symbol, TraitName, Type, TypeDefInfo, TypeName, Visibility,
     };
     use std::collections::HashMap;
 
@@ -2797,5 +2970,74 @@ mod tests {
             }
             other => panic!("expected ModuleEntry::Def, got {:?}", other),
         }
+    }
+
+    // ---- Tier-1 DefBuilder (ModuleEntry::def) ----
+
+    fn mono_scheme(ty: Type) -> Scheme {
+        Scheme { type_vars: vec![], constraints: HashMap::new(), ty }
+    }
+
+    // spec: design/arch/fixmes/0241 — Tier-1 Def constructor: defaults
+    #[test]
+    fn def_builder_defaults() {
+        let entry: ModuleEntry =
+            ModuleEntry::def(mono_scheme(Type::Int), DefKind::Primitive).build();
+        match entry {
+            ModuleEntry::Def {
+                scheme, visibility, docstring, param_names, kind, callees, got_slot,
+                trait_origin, seq, ast, code,
+            } => {
+                assert_eq!(scheme.ty, Type::Int);
+                assert_eq!(visibility, Visibility::Public, "default visibility is Public");
+                assert!(docstring.is_none());
+                assert!(param_names.is_empty());
+                assert!(matches!(*kind, DefKind::Primitive));
+                assert!(callees.is_empty(), "callees defaulted, never settable");
+                assert!(got_slot.is_none());
+                assert!(trait_origin.is_none());
+                assert_eq!(seq, 0);
+                assert!(ast.is_none());
+                assert!(code.is_none(), "code defaulted, never settable");
+            }
+            other => panic!("expected Def, got {:?}", other),
+        }
+    }
+
+    // spec: design/arch/fixmes/0241 — Tier-1 Def constructor: overrides
+    #[test]
+    fn def_builder_overrides() {
+        let trait_name = FQTraitName::new(ModuleFullPath::from("core.num"), TraitName::from("Num"));
+        let entry: ModuleEntry = ModuleEntry::def(mono_scheme(Type::Bool), DefKind::UserFn { constrained_fn: None })
+            .visibility(Visibility::Private)
+            .docstring("doc")
+            .param_names(vec![Symbol::from("a"), Symbol::from("b")])
+            .got_slot(7)
+            .trait_origin(trait_name.clone())
+            .seq(42)
+            .ast(trivial_variant("f"))
+            .build();
+        match entry {
+            ModuleEntry::Def {
+                visibility, docstring, param_names, got_slot, trait_origin, seq, ast, ..
+            } => {
+                assert_eq!(visibility, Visibility::Private);
+                assert_eq!(docstring.as_deref(), Some("doc"));
+                assert_eq!(param_names, vec![Symbol::from("a"), Symbol::from("b")]);
+                assert_eq!(got_slot, Some(7));
+                assert_eq!(trait_origin, Some(trait_name));
+                assert_eq!(seq, 42);
+                assert!(ast.is_some());
+            }
+            other => panic!("expected Def, got {:?}", other),
+        }
+    }
+
+    // spec: design/arch/fixmes/0241 — From<DefBuilder> conversion (terminal)
+    #[test]
+    fn def_builder_from_conversion() {
+        let entry: ModuleEntry =
+            ModuleEntry::def(mono_scheme(Type::Int), DefKind::Primitive).into();
+        assert!(matches!(entry, ModuleEntry::Def { .. }));
     }
 }

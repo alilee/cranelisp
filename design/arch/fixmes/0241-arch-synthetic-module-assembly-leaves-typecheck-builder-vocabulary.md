@@ -25,10 +25,28 @@ approved motion is narrower:
    typecheck is correct on bounded-context grounds (content construction is not
    type-checking, BC §2) and does not depend on a replacement vocabulary existing.
 
-2. **No `cranelisp-types` builder vocabulary is built now.** Instead, `int`
-   reconstructs whatever mount sequence it needs in its own wave (FIXME 0242),
-   pulling the assembly reference from git. No `cranelisp-types` change in this
-   motion; no `declare_*` helpers added.
+2. ~~**No `cranelisp-types` builder vocabulary is built now.**~~ **Amended S73
+   (2026-05-31).** A user-approved three-tier design landed the **Tier-1 `Def`
+   constructor** in `cranelisp-types` ahead of the broader vocabulary:
+   `ModuleEntry::def(scheme, kind) -> DefBuilder<C>` (chainable `.visibility`
+   [defaults `Public`] / `.docstring` / `.param_names` / `.got_slot` /
+   `.trait_origin` / `.seq` / `.ast`, terminated by `.build()` or
+   `From<DefBuilder<C>>`). `callees` and `code` are deliberately NOT settable
+   (runtime-state, written downstream). It realizes the `declare_def` helper this
+   FIXME deferred — the single multi-consumer Tier-1 piece (`cranelisp-primitives`
+   static table, `int`'s FIXME-0242 mount, and the Tier-2 test helpers all use it).
+   It is production surface (in `crates/cranelisp-types/public-api.txt`). The
+   **broader `declare_adt` / `declare_special_form` / `declare_trait` vocabulary
+   remains deferred** — minimum mechanism; only the `Def` constructor has two real
+   production consumers today. See `design/arch/bounded-contexts.md` §7 ("`Def`
+   entry construction — the builder"). A **Tier-2 feature-gated
+   `cranelisp_types::test_support` `SymbolTableBuilder`** (generic,
+   content-agnostic, NOT in the production baseline — `test-support` Cargo feature)
+   also landed for OTHER crates' test suites — see §"Relationship to FIXME 0239".
+
+   **This unblocks FIXME 0242**: `int` builds its mount entries with
+   `ModuleEntry::def(...)` instead of hand-rolled 11-field struct literals (the
+   git-history `register_builtins` body remains the content/ordering reference).
 
 The facade has been reconciled: `design/arch/facades/typecheck.md` §"Builtin
 registration — removed from typecheck" states the removal and points `int` at git
@@ -92,18 +110,30 @@ shape to warrant extraction), the original analysis stands as the design input:
 
 ## Status / disposition
 
+- **Tier-1 `Def` constructor LANDED (S73, 2026-05-31).** `ModuleEntry::def` +
+  `DefBuilder<C>` are in `cranelisp-types`, with unit tests + `public-api.txt`
+  baseline regenerated (the new items appear; `test_support` does not). The
+  `declare_def` line of the deferred analysis below is therefore **struck** — it is
+  no longer deferred. **Tier-2 `test_support::SymbolTableBuilder`** also landed
+  (feature-gated; out of the production baseline). See `bounded-contexts.md` §7.
+- **The broader `declare_*` vocabulary stays deferred.** `declare_adt` /
+  `declare_special_form` / `declare_trait` (the per-step table in the deferred
+  analysis below) are NOT built — minimum mechanism; only the `Def` constructor had
+  two real production consumers. The per-step disposition table is retained as the
+  design input for if/when the rest is justified.
 - **The boundary correction is captured** (facade reconciled; `int` owns the mount
-  via FIXME 0242). The *immediate* actionable content of this FIXME is therefore
-  satisfied by the deletion + `int` reconstruction — no `/arch` builder authoring is
-  owed this sprint.
-- **This FIXME remains open** only as the home for the deferred shared-builder
+  via FIXME 0242).
+- **This FIXME remains open** only as the home for the deferred broader-vocabulary
   rationale + the FIXME 0239 generalization. Close it (folding any still-live FIXME
-  0239 substance) once it is decided either (a) the shared builder is wanted — at
-  which point it becomes actionable `/arch` work — or (b) `int`'s reconstruction has
-  settled and a shared builder is confirmed unnecessary, in which case 0239 closes
-  with it.
+  0239 substance) once it is decided either (a) the rest of the vocabulary is wanted
+  — at which point it becomes actionable `/arch` work — or (b) `int`'s reconstruction
+  (now building on `ModuleEntry::def`) has settled and the broader vocabulary is
+  confirmed unnecessary, in which case 0239 closes with it.
 - **Relationship to FIXME 0239**: 0239 ("instantiate a module symbol table from a
-  source") is the broader generalization; it is no longer blocked-on by anything
-  here and is likewise deferred pending a second consumer.
+  source") is the broader generalization. Its *test-fixture direction* is now
+  settled as **"construct from builders"** (the Tier-2 `SymbolTableBuilder` over the
+  Tier-1 `ModuleEntry::def`), NOT "instantiate from source"; the broader
+  source-abstraction (PrimitivesSource / CacheSource / TestSource trait family)
+  remains deferred pending a second consumer. See 0239 for the threaded note.
 - Coordinate with FIXME 0240 (adjacent int↔typecheck startup-seam threading:
   module_aliases A1/A4).

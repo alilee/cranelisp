@@ -3,6 +3,16 @@ name = "cranelisp-types"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Exposes `cranelisp_types::test_support` (a generic, content-agnostic
+# SymbolTable builder) to OTHER crates' test suites — notably
+# `cranelisp-typecheck`'s unit tests. Pure `#[cfg(test)]` is crate-local
+# and would not be visible downstream, so the helpers are gated behind this
+# feature. The `public-api.txt` baseline is generated WITHOUT this feature,
+# so `test_support` never enters the production contract — that is what makes
+# the test-only delineation enforceable. See `bounded-contexts.md` §7.
+test-support = []
+
 [dependencies]
 dashmap = "6"
 serde = { version = "1", features = ["derive"] }
