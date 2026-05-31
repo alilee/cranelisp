@@ -2340,23 +2340,51 @@ impl TestFixture {
     }
 
     /// Check program (test convenience).
+    ///
+    /// Routes a whole-program batch through `check_via_forms` (the same Pass 1
+    /// / Pass 2 / finalize pipeline as production `check_forms`) with `Additive`
+    /// strategy, matching the retired `check_program`. The module is taken from
+    /// the fixture's current `CheckState` (set via `set_current_module`), so
+    /// helpers like `tc_with_prims` that switch to `test` resolve correctly.
     pub fn check_program_self(
         &mut self,
         program: &[cranelisp_types::TopLevel],
     ) -> Result<crate::result::CheckResult, CranelispError> {
         let env = TypeCheckEnv::new(&self.modules, &self.next_id);
-        #[allow(deprecated)]
-        env.check_program(&mut self.state, program)
+        let ctx = cranelisp_types::CompileContext {
+            module: self.state.current_module.clone(),
+            codegen: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
+        };
+        env.check_via_forms(
+            &mut self.state,
+            program,
+            &ctx,
+            cranelisp_types::ModuleStrategy::Additive,
+        )
     }
 
     /// Check REPL input (test convenience).
+    ///
+    /// Routes a single REPL form through `check_via_forms` as a one-element
+    /// slice with `Additive` strategy, matching the retired `check_repl_input`
+    /// incremental path. The module is taken from the fixture's current
+    /// `CheckState` (set via `set_current_module`).
     pub fn check_repl_input_self(
         &mut self,
         input: &cranelisp_types::TopLevel,
     ) -> Result<crate::result::CheckResult, CranelispError> {
         let env = TypeCheckEnv::new(&self.modules, &self.next_id);
-        #[allow(deprecated)]
-        env.check_repl_input(&mut self.state, input)
+        let ctx = cranelisp_types::CompileContext {
+            module: self.state.current_module.clone(),
+            codegen: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
+        };
+        let program = std::slice::from_ref(input);
+        env.check_via_forms(
+            &mut self.state,
+            program,
+            &ctx,
+            cranelisp_types::ModuleStrategy::Additive,
+        )
     }
 
     /// Infer expression type (test convenience).
@@ -2535,6 +2563,10 @@ impl TestFixture {
     }
 
     /// Check (unified pipeline, test convenience).
+    ///
+    /// Routes to `check_via_forms`, which drives the same Pass 1 / Pass 2 /
+    /// finalize pipeline as the production `check_forms` free function and
+    /// returns the display-bearing `CheckResult` in-crate tests assert on.
     pub fn check(
         &mut self,
         program: &[cranelisp_types::TopLevel],
@@ -2542,7 +2574,7 @@ impl TestFixture {
         strategy: cranelisp_types::ModuleStrategy,
     ) -> Result<crate::result::CheckResult, CranelispError> {
         let env = TypeCheckEnv::new(&self.modules, &self.next_id);
-        env.check(&mut self.state, program, ctx, strategy)
+        env.check_via_forms(&mut self.state, program, ctx, strategy)
     }
 
     /// Is internal constructor (test convenience).
@@ -2591,17 +2623,6 @@ impl TestFixture {
     // (`CheckState`, `SymbolTable`) instead. Tests that used to read those
     // fields off `CheckResult` go through these accessors now.
     // ---------------------------------------------------------------------
-
-    /// Current `CheckState.method_resolutions` snapshot.
-    ///
-    /// Populated on the `check_program_self` path (single-shot batch); drained
-    /// into annotated ASTs on the `check` path — tests that used
-    /// `tc.check(..)` should use `annotated_resolutions()` instead.
-    pub fn state_method_resolutions(
-        &self,
-    ) -> &std::collections::HashMap<Span, cranelisp_types::ResolvedCall> {
-        &self.state.method_resolutions.resolved_calls
-    }
 
     /// Collect `ResolvedCall`s from annotated AST nodes across all defn bodies
     /// in the current module. Mirrors what `check()` used to publish via

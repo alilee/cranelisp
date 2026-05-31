@@ -1,33 +1,38 @@
 //! Multi-pass type checking pipeline.
 //!
-//! `check()` is the unified entry point: it processes any `&[TopLevel]` slice
-//! through a multi-pass pipeline (register → check → constrained → mono → curry).
-//! A REPL line is a one-element slice; a batch program is a multi-element slice.
-//! The passes work identically regardless of slice length.
+//! The production entry surface is the `check_forms` free function in
+//! `form.rs` (Decision 44): it drives a single cluster-typecheck pass over a
+//! `Vec<ParsedEntry>` through the per-form API below.
 //!
 //! ## Per-Form API (v4 Pipeline)
 //!
 //! `check_form()` processes a single `TopLevel` form through one pass at a time.
-//! The caller drives two-pass iteration:
+//! The caller (`check_forms`) drives two-pass iteration:
 //! - Pass 1 (`CheckPass::Register`): register type defs, traits, signatures.
 //! - Pass 2 (`CheckPass::CheckBody`): check function bodies, detect constraints.
 //!
 //! `merge_form_result()` accumulates per-form results into a `ModuleCheckAccumulator`.
 //! `finalize_check_result()` runs post-passes and drains the accumulator into `CheckResult`.
 //!
-//! `check()` internally uses `check_form()` in two passes — existing callers unchanged.
-//!
-//! `check_program` and `check_repl_input` are deprecated. All production callers
-//! now use `check()`. The old methods are retained only for typecheck crate tests.
+//! `check_via_forms()` is a `#[cfg(test)]` driver that runs the same Pass 1 /
+//! Pass 2 / finalize pipeline over a `&[TopLevel]` slice and retains the
+//! display-bearing `CheckResult` for in-crate test assertions. Production code
+//! never calls it — it routes through `check_forms`.
 
 use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{ErrorLocation,
-    CompileContext, ConstrainedFn, CranelispError, Defn, DefKind, DefnVariant,
-    DisplayInfo, Expr, FQSymbol, JitSymbol, ModuleEntry, ModuleFullPath,
-    ModuleStrategy, MonoDefn, ResolvedCall, Scheme, Span, Subst, Symbol, SymbolTable, TopLevel, Type,
-    Visibility, Warning, apply,
+    ConstrainedFn, CranelispError, Defn, DefKind, DefnVariant,
+    Expr, FQSymbol, JitSymbol, ModuleEntry, ModuleFullPath,
+    ModuleStrategy, MonoDefn, ResolvedCall, Span, Subst, Symbol, SymbolTable, TopLevel, Type,
+    Warning, apply,
 };
+
+// Test-only imports: used exclusively by the `#[cfg(test)]` `check_via_forms`
+// driver, `compute_display_info` / `wrap_exprs_as_defns` helpers, and the
+// in-crate test module.
+#[cfg(test)]
+use cranelisp_types::{CompileContext, DisplayInfo, Visibility};
 
 use crate::result::CheckResult;
 
@@ -375,19 +380,15 @@ impl ModuleCheckAccumulator {
 
 // --- Multi-sig type aliases ---
 //
-// Reachable only through `check_program` / `check_repl_input` /
-// `finalize_check_result` chains, which are `pub(crate)` and consumed only
-// by `#[cfg(test)]` test-fixture proxies (see `TestFixture` in `checker.rs`).
-// The new free-function surface (`check_form_signatures` /
-// `check_form_body`) does not yet wire through multi-sig overload
-// resolution; that integration arrives in Wave 3a-α completion.
+// Used by the multi-sig overload-resolution helpers
+// (`resolve_variant_types` / `register_mangled_variants`) reached from
+// `finalize_check_result`'s `resolve_multi_sig_overloads` post-pass — part
+// of the production `check_forms` path.
 
 /// Resolved variant info: (concrete_params, concrete_ret, internal_name, variant_index).
-#[allow(dead_code)]
 type ResolvedVariant = (Vec<Type>, Type, Symbol, usize);
 
 /// Mangled variant info: (concrete_params, concrete_ret, mangled_name).
-#[allow(dead_code)]
 type MangledVariantInfo = (Vec<Type>, Type, Symbol);
 
 // --- Name mangling for multi-sig overload dispatch ---
@@ -414,7 +415,6 @@ fn is_trait_impl_mangled_name(name: &str) -> bool {
     false
 }
 
-#[allow(dead_code)]
 fn mangle_sig(name: &str, param_types: &[Type]) -> Symbol {
     if param_types.is_empty() {
         Symbol::from(format!("{}$", name))
@@ -425,7 +425,6 @@ fn mangle_sig(name: &str, param_types: &[Type]) -> Symbol {
 }
 
 /// Mangle a single type for name mangling.
-#[allow(dead_code)]
 fn mangle_type(ty: &Type) -> String {
     match ty {
         Type::Int => "Int".to_string(),
@@ -447,7 +446,6 @@ fn mangle_type(ty: &Type) -> String {
 }
 
 /// Check if two concrete types are compatible (for overload resolution).
-#[allow(dead_code)]
 fn types_compatible(a: &Type, b: &Type) -> bool {
     match (a, b) {
         (Type::Int, Type::Int)
@@ -480,14 +478,6 @@ fn types_compatible(a: &Type, b: &Type) -> bool {
     }
 }
 
-// The whole-program / REPL-input legacy check methods (`check`,
-// `check_program`, `check_repl_input`) plus their helper chain are
-// reachable only through `#[cfg(test)]` test-fixture proxies (per the
-// Wave 3a-β public-surface demotion — see FIXME 0173). Their dead-code
-// lints are suppressed at the impl-block level until the chain is fully
-// retired in a follow-up wave; the new free-function surface
-// (`check_form_signatures` / `check_form_body`) is the production path.
-#[allow(dead_code)]
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     // =================================================================
     // Per-Form Typecheck API (v4 pipeline)
@@ -1253,18 +1243,25 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     }
 
     // =================================================================
-    // Unified check() entry point — uses check_form internally
+    // Unified multi-form check driver — drives `check_forms`'s internal
+    // pipeline (Pass 1 register, Pass 2 check bodies, finalize) over a
+    // `&[TopLevel]` slice and returns the `CheckResult` (including display
+    // info). The production entry surface is `check_forms` in `form.rs`,
+    // which discards the display-bearing `CheckResult`; this driver retains
+    // it so in-crate tests can assert on inferred types / schemes.
     // =================================================================
 
-    /// Unified type-checking entry point.
+    /// Drive the cluster pipeline over a `TopLevel` slice and return the
+    /// display-bearing `CheckResult`.
     ///
-    /// Processes a slice of `TopLevel` forms through the multi-pass pipeline
-    /// using `check_form()` internally. Existing callers see identical results.
-    ///
-    /// `Expr` variants are wrapped in a synthetic zero-arg `Defn` named `__expr`
-    /// so they flow through the same passes as regular definitions.
-    #[must_use = "check result contains expr_types and method_resolutions needed by codegen"]
-    pub(crate) fn check(
+    /// Mirrors `check_forms`'s internal Pass 1 / Pass 2 / finalize ordering.
+    /// `Expr` variants are wrapped in a synthetic zero-arg `Defn` named
+    /// `__expr` so they flow through the same passes as regular definitions.
+    /// Used by in-crate test fixtures only — the production path is the
+    /// `check_forms` free function in `form.rs`.
+    #[cfg(test)]
+    #[must_use = "check result contains display info needed by REPL-display tests"]
+    pub(crate) fn check_via_forms(
         &self,
         state: &mut CheckState,
         program: &[TopLevel],
@@ -1276,20 +1273,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         // Set the module on the caller-owned state.
         state.current_module = ctx.module.clone();
-        self.check_inner(state, program, strategy)
-    }
-
-    fn check_inner(
-        &self,
-        state: &mut CheckState,
-        program: &[TopLevel],
-        strategy: ModuleStrategy,
-    ) -> Result<CheckResult, CranelispError> {
-        // If Replace strategy, clear existing module state so that removed
-        // definitions don't persist as stale entries.
-        if strategy == ModuleStrategy::Replace {
-            self.clear_module_for_replace(state);
-        }
 
         // Build a working copy of the program with Expr variants wrapped
         // as synthetic zero-arg Defns.
@@ -1342,6 +1325,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     }
 
     /// Wrap `Expr` variants as synthetic zero-arg `Defn` named `__expr`.
+    /// Used only by the `check_via_forms` test driver.
+    #[cfg(test)]
     fn wrap_exprs_as_defns(program: &[TopLevel]) -> Vec<TopLevel> {
         let mut working_program = Vec::with_capacity(program.len());
         for top in program {
@@ -1377,6 +1362,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ///
     /// Populated when the input has 1-2 elements (REPL-like input).
     /// For batch programs (many forms), returns None.
+    /// Used only by the `check_via_forms` test driver.
+    #[cfg(test)]
     fn compute_display_info(
         &self,
         state: &CheckState,
@@ -1429,36 +1416,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
     }
 
-    /// Public wrapper for `clear_module_for_replace` (used by v4 worker).
-    pub(crate) fn clear_module_for_replace_public(&self, state: &mut CheckState) {
-        self.clear_module_for_replace(state);
-    }
-
-    /// Public wrapper for `compute_display_info` (used by v4 worker).
-    pub(crate) fn compute_display_info_public(
-        &self,
-        state: &CheckState,
-        original_program: &[TopLevel],
-        defn_type_vars: &HashMap<Symbol, (Vec<Type>, Type)>,
-    ) -> Option<DisplayInfo> {
-        self.compute_display_info(state, original_program, defn_type_vars)
-    }
-
-    /// Prepare module for Replace strategy.
-    ///
-    /// The symbol table is preserved — existing entries guide GOT slot
-    /// reuse and enable type-change detection during re-registration.
-    /// GOT zeroing and codegen artifact cleanup happen at the worker
-    /// level (worker.rs) which has access to SharedCodegenState.
-    ///
-    /// After re-processing, symbols present in the old table but absent
-    /// from the new source are stale and should be invalidated.
-    fn clear_module_for_replace(&self, _state: &mut CheckState) {
-        // Symbol table intentionally NOT cleared.
-        // Slot assignments and type info are needed for correct re-registration.
-        // See worker.rs clear_module_codegen() for the GOT/codegen side.
-    }
-
     /// Collect only single-sig Defn entries (skip multi-sig).
     fn collect_single_sig_defns(program: &[TopLevel]) -> Vec<&Defn> {
         program
@@ -1475,75 +1432,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 }
             })
             .collect()
-    }
-
-    /// Expand multi-sig defns into synthetic single-variant defns with
-    /// internal names (`name__v0`, `name__v1`, ...).
-    ///
-    /// Also populates `self.overloads` with the base name → internal name
-    /// mapping for later overload resolution.
-    ///
-    /// Returns owned `Vec<Defn>` — the caller holds references into this vec
-    /// alongside the single-sig defn references from the program.
-    ///
-    /// Note: Superseded by `check_form_register_multi_sig` for the `check()` path.
-    /// Retained for the deprecated `check_program` path used in tests.
-    #[allow(dead_code)]
-    fn expand_multi_sig_defns(&self,
-        state: &mut CheckState, program: &[TopLevel]) -> Vec<Defn> {
-        let mut internal_defns = Vec::new();
-
-        for top in program {
-            if let TopLevel::Defn(defn) = top {
-                if !defn.is_multi_sig() {
-                    continue;
-                }
-
-                let mut overload_entries = Vec::new();
-                for (i, variant) in defn.variants.iter().enumerate() {
-                    let internal_name = Symbol::from(format!("{}__v{}", defn.name, i));
-                    overload_entries.push((internal_name.clone(), variant.params.len()));
-
-                    internal_defns.push(Defn {
-                        name: internal_name,
-                        docstring: defn.docstring.clone(),
-                        variants: vec![DefnVariant {
-                            params: variant.params.clone(),
-                            body: variant.body.clone(),
-                            span: variant.span,
-                        }],
-                        visibility: defn.visibility,
-                        span: variant.span,
-                    });
-                }
-                state.overloads.insert(defn.name.clone(), overload_entries);
-
-                // Register a placeholder for the base name so `infer_var`
-                // can find it during pass 2. The placeholder uses a fresh
-                // type variable — the actual type is determined during
-                // overload resolution after pass 2.
-                let placeholder_ty = self.fresh_var();
-                let placeholder_scheme = mono(placeholder_ty);
-                self.current_symbol_table_mut(state).insert(
-                    defn.name.clone(),
-                    ModuleEntry::Def {
-                        scheme: placeholder_scheme,
-                        visibility: defn.visibility,
-                        docstring: defn.docstring.clone(),
-                        param_names: vec![],
-                        kind: Box::new(DefKind::Overloaded { variants: vec![] }),
-                        callees: Vec::new(),
-                        got_slot: None,
-                        trait_origin: None,
-                        seq: 0,
-                        ast: None,
-                        code: None,
-                    },
-                );
-            }
-        }
-
-        internal_defns
     }
 
     /// Resolve multi-sig overloads after pass 2: build mangled names from
@@ -1843,315 +1731,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         Ok(())
     }
 
-    /// Check a complete program (batch mode).
-    ///
-    /// Two-pass pipeline:
-    /// 1. Register type definitions and function signatures.
-    /// 2. Check function bodies, generalize types.
-    #[deprecated(note = "use check() instead — unified pipeline entry point")]
-    #[must_use = "check result contains expr_types and method_resolutions needed by codegen"]
-    pub(crate) fn check_program(
-        &self,
-        state: &mut CheckState,
-        program: &[TopLevel],
-    ) -> Result<CheckResult, CranelispError> {
-        self.check_program_inner(state, program)
-    }
-
-    fn check_program_inner(
-        &self,
-        state: &mut CheckState,
-        program: &[TopLevel],
-    ) -> Result<CheckResult, CranelispError> {
-        // Pass 1: register type definitions
-        self.register_type_defs_from_program(state, program)?;
-
-        // Pass 1: register trait declarations
-        self.register_trait_decls_from_program(state, program)?;
-
-        // Pass 1: register trait implementations.
-        // Side effect: registers default-method defns on the symbol table.
-        // The returned Vec<Defn> was carried on CheckResult.default_method_defns
-        // pre-slim (Sprint 57 Wave 2 step 4); no longer needed.
-        let _default_defns =
-            self.register_trait_impls_from_program(state, program)?;
-
-        // Pass 1: register function signatures with fresh type variables
-        let defns = Self::collect_defns(program);
-        let defn_type_vars = self.pass1_register_signatures(state, &defns)?;
-
-        // Pass 2: check function bodies and generalize
-        self.pass2_check_bodies(state, &defns, &defn_type_vars)?;
-
-        // Pass 3: detect constrained polymorphic functions
-        let constrained_fn_names =
-            self.detect_constrained_fns(state, &defns);
-
-        // Pass 4: monomorphise constrained function call sites.
-        // Side effect: registers mono specialisations on the symbol table via
-        // `register_mono_entry` inside `monomorphise_call`. The returned
-        // Vec<MonoDefn> was carried on CheckResult.mono_defns pre-slim; no
-        // longer needed — annotated mono ASTs already live on SymbolTable.
-        let _mono_defns = self.pass4_monomorphise(state, &defns, &constrained_fn_names)?;
-
-        // Pass 5: resolve auto-curry sites into method_resolutions
-        self.resolve_auto_curry(state);
-
-        let resolved_expr_types = self.resolve_expr_types(state);
-
-        // Step 1b: Annotate AST nodes and write to ModuleEntry::Def.ast
-        {
-            let sym_table = &mut self.current_symbol_table_mut(state);
-            for top in program {
-                match top {
-                    TopLevel::Defn(defn) if defn.is_multi_sig() => {
-                        for (i, variant) in defn.variants.iter().enumerate() {
-                            let internal_name = Symbol::from(format!("{}__v{}", defn.name, i));
-                            let mut variant_defn = Defn {
-                                name: internal_name.clone(),
-                                docstring: defn.docstring.clone(),
-                                variants: vec![DefnVariant {
-                                    params: variant.params.clone(),
-                                    body: variant.body.clone(),
-                                    span: variant.span,
-                                }],
-                                visibility: defn.visibility,
-                                span: variant.span,
-                            };
-                            annotate_defn_from_maps(
-                                &mut variant_defn,
-                                &resolved_expr_types,
-                                &state.method_resolutions.resolved_calls,
-                            );
-                            apply_subst_to_defn(&state.subst, &mut variant_defn);
-                            if let Some(ModuleEntry::Def { ast, .. }) =
-                                sym_table.symbols.get_mut(&internal_name)
-                            {
-                                // S69 Submission 35: ast is Option<DefnVariant>.
-                                *ast = variant_defn.variants.into_iter().next();
-                            }
-                        }
-                    }
-                    TopLevel::Defn(defn) => {
-                        let mut annotated = defn.clone();
-                        annotate_defn_from_maps(
-                            &mut annotated,
-                            &resolved_expr_types,
-                            &state.method_resolutions.resolved_calls,
-                        );
-                        apply_subst_to_defn(&state.subst, &mut annotated);
-                        if let Some(ModuleEntry::Def { ast, .. }) =
-                            sym_table.symbols.get_mut(&defn.name)
-                        {
-                            *ast = annotated.variants.into_iter().next();
-                        }
-                    }
-                    TopLevel::TraitImpl(ti) => {
-                        for method in &ti.methods {
-                            let target_name = ti.target.head_ref().map(|r| r.name.as_ref()).unwrap_or("");
-                            let mangled = format!("{}.{}${}", ti.trait_name, method.name, target_name);
-                            let mangled_sym = Symbol::from(mangled.as_str());
-                            let mut annotated = method.clone();
-                            annotated.name = mangled_sym.clone();
-                            annotate_defn_from_maps(
-                                &mut annotated,
-                                &resolved_expr_types,
-                                &state.method_resolutions.resolved_calls,
-                            );
-                            apply_subst_to_defn(&state.subst, &mut annotated);
-                            if let Some(ModuleEntry::Def { ast, .. }) =
-                                sym_table.symbols.get_mut(&mangled_sym)
-                            {
-                                *ast = annotated.variants.into_iter().next();
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        // Sprint 57 Wave 2 step 4: mono defn ASTs are already annotated by
-        // `monomorphise_call` and written onto the symbol table by
-        // `register_mono_entry` before reaching this point. The previous
-        // re-annotation loop over `mono_defns` only existed to feed
-        // `CheckResult.mono_defns`; the slimmed CheckResult no longer carries
-        // that field. `constrained_fn_names` / `resolved_expr_types` locals
-        // above similarly have no boundary consumer post-slim.
-        let _ = constrained_fn_names;
-        let _ = resolved_expr_types;
-
-        Ok(CheckResult {
-            warnings: std::mem::take(&mut state.warnings),
-            display: None,
-        })
-    }
-
-    /// Check a single REPL input incrementally.
-    #[deprecated(note = "use check() instead — unified pipeline entry point")]
-    #[must_use = "check result contains type and expr_types needed by codegen"]
-    pub(crate) fn check_repl_input(
-        &self,
-        state: &mut CheckState,
-        input: &TopLevel,
-    ) -> Result<CheckResult, CranelispError> {
-        self.check_repl_input_inner(state, input)
-    }
-
-    fn check_repl_input_inner(
-        &self,
-        state: &mut CheckState,
-        input: &TopLevel,
-    ) -> Result<CheckResult, CranelispError> {
-        match input {
-            TopLevel::Expr(expr) => {
-                let ty = self.infer_expr(state, expr)?;
-                let resolved = self.apply_subst(state, &ty);
-
-                // Resolve auto-curry sites before building result.
-                self.resolve_auto_curry(state);
-
-                // Gap 4: scan for constrained-fn calls, monomorphise on demand.
-                // Side effect: registers mono specialisations on the symbol
-                // table via `register_mono_entry`. Returned Vec<MonoDefn> was
-                // carried on CheckResult.mono_defns pre-slim (Wave 2 step 4).
-                let _mono_defns = self.monomorphise_expr_calls(state, expr)?;
-
-                Ok(self.build_repl_result(state, resolved, None))
-            }
-
-            TopLevel::Defn(defn) if defn.is_multi_sig() => {
-                self.check_repl_multi_sig(state, defn)
-            }
-
-            TopLevel::Defn(defn) => {
-                let (ty, scheme) = self.check_single_defn(state, defn)?;
-
-                // Resolve auto-curry sites before building result.
-                self.resolve_auto_curry(state);
-
-                // Scan defn body for constrained-fn calls, monomorphise on demand.
-                // Side effect: registers mono specialisations on the symbol
-                // table via `register_mono_entry`. Returned Vec<MonoDefn> was
-                // carried on CheckResult.mono_defns pre-slim (Wave 2 step 4).
-                let _mono_defns = self.monomorphise_expr_calls(state, defn.body())?;
-
-                // Step 1b: Annotate AST and write to ModuleEntry::Def.ast (REPL path)
-                {
-                    let resolved_expr_types = self.resolve_expr_types(state);
-                    let mut annotated = defn.clone();
-                    annotate_defn_from_maps(
-                        &mut annotated,
-                        &resolved_expr_types,
-                        &state.method_resolutions.resolved_calls,
-                    );
-                    apply_subst_to_defn(&state.subst, &mut annotated);
-                    if let Some(ModuleEntry::Def { ast, .. }) =
-                        self.current_symbol_table_mut(state).symbols.get_mut(&defn.name)
-                    {
-                        *ast = annotated.variants.into_iter().next();
-                    }
-                }
-
-                Ok(self.build_repl_result(state, ty, Some(scheme)))
-            }
-
-            TopLevel::TypeDef {
-                name,
-                docstring,
-                type_params,
-                constructors,
-                visibility,
-                span,
-            } => {
-                self.register_type_def(state, name, docstring, type_params, constructors, *visibility, *span)?;
-                let fqtn = cranelisp_types::FQTypeName::new(
-                    state.current_module.clone(), name.clone(),
-                );
-                let ty = Type::ADT(fqtn, vec![]);
-                Ok(self.build_repl_result(state, ty, None))
-            }
-
-            TopLevel::TraitDecl(decl) => {
-                self.register_trait_decl(state, decl)?;
-                let ty = Type::Bool; // Placeholder return type for trait decl
-                Ok(self.build_repl_result(state, ty, None))
-            }
-
-            TopLevel::TraitImpl(impl_) => {
-                // Side effect: default method defns registered on symbol table
-                // via `register_trait_impl`. Returned Vec<Defn> was carried on
-                // CheckResult.default_method_defns pre-slim (Wave 2 step 4).
-                let _default_defns = self.register_trait_impl(state, impl_)?;
-                let ty = Type::Bool; // Placeholder return type for trait impl
-                Ok(self.build_repl_result(state, ty, None))
-            }
-        }
-    }
-
-    // --- Pass 1: Registration ---
-
-    /// Register all TypeDef entries from the program.
-    fn register_type_defs_from_program(
-        &self,
-        state: &mut CheckState,
-        program: &[TopLevel],
-    ) -> Result<(), CranelispError> {
-        for top in program {
-            if let TopLevel::TypeDef {
-                name,
-                docstring,
-                type_params,
-                constructors,
-                visibility,
-                span,
-            } = top
-            {
-                self.register_type_def(
-                    state,
-                    name,
-                    docstring,
-                    type_params,
-                    constructors,
-                    *visibility,
-                    *span,
-                )?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Register all TraitDecl entries from the program.
-    fn register_trait_decls_from_program(
-        &self,
-        state: &mut CheckState,
-        program: &[TopLevel],
-    ) -> Result<(), CranelispError> {
-        for top in program {
-            if let TopLevel::TraitDecl(decl) = top {
-                self.register_trait_decl(state, decl)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Register all TraitImpl entries from the program.
-    /// Returns default method definitions generated.
-    fn register_trait_impls_from_program(
-        &self,
-        state: &mut CheckState,
-        program: &[TopLevel],
-    ) -> Result<Vec<Defn>, CranelispError> {
-        let mut default_defns = Vec::new();
-        for top in program {
-            if let TopLevel::TraitImpl(impl_) = top {
-                let defaults = self.register_trait_impl(state, impl_)?;
-                default_defns.extend(defaults);
-            }
-        }
-        Ok(default_defns)
-    }
-
     /// Detect constrained polymorphic functions after generalization.
     ///
     /// A function is constrained if its generalized scheme has non-empty constraints.
@@ -2177,31 +1756,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         names
     }
 
-    /// Collect all Defn entries from the program.
-    fn collect_defns(program: &[TopLevel]) -> Vec<&Defn> {
-        program
-            .iter()
-            .filter_map(|top| {
-                if let TopLevel::Defn(defn) = top {
-                    // Skip multi-sig defns — not supported in Ring 0 batch path
-                    if defn.is_multi_sig() {
-                        None
-                    } else {
-                        Some(defn)
-                    }
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
     /// Create fresh type variables for a function's parameters and return type,
     /// respecting any annotations, and register the signature in the symbol table.
     ///
     /// Returns `(param_types, return_type)` for use in body checking.
-    /// Shared by `pass1_register_signatures` (batch) and `check_single_defn` (REPL)
-    /// to prevent the two paths from diverging as rings add complexity.
+    /// Shared by the per-form registration path (`check_form_register_single_defn`)
+    /// and the multi-sig variant registration to prevent the two paths from
+    /// diverging as rings add complexity.
     fn register_defn_signature(
         &self,
         state: &mut CheckState,
@@ -2303,110 +1864,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         Ok((param_types, ret_ty))
     }
 
-    /// Pass 1: Register function signatures with fresh type variables.
-    ///
-    /// Returns a map from function name to (param type vars, return type var)
-    /// for use in Pass 2.
-    fn pass1_register_signatures(
-        &self,
-        state: &mut CheckState,
-        defns: &[&Defn],
-    ) -> Result<HashMap<Symbol, (Vec<Type>, Type)>, CranelispError> {
-        let mut type_vars = HashMap::new();
-
-        for defn in defns {
-            let (param_types, ret_ty) = self.register_defn_signature(state, defn)?;
-            type_vars.insert(defn.name.clone(), (param_types, ret_ty));
-        }
-
-        Ok(type_vars)
-    }
-
-    /// Pass 2: Check function bodies and generalize types.
-    ///
-    /// All bodies are checked first (with deferred trait resolution), then
-    /// all functions are generalized.
-    ///
-    /// After each body check, we eagerly detect constrained polymorphism
-    /// by checking if the function's type vars have active constraints.
-    /// This must happen before later functions' call sites can pin the vars
-    /// to concrete types through the shared substitution.
-    fn pass2_check_bodies(
-        &self,
-        state: &mut CheckState,
-        defns: &[&Defn],
-        type_vars: &HashMap<Symbol, (Vec<Type>, Type)>,
-    ) -> Result<(), CranelispError> {
-        // Phase 1: Check all bodies, resolve deferred trait calls,
-        // and eagerly mark constrained functions.
-        for defn in defns {
-            let (param_types, ret_ty) = type_vars
-                .get(&defn.name)
-                .ok_or_else(|| CranelispError::TypeError {
-                    message: format!("internal: missing type vars for {}", defn.name),
-                    location: ErrorLocation::from_span(defn.span),
-                })?;
-
-            self.check_defn_body(state, defn, param_types, ret_ty)?;
-            self.resolve_deferred_trait_calls(state, defn.body());
-
-            // Eagerly detect if this function is constrained.
-            // Must happen now, before later call sites resolve its type vars.
-            let fn_type = Type::Fn(
-                param_types.iter().map(|t| self.apply_subst(state, t)).collect(),
-                Box::new(self.apply_subst(state, ret_ty)),
-            );
-            let trial_scheme = self.generalize(state, &fn_type);
-            if !trial_scheme.constraints.is_empty() {
-                // Mark as constrained immediately
-                if let Some(ModuleEntry::Def { kind, .. }) =
-                    self.current_symbol_table_mut(state).symbols.get_mut(&defn.name)
-                {
-                    let cf = ConstrainedFn {
-                        variant: defn.variants[0].clone(),
-                        scheme: trial_scheme,
-                    };
-                    **kind = DefKind::UserFn {
-                        constrained_fn: Some(Box::new(cf)),
-                    };
-                }
-            }
-        }
-
-        // Phase 2: Generalize all functions.
-        // If the final scheme has no constraints, clear any eager constrained_fn marker
-        // (later call sites may have pinned the type vars to concrete types).
-        for defn in defns {
-            let (param_types, ret_ty) = type_vars.get(&defn.name).unwrap();
-            let fn_type = Type::Fn(
-                param_types.iter().map(|t| self.apply_subst(state, t)).collect(),
-                Box::new(self.apply_subst(state, ret_ty)),
-            );
-            let scheme = self.generalize(state, &fn_type);
-            if let Some(ModuleEntry::Def { scheme: s, kind, .. }) =
-                self.current_symbol_table_mut(state).symbols.get_mut(&defn.name)
-            {
-                *s = scheme.clone();
-                // Clear eager constrained marker if final scheme is unconstrained
-                if scheme.constraints.is_empty()
-                    && let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref()
-                {
-                    **kind = DefKind::UserFn { constrained_fn: None };
-                }
-            }
-        }
-
-        // Phase 3: Re-resolve deferred trait calls now that all types are pinned.
-        // During Phase 1, some trait method calls (e.g., `+` in `add`) couldn't be
-        // resolved because arg types were still unresolved vars. After Phase 2,
-        // later call sites may have pinned those vars to concrete types.
-        for defn in defns {
-            self.resolve_deferred_trait_calls(state, defn.body());
-        }
-
-        Ok(())
-    }
-
     /// Check a single function definition body.
     fn check_defn_body(
         &self,
@@ -2445,144 +1902,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         self.record_expr_type(state, defn.span, resolved_fn_type);
 
         Ok(())
-    }
-
-    /// Check a single defn for REPL (register, check, generalize in one step).
-    fn check_single_defn(
-        &self,
-        state: &mut CheckState,
-        defn: &Defn,
-    ) -> Result<(Type, Scheme), CranelispError> {
-        let (param_types, ret_ty) = self.register_defn_signature(state, defn)?;
-
-        // Check body
-        self.check_defn_body(state, defn, &param_types, &ret_ty)?;
-
-        // Post-inference deferred trait resolution
-        self.resolve_deferred_trait_calls(state, defn.body());
-
-        // Generalize (propagates active constraints)
-        let resolved_fn_type = Type::Fn(
-            param_types.iter().map(|t| self.apply_subst(state, t)).collect(),
-            Box::new(self.apply_subst(state, &ret_ty)),
-        );
-        let scheme = self.generalize(state, &resolved_fn_type);
-
-        // Update symbol table with generalized scheme
-        // If constrained, also store as ConstrainedFn
-        if let Some(ModuleEntry::Def { scheme: s, kind, .. }) =
-            self.current_symbol_table_mut(state).symbols.get_mut(&defn.name)
-        {
-            *s = scheme.clone();
-
-            if !scheme.constraints.is_empty() {
-                let cf = ConstrainedFn {
-                    variant: defn.variants[0].clone(),
-                    scheme: scheme.clone(),
-                };
-                **kind = DefKind::UserFn {
-                    constrained_fn: Some(Box::new(cf)),
-                };
-            }
-        }
-
-        Ok((scheme.ty.clone(), scheme))
-    }
-
-    /// Check a multi-sig defn for REPL: register variants, check bodies,
-    /// resolve overloads, and build the result — all in one step.
-    fn check_repl_multi_sig(
-        &self,
-        state: &mut CheckState,
-        defn: &Defn,
-    ) -> Result<CheckResult, CranelispError> {
-        // Phase 1: Register each variant's signature
-        let mut defn_type_vars = HashMap::new();
-        let mut overload_entries = Vec::new();
-        for (i, variant) in defn.variants.iter().enumerate() {
-            let internal_name = Symbol::from(format!("{}__v{}", defn.name, i));
-            overload_entries.push((internal_name.clone(), variant.params.len()));
-
-            let internal_defn = Defn {
-                name: internal_name.clone(),
-                docstring: defn.docstring.clone(),
-                variants: vec![DefnVariant {
-                    params: variant.params.clone(),
-                    body: variant.body.clone(),
-                    span: variant.span,
-                }],
-                visibility: defn.visibility,
-                span: variant.span,
-            };
-            let (param_types, ret_ty) = self.register_defn_signature(state, &internal_defn)?;
-            defn_type_vars.insert(internal_name, (param_types, ret_ty));
-        }
-        state.overloads.insert(defn.name.clone(), overload_entries);
-
-        // Register a placeholder for the base name
-        let placeholder_ty = self.fresh_var();
-        let placeholder_scheme = mono(placeholder_ty);
-        self.current_symbol_table_mut(state).insert(
-            defn.name.clone(),
-            ModuleEntry::Def {
-                scheme: placeholder_scheme,
-                visibility: defn.visibility,
-                docstring: defn.docstring.clone(),
-                param_names: vec![],
-                kind: Box::new(DefKind::Overloaded { variants: vec![] }),
-                callees: Vec::new(),
-                got_slot: None,
-                trait_origin: None,
-                seq: 0,
-                ast: None,
-                code: None,
-            },
-        );
-
-        // Phase 2: Check each variant body
-        for (i, variant) in defn.variants.iter().enumerate() {
-            let internal_name = Symbol::from(format!("{}__v{}", defn.name, i));
-            let (param_types, ret_ty) = defn_type_vars
-                .get(&internal_name)
-                .expect("internal: missing type vars for multi-sig variant");
-
-            let internal_defn = Defn {
-                name: internal_name.clone(),
-                docstring: defn.docstring.clone(),
-                variants: vec![DefnVariant {
-                    params: variant.params.clone(),
-                    body: variant.body.clone(),
-                    span: variant.span,
-                }],
-                visibility: defn.visibility,
-                span: variant.span,
-            };
-
-            self.check_defn_body(state, &internal_defn, param_types, ret_ty)?;
-            self.resolve_deferred_trait_calls(state, internal_defn.body());
-        }
-
-        // Phase 2.5: Resolve multi-sig overloads (mangle names, register).
-        // Side effect: `register_mangled_variants` writes mangled entries onto
-        // the symbol table. Returned Vec<Defn> was carried on
-        // CheckResult.default_method_defns pre-slim (Wave 2 step 4).
-        let resolved = self.resolve_variant_types(state, defn, &defn_type_vars)?;
-        let (_mangled_defns, resolved_info) =
-            self.register_mangled_variants(state, defn, &resolved);
-        self.register_overloaded_base(state, defn, resolved_info);
-
-        // Resolve pending overloads and auto-curry
-        self.resolve_pending_overloads(state)?;
-        self.resolve_auto_curry(state);
-
-        // Build the result using the first variant's type for display
-        let first_variant_ty = if let Some((concrete_params, concrete_ret, _, _)) = resolved.first() {
-            Type::Fn(concrete_params.clone(), Box::new(concrete_ret.clone()))
-        } else {
-            Type::Int // fallback — shouldn't happen
-        };
-        let scheme = self.generalize(state, &first_variant_ty);
-        Ok(self.build_repl_result(state, first_variant_ty, Some(scheme)))
     }
 
     // --- Monomorphisation passes ---
@@ -2651,84 +1970,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             if let Some(mono) = self.monomorphise_call(state, fn_name, &arg_types, *call_span)? {
                 let mangled = JitSymbol::from(mono.defn.name.as_ref());
                 // Record dispatch for this call site
-                state.method_resolutions.resolved_calls.insert(
-                    *call_span,
-                    ResolvedCall::SigDispatch { mangled_name: mangled.clone() },
-                );
-                seen.insert(key, mangled);
-                mono_defns.push(mono);
-            }
-        }
-
-        Ok(mono_defns)
-    }
-
-    /// Scan an expression for calls to constrained functions (REPL path).
-    ///
-    /// Collects call sites, resolves arg types, and calls `monomorphise_call`
-    /// for each. Used by both `check_repl_input(Expr)` and `check_repl_input(Defn)`.
-    fn monomorphise_expr_calls(
-        &self,
-        state: &mut CheckState,
-        expr: &Expr,
-    ) -> Result<Vec<MonoDefn>, CranelispError> {
-        // Build the set of constrained fn names from the symbol table
-        let constrained_fn_names: HashSet<Symbol> = {
-            let r = self.current_symbol_table(state);
-            r.view()
-                .iter()
-                .filter_map(|(name, entry)| {
-                    if let ModuleEntry::Def { kind, .. } = entry
-                        && let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref()
-                    {
-                        return Some(name.clone());
-                    }
-                    None
-                })
-                .collect()
-        };
-
-        if constrained_fn_names.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let mut call_sites = Vec::new();
-        Self::collect_constrained_calls(expr, &constrained_fn_names, &mut call_sites);
-
-        if call_sites.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let resolved_expr_types = self.resolve_expr_types(state);
-
-        let mut mono_defns = Vec::new();
-        let mut seen: HashMap<String, JitSymbol> = HashMap::new();
-
-        for (fn_name, arg_spans, call_span) in &call_sites {
-            let arg_types: Vec<Type> = arg_spans
-                .iter()
-                .filter_map(|span| resolved_expr_types.get(span).cloned())
-                .collect();
-
-            if arg_types.len() != arg_spans.len() {
-                continue;
-            }
-
-            let key = format!("{}${}", fn_name, arg_types.iter()
-                .map(|t| format!("{}", t))
-                .collect::<Vec<_>>()
-                .join("+"));
-
-            if let Some(mangled) = seen.get(&key) {
-                state.method_resolutions.resolved_calls.insert(
-                    *call_span,
-                    ResolvedCall::SigDispatch { mangled_name: mangled.clone() },
-                );
-                continue;
-            }
-
-            if let Some(mono) = self.monomorphise_call(state, fn_name, &arg_types, *call_span)? {
-                let mangled = JitSymbol::from(mono.defn.name.as_ref());
                 state.method_resolutions.resolved_calls.insert(
                     *call_span,
                     ResolvedCall::SigDispatch { mangled_name: mangled.clone() },
@@ -2869,23 +2110,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .collect()
     }
 
-    /// Build a CheckResult with display info from the current state (REPL path).
-    ///
-    /// Sprint 57 Wave 2 step 4: `CheckResult` slimmed to `{ warnings, display }`;
-    /// typecheck-internal side maps (`method_resolutions`, `expr_types`, etc.)
-    /// live on `CheckState` and are consumed in-place by downstream passes —
-    /// they are no longer drained here.
-    fn build_repl_result(
-        &self,
-        state: &mut CheckState,
-        ty: Type,
-        scheme: Option<Scheme>,
-    ) -> CheckResult {
-        CheckResult {
-            warnings: std::mem::take(&mut state.warnings),
-            display: Some(DisplayInfo { ty, scheme }),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -3761,8 +2985,11 @@ mod tests {
 
         let _result = tc.check_program_self(&program).unwrap();
 
-        // The add-i64 call site should have a BuiltinFn resolution
-        let method_resolutions = tc.state_method_resolutions();
+        // The add-i64 call site should have a BuiltinFn resolution. Post-slim,
+        // resolutions are drained off `state` into annotated ASTs on the
+        // unified `check_forms` pipeline (which `check_program_self` now uses),
+        // so read them back via `annotated_resolutions()`.
+        let method_resolutions = tc.annotated_resolutions();
         assert!(!method_resolutions.is_empty());
         let resolution = method_resolutions.get(&span(15, 28)).unwrap();
         match resolution {
