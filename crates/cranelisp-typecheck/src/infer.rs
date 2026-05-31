@@ -2716,12 +2716,9 @@ mod tests {
         // Register in module so the constrained_fn check finds it
         tc.symbol_table_mut().insert(
             Symbol::from("cfn"),
-            ModuleEntry::Def {
-                scheme: scheme.clone(),
-                visibility: Visibility::Public,
-                docstring: None,
-                param_names: vec![Symbol::from("x"), Symbol::from("y")],
-                kind: Box::new(cranelisp_types::DefKind::UserFn {
+            ModuleEntry::def(
+                scheme.clone(),
+                cranelisp_types::DefKind::UserFn {
                     constrained_fn: Some(Box::new(ConstrainedFn {
                         variant: DefnVariant {
                             params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
@@ -2730,14 +2727,10 @@ mod tests {
                         },
                         scheme: scheme.clone(),
                     })),
-                }),
-                callees: Vec::new(),
-                got_slot: None,
-                trait_origin: None,
-                seq: 0,
-                ast: None,
-                code: None,
-            },
+                },
+            )
+            .param_names(vec![Symbol::from("x"), Symbol::from("y")])
+            .build(),
         );
     }
 

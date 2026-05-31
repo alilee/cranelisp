@@ -28,6 +28,7 @@
 //   the internal dispatcher working.
 
 mod adt;
+#[cfg(test)]
 mod builtins;
 mod checker;
 mod cluster;
@@ -44,13 +45,13 @@ mod unify;
 
 // Public API
 //
-// `register_builtins` is intentionally NOT re-exported. Synthetic-module
-// assembly is leaving this crate's bounded context (typecheck checks forms
-// against caller-populated symbol tables; it does not construct the language).
-// The `builtins` module body is retained `pub(crate)` as the legacy assembly
-// reference for the S73 relocation into `cranelisp-types` builders + `/int`
-// orchestration. Severing the public re-export forces `/int` to stop calling
-// it.
+// There is no builtin-registration entry point. Synthetic-module assembly
+// (seeding `primitives`/`macros` + the `Option`/`IO`/`Trace`/`TestResult`
+// ADTs) left this crate's bounded context: typecheck checks forms against
+// caller-populated symbol tables; it does not construct the language. The
+// production mount is reconstructed by `int` at session init (FIXME 0242).
+// The `builtins` module is now entirely `#[cfg(test)]` test-support — the
+// minimal synthetic seed the unit suite needs (FIXME 0239 test-oracle).
 pub use checker::{
     CheckState, TypeCheckEnv, advance_next_id_past_table, register_exports, register_imports,
 };

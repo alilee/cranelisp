@@ -1,30 +1,50 @@
-//! Register Ring 0-4 primitives, special forms, and synthetic modules.
+//! TEST-ONLY synthetic-module + primitive seeders for the typecheck unit suite.
 //!
-//! Ring 0: 20 monomorphic named primitives (add-i64, add-f64, eq-i64, ..., not, eq-bool).
-//! Ring 1: 8 monomorphic string/conversion externs + 4 polymorphic Vec externs.
-//! Ring 3: Synthetic `macros` module (Sexp, SList ADTs + sconcat extern) +
-//!         `quote-sexp` extern in `primitives`.
-//! Ring 4: IO ADT (Pure, Effect, Bind) + `bind` inline primitive in `primitives`.
+//! Production session-init no longer assembles primitives or synthetic modules
+//! here. Per `facades/typecheck.md` §"Builtin registration — removed from
+//! typecheck", synthetic-module assembly (seeding the `primitives`/`macros`
+//! modules and the `Option`/`IO`/`Trace`/`TestResult` ADTs) is content
+//! construction, NOT type-checking — it left typecheck's bounded context. The
+//! production mount is reconstructed by `int` at session init (FIXME 0242);
+//! the prior `register_builtins` body is recoverable from git history.
+//!
+//! What remains in this file is `#[cfg(test)]` test-support: the typecheck
+//! crate's own unit tests need plausible primitive-shaped Defs and synthetic
+//! ADTs to exercise inference / trait dispatch / ADT / monomorphisation flows
+//! WITHOUT depending on any other workspace crate (typecheck imports only
+//! `cranelisp-types` — facade §"Consumed surface"). These seeders are the
+//! FIXME 0239 "test-oracle" surface; see that FIXME for the relocation plan.
+//!
+//! The surface is a composable Tier-3 fixture builder (`FixtureBuilder`,
+//! `#[cfg(test)]`). A test declares exactly the starting position it needs by
+//! composing OPT-IN content presets (`FixtureContent`) instead of forcing the
+//! all-on world. The named presets — each a slice carved out of the prior
+//! monolith — are:
+//! - `with_special_forms` — special-form metadata at root `""`.
+//! - `with_builtin_type_names` — Int/Bool/Float/String/Vec in `primitives`.
+//! - `with_macros_sexp` — synthetic `macros` module (Sexp/SList ADTs + sconcat).
+//! - `with_io` — the `IO` ADT (Pure/Effect/Bind) + `bind` primitive.
+//! - `with_primitives` — the Ring 0/1/3 primitive `Def`s
+//!   (arithmetic/comparison/bool/string/vec/quote-sexp) whose schemes match the
+//!   spec contract (Appendix A.2/A.3/A.5).
+//!
+//! `FixtureBuilder::full()` composes all presets in bootstrap-valid order —
+//! the world the prior `seed_synthetic_modules` + `seed_test_primitives` pair
+//! produced; `TestFixture::new()` delegates to it. The per-preset CONTENT
+//! (schemes, ADT shapes) is typecheck-owned and stays here; entries are built
+//! through `cranelisp_types::ModuleEntry::def` (Tier 1) — no raw struct
+//! literals.
 //!
 //! Traits (Num, Eq, Ord, Display) and their impls are ordinary Cranelisp
-//! defined in prelude `.cl` files, NOT compiler-seeded. Tests that need
-//! operators should either load the prelude or define traits inline.
-//! See design/arch/CLAUDE.md Decision 17.
-//!
-//! Registration order (driven by `register_builtins`):
-//! 1. register_special_forms()        — if, let, defn, match, deftrait, impl, defmacro, etc.
-//! 2. register_builtin_type_names()   — Int/Bool/Float/String intrinsics + Vec typedef
-//! 3. register_macros_module()        — Sexp, SList ADTs + sconcat extern in `macros` module
-//! 4. register_option_type()          — Option ADT in `primitives`
-//! 5. register_io_type()              — IO ADT (Pure, Effect, Bind) in `primitives`
-//! 6. register_bind_primitive()       — bind inline primitive in `primitives`
-//! 7. register_trace_type()           — Trace ADT (TraceCall) + accessors in `primitives`
-//! 8. register_test_infrastructure()  — TestResult root type + test special forms in `user`
+//! defined in prelude `.cl` files, NOT seeded here. Tests that need operators
+//! define traits inline (see `register_num_trait_inline` in the program tests).
 
+#[cfg(test)]
 use std::collections::HashMap;
 
+#[cfg(test)]
 use cranelisp_types::{
-    ConstructorDef, DefKind, FQTypeName, FieldDef, FieldInfo,
+    ConstructorDef, DefKind, FQTypeName, FieldDef,
     ModuleEntry, ModuleFullPath, Scheme, Span, Symbol, Type, TypeDefInfo, TypeExpr,
     TypeName, Visibility,
 };
@@ -32,87 +52,184 @@ use cranelisp_types::{
 use cranelisp_types::TypeId;
 
 /// Helper: create FQTypeName in the "primitives" module.
+#[cfg(test)]
 fn primitives_fqtn(name: &str) -> FQTypeName {
     FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from(name))
 }
 
 /// Helper: create FQTypeName in the "macros" module.
+#[cfg(test)]
 fn macros_fqtn(name: &str) -> FQTypeName {
     FQTypeName::new(ModuleFullPath::from("macros"), TypeName::from(name))
 }
 
+#[cfg(test)]
 use crate::checker::{CheckState, TypeCheckEnv};
+#[cfg(test)]
 use crate::scheme::mono;
 
-/// Register all builtins into the given modules map.
+/// TEST-ONLY: Tier-3 composable content presets for the typecheck unit suite.
 ///
-/// This is a free function — the caller owns the `DashMap` and `AtomicU32`.
-/// Called once during session startup before constructing `TypeCheckEnv`.
+/// Each variant is a NAMED slice carved out of the prior all-or-nothing
+/// synthetic world. A test composes exactly the starting position it needs via
+/// [`FixtureContent`] / [`FixtureBuilder`] instead of forcing the entire world.
 ///
-/// Seeds the "user" and "primitives" modules with Ring 0-4 primitives,
-/// special forms, and synthetic modules (macros, IO, Trace, TestResult).
+/// The CONTENT each preset seeds (schemes per spec Appendix A.2/A.3/A.5, ADT
+/// shapes per spec §9.1 / §10) is typecheck-specific and spec-mandated — it
+/// stays here. The generic per-table assembly machinery lives in
+/// `cranelisp_types::test_support` (Tier 2); the Tier-1 `ModuleEntry::def`
+/// builder constructs the entries.
 ///
-/// Traits (Num, Eq, Ord, Display) are NOT registered here — they come from
-/// prelude `.cl` files loaded through the normal module pipeline.
+/// Ordering matters at compose time (bootstrap dependencies):
+/// - `BuiltinTypeNames` must precede `MacrosSexp` (Sexp/SList fields reference
+///   `primitives/Int` etc.) and `Primitives` (`Option`/`Vec` schemes).
+/// - `MacrosSexp` must precede `Primitives` (`quote-sexp` references
+///   `macros/Sexp`).
+/// - `Io` registers `primitives/Option`-independent IO ADT; order-free w.r.t.
+///   the others except it needs the `primitives` module to exist.
 ///
-/// LEGACY (not public). Synthetic-module assembly is leaving typecheck's
-/// bounded context. This body is retained as the assembly reference for the
-/// S73 relocation (builders on `cranelisp-types::SymbolTable`, orchestrated by
-/// `/int`); it is no longer reachable outside this crate.
-#[allow(dead_code)]
-pub(crate) fn register_builtins<C, L>(
-    modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable<C, L>>,
-    next_id: &std::sync::atomic::AtomicU32,
-)
-where
-    C: cranelisp_types::CodeStore,
-    L: cranelisp_types::LinkerStore,
-{
-    let env = TypeCheckEnv::new(modules, next_id);
-    let mut state = CheckState::new(ModuleFullPath::from("user"));
-
-    // Ensure the `primitives` synthetic module exists.
-    let primitives_path = ModuleFullPath::from("primitives");
-    if !modules.contains_key(&primitives_path) {
-        modules.insert(
-            primitives_path.clone(),
-            cranelisp_types::SymbolTable::<C, L>::new_with_params(primitives_path.clone()),
-        );
-    }
-
-    // Sprint 67 hack-back (FIXME 0193): ensure root `""` exists before
-    // registering special-form metadata. Per Principle 17 amendment, root
-    // `""` is the canonical home for special-form introspection metadata.
-    // The root SymbolTable is populated once at bootstrap by
-    // `register_special_forms` and never modified during typecheck.
-    let root_path = ModuleFullPath::from("");
-    if !modules.contains_key(&root_path) {
-        modules.insert(
-            root_path.clone(),
-            cranelisp_types::SymbolTable::<C, L>::new_with_params(root_path.clone()),
-        );
-    }
-
-    env.register_special_forms();
-    env.register_builtin_type_names();
-
-    // Ring 3: Seed synthetic `macros` module with SList and Sexp ADTs + sconcat.
-    env.register_macros_module(&mut state);
-
-    // Ring 1: Option ADT in `primitives` (needed by parse-int return type).
-    env.register_option_type(&mut state);
-
-    // Ring 4: IO ADT and bind primitive in `primitives`.
-    env.register_io_type(&mut state);
-    env.register_bind_primitive();
-
-    // Ring 4: Trace ADT (TraceCall) + field accessors in `primitives`.
-    env.register_trace_type(&mut state);
-
-    // Ring 4: TestResult root type + test special forms in `user`.
-    env.register_test_infrastructure(&mut state);
+/// Option/Trace/TestResult assembly is NOT a preset — tests that need `Option`
+/// register it inline via their own `register_option` helpers (constructed
+/// values through `register_type_def_self`, which is already clean). Per
+/// Decision 0040, `Trace` relocated in full to `int`; there is no Trace preset.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FixtureContent {
+    /// Special-form introspection metadata at root `""` (Principle 17 / FIXME
+    /// 0193). `if`/`let`/`fn`/`defn`/`deftype`/`match`/`deftrait`/`impl`/`defmacro`.
+    SpecialForms,
+    /// Builtin type names in `primitives`: `Int`/`Bool`/`Float`/`String`
+    /// (`IntrinsicType`) + `Vec` (`TypeDef`). Spec §3.1, §8.9.1.
+    BuiltinTypeNames,
+    /// Ring 0/1/3 primitive `Def`s (arithmetic / comparison / bool / string /
+    /// vec) whose schemes match the spec contract (Appendix A.2/A.3/A.5).
+    Primitives,
+    /// Synthetic `macros` module: `SList`/`Sexp` ADTs + `sconcat` (spec §9.1).
+    MacrosSexp,
+    /// `IO` ADT (`Pure`/`Effect`/`Bind`) + `bind` primitive in `primitives`
+    /// (spec §10; backs IO exhaustiveness tests in adt.rs).
+    Io,
 }
 
+/// TEST-ONLY: composable Tier-3 fixture-content builder.
+///
+/// Declare exactly the presets a test starts from:
+/// ```ignore
+/// let modules = DashMap::new();
+/// let next_id = AtomicU32::new(0);
+/// FixtureBuilder::new()
+///     .with_special_forms()
+///     .with_builtin_type_names()
+///     .with_primitives()
+///     .seed(&modules, &next_id);
+/// ```
+/// [`FixtureBuilder::full`] composes ALL presets (the prior all-on world);
+/// `TestFixture::new()` delegates to it so existing call sites stay green.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct FixtureBuilder {
+    contents: Vec<FixtureContent>,
+}
+
+#[cfg(test)]
+impl FixtureBuilder {
+    /// Begin an empty builder — no presets selected.
+    pub(crate) fn new() -> Self {
+        FixtureBuilder { contents: Vec::new() }
+    }
+
+    /// All presets composed in bootstrap-valid order — the full synthetic
+    /// world the prior `seed_synthetic_modules` + `seed_test_primitives` pair
+    /// produced. `TestFixture::new()` uses this.
+    pub(crate) fn full() -> Self {
+        FixtureBuilder::new()
+            .with_special_forms()
+            .with_builtin_type_names()
+            .with_macros_sexp()
+            .with_io()
+            .with_primitives()
+    }
+
+    /// Add the special-form metadata preset (root `""`).
+    pub(crate) fn with_special_forms(mut self) -> Self {
+        self.contents.push(FixtureContent::SpecialForms);
+        self
+    }
+
+    /// Add the builtin type-name preset (`Int`/`Bool`/`Float`/`String`/`Vec`).
+    pub(crate) fn with_builtin_type_names(mut self) -> Self {
+        self.contents.push(FixtureContent::BuiltinTypeNames);
+        self
+    }
+
+    /// Add the Ring 0/1/3 primitive `Def` preset.
+    pub(crate) fn with_primitives(mut self) -> Self {
+        self.contents.push(FixtureContent::Primitives);
+        self
+    }
+
+    /// Add the synthetic `macros` module preset (Sexp/SList + sconcat).
+    pub(crate) fn with_macros_sexp(mut self) -> Self {
+        self.contents.push(FixtureContent::MacrosSexp);
+        self
+    }
+
+    /// Add the `IO` ADT + `bind` preset.
+    pub(crate) fn with_io(mut self) -> Self {
+        self.contents.push(FixtureContent::Io);
+        self
+    }
+
+    /// Seed the selected presets into `modules`. Presets are applied in the
+    /// order requested; [`FixtureBuilder::full`] orders them for bootstrap
+    /// validity. The `primitives` and root `""` modules are created on demand.
+    pub(crate) fn seed<C, L>(
+        self,
+        modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable<C, L>>,
+        next_id: &std::sync::atomic::AtomicU32,
+    )
+    where
+        C: cranelisp_types::CodeStore,
+        L: cranelisp_types::LinkerStore,
+    {
+        let env = TypeCheckEnv::new(modules, next_id);
+        let mut state = CheckState::new(ModuleFullPath::from("user"));
+
+        // Ensure the always-needed synthetic modules exist before any preset
+        // touches them.
+        let primitives_path = ModuleFullPath::from("primitives");
+        if !modules.contains_key(&primitives_path) {
+            modules.insert(
+                primitives_path.clone(),
+                cranelisp_types::SymbolTable::<C, L>::new_with_params(primitives_path.clone()),
+            );
+        }
+        let root_path = ModuleFullPath::from("");
+        if !modules.contains_key(&root_path) {
+            modules.insert(
+                root_path.clone(),
+                cranelisp_types::SymbolTable::<C, L>::new_with_params(root_path.clone()),
+            );
+        }
+
+        for content in self.contents {
+            match content {
+                FixtureContent::SpecialForms => env.register_special_forms(),
+                FixtureContent::BuiltinTypeNames => env.register_builtin_type_names(),
+                FixtureContent::MacrosSexp => env.register_macros_module(&mut state),
+                FixtureContent::Io => {
+                    env.register_io_type(&mut state);
+                    env.register_bind_primitive();
+                }
+                FixtureContent::Primitives => {
+                    seed_test_primitives(modules, next_id);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
 
 
@@ -298,19 +415,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         self.current_symbol_table_mut(state).insert(
             Symbol::from("sconcat"),
-            ModuleEntry::Def {
-                scheme: mono(sconcat_type),
-                visibility: Visibility::Public,
-                docstring: Some("Concatenate two SList Sexp values".to_string()),
-                param_names: vec![Symbol::from("a"), Symbol::from("b")],
-                kind: Box::new(DefKind::Primitive),
-                callees: Vec::new(),
-                got_slot: None,
-                trait_origin: None,
-                seq: 0,
-                ast: None,
-                code: None,
-            },
+            ModuleEntry::def(mono(sconcat_type), DefKind::Primitive)
+                .docstring("Concatenate two SList Sexp values")
+                .param_names(vec![Symbol::from("a"), Symbol::from("b")])
+                .build(),
         );
     }
 
@@ -442,56 +550,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }],
             span: Span::SYNTHETIC,
         }
-    }
-
-    /// Register the `Option` ADT in the `primitives` module.
-    ///
-    /// `(deftype (Option a) None (Some [:a val]))`
-    ///
-    /// This is needed for `parse-int` which returns `(Option Int)`.
-    /// Constructors `None` and `Some` are registered in the primitives module
-    /// and become available to user code via `(import [primitives [*]])`.
-    fn register_option_type(&self, state: &mut CheckState) {
-        let saved_module = state.current_module.clone();
-        let primitives_path = ModuleFullPath::from("primitives");
-        self.ensure_module_exists(&primitives_path);
-        state.current_module = primitives_path;
-
-        let option_ctors = vec![
-            // None (tag=0): nullary
-            ConstructorDef {
-                name: Symbol::from("None"),
-                docstring: Some("Absent value".to_string()),
-                fields: vec![],
-                span: Span::SYNTHETIC,
-            },
-            // Some (tag=1): field `val` of type `a`
-            ConstructorDef {
-                name: Symbol::from("Some"),
-                docstring: Some("Present value".to_string()),
-                fields: vec![FieldDef {
-                    name: Symbol::from("val"),
-                    type_expr: TypeExpr::TypeVar(Symbol::from("a")),
-                    span: Span::SYNTHETIC,
-                }],
-                span: Span::SYNTHETIC,
-            },
-        ];
-
-        self.register_type_def(
-            state,
-            &TypeName::from("Option"),
-            &Some("Optional value — None or (Some val)".to_string()),
-            &[Symbol::from("a")],
-            &option_ctors,
-            Visibility::Public,
-            Span::SYNTHETIC,
-        )
-        .unwrap_or_else(|e| {
-            unreachable!("invariant: Option type registration failed: {e}")
-        });
-
-        state.current_module = saved_module;
     }
 
     /// Register the IO ADT in the `primitives` module.
@@ -629,30 +687,23 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
         primitives_table.insert(
             Symbol::from("Bind"),
-            ModuleEntry::Def {
-                scheme: bind_ctor_scheme,
-                visibility: Visibility::Public,
-                docstring: Some(
-                    "Chain IO actions (internal — constructed by bind primitive)".to_string(),
-                ),
-                param_names: bind_param_names,
-                kind: Box::new(DefKind::Constructor {
+            ModuleEntry::def(
+                bind_ctor_scheme,
+                DefKind::Constructor {
                     type_name: io_fqtn,
                     tag: 2,
                     field_count: bind_field_count,
                     internal: true,
-                }),
-                callees: Vec::new(),
-                got_slot: None,
-                trait_origin: None,
-                seq: 0,
-                ast: Some(cranelisp_types::DefnVariant {
-                    params: synth_params,
-                    body: synth_body,
-                    span: body_span,
-                }),
-                code: None,
-            },
+                },
+            )
+            .docstring("Chain IO actions (internal — constructed by bind primitive)")
+            .param_names(bind_param_names)
+            .ast(cranelisp_types::DefnVariant {
+                params: synth_params,
+                body: synth_body,
+                span: body_span,
+            })
+            .build(),
         );
     }
 
@@ -690,315 +741,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         primitives_table.insert(
             Symbol::from("bind"),
-            ModuleEntry::Def {
-                scheme: bind_scheme,
-                visibility: Visibility::Public,
-                docstring: Some(
-                    "Chain IO actions: extract value from first IO, pass to continuation"
-                        .to_string(),
-                ),
-                param_names: vec![Symbol::from("io"), Symbol::from("f")],
-                kind: Box::new(DefKind::Primitive),
-                callees: Vec::new(),
-                got_slot: None,
-                trait_origin: None,
-                seq: 0,
-                ast: None,
-                code: None,
-            },
+            ModuleEntry::def(bind_scheme, DefKind::Primitive)
+                .docstring("Chain IO actions: extract value from first IO, pass to continuation")
+                .param_names(vec![Symbol::from("io"), Symbol::from("f")])
+                .build(),
         );
     }
 
-    /// Register the Trace ADT and field accessors in the `primitives` module.
-    ///
-    /// Trace is a monomorphic ADT (no type parameters) with a single constructor:
-    ///
-    /// ```clojure
-    /// (deftype Trace
-    ///   (TraceCall [:String name
-    ///               :String params
-    ///               :String result
-    ///               :Int    children
-    ///               :Int    nanos]))
-    /// ```
-    ///
-    /// Per spec §3.2.4 and §4.12.4, Trace, TraceCall, and field accessors are
-    /// NOT auto-imported into user scope. Users must explicitly import them:
-    ///   `(import [primitives [Trace TraceCall name params result children nanos]])`
-    ///
-    /// Field accessors are registered as monomorphic Def entries:
-    ///   name     :: (Fn [Trace] String)
-    ///   params   :: (Fn [Trace] String)
-    ///   result   :: (Fn [Trace] String)
-    ///   children :: (Fn [Trace] Int)
-    ///   nanos    :: (Fn [Trace] Int)
-    fn register_trace_type(&self, state: &mut CheckState) {
-        // Switch to the synthetic `primitives` module.
-        let saved_module = state.current_module.clone();
-        let primitives_path = ModuleFullPath::from("primitives");
-        self.ensure_module_exists(&primitives_path);
-        state.current_module = primitives_path.clone();
-
-        // Build TraceCall's ConstructorInfo with pre-resolved FQ field types.
-        //
-        // Per Principle 17, `primitives` has empty imports — short-name
-        // resolution against the current module's view cannot find
-        // `macros/SList`. Construct the cross-module field types FQ at
-        // registration time using `macros_fqtn(...)` / `primitives_fqtn(...)`.
-        let trace_fqtn = primitives_fqtn("Trace");
-        let slist_string_ty = Type::ADT(macros_fqtn("SList"), vec![Type::String]);
-        let slist_trace_ty = Type::ADT(
-            macros_fqtn("SList"),
-            vec![Type::ADT(trace_fqtn.clone(), vec![])],
-        );
-
-        let trace_ctor_info = crate::adt::CtorBuild {
-            name: Symbol::from("TraceCall"),
-            tag: 0,
-            fields: vec![
-                FieldInfo {
-                    name: Symbol::from("name"),
-                    ty: Type::String,
-                },
-                FieldInfo {
-                    name: Symbol::from("params"),
-                    ty: slist_string_ty,
-                },
-                FieldInfo {
-                    name: Symbol::from("result"),
-                    ty: Type::String,
-                },
-                FieldInfo {
-                    name: Symbol::from("children"),
-                    ty: slist_trace_ty,
-                },
-                FieldInfo {
-                    name: Symbol::from("nanos"),
-                    ty: Type::Int,
-                },
-            ],
-            docstring: Some("Trace call tree node".to_string()),
-            internal: false,
-        };
-
-        self.register_type_def_with_ctor_infos(
-            state,
-            &TypeName::from("Trace"),
-            &Some("Recorded execution call tree from (trace expr)".to_string()),
-            &[],
-            &[],
-            vec![trace_ctor_info],
-            Visibility::Public,
-        );
-
-        // Register field accessor functions as monomorphic Def entries.
-        // These allow destructuring via function application rather than match.
-        let trace_type = Type::ADT(primitives_fqtn("Trace"), vec![]);
-
-        let accessor_defs: Vec<(&str, &str, Type)> = vec![
-            (
-                "name",
-                "Fully qualified function name from trace call",
-                Type::String,
-            ),
-            (
-                "params",
-                "Formatted parameter values from trace call",
-                Type::ADT(macros_fqtn("SList"), vec![Type::String]),
-            ),
-            (
-                "result",
-                "Formatted result value from trace call",
-                Type::String,
-            ),
-            (
-                "children",
-                "Child calls in trace node",
-                Type::ADT(
-                    macros_fqtn("SList"),
-                    vec![Type::ADT(primitives_fqtn("Trace"), vec![])],
-                ),
-            ),
-            ("nanos", "Wall-clock nanoseconds for trace call", Type::Int),
-        ];
-
-        for (field_name, docstring, return_ty) in accessor_defs {
-            let scheme = Scheme {
-                type_vars: vec![],
-                constraints: HashMap::new(),
-                ty: Type::Fn(vec![trace_type.clone()], Box::new(return_ty)),
-            };
-
-            self.current_symbol_table_mut(state).insert(
-                Symbol::from(field_name),
-                ModuleEntry::Def {
-                    scheme,
-                    visibility: Visibility::Public,
-                    docstring: Some(docstring.to_string()),
-                    param_names: vec![Symbol::from("t")],
-                    kind: Box::new(DefKind::Primitive),
-                    callees: Vec::new(),
-                    got_slot: None,
-                    trait_origin: None,
-                seq: 0,
-                ast: None,
-                    code: None,
-                },
-            );
-        }
-
-        // Register `trace` as a module-scoped special form in `primitives`.
-        // Unlike parser keywords (let, if, fn), `trace` has regular call syntax
-        // and is resolved through the module system (arch Principle 10).
-        self.current_symbol_table_mut(state).insert(
-            Symbol::from("trace"),
-            ModuleEntry::SpecialForm {
-                scheme: Scheme {
-                    type_vars: vec![],
-                    constraints: HashMap::new(),
-                    ty: Type::Fn(
-                        vec![Type::Var(0)], // any expression type
-                        Box::new(Type::ADT(primitives_fqtn("Trace"), vec![])),
-                    ),
-                },
-                param_names: vec![Symbol::from("expr")],
-                docstring: Some(
-                    "Execution trace: (trace expr) — evaluates expr with call instrumentation, returns Trace ADT"
-                        .to_string(),
-                ),
-                description: "Execution trace: (trace expr) — evaluates expr with call instrumentation, returns Trace ADT".to_string(),
-                visibility: Visibility::Public,
-            },
-        );
-
-        // Restore the original module context.
-        state.current_module = saved_module;
-    }
-
-    /// Register the TestResult type and test primitives in `primitives`.
-    ///
-    /// Per spec §8.9.1, builtin types live in `primitives` and require
-    /// explicit import. TestResult, discover-tests, and run-test are NOT
-    /// seeded into `user` — they must be imported explicitly.
-    fn register_test_infrastructure(&self, state: &mut CheckState) {
-        // Switch to the `primitives` module for registration.
-        let saved_module = state.current_module.clone();
-        self.ensure_module_exists(&ModuleFullPath::from("primitives"));
-        state.current_module = ModuleFullPath::from("primitives");
-
-        // TestResult type: TestPass, TestFail constructors.
-        let test_result_ctors = vec![
-            ConstructorDef {
-                name: Symbol::from("TestPass"),
-                docstring: Some("Test passed".to_string()),
-                fields: vec![
-                    FieldDef {
-                        name: Symbol::from("name"),
-                        type_expr: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("String"))),
-                        span: Span::SYNTHETIC,
-                    },
-                    FieldDef {
-                        name: Symbol::from("nanos"),
-                        type_expr: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
-                        span: Span::SYNTHETIC,
-                    },
-                ],
-                span: Span::SYNTHETIC,
-            },
-            ConstructorDef {
-                name: Symbol::from("TestFail"),
-                docstring: Some("Test failed (no trace)".to_string()),
-                fields: vec![
-                    FieldDef {
-                        name: Symbol::from("name"),
-                        type_expr: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("String"))),
-                        span: Span::SYNTHETIC,
-                    },
-                    FieldDef {
-                        name: Symbol::from("nanos"),
-                        type_expr: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
-                        span: Span::SYNTHETIC,
-                    },
-                    FieldDef {
-                        name: Symbol::from("reason"),
-                        type_expr: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("String"))),
-                        span: Span::SYNTHETIC,
-                    },
-                ],
-                span: Span::SYNTHETIC,
-            },
-        ];
-
-        self.register_type_def(state,
-            &TypeName::from("TestResult"),
-            &Some("Test execution result".to_string()),
-            &[], // monomorphic
-            &test_result_ctors,
-            Visibility::Public,
-            Span::SYNTHETIC,
-        )
-        .unwrap_or_else(|e| {
-            unreachable!("invariant: TestResult type registration failed: {e}")
-        });
-
-        // Register discover-tests and run-test as special forms.
-        let sexp_type = Type::ADT(macros_fqtn("Sexp"), vec![]);
-        let slist_sexp = Type::ADT(macros_fqtn("SList"), vec![sexp_type.clone()]);
-        let test_result_type = Type::ADT(primitives_fqtn("TestResult"), vec![]);
-        let io_slist_sexp = Type::ADT(primitives_fqtn("IO"), vec![slist_sexp]);
-        let io_test_result = Type::ADT(primitives_fqtn("IO"), vec![test_result_type]);
-
-        self.current_symbol_table_mut(state).insert(
-            Symbol::from("discover-tests"),
-            ModuleEntry::Def {
-                scheme: Scheme {
-                    type_vars: vec![],
-                    constraints: HashMap::new(),
-                    ty: Type::Fn(vec![Type::String], Box::new(io_slist_sexp)),
-                },
-                visibility: Visibility::Public,
-                docstring: Some(
-                    "Discover test-* functions: (discover-tests) or (discover-tests module)"
-                        .to_string(),
-                ),
-                param_names: vec![Symbol::from("module")],
-                kind: Box::new(DefKind::Primitive),
-                callees: Vec::new(),
-                got_slot: None,
-                trait_origin: None,
-                seq: 0,
-                ast: None,
-                code: None,
-            },
-        );
-
-        self.current_symbol_table_mut(state).insert(
-            Symbol::from("run-test"),
-            ModuleEntry::Def {
-                scheme: Scheme {
-                    type_vars: vec![],
-                    constraints: HashMap::new(),
-                    ty: Type::Fn(vec![sexp_type.clone()], Box::new(io_test_result.clone())),
-                },
-                visibility: Visibility::Public,
-                docstring: Some(
-                    "Run a single test without tracing: (run-test name)"
-                        .to_string(),
-                ),
-                param_names: vec![Symbol::from("name")],
-                kind: Box::new(DefKind::Primitive),
-                callees: Vec::new(),
-                got_slot: None,
-                trait_origin: None,
-                seq: 0,
-                ast: None,
-                code: None,
-            },
-        );
-
-        // Restore the original module context.
-        state.current_module = saved_module;
-    }
 }
 
 /// Look up the spec-mandated docstring for a builtin primitive.
@@ -1015,7 +764,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 /// `PRIMITIVES_TABLE` Arc-cloned into session at startup; typecheck no
 /// longer registers primitive Defs). Tests in this module still exercise
 /// the shape to verify the spec §A.5 contract.
-#[allow(dead_code)]
+#[cfg(test)]
 fn builtin_docstring(name: &str) -> Option<String> {
     let doc = match name {
         // --- Integer arithmetic ---
@@ -1227,23 +976,12 @@ where
             .get_mut(&primitives_path)
             .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
         for (name, ty, param_names) in mono_primitives {
-            let docstring = builtin_docstring(name);
-            prims.insert(
-                Symbol::from(name),
-                ModuleEntry::Def {
-                    scheme: mono(ty),
-                    visibility: Visibility::Public,
-                    docstring,
-                    param_names,
-                    kind: Box::new(DefKind::Primitive),
-                    callees: Vec::new(),
-                    got_slot: None,
-                    trait_origin: None,
-                    seq: 0,
-                    ast: None,
-                    code: None,
-                },
-            );
+            let mut builder = ModuleEntry::def(mono(ty), DefKind::Primitive)
+                .param_names(param_names);
+            if let Some(doc) = builtin_docstring(name) {
+                builder = builder.docstring(doc);
+            }
+            prims.insert(Symbol::from(name), builder.build());
         }
     }
 
@@ -1314,23 +1052,12 @@ where
                 constraints: HashMap::new(),
                 ty,
             };
-            let docstring = builtin_docstring(name);
-            prims.insert(
-                Symbol::from(name),
-                ModuleEntry::Def {
-                    scheme,
-                    visibility: Visibility::Public,
-                    docstring,
-                    param_names,
-                    kind: Box::new(DefKind::Primitive),
-                    callees: Vec::new(),
-                    got_slot: None,
-                    trait_origin: None,
-                    seq: 0,
-                    ast: None,
-                    code: None,
-                },
-            );
+            let mut builder = ModuleEntry::def(scheme, DefKind::Primitive)
+                .param_names(param_names);
+            if let Some(doc) = builtin_docstring(name) {
+                builder = builder.docstring(doc);
+            }
+            prims.insert(Symbol::from(name), builder.build());
         }
     }
 
@@ -1354,6 +1081,41 @@ mod tests {
         tf.modules
             .get(&path)
             .expect("primitives module should exist")
+    }
+
+    // spec: design/arch/fixmes/0239 — Tier-3 presets compose opt-in, not all-on.
+    // A builder with only `with_primitives` seeds the primitive Defs but NOT
+    // the special-form metadata; this guards the preset boundary (negative).
+    #[test]
+    fn test_primitives_preset_seeds_without_special_forms() {
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
+        // Primitive Defs are present.
+        assert!(primitives_table(&tf).get("add-i64").is_some());
+        // Special-form metadata at root `""` is absent (preset not selected).
+        let root_path = ModuleFullPath::from("");
+        let root = tf.modules.get(&root_path).expect("root `\"\"` always exists");
+        assert!(
+            root.get("if").is_none(),
+            "with_primitives must NOT seed special forms"
+        );
+    }
+
+    // spec: design/arch/fixmes/0241 — Tier-2 SymbolTableBuilder resolves in the
+    // typecheck test build (test-support feature) and round-trips an entry built
+    // via the Tier-1 ModuleEntry::def constructor.
+    #[test]
+    fn test_tier2_symbol_table_builder_visible() {
+        use cranelisp_types::test_support::SymbolTableBuilder;
+        use cranelisp_types::{DefKind, Symbol};
+        let table: cranelisp_types::SymbolTable = SymbolTableBuilder::new(ModuleFullPath::from("t"))
+            .entry(
+                Symbol::from("k"),
+                ModuleEntry::def(crate::scheme::mono(Type::Int), DefKind::Primitive)
+                    .docstring("const")
+                    .build(),
+            )
+            .build();
+        assert!(table.get("k").is_some());
     }
 
     /// Spec-mandated Ring 0 primitive names (spec appendix-a-builtins §A.2).
@@ -1499,7 +1261,9 @@ mod tests {
     // the root module `""`, not seeded into every module.
     #[test]
     fn test_special_forms_registered() {
-        let tf = TestFixture::new();
+        // Narrowed to the minimal preset this test consumes: just the
+        // special-form metadata, no primitives / macros / IO world.
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_special_forms());
         let forms = ["if", "let", "fn", "defn", "deftype", "match", "deftrait", "impl"];
         let root_path = ModuleFullPath::from("");
         let root_table = tf.modules.get(&root_path)
@@ -2508,110 +2272,6 @@ mod tests {
     // Trace ADT (Ring 4, spec §3.2.4 / §4.12)
     // -----------------------------------------------------------------------
 
-    // spec: 03-types §3.2.4 — Trace type registered as monomorphic ADT
-    #[test]
-    fn test_trace_type_registered() {
-        let tf = TestFixture::new();
-        let primitives_path = ModuleFullPath::from("primitives");
-        let info = tf.lookup_type_def_in_module(&primitives_path, &TypeName::from("Trace"));
-        assert!(info.is_some(), "Trace type should be registered");
-        let info = info.unwrap();
-        assert!(info.type_params.is_empty(), "Trace has no type parameters (monomorphic)");
-        assert_eq!(info.constructors.len(), 1, "Trace has 1 constructor: TraceCall");
-        assert_eq!(
-            tf.lookup_type_def_docstring_in_module(&primitives_path, &TypeName::from("Trace"))
-                .as_deref(),
-            Some("Recorded execution call tree from (trace expr)")
-        );
-    }
-
-    // spec: 03-types §3.2.4 — TraceCall constructor with 5 fields
-    #[test]
-    fn test_trace_call_constructor() {
-        let tf = TestFixture::new();
-        let primitives_path = ModuleFullPath::from("primitives");
-        let primitives_table = tf.modules.get(&primitives_path).unwrap();
-
-        if let Some(ModuleEntry::Def { kind, scheme, param_names, .. }) =
-            primitives_table.get("TraceCall")
-        {
-            if let DefKind::Constructor { tag, field_count, .. } = kind.as_ref() {
-                assert_eq!(*tag, 0, "TraceCall should be tag 0");
-                assert_eq!(*field_count, 5, "TraceCall has 5 fields");
-            } else {
-                panic!("TraceCall should be DefKind::Constructor");
-            }
-            assert_eq!(param_names.len(), 5);
-            assert_eq!(param_names[0].as_ref(), "name");
-            assert_eq!(param_names[1].as_ref(), "params");
-            assert_eq!(param_names[2].as_ref(), "result");
-            assert_eq!(param_names[3].as_ref(), "children");
-            assert_eq!(param_names[4].as_ref(), "nanos");
-
-            // Field types: String, (SList String), String, (SList Trace), Int
-            let slist_string = Type::ADT(macros_fqtn("SList"), vec![Type::String]);
-            let slist_trace = Type::ADT(
-                macros_fqtn("SList"),
-                vec![Type::ADT(primitives_fqtn("Trace"), vec![])],
-            );
-            // Per S70 ctor migration map: field types fold into scheme.ty's Fn params.
-            let field_types = match &scheme.ty {
-                Type::Fn(p, _) => p.clone(),
-                _ => panic!("TraceCall scheme should be Fn"),
-            };
-            assert_eq!(field_types[0], Type::String);
-            assert_eq!(field_types[1], slist_string); // params: SList of String
-            assert_eq!(field_types[2], Type::String);
-            assert_eq!(field_types[3], slist_trace); // children: SList of Trace
-            assert_eq!(field_types[4], Type::Int);
-
-            // Monomorphic scheme: no quantified vars
-            assert!(scheme.type_vars.is_empty(), "TraceCall scheme should be monomorphic");
-            // TraceCall :: (Fn [String (SList String) String (SList Trace) Int] Trace)
-            let slist_string = Type::ADT(macros_fqtn("SList"), vec![Type::String]);
-            let slist_trace = Type::ADT(
-                macros_fqtn("SList"),
-                vec![Type::ADT(primitives_fqtn("Trace"), vec![])],
-            );
-            match &scheme.ty {
-                Type::Fn(params, ret) => {
-                    assert_eq!(params.len(), 5);
-                    assert_eq!(params[0], Type::String);
-                    assert_eq!(params[1], slist_string);
-                    assert_eq!(params[2], Type::String);
-                    assert_eq!(params[3], slist_trace);
-                    assert_eq!(params[4], Type::Int);
-                    match ret.as_ref() {
-                        Type::ADT(name, args) => {
-                            assert_eq!(name.name.as_ref(), "Trace");
-                            assert!(args.is_empty());
-                        }
-                        _ => panic!("TraceCall return should be Trace, got {:?}", ret),
-                    }
-                }
-                _ => panic!("TraceCall should have Fn type, got {:?}", scheme.ty),
-            }
-        } else {
-            panic!("TraceCall should be a Def(Constructor) entry in primitives module");
-        }
-    }
-
-    // spec: 03-types §3.2.4 — Trace names in primitives module
-    #[test]
-    fn test_trace_in_primitives_module() {
-        let tf = TestFixture::new();
-        let primitives_path = ModuleFullPath::from("primitives");
-        let primitives_table = tf.modules.get(&primitives_path).unwrap();
-
-        assert!(primitives_table.get("Trace").is_some(), "Trace type in primitives");
-        assert!(primitives_table.get("TraceCall").is_some(), "TraceCall constructor in primitives");
-        // Field accessors
-        assert!(primitives_table.get("name").is_some(), "name accessor in primitives");
-        assert!(primitives_table.get("params").is_some(), "params accessor in primitives");
-        assert!(primitives_table.get("result").is_some(), "result accessor in primitives");
-        assert!(primitives_table.get("children").is_some(), "children accessor in primitives");
-        assert!(primitives_table.get("nanos").is_some(), "nanos accessor in primitives");
-    }
 
     // spec: 03-types §3.2.4 — Trace names NOT auto-imported into user module
     #[test]
@@ -2626,42 +2286,6 @@ mod tests {
         assert!(user_table.get("result").is_none(), "result accessor must NOT be auto-imported");
         assert!(user_table.get("children").is_none(), "children accessor must NOT be auto-imported");
         assert!(user_table.get("nanos").is_none(), "nanos accessor must NOT be auto-imported");
-    }
-
-    // spec: 03-types §3.2.4 — Trace field accessor types
-    #[test]
-    fn test_trace_field_accessors() {
-        let tf = TestFixture::new();
-        let primitives_path = ModuleFullPath::from("primitives");
-        let primitives_table = tf.modules.get(&primitives_path).unwrap();
-        let trace_type = Type::ADT(primitives_fqtn("Trace"), vec![]);
-
-        let check_accessor = |name: &str, expected_ret: &Type| {
-            if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table.get(name) {
-                assert!(scheme.type_vars.is_empty(), "{name} should be monomorphic");
-                match &scheme.ty {
-                    Type::Fn(params, ret) => {
-                        assert_eq!(params.len(), 1, "{name} takes 1 param");
-                        assert_eq!(&params[0], &trace_type, "{name} param should be Trace");
-                        assert_eq!(ret.as_ref(), expected_ret, "{name} return type mismatch");
-                    }
-                    _ => panic!("{name} should have Fn type"),
-                }
-            } else {
-                panic!("{name} should be a Def entry in primitives");
-            }
-        };
-
-        let slist_string = Type::ADT(macros_fqtn("SList"), vec![Type::String]);
-        let slist_trace = Type::ADT(
-            macros_fqtn("SList"),
-            vec![Type::ADT(primitives_fqtn("Trace"), vec![])],
-        );
-        check_accessor("name", &Type::String);
-        check_accessor("params", &slist_string);
-        check_accessor("result", &Type::String);
-        check_accessor("children", &slist_trace);
-        check_accessor("nanos", &Type::Int);
     }
 
     // -----------------------------------------------------------------------
@@ -2765,99 +2389,6 @@ mod tests {
                  — retired by Decision 45 Pattern B; chain-follow is THE navigation primitive \
                  (Principle 17). See design/typecheck/implementation-slice-s66.md §1.A α14."
             );
-        }
-    }
-
-    // spec: arch Principle 17 + slice §1.A α12 — synthetic-module type
-    // references (e.g., primitives' `Trace` ADT referring to `macros/SList`)
-    // are constructed FQ at registration time. The TraceCall constructor's
-    // `params` and `children` field types MUST be `Type::ADT(macros_fqtn(...),
-    // ...)` with the FQ name pointing at the `macros` module — never a
-    // short-name lookup result.
-    #[test]
-    fn test_trace_call_fields_use_fq_macros_types() {
-        let tf = TestFixture::new();
-        let primitives_path = ModuleFullPath::from("primitives");
-        let macros_module = ModuleFullPath::from("macros");
-
-        let info = tf
-            .lookup_type_def_in_module(&primitives_path, &TypeName::from("Trace"))
-            .expect("Trace ADT should be registered in primitives");
-        assert_eq!(info.constructors.len(), 1, "Trace has one constructor");
-        // Per S70: info.constructors is Vec<Symbol>; per-ctor metadata lives on
-        // the ctor's ModuleEntry::Def in the symbol table.
-        assert_eq!(info.constructors[0].as_ref(), "TraceCall");
-
-        let primitives_table = tf.modules.get(&primitives_path).unwrap();
-        let (param_names, field_types) = if let Some(ModuleEntry::Def {
-            param_names, scheme, ..
-        }) = primitives_table.get("TraceCall")
-        {
-            let field_types = match &scheme.ty {
-                Type::Fn(p, _) => p.clone(),
-                _ => panic!("TraceCall scheme should be Fn"),
-            };
-            (param_names.clone(), field_types)
-        } else {
-            panic!("TraceCall should be a Def(Constructor) in primitives");
-        };
-
-        // Locate the `params` field — its type must be `(SList String)` with
-        // the FQ name `macros/SList`.
-        let params_idx = param_names
-            .iter()
-            .position(|n| n.as_ref() == "params")
-            .expect("TraceCall has a `params` field");
-        match &field_types[params_idx] {
-            Type::ADT(fqtn, args) => {
-                assert_eq!(
-                    fqtn.module, macros_module,
-                    "TraceCall.params field type FQ module MUST be `macros` \
-                     (α12 FQ-at-registration); got {}",
-                    fqtn.module
-                );
-                assert_eq!(fqtn.name.as_ref(), "SList");
-                assert_eq!(args.len(), 1, "SList has one type arg");
-                assert_eq!(args[0], Type::String, "TraceCall.params is SList of String");
-            }
-            other => panic!(
-                "TraceCall.params field type MUST be `Type::ADT(macros/SList, [String])`, got {other:?}"
-            ),
-        }
-
-        // Locate the `children` field — its type must be `(SList Trace)`
-        // with the FQ name `macros/SList` and the inner Trace fully qualified
-        // to `primitives/Trace`.
-        let children_idx = param_names
-            .iter()
-            .position(|n| n.as_ref() == "children")
-            .expect("TraceCall has a `children` field");
-        match &field_types[children_idx] {
-            Type::ADT(fqtn, args) => {
-                assert_eq!(
-                    fqtn.module, macros_module,
-                    "TraceCall.children field type FQ module MUST be `macros` \
-                     (α12 FQ-at-registration); got {}",
-                    fqtn.module
-                );
-                assert_eq!(fqtn.name.as_ref(), "SList");
-                assert_eq!(args.len(), 1, "SList has one type arg");
-                match &args[0] {
-                    Type::ADT(inner_fqtn, inner_args) => {
-                        assert_eq!(
-                            inner_fqtn.module, primitives_path,
-                            "inner Trace type's FQ module MUST be `primitives`; got {}",
-                            inner_fqtn.module
-                        );
-                        assert_eq!(inner_fqtn.name.as_ref(), "Trace");
-                        assert!(inner_args.is_empty(), "Trace is monomorphic");
-                    }
-                    other => panic!("inner type of (SList _) MUST be Type::ADT(primitives/Trace, []), got {other:?}"),
-                }
-            }
-            other => panic!(
-                "TraceCall.children field type MUST be `Type::ADT(macros/SList, [...])`, got {other:?}"
-            ),
         }
     }
 }

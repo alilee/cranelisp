@@ -243,8 +243,10 @@ where
     /// Create a new TypeCheckEnv from borrowed shared state.
     ///
     /// The caller owns the `DashMap` and `AtomicU32`; this struct just
-    /// borrows them. Use `register_builtins()` (free function) to seed
-    /// the modules map before constructing the env.
+    /// borrows them. The caller is responsible for seeding the modules map
+    /// (primitives + synthetic modules) before constructing the env; typecheck
+    /// no longer assembles those (FIXME 0242 — mounted by `int` at session
+    /// init).
     pub fn new(
         modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
         next_id: &'a AtomicU32,
@@ -2239,19 +2241,31 @@ pub(crate) struct TestFixture {
 
 #[cfg(test)]
 impl TestFixture {
-    /// Create a test fixture with builtins registered and "user" as the current module.
+    /// Create a test fixture with the FULL synthetic world registered and
+    /// "user" as the current module.
+    ///
+    /// Production session-init no longer assembles primitives or synthetic
+    /// modules in typecheck (facade §"Builtin registration — removed from
+    /// typecheck"; FIXME 0242 reconstructs the mount in `int`). This composes
+    /// every Tier-3 content preset (special forms + builtin type names + macros
+    /// Sexp/SList + IO ADT + Ring 0/1/3 primitives) via
+    /// `FixtureBuilder::full()`, which builds only on `cranelisp-types` (no
+    /// `cranelisp-primitives` dep). Tests that need a narrower starting
+    /// position can compose presets directly via [`TestFixture::with_content`].
     pub fn new() -> Self {
+        Self::with_content(crate::builtins::FixtureBuilder::full())
+    }
+
+    /// Create a test fixture seeding exactly the composed content presets,
+    /// with "user" as the current module. Use this to declare the minimal
+    /// starting position a test needs, e.g.
+    /// `TestFixture::with_content(FixtureBuilder::new().with_special_forms())`.
+    pub fn with_content(builder: crate::builtins::FixtureBuilder) -> Self {
         let modules = DashMap::new();
         let next_id = AtomicU32::new(0);
         let current_module = ModuleFullPath::from("user");
         modules.insert(current_module.clone(), SymbolTable::new(current_module.clone()));
-        crate::builtins::register_builtins(&modules, &next_id);
-        // Per S72 Wave 1 Trigger 1 (Decision 0048): production sources
-        // primitive Defs from `cranelisp-primitives::PRIMITIVES_TABLE` at
-        // session startup; typecheck no longer registers them. Tests stay
-        // self-contained via this fixture seed (no `cranelisp-primitives`
-        // dep). See `seed_test_primitives` rustdoc.
-        crate::builtins::seed_test_primitives(&modules, &next_id);
+        builder.seed(&modules, &next_id);
         TestFixture {
             modules,
             next_id,
@@ -2826,9 +2840,11 @@ mod tests {
         assert!(prims_table.get("add-i64").is_some(), "add-i64 in primitives");
         assert!(prims_table.get("Int").is_some(), "Int in primitives");
         assert!(prims_table.get("Bool").is_some(), "Bool in primitives");
-        assert!(prims_table.get("TestResult").is_some(), "TestResult in primitives");
-        assert!(prims_table.get("discover-tests").is_some(), "discover-tests in primitives");
-        assert!(prims_table.get("run-test").is_some(), "run-test in primitives");
+        // NOTE: TestResult / discover-tests / run-test are no longer seeded by
+        // the typecheck test fixture — the test-infrastructure synthetic
+        // assembly left typecheck's bounded context (facade §"Builtin
+        // registration — removed from typecheck"; FIXME 0242). The `*-is-none`
+        // assertions above still hold (they were never auto-imported into user).
     }
 
     // spec: 08-modules §8.9 — new modules are empty; special forms live at
@@ -2862,19 +2878,11 @@ mod tests {
         // Define something in user
         tf.symbol_table_mut().insert(
             Symbol::from("user-only"),
-            ModuleEntry::Def {
-                scheme: crate::scheme::mono(Type::Int),
-                visibility: Visibility::Public,
-                docstring: None,
-                param_names: vec![],
-                kind: Box::new(DefKind::UserFn { constrained_fn: None }),
-                callees: Vec::new(),
-                got_slot: None,
-                trait_origin: None,
-                seq: 0,
-                ast: None,
-                code: None,
-            },
+            ModuleEntry::def(
+                crate::scheme::mono(Type::Int),
+                DefKind::UserFn { constrained_fn: None },
+            )
+            .build(),
         );
 
         // Switch to another module — shouldn't see user-only
@@ -2893,19 +2901,12 @@ mod tests {
         for (name, vis) in entries {
             tf.symbol_table_mut().insert(
                 Symbol::from(name),
-                ModuleEntry::Def {
-                    scheme: crate::scheme::mono(Type::Int),
-                    visibility: vis,
-                    docstring: None,
-                    param_names: vec![],
-                    kind: Box::new(DefKind::UserFn { constrained_fn: None }),
-                    callees: Vec::new(),
-                    got_slot: None,
-                    trait_origin: None,
-                    seq: 0,
-                    ast: None,
-                    code: None,
-                },
+                ModuleEntry::def(
+                    crate::scheme::mono(Type::Int),
+                    DefKind::UserFn { constrained_fn: None },
+                )
+                .visibility(vis)
+                .build(),
             );
         }
     }
@@ -3379,19 +3380,11 @@ mod tests {
             let mut guard = tf.modules.get_mut(&path).unwrap();
             guard.insert(
                 Symbol::from("helper-val"),
-                ModuleEntry::Def {
-                    scheme: crate::scheme::mono(Type::Int),
-                    visibility: Visibility::Public,
-                    docstring: None,
-                    param_names: vec![],
-                    kind: Box::new(DefKind::UserFn { constrained_fn: None }),
-                    callees: Vec::new(),
-                    got_slot: None,
-                    trait_origin: None,
-                    seq: 0,
-                    ast: None,
-                    code: None,
-                },
+                ModuleEntry::def(
+                    crate::scheme::mono(Type::Int),
+                    DefKind::UserFn { constrained_fn: None },
+                )
+                .build(),
             );
         }
 
