@@ -122,7 +122,7 @@ All newtypes are generated via `string_newtype!()` which derives the standard tr
 
 The S67 edge-settlement sprint established `cargo-public-api` baselines (`crates/cranelisp-{crate}/public-api.txt`) as the frozen contract at every crate edge. Future edge changes — anything that touches a crate's `public-api.txt` baseline — must, in the SAME change-set:
 
-1. **Regenerate** the affected crate's `public-api.txt` via `cargo public-api --diff-git-checkouts ... > crates/.../public-api.txt` (or equivalent — keep the regeneration mechanical and reproducible).
+1. **Regenerate** the affected crate's `public-api.txt` via the canonical command `cargo public-api --omit blanket-impls,auto-derived-impls -p <crate> > crates/<crate>/public-api.txt` — mechanical and reproducible. The `--omit blanket-impls,auto-derived-impls` flags strip auto-generated noise (`::into`/`::borrow`/`::from`/`::clone`/`::Owned = T`/Debug etc.) that carries no semver signal; auto-trait impls (`impl Send/Sync/Freeze/Unpin/RefUnwindSafe for ...`) are deliberately KEPT because they are a real semver signal (e.g. a `Mutex` field flipping a type to `!Freeze`/`!Sync` is exactly the regression the baseline diff must catch).
 2. **Update** the corresponding `facades/{crate}.md` (or `facades/backend-cache.md` for the cache submodule) to name + disposition each added/changed/removed item.
 3. **Include the diff** in the commit, side-by-side with the source change that produced it. Reviewers (`/review`, the user) read the baseline diff alongside the facade diff to assess whether the change is a legitimate edge evolution or accidental surface leakage.
 

@@ -4,11 +4,7 @@ pub cranelisp_typecheck::CheckError::Gap(cranelisp_types::error::ResolutionGap)
 pub cranelisp_typecheck::CheckError::TypeError
 pub cranelisp_typecheck::CheckError::TypeError::location: cranelisp_types::error::ErrorLocation
 pub cranelisp_typecheck::CheckError::TypeError::message: alloc::string::String
-impl core::clone::Clone for cranelisp_typecheck::CheckError
-pub fn cranelisp_typecheck::CheckError::clone(&self) -> cranelisp_typecheck::CheckError
 impl core::error::Error for cranelisp_typecheck::CheckError
-impl core::fmt::Debug for cranelisp_typecheck::CheckError
-pub fn cranelisp_typecheck::CheckError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for cranelisp_typecheck::CheckError
 pub fn cranelisp_typecheck::CheckError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_typecheck::CheckError
@@ -18,32 +14,6 @@ impl core::marker::Unpin for cranelisp_typecheck::CheckError
 impl core::marker::UnsafeUnpin for cranelisp_typecheck::CheckError
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_typecheck::CheckError
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_typecheck::CheckError
-impl<T, U> core::convert::Into<U> for cranelisp_typecheck::CheckError where U: core::convert::From<T>
-pub fn cranelisp_typecheck::CheckError::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for cranelisp_typecheck::CheckError where U: core::convert::Into<T>
-pub type cranelisp_typecheck::CheckError::Error = core::convert::Infallible
-pub fn cranelisp_typecheck::CheckError::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for cranelisp_typecheck::CheckError where U: core::convert::TryFrom<T>
-pub type cranelisp_typecheck::CheckError::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn cranelisp_typecheck::CheckError::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for cranelisp_typecheck::CheckError where T: core::clone::Clone
-pub type cranelisp_typecheck::CheckError::Owned = T
-pub fn cranelisp_typecheck::CheckError::clone_into(&self, target: &mut T)
-pub fn cranelisp_typecheck::CheckError::to_owned(&self) -> T
-impl<T> alloc::string::ToString for cranelisp_typecheck::CheckError where T: core::fmt::Display + ?core::marker::Sized
-pub fn cranelisp_typecheck::CheckError::to_string(&self) -> alloc::string::String
-impl<T> core::any::Any for cranelisp_typecheck::CheckError where T: 'static + ?core::marker::Sized
-pub fn cranelisp_typecheck::CheckError::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for cranelisp_typecheck::CheckError where T: ?core::marker::Sized
-pub fn cranelisp_typecheck::CheckError::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for cranelisp_typecheck::CheckError where T: ?core::marker::Sized
-pub fn cranelisp_typecheck::CheckError::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for cranelisp_typecheck::CheckError where T: core::clone::Clone
-pub unsafe fn cranelisp_typecheck::CheckError::clone_to_uninit(&self, dest: *mut u8)
-impl<T> core::convert::From<T> for cranelisp_typecheck::CheckError
-pub fn cranelisp_typecheck::CheckError::from(t: T) -> T
-impl<T> cranelisp_types::module::CodeStore for cranelisp_typecheck::CheckError where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
-impl<T> cranelisp_types::module::LinkerStore for cranelisp_typecheck::CheckError where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 #[non_exhaustive] pub enum cranelisp_typecheck::SymbolTableAccess<'a, C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore>
 pub cranelisp_typecheck::SymbolTableAccess::Cluster
 pub cranelisp_typecheck::SymbolTableAccess::Cluster::current_module: cranelisp_types::newtype::ModuleFullPath
@@ -65,36 +35,11 @@ impl<'a, C, L> core::marker::Unpin for cranelisp_typecheck::SymbolTableAccess<'a
 impl<'a, C, L> core::marker::UnsafeUnpin for cranelisp_typecheck::SymbolTableAccess<'a, C, L>
 impl<'a, C, L> !core::panic::unwind_safe::RefUnwindSafe for cranelisp_typecheck::SymbolTableAccess<'a, C, L>
 impl<'a, C, L> !core::panic::unwind_safe::UnwindSafe for cranelisp_typecheck::SymbolTableAccess<'a, C, L>
-impl<T, U> core::convert::Into<U> for cranelisp_typecheck::SymbolTableAccess<'a, C, L> where U: core::convert::From<T>
-pub fn cranelisp_typecheck::SymbolTableAccess<'a, C, L>::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for cranelisp_typecheck::SymbolTableAccess<'a, C, L> where U: core::convert::Into<T>
-pub type cranelisp_typecheck::SymbolTableAccess<'a, C, L>::Error = core::convert::Infallible
-pub fn cranelisp_typecheck::SymbolTableAccess<'a, C, L>::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for cranelisp_typecheck::SymbolTableAccess<'a, C, L> where U: core::convert::TryFrom<T>
-pub type cranelisp_typecheck::SymbolTableAccess<'a, C, L>::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn cranelisp_typecheck::SymbolTableAccess<'a, C, L>::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> core::any::Any for cranelisp_typecheck::SymbolTableAccess<'a, C, L> where T: 'static + ?core::marker::Sized
-pub fn cranelisp_typecheck::SymbolTableAccess<'a, C, L>::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for cranelisp_typecheck::SymbolTableAccess<'a, C, L> where T: ?core::marker::Sized
-pub fn cranelisp_typecheck::SymbolTableAccess<'a, C, L>::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for cranelisp_typecheck::SymbolTableAccess<'a, C, L> where T: ?core::marker::Sized
-pub fn cranelisp_typecheck::SymbolTableAccess<'a, C, L>::borrow_mut(&mut self) -> &mut T
-impl<T> core::convert::From<T> for cranelisp_typecheck::SymbolTableAccess<'a, C, L>
-pub fn cranelisp_typecheck::SymbolTableAccess<'a, C, L>::from(t: T) -> T
 pub enum cranelisp_typecheck::SymbolTableEnsureOutcome
 pub cranelisp_typecheck::SymbolTableEnsureOutcome::AlreadyPresent
 pub cranelisp_typecheck::SymbolTableEnsureOutcome::Created
 impl cranelisp_typecheck::SymbolTableEnsureOutcome
 pub fn cranelisp_typecheck::SymbolTableEnsureOutcome::as_u8(self) -> u8
-impl core::clone::Clone for cranelisp_typecheck::SymbolTableEnsureOutcome
-pub fn cranelisp_typecheck::SymbolTableEnsureOutcome::clone(&self) -> cranelisp_typecheck::SymbolTableEnsureOutcome
-impl core::cmp::Eq for cranelisp_typecheck::SymbolTableEnsureOutcome
-impl core::cmp::PartialEq for cranelisp_typecheck::SymbolTableEnsureOutcome
-pub fn cranelisp_typecheck::SymbolTableEnsureOutcome::eq(&self, other: &cranelisp_typecheck::SymbolTableEnsureOutcome) -> bool
-impl core::fmt::Debug for cranelisp_typecheck::SymbolTableEnsureOutcome
-pub fn cranelisp_typecheck::SymbolTableEnsureOutcome::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for cranelisp_typecheck::SymbolTableEnsureOutcome
-impl core::marker::StructuralPartialEq for cranelisp_typecheck::SymbolTableEnsureOutcome
 impl core::marker::Freeze for cranelisp_typecheck::SymbolTableEnsureOutcome
 impl core::marker::Send for cranelisp_typecheck::SymbolTableEnsureOutcome
 impl core::marker::Sync for cranelisp_typecheck::SymbolTableEnsureOutcome
@@ -102,32 +47,6 @@ impl core::marker::Unpin for cranelisp_typecheck::SymbolTableEnsureOutcome
 impl core::marker::UnsafeUnpin for cranelisp_typecheck::SymbolTableEnsureOutcome
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_typecheck::SymbolTableEnsureOutcome
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_typecheck::SymbolTableEnsureOutcome
-impl<Q, K> hashbrown::Equivalent<K> for cranelisp_typecheck::SymbolTableEnsureOutcome where Q: core::cmp::Eq + ?core::marker::Sized, K: core::borrow::Borrow<Q> + ?core::marker::Sized
-pub fn cranelisp_typecheck::SymbolTableEnsureOutcome::equivalent(&self, key: &K) -> bool
-impl<T, U> core::convert::Into<U> for cranelisp_typecheck::SymbolTableEnsureOutcome where U: core::convert::From<T>
-pub fn cranelisp_typecheck::SymbolTableEnsureOutcome::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for cranelisp_typecheck::SymbolTableEnsureOutcome where U: core::convert::Into<T>
-pub type cranelisp_typecheck::SymbolTableEnsureOutcome::Error = core::convert::Infallible
-pub fn cranelisp_typecheck::SymbolTableEnsureOutcome::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for cranelisp_typecheck::SymbolTableEnsureOutcome where U: core::convert::TryFrom<T>
-pub type cranelisp_typecheck::SymbolTableEnsureOutcome::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn cranelisp_typecheck::SymbolTableEnsureOutcome::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for cranelisp_typecheck::SymbolTableEnsureOutcome where T: core::clone::Clone
-pub type cranelisp_typecheck::SymbolTableEnsureOutcome::Owned = T
-pub fn cranelisp_typecheck::SymbolTableEnsureOutcome::clone_into(&self, target: &mut T)
-pub fn cranelisp_typecheck::SymbolTableEnsureOutcome::to_owned(&self) -> T
-impl<T> core::any::Any for cranelisp_typecheck::SymbolTableEnsureOutcome where T: 'static + ?core::marker::Sized
-pub fn cranelisp_typecheck::SymbolTableEnsureOutcome::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for cranelisp_typecheck::SymbolTableEnsureOutcome where T: ?core::marker::Sized
-pub fn cranelisp_typecheck::SymbolTableEnsureOutcome::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for cranelisp_typecheck::SymbolTableEnsureOutcome where T: ?core::marker::Sized
-pub fn cranelisp_typecheck::SymbolTableEnsureOutcome::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for cranelisp_typecheck::SymbolTableEnsureOutcome where T: core::clone::Clone
-pub unsafe fn cranelisp_typecheck::SymbolTableEnsureOutcome::clone_to_uninit(&self, dest: *mut u8)
-impl<T> core::convert::From<T> for cranelisp_typecheck::SymbolTableEnsureOutcome
-pub fn cranelisp_typecheck::SymbolTableEnsureOutcome::from(t: T) -> T
-impl<T> cranelisp_types::module::CodeStore for cranelisp_typecheck::SymbolTableEnsureOutcome where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
-impl<T> cranelisp_types::module::LinkerStore for cranelisp_typecheck::SymbolTableEnsureOutcome where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 pub enum cranelisp_typecheck::SymbolTableMut<'a, 'b, C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore>
 pub cranelisp_typecheck::SymbolTableMut::Live(dashmap::mapref::one::RefMut<'a, cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>)
 pub cranelisp_typecheck::SymbolTableMut::Staging(core::cell::RefMut<'a, &'b mut cranelisp_types::module::SymbolTable<C, L>>)
@@ -143,24 +62,6 @@ impl<'a, 'b, C, L> core::marker::Unpin for cranelisp_typecheck::SymbolTableMut<'
 impl<'a, 'b, C, L> core::marker::UnsafeUnpin for cranelisp_typecheck::SymbolTableMut<'a, 'b, C, L>
 impl<'a, 'b, C, L> !core::panic::unwind_safe::RefUnwindSafe for cranelisp_typecheck::SymbolTableMut<'a, 'b, C, L>
 impl<'a, 'b, C, L> !core::panic::unwind_safe::UnwindSafe for cranelisp_typecheck::SymbolTableMut<'a, 'b, C, L>
-impl<P, T> core::ops::deref::Receiver for cranelisp_typecheck::SymbolTableMut<'a, 'b, C, L> where P: core::ops::deref::Deref<Target = T> + ?core::marker::Sized, T: ?core::marker::Sized
-pub type cranelisp_typecheck::SymbolTableMut<'a, 'b, C, L>::Target = T
-impl<T, U> core::convert::Into<U> for cranelisp_typecheck::SymbolTableMut<'a, 'b, C, L> where U: core::convert::From<T>
-pub fn cranelisp_typecheck::SymbolTableMut<'a, 'b, C, L>::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for cranelisp_typecheck::SymbolTableMut<'a, 'b, C, L> where U: core::convert::Into<T>
-pub type cranelisp_typecheck::SymbolTableMut<'a, 'b, C, L>::Error = core::convert::Infallible
-pub fn cranelisp_typecheck::SymbolTableMut<'a, 'b, C, L>::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for cranelisp_typecheck::SymbolTableMut<'a, 'b, C, L> where U: core::convert::TryFrom<T>
-pub type cranelisp_typecheck::SymbolTableMut<'a, 'b, C, L>::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn cranelisp_typecheck::SymbolTableMut<'a, 'b, C, L>::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> core::any::Any for cranelisp_typecheck::SymbolTableMut<'a, 'b, C, L> where T: 'static + ?core::marker::Sized
-pub fn cranelisp_typecheck::SymbolTableMut<'a, 'b, C, L>::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for cranelisp_typecheck::SymbolTableMut<'a, 'b, C, L> where T: ?core::marker::Sized
-pub fn cranelisp_typecheck::SymbolTableMut<'a, 'b, C, L>::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for cranelisp_typecheck::SymbolTableMut<'a, 'b, C, L> where T: ?core::marker::Sized
-pub fn cranelisp_typecheck::SymbolTableMut<'a, 'b, C, L>::borrow_mut(&mut self) -> &mut T
-impl<T> core::convert::From<T> for cranelisp_typecheck::SymbolTableMut<'a, 'b, C, L>
-pub fn cranelisp_typecheck::SymbolTableMut<'a, 'b, C, L>::from(t: T) -> T
 pub enum cranelisp_typecheck::SymbolTableRead<'a, 'b, C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore>
 pub cranelisp_typecheck::SymbolTableRead::Cluster
 pub cranelisp_typecheck::SymbolTableRead::Cluster::live: dashmap::mapref::one::Ref<'a, cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>
@@ -175,29 +76,9 @@ impl<'a, 'b, C, L> core::marker::Unpin for cranelisp_typecheck::SymbolTableRead<
 impl<'a, 'b, C, L> core::marker::UnsafeUnpin for cranelisp_typecheck::SymbolTableRead<'a, 'b, C, L>
 impl<'a, 'b, C, L> !core::panic::unwind_safe::RefUnwindSafe for cranelisp_typecheck::SymbolTableRead<'a, 'b, C, L>
 impl<'a, 'b, C, L> !core::panic::unwind_safe::UnwindSafe for cranelisp_typecheck::SymbolTableRead<'a, 'b, C, L>
-impl<T, U> core::convert::Into<U> for cranelisp_typecheck::SymbolTableRead<'a, 'b, C, L> where U: core::convert::From<T>
-pub fn cranelisp_typecheck::SymbolTableRead<'a, 'b, C, L>::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for cranelisp_typecheck::SymbolTableRead<'a, 'b, C, L> where U: core::convert::Into<T>
-pub type cranelisp_typecheck::SymbolTableRead<'a, 'b, C, L>::Error = core::convert::Infallible
-pub fn cranelisp_typecheck::SymbolTableRead<'a, 'b, C, L>::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for cranelisp_typecheck::SymbolTableRead<'a, 'b, C, L> where U: core::convert::TryFrom<T>
-pub type cranelisp_typecheck::SymbolTableRead<'a, 'b, C, L>::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn cranelisp_typecheck::SymbolTableRead<'a, 'b, C, L>::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> core::any::Any for cranelisp_typecheck::SymbolTableRead<'a, 'b, C, L> where T: 'static + ?core::marker::Sized
-pub fn cranelisp_typecheck::SymbolTableRead<'a, 'b, C, L>::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for cranelisp_typecheck::SymbolTableRead<'a, 'b, C, L> where T: ?core::marker::Sized
-pub fn cranelisp_typecheck::SymbolTableRead<'a, 'b, C, L>::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for cranelisp_typecheck::SymbolTableRead<'a, 'b, C, L> where T: ?core::marker::Sized
-pub fn cranelisp_typecheck::SymbolTableRead<'a, 'b, C, L>::borrow_mut(&mut self) -> &mut T
-impl<T> core::convert::From<T> for cranelisp_typecheck::SymbolTableRead<'a, 'b, C, L>
-pub fn cranelisp_typecheck::SymbolTableRead<'a, 'b, C, L>::from(t: T) -> T
 pub struct cranelisp_typecheck::CheckResult
 pub cranelisp_typecheck::CheckResult::display: core::option::Option<cranelisp_types::check::DisplayInfo>
 pub cranelisp_typecheck::CheckResult::warnings: alloc::vec::Vec<cranelisp_types::error::Warning>
-impl core::clone::Clone for cranelisp_typecheck::CheckResult
-pub fn cranelisp_typecheck::CheckResult::clone(&self) -> cranelisp_typecheck::CheckResult
-impl core::fmt::Debug for cranelisp_typecheck::CheckResult
-pub fn cranelisp_typecheck::CheckResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_typecheck::CheckResult
 impl core::marker::Send for cranelisp_typecheck::CheckResult
 impl core::marker::Sync for cranelisp_typecheck::CheckResult
@@ -205,30 +86,6 @@ impl core::marker::Unpin for cranelisp_typecheck::CheckResult
 impl core::marker::UnsafeUnpin for cranelisp_typecheck::CheckResult
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_typecheck::CheckResult
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_typecheck::CheckResult
-impl<T, U> core::convert::Into<U> for cranelisp_typecheck::CheckResult where U: core::convert::From<T>
-pub fn cranelisp_typecheck::CheckResult::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for cranelisp_typecheck::CheckResult where U: core::convert::Into<T>
-pub type cranelisp_typecheck::CheckResult::Error = core::convert::Infallible
-pub fn cranelisp_typecheck::CheckResult::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for cranelisp_typecheck::CheckResult where U: core::convert::TryFrom<T>
-pub type cranelisp_typecheck::CheckResult::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn cranelisp_typecheck::CheckResult::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for cranelisp_typecheck::CheckResult where T: core::clone::Clone
-pub type cranelisp_typecheck::CheckResult::Owned = T
-pub fn cranelisp_typecheck::CheckResult::clone_into(&self, target: &mut T)
-pub fn cranelisp_typecheck::CheckResult::to_owned(&self) -> T
-impl<T> core::any::Any for cranelisp_typecheck::CheckResult where T: 'static + ?core::marker::Sized
-pub fn cranelisp_typecheck::CheckResult::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for cranelisp_typecheck::CheckResult where T: ?core::marker::Sized
-pub fn cranelisp_typecheck::CheckResult::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for cranelisp_typecheck::CheckResult where T: ?core::marker::Sized
-pub fn cranelisp_typecheck::CheckResult::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for cranelisp_typecheck::CheckResult where T: core::clone::Clone
-pub unsafe fn cranelisp_typecheck::CheckResult::clone_to_uninit(&self, dest: *mut u8)
-impl<T> core::convert::From<T> for cranelisp_typecheck::CheckResult
-pub fn cranelisp_typecheck::CheckResult::from(t: T) -> T
-impl<T> cranelisp_types::module::CodeStore for cranelisp_typecheck::CheckResult where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
-impl<T> cranelisp_types::module::LinkerStore for cranelisp_typecheck::CheckResult where T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 pub struct cranelisp_typecheck::CheckState
 impl cranelisp_typecheck::CheckState
 pub fn cranelisp_typecheck::CheckState::current_module(&self) -> &cranelisp_types::newtype::ModuleFullPath
@@ -240,22 +97,6 @@ impl core::marker::Unpin for cranelisp_typecheck::CheckState
 impl core::marker::UnsafeUnpin for cranelisp_typecheck::CheckState
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_typecheck::CheckState
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_typecheck::CheckState
-impl<T, U> core::convert::Into<U> for cranelisp_typecheck::CheckState where U: core::convert::From<T>
-pub fn cranelisp_typecheck::CheckState::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for cranelisp_typecheck::CheckState where U: core::convert::Into<T>
-pub type cranelisp_typecheck::CheckState::Error = core::convert::Infallible
-pub fn cranelisp_typecheck::CheckState::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for cranelisp_typecheck::CheckState where U: core::convert::TryFrom<T>
-pub type cranelisp_typecheck::CheckState::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn cranelisp_typecheck::CheckState::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> core::any::Any for cranelisp_typecheck::CheckState where T: 'static + ?core::marker::Sized
-pub fn cranelisp_typecheck::CheckState::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for cranelisp_typecheck::CheckState where T: ?core::marker::Sized
-pub fn cranelisp_typecheck::CheckState::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for cranelisp_typecheck::CheckState where T: ?core::marker::Sized
-pub fn cranelisp_typecheck::CheckState::borrow_mut(&mut self) -> &mut T
-impl<T> core::convert::From<T> for cranelisp_typecheck::CheckState
-pub fn cranelisp_typecheck::CheckState::from(t: T) -> T
 pub struct cranelisp_typecheck::TypeCheckEnv<'a, C, L> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 impl<'a, C, L> cranelisp_typecheck::TypeCheckEnv<'a, C, L> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::current_symbol_table<'b>(&'b self, state: &cranelisp_typecheck::CheckState) -> cranelisp_typecheck::SymbolTableRead<'b, 'a, C, L>
@@ -269,22 +110,6 @@ impl<'a, C, L> core::marker::Unpin for cranelisp_typecheck::TypeCheckEnv<'a, C, 
 impl<'a, C, L> core::marker::UnsafeUnpin for cranelisp_typecheck::TypeCheckEnv<'a, C, L>
 impl<'a, C, L> !core::panic::unwind_safe::RefUnwindSafe for cranelisp_typecheck::TypeCheckEnv<'a, C, L>
 impl<'a, C, L> !core::panic::unwind_safe::UnwindSafe for cranelisp_typecheck::TypeCheckEnv<'a, C, L>
-impl<T, U> core::convert::Into<U> for cranelisp_typecheck::TypeCheckEnv<'a, C, L> where U: core::convert::From<T>
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for cranelisp_typecheck::TypeCheckEnv<'a, C, L> where U: core::convert::Into<T>
-pub type cranelisp_typecheck::TypeCheckEnv<'a, C, L>::Error = core::convert::Infallible
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::try_from(value: U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for cranelisp_typecheck::TypeCheckEnv<'a, C, L> where U: core::convert::TryFrom<T>
-pub type cranelisp_typecheck::TypeCheckEnv<'a, C, L>::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> core::any::Any for cranelisp_typecheck::TypeCheckEnv<'a, C, L> where T: 'static + ?core::marker::Sized
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for cranelisp_typecheck::TypeCheckEnv<'a, C, L> where T: ?core::marker::Sized
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for cranelisp_typecheck::TypeCheckEnv<'a, C, L> where T: ?core::marker::Sized
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::borrow_mut(&mut self) -> &mut T
-impl<T> core::convert::From<T> for cranelisp_typecheck::TypeCheckEnv<'a, C, L>
-pub fn cranelisp_typecheck::TypeCheckEnv<'a, C, L>::from(t: T) -> T
 pub fn cranelisp_typecheck::advance_next_id_past_table<C, L>(next_id: &core::sync::atomic::AtomicU32, table: &cranelisp_types::module::SymbolTable<C, L>) where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub fn cranelisp_typecheck::check_forms<C, L>(parsed: alloc::vec::Vec<cranelisp_types::parsed::ParsedEntry>, ctx: &mut cranelisp_typecheck::SymbolTableAccess<'_, C, L>, symbol_tables: &cranelisp_types::module::SymbolTables<C, L>, module_aliases: &cranelisp_types::module::ModuleAliases) -> core::result::Result<(), cranelisp_typecheck::CheckError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub fn cranelisp_typecheck::emit_symbol_table_ensure(module: &cranelisp_types::newtype::ModuleFullPath, outcome: cranelisp_typecheck::SymbolTableEnsureOutcome)

@@ -77,15 +77,6 @@ pub cranelisp_intrinsics::io_observer::IoEvent::TrampolineEnter
 pub cranelisp_intrinsics::io_observer::IoEvent::TrampolineEnter::io_ptr: i64
 pub cranelisp_intrinsics::io_observer::IoEvent::TrampolineExit
 pub cranelisp_intrinsics::io_observer::IoEvent::TrampolineExit::result: i64
-impl core::clone::Clone for cranelisp_intrinsics::io_observer::IoEvent
-pub fn cranelisp_intrinsics::io_observer::IoEvent::clone(&self) -> cranelisp_intrinsics::io_observer::IoEvent
-impl core::cmp::Eq for cranelisp_intrinsics::io_observer::IoEvent
-impl core::cmp::PartialEq for cranelisp_intrinsics::io_observer::IoEvent
-pub fn cranelisp_intrinsics::io_observer::IoEvent::eq(&self, other: &cranelisp_intrinsics::io_observer::IoEvent) -> bool
-impl core::fmt::Debug for cranelisp_intrinsics::io_observer::IoEvent
-pub fn cranelisp_intrinsics::io_observer::IoEvent::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for cranelisp_intrinsics::io_observer::IoEvent
-impl core::marker::StructuralPartialEq for cranelisp_intrinsics::io_observer::IoEvent
 impl core::marker::Freeze for cranelisp_intrinsics::io_observer::IoEvent
 impl core::marker::Send for cranelisp_intrinsics::io_observer::IoEvent
 impl core::marker::Sync for cranelisp_intrinsics::io_observer::IoEvent
@@ -106,15 +97,6 @@ pub cranelisp_intrinsics::io_observer::IoEventTag::PlatformEffect
 pub cranelisp_intrinsics::io_observer::IoEventTag::PureStep
 pub cranelisp_intrinsics::io_observer::IoEventTag::TrampolineEnter
 pub cranelisp_intrinsics::io_observer::IoEventTag::TrampolineExit
-impl core::clone::Clone for cranelisp_intrinsics::io_observer::IoEventTag
-pub fn cranelisp_intrinsics::io_observer::IoEventTag::clone(&self) -> cranelisp_intrinsics::io_observer::IoEventTag
-impl core::cmp::Eq for cranelisp_intrinsics::io_observer::IoEventTag
-impl core::cmp::PartialEq for cranelisp_intrinsics::io_observer::IoEventTag
-pub fn cranelisp_intrinsics::io_observer::IoEventTag::eq(&self, other: &cranelisp_intrinsics::io_observer::IoEventTag) -> bool
-impl core::fmt::Debug for cranelisp_intrinsics::io_observer::IoEventTag
-pub fn cranelisp_intrinsics::io_observer::IoEventTag::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for cranelisp_intrinsics::io_observer::IoEventTag
-impl core::marker::StructuralPartialEq for cranelisp_intrinsics::io_observer::IoEventTag
 impl core::marker::Freeze for cranelisp_intrinsics::io_observer::IoEventTag
 impl core::marker::Send for cranelisp_intrinsics::io_observer::IoEventTag
 impl core::marker::Sync for cranelisp_intrinsics::io_observer::IoEventTag
@@ -178,15 +160,6 @@ pub cranelisp_intrinsics::IoEvent::TrampolineEnter
 pub cranelisp_intrinsics::IoEvent::TrampolineEnter::io_ptr: i64
 pub cranelisp_intrinsics::IoEvent::TrampolineExit
 pub cranelisp_intrinsics::IoEvent::TrampolineExit::result: i64
-impl core::clone::Clone for cranelisp_intrinsics::io_observer::IoEvent
-pub fn cranelisp_intrinsics::io_observer::IoEvent::clone(&self) -> cranelisp_intrinsics::io_observer::IoEvent
-impl core::cmp::Eq for cranelisp_intrinsics::io_observer::IoEvent
-impl core::cmp::PartialEq for cranelisp_intrinsics::io_observer::IoEvent
-pub fn cranelisp_intrinsics::io_observer::IoEvent::eq(&self, other: &cranelisp_intrinsics::io_observer::IoEvent) -> bool
-impl core::fmt::Debug for cranelisp_intrinsics::io_observer::IoEvent
-pub fn cranelisp_intrinsics::io_observer::IoEvent::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for cranelisp_intrinsics::io_observer::IoEvent
-impl core::marker::StructuralPartialEq for cranelisp_intrinsics::io_observer::IoEvent
 impl core::marker::Freeze for cranelisp_intrinsics::io_observer::IoEvent
 impl core::marker::Send for cranelisp_intrinsics::io_observer::IoEvent
 impl core::marker::Sync for cranelisp_intrinsics::io_observer::IoEvent
@@ -207,15 +180,6 @@ pub cranelisp_intrinsics::IoEventTag::PlatformEffect
 pub cranelisp_intrinsics::IoEventTag::PureStep
 pub cranelisp_intrinsics::IoEventTag::TrampolineEnter
 pub cranelisp_intrinsics::IoEventTag::TrampolineExit
-impl core::clone::Clone for cranelisp_intrinsics::io_observer::IoEventTag
-pub fn cranelisp_intrinsics::io_observer::IoEventTag::clone(&self) -> cranelisp_intrinsics::io_observer::IoEventTag
-impl core::cmp::Eq for cranelisp_intrinsics::io_observer::IoEventTag
-impl core::cmp::PartialEq for cranelisp_intrinsics::io_observer::IoEventTag
-pub fn cranelisp_intrinsics::io_observer::IoEventTag::eq(&self, other: &cranelisp_intrinsics::io_observer::IoEventTag) -> bool
-impl core::fmt::Debug for cranelisp_intrinsics::io_observer::IoEventTag
-pub fn cranelisp_intrinsics::io_observer::IoEventTag::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for cranelisp_intrinsics::io_observer::IoEventTag
-impl core::marker::StructuralPartialEq for cranelisp_intrinsics::io_observer::IoEventTag
 impl core::marker::Freeze for cranelisp_intrinsics::io_observer::IoEventTag
 impl core::marker::Send for cranelisp_intrinsics::io_observer::IoEventTag
 impl core::marker::Sync for cranelisp_intrinsics::io_observer::IoEventTag

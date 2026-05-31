@@ -1,5 +1,3 @@
- Documenting cranelisp-platform v0.1.0 (/Users/alilee/Projects.nosync/rust/cranelisp/crates/cranelisp-platform)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.96s
 pub mod cranelisp_platform
 pub use cranelisp_platform::PlatformError
 pub use cranelisp_platform::SchedulingClass
@@ -10,14 +8,6 @@ pub cranelisp_platform::ExpectedFieldType::CLBool
 pub cranelisp_platform::ExpectedFieldType::CLFloat
 pub cranelisp_platform::ExpectedFieldType::CLInt
 pub cranelisp_platform::ExpectedFieldType::CLString
-impl core::clone::Clone for cranelisp_platform::ExpectedFieldType
-pub fn cranelisp_platform::ExpectedFieldType::clone(&self) -> cranelisp_platform::ExpectedFieldType
-impl core::cmp::Eq for cranelisp_platform::ExpectedFieldType
-impl core::cmp::PartialEq for cranelisp_platform::ExpectedFieldType
-pub fn cranelisp_platform::ExpectedFieldType::eq(&self, other: &cranelisp_platform::ExpectedFieldType) -> bool
-impl core::fmt::Debug for cranelisp_platform::ExpectedFieldType
-pub fn cranelisp_platform::ExpectedFieldType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for cranelisp_platform::ExpectedFieldType
 impl core::marker::Freeze for cranelisp_platform::ExpectedFieldType
 impl core::marker::Send for cranelisp_platform::ExpectedFieldType
 impl core::marker::Sync for cranelisp_platform::ExpectedFieldType
@@ -31,14 +21,6 @@ pub cranelisp_platform::FieldType::CLBool
 pub cranelisp_platform::FieldType::CLFloat
 pub cranelisp_platform::FieldType::CLInt
 pub cranelisp_platform::FieldType::CLString
-impl core::clone::Clone for cranelisp_platform::FieldType
-pub fn cranelisp_platform::FieldType::clone(&self) -> cranelisp_platform::FieldType
-impl core::cmp::Eq for cranelisp_platform::FieldType
-impl core::cmp::PartialEq for cranelisp_platform::FieldType
-pub fn cranelisp_platform::FieldType::eq(&self, other: &cranelisp_platform::FieldType) -> bool
-impl core::fmt::Debug for cranelisp_platform::FieldType
-pub fn cranelisp_platform::FieldType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for cranelisp_platform::FieldType
 impl core::marker::Freeze for cranelisp_platform::FieldType
 impl core::marker::Send for cranelisp_platform::FieldType
 impl core::marker::Sync for cranelisp_platform::FieldType
@@ -77,17 +59,9 @@ pub cranelisp_platform::SchemaParseError::UnexpectedToken::found: alloc::string:
 pub cranelisp_platform::SchemaParseError::UnknownFieldType
 pub cranelisp_platform::SchemaParseError::UnknownFieldType::at: cranelisp_platform::ParseLoc
 pub cranelisp_platform::SchemaParseError::UnknownFieldType::name: alloc::string::String
-impl core::clone::Clone for cranelisp_platform::SchemaParseError
-pub fn cranelisp_platform::SchemaParseError::clone(&self) -> cranelisp_platform::SchemaParseError
-impl core::cmp::Eq for cranelisp_platform::SchemaParseError
-impl core::cmp::PartialEq for cranelisp_platform::SchemaParseError
-pub fn cranelisp_platform::SchemaParseError::eq(&self, other: &cranelisp_platform::SchemaParseError) -> bool
 impl core::error::Error for cranelisp_platform::SchemaParseError
-impl core::fmt::Debug for cranelisp_platform::SchemaParseError
-pub fn cranelisp_platform::SchemaParseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for cranelisp_platform::SchemaParseError
 pub fn cranelisp_platform::SchemaParseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for cranelisp_platform::SchemaParseError
 impl core::marker::Freeze for cranelisp_platform::SchemaParseError
 impl core::marker::Send for cranelisp_platform::SchemaParseError
 impl core::marker::Sync for cranelisp_platform::SchemaParseError
@@ -112,7 +86,7 @@ pub fn cranelisp_platform::CLAdt<cranelisp_platform::AnyAdt>::read_tag_any(&self
 impl<T: cranelisp_platform::CLAdtType + cranelisp_platform::GetSchema> cranelisp_platform::CLAdt<T>
 pub fn cranelisp_platform::CLAdt<T>::construct(tag: u32, fields: &[i64]) -> cranelisp_platform::CLOwned<cranelisp_platform::CLAdt<T>>
 pub fn cranelisp_platform::CLAdt<T>::own_field<F: cranelisp_platform::CLHeap + cranelisp_platform::CLTypeWitness>(&self, field_name: &str) -> cranelisp_platform::CLOwned<F>
-pub fn cranelisp_platform::CLAdt<T>::read_field<F>(&self, field_name: &str) -> F where F: cranelisp_platform::CLTypeWitness + cranelisp_platform::CLType
+pub fn cranelisp_platform::CLAdt<T>::read_field<F>(&self, field_name: &str) -> F where F: cranelisp_platform::CLType + cranelisp_platform::CLTypeWitness
 pub fn cranelisp_platform::CLAdt<T>::read_tag(&self) -> u32
 impl<T: cranelisp_platform::CLAdtType> cranelisp_platform::CLAdt<T>
 pub fn cranelisp_platform::CLAdt<T>::from_raw(base_ptr: i64) -> Self
@@ -141,17 +115,12 @@ impl<T> core::marker::UnsafeUnpin for cranelisp_platform::CLAdt<T>
 impl<T> core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::CLAdt<T> where T: core::panic::unwind_safe::RefUnwindSafe
 impl<T> core::panic::unwind_safe::UnwindSafe for cranelisp_platform::CLAdt<T> where T: core::panic::unwind_safe::UnwindSafe
 #[repr(transparent)] pub struct cranelisp_platform::CLBool(_)
-impl core::clone::Clone for cranelisp_platform::CLBool
-pub fn cranelisp_platform::CLBool::clone(&self) -> cranelisp_platform::CLBool
 impl core::convert::From<bool> for cranelisp_platform::CLBool
 pub fn cranelisp_platform::CLBool::from(v: bool) -> Self
 impl core::convert::From<cranelisp_platform::CLBool> for bool
 pub fn bool::from(v: cranelisp_platform::CLBool) -> Self
 impl core::convert::From<cranelisp_platform::CLBool> for cranelisp_platform::CLIO<cranelisp_platform::CLBool>
 pub fn cranelisp_platform::CLIO<cranelisp_platform::CLBool>::from(val: cranelisp_platform::CLBool) -> Self
-impl core::fmt::Debug for cranelisp_platform::CLBool
-pub fn cranelisp_platform::CLBool::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for cranelisp_platform::CLBool
 impl cranelisp_platform::CLType for cranelisp_platform::CLBool
 pub fn cranelisp_platform::CLBool::to_raw(self) -> i64
 impl cranelisp_platform::CLTypeWitness for cranelisp_platform::CLBool
@@ -166,17 +135,12 @@ impl core::marker::UnsafeUnpin for cranelisp_platform::CLBool
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::CLBool
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::CLBool
 #[repr(transparent)] pub struct cranelisp_platform::CLFloat(_)
-impl core::clone::Clone for cranelisp_platform::CLFloat
-pub fn cranelisp_platform::CLFloat::clone(&self) -> cranelisp_platform::CLFloat
 impl core::convert::From<cranelisp_platform::CLFloat> for cranelisp_platform::CLIO<cranelisp_platform::CLFloat>
 pub fn cranelisp_platform::CLIO<cranelisp_platform::CLFloat>::from(val: cranelisp_platform::CLFloat) -> Self
 impl core::convert::From<cranelisp_platform::CLFloat> for f64
 pub fn f64::from(v: cranelisp_platform::CLFloat) -> Self
 impl core::convert::From<f64> for cranelisp_platform::CLFloat
 pub fn cranelisp_platform::CLFloat::from(v: f64) -> Self
-impl core::fmt::Debug for cranelisp_platform::CLFloat
-pub fn cranelisp_platform::CLFloat::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for cranelisp_platform::CLFloat
 impl cranelisp_platform::CLType for cranelisp_platform::CLFloat
 pub fn cranelisp_platform::CLFloat::to_raw(self) -> i64
 impl cranelisp_platform::CLTypeWitness for cranelisp_platform::CLFloat
@@ -211,8 +175,6 @@ impl core::convert::From<f64> for cranelisp_platform::CLIO<cranelisp_platform::C
 pub fn cranelisp_platform::CLIO<cranelisp_platform::CLFloat>::from(val: f64) -> Self
 impl core::convert::From<i64> for cranelisp_platform::CLIO<cranelisp_platform::CLInt>
 pub fn cranelisp_platform::CLIO<cranelisp_platform::CLInt>::from(val: i64) -> Self
-impl<CL: core::fmt::Debug + cranelisp_platform::CLType> core::fmt::Debug for cranelisp_platform::CLIO<CL>
-pub fn cranelisp_platform::CLIO<CL>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<CL: cranelisp_platform::CLType> core::convert::From<cranelisp_platform::CLIO<CL>> for i64
 pub fn i64::from(v: cranelisp_platform::CLIO<CL>) -> Self
 impl<CL> core::marker::Freeze for cranelisp_platform::CLIO<CL>
@@ -223,17 +185,12 @@ impl<CL> core::marker::UnsafeUnpin for cranelisp_platform::CLIO<CL>
 impl<CL> core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::CLIO<CL> where CL: core::panic::unwind_safe::RefUnwindSafe
 impl<CL> core::panic::unwind_safe::UnwindSafe for cranelisp_platform::CLIO<CL> where CL: core::panic::unwind_safe::UnwindSafe
 #[repr(transparent)] pub struct cranelisp_platform::CLInt(_)
-impl core::clone::Clone for cranelisp_platform::CLInt
-pub fn cranelisp_platform::CLInt::clone(&self) -> cranelisp_platform::CLInt
 impl core::convert::From<cranelisp_platform::CLInt> for cranelisp_platform::CLIO<cranelisp_platform::CLInt>
 pub fn cranelisp_platform::CLIO<cranelisp_platform::CLInt>::from(val: cranelisp_platform::CLInt) -> Self
 impl core::convert::From<cranelisp_platform::CLInt> for i64
 pub fn i64::from(v: cranelisp_platform::CLInt) -> Self
 impl core::convert::From<i64> for cranelisp_platform::CLInt
 pub fn cranelisp_platform::CLInt::from(v: i64) -> Self
-impl core::fmt::Debug for cranelisp_platform::CLInt
-pub fn cranelisp_platform::CLInt::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for cranelisp_platform::CLInt
 impl cranelisp_platform::CLType for cranelisp_platform::CLInt
 pub fn cranelisp_platform::CLInt::to_raw(self) -> i64
 impl cranelisp_platform::CLTypeWitness for cranelisp_platform::CLInt
@@ -265,8 +222,6 @@ impl<T> core::panic::unwind_safe::UnwindSafe for cranelisp_platform::CLOwned<T> 
 #[repr(transparent)] pub struct cranelisp_platform::CLString(_)
 impl cranelisp_platform::CLString
 pub fn cranelisp_platform::CLString::as_str(&self) -> &str
-impl core::clone::Clone for cranelisp_platform::CLString
-pub fn cranelisp_platform::CLString::clone(&self) -> cranelisp_platform::CLString
 impl core::convert::From<&str> for cranelisp_platform::CLString
 pub fn cranelisp_platform::CLString::from(s: &str) -> Self
 impl core::convert::From<alloc::string::String> for cranelisp_platform::CLString
@@ -275,9 +230,6 @@ impl core::convert::From<cranelisp_platform::CLString> for alloc::string::String
 pub fn alloc::string::String::from(v: cranelisp_platform::CLString) -> Self
 impl core::convert::From<cranelisp_platform::CLString> for cranelisp_platform::CLIO<cranelisp_platform::CLString>
 pub fn cranelisp_platform::CLIO<cranelisp_platform::CLString>::from(val: cranelisp_platform::CLString) -> Self
-impl core::fmt::Debug for cranelisp_platform::CLString
-pub fn cranelisp_platform::CLString::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for cranelisp_platform::CLString
 impl cranelisp_platform::CLHeap for cranelisp_platform::CLString
 pub fn cranelisp_platform::CLString::dec_rc(&self)
 pub fn cranelisp_platform::CLString::inc_rc(&self)
@@ -300,10 +252,6 @@ impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::CLString
 pub struct cranelisp_platform::Field
 pub cranelisp_platform::Field::field_type: cranelisp_platform::FieldType
 pub cranelisp_platform::Field::name: alloc::string::String
-impl core::clone::Clone for cranelisp_platform::Field
-pub fn cranelisp_platform::Field::clone(&self) -> cranelisp_platform::Field
-impl core::fmt::Debug for cranelisp_platform::Field
-pub fn cranelisp_platform::Field::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_platform::Field
 impl core::marker::Send for cranelisp_platform::Field
 impl core::marker::Sync for cranelisp_platform::Field
@@ -353,15 +301,6 @@ pub struct cranelisp_platform::ParseLoc
 pub cranelisp_platform::ParseLoc::col: u32
 pub cranelisp_platform::ParseLoc::line: u32
 pub cranelisp_platform::ParseLoc::offset: usize
-impl core::clone::Clone for cranelisp_platform::ParseLoc
-pub fn cranelisp_platform::ParseLoc::clone(&self) -> cranelisp_platform::ParseLoc
-impl core::cmp::Eq for cranelisp_platform::ParseLoc
-impl core::cmp::PartialEq for cranelisp_platform::ParseLoc
-pub fn cranelisp_platform::ParseLoc::eq(&self, other: &cranelisp_platform::ParseLoc) -> bool
-impl core::fmt::Debug for cranelisp_platform::ParseLoc
-pub fn cranelisp_platform::ParseLoc::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for cranelisp_platform::ParseLoc
-impl core::marker::StructuralPartialEq for cranelisp_platform::ParseLoc
 impl core::marker::Freeze for cranelisp_platform::ParseLoc
 impl core::marker::Send for cranelisp_platform::ParseLoc
 impl core::marker::Sync for cranelisp_platform::ParseLoc
@@ -415,8 +354,6 @@ pub fn cranelisp_platform::Schema::lookup_type(&self, name: &str) -> core::optio
 pub fn cranelisp_platform::Schema::lookup_variant_field_offset(&self, type_name: &str, variant_name: &str, field_name: &str) -> core::option::Option<usize>
 pub fn cranelisp_platform::Schema::parse(src: &str) -> core::result::Result<Self, cranelisp_platform::SchemaParseError>
 pub fn cranelisp_platform::Schema::variant_names(&self, type_name: &str) -> core::option::Option<alloc::vec::Vec<&str>>
-impl core::fmt::Debug for cranelisp_platform::Schema
-pub fn cranelisp_platform::Schema::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_platform::Schema
 impl core::marker::Send for cranelisp_platform::Schema
 impl core::marker::Sync for cranelisp_platform::Schema
@@ -427,10 +364,6 @@ impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::Schema
 pub struct cranelisp_platform::TypeShape
 pub cranelisp_platform::TypeShape::name: alloc::string::String
 pub cranelisp_platform::TypeShape::variants: alloc::vec::Vec<cranelisp_platform::Variant>
-impl core::clone::Clone for cranelisp_platform::TypeShape
-pub fn cranelisp_platform::TypeShape::clone(&self) -> cranelisp_platform::TypeShape
-impl core::fmt::Debug for cranelisp_platform::TypeShape
-pub fn cranelisp_platform::TypeShape::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_platform::TypeShape
 impl core::marker::Send for cranelisp_platform::TypeShape
 impl core::marker::Sync for cranelisp_platform::TypeShape
@@ -441,10 +374,6 @@ impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::TypeShape
 pub struct cranelisp_platform::Variant
 pub cranelisp_platform::Variant::fields: alloc::vec::Vec<cranelisp_platform::Field>
 pub cranelisp_platform::Variant::name: alloc::string::String
-impl core::clone::Clone for cranelisp_platform::Variant
-pub fn cranelisp_platform::Variant::clone(&self) -> cranelisp_platform::Variant
-impl core::fmt::Debug for cranelisp_platform::Variant
-pub fn cranelisp_platform::Variant::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_platform::Variant
 impl core::marker::Send for cranelisp_platform::Variant
 impl core::marker::Sync for cranelisp_platform::Variant

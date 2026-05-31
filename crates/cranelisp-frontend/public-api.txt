@@ -23,11 +23,7 @@ pub cranelisp_frontend::expand::ExpansionError::MacroAborted::span: cranelisp_ty
 pub cranelisp_frontend::expand::ExpansionError::Malformed
 pub cranelisp_frontend::expand::ExpansionError::Malformed::message: alloc::string::String
 pub cranelisp_frontend::expand::ExpansionError::Malformed::span: cranelisp_types::span::Span
-impl core::clone::Clone for cranelisp_frontend::expand::ExpansionError
-pub fn cranelisp_frontend::expand::ExpansionError::clone(&self) -> cranelisp_frontend::expand::ExpansionError
 impl core::error::Error for cranelisp_frontend::expand::ExpansionError
-impl core::fmt::Debug for cranelisp_frontend::expand::ExpansionError
-pub fn cranelisp_frontend::expand::ExpansionError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for cranelisp_frontend::expand::ExpansionError
 pub fn cranelisp_frontend::expand::ExpansionError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_frontend::expand::ExpansionError
@@ -46,10 +42,6 @@ pub cranelisp_frontend::module_extract::ExtractedDeclarations::import_specs: all
 pub cranelisp_frontend::module_extract::ExtractedDeclarations::mod_decls: alloc::vec::Vec<cranelisp_types::module::ModDecl>
 pub cranelisp_frontend::module_extract::ExtractedDeclarations::path: cranelisp_types::newtype::ModuleFullPath
 pub cranelisp_frontend::module_extract::ExtractedDeclarations::platform_specs: alloc::vec::Vec<cranelisp_types::module::PlatformSpec>
-impl core::clone::Clone for cranelisp_frontend::module_extract::ExtractedDeclarations
-pub fn cranelisp_frontend::module_extract::ExtractedDeclarations::clone(&self) -> cranelisp_frontend::module_extract::ExtractedDeclarations
-impl core::fmt::Debug for cranelisp_frontend::module_extract::ExtractedDeclarations
-pub fn cranelisp_frontend::module_extract::ExtractedDeclarations::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_frontend::module_extract::ExtractedDeclarations
 impl core::marker::Send for cranelisp_frontend::module_extract::ExtractedDeclarations
 impl core::marker::Sync for cranelisp_frontend::module_extract::ExtractedDeclarations
@@ -74,11 +66,7 @@ pub cranelisp_frontend::ExpansionError::MacroAborted::span: cranelisp_types::spa
 pub cranelisp_frontend::ExpansionError::Malformed
 pub cranelisp_frontend::ExpansionError::Malformed::message: alloc::string::String
 pub cranelisp_frontend::ExpansionError::Malformed::span: cranelisp_types::span::Span
-impl core::clone::Clone for cranelisp_frontend::expand::ExpansionError
-pub fn cranelisp_frontend::expand::ExpansionError::clone(&self) -> cranelisp_frontend::expand::ExpansionError
 impl core::error::Error for cranelisp_frontend::expand::ExpansionError
-impl core::fmt::Debug for cranelisp_frontend::expand::ExpansionError
-pub fn cranelisp_frontend::expand::ExpansionError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for cranelisp_frontend::expand::ExpansionError
 pub fn cranelisp_frontend::expand::ExpansionError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_frontend::expand::ExpansionError
@@ -94,10 +82,6 @@ pub cranelisp_frontend::ExtractedDeclarations::import_specs: alloc::vec::Vec<cra
 pub cranelisp_frontend::ExtractedDeclarations::mod_decls: alloc::vec::Vec<cranelisp_types::module::ModDecl>
 pub cranelisp_frontend::ExtractedDeclarations::path: cranelisp_types::newtype::ModuleFullPath
 pub cranelisp_frontend::ExtractedDeclarations::platform_specs: alloc::vec::Vec<cranelisp_types::module::PlatformSpec>
-impl core::clone::Clone for cranelisp_frontend::module_extract::ExtractedDeclarations
-pub fn cranelisp_frontend::module_extract::ExtractedDeclarations::clone(&self) -> cranelisp_frontend::module_extract::ExtractedDeclarations
-impl core::fmt::Debug for cranelisp_frontend::module_extract::ExtractedDeclarations
-pub fn cranelisp_frontend::module_extract::ExtractedDeclarations::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_frontend::module_extract::ExtractedDeclarations
 impl core::marker::Send for cranelisp_frontend::module_extract::ExtractedDeclarations
 impl core::marker::Sync for cranelisp_frontend::module_extract::ExtractedDeclarations
