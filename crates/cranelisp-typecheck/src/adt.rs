@@ -329,27 +329,22 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 span: body_span,
             };
 
-            self.current_symbol_table_mut(state).insert(
-                ctor.name.clone(),
-                ModuleEntry::Def {
-                    scheme: ctor_scheme,
-                    visibility,
-                    docstring: ctor.docstring.clone(),
-                    param_names,
-                    kind: Box::new(DefKind::Constructor {
-                        type_name: fqtn.clone(),
-                        tag: ctor.tag,
-                        field_count: ctor.fields.len(),
-                        internal: ctor.internal,
-                    }),
-                    callees: Vec::new(),
-                    got_slot: None,
-                    trait_origin: None,
-                    seq: 0,
-                    ast: Some(ast),
-                    code: None,
+            let mut builder = ModuleEntry::def(
+                ctor_scheme,
+                DefKind::Constructor {
+                    type_name: fqtn.clone(),
+                    tag: ctor.tag,
+                    field_count: ctor.fields.len(),
+                    internal: ctor.internal,
                 },
-            );
+            )
+            .visibility(visibility)
+            .param_names(param_names)
+            .ast(ast);
+            if let Some(doc) = ctor.docstring.clone() {
+                builder = builder.docstring(doc);
+            }
+            self.current_symbol_table_mut(state).insert(ctor.name.clone(), builder.build());
         }
     }
 
@@ -640,13 +635,26 @@ mod tests {
         let mut tc = TestFixture::new();
         // Phase B Part 2b: bare `Int`/`Bool` references in field types
         // require explicit import per Principle 17 (no Tier 2 universe walk).
-        let import_spec = cranelisp_types::ImportSpec {
-            module_path: cranelisp_types::ModuleFullPath::from("primitives"),
-            alias: None,
-            names: cranelisp_types::ImportNames::Glob,
-            span: Span::SYNTHETIC,
-        };
-        tc.register_imports_self(&[import_spec]).unwrap();
+        // Import registration is no longer a typecheck concern (facade
+        // `typecheck.md` §"Import/export registration is not a typecheck
+        // concern"); seed the needed `Int`/`Bool` import edges directly into
+        // the user module's symbol table, mirroring what the orchestrator's
+        // import installer would land.
+        {
+            let mut user = tc.symbol_table_mut();
+            for ty in ["Int", "Bool"] {
+                user.insert(
+                    Symbol::from(ty),
+                    cranelisp_types::ModuleEntry::Import {
+                        source: cranelisp_types::FQSymbol {
+                            module: cranelisp_types::ModuleFullPath::from("primitives"),
+                            symbol: Symbol::from(ty),
+                        },
+                        visibility: Visibility::Public,
+                    },
+                );
+            }
+        }
         tc.register_type_def_self(
             &TypeName::from("Pair"),
             &None,

@@ -73,17 +73,6 @@ impl ScopeStack {
         result
     }
 
-    /// Return the number of frames (for snapshot/restore).
-    pub fn depth(&self) -> usize {
-        self.frames.len()
-    }
-
-    /// Truncate the scope stack to the given depth (for snapshot/restore).
-    /// Pops extra frames that were pushed during a failed type-check.
-    pub fn truncate_to(&mut self, depth: usize) {
-        self.frames.truncate(depth);
-    }
-
     /// Number of entries in the base (module-level) frame.
     #[allow(dead_code)]
     pub fn base_frame_len(&self) -> usize {
@@ -174,18 +163,4 @@ mod tests {
         assert!(!fv.contains(&1));
     }
 
-    // spec: 03-types §3.5.3 — scope nesting depth tracks push/pop correctly
-    #[test]
-    fn test_push_pop_depth() {
-        let mut stack = ScopeStack::new();
-        assert_eq!(stack.depth(), 1);
-        stack.push_scope();
-        assert_eq!(stack.depth(), 2);
-        stack.push_scope();
-        assert_eq!(stack.depth(), 3);
-        stack.pop_scope();
-        assert_eq!(stack.depth(), 2);
-        stack.pop_scope();
-        assert_eq!(stack.depth(), 1);
-    }
 }

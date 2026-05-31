@@ -43,10 +43,10 @@ impl CompilerSession {
     pub fn re_register_module(&mut self, module: &ModuleFullPath) -> Result<bool, CranelispError>;       // file watcher path; Sprint 67 W1 PIF target — thin forward to `self.shared.scheduler.re_register_module(module)` (currently only `CompileScheduler::re_register_module` exists at `scheduler.rs:412`; the `CompilerSession`-level forward lands in W3)
 
     // Shared cluster-processing entry — used by both compilation worker and eval (per exec-flow-compilation + exec-flow-repl).
-    // Per Decision 44 (amended FIXME 0167 for Approach B + ClusterContext; 2026-05-13 third amendment collapsing the
+    // Per Decision 44 (amended FIXME 0167 for Approach B + SymbolTableAccess; 2026-05-13 third amendment collapsing the
     // two-pass split into a single typecheck call) — a cluster is one form (non-`begin` REPL input), the contents of
     // (begin form₁ ... formN) (explicit REPL cluster), or a file's non-structural forms (batch one-big-cluster). The
-    // orchestrator constructs ClusterContext::Cluster { modules, staging, current_module }, threads &mut ctx through one
+    // orchestrator constructs SymbolTableAccess::Cluster { modules, staging, current_module }, threads &mut ctx through one
     // `cranelisp_typecheck::check_forms` call (typecheck mutates staging via ctx.current_symbol_table_mut() — the same
     // accessor used in committed-mode; the two-pass discipline is internal to check_forms), and commits atomically on
     // success by draining staging into the live SymbolTable.
@@ -168,9 +168,12 @@ pub struct SharedState {
 
     /// Session-level module-alias storage — parallel to `symbol_tables`,
     /// keyed by the alias's full path (e.g., `m.n.str` for an alias `str`
-    /// declared inside module `m.n`). Written by `register_imports` /
-    /// `register_exports` at parse-time; read by §8.6.6 qualified-name
-    /// resolution everywhere a qualified name might traverse an alias.
+    /// declared inside module `m.n`). Written by the parse-time alias
+    /// installer (int-side / frontend StructuralDecl processing — NOT a
+    /// typecheck concern: typecheck reads `module_aliases` read-only during
+    /// §8.6.6 resolution and does not populate it); read by §8.6.6
+    /// qualified-name resolution everywhere a qualified name might traverse
+    /// an alias.
     /// Cross-table mount-vs-submodule conflict check applies at insert time
     /// (see `bounded-contexts.md` §7 "Per-namespace insertion-time conflict
     /// enforcement"). Per Decision pending S69 W3
@@ -346,7 +349,7 @@ pub struct DllHandle {
 | Field | On | Why |
 |---|---|---|
 | `symbol_tables` | SharedState | Per-symbol mutation by workers; per-entry locks via inner DashMap |
-| `module_aliases` | SharedState | Session-level parallel table per `bounded-contexts.md` §7 ("Module aliases live at session level"). Workers read during §8.6.6 qualified-name resolution; the parse-time installer writes via `register_imports` / `register_exports` |
+| `module_aliases` | SharedState | Session-level parallel table per `bounded-contexts.md` §7 ("Module aliases live at session level"). Workers read during §8.6.6 qualified-name resolution; the int-side / frontend-StructuralDecl parse-time alias installer writes (NOT typecheck — the struck `register_imports` / `register_exports` typecheck free functions are gone; typecheck reads aliases read-only and does not populate them, see `facades/typecheck.md` §"Import/export registration is not a typecheck concern") |
 | `next_type_id` | SharedState | Workers borrow `&AtomicU32` to allocate fresh type-var IDs per Decision 44 |
 | `scheduler` | SharedState | Workers call `notify_*` and `wait_for_*` |
 | `cache` | SharedState | Worker reads sidecars + writes `.o`; the underlying file IO is internally synchronised |
@@ -394,7 +397,7 @@ Direction discipline:
 | `file_to_module: Mutex<HashMap<PathBuf, ModuleFullPath>>` | `SharedState` | PFR — facade widens | File watcher cascade needs this from any worker that resolves imports. Worker-shared. Facade adds field. | /dev (int) Wave 3 (facade text only) |
 | `cache_state: Mutex<Option<CacheState>>` | `SharedState` | PFR — facade widens | Manifest + hash-records snapshot. Workers update via `record_cache_hit`. Worker-shared. Facade adds field. | /dev (int) Wave 3 (facade text only) |
 | `symbol_tables: DashMap<ModuleFullPath, SessionSymbolTable>` | `SharedState` | PFR-rename | Facade now names `SymbolTables<Code, ()>` (the materialised typedef in `cranelisp-types` per S69 audit F-1 + the session-level alias-table cascade). Impl uses `SessionSymbolTable` alias (= `SymbolTable<Code, ()>`). Adopt `SymbolTables<Code, ()>` in the impl. | /dev (int) Wave 3 (facade text only) |
-| `module_aliases: ModuleAliases` | `SharedState` | New — session-level table | Parallel to `symbol_tables` per `bounded-contexts.md` §7. Keyed by `ModuleFullPath` (alias's full path). Constructed empty at session init; written by `register_imports` / `register_exports` at parse-time. /dev (int) Wave 3 — add the field; cascade the param to `expand` / `check_forms` / `compile_to_module` / `load_object` / `compile_to_object` / `register_imports` / `register_exports` call sites. | /dev (int) Wave 3 |
+| `module_aliases: ModuleAliases` | `SharedState` | New — session-level table | Parallel to `symbol_tables` per `bounded-contexts.md` §7. Keyed by `ModuleFullPath` (alias's full path). Constructed empty at session init; written by the int-side / frontend-StructuralDecl parse-time alias installer (NOT typecheck — `register_imports` / `register_exports` are struck from the typecheck surface; typecheck reads `module_aliases` read-only). /dev (int) Wave 3 — add the field; cascade the read-only param to `expand` / `check_forms` / `compile_to_module` / `load_object` / `compile_to_object` call sites. | /dev (int) Wave 3 |
 | `next_type_id: AtomicU32` | `SharedState` | PFR — facade widens | Per Decision 44 + facade `typecheck.md` `TypeCheckEnv::new(modules, next_id)` — workers need shared access to allocate fresh type-var IDs. Worker-shared. Facade adds field. | /dev (int) Wave 3 (facade text only) |
 | `current_module: Mutex<ModuleFullPath>` | `SharedState` | **PIF** — relocate to `CompilerSession` | REPL-only state (`/mod` switches it). Workers don't need it — they receive `module` per `PriorityWork`/`NiceWork` work item. Facade's `CompilerSession.current_repl_module: ModuleFullPath` is the right home (no `Mutex` needed — REPL is single-threaded against this field; initiator-only). **Move to `CompilerSession`.** | /dev (int) Wave 3 |
 | `repl_check_state: Mutex<Option<CheckState>>` | `SharedState` | **PIF** — relocate to `CompilerSession` | REPL-only carry-forward across evals. Workers do not use this. **Move to `CompilerSession`.** | /dev (int) Wave 3 |
@@ -1063,7 +1066,7 @@ A **cluster** is the unit of typecheck atomicity (Decision 44):
 - A `(begin form₁ … formN)` REPL input is the explicit multi-form cluster boundary — `eval` unwraps the top-level `begin` and passes the inner forms to `process_cluster`.
 - Batch (file) compilation passes a file's non-structural forms as one big cluster (per spec §5.13.1's MAY-reference-freely rule at file scope).
 
-Frontend and typecheck stay pure with respect to live state (no `Sess`, no `CompileScheduler` dependency — Principle 3). Per Decision 44 (amended FIXME 0167 for Approach B + ClusterContext; 2026-05-13 third amendment collapsing the two-pass split), typecheck may mutate the orchestrator-handed staging `SymbolTable` via the `ctx.current_symbol_table_mut()` accessor — staging mutation is invisible to typecheck and to other workers. Workers park inside `wait_for_*` calls — that IS the worker's allowed parking site, never inside library code. `process_cluster` is THE crossing point where the gap value becomes a scheduler call AND where the `ClusterContext::Cluster` construction mediates the cluster-internal Pass 1 / Pass 2 visibility (the two-pass discipline is internal to `check_forms`).
+Frontend and typecheck stay pure with respect to live state (no `Sess`, no `CompileScheduler` dependency — Principle 3). Per Decision 44 (amended FIXME 0167 for Approach B + SymbolTableAccess; 2026-05-13 third amendment collapsing the two-pass split), typecheck may mutate the orchestrator-handed staging `SymbolTable` via the `ctx.current_symbol_table_mut()` accessor — staging mutation is invisible to typecheck and to other workers. Workers park inside `wait_for_*` calls — that IS the worker's allowed parking site, never inside library code. `process_cluster` is THE crossing point where the gap value becomes a scheduler call AND where the `SymbolTableAccess::Cluster` construction mediates the cluster-internal Pass 1 / Pass 2 visibility (the two-pass discipline is internal to `check_forms`).
 
 ```rust
 // process_cluster runs on workers — takes &SharedState (the worker's Arc clone).
@@ -1074,11 +1077,11 @@ Frontend and typecheck stay pure with respect to live state (no `Sess`, no `Comp
 // Phase 0 (write_structural_decls + defn_order seed) ran in register_module
 // before this work item was dispatched — see "register_module Phase 0" below.
 //
-// Per Decision 44 (amended FIXME 0167 for Approach B + ClusterContext;
+// Per Decision 44 (amended FIXME 0167 for Approach B + SymbolTableAccess;
 // 2026-05-13 third amendment collapsing the two-pass split) — staging is a
 // transient, orchestrator-local SymbolTable that holds Pass 1 signature shells
 // and Pass 2 body-checked entries until cluster commit. The orchestrator
-// constructs ClusterContext::Cluster { modules, staging, current_module } and
+// constructs SymbolTableAccess::Cluster { modules, staging, current_module } and
 // threads &mut ctx to one cranelisp_typecheck::check_forms call. Typecheck
 // reads via ctx.current_symbol_table() (returns View::union(staging, live)) and
 // writes via ctx.current_symbol_table_mut() (returns &mut staging). The 91
@@ -1114,9 +1117,9 @@ pub fn process_cluster(shared: &SharedState, forms: Vec<Sexp>, scope: &ModuleFul
         }
         if needs_retry_after_expand { continue; }
 
-        // 2. Construct staging + ClusterContext.
+        // 2. Construct staging + SymbolTableAccess.
         let mut staging: SymbolTable<Code, ()> = SymbolTable::new(scope.clone());
-        let mut ctx = ClusterContext::Cluster {
+        let mut ctx = SymbolTableAccess::Cluster {
             modules: &shared.symbol_tables,
             staging: &mut staging,
             current_module: scope.clone(),
@@ -1201,7 +1204,7 @@ fn ensure_registered(shared: &SharedState, module: &ModuleFullPath) -> Result<()
 
 **Atomicity guarantees**:
 - A failure at any point — `expand` Gap that the scheduler resolves to a cycle, `check_forms` Gap, `check_forms` TypeError — drops the staging `SymbolTable` on the floor when the function frame returns. The live `SymbolTable` is byte-identical to its pre-cluster state. The live invariant ("if it's in the live table, it's checked AND committed") holds across cluster boundaries; only completed clusters are visible to other workers.
-- Inside `check_forms`, Pass 1's signature shells become visible to Pass 2 through `ctx.current_symbol_table()` — which returns a `View::union(staging, live)` in `ClusterContext::Cluster` mode. That is how mutual recursion / forward references resolve. Other workers seeing the live table mid-cluster cannot observe staging contents; staging is orchestrator-local and is held under the orchestrator's stack-frame `&mut` borrow inside the `ClusterContext`.
+- Inside `check_forms`, Pass 1's signature shells become visible to Pass 2 through `ctx.current_symbol_table()` — which returns a `View::union(staging, live)` in `SymbolTableAccess::Cluster` mode. That is how mutual recursion / forward references resolve. Other workers seeing the live table mid-cluster cannot observe staging contents; staging is orchestrator-local and is held under the orchestrator's stack-frame `&mut` borrow inside the `SymbolTableAccess`.
 
 **Termination**. Each `handle_gap` call advances the dependency state monotonically (registers a module, satisfies a typecheck wait, satisfies an inmem wait). Subsequent retries see strictly more state than the previous attempt; the loop terminates when expand + both passes succeed, when a non-gap error fires, or when the scheduler returns `SchedulerError::Cycle` (mutual import per Decision 30).
 
@@ -1338,7 +1341,7 @@ The integration crate imports from:
 
 - **`cranelisp-types`** — the full set above.
 - **`cranelisp-frontend`** — `parse`, `expand`, `build_form` (returns `Vec<ParsedEntry>` per S66 FIXME 0156; replaces the prior `build_ast` shape at the per-form boundary), `build_expr`, `extract_module_declarations`, `synthesize_macro_clause_defn`, `next_synthetic_span`, `is_defmacro`, `is_begin`, `flatten_begin`, `expand_quasiquotes`, `parse_preserving_comments`, `ParseProduct`, `Ast`, `ExpansionError`. (Per FIXME 0156 resolution: `parse_defmacro` becomes `pub(crate)` inside `build_form`'s dispatcher; `DefmacroInfo` and `ParsedEntry` move to `cranelisp-types` — int imports both from there.)
-- **`cranelisp-typecheck`** — `check_forms` (per Decision 44's 2026-05-13 third amendment — single-call cluster surface; the internal two-pass discipline does not cross the facade), `CheckResult`, `CheckError`, `CheckState`, `ClusterContext`, `TypeCheckEnv`, the trace install hook. (`register_builtins` is no longer consumed from typecheck — synthetic-module assembly is deleted from typecheck per FIXME 0241; `int`'s own session-init seeding routine reconstructs the mount, see §"Session init" + FIXME 0242.)
+- **`cranelisp-typecheck`** — `check_forms` (per Decision 44's 2026-05-13 third amendment — single-call cluster surface; the internal two-pass discipline does not cross the facade), `CheckResult`, `CheckError`, `CheckState`, `SymbolTableAccess`, `TypeCheckEnv`, the trace install hook. (`register_builtins` is no longer consumed from typecheck — synthetic-module assembly is deleted from typecheck per FIXME 0241; `int`'s own session-init seeding routine reconstructs the mount, see §"Session init" + FIXME 0242.)
 - **`cranelisp-backend`** — `compile_to_module` (returns `Result<CompilationArtifacts, CompilationError>` per Decision 41 + S70 Phase B amendment; writes `Code::Jit` and the GOT slot ptr directly into the passed-in shared stores via `&self`-interior-mutable methods; returns the always-created introspection contributions as `CompilationArtifacts` by value — int composes its `Introspection` struct from the artefact plus parse-time fields), `produce_disasm` (the on-demand disassembly free function — int invokes when a REPL `/disasm` request fires), `CompilationArtifacts` (the value-returned per-call introspection contributions), `load_object`, `compile_to_object`, `Code` (re-exported per Decision 41), `LinkerArtefact`, `ObjectArtefact`, `Jit`, `Linker`, `CompilationError` (with `SymbolNotCompilable` variant per §2.7), `GotObserver` + `GotEvent` + `GotEventTag` + `GotProvenance` + `register_got_observer` (per FIXME 0099 — backend-originated observer types, int registers consumer state). Cranelift `Module`, `JITModule`, `ObjectModule`, `JITBuilder` (via cranelift crates re-exported from backend).
 - **`cranelisp-intrinsics`** — backend-emitted intrinsic extern functions registered with the JIT (via `JITBuilder::symbol`) per Decision 43: `cranelisp_alloc`, `heap_alloc_payload`, `heap_dealloc`, `rc_inc`, `rc_dec`, `consume_shallow`, `dec_shallow_io`, `vec_*`, `heap_alloc_string`, `string_read`, `sconcat`, `quote_sexp`, `cranelisp_run_io`, `io_run`, `run_io_trampoline`, `ivar_*`, `runtime_panic`. Stats accessors (`alloc_count`, `dealloc_count`, `bytes_allocated`, `bytes_current`, `bytes_peak`, `reset_counts`) for `/mem`. The IO observer extension point (`IoEvent`, `IoEventTag`, `IoObserver`, `register_io_observer`, `trace_anchor`) per Decision 40 — int registers an `IoObserver` at session init when REPL/trace mode is on or `CRANELISP_IO_TRACE=1`.
 - **`cranelisp-primitives`** — one pub item consumed: the static `PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<Code, ()>>>` (per Decision 48 — S68). Session init `Arc::clone`s it into `shared.symbol_tables` at `ModuleFullPath::primitives()`. The cloned table carries its own `Arc<GotTable>` (populated at static-init with raw `*const u8` fn ptrs for every non-inlined primitive: string ops, marshal, per-type to-string, int/float/bool conversions, `not`). From the instant session-init completes, primitives dispatch is functionally equivalent to any other module — the standard cross-module GOT-indirect path (Decision 23, Decision 31) resolves `(let [f +] (f 1 2))` via `__cranelisp_got_primitives[slot]`. **No special case in backend's `symbol_lookup_fn`** — the per-process static `Arc<GotTable>` IS the SymbolTable-GOT row of Decision 23's two-GOT model. The pre-S68 per-fn `pub extern "C"` items demote to `pub(crate)` (with explicit init-hook discipline; see "Link orchestration" below for exe-bundle's force-link replacement). Inline substitution in backend (`primitives_inline.rs`) remains a separate code-size + dispatch-cost optimisation — identical semantics, faster code.
@@ -1418,6 +1421,6 @@ These hold across sprints — the contract `int` makes with the rest of the work
 
 15. **`SharedState` vs `CompilerSession` split is mode-aligned (Decision 38).** `SharedState` carries everything reachable by workers — `symbol_tables`, `scheduler`, `cache`, `kept_dlls`, `introspection`, read-only configuration. `CompilerSession` carries everything reachable only by the initiator thread — watcher channel, REPL eval cursor, worker pool handles, accumulated warnings. Workers receive `Arc<SharedState>` at spawn, never see `CompilerSession`. No worker-side merge step: all mutation happens through interior mutability of the contained types under per-cell locks.
 
-16. **Per-symbol mutability after Phase 0 (Decision 38, FIXMEs 0008/0009; Decision 44 amended FIXME 0167; 2026-05-13 third amendment).** `register_module` runs Phase 0 synchronously: `parse → entry(m).or_default() → write_structural_decls → drop RefMut`. After Phase 0, all live `SymbolTable` access is `&SymbolTable` + per-entry inner-DashMap locks. `process_cluster` uses the `&shared.symbol_tables` DashMap reference (housed under `ClusterContext::Cluster.modules`) for cross-module reads, not `.entry().or_default()`. The single-call typecheck surface `cranelisp_typecheck::check_forms` takes `&mut ClusterContext<'_, C, L>`; in `Cluster` mode the orchestrator owns a separate transient `SymbolTable` ("staging") that is `&mut`-borrowed inside `ClusterContext` for the lifetime of the cluster — typecheck mutates staging via the `current_symbol_table_mut()` accessor, oblivious to the staging-vs-live distinction. The two-pass discipline lives inside `check_forms`'s frame, not on the facade. Staging is never published — it dissolves on cluster failure or drains into live atomically on success. The only `&mut SymbolTable` operations on the **live** table are Phase 0 (structural decls + defn_order seed) and per-cluster REPL appends to `defn_order` during `insert_cluster`.
+16. **Per-symbol mutability after Phase 0 (Decision 38, FIXMEs 0008/0009; Decision 44 amended FIXME 0167; 2026-05-13 third amendment).** `register_module` runs Phase 0 synchronously: `parse → entry(m).or_default() → write_structural_decls → drop RefMut`. After Phase 0, all live `SymbolTable` access is `&SymbolTable` + per-entry inner-DashMap locks. `process_cluster` uses the `&shared.symbol_tables` DashMap reference (housed under `SymbolTableAccess::Cluster.modules`) for cross-module reads, not `.entry().or_default()`. The single-call typecheck surface `cranelisp_typecheck::check_forms` takes `&mut SymbolTableAccess<'_, C, L>`; in `Cluster` mode the orchestrator owns a separate transient `SymbolTable` ("staging") that is `&mut`-borrowed inside `SymbolTableAccess` for the lifetime of the cluster — typecheck mutates staging via the `current_symbol_table_mut()` accessor, oblivious to the staging-vs-live distinction. The two-pass discipline lives inside `check_forms`'s frame, not on the facade. Staging is never published — it dissolves on cluster failure or drains into live atomically on success. The only `&mut SymbolTable` operations on the **live** table are Phase 0 (structural decls + defn_order seed) and per-cluster REPL appends to `defn_order` during `insert_cluster`.
 
 17. **Introspection is mode-conditional (Decisions 38, 39).** `shared.introspection` is `Some(DashMap)` iff REPL mode OR `CRANELISP_CODEGEN_TRACE` is set. Production batch leaves it `None` and pays zero per-symbol metadata overhead. Source text is per-defn on `Introspection.source` — there is no module-global source store. Parse errors capture context inline (in `ErrorLocation.context`); typecheck/codegen errors capture coordinates (`line_col` + `fq`) and let the formatter resolve source via introspection at display time.

@@ -1,5 +1,7 @@
 # int — Sprint 69 facade audit (re-authored against the architectural configuration)
 
+> **Naming note (facade-coherence pass, post-S72).** The boundary type `ClusterContext` is renamed `SymbolTableAccess` — every `ClusterContext` mention below reads as `SymbolTableAccess` (the `Live` / `Cluster` variant names are unchanged). See `facades/typecheck.md` §"Cluster check scaffolding" naming rationale.
+
 **Owner**: `/design (int)`
 **Scope**: `src/` (binary crate — no `public-api.txt`; audited via direct source read) + `crates/cranelisp-exe-bundle/` (11-line `public-api.txt` + 101-line `lib.rs`).
 **Audit-as-of**: 2026-05-19 (re-author).

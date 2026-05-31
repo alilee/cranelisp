@@ -1,6 +1,6 @@
 //! `check_forms` — single-function cluster-typecheck entry surface.
 //!
-//! Per Decision 44 (amended FIXME 0167 — Approach B + `ClusterContext`;
+//! Per Decision 44 (amended FIXME 0167 — Approach B + `SymbolTableAccess`;
 //! 2026-05-13 third amendment collapsing the two-pass split into one call):
 //! the typecheck entry surface used by `int`'s shared `process_cluster` is
 //! **one** free function per cluster — `check_forms`. The internal two-pass
@@ -13,7 +13,7 @@
 //!
 //! `check_forms` is pure with respect to live state; staging mutation flows
 //! through the existing `current_symbol_table_mut` accessor in
-//! `ClusterContext` and is invisible to typecheck. Cluster atomicity is
+//! `SymbolTableAccess` and is invisible to typecheck. Cluster atomicity is
 //! preserved because staging is orchestrator-local and is committed (drained
 //! into live) only on whole-cluster `Ok`.
 //!
@@ -22,36 +22,35 @@
 //! staging `ModuleEntry::Def`'s existing fields (`callees`, `ast`
 //! annotations, additional staged `Def` entries for mono specialisations).
 //!
-//! ## Wave 3b-2c.1 (write-redirection plumbing)
+//! ## Staging redirection (cluster mode)
 //!
-//! When `ctx` is `ClusterContext::Cluster { staging, current_module, .. }`,
+//! When `ctx` is `SymbolTableAccess::Cluster { staging, current_module, .. }`,
 //! `check_forms` extracts the `&mut SymbolTable` staging reference and wraps
 //! it in a local `RefCell` whose `&` is passed to `TypeCheckEnv` via
 //! `new_with_staging`. The env's `current_symbol_table_mut(state)` accessor
 //! checks `state.current_module` against the staging module and returns
 //! `SymbolTableMut::Staging(...)` (cluster) or `SymbolTableMut::Live(...)`
-//! (other modules / live mode). This makes the 91 register-call sites
-//! redirect to staging transparently in cluster mode while remaining
+//! (other modules / live mode). This makes the register-call sites redirect
+//! writes to staging transparently in cluster mode while remaining
 //! semantically unchanged in live mode.
 //!
-//! Reads (`current_symbol_table`) currently still hit live in both modes;
-//! union reads (staging-first-then-live, per facade `View`) are Wave 3b-2c.1
-//! follow-up — see `design/arch/fixmes/` for the read-union plumbing FIXME
-//! filed by this change. Intra-cluster forward references (Pass 2 reads a
-//! signature Pass 1 wrote into staging) therefore depend on the follow-up
-//! and are not yet exercised by `check_forms` in cluster mode.
+//! Reads (`current_symbol_table`) use the staging-first union `View` in
+//! cluster mode: the accessor returns `SymbolTableRead::Cluster { staging,
+//! live }` whose `.view()` is `View::union(staging, live)` (staging-first),
+//! and `SymbolTableRead::Live(...)` (`View::single(live)`) in live mode.
+//! Intra-cluster forward references therefore work: Pass 2 reads a signature
+//! Pass 1 wrote into staging, because the union view sees staging entries
+//! ahead of live.
 
 use std::cell::RefCell;
 
-use dashmap::DashMap;
-
 use cranelisp_types::{
-    CodeStore, Defn, ErrorLocation, LinkerStore, ModuleFullPath, ModuleStrategy, ParsedEntry,
-    Span, SymbolTable, TopLevel,
+    CodeStore, Defn, ErrorLocation, LinkerStore, ModuleAliases, ModuleStrategy, ParsedEntry,
+    Span, SymbolTable, SymbolTables, TopLevel,
 };
 
 use crate::checker::{CheckState, TypeCheckEnv};
-use crate::cluster::ClusterContext;
+use crate::cluster::SymbolTableAccess;
 use crate::program::{CheckPass, ModuleCheckAccumulator};
 use crate::result::CheckError;
 
@@ -62,9 +61,11 @@ use crate::result::CheckError;
 /// `ModuleCheckAccumulator` across the two passes so Pass 1's
 /// `defn_type_vars` flow into Pass 2.
 ///
-/// `ctx` carries the staging-vs-live dispatch (see `ClusterContext`); writes
-/// flow through `ctx.current_symbol_table_mut()` (currently writes go to live
-/// in both modes — full staging redirection is Wave 3a-α follow-up). The
+/// `ctx` carries the staging-vs-live dispatch (see `SymbolTableAccess`); writes
+/// flow through `ctx.current_symbol_table_mut()` — redirected to staging in
+/// cluster mode, to live otherwise. Reads flow through
+/// `ctx.current_symbol_table()`, which serves a staging-first union `View`
+/// in cluster mode so intra-cluster forward references resolve. The
 /// `symbol_tables` parameter is the shared-borrow universe of modules used
 /// for cross-module FQ resolution.
 ///
@@ -81,8 +82,9 @@ use crate::result::CheckError;
 /// into live atomically.
 pub fn check_forms<C, L>(
     parsed: Vec<ParsedEntry>,
-    ctx: &mut ClusterContext<'_, C, L>,
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    ctx: &mut SymbolTableAccess<'_, C, L>,
+    symbol_tables: &SymbolTables<C, L>,
+    module_aliases: &ModuleAliases,
 ) -> Result<(), CheckError>
 where
     C: CodeStore,
@@ -98,16 +100,16 @@ where
     // writes; the live table must exist before staging can shadow it).
     let next_id = std::sync::atomic::AtomicU32::new(0);
     {
-        let env = TypeCheckEnv::<C, L>::new(symbol_tables, &next_id);
+        let env = TypeCheckEnv::<C, L>::new(symbol_tables, &next_id, module_aliases);
         env.ensure_module_exists(&current_module);
     }
 
     // Construct the working env. In cluster mode, route writes targeting
     // `current_module` to a LOCAL `RefCell<&mut SymbolTable>` whose inner
-    // `&mut` reborrows the staging table out of the `ClusterContext::Cluster`
+    // `&mut` reborrows the staging table out of the `SymbolTableAccess::Cluster`
     // variant. The local cell binds outer-borrow + inner-mut to the same
     // call-frame lifetime, satisfying the invariance constraint on
-    // `new_with_staging`'s collapsed `'a == 'a` shape. ClusterContext's own
+    // `new_with_staging`'s collapsed `'a == 'a` shape. SymbolTableAccess's own
     // internal `RefCell` is the same data viewed through a different label —
     // we hold `ctx` mutably exclusive across this call frame, so handing the
     // reborrowed inner pointer to the local cell preserves single-writer
@@ -122,7 +124,7 @@ where
     // — it makes `Cluster` mode actually stage instead of leaking writes to
     // live.
     let staging_cell: Option<RefCell<&mut SymbolTable<C, L>>> = match ctx {
-        ClusterContext::Cluster { staging, .. } => {
+        SymbolTableAccess::Cluster { staging, .. } => {
             // `staging: &mut RefCell<&'a mut SymbolTable<C, L>>` — take a
             // mutable handle through `get_mut`, then reborrow the inner
             // `&mut SymbolTable` into a fresh `&mut` scoped to this call
@@ -133,7 +135,7 @@ where
             let reborrow: &mut SymbolTable<C, L> = inner;
             Some(RefCell::new(reborrow))
         }
-        ClusterContext::Live { .. } => None,
+        SymbolTableAccess::Live { .. } => None,
     };
 
     let env = match &staging_cell {
@@ -142,8 +144,9 @@ where
             &next_id,
             current_module.clone(),
             cell,
+            module_aliases,
         ),
-        None => TypeCheckEnv::<C, L>::new(symbol_tables, &next_id),
+        None => TypeCheckEnv::<C, L>::new(symbol_tables, &next_id, module_aliases),
     };
 
     // Advance `next_id` past any type variable IDs already used in stored
@@ -182,7 +185,7 @@ where
     for form in &working_program {
         let result = env
             .check_form(&current_module, form, CheckPass::Register, &mut state, &mut accumulator)
-            .map_err(map_cranelisp_error)?;
+            .map_err(|e| lift_error(e, &state))?;
         env.merge_form_result(&current_module, &mut state, &mut accumulator, result);
     }
 
@@ -193,7 +196,7 @@ where
         let form = TopLevel::Defn(defn.clone());
         let result = env
             .check_form(&current_module, &form, CheckPass::Register, &mut state, &mut accumulator)
-            .map_err(map_cranelisp_error)?;
+            .map_err(|e| lift_error(e, &state))?;
         env.merge_form_result(&current_module, &mut state, &mut accumulator, result);
     }
     // Put defaults back so finalize knows about them.
@@ -206,7 +209,7 @@ where
     for form in &working_program {
         let result = env
             .check_form(&current_module, form, CheckPass::CheckBody, &mut state, &mut accumulator)
-            .map_err(map_cranelisp_error)?;
+            .map_err(|e| lift_error(e, &state))?;
         env.merge_form_result(&current_module, &mut state, &mut accumulator, result);
     }
 
@@ -216,7 +219,7 @@ where
         let form = TopLevel::Defn(defn.clone());
         let result = env
             .check_form(&current_module, &form, CheckPass::CheckBody, &mut state, &mut accumulator)
-            .map_err(map_cranelisp_error)?;
+            .map_err(|e| lift_error(e, &state))?;
         env.merge_form_result(&current_module, &mut state, &mut accumulator, result);
     }
 
@@ -240,9 +243,30 @@ where
             &working_program,
             ModuleStrategy::Additive,
         )
-        .map_err(map_cranelisp_error)?;
+        .map_err(|e| lift_error(e, &state))?;
 
     Ok(())
+}
+
+/// Lift a failed inner-dispatcher `CranelispError` to `CheckError`, promoting
+/// it to `CheckError::Gap` when a cross-module resolution gap was recorded on
+/// `state.pending_gap` by the resolution caller.
+///
+/// `resolve_qualified` reports a gap in-band (on its `(scheme, gap)` return)
+/// when an alias-resolved target module is ABSENT from the session symbol
+/// tables. Because resolution returns `(None, gap)` so the `lookup` fallback
+/// chain can still satisfy the name via another candidate path, the
+/// `&mut`-holding caller (`infer_var` / `lookup_constructor_scheme`) stores
+/// the surviving gap on `state.pending_gap`. The gap surfaces here only once
+/// the overall lookup fails and the per-form dispatcher reports a not-found
+/// `TypeError`. At that point the pending gap (carrying the alias-resolved
+/// target module) is the precise cross-module cause, so we lift to `Gap`;
+/// otherwise the original `TypeError` stands.
+fn lift_error(e: cranelisp_types::CranelispError, state: &CheckState) -> CheckError {
+    if let Some(gap) = state.pending_gap.clone() {
+        return CheckError::Gap(gap);
+    }
+    map_cranelisp_error(e)
 }
 
 /// Convert a `ParsedEntry` into the `TopLevel` shape that the existing
@@ -305,13 +329,18 @@ fn map_cranelisp_error(e: cranelisp_types::CranelispError) -> CheckError {
 mod tests {
     use super::*;
     use cranelisp_types::{
-        ConstructorDef, DefKind, DefnVariant, Expr, FieldDef, ModuleEntry, Span, Symbol, TraitDecl,
-        TraitImpl, TypeExpr, TypeName, Visibility,
+        ConstructorDef, DefKind, DefnVariant, Expr, FieldDef, ModuleEntry, ModuleFullPath, Span,
+        Symbol, TraitDecl, TraitImpl, TypeExpr, TypeName, Visibility,
     };
+    use dashmap::DashMap;
     use std::sync::Arc;
 
     fn module_path() -> ModuleFullPath {
         ModuleFullPath::from("test_form_mod")
+    }
+
+    fn no_aliases() -> ModuleAliases {
+        ModuleAliases::new()
     }
 
     fn modules() -> Arc<DashMap<ModuleFullPath, SymbolTable<(), ()>>> {
@@ -415,9 +444,9 @@ mod tests {
     #[test]
     fn check_forms_single_defn_round_trip() {
         let modules = modules();
-        let mut ctx: ClusterContext<'_, (), ()> = ClusterContext::live(&modules, module_path());
+        let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
         let parsed = vec![one_variant_defn("solo")];
-        check_forms::<(), ()>(parsed, &mut ctx, &modules).expect("clean check_forms");
+        check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases()).expect("clean check_forms");
 
         let guard = modules.get(&module_path()).expect("module exists");
         let entry = guard.get("solo").expect("solo registered");
@@ -437,7 +466,7 @@ mod tests {
     #[test]
     fn check_forms_forward_reference_works() {
         let modules = modules();
-        let mut ctx: ClusterContext<'_, (), ()> = ClusterContext::live(&modules, module_path());
+        let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
 
         // first: () -> Int = 0
         // second: () -> Int = first  (calls first)
@@ -465,7 +494,7 @@ mod tests {
         };
 
         let parsed = vec![first, second];
-        check_forms::<(), ()>(parsed, &mut ctx, &modules).expect("clean check_forms");
+        check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases()).expect("clean check_forms");
 
         let guard = modules.get(&module_path()).expect("module exists");
         assert!(guard.get("first").is_some(), "first registered");
@@ -482,12 +511,12 @@ mod tests {
     #[test]
     fn check_forms_pass_state_threading_is_intact() {
         let modules = modules();
-        let mut ctx: ClusterContext<'_, (), ()> = ClusterContext::live(&modules, module_path());
+        let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
         let parsed = vec![one_variant_defn("twopass")];
         // Pre-S66: this would fail with "missing type vars" because Pass 1
         // and Pass 2 ran in separate calls with separate accumulators.
         // Post-S66: the accumulator persists; this succeeds.
-        check_forms::<(), ()>(parsed, &mut ctx, &modules)
+        check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases())
             .expect("state threading should keep type vars alive across passes");
     }
 
@@ -497,7 +526,7 @@ mod tests {
     #[test]
     fn check_forms_handles_mixed_form_cluster() {
         let modules = modules();
-        let mut ctx: ClusterContext<'_, (), ()> = ClusterContext::live(&modules, module_path());
+        let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
         let parsed = vec![
             empty_typedef("MyT"),
             empty_traitdecl("MyTr"),
@@ -506,7 +535,7 @@ mod tests {
             macro_entry("m"),
             constructor_entry(),
         ];
-        let r = check_forms::<(), ()>(parsed, &mut ctx, &modules);
+        let r = check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases());
         // The TypeDef + TraitDecl + Defn registrations should succeed; the
         // TraitImpl with an empty method set is also valid. Macros and
         // constructors are no-ops at this surface.
@@ -531,14 +560,14 @@ mod tests {
     fn check_forms_cluster_mode_reachable() {
         let modules = modules();
         let mut staging = SymbolTable::<(), ()>::new_with_params(module_path());
-        let mut ctx: ClusterContext<'_, (), ()> =
-            ClusterContext::cluster(&modules, &mut staging, module_path());
+        let mut ctx: SymbolTableAccess<'_, (), ()> =
+            SymbolTableAccess::cluster(&modules, &mut staging, module_path());
         let parsed = vec![one_variant_defn("clustered")];
-        let r = check_forms::<(), ()>(parsed, &mut ctx, &modules);
+        let r = check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases());
         assert!(r.is_ok(), "cluster-mode check_forms returns structured Result: {r:?}");
     }
 
-    /// Wave 3b-2c.1 acceptance test: in `ClusterContext::Cluster` mode,
+    /// Wave 3b-2c.1 acceptance test: in `SymbolTableAccess::Cluster` mode,
     /// `check_forms` writes go to the orchestrator-handed staging table,
     /// NOT to the per-module live table. This is the structural pre-S66
     /// guarantee that makes whole-cluster atomic commit-or-discard
@@ -563,10 +592,10 @@ mod tests {
 
         let mut staging = SymbolTable::<(), ()>::new_with_params(module_path());
         {
-            let mut ctx: ClusterContext<'_, (), ()> =
-                ClusterContext::cluster(&modules, &mut staging, module_path());
+            let mut ctx: SymbolTableAccess<'_, (), ()> =
+                SymbolTableAccess::cluster(&modules, &mut staging, module_path());
             let parsed = vec![one_variant_defn("staged_defn")];
-            check_forms::<(), ()>(parsed, &mut ctx, &modules)
+            check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases())
                 .expect("cluster mode check_forms succeeds");
         }
 
@@ -598,7 +627,7 @@ mod tests {
         }
     }
 
-    /// Wave 3b-2c.3 acceptance test (FIXME 0179): in `ClusterContext::Cluster`
+    /// Wave 3b-2c.3 acceptance test (FIXME 0179): in `SymbolTableAccess::Cluster`
     /// mode, a write then a read-back from the SAME `check_forms` call finds
     /// the written entry — not via the live table (which is untouched per
     /// invariant 2), but through the staging-first read union plumbed via
@@ -622,8 +651,8 @@ mod tests {
         let modules = modules();
         let mut staging = SymbolTable::<(), ()>::new_with_params(module_path());
         {
-            let mut ctx: ClusterContext<'_, (), ()> =
-                ClusterContext::cluster(&modules, &mut staging, module_path());
+            let mut ctx: SymbolTableAccess<'_, (), ()> =
+                SymbolTableAccess::cluster(&modules, &mut staging, module_path());
             // first: () -> Int = 0
             // second: () -> Int = first  (calls first)
             let first = one_variant_defn("first");
@@ -649,7 +678,7 @@ mod tests {
                 span: Span::SYNTHETIC,
             };
             let parsed = vec![first, second];
-            check_forms::<(), ()>(parsed, &mut ctx, &modules).expect(
+            check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases()).expect(
                 "cluster-mode forward reference must resolve via staging read union",
             );
         }
@@ -676,9 +705,9 @@ mod tests {
     #[test]
     fn check_forms_live_mode_writes_visible_on_modules() {
         let modules = modules();
-        let mut ctx: ClusterContext<'_, (), ()> = ClusterContext::live(&modules, module_path());
+        let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
         let parsed = vec![one_variant_defn("livewrite")];
-        check_forms::<(), ()>(parsed, &mut ctx, &modules).expect("live mode");
+        check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases()).expect("live mode");
         let guard = modules.get(&module_path()).expect("module exists");
         assert!(guard.get("livewrite").is_some());
     }
@@ -689,9 +718,9 @@ mod tests {
     #[test]
     fn check_forms_macro_only_is_noop() {
         let modules = modules();
-        let mut ctx: ClusterContext<'_, (), ()> = ClusterContext::live(&modules, module_path());
+        let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
         let parsed = vec![macro_entry("m"), constructor_entry()];
-        let r = check_forms::<(), ()>(parsed, &mut ctx, &modules);
+        let r = check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases());
         assert!(r.is_ok(), "macro-only / constructor-only cluster is a no-op: {r:?}");
     }
 
@@ -730,9 +759,9 @@ mod tests {
             span: Span::new(0, 14),
         };
         {
-            let mut ctx: ClusterContext<'_, (), ()> =
-                ClusterContext::live(&modules, module_path());
-            check_forms::<(), ()>(vec![id_defn], &mut ctx, &modules)
+            let mut ctx: SymbolTableAccess<'_, (), ()> =
+                SymbolTableAccess::live(&modules, module_path());
+            check_forms::<(), ()>(vec![id_defn], &mut ctx, &modules, &no_aliases())
                 .expect("call 1: register id as constrained-poly");
         }
 
@@ -772,9 +801,9 @@ mod tests {
             docstring: None,
             span: Span::new(80, 110),
         };
-        let mut ctx2: ClusterContext<'_, (), ()> =
-            ClusterContext::live(&modules, module_path());
-        check_forms::<(), ()>(vec![caller_defn], &mut ctx2, &modules)
+        let mut ctx2: SymbolTableAccess<'_, (), ()> =
+            SymbolTableAccess::live(&modules, module_path());
+        check_forms::<(), ()>(vec![caller_defn], &mut ctx2, &modules, &no_aliases())
             .expect("call 2: monomorphise (id 7) — must not overflow");
 
         // Assert: `id$Int` mono entry is registered in live.
@@ -783,5 +812,103 @@ mod tests {
             guard.get("id$Int").is_some(),
             "id$Int should be registered after call 2 mono"
         );
+    }
+
+    /// A defn whose body references the qualified name `module/name`, where
+    /// `module` is the absolute module path component of the reference.
+    fn defn_referencing(name: &str, qualified_ref: &str) -> ParsedEntry {
+        ParsedEntry::Def {
+            name: Symbol::from(name),
+            variants: vec![DefnVariant {
+                params: vec![],
+                body: Expr::Var {
+                    name: Symbol::from(qualified_ref),
+                    span: Span::new(11, 11 + qualified_ref.len() as u32),
+                    inferred_type: None,
+                },
+                span: Span::new(10, 40),
+            }],
+            visibility: Visibility::Private,
+            docstring: None,
+            span: Span::new(0, 41),
+        }
+    }
+
+    /// Gap on a missing module (plain, no alias): an FQ value reference
+    /// `some.mod/name` whose `some.mod` module is ABSENT from the session
+    /// symbol tables surfaces `CheckError::Gap(SymbolTypechecked(fq))` with
+    /// `fq.module == "some.mod"` — the named target module, not the local
+    /// module.
+    ///
+    /// spec: facade `typecheck.md` invariant 8 (Gap) §"Enactment";
+    /// `bounded-contexts.md` §7 (cross-module resolution); ResolutionGap.
+    #[test]
+    fn gap_on_missing_module_plain() {
+        let modules = modules();
+        let mut ctx: SymbolTableAccess<'_, (), ()> =
+            SymbolTableAccess::live(&modules, module_path());
+        // Body references `some.mod/thing`; `some.mod` is not in `modules`.
+        let parsed = vec![defn_referencing("uses_missing", "some.mod/thing")];
+        let r = check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases());
+        match r {
+            Err(CheckError::Gap(cranelisp_types::ResolutionGap::SymbolTypechecked(fq))) => {
+                assert_eq!(
+                    fq.module.as_ref(),
+                    "some.mod",
+                    "gap module must be the named (absent) target module"
+                );
+                assert_eq!(fq.symbol.as_ref(), "thing", "gap symbol is the local name");
+            }
+            other => panic!("expected Gap(SymbolTypechecked) for missing module, got {other:?}"),
+        }
+    }
+
+    /// Gap on a missing module reached VIA an alias: an alias `m/real`
+    /// (owner-prefixed key `<owner>.real`) targeting `real.target`, where
+    /// `real.target` is ABSENT. A reference through the alias must FOLLOW the
+    /// alias before deciding the gap — the gap's `fq.module` is the resolved
+    /// target `real.target`, NOT the bare alias prefix. This proves §8.6.6
+    /// alias substitution runs ahead of gap detection.
+    ///
+    /// spec: facade `typecheck.md` invariant 8 (Gap) §"Enactment";
+    /// `bounded-contexts.md` §7 (§8.6.6 longest-prefix alias substitution).
+    #[test]
+    fn gap_on_missing_module_via_alias() {
+        let modules = modules();
+        // Alias table: key `r` -> target `real.target`. `lookup` probes the
+        // child-of-current path (`<current_module>.r`) first, then the
+        // ABSOLUTE module component `r`. The §8.6.6 longest-prefix-match
+        // substitutes the alias on the absolute probe (`r` is a prefix of the
+        // queried `r`), rewriting it to `real.target`. With `real.target`
+        // absent the resolver records the gap carrying the resolved target.
+        let aliases = ModuleAliases::new();
+        aliases.insert(
+            ModuleFullPath::from("r"),
+            cranelisp_types::ModuleAliasEntry::new(
+                ModuleFullPath::from("real.target"),
+                Visibility::Public,
+                Span::SYNTHETIC,
+            ),
+        );
+
+        let mut ctx: SymbolTableAccess<'_, (), ()> =
+            SymbolTableAccess::live(&modules, module_path());
+        // Body references `r/thing`; `r` is an alias to `real.target` which is
+        // absent. The gap must carry the RESOLVED target.
+        let parsed = vec![defn_referencing("uses_alias", "r/thing")];
+        let r = check_forms::<(), ()>(parsed, &mut ctx, &modules, &aliases);
+        match r {
+            Err(CheckError::Gap(cranelisp_types::ResolutionGap::SymbolTypechecked(fq))) => {
+                assert_eq!(
+                    fq.module.as_ref(),
+                    "real.target",
+                    "gap module must be the ALIAS-RESOLVED target, not the bare alias"
+                );
+                assert_eq!(fq.symbol.as_ref(), "thing", "gap symbol is the local name");
+            }
+            other => panic!(
+                "expected Gap(SymbolTypechecked) with alias-resolved target, got {other:?}"
+            ),
+        }
     }
 }

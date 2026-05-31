@@ -48,28 +48,33 @@ edit other crates.
    (`current_symbol_table` / `current_symbol_table_mut` promoted from
    `pub(crate)` to `pub` on `TypeCheckEnv`). Facade text in
    §"SymbolTableRead / SymbolTableMut single-pair invariant" should
-   confirm both pairs (`ClusterContext::current_symbol_table[_mut]` AND
+   confirm both pairs (`SymbolTableAccess::current_symbol_table[_mut]` AND
    `TypeCheckEnv::current_symbol_table[_mut]`) return the same wrappers.
+   (Note: the boundary type was renamed `ClusterContext` →
+   `SymbolTableAccess` in the facade-coherence pass — see
+   `facades/typecheck.md` §"Cluster check scaffolding" naming rationale.)
 
-3. **module_aliases threading (A1 / A4)** — deferred from Wave 3b
-   because the signature change for `check_forms` /
-   `register_imports` / `register_exports` to take `&ModuleAliases`
-   breaks downstream callers in `src/worker.rs` (~6 sites),
-   `src/session.rs` (~1 site). Per
-   `feedback_facade_first_migration.md` the discipline is: push
-   typecheck to the target signature first, accept broken downstream
-   build, fix consumers wave-by-wave. /arch coordinates the
-   cross-crate cascade — either:
-
-   (a) /arch + /dev (int) land the module_aliases threading
-       coherently in a coordinated wave, OR
-
-   (b) the facade text relaxes A1/A4 to permit the per-call
-       `CheckState`-local `module_aliases` HashMap until a later
-       FIXME drives the session-level migration.
-
-   The plan §A1/A4 recommends (a) (~1-2 day combined source-moves
-   change). The Wave 3b deferral is mechanical, not a Decision change.
+3. **module_aliases threading (A1 / A4)** — **alias provenance is now
+   settled (facade-coherence pass): `module_aliases` arrives threaded
+   READ-ONLY into `check_forms`, and typecheck follows aliases during
+   §8.6.6 FQ resolution but does NOT self-populate an alias table.** The
+   `register_imports` / `register_exports` typecheck free functions
+   (FIXME 0192 hack-back) are **struck from the typecheck surface** — see
+   `facades/typecheck.md` §"Import/export registration is not a typecheck
+   concern". So the original threading premise here — "the signature
+   change for `check_forms` / `register_imports` / `register_exports` to
+   take `&ModuleAliases`" — is subsumed: there is no longer any
+   `register_imports` / `register_exports` on the typecheck surface to
+   thread `&ModuleAliases` through, and the alias writer is the int-side /
+   frontend-StructuralDecl parse-time installer, not typecheck. What
+   remains live: threading the read-only `module_aliases` parameter into
+   `check_forms` (the `check_forms` signature in the facade already names
+   it). This is a mechanical cross-crate cascade (push typecheck to the
+   target read-only signature first, fix `src/worker.rs` / `src/session.rs`
+   consumers wave-by-wave per `feedback_facade_first_migration.md`) — NOT
+   a Decision change, and option (b)'s `CheckState`-local
+   self-populated HashMap is **rejected** (typecheck does not populate
+   aliases). /arch + /dev (int) land the read-only threading coherently.
 
 4. **public-api.txt regeneration** — Wave 3b regenerated
    `crates/cranelisp-typecheck/public-api.txt` with the new

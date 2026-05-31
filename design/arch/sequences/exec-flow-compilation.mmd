@@ -52,9 +52,9 @@ sequenceDiagram
         Note over Sched: Workers operate on &SymbolTable via Sess.shared.symbol_tables.get. Cache hit via sidecar skips the cluster loop entirely.
         Note over Sched: Per Decision 44 the typecheck surface is a single free function check_forms. The orchestrator process_cluster in the int crate drives it across one cluster.
         Note over Sched: A cluster is one form for non-begin REPL input, or contents of a begin-block for explicit REPL clusters, or the file non-structural forms for batch one-big-cluster.
-        Note over Sched: check_forms takes Vec of ParsedEntry plus mutable ClusterContext plus SymbolTables and returns Result of CheckError. Internally Pass 1 registers signatures, Pass 2 checks bodies. Pass-1-to-Pass-2 working state lives inside check_forms frame and never crosses the facade.
+        Note over Sched: check_forms takes Vec of ParsedEntry plus mutable SymbolTableAccess plus SymbolTables and returns Result of CheckError. Internally Pass 1 registers signatures, Pass 2 checks bodies. Pass-1-to-Pass-2 working state lives inside check_forms frame and never crosses the facade.
         Note over Sched: typecheck reads via ctx.current_symbol_table which returns a View union of staging and live in Cluster mode, and writes via ctx.current_symbol_table_mut which returns mutable staging. The 91 register-call sites in program.rs do not change individually.
-        Note over Sched: orchestrator owns a transient staging SymbolTable for the cluster, held under mutable borrow inside ClusterContext::Cluster, and commits via insert_cluster atomically into the live SymbolTable on success.
+        Note over Sched: orchestrator owns a transient staging SymbolTable for the cluster, held under mutable borrow inside SymbolTableAccess::Cluster, and commits via insert_cluster atomically into the live SymbolTable on success.
         Note over Sched: On Err of TypeError staging dissolves with the function frame. Live table is byte-identical to pre-cluster state. On Err of Gap the orchestrator drops staging and retries the whole check_forms call against a fresh staging frame.
 
         create participant PW as Priority Worker<br/>::worker::priority_worker_loop(Arc[SharedState])
@@ -135,11 +135,11 @@ sequenceDiagram
                     create participant Typecheck as Typecheck facade<br/>cranelisp_typecheck
                     Note over PW, Typecheck: After expand plus build_form has accumulated vec of ParsedEntry for every form in the cluster, the orchestrator makes one cranelisp_typecheck::check_forms call.
                     Note over PW, Typecheck: Multi-clause defmacro yields one parent Macro-kind Def plus N clause-body UserFn Defs under {macro}$clause-{N} names. deftype-with-constructors yields the type Def plus N Constructor-kind Defs. Both shapes produce multiple ParsedEntry items per source form.
-                    Note over PW, Typecheck: Per Decision 44 — amended by FIXME 0167 for Approach B plus ClusterContext, and 2026-05-13 third amendment collapsing the two-pass split — check_forms internally runs Pass 1 to register signatures, then Pass 2 to check bodies across all parsed entries.
-                    Note over PW, Typecheck: The orchestrator constructs ClusterContext.Cluster carrying modules, staging as mutable ref to empty_staging, and current_module once per cluster, then threads &mut ctx through the single check_forms call.
+                    Note over PW, Typecheck: Per Decision 44 — amended by FIXME 0167 for Approach B plus SymbolTableAccess, and 2026-05-13 third amendment collapsing the two-pass split — check_forms internally runs Pass 1 to register signatures, then Pass 2 to check bodies across all parsed entries.
+                    Note over PW, Typecheck: The orchestrator constructs SymbolTableAccess.Cluster carrying modules, staging as mutable ref to empty_staging, and current_module once per cluster, then threads &mut ctx through the single check_forms call.
                     Note over PW, Typecheck: Typecheck mutates staging via ctx.current_symbol_table_mut — cluster-atomic drain at the end. Pass-1-to-Pass-2 working state lives inside check_forms frame and never crosses the facade.
 
-                    PW ->> Typecheck: cranelisp_typecheck::check_forms — parsed as vec of ParsedEntry, ctx as &mut ClusterContext over Code and unit, symbol_tables as &SymbolTables, returns Result of unit or CheckError
+                    PW ->> Typecheck: cranelisp_typecheck::check_forms — parsed as vec of ParsedEntry, ctx as &mut SymbolTableAccess over Code and unit, symbol_tables as &SymbolTables, returns Result of unit or CheckError
                     Note over PW, Typecheck: Decision 44 third amendment — pure with respect to live state. Staging mutation flows through ctx.current_symbol_table_mut — same accessor used in committed-mode. The 91 register-call sites in typecheck program.rs do NOT change individually.
                     Note over PW, Typecheck: Pass 2 bodies check against ctx.current_symbol_table which returns a union View over staging and live in Cluster mode — cluster signatures from Pass 1 visible to Pass 2 internally.
 

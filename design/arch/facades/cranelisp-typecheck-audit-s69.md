@@ -1,5 +1,7 @@
 # cranelisp-typecheck — Sprint 69 facade audit (per-item analysis, configuration-grounded re-author)
 
+> **SUPERSEDED IN PART (facade-coherence pass, post-S72).** This is a dated S69 record; its findings text is preserved as the point-in-time audit. Two of its conclusions are since overturned by the canonical facade and must not be read as current: (1) **Findings F-3 / F-4 / F-1's framing treat `register_imports` / `register_exports` as a kept typecheck surface** (free-fn canonical form). They are now **struck from the typecheck surface entirely** — `ParsedEntry` has no `Import`/`Export` variant, so typecheck never receives imports/exports; import/export registration is frontend's StructuralDecl concern. See `facades/typecheck.md` §"Import/export registration is not a typecheck concern". (2) The boundary type **`ClusterContext` is renamed `SymbolTableAccess`** — every `ClusterContext` mention below reads as `SymbolTableAccess` (the `Live` / `Cluster` variant names are unchanged). See `facades/typecheck.md` §"Cluster check scaffolding" naming rationale.
+
 **Audit triple**: `crates/cranelisp-typecheck/src/lib.rs` (declared surface) × `design/arch/facades/typecheck.md` (binding contract) × `crates/cranelisp-typecheck/public-api.txt` (live boundary).
 
 **Date**: 2026-05-19 (S69 Phase 3 Wave 1 — re-author over the 2026-05-19 morning draft)

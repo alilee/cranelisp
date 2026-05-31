@@ -18,11 +18,11 @@
 // - Public cluster-typecheck entry surface is `check_forms` (single free
 //   function in `form` module) that the orchestrator
 //   (`int::process_cluster`) calls once per cluster. Per Decision 44
-//   (amended FIXME 0167 — Approach B + `ClusterContext`; third amendment
+//   (amended FIXME 0167 — Approach B + `SymbolTableAccess`; third amendment
 //   collapsing the two-pass split), the internal two-pass discipline (spec
 //   §5.13.1) is implementation-phase ordering inside `check_forms`'s frame —
 //   not facade-exposed. Staging-vs-live access is mediated by
-//   `ClusterContext` (in `cluster` module). The pre-S66 `CheckPass`,
+//   `SymbolTableAccess` (in `cluster` module). The pre-S66 `CheckPass`,
 //   `FormCheckResult`, and `ModuleCheckAccumulator` public types are
 //   removed; per-pass / per-form scaffolding survives `pub(crate)` to keep
 //   the internal dispatcher working.
@@ -52,16 +52,11 @@ mod unify;
 // production mount is reconstructed by `int` at session init (FIXME 0242).
 // The `builtins` module is now entirely `#[cfg(test)]` test-support — the
 // minimal synthetic seed the unit suite needs (FIXME 0239 test-oracle).
-pub use checker::{
-    CheckState, TypeCheckEnv, advance_next_id_past_table, register_exports, register_imports,
-};
-pub use cluster::{ClusterContext, SymbolTableMut, SymbolTableRead};
+pub use checker::{CheckState, TypeCheckEnv, advance_next_id_past_table};
+pub use cluster::{SymbolTableAccess, SymbolTableMut, SymbolTableRead};
 pub use form::check_forms;
-pub use result::{CheckError, CheckResult, ReplSnapshot, ResolveError};
+pub use result::{CheckError, CheckResult};
 pub use trace::{
     SymbolTableEnsureHook, SymbolTableEnsureOutcome, emit_symbol_table_ensure,
     install_symbol_table_ensure_hook,
 };
-
-// Re-export boundary types that callers need (these stay in cranelisp-types).
-pub use cranelisp_types::{CranelispError, TopLevel};

@@ -192,7 +192,8 @@ impl FixtureBuilder {
         C: cranelisp_types::CodeStore,
         L: cranelisp_types::LinkerStore,
     {
-        let env = TypeCheckEnv::new(modules, next_id);
+        let module_aliases = cranelisp_types::ModuleAliases::default();
+        let env = TypeCheckEnv::new(modules, next_id, &module_aliases);
         let mut state = CheckState::new(ModuleFullPath::from("user"));
 
         // Ensure the always-needed synthetic modules exist before any preset

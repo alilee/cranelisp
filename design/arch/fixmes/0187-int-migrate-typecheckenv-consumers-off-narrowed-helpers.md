@@ -43,7 +43,7 @@ The methods still publicly exposed by `TypeCheckEnv` after Wave 3 narrowing:
 | `get_implementing_types(&TraitName)` | session_v4.rs:3702 | REPL — migrate to scan the trait's defining module for `TraitImpl` entries |
 | `module_table(&ModuleFullPath)` | session_v4.rs:2757, 2785, 3215, 3343 | Migrate to `Sess.shared.symbol_tables.get(&path)` directly (the `DashMap` is already in `int`'s reach) |
 | `restore_cached_module(SymbolTable)` / `restore_cached_impls(&[String])` | worker.rs:1904, 1909 | Cache-hit reconstruction — migrate to direct `DashMap::insert` (and the no-op `restore_cached_impls` deletes outright) |
-| `register_imports` / `register_exports` | worker.rs:1618, 1644, 2119, 2176, 2721, 2765; session.rs:335 | Most invasive. Probably stays `pub` as the import/export wiring entry point — facade should be amended to list it. |
+| `register_imports` / `register_exports` | worker.rs:1618, 1644, 2119, 2176, 2721, 2765; session.rs:335 | **Struck from the typecheck surface (facade-coherence pass) — NOT kept `pub`.** Import/export registration is frontend's StructuralDecl concern; `ParsedEntry` has no `Import`/`Export` variant, so typecheck never receives imports/exports (see `facades/typecheck.md` §"Import/export registration is not a typecheck concern"). These callers migrate off typecheck: the alias writer is the int-side / frontend-StructuralDecl parse-time installer; the cross-module concern typecheck does have surfaces as `CheckError::Gap` (orchestrator loads + retries). The dead-code warnings on removal are the expected signal. |
 
 ## Proposed resolution
 
@@ -60,9 +60,11 @@ sites; each is a small replacement. After this phase, `lookup_type_def`,
 and `restore_cached_*` to direct `DashMap` operations on `Sess.shared.symbol_tables`
 (no `TypeCheckEnv` construction required for these paths). After this phase,
 the 8 remaining helper-method exposures collapse to 2 or 3 facade-listed
-escape hatches plus `register_imports`/`register_exports` (the
-import/export wiring, which probably stays pub as an entry point — facade to
-list).
+escape hatches. `register_imports`/`register_exports` are **struck from
+the typecheck surface** (facade-coherence pass — see row above and
+`facades/typecheck.md` §"Import/export registration is not a typecheck
+concern"); their callers migrate off typecheck rather than the facade
+listing them as kept entry points.
 
 The facade `design/arch/facades/typecheck.md` should be amended at the end
 of Phase B to either (a) list the residual `pub` exposures with rationale, or

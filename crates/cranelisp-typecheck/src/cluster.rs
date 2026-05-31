@@ -1,10 +1,10 @@
-//! `ClusterContext<'a, C, L>` — the cluster-vs-committed dispatch choke point
+//! `SymbolTableAccess<'a, C, L>` — the cluster-vs-committed dispatch choke point
 //! for the per-cluster typecheck surface.
 //!
-//! Per Decision 44 (amended FIXME 0167 — Approach B + `ClusterContext`),
-//! `ClusterContext` is the single point where staging-vs-live access is
+//! Per Decision 44 (amended FIXME 0167 — Approach B + `SymbolTableAccess`),
+//! `SymbolTableAccess` is the single point where staging-vs-live access is
 //! decided. The cluster entry function (`check_forms`) accepts
-//! `&mut ClusterContext` and routes every read / write through the accessors
+//! `&mut SymbolTableAccess` and routes every read / write through the accessors
 //! `current_symbol_table()` (read) and `current_symbol_table_mut()` (write).
 //!
 //! Variants:
@@ -33,7 +33,7 @@ use cranelisp_types::{
 
 /// The cluster-vs-committed dispatch choke point. See module docs.
 #[non_exhaustive]
-pub enum ClusterContext<'a, C: CodeStore = (), L: LinkerStore = ()> {
+pub enum SymbolTableAccess<'a, C: CodeStore = (), L: LinkerStore = ()> {
     /// Committed mode — used outside cluster processing.
     Live {
         modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
@@ -44,7 +44,7 @@ pub enum ClusterContext<'a, C: CodeStore = (), L: LinkerStore = ()> {
     /// `staging` is wrapped in a `RefCell` so the read + write accessors can
     /// each hand out a runtime-checked borrow guard. The orchestrator's
     /// `&'a mut SymbolTable` is consumed by the `cluster()` constructor; the
-    /// `RefCell` is owned by the `ClusterContext` value.
+    /// `RefCell` is owned by the `SymbolTableAccess` value.
     Cluster {
         modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
         staging: RefCell<&'a mut SymbolTable<C, L>>,
@@ -52,8 +52,8 @@ pub enum ClusterContext<'a, C: CodeStore = (), L: LinkerStore = ()> {
     },
 }
 
-impl<'a, C: CodeStore, L: LinkerStore> ClusterContext<'a, C, L> {
-    /// Construct a `Live` mode ClusterContext. Lookups dispatch directly to
+impl<'a, C: CodeStore, L: LinkerStore> SymbolTableAccess<'a, C, L> {
+    /// Construct a `Live` mode SymbolTableAccess. Lookups dispatch directly to
     /// the per-module live table; writes go to the per-module live table
     /// (caller takes `&mut self`, but the actual write surface is the
     /// DashMap shard lock — see `current_symbol_table_mut`).
@@ -61,10 +61,10 @@ impl<'a, C: CodeStore, L: LinkerStore> ClusterContext<'a, C, L> {
         modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
         current_module: ModuleFullPath,
     ) -> Self {
-        ClusterContext::Live { modules, current_module }
+        SymbolTableAccess::Live { modules, current_module }
     }
 
-    /// Construct a `Cluster` mode ClusterContext. The orchestrator owns the
+    /// Construct a `Cluster` mode SymbolTableAccess. The orchestrator owns the
     /// staging table and lends it to the cluster's processing via `&mut`; the
     /// constructor wraps that reference in a `RefCell` so the read + write
     /// accessors can hand out borrow guards.
@@ -73,7 +73,7 @@ impl<'a, C: CodeStore, L: LinkerStore> ClusterContext<'a, C, L> {
         staging: &'a mut SymbolTable<C, L>,
         current_module: ModuleFullPath,
     ) -> Self {
-        ClusterContext::Cluster {
+        SymbolTableAccess::Cluster {
             modules,
             staging: RefCell::new(staging),
             current_module,
@@ -83,8 +83,8 @@ impl<'a, C: CodeStore, L: LinkerStore> ClusterContext<'a, C, L> {
     /// Currently scoped module path.
     pub fn current_module(&self) -> &ModuleFullPath {
         match self {
-            ClusterContext::Live { current_module, .. }
-            | ClusterContext::Cluster { current_module, .. } => current_module,
+            SymbolTableAccess::Live { current_module, .. }
+            | SymbolTableAccess::Cluster { current_module, .. } => current_module,
         }
     }
 
@@ -101,20 +101,20 @@ impl<'a, C: CodeStore, L: LinkerStore> ClusterContext<'a, C, L> {
     ///   `View::single(live)`. Guard holds a DashMap per-shard read guard.
     pub fn current_symbol_table<'b>(&'b self) -> SymbolTableRead<'b, 'a, C, L> {
         match self {
-            ClusterContext::Live { modules, current_module } => {
+            SymbolTableAccess::Live { modules, current_module } => {
                 let guard = modules
                     .get(current_module)
-                    .unwrap_or_else(|| panic!(
-                        "ClusterContext::current_symbol_table: current module '{}' not present in live modules",
+                    .unwrap_or_else(|| unreachable!(
+                        "SymbolTableAccess::current_symbol_table: current module '{}' not present in live modules",
                         current_module
                     ));
                 SymbolTableRead::Live(guard)
             }
-            ClusterContext::Cluster { modules, staging, current_module } => {
+            SymbolTableAccess::Cluster { modules, staging, current_module } => {
                 let guard = modules
                     .get(current_module)
-                    .unwrap_or_else(|| panic!(
-                        "ClusterContext::current_symbol_table: current module '{}' not present in live modules (cluster precondition)",
+                    .unwrap_or_else(|| unreachable!(
+                        "SymbolTableAccess::current_symbol_table: current module '{}' not present in live modules (cluster precondition)",
                         current_module
                     ));
                 SymbolTableRead::Cluster { staging: staging.borrow(), live: guard }
@@ -132,16 +132,16 @@ impl<'a, C: CodeStore, L: LinkerStore> ClusterContext<'a, C, L> {
     ///   per-module write guard for the per-module live table.
     pub fn current_symbol_table_mut<'b>(&'b mut self) -> SymbolTableMut<'b, 'a, C, L> {
         match self {
-            ClusterContext::Live { modules, current_module } => {
+            SymbolTableAccess::Live { modules, current_module } => {
                 let guard = modules
                     .get_mut(current_module)
-                    .unwrap_or_else(|| panic!(
-                        "ClusterContext::current_symbol_table_mut: current module '{}' not present in live modules",
+                    .unwrap_or_else(|| unreachable!(
+                        "SymbolTableAccess::current_symbol_table_mut: current module '{}' not present in live modules",
                         current_module
                     ));
                 SymbolTableMut::Live(guard)
             }
-            ClusterContext::Cluster { staging, .. } => {
+            SymbolTableAccess::Cluster { staging, .. } => {
                 SymbolTableMut::Staging(staging.borrow_mut())
             }
         }
@@ -149,7 +149,7 @@ impl<'a, C: CodeStore, L: LinkerStore> ClusterContext<'a, C, L> {
 
 }
 
-/// Read-side borrow guard returned by both `ClusterContext::current_symbol_table()`
+/// Read-side borrow guard returned by both `SymbolTableAccess::current_symbol_table()`
 /// and `TypeCheckEnv::current_symbol_table()` — the single-pair invariant
 /// (per `facades/typecheck.md` §"Single-pair invariant") mandates one pair of
 /// read+write wrappers across the typecheck surface.
@@ -193,7 +193,7 @@ impl<'a, 'b, C: CodeStore, L: LinkerStore> SymbolTableRead<'a, 'b, C, L> {
 }
 
 /// Write-side borrow guard returned by both
-/// `ClusterContext::current_symbol_table_mut()` and
+/// `SymbolTableAccess::current_symbol_table_mut()` and
 /// `TypeCheckEnv::current_symbol_table_mut()` — the single-pair invariant
 /// counterpart to `SymbolTableRead`.
 ///
@@ -266,7 +266,7 @@ mod tests {
     #[test]
     fn live_mode_routes_to_live_table() {
         let modules = empty_modules();
-        let mut ctx: ClusterContext<'_, (), ()> = ClusterContext::live(&modules, module_path());
+        let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
         // Initially empty
         {
             let r = ctx.current_symbol_table();
@@ -293,8 +293,8 @@ mod tests {
         let modules = empty_modules();
         let mut staging = SymbolTable::<(), ()>::new_with_params(module_path());
         {
-            let mut ctx: ClusterContext<'_, (), ()> =
-                ClusterContext::cluster(&modules, &mut staging, module_path());
+            let mut ctx: SymbolTableAccess<'_, (), ()> =
+                SymbolTableAccess::cluster(&modules, &mut staging, module_path());
             let mut w = ctx.current_symbol_table_mut();
             w.insert(Symbol::from("staged"), dummy_module_entry());
         }
@@ -316,8 +316,8 @@ mod tests {
         let mut staging = SymbolTable::<(), ()>::new_with_params(module_path());
         staging.insert(Symbol::from("staging_only"), dummy_module_entry());
 
-        let ctx: ClusterContext<'_, (), ()> =
-            ClusterContext::cluster(&modules, &mut staging, module_path());
+        let ctx: SymbolTableAccess<'_, (), ()> =
+            SymbolTableAccess::cluster(&modules, &mut staging, module_path());
         let r = ctx.current_symbol_table();
         let v = r.view();
         assert!(v.lookup(&Symbol::from("live_only")).is_some());
@@ -346,8 +346,8 @@ mod tests {
             },
         );
 
-        let ctx: ClusterContext<'_, (), ()> =
-            ClusterContext::cluster(&modules, &mut staging, module_path());
+        let ctx: SymbolTableAccess<'_, (), ()> =
+            SymbolTableAccess::cluster(&modules, &mut staging, module_path());
         let r = ctx.current_symbol_table();
         let v = r.view();
         let entry = v.lookup(&Symbol::from("name")).expect("name resolves");
@@ -362,7 +362,7 @@ mod tests {
     #[test]
     fn current_module_returns_active_path() {
         let modules = empty_modules();
-        let ctx: ClusterContext<'_, (), ()> = ClusterContext::live(&modules, module_path());
+        let ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
         assert_eq!(ctx.current_module(), &module_path());
     }
 }

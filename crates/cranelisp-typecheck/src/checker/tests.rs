@@ -1,0 +1,931 @@
+    use super::*;
+    use cranelisp_types::{DefKind, ModuleEntry, ModuleFullPath,
+        Span, Symbol, Visibility,
+    };
+
+    // --- Module-scoped type environments ---
+
+    // spec: 08-modules §8.13 — default REPL module is "user"
+    #[test]
+    fn test_default_module_is_user() {
+        let tf = TestFixture::new();
+        assert_eq!(tf.state.current_module.as_ref(), "user");
+    }
+
+    // spec: 11-stdlib §11.1, 08-modules §8.9 — special-form metadata lives at
+    // root `""` only (Principle 17 amendment, FIXME 0193). Regular modules
+    // are empty after ensure_module_exists.
+    #[test]
+    fn test_bare_module_has_root_contents_only() {
+        let mut tf = TestFixture::new();
+        tf.set_current_module(ModuleFullPath::from("bare"));
+
+        // --- Special forms live at root `""` ---
+        let root_path = ModuleFullPath::from("");
+        let root_table = tf.modules.get(&root_path).expect("root \"\" should exist");
+        assert!(root_table.get("if").is_some(), "if should be at root \"\"");
+        assert!(root_table.get("let").is_some(), "let should be at root \"\"");
+        assert!(root_table.get("defn").is_some(), "defn should be at root \"\"");
+        assert!(root_table.get("fn").is_some(), "fn should be at root \"\"");
+        assert!(root_table.get("match").is_some(), "match should be at root \"\"");
+        assert!(root_table.get("deftype").is_some(), "deftype should be at root \"\"");
+        assert!(root_table.get("deftrait").is_some(), "deftrait should be at root \"\"");
+        assert!(root_table.get("impl").is_some(), "impl should be at root \"\"");
+        assert!(root_table.get("defmacro").is_some(), "defmacro should be at root \"\"");
+        drop(root_table);
+
+        // --- Bare module is empty (no special forms seeded — FIXME 0193) ---
+        assert!(tf.symbol_table().get("if").is_none(), "if not seeded into bare modules");
+        assert!(tf.symbol_table().get("let").is_none(), "let not seeded into bare modules");
+
+        // --- NOT available without import (spec §8.9.1) ---
+        assert!(tf.symbol_table().get("Int").is_none(), "Int needs import");
+        assert!(tf.symbol_table().get("Bool").is_none(), "Bool needs import");
+        assert!(tf.symbol_table().get("Float").is_none(), "Float needs import");
+        assert!(tf.symbol_table().get("String").is_none(), "String needs import");
+        assert!(tf.symbol_table().get("add-i64").is_none(), "add-i64 needs import");
+        assert!(tf.symbol_table().get("str-concat").is_none(), "str-concat needs import");
+        assert!(tf.symbol_table().get("bind").is_none(), "bind needs import");
+        assert!(tf.symbol_table().get("Pure").is_none(), "Pure needs import");
+        assert!(tf.symbol_table().get("SexpSym").is_none(), "SexpSym needs import");
+        assert!(tf.symbol_table().get("+").is_none(), "+ needs prelude");
+        assert!(tf.symbol_table().get("TestResult").is_none(), "TestResult needs import");
+        assert!(tf.symbol_table().get("discover-tests").is_none(), "discover-tests needs import");
+        assert!(tf.symbol_table().get("run-test").is_none(), "run-test needs import");
+
+        // Primitives ARE in the primitives synthetic module.
+        let prims_path = ModuleFullPath::from("primitives");
+        let prims_table = tf.modules.get(&prims_path).unwrap();
+        assert!(prims_table.get("add-i64").is_some(), "add-i64 in primitives");
+        assert!(prims_table.get("Int").is_some(), "Int in primitives");
+        assert!(prims_table.get("Bool").is_some(), "Bool in primitives");
+        // NOTE: TestResult / discover-tests / run-test are no longer seeded by
+        // the typecheck test fixture — the test-infrastructure synthetic
+        // assembly left typecheck's bounded context (facade §"Builtin
+        // registration — removed from typecheck"; FIXME 0242). The `*-is-none`
+        // assertions above still hold (they were never auto-imported into user).
+    }
+
+    // spec: 08-modules §8.9 — new modules are empty; special forms live at
+    // root `""` (Principle 17 amendment, FIXME 0193).
+    #[test]
+    fn test_set_current_module_creates_new() {
+        let mut tf = TestFixture::new();
+        tf.set_current_module(ModuleFullPath::from("math"));
+        assert_eq!(tf.state.current_module.as_ref(), "math");
+        assert!(tf.symbol_table().get("if").is_none(), "special forms at root \"\", not seeded");
+        assert!(tf.symbol_table().get("Int").is_none());
+        assert!(tf.symbol_table().get("add-i64").is_none());
+        assert!(tf.symbol_table().get("+").is_none());
+    }
+
+    // spec: 08-modules §8.6 — switching modules preserves existing module state.
+    // Per FIXME 0193 amendment: `user` has no special status.
+    #[test]
+    fn test_switch_back_to_user_preserves_builtins() {
+        let mut tf = TestFixture::new();
+        tf.set_current_module(ModuleFullPath::from("other"));
+        tf.set_current_module(ModuleFullPath::from("user"));
+        assert!(tf.symbol_table().get("if").is_none(), "user not architecturally privileged");
+        assert!(tf.symbol_table().get("add-i64").is_none());
+    }
+
+    // spec: 08-modules §8.6 — modules have independent symbol tables
+    #[test]
+    fn test_modules_are_independent() {
+        let mut tf = TestFixture::new();
+        // Define something in user
+        tf.symbol_table_mut().insert(
+            Symbol::from("user-only"),
+            ModuleEntry::def(
+                crate::scheme::mono(Type::Int),
+                DefKind::UserFn { constrained_fn: None },
+            )
+            .build(),
+        );
+
+        // Switch to another module — shouldn't see user-only
+        tf.set_current_module(ModuleFullPath::from("other"));
+        assert!(tf.symbol_table().get("user-only").is_none());
+
+        // Switch back — should see it again
+        tf.set_current_module(ModuleFullPath::from("user"));
+        assert!(tf.symbol_table().get("user-only").is_some());
+    }
+
+    // --- Cross-module name resolution ---
+
+    fn seed_module(tf: &mut TestFixture, path: &str, entries: Vec<(&str, Visibility)>) {
+        tf.set_current_module(ModuleFullPath::from(path));
+        for (name, vis) in entries {
+            tf.symbol_table_mut().insert(
+                Symbol::from(name),
+                ModuleEntry::def(
+                    crate::scheme::mono(Type::Int),
+                    DefKind::UserFn { constrained_fn: None },
+                )
+                .visibility(vis)
+                .build(),
+            );
+        }
+    }
+
+    /// Seed glob-import edges from `source` into the CURRENT module, mirroring
+    /// what the orchestrator's import installer lands for a `(import [source
+    /// [*]])`. Import registration is no longer a typecheck concern (facade
+    /// `typecheck.md` §"Import/export registration is not a typecheck
+    /// concern"); typecheck tests that need imports installed seed the edges
+    /// directly. Inserts an `Import` binding for every PUBLIC symbol in
+    /// `source` (private names are not glob-importable, spec §8.7).
+    fn seed_glob_import(tf: &mut TestFixture, source: &ModuleFullPath) {
+        let names: Vec<Symbol> = {
+            let src = tf.modules.get(source).expect("source module exists for glob seed");
+            src.all_symbols()
+                .filter(|(_, e)| e.is_public())
+                .map(|(n, _)| n.clone())
+                .collect()
+        };
+        for name in names {
+            tf.symbol_table_mut().insert(
+                name.clone(),
+                ModuleEntry::Import {
+                    source: FQSymbol { module: source.clone(), symbol: name },
+                    visibility: Visibility::Public,
+                },
+            );
+        }
+    }
+
+    /// Seed specific-import edges for `names` from `source` into the CURRENT
+    /// module (mirrors `(import [source [a b]])`). See `seed_glob_import`.
+    fn seed_specific_import(tf: &mut TestFixture, source: &ModuleFullPath, names: &[&str]) {
+        for name in names {
+            tf.symbol_table_mut().insert(
+                Symbol::from(*name),
+                ModuleEntry::Import {
+                    source: FQSymbol {
+                        module: source.clone(),
+                        symbol: Symbol::from(*name),
+                    },
+                    visibility: Visibility::Public,
+                },
+            );
+        }
+    }
+
+    // spec: 08-modules §8.5 — qualified name resolves public symbol in target module
+    #[test]
+    fn test_resolve_qualified_public() {
+        let mut tf = TestFixture::new();
+        seed_module(&mut tf, "math", vec![("add", Visibility::Public)]);
+        tf.set_current_module(ModuleFullPath::from("user"));
+
+        let result = tf.resolve_qualified(&ModuleFullPath::from("math"), "add").unwrap();
+        assert!(result.is_some());
+    }
+
+    // spec: 08-modules §8.7 — private symbol access denied from outside module
+    #[test]
+    fn test_resolve_qualified_private_denied() {
+        let mut tf = TestFixture::new();
+        seed_module(&mut tf, "math", vec![("internal", Visibility::Private)]);
+        tf.set_current_module(ModuleFullPath::from("user"));
+
+        let result = tf.resolve_qualified(&ModuleFullPath::from("math"), "internal");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("private"));
+    }
+
+    // spec: 08-modules §8.7 — private symbol accessible from child module in subtree
+    #[test]
+    fn test_resolve_qualified_private_allowed_in_subtree() {
+        let mut tf = TestFixture::new();
+        seed_module(&mut tf, "math", vec![("internal", Visibility::Private)]);
+        tf.set_current_module(ModuleFullPath::from("math.test"));
+
+        let result = tf.resolve_qualified(&ModuleFullPath::from("math"), "internal").unwrap();
+        assert!(result.is_some());
+    }
+
+    // spec: 08-modules §8.6 — qualified lookup returns None for nonexistent symbol
+    #[test]
+    fn test_resolve_qualified_not_found() {
+        let mut tf = TestFixture::new();
+        seed_module(&mut tf, "math", vec![("add", Visibility::Public)]);
+        tf.set_current_module(ModuleFullPath::from("user"));
+
+        let result = tf.resolve_qualified(&ModuleFullPath::from("math"), "nonexistent").unwrap();
+        assert!(result.is_none());
+    }
+
+    // spec: 08-modules §8.6 — qualified lookup on unknown module returns None
+    #[test]
+    fn test_resolve_qualified_unknown_module() {
+        let tf = TestFixture::new();
+        let result = tf.resolve_qualified(&ModuleFullPath::from("unknown"), "foo").unwrap();
+        assert!(result.is_none());
+    }
+
+    // --- Import processing ---
+    //
+    // Import/export *registration* is no longer a typecheck concern (facade
+    // `typecheck.md` §"Import/export registration is not a typecheck
+    // concern"). The orchestrator's import installer lands `ModuleEntry::Import`
+    // edges and `ModuleAliases` entries directly; typecheck only *consumes*
+    // them during resolution. The former glob/specific/ambiguity/alias-only
+    // registration tests (`test_import_glob`, `test_import_specific`,
+    // `test_import_specific_private_error`, `test_import_specific_not_found_error`,
+    // `test_import_unknown_module_error`, `test_import_chain_resolution`,
+    // `test_import_ambiguity`, `test_import_same_source_not_ambiguous`,
+    // `test_import_alias_only`) exercised that deleted registration surface and
+    // were removed with it. Consumption of already-installed import edges is
+    // covered by `test_resolve_qualified_*` (below) and the chain-follow tests
+    // elsewhere in this module.
+
+    // --- is_in_subtree ---
+
+    // spec: 08-modules §8.7 — module is in its own subtree
+    #[test]
+    fn test_is_in_subtree_self() {
+        let tf = TestFixture::new();
+        assert!(tf.env().is_in_subtree(
+            &ModuleFullPath::from("foo"),
+            &ModuleFullPath::from("foo"),
+        ));
+    }
+
+    // spec: 08-modules §8.7 — child module is in parent subtree
+    #[test]
+    fn test_is_in_subtree_child() {
+        let tf = TestFixture::new();
+        assert!(tf.env().is_in_subtree(
+            &ModuleFullPath::from("foo.bar"),
+            &ModuleFullPath::from("foo"),
+        ));
+    }
+
+    // spec: 08-modules §8.7 — grandchild module is in ancestor subtree
+    #[test]
+    fn test_is_in_subtree_grandchild() {
+        let tf = TestFixture::new();
+        assert!(tf.env().is_in_subtree(
+            &ModuleFullPath::from("foo.bar.baz"),
+            &ModuleFullPath::from("foo"),
+        ));
+    }
+
+    // spec: 08-modules §8.7 — unrelated module is not in subtree
+    #[test]
+    fn test_is_not_in_subtree() {
+        let tf = TestFixture::new();
+        assert!(!tf.env().is_in_subtree(
+            &ModuleFullPath::from("other"),
+            &ModuleFullPath::from("foo"),
+        ));
+    }
+
+    // spec: 08-modules §8.7 — string prefix without dot separator is not subtree
+    #[test]
+    fn test_is_not_in_subtree_prefix_mismatch() {
+        let tf = TestFixture::new();
+        assert!(!tf.env().is_in_subtree(
+            &ModuleFullPath::from("foobar"),
+            &ModuleFullPath::from("foo"),
+        ));
+    }
+
+    // --- Alias resolution in resolve_qualified ---
+
+    // spec: 08-modules §8.3 — qualified resolution follows module alias
+    #[test]
+    fn test_resolve_qualified_uses_alias() {
+        let mut tf = TestFixture::new();
+        seed_module(&mut tf, "core.option", vec![("Some", Visibility::Public)]);
+        tf.set_current_module(ModuleFullPath::from("main"));
+
+        // §8.6.6 longest-prefix-match: the session alias table is keyed by the
+        // full alias path; querying `opt` matches the `opt` key and substitutes
+        // its target `core.option` before resolution restarts.
+        tf.module_aliases.insert(
+            ModuleFullPath::from("opt"),
+            cranelisp_types::ModuleAliasEntry::new(
+                ModuleFullPath::from("core.option"),
+                Visibility::Public,
+                Span::SYNTHETIC,
+            ),
+        );
+
+        let result = tf.resolve_qualified(&ModuleFullPath::from("opt"), "Some").unwrap();
+        assert!(result.is_some(), "resolve_qualified should resolve 'opt/Some' via alias");
+    }
+
+    // spec: 08-modules §8.5 — direct qualified path works without alias
+    #[test]
+    fn test_resolve_qualified_without_alias_unchanged() {
+        let mut tf = TestFixture::new();
+        seed_module(&mut tf, "math", vec![("add", Visibility::Public)]);
+        tf.set_current_module(ModuleFullPath::from("main"));
+
+        let result = tf.resolve_qualified(&ModuleFullPath::from("math"), "add").unwrap();
+        assert!(result.is_some());
+    }
+
+    // --- Builtin seeding in new modules ---
+
+    // spec: 08-modules §8.9 — new module is empty (Principle 17 amendment,
+    // FIXME 0193). Special forms at root `""`, not seeded.
+    #[test]
+    fn test_new_module_does_not_have_primitives() {
+        let mut tf = TestFixture::new();
+        tf.set_current_module(ModuleFullPath::from("mymod"));
+        assert!(tf.symbol_table().get("add-i64").is_none(), "add-i64 needs import");
+        assert!(tf.symbol_table().get("bind").is_none(), "bind needs import");
+        assert!(tf.symbol_table().get("if").is_none(), "special forms at root \"\"");
+        assert!(tf.symbol_table().get("Int").is_none(), "Int needs import");
+    }
+
+    // --- Fresh variable generation ---
+
+    // spec: pipeline-v3.md §3.4.3 — AtomicU32 TypeId allocation is monotonic
+    #[test]
+    fn test_fresh_var_ids_are_monotonic() {
+        let tf = TestFixture::new();
+        let env = tf.env();
+        let (_, id1) = env.fresh_var_id();
+        let (_, id2) = env.fresh_var_id();
+        let (_, id3) = env.fresh_var_id();
+        assert!(id1 < id2);
+        assert!(id2 < id3);
+    }
+
+    // spec: pipeline-v3.md §3.4.3 — fresh_var returns unique Var types
+    #[test]
+    fn test_fresh_var_returns_unique_vars() {
+        let tf = TestFixture::new();
+        let env = tf.env();
+        let v1 = env.fresh_var();
+        let v2 = env.fresh_var();
+        assert_ne!(v1, v2);
+        assert!(matches!(v1, Type::Var(_)));
+        assert!(matches!(v2, Type::Var(_)));
+    }
+
+    // -----------------------------------------------------------------
+    // Sprint 61 Wave 3 step 3e'' — H6 atomic `ensure_module_exists`
+    // -----------------------------------------------------------------
+    //
+    // These tests exercise the new `entry().or_insert_with(...)` +
+    // hoisted-seed implementation per /arch mini-review §3d''.
+    //
+    // Per `design/int/heisenbug-race-closure.md §3d''` Test authoring
+    // requirements (2): narrow regression guard for concurrent ensures
+    // on the same path — exactly one thread builds, others observe
+    // the pre-existing table intact.
+    //
+    // Tests use `TestFixture` which already populates `user` with
+    // special forms so the seed clone is non-trivial.
+
+    // Per Principle 17 amendment (FIXME 0193): `ensure_module_exists` creates
+    // an empty `SymbolTable`. Special forms live at root `""` only.
+    #[test]
+    fn ensure_module_exists_creates_empty_table() {
+        let tf = TestFixture::new();
+        let path = ModuleFullPath::from("fresh-mod-a");
+        assert!(
+            tf.modules.get(&path).is_none(),
+            "precondition: module absent"
+        );
+        tf.env().ensure_module_exists(&path);
+        let guard = tf.modules.get(&path).expect("module must be present");
+        assert!(
+            guard.get("if").is_none(),
+            "special forms not seeded (FIXME 0193) — live at root \"\""
+        );
+        assert!(
+            guard.get("defn").is_none(),
+            "special forms not seeded (FIXME 0193) — live at root \"\""
+        );
+        assert!(
+            guard.get("Int").is_none(),
+            "builtin types must NOT leak via ensure"
+        );
+    }
+
+    #[test]
+    fn ensure_module_exists_on_populated_table_preserves_entries() {
+        // Simulates the post-populate-then-ensure scenario that H6's
+        // pre-fix code broke: another code path populated
+        // `modules[helper]` with a real symbol; a concurrent
+        // `ensure_module_exists(helper)` on the REPL thread must NOT
+        // overwrite the table.
+        let tf = TestFixture::new();
+        let path = ModuleFullPath::from("fresh-mod-b");
+
+        // Pre-seed with a user-visible symbol (emulating what the
+        // priority worker does in handle_typecheck_work_shared after
+        // its own ensure + typecheck).
+        tf.env().ensure_module_exists(&path);
+        {
+            let mut guard = tf.modules.get_mut(&path).unwrap();
+            guard.insert(
+                Symbol::from("helper-val"),
+                ModuleEntry::def(
+                    crate::scheme::mono(Type::Int),
+                    DefKind::UserFn { constrained_fn: None },
+                )
+                .build(),
+            );
+        }
+
+        // Second ensure — pre-fix, this OVERWROTE the populated table.
+        // Post-fix, the `Entry::Occupied` path fires and the table is
+        // left untouched.
+        tf.env().ensure_module_exists(&path);
+
+        let guard = tf.modules.get(&path).expect("module still present");
+        assert!(
+            guard.get("helper-val").is_some(),
+            "pre-existing helper-val MUST NOT be overwritten by second ensure \
+             (H6 regression guard — design/int/heisenbug-race-closure.md §8.3)"
+        );
+        // Per FIXME 0193: special forms NOT seeded into regular modules.
+        assert!(
+            guard.get("if").is_none(),
+            "special forms live at root \"\", not seeded into regular modules"
+        );
+    }
+
+    #[test]
+    fn ensure_module_exists_concurrent_same_path_emits_exactly_one_created() {
+        // Stress the atomicity: spawn N threads each calling
+        // `ensure_module_exists(same_path)` concurrently. Exactly one
+        // Created emission, N-1 AlreadyPresent emissions, and the
+        // table ends up present with special forms seeded.
+        //
+        // Observability: install a test-local counting hook on the
+        // trace slot. Because `install_symbol_table_ensure_hook` is
+        // backed by a `OnceLock` (process-global, first-install wins),
+        // the hook may already be installed by a sibling test or a
+        // higher-level binary run. To make the assertion robust to
+        // test-execution order we spy via a dedicated atomic counter
+        // keyed off the module path in the forwarding hook below.
+
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering as AOrd};
+        use std::thread;
+
+        // Global counters: one per outcome, scoped to this test's path.
+        static CREATED: AtomicUsize = AtomicUsize::new(0);
+        static ALREADY_PRESENT: AtomicUsize = AtomicUsize::new(0);
+        // Install a forwarding hook on first call. This is idempotent
+        // on the OnceLock slot — subsequent tests' installs are
+        // no-ops. Routing is keyed by a well-known path the test owns.
+        fn test_counting_hook(
+            module: &ModuleFullPath,
+            outcome: crate::trace::SymbolTableEnsureOutcome,
+        ) {
+            if module.as_ref() == CONCURRENT_PATH {
+                match outcome {
+                    crate::trace::SymbolTableEnsureOutcome::Created => {
+                        CREATED.fetch_add(1, AOrd::Relaxed);
+                    }
+                    crate::trace::SymbolTableEnsureOutcome::AlreadyPresent => {
+                        ALREADY_PRESENT.fetch_add(1, AOrd::Relaxed);
+                    }
+                }
+            }
+        }
+        const CONCURRENT_PATH: &str = "concurrent-ensure-path";
+        crate::trace::install_symbol_table_ensure_hook(test_counting_hook);
+
+        CREATED.store(0, AOrd::Relaxed);
+        ALREADY_PRESENT.store(0, AOrd::Relaxed);
+
+        let tf = Arc::new(TestFixture::new());
+        let path = ModuleFullPath::from(CONCURRENT_PATH);
+        assert!(tf.modules.get(&path).is_none());
+
+        const N: usize = 8;
+        let barrier = Arc::new(std::sync::Barrier::new(N));
+        let mut handles = Vec::with_capacity(N);
+        for _ in 0..N {
+            let tf_cl = tf.clone();
+            let barrier_cl = barrier.clone();
+            let path_cl = path.clone();
+            handles.push(thread::spawn(move || {
+                barrier_cl.wait();
+                tf_cl.env().ensure_module_exists(&path_cl);
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Post-condition: the table is present and empty. Special forms
+        // live at root `""` (FIXME 0193).
+        let guard = tf.modules.get(&path).expect("module must be present");
+        assert!(
+            guard.get("if").is_none(),
+            "special forms at root \"\", not seeded under concurrency"
+        );
+
+        // Sink invariants (only valid if our hook was the active
+        // install — OnceLock ordering permitting). If another forwarding
+        // hook had already won the install race in a prior test, the
+        // counters stay at 0 and the invariant degrades to
+        // "post-condition observed via the fixture". Guard with a
+        // conditional assertion so the test remains deterministic
+        // regardless of execution order.
+        let created = CREATED.load(AOrd::Relaxed);
+        let already = ALREADY_PRESENT.load(AOrd::Relaxed);
+        if created + already > 0 {
+            assert_eq!(
+                created, 1,
+                "exactly ONE Created emission for a concurrent ensure on the same \
+                 path (H6 invariant — any >1 is the race signature). \
+                 observed: created={created} already_present={already}"
+            );
+            assert_eq!(
+                already,
+                N - 1,
+                "the other N-1 threads must each emit AlreadyPresent"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Wave 3a-α redo Sub-D — Pattern B trait-home + chain-follow tests
+    // -----------------------------------------------------------------
+    //
+    // These tests guard Decision 45 (Pattern B) and Principle 17 (per-symbol
+    // chain-follow as THE navigation primitive) for `TraitImpl` writes and
+    // lookups. See `design/typecheck/implementation-slice-s66.md §5`.
+
+    use cranelisp_types::{
+        Defn, DefnVariant, Expr, FQSymbol, FQTypeName, TraitDecl, TraitImpl, TraitMethodSig,
+        TraitName, TypeExpr, TypeName,
+    };
+
+    /// Make a unary trait `T` over type parameter `a` with one method `op`
+    /// (`(Fn [a a] a)`). Used by Pattern B / chain-follow tests below.
+    fn make_unary_trait_decl(name: &str, method: &str) -> TraitDecl {
+        TraitDecl {
+            name: TraitName::from(name),
+            docstring: None,
+            type_params: vec![Symbol::from("a")],
+            methods: vec![TraitMethodSig {
+                name: Symbol::from(method),
+                docstring: None,
+                params: vec![
+                    (Symbol::from("lhs"), TypeExpr::TypeVar(Symbol::from("a"))),
+                    (Symbol::from("rhs"), TypeExpr::TypeVar(Symbol::from("a"))),
+                ],
+                ret_type: TypeExpr::TypeVar(Symbol::from("a")),
+                span: Span::SYNTHETIC,
+                hkt_param_index: None,
+                default_body: None,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        }
+    }
+
+    /// Make a concrete `(impl T Int (defn op [lhs rhs] (add-i64 lhs rhs)))`.
+    fn make_int_op_impl(trait_name: &str, method: &str) -> TraitImpl {
+        TraitImpl {
+            trait_name: cranelisp_types::TraitRef::new(None, TraitName::from(trait_name)),
+            target: cranelisp_types::TypeExpr::Named(
+                cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
+            ),
+            type_constraints: vec![],
+            methods: vec![Defn {
+                name: Symbol::from(method),
+                docstring: None,
+                variants: vec![DefnVariant {
+                    params: vec![(Symbol::from("lhs"), None), (Symbol::from("rhs"), None)],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add-i64"),
+                            span: Span::SYNTHETIC,
+                            inferred_type: None,
+                        }),
+                        args: vec![
+                            Expr::Var {
+                                name: Symbol::from("lhs"),
+                                span: Span::SYNTHETIC,
+                                inferred_type: None,
+                            },
+                            Expr::Var {
+                                name: Symbol::from("rhs"),
+                                span: Span::SYNTHETIC,
+                                inferred_type: None,
+                            },
+                        ],
+                        span: Span::SYNTHETIC,
+                        resolved_call: None,
+                        inferred_type: None,
+                    },
+                    span: Span::SYNTHETIC,
+                }],
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            }],
+            span: Span::SYNTHETIC,
+        }
+    }
+
+    // spec: arch Decision 45 Pattern B + slice §1.A α15 — `ModuleEntry::TraitImpl`
+    // writes target the trait's defining module H, NOT the writer's module M.
+    // Set up: trait T declared in H; M imports T from H; register impl from M's
+    // perspective; assert the impl entry lands in H's symbol table and is
+    // absent from M's.
+    #[test]
+    fn test_trait_impl_write_lands_in_trait_home_not_writer() {
+        let mut tf = TestFixture::new();
+
+        // Need primitives imported into M so the impl body (`add-i64`) and
+        // the bare type name `Int` are resolvable.
+        let home = ModuleFullPath::from("home_h");
+        let writer = ModuleFullPath::from("writer_m");
+
+        // 1. Declare trait T in H.
+        tf.set_current_module(home.clone());
+        seed_glob_import(&mut tf, &ModuleFullPath::from("primitives"));
+        tf.register_trait_decl_self(&make_unary_trait_decl("PatternBTrait", "pb-op"))
+            .unwrap();
+
+        // 2. Switch to writer M; import T from H + primitives glob.
+        tf.set_current_module(writer.clone());
+        seed_glob_import(&mut tf, &ModuleFullPath::from("primitives"));
+        seed_specific_import(&mut tf, &home, &["PatternBTrait", "pb-op"]);
+
+        // Sanity: M sees T via Import binding (terminal resolves to TraitDecl in H).
+        let (_term, term_home) = tf
+            .env()
+            .resolve_terminal_entry_and_home(&writer, "PatternBTrait")
+            .expect("M's Import of PatternBTrait should chain-follow to H");
+        assert_eq!(
+            term_home, home,
+            "chain-follow of `PatternBTrait` from writer M should land at trait home H"
+        );
+
+        // 3. Register impl from M's perspective.
+        tf.register_trait_impl_self(&make_int_op_impl("PatternBTrait", "pb-op"))
+            .unwrap();
+
+        // 4. Assert ModuleEntry::TraitImpl lands in H, not M.
+        let expected_key = Symbol::from("impl$primitives/Int$home_h/PatternBTrait");
+
+        let home_table = tf
+            .modules
+            .get(&home)
+            .expect("H's symbol table should exist");
+        let h_entry = home_table.get(expected_key.as_ref());
+        assert!(
+            matches!(h_entry, Some(ModuleEntry::TraitImpl { .. })),
+            "Pattern B: TraitImpl MUST be written to H (trait's home), \
+             key `{expected_key}`; got {h_entry:?}"
+        );
+        if let Some(ModuleEntry::TraitImpl { trait_name, impl_type, .. }) = h_entry {
+            assert_eq!(trait_name.module, home, "trait_name FQ module should be H");
+            assert_eq!(trait_name.name.as_ref(), "PatternBTrait");
+            assert_eq!(
+                impl_type.module.as_ref(),
+                "primitives",
+                "Int resolves to primitives"
+            );
+            assert_eq!(impl_type.name.as_ref(), "Int");
+        }
+        drop(home_table);
+
+        // Negative: writer M's table MUST NOT contain ANY TraitImpl entry
+        // for PatternBTrait — and no synthetic `impl$...$home_h/PatternBTrait`
+        // key in particular.
+        let writer_table = tf
+            .modules
+            .get(&writer)
+            .expect("M's symbol table should exist");
+        assert!(
+            writer_table.get(expected_key.as_ref()).is_none(),
+            "Pattern A regression: TraitImpl MUST NOT appear in writer module M's table"
+        );
+        for (key, entry) in writer_table.all_symbols() {
+            if let ModuleEntry::TraitImpl { trait_name, .. } = entry {
+                panic!(
+                    "writer M contains an unexpected TraitImpl entry `{key}` for trait `{trait_name}` \
+                     — Pattern B requires it to live in the trait's home module H, not M"
+                );
+            }
+        }
+    }
+
+    // spec: arch Decision 45 + Principle 17 + slice §1.A α5/α6/α7 — impl
+    // resolution uses per-symbol chain-follow on `Import`/`Reexport`
+    // bindings to find the trait's home, then probes ONLY that one module
+    // for the synthetic `impl$...` key. No universe scan, no closure walk.
+    //
+    // Set up a re-export chain: L declares trait T; M imports T from L and
+    // re-exports it; N imports T from M (so N's binding is an `Import`
+    // pointing at M's `Reexport` pointing at L's `TraitDecl`). Place the
+    // impl at L (trait's home, per Pattern B). Place "decoy" TraitImpl
+    // entries in two unrelated modules (D1 and D2) that a universe scan
+    // would erroneously pick up. From N's view, `has_impl_in_module(N, T,
+    // Int)` MUST return true (chain-follow finds the L-resident impl), and
+    // the decoys MUST be ignored.
+    #[test]
+    fn test_impl_resolution_chain_follows_not_universe_scans() {
+        let mut tf = TestFixture::new();
+
+        let l = ModuleFullPath::from("chain_l");
+        let m = ModuleFullPath::from("chain_m");
+        let n = ModuleFullPath::from("chain_n");
+        let d1 = ModuleFullPath::from("decoy_d1");
+        let d2 = ModuleFullPath::from("decoy_d2");
+
+        // 1. L declares trait T (with primitives glob so the impl body
+        //    can resolve add-i64).
+        tf.set_current_module(l.clone());
+        seed_glob_import(&mut tf, &ModuleFullPath::from("primitives"));
+        tf.register_trait_decl_self(&make_unary_trait_decl("ChainTrait", "ch-op"))
+            .unwrap();
+        // L also owns the impl — write from L's perspective (Pattern B:
+        // chain-follow is depth-zero because writer == trait home).
+        tf.register_trait_impl_self(&make_int_op_impl("ChainTrait", "ch-op"))
+            .unwrap();
+
+        // 2. M imports T from L AND re-exports it. We construct the
+        //    `Reexport` entry directly (matches what `register_exports`
+        //    builds in the prod pipeline).
+        tf.set_current_module(m.clone());
+        seed_specific_import(&mut tf, &l, &["ChainTrait"]);
+        // Overwrite the `Import` with a `Reexport` on M so N's import sees
+        // a `Reexport` edge — the chain becomes N(Import) → M(Reexport) → L(TraitDecl).
+        tf.symbol_table_mut().insert(
+            Symbol::from("ChainTrait"),
+            ModuleEntry::Import {
+                source: FQSymbol {
+                    module: l.clone(),
+                    symbol: Symbol::from("ChainTrait"),
+                },
+                visibility: Visibility::Public,
+            },
+        );
+
+        // 3. N imports T from M.
+        tf.set_current_module(n.clone());
+        seed_specific_import(&mut tf, &m, &["ChainTrait"]);
+
+        // Sanity: from N, chain-follow lands at L (the trait's home).
+        let (_term, home_via_n) = tf
+            .env()
+            .resolve_terminal_entry_and_home(&n, "ChainTrait")
+            .expect("chain-follow from N should reach L");
+        assert_eq!(
+            home_via_n, l,
+            "chain-follow of `ChainTrait` from N must terminate at L (chain length 2)"
+        );
+
+        // 4. Place decoy TraitImpl entries in D1 and D2. A universe scan
+        //    would erroneously match these; chain-follow MUST ignore them
+        //    because it probes ONLY the trait's home (L).
+        let decoy_key = Symbol::from("impl$primitives/Int$chain_l/ChainTrait");
+        for decoy_path in [&d1, &d2] {
+            // Ensure the module exists so a write succeeds.
+            tf.env().ensure_module_exists(decoy_path);
+            let mut tbl = tf
+                .modules
+                .get_mut(decoy_path)
+                .expect("decoy module just ensured");
+            tbl.insert(
+                decoy_key.clone(),
+                ModuleEntry::TraitImpl {
+                    trait_name: cranelisp_types::FQTraitName::new(
+                        l.clone(),
+                        TraitName::from("ChainTrait"),
+                    ),
+                    impl_type: FQTypeName::new(
+                        ModuleFullPath::from("primitives"),
+                        TypeName::from("Int"),
+                    ),
+                    methods: vec![Symbol::from("ch-op")],
+                    visibility: Visibility::Public,
+                },
+            );
+        }
+
+        // 5. From N's view, has_impl_with_state MUST find the L-resident
+        //    impl via chain-follow (positive). The decoy entries are
+        //    structurally identical but live in unrelated modules; if the
+        //    resolver were doing a universe scan it would still find one,
+        //    so the positive does not by itself prove chain-follow. The
+        //    negative below tightens the assertion.
+        let n_state = CheckState::new(n.clone());
+        let env = tf.env();
+        assert!(
+            env.has_impl_with_state(&n_state, &TraitName::from("ChainTrait"), &TypeName::from("Int")),
+            "impl resolution from N should chain-follow N → M → L and find the L-resident impl"
+        );
+
+        // Negative: lookup against a trait name that DOES NOT have an
+        // import binding in N MUST return false. If the resolver were
+        // doing a universe scan over `self.modules`, the decoys (whose
+        // synthetic key embeds `chain_l/ChainTrait`) could be matched by
+        // name alone; chain-follow refuses because the starting module N
+        // has no `UnknownTrait` binding to follow.
+        assert!(
+            !env.has_impl_with_state(
+                &n_state,
+                &TraitName::from("UnknownTrait"),
+                &TypeName::from("Int")
+            ),
+            "no `UnknownTrait` import in N → chain-follow must fail and decoys MUST NOT be matched \
+             (a universe scan would falsely hit the decoy entries)"
+        );
+
+        // Negative: probing the writer module N directly for the synthetic
+        // impl key MUST find nothing — the entry lives in L only.
+        let n_table = tf
+            .modules
+            .get(&n)
+            .expect("N's symbol table should exist");
+        assert!(
+            n_table.get(decoy_key.as_ref()).is_none(),
+            "N's symbol table MUST NOT carry the impl entry (it lives in L per Pattern B)"
+        );
+    }
+
+    // spec: arch Principle 17 + slice §1.A α1/α2/α3 — short-name lookup is
+    // current-module-only. If `foo` is absent from the current module's
+    // symbol table, the lookup fails — no fallback to primitives, no
+    // closure walk, no universe scan. With a `(import [M [foo]])` binding
+    // in N, the same lookup chain-follows the per-symbol Import edge to M.
+    #[test]
+    fn test_short_name_lookup_is_current_module_only() {
+        let mut tf = TestFixture::new();
+
+        let m = ModuleFullPath::from("home_m");
+        let n = ModuleFullPath::from("consumer_n");
+
+        // 1. Register a TypeDef for `Foo` in M.
+        tf.set_current_module(m.clone());
+        tf.register_type_def_self(
+            &TypeName::from("Foo"),
+            &None,
+            &[],
+            &[cranelisp_types::ConstructorDef {
+                name: Symbol::from("MkFoo"),
+                docstring: None,
+                fields: vec![],
+                span: Span::SYNTHETIC,
+            }],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        ).unwrap();
+
+        // 2. From N (no import of M.Foo), short-name lookup of Foo MUST fail.
+        tf.set_current_module(n.clone());
+        let result_no_import = tf
+            .env()
+            .lookup_type_def_in_module(&n, &TypeName::from("Foo"));
+        assert!(
+            result_no_import.is_none(),
+            "current-module-only short-name lookup MUST fail when `Foo` is not bound in N \
+             (Principle 17: no fallback, no closure walk, no universe scan)"
+        );
+
+        // Negative: also confirm that short-name `lookup` (Scheme variant)
+        // does not silently chain into M.
+        let n_state = CheckState::new(n.clone());
+        assert!(
+            tf.env().lookup(&n_state, "Foo").0.is_none(),
+            "Scheme-flavoured lookup of `Foo` from N MUST also fail without an Import"
+        );
+
+        // 3. Now inject a per-symbol Import binding into N for M.Foo.
+        //    Manual insert mirrors what `register_imports` would build for
+        //    a Specific import (TypeDef entries are public-by-default here).
+        tf.symbol_table_mut().insert(
+            Symbol::from("Foo"),
+            ModuleEntry::Import {
+                source: FQSymbol {
+                    module: m.clone(),
+                    symbol: Symbol::from("Foo"),
+                },
+                visibility: Visibility::Private,
+            },
+        );
+
+        // 4. The same short-name lookup now chain-follows N(Import) → M(TypeDef)
+        //    and succeeds — reach is per-binding, not per-resolver.
+        let result_after_import = tf
+            .env()
+            .lookup_type_def_in_module(&n, &TypeName::from("Foo"));
+        assert!(
+            result_after_import.is_some(),
+            "after injecting `ModuleEntry::Import {{ source: M/Foo }}` into N, \
+             chain-follow should resolve `Foo` to M's TypeDef"
+        );
+        let info = result_after_import.unwrap();
+        assert_eq!(info.name.module, m, "resolved Foo's FQ module should be M");
+        assert_eq!(info.name.name.as_ref(), "Foo");
+    }

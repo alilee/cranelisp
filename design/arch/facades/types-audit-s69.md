@@ -1,5 +1,7 @@
 # cranelisp-types — Sprint 69 facade audit (per-item analysis, design-intent grounded)
 
+> **Naming note (facade-coherence pass, post-S72).** The typecheck boundary type `ClusterContext` is renamed `SymbolTableAccess` — every `ClusterContext` mention below (in the `View` consumer-cascade discussion) reads as `SymbolTableAccess`. See `facades/typecheck.md` §"Cluster check scaffolding" naming rationale.
+
 **Audit triple**: `crates/cranelisp-types/src/lib.rs` (declared surface, 82 LOC) × `design/arch/facades/types.md` (binding contract, 1038 LOC) × `crates/cranelisp-types/public-api.txt` (live boundary, 3772 LOC).
 
 **Date**: 2026-05-19 (S69 Phase 3 Wave 1 — re-author #2)

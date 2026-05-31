@@ -218,24 +218,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             };
 
             // Register the method name as a symbol with trait_origin
-            self.current_symbol_table_mut(state).insert(
-                method.name.clone(),
-                cranelisp_types::ModuleEntry::Def {
-                    scheme: method_scheme,
-                    visibility: Visibility::Public,
-                    docstring: method.docstring.clone(),
-                    param_names: method.params.iter().map(|(n, _)| n.clone()).collect(),
-                    kind: Box::new(cranelisp_types::DefKind::UserFn {
-                        constrained_fn: None,
-                    }),
-                    callees: Vec::new(),
-                    got_slot: None,
-                    trait_origin: Some(fq_trait_name.clone()),
-                    seq: 0,
-                    ast: None,
-                    code: None,
-                },
-            );
+            let mut builder = cranelisp_types::ModuleEntry::def(
+                method_scheme,
+                cranelisp_types::DefKind::UserFn { constrained_fn: None },
+            )
+            .param_names(method.params.iter().map(|(n, _)| n.clone()).collect())
+            .trait_origin(fq_trait_name.clone());
+            if let Some(doc) = method.docstring.clone() {
+                builder = builder.docstring(doc);
+            }
+            self.current_symbol_table_mut(state).insert(method.name.clone(), builder.build());
 
             // trait_origin is already set on the ModuleEntry::Def above,
             // so no separate reverse lookup registration is needed.
@@ -285,24 +277,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         };
 
         // Register the method name as a symbol with trait_origin
-        self.current_symbol_table_mut(state).insert(
-            method.name.clone(),
-            cranelisp_types::ModuleEntry::Def {
-                scheme: method_scheme,
-                visibility: Visibility::Public,
-                docstring: method.docstring.clone(),
-                param_names: method.params.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
-                kind: Box::new(cranelisp_types::DefKind::UserFn {
-                    constrained_fn: None,
-                }),
-                callees: Vec::new(),
-                got_slot: None,
-                trait_origin: Some(fq_trait_name),
-                seq: 0,
-                ast: None,
-                code: None,
-            },
-        );
+        let mut builder = cranelisp_types::ModuleEntry::def(
+            method_scheme,
+            cranelisp_types::DefKind::UserFn { constrained_fn: None },
+        )
+        .param_names(method.params.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>())
+        .trait_origin(fq_trait_name);
+        if let Some(doc) = method.docstring.clone() {
+            builder = builder.docstring(doc);
+        }
+        self.current_symbol_table_mut(state).insert(method.name.clone(), builder.build());
 
         // trait_origin is already set on the ModuleEntry::Def above,
         // so no separate reverse lookup registration is needed.
@@ -703,6 +687,50 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             Symbol::from(mangled.as_str())
         };
 
+        self.finalize_impl_method_writeback(
+            state,
+            method_defn,
+            &method_clone,
+            mangled_sym,
+            &param_types,
+            &ret_ty,
+            &mr_before,
+            &et_before,
+        )
+    }
+
+    /// Shared tail of `check_impl_method_with_sig` / `check_hkt_impl_method`.
+    ///
+    /// Both methods, after checking the method body with concrete param/return
+    /// types, extract the per-defn side-map delta, annotate a fresh `Defn`
+    /// clone with those types + resolved calls, apply the final substitution,
+    /// and write the annotated `DefnVariant` into the symbol table (inserting a
+    /// concrete-scheme `Def` entry if one doesn't already exist). `mr_before` /
+    /// `et_before` are the side-map key snapshots taken *before* the body check.
+    ///
+    /// The symbol table entry may not yet exist because `register_trait_impl`
+    /// runs during Pass 1's TraitImpl processing, BEFORE the mangled-name Defns
+    /// are iterated through `check_form_register` (which calls
+    /// `register_defn_signature` to create the Def entry). We insert a fresh Def
+    /// entry here so that:
+    ///   1. `ast: Some(annotated)` persists through later `register_defn_signature`
+    ///      (which now preserves existing ast).
+    ///   2. `check_form_body_single_defn` short-circuits on `ast: Some(_)`,
+    ///      avoiding spurious re-inference that would acquire trait constraints
+    ///      on fresh type vars and mark the method as a constrained_fn — which
+    ///      would cause codegen to skip it, leaving a null GOT slot → SIGSEGV.
+    #[allow(clippy::too_many_arguments)]
+    fn finalize_impl_method_writeback(
+        &self,
+        state: &mut CheckState,
+        method_defn: &Defn,
+        method_clone: &Defn,
+        mangled_sym: Symbol,
+        param_types: &[Type],
+        ret_ty: &Type,
+        mr_before: &HashSet<Span>,
+        et_before: &HashSet<Span>,
+    ) -> Result<Defn, CranelispError> {
         // Extract delta: only entries added during this method's body check
         let method_mr: HashMap<Span, ResolvedCall> = state.method_resolutions
             .resolved_calls
@@ -737,42 +765,27 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         crate::program::apply_subst_to_defn(&state.subst, &mut annotated);
 
         // Write the fully annotated defn to ModuleEntry::Def.ast.
-        //
-        // The symbol table entry may not yet exist because register_trait_impl
-        // runs during Pass 1's TraitImpl processing, BEFORE the mangled-name
-        // Defns are iterated through check_form_register (which calls
-        // register_defn_signature to create the Def entry). We insert a fresh
-        // Def entry here so that:
-        //   1. `ast: Some(annotated)` persists through later register_defn_signature
-        //      (which now preserves existing ast).
-        //   2. `check_form_body_single_defn` short-circuits on `ast: Some(_)`,
-        //      avoiding spurious re-inference that would acquire trait constraints
-        //      on fresh type vars and mark the method as a constrained_fn — which
-        //      would cause codegen to skip it, leaving a null GOT slot → SIGSEGV.
-        let fn_type = Type::Fn(param_types.clone(), Box::new(ret_ty.clone()));
+        let fn_type = Type::Fn(param_types.to_vec(), Box::new(ret_ty.clone()));
         let concrete_scheme = crate::scheme::mono(fn_type);
         let mut st = self.current_symbol_table_mut(state);
-        let ast_variant: Option<DefnVariant> = annotated.variants.iter().next().cloned();
+        let ast_variant: Option<DefnVariant> = annotated.variants.first().cloned();
         if let Some(ModuleEntry::Def { ast, .. }) = st.symbols.get_mut(&mangled_sym) {
             *ast = ast_variant;
         } else {
-            let got_slot = Some(st.allocate_got_slot());
-            st.insert(
-                mangled_sym.clone(),
-                ModuleEntry::Def {
-                    scheme: concrete_scheme,
-                    visibility: Visibility::Public,
-                    docstring: method_defn.docstring.clone(),
-                    param_names: method_defn.params().iter().map(|(n, _)| n.clone()).collect(),
-                    kind: Box::new(DefKind::UserFn { constrained_fn: None }),
-                    callees: Vec::new(),
-                    got_slot,
-                    trait_origin: None,
-                    seq: 0,
-                    ast: ast_variant,
-                    code: None,
-                },
-            );
+            let got_slot = st.allocate_got_slot();
+            let mut builder = ModuleEntry::def(
+                concrete_scheme,
+                DefKind::UserFn { constrained_fn: None },
+            )
+            .param_names(method_defn.params().iter().map(|(n, _)| n.clone()).collect())
+            .got_slot(got_slot);
+            if let Some(doc) = method_defn.docstring.clone() {
+                builder = builder.docstring(doc);
+            }
+            if let Some(ast) = ast_variant {
+                builder = builder.ast(ast);
+            }
+            st.insert(mangled_sym.clone(), builder.build());
         }
 
         Ok(annotated)
@@ -871,71 +884,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         );
         let mangled_sym = Symbol::from(mangled.as_str());
 
-        // Extract delta: only entries added during this method's body check
-        let method_mr: HashMap<Span, ResolvedCall> = state.method_resolutions
-            .resolved_calls
-            .iter()
-            .filter(|(span, _)| !mr_before.contains(span))
-            .map(|(span, res)| (*span, res.clone()))
-            .collect();
-        let method_et: HashMap<Span, Type> = state.expr_types
-            .iter()
-            .filter(|(span, _)| !et_before.contains(span))
-            .map(|(span, ty)| (*span, apply(&state.subst, ty)))
-            .collect();
-
-        // Annotate the clone with types and resolved calls from delta,
-        // then apply final substitution to resolve Var(N) type variables
-        let mut annotated = Defn {
-            name: mangled_sym.clone(),
-            docstring: method_clone.docstring.clone(),
-            variants: vec![DefnVariant {
-                params: method_clone.params().to_vec(),
-                body: method_clone.body().clone(),
-                span: method_clone.span,
-            }],
-            visibility: Visibility::Public,
-            span: method_clone.span,
-        };
-        crate::program::annotate_defn_from_maps(
-            &mut annotated,
-            &method_et,
-            &method_mr,
-        );
-        crate::program::apply_subst_to_defn(&state.subst, &mut annotated);
-
-        // Write the fully annotated defn to ModuleEntry::Def.ast.
-        // If the entry doesn't exist yet (TraitImpl runs in Pass 1 before mangled
-        // Defns are registered), insert a concrete-scheme entry so later
-        // register_defn_signature / check_form_body_single_defn can preserve /
-        // short-circuit on ast. See check_impl_method for rationale.
-        let fn_type = Type::Fn(param_types.clone(), Box::new(ret_ty.clone()));
-        let concrete_scheme = crate::scheme::mono(fn_type);
-        let mut st = self.current_symbol_table_mut(state);
-        let ast_variant: Option<DefnVariant> = annotated.variants.iter().next().cloned();
-        if let Some(ModuleEntry::Def { ast, .. }) = st.symbols.get_mut(&mangled_sym) {
-            *ast = ast_variant;
-        } else {
-            let got_slot = Some(st.allocate_got_slot());
-            st.insert(
-                mangled_sym.clone(),
-                ModuleEntry::Def {
-                    scheme: concrete_scheme,
-                    visibility: Visibility::Public,
-                    docstring: method_defn.docstring.clone(),
-                    param_names: method_defn.params().iter().map(|(n, _)| n.clone()).collect(),
-                    kind: Box::new(DefKind::UserFn { constrained_fn: None }),
-                    callees: Vec::new(),
-                    got_slot,
-                    trait_origin: None,
-                    seq: 0,
-                    ast: ast_variant,
-                    code: None,
-                },
-            );
-        }
-
-        Ok(annotated)
+        self.finalize_impl_method_writeback(
+            state,
+            method_defn,
+            &method_clone,
+            mangled_sym,
+            &param_types,
+            &ret_ty,
+            &mr_before,
+            &et_before,
+        )
     }
 
     /// Check a function body with explicit parameter types.
@@ -1202,91 +1160,7 @@ fn primitive_for_trait_method(
 }
 
 #[cfg(test)]
-mod primitive_dispatch_tests {
-    use super::*;
-
-    // FIXME 0185 — verify the primitive-trait-method dispatch table mirrors
-    // the pre-D43 backend `primitive_for_trait_method` mapping.
-    #[test]
-    fn num_plus_int_maps_to_add_i64() {
-        let result = primitive_for_trait_method(
-            &TraitName::from("Num"),
-            &Symbol::from("+"),
-            &TypeName::from("Int"),
-        );
-        assert_eq!(result, Some("add-i64"));
-    }
-
-    #[test]
-    fn num_plus_float_maps_to_add_f64() {
-        let result = primitive_for_trait_method(
-            &TraitName::from("Num"),
-            &Symbol::from("+"),
-            &TypeName::from("Float"),
-        );
-        assert_eq!(result, Some("add-f64"));
-    }
-
-    #[test]
-    fn eq_eq_int_maps_to_eq_i64() {
-        let result = primitive_for_trait_method(
-            &TraitName::from("Eq"),
-            &Symbol::from("="),
-            &TypeName::from("Int"),
-        );
-        assert_eq!(result, Some("eq-i64"));
-    }
-
-    #[test]
-    fn eq_neq_string_maps_to_neq_string() {
-        let result = primitive_for_trait_method(
-            &TraitName::from("Eq"),
-            &Symbol::from("!="),
-            &TypeName::from("String"),
-        );
-        assert_eq!(result, Some("neq-string"));
-    }
-
-    #[test]
-    fn ord_lt_int_maps_to_lt_i64() {
-        let result = primitive_for_trait_method(
-            &TraitName::from("Ord"),
-            &Symbol::from("<"),
-            &TypeName::from("Int"),
-        );
-        assert_eq!(result, Some("lt-i64"));
-    }
-
-    #[test]
-    fn display_show_int_maps_to_int_to_string() {
-        let result = primitive_for_trait_method(
-            &TraitName::from("Display"),
-            &Symbol::from("show"),
-            &TypeName::from("Int"),
-        );
-        assert_eq!(result, Some("int-to-string"));
-    }
-
-    #[test]
-    fn unknown_combination_returns_none() {
-        let result = primitive_for_trait_method(
-            &TraitName::from("Display"),
-            &Symbol::from("show"),
-            &TypeName::from("Option"),
-        );
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn user_trait_returns_none() {
-        let result = primitive_for_trait_method(
-            &TraitName::from("MyTrait"),
-            &Symbol::from("foo"),
-            &TypeName::from("Int"),
-        );
-        assert_eq!(result, None);
-    }
-}
+mod primitive_dispatch_tests;
 
 // Continuation impl for the original trait-method block — split by the
 // primitive_for_trait_method dispatch table inserted above per FIXME 0185.
@@ -1501,28 +1375,24 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 ModuleEntry::Def { got_slot, .. } => *got_slot,
                 _ => None,
             });
-        let got_slot = Some(existing_got_slot.unwrap_or_else(|| st.allocate_got_slot()));
+        let got_slot = existing_got_slot.unwrap_or_else(|| st.allocate_got_slot());
 
-        st.insert(
-            mono.defn.name.clone(),
-            ModuleEntry::Def {
-                scheme,
-                visibility: mono.defn.visibility,
-                docstring: mono.defn.docstring.clone(),
-                param_names: mono.defn.params().iter().map(|(n, _)| n.clone()).collect(),
-                kind: Box::new(DefKind::UserFn {
-                    constrained_fn: None,
-                }),
-                callees: Vec::new(),
-                got_slot,
-                trait_origin: None,
-                seq: 0,
-                // S69 Submission 35: ast holds the single meaningful DefnVariant
-                // (not the parent Defn wrapper).
-                ast: mono.defn.variants.iter().next().cloned(),
-                code: None,
-            },
-        );
+        let mut builder = ModuleEntry::def(
+            scheme,
+            DefKind::UserFn { constrained_fn: None },
+        )
+        .visibility(mono.defn.visibility)
+        .param_names(mono.defn.params().iter().map(|(n, _)| n.clone()).collect())
+        .got_slot(got_slot);
+        if let Some(doc) = mono.defn.docstring.clone() {
+            builder = builder.docstring(doc);
+        }
+        // S69 Submission 35: ast holds the single meaningful DefnVariant
+        // (not the parent Defn wrapper).
+        if let Some(ast) = mono.defn.variants.first().cloned() {
+            builder = builder.ast(ast);
+        }
+        st.insert(mono.defn.name.clone(), builder.build());
     }
 
     /// Instantiate a scheme with fresh type variables, unify with the given
@@ -2124,8 +1994,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Staging-aware (FIXME 0179): iterate the unioned View so in-cluster
         // TraitDecl registrations are visible.
         let r = self.current_symbol_table(state);
-        for (_name, entry) in r.view().iter() {
-            if let Some(terminal) = self.resolve_to_terminal_entry_owned(entry, 0)
+        let names: Vec<Symbol> = r.view().iter().map(|(name, _)| name.clone()).collect();
+        for name in &names {
+            if let Some(terminal) =
+                self.resolve_terminal_entry_and_home(&state.current_module, name.as_ref()).map(|(e, _home)| e)
                 && let ModuleEntry::TraitDecl { info, .. } = terminal
             {
                 for method in &info.methods {
@@ -2144,1077 +2016,4 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::checker::TestFixture;
-    use cranelisp_types::{Defn, DefnVariant, ImportNames, ImportSpec, ModuleEntry, ModuleFullPath,
-        Span, TraitDecl, TraitImpl, TraitMethodSig, TypeExpr, Visibility,
-    };
-
-    /// Test helper: create an FQTraitName in the "test" module.
-    fn test_fqtn_trait(name: &str) -> FQTraitName {
-        FQTraitName::new(ModuleFullPath::from("test"), TraitName::from(name))
-    }
-
-    /// Test helper: create an FQTypeName in the "test" module.
-    fn test_fqtn(name: &str) -> FQTypeName {
-        FQTypeName::new(ModuleFullPath::from("test"), TypeName::from(name))
-    }
-
-    /// Create a TypeChecker with primitives imported into a "test" module.
-    fn tc_with_prims() -> TestFixture {
-        let mut tc = TestFixture::new();
-        tc.set_current_module(ModuleFullPath::from("test"));
-        let import_spec = ImportSpec {
-            module_path: ModuleFullPath::from("primitives"),
-            alias: None,
-            names: ImportNames::Glob,
-            span: Span::new(0, 0),
-        };
-        tc.register_imports_self(&[import_spec]).unwrap();
-        tc
-    }
-
-    /// Make a test-only trait decl (not conflicting with builtins).
-    fn make_test_trait_decl() -> TraitDecl {
-        TraitDecl {
-            name: TraitName::from("TestTrait"),
-            docstring: None,
-            type_params: vec![Symbol::from("a")],
-            methods: vec![
-                TraitMethodSig {
-                    name: Symbol::from("test-op"),
-                    docstring: None,
-                    params: vec![
-                        (Symbol::from("lhs"), TypeExpr::TypeVar(Symbol::from("a"))),
-                        (Symbol::from("rhs"), TypeExpr::TypeVar(Symbol::from("a"))),
-                    ],
-                    ret_type: TypeExpr::TypeVar(Symbol::from("a")),
-                    span: Span::SYNTHETIC,
-                    hkt_param_index: None,
-                    default_body: None,
-                },
-            ],
-            visibility: Visibility::Public,
-            span: Span::SYNTHETIC,
-        }
-    }
-
-    // spec: 07-traits §7.1 — no traits registered at startup
-    #[test]
-    fn test_no_traits_at_startup() {
-        let tc = TestFixture::new();
-        // No traits should be discoverable via lookup
-        assert!(tc.lookup_trait_decl(&TraitName::from("TestTrait")).is_none());
-    }
-
-    // spec: 07-traits §7.3 — no impls registered at startup
-    #[test]
-    fn test_no_impls_at_startup() {
-        let tc = TestFixture::new();
-        // No impls should be discoverable via has_impl
-        assert!(!tc.has_impl(&TraitName::from("Num"), &TypeName::from("Int")));
-    }
-
-    // spec: 03-types §3.6.1 — constraint detection: add and get trait constraints
-    #[test]
-    fn test_active_constraints_add_and_get() {
-        let mut ac = ActiveConstraints::default();
-        ac.add(0, test_fqtn_trait("Num"));
-        assert_eq!(ac.get(0).map(|v| v.len()), Some(1));
-        assert!(ac.get(1).is_none());
-    }
-
-    // spec: 03-types §3.6.2 — constraint propagation: duplicate adds are idempotent
-    #[test]
-    fn test_active_constraints_add_is_idempotent() {
-        let mut ac = ActiveConstraints::default();
-        ac.add(0, test_fqtn_trait("Num"));
-        ac.add(0, test_fqtn_trait("Num"));
-        ac.add(0, test_fqtn_trait("Eq"));
-        ac.add(0, test_fqtn_trait("Eq"));
-        let traits = ac.get(0).unwrap();
-        assert_eq!(traits.len(), 2, "duplicate adds should be ignored");
-        assert_eq!(traits[0].name.as_ref(), "Num");
-        assert_eq!(traits[1].name.as_ref(), "Eq");
-    }
-
-    // spec: 03-types §3.6.2 — collect constraints for specific type variable set
-    #[test]
-    fn test_active_constraints_collect_for_vars() {
-        let mut ac = ActiveConstraints::default();
-        ac.add(0, test_fqtn_trait("Num"));
-        ac.add(1, test_fqtn_trait("Eq"));
-
-        let collected = ac.collect_for_vars(&[0, 2]);
-        assert!(collected.contains_key(&0));
-        assert!(!collected.contains_key(&1));
-        assert!(!collected.contains_key(&2));
-    }
-
-    // spec: 03-types §3.6.2 — constraint state can be cleared
-    #[test]
-    fn test_active_constraints_clear() {
-        let mut ac = ActiveConstraints::default();
-        ac.add(0, test_fqtn_trait("Num"));
-        ac.clear();
-        assert!(ac.constraints.is_empty());
-    }
-
-    // spec: 07-traits §7.4.1 — concrete_type_name maps Int to TypeName
-    #[test]
-    fn test_concrete_type_name_int() {
-        assert_eq!(concrete_type_name(&Type::Int), Some(TypeName::from("Int")));
-    }
-
-    // spec: 07-traits §7.4.1 — concrete_type_name maps Float to TypeName
-    #[test]
-    fn test_concrete_type_name_float() {
-        assert_eq!(
-            concrete_type_name(&Type::Float),
-            Some(TypeName::from("Float"))
-        );
-    }
-
-    // spec: 07-traits §7.4.1 — concrete_type_name maps Bool to TypeName
-    #[test]
-    fn test_concrete_type_name_bool() {
-        assert_eq!(
-            concrete_type_name(&Type::Bool),
-            Some(TypeName::from("Bool"))
-        );
-    }
-
-    // spec: 07-traits §7.4.1 — concrete_type_name maps String to TypeName
-    #[test]
-    fn test_concrete_type_name_string() {
-        assert_eq!(
-            concrete_type_name(&Type::String),
-            Some(TypeName::from("String"))
-        );
-    }
-
-    // spec: 07-traits §7.4.1 — concrete_type_name maps ADT to its TypeName
-    #[test]
-    fn test_concrete_type_name_adt() {
-        assert_eq!(
-            concrete_type_name(&Type::ADT(test_fqtn("Color"), vec![])),
-            Some(TypeName::from("Color"))
-        );
-    }
-
-    // spec: 07-traits §7.4.1 — type variable has no concrete type name
-    #[test]
-    fn test_concrete_type_name_var_is_none() {
-        assert_eq!(concrete_type_name(&Type::Var(0)), None);
-    }
-
-    // spec: 07-traits §7.1 — deftrait registers trait and methods in symbol table
-    #[test]
-    fn test_register_trait_decl() {
-        let mut tc = TestFixture::new();
-        let decl = make_test_trait_decl();
-        tc.register_trait_decl_self(&decl).unwrap();
-
-        // Trait should be discoverable via SymbolTable lookup
-        assert!(tc.lookup_trait_decl(&TraitName::from("TestTrait")).is_some());
-        // Method should be reverse-mapped via trait_origin on ModuleEntry::Def
-        assert_eq!(
-            tc.method_to_trait(&Symbol::from("test-op")),
-            Some(TraitName::from("TestTrait"))
-        );
-        // Trait should be in symbol table
-        assert!(matches!(
-            tc.symbol_table().get("TestTrait"),
-            Some(ModuleEntry::TraitDecl { .. })
-        ));
-    }
-
-    // spec: 07-traits §7.1 — duplicate trait declaration is an error
-    #[test]
-    fn test_register_duplicate_trait_fails() {
-        let mut tc = TestFixture::new();
-        let decl = make_test_trait_decl();
-        tc.register_trait_decl_self(&decl).unwrap();
-        let err = tc.register_trait_decl_self(&decl).unwrap_err();
-        assert!(err.message().contains("already defined"));
-    }
-
-    // spec: 03-types §3.4.1 — trait method scheme carries trait constraint
-    #[test]
-    fn test_trait_method_has_constrained_scheme() {
-        let mut tc = TestFixture::new();
-        let decl = make_test_trait_decl();
-        tc.register_trait_decl_self(&decl).unwrap();
-
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("test-op") {
-            assert_eq!(scheme.type_vars.len(), 1, "test-op should have 1 quantified var");
-            assert!(
-                !scheme.constraints.is_empty(),
-                "test-op should have TestTrait constraint"
-            );
-            let var_id = scheme.type_vars[0];
-            let traits = scheme.constraints.get(&var_id).unwrap();
-            assert_eq!(traits.len(), 1);
-            assert_eq!(traits[0].name.as_ref(), "TestTrait");
-        } else {
-            panic!("test-op should be registered");
-        }
-    }
-
-    // spec: 07-traits §7.3.1 — register concrete trait implementation
-    #[test]
-    fn test_register_trait_impl() {
-        let mut tc = tc_with_prims();
-        let decl = make_test_trait_decl();
-        tc.register_trait_decl_self(&decl).unwrap();
-
-        let impl_ = TraitImpl {
-            trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("TestTrait")),
-            target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
-            type_constraints: vec![],
-            methods: vec![Defn {
-                name: Symbol::from("test-op"),
-                docstring: None,
-                variants: vec![DefnVariant {
-                    params: vec![(Symbol::from("lhs"), None), (Symbol::from("rhs"), None)],
-                    body: cranelisp_types::Expr::Apply {
-                        callee: Box::new(cranelisp_types::Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: Span::SYNTHETIC,
-                            inferred_type: None,
-                        }),
-                        args: vec![
-                            cranelisp_types::Expr::Var { name: Symbol::from("lhs"), span: Span::SYNTHETIC, inferred_type: None, },
-                            cranelisp_types::Expr::Var { name: Symbol::from("rhs"), span: Span::SYNTHETIC, inferred_type: None, },
-                        ],
-                        span: Span::SYNTHETIC,
-                        resolved_call: None,
-                        inferred_type: None,
-                    },
-                    span: Span::SYNTHETIC,
-                }],
-                visibility: Visibility::Public,
-                span: Span::SYNTHETIC,
-            }],
-            span: Span::SYNTHETIC,
-        };
-        tc.register_trait_impl_self(&impl_).unwrap();
-
-        assert!(tc.has_impl(&TraitName::from("TestTrait"), &TypeName::from("Int")));
-        assert!(!tc.has_impl(&TraitName::from("TestTrait"), &TypeName::from("Bool")));
-    }
-
-    // spec: 07-traits §7.4.1 — resolve trait method to concrete impl mangled name
-    #[test]
-    fn test_try_resolve_trait_method_success() {
-        let mut tc = tc_with_prims();
-        let decl = make_test_trait_decl();
-        tc.register_trait_decl_self(&decl).unwrap();
-
-        let impl_ = TraitImpl {
-            trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("TestTrait")),
-            target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
-            type_constraints: vec![],
-            methods: vec![Defn {
-                name: Symbol::from("test-op"),
-                docstring: None,
-                variants: vec![DefnVariant {
-                    params: vec![(Symbol::from("lhs"), None), (Symbol::from("rhs"), None)],
-                    body: cranelisp_types::Expr::Apply {
-                        callee: Box::new(cranelisp_types::Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: Span::SYNTHETIC,
-                            inferred_type: None,
-                        }),
-                        args: vec![
-                            cranelisp_types::Expr::Var { name: Symbol::from("lhs"), span: Span::SYNTHETIC, inferred_type: None, },
-                            cranelisp_types::Expr::Var { name: Symbol::from("rhs"), span: Span::SYNTHETIC, inferred_type: None, },
-                        ],
-                        span: Span::SYNTHETIC,
-                        resolved_call: None,
-                        inferred_type: None,
-                    },
-                    span: Span::SYNTHETIC,
-                }],
-                visibility: Visibility::Public,
-                span: Span::SYNTHETIC,
-            }],
-            span: Span::SYNTHETIC,
-        };
-        tc.register_trait_impl_self(&impl_).unwrap();
-
-        let result = tc.try_resolve_trait_method_self(
-            &Symbol::from("test-op"),
-            &[Type::Int, Type::Int],
-            Span::SYNTHETIC,
-        );
-        let result = result.expect("should not error");
-        assert!(result.is_some());
-        if let Some(ResolvedCall::TraitMethod {
-            trait_name,
-            method_name,
-            impl_type,
-            mangled_name,
-        }) = result
-        {
-            assert_eq!(trait_name.name.as_ref(), "TestTrait");
-            assert_eq!(method_name.as_ref(), "test-op");
-            assert_eq!(impl_type.name.as_ref(), "Int");
-            assert_eq!(mangled_name.as_ref(), "TestTrait.test-op$Int");
-        }
-    }
-
-    // spec: 07-traits §7.4.3 — no matching impl returns TypeError
-    #[test]
-    fn test_try_resolve_trait_method_no_impl() {
-        let mut tc = TestFixture::new();
-        let decl = make_test_trait_decl();
-        tc.register_trait_decl_self(&decl).unwrap();
-        // No impl registered for Bool under TestTrait
-
-        let result = tc.try_resolve_trait_method_self(
-            &Symbol::from("test-op"),
-            &[Type::Bool, Type::Bool],
-            Span::SYNTHETIC,
-        );
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        match err {
-            CranelispError::TypeError { message, .. } => {
-                assert!(message.contains("no impl of trait TestTrait for type Bool"), "{message}");
-            }
-            other => panic!("expected TypeError, got {other:?}"),
-        }
-    }
-
-    // spec: 07-traits §7.4.1 — non-trait-method name returns None
-    #[test]
-    fn test_try_resolve_non_trait_method() {
-        let mut tc = TestFixture::new();
-        let result = tc.try_resolve_trait_method_self(
-            &Symbol::from("add-i64"),
-            &[Type::Int, Type::Int],
-            Span::SYNTHETIC,
-        );
-        assert!(matches!(result, Ok(None)));
-    }
-
-    // spec: 07-traits §7.4.3 — has_impl tracks trait-type pairs via SymbolTable
-    #[test]
-    fn test_has_impl_via_symbol_table() {
-        let mut tc = tc_with_prims();
-        let decl = make_test_trait_decl();
-        tc.register_trait_decl_self(&decl).unwrap();
-
-        let impl_ = TraitImpl {
-            trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("TestTrait")),
-            target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
-            type_constraints: vec![],
-            methods: vec![Defn {
-                name: Symbol::from("test-op"),
-                docstring: None,
-                variants: vec![DefnVariant {
-                    params: vec![(Symbol::from("lhs"), None), (Symbol::from("rhs"), None)],
-                    body: cranelisp_types::Expr::Apply {
-                        callee: Box::new(cranelisp_types::Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: Span::SYNTHETIC,
-                            inferred_type: None,
-                        }),
-                        args: vec![
-                            cranelisp_types::Expr::Var { name: Symbol::from("lhs"), span: Span::SYNTHETIC, inferred_type: None, },
-                            cranelisp_types::Expr::Var { name: Symbol::from("rhs"), span: Span::SYNTHETIC, inferred_type: None, },
-                        ],
-                        span: Span::SYNTHETIC,
-                        resolved_call: None,
-                        inferred_type: None,
-                    },
-                    span: Span::SYNTHETIC,
-                }],
-                visibility: Visibility::Public,
-                span: Span::SYNTHETIC,
-            }],
-            span: Span::SYNTHETIC,
-        };
-        tc.register_trait_impl_self(&impl_).unwrap();
-
-        assert!(tc.has_impl(&TraitName::from("TestTrait"), &TypeName::from("Int")));
-        assert!(!tc.has_impl(&TraitName::from("TestTrait"), &TypeName::from("Bool")));
-    }
-
-    // spec: 07-traits §7.1 — is_trait_method distinguishes trait methods from plain fns
-    #[test]
-    fn test_is_trait_method() {
-        let mut tc = TestFixture::new();
-        let decl = make_test_trait_decl();
-        tc.register_trait_decl_self(&decl).unwrap();
-
-        assert!(tc.is_trait_method(&Symbol::from("test-op")));
-        assert!(!tc.is_trait_method(&Symbol::from("add-i64")));
-    }
-
-    // spec: 07-traits §7.1.1 — self type resolves to implementing type
-    #[test]
-    fn test_resolve_trait_type_expr_self() {
-        let mut var_map = HashMap::new();
-        let mut next_id: TypeId = 100;
-        let result = resolve_trait_type_expr(
-            &TypeExpr::SelfType,
-            &Type::Int,
-            Span::SYNTHETIC,
-            &mut var_map,
-            &mut next_id,
-        )
-        .unwrap();
-        assert_eq!(result, Type::Int);
-    }
-
-    // spec: 07-traits §7.1.4 — named type in trait signature resolves to concrete type
-    #[test]
-    fn test_resolve_trait_type_expr_named() {
-        let mut var_map = HashMap::new();
-        let mut next_id: TypeId = 100;
-        let result = resolve_trait_type_expr(
-            &TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool"))),
-            &Type::Int,
-            Span::SYNTHETIC,
-            &mut var_map,
-            &mut next_id,
-        )
-        .unwrap();
-        assert_eq!(result, Type::Bool);
-    }
-
-    // spec: 07-traits §7.1.4 — type variable in trait sig gets fresh var
-    #[test]
-    fn test_resolve_trait_type_expr_type_var_gets_fresh_var() {
-        let mut var_map = HashMap::new();
-        let mut next_id: TypeId = 100;
-        let result = resolve_trait_type_expr(
-            &TypeExpr::TypeVar(Symbol::from("b")),
-            &Type::Float,
-            Span::SYNTHETIC,
-            &mut var_map,
-            &mut next_id,
-        )
-        .unwrap();
-        assert!(matches!(result, Type::Var(_)));
-        assert_ne!(result, Type::Float);
-    }
-
-    // spec: 07-traits §7.1.4 — pre-seeded type var reuses existing mapping
-    #[test]
-    fn test_resolve_trait_type_expr_type_var_preseeded() {
-        let mut var_map = HashMap::new();
-        var_map.insert(Symbol::from("a"), Type::Int);
-        let mut next_id: TypeId = 100;
-        let result = resolve_trait_type_expr(
-            &TypeExpr::TypeVar(Symbol::from("a")),
-            &Type::Float,
-            Span::SYNTHETIC,
-            &mut var_map,
-            &mut next_id,
-        )
-        .unwrap();
-        assert_eq!(result, Type::Int);
-    }
-
-    // spec: 07-traits §7.1.4 — same type variable name reuses same var across calls
-    #[test]
-    fn test_resolve_trait_type_expr_same_var_reused() {
-        let mut var_map = HashMap::new();
-        let mut next_id: TypeId = 100;
-        let r1 = resolve_trait_type_expr(
-            &TypeExpr::TypeVar(Symbol::from("b")),
-            &Type::Int,
-            Span::SYNTHETIC,
-            &mut var_map,
-            &mut next_id,
-        )
-        .unwrap();
-        let r2 = resolve_trait_type_expr(
-            &TypeExpr::TypeVar(Symbol::from("b")),
-            &Type::Int,
-            Span::SYNTHETIC,
-            &mut var_map,
-            &mut next_id,
-        )
-        .unwrap();
-        assert_eq!(r1, r2);
-    }
-
-    // spec: pipeline-orchestration §5 — no core traits at startup (Decision 17 eliminated)
-    #[test]
-    fn test_no_core_traits_at_startup() {
-        let tc = TestFixture::new();
-        // Traits come from prelude .cl files, NOT compiler builtins.
-        // No traits should be discoverable via SymbolTable lookup.
-        assert!(tc.lookup_trait_decl(&TraitName::from("Num")).is_none(),
-            "no traits should be registered at startup");
-        assert!(!tc.has_impl(&TraitName::from("Num"), &TypeName::from("Int")),
-            "no impls should be registered at startup");
-    }
-
-    // spec: pipeline-orchestration §5 — operator symbols NOT in symbol table at startup
-    #[test]
-    fn test_no_operators_at_startup() {
-        let tc = TestFixture::new();
-        let ops = ["+", "-", "*", "/", "=", "!=", "<", ">", "<=", ">="];
-        for op in ops {
-            assert!(
-                tc.symbol_table().get(op).is_none(),
-                "operator {op} should NOT be in symbol table at startup"
-            );
-        }
-    }
-
-    // spec: 07-traits §7.4.2 — trait method resolution works with inline trait definitions
-    #[test]
-    fn test_try_resolve_with_inline_trait() {
-        let mut tc = tc_with_prims();
-        // Register Num trait inline (as prelude would)
-        let num_decl = TraitDecl {
-            name: TraitName::from("Num"),
-            docstring: None,
-            type_params: vec![Symbol::from("a")],
-            methods: vec![TraitMethodSig {
-                name: Symbol::from("+"),
-                docstring: None,
-                params: vec![
-                    (Symbol::from("lhs"), TypeExpr::TypeVar(Symbol::from("a"))),
-                    (Symbol::from("rhs"), TypeExpr::TypeVar(Symbol::from("a"))),
-                ],
-                ret_type: TypeExpr::TypeVar(Symbol::from("a")),
-                span: Span::SYNTHETIC,
-                hkt_param_index: None,
-                default_body: None,
-            }],
-            visibility: Visibility::Public,
-            span: Span::SYNTHETIC,
-        };
-        tc.register_trait_decl_self(&num_decl).unwrap();
-
-        // Register impl Num for Int
-        let impl_ = TraitImpl {
-            trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Num")),
-            target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
-            type_constraints: vec![],
-            methods: vec![Defn {
-                name: Symbol::from("+"),
-                docstring: None,
-                variants: vec![DefnVariant {
-                    params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
-                    body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: Span::SYNTHETIC,
-                            inferred_type: None,
-                        }),
-                        args: vec![
-                            Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC, inferred_type: None, },
-                            Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC, inferred_type: None, },
-                        ],
-                        span: Span::SYNTHETIC,
-                        resolved_call: None,
-                        inferred_type: None,
-                    },
-                    span: Span::SYNTHETIC,
-                }],
-                visibility: Visibility::Public,
-                span: Span::SYNTHETIC,
-            }],
-            span: Span::SYNTHETIC,
-        };
-        tc.register_trait_impl_self(&impl_).unwrap();
-        tc.clear_transient_state();
-
-        let result = tc.try_resolve_trait_method_self(
-            &Symbol::from("+"),
-            &[Type::Int, Type::Int],
-            Span::SYNTHETIC,
-        ).expect("should not error");
-        assert!(result.is_some());
-        if let Some(ResolvedCall::TraitMethod { mangled_name, .. }) = result {
-            assert_eq!(mangled_name.as_ref(), "Num.+$Int");
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Default method body generation tests
-    // -----------------------------------------------------------------------
-
-    use cranelisp_types::Expr;
-
-    /// Helper: check that an expr is `Apply { callee: Var(name), .. }`
-    fn assert_apply_callee(expr: &Expr, expected_name: &str) {
-        if let Expr::Apply { callee, .. } = expr {
-            if let Expr::Var { name, .. } = callee.as_ref() {
-                assert_eq!(name.as_ref(), expected_name);
-                return;
-            }
-        }
-        panic!("expected Apply with callee Var({expected_name}), got {expr:?}");
-    }
-
-    /// Helper: extract Apply args
-    fn apply_args(expr: &Expr) -> &[Expr] {
-        if let Expr::Apply { args, .. } = expr {
-            args.as_slice()
-        } else {
-            panic!("expected Apply, got {expr:?}");
-        }
-    }
-
-    /// Helper: assert Var with given name
-    fn assert_var(expr: &Expr, expected: &str) {
-        if let Expr::Var { name, .. } = expr {
-            assert_eq!(name.as_ref(), expected);
-        } else {
-            panic!("expected Var({expected}), got {expr:?}");
-        }
-    }
-
-    // spec: 07-traits §7.1.5 — default method body: != is (not (= x y))
-    #[test]
-    fn test_build_default_body_neq() {
-        // != → (not (= x y))
-        let body = build_default_body(
-            "Eq", "!=",
-            &[Symbol::from("x"), Symbol::from("y")],
-            Span::SYNTHETIC,
-        ).unwrap();
-
-        assert_apply_callee(&body, "not");
-        let not_args = apply_args(&body);
-        assert_eq!(not_args.len(), 1);
-        assert_apply_callee(&not_args[0], "=");
-        let eq_args = apply_args(&not_args[0]);
-        assert_eq!(eq_args.len(), 2);
-        assert_var(&eq_args[0], "x");
-        assert_var(&eq_args[1], "y");
-    }
-
-    // spec: 07-traits §7.1.5 — default method body: > is (< y x)
-    #[test]
-    fn test_build_default_body_gt() {
-        // > → (< y x)
-        let body = build_default_body(
-            "Ord", ">",
-            &[Symbol::from("x"), Symbol::from("y")],
-            Span::SYNTHETIC,
-        ).unwrap();
-
-        assert_apply_callee(&body, "<");
-        let args = apply_args(&body);
-        assert_eq!(args.len(), 2);
-        assert_var(&args[0], "y");
-        assert_var(&args[1], "x");
-    }
-
-    // spec: 07-traits §7.1.5 — default method body: <= is (not (< y x))
-    #[test]
-    fn test_build_default_body_le() {
-        // <= → (not (< y x))
-        let body = build_default_body(
-            "Ord", "<=",
-            &[Symbol::from("x"), Symbol::from("y")],
-            Span::SYNTHETIC,
-        ).unwrap();
-
-        assert_apply_callee(&body, "not");
-        let not_args = apply_args(&body);
-        assert_eq!(not_args.len(), 1);
-        assert_apply_callee(&not_args[0], "<");
-        let lt_args = apply_args(&not_args[0]);
-        assert_eq!(lt_args.len(), 2);
-        assert_var(&lt_args[0], "y");
-        assert_var(&lt_args[1], "x");
-    }
-
-    // spec: 07-traits §7.1.5 — default method body: >= is (not (< x y))
-    #[test]
-    fn test_build_default_body_ge() {
-        // >= → (not (< x y))
-        let body = build_default_body(
-            "Ord", ">=",
-            &[Symbol::from("x"), Symbol::from("y")],
-            Span::SYNTHETIC,
-        ).unwrap();
-
-        assert_apply_callee(&body, "not");
-        let not_args = apply_args(&body);
-        assert_eq!(not_args.len(), 1);
-        assert_apply_callee(&not_args[0], "<");
-        let lt_args = apply_args(&not_args[0]);
-        assert_eq!(lt_args.len(), 2);
-        assert_var(&lt_args[0], "x");
-        assert_var(&lt_args[1], "y");
-    }
-
-    // spec: 07-traits §7.1.5 — unknown trait/method has no default body
-    #[test]
-    fn test_build_default_body_unknown_method_errors() {
-        let result = build_default_body(
-            "Unknown", "foo",
-            &[Symbol::from("x"), Symbol::from("y")],
-            Span::SYNTHETIC,
-        );
-        assert!(result.is_err());
-    }
-
-    // spec: 07-traits §7.1.5 — default body with wrong param count errors
-    #[test]
-    fn test_build_default_body_wrong_param_count_errors() {
-        let result = build_default_body(
-            "Eq", "!=",
-            &[Symbol::from("x")],
-            Span::SYNTHETIC,
-        );
-        assert!(result.is_err());
-    }
-
-    // spec: 07-traits §7.1.5 — generate_default_methods synthesizes missing impl methods
-    #[test]
-    fn test_generate_default_methods_produces_real_bodies() {
-        // Register Eq trait inline and create an impl with only "=" provided.
-        // The "!=" default should be generated with a real body.
-        let mut tc = TestFixture::new();
-
-        // Register Eq trait inline (as prelude would)
-        let eq_decl = TraitDecl {
-            name: TraitName::from("Eq"),
-            docstring: None,
-            type_params: vec![Symbol::from("a")],
-            methods: vec![
-                TraitMethodSig {
-                    name: Symbol::from("="),
-                    docstring: None,
-                    params: vec![
-                        (Symbol::from("x"), TypeExpr::TypeVar(Symbol::from("a"))),
-                        (Symbol::from("y"), TypeExpr::TypeVar(Symbol::from("a"))),
-                    ],
-                    ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool"))),
-                    span: Span::SYNTHETIC,
-                    hkt_param_index: None,
-                    default_body: None,
-                },
-                TraitMethodSig {
-                    name: Symbol::from("!="),
-                    docstring: None,
-                    params: vec![
-                        (Symbol::from("x"), TypeExpr::TypeVar(Symbol::from("a"))),
-                        (Symbol::from("y"), TypeExpr::TypeVar(Symbol::from("a"))),
-                    ],
-                    ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool"))),
-                    span: Span::SYNTHETIC,
-                    hkt_param_index: None,
-                    // Default body: (not (= x y)) — parsed Expr per S69 Submission 26
-                    // (default_body is now Option<Expr>, was Option<Sexp>).
-                    default_body: Some(Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("not"),
-                            span: Span::SYNTHETIC,
-                            inferred_type: None,
-                        }),
-                        args: vec![Expr::Apply {
-                            callee: Box::new(Expr::Var {
-                                name: Symbol::from("="),
-                                span: Span::SYNTHETIC,
-                                inferred_type: None,
-                            }),
-                            args: vec![
-                                Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC, inferred_type: None },
-                                Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC, inferred_type: None },
-                            ],
-                            span: Span::SYNTHETIC,
-                            resolved_call: None,
-                            inferred_type: None,
-                        }],
-                        span: Span::SYNTHETIC,
-                        resolved_call: None,
-                        inferred_type: None,
-                    }),
-                },
-            ],
-            visibility: Visibility::Public,
-            span: Span::SYNTHETIC,
-        };
-        tc.register_trait_decl_self(&eq_decl).unwrap();
-
-        let impl_ = TraitImpl {
-            trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Eq")),
-            target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
-            type_constraints: vec![],
-            methods: vec![Defn {
-                name: Symbol::from("="),
-                docstring: None,
-                variants: vec![DefnVariant {
-                    params: vec![(Symbol::from("lhs"), None), (Symbol::from("rhs"), None)],
-                    body: Expr::BoolLit { value: true, span: Span::SYNTHETIC, inferred_type: None, },
-                    span: Span::SYNTHETIC,
-                }],
-                visibility: Visibility::Public,
-                span: Span::SYNTHETIC,
-            }],
-            span: Span::SYNTHETIC,
-        };
-
-        let decl = tc.lookup_trait_decl(&TraitName::from("Eq"))
-            .expect("Eq trait should be registered");
-        let defaults = tc.generate_default_methods(&tc.state, &decl, &impl_).unwrap();
-
-        assert_eq!(defaults.len(), 1, "should generate 1 default method (!=)");
-        let neq = &defaults[0];
-        assert_eq!(neq.name.as_ref(), "Eq.!=$Int");
-        assert_eq!(neq.params().len(), 2);
-
-        // Body should be (not (= x y)), not IntLit 0
-        assert_apply_callee(neq.body(), "not");
-    }
-
-    // ---- Sprint 56 Wave 0 §9.4 — mono specialisation ast + distinct GOT slot ----
-
-    /// Register a minimal `Num` trait with `+` and an impl for Int
-    /// (identical in intent to `program::tests::register_num_trait_inline`, but
-    /// kept local to the traits test module so we don't cross test-module boundaries).
-    fn register_num_for_int(tc: &mut TestFixture) {
-        let num_decl = TraitDecl {
-            name: TraitName::from("Num"),
-            docstring: None,
-            type_params: vec![Symbol::from("a")],
-            methods: vec![TraitMethodSig {
-                name: Symbol::from("+"),
-                docstring: None,
-                params: vec![
-                    (Symbol::from("lhs"), TypeExpr::TypeVar(Symbol::from("a"))),
-                    (Symbol::from("rhs"), TypeExpr::TypeVar(Symbol::from("a"))),
-                ],
-                ret_type: TypeExpr::TypeVar(Symbol::from("a")),
-                span: Span::SYNTHETIC,
-                hkt_param_index: None,
-                default_body: None,
-            }],
-            visibility: Visibility::Public,
-            span: Span::SYNTHETIC,
-        };
-        tc.register_trait_decl_self(&num_decl).unwrap();
-
-        let impl_ = TraitImpl {
-            trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Num")),
-            target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
-            type_constraints: vec![],
-            methods: vec![Defn {
-                name: Symbol::from("+"),
-                docstring: None,
-                variants: vec![DefnVariant {
-                    params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
-                    body: cranelisp_types::Expr::Apply {
-                        callee: Box::new(cranelisp_types::Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: Span::SYNTHETIC,
-                            inferred_type: None,
-                        }),
-                        args: vec![
-                            cranelisp_types::Expr::Var {
-                                name: Symbol::from("x"),
-                                span: Span::SYNTHETIC,
-                                inferred_type: None,
-                            },
-                            cranelisp_types::Expr::Var {
-                                name: Symbol::from("y"),
-                                span: Span::SYNTHETIC,
-                                inferred_type: None,
-                            },
-                        ],
-                        span: Span::SYNTHETIC,
-                        resolved_call: None,
-                        inferred_type: None,
-                    },
-                    span: Span::SYNTHETIC,
-                }],
-                visibility: Visibility::Public,
-                span: Span::SYNTHETIC,
-            }],
-            span: Span::SYNTHETIC,
-        };
-        tc.register_trait_impl_self(&impl_).unwrap();
-        tc.clear_transient_state();
-    }
-
-    /// Walk an Expr tree and visit every inferred_type, asserting it is concrete.
-    fn assert_types_concrete(expr: &cranelisp_types::Expr) {
-        if let Some(ty) = expr.inferred_type() {
-            assert!(
-                !ty.contains_var(),
-                "inferred_type should be concrete, got Var at span {:?}: {:?}",
-                expr.span(),
-                ty
-            );
-        }
-        use cranelisp_types::Expr as E;
-        match expr {
-            E::Apply { callee, args, .. } => {
-                assert_types_concrete(callee);
-                for a in args {
-                    assert_types_concrete(a);
-                }
-            }
-            E::Let { bindings, body, .. } | E::ParBind { bindings, body, .. } => {
-                for (_, b) in bindings {
-                    assert_types_concrete(b);
-                }
-                assert_types_concrete(body);
-            }
-            E::If { cond, then_branch, else_branch, .. } => {
-                assert_types_concrete(cond);
-                assert_types_concrete(then_branch);
-                assert_types_concrete(else_branch);
-            }
-            E::Lambda { body, .. }
-            | E::Annotate { expr: body, .. }
-            | E::Trace { body, .. } => {
-                assert_types_concrete(body);
-            }
-            E::Match { scrutinee, arms, .. } => {
-                assert_types_concrete(scrutinee);
-                for arm in arms {
-                    assert_types_concrete(&arm.body);
-                }
-            }
-            E::VecLit { elements, .. } => {
-                for e in elements {
-                    assert_types_concrete(e);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // spec: design/typecheck/ast-annotation.md §9.4 — mono specialisation ast + distinct GOT slot
-    #[test]
-    fn wave0_mono_entry_registered_with_distinct_got_slot() {
-        use cranelisp_types::Expr;
-        let mut tc = tc_with_prims();
-        register_num_for_int(&mut tc);
-
-        // Template: (defn add [x y] (+ x y))
-        let add_defn = cranelisp_types::TopLevel::Defn(Defn {
-            name: Symbol::from("add"),
-            docstring: None,
-            variants: vec![DefnVariant {
-                params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
-                body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("+"),
-                        span: Span::new(18, 19),
-                        inferred_type: None,
-                    }),
-                    args: vec![
-                        Expr::Var { name: Symbol::from("x"), span: Span::new(20, 21), inferred_type: None },
-                        Expr::Var { name: Symbol::from("y"), span: Span::new(22, 23), inferred_type: None },
-                    ],
-                    span: Span::new(17, 24),
-                    resolved_call: None,
-                    inferred_type: None,
-                },
-                span: Span::new(0, 25),
-            }],
-            visibility: Visibility::Public,
-            span: Span::new(0, 25),
-        });
-        tc.check_repl_input_self(&add_defn).unwrap();
-
-        // Concrete call-site triggers monomorphisation: (defn main [] (add 1 2))
-        let main_defn = cranelisp_types::TopLevel::Defn(Defn {
-            name: Symbol::from("main"),
-            docstring: None,
-            variants: vec![DefnVariant {
-                params: vec![],
-                body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("add"),
-                        span: Span::new(200, 203),
-                        inferred_type: None,
-                    }),
-                    args: vec![
-                        Expr::IntLit { value: 1, span: Span::new(204, 205), inferred_type: None },
-                        Expr::IntLit { value: 2, span: Span::new(206, 207), inferred_type: None },
-                    ],
-                    span: Span::new(199, 208),
-                    resolved_call: None,
-                    inferred_type: None,
-                },
-                span: Span::new(180, 209),
-            }],
-            visibility: Visibility::Public,
-            span: Span::new(180, 209),
-        });
-        tc.check_repl_input_self(&main_defn).unwrap();
-
-        // Template entry: kind UserFn { constrained_fn: Some(_) }.
-        // NOTE: §9.2 of design/typecheck/ast-annotation.md says the template's `ast`
-        // "stays None" to signal "skip at codegen". That is the future intent — the
-        // filter in `defined_symbols()` (§9.5) gates on `kind`, not `ast`, so the
-        // invariant that matters today is `kind`. The mono entry below carries the
-        // compilable body.
-        let template_got_slot = {
-            let st = tc.symbol_table();
-            match st.get("add") {
-                Some(ModuleEntry::Def { kind, got_slot, .. }) => {
-                    assert!(
-                        matches!(kind.as_ref(), DefKind::UserFn { constrained_fn: Some(_) }),
-                        "template 'add' kind should be UserFn(Some), got {:?}",
-                        kind
-                    );
-                    *got_slot
-                }
-                other => panic!("'add' template should be Def entry, got {:?}", other),
-            }
-        };
-
-        // Mono entry: kind UserFn(None), ast: Some(..), has a GOT slot distinct from template.
-        let mono_got_slot = {
-            let st = tc.symbol_table();
-            match st.get("add$Int+Int") {
-                Some(ModuleEntry::Def { kind, ast, got_slot, .. }) => {
-                    assert!(
-                        matches!(kind.as_ref(), DefKind::UserFn { constrained_fn: None }),
-                        "mono 'add$Int+Int' kind should be UserFn(None), got {:?}",
-                        kind
-                    );
-                    let defn = ast.as_ref().expect("mono must carry ast: Some(..)");
-                    // Per S69 Submission 35: ast: Option<DefnVariant>; the name lives on
-                    // the symbol-table key ("add$Int+Int" here), not on the variant.
-
-                    // All inferred types on the mono body are concrete.
-                    assert_types_concrete(&defn.body);
-
-                    // The resolved_call on the + call site must be set (SigDispatch or
-                    // TraitMethod — both are valid concrete resolutions post-mono).
-                    if let Expr::Apply { resolved_call, .. } = &defn.body {
-                        assert!(
-                            resolved_call.is_some(),
-                            "mono body's + call site must have resolved_call set"
-                        );
-                    } else {
-                        panic!("mono body should be Apply, got {:?}", defn.body);
-                    }
-
-                    got_slot.expect("mono must have a GOT slot assigned")
-                }
-                other => panic!("'add$Int+Int' mono should be Def entry, got {:?}", other),
-            }
-        };
-
-        // Distinctness: template slot (if any) must differ from the mono slot.
-        // Constrained templates usually get no slot (`None`); in that case any
-        // Some(slot) on the mono is trivially distinct.
-        if let Some(t) = template_got_slot {
-            assert_ne!(
-                t, mono_got_slot,
-                "template and mono must have distinct GOT slots"
-            );
-        }
-    }
-}
+mod tests;
