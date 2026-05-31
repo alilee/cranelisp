@@ -246,7 +246,7 @@ The wave's risk concentration is `expand` migration (§5) — ~520 LOC source po
 - `crates/cranelisp-frontend/src/lib.rs` //! preamble — public-API contract (canonical home post-S70 Phase B group B3-C facade retirement)
 - `crates/cranelisp-types/src/parsed.rs` rustdoc (`ParsedEntry`), `crates/cranelisp-types/src/view.rs` rustdoc (`View`) — boundary types
 - `design/arch/facades/int.md` §"`process_cluster` — the cluster-atomic orchestration loop" — orchestrator contract (consumer-side)
-- `design/arch/facades/typecheck.md` §"`check_form_signatures` + `check_form_body`" — consumer signatures
+- `crates/cranelisp-typecheck/src/lib.rs` rustdoc (`check_forms`) + `bounded-contexts.md` §2 — consumer signatures (post-S72 W5 facade retirement; `facades/typecheck.md` retired)
 - `design/arch/decisions/0044-cluster-atomic-typecheck-orchestrator-staging.md` — cluster-atomic shape
 - `design/arch/decisions/0045-traitimpl-storage-in-trait-defining-module.md` — Pattern B impl storage (Wave 3a-α)
 - `design/arch/decisions/0046-wave3a-locality-refactor-precedes-triad.md` — Wave 3a α/β sequencing
