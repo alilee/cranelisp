@@ -6,21 +6,14 @@
 //! live in `cranelisp-intrinsics::vec_runtime` — they are backend-emitted-call
 //! targets, not user-callable from source.
 //!
-//! ## FIXME 0180 close (Sprint 67 Wave 3 — physical relocation)
+//! ## FIXME 0180 / 0245 close (S67 Wave 3 relocation; S73 layout dedup)
 //!
 //! `vec_len` physically lives here; no re-export from intrinsics. The Vec
-//! layout offsets (`LEN_OFFSET` = 16) are duplicated here to avoid a
-//! load-bearing import of intrinsics' layout constants. The duplication is
-//! safe because the layout is fixed by Decision 11 (base-pointer ABI) and
-//! the `HeapHeader` (`size: i64 @ +0`, `rc: i64 @ +8`) — `len` always lives
-//! at `+16` from the base. A debug_assert at module load could verify this
-//! against `cranelisp_intrinsics::vec_runtime`'s offsets, but a static const
-//! assert is structurally simpler.
+//! heap-layout offset is sourced exclusively from `cranelisp-intrinsics`'
+//! blessed public layout ABI (`vec_runtime::LEN_OFFSET`, FIXME 0245) — no
+//! local copy. Single source of truth (Principle 7).
 
-/// Offset of the `len` field from a Vec's base pointer.
-///
-/// Layout from base: `[size(i64) @ +0 | rc(i64) @ +8 | len(i64) @ +16 | cap(i64) @ +24 | data_ptr(i64) @ +32]`.
-const LEN_OFFSET: usize = 16;
+use cranelisp_intrinsics::vec_runtime::LEN_OFFSET;
 
 /// Read the length of a Vec.
 ///

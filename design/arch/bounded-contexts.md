@@ -148,11 +148,11 @@ The four free-function form-by-form boundary — `parse`, `extract_module_declar
 - Code generation (backend)
 - Backend-emitted-call targets (intrinsics — §4b)
 - Trait dispatch knowledge (typecheck + stdlib)
-- Symbol-table seeding logic (int — int reads `cranelisp-types::primitives()` at session init)
+- Session mount + concretization (int — int clones `cranelisp_primitives::PRIMITIVES_TABLE` and calls `into_concrete::<Code, ()>()` at session init; the `()`-flavoured static is owned here, the `<Code, ()>` concretization is int's)
 
 **What crosses the boundary.**
-- **Outward**: an `extern "C"` symbol surface — primitives by their kebab-case symbol name.
-- **Inward**: identifier newtypes from `cranelisp-types` (for the seeding helper); nothing else from the workspace.
+- **Outward**: the static `PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<(), ()>>>` (the synthetic `primitives` module's symbol table + the shared `Arc<GotTable>`); behind it, an `extern "C"` symbol surface — primitives by their kebab-case symbol name, reachable only via GOT slots.
+- **Inward**: identifier newtypes + `SymbolTable`/`ModuleEntry`/`DefKind` etc. from `cranelisp-types` (boundary); the runtime substrate from `cranelisp-intrinsics` — the allocator and the blessed **heap-layout-ABI consts** (`HeapString::{LEN_OFFSET, DATA_OFFSET}`, `vec_runtime::{LEN_OFFSET, CAP_OFFSET, DATA_PTR_OFFSET}`) plus drop/RC/panic helpers (FIXME 0245). **Nothing from `cranelisp-backend`** — `primitives ⟂ backend` (S73 sever; FIXME 0244 made every entry `code: None`, so primitives never names `Code`).
 - **Window types**: none.
 
 **Evolution driver.** Spec-driven — new primitives appear when the spec requires them.
@@ -190,7 +190,11 @@ The four free-function form-by-form boundary — `parse`, `extract_module_declar
 
 **Evolution driver.** Backend-driven — new intrinsics appear when backend codegen needs them; existing intrinsics evolve in lock-step with backend's emitted-call shapes.
 
-**Cross-crate dependency edges (post-D43).** Backend depends on `cranelisp-primitives` (for symbol-table seeding via `cranelisp-types::primitives()`) AND on `cranelisp-intrinsics` (for emitted-symbol declarations); backend does NOT depend on the retired `cranelisp-runtime`. `int` depends on both — primitives for seeding, intrinsics for JIT registration of fn ptrs and for the trace/io_trace consumer side post-FIXME 0103.
+**Cross-crate dependency edges (post-D43, S73-corrected).**
+
+- **`cranelisp-primitives` depends on exactly two workspace crates**: `cranelisp-types` (boundary) and `cranelisp-intrinsics` (runtime substrate — the allocator + blessed heap-layout-ABI consts + drop/RC/panic helpers, FIXME 0245). It does **NOT** depend on `cranelisp-backend`: `primitives ⟂ backend` is a **bidirectional severance** (S73 — FIXME 0244 made every primitives entry `code: None`, so primitives never constructs or names a `Code` value, so it drops `cranelisp-backend` from its `Cargo.toml`; the reverse `backend → primitives` edge was already banned by Decision 0048 §"Structural invariant — backend dep-ban"). The previously-"permitted" `primitives → backend` edge (for the now-deleted `Code::Primitive` / the `Code` type-parameter mention) retires.
+- **`cranelisp-intrinsics`** imports from `cranelisp-types` and `cranelisp-platform` only; it does NOT depend on primitives (the consumption is the other way — primitives is intrinsics' in-tree Rust consumer).
+- **Backend's own dependency edges** (its current `cranelisp_primitives::*` Rust-path references in `intrinsic_symbols()` and the resulting `cranelisp-primitives` line in `crates/cranelisp-backend/Cargo.toml`) are stale residue of the pre-S73 model and are scheduled for deletion in a **future backend sprint** (deferred per the S73 re-scope; FIXME 0191). Until that lands, backend's manifest is red against the dep-ban; this is a known, sequenced carry, not a fresh defect. `int` depends on primitives (clone + `into_concrete` at session mount), intrinsics (JIT registration of fn ptrs + the trace/io_trace consumer side post-FIXME 0103), and backend.
 
 ---
 
@@ -274,7 +278,7 @@ All five are tracked by FIXMEs 0224–0228 (`target: /qa`, deferred to a future 
 
 These hold across sprints — the contract `cranelisp-platform` makes with the rest of the workspace:
 
-1. **Platform fn pointers live in `SymbolTable.got()`, indexed by `ModuleEntry::Def.got_slot`** (Decision 0026, S66 amendment + rollback `1dc57ae` — GOT is the single source of truth for callable addresses). Per spec §8.9.3, `(platform <name>)` registers a synthetic module at `symbol_tables["platform.<name>"]`; per-fn `ModuleEntry::Def` entries (with `kind: Primitive { primitive_kind: PlatformEffect { … } }` distinguishing the platform origin) live in that synthetic module's `symbols`. The DLL handle is the lifecycle owner, retained on the platform module's own `SymbolTable.dll: Option<D>` field (per `crates/cranelisp-types/src/module.rs` `SymbolTable` rustdoc — `D: DllStore` generic). Drop semantics: dropping the platform module's SymbolTable drops the DLL. `scheduling_class` lives inside `PrimitiveKind::PlatformEffect { scheduling_class }` — ill-formed states unrepresentable.
+1. **Platform fn pointers live in `SymbolTable.got()`, indexed by `ModuleEntry::Def.got_slot`** (Decision 0026, S66 amendment + rollback `1dc57ae` — GOT is the single source of truth for callable addresses). Per spec §8.9.3, `(platform <name>)` registers a synthetic module at `symbol_tables["platform.<name>"]`; per-fn `ModuleEntry::Def` entries (with `kind: DefKind::PlatformEffect { scheduling_class }` distinguishing the platform origin) live in that synthetic module's `symbols`. The DLL handle is the lifecycle owner, retained on the platform module's own `SymbolTable.dll: Option<D>` field (per `crates/cranelisp-types/src/module.rs` `SymbolTable` rustdoc — `D: DllStore` generic). Drop semantics: dropping the platform module's SymbolTable drops the DLL. `scheduling_class` lives inside `DefKind::PlatformEffect { scheduling_class }` — a `DefKind` sibling variant promoted from the retired `PrimitiveKind` sub-discriminator (S69 Submission 36); ill-formed states ("a user fn with a scheduling class") unrepresentable.
 
 2. **Stable C ABI at the DLL boundary.** `PlatformManifest`, `PlatformFn`, `HostCallbacks` are `#[repr(C)]`. Layout changes require an `ABI_VERSION` bump. `load_manifest` (int-side) validates the version on load and refuses mismatched DLLs with `PlatformError::AbiVersionMismatch`.
 
@@ -286,7 +290,7 @@ These hold across sprints — the contract `cranelisp-platform` makes with the r
 
 6. **No DLL unloading mid-session.** Once a platform DLL is loaded via `load_manifest`, it stays loaded until session shutdown. This is what makes the per-symbol GOT-slot pointer valid for the session — DLL pages are not unmapped while symbols reference them. Bounded leaks in `declare_platform!`'s `Box::leak` for `jit_name` bytes + per-fn parallel-array allocations are bounded by this invariant.
 
-7. **`scheduling_class` declared by the DLL, consumed by the IO trampoline.** Per Decision 0026 — the IO trampoline reads `scheduling_class` off the destructured `PrimitiveKind::PlatformEffect` variant when it dispatches an Effect, and uses it to decide whether to spawn the work on the IO thread pool, the CPU thread pool, etc. Platform authors choose the class statically per fn via the `scheduling:` arm of `declare_platform!`.
+7. **`scheduling_class` declared by the DLL, consumed by the IO trampoline.** Per Decision 0026 — the IO trampoline reads `scheduling_class` off the destructured `DefKind::PlatformEffect` variant when it dispatches an Effect, and uses it to decide whether to spawn the work on the IO thread pool, the CPU thread pool, etc. Platform authors choose the class statically per fn via the `scheduling:` arm of `declare_platform!`.
 
 8. **FQTypeName migration: zero-hit (Decision 0047).** Per Decision 0047 + §7 ("FQTypeName binding"), `cranelisp-platform` has zero public-surface changes and zero in-crate hits under the FQTypeName binding migration. The platform-DLL ABI uses S-expression type-signature strings (`PlatformFn.type_sig`) rather than resolved-stage type identifiers; resolution happens int-side downstream of `manifest_to_descriptors`. Migration disposition: no-op.
 

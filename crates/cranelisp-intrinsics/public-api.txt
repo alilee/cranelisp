@@ -121,6 +121,9 @@ pub fn cranelisp_intrinsics::rc::is_rc_trace_enabled() -> bool
 pub fn cranelisp_intrinsics::rc::rc_trace(op: &str, ptr: i64, rc: i64)
 #[export_name = "runtime/rc_underflow_check"] pub c fn cranelisp_intrinsics::rc::rc_underflow_check(ptr: i64, old_rc: i64) -> i64
 pub mod cranelisp_intrinsics::vec_runtime
+pub const cranelisp_intrinsics::vec_runtime::CAP_OFFSET: usize
+pub const cranelisp_intrinsics::vec_runtime::DATA_PTR_OFFSET: usize
+pub const cranelisp_intrinsics::vec_runtime::LEN_OFFSET: usize
 #[export_name = "runtime/vec_drop"] pub c fn cranelisp_intrinsics::vec_runtime::vec_drop(vec: i64, elem_dec_fn: i64)
 #[export_name = "runtime/vec_new"] pub c fn cranelisp_intrinsics::vec_runtime::vec_new(cap: i64) -> i64
 #[export_name = "vec-push-copy"] pub c fn cranelisp_intrinsics::vec_runtime::vec_push_copy(vec: i64, val: i64, elem_inc_fn: i64) -> i64

@@ -108,29 +108,32 @@ fn s68_not_primitive_works_in_link_mode_sentinel() {
 }
 
 // =============================================================================
-// #5 — `PRIMITIVES_TABLE` is `LazyLock<Arc<SymbolTable<Code, ()>>>`.
+// #5 — `PRIMITIVES_TABLE` is `LazyLock<Arc<SymbolTable<(), ()>>>`.
 //
-// Source-level structural assertion against the post-S68 facade. At
-// authoring time the type is `LazyLock<SymbolTable<(), ()>>` (per
-// `crates/cranelisp-primitives/src/lib.rs:90`). Wave 3 lands the
-// `Arc<SymbolTable<Code, ()>>` shape per Decision 0048.
+// Source-level structural assertion against the S73 severed-dependency shape.
+// S73 (FIXME 0244) reverses the S68 `Code::Primitive` marker: with `code: None`
+// everywhere, primitives never constructs a `Code` value, so it builds a
+// `()`-flavoured table and drops the `cranelisp-backend` dependency entirely.
+// `int` concretizes to `<Code, ()>` via `into_concrete` at the S74 session mount.
 // =============================================================================
 
-// spec: design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md
-//       §"Shape" — `pub static PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<Code, ()>>>`.
-// FIXME(/dev (primitives)) — lift to a typed `use` assertion once Wave 3 lands
-//       the shape; this string-scan is a stand-in until the type names exist.
+// spec: design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md §"Shape"
+//       (A2 reversed; dep-ban → bidirectional severance per the S73 Phase 2
+//       top-up) + design/arch/fixmes/0244-arch-revert-0048-a2-code-primitive-marker.md
+//       §"Proposed resolution" (ratified S73 Phase 2) — the table is
+//       `pub static PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<(), ()>>>`.
 #[test]
-fn s68_primitives_table_is_arc_symboltable_code_unit() {
+fn s68_primitives_table_is_arc_symboltable_unit_unit() {
     let src = read_source("crates/cranelisp-primitives/src/lib.rs");
 
-    // Failing-now: current type is `LazyLock<SymbolTable<(), ()>>` (no `Arc`,
-    // no `Code` type param). Will pass when Wave 3 lands the post-S68 facade
-    // shape: `pub static PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<Code, ()>>>`.
+    // S73 target: the severed `<(), ()>` shape — no `Code` type param, because
+    // primitives no longer names `cranelisp-backend` at all (FIXME 0244 + the
+    // Phase 2 bidirectional-severance top-up). `int` concretizes to `<Code, ()>`
+    // at the S74 mount via `into_concrete`, preserving the shared `Arc<GotTable>`.
     assert!(
-        src.contains("PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<Code, ()>>>"),
-        "PRIMITIVES_TABLE MUST be typed `LazyLock<Arc<SymbolTable<Code, ()>>>` per \
-         Decision 0048 §Shape (Wave 3). Current declaration in \
+        src.contains("PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<(), ()>>>"),
+        "PRIMITIVES_TABLE MUST be typed `LazyLock<Arc<SymbolTable<(), ()>>>` per \
+         FIXME 0244 + Decision 0048 §Shape (S73 severance). Current declaration in \
          crates/cranelisp-primitives/src/lib.rs does not match the target shape."
     );
 }
@@ -262,7 +265,14 @@ fn s68_exe_bundle_publishes_cranelisp_init_primitives_hook() {
 // =============================================================================
 
 // spec: design/arch/fixmes/0191-*.md — `intrinsic_symbols()` primitives entries
-//       retirement; Decision 0048 §"Structural invariant — backend dep-ban".
+//       retirement + backend dep-ban source cleanup; Decision 0048 §"Structural
+//       invariant — backend dep-ban" (S73 Phase 2: → bidirectional severance).
+//       This is the DEFERRED backend-side work: the `intrinsic_symbols()` shrink
+//       and the backend Cargo.toml dep-line removal are the future backend sprint
+//       (FIXME 0191) — backend is UNTOUCHED this sprint. The body's source-grep
+//       assertions are kept intact so they re-enable when the backend sprint
+//       lands the dep-ban cleanup.
+#[ignore = "backend sprint — Code::Primitive deletion deferred; FIXME 0221/0191"]
 #[test]
 fn s68_backend_intrinsic_symbols_drops_primitives_paths() {
     let jit = read_source("crates/cranelisp-backend/src/jit.rs");
@@ -295,10 +305,14 @@ fn s68_backend_intrinsic_symbols_drops_primitives_paths() {
 // =============================================================================
 
 // spec: design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md
-//       §"Shape" (S68 Phase 3 amendment) — `Code::Primitive` marker variant
-//       added to the `Code` enum; no payload (Decision 35 invariant preserved).
-// FIXME(/dev (backend)) — lift to a typed `match` over a constructed value
-//       once Wave 2 publishes the variant; this string-scan is a stand-in.
+//       §"Shape" — A2 (`Code::Primitive` marker) REVERSED by FIXME 0244 (S73
+//       Phase 2). The S73 *target* is the variant DELETED from `code.rs`, but
+//       that deletion is the deferred backend sprint (FIXME 0221) — backend is
+//       UNTOUCHED this sprint (the variant still exists). This test's body
+//       asserts the variant's presence (the pre-deletion state); it is ignored
+//       until the backend sprint deletes the variant, at which point the body
+//       flips to asserting absence and is re-enabled.
+#[ignore = "backend sprint — Code::Primitive deletion deferred; FIXME 0221/0191"]
 #[test]
 fn s68_code_enum_has_primitive_marker_variant() {
     let src = read_source("crates/cranelisp-backend/src/code.rs");
@@ -317,42 +331,49 @@ fn s68_code_enum_has_primitive_marker_variant() {
 }
 
 // =============================================================================
-// #11 — Primitives' `ModuleEntry::Def` entries carry `Some(Code::Primitive)`.
+// #11 — Primitives' `ModuleEntry::Def` entries carry `code: None`; primitive-
+// ness is read from `kind: DefKind::Primitive`.
 //
-// Failing-now. Wave 3 (primitives slice) constructs entries with the marker.
-// Until then the entries either don't carry a `Code` value at all (current
-// `SymbolTable<(), ()>` shape) or, immediately post-Wave-3, carry the
-// `Code::Primitive` marker.
-//
-// E2E observation point: the REPL's `/info` slash command surfaces the
-// `Code` lifecycle category for any defined symbol. Post-S68 we can spot-
-// check a primitive's category via `/info primitives/add-i64`. At authoring
-// time the marker doesn't exist; the assertion is the observable string
-// that would appear.
+// S73 (FIXME 0244) reverses the S68 `Code::Primitive` marker. Entries are built
+// via `ModuleEntry::def(scheme, DefKind::Primitive)...build()` — the builder
+// default `code: None` is now *correct*, and primitive-ness reads from the
+// canonical `kind: DefKind::Primitive` (no marker smuggled into the lifecycle
+// `code` field). The `Code::Primitive` *variant deletion* in backend's code.rs
+// is the deferred backend sprint (see #10) — but primitives no longer names
+// `Code` at all, so it constructs no marker regardless.
 // =============================================================================
 
-// spec: design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md
-//       §"Shape" — every primitives `ModuleEntry::Def.code = Some(Code::Primitive)`.
-// FIXME(/dev (primitives)) — lift to a typed assertion against a constructed
-//       PRIMITIVES_TABLE entry once the table is rebuilt with `code: Some(Code::Primitive)`.
-//       Today's string-scan is a stand-in until that source exists.
+// spec: design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md §"Shape"
+//       (A2 reversed; A1b `code: None` accepted) +
+//       design/arch/fixmes/0244-arch-revert-0048-a2-code-primitive-marker.md
+//       §"Proposed resolution" (ratified S73 Phase 2) — every primitives
+//       `ModuleEntry::Def` carries `code: None` via the builder default;
+//       primitive-ness is `matches!(kind, DefKind::Primitive)`.
 #[test]
-fn s68_primitives_entries_carry_code_primitive_marker() {
+fn s68_primitives_entries_carry_code_none_kind_primitive() {
     let src = read_source("crates/cranelisp-primitives/src/lib.rs");
 
-    // Failing-now: at authoring time the primitives table is
-    // `LazyLock<SymbolTable<(), ()>>` — no `Code` parameter, no
-    // `Code::Primitive` value attached to any entry. Will pass when
-    // Wave 3 constructs entries that carry the marker variant.
-    //
-    // Companion to test #10 (which asserts the variant exists on the enum).
-    // This test asserts the variant is actually used at construction time.
+    // S73 target: entries are built through the `ModuleEntry::def` builder
+    // with `DefKind::Primitive`, never naming `Code` (FIXME 0244 severance).
+    // The builder's `code: None` default is the lifecycle value; primitive-ness
+    // is the `kind` fact, not a `code` marker.
     assert!(
-        src.contains("Code::Primitive"),
-        "crates/cranelisp-primitives/src/lib.rs MUST construct entries with \
-         `code = Some(Code::Primitive)` per Decision 0048 §Shape (Wave 3). \
-         Today the static-init builder uses `SymbolTable<(), ()>` with no \
-         Code value attached."
+        src.contains("ModuleEntry::def(scheme, DefKind::Primitive)"),
+        "crates/cranelisp-primitives/src/lib.rs MUST construct entries via \
+         `ModuleEntry::def(scheme, DefKind::Primitive)...build()` per FIXME 0244 \
+         (S73). The builder default `code: None` is the lifecycle value; \
+         primitive-ness reads from `kind: DefKind::Primitive`."
+    );
+
+    // Negative companion: the reverted `Code::Primitive` marker MUST NOT be
+    // constructed anywhere in the primitives source — primitives names no
+    // `Code` value post-severance (FIXME 0244 + the Phase 2 bidirectional
+    // severance top-up).
+    assert!(
+        !src.contains("Code::Primitive"),
+        "crates/cranelisp-primitives/src/lib.rs MUST NOT name `Code::Primitive` \
+         post-S73 — the marker is reverted (FIXME 0244) and primitives no longer \
+         depends on `cranelisp-backend` (bidirectional severance)."
     );
 }
 

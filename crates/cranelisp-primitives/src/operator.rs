@@ -23,8 +23,8 @@ use cranelisp_types::{ModuleFullPath, Symbol, Type, TypeName};
 /// A Ring 0 monomorphic primitive definition.
 ///
 /// Each primitive has a fixed concrete type — all fields are compile-time constants.
-/// Registered as `DefKind::Primitive { primitive_kind: PrimitiveKind::Inline }` in the
-/// symbol table.
+/// Registered as a payload-free `DefKind::Primitive` entry in the symbol table
+/// (S69 Submission 36 — the prior `{ primitive_kind, jit_name }` payload retired).
 #[derive(Debug, Clone)]
 pub(crate) struct PrimitiveDef {
     /// The name used in source (e.g. `add-i64`, `add-f64`, `not`).
@@ -32,9 +32,6 @@ pub(crate) struct PrimitiveDef {
     /// The concrete monomorphic type of this primitive.
     /// Always a `Type::Fn` with concrete parameter and return types.
     pub ty: Type,
-    /// The Cranelift instruction emitted at call sites.
-    /// The backend matches on this string to emit the correct IR.
-    pub cranelift_op: &'static str,
     /// Parameter names for REPL display (e.g. `[lhs rhs]`).
     pub param_names: Vec<Symbol>,
 }
@@ -43,133 +40,114 @@ pub(crate) struct PrimitiveDef {
 ///
 /// Single authoritative source — typechecker and backend both reference this.
 /// The typechecker registers these with monomorphic schemes (`mono(prim.ty)`).
-/// The backend matches on `cranelift_op` to emit inline Cranelift IR.
+/// The backend owns its own inline-substitution table (`primitives_inline.rs`)
+/// keyed by primitive name (`primitives ⟂ backend`, S73).
 pub(crate) fn ring0_primitives() -> Vec<PrimitiveDef> {
     vec![
         // --- Int arithmetic: (Fn [Int Int] Int) ---
         PrimitiveDef {
             name: Symbol::from("add-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
-            cranelift_op: "iadd",
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
         },
         PrimitiveDef {
             name: Symbol::from("sub-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
-            cranelift_op: "isub",
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
         },
         PrimitiveDef {
             name: Symbol::from("mul-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
-            cranelift_op: "imul",
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
         },
         PrimitiveDef {
             name: Symbol::from("div-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
-            cranelift_op: "sdiv",
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
         },
         // --- Float arithmetic: (Fn [Float Float] Float) ---
         PrimitiveDef {
             name: Symbol::from("add-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Float)),
-            cranelift_op: "fadd",
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
         },
         PrimitiveDef {
             name: Symbol::from("sub-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Float)),
-            cranelift_op: "fsub",
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
         },
         PrimitiveDef {
             name: Symbol::from("mul-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Float)),
-            cranelift_op: "fmul",
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
         },
         PrimitiveDef {
             name: Symbol::from("div-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Float)),
-            cranelift_op: "fdiv",
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
         },
         // --- Int comparison: (Fn [Int Int] Bool) ---
         PrimitiveDef {
             name: Symbol::from("eq-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Bool)),
-            cranelift_op: "icmp_eq",
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
         },
         PrimitiveDef {
             name: Symbol::from("lt-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Bool)),
-            cranelift_op: "icmp_slt",
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
         },
         PrimitiveDef {
             name: Symbol::from("gt-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Bool)),
-            cranelift_op: "icmp_sgt",
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
         },
         PrimitiveDef {
             name: Symbol::from("le-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Bool)),
-            cranelift_op: "icmp_sle",
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
         },
         PrimitiveDef {
             name: Symbol::from("ge-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Bool)),
-            cranelift_op: "icmp_sge",
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
         },
         // --- Float comparison: (Fn [Float Float] Bool) ---
         PrimitiveDef {
             name: Symbol::from("eq-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Bool)),
-            cranelift_op: "fcmp_eq",
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
         },
         PrimitiveDef {
             name: Symbol::from("lt-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Bool)),
-            cranelift_op: "fcmp_lt",
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
         },
         PrimitiveDef {
             name: Symbol::from("gt-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Bool)),
-            cranelift_op: "fcmp_gt",
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
         },
         PrimitiveDef {
             name: Symbol::from("le-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Bool)),
-            cranelift_op: "fcmp_le",
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
         },
         PrimitiveDef {
             name: Symbol::from("ge-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Bool)),
-            cranelift_op: "fcmp_ge",
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
         },
         // --- Boolean: (Fn [Bool] Bool) ---
         PrimitiveDef {
             name: Symbol::from("not"),
             ty: Type::Fn(vec![Type::Bool], Box::new(Type::Bool)),
-            cranelift_op: "bxor", // XOR with 1 to flip bool
             param_names: vec![Symbol::from("b")],
         },
         // --- Boolean equality: (Fn [Bool Bool] Bool) ---
         PrimitiveDef {
             name: Symbol::from("eq-bool"),
             ty: Type::Fn(vec![Type::Bool, Type::Bool], Box::new(Type::Bool)),
-            cranelift_op: "icmp_eq",
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
         },
     ]
@@ -180,51 +158,42 @@ pub(crate) fn ring0_primitives() -> Vec<PrimitiveDef> {
 /// These are string and type conversion functions implemented as extern "C"
 /// functions in `cranelisp-runtime`. They are NOT inlined as Cranelift IR
 /// at call sites -- the backend emits `call` instructions to the JIT-registered
-/// function pointers.
-///
-/// The `cranelift_op` field is the JIT symbol name (same as the spec name).
+/// function pointers, keyed by the primitive name (same as the spec name).
 pub(crate) fn ring1_primitives() -> Vec<PrimitiveDef> {
     vec![
         PrimitiveDef {
             name: Symbol::from("str-concat"),
             ty: Type::Fn(vec![Type::String, Type::String], Box::new(Type::String)),
-            cranelift_op: "str-concat",
             param_names: vec![Symbol::from("a"), Symbol::from("b")],
         },
         PrimitiveDef {
             name: Symbol::from("str-eq"),
             ty: Type::Fn(vec![Type::String, Type::String], Box::new(Type::Bool)),
-            cranelift_op: "str-eq",
             param_names: vec![Symbol::from("a"), Symbol::from("b")],
         },
         PrimitiveDef {
             name: Symbol::from("str-len"),
             ty: Type::Fn(vec![Type::String], Box::new(Type::Int)),
-            cranelift_op: "str-len",
             param_names: vec![Symbol::from("s")],
         },
         PrimitiveDef {
             name: Symbol::from("string-identity"),
             ty: Type::Fn(vec![Type::String], Box::new(Type::String)),
-            cranelift_op: "string-identity",
             param_names: vec![Symbol::from("s")],
         },
         PrimitiveDef {
             name: Symbol::from("int-to-string"),
             ty: Type::Fn(vec![Type::Int], Box::new(Type::String)),
-            cranelift_op: "int-to-string",
             param_names: vec![Symbol::from("n")],
         },
         PrimitiveDef {
             name: Symbol::from("float-to-string"),
             ty: Type::Fn(vec![Type::Float], Box::new(Type::String)),
-            cranelift_op: "float-to-string",
             param_names: vec![Symbol::from("f")],
         },
         PrimitiveDef {
             name: Symbol::from("bool-to-string"),
             ty: Type::Fn(vec![Type::Bool], Box::new(Type::String)),
-            cranelift_op: "bool-to-string",
             param_names: vec![Symbol::from("b")],
         },
         PrimitiveDef {
@@ -233,20 +202,17 @@ pub(crate) fn ring1_primitives() -> Vec<PrimitiveDef> {
                 vec![Type::String],
                 Box::new(Type::adt(ModuleFullPath::from("primitives"), TypeName::from("Option"), vec![Type::Int])),
             ),
-            cranelift_op: "parse-int",
             param_names: vec![Symbol::from("s")],
         },
         // --- Ring 1 extended string primitives ---
         PrimitiveDef {
             name: Symbol::from("substring"),
             ty: Type::Fn(vec![Type::String, Type::Int, Type::Int], Box::new(Type::String)),
-            cranelift_op: "substring",
             param_names: vec![Symbol::from("s"), Symbol::from("start"), Symbol::from("end")],
         },
         PrimitiveDef {
             name: Symbol::from("char-at"),
             ty: Type::Fn(vec![Type::String, Type::Int], Box::new(Type::String)),
-            cranelift_op: "char-at",
             param_names: vec![Symbol::from("s"), Symbol::from("idx")],
         },
         PrimitiveDef {
@@ -255,7 +221,6 @@ pub(crate) fn ring1_primitives() -> Vec<PrimitiveDef> {
                 vec![Type::String, Type::String],
                 Box::new(Type::adt(ModuleFullPath::from("primitives"), TypeName::from("Vec"), vec![Type::String])),
             ),
-            cranelift_op: "split",
             param_names: vec![Symbol::from("s"), Symbol::from("sep")],
         },
         PrimitiveDef {
@@ -264,49 +229,41 @@ pub(crate) fn ring1_primitives() -> Vec<PrimitiveDef> {
                 vec![Type::String, Type::adt(ModuleFullPath::from("primitives"), TypeName::from("Vec"), vec![Type::String])],
                 Box::new(Type::String),
             ),
-            cranelift_op: "join",
             param_names: vec![Symbol::from("sep"), Symbol::from("parts")],
         },
         PrimitiveDef {
             name: Symbol::from("replace"),
             ty: Type::Fn(vec![Type::String, Type::String, Type::String], Box::new(Type::String)),
-            cranelift_op: "replace",
             param_names: vec![Symbol::from("s"), Symbol::from("from"), Symbol::from("to")],
         },
         PrimitiveDef {
             name: Symbol::from("trim"),
             ty: Type::Fn(vec![Type::String], Box::new(Type::String)),
-            cranelift_op: "trim",
             param_names: vec![Symbol::from("s")],
         },
         PrimitiveDef {
             name: Symbol::from("starts-with?"),
             ty: Type::Fn(vec![Type::String, Type::String], Box::new(Type::Bool)),
-            cranelift_op: "starts-with?",
             param_names: vec![Symbol::from("s"), Symbol::from("prefix")],
         },
         PrimitiveDef {
             name: Symbol::from("ends-with?"),
             ty: Type::Fn(vec![Type::String, Type::String], Box::new(Type::Bool)),
-            cranelift_op: "ends-with?",
             param_names: vec![Symbol::from("s"), Symbol::from("suffix")],
         },
         PrimitiveDef {
             name: Symbol::from("contains?"),
             ty: Type::Fn(vec![Type::String, Type::String], Box::new(Type::Bool)),
-            cranelift_op: "contains?",
             param_names: vec![Symbol::from("s"), Symbol::from("needle")],
         },
         PrimitiveDef {
             name: Symbol::from("to-upper"),
             ty: Type::Fn(vec![Type::String], Box::new(Type::String)),
-            cranelift_op: "to-upper",
             param_names: vec![Symbol::from("s")],
         },
         PrimitiveDef {
             name: Symbol::from("to-lower"),
             ty: Type::Fn(vec![Type::String], Box::new(Type::String)),
-            cranelift_op: "to-lower",
             param_names: vec![Symbol::from("s")],
         },
     ]
@@ -326,7 +283,6 @@ pub(crate) fn ring3_primitives() -> Vec<PrimitiveDef> {
         PrimitiveDef {
             name: Symbol::from("quote-sexp"),
             ty: Type::Fn(vec![sexp_type.clone()], Box::new(sexp_type)),
-            cranelift_op: "quote-sexp",
             param_names: vec![Symbol::from("sexp")],
         },
     ]
@@ -439,7 +395,6 @@ mod tests {
             Type::Fn(vec![Type::Bool], Box::new(Type::Bool)),
             "not: (Fn [Bool] Bool)"
         );
-        assert_eq!(not.cranelift_op, "bxor");
     }
 
     #[test]
@@ -473,35 +428,21 @@ mod tests {
     #[test]
     fn test_no_type_vars_in_primitives() {
         for p in ring0_primitives() {
-            match &p.ty {
-                Type::Fn(params, ret) => {
-                    for param in params {
-                        assert!(
-                            !matches!(param, Type::Var(_)),
-                            "primitive {} should have no type vars, got {:?}",
-                            p.name,
-                            param
-                        );
-                    }
+            if let Type::Fn(params, ret) = &p.ty {
+                for param in params {
                     assert!(
-                        !matches!(ret.as_ref(), Type::Var(_)),
-                        "primitive {} return type should not be a Var",
-                        p.name
+                        !matches!(param, Type::Var(_)),
+                        "primitive {} should have no type vars, got {:?}",
+                        p.name,
+                        param
                     );
                 }
-                _ => {}
+                assert!(
+                    !matches!(ret.as_ref(), Type::Var(_)),
+                    "primitive {} return type should not be a Var",
+                    p.name
+                );
             }
-        }
-    }
-
-    #[test]
-    fn test_cranelift_op_nonempty() {
-        for p in ring0_primitives() {
-            assert!(
-                !p.cranelift_op.is_empty(),
-                "primitive {} should have a cranelift_op",
-                p.name
-            );
         }
     }
 
@@ -523,6 +464,5 @@ mod tests {
             Type::Fn(vec![sexp_type.clone()], Box::new(sexp_type)),
             "quote-sexp: (Fn [Sexp] Sexp)"
         );
-        assert_eq!(qs.cranelift_op, "quote-sexp");
     }
 }

@@ -6,11 +6,4 @@ edition = "2024"
 [dependencies]
 cranelisp-types = { path = "../cranelisp-types" }
 cranelisp-intrinsics = { path = "../cranelisp-intrinsics" }
-# Decision 0048 §"Structural invariant — backend dep-ban" — the dep edge
-# `cranelisp-primitives → cranelisp-backend` is permitted (for the
-# `Code::Primitive` marker variant from `cranelisp-backend::Code`). The
-# reverse edge `cranelisp-backend → cranelisp-primitives` is forbidden
-# and landed in this same change-set (Wave 4) via removal from
-# `crates/cranelisp-backend/Cargo.toml`.
-cranelisp-backend = { path = "../cranelisp-backend" }
 serde = { version = "1", features = ["derive"] }

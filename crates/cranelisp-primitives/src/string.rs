@@ -22,6 +22,7 @@
 
 use cranelisp_intrinsics::{alloc, drop as drop_glue, rc};
 use cranelisp_intrinsics::heap_string::{HeapString, alloc_string};
+use cranelisp_intrinsics::vec_runtime::{DATA_PTR_OFFSET, LEN_OFFSET};
 
 // ---------------------------------------------------------------------------
 // Internal helpers — duplicate of intrinsics::heap_string's private helpers,
@@ -54,17 +55,11 @@ unsafe fn read_str(base: *const u8) -> &'static str {
     unsafe { std::str::from_utf8_unchecked(bytes) }
 }
 
-// ---------------------------------------------------------------------------
-// Sibling Vec layout — duplicate of `crate::vec::LEN_OFFSET` plus the
-// data-pointer offset needed by `split` / `join`. Keeping these here avoids
-// circular dependencies in module load order; the constants are fixed by
-// Decision 11 (base-pointer ABI) and the HeapHeader (16 bytes prefix).
-//
-// Layout: `[size(i64) @ +0 | rc(i64) @ +8 | len(i64) @ +16 | cap(i64) @ +24 | data_ptr(i64) @ +32]`.
-// ---------------------------------------------------------------------------
-
-const VEC_LEN_OFFSET: usize = 16;
-const VEC_DATA_PTR_OFFSET: usize = 32;
+// Vec heap-layout offsets (`LEN_OFFSET`, `DATA_PTR_OFFSET`) used by
+// `split` / `join` are sourced from `cranelisp-intrinsics`' blessed public
+// layout ABI (`vec_runtime`, FIXME 0245) — see the `use` above. No local
+// copies (single source of truth, Principle 7). `CAP_OFFSET` is not used here
+// and is deliberately not imported.
 
 // ---------------------------------------------------------------------------
 // Extern C interface — user-callable string primitives.
@@ -183,13 +178,13 @@ pub(crate) extern "C" fn str_split(s: i64, sep: i64) -> i64 {
 
     unsafe {
         let data_ptr =
-            *((vec_base as *const u8).add(VEC_DATA_PTR_OFFSET) as *const *mut i64);
+            *((vec_base as *const u8).add(DATA_PTR_OFFSET) as *const *mut i64);
         for (i, part) in parts.iter().enumerate() {
             let heap_str = alloc_string(part.as_bytes()) as i64;
             *data_ptr.add(i) = heap_str;
         }
         // Set len.
-        *((vec_base as *mut u8).add(VEC_LEN_OFFSET) as *mut i64) = count;
+        *((vec_base as *mut u8).add(LEN_OFFSET) as *mut i64) = count;
     }
 
     rc::consume_shallow(s);
@@ -207,9 +202,9 @@ pub(crate) extern "C" fn str_join(sep: i64, vec: i64) -> i64 {
     let sep_str = unsafe { read_str(sep as *const u8) };
 
     let base = vec as *const u8;
-    let len = unsafe { *(base.add(VEC_LEN_OFFSET) as *const i64) } as usize;
+    let len = unsafe { *(base.add(LEN_OFFSET) as *const i64) } as usize;
     let data_ptr =
-        unsafe { *(base.add(VEC_DATA_PTR_OFFSET) as *const i64) as *const i64 };
+        unsafe { *(base.add(DATA_PTR_OFFSET) as *const i64) as *const i64 };
 
     let mut parts: Vec<String> = Vec::with_capacity(len);
     for i in 0..len {

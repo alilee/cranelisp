@@ -207,10 +207,16 @@ mod tests {
     #[test]
     fn test_alloc_string_null_ptr() {
         let s = heap_alloc_string(std::ptr::null(), 0);
+        // spec §12.1.2: (null, 0) must produce a valid empty heap string, not crash.
         assert_ne!(s, 0);
         unsafe {
-            let len = *(s as *const u8).add(HeapString::LEN_OFFSET as usize) as *const i64;
-            assert_eq!(*(len), 0);
+            // Read the i64 length field at LEN_OFFSET. The parenthesisation matters:
+            // cast the (base + offset) address to `*const i64` THEN deref. Without the
+            // inner parens the leading `*` would bind to `s as *const u8` (a one-byte
+            // read) and the trailing `as *const i64` would reinterpret that byte as a
+            // pointer — a null-deref. See sibling tests for the same idiom.
+            let len = *(s as *const u8).add(HeapString::LEN_OFFSET as usize).cast::<i64>();
+            assert_eq!(len, 0);
             alloc::dealloc(s as *mut u8);
         }
     }

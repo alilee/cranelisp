@@ -14,20 +14,23 @@ Per **Decision 0048** — the public Rust surface of `cranelisp-primitives` is *
 
 ```rust
 /// Statically-constructed symbol table + GOT for the synthetic `primitives` module.
-/// `Arc<SymbolTable<Code, ()>>` Arc-cloned into every `CompilerSession` at startup.
-pub static PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<Code, ()>>>;
+/// `Arc<SymbolTable<(), ()>>` Arc-cloned into every `CompilerSession` at startup,
+/// then concretized to `<Code, ()>` by `int` at the session mount via
+/// `into_concrete::<Code, ()>()` (the proven cache-restore bridge — preserves the
+/// shared `Arc<GotTable>`). Primitives never names `Code`.
+pub static PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<(), ()>>>;
 ```
 
 The ~22 individual extern fns demote to `pub(crate) extern "C"` with `#[used]` discipline (to prevent DCE in `--link`-mode static archives). `pub fn ring0_jit_symbols()` retires (FIXME 0182 closure). The submodules (`ring0`, `int`, `float`, `bool`, `marshal`, `string`, `vec`) remain `pub mod` for source organisation but their `extern "C"` members are reachable only through `PRIMITIVES_TABLE.got()` slots — never via direct `cranelisp_primitives::ring0::add_i64` Rust call paths from consumers.
 
 ### Type shape
 
-`PRIMITIVES_TABLE` is `LazyLock<Arc<SymbolTable<Code, ()>>>` — note the `Arc` wrapper around the `SymbolTable` (the pre-S68 transitional shape was `LazyLock<SymbolTable<(), ()>>` without the `Arc` and with `C = ()`). The `C = Code` parameter is required because the table is now Arc-cloned into the live `SymbolTables<Code, ()>` map carried by `CompilerSession` — type uniformity is load-bearing for the "functionally equivalent to any other module" invariant. The `Arc<GotTable>` reachable via `PRIMITIVES_TABLE.got()` is itself populated at `LazyLock` init and never reallocated for the process lifetime.
+`PRIMITIVES_TABLE` is `LazyLock<Arc<SymbolTable<(), ()>>>` — note the `Arc` wrapper around the `SymbolTable` (the pre-S68 transitional shape was `LazyLock<SymbolTable<(), ()>>` without the `Arc`; S68 added the `Arc`). **Primitives builds a `()`-flavoured table, NOT a `Code`-flavoured one** (S73 — backend sever). Because every entry carries `code: None` (FIXME 0244), primitives **never constructs a `Code` value**, so it has no reason to name `Code` at all — and per user direction (2026-05-31) it MUST NOT import `cranelisp-backend`. The pre-S73 reading that "`C = Code` is load-bearing for the functionally-equivalent-to-any-other-module invariant" is **retired**: type uniformity with the live `SymbolTables<Code, ()>` map is achieved at the **session layer**, not at the primitives build. `int` clones the static and calls `SymbolTable::into_concrete::<Code, ()>()` at the mount (the proven cache-restore bridge — it maps each `code: Option<()>` to `None::<Code>` and carries `got: self.got` through unchanged, preserving the one shared `Arc<GotTable>`). The `Arc<GotTable>` reachable via `PRIMITIVES_TABLE.got()` is populated at `LazyLock` init and never reallocated for the process lifetime; `into_concrete` preserves that exact `Arc`, so the "one process GOT" invariant (BC §4a invariants 2/6) holds across the concretization.
 
 ```rust
 use std::sync::{Arc, LazyLock};
-use cranelisp_backend::Code;
 use cranelisp_types::{GotTable, ModuleEntry, ModuleFullPath, SymbolTable};
+// NOTE: no `use cranelisp_backend::Code;` — primitives does NOT depend on backend.
 
 /// The synthetic `primitives` module's symbol table and GOT. Both are constructed
 /// once per process at LazyLock init time; the contained `Arc<GotTable>` is
@@ -35,21 +38,27 @@ use cranelisp_types::{GotTable, ModuleEntry, ModuleFullPath, SymbolTable};
 /// every non-inlined primitive (ring-0 arithmetic/comparison, marshal, per-type
 /// to_string, int/float/bool conversions, string ops, `vec-len`, `not`).
 ///
-/// Per Decision 0048 (A2, revised 2026-05-17 in Phase 3): each
-/// `ModuleEntry::Def.code = Some(Code::Primitive)` — the marker variant
-/// expressing process-static lifecycle (externally owned by this `LazyLock`).
-/// The variant carries no payload. The raw `*const u8` continues to live in
-/// the GOT's `AtomicPtr<u8>` per Decision 0035 ("GOT is the single source of
-/// truth for callable addresses; no per-entry pointer field") — invariant
-/// preserved; the marker variant communicates the lifecycle category at
-/// every match site over `code`, never duplicates the address.
+/// The code-store type parameter is `()` — primitives build a code-free table.
+/// Per Decision 0048 (A2 reversed, FIXME 0244, 2026-05-31): each
+/// `ModuleEntry::Def.code = None` — the `ModuleEntry::def(..).build()` builder
+/// default. Primitive-ness is NOT encoded in `code`; it is read from
+/// `kind: DefKind::Primitive`. `code` retains its single responsibility (the
+/// per-entry runtime resource handle, `None` when there is no owned compiled
+/// code to reclaim — which is always the case for primitives). The raw
+/// `*const u8` lives in the GOT's `AtomicPtr<u8>` per Decision 0035 ("GOT is
+/// the single source of truth for callable addresses; no per-entry pointer
+/// field") — invariant preserved trivially (there is no `code` payload).
+///
+/// `int` concretizes to `<Code, ()>` at the session mount via `into_concrete`
+/// (§Session-integration contract); primitives itself never names `Code`.
 ///
 /// The `Arc` semantics already in `SymbolTable.got: Arc<GotTable>` carry the
 /// wiring — primitives' GOT is NOT a new category in Decision 23's two-GOT
 /// model; it is the SymbolTable-GOT row of that model, instantiated in static
 /// memory rather than in per-session heap. The `Arc<SymbolTable<…>>` outer
-/// wrapper is what CompilerSession Arc-clones into `session.symbol_tables`.
-pub static PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<Code, ()>>>;
+/// wrapper is what CompilerSession Arc-clones (then concretizes) into
+/// `session.symbol_tables`.
+pub static PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<(), ()>>>;
 ```
 
 ### Static-init contract
@@ -58,28 +67,30 @@ At `LazyLock` first-access time, the initialiser performs the following populati
 
 1. **SymbolTable population.** One `ModuleEntry::Def` per non-inlined primitive listed in the inventory below (§"Primitives inventory") is inserted under its kebab-case `Symbol` name. Each entry's fields:
    - `scheme` — typecheck `Scheme` from the crate-private `operator::ring{0,1,3}_primitives()` builders. `PrimitiveDef` and the three ring builders are crate-private constructor inputs for this static init (relocated from `cranelisp-types` S69 — H1 stronger disposition; consumers reach the same data via the inserted `ModuleEntry::Def` shape, not via `PrimitiveDef` rows).
-   - `kind` — `Box::new(DefKind::Primitive { primitive_kind: PrimitiveKind::Inline, jit_name: Some(JitSymbol::from(name)) })`.
+   - `kind` — `Box::new(DefKind::Primitive)` — the **payload-free unit variant** (S69 Submission 36 collapsed the prior `Primitive { primitive_kind, jit_name }` shape; `crates/cranelisp-types/src/module.rs:1312` rustdoc carries the rationale). This is the canonical "this symbol is a primitive" fact (read at the 34 primitive-aware sites); primitive-ness is derived from `kind`, never from `code`. There is **no `primitive_kind` sub-discriminator and no `jit_name` field**: the JIT linker name IS the symbol-table key uniformly (`src/CLAUDE.md` §"JIT Symbol Names" — every symbol addressable as `module/symbol`), and inline-eligibility is encoded per-call-site in `ResolvedCall::BuiltinFn { name }` (set by typecheck), not on the discriminator.
    - `got_slot: Some(N)` — N is allocated deterministically via `SymbolTable::allocate_got_slot()` at init; slot indices are stable for the process lifetime.
-   - `code: Some(Code::Primitive)` — per Decision 0048 (A2, revised 2026-05-17): the marker variant expresses process-static lifecycle. No payload; the GOT is the single source of truth for the `*const u8` address (Decision 35 invariant preserved).
-   - `visibility: Visibility::Public`, `trait_origin: None`, `ast: None`, `callees: Vec::new()`.
+   - `code: None` — per Decision 0048 (A2 reversed, FIXME 0244, 2026-05-31): the `ModuleEntry::def(scheme, kind).param_names(..).got_slot(slot).build()` builder default. There is no `.primitive()` / `.code()` setter and no `CodeStore` constructor — `code` is runtime resource state, not constructor-settable, and primitives have no owned reclaimable resource (the `LazyLock` owns the static fn addresses; the GOT is the single source of truth for the `*const u8` per Decision 35).
+   - `visibility: Visibility::Public`, `trait_origin: None`, `ast: None`, `callees: Vec::new()`, `seq: 0` — all builder defaults.
 
 2. **GotTable population.** For each allocated slot N, the corresponding `pub(crate) extern "C" fn`'s address is stored via `table.got.store_slot(N, fn_ptr as *const u8)`. The (symbol → ptr) mapping is built from a single in-crate harvest of every `#[unsafe(export_name = "…")] pub(crate) extern "C" fn` across the submodules; no `Vec<(&str, *const u8)>` is published.
 
-3. **Arc wrap + freeze.** The populated `SymbolTable<Code, ()>` is wrapped in `Arc::new(...)` and returned from the `LazyLock` initialiser. From this point on, the table is treated as read-only by all consumers; the `Arc<GotTable>` inside (via `table.got: Arc<GotTable>`) is similarly read-only for the slots that primitives owns. No further `store_slot` calls land on primitives' GOT after init.
+3. **Arc wrap + freeze.** The populated `SymbolTable<(), ()>` is wrapped in `Arc::new(...)` and returned from the `LazyLock` initialiser. From this point on, the table is treated as read-only by all consumers; the `Arc<GotTable>` inside (via `table.got: Arc<GotTable>`) is similarly read-only for the slots that primitives owns. No further `store_slot` calls land on primitives' GOT after init. The `()` code-store flavour is preserved until `int` concretizes at the session mount (§Session-integration contract); the GOT `Arc` survives the concretization untouched.
 
 ### Session-integration contract
 
-`CompilerSession` startup (per `facades/int.md`) obtains an `Arc::clone` of the static and inserts it into the session's `SymbolTables<Code, ()>` map at `ModuleFullPath::primitives()`:
+`CompilerSession` startup (per `facades/int.md`) holds a `SymbolTables<Code, ()>` map, so it must **concretize** the `()`-flavoured static to `<Code, ()>` before inserting it at `ModuleFullPath::primitives()`. It does so via `SymbolTable::into_concrete::<Code, ()>()` — the same `cranelisp-types` bridge the cache-restore path uses (`crates/cranelisp-types/src/module.rs`):
 
 ```rust
 // in CompilerSession::new() (or equivalent session init in src/session_v4.rs)
-session.symbol_tables.insert(
-    ModuleFullPath::primitives(),
-    Arc::clone(&*cranelisp_primitives::PRIMITIVES_TABLE),
-);
+let primitives: SymbolTable<Code, ()> =
+    (*cranelisp_primitives::PRIMITIVES_TABLE)   // Arc<SymbolTable<(), ()>>
+        .as_ref()
+        .clone()                                 // SymbolTable<(), ()> (got: Arc<GotTable> shared)
+        .into_concrete::<Code, ()>();            // SymbolTable<Code, ()> — code: None per entry; got carried through
+session.symbol_tables.insert(ModuleFullPath::primitives(), primitives);
 ```
 
-The `Arc::clone` is shallow — both the outer `Arc<SymbolTable>` and (transitively) the inner `Arc<GotTable>` are reference-counted shares of the same static-memory backing. There is one and only one `GotTable` for primitives in the process, regardless of how many sessions exist concurrently. Reads from any session resolve through the same atomic-ptr slots.
+`into_concrete` maps each entry's `code: Option<()>` to `None::<Code>` (every primitives entry is already `code: None`) and carries `got: self.got` through verbatim. The `.clone()` is shallow with respect to the GOT — the inner `Arc<GotTable>` is reference-count-shared with the static-memory backing, and `into_concrete` preserves that exact `Arc`. There is therefore one and only one `GotTable` for primitives in the process, regardless of how many sessions exist concurrently; reads from any session resolve through the same atomic-ptr slots. (The structural `SymbolTable` fields — `symbols`, `next_got_slot`, `next_seq`, `imports`, `exports`, etc. — are per-session-cloned, but that copy is cheap and the address-bearing GOT is shared.)
 
 From session-init onward, primitives dispatch is functionally equivalent to any other module:
 
@@ -282,13 +293,21 @@ None. Per Principle 15 — facade types live with behaviour; primitives owns no 
 
 ## Consumed surface
 
-The primitives crate imports from:
+The primitives crate imports from **exactly two workspace crates**: `cranelisp-types` (boundary) and `cranelisp-intrinsics` (runtime substrate). It does **NOT** import `cranelisp-backend`, `cranelisp-frontend`, `cranelisp-typecheck`, `cranelisp-platform`, or `cranelisp` (binary).
 
-- **`cranelisp-types`** — the bulk of the dependency. The static `PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<Code, ()>>>` requires `SymbolTable`, `ModuleEntry`, `DefKind`, `PrimitiveKind`, `JitSymbol`, `Visibility`, `Symbol`, `Type`, `Scheme`, `ModuleFullPath`, `FQTypeName`. The `PrimitiveDef` row type and `ring{0,1,3}_primitives()` builders live in the crate-private `operator` module (relocated from `cranelisp-types` S69 — H1 stronger disposition; not part of the consumed surface). Acyclic; types is the leaf with no workspace dependencies.
+- **`cranelisp-types`** — the boundary. The static `PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<(), ()>>>` requires `SymbolTable`, `ModuleEntry`, `DefKind`, `Visibility`, `Symbol`, `Type`, `Scheme`, `ModuleFullPath`, `FQTypeName`. (`PrimitiveKind` and `JitSymbol` are **not** imported — both retired S69 Submission 36 when `DefKind::Primitive` collapsed to a payload-free unit variant; the JIT linker name is the symbol-table key, not a stored field.) The `PrimitiveDef` row type and `ring{0,1,3}_primitives()` builders live in the crate-private `operator` module (relocated from `cranelisp-types` S69 — H1 stronger disposition; not part of the consumed surface). Acyclic; types is the leaf with no workspace dependencies.
 
-- **`cranelisp-backend`** — for the `Code` type parameter on `SymbolTable<Code, ()>` AND for the `Code::Primitive` marker variant constructed at static-init (per Decision 0048 (A2), revised 2026-05-17). Decision 0041 placed `Code` in `cranelisp-backend`; `cranelisp-primitives` names `Code` and constructs `Code::Primitive` (the variant carries no payload — see Decision 0048 §"Shape"). The dependency edge is `cranelisp-primitives → cranelisp-backend`. **Dep-ban (Decision 0048 §"Structural invariant — backend dep-ban", S68 Phase 3 revision)**: `cranelisp-backend` MUST NOT depend on `cranelisp-primitives` — workspace `[dependencies]` and `[dev-dependencies]` alike. The reverse edge `cranelisp-backend → cranelisp-primitives` is forbidden by the workspace DAG, which structurally enforces the architectural invariant "primitives dispatch reaches code via GOT, never via direct extern". Backend consumes `PRIMITIVES_TABLE` exclusively via the session's `SymbolTables` map (`int` does the Arc-clone insertion at session init); backend has no Rust-path visibility into primitives' fns and therefore physically cannot emit a direct-call instruction targeting a primitive. Acyclic.
+- **`cranelisp-intrinsics`** — the runtime substrate. This dependency is **real, behavioural, and type-level** — it is NOT a build-system convenience and is NOT severable (FIXME 0245, option A; the older facade claim "primitives does NOT depend on `cranelisp-intrinsics` … calls the allocator by linker-resolved name" was aspirational and never honoured). Primitives' heap primitives (in `string.rs`, `vec.rs`) make direct Rust calls into intrinsics' allocator and read intrinsics-owned heap layout. The **standing consumed contract** — bound by the baseline-diff discipline (`design/arch/CLAUDE.md` §"Baseline-diff discipline") with `cranelisp-primitives` as a named consumer of `cranelisp-intrinsics`' public API — is exactly:
+  - `cranelisp_intrinsics::heap_string::{alloc_string, HeapString}` — the allocator entry plus the `HeapString` `#[repr(C)]` layout type, **including its layout-ABI consts** `HeapString::{LEN_OFFSET, DATA_OFFSET}` (and `payload_size`). Read in `string.rs::read_string_parts`.
+  - `cranelisp_intrinsics::vec_runtime::{vec_new, LEN_OFFSET, CAP_OFFSET, DATA_PTR_OFFSET}` — the Vec allocator entry plus the canonical Vec heap-layout consts. The three `vec_runtime` layout consts are the **NEW pub items** `/dev (intrinsics)` exposes this sprint (FIXME 0245 — Phase 5); primitives consumes them in place of its previously-duplicated private `LEN_OFFSET` / `VEC_LEN_OFFSET` / `VEC_DATA_PTR_OFFSET` copies (deleted Phase 5 — single source of truth, Principle 7).
+  - `cranelisp_intrinsics::alloc::alloc_with_rc` — the RC-headered allocator used when a primitive constructs a fresh heap value.
+  - `cranelisp_intrinsics::rc::consume_shallow` — single-node RC dec.
+  - `cranelisp_intrinsics::drop::{consume_sexp, consume_slist}` — recursive RC-dec walks over Sexp / SList shapes (marshal primitives).
+  - `cranelisp_intrinsics::panic::runtime_panic` — match-exhaustiveness / bounds panic sentinel.
 
-Primitives does NOT depend on `cranelisp-frontend`, `cranelisp-typecheck`, `cranelisp-platform`, `cranelisp-intrinsics`, or `cranelisp` (binary). In particular: primitives does NOT depend on `cranelisp-intrinsics`. Where a primitive allocates heap (e.g., `int-to-string`), it does so by calling the allocator's extern fn at the linker-resolved name — the same way backend-emitted code calls intrinsics — not by depending on intrinsics as a Rust crate.
+  The heap-object layout (the `HeapString` offsets and the `vec_runtime` offsets) is `cranelisp-intrinsics`' **blessed, stable public ABI** (FIXME 0245; see `facades/intrinsics.md` §"Heap allocator" / §"Vec runtime layout ABI"). Primitives holds **no duplicate copies** of these offsets post-Phase-5 — it reads them from intrinsics exclusively. Any future intrinsics change to a consumed item is a baseline-diff event with primitives as a named downstream. Acyclic.
+
+Where a primitive allocates heap (e.g., `int-to-string`, `str-concat`, `split`, `join`), it does so by Rust-calling intrinsics' allocator and reading intrinsics' layout consts — NOT by re-deriving offsets locally and NOT (contrary to the retired claim) by calling the allocator only at a linker-resolved name.
 
 ---
 
@@ -318,7 +337,7 @@ These hold across sprints — the contract `cranelisp-primitives` makes with the
 
 5. **Inline-substitution is optional.** Backend MAY substitute a primitive call with inline CLIF (e.g., `add-i64 → iadd`) at a known direct call site. It MAY NOT be required to do so — the named fn ptr in `PRIMITIVES_TABLE.got()` is a legitimate fallback for indirect calls (operator-as-value, GOT-indirect cross-module calls before linker resolution). Implementation choices live in `cranelisp-backend/src/primitives_inline.rs`.
 
-6. **Process-static lifecycle.** `PRIMITIVES_TABLE` and its inner `Arc<GotTable>` are constructed once per process at `LazyLock` first-access; never reallocated; never invalidated. Decision 31's per-batch `JITModule` lifecycle does not apply — primitives are the **named exception** (carve-out stated in Decision 0048; to be reflected in Decision 31's "Consequences" at next amendment). Cache-hit reload (Decision 30) similarly carves primitives out — primitives are never cached (no `.meta.json`, no `.o`); the static is always present at session start.
+6. **Process-static lifecycle.** `PRIMITIVES_TABLE` and its inner `Arc<GotTable>` are constructed once per process at `LazyLock` first-access; never reallocated; never invalidated. Each entry carries `code: None` (post-A2-reversal, FIXME 0244) — primitives have no per-entry reclaimable `Code` resource (the `LazyLock` owns the static fn addresses); the lifecycle category is *not* recorded as a `code` marker variant, it follows from `kind: DefKind::Primitive`. Decision 31's per-batch `JITModule` lifecycle does not apply — primitives are the **named exception** (carve-out stated in Decision 0048; to be reflected in Decision 31's "Consequences" at next amendment). Cache-hit reload (Decision 30) similarly carves primitives out — primitives are never cached (no `.meta.json`, no `.o`); the static is always present at session start.
 
 7. **Spec-driven evolution.** New primitives appear when the spec requires them. The crate does not accrete primitives for backend convenience; that is what `cranelisp-intrinsics` is for. The categorical line (user-callable vs backend-emitted-call target) is the load-bearing distinction Decision 43 formalised and Decision 0048 makes operational.
 
@@ -330,7 +349,7 @@ These hold across sprints — the contract `cranelisp-primitives` makes with the
 
 The following facades and design docs depend on this one and must be in sync at S68 close:
 
-- **`facades/backend.md`** — `intrinsic_symbols()` body shrinks (no primitives entries; closes FIXME 0191). The `primitives_inline.rs` retirement narrative updates: GOT-indirect dispatch is *the* path post-S68, inline substitution is the optional optimisation it was always intended to be. **Add dep-ban (S68 Phase 3 revision)**: backend MUST NOT depend on `cranelisp-primitives`; Phase 5 Wave 4 deletes the `cranelisp_primitives::*` Rust paths from `intrinsic_symbols()` and removes the `cranelisp-primitives` line from backend's `Cargo.toml`.
+- **`facades/backend.md`** — `intrinsic_symbols()` body shrinks (no primitives entries; closes FIXME 0191). The `primitives_inline.rs` retirement narrative updates: GOT-indirect dispatch is *the* path post-S68, inline substitution is the optional optimisation it was always intended to be. **Dep-ban is now bidirectional severance (S73)**: `cranelisp-primitives ⟂ cranelisp-backend` — neither names the other (primitives builds a `<(), ()>` table and never names `Code`; backend MUST NOT depend on primitives). The backend-side cascade (deleting the `cranelisp_primitives::*` Rust paths from `intrinsic_symbols()` and removing the `cranelisp-primitives` line from backend's `Cargo.toml`) is **deferred to a future backend sprint** per the S73 re-scope; the primitives-side severance (no `use cranelisp_backend::Code`, no `cranelisp-backend` in primitives' `Cargo.toml`) lands this sprint.
 - **`facades/intrinsics.md`** — `JITBuilder::symbol(name, ptr)` narrows to intrinsics-only post-S68. Doc-comment refresh; no public-API change expected.
 - **`facades/int.md`** — `CompilerSession` startup references `cranelisp_primitives::PRIMITIVES_TABLE` (Arc-clone insertion into `session.symbol_tables`). No `ring0_jit_symbols()` consumption.
 - **exe-bundle / `cranelisp_init_platform`** — `pub use cranelisp_primitives::string;` (and sibling) force-link lines retire; replaced by an explicit `cranelisp_init_primitives()` no-op that forces `LazyLock::force(&PRIMITIVES_TABLE)` at startup (per /arch's Phase 2 recommendation in `sprints/SPRINT.md`). For `--link` mode, the static archive must contain the primitives fns (the `#[used]` discipline on each extern fn) AND the linker-side `.o` data-section GOT for `primitives` is populated at process startup before any compiled code runs.
@@ -350,9 +369,11 @@ The following facades and design docs depend on this one and must be in sync at 
 - `decisions/0031-one-jitmodule-per-compile-batch.md` — the per-batch lifecycle 0048 carves an exception from
 - `decisions/0023-uniform-codegen-mode-as-module-property.md` (legacy) — two-GOT model 0048 instantiates for primitives
 - `decisions/0030-form-by-form-scheduler-mutual-imports.md` — cache reload path 0048 carves an exception from
-- `facades/intrinsics.md` — sibling crate from the runtime split
-- `facades/backend.md` §"Consumed surface" — backend's name-keyed substitution table consumes primitives by symbol name
-- `facades/int.md` §"Consumed surface" — int Arc-clones the static at session init
+- `facades/intrinsics.md` — sibling crate from the runtime split; the **runtime-substrate dependency** primitives consumes (allocator + heap-string/vec layout-ABI consts + drop/panic) — §Consumed surface pins the exact items per FIXME 0245
+- `facades/backend.md` §"Consumed surface" — backend's name-keyed substitution table consumes primitives by symbol name (NOT by Rust path — `primitives ⟂ backend`)
+- `facades/int.md` §"Consumed surface" — int clones the static and `into_concrete`s it to `<Code, ()>` at session init
+- `fixmes/0244-arch-revert-0048-a2-code-primitive-marker.md` — `code: None`; the precondition for the backend sever (primitives stops naming `Code`)
+- `fixmes/0245-arch-heap-layout-blessed-public-abi-of-intrinsics.md` — heap-layout = intrinsics' blessed public ABI (option A); the consumed-contract pinning above is its `/arch` half
 - `principles.md` Principle 1 (decoupling), Principle 7 (single source of truth — operative test for static-table-in-crate vs per-batch construction), Principle 8 (no interim implementations — the static-table shape is the target), Principle 15 (facade types live with behaviour)
 - `src/CLAUDE.md` "JIT Symbol Names" — the symbol-name convention
 - `fixmes/0210-arch-primitives-as-uniform-module-with-symboltable-and-got.md` — primary FIXME this facade refresh resolves

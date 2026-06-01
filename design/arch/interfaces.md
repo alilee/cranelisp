@@ -1261,10 +1261,24 @@ impl ModuleEntry {
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DefKind {
-    SpecialForm { description: String },
-    Primitive {
-        primitive_kind: PrimitiveKind,
-        jit_name: Option<LinkerSymbol>,
+    /// A built-in primitive bundled in `cranelisp-primitives`. Payload-free
+    /// unit variant (S69 Submission 36 retired the prior
+    /// `Primitive { primitive_kind, jit_name }` payload). The discriminator
+    /// alone signals "bundled compiler-provided body". The JIT linker name IS
+    /// the symbol-table key uniformly (`src/CLAUDE.md` §"JIT Symbol Names");
+    /// inline-eligibility is encoded per-call-site in
+    /// `ResolvedCall::BuiltinFn { name }` (set by typecheck), not on this
+    /// discriminator.
+    Primitive,
+    /// A DLL-routed platform effect. Promoted from a sub-variant of the
+    /// retired `PrimitiveKind` to a `DefKind` sibling (S69 Submission 36).
+    /// `scheduling_class` is a variant field (not a sibling on
+    /// `ModuleEntry::Def`) so that only entries that actually carry a
+    /// scheduling class can have one — see Decision 26. Written during
+    /// `(platform ...)` form processing from the DLL manifest; read by
+    /// `bind_chain_analysis.rs::classify_expr` via an Import-chain walk.
+    PlatformEffect {
+        scheduling_class: cranelisp_platform::SchedulingClass,
     },
     UserFn {
         constrained_fn: Option<ConstrainedFn>,
@@ -1272,20 +1286,10 @@ pub enum DefKind {
     Overloaded {
         variants: Vec<OverloadVariant>,
     },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum PrimitiveKind {
-    Inline,
-    Extern,
-    /// Platform DLL effect. `scheduling_class` is a variant field (not a
-    /// sibling on `ModuleEntry::Def`) so that only entries that actually
-    /// carry a scheduling class can have one — see Decision 26. Written
-    /// during `(platform ...)` form processing from the DLL manifest; read
-    /// by `bind_chain_analysis.rs::classify_expr` via an Import-chain walk.
-    PlatformEffect {
-        scheduling_class: cranelisp_platform::SchedulingClass,
-    },
+    // SpecialForm retired from DefKind (S69 Submission 36) — promoted to its
+    // own `ModuleEntry::SpecialForm` variant. PrimitiveKind enum retired
+    // entirely (Inline/Extern were vestigial; PlatformEffect promoted to the
+    // DefKind sibling above).
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1833,7 +1837,7 @@ impl SymbolTable {
 
 The filter is deliberately strict: any `ModuleEntry::Def` with `ast: None` is excluded — whether pre-body-check, primitive, special form, `Overloaded` base, or constrained-fn template. Adding new non-compilable categories never silently breaks codegen, because the `ast.is_some()` clause comes first.
 
-> Note on `ModuleEntry::Def.ast` / `code` / `got_slot`: the full set of typecheck- and codegen-populated fields on `ModuleEntry::Def` (`ast`, `code`, `got_slot`, `callees`, `trait_origin`) is now shown in the variant definition above. `ast` arrived in Sprint 55 (Phase 1); `code` shape landed in Sprint 57 Phase 3 G6 (concrete `Code` placeholder); the previously-separate `platform_fn_ptr` landed in Sprint 57 Phase 4 G8 (later removed in S66 — see below); `code` is parameterised to `Option<C>` in Sprint 58 Phase 5 Step 5c (G12) per Decision 32 — the integration layer chooses the concrete `C = Code` (re-exported from `cranelisp-backend` per Decision 41) so per-redefinition reclaim fires (Decision 31 Scenario 2). **Sprint 66 (2026-05-09 — fn_ptr unification + rollback)** worked in two steps: (1) commit `b09ec76` removed `platform_fn_ptr` and added a unified `fn_ptr: Option<*const u8>` covering all four ptr origins (JIT user fn, linker-loaded user fn, primitive, platform DLL fn); (2) commit `1dc57ae` (same day) **rolled back** the unified `fn_ptr` field as redundant with the per-module `GotTable` already in place. Post-rollback canonical statement: **GOT is the single source of truth for callable addresses** — `got_slot: Some(slot)` indexes into `SymbolTable.got()` (a `GotTable` per module — `crates/cranelisp-types/src/got.rs`); the runtime address lives at `symbol_table.got().load_slot(slot)`. The `Code` variant slim survived the rollback (`Code::Jit(Arc<Jit>)` / `Code::Linker(Arc<Linker>)`); a third marker variant `Code::Primitive` was added in S68 Phase 3 per Decision 0048 (A2, revised 2026-05-17, user direction). The `code` field is `#[serde(skip)]` — runtime-only, re-derivable from the AST + cache `.o` (constructs `Code::Linker(Arc<Linker>)` per `load_object` for user fns; primitives have process lifetime and `code = Some(Code::Primitive)` — the marker variant carries no payload, the GOT continues to hold the `*const u8`; platform DLL fns are `code = None`, DLL handle held in `SharedState.kept_dlls`). See `design/typecheck/ast-annotation.md` §6 for the authoritative per-category table of which entries carry `ast: Some(_)`, and `crates/cranelisp-types/src/module.rs` `ModuleEntry::Def` rustdoc for the canonical post-rollback field shape.
+> Note on `ModuleEntry::Def.ast` / `code` / `got_slot`: the full set of typecheck- and codegen-populated fields on `ModuleEntry::Def` (`ast`, `code`, `got_slot`, `callees`, `trait_origin`) is now shown in the variant definition above. `ast` arrived in Sprint 55 (Phase 1); `code` shape landed in Sprint 57 Phase 3 G6 (concrete `Code` placeholder); the previously-separate `platform_fn_ptr` landed in Sprint 57 Phase 4 G8 (later removed in S66 — see below); `code` is parameterised to `Option<C>` in Sprint 58 Phase 5 Step 5c (G12) per Decision 32 — the integration layer chooses the concrete `C = Code` (re-exported from `cranelisp-backend` per Decision 41) so per-redefinition reclaim fires (Decision 31 Scenario 2). **Sprint 66 (2026-05-09 — fn_ptr unification + rollback)** worked in two steps: (1) commit `b09ec76` removed `platform_fn_ptr` and added a unified `fn_ptr: Option<*const u8>` covering all four ptr origins (JIT user fn, linker-loaded user fn, primitive, platform DLL fn); (2) commit `1dc57ae` (same day) **rolled back** the unified `fn_ptr` field as redundant with the per-module `GotTable` already in place. Post-rollback canonical statement: **GOT is the single source of truth for callable addresses** — `got_slot: Some(slot)` indexes into `SymbolTable.got()` (a `GotTable` per module — `crates/cranelisp-types/src/got.rs`); the runtime address lives at `symbol_table.got().load_slot(slot)`. The `Code` variant slim survived the rollback: `Code` carries only the two lifecycle-owning variants `Code::Jit(Arc<Jit>)` / `Code::Linker(Arc<Linker>)`. (A `Code::Primitive` marker variant was briefly added in S68 Phase 3 per Decision 0048 A2, then **reversed in S73 Phase 2 per FIXME 0244** — primitive-ness is read from `kind: DefKind::Primitive`, not from a `code` marker.) The `code` field is `#[serde(skip)]` — runtime-only, re-derivable from the AST + cache `.o` (constructs `Code::Linker(Arc<Linker>)` per `load_object` for user fns; primitives have process lifetime and carry `code = None` — the GOT holds the `*const u8`; platform DLL fns are also `code = None`, DLL handle held in `SharedState.kept_dlls`). See `design/typecheck/ast-annotation.md` §6 for the authoritative per-category table of which entries carry `ast: Some(_)`, and `crates/cranelisp-types/src/module.rs` `ModuleEntry::Def` rustdoc for the canonical post-rollback field shape.
 
 ---
 

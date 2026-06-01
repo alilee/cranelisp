@@ -13,49 +13,61 @@
 //! ## Public Rust API — single item
 //!
 //! Per Decision 0048 (S68): the public Rust surface is the single static
-//! `PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<Code, ()>>>`. The ~22
-//! individual extern fns demote to `pub(crate) extern "C"` with `#[used]`
-//! discipline (to prevent DCE in `--link`-mode static archives). The
-//! statically-constructed `Arc<SymbolTable>` is Arc-cloned into each
-//! `CompilerSession`'s `SymbolTables<Code, ()>` map at session init — from
-//! that point on, primitives dispatch is functionally equivalent to any
-//! other module via the standard cross-module GOT-indirect call sequence.
+//! `PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<(), ()>>>`. The ~22
+//! individual extern fns demote to `pub(crate) extern "C"` carrying
+//! `#[unsafe(export_name = "…")]`. (The facade also prescribes `#[used]`
+//! discipline to prevent DCE in `--link`-mode static archives, but `#[used]`
+//! is not applicable to functions — only statics — so the per-fn attribute is
+//! NOT present; the DCE-anchor mechanism is pending `/arch` re-disposition per
+//! FIXME 0247.) The statically-constructed `Arc<SymbolTable>` is Arc-cloned
+//! into each
+//! `CompilerSession` at session init; `int` concretizes the `()`-flavoured
+//! static to `<Code, ()>` at the session mount via `into_concrete` (the
+//! proven cache-restore bridge — preserves the shared `Arc<GotTable>`; the
+//! mount itself is S74, not this crate). From that point on, primitives
+//! dispatch is functionally equivalent to any other module via the standard
+//! cross-module GOT-indirect call sequence. **Primitives never names `Code`.**
 //!
-//! ## Lifecycle marker — `Code::Primitive`
+//! ## Lifecycle — `code: None`
 //!
-//! Every `ModuleEntry::Def.code = Some(Code::Primitive)` per Decision 0048
-//! §"Shape" (S68 Phase 3 user revision, 2026-05-17). The marker variant
-//! carries no payload — Decision 35's "GOT is the single source of truth
-//! for callable addresses; no per-entry pointer field" invariant is
-//! preserved. The fn ptr lives in the per-module `GotTable` indexed by
-//! `ModuleEntry::Def.got_slot`; the `Code::Primitive` marker expresses the
-//! *lifecycle category* (process-static, externally owned by this
-//! `LazyLock`) at every match site over `Code`.
+//! Each `ModuleEntry::Def` carries `code: None` — the
+//! `ModuleEntry::def(..).build()` builder default (Decision 0048 A2 reversed,
+//! FIXME 0244, 2026-05-31). Primitive-ness is NOT encoded in `code`; it is
+//! read from `kind: DefKind::Primitive`. `code` retains its single
+//! responsibility — the per-entry runtime resource handle, `None` when there
+//! is no owned compiled code to reclaim (always the case for primitives; the
+//! `LazyLock` owns the static fn addresses). The raw `*const u8` lives in the
+//! `GotTable` indexed by `ModuleEntry::Def.got_slot` per Decision 35 ("GOT is
+//! the single source of truth for callable addresses; no per-entry pointer
+//! field") — invariant preserved trivially (there is no `code` payload).
 //!
-//! ## Backend dep-ban (Decision 0048 §"Structural invariant")
+//! ## Backend severance (Decision 0048 §"Structural invariant", S73)
 //!
-//! `cranelisp-backend` MUST NOT depend on `cranelisp-primitives`. The
-//! reverse edge — `cranelisp-primitives → cranelisp-backend` — is permitted
-//! and required (for the `Code::Primitive` marker variant). The workspace
-//! DAG enforces the "primitives reach code via GOT, never via direct extern"
-//! invariant structurally per Principle 18.
+//! `cranelisp-primitives ⟂ cranelisp-backend` — neither names the other.
+//! Because every entry carries `code: None`, primitives never constructs a
+//! `Code` value, builds a `SymbolTable<(), ()>`, and drops `cranelisp-backend`
+//! from its manifest entirely. `int` concretizes via `into_concrete` at the
+//! session mount (S74); type uniformity with the live `SymbolTables<Code, ()>`
+//! map is achieved at the session layer, not at the primitives build. The
+//! pre-S73 narrative ("the reverse edge … is permitted and required for the
+//! `Code::Primitive` marker") is retired. The workspace DAG enforces the
+//! "primitives reach code via GOT, never via direct extern" invariant
+//! structurally per Principle 18 (bidirectional severance) and Principle 1
+//! (decoupling).
 //!
 //! ## Module organisation
 //!
 //! Per-primitive-category sub-modules (`ring0`, `int`, `float`, `bool`,
 //! `marshal`, `string`, `vec`) keep the source small and focused. Their
-//! `extern "C"` members are `pub(crate)` with `#[used]`; the only way for
-//! a consumer outside the crate to reach a primitive's fn ptr is via
+//! `extern "C"` members are `pub(crate)` carrying `#[unsafe(export_name)]`
+//! (the `#[used]` DCE anchor is pending FIXME 0247 — see above); the only way
+//! for a consumer outside the crate to reach a primitive's fn ptr is via
 //! `PRIMITIVES_TABLE`'s GOT slots.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
-use cranelisp_backend::Code;
-use cranelisp_types::{
-    DefKind, JitSymbol, ModuleEntry, ModuleFullPath, PrimitiveKind, Scheme, SymbolTable,
-    Visibility,
-};
+use cranelisp_types::{DefKind, ModuleEntry, ModuleFullPath, Scheme, SymbolTable};
 
 pub mod bool;
 pub mod float;
@@ -71,32 +83,34 @@ use operator::{PrimitiveDef, ring0_primitives, ring1_primitives, ring3_primitive
 /// The synthetic `primitives` module's statically-constructed symbol table
 /// and GOT.
 ///
-/// Per Decision 0048 §"Shape": `LazyLock<Arc<SymbolTable<Code, ()>>>`. The
-/// `Arc` outer is what CompilerSession Arc-clones into `session.symbol_tables`
-/// at init — one Arc-share per session, all pointing at the same static
-/// `SymbolTable`. The inner `Arc<GotTable>` (via `SymbolTable.got`) is
-/// likewise process-static; all sessions read fn ptrs through the same
-/// atomic slots.
+/// Per Decision 0048 (A2 reversed, S73): `LazyLock<Arc<SymbolTable<(), ()>>>`.
+/// Primitives builds a `()`-flavoured (code-free) table; it never names
+/// `Code`. The `Arc` outer is what CompilerSession Arc-clones into
+/// `session.symbol_tables` at init — `int` then concretizes to `<Code, ()>`
+/// via `into_concrete` at the session mount (S74), preserving the shared
+/// inner `Arc<GotTable>`. That inner GOT (via `SymbolTable.got`) is
+/// process-static; all sessions read fn ptrs through the same atomic slots.
 ///
 /// Population at static-init time: one `ModuleEntry::Def` per primitive in
 /// the union of `ring0_primitives()` + `ring1_primitives()` +
 /// `ring3_primitives()` + the static `vec-len` row. Each entry's `kind`
-/// is `DefKind::Primitive { primitive_kind: PrimitiveKind::Inline,
-/// jit_name: Some(JitSymbol::from(name)) }`; `got_slot: Some(N)` indexes
-/// the GOT. The corresponding `pub(crate) extern "C"` fn's address is
-/// stored at GOT slot N via `table.got.store_slot(N, fn_ptr)`. Every entry
-/// carries `code: Some(Code::Primitive)` per Decision 0048 A2 (revised
-/// 2026-05-17): the marker variant expresses process-static lifecycle.
-/// The (symbol → ptr) mapping is built from a single in-crate harvest of
-/// every `#[unsafe(export_name)]` extern fn across the submodules — see
+/// is the payload-free `DefKind::Primitive` unit variant (S69 Submission 36 —
+/// the JIT linker name IS the symbol-table key, no `jit_name` field, no
+/// `primitive_kind` sub-discriminator); `got_slot: Some(N)` indexes the GOT.
+/// The corresponding `pub(crate) extern "C"` fn's address is stored at GOT
+/// slot N via `table.got.store_slot(N, fn_ptr)`. Every entry carries
+/// `code: None` (the `ModuleEntry::def(..).build()` default, FIXME 0244):
+/// primitive-ness is read from `kind`, never from `code`. The (symbol → ptr)
+/// mapping is built from a single in-crate harvest of every
+/// `#[unsafe(export_name)]` extern fn across the submodules — see
 /// `extern_shims()` below.
-pub static PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<Code, ()>>> =
+pub static PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<(), ()>>> =
     LazyLock::new(|| Arc::new(build_primitives_table()));
 
-/// Build the populated `SymbolTable<Code, ()>` returned (wrapped in `Arc`)
+/// Build the populated `SymbolTable<(), ()>` returned (wrapped in `Arc`)
 /// from the `LazyLock` initialiser.
-fn build_primitives_table() -> SymbolTable<Code, ()> {
-    let mut table = SymbolTable::<Code, ()>::new_with_params(ModuleFullPath::from("primitives"));
+fn build_primitives_table() -> SymbolTable<(), ()> {
+    let mut table = SymbolTable::<(), ()>::new_with_params(ModuleFullPath::from("primitives"));
     let shims = extern_shims();
 
     // Union the three primitive registries from `cranelisp-types`.
@@ -119,9 +133,10 @@ fn build_primitives_table() -> SymbolTable<Code, ()> {
 
 /// Insert one `PrimitiveDef` into the table: allocate a GOT slot, store the
 /// extern fn's address at that slot (when present in the shim harvest),
-/// insert the `ModuleEntry::Def` with `code: Some(Code::Primitive)`.
+/// insert the `ModuleEntry::Def` with `kind: DefKind::Primitive` (and the
+/// builder default `code: None`).
 fn insert_primitive_entry(
-    table: &mut SymbolTable<Code, ()>,
+    table: &mut SymbolTable<(), ()>,
     prim: &PrimitiveDef,
     shims: &HashMap<&'static str, *const u8>,
 ) {
@@ -130,27 +145,16 @@ fn insert_primitive_entry(
         table.got.store_slot(slot, *ptr);
     }
     let scheme = Scheme {
-        vars: Vec::new(),
+        type_vars: Vec::new(),
         constraints: HashMap::new(),
         ty: prim.ty.clone(),
     };
     table.insert(
         prim.name.clone(),
-        ModuleEntry::Def {
-            scheme,
-            visibility: Visibility::Public,
-            docstring: None,
-            param_names: prim.param_names.clone(),
-            kind: Box::new(DefKind::Primitive {
-                primitive_kind: PrimitiveKind::Inline,
-                jit_name: Some(JitSymbol::from(prim.name.as_ref())),
-            }),
-            callees: Vec::new(),
-            got_slot: Some(slot),
-            trait_origin: None,
-            ast: None,
-            code: Some(Code::Primitive),
-        },
+        ModuleEntry::def(scheme, DefKind::Primitive)
+            .param_names(prim.param_names.clone())
+            .got_slot(slot)
+            .build(),
     );
 }
 
@@ -158,7 +162,7 @@ fn insert_primitive_entry(
 /// query family lives outside the ring tables in
 /// `facades/primitives.md` §"Vec query".
 fn insert_vec_len_entry(
-    table: &mut SymbolTable<Code, ()>,
+    table: &mut SymbolTable<(), ()>,
     shims: &HashMap<&'static str, *const u8>,
 ) {
     use cranelisp_types::{Symbol, Type};
@@ -170,27 +174,16 @@ fn insert_vec_len_entry(
     // type is `(Fn [(Vec a)] Int)`; the primitive-table boundary erases
     // the Vec to its i64 base-ptr ABI per Decision 11.
     let scheme = Scheme {
-        vars: Vec::new(),
+        type_vars: Vec::new(),
         constraints: HashMap::new(),
         ty: Type::Fn(vec![Type::Int], Box::new(Type::Int)),
     };
     table.insert(
         Symbol::from("vec-len"),
-        ModuleEntry::Def {
-            scheme,
-            visibility: Visibility::Public,
-            docstring: None,
-            param_names: vec![Symbol::from("v")],
-            kind: Box::new(DefKind::Primitive {
-                primitive_kind: PrimitiveKind::Inline,
-                jit_name: Some(JitSymbol::from("vec-len")),
-            }),
-            callees: Vec::new(),
-            got_slot: Some(slot),
-            trait_origin: None,
-            ast: None,
-            code: Some(Code::Primitive),
-        },
+        ModuleEntry::def(scheme, DefKind::Primitive)
+            .param_names(vec![Symbol::from("v")])
+            .got_slot(slot)
+            .build(),
     );
 }
 
@@ -332,21 +325,26 @@ mod tests {
     }
 
     #[test]
-    fn every_entry_carries_code_primitive_marker() {
-        // Decision 0048 §"Shape" (S68 Phase 3 amendment, 2026-05-17 user
-        // revision) — every primitives `ModuleEntry::Def.code` MUST be
-        // `Some(Code::Primitive)`. The marker variant expresses the
-        // process-static lifecycle category at every match site over
-        // `Code`; it carries no payload (Decision 35 invariant preserved —
-        // the GOT remains the single source of truth for the `*const u8`).
+    fn every_entry_is_def_kind_primitive() {
+        // Decision 0048 (A2 reversed, FIXME 0244, 2026-05-31) — primitive-ness
+        // is read from `kind: DefKind::Primitive` (the canonical fact), NOT
+        // from `code`. Every entry carries the payload-free `DefKind::Primitive`
+        // unit variant, and `code: None` (the `ModuleEntry::def(..).build()`
+        // builder default; there is no `Code::Primitive` marker). The GOT
+        // remains the single source of truth for the `*const u8` (Decision 35).
         for (name, entry) in PRIMITIVES_TABLE.symbols.iter() {
-            let ModuleEntry::Def { code, .. } = entry else {
+            let ModuleEntry::Def { kind, code, .. } = entry else {
                 panic!("entry {name} should be a Def");
             };
             assert!(
-                matches!(code, Some(Code::Primitive)),
-                "entry {name} must carry Code::Primitive; got {:?}",
-                code
+                matches!(**kind, DefKind::Primitive),
+                "entry {name} must carry DefKind::Primitive; got {kind:?}"
+            );
+            // Belt-and-suspenders: `code` is the builder default `None`
+            // (no spec contract — `kind` is authoritative).
+            assert!(
+                code.is_none(),
+                "entry {name} must carry code: None; got {code:?}"
             );
         }
     }
@@ -371,24 +369,178 @@ mod tests {
         }
     }
 
-    #[test]
-    fn not_primitive_present_and_callable() {
-        // Decision 0048 (C1) + spec/appendix-a-builtins.md §A.3.
+    // -----------------------------------------------------------------------
+    // Content harness (deliverable C(a)) — assert the spec contract
+    // (`spec/appendix-a-builtins.md` §A.2/§A.3/§A.5) against each inserted
+    // table entry. Parity-iterate the `ring{0,1,3}_primitives()` builders
+    // (the constructor input) so the harness checks the insert path round-trips
+    // builder input → table output, plus an explicit `vec-len` row.
+    // -----------------------------------------------------------------------
+
+    /// Assert one inserted entry against its expected `(ty, param_names)`.
+    fn assert_content_row(name: &str, expected_ty: &cranelisp_types::Type, expected_params: &[&str]) {
         let entry = PRIMITIVES_TABLE
-            .get("not")
-            .expect("`not` must be a primitives entry");
+            .get(name)
+            .unwrap_or_else(|| panic!("missing PRIMITIVES_TABLE entry for {name}"));
+        let ModuleEntry::Def {
+            scheme,
+            param_names,
+            got_slot,
+            kind,
+            ..
+        } = entry
+        else {
+            panic!("entry {name} should be a Def");
+        };
+        // scheme.ty is the boundary Type::Fn per spec §A.3.
+        assert_eq!(&scheme.ty, expected_ty, "scheme.ty mismatch for {name}");
+        // param_names match the spec contract.
+        let actual: Vec<&str> = param_names.iter().map(|p| p.as_ref()).collect();
+        assert_eq!(actual.as_slice(), expected_params, "param_names mismatch for {name}");
+        // got_slot is allocated.
+        assert!(got_slot.is_some(), "entry {name} missing got_slot");
+        // kind is the primitive discriminator.
+        assert!(matches!(**kind, DefKind::Primitive), "entry {name} kind != Primitive");
+        // jit_name IS the symbol-table key (S69 Submission 36) — pinned by the
+        // successful `.get(name)` lookup above.
+    }
+
+    #[test]
+    fn content_harness_ring_builders_round_trip() {
+        // Parity check: every `PrimitiveDef` from the three ring builders
+        // round-trips through the inserted `ModuleEntry::Def` — its
+        // (name, ty, param_names) match the table entry. Catches insert-path
+        // regressions (the builder is the source of the spec contract).
+        let mut count = 0usize;
+        for prim in ring0_primitives()
+            .into_iter()
+            .chain(ring1_primitives())
+            .chain(ring3_primitives())
+        {
+            let params: Vec<&str> = prim.param_names.iter().map(|p| p.as_ref()).collect();
+            assert_content_row(prim.name.as_ref(), &prim.ty, &params);
+            count += 1;
+        }
+        // Sanity: the union is non-trivial (guards against an empty iterator
+        // silently passing the loop).
+        assert!(count >= 30, "expected >=30 ring-builder rows, got {count}");
+    }
+
+    #[test]
+    fn content_harness_vec_len_row() {
+        use cranelisp_types::Type;
+        // `vec-len` is not in any ring builder — explicit row. Boundary scheme
+        // is `(Fn [Int] Int)` (Vec erased to its i64 base-ptr ABI, Decision 11),
+        // NOT the user-source `(Fn [(Vec a)] Int)`.
+        assert_content_row(
+            "vec-len",
+            &Type::Fn(vec![Type::Int], Box::new(Type::Int)),
+            &["v"],
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Behavioural harness (deliverable C(b)) — transmute-and-invoke the 20
+    // PURE scalar ops (ring0 i64/f64 arithmetic+comparison, eq-bool, not)
+    // against known I/O pairs. Heap/allocator-coupled ops are EXCLUDED (they
+    // stay e2e / in string.rs + vec.rs module-local tests).
+    // -----------------------------------------------------------------------
+
+    /// Load the GOT-slot fn ptr for a primitive, asserting it is populated.
+    fn slot_ptr(name: &str) -> *const u8 {
+        let entry = PRIMITIVES_TABLE
+            .get(name)
+            .unwrap_or_else(|| panic!("missing entry for {name}"));
         let ModuleEntry::Def { got_slot: Some(slot), .. } = entry else {
-            panic!("`not` must be a Def with got_slot");
+            panic!("{name} must be a Def with got_slot");
         };
         let ptr = PRIMITIVES_TABLE.got.load_slot(*slot);
-        assert!(!ptr.is_null(), "`not` GOT slot is null");
-        // SAFETY: `ptr` was just loaded from a slot populated by
-        // `extern_shims()` with `ring0::not as *const u8`. The shim's
-        // signature is `extern "C" fn(i64) -> i64`. We transmute back.
-        let not_fn: extern "C" fn(i64) -> i64 =
-            unsafe { std::mem::transmute(ptr) };
-        assert_eq!(not_fn(0), 1, "(not false) = true");
-        assert_eq!(not_fn(1), 0, "(not true) = false");
+        assert!(!ptr.is_null(), "GOT slot for {name} is null");
+        ptr
+    }
+
+    /// Invoke an `(i64, i64) -> i64` primitive by name.
+    fn call_i64_i64(name: &str, a: i64, b: i64) -> i64 {
+        // SAFETY: ptr is loaded from the GOT slot populated by extern_shims()
+        // with the matching `extern "C" fn(i64, i64) -> i64`; we transmute back.
+        let f: extern "C" fn(i64, i64) -> i64 = unsafe { std::mem::transmute(slot_ptr(name)) };
+        f(a, b)
+    }
+
+    /// Invoke a `(i64) -> i64` primitive by name.
+    fn call_i64(name: &str, a: i64) -> i64 {
+        // SAFETY: as above, for `extern "C" fn(i64) -> i64`.
+        let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(slot_ptr(name)) };
+        f(a)
+    }
+
+    /// Invoke an `(f64, f64) -> f64` primitive by name (f64-bits ABI, Decision 10).
+    fn call_f64_f64(name: &str, a: f64, b: f64) -> f64 {
+        f64::from_bits(call_i64_i64(name, a.to_bits() as i64, b.to_bits() as i64) as u64)
+    }
+
+    /// Invoke an `(f64, f64) -> i64` comparison primitive (0/1).
+    fn call_f64_cmp(name: &str, a: f64, b: f64) -> i64 {
+        call_i64_i64(name, a.to_bits() as i64, b.to_bits() as i64)
+    }
+
+    #[test]
+    fn behavioural_ring0_int_arithmetic() {
+        // spec: appendix-a-builtins §A.2 — int arithmetic.
+        assert_eq!(call_i64_i64("add-i64", 2, 3), 5);
+        assert_eq!(call_i64_i64("sub-i64", 7, 4), 3);
+        assert_eq!(call_i64_i64("mul-i64", 6, 7), 42);
+        // div-i64: only the non-zero happy path here (div-by-zero panic path
+        // is e2e — couples to the intrinsics thread-local error slot).
+        assert_eq!(call_i64_i64("div-i64", 6, 2), 3);
+    }
+
+    #[test]
+    fn behavioural_ring0_int_comparison() {
+        // spec: appendix-a-builtins §A.2 — int comparison (0/1).
+        assert_eq!(call_i64_i64("eq-i64", 3, 3), 1);
+        assert_eq!(call_i64_i64("eq-i64", 3, 4), 0);
+        assert_eq!(call_i64_i64("lt-i64", 2, 3), 1);
+        assert_eq!(call_i64_i64("lt-i64", 3, 2), 0);
+        assert_eq!(call_i64_i64("gt-i64", 3, 2), 1);
+        assert_eq!(call_i64_i64("gt-i64", 2, 3), 0);
+        assert_eq!(call_i64_i64("le-i64", 3, 3), 1);
+        assert_eq!(call_i64_i64("le-i64", 4, 3), 0);
+        assert_eq!(call_i64_i64("ge-i64", 3, 3), 1);
+        assert_eq!(call_i64_i64("ge-i64", 2, 3), 0);
+    }
+
+    #[test]
+    fn behavioural_ring0_float_arithmetic() {
+        // spec: appendix-a-builtins §A.2 — float arithmetic (f64-bits ABI).
+        assert_eq!(call_f64_f64("add-f64", 1.5, 2.5), 4.0);
+        assert_eq!(call_f64_f64("sub-f64", 5.0, 1.5), 3.5);
+        assert_eq!(call_f64_f64("mul-f64", 2.0, 3.5), 7.0);
+        assert_eq!(call_f64_f64("div-f64", 9.0, 3.0), 3.0);
+    }
+
+    #[test]
+    fn behavioural_ring0_float_comparison() {
+        // spec: appendix-a-builtins §A.2 — float comparison (0/1).
+        assert_eq!(call_f64_cmp("eq-f64", 1.5, 1.5), 1);
+        assert_eq!(call_f64_cmp("eq-f64", 1.5, 2.5), 0);
+        assert_eq!(call_f64_cmp("lt-f64", 1.0, 2.0), 1);
+        assert_eq!(call_f64_cmp("lt-f64", 2.0, 1.0), 0);
+        assert_eq!(call_f64_cmp("gt-f64", 2.0, 1.0), 1);
+        assert_eq!(call_f64_cmp("gt-f64", 1.0, 2.0), 0);
+        assert_eq!(call_f64_cmp("le-f64", 1.5, 1.5), 1);
+        assert_eq!(call_f64_cmp("le-f64", 2.0, 1.5), 0);
+        assert_eq!(call_f64_cmp("ge-f64", 1.5, 1.5), 1);
+        assert_eq!(call_f64_cmp("ge-f64", 1.0, 1.5), 0);
+    }
+
+    #[test]
+    fn behavioural_ring0_boolean() {
+        // spec: appendix-a-builtins §A.3 — not (Decision 0048 C1) + eq-bool.
+        assert_eq!(call_i64("not", 0), 1, "(not false) = true");
+        assert_eq!(call_i64("not", 1), 0, "(not true) = false");
+        assert_eq!(call_i64_i64("eq-bool", 1, 1), 1);
+        assert_eq!(call_i64_i64("eq-bool", 1, 0), 0);
     }
 
     #[test]

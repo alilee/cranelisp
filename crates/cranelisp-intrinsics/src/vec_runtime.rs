@@ -31,13 +31,25 @@ use crate::alloc as heap_alloc_mod;
 // ---------------------------------------------------------------------------
 
 /// Offset of `len` field from base pointer.
-pub(crate) const LEN_OFFSET: usize = 16;
+///
+/// Blessed public-ABI contract (FIXME 0245): `cranelisp-primitives` reads this.
+pub const LEN_OFFSET: usize = 16;
 /// Offset of `cap` field from base pointer.
-pub(crate) const CAP_OFFSET: usize = 24;
+///
+/// Blessed public-ABI contract (FIXME 0245): `cranelisp-primitives` reads this.
+pub const CAP_OFFSET: usize = 24;
 /// Offset of `data_ptr` field from base pointer.
-pub(crate) const DATA_PTR_OFFSET: usize = 32;
+///
+/// Blessed public-ABI contract (FIXME 0245): `cranelisp-primitives` reads this.
+pub const DATA_PTR_OFFSET: usize = 32;
 /// Payload size after HeapHeader: len + cap + data_ptr = 24 bytes.
 const VEC_PAYLOAD_SIZE: usize = 24;
+
+// Single-source guard: lock the blessed layout-ABI offsets (FIXME 0245).
+// Future drift in these values fails the build.
+const _: () = assert!(LEN_OFFSET == 16);
+const _: () = assert!(CAP_OFFSET == 24);
+const _: () = assert!(DATA_PTR_OFFSET == 32);
 
 // ---------------------------------------------------------------------------
 // Internal helpers
