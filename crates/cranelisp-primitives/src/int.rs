@@ -1,8 +1,8 @@
 //! Integer conversion primitives — user-callable.
 //!
-//! Per Decision 43 + `design/arch/facades/primitives.md`: kebab-case JIT
-//! names (`int-to-string`, `parse-int`), registered in the synthetic
-//! `primitives` module's symbol table; user-addressable.
+//! Per Decision 43 (see the crate-root `//!` and `bounded-contexts.md` §4a):
+//! kebab-case JIT names (`int-to-string`, `parse-int`), registered in the
+//! synthetic `primitives` module's symbol table; user-addressable.
 //!
 //! Wave 3b-2d.2b lifted the bodies from
 //! `cranelisp-runtime/src/primitives/int.rs` into this crate. The

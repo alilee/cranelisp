@@ -7,9 +7,10 @@
 //! Tag constants are imported from `cranelisp_types::marshal` (single source
 //! of truth). See that module for constructor order documentation.
 //!
-//! Per Decision 43 + `design/arch/facades/primitives.md`: these are
-//! user-callable primitives (kebab-case JIT names `sconcat` / `quote-sexp`,
-//! registered in the synthetic `primitives` module's symbol table). Wave
+//! Per Decision 43 (see the crate-root `//!` and `bounded-contexts.md` §4a):
+//! these are user-callable primitives (kebab-case JIT names `sconcat` /
+//! `quote-sexp`, registered in the synthetic `primitives` module's symbol
+//! table). Wave
 //! 3b-2d.2b lifted the bodies from `cranelisp-runtime/src/marshal.rs` into
 //! this crate; `cranelisp-runtime` keeps a thin re-export shim until that
 //! crate retires per FIXME 0150 Phase 5.

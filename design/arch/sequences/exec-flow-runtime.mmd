@@ -5,7 +5,7 @@ sequenceDiagram
     participant Trampoline as Trampoline<br/>::session_v4::CompilerSession::trampoline
     participant IoObs as IoObserver<br/>cranelisp_intrinsics::register_io_observer<br/>(extension point — consumer state in src::io_trace)
 
-    Note over Caller, IoObs: † marks proposed/target API not yet in current code.<br/>Receiver is implicit in the lifeline.<br/>Runtime cadence begins when JIT'd user code starts executing — ends when the trampoline returns to the caller.<br/>Per Decision 43 the running-program substrate is split across cranelisp-primitives (user-callable) and cranelisp-intrinsics (backend-emitted-call targets shown below).<br/>Compilation internals (typecheck, codegen) delegated to exec-flow-compilation.<br/>IoObserver registration (extension point per facades/intrinsics.md §"IO observation") happens once at session init from int when REPL/trace mode or CRANELISP_IO_TRACE=1 is active. Production batch: no observer registered, one relaxed null-check load per emit site.
+    Note over Caller, IoObs: † marks proposed/target API not yet in current code.<br/>Receiver is implicit in the lifeline.<br/>Runtime cadence begins when JIT'd user code starts executing — ends when the trampoline returns to the caller.<br/>Per Decision 43 the running-program substrate is split across cranelisp-primitives (user-callable) and cranelisp-intrinsics (backend-emitted-call targets shown below).<br/>Compilation internals (typecheck, codegen) delegated to exec-flow-compilation.<br/>IoObserver registration (extension point per bounded-contexts.md §4b + cranelisp-intrinsics io_observer rustdoc, facades/intrinsics.md retired S74 W3) happens once at session init from int when REPL/trace mode or CRANELISP_IO_TRACE=1 is active. Production batch: no observer registered, one relaxed null-check load per emit site.
 
     rect rgb(245, 230, 255)
         Note over Caller, Trampoline: ENTRY — caller invokes the trampoline with a code pointer + expected type<br/>(code_ptr was obtained from ST[m].get(sym).code.ptr() or from a per-eval JITModule)
@@ -67,7 +67,7 @@ sequenceDiagram
             Trampoline ->> IORuntime: cranelisp_intrinsics::cranelisp_run_io(io_root_ptr: i64) -> i64
             Note over IORuntime: reduces the IO tree node-by-node, consuming each outer allocation via rc::dec_shallow_io (per Decision 29)
             opt IoObserver registered (relaxed-load null check)
-                Note over IORuntime, IoObs: extension-point emit on trampoline entry — facades/intrinsics.md §"IO observation"
+                Note over IORuntime, IoObs: extension-point emit on trampoline entry — bounded-contexts.md §4b + cranelisp-intrinsics io_observer rustdoc
                 IORuntime ->> IoObs: IoObserver(IoEventTag::TrampolineEnter, &IoEvent { /* root payload */ })
             end
 

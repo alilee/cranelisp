@@ -129,8 +129,8 @@ pub fn consume_slist(mut ptr: i64) {
 /// - SexpInt/Float/Bool (tags 0/1/2): no heap sub-refs.
 /// - SexpStr (tag 3): field0 is a String heap pointer.
 /// - SexpSym (tag 4): field0 is a String heap pointer (the symbol name).
-/// - SexpList (tag 5): field0 is an SList<Sexp>.
-/// - SexpBracket (tag 6): field0 is an SList<Sexp>.
+/// - SexpList (tag 5): field0 is an `SList<Sexp>`.
+/// - SexpBracket (tag 6): field0 is an `SList<Sexp>`.
 ///
 /// # Safety
 /// `ptr` must be a valid Sexp heap pointer (rc > 0) or a bare nullary tag.

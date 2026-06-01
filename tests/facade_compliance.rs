@@ -1,13 +1,64 @@
-// facade_compliance.rs — Sprint 67 Wave 0 (/qa primary deliverable).
+// facade_compliance.rs — Sprint 67 Wave 0 (/qa primary deliverable);
+// re-anchored Sprint 74 Wave 4 (/qa), then SIMPLIFIED later in W4 (/qa).
+//
+// **One check, one contract.** This file holds the mechanical drift
+// detector between as-built (each crate's `public-api.txt` baseline) and
+// as-designed, FOR CRATES THAT STILL HAVE A BINDING FACADE `.md`. That is
+// its entire job: for each such crate, assert every public-api baseline
+// item is named somewhere in the facade (an orphan check).
+//
+// **Facade-compliance applies only to crates with a binding facade.** As of
+// Sprint 74, SIX of the original eight facades have been RETIRED and their
+// `.md` files deleted:
+//
+//   types.md      retired S69 (FIXME 0218)
+//   frontend.md   retired S70 W4
+//   platform.md   retired S71 W4
+//   typecheck.md  retired S72
+//   intrinsics.md retired S74 W3
+//   primitives.md retired S74 W3
+//
+// For those six crates there is **nothing for a facade-compliance test to
+// check**. Once a facade is retired the crate's public surface is DEFINED by
+// its source: the `public-api.txt` baseline (the `cargo public-api` record)
+// plus the compiler ARE the definition and the guard. There is no longer a
+// facade `.md` to comply WITH, so asserting "the crate documents itself"
+// would just be restating the code — not a contract check. Source rustdoc on
+// those crates carries rationale (why the code is shaped as it is), not a
+// restatement of the surface; it is intentionally NOT asserted here. The
+// cross-type design narrative for the retired crates lives in
+// `design/arch/bounded-contexts.md` (§7 types, §1 frontend, §5 platform,
+// §4a primitives, §4b intrinsics).
+//
+// Therefore the six retired crates are **intentionally absent from this
+// test entirely** — they are not moved to a different check; they drop out.
+//
+// Only the still-binding facades remain in scope here:
+//
+//   backend.md + backend-cache.md (sub-facade per REV-1)
+//   int.md  — covered by the separate `int_facade_*` tests in this dir
+//             (e.g. `tests/facade_pif_rows.rs`); `int` is a binary crate with
+//             no `public-api.txt`, so it is not part of THIS file's
+//             pub-api↔facade grep check.
+//
+// So the only crate exercised by this file's grep check is `cranelisp-backend`.
+//
+// **Why this file was latently broken before S74.** The S67 `facade_pairs()`
+// listed all eight crates and read each facade `.md` with panic-on-missing.
+// As each facade retired (S69–S74), its slice began panicking on the now-
+// deleted file. This stayed masked because `tests/` integration targets
+// link the root `cranelisp` binary, and that binary has been RED (backend
+// cascade) across these sprints — so the test never compiled/ran to expose
+// the panic. The S74 W4 re-anchor removed the dependency on the six deleted
+// `.md` files; this file is pure `std::fs` and references no retired facade.
+//
+// =============================================================================
+// Facade text compliance (binding facades only)
+// =============================================================================
 //
 // **Failing-not-ignored by design.** Per `memory/feedback_failing_not_ignored.md`
-// and `sprints/SPRINT.md §"Enforcement mechanism"`, this test is the
-// mechanical drift detector between as-built (each crate's
-// `public-api.txt` baseline) and as-designed (each crate's `facades/{crate}.md`).
-// At S67 Wave 0 open, ~45 PFR/PIF rows have been dispositioned by /arch
-// (sprint table 116–162); orphan items in the pub-api baseline are the
-// expected failure surface. The test should FAIL TODAY and flip GREEN
-// as /design (Wave 1) + /dev (Waves 2–4) reconcile each crate's drift.
+// and `sprints/SPRINT.md §"Enforcement mechanism"`, this is the drift
+// detector between each binding facade and its crate's `public-api.txt`.
 //
 // **Mechanism (Option A — text grep).** For each (crate baseline, facade
 // document) pair, extract the leaf "name" from every `pub …` line in the
@@ -36,24 +87,9 @@
 // type aliases, constants, and trait declarations — the surface that
 // the facade SHOULD enumerate.
 //
-// **Per-crate facade pairs** (per SPRINT.md "Cover the 8 facade↔baseline pairs"):
-//   types       → facades/types.md (retired S69; crate-root rustdoc + bounded-contexts.md §7)
-//   frontend    → facades/frontend.md (retired S70 W4; crate-root rustdoc + bounded-contexts.md §1)
-//   typecheck   → facades/typecheck.md
-//   backend     → facades/backend.md + facades/backend-cache.md (sub-facade)
-//   primitives  → facades/primitives.md
-//   intrinsics  → facades/intrinsics.md
-//   platform    → facades/platform.md (retired S71 W4; crate-root rustdoc + bounded-contexts.md §5)
-// `int` (binary crate) has no `public-api.txt` and is skipped here;
-// `int` surface is covered by separate integration tests below
-// (`int_facade_*` files in this directory).
-//
 // spec: design/arch/CLAUDE.md §"Baseline-diff discipline" — every
 // edge change must update both the pub-api baseline and the facade in
 // the same change-set; this test enforces the second half.
-// FIXME(/dev — every crate's PFR/PIF resolution in S67 Waves 1–4 must
-// either name the item in the facade or mark it internal-but-exposed
-// with rationale).
 
 #![allow(dead_code)]
 
@@ -65,20 +101,25 @@ fn workspace_root() -> PathBuf {
 }
 
 /// (crate-name, pub-api filename, [facade markdown files that together cover it])
+/// — only the still-binding facades. The six retired crates
+/// (types/frontend/platform/typecheck/intrinsics/primitives) are intentionally
+/// absent: their facade `.md` is gone, so source IS their canonical surface,
+/// guarded by `public-api.txt` + the compiler, with rustdoc carrying rationale.
+/// There is nothing for a facade-compliance test to check on a retired-facade
+/// crate, so they drop out of this test entirely (they are not moved to a
+/// different check).
 fn facade_pairs() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
     vec![
-        ("cranelisp-types", "cranelisp-types", vec!["types.md"]),
-        ("cranelisp-frontend", "cranelisp-frontend", vec!["frontend.md"]),
-        ("cranelisp-typecheck", "cranelisp-typecheck", vec!["typecheck.md"]),
         // backend split across two facade files (cache sub-facade per REV-1):
         (
             "cranelisp-backend",
             "cranelisp-backend",
             vec!["backend.md", "backend-cache.md"],
         ),
-        ("cranelisp-primitives", "cranelisp-primitives", vec!["primitives.md"]),
-        ("cranelisp-intrinsics", "cranelisp-intrinsics", vec!["intrinsics.md"]),
-        ("cranelisp-platform", "cranelisp-platform", vec!["platform.md"]),
+        // `int` (binary crate) has no `public-api.txt`, so it is not part of
+        // the pub-api↔facade grep check; `int.md` remains binding and is
+        // covered by separate `int_facade_*` integration tests in this dir
+        // (e.g. `tests/facade_pif_rows.rs`).
     ]
 }
 
@@ -240,6 +281,10 @@ fn name_blacklist() -> &'static [&'static str] {
     ]
 }
 
+// =============================================================================
+// Facade text compliance for the still-binding facades.
+// =============================================================================
+
 #[test]
 fn facade_compliance_orphans_match_expected_sprint_67_baseline() {
     let root = workspace_root();
@@ -294,8 +339,10 @@ fn facade_compliance_orphans_match_expected_sprint_67_baseline() {
     // and /dev can attack them by crate.
     let mut msg = format!(
         "Facade compliance: {} pub-api items NOT named in their facade.\n\
-         Sprint 67 Wave 0 baseline — expected to fail; /design (Wave 1) \
-         and /dev (Waves 2–4) close the gap.\n\n",
+         Binding facades checked here: backend.md + backend-cache.md. The six \
+         retired-facade crates (types/frontend/platform/typecheck/intrinsics/\
+         primitives) are intentionally absent — source is their canonical \
+         surface, so there is nothing for a facade-compliance test to check.\n\n",
         total_orphans
     );
     for (crate_name, orphans) in &orphans_per_crate {
@@ -315,7 +362,7 @@ fn facade_compliance_orphans_match_expected_sprint_67_baseline() {
         }
     }
 
-    // Failing-not-ignored. Total orphan count is the sprint progress
-    // metric. Test passes when total_orphans == 0 (Wave 6 close gate).
+    // Failing-not-ignored. Total orphan count is the drift metric for the
+    // still-binding facades. Test passes when total_orphans == 0.
     assert_eq!(total_orphans, 0, "{msg}");
 }

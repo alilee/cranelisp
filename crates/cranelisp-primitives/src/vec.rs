@@ -1,17 +1,18 @@
 //! User-callable Vec primitives — primitives-surface presentation.
 //!
-//! Per Decision 43 + `design/arch/facades/primitives.md`: `vec-len` is the
-//! kebab-case, user-addressable Vec read accessor. The Vec runtime helpers
-//! (`vec_new`, `vec_drop`, `vec_set_copy`, `vec_push_copy`, `vec_push_grow`)
-//! live in `cranelisp-intrinsics::vec_runtime` — they are backend-emitted-call
-//! targets, not user-callable from source.
+//! `vec-len` is the kebab-case, user-addressable Vec read accessor. The Vec
+//! runtime helpers (`vec_new`, `vec_drop`, `vec_set_copy`, `vec_push_copy`,
+//! `vec_push_grow`) live in `cranelisp-intrinsics::vec_runtime` — they are
+//! backend-emitted-call targets, not user-callable from source.
 //!
-//! ## FIXME 0180 / 0245 close (S67 Wave 3 relocation; S73 layout dedup)
+//! ## Vec heap-layout offset — single source of truth
 //!
 //! `vec_len` physically lives here; no re-export from intrinsics. The Vec
-//! heap-layout offset is sourced exclusively from `cranelisp-intrinsics`'
-//! blessed public layout ABI (`vec_runtime::LEN_OFFSET`, FIXME 0245) — no
-//! local copy. Single source of truth (Principle 7).
+//! heap-layout offset is sourced exclusively from
+//! [`cranelisp_intrinsics::vec_runtime::LEN_OFFSET`] — intrinsics' blessed
+//! public layout-ABI const (value 16), whose own rustdoc is the canonical
+//! statement of the offset. Primitives holds **no duplicate copy** (single
+//! source of truth, Principle 7).
 
 use cranelisp_intrinsics::vec_runtime::LEN_OFFSET;
 

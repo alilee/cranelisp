@@ -1,12 +1,12 @@
-//! IO observation extension point per Decision 40 / `facades/intrinsics.md`
-//! §"IO observation (extension point)".
+//! IO observation extension point per Decision 40. The contract is carried by
+//! the crate-root `//!` rustdoc + `design/arch/bounded-contexts.md` §4b —
+//! Intrinsics.
 //!
 //! Intrinsics defines the observation taxonomy and a registration API;
 //! all consumer-side state (ring buffers, panic hooks, formatters,
 //! dump-to-stderr, merge-sort) lives in `int`'s `src/io_trace/`. The IO
-//! trampoline (currently in `cranelisp-runtime::io`; moves into this crate
-//! at Wave 3b-2 / FIXME 0150 Phase 2) emits events through the registered
-//! observer via a relaxed-load null check on the hot path.
+//! trampoline (in this crate's [`crate::io`] module) emits events through the
+//! registered observer via a relaxed-load null check on the hot path.
 //!
 //! Production batch (`--link`, non-trace `--run`) does NOT register an
 //! observer and pays one relaxed-load null check per IO call site
@@ -156,9 +156,9 @@ pub fn register_io_observer(observer: Option<IoObserver>) {
 /// instrumented site. When no observer is registered, costs one
 /// `Acquire` load + null check + branch.
 ///
-/// Made `pub` so the trampoline (currently in `cranelisp-runtime::io`,
-/// later relocated into this crate per FIXME 0150 Phase 2) can call it
-/// without going through any indirection.
+/// Kept `pub` so the in-crate IO trampoline (`crate::io`, i.e.
+/// `cranelisp_run_io`) can call it directly on the hot path without
+/// going through any indirection.
 #[inline]
 pub fn emit(tag: IoEventTag, event: &IoEvent) {
     let raw = OBSERVER_SLOT.load(Ordering::Acquire);

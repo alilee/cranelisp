@@ -61,7 +61,7 @@ const _: () = assert!(DATA_PTR_OFFSET == 32);
 /// `base` must point to a valid Vec struct.
 #[inline]
 unsafe fn read_len(base: *const u8) -> i64 {
-    unsafe { *(base.add(LEN_OFFSET) as *const i64) }
+    unsafe { *base.add(LEN_OFFSET).cast::<i64>() }
 }
 
 /// Read the `cap` field from a Vec base pointer.
@@ -70,7 +70,7 @@ unsafe fn read_len(base: *const u8) -> i64 {
 /// `base` must point to a valid Vec struct.
 #[inline]
 unsafe fn read_cap(base: *const u8) -> i64 {
-    unsafe { *(base.add(CAP_OFFSET) as *const i64) }
+    unsafe { *base.add(CAP_OFFSET).cast::<i64>() }
 }
 
 /// Read the `data_ptr` field from a Vec base pointer.
@@ -79,25 +79,25 @@ unsafe fn read_cap(base: *const u8) -> i64 {
 /// `base` must point to a valid Vec struct.
 #[inline]
 unsafe fn read_data_ptr(base: *const u8) -> *mut i64 {
-    unsafe { *(base.add(DATA_PTR_OFFSET) as *const i64) as *mut i64 }
+    unsafe { *base.add(DATA_PTR_OFFSET).cast::<i64>() as *mut i64 }
 }
 
 /// Write the `len` field.
 #[inline]
 unsafe fn write_len(base: *mut u8, len: i64) {
-    unsafe { *(base.add(LEN_OFFSET) as *mut i64) = len; }
+    unsafe { *base.add(LEN_OFFSET).cast::<i64>() = len; }
 }
 
 /// Write the `cap` field.
 #[inline]
 unsafe fn write_cap(base: *mut u8, cap: i64) {
-    unsafe { *(base.add(CAP_OFFSET) as *mut i64) = cap; }
+    unsafe { *base.add(CAP_OFFSET).cast::<i64>() = cap; }
 }
 
 /// Write the `data_ptr` field.
 #[inline]
 unsafe fn write_data_ptr(base: *mut u8, data_ptr: *mut i64) {
-    unsafe { *(base.add(DATA_PTR_OFFSET) as *mut i64) = data_ptr as i64; }
+    unsafe { *base.add(DATA_PTR_OFFSET).cast::<i64>() = data_ptr as i64; }
 }
 
 /// Allocate a data buffer of `cap` elements (each i64 = 8 bytes).
@@ -263,7 +263,7 @@ pub extern "C" fn vec_push_copy(vec: i64, val: i64, elem_inc_fn: i64) -> i64 {
 ///
 /// Called when the Vec is the unique owner (rc==1) but the data buffer is full
 /// (len >= cap). Reallocates the data buffer with doubled capacity (minimum 4),
-/// stores val at data[len], increments len. Returns the same Vec pointer.
+/// stores val at `data[len]`, increments len. Returns the same Vec pointer.
 ///
 /// JIT name: "vec-push-grow" — exported via export_name so link-mode resolves.
 #[unsafe(export_name = "vec-push-grow")]
@@ -534,7 +534,7 @@ mod tests {
         }
 
         let inc_fn_ptr = test_inc_fn as extern "C" fn(i64) -> i64;
-        let v2 = vec_set_copy(v, 1, 99, inc_fn_ptr as i64);
+        let v2 = vec_set_copy(v, 1, 99, inc_fn_ptr as usize as i64);
 
         // inc_fn should have been called for elements at indices 0 and 2 (not 1, the replaced one).
         // Delta-based (>=) because parallel tests share the same INC_CALL_COUNT.
@@ -559,7 +559,7 @@ mod tests {
         }
 
         let inc_fn_ptr = test_inc_fn as extern "C" fn(i64) -> i64;
-        let v2 = vec_push_copy(v, 30, inc_fn_ptr as i64);
+        let v2 = vec_push_copy(v, 30, inc_fn_ptr as usize as i64);
 
         // Delta-based (>=) because parallel tests share the same INC_CALL_COUNT.
         let after = INC_CALL_COUNT.load(std::sync::atomic::Ordering::Relaxed);
@@ -584,7 +584,7 @@ mod tests {
         }
 
         let dec_fn_ptr = test_dec_fn as extern "C" fn(i64) -> i64;
-        vec_drop(v, dec_fn_ptr as i64);
+        vec_drop(v, dec_fn_ptr as usize as i64);
 
         // Delta-based (>=) because parallel tests could share the same DEC_CALL_COUNT.
         let after = DEC_CALL_COUNT.load(std::sync::atomic::Ordering::Relaxed);

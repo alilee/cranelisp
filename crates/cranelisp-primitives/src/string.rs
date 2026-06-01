@@ -1,18 +1,22 @@
 //! User-callable string primitives — primitives-surface presentation.
 //!
-//! Per Decision 43 + `design/arch/facades/primitives.md`: the kebab-case
-//! string operations callable from user code (`str-concat`, `str-eq`,
-//! `substring`, `split`, `to-upper`, …) belong to the **primitives** bounded
-//! context — they are addressable via the synthetic `primitives` module's
-//! symbol table with kebab-case JIT names.
+//! The kebab-case string operations callable from user code (`str-concat`,
+//! `str-eq`, `substring`, `split`, `to-upper`, …) belong to the **primitives**
+//! bounded context — they are addressable via the synthetic `primitives`
+//! module's symbol table with kebab-case JIT names.
 //!
-//! ## FIXME 0180 close (Sprint 67 Wave 3 — physical relocation)
+//! ## Heap-layout offsets — single source of truth
 //!
-//! These bodies physically live here. They reference `HeapString` layout
-//! (owned by `cranelisp-intrinsics::heap_string` — backend-emitted-call
-//! domain) for the heap layout invariants, and the alloc/rc/drop helpers
-//! in `cranelisp-intrinsics::{alloc, rc, drop}` for the consuming-convention
-//! plumbing (Decision 24).
+//! These bodies physically live here. They read heap-layout offsets from
+//! `cranelisp-intrinsics`' blessed public layout ABI — never local copies
+//! (single source of truth, Principle 7): string offsets from
+//! [`cranelisp_intrinsics::heap_string::HeapString::LEN_OFFSET`] and
+//! [`HeapString::DATA_OFFSET`] (whose const rustdoc is the canonical
+//! statement), and the Vec offsets used by `split`/`join` from
+//! [`cranelisp_intrinsics::vec_runtime::LEN_OFFSET`] and
+//! [`cranelisp_intrinsics::vec_runtime::DATA_PTR_OFFSET`]. The alloc/rc/drop
+//! helpers in `cranelisp-intrinsics::{alloc, rc, drop}` carry the
+//! consuming-convention plumbing (Decision 24).
 //!
 //! ## Consuming convention (Decision 24)
 //!
@@ -57,9 +61,10 @@ unsafe fn read_str(base: *const u8) -> &'static str {
 
 // Vec heap-layout offsets (`LEN_OFFSET`, `DATA_PTR_OFFSET`) used by
 // `split` / `join` are sourced from `cranelisp-intrinsics`' blessed public
-// layout ABI (`vec_runtime`, FIXME 0245) — see the `use` above. No local
-// copies (single source of truth, Principle 7). `CAP_OFFSET` is not used here
-// and is deliberately not imported.
+// layout-ABI consts `cranelisp_intrinsics::vec_runtime::{LEN_OFFSET,
+// DATA_PTR_OFFSET}` (whose const rustdoc is the canonical statement) — see the
+// `use` above. No local copies (single source of truth, Principle 7).
+// `CAP_OFFSET` is not used here and is deliberately not imported.
 
 // ---------------------------------------------------------------------------
 // Extern C interface — user-callable string primitives.

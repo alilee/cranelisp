@@ -1,6 +1,7 @@
 //! Cranelisp primitives — user-callable, symbol-table addressable operations.
 //!
-//! Per Decision 43 + Decision 48 + `design/arch/facades/primitives.md`: this
+//! Per Decision 43 + Decision 48 (cross-surface narrative in
+//! `bounded-contexts.md` §4a): this
 //! crate hosts the kebab-case, user-addressable primitives whose JIT names
 //! appear in the synthetic `primitives` module's symbol table (e.g. `add-i64`,
 //! `str-concat`, `vec-len`, `substring`, `int-to-string`, `parse-int`,
@@ -15,18 +16,36 @@
 //! Per Decision 0048 (S68): the public Rust surface is the single static
 //! `PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<(), ()>>>`. The ~22
 //! individual extern fns demote to `pub(crate) extern "C"` carrying
-//! `#[unsafe(export_name = "…")]`. (The facade also prescribes `#[used]`
-//! discipline to prevent DCE in `--link`-mode static archives, but `#[used]`
-//! is not applicable to functions — only statics — so the per-fn attribute is
-//! NOT present; the DCE-anchor mechanism is pending `/arch` re-disposition per
-//! FIXME 0247.) The statically-constructed `Arc<SymbolTable>` is Arc-cloned
-//! into each
+//! `#[unsafe(export_name = "…")]`.
+//!
+//! DCE-survival of those extern fns in `--link`-mode static archives relies on
+//! three existing mechanisms — there is **no `#[used] static` anchor**
+//! (minimum mechanism, Principle 2): (1) the `#[unsafe(export_name = "…")]`
+//! attribute emits the linker symbol into the object/staticlib independent of
+//! the fn's Rust visibility (`pub(crate)` still yields the symbol); (2) the
+//! exe-bundle force-link `LazyLock::force(&PRIMITIVES_TABLE)` at startup
+//! (`cranelisp-exe-bundle/src/lib.rs:75`) is the link anchor that pulls the
+//! static — and therefore the harvested fn addresses — into the binary;
+//! (3) the in-crate `extern_shims()` harvest (below) takes every fn's address
+//! at static-init, so each is referenced from live code. (`#[used]` is
+//! statics-only and does not apply to functions; this Option-2 wording is the
+//! settled disposition.)
+//!
+//! The statically-constructed `Arc<SymbolTable>` is Arc-cloned into each
 //! `CompilerSession` at session init; `int` concretizes the `()`-flavoured
-//! static to `<Code, ()>` at the session mount via `into_concrete` (the
-//! proven cache-restore bridge — preserves the shared `Arc<GotTable>`; the
-//! mount itself is S74, not this crate). From that point on, primitives
-//! dispatch is functionally equivalent to any other module via the standard
-//! cross-module GOT-indirect call sequence. **Primitives never names `Code`.**
+//! static to `<Code, ()>` at the session mount via
+//! `SymbolTable::into_concrete::<Code, ()>()`. This `<(),()>`→`<Code, ()>`
+//! bridge is an **exercised contract today**, not forward work: the
+//! cache-restore hot path calls it explicitly (`session_v4.rs:1363`,
+//! `worker.rs:1917`) and `into_concrete` is defined and tested in
+//! `cranelisp-types` (`module.rs:470`). It maps each `code: Option<()>` to
+//! `None::<Code>` and carries `got: self.got` through unchanged, preserving
+//! the one shared `Arc<GotTable>`. (The primary-mount comment in `int` is
+//! int's to align — FIXME 0242; the rustdoc assertion holds regardless, since
+//! both spellings produce the shared-`Arc<GotTable>` `<Code, ()>` table.) From
+//! that point on, primitives dispatch is functionally equivalent to any other
+//! module via the standard cross-module GOT-indirect call sequence.
+//! **Primitives never names `Code`.**
 //!
 //! ## Lifecycle — `code: None`
 //!
@@ -47,8 +66,9 @@
 //! Because every entry carries `code: None`, primitives never constructs a
 //! `Code` value, builds a `SymbolTable<(), ()>`, and drops `cranelisp-backend`
 //! from its manifest entirely. `int` concretizes via `into_concrete` at the
-//! session mount (S74); type uniformity with the live `SymbolTables<Code, ()>`
-//! map is achieved at the session layer, not at the primitives build. The
+//! session mount (the exercised cache-restore bridge — see §"Public Rust API");
+//! type uniformity with the live `SymbolTables<Code, ()>` map is achieved at
+//! the session layer, not at the primitives build. The
 //! pre-S73 narrative ("the reverse edge … is permitted and required for the
 //! `Code::Primitive` marker") is retired. The workspace DAG enforces the
 //! "primitives reach code via GOT, never via direct extern" invariant
@@ -60,9 +80,20 @@
 //! Per-primitive-category sub-modules (`ring0`, `int`, `float`, `bool`,
 //! `marshal`, `string`, `vec`) keep the source small and focused. Their
 //! `extern "C"` members are `pub(crate)` carrying `#[unsafe(export_name)]`
-//! (the `#[used]` DCE anchor is pending FIXME 0247 — see above); the only way
-//! for a consumer outside the crate to reach a primitive's fn ptr is via
+//! (DCE survival via the export-name symbol + exe-bundle force-link +
+//! `extern_shims()` harvest — see §"Public Rust API"); the only way for a
+//! consumer outside the crate to reach a primitive's fn ptr is via
 //! `PRIMITIVES_TABLE`'s GOT slots.
+//!
+//! Because every extern is `pub(crate)`, the `cargo-public-api` baseline
+//! (`public-api.txt`) is **stable across primitive churn** — adding, renaming,
+//! or deleting a primitive does not change the Rust public surface (the nine
+//! lines: `PRIMITIVES_TABLE` + seven `pub mod` + the crate root). The semantic
+//! surface — which primitives exist and their signatures — is governed by
+//! **spec-conformance tests** (`/qa`, against `spec/appendix-a-builtins.md`
+//! §A.2/§A.3) and the in-crate `operator::ring{0,1,3}_primitives()` builders
+//! (the static-init content harness parity-checks builder → table), NOT by the
+//! Rust baseline.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
@@ -87,8 +118,9 @@ use operator::{PrimitiveDef, ring0_primitives, ring1_primitives, ring3_primitive
 /// Primitives builds a `()`-flavoured (code-free) table; it never names
 /// `Code`. The `Arc` outer is what CompilerSession Arc-clones into
 /// `session.symbol_tables` at init — `int` then concretizes to `<Code, ()>`
-/// via `into_concrete` at the session mount (S74), preserving the shared
-/// inner `Arc<GotTable>`. That inner GOT (via `SymbolTable.got`) is
+/// via `into_concrete` at the session mount (the exercised cache-restore
+/// bridge), preserving the shared inner `Arc<GotTable>`. That inner GOT
+/// (via `SymbolTable.got`) is
 /// process-static; all sessions read fn ptrs through the same atomic slots.
 ///
 /// Population at static-init time: one `ModuleEntry::Def` per primitive in
@@ -124,8 +156,8 @@ fn build_primitives_table() -> SymbolTable<(), ()> {
     }
 
     // `vec-len` is not in any of the three registry fns (it's a vec query
-    // primitive — see `facades/primitives.md` §"Vec query"). Insert it
-    // with a hand-built scheme matching the source signature.
+    // primitive — the Vec query family lives outside the ring tables). Insert
+    // it with a hand-built scheme matching the source signature.
     insert_vec_len_entry(&mut table, &shims);
 
     table
@@ -159,8 +191,7 @@ fn insert_primitive_entry(
 }
 
 /// Insert the `vec-len` entry. Not in `ring{0,1,3}_primitives()` — the Vec
-/// query family lives outside the ring tables in
-/// `facades/primitives.md` §"Vec query".
+/// query family lives outside the ring tables.
 fn insert_vec_len_entry(
     table: &mut SymbolTable<(), ()>,
     shims: &HashMap<&'static str, *const u8>,

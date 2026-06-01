@@ -1,8 +1,8 @@
 //! Float conversion primitives — user-callable.
 //!
-//! Per Decision 43 + `design/arch/facades/primitives.md`: kebab-case JIT
-//! name `float-to-string`; registered in the synthetic `primitives` module's
-//! symbol table. Wave 3b-2d.2b lifted the body from
+//! Per Decision 43 (see the crate-root `//!` and `bounded-contexts.md` §4a):
+//! kebab-case JIT name `float-to-string`; registered in the synthetic
+//! `primitives` module's symbol table. Wave 3b-2d.2b lifted the body from
 //! `cranelisp-runtime/src/primitives/float.rs`.
 
 use cranelisp_intrinsics::heap_string;

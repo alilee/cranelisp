@@ -1,8 +1,8 @@
 # `cranelisp-primitives` — master design
 
-**Status.** ACTIVE — authored S73 Phase 3 by `/design (cranelisp-primitives)` (2026-05-31). This is the per-crate master design doc (`design/{crate}/{crate}.md`) the `/design` role owns; it supersedes the S66 new-crate slice (`design/primitives/implementation-slice-s66.md`, now historical — the crate exists and the migration it scoped has landed) as the forward-looking design home. Cross-references the binding facade `design/arch/facades/primitives.md` (the as-designed public surface, `/arch`-owned) and the two ratified S73 configuration FIXMEs 0244 / 0245.
+**Status.** ACTIVE — authored S73 Phase 3, refreshed S74 Phase 3 by `/design (cranelisp-primitives)` (2026-06-01) for the **6th-data-point facade retirement** (doc-only — primitives' SOURCE was brought to facade-aligned shape in S73; backend severed, builder adopted, layout deduped). This is the per-crate master design doc (`design/{crate}/{crate}.md`) the `/design` role owns; it supersedes the S66 new-crate slice (`design/primitives/implementation-slice-s66.md`, now historical — the crate exists and the migration it scoped has landed) as the forward-looking design home. From S74 close onward the **canonical public surface is the crate-root `//!` + per-item `///` rustdoc** in `crates/cranelisp-primitives/src/lib.rs`; the cross-surface narrative + the 8 bounded-context invariants live in `bounded-contexts.md §4a` (`/arch`-owned). `design/arch/facades/primitives.md` is retired (`git rm` at fold, `/arch`'s action). §8 below scopes the retirement.
 
-**Reads.** `design/arch/facades/primitives.md`; `design/arch/fixmes/{0244,0245}-*.md`; `design/arch/facades/intrinsics.md` §"Heap allocator"/§"Vec runtime layout ABI"; `crates/cranelisp-primitives/src/{lib,operator,string,vec,ring0}.rs`; `crates/cranelisp-types/src/module.rs` (`ModuleEntry::def` builder, `DefKind::Primitive`, `SymbolTable::into_concrete`); `spec/appendix-a-builtins.md` §A.2/§A.3.
+**Reads.** `crates/cranelisp-primitives/src/{lib,operator,string,vec,ring0}.rs` (the canonical surface post-retirement); `design/arch/facades/primitives.md` (retiring this sprint — the fold source); `design/arch/bounded-contexts.md §4a`; `design/arch/fixmes/{0244,0245,0247}-*.md`; `crates/cranelisp-intrinsics/src/{vec_runtime,heap_string}.rs` §layout consts (the consumed blessed-ABI rustdoc the 0245 consumer note points at); `crates/cranelisp-types/src/module.rs` (`ModuleEntry::def` builder, `DefKind::Primitive`, `SymbolTable::into_concrete`); `crates/cranelisp-exe-bundle/src/lib.rs:75` (`LazyLock::force(&PRIMITIVES_TABLE)` force-link anchor); `sprints/SPRINT.md` §"Architecture review (Phase 2)" (Rulings 1/2, Revisions A–D); `spec/appendix-a-builtins.md` §A.2/§A.3.
 
 ---
 
@@ -184,12 +184,14 @@ enum Invoke {
 
 ---
 
-## 4. What this sprint does NOT do (scope boundary)
+> **Note (S74 refresh).** §2–§6 below are the **S73** work record — the source moves that brought the crate to facade-aligned shape (all landed `ef69ede`). They are retained as the design rationale for the current source. The **S74** work is doc-only and is scoped in §8 (facade retirement / rustdoc fold). No §2–§6 source step is re-opened by S74.
+
+## 4. What S73 did NOT do (scope boundary — historical)
 
 - **No `int`-side mount change.** The `into_concrete::<Code, ()>()` session mount (FIXME 0242) is **S74** — `int`-owned. Primitives publishes `<(), ()>`; it does not reach into `int`.
 - **No backend-side cleanup.** Deleting the `Code::Primitive` variant from `crates/cranelisp-backend/src/code.rs` and removing the `cranelisp-primitives` line from backend's `Cargo.toml` (the reverse edge) are a **future backend sprint** (FIXME 0244 §sequencing; FIXME 0191). The primitives-side severance lands this sprint; the backend-side is decoupled by the severance.
 - **No intrinsics audit.** Only the additive `pub const` exposure of the three `vec_runtime` offsets (a `/dev (intrinsics)` step). The full intrinsics per-crate audit (FIXME 0178, extern-signature review, facade retirement) is a separate future sprint.
-- **No facade retirement.** `facades/primitives.md` stays binding (it is the canonical surface this doc cross-references).
+- **No facade retirement (in S73).** `facades/primitives.md` stayed binding through S73. **S74 retires it** (doc-only) — see §8.
 
 ---
 
@@ -213,12 +215,96 @@ None. The construction is fully grounded in the facade + FIXMEs 0244/0245 + comm
 
 ## 7. Cross-references
 
-- `design/arch/facades/primitives.md` — binding facade (as-designed public surface)
-- `design/arch/facades/intrinsics.md` §"Heap allocator"/§"Vec runtime layout ABI" — the consumed layout-ABI contract
-- `design/arch/fixmes/0244-*.md` — `code: None`; primitive-ness from `kind` (deliverable B config)
-- `design/arch/fixmes/0245-*.md` — heap-layout = intrinsics' blessed public ABI (deliverable E config)
-- `design/arch/fixmes/0246-*.md` — (filed this Phase) stale `DefKind::Primitive` payload in facade
+- `design/arch/facades/primitives.md` — fold source (RETIRING S74; canonical surface becomes the crate-root `//!` + per-item `///` rustdoc)
+- `design/arch/bounded-contexts.md §4a` — cross-surface narrative + the 8 BC invariants (home post-retirement; `/arch`-owned)
+- `design/arch/facades/intrinsics.md` §"Vec runtime"/§"String allocator + reader" — the consumed layout-ABI contract (also retiring S74 — the 0245 consumer note points at the intrinsics-side **const rustdoc** `vec_runtime::{LEN_OFFSET,DATA_PTR_OFFSET}` + `heap_string::HeapString::{LEN_OFFSET,DATA_OFFSET}`, not at the facade)
+- `design/arch/fixmes/0244-*.md` — `code: None`; primitive-ness from `kind` (deliverable B config; landed S73)
+- `design/arch/fixmes/0245-*.md` — heap-layout = intrinsics' blessed public ABI (deliverable E config; both sides landed S73 — verify+delete S74)
+- `design/arch/fixmes/0247-*.md` — `#[used]` not applicable to extern fn; Option-2 ruling (`export_name` + exe-bundle force-link); DCE wording fix folds into `//!` rustdoc S74
+- `design/arch/fixmes/0246-*.md` — stale `DefKind::Primitive` payload in facade (resolved by retirement — the facade ceases to be canonical)
 - `design/primitives/implementation-slice-s66.md` — historical new-crate slice (superseded by this master)
 - `spec/appendix-a-builtins.md` §A.2/§A.3 — the primitive set + signatures (semantic-surface authority)
 - `crates/cranelisp-types/src/module.rs` — `ModuleEntry::def` builder; `DefKind::Primitive` (payload-free, `:1312`); `SymbolTable::into_concrete` (`:470`)
-- Principles 1 (decoupling), 3 (dep toward stability), 6 (complexity budget), 7 (single source of truth), 18 (primitives ⟂ backend severance)
+- `crates/cranelisp-exe-bundle/src/lib.rs:75` — `LazyLock::force(&PRIMITIVES_TABLE)` (the Option-2 DCE/force-link anchor)
+- Principles 1 (decoupling), 2 (minimum mechanism — Option-2 anchor), 3 (dep toward stability), 6 (complexity budget), 7 (single source of truth), 18 (primitives ⟂ backend severance)
+
+---
+
+## 8. S74 — facade retirement (6th data point, doc-only)
+
+**Shape.** Doc-only. Primitives' SOURCE is already facade-aligned (S73, `ef69ede`); S74 folds `facades/primitives.md` into the crate's rustdoc + BC §4a, then `git rm`s the facade. **Zero source-behaviour change; baseline byte-identical (9 lines).** Honours SPRINT.md Phase-2 Rulings 1 (Session-integration = asserted-live), 2 (FIXME 0247 Option-2 DCE wording), Revision C (int-side mount drift is int's, folded into FIXME 0242 — not this crate's edit).
+
+### 8.1 Rustdoc-fold mapping (facade section → destination)
+
+The crate's `//!` preamble (`lib.rs:1–65`) already carries most of the facade narrative in severed-shape (S73 lift). The S74 fold is mostly a **verification-and-touch-up** of that preamble plus the per-item `///`, with two substantive edits (the 0247 DCE wording, Ruling 2; and the Session-integration asserted-live framing, Ruling 1):
+
+| Facade section | Destination | Action |
+|---|---|---|
+| §"Public surface" (one item `PRIMITIVES_TABLE`) | `lib.rs` `//!` §"Public Rust API — single item" (already present, `:13–29`) + `///` on `PRIMITIVES_TABLE` (`:83–106`) | Verify wording; strike the `#[used]`-discipline sentence (`:18–22`) per Ruling 2 — see 8.3 |
+| §"Type shape" (`<(),()>` + `into_concrete` at mount) | `lib.rs` `//!` §"Backend severance" (`:44–56`) + `///` on `PRIMITIVES_TABLE` (`:86–92`) | Already severed-shape; verify `<(),()>` + the `into_concrete`-at-mount sentence reads asserted-live (Ruling 1), not "S74 forward-work" |
+| §"Static-init contract" (3-step population) | `///` on `PRIMITIVES_TABLE` (`:94–106`) + `///` on `build_primitives_table`/`insert_primitive_entry`/`extern_shims` (already present `:110–194`) | Verify present; the per-fn `///` already carries the population narrative |
+| §"Session-integration contract" (asserted-live, Ruling 1) | `lib.rs` `//!` §"Public Rust API" (`:23–29`) + BC §4a (`/arch` edit) | Reframe to **asserted-live**: the `<(),()>`→`<Code,()>` `into_concrete` mount is EXERCISED today on the cache-restore hot path (`session_v4.rs:1363`, `worker.rs:1917`); `into_concrete` defined+tested in `cranelisp-types` (`module.rs:470`). Strike "the mount itself is S74, not this crate" (`:27`) — it implies forward-work; replace with "exercised on the cache-restore path; the primary-mount spelling is int's to align (FIXME 0242)". **The cross-surface mount narrative + the asserted-live statement also land in BC §4a — `/arch`'s edit.** |
+| §"Primitives inventory" (the ~45-row symbol table) | NOT folded into rustdoc verbatim | The inventory's semantic surface is governed by **spec conformance tests** (`/qa`) + the `operator::ring{0,1,3}_primitives()` builders (the in-crate content-harness already parity-checks builder→table). The per-submodule `///` on each `extern "C" fn` (e.g. `vec.rs` `vec-len`) carries the symbol-name/signature locally. The `//!` notes that the inventory is spec-governed, not rustdoc-enumerated (cite `spec/appendix-a-builtins.md` §A.2/§A.3 + the content harness). |
+| §"Removed from pub surface" (S68 narrowing list) | NOT folded — historical | The narrowing already happened (S73 source). The `cargo-public-api` baseline (9 lines) IS the record of the current surface; the demotion list is migration history. `//!` §"Module organisation" (`:58–65`) already states externs are `pub(crate)` reachable only via GOT. **Strike the `#[used]` mention** here too (Ruling 2). |
+| §"Versioning policy" (baseline stable across primitive churn) | `lib.rs` `//!` §"Module organisation" (one sentence) | Add: the cargo-public-api baseline is stable across primitive add/rename/delete (externs are `pub(crate)`); the primitive set + signatures are governed by spec-conformance tests, not the Rust baseline. |
+| §"Consumed surface" (the 0245 layout-ABI consumer pin) | **`///` consumer note on `vec.rs` + `string.rs` read sites** (see 8.2) | This is the bilateral-boundary half — a Rust-consumer note pointing at **intrinsics' const rustdoc**, NOT at a facade. |
+| §"Bounded-context invariants 1–8" | **BC §4a — `/arch`'s edit** (Revision D — fold the FULL numbered list as a "Bounded-context invariants" subsection, per the platform §5 / typecheck §2 template; do not summarise-and-drop) | Invariants: 1 user-callable, 2 symbol-table addressable, 3 uniform dispatch + structural backend dep-ban, 4 no trait knowledge, 5 inline-substitution optional, 6 process-static lifecycle + `code: None`, 7 spec-driven evolution, 8 consuming convention. **`/design` names what lands; `/arch` writes BC §4a.** |
+| §"Types originated here" / §"Re-exports" / §"Sealed traits" / §"`#[non_exhaustive]`" / §"Public consts" — all "None" | NOT folded | Vacuous; no rustdoc needed (a leaf crate with one pub static and zero pub types). |
+| §"Cascade pointers" / §"Cross-references" | NOT folded — migration bookkeeping | These point at sibling facades' cascades; on retirement they are dead. The live cross-surface edges are stated in BC §4a (`/arch`). |
+| §"DCE/force-link" wording (currently in §"Public surface" line 24 / §"Removed from pub surface") | `lib.rs` `//!` §"Module organisation" (corrected Option-2 wording) + the `///` consumer-facing note (exe-bundle side is `/int`'s) | See 8.3 — Ruling 2. |
+
+### 8.2 The 0245 consumer-side note (the bilateral-boundary half)
+
+Primitives reads intrinsics' blessed layout-ABI consts at exactly these sites (verified against source):
+
+- **`vec.rs`** — `use cranelisp_intrinsics::vec_runtime::LEN_OFFSET;` (`:16`); read at `vec_len` (`:24`). The `//!` already carries a §"FIXME 0180 / 0245 close" note (`:9–14`) pointing at `vec_runtime::LEN_OFFSET` as intrinsics' "blessed public layout ABI". **S74 touch-up:** repoint the prose from "FIXME 0245" to intrinsics' **const rustdoc** (`cranelisp_intrinsics::vec_runtime::LEN_OFFSET` — the const carries the blessed-ABI doc, value 16; `vec_runtime.rs:36`); state primitives holds no duplicate (Principle 7), single source of truth.
+- **`string.rs`** — `use cranelisp_intrinsics::vec_runtime::{DATA_PTR_OFFSET, LEN_OFFSET};` (`:25`) for `split`/`join` (read at `:181,187,205,207`); `HeapString::{LEN_OFFSET, DATA_OFFSET}` for `read_string_parts`/`str_len` (`:38,40,103`). The `//!` §"FIXME 0180 close" (`:9–15`) + the in-body comment (`:58–60`) already name the consumed ABI. **S74 touch-up:** the `///`/comment text points at the intrinsics-side **const rustdoc** — `cranelisp_intrinsics::vec_runtime::{LEN_OFFSET, DATA_PTR_OFFSET}` (`vec_runtime.rs:36,44`) and `cranelisp_intrinsics::heap_string::HeapString::{LEN_OFFSET, DATA_OFFSET}` (`heap_string.rs:38,39`) — explicitly NOT at a facade. Note `string.rs` consumes only `{LEN_OFFSET, DATA_PTR_OFFSET}` from `vec_runtime` (NOT `CAP_OFFSET`) — importing `CAP_OFFSET` draws a dead-import warning; the consumed contract is exactly those two.
+
+This is a wording touch-up of existing `//!`/comment text — **no behaviour change, no new import, no offset re-derivation** (post-S73 there are zero local layout-const definitions in primitives: `git grep -n "LEN_OFFSET\s*=\|DATA_PTR_OFFSET\s*=\|VEC_LEN_OFFSET\|VEC_DATA_PTR_OFFSET" crates/cranelisp-primitives/src/` returns nothing).
+
+### 8.3 The 0247 / DCE wording fix (Ruling 2, Option 2)
+
+`#[used]` is statics-only; it does **not** apply to `extern fn` (rustc rejects). The facade prescribes `#[used]` on each extern (line 24 / §"Removed from pub surface" line 241) — that wording is **wrong** and MUST NOT carry into rustdoc. The current `//!` (`:18–22`) already flags the discrepancy ("`#[used]` is not applicable to functions … pending FIXME 0247 re-disposition"). **S74 resolves it to the Option-2 statement:**
+
+> DCE-survival of the primitives extern fns in `--link`-mode static archives relies on `#[unsafe(export_name = "…")]` (which emits the linker symbol independent of Rust visibility) + the exe-bundle force-link `LazyLock::force(&PRIMITIVES_TABLE)` (`cranelisp-exe-bundle/src/lib.rs:75`) + the in-crate `extern_shims()` harvest that takes every fn address at static-init. There is **no `#[used] static` anchor** — the existing harvest + force IS the link anchor (minimum mechanism, Principle 2). Strike all `#[used]`-on-fn language.
+
+This text replaces the "pending FIXME 0247" hedge in the `//!` §"Public Rust API" / §"Module organisation" with a settled Option-2 statement. (FIXME 0247 deletes on fold — `/arch`'s action.)
+
+### 8.4 Cross-ref sweep (docs referencing `facades/primitives.md`)
+
+On retirement, repoint references in the **canonical set**; historical/draining docs may retain references (per Revision D — "only the canonical set must be clean").
+
+**Canonical — must repoint (all `/arch`-owned; `/design` flags, does not edit):**
+- `design/arch/CLAUDE.md` line 15 (exception list) — add primitives §4a as the 6th retired facade. **`/arch` edit.**
+- `design/arch/facades/intrinsics.md` (`:7,19,142,177,310,413,414`) — references the sibling facade; **itself retiring this sprint** (5th DP) → repointed to BC §4a / source rustdoc by `/arch` in the same pass.
+- `design/arch/facades/backend.md` (`:328,407,495`) — references primitives facade + (stale) `Code::Primitive`; **retires in a future backend sprint** → `/arch` repoints to BC §4a + adds a "retired" note now (Revision D's archive-style note where a canonical doc points at the deleted file).
+- `design/arch/bounded-contexts.md §4a` — gains the 8-invariant subsection + the asserted-live mount narrative. **`/arch` edit.**
+
+**Historical / draining (may retain references — NO action required):** `design/{primitives,runtime,backend,int}/implementation-slice-s66.md`; `design/arch/sprint-65-*`, `sprint-66-*`, `cranelisp-types-settled-verdict-s70.md`, `legacy/substance-scoping.md`, `archive/facades-runtime.md`; the facade-audit-s69 files; `decisions/0048-*.md`; the FIXME files (`0157,0161,0182,0189,0191,0210,0212,0218,0244,0245,0247`-*) — FIXMEs 0244/0245/0247/0246 delete on fold; the rest are historical.
+
+**This doc** (`design/primitives/primitives.md`) — §7 cross-ref to `facades/primitives.md` is updated (this refresh) to mark it RETIRING and point at BC §4a + source rustdoc as the post-retirement canonical surface.
+
+### 8.5 Ordered `/dev (primitives)` work-steps (Phase 5 — rustdoc-authoring only, NO behaviour change)
+
+Each step touches `//!`/`///` text only. Acceptance check after each.
+
+1. **`lib.rs` `//!` — strike `#[used]` hedge, settle Option-2 DCE wording (8.3).** Replace the "`#[used]` not applicable … pending FIXME 0247" sentences (`:18–22`, and any echo in §"Module organisation" `:62–64`) with the settled Option-2 statement (`export_name` + exe-bundle force-link + `extern_shims()` harvest; no `#[used] static`). *Check:* `git grep -n "#\[used\]\|pending FIXME 0247\|pending.*re-disposition" crates/cranelisp-primitives/src/lib.rs` returns nothing.
+2. **`lib.rs` `//!` — reframe Session-integration as asserted-live (Ruling 1, 8.1).** In §"Public Rust API" (`:23–29`) strike "the mount itself is S74, not this crate"; state the `into_concrete` `<(),()>`→`<Code,()>` mount is exercised on the cache-restore path today (`into_concrete` defined+tested in `cranelisp-types`); the primary-mount comment alignment is int's (FIXME 0242). *Check:* the `//!` no longer says the mount is "S74" / forward-work; reads as a live contract. Confirm no `src/` edit (Revision C is int's).
+3. **`lib.rs` `//!` — add the spec-governed-inventory + versioning sentence (8.1).** In §"Module organisation": the cargo-public-api baseline is stable across primitive churn (externs `pub(crate)`); the primitive set+signatures are spec-conformance-governed, not Rust-baseline-governed (cite `spec/appendix-a-builtins.md` + the content harness). *Check:* sentence present; no claim that adding a primitive changes the baseline.
+4. **`vec.rs` + `string.rs` — repoint the 0245 consumer note at intrinsics' const rustdoc (8.2).** Touch the `//!`/in-body comment prose so it points at `cranelisp_intrinsics::vec_runtime::{LEN_OFFSET,DATA_PTR_OFFSET}` + `heap_string::HeapString::{LEN_OFFSET,DATA_OFFSET}` (the const rustdoc), explicitly NOT at a facade; state "no duplicate copy, single source of truth (Principle 7)". *Check:* no `facades/primitives.md` reference remains in `vec.rs`/`string.rs`; the `use` lines + offset read sites are byte-unchanged (comment-only edits).
+5. **Verify rustdoc covers every pub-api line (0 orphans).** The 9 baseline lines: `PRIMITIVES_TABLE` (has `///` `:83–106`), 7 `pub mod` (each submodule has a `//!`), crate root (has the `//!`). *Check:* `cargo doc -p cranelisp-primitives --no-deps` builds; each of the 9 baseline items has rustdoc.
+
+### 8.6 Acceptance (S74 doc-only)
+
+1. `cargo nextest run -p cranelisp-primitives` **green** (no source-behaviour change; the existing 16 `#[cfg(test)]` fns in `lib.rs` + `vec.rs`/`string.rs` module tests unchanged).
+2. `crates/cranelisp-primitives/public-api.txt` **byte-identical, 9 lines** (one `PRIMITIVES_TABLE` + 7 `pub mod` + crate root). **No regeneration.** Any baseline delta is a defect signalling an accidental source edit — STOP and flag.
+3. Rustdoc covers every pub-api item (0 orphans); `cargo doc -p cranelisp-primitives --no-deps` builds clean.
+4. `cargo clippy -p cranelisp-primitives` warning-free for anything this change touches (comment-only — expect zero new lints; no `CAP_OFFSET` import).
+5. (`/arch`) `facades/primitives.md` `git rm`'d; BC §4a carries the 8 invariants + asserted-live mount narrative; exception list updated to 6 retired facades; 0 dangling refs across the canonical set.
+
+### 8.7 FIXMEs to file
+
+**None from `/design (primitives)` this sprint.** The drift, rulings, and folds are all already owned:
+- The int-side primary-mount drift (Revision C) is **`/int`'s**, folded into existing **FIXME 0242** (per SPRINT.md Phase-2 §3 / FIXME-debt table) — `/design (primitives)` does not file a new one and does not edit `src/`.
+- FIXMEs 0245 / 0247 are **`/arch`'s** to verify+delete on fold (in scope this sprint).
+- **FIXME 0246** (filed S73 by `/design (primitives)` — stale `DefKind::Primitive` payload in the facade) is **resolved by the retirement**: the facade ceases to be canonical, so its stale payload prose is moot. `/arch` should `git rm` 0246 alongside the facade (the canonical surface — source rustdoc — already states bare `DefKind::Primitive`). *If `/arch` prefers an explicit close note, that is a one-line disposition; no further `/design` action.*

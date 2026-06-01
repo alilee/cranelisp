@@ -32,22 +32,29 @@ static LIVE_ALLOCS: LazyLock<Mutex<HashSet<usize>>> =
 // Public Rust API for tracking (used by /qa integration tests)
 // ---------------------------------------------------------------------------
 
+/// Total allocations since the last [`reset_counts`] (process-global stat;
+/// read by int's `/mem` slash command). No state across sessions — test
+/// contexts call [`reset_counts`] at session start.
 pub fn alloc_count() -> usize {
     ALLOC_COUNT.load(Ordering::Relaxed)
 }
 
+/// Total deallocations since the last [`reset_counts`] (process-global stat).
 pub fn dealloc_count() -> usize {
     DEALLOC_COUNT.load(Ordering::Relaxed)
 }
 
+/// Cumulative bytes ever allocated since the last [`reset_counts`].
 pub fn bytes_allocated() -> usize {
     BYTES_ALLOCATED.load(Ordering::Relaxed)
 }
 
+/// Bytes currently live (allocated minus freed) since the last [`reset_counts`].
 pub fn bytes_current() -> usize {
     BYTES_CURRENT.load(Ordering::Relaxed)
 }
 
+/// High-water mark of live bytes since the last [`reset_counts`].
 pub fn bytes_peak() -> usize {
     BYTES_PEAK.load(Ordering::Relaxed)
 }

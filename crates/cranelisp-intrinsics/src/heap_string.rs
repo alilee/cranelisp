@@ -35,7 +35,18 @@ pub struct HeapString {
 }
 
 impl HeapString {
+    /// Offset of the `len` field from the base pointer (codegen-time constant).
+    ///
+    /// Blessed, stable public layout-ABI (FIXME 0245): `cranelisp-primitives`
+    /// (`string.rs`) reads this directly for its user-callable string ops; it
+    /// holds no duplicate copy of the offset (Principle 7). Evolution is an
+    /// explicit version bump, not a source-level guard (Principle 14).
     pub const LEN_OFFSET: i32 = offset_of!(Self, len) as i32; // 16
+    /// Offset of the byte payload from the base pointer (codegen-time constant).
+    ///
+    /// Blessed, stable public layout-ABI (FIXME 0245): the named Rust consumer
+    /// is `cranelisp-primitives`; the FFI counterpart is `cranelisp-platform`'s
+    /// `CLString::as_str`, which reaches the bytes via `read_string_as_str`.
     pub const DATA_OFFSET: usize = mem::size_of::<Self>(); // 24
 
     /// Total payload size after the header: len field + byte data.
