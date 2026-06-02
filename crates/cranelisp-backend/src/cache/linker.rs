@@ -1,12 +1,21 @@
-// Minimal linker for loading cached `.o` files.
-//
-// Loads relocatable object files produced by `cranelift-object`, resolves
-// relocations against known symbols (intrinsics, builtins, platform DLLs,
-// GOT base addresses), and maps code into executable memory.
-//
-// Primary target: Mach-O aarch64 (macOS ARM). Also supports ELF aarch64 (Linux ARM).
-//
-// GOT architecture: per-module GOT tables are heap-allocated during typecheck.
+//! Mach-O / ELF object loading + per-symbol resolution — the cache submodule's
+//! linker.
+//!
+//! Loads relocatable object files produced by `cranelift-object`, resolves
+//! relocations against known symbols (intrinsics, builtins, platform DLLs,
+//! GOT base addresses), and maps code into executable memory.
+//!
+//! This is the **only mmap-holder** in the workspace (cache invariant 1): the
+//! `Linker` holds the mmap'd object memory, and per-symbol retention via
+//! `Arc<Linker>` (cloned per `Code::Linker`) keeps the code pages alive until
+//! the last reference drops. The public surface is `Linker::new` /
+//! `Linker::get_symbol` / `Linker::register_symbol` (`get_symbol` returns the
+//! typed `Result<*const u8, LinkerError>` per Decision 37); `load_object` is
+//! `pub(crate)` and is reached from the crate-root `load_object` free function.
+//!
+//! Primary target: Mach-O aarch64 (macOS ARM). Also supports ELF aarch64 (Linux ARM).
+//!
+//! GOT architecture: per-module GOT tables are heap-allocated during typecheck.
 // Object code references them via `__cranelisp_got_{module}` data symbols.
 // Decision 23 (Sprint 58 Wave 2 follow-on): the symbol address IS the GOT
 // slab base directly — no extra pointer-cell indirection. In `.o` files the
@@ -201,7 +210,12 @@ impl Linker {
 
     /// Load an object file: parse sections, copy code to executable memory,
     /// resolve relocations, and register defined symbols.
-    pub fn load_object(
+    ///
+    /// `pub(crate)` per S75 W2 (facade PIF Row 3): the public cache-hit entry
+    /// is the free function `cranelisp_backend::load_object`, which owns
+    /// `Linker` construction and returns a `LinkerArtefact`. This method is
+    /// the in-crate primitive that free function (and the cache module) drive.
+    pub(crate) fn load_object(
         &mut self,
         module_name: &str,
         bytes: &[u8],

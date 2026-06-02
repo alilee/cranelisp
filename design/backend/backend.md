@@ -37,13 +37,15 @@ Per Decision 41, the per-symbol code carrier (`Code`) is named in this crate as 
 
 The facade `design/arch/facades/backend.md` is authoritative. **Do not restate signatures here** — cite §"Public surface" and §"Object file contract" of the facade for the Rust-level shape. This section names what the surface is *for* and which contract invariants this crate is responsible for upholding.
 
-### 2.1 The three free functions (facade §"Public surface")
+### 2.1 The three free functions (facade §"Public surface" — S75 D41-rotated)
 
-- `compile_to_module<M: Module>(scope, names, symbol_tables, introspection, module) -> Result<(), CompilationError>` — the **single CLIF emission entry**. Used by `int`'s priority workers (JIT path, per-symbol cardinality per Decision 41) and nice workers (object path, per-module cardinality). Mode is determined by the supplied `M` instance per Decision 23. Backend writes `Code::Jit { jit, ptr }` directly into each compiled symbol's entry via `SymbolTable::write_code(&self, sym, code)` (Decision 38; interior mutable). `Introspection { clif_ir, disasm, code_size, compile_duration }` is written iff `introspection.is_some()` — the `Option`'s presence IS the mode discriminator per Decision 38.
+The codegen boundary is **exactly three** free functions (facade §"Free functions"). **There is no separate object-compile entry** — the never-real `compile_to_object` free function is retracted (S75; facade tombstone); the object path is `compile_to_module::<ObjectModule>` + **caller** `finish().emit()` (the §2.5 caller-finalize contract in `compile-to-module.md`, symmetric to JIT mode where `int` holds the `JITModule` for `Arc<Jit>` reclaim).
 
-- `load_object(module, object, symbol_tables) -> Result<LinkerArtefact, CranelispError>` — the **JIT-mode cache-hit entry**. Reads a `.o` produced by an earlier `compile_to_object` call (or by `--link` mode), runs the cache linker to resolve each defined symbol's bare-name address (Decision 36), returns `LinkerArtefact { linker: Arc<Linker>, ptrs: HashMap<Symbol, *const u8> }` for `int` to wrap into `Code::Linker { linker, ptr }` per symbol (Decision 35). Per-module cardinality (one `Linker` holds many symbols) is unchanged by Decision 41 — the per-symbol direct-write pattern is for `compile_to_module` only.
+- `compile_to_module<M: Module + CodeFinalizer>(scope, names, symbol_tables, module_aliases, module) -> Result<CompilationArtifacts, CompilationError>` — the **single CLIF emission entry**. Used by `int`'s priority workers (JIT path, per-symbol cardinality per Decision 41) and nice workers (object path, per-module cardinality). Mode is determined by the supplied `M` instance per Decision 23. Backend writes `Code::Jit(Arc<Jit>)` directly into each compiled symbol's entry via `SymbolTable::write_code(&self, sym, code)` (Decision 38; interior mutable) AND writes the resulting fn pointer to the entry's GOT slot via `got().store_slot(slot, ptr)` (D41 #1 + #2). It returns the always-created introspection artefact `CompilationArtifacts { clif_ir, code_size, compile_duration }` **by value** — the caller composes its `Introspection` (REPL/trace mode) or drops it (production batch). Backend never names `Introspection` (D41 #3 retracted, S70 Phase B). The `module_aliases` param feeds `compiler::resolve_func_arity` / `resolve_got_target` qualified-callee resolution.
 
-- `compile_to_object(module, symbol_tables) -> Result<ObjectArtefact, CranelispError>` — the **nice-worker object-codegen entry**. Produces `ObjectArtefact { object: Vec<u8>, sidecar: SymbolTable<(), ()> }`. Backend writes nothing to disk; `int`'s `ObjectCache::write` performs the file IO and enforces the Decision-25 pairing invariant.
+- `produce_disasm(fq, symbol_tables) -> Result<String, CompilationError>` — the **on-demand disassembly entry**. Invoked lazily by `int` on a REPL `/disasm <fn>` request, NOT eagerly per-compile. Resolves the FQSymbol to its entry, reads the code ptr from `got().load_slot(slot)` + `code_size` from entry metadata, produces the disassembly string. Factored out of `CompilationArtifacts` because disassembly is much more expensive than CLIF-string capture and should not be paid unless asked.
+
+- `load_object(module, object, symbol_tables, module_aliases) -> Result<LinkerArtefact, CranelispError>` — the **JIT-mode cache-hit entry**. Reads a `.o` produced by an earlier object-codegen pass (`compile_to_module::<ObjectModule>` + caller `finish().emit()`) or by `--link` mode, runs the cache linker to resolve each defined symbol's bare-name address (Decision 36), returns `LinkerArtefact { linker: Arc<Linker>, ptrs: HashMap<Symbol, *const u8> }` for `int` to write each ptr to the entry's GOT slot and store `Code::Linker(Arc<Linker>)` as the lifecycle owner (Decision 35). Per-module cardinality (one `Linker` holds many symbols) is unchanged by Decision 41 — the per-symbol direct-write pattern is for `compile_to_module` only. (`Linker::load_object` the method becomes `pub(crate)`; the free fn is the public entry.)
 
 ### 2.2 The retention newtypes
 
@@ -51,9 +53,9 @@ The facade `design/arch/facades/backend.md` is authoritative. **Do not restate s
 
 - `Linker` (facade §"Linker — the cache-load retention newtype") — opaque retention root for cache-hit code regions. `Arc<Linker>` is analogous to `Arc<Jit>` for cache-hit lifecycles. Public surface is `load_object(object: &[u8]) -> Result<Self, CranelispError>` (associated constructor) and `get_symbol(&self, name: &LinkerSymbol) -> Result<*const u8, LinkerError>` — the typed-result accessor per facade §2.6 (defensive resolution, Decision 37 — see §6.2 below).
 
-### 2.3 The per-symbol code carrier
+### 2.3 The per-symbol lifecycle owner
 
-`Code` (facade §"Code — the per-symbol code carrier") lives **in this crate** per Decision 41. Two variants — `Jit { jit, ptr }` for fresh-build, `Linker { linker, ptr }` for cache-hit. `impl Code { pub fn ptr(&self) -> *const u8 }` is the variant-uniform code-address accessor consumed by `int` at GOT-write time. `Code` does NOT live in `cranelisp-types` — that would invert the dependency graph and breach Principle 3.
+`Code` (facade §"`Code` — the per-symbol lifecycle owner") lives **in this crate** per Decision 41. Post-S75 (FIXME 0244 backend half + the S66 variant slim) it carries **lifecycle ownership ONLY**, with exactly two variants — `Jit(Arc<Jit>)` for fresh-build, `Linker(Arc<Linker>)` for cache-hit. There is **no per-variant `ptr`** (the GOT is the single source of truth for callable addresses — read via `got().load_slot(slot)`) and **no `Code::Primitive`** (the marker is dropped; primitive-ness reads from `kind: DefKind::Primitive`, and primitives entries carry `code: None`). The variant-uniform `Code::ptr()` accessor is removed. `Code` does NOT live in `cranelisp-types` — that would invert the dependency graph and breach Principle 3.
 
 ### 2.4 Errors
 
@@ -71,18 +73,18 @@ These are the contract this design protects across sprints:
 6. **Two-GOT model, one CLIF** (Decision 23) — same data-symbol reference (`__cranelisp_got_{M}`) appears in every CLIF emission; resolution differs by `Module` impl at finalize.
 7. **Bare names + `Linkage::Local` uniformly** (Decision 36) — every user function. The `--link` mode `_main` alias is `int::link_by_name`'s job, not backend's.
 
-### 2.6 As-built deviations from §2.1–§2.5 (this is a refresh, not a status report)
+### 2.6 As-built deviations from §2.1–§2.5 — CLOSED by S75 W2
 
-The audit `audits/backend-20260423.md` records four substantive gaps between the facade target and as-built state at audit date. They remain open and are the major implementation work owed against this design intent:
+The audit `audits/backend-20260423.md` recorded four substantive gaps between the facade target and as-built state. **S75 W2 (boundary rotation) closes all four.** They are no longer "owed future work" — they are the W2 step. Tracked here as the closure record:
 
-| Facade target | As-built state at audit date | Resolution path |
+| Facade target | Pre-S75 source state | S75 closure |
 |---|---|---|
-| Single `compile_to_module<M>` entry; `Jit` exposes only `new`/`module` | `lib.rs::compile_to_module<M, C, L>` AND `jit.rs::Jit::compile_defn` are both public per-function entries; two parallel `CompileContext` builders; two `build_isa` (one in `cache/object.rs` parameterised, one in `jit.rs` hardcoded) | Audit Phase 1 — converge entry points + ISA + context builder. Cited under Simplicity §4.1 (Principle 11 — single pipeline) |
-| `compile_to_module(...) -> Result<(), CompilationError>`; backend writes Code directly via `write_code` | `compile_to_module(...) -> Result<CompilationResult, CranelispError>` with a return tuple (`code_ptrs`, `artifacts`, `func_ids`, `entry_func_id`, etc.); int post-loop iterates and constructs `Code::Jit` (`worker.rs:2860-3018`); `SymbolTable::write_code` does not yet exist | Decision 41 follow-through — backend signature refactor + `SymbolTable::write_code` addition in `cranelisp-types` (FIXME `target: /arch` filed by `int`'s `/design` if not already; this refresh notes the dependency rather than re-files) |
-| `Code` lives in `crates/cranelisp-backend/src/code.rs` | `Code` lives in `src/code.rs` (integration layer); `cranelisp-backend` does not yet name it | Same Decision 41 follow-through — co-ordinated `Code` move + `compile_to_module` signature refactor |
-| `load_object` is a backend free function returning `LinkerArtefact { linker: Arc<Linker>, ptrs }` | `Linker::load_object(&mut self, _module_name, bytes) -> Result<(), CranelispError>` is a method on `Linker`; `Linker` itself is constructed elsewhere; no `LinkerArtefact` struct | Facade-driven refactor — wrap the existing relocator in the `load_object` free function shape; `LinkerArtefact` becomes a thin DTO over the existing internals. No semantic change, surface change only |
+| Single `compile_to_module<M>` entry; no separate object-compile fn | `compile_to_module<M, C, L>` exists; the `lib.rs:821` `compile_to_object` stub (returns `unimplemented!()`, cites never-filed FIXME 0184) is a phantom third entry; `Jit::compile_defn` is an internal per-fn helper | W2 deletes the `compile_to_object` stub; object path is `compile_to_module::<ObjectModule>` + caller `finish().emit()`. `Jit::compile_defn` stays internal-but-exposed (facade Row 9). |
+| `compile_to_module(...) -> Result<CompilationArtifacts, CompilationError>` + `module_aliases`; direct `write_code` + GOT-slot writes | `compile_to_module(...) -> Result<CompilationResult, CompilationError>` returning a tuple (`artifacts: HashMap<_, FunctionArtifacts>`, `code_ptrs`, `func_ids`, `entry_func_id`, `func_arities`, `warnings`); no `module_aliases` param | W2 rotates to the D41 signature (FIXME 0221): value-returned `CompilationArtifacts`, `module_aliases` param, `produce_disasm` authored, `CompilationResult` + `FunctionArtifacts` deleted. D41 #1/#2 direct-writes preserved; #3 retracted. |
+| `Code` in `crates/cranelisp-backend/src/code.rs`, slimmed to `Jit(Arc<Jit>)`/`Linker(Arc<Linker>)`, no `Primitive` | `Code` already in `crates/cranelisp-backend/src/code.rs` (the D41 move landed) BUT still `{ jit, ptr }` / `{ linker, ptr }` + `Primitive` | W2 slims the variant payloads (drop `ptr`) AND deletes `Primitive` (FIXME 0244 backend half) — both together, no half-rotation (Rev 3). |
+| `load_object` free fn returning `LinkerArtefact`; `Linker::load_object` `pub(crate)`; `Linker::get_symbol -> Result<_, LinkerError>` | free `load_object` already exists; `Linker::load_object` still `pub`; `Linker::get_symbol -> Option<*const u8>` | W2 narrows `Linker::load_object` to `pub(crate)`; rotates `get_symbol` to `Result<*const u8, LinkerError>` (D37). |
 
-These deviations are observations *of the source*; they do not reflect a problem with the **contract**. The contract is implementable simply against the BC + facade — the implementation just hasn't caught up to the contract for several sprints. The simplicity check (§4.1 below) confirms this: the convergence is a *deletion + re-shape* exercise, not a *redesign* exercise. No FIXME `target: /arch` is filed for these — they are open implementation work on the existing canonical design.
+These were observations *of the source*, not a problem with the **contract** — the contract is implementable simply against the BC + facade, and S75 is the sprint where the implementation catches up. The simplicity check (§4.1) confirms it is a *deletion + re-shape* exercise, not a *redesign*. No FIXME `target: /arch` is owed — the rotation lands the existing canonical design (FIXMEs 0221 + 0244 are the tracking records, resolved in W2).
 
 ---
 
@@ -115,27 +117,30 @@ These deviations are observations *of the source*; they do not reflect a problem
 
 ### 3.2 Module layout — target
 
-The target is BC-shaped: `compile_to_module` is the only public per-symbol/per-module compile entry; everything else in this crate is implementation detail behind that entry, behind `compile_to_object`, or behind `load_object`. The audit's target diagram reduces to:
+The target is BC-shaped: `compile_to_module` is the only public CLIF-emission entry; everything else in this crate is implementation detail behind it, behind `produce_disasm`, or behind `load_object`. The object path is `compile_to_module::<ObjectModule>` + caller `finish().emit()` — NOT a separate backend entry (S75 retraction). The target diagram reduces to:
 
 ```
 caller
-  └─ compile_to_module(scope, names, &symbol_tables, introspection?, M) ─→ () + side-effects
+  └─ compile_to_module(scope, names, &symbol_tables, &module_aliases, M) ─→ CompilationArtifacts + side-effects
         ├─ build_isa(M.is_pic())                              [single helper, in cache/object.rs]
-        ├─ CompileContext::build(scope, names, symbol_tables, isa)   [one builder]
+        ├─ CompileContext::build(scope, names, symbol_tables, module_aliases, isa)   [one builder]
         ├─ for sym in names:
-        │     compile_defn(plan, defn) ──→ FnCompiler<M>::compile_body
+        │     compile_defn(plan, defn) ──→ FnCompiler<M>::compile_body  (Expr::ConstrADT → compile_constr_adt)
         ├─ M.finalize_definitions()                            [JIT path] / no-op [object path]
-        ├─ for each compiled sym: write Code into symbol_tables[scope]
-        └─ if introspection.is_some(): write Introspection per sym
+        ├─ for each compiled sym: write_code(Code::Jit(Arc<Jit>)) + got().store_slot(slot, ptr)
+        └─ return CompilationArtifacts { clif_ir, code_size, compile_duration }  [caller composes Introspection or drops]
+
+caller (on-demand disasm)
+  └─ produce_disasm(fq, &symbol_tables) ─→ String   [lazy; reads got().load_slot + code_size]
 
 caller (cache-hit)
-  └─ load_object(scope, &bytes, &symbol_tables) ─→ LinkerArtefact { linker, ptrs }
-        ├─ Linker::load_object(bytes) ──→ Linker
-        └─ for each defined symbol: linker.get_symbol(bare_name)?   [Decision 37 defensive]
+  └─ load_object(scope, &bytes, &symbol_tables, &module_aliases) ─→ LinkerArtefact { linker, ptrs }
+        ├─ Linker::load_object(bytes) ──→ Linker   [Linker::load_object is pub(crate)]
+        └─ for each defined symbol: linker.get_symbol(bare_name)?   [Decision 37 defensive → Result<_, LinkerError>]
 
-caller (object)
-  └─ compile_to_object(scope, &symbol_tables) ─→ ObjectArtefact { object, sidecar }
-        └─ same FnCompiler skeleton against ObjectModule + sidecar SymbolTable<(), ()> serialise
+caller (object)  — NO backend entry; the caller drives it:
+  └─ compile_to_module::<ObjectModule>(scope, names, &symbol_tables, &module_aliases, obj) ─→ CompilationArtifacts
+        └─ obj.finish().emit()?   [caller-side finalize; bytes + sidecar SymbolTable<(), ()> packaged into ObjectArtefact]
 
 tests
   └─ FnCompiler / submodule narrow unit tests in their owning files
@@ -153,24 +158,25 @@ These moves are not new design — they are decisions already taken (Decisions 2
 ### 3.3 Compilation flow (target shape, per facade + Decision 41)
 
 ```text
-compile_to_module(scope, names, &symbol_tables, introspection?, &mut M):
+compile_to_module(scope, names, &symbol_tables, &module_aliases, &mut M) -> Result<CompilationArtifacts, CompilationError>:
     isa     = build_isa(M.is_pic())                           # cache/object.rs canonical helper
-    plan    = CompileContext::build(scope, names, &symbol_tables, isa)
+    plan    = CompileContext::build(scope, names, &symbol_tables, &module_aliases, isa)
     declare functions    (bare names, Linkage::Local — Decision 36)
     declare GOT data     (__cranelisp_got_{scope}, mode-resolved at finalize — Decision 23)
     declare runtime imports
     for sym in names where defined_symbols() includes sym:
-        compile_defn(plan, defn)                              # emits CLIF via FnCompiler<M>
+        compile_defn(plan, defn)                              # emits CLIF via FnCompiler<M>; Expr::ConstrADT → compile_constr_adt
     M.finalize_definitions()
     for each defined sym:
         ptr  = M.get_finalized_function(func_id)
-        symbol_tables.get(scope)?.write_code(sym, Code::Jit { jit: jit_arc.clone(), ptr })
-        if let Some(intro) = introspection:
-            intro.insert(FQSymbol::new(scope, sym), Introspection { clif_ir, disasm, code_size, compile_duration })
-    Ok(())
+        symbol_tables.get(scope)?.write_code(sym, Code::Jit(jit_arc.clone()))   # lifecycle owner only — no ptr in Code
+        symbol_tables.get(scope)?.got().store_slot(slot, ptr)                   # GOT is the single source of truth for the ptr
+    return CompilationArtifacts { clif_ir, code_size, compile_duration }        # by value; caller composes Introspection or drops
 ```
 
-JIT cardinality is **per-symbol**: the caller invokes `compile_to_module` once per defined symbol, each invocation creating a fresh `Jit` (and thus a fresh `JITModule`). Object cardinality is **per-module**: one `compile_to_module` invocation processes the full module's defined symbols against an `ObjectModule`, then `compile_to_object` (which shares this skeleton) returns the bytes.
+(Object mode: same body against an `ObjectModule`; the caller then runs `obj.finish().emit()` — there is no `get_finalized_function`/`write_code` in object mode, so the per-symbol GOT/`Code` writes are gated by the `CodeFinalizer` capability, not a mode flag.)
+
+JIT cardinality is **per-symbol**: the caller invokes `compile_to_module` once per defined symbol, each invocation creating a fresh `Jit` (and thus a fresh `JITModule`). Object cardinality is **per-module**: one `compile_to_module::<ObjectModule>` invocation processes the full module's defined symbols, then the **caller** runs `obj.finish().emit()` to obtain the bytes (the §2.5 caller-finalize contract — there is no `compile_to_object` backend entry).
 
 Decision 41 §1 explains the per-symbol JIT trade: per-redefinition reclaim becomes truly per-symbol (each `Code::Jit` clone in the table holds an independent `Arc<Jit>`; redefining one symbol drops one Arc to zero immediately). The cost is ~50 intrinsic registrations per `JITModule::new`. The integration-layer callsite is the one pattern in Decision 41 §1 — backend's body iterates `names: &[Symbol]` of length 1 in JIT mode, length N in object mode, but the body does not branch on cardinality.
 
@@ -252,7 +258,7 @@ This sprint did not touch backend concurrency. No subordinate concurrency doc ex
 
 - Per-symbol JIT cardinality (Decision 41) trades batch amortisation for per-redefinition reclaim immediacy. The cost is ~50 intrinsic registrations per `JITModule::new` invocation. Acceptable per the decision rationale (Principle 1 — decoupling — over Principle 6 marginal cost).
 - Cache-hit path (`load_object`) skips codegen entirely; mmap the `.o`, resolve bare-name symbols, write to GOT slots. Decision 25's "cache stores both `.meta.json` AND `.o`" eliminates the previous "regenerated from `ast` on cache-hit load" wording — codegen only runs on fresh build.
-- Object mode keeps per-module batching: one `ObjectModule` holds the whole module's defined symbols, written in a single `compile_to_object` call.
+- Object mode keeps per-module batching: one `ObjectModule` holds the whole module's defined symbols, written in a single `compile_to_module::<ObjectModule>` call; the caller then `finish().emit()`s (no `compile_to_object` entry).
 
 **Pathological cases identified**:
 
@@ -296,14 +302,14 @@ The audit's silence on concurrency reflects the design's success here: there is 
 
 Decisions 25, 31, 34, 35, 36, 37, 41 together specify the cache + linker shape. The relevant subordinate docs are `module-caching.md` and `compile-to-module.md` §16–17.
 
-### 6.1 Cache writes — `compile_to_object`
+### 6.1 Cache writes — the object path (`compile_to_module::<ObjectModule>` + caller `finish().emit()`)
 
-`compile_to_object(scope, &symbol_tables) -> ObjectArtefact { object, sidecar }`:
+There is **no `compile_to_object` backend free function** (S75 retraction). The nice worker drives the object path itself: it calls `compile_to_module::<ObjectModule>(scope, names, &symbol_tables, &module_aliases, &mut obj)`, then finalises the module caller-side via `obj.finish().emit()` to obtain the bytes, and packages bytes + sidecar into the `ObjectArtefact { object, sidecar }` it persists.
 
-- `object: Vec<u8>` — Mach-O / ELF / COFF emitted via `cranelift-object`. Per Decision 36, every user function is `Linkage::Local` with bare-name symbol. Per Decision 23, the `__cranelisp_got_{scope}` data symbol is `Linkage::Export` with relocation initialisers ordered by `SymbolTable[scope].symbols[name].got_slot`.
-- `sidecar: SymbolTable<(), ()>` — the schema-versioned (Decision 34) serialised symbol table. Backend produces this; the integration layer's `ObjectCache::write` writes both files paired (Decision 25 pairing invariant; cache-load enforces `meta.json` ⇒ `.o` invariant).
+- `object: Vec<u8>` — Mach-O / ELF / COFF emitted via `cranelift-object` (from the caller's `finish().emit()`). Per Decision 36, every user function is `Linkage::Local` with bare-name symbol. Per Decision 23, the `__cranelisp_got_{scope}` data symbol is `Linkage::Export` with relocation initialisers ordered by `SymbolTable[scope].symbols[name].got_slot`.
+- `sidecar: SymbolTable<(), ()>` — the schema-versioned (Decision 34) serialised symbol table. The integration layer's `ObjectCache::write` writes both files paired (Decision 25 pairing invariant; cache-load enforces `meta.json` ⇒ `.o` invariant).
 
-Backend writes nothing to disk. File IO is `int`'s.
+`ObjectArtefact` is a backend-authored DTO (facade §"Return shapes"); backend writes nothing to disk. File IO is `int`'s.
 
 ### 6.2 Cache reads — `load_object`
 
@@ -366,11 +372,11 @@ Decisions not listed (1–9 cross-crate framing, 10 base-pointer ABI in interfac
 
 ## 8. Subordinate topic docs
 
-The 21 existing docs under `design/backend/` (this `backend.md` is the master) elaborate specific subsystems. This master doc points; it does not reproduce. Live (cite-as-design-intent) vs stale (cite-as-historical-reference) is called out explicitly per the §1 framing — stale docs remain useful for repro context but should not be cited as authoritative.
+The existing docs under `design/backend/` (this `backend.md` is the master; 5 incident-debug docs moved to `archive/` in S75 W5 per FIXME 0096) elaborate specific subsystems. This master doc points; it does not reproduce. Live (cite-as-design-intent) vs stale (cite-as-historical-reference) is called out explicitly per the §1 framing — stale docs remain useful for repro context but should not be cited as authoritative.
 
 | Topic | File | Status |
 |---|---|---|
-| Compilation function shape | `compile-to-module.md` | **Live**. Authoritative on §17 generics activation. Audit-current — describes Decision 25 + 32 + 35 outcome. Decision 41 update needed (signature `Result<(), CompilationError>`) |
+| Compilation function shape | `compile-to-module.md` | **Live**. Authoritative on §17 generics activation; describes Decision 25 + 32 + 35 outcome. **S75 banner at top of file** states the D41-rotated target (`Result<CompilationArtifacts, CompilationError>` + `module_aliases` param + `produce_disasm`; `compile_to_object` retracted; 3-entry boundary; `Code` slim + `Primitive` drop; `compile_constr_adt` §2.6). The body §8/§9.1 `CompilationResult` text is pre-rotation migration narrative superseded by the banner. |
 | Ring 1 codegen | `ring1-codegen.md` | **Live**. Stable. Ring 0/1 primitives backbone |
 | Ring 2 RC discipline | `ring2-rc.md` | **Live**. Authoritative on Decision 24 (uniform consuming convention). §10 addendum (string-literal RC residual through `print`) is current |
 | Per-module GOT | `per-module-got.md` | **Live**. Authoritative on Decision 23's two-GOT runtime. Read alongside `compile-to-module.md` §5 |
@@ -380,18 +386,18 @@ The 21 existing docs under `design/backend/` (this `backend.md` is the master) e
 | HKT codegen | `hkt-codegen.md` | **Partial / stale**. Sprint 24 era; check against current monomorphisation pipeline before extending |
 | IO trampoline | `io-trampoline.md` | **Live**. Backend's IO trampoline design |
 | IO scheduling | `io-scheduling.md` | **Live**. Overlaps with §10.12 spec |
-| IO trampoline trace | `io-trampoline-trace.md` | **Stale as live design**. Incident-debug residue. Reference only |
+| IO trampoline trace | `archive/io-trampoline-trace.md` | **Archived (S75 W5, FIXME 0096)**. Incident-debug residue. Reference only |
 | Lenient eval | `lenient-eval.md` | **Live**. Spec §12.4.3 + §10.12 backend story |
 | FQTypeName cache | `sprint51-fqtypename-cache.md` | **Partially stale**. Sprint 51 era; Decision 34's `schema_version` replaces the pre-S58 manifest hashing for shape changes |
 | Sprint 19 panic boundary | `sprint19-panic-boundary.md` | **Live**. Catchable runtime panics. Check against current `runtime_panic` extern declared in facade §"Consumed surface" |
 | AST-sourced codegen | `ast-sourced-codegen.md` | **Partially superseded** by Decision 25 (the `Def.ast` field). Cite cautiously |
 | Auto-curry + run-tests | `auto-curry-and-run-tests.md` | **Live**. A2 + R1 codegen primitives |
-| Cache REPL loads triage | `cache-repl-loads-triage.md` | **Stale**. Post-Decision-37 the "no swallowed failures" outcome lands in `module-caching.md`. Reference for history only |
-| Defect 8 repro notes | `defect-8-repro-notes.md` | **Stale as live design**. Keep as cross-skill repro example |
-| Defects 4/5/6 reduction | `defects-456-reduction.md` | **Stale as live design**. Sprint 59 W1 incident-debug residue |
-| Slice 4 / 21-hello-io | `slice-4-21-hello-io-investigation.md` | **Stale as live design**. Sprint 61 era closure double-free reduction; keep for repro |
+| Cache REPL loads triage | `archive/cache-repl-loads-triage.md` | **Archived (S75 W5, FIXME 0096)**. Post-Decision-37 the "no swallowed failures" outcome lands in `module-caching.md`. Reference for history only |
+| Defect 8 repro notes | `archive/defect-8-repro-notes.md` | **Archived (S75 W5, FIXME 0096)**. Keep as cross-skill repro example |
+| Defects 4/5/6 reduction | `archive/defects-456-reduction.md` | **Archived (S75 W5, FIXME 0096)**. Sprint 59 W1 incident-debug residue |
+| Slice 4 / 21-hello-io | `archive/slice-4-21-hello-io-investigation.md` | **Archived (S75 W5, FIXME 0096)**. Sprint 61 era closure double-free reduction; keep for repro |
 
-Six docs are flagged stale-as-design. They remain as references but should not be cited as authoritative design intent. **FIXME 0096** (`*-design-backend-stale-subordinate-doc-archival.md`) asks `/sprint` to schedule a 30-minute housekeeping pass that moves them to `design/backend/archive/` with a `README.md` indexing what each captured.
+**Archival done (S75 W5, FIXME 0096).** The five firmly-stale "Stale as live design" docs (`io-trampoline-trace.md`, `cache-repl-loads-triage.md`, `defect-8-repro-notes.md`, `defects-456-reduction.md`, `slice-4-21-hello-io-investigation.md`) moved to `design/backend/archive/` with an `archive/README.md` index. The two **partially**-stale docs (`hkt-codegen.md`, `sprint51-fqtypename-cache.md`, `ast-sourced-codegen.md`) retain residual live content and stay at the top level as cite-with-care references. FIXME 0096 may be `git rm`'d once `/sprint` confirms.
 
 ---
 
@@ -411,7 +417,7 @@ The contract questions surfaced by earlier refreshes have all been resolved into
 
 ### FIXME 0096 — Stale subordinate-doc archival pass
 
-`target: /sprint`. Six subordinate docs (named in §8 above) are incident-debug or pivot residue that no longer reflects live design intent. They are still useful as repro references but pollute the "what is the current design?" answer when a contributor scans `design/backend/`. Schedule a 30-minute housekeeping pass that moves them to `design/backend/archive/` with an `archive/README.md` indexing what each captured. Live docs in §8's table stay. See `design/arch/fixmes/0096-design-backend-stale-subordinate-doc-archival.md`.
+`target: /sprint`. **DONE (S75 W5).** The five firmly-stale incident-debug docs moved to `design/backend/archive/` with an `archive/README.md` index; §8's table rows now point at `archive/`. The two partially-stale docs (`sprint51-fqtypename-cache.md`, `ast-sourced-codegen.md`) retain residual live content and stay top-level. FIXME 0096 is ready for `git rm` at `/sprint`'s confirmation. See `design/arch/fixmes/0096-design-backend-stale-subordinate-doc-archival.md`.
 
 ### FIXME 0108 — Relocate `display.rs` to `int`
 
@@ -430,4 +436,4 @@ The contract questions surfaced by earlier refreshes have all been resolved into
 - `audits/backend-20260423-{current,target}-state.{mmd,svg}` — diagrams (target diagram aligns with §3.2 above; current diagram is the audit-date snapshot)
 - `crates/cranelisp-backend/CLAUDE.md` — `/dev`-narrow code conventions
 - `crates/cranelisp-backend/src/` — implementation surface
-- 21 subordinate topic docs in `design/backend/` — see §8 above
+- subordinate topic docs in `design/backend/` (+ `design/backend/archive/` for the 5 incident-debug docs archived S75 W5 per FIXME 0096) — see §8 above

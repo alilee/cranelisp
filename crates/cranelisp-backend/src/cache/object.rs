@@ -1,16 +1,25 @@
-// ObjectModule compilation for module caching.
-//
-// Re-emits a module's functions into a Cranelift ObjectModule to produce
-// a relocatable `.o` file. This is the second compilation pass (the first
-// targets JITModule for immediate execution).
-//
-// Key design decisions:
-// - `ObjectCompileInput` struct replaces the sketch's 21 positional params
-// - `GotReference::DataSymbol` for ObjectModule GOT references
-// - Single `build_isa(is_pic: bool)` for ISA construction
-// - `IntrinsicTable` unifies all extern symbol declarations
-//
-// See design/backend/module-caching.md §5 and §7.
+//! `.o` build-packet construction + processing — the object-path plumbing.
+//!
+//! Drives the object compilation path: `compile_to_module::<ObjectModule>`
+//! followed by the caller's `obj_module.finish().emit()` (the caller-finalize
+//! contract — there is no separate `compile_to_object` backend free function).
+//! The structs here ([`ObjectCompileInput`], [`CacheWritePacket`],
+//! [`IntrinsicTable`], …) cross the backend↔int boundary: the nice worker
+//! produces them, `int` writes the resulting `.o` + sidecar to disk.
+//!
+//! [`build_isa`] is the **single ISA construction point** (re-exported at the
+//! crate root as `cranelisp_backend::build_isa`); `got_data_symbol_name`
+//! produces the `__cranelisp_got_{module}` data-symbol name (Decision 23).
+//!
+//! Key design decisions:
+//! - [`ObjectCompileInput`] groups the codegen input (replaces the sketch's 21
+//!   positional params).
+//! - `GotReference::DataSymbol` for `ObjectModule` GOT references.
+//! - Single `build_isa(is_pic: bool)` for ISA construction.
+//! - [`IntrinsicTable`] unifies all extern-symbol declarations (the three
+//!   buckets track Decision 43's three-crate split of relocation targets).
+//!
+//! See `design/backend/module-caching.md` §5 and §7.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -260,10 +269,18 @@ pub fn process_cache_packet(
             })?;
         let mut obj_module = ObjectModule::new(obj_builder);
 
+        // Object-mode full-module compile: cross-module references are emitted
+        // GOT-indirect and resolved by the linker at load (not via alias-prefix
+        // resolution at codegen), so an empty alias table is the correct,
+        // behaviour-preserving input here — `resolve_got_target` then takes its
+        // prior child/absolute qualified-name path. (S75 W2 D41 rotation added
+        // the `module_aliases` param to `compile_to_module`.)
+        let module_aliases: cranelisp_types::ModuleAliases = dashmap::DashMap::new();
         crate::compile_to_module(
             input.module_path.clone(),
             &names,
             symbol_tables,
+            &module_aliases,
             &mut obj_module,
         )?;
 
@@ -292,10 +309,11 @@ pub fn process_cache_packet(
     })
 }
 
-/// Compute the well-known GOT data symbol name for a module.
-///
-// Re-export from compiler module (single source of truth).
-pub use crate::compiler::got_data_symbol_name;
+// GOT data symbol naming collapsed to a single `pub(crate)` home in S75 W3
+// (per the /arch re-ruling): the canonical fn is
+// `crate::compiler::got_data_symbol_name`. The former `cache::object`
+// re-export — which existed only to serve int's call path — is removed; all
+// in-crate callers use the `crate::compiler::` path directly.
 
 /// Result of processing a cache write packet. Used by the caller to
 /// update the manifest.
@@ -316,14 +334,14 @@ mod tests {
     #[test]
     fn test_build_isa_pic() {
         let isa = build_isa(true).unwrap();
-        assert!(isa.triple().to_string().len() > 0);
+        assert!(!isa.triple().to_string().is_empty());
     }
 
     // spec: design/backend/module-caching.md §5 — build_isa without PIC produces valid ISA
     #[test]
     fn test_build_isa_non_pic() {
         let isa = build_isa(false).unwrap();
-        assert!(isa.triple().to_string().len() > 0);
+        assert!(!isa.triple().to_string().is_empty());
     }
 
     // spec: design/backend/module-caching.md §7 — IntrinsicTable construction
@@ -348,7 +366,7 @@ mod tests {
         let input = ObjectCompileInput {
             module_path: mp.clone(),
             defns: vec![],
-            method_resolutions: HashMap::new(),
+            method_resolutions: cranelisp_types::MethodResolutions::new(),
             fn_slot_assignments: HashMap::new(),
             fn_to_module: HashMap::new(),
             intrinsics: IntrinsicTable::new(),
@@ -387,7 +405,7 @@ mod tests {
         let input = ObjectCompileInput {
             module_path: mp.clone(),
             defns: vec![],
-            method_resolutions: HashMap::new(),
+            method_resolutions: cranelisp_types::MethodResolutions::new(),
             fn_slot_assignments: HashMap::new(),
             fn_to_module: HashMap::new(),
             intrinsics: IntrinsicTable::new(),
@@ -418,6 +436,9 @@ mod tests {
     // spec: design/backend/module-caching.md §13.4 — GOT data symbol naming
     #[test]
     fn test_got_data_symbol_name() {
+        // Canonical home is `crate::compiler::got_data_symbol_name` (S75 W3 —
+        // the cache re-export collapsed to a single `pub(crate)` home).
+        use crate::compiler::got_data_symbol_name;
         assert_eq!(
             got_data_symbol_name(&ModuleFullPath::from("user")),
             "__cranelisp_got_user"
@@ -458,11 +479,12 @@ mod tests {
         let tables = dashmap::DashMap::new();
         let mut st = SymbolTable::new(module.clone());
         let name = defn.name.clone();
-        let param_names = defn
+        let param_names: Vec<Symbol> = defn
             .variants
             .first()
-            .map(|v| v.params.clone())
+            .map(|v| v.params.iter().map(|(n, _)| n.clone()).collect())
             .unwrap_or_default();
+        let variant = defn.variants.first().cloned();
         st.insert(
             name,
             ModuleEntry::Def {
@@ -474,7 +496,8 @@ mod tests {
                 callees: vec![],
                 got_slot: None,
                 trait_origin: None,
-                ast: Some(defn),
+                seq: 0,
+                ast: variant,
                 code: None,
             },
         );
@@ -492,7 +515,6 @@ mod tests {
             docstring: None,
             variants: vec![DefnVariant {
                 params: vec![],
-                param_annotations: vec![],
                 body: Expr::IntLit {
                     value: 42,
                     span: Span::new(10, 12),
@@ -506,17 +528,19 @@ mod tests {
 
         let module = ModuleFullPath::from("user");
         let scheme = Scheme {
-            vars: vec![],
+            type_vars: vec![],
             constraints: HashMap::new(),
             ty: cranelisp_types::Type::Fn(vec![], Box::new(cranelisp_types::Type::Int)),
         };
         let tables = table_with_def(&module, defn.clone(), scheme);
 
         let mut obj_module = test_object_module();
+        let aliases: cranelisp_types::ModuleAliases = dashmap::DashMap::new();
         let _result = crate::compile_to_module(
             module,
             std::slice::from_ref(&defn.name),
             &tables,
+            &aliases,
             &mut obj_module,
         ).unwrap();
 
@@ -552,8 +576,7 @@ mod tests {
             name: Symbol::from("identity"),
             docstring: None,
             variants: vec![DefnVariant {
-                params: vec![Symbol::from("x")],
-                param_annotations: vec![None],
+                params: vec![(Symbol::from("x"), None)],
                 body: Expr::Var {
                     name: Symbol::from("x"),
                     span: Span::new(20, 21),
@@ -567,7 +590,7 @@ mod tests {
 
         let module = ModuleFullPath::from("user");
         let scheme = Scheme {
-            vars: vec![],
+            type_vars: vec![],
             constraints: HashMap::new(),
             ty: cranelisp_types::Type::Fn(
                 vec![cranelisp_types::Type::Int],
@@ -577,10 +600,12 @@ mod tests {
         let tables = table_with_def(&module, defn.clone(), scheme);
 
         let mut obj_module = test_object_module();
+        let aliases: cranelisp_types::ModuleAliases = dashmap::DashMap::new();
         let _result = crate::compile_to_module(
             module,
             std::slice::from_ref(&defn.name),
             &tables,
+            &aliases,
             &mut obj_module,
         ).unwrap();
 
@@ -609,7 +634,6 @@ mod tests {
             docstring: None,
             variants: vec![DefnVariant {
                 params: vec![],
-                param_annotations: vec![],
                 body: Expr::IntLit {
                     value: 0,
                     span: Span::new(10, 11),
@@ -621,7 +645,7 @@ mod tests {
             span: Span::new(0, 15),
         };
         let scheme = Scheme {
-            vars: vec![],
+            type_vars: vec![],
             constraints: HashMap::new(),
             ty: cranelisp_types::Type::Fn(vec![], Box::new(cranelisp_types::Type::Int)),
         };
@@ -629,7 +653,7 @@ mod tests {
         let input = ObjectCompileInput {
             module_path: mp.clone(),
             defns: vec![(defn.clone(), scheme.clone())],
-            method_resolutions: HashMap::new(),
+            method_resolutions: cranelisp_types::MethodResolutions::new(),
             fn_slot_assignments: HashMap::new(),
             fn_to_module: HashMap::new(),
             intrinsics: IntrinsicTable::new(),
@@ -677,7 +701,7 @@ mod tests {
         let input = ObjectCompileInput {
             module_path: mp.clone(),
             defns: vec![],  // No functions
-            method_resolutions: HashMap::new(),
+            method_resolutions: cranelisp_types::MethodResolutions::new(),
             fn_slot_assignments: HashMap::new(),
             fn_to_module: HashMap::new(),
             intrinsics: IntrinsicTable::new(),

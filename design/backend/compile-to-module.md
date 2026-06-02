@@ -1,5 +1,77 @@
 # compile_to_module<M: Module> — Unified Compilation Function
 
+<!-- ============================================================
+     S75 NORMATIVE BANNER — read this first; it supersedes the
+     pre-D41 `CompilationResult` / `FunctionArtifacts` shape that
+     the body sections (§2.1, §8, §9.1, §13) still describe as
+     historical migration narrative.
+
+     S75 (Sprint 75) rotates the source to the D41-amended boundary
+     (FIXME 0221, S70 Phase B amendment to Decision 41) AND retracts
+     the never-real `compile_to_object` free function. The settled
+     target after S75 is:
+
+     1. THE CODEGEN BOUNDARY IS EXACTLY THREE FREE FUNCTIONS:
+          compile_to_module<M>   (the only CLIF-emission entry; §2)
+          load_object            (cache-hit .o map; no codegen)
+          produce_disasm         (on-demand disassembly)
+        `compile_to_object` is RETRACTED — it never had a real body
+        (a Sprint-67 facade scaffold returning unimplemented!(),
+        citing the never-filed FIXME 0184). The object path is
+        `compile_to_module::<ObjectModule>` + CALLER `finish().emit()`
+        — the §2.5 caller-finalize contract, symmetric to int holding
+        the JITModule for Arc<Jit> reclaim in JIT mode. See
+        `facades/backend.md` §"Free functions" tombstone + Decision 23.
+
+     2. compile_to_module's S75 SIGNATURE (the D41 rotation):
+          pub fn compile_to_module<M: Module + CodeFinalizer, C, L>(
+              scope: &ModuleFullPath,
+              names: &[Symbol],
+              symbol_tables: &SymbolTables<C, L>,   // SymbolTables<Code,()> at the int boundary
+              module_aliases: &ModuleAliases,        // NEW param — alias resolution for qualified callees
+              module: &mut M,
+          ) -> Result<CompilationArtifacts, CompilationError>;
+
+          #[non_exhaustive]
+          pub struct CompilationArtifacts {       // value-returned, always created
+              pub clif_ir: String,
+              pub code_size: usize,
+              pub compile_duration: std::time::Duration,
+          }
+
+          pub fn produce_disasm(
+              fq: &FQSymbol,
+              symbol_tables: &SymbolTables<C, L>,
+          ) -> Result<String, CompilationError>;
+
+        `CompilationResult` + `FunctionArtifacts` are DELETED (they were
+        the pre-rotation per-batch return tuple). D41 #1 (write_code) and
+        #2 (got().store_slot) direct-writes are PRESERVED; D41 #3
+        (Introspection direct-write) is RETRACTED — backend returns the
+        artefact BY VALUE and never names int's `Introspection`.
+        The `module_aliases` param is what `compiler::resolve_func_arity`
+        / `resolve_got_target` already need for qualified-callee
+        resolution; it is threaded in rather than re-derived.
+
+     3. `Code` SLIMS to lifecycle-owner-only and loses `Primitive`
+        (FIXME 0244 backend half): `Code::Jit(Arc<Jit>)` /
+        `Code::Linker(Arc<Linker>)`; NO per-variant `ptr` (the GOT is
+        the single source of truth for callable addresses); NO
+        `Code::Primitive` (primitive-ness reads from
+        `kind: DefKind::Primitive`; primitives entries carry `code: None`).
+
+     4. `Linker::get_symbol -> Result<*const u8, LinkerError>` (D37);
+        `Linker::load_object` becomes `pub(crate)`; the free `load_object`
+        is the public cache-hit entry.
+
+     5. ADT constructors lower through `compile_constr_adt` (the
+        `Expr::ConstrADT` handler — see §2.6 below), replacing the
+        four-function ctor family.
+
+     int's call sites stay RED after S75 (re-wired S77); acceptance is
+     crate-narrow green. See `sprints/SPRINT.md` §"Phase 2 re-scope".
+     ============================================================ -->
+
 <!-- Sprint 58 Wave 2 architectural reconciliation: COMPLETE.
      The four FIXME points filed by /arch (Decisions 23 UPDATED, 25 UPDATED,
      36 NEW, 37 NEW) have all landed:
@@ -158,9 +230,123 @@ let bytes = obj_module.finish().emit()?;
 // Write bytes to .o file
 ```
 
-`Jit` is `pub(crate)` — callers work with `JITModule` directly (from cranelift_jit). No backend wrapper types in the public API except `CompilationResult`.
+`Jit` is the JIT retention newtype (`pub` per `facades/backend.md` §"Jit"); callers also work with `JITModule` directly (from cranelift_jit). The only backend value-type in the public return of `compile_to_module` is `CompilationArtifacts` (post-S75; the pre-D41 `CompilationResult` shown in the snippets below is the historical pre-rotation shape — see the S75 banner at the top of this file).
 
 **`names` as an ordered list**. The iteration order of `names` determines compilation order, which determines the "last zero-arg defn" chosen for `entry_func_id` and the order of `func_ids` population. Callers that care (e.g., `--run` batch mode picking a main entry) pass a deterministic order (typically source order); callers that don't (nice worker `.o` emission) may pass any stable enumeration.
+
+### 2.6 Constructor codegen — two paths over one core op (`emit_adt_construct`), constructors-like-primitives (S69/S75 ctor-as-Def)
+
+> **Status: PRESCRIPTIVE for S75 W1 (landed `compile_constr_adt`) + W4 (the full two-path collapse formalized below — closure deletion included).** This section is the backend-owned design for the constructor codegen the S70 ctor-as-Def collapse lands in backend. It is grounded in `facades/backend.md` §"Constructor codegen" (already target-stated to this model — see line 567 "First-class use `(map Some list)` passes the ctor Def's `got_slot` address — same path as any other callable. No on-demand closure synthesis.") + the `Expr::ConstrADT` rustdoc at `crates/cranelisp-types/src/ast.rs` + `DefKind::Constructor` at `crates/cranelisp-types/src/module.rs` + `bounded-contexts.md` §7 "Multi-legged authoring" + **Decision 48 (the primitives symmetry the constructor model mirrors exactly).**
+
+> **W4 correction — designs for the FINAL state (user directive 2026-06-02).** The prior W4 text of this section treated "int does not yet got-slot / compile constructor `Def`s" as a *blocker* that forces backend to keep the bespoke as-value closure (`compile_data_constructor_as_value` + `compile_ctor_wrapper_body`) until S77, deferring the deletion to category (B). **That framing is retracted — it was the int-deference this sprint rejects.** Backend designs for the final state, exactly as it already does for **primitives** (Decision 48): primitives dispatch GOT-indirect and resolve operator/primitive-as-value through a GOT-resolving closure (`compile_operator_as_value`) **because backend assumes the primitives module's GOT entries exist** — primitives/int populate them, not backend. Constructors get the *identical* treatment: backend **EXPECTS the constructor's GOT slot to be populated** and routes constructor-as-value through the **same fn-as-value / GOT-resolving path** primitives-as-value already uses. The bespoke closure is **DELETED.** int not yet producing the constructor GOT entries is int's red state (S77 enablement, §2.6.5) — it is **not a backend concern** and **not a reason to keep the closure**. The "three live paths today" observation from the prior text is the *current source state W4 collapses*, not a constraint on the target.
+
+**Why this arm exists now.** Pre-S70, ADT construction was emitted by a four-function family — `compile_data_constructor_call` (`compiler/apply.rs`), `compile_data_constructor_as_value` (`compiler/literals.rs`), `nullary_constructor_tag` (`compiler/literals.rs`), `data_constructor_info` (`compiler/literals.rs`) — each reading a `ConstructorInfo` struct via `CompileContext::lookup_constructor` (`compiler/mod.rs`). S70 retired the `ConstructorInfo` struct from `cranelisp-types`. Constructors are now ordinary `ModuleEntry::Def` entries: `kind: DefKind::Constructor { type_name: FQTypeName, tag: usize, field_count: usize, internal: bool }`, with a synthesised `DefnVariant` body whose single body expression is `Expr::ConstrADT { type_name, tag, fields, span, inferred_type }`. Backend lowers the body node for construction — it reads the `DefKind::Constructor` metadata only for *recognition* (Path-1 inline) and pattern matching (`tag`).
+
+#### 2.6.1 The model — two paths over one core op, mirroring primitives exactly
+
+Constructors get the **same shape as primitives** (Decision 48): a GOT-dispatched `Def` reachable as a first-class value, **plus** an optional inline-substitution emitted at saturated call sites. The symmetry is point-for-point:
+
+| Concern | Primitive (Decision 48 — landed) | Constructor (this design — W4) |
+|---|---|---|
+| Callable form | got-slotted `Def` in the synthetic `primitives` module; GOT-indirect dispatch uniformly | got-slotted `Def`; GOT-indirect dispatch uniformly |
+| Saturated call optimization | `primitives_inline::try_emit_inline_primitive` at the call site (no call frame) | `emit_adt_construct` inline at the saturated `(Some 3)` call site (no call frame) |
+| As-value (`(map + xs)` / `(map Some xs)`) | `compile_operator_as_value` — resolve the primitive's GOT slot, build a zero-capture closure whose wrapper body GOT-indirects to the slot | the **same** fn-as-value / GOT-resolving mechanism: `compile_fn_as_value` over the got-slotted ctor `Def` |
+| GOT-entry producer | primitives crate / int (Decision 48) — **backend ASSUMES it** | typecheck (got-slot) + int (batch) — **backend ASSUMES it** (§2.6.5) |
+| Core construct/dispatch | (n/a — primitive bodies are extern/inline) | `emit_adt_construct(tag, field_vals) -> Value` |
+
+One core emitter does the actual construction; the two paths differ only in *who* invokes it and *whether a call frame is involved*.
+
+**Core op — `emit_adt_construct(tag, field_vals: &[Value], span) -> Value`.** The single ADT-construct emitter, taking an already-computed `tag` and the already-computed field `Value`s:
+
+| Case | Emission |
+|---|---|
+| `field_vals.is_empty()` (nullary, e.g. `None`, `Red`) | `iconst.i64 tag` — a bare tag value, no heap allocation. Preserves the `NULLARY_TAG_THRESHOLD` discrimination contract (see `heap.rs` + `per-module-got.md`). This folds in the former `nullary_constructor_tag` *emission* arm. |
+| `!field_vals.is_empty()` (data ctor, e.g. `Some 42`, `Cons h t`) | (1) `heap::emit_alloc` a `HeapAdt` payload sized `HeapAdt::payload_size(field_vals.len())`; (2) store `tag` at `HeapAdt::TAG_OFFSET`; (3) `heap::heap_store` each field `Value` at `HeapAdt::field_offset(i)`. Result `Value` is the heap pointer. |
+
+`emit_adt_construct` does **no field compilation and no RC adjustment** — its callers pre-compute `field_vals` (with the consuming-convention inc/transfer already applied) and hand them in. This is exactly the contract of the current `compile_data_constructor_call` body (`apply.rs`); W4 renames it to `emit_adt_construct`, adds the nullary arm, and routes all construct sites through it. See §2.6.4 for the RC contract.
+
+**Path 1 — inline construction `(Some 3)` (saturated application).** A saturated constructor *application* emits `emit_adt_construct` **inline at the call site** — no call, no GOT, no closure. This is the existing `compile_var_apply` branch (`apply.rs`): `data_constructor_info(name)` recognises the callee as a data ctor with N fields, `compile_consuming_arg_list` computes the N field values, and the construct is emitted in place. **KEEP this branch** — it is the optimization, structurally identical to `primitives_inline` for saturated primitive calls (Decision 48). It is *not* a redundant interception. W4 only re-points its tail from `compile_data_constructor_call` to `emit_adt_construct`.
+
+Nullary applications never reach Path 1 (a nullary ctor like `None` is not applied; it appears as `Expr::Var`). Nullary *references* fold to `iconst tag` at the `compile_var` site (the current `nullary_constructor_tag` branch in `literals.rs`), which W4 re-expresses as `emit_adt_construct(tag, &[], span)` for a single emission rule.
+
+**Path 1 (Def-body) — `compile_constr_adt` (`Expr::ConstrADT` node).** The `Expr::ConstrADT` node is born **only** as the synthesised body of a constructor `Def` (verified: typecheck `register_constructors` + `builtins.rs` synth_body; user code `(Some 3)` arrives as `Apply { Var("Some"), [3] }`, never as a `ConstrADT` node — S69 Sub 35). `compile_constr_adt` (`apply.rs`) is therefore the **constructor Def's body** codegen: it `compile_consuming_arg_list`s the body's field `Var`s, then calls the core op. **KEEP it** — W4 re-points its tail (currently `compile_data_constructor_call`) to `emit_adt_construct`. This is the codegen that runs *inside* the got-slotted constructor function — the GOT target's body for Path 2.
+
+**Path 2 — GOT-as-value `(map Some [3 4 5])`, via the normal fn-as-value path.** `Some` mentioned as a first-class value resolves through the **same mechanism primitives-as-value uses** — the `compile_var` fall-through to `is_known_function` → `compile_fn_as_value` (`control_flow.rs`). The corrected `compile_var` dispatch **deletes its dedicated constructor-as-value branch entirely**; a constructor reference simply falls through to the generic fn-as-value handler, exactly as `(map + xs)` falls through `compile_operator_as_value` and any user `(map f xs)` falls through `compile_fn_as_value`:
+
+```
+compile_var(name):
+    1. local variable?           → use_var
+    2. nullary ctor reference?   → emit_adt_construct(tag, &[], span)   // Path-1 nullary fold; KEEP recognition
+    3. operator-as-value?        → compile_operator_as_value           // primitives-as-value; UNCHANGED
+    4. is_known_function(name)?  → compile_fn_as_value                  // ← constructors land HERE now (Path 2)
+    5. else                      → undefined-variable error
+```
+
+The dedicated `if data_constructor_info → compile_data_constructor_as_value` branch (currently between steps 2 and 3) is **removed**. A *data* constructor is no longer special-cased at `compile_var`: once it is got-slotted (§2.6.5), `is_known_function` returns true (via `resolve_got_target`) and `compile_fn_as_value` builds the zero-capture closure whose wrapper body (`emit_wrapper_call` → GOT-indirect `call_indirect` against `__cranelisp_got_{module}` + slot) calls the constructor function. The constructor function's body (`compile_constr_adt` → `emit_adt_construct`) performs the actual construct. `map` invokes the closure under the ordinary closure-call convention.
+
+This is the **identical mechanism** validated in source for primitives-as-value: `compile_operator_as_value` (`literals.rs`) resolves the primitive's slot via `resolve_got_target`, declares `__cranelisp_got_{primitives}` as `Linkage::Import` data, and emits a wrapper that `global_value`s the slab base, loads `slab_base + slot*8`, and `call_indirect`s. `compile_fn_as_value`'s `emit_wrapper_call` (`control_flow.rs`) does the same GOT-indirect dance (or a direct `call` when the name is in the current unit's `func_ids`). **Backend EXPECTS the constructor's GOT slot to be populated** — exactly as `compile_operator_as_value` expects the primitive's slot to be populated. The producer of that entry (typecheck got-slot + int batch, §2.6.5) is the S77 *int-side* enablement, the precise analogue of how primitives/int produced the primitive GOT entries that `compile_operator_as_value` already assumes.
+
+**Pattern matching is none of these paths** — `Pattern::Constructor` codegen (`compiler/match_codegen.rs`) reads `DefKind::Constructor.tag` from the symbol table; discrimination is unchanged.
+
+#### 2.6.2 The primitives precedent — backend assumes the GOT entry, it does not produce it
+
+The crux of the correction: **a callable's GOT entry is produced by the surface that owns the callable, never by the codegen that *consumes* it.** Decision 48 settled this for primitives — `cranelisp-primitives` owns a statically-constructed `SymbolTable` + `Arc<GotTable>` referenced from `CompilerSession` at startup; from session-init onward primitives dispatch is functionally equivalent to any other module. Backend's `compile_operator_as_value` does not got-slot the primitive or populate the slab — it *resolves* the slot (`resolve_got_target`) and *emits a reference* (`global_value` + indexed load), trusting that by the time the emitted code runs, the slab base resolves (JIT: int's `symbol_lookup_fn` over `symbol_tables[primitives].got().base_ptr()`; object: linker relocation). The slot's *population* is upstream.
+
+Constructors are the same kind of callable `Def` and get the same division of labour. Backend's `compile_constr_adt` (the body) + `compile_fn_as_value` (the as-value reference) are the *consume* side and are **already capable** — `compile_to_module`'s loop compiles whatever named `Def` with `ast: Some(_)` it is handed, and `compile_constr_adt` emits the body correctly. The *produce* side — got-slotting the constructor `Def` and enumerating it into the codegen batch — is upstream (typecheck + int), and is the S77 enablement (§2.6.5). Backend's design assumes it, names it, and does not wait on it: the W4 source change lands the consume side complete (closure deleted), and int's call sites stay red until S77 — exactly as the S75 banner already establishes for the whole `compile_to_module` rotation ("int's call sites stay RED after S75; acceptance is crate-narrow green").
+
+#### 2.6.3 W4 disposition — the full collapse, backend-only
+
+W4 lands the **complete** collapse in backend. There is no deferred category-(B): the closure is deleted now, and the as-value path is rerouted through the GOT/fn-as-value mechanism that backend already owns and already exercises for primitives. The runtime-completeness of `(map Some xs)` depends on the S77 int-side GOT-entry production, but that is int's red state — not a backend deferral.
+
+| Function | Site | W4 disposition |
+|---|---|---|
+| `compile_data_constructor_call` | `apply.rs` | **Unify → `emit_adt_construct`.** Rename; it already takes `(tag, field_vals, span)` and does alloc+tag+stores. Add the `field_vals.is_empty() → iconst tag` nullary arm (absorbing `nullary_constructor_tag`'s emission). |
+| `compile_constr_adt` | `apply.rs` | **KEEP** (Path-1 Def body — the GOT target's body for Path 2). Re-point tail to `emit_adt_construct`. |
+| `compile_var_apply` ctor branch | `apply.rs` | **KEEP** (Path-1 inline). Re-point tail to `emit_adt_construct`. |
+| `nullary_constructor_tag` | `literals.rs` | **Fold into `emit_adt_construct` nullary arm.** The `compile_var` nullary-reference site calls `emit_adt_construct(tag, &[], span)` instead. The `lookup_constructor` *recognition* (is-this-a-nullary-ctor) stays — only the *emission* helper folds away. |
+| `data_constructor_info` | `literals.rs` | **KEEP** (Path-1 inline-substitution recognition — the `(Some 3)`-is-a-saturated-ctor-call test, and the `compile_var` nullary-vs-data discrimination). Already reconciled with W1's `CtorMeta`/`lookup_constructor` (`data_constructor_info` *delegates* to `lookup_constructor`). Used by `compile_var_apply`'s Path-1 branch. No change beyond the tail re-point at its caller. |
+| `compile_data_constructor_as_value` | `literals.rs` | **DELETE.** Replaced by Path 2: remove the dedicated `compile_var` branch (`if data_constructor_info → compile_data_constructor_as_value`); the reference falls through to `is_known_function` → `compile_fn_as_value` over the got-slotted ctor `Def` — the same GOT/fn-as-value mechanism `compile_operator_as_value` uses for primitives. |
+| `compile_ctor_wrapper_body` | `literals.rs` | **DELETE with `compile_data_constructor_as_value`** (its only caller). The wrapper body it synthesised is superseded by `compile_fn_as_value`'s `compile_fn_wrapper_body` + `emit_wrapper_call`. |
+
+**Net effect of W4:** (1) one core emitter (`emit_adt_construct`) with all construct copies routed through it (`compile_data_constructor_call`→renamed, `compile_constr_adt`→re-pointed, the inline `compile_var_apply` branch→re-pointed, the nullary `compile_var` reference→re-pointed); `nullary_constructor_tag` emission folded in. (2) The bespoke as-value closure (`compile_data_constructor_as_value` + `compile_ctor_wrapper_body`) **deleted**, constructor-as-value rerouted through the generic `compile_fn_as_value` GOT path. This *achieves* the facade's "single handler" collapse in backend this sprint. The construct-as-value path is **runtime-complete only once** the S77 int-side GOT-entry production lands (§2.6.5) — that dependency is named, not absorbed into backend.
+
+> **`/design` note — the deletion is correct now, not "owed until S77."** The prior note here said "do NOT delete the as-value closure in W4." **That is retracted by the 2026-06-02 user directive.** Backend mirrors primitives: it deletes the bespoke wrapper and routes through the GOT mechanism, *expecting* the GOT entry the way `compile_operator_as_value` expects the primitive's. The crate-narrow tests prove the path by populating the constructor's GOT slot the way the W1 `make_def_entry_slot` tests populate a `Def`'s slot (§2.6.6). int's production of those entries in the real pipeline is S77; the design does not hold the deletion hostage to it.
+
+#### 2.6.4 RC / Decision-24 contract for `emit_adt_construct`
+
+`emit_adt_construct` itself performs **no** RC adjustment — it stores the `field_vals` it is handed verbatim. The consuming-convention inc/transfer happens in the **caller** that produces `field_vals`:
+- **Path 1 inline** (`compile_var_apply`) and **Path 1 Def body** (`compile_constr_adt`) both build `field_vals` via `compile_consuming_arg_list`, which inc's non-last-use heap `Var` fields (`AlwaysHeap` → `emit_rc_inc`; `Mixed` → `emit_rc_inc_guarded`) and transfers last-use / temporary fields at their existing rc. This is Decision 24's uniform consuming convention (BC invariant 2): the ADT holds an independent reference; the ADT's drop glue dec's heap-typed fields when the ADT reaches rc=0.
+- **Path 2** routes through the got-slotted ctor function whose body *is* `compile_constr_adt` — so the same `compile_consuming_arg_list` discipline applies inside the function. The fn-as-value caller (`map`) passes arguments under the ordinary consuming calling convention; no special ctor-as-value RC handling is needed (another reason the bespoke wrapper is redundant once Path 2 is the path).
+
+**`/dev` must preserve:** `emit_adt_construct` stays RC-neutral; the inc/transfer remains in the `compile_consuming_arg_list` callers. Do **not** move RC into the core op — doing so would double-inc the Path-1 inline site (which already inc'd) and is the classic RC mis-count the small-CLIF-by-eye discipline catches.
+
+#### 2.6.5 S77 int-side enablement — the dependency backend's design ASSUMES
+
+Backend's Path 2 design assumes a constructor `Def` is a genuine got-slotted, compiled callable — exactly as primitives are. That production is **not** backend's; it is the S77 enablement, owned by `/arch` + `/typecheck` + `/int`:
+
+| Enabling step | Owner | What it does |
+|---|---|---|
+| **got-slot assignment** to `DefKind::Constructor` entries | typecheck (`register_constructors` / the slot-allocation pass) | Constructor `Def`s currently build with `got_slot: None` (the `allocate_got_slot()` sites key on `DefKind::UserFn`/mono/trait-method only). S77 assigns a slot to each constructor `Def`, so `resolve_got_target` finds it and `is_known_function` returns true. |
+| **batch enumeration** of constructor names | int (`derive_codegen_batch`) | The codegen `names` list currently pushes only `TopLevel::Defn`/`__expr`/`TraitImpl` names. Constructors are synthesised under `TopLevel::TypeDef`, so their names never enter `names`. S77 enumerates each `TypeDef`'s constructor `Def`s into the batch, so `compile_to_module` compiles each constructor body (`Expr::ConstrADT` → `compile_constr_adt`) into a function whose address `compile_to_module` writes into the slot (D41 #2). |
+| **GOT-data / symbol-lookup** for the constructor's module | int (JIT `symbol_lookup_fn` / object relocation) | Already general — the constructor lives in a user/prelude module whose `__cranelisp_got_{M}` is wired the same as any other module. No constructor-specific work beyond the two rows above. |
+
+This mirrors the primitives precedent precisely: primitives' GOT entries were produced by primitives/int (Decision 48); `compile_operator_as_value` simply assumed them. The constructor GOT entries are produced by typecheck + int (S77); `compile_fn_as_value` simply assumes them. **The W4 backend change is complete and correct without S77** — it lands the consume side (closure deleted, as-value rerouted) and the crate-narrow tests prove it by populating the slot in the harness (§2.6.6). S77 makes the path runtime-complete in the *production* pipeline. A FIXME `target: /arch` (§9 handoff) names this dependency for `/arch` to route to typecheck + int.
+
+#### 2.6.6 Acceptance — crate-narrow, GOT-slot populated by the harness
+
+With the closure gone, Path 2 needs the constructor's GOT slot populated to *run*. Backend's crate-narrow tests set up the slot **the way the W1 `make_def_entry_slot` tests do** (`lib.rs` — `make_def_entry_slot(defn, slot)` inserts a `ModuleEntry::Def` with an explicit `got_slot: Some(slot)` and `next_got_slot` bumped; `compile_to_module` then writes the finalised code pointer into the slab via `got().store_slot` — D41 #2, verified in `compile_to_module_writes_got_slot_after_finalize`). The constructor as-value test follows the same two-stage shape:
+
+1. **Stage 1 — got-slot + compile the constructor `Def`.** Build a constructor `Def` whose single `DefnVariant` body is an `Expr::ConstrADT { tag, fields: [field Vars…], … }` (the synthesised shape typecheck will produce at S77). Insert it via `make_def_entry_slot(ctor_defn, 0)` into a shared `SymbolTable` (so `got_slot: Some(0)`). Compile it with `compile_to_module(module, &[ctor_name], &tables, &aliases, jit)`. Assert the GOT slot is non-null afterward (the constructor body is now a live callable at slab slot 0) — the exact assertion `compile_to_module_writes_got_slot_after_finalize` already makes for an ordinary `Def`.
+2. **Stage 2 — compile a consumer that references the constructor as a value.** A consumer defn `(let [f Some] (f 3))` (or a direct `compile_fn_as_value`-exercising body) in a module that imports/sees the constructor's table. With the shared `tables` carrying the got-slotted constructor, `is_known_function` returns true (via `resolve_got_target`), `compile_fn_as_value` builds the zero-capture closure, and `emit_wrapper_call` emits the GOT-indirect `call_indirect` against `__cranelisp_got_{module}` + slot 0. The test asserts the consumer compiles (no `undefined variable` / `unknown arity` error — `resolve_func_arity` reads `param_names.len()`, already green per the prior W4 verdict) and, when run end-to-end in the harness's JIT (slot populated in Stage 1, `symbol_lookup_fn` registered the same way the existing JIT tests do), produces the constructed ADT.
+
+**What stays crate-narrow GREEN this sprint (all proven without S77):**
+- The unified core op `emit_adt_construct` — both arms (nullary `iconst tag`; data alloc+tag+stores), exercised via the Path-1 inline and `compile_constr_adt` Def-body sites (these need no GOT entry — they emit inline / are the body itself).
+- The constructor `Def`'s body compiled into a got-slotted callable (Stage 1) — `compile_to_module` + `store_slot`, the `make_def_entry_slot` pattern.
+- The as-value reroute (Stage 2) — `compile_fn_as_value` over a harness-got-slotted constructor `Def`, including the GOT-indirect wrapper. This is the durable regression guard for the closure deletion: it proves the generic fn-as-value path subsumes the deleted bespoke wrapper.
+
+**What is pending-S77 (failing-not-ignored, NOT a backend regression):** any *existing* end-to-end / integration test that exercises `(map Some xs)` or `(let [f Some] (f 3))` **through the real pipeline** (not the crate-narrow harness) will not run until int's production batch got-slots + enumerates constructors (§2.6.5). Per `memory/feedback_failing_not_ignored.md`, such a test stays **failing, un-ignored**, carrying a `FIXME(/arch)` (S77 enablement) — it is the trigger for the cross-crate work, not a hidden gap. The crate-narrow tests above (harness-populated slot) cover the *backend* obligation completely; the pending test covers the *pipeline* obligation that S77 closes. `/qa` owns authoring the pending e2e test in `tests/`; `/dev` owns the crate-narrow unit tests in `crates/cranelisp-backend/src/`.
+
+> **Honest statement of the split:** the design + the inline path + the GOT-emit + the as-value-via-fn-as-value reroute are **all exercised crate-narrow** this sprint (slot set up by the harness). The *only* thing that waits on S77 is the real-pipeline e2e, because only int produces the constructor GOT entry in production. Backend does not got-slot constructors and never will — that is int/typecheck's job, exactly as primitives' GOT entries are not backend's.
 
 ## 3. Function Signature and Generic Constraints
 
@@ -409,6 +595,17 @@ Per `/arch` Decision 36 + Decision 31 (all-GOT calling for REPL redefinition cor
 Compile-time arity for cross-module call sites is resolved at codegen time via `compiler::resolve_func_arity` walking the symbol tables (used in `compile_curry_function`, `control_flow.rs:1064`).
 
 ## 8. Return Type
+
+> **SUPERSEDED by the S75 banner (top of file).** The `CompilationResult` /
+> `FunctionArtifacts` shapes below are the **pre-D41 historical return tuple**,
+> kept here as migration narrative. After S75 W2, `compile_to_module` returns
+> `Result<CompilationArtifacts, CompilationError>` — a value-returned, always-
+> created `{ clif_ir, code_size, compile_duration }` triple — and writes `Code` +
+> the GOT slot ptr directly into the passed-in stores (D41 #1 + #2). The
+> expensive `disasm` field moves to the separate on-demand `produce_disasm` free
+> function. `CompilationResult` + `FunctionArtifacts` + `entry_func_id` +
+> `func_ids` + `func_arities` + `warnings` are DELETED. Read §8/§8.1/§9.1 below
+> as the *journey*, not the destination.
 
 ```rust
 /// Result of compiling a program's functions into a module.

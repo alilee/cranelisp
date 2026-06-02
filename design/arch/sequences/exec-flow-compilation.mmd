@@ -9,7 +9,7 @@ sequenceDiagram
     participant Cache as Object cache<br/>::cache::ObjectCache
     participant GotObs as GotObserver<br/>cranelisp_backend::register_got_observer<br/>(extension point — consumer state in src::got_trace)
 
-    Note over Initiator, GotObs: † marks proposed/target API not yet in current code.<br/>Workers, facades, and STs introduced lazily at first use.<br/>All call signatures are the as-designed facade — translate directly to Rust source.<br/>Receiver (&self / &mut self) is implicit in the lifeline.<br/>SharedState is the Arc[T] every worker holds — initiator-side calls touch Sess, worker-side calls touch Shared.<br/>GotObserver registration (extension point per facades/backend.md §"GOT-population observation") happens once at session init from int when REPL/trace mode or CRANELISP_GOT_TRACE=1 is active. Production batch: no observer registered, one relaxed null-check load per emit site.
+    Note over Initiator, GotObs: † marks proposed/target API not yet in current code.<br/>Workers, facades, and STs introduced lazily at first use.<br/>All call signatures are the as-designed facade — translate directly to Rust source.<br/>Receiver (&self / &mut self) is implicit in the lifeline.<br/>SharedState is the Arc[T] every worker holds — initiator-side calls touch Sess, worker-side calls touch Shared.<br/>GotObserver registration (extension point per cranelisp_backend::got_observer rustdoc + bounded-contexts.md §3) happens once at session init from int when REPL/trace mode or CRANELISP_GOT_TRACE=1 is active. Production batch: no observer registered, one relaxed null-check load per emit site.
 
     rect rgb(245, 230, 255)
         Note over Initiator, Sched: ENTRY — register_module runs Phase 0 SYNCHRONOUSLY (parse + structural decls), then dispatches<br/>Phase 0 is the only [&mut SymbolTable] hold (microseconds — entry write lock on the outer DashMap).<br/>After Phase 0 the SymbolTable is reachable only via shared .get() — workers run with [&SymbolTable] + per-entry inner locks.
@@ -195,12 +195,14 @@ sequenceDiagram
             create participant Backend as Backend facade<br/>cranelisp_backend
             PW ->> Backend: cranelisp_backend::load_object(module: &ModuleFullPath, object: &[u8], symbol_tables: &SymbolTables) -> Result[LinkerArtefact, CranelispError]
             Note over Backend, ST_m1: linker resolves each defined symbol of m1 by bare name (per Decision 36)
-            Backend ->> ST_m1: SymbolTable::write_code(sym: &Symbol, code: Code::Linker(Arc[Linker])) + got().store_slot(entry.got_slot, ptr) — for each defined symbol<br/>S66 post-rollback — Code carries lifecycle owner only — call address lives in the GOT (single source of truth)
+            Backend ->> ST_m1: got().store_slot(entry.got_slot, ptr) — for each defined symbol — backend writes the GOT slot (D41 #2)<br/>S66 post-rollback — call address lives in the GOT (single source of truth)
             opt GotObserver registered (per defined symbol — relaxed-load null check)
-                Note over Backend, GotObs: extension-point emit at the load_object slot-population site — facades/backend.md §"GOT-population observation"
+                Note over Backend, GotObs: extension-point emit at the load_object slot-population site — cranelisp_backend::got_observer rustdoc + bounded-contexts.md §3
                 Backend ->> GotObs: GotObserver(GotEventTag::LinkerWrite, &GotEvent { module: m1, symbol, slot, ptr, provenance: GotProvenance::Linker { linker_addr } })
             end
             Backend -->> PW: Ok(LinkerArtefact { linker: Arc[Linker], ptrs: HashMap[Symbol, *const u8] })
+            Note over PW, ST_m1: CALLER composes Code (D41 #1, S75 W2 Finding-A) — for each (symbol, ptr) in ptrs, int stores Code::Linker(linker.clone()) on ST_m1[symbol] via SymbolTable::write_code. Backend never constructs Code.
+            PW ->> ST_m1: SymbolTable::write_code(sym, Code::Linker(Arc[Linker])) — for each defined symbol (caller-side compose)
             PW ->> Sched: CompileScheduler::notify_inmem_codegen_batch_complete(module: &ModuleFullPath)
             PW ->> Sched: CompileScheduler::notify_object_codegen_complete(module: &ModuleFullPath)
             Note over Sched: cache-hit completes BOTH in-mem and object phases for m1 — object phase skipped
@@ -208,19 +210,21 @@ sequenceDiagram
             Sched -->> PW: Some(PriorityWork::Jit(fq: FQSymbol))
             PW ->> Shared: Sess.shared.symbol_tables.get(&m1)
             Shared -->> PW: Some(Ref[SymbolTable])
-            Note over PW, Backend: per-symbol JIT call site (Decision 41) — names is single-element [fq.symbol].<br/>Backend writes Code and Introspection directly into the passed-in stores via Decision 38's write_code(&self, sym, code) and the Option[&DashMap] introspection parameter.<br/>No artefact return — Result[(), CompilationError]. The previous int-side post-loop (worker.rs:2860-3018) collapses into this single call site.
-            PW ->> Backend: cranelisp_backend::compile_to_module[M: Module](scope: &ModuleFullPath, names: &[Symbol], symbol_tables: &DashMap[ModuleFullPath, SymbolTable[Code, ()]], introspection: Option[&DashMap[FQSymbol, Introspection]], module: M) -> Result[(), CompilationError]
+            Note over PW, Backend: per-symbol JIT call site (Decision 41) — names is single-element [fq.symbol].<br/>int creates the Jit, passes jit.jit_module() (a &mut M) into the call. Backend writes ONLY the GOT slot (D41 #2) and returns a value CompilationArtifacts (S70 Phase B amendment).<br/>Backend does NOT construct Code and does NOT name Introspection (S75 W2 Finding-A — backend only borrows &mut M, never owns the Arc[Jit]).
+            PW ->> Backend: cranelisp_backend::compile_to_module[M: Module](scope: &ModuleFullPath, names: &[Symbol], symbol_tables: &SymbolTables[Code, ()], module_aliases: &ModuleAliases, module: jit.jit_module()) -> Result[CompilationArtifacts, CompilationError]
             Backend ->> ST_m1: SymbolTable::get(sym: &Symbol) -> Option[Ref[ModuleEntry[Code]]] — read ast, scheme, resolved calls
-            Backend ->> ST_m1: SymbolTable::write_code(sym: &Symbol, code: Code::Jit(Arc[Jit])) + got().store_slot(entry.got_slot, ptr)<br/>S66 post-rollback — Code carries lifecycle owner only — call address lives in the GOT (single source of truth) — [&self] + inner DashMap per-key write lock, atomic GOT slot swap per Decision 41 (formerly Decision 31, retired)
+            Backend ->> ST_m1: got().store_slot(entry.got_slot, ptr)<br/>S66 post-rollback — call address lives in the GOT (single source of truth) — [&self] + inner DashMap per-key write lock, atomic GOT slot swap per Decision 41 (formerly Decision 31, retired)
             opt GotObserver registered (relaxed-load null check)
-                Note over Backend, GotObs: extension-point emit at the write_code site — facades/backend.md §"GOT-population observation"
+                Note over Backend, GotObs: extension-point emit at the got().store_slot site — cranelisp_backend::got_observer rustdoc + bounded-contexts.md §3
                 Backend ->> GotObs: GotObserver(GotEventTag::JitWrite, &GotEvent { module: m1, symbol, slot, ptr, provenance: GotProvenance::Jit { jit_addr } })
             end
-            opt introspection.is_some() (REPL or trace mode — Decision 38 mode discriminator)
-                Note over Backend, Shared: backend writes Introspection directly per Decision 41 — int does no post-processing
-                Backend ->> Shared: introspection.unwrap().insert(fq, Introspection { clif_ir: Some(...), disasm: Some(...), code_size: Some(...), compile_duration: Some(...), .. })
+            Backend -->> PW: Ok(CompilationArtifacts { clif_ir, code_size, compile_duration })
+            Note over PW, ST_m1: CALLER composes Code + Introspection (D41 #1, S75 W2 Finding-A). int wraps Arc::new(jit) AFTER the call and stores Code::Jit(Arc[Jit]) on ST_m1[fq.symbol] via SymbolTable::write_code (atomic GOT-swap-precedes-old-Arc-drop discipline per D41).
+            PW ->> ST_m1: SymbolTable::write_code(fq.symbol, Code::Jit(Arc[Jit])) — caller-side compose
+            opt REPL or trace mode (caller retains the artefact)
+                Note over PW, Shared: int composes Introspection from CompilationArtifacts + parse/expansion fields. disasm via on-demand produce_disasm(fq, code_size, symbol_tables) when /disasm fires (S75 W2 Finding-C — caller-supplied code_size + capstone).
+                PW ->> Shared: introspection.insert(fq, Introspection { clif_ir: Some(...), code_size: Some(...), compile_duration: Some(...), disasm: None, .. })
             end
-            Backend -->> PW: Ok(())
             PW ->> Sched: CompileScheduler::notify_inmem_codegen_complete(fq: &FQSymbol)
             Note over Sched: when all m1/sym in-mem complete: Sched enqueues NiceWork::ObjectCodegen(m1)
         end
@@ -243,10 +247,14 @@ sequenceDiagram
         Sched -->> NW: Some(NiceWork::ObjectCodegen(m1: ModuleFullPath))<br/>(returned from take_object_codegen() the worker was parked in)
         NW ->> Shared: Sess.shared.symbol_tables.get(&m1)
         Shared -->> NW: Some(Ref[SymbolTable])
-        NW ->> Backend: cranelisp_backend::compile_to_object(module: &ModuleFullPath, symbol_tables: &SymbolTables) -> Result[ObjectArtefact, CranelispError]
+        Note over NW, Backend: single codegen entry (Decision 23, design/backend/compile-to-module.md §2) — object mode is just an ObjectModule instance passed to the SAME compile_to_module[M].<br/>NO separate compile_to_object backend entry. The nice worker constructs the ObjectModule, calls compile_to_module::[ObjectModule], then FINALISES it caller-side (the §2.5 caller-finalize contract, symmetric to int holding the JITModule for Arc[Jit] reclaim in JIT mode).
+        NW ->> NW: let mut obj_module = ObjectModule::new(ObjectBuilder::new(build_isa(true), ..))
+        NW ->> Backend: cranelisp_backend::compile_to_module[M: Module](scope: &ModuleFullPath, names: &[Symbol], symbol_tables: &SymbolTables[Code, ()], module_aliases: &ModuleAliases, module: obj_module) -> Result[CompilationArtifacts, CompilationError]
         Backend ->> ST_m1: SymbolTable::get(sym: &Symbol) — for each defined symbol of m1
-        Backend -->> NW: Ok(ObjectArtefact { object: Vec[u8], sidecar: SymbolTable [generic C=(), L=()] })
-        NW ->> Cache: ObjectCache::write(module: &ModuleFullPath, artefact: &ObjectArtefact) -> Result[(), CacheError]
+        Backend -->> NW: Ok(CompilationArtifacts { clif_ir, code_size, compile_duration })
+        NW ->> NW: let product = obj_module.finish() then let obj_bytes = product.emit()? — caller-side finalize (the §2.5 contract — backend never touches disk)
+        Note over NW, Cache: nice worker packages obj_bytes + serialised SymbolTable[(), ()] sidecar into the ObjectArtefact it persists
+        NW ->> Cache: ObjectCache::write(module: &ModuleFullPath, artefact: &ObjectArtefact { object: obj_bytes, sidecar }) -> Result[(), CacheError]
         NW ->> Sched: CompileScheduler::notify_object_codegen_complete(module: &ModuleFullPath)
     end
 

@@ -1,13 +1,77 @@
+//! Module caching — backend's persistence half (an internal implementation
+//! detail, NOT a separate bounded-context surface).
+//!
+//! Serialises the typecheck product (sidecar) + the codegen product (`.o`) to
+//! disk, validates cache hits against current source hashes and toolchain
+//! fingerprints, and reads them back into memory at session start. It lives in
+//! `cranelisp-backend` because the cache `Linker` newtype mediates ELF/Mach-O
+//! object loading — a Cranelift-adjacent capability `cranelisp-types` may not
+//! name (Principle 3).
+//!
+//! On-disk layout:
+//! ```text
+//!   .cranelisp-cache/
+//!     manifest.json           # version, target triple, module hashes
+//!     <module>.meta.json      # serialized SymbolTable (includes GOT slot assignments)
+//!     <module>.o              # relocatable object file
+//! ```
+//! See `design/backend/module-caching.md` for the full design.
+//!
+//! # Four sibling submodules
+//!
+//! | Submodule | Role |
+//! |---|---|
+//! | [`linker`] | Mach-O / ELF object loading + per-symbol resolution (wraps `memmap2` + `object`). |
+//! | [`manifest`] | Cache index (`manifest.json`): per-module source + dependency hashes; cache-validity check against compiler fingerprint, target triple, cranelift version, format version. |
+//! | [`object`] | `.o` build-packet construction + processing; `ObjectModule` + `TargetIsa` plumbing; GOT data-symbol naming. Drives the object path `compile_to_module::<ObjectModule>` + caller `finish().emit()`. |
+//! | [`serialize`] | Sidecar (`.meta.json`) read/write; `SymbolTable<(), ()>` serde; `CacheStale` discrimination at deserialise time. |
+//!
+//! This crate-internal root holds the genuine multi-submodule orchestration
+//! helpers ([`CachedModule`], [`module_cache_path`], [`try_load_cached_module`],
+//! [`load_cached_object`]) and the version consts ([`CACHE_SCHEMA_VERSION`],
+//! [`CACHE_FORMAT_VERSION`], [`BUILD_ID`]). The pre-S67 doubled root-level
+//! re-export layer was retired in S67 Wave 4 (see the routing note below); the
+//! canonical home of every cache type is exactly one submodule.
+//!
+//! # Cache invariants (internal implementation invariants)
+//!
+//! These describe how the cache submodule behaves internally — they are not
+//! contracts the rest of the workspace reasons about at the bounded-context
+//! boundary:
+//!
+//! 1. **`Linker` is the only mmap-holder.** No other type in the workspace
+//!    holds mmap'd object memory. Per-symbol retention via `Arc<Linker>`
+//!    (cloned per `Code::Linker` clone) keeps pages alive until the last
+//!    reference drops. (See [`linker`].)
+//! 2. **`CacheManifest` is the single index.** Per-module sidecars
+//!    (`{module}.meta.json`) and objects (`{module}.o`) are referenced via
+//!    `CacheManifest::modules`, pair-invariantly (sidecar present implies
+//!    object present, and vice versa). (See [`manifest`].)
+//! 3. **Cache-validity is checked at every cache-hit attempt.**
+//!    `manifest::check_manifest` runs before any [`try_load_cached_module`];
+//!    a stale cache surfaces as `serialize::CacheStale` and the caller
+//!    recompiles — no implicit "use stale cache anyway" fallback.
+//! 4. **[`CACHE_FORMAT_VERSION`] and [`CACHE_SCHEMA_VERSION`] are independent.**
+//!    Format version tracks the `CacheManifest` (index) shape; schema version
+//!    tracks the `SymbolTable` serialised (sidecar) shape. A version-mismatched
+//!    manifest invalidates all cached modules atomically; a mismatched sidecar
+//!    invalidates only that one module.
+//! 5. **No re-codegen on cache-hit.** Cache-hit modules skip
+//!    `compile_to_module` entirely; backend reads the pre-built `.o` via
+//!    `linker::Linker::load_object` and writes `Code::Linker` lifecycle owners
+//!    plus per-symbol GOT slots. The `.o` byte content is authoritative; no
+//!    per-symbol re-emission ever happens.
+//!
+//! # Forbidden patterns
+//!
+//! - **No `pub` items shared across submodules without a single canonical
+//!   home.** Each cache type lives in exactly one submodule by responsibility;
+//!   new types are NOT re-exported at `cache::` root unless they are genuine
+//!   multi-submodule orchestration helpers.
+//! - **No serde-shape change without a [`CACHE_SCHEMA_VERSION`] bump** (see
+//!   [`serialize`]).
+
 use cranelisp_types::ErrorLocation;
-// Module caching: persist compiled module metadata and object files to disk.
-//
-// Layout:
-//   .cranelisp-cache/
-//     manifest.json           # version, target triple, module hashes
-//     <module>.meta.json      # serialized SymbolTable (includes GOT slot assignments)
-//     <module>.o              # relocatable object file
-//
-// See design/backend/module-caching.md for the full design.
 
 pub mod manifest;
 pub mod serialize;
@@ -45,7 +109,7 @@ pub mod linker;
 ///
 /// Bump on:
 /// * field deletions on `SymbolTable` / any `ModuleEntry` variant,
-/// * field type changes (deserialise<New> would fail on persisted Old),
+/// * field type changes (`deserialise<New>` would fail on persisted Old),
 /// * enum variant additions to a serde-tagged enum used inside `SymbolTable`,
 /// * variant renames.
 ///
@@ -110,7 +174,7 @@ pub fn module_cache_path(
 /// `user` -> ("", "user")
 /// Root/entry -> ("", "_entry")
 fn module_dir_and_stem(module_path: &cranelisp_types::ModuleFullPath) -> (String, String) {
-    let path_str = module_path.0.as_str();
+    let path_str: &str = module_path.as_ref();
     if path_str.is_empty() || path_str == "_root" || path_str == "_entry" {
         return (String::new(), "_entry".to_string());
     }
@@ -170,7 +234,7 @@ impl CachedModule {
     pub fn imported_modules(&self) -> std::collections::HashSet<cranelisp_types::ModuleFullPath> {
         let mut modules = std::collections::HashSet::new();
         for (_name, entry) in self.metadata.symbol_table.all_symbols() {
-            if let cranelisp_types::ModuleEntry::Import { source } = entry {
+            if let cranelisp_types::ModuleEntry::Import { source, .. } = entry {
                 let mod_path = &source.module;
                 // Skip synthetic compiler modules.
                 if mod_path.as_ref() != "primitives" && mod_path.as_ref() != "macros" {
@@ -518,7 +582,6 @@ mod tests {
             docstring: None,
             variants: vec![DefnVariant {
                 params: vec![],
-                param_annotations: vec![],
                 body: Expr::IntLit {
                     value: 42,
                     span: Span::new(10, 12),
@@ -538,7 +601,7 @@ mod tests {
             defn.name.clone(),
             ModuleEntry::Def {
                 scheme: Scheme {
-                    vars: vec![],
+                    type_vars: vec![],
                     constraints: Default::default(),
                     ty: Type::Fn(vec![], Box::new(Type::Int)),
                 },
@@ -549,7 +612,8 @@ mod tests {
                 callees: vec![],
                 got_slot: None,
                 trait_origin: None,
-                ast: Some(defn.clone()),
+                seq: 0,
+                ast: defn.variants.first().cloned(),
                 code: None,
             },
         );
@@ -560,10 +624,12 @@ mod tests {
         let obj_builder = ObjectBuilder::new(isa, "test", default_libcall_names()).unwrap();
         let mut obj_module = ObjectModule::new(obj_builder);
 
+        let aliases: cranelisp_types::ModuleAliases = dashmap::DashMap::new();
         crate::compile_to_module(
             module,
             std::slice::from_ref(&defn.name),
             &tables,
+            &aliases,
             &mut obj_module,
         ).unwrap();
 
@@ -599,6 +665,7 @@ mod tests {
                     module: ModuleFullPath::from("main.mid.leaf"),
                     symbol: Symbol::from("base-val"),
                 },
+                visibility: cranelisp_types::Visibility::Private,
             },
         );
 
@@ -607,7 +674,7 @@ mod tests {
             Symbol::from("relay"),
             ModuleEntry::Def {
                 scheme: Scheme {
-                    vars: vec![],
+                    type_vars: vec![],
                     constraints: std::collections::HashMap::new(),
                     ty: Type::Fn(vec![], Box::new(Type::Int)),
                 },
@@ -618,6 +685,7 @@ mod tests {
                 callees: vec![],
                 got_slot: Some(0),
                 trait_origin: None,
+                seq: 0,
                 ast: None,
                 code: None,
             },
@@ -631,6 +699,7 @@ mod tests {
                     module: ModuleFullPath::from("primitives"),
                     symbol: Symbol::from("add-i64"),
                 },
+                visibility: cranelisp_types::Visibility::Private,
             },
         );
 

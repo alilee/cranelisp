@@ -16,6 +16,10 @@ cranelift-jit = "0.116"
 cranelift-native = "0.116"
 cranelift-codegen = { version = "0.116", features = ["disas"] }
 cranelift-object = "0.116"
+# Raw-bytes disassembler for the on-demand `produce_disasm` path (S75 W3,
+# /arch-blessed — already transitive via cranelift's `disas` feature, so ~zero
+# incremental build cost). See `facades/backend.md` §"Consumed surface".
+capstone = "0.12"
 target-lexicon = "0.12"
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }

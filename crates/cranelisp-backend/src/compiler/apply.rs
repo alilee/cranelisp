@@ -1,13 +1,14 @@
 // Function application codegen.
 //
 // compile_apply, compile_direct_call, compile_tail_self_call,
-// compile_data_constructor_call, compile_extern_call,
+// emit_adt_construct, compile_extern_call,
 // compile_closure_call
 
 use cranelift::prelude::*;
 use cranelift_module::Module;
 
-use cranelisp_types::{ErrorLocation, CranelispError, Expr, HeapCategory, ResolvedCall, Span, Symbol};
+use cranelisp_types::{ErrorLocation, CranelispError, Expr, ResolvedCall, Span, Symbol};
+use crate::heap::HeapCategory;
 
 use crate::heap::{self, HeapAdt, HeapClosure};
 use crate::primitives_inline;
@@ -193,6 +194,7 @@ where
                     let sym = Symbol::from(op_name.as_ref());
                     if crate::compiler::resolve_got_target(
                         self.ctx.symbol_tables,
+                        self.ctx.module_aliases,
                         &self.ctx.current_module,
                         &sym,
                     )
@@ -306,6 +308,14 @@ where
                     trait_resolution.as_deref(),
                 )
             }
+            // `ResolvedCall` is `#[non_exhaustive]` (cranelisp-types crate-root
+            // policy): a wildcard arm is required for cross-crate matches. Any
+            // future variant the backend does not yet lower is a codegen error
+            // naming the call rather than a silent miscompile.
+            other => Err(CranelispError::CodegenError {
+                message: format!("unsupported resolved-call variant in codegen: {other:?}"),
+                location: ErrorLocation::from_span(span),
+            }),
         }
     }
 
@@ -340,7 +350,7 @@ where
             // For temporary args, rc=1 transfers directly into the field.
             let arg_vals = self.compile_consuming_arg_list(args)?;
             self.in_tail_position = saved_tail;
-            return self.compile_data_constructor_call(tag, &arg_vals, span);
+            return self.emit_adt_construct(tag, &arg_vals, span);
         }
 
         // Check if the callee is a local variable (holding a closure value).
@@ -427,6 +437,7 @@ where
         // abstraction. See design/backend/compile-to-module.md §12.
         if let Some((module_path, slot)) = crate::compiler::resolve_got_target(
             self.ctx.symbol_tables,
+            self.ctx.module_aliases,
             &self.ctx.current_module,
             name,
         ) {
@@ -519,6 +530,7 @@ where
     ) -> Result<(cranelisp_types::ModuleFullPath, usize), CranelispError> {
         crate::compiler::resolve_got_target(
             self.ctx.symbol_tables,
+            self.ctx.module_aliases,
             &self.ctx.current_module,
             name,
         )
@@ -554,13 +566,70 @@ where
         Ok(self.builder.ins().iconst(types::I64, 0))
     }
 
-    /// Compile a data constructor call: allocate heap, store tag + fields.
-    fn compile_data_constructor_call(
+    /// Compile an `Expr::ConstrADT` node — the language-level ADT construction
+    /// operation synthesised as the body of every constructor's `Def`.
+    ///
+    /// Per `design/backend/compile-to-module.md` §2.6:
+    /// - **Nullary** (`fields.is_empty()`, e.g. `None`, `Red`): fold to a bare
+    ///   `iconst.i64 tag` — no heap allocation. Preserves the
+    ///   `NULLARY_TAG_THRESHOLD` discrimination contract.
+    /// - **Data** (e.g. `Some 42`, `Cons h t`): consuming-compile each field
+    ///   left-to-right, `emit_alloc` a `HeapAdt` payload, store `tag` at
+    ///   `TAG_OFFSET`, store each field `Value` at its `field_offset(i)`. The
+    ///   result `Value` is the heap pointer.
+    ///
+    /// RC: field values are transferred into the constructor under the uniform
+    /// consuming convention (Decision 24, BC invariant 2) — `compile_consuming_arg_list`
+    /// inc's non-last-use Var fields before the store; last-use fields transfer
+    /// their existing reference. The ADT's drop glue dec's heap-typed fields when
+    /// the ADT itself reaches rc=0.
+    ///
+    /// First-class use `(map Some list)` — passing a constructor as a value via
+    /// its `Def`'s `got_slot` (the same path as any other callable, no
+    /// on-demand closure synthesis) — is a `// target (S77)` (int-produced).
+    ///
+    /// `compile_constr_adt` + `emit_adt_construct` are the two-path model
+    /// (nullary `iconst tag` / data alloc+tag+stores). The older
+    /// `literals::nullary_constructor_tag` + `literals::data_constructor_info`
+    /// helpers still exist; their consolidation into this single handler (the
+    /// "~200 LOC removed" cleanup) is a `// target (S77)` cleanup, not yet done.
+    pub(crate) fn compile_constr_adt(
+        &mut self,
+        tag: usize,
+        fields: &[Expr],
+        span: Span,
+    ) -> Result<Value, CranelispError> {
+        // Consuming-compile fields (nullary → empty), then route through the
+        // single core emitter. `emit_adt_construct` handles the nullary
+        // (`iconst tag`) and data (`alloc + tag + stores`) arms.
+        let field_vals = self.compile_consuming_arg_list(fields)?;
+        self.emit_adt_construct(tag, &field_vals, span)
+    }
+
+    /// The single ADT-construct emitter — both paths route through here.
+    ///
+    /// Per `design/backend/compile-to-module.md` §2.6.1: takes an already-computed
+    /// `tag` and the already-computed field `Value`s, and emits the construct.
+    /// **RC-neutral** (§2.6.4): stores `field_vals` verbatim — the consuming-
+    /// convention inc/transfer happens in the callers that produce `field_vals`
+    /// (`compile_consuming_arg_list`). Do NOT add RC here; doing so would
+    /// double-inc the Path-1 inline site.
+    ///
+    /// | Case | Emission |
+    /// |---|---|
+    /// | `field_vals.is_empty()` (nullary, e.g. `None`, `Red`) | bare `iconst.i64 tag`, no heap allocation — preserves the `NULLARY_TAG_THRESHOLD` discrimination contract |
+    /// | `!field_vals.is_empty()` (data ctor) | `emit_alloc` a `HeapAdt`, store `tag` at `TAG_OFFSET`, store each field at `field_offset(i)`; result is the heap pointer |
+    pub(crate) fn emit_adt_construct(
         &mut self,
         tag: usize,
         field_vals: &[Value],
         span: Span,
     ) -> Result<Value, CranelispError> {
+        if field_vals.is_empty() {
+            // Nullary constructor: bare tag, no heap allocation.
+            return Ok(self.builder.ins().iconst(types::I64, tag as i64));
+        }
+
         let alloc_id =
             self.ctx
                 .alloc_func_id

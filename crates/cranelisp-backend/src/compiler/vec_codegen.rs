@@ -11,13 +11,13 @@
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
-use cranelisp_types::{ErrorLocation, 
-    CranelispError, Expr, HeapCategory, HeapHeader, Span, Type,
+use cranelisp_types::{ErrorLocation,
+    CranelispError, Expr, HeapHeader, Span, Type,
 };
 
-use crate::heap::{self, HeapAdt, HeapVec, NULLARY_THRESHOLD_I64};
+use crate::heap::{self, HeapAdt, HeapCategory, HeapVec, NULLARY_THRESHOLD_I64};
 
-use super::{collect_var_ids_from_type, substitute_type_inline, FnCompiler};
+use super::{collect_var_ids_from_type, substitute_type_inline, CtorMeta, FnCompiler};
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where
@@ -813,9 +813,12 @@ where
             _ => return Ok(None),
         };
 
+        // Reconstruct constructor metadata (S70 ctor-as-Def).
+        let all_ctors = self.ctx.constructor_metas(&type_def);
+
         // Build substitution from Var ids to concrete types.
         let mut unique_var_ids: Vec<cranelisp_types::TypeId> = Vec::new();
-        for c in &type_def.constructors {
+        for c in &all_ctors {
             for field in &c.fields {
                 collect_var_ids_from_type(&field.ty, &mut unique_var_ids);
             }
@@ -827,9 +830,8 @@ where
             .collect();
 
         // Collect data constructors with fields.
-        let data_ctors: Vec<_> = type_def
-            .constructors
-            .iter()
+        let data_ctors: Vec<CtorMeta> = all_ctors
+            .into_iter()
             .filter(|c| !c.fields.is_empty())
             .collect();
 
@@ -890,7 +892,7 @@ where
         // No mixed guard needed here.
 
         if data_ctors.len() == 1 {
-            let ctor = data_ctors[0];
+            let ctor = &data_ctors[0];
             self.emit_standalone_field_decs(
                 &mut builder,
                 adt_val,
@@ -904,11 +906,10 @@ where
             let heap_tag = heap::heap_load(&mut builder, adt_val, HeapAdt::TAG_OFFSET);
             let done_block = builder.create_block();
 
-            // Collect data_ctors into owned Vec so `self` isn't borrowed across
-            // the iteration body (we need `&mut self` inside the loop to call
-            // `emit_standalone_field_decs`).
-            let data_ctors_owned: Vec<cranelisp_types::ConstructorInfo> =
-                data_ctors.iter().map(|c| (*c).clone()).collect();
+            // `data_ctors` is already owned (Vec<CtorMeta>); clone for the loop
+            // so `self` isn't borrowed across the body (we need `&mut self`
+            // inside the loop to call `emit_standalone_field_decs`).
+            let data_ctors_owned: Vec<CtorMeta> = data_ctors.clone();
 
             for (idx, ctor) in data_ctors_owned.iter().enumerate() {
                 let ctor_block = builder.create_block();
@@ -975,7 +976,7 @@ where
         &mut self,
         builder: &mut FunctionBuilder,
         adt_val: Value,
-        ctor: &cranelisp_types::ConstructorInfo,
+        ctor: &CtorMeta,
         subst: &std::collections::HashMap<cranelisp_types::TypeId, Type>,
         dealloc_id: cranelift_module::FuncId,
         span: Span,

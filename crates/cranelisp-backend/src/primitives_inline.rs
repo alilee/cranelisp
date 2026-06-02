@@ -1,29 +1,30 @@
-// Ring 0 inline-substitution table — uniform-dispatch optimisation.
-//
-// Per Decision 43 + FIXME 0174 (`design/arch/fixmes/0174-...uniform-primitive-dispatch.md`) +
-// `design/arch/facades/backend.md` §"Non-goals / forbidden patterns": this
-// file holds ONLY the name-keyed inline-Cranelift-IR emission table for the
-// Ring 0 primitives. It is **not** a dispatch path — the dispatch path is the
-// standard `compile_direct_call` → `resolve_got_target` → GOT-indirect call
-// that every user function uses. `try_emit_inline_primitive` is consulted
-// **before** that fallback as an opportunistic optimisation: if the call
-// site's symbol matches the inline table, emit inline CLIF; if not, return
-// `None` and let the caller fall through to the standard path.
-//
-// The Rust shim fns in `cranelisp-primitives::ring0` are the GOT-indirect
-// emission targets. They have identical semantics to the inline CLIF;
-// the inline path is a code-size + dispatch-cost win, not a correctness
-// requirement. Mappable paths (`(let [f not] (f true))`) and call-by-symbol
-// always work because the GOT slot is populated regardless of whether the
-// call site is in the inline table.
-//
-// Ring 0 primitives covered (the 23 names that participate in inline
-// substitution; trace `cranelisp-primitives::ring0::ring0_jit_symbols`):
-//   add-i64, sub-i64, mul-i64, div-i64
-//   add-f64, sub-f64, mul-f64, div-f64
-//   eq-i64, lt-i64, gt-i64, le-i64, ge-i64, neq-i64
-//   eq-f64, lt-f64, gt-f64, le-f64, ge-f64, neq-f64
-//   not, eq-bool, neq-bool
+//! Ring 0 inline-substitution table — a name-keyed dispatch optimisation.
+//!
+//! Per Decision 43 + `design/arch/facades/backend.md` §"Non-goals / forbidden
+//! patterns": this file holds ONLY the name-keyed inline-Cranelift-IR emission
+//! table for the Ring 0 primitives. It is **not** a dispatch path — the
+//! dispatch path is the standard `compile_direct_call` -> `resolve_got_target`
+//! -> GOT-indirect call that every user function uses. `try_emit_inline_primitive`
+//! is consulted **before** that fallback as an opportunistic optimisation: if
+//! the call site's symbol matches the inline table, emit inline CLIF; if not,
+//! return `None` and let the caller fall through to the standard path.
+//!
+//! Backend has no trait knowledge: the substitution is keyed on `Symbol` only,
+//! never on `(trait, method, type)` triples (forbidden pattern). The GOT slot
+//! for each primitive is always populated, so mappable paths
+//! (`(let [f not] (f true))`) and call-by-symbol work whether or not the call
+//! site is in the inline table — the inline path is a code-size + dispatch-cost
+//! win, not a correctness requirement.
+//!
+//! Ring 0 primitives covered (the 23 names that participate in inline
+//! substitution):
+//! ```text
+//!   add-i64, sub-i64, mul-i64, div-i64
+//!   add-f64, sub-f64, mul-f64, div-f64
+//!   eq-i64, lt-i64, gt-i64, le-i64, ge-i64, neq-i64
+//!   eq-f64, lt-f64, gt-f64, le-f64, ge-f64, neq-f64
+//!   not, eq-bool, neq-bool
+//! ```
 
 use cranelift::prelude::*;
 use cranelift_module::{FuncId, Module};
@@ -51,7 +52,10 @@ use cranelisp_types::{ErrorLocation, CranelispError, Span};
 /// `None` case by falling through to GOT-indirect dispatch — they MUST NOT
 /// raise an error on `None`. Returning an error on `None` would re-introduce
 /// the name-keyed dispatch-only shape that this rename eliminated.
-pub fn try_emit_inline_primitive<M: Module>(
+///
+/// Narrowed to `pub(crate)` in S75 W3 — codegen-site inline-substitution
+/// emitter; in-crate callers only (`compiler::apply`, `compiler::control_flow`).
+pub(crate) fn try_emit_inline_primitive<M: Module>(
     builder: &mut FunctionBuilder,
     name: &str,
     args: &[Value],
@@ -114,7 +118,9 @@ pub fn try_emit_inline_primitive<M: Module>(
 /// compilation strategy — NeverHeap inline operands vs consuming heap externs).
 /// New callers should prefer matching on the `Option` return of
 /// `try_emit_inline_primitive` directly.
-pub fn is_known_builtin(name: &str) -> bool {
+///
+/// Narrowed to `pub(crate)` in S75 W3 — codegen-site predicate; in-crate only.
+pub(crate) fn is_known_builtin(name: &str) -> bool {
     matches!(
         name,
         "add-i64"

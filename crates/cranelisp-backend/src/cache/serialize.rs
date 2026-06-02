@@ -1,25 +1,29 @@
-// Module metadata serialization for the cache.
-//
-// Sprint 58 Step 5b — Per `design/backend/module-caching.md` §14 (PRESCRIPTIVE):
-// the `.meta.json` file IS a serialised `SymbolTable<(), ()>`. The pre-Phase-5
-// `CacheMetadata` envelope dissolves; runtime fields (`code`, `got`,
-// `linker`) are `#[serde(skip)]` on the symbol table itself and are
-// re-derived on cache-hit by re-running codegen against `ast` and re-resolving
-// platform DLLs. The schema_version field on `SymbolTable` (Decision 34) is
-// the cache invalidation handshake.
-//
-// Authoritative API (use these in new code):
-//   - `serialise_meta(table, schema_version) -> Vec<u8>`
-//   - `deserialise_meta(bytes) -> Result<SymbolTable, CacheStale>`
-//   - `write_meta(path, table, schema_version) -> Result<(), CacheError>`
-//   - `load_meta(path) -> Result<SymbolTable, CacheStale>`
-//
-// The legacy `CacheMetadata` envelope and its companion functions
-// (`read_cached_metadata`, `write_cached_metadata`) are retained as
-// `#[deprecated]` shims that delegate to the new API, so that `/int`-owned
-// (`src/session_v4.rs`) and `/qa`-owned (`tests/cache.rs`) call sites can
-// migrate at their own pace within Sprint 58 Wave 2b–3. They must be removed
-// when those files migrate.
+//! Sidecar (`.meta.json`) serialisation + `CacheStale` discrimination.
+//!
+//! Per `design/backend/module-caching.md` §14: the `.meta.json` file IS a
+//! serialised `SymbolTable<(), ()>` (Decision 25 — types, schemes, AST bodies,
+//! GOT slot layout, structural decls). Runtime fields (`code`, `got`, `linker`)
+//! are `#[serde(skip)]` and re-derived on cache-hit. The `schema_version` field
+//! (Decision 34) is the cache-invalidation handshake.
+//!
+//! **Forbidden pattern — no serde-shape change without a `CACHE_SCHEMA_VERSION`
+//! bump.** Any change to a `#[derive(Serialize, Deserialize)]` shape that
+//! affects on-disk bytes MUST bump `super::CACHE_SCHEMA_VERSION`;
+//! [`deserialise_meta`] rejects mismatched versions with
+//! [`CacheStale::SchemaMismatch`] and the caller treats it as a cache miss.
+//! Skipping the bump silently corrupts user cache directories — fail-loud over
+//! fail-silent.
+//!
+//! Authoritative API (use these in new code):
+//!   - `serialise_meta(table, schema_version) -> Vec<u8>`
+//!   - `deserialise_meta(bytes, expected_schema_version, path) -> Result<SymbolTable, CacheStale>`
+//!   - `write_meta(path, table, schema_version) -> Result<(), CranelispError>`
+//!   - `load_meta(path) -> Result<SymbolTable, CacheStale>`
+//!
+//! The legacy `CacheMetadata` envelope and its companion functions
+//! (`read_cached_metadata`, `write_cached_metadata`) are retained as
+//! `#[deprecated]` shims that delegate to the new API so remaining call sites
+//! can migrate at their own pace; they are removed when those files migrate.
 
 use std::path::Path;
 
@@ -206,7 +210,7 @@ where
 /// * `schema_version` mismatch → `CacheStale::SchemaMismatch` (treat as miss).
 /// * Success → return the table; `code` / `got` / `linker` are at their
 ///   default values and the caller is responsible for re-deriving them per
-///   §14.3 step [5]. (The runtime address for each addressable callable is
+///   §14.3 step 5. (The runtime address for each addressable callable is
 ///   re-populated into the GOT slot on cache-hit by codegen / platform
 ///   reload — there is no separate `fn_ptr` field on the entry.)
 pub fn deserialise_meta(
@@ -395,31 +399,24 @@ pub fn write_cached_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::{DefKind, Defn, DefnVariant, Expr, FQSymbol, ImportSpec, ModuleEntry, ModuleFullPath,
+    use cranelisp_types::{DefKind, DefnVariant, Expr, FQSymbol, ImportSpec, ModuleEntry, ModuleFullPath,
         Scheme, Span as TSpan, Symbol, Type, Visibility,
     };
     use std::collections::HashMap;
 
-    fn make_def(name: &str) -> ModuleEntry {
-        let defn = Defn {
-            name: Symbol::from(name),
-            docstring: None,
-            variants: vec![DefnVariant {
-                params: vec![],
-                param_annotations: vec![],
-                body: Expr::IntLit {
-                    value: 42,
-                    span: TSpan::new(10, 12),
-                    inferred_type: None,
-                },
-                span: TSpan::new(0, 20),
-            }],
-            visibility: Visibility::Public,
+    fn make_def(_name: &str) -> ModuleEntry {
+        let variant = DefnVariant {
+            params: vec![],
+            body: Expr::IntLit {
+                value: 42,
+                span: TSpan::new(10, 12),
+                inferred_type: None,
+            },
             span: TSpan::new(0, 20),
         };
         ModuleEntry::Def {
             scheme: Scheme {
-                vars: vec![],
+                type_vars: vec![],
                 constraints: HashMap::new(),
                 ty: Type::Fn(vec![], Box::new(Type::Int)),
             },
@@ -430,7 +427,8 @@ mod tests {
             callees: vec![],
             got_slot: Some(7),
             trait_origin: None,
-            ast: Some(defn),
+            seq: 0,
+            ast: Some(variant),
             code: None,
         }
     }
@@ -534,6 +532,7 @@ mod tests {
                     module: ModuleFullPath::from("other"),
                     symbol: Symbol::from("dep-val"),
                 },
+                visibility: cranelisp_types::Visibility::Private,
             },
         );
         table.next_got_slot = 13;

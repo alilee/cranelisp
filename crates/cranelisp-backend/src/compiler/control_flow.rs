@@ -7,7 +7,8 @@ use std::collections::HashSet;
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
-use cranelisp_types::{ErrorLocation, CranelispError, Expr, HeapCategory, ResolvedCall, Span, Symbol, Type};
+use cranelisp_types::{ErrorLocation, CranelispError, Expr, ResolvedCall, Span, Symbol, Type};
+use crate::heap::HeapCategory;
 
 use crate::heap::{self, HeapAdt, HeapClosure};
 use crate::primitives_inline;
@@ -39,7 +40,12 @@ where
                 .get(&self.ctx.current_module)
                 .map(|table| {
                     table.symbols.iter()
-                        .filter(|(_, entry)| matches!(entry, cranelisp_types::ModuleEntry::Constructor { .. }))
+                        .filter(|(_, entry)| matches!(
+                            entry,
+                            cranelisp_types::ModuleEntry::Def {
+                                kind, ..
+                            } if matches!(**kind, cranelisp_types::DefKind::Constructor { .. })
+                        ))
                         .map(|(name, _)| name.clone())
                         .collect()
                 })
@@ -135,7 +141,6 @@ where
             // Wrap the value expression in a zero-arg lambda (thunk).
             let thunk_expr = Expr::Lambda {
                 params: vec![],
-                param_annotations: vec![],
                 body: Box::new(val_expr.clone()),
                 span: val_expr.span(),
                 inferred_type: None,
@@ -1133,6 +1138,7 @@ where
         self.ctx.func_ids.contains_key(name)
             || crate::compiler::resolve_got_target(
                 self.ctx.symbol_tables,
+                self.ctx.module_aliases,
                 &self.ctx.current_module,
                 name,
             )
@@ -1160,6 +1166,7 @@ where
         let arity = self.ctx.func_arities.get(name).copied()
             .or_else(|| crate::compiler::resolve_func_arity(
                 self.ctx.symbol_tables,
+                self.ctx.module_aliases,
                 &self.ctx.current_module,
                 name,
             ))
@@ -1742,7 +1749,7 @@ fn collect_free_vars(
         }
         Expr::Lambda { params, body, .. } => {
             let mut extended = bound.clone();
-            for p in params {
+            for (p, _) in params {
                 extended.insert(p.clone());
             }
             collect_free_vars(body, &extended, free, seen);
@@ -1790,6 +1797,11 @@ fn collect_free_vars(
                 extended.insert(name.clone());
             }
             collect_free_vars(body, &extended, free, seen);
+        }
+        Expr::ConstrADT { fields, .. } => {
+            for f in fields {
+                collect_free_vars(f, bound, free, seen);
+            }
         }
         Expr::StringLit { .. }
         | Expr::IntLit { .. }

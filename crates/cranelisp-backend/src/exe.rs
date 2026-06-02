@@ -1,14 +1,17 @@
-// Startup stub generation for standalone executables.
-//
-// Generates a small `.o` file containing a `start` symbol that:
-// 1. Initializes platforms (calls `cranelisp_init_platform` for each manifest)
-// 2. Calls the user's `main` function
-// 3. If `main` returns IO, calls the IO trampoline (`cranelisp_run_io`)
-// 4. Truncates the i64 result to i32 and calls `exit`
-//
-// This lives in cranelisp-backend because it uses Cranelift APIs directly.
-// The binary crate orchestrates: validates main, collects .o paths, invokes
-// the linker. See design/backend/executable-generation.md §4.
+//! Startup-stub generation for standalone executables (`--link` mode).
+//!
+//! `generate_startup_object` produces a small `.o` defining a `start` symbol
+//! that:
+//! 1. Initializes platforms (calls `cranelisp_init_platform` for each manifest),
+//! 2. Calls the user's `main` function,
+//! 3. If `main` returns IO, calls the IO trampoline (`cranelisp_run_io`),
+//! 4. Truncates the i64 result to i32 and calls `exit`.
+//!
+//! This is link-orchestration assist, NOT codegen: it is called by
+//! `int::link_by_name` (not by `compile_to_module`). It lives in
+//! `cranelisp-backend` because it uses Cranelift APIs directly; the binary
+//! crate orchestrates (validates `main`, collects `.o` paths, invokes the
+//! system linker). See `design/backend/executable-generation.md` §4.
 
 use cranelift::prelude::*;
 use cranelift_module::{default_libcall_names, Linkage, Module};
@@ -28,7 +31,29 @@ use cranelisp_types::{ErrorLocation, CranelispError, Span};
 ///
 /// # Returns
 /// The raw bytes of a relocatable object file (Mach-O on macOS aarch64).
-pub fn generate_startup_object(
+///
+/// # Linker-symbol ABI (preserved here before the S75 W3 `pub(crate)` narrow)
+///
+/// The emitted `.o` defines one **`Linkage::Export`** symbol — **`start`** (the
+/// system-linker entry, referenced via `-e _start`). It declares the entry
+/// function `entry_fn_name` (typically `main`, or module-qualified like
+/// `hello/main`) as **`Linkage::Import`** and emits a relocation against it,
+/// plus `Linkage::Import` relocations against each platform-manifest name in
+/// `platform_manifest_names` and (when `main_returns_io`) against the IO
+/// trampoline `cranelisp_run_io`. These imports are resolved at system-link
+/// time against the user `.o`s and the runtime/platform archives.
+///
+/// Narrowed to `pub(crate)` per the S75 W3 /arch re-ruling: the `--link`
+/// `start`-`.o` assist is link-orchestration the `--link` driver owns (BC
+/// invariant 7 — "the `--link` `_main` alias is int's job, not backend's").
+/// The body stays in backend as an internal helper; it is not a boundary.
+/// int's call sites (`exe.rs:20` re-export + `session_v4.rs:3991`) re-wire S77.
+// `allow(dead_code)`: the only non-test caller is int (currently red post-W2/W3;
+// re-wires S77). In-crate unit tests below exercise it. The allow clears the
+// lib-target dead_code warning the W3 narrow surfaced without deleting the body
+// (deletion is a W4 streamline decision).
+#[allow(dead_code)]
+pub(crate) fn generate_startup_object(
     platform_manifest_names: &[String],
     main_returns_io: bool,
     entry_fn_name: &str,

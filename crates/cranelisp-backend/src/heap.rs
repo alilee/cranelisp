@@ -1,17 +1,28 @@
-// Heap layout types and emit helpers.
-//
-// This module is the SOLE location that imports layout constants (HeapHeader,
-// HeapAdt, HeapClosure offsets). All other codegen code calls these helpers.
-// This confines heap layout assumptions per src/CLAUDE.md §"Heap Access".
-//
-// Contents:
-//   HeapAdt    — ADT data constructor layout
-//   HeapClosure — Closure layout
-//   heap_load  — load an i64 from a heap object
-//   heap_store — store an i64 into a heap object
-//   emit_rc_inc — inline atomic RC increment
-//   emit_rc_dec — inline atomic RC decrement + conditional dealloc
-//   emit_alloc — emit call to runtime/alloc
+//! Heap layout types, RC emit helpers, and codegen heap classification.
+//!
+//! This module is the SOLE location that imports the cross-crate layout
+//! constants (`HeapHeader`, `HeapAdt`, `HeapClosure` offsets — the runtime
+//! layout contract intrinsics and codegen agree on). All other codegen code
+//! calls these helpers, confining heap-layout assumptions per
+//! `src/CLAUDE.md` §"Heap Access". These items are `pub` because
+//! `cranelisp-intrinsics` reads the layouts and codegen emits offset-keyed
+//! loads against the same constants; no external consumer should call the emit
+//! helpers.
+//!
+//! [`HeapCategory`] + [`HeapCategory::classify`] are backend-internal codegen
+//! classification (relocated here from `cranelisp-types` per S69 Sub 38 — zero
+//! production consumers outside this crate). `classify` carries an interim
+//! two-mode `Option<&tables>` contract (pre-typecheck: ADTs conservatively
+//! `Mixed`; post-typecheck: classified by constructor inspection) and several
+//! pending structural cascades noted at the item.
+//!
+//! Contents:
+//!   - `HeapAdt` — ADT data-constructor layout
+//!   - `HeapClosure` — closure layout
+//!   - `heap_load` / `heap_store` — load/store an i64 from/into a heap object
+//!   - `emit_rc_inc` — inline atomic RC increment
+//!   - `emit_rc_dec` — inline atomic RC decrement + conditional dealloc
+//!   - `emit_alloc` — emit call to `runtime/alloc`
 
 use std::collections::HashMap;
 use std::mem::{self, offset_of};
@@ -23,7 +34,7 @@ use cranelift_module::{FuncId, Module};
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    FQTypeName, HeapHeader, ModuleEntry, ModuleFullPath, Symbol, SymbolTable, Type, TypeDefInfo,
+    FQTypeName, HeapHeader, ModuleEntry, ModuleFullPath, Symbol, SymbolTable, Type,
 };
 
 use crate::codegen_types::NULLARY_TAG_THRESHOLD;
@@ -138,7 +149,8 @@ const _: () = assert!(mem::size_of::<HeapVec>() == 40);
 /// HeapAdt::field_offset(i), etc.) — never a bare numeric literal.
 ///
 /// ptr is ptr-width (i64 on native); the returned value is data-width (i64).
-pub fn heap_load(builder: &mut FunctionBuilder, ptr: Value, offset: i32) -> Value {
+// Narrowed to `pub(crate)` in S75 W3 — per-call-site codegen primitive; in-crate only.
+pub(crate) fn heap_load(builder: &mut FunctionBuilder, ptr: Value, offset: i32) -> Value {
     builder
         .ins()
         .load(types::I64, MemFlags::trusted(), ptr, offset)
@@ -146,7 +158,7 @@ pub fn heap_load(builder: &mut FunctionBuilder, ptr: Value, offset: i32) -> Valu
 
 /// Store an i64 value into a heap object at the given byte offset.
 /// Same offset rules as heap_load.
-pub fn heap_store(builder: &mut FunctionBuilder, val: Value, ptr: Value, offset: i32) {
+pub(crate) fn heap_store(builder: &mut FunctionBuilder, val: Value, ptr: Value, offset: i32) {
     builder.ins().store(MemFlags::trusted(), val, ptr, offset);
 }
 
@@ -158,7 +170,7 @@ pub fn heap_store(builder: &mut FunctionBuilder, val: Value, ptr: Value, offset:
 ///
 /// Cranelift atomic_rmw(Add, ptr + RC_OFFSET, 1, Release).
 /// This is an INLINE atomic op, NOT an extern function call.
-pub fn emit_rc_inc(builder: &mut FunctionBuilder, ptr: Value) {
+pub(crate) fn emit_rc_inc(builder: &mut FunctionBuilder, ptr: Value) {
     let rc_addr = builder
         .ins()
         .iadd_imm(ptr, i64::from(HeapHeader::RC_OFFSET));
@@ -176,7 +188,7 @@ pub fn emit_rc_inc(builder: &mut FunctionBuilder, ptr: Value) {
 ///
 /// For Mixed HeapCategory types, checks if the value is a bare nullary tag
 /// (below NULLARY_TAG_THRESHOLD) before accessing the RC header.
-pub fn emit_rc_inc_guarded(builder: &mut FunctionBuilder, ptr: Value) {
+pub(crate) fn emit_rc_inc_guarded(builder: &mut FunctionBuilder, ptr: Value) {
     let cont_block = builder.create_block();
     let inc_block = builder.create_block();
 
@@ -221,7 +233,7 @@ pub fn emit_rc_inc_guarded(builder: &mut FunctionBuilder, ptr: Value) {
 /// The `dealloc_func_id` is the FuncId for `runtime/dealloc`.
 /// The `drop_glue_id` is Some(FuncId) if the type has heap-typed fields.
 /// If `guard_nullary` is true, emit a check that skips dec for bare tags.
-pub fn emit_rc_dec<M: Module>(
+pub(crate) fn emit_rc_dec<M: Module>(
     builder: &mut FunctionBuilder,
     module: &mut M,
     ptr: Value,
@@ -236,7 +248,7 @@ pub fn emit_rc_dec<M: Module>(
 /// When `guard_nullary` is true, values below `NULLARY_TAG_THRESHOLD` (bare
 /// ADT tags from nullary constructors) are skipped — they are not heap
 /// pointers and have no RC header.
-pub fn emit_rc_dec_guarded<M: Module>(
+pub(crate) fn emit_rc_dec_guarded<M: Module>(
     builder: &mut FunctionBuilder,
     module: &mut M,
     ptr: Value,
@@ -306,7 +318,7 @@ pub fn emit_rc_dec_guarded<M: Module>(
 
 /// Emit a call to `runtime/alloc` with the given payload size (bytes).
 /// Returns the base pointer (i64) to the new allocation (rc=1).
-pub fn emit_alloc<M: Module>(
+pub(crate) fn emit_alloc<M: Module>(
     builder: &mut FunctionBuilder,
     module: &mut M,
     alloc_func_id: FuncId,
@@ -323,7 +335,7 @@ pub fn emit_alloc<M: Module>(
 // ---------------------------------------------------------------------------
 
 /// Check if a type has mixed nullary and data constructors (for match discrimination).
-pub fn is_mixed_adt<C, L>(
+pub(crate) fn is_mixed_adt<C, L>(
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     fqtn: &FQTypeName,
 ) -> bool
@@ -332,18 +344,58 @@ where
     L: cranelisp_types::LinkerStore,
 {
     symbol_tables.get(&fqtn.module)
-        .and_then(|table| {
+        .map(|table| {
             let type_key = Symbol::from(fqtn.name.as_ref());
-            match table.get(type_key.as_ref()) {
-                Some(ModuleEntry::TypeDef { info, .. }) => {
-                    let has_nullary = info.constructors.iter().any(|c| c.fields.is_empty());
-                    let has_data = info.constructors.iter().any(|c| !c.fields.is_empty());
-                    Some(has_nullary && has_data)
+            let ctor_names: Vec<Symbol> = match table.get(type_key.as_ref()) {
+                Some(ModuleEntry::TypeDef { info, .. }) => info.constructors.clone(),
+                _ => return false,
+            };
+            // Walk each constructor NAME → its DefKind::Constructor Def for the
+            // field count (TypeDefInfo.constructors is Vec<Symbol> post-S70).
+            let mut has_nullary = false;
+            let mut has_data = false;
+            for ctor_name in &ctor_names {
+                if let Some(fc) = ctor_field_count(table.value(), ctor_name) {
+                    if fc == 0 {
+                        has_nullary = true;
+                    } else {
+                        has_data = true;
+                    }
                 }
-                _ => None,
             }
+            has_nullary && has_data
         })
         .unwrap_or(false)
+}
+
+/// Read the field count for a constructor name from its
+/// `ModuleEntry::Def { kind: DefKind::Constructor { field_count, .. }, .. }`
+/// entry within the given symbol table. Returns `None` if the name is not a
+/// constructor in this table.
+fn ctor_field_count<C, L>(
+    table: &SymbolTable<C, L>,
+    ctor_name: &Symbol,
+) -> Option<usize>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    match table.get(ctor_name.as_ref()) {
+        Some(ModuleEntry::Def { kind, .. }) => match &**kind {
+            cranelisp_types::DefKind::Constructor { field_count, .. } => Some(*field_count),
+            _ => None,
+        },
+        // Product type: same-named constructor stored on the TypeDef's
+        // `constructor_scheme` (a `Type::Fn(field_types, _)`); its arity is the
+        // field count. (See `CompileContext::extract_constructor`.)
+        Some(ModuleEntry::TypeDef { constructor_scheme: Some(scheme), .. }) => {
+            match &scheme.ty {
+                Type::Fn(params, _) => Some(params.len()),
+                _ => Some(0),
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Threshold constant for discriminating nullary tags from heap pointers.
@@ -435,108 +487,176 @@ impl HeapCategory {
         };
 
         let type_key = Symbol::from(fqtn.name.as_ref());
-        let info = match table.get(type_key.as_ref()) {
-            Some(ModuleEntry::TypeDef { info, .. }) => info,
+        let ctor_names: Vec<Symbol> = match table.get(type_key.as_ref()) {
+            Some(ModuleEntry::TypeDef { info, .. }) => info.constructors.clone(),
             _ => return HeapCategory::Mixed,
         };
 
-        Self::classify_from_type_def_info(info)
+        Self::classify_from_ctor_names(table.value(), &ctor_names)
     }
 
-    /// Classify an ADT from its TypeDefInfo (shared logic).
+    /// Classify an ADT from its constructor NAMES (ctor-as-Def shape, S70).
     ///
-    /// FIXME(/dev — heap classifier rebuild, ctor-as-Def cascade): under the
-    /// ctor-as-Def shape (see facades/types.md §"Symbol table — the single
-    /// store" §"DefKind"), `TypeDefInfo.constructors: Vec<Symbol>` (names
-    /// only); the per-constructor field count lives on each ctor's
-    /// `ModuleEntry::Def` at `kind: DefKind::Constructor { field_count, .. }`.
-    /// The classifier must walk each name through the symbol table to
-    /// determine nullary-vs-data counts. Current stub returns `Mixed` to keep
-    /// the cranelisp-types crate compiling under the interface flip; consumer
-    /// cascade in Sprint 69 Wave 3 rebuilds the correct classifier (and the
-    /// in-crate tests below) against the new shape with Def fixtures replacing
-    /// ConstructorInfo.
-    fn classify_from_type_def_info(_info: &TypeDefInfo) -> HeapCategory {
-        HeapCategory::Mixed
+    /// `TypeDefInfo.constructors` is `Vec<Symbol>` (names only); the
+    /// per-constructor field count lives on each ctor's `ModuleEntry::Def` at
+    /// `kind: DefKind::Constructor { field_count, .. }`. This walks each name
+    /// through the symbol table to count nullary (field_count == 0) vs data
+    /// (field_count > 0) constructors:
+    /// - All nullary -> `NeverHeap` (bare tags)
+    /// - All data -> `AlwaysHeap`
+    /// - Mix -> `Mixed`
+    /// - No resolvable constructors -> `Mixed` (conservative).
+    fn classify_from_ctor_names<C, L>(
+        table: &SymbolTable<C, L>,
+        ctor_names: &[Symbol],
+    ) -> HeapCategory
+    where
+        C: cranelisp_types::CodeStore,
+        L: cranelisp_types::LinkerStore,
+    {
+        let mut has_nullary = false;
+        let mut has_data = false;
+        let mut resolved_any = false;
+        for ctor_name in ctor_names {
+            if let Some(fc) = ctor_field_count(table, ctor_name) {
+                resolved_any = true;
+                if fc == 0 {
+                    has_nullary = true;
+                } else {
+                    has_data = true;
+                }
+            }
+        }
+        if !resolved_any {
+            return HeapCategory::Mixed;
+        }
+        match (has_nullary, has_data) {
+            (true, false) => HeapCategory::NeverHeap,
+            (false, true) => HeapCategory::AlwaysHeap,
+            _ => HeapCategory::Mixed,
+        }
     }
 }
 
-// FIXME(/dev — heap classifier tests rebuild, ctor-as-Def cascade): the test
-// module below uses the retired `ConstructorInfo` struct + `Vec<ConstructorInfo>`
-// shape for `TypeDefInfo.constructors`. Under the ctor-as-Def shape (see
-// facades/types.md §"Symbol table — the single store" §"DefKind"), tests must
-// build fake symbol tables containing `ModuleEntry::Def { kind:
-// DefKind::Constructor { field_count, .. }, .. }` entries per constructor
-// name, and exercise the rebuilt classifier (see `classify_from_type_def_info`
-// FIXME above). Gated out (`cfg(any())` = never compiled) until Wave 3
-// rebuild lands.
-#[cfg(any())]
+// Heap classifier tests — rebuilt against the ctor-as-Def shape (S70). The
+// retired `ConstructorInfo` struct is replaced by `ModuleEntry::Def { kind:
+// DefKind::Constructor { type_name, tag, field_count, .. }, .. }` entries per
+// constructor name; `TypeDefInfo.constructors` is `Vec<Symbol>` (names only).
+// The classifier walks each name → its Def for the field count. See
+// `design/backend/compile-to-module.md` §2.6 + `DefKind::Constructor` rustdoc.
+#[cfg(test)]
 mod heap_category_tests {
     use super::*;
-    use cranelisp_types::{ConstructorInfo, FieldInfo, TypeName, Visibility};
+    use cranelisp_types::{DefKind, FQTypeName, Scheme, TypeDefInfo, TypeName, Visibility};
 
     const TEST_MOD: &str = "test";
+
+    /// A constructor spec for test fixtures: name, tag, and field count.
+    struct CtorSpec {
+        name: &'static str,
+        tag: usize,
+        field_count: usize,
+    }
 
     /// Test helper: create an FQTypeName in a "test" module.
     fn test_fqtn(name: &str) -> FQTypeName {
         FQTypeName::new(ModuleFullPath::from(TEST_MOD), TypeName::from(name))
     }
 
-    /// Helper: build a TypeDefInfo with the given constructors.
-    fn make_type_def(
-        name: &str,
+    /// Helper: nullary constructor spec (no fields).
+    fn nullary_ctor(name: &'static str, tag: usize) -> CtorSpec {
+        CtorSpec { name, tag, field_count: 0 }
+    }
+
+    /// Helper: data constructor spec with the given field count.
+    fn data_ctor(name: &'static str, tag: usize, field_count: usize) -> CtorSpec {
+        CtorSpec { name, tag, field_count }
+    }
+
+    /// Build a constructor `Def` entry under the ctor-as-Def shape.
+    fn ctor_def_entry(type_fqtn: &FQTypeName, spec: &CtorSpec) -> ModuleEntry {
+        let scheme = Scheme {
+            type_vars: vec![],
+            constraints: std::collections::HashMap::new(),
+            ty: Type::ADT(type_fqtn.clone(), vec![]),
+        };
+        ModuleEntry::Def {
+            scheme,
+            visibility: Visibility::Public,
+            docstring: None,
+            param_names: (0..spec.field_count)
+                .map(|i| Symbol::from(format!("f{i}")))
+                .collect(),
+            kind: Box::new(DefKind::Constructor {
+                type_name: type_fqtn.clone(),
+                tag: spec.tag,
+                field_count: spec.field_count,
+                internal: false,
+            }),
+            callees: vec![],
+            got_slot: None,
+            trait_origin: None,
+            seq: 0,
+            ast: None,
+            code: None,
+        }
+    }
+
+    /// Build a DashMap with a single module, mirroring the production
+    /// registration order (`cranelisp-typecheck::adt::register_type`): each
+    /// constructor `Def` is inserted FIRST, then the `TypeDef` is inserted
+    /// under the type name. For a **product type** (single constructor whose
+    /// name equals the type name) the `TypeDef` overwrites the same-named ctor
+    /// `Def` and carries `constructor_scheme: Some(Type::Fn(field_types, adt))`.
+    fn tables_with_type(
+        type_name: &str,
         type_params: &[&str],
-        constructors: Vec<ConstructorInfo>,
-    ) -> TypeDefInfo {
-        TypeDefInfo {
-            name: test_fqtn(name),
-            type_params: type_params.iter().map(|s| Symbol::from(*s)).collect(),
-            constructors,
-            docstring: None,
-        }
-    }
-
-    /// Helper: build a nullary constructor (no fields).
-    fn nullary_ctor(name: &str, tag: usize) -> ConstructorInfo {
-        ConstructorInfo {
-            name: Symbol::from(name),
-            tag,
-            fields: vec![],
-            docstring: None,
-            internal: false,
-        }
-    }
-
-    /// Helper: build a data constructor with one Int field.
-    fn data_ctor(name: &str, tag: usize) -> ConstructorInfo {
-        ConstructorInfo {
-            name: Symbol::from(name),
-            tag,
-            fields: vec![FieldInfo {
-                name: Symbol::from("val"),
-                ty: Type::Int,
-            }],
-            docstring: None,
-            internal: false,
-        }
-    }
-
-    /// Helper: build a DashMap with a single module containing the given TypeDefInfos.
-    fn tables_with_defs(defs: Vec<TypeDefInfo>) -> dashmap::DashMap<ModuleFullPath, SymbolTable> {
+        ctors: &[CtorSpec],
+    ) -> dashmap::DashMap<ModuleFullPath, SymbolTable> {
         let tables: dashmap::DashMap<ModuleFullPath, SymbolTable> = dashmap::DashMap::new();
         let mut st = SymbolTable::new(ModuleFullPath::from(TEST_MOD));
-        for def in defs {
-            let key = Symbol::from(def.name.name.as_ref());
-            st.insert(
-                key,
-                ModuleEntry::TypeDef {
-                    info: def,
-                    visibility: Visibility::Public,
-                    constructor_scheme: None,
-                    sexp: None,
-                },
-            );
+        let fqtn = test_fqtn(type_name);
+
+        // Insert ctor Defs first (production order).
+        for spec in ctors {
+            st.insert(Symbol::from(spec.name), ctor_def_entry(&fqtn, spec));
         }
+
+        // Product type: single ctor named like the type → store its signature
+        // on the TypeDef's constructor_scheme (Int placeholder field types).
+        let constructor_scheme = if ctors.len() == 1 && ctors[0].name == type_name {
+            let field_count = ctors[0].field_count;
+            let ty = if field_count == 0 {
+                Type::ADT(fqtn.clone(), vec![])
+            } else {
+                Type::Fn(
+                    (0..field_count).map(|_| Type::Int).collect(),
+                    Box::new(Type::ADT(fqtn.clone(), vec![])),
+                )
+            };
+            Some(Scheme {
+                type_vars: vec![],
+                constraints: std::collections::HashMap::new(),
+                ty,
+            })
+        } else {
+            None
+        };
+
+        let info = TypeDefInfo {
+            name: fqtn.clone(),
+            type_params: type_params.iter().map(|s| Symbol::from(*s)).collect(),
+            constructors: ctors.iter().map(|c| Symbol::from(c.name)).collect(),
+        };
+        st.insert(
+            Symbol::from(type_name),
+            ModuleEntry::TypeDef {
+                info,
+                visibility: Visibility::Public,
+                docstring: None,
+                constructor_scheme,
+            },
+        );
         tables.insert(ModuleFullPath::from(TEST_MOD), st);
         tables
     }
@@ -609,15 +729,15 @@ mod heap_category_tests {
     #[test]
     fn test_enum_only_adt_never_heap() {
         // (deftype Color Red Green Blue)
-        let tables = tables_with_defs(vec![make_type_def(
+        let tables = tables_with_type(
             "Color",
             &[],
-            vec![
+            &[
                 nullary_ctor("Red", 0),
                 nullary_ctor("Green", 1),
                 nullary_ctor("Blue", 2),
             ],
-        )]);
+        );
         let color = Type::ADT(test_fqtn("Color"), vec![]);
         assert_eq!(
             HeapCategory::classify(&color, Some(&tables)),
@@ -631,11 +751,11 @@ mod heap_category_tests {
     fn test_data_only_adt_always_heap() {
         // (deftype Wrapper [val]) — non-parameterized with data constructor
         // This is the F-2 bug case: was incorrectly NeverHeap
-        let tables = tables_with_defs(vec![make_type_def(
+        let tables = tables_with_type(
             "Wrapper",
             &[],
-            vec![data_ctor("Wrapper", 0)],
-        )]);
+            &[data_ctor("Wrapper", 0, 1)],
+        );
         let wrapper = Type::ADT(test_fqtn("Wrapper"), vec![]);
         assert_eq!(
             HeapCategory::classify(&wrapper, Some(&tables)),
@@ -646,26 +766,11 @@ mod heap_category_tests {
     #[test]
     fn test_product_type_always_heap() {
         // (deftype IPoint (IPoint [:Int x :Int y])) — product type
-        let tables = tables_with_defs(vec![make_type_def(
+        let tables = tables_with_type(
             "IPoint",
             &[],
-            vec![ConstructorInfo {
-                name: Symbol::from("IPoint"),
-                tag: 0,
-                fields: vec![
-                    FieldInfo {
-                        name: Symbol::from("x"),
-                        ty: Type::Int,
-                    },
-                    FieldInfo {
-                        name: Symbol::from("y"),
-                        ty: Type::Int,
-                    },
-                ],
-                docstring: None,
-                internal: false,
-            }],
-        )]);
+            &[data_ctor("IPoint", 0, 2)],
+        );
         let point = Type::ADT(test_fqtn("IPoint"), vec![]);
         assert_eq!(
             HeapCategory::classify(&point, Some(&tables)),
@@ -678,11 +783,11 @@ mod heap_category_tests {
     #[test]
     fn test_mixed_adt_with_tables() {
         // (deftype (Option a) None (Some [:a val]))
-        let tables = tables_with_defs(vec![make_type_def(
+        let tables = tables_with_type(
             "Option",
             &["a"],
-            vec![nullary_ctor("None", 0), data_ctor("Some", 1)],
-        )]);
+            &[nullary_ctor("None", 0), data_ctor("Some", 1, 1)],
+        );
         let option_int = Type::ADT(test_fqtn("Option"), vec![Type::Int]);
         assert_eq!(
             HeapCategory::classify(&option_int, Some(&tables)),
@@ -696,11 +801,11 @@ mod heap_category_tests {
     fn test_phantom_type_never_heap() {
         // (deftype (Phantom a) PhantomVal) — parameterized, but only nullary constructor
         // This was incorrectly Mixed with the old heuristic
-        let tables = tables_with_defs(vec![make_type_def(
+        let tables = tables_with_type(
             "Phantom",
             &["a"],
-            vec![nullary_ctor("PhantomVal", 0)],
-        )]);
+            &[nullary_ctor("PhantomVal", 0)],
+        );
         let phantom = Type::ADT(test_fqtn("Phantom"), vec![Type::Int]);
         assert_eq!(
             HeapCategory::classify(&phantom, Some(&tables)),
@@ -771,7 +876,7 @@ mod heap_category_tests {
 ///
 /// Ring 1 simplified approach: walk the expression tree and for each variable,
 /// record all use sites. The last one in a pre-order traversal is the last use.
-pub fn compute_last_uses(
+pub(crate) fn compute_last_uses(
     expr: &cranelisp_types::Expr,
 ) -> HashMap<(cranelisp_types::Symbol, cranelisp_types::Span), bool> {
     use cranelisp_types::{Symbol, Span};
@@ -842,6 +947,11 @@ fn collect_var_uses(
                 collect_var_uses(val_expr, uses);
             }
             collect_var_uses(body, uses);
+        }
+        Expr::ConstrADT { fields, .. } => {
+            for f in fields {
+                collect_var_uses(f, uses);
+            }
         }
         // Literals have no variable references.
         Expr::IntLit { .. }

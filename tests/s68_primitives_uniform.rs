@@ -139,46 +139,50 @@ fn s68_primitives_table_is_arc_symboltable_unit_unit() {
 }
 
 // =============================================================================
-// #6 — Sentinel: the still-binding S68-touched crate stays in the facade check.
+// #6 — Sentinel: NO S68-touched crate retains a binding facade (all retired).
 //
 // Adjacent to #3. `tests/facade_compliance.rs` is the facade-compliance drift
-// guard. Its premise NARROWED at S74 W4: facade-compliance applies only to
-// crates that still have a binding facade `.md`. As of S74 W3 the
-// `primitives.md` and `intrinsics.md` facades RETIRED (joining `types.md`/
-// `frontend.md`/`platform.md`/`typecheck.md`). Once a facade is retired the
-// crate's public surface is DEFINED by its source — `public-api.txt` + the
-// compiler ARE the definition and the guard — so there is no facade left to
-// comply WITH and nothing for a facade-compliance test to check on primitives
-// or intrinsics. They are therefore INTENTIONALLY ABSENT from
-// `tests/facade_compliance.rs`: not moved to a different check, dropped out.
+// guard. Its premise NARROWED at S74 W4 (facade-compliance applies only to
+// crates that still have a binding facade `.md`) and FULLY COLLAPSED at S75 W5c.
+// As of S74 W3 the `primitives.md` and `intrinsics.md` facades RETIRED (joining
+// `types.md`/`frontend.md`/`platform.md`/`typecheck.md`); at S75 W5b
+// `backend.md` and `backend-cache.md` retired too — the LAST two binding
+// facades. Once a facade is retired the crate's public surface is DEFINED by
+// its source — `public-api.txt` + the compiler ARE the definition and the
+// guard — so there is no facade left to comply WITH and nothing for a
+// facade-compliance test to check. All eight crates are therefore
+// INTENTIONALLY ABSENT from `tests/facade_compliance.rs`: not moved to a
+// different check, dropped out. `facade_pairs()` is now an empty tombstone.
 //
-// This sentinel re-anchors with that narrowing (option (a) of the S74-W4
-// simplification: narrow the sentinel to the still-binding crate rather than
-// remove it). Of the S68-touched crates, only `cranelisp-backend` still has a
-// binding facade, so the only live facade-compliance contract is backend's.
-// The sentinel asserts backend stays in `facade_pairs()` (so a refactor can't
-// silently drop the one crate that DOES have a contract) AND that primitives/
-// intrinsics stay OUT (so a refactor can't re-assert their retired contract).
+// This sentinel flips with that collapse (S75 W5c — mirroring exactly the S74
+// primitives/intrinsics flip): the backend POSITIVE assertion ("backend stays
+// in facade_pairs()") is REMOVED, and `cranelisp-backend` JOINS the
+// MUST-BE-ABSENT set alongside `cranelisp-primitives` + `cranelisp-intrinsics`.
+// Net: all three are asserted absent, locking in the retirement (so a refactor
+// can't silently re-assert any retired contract). `int.md` remains binding but
+// `int` is a binary crate with no `public-api.txt`, so it was never part of
+// this grep check (it is covered by `facade_pif_rows.rs`).
 // =============================================================================
 
-// spec: design/arch/CLAUDE.md §"Baseline-diff discipline" — narrowed at S74 W4
-//       (/qa) when primitives.md + intrinsics.md retired: facade-compliance
-//       applies only to crates with a binding facade; retired-facade crates
-//       have source as their canonical surface and are absent from the check.
-//       This is the corrected, simpler form of the (now-deleted) FIXME 0218
-//       resolution (the over-built rustdoc-coverage check it briefly added is
-//       removed — restating the source is not a contract check).
-// Sentinel: of the S68-touched crates, only `cranelisp-backend` still carries
-// a binding facade, so it is the only one with a facade-compliance contract.
-// This meta-row asserts backend stays in `facade_pairs()` and primitives/
-// intrinsics stay out.
+// spec: design/arch/CLAUDE.md §"Baseline-diff discipline" — collapsed at S75 W5c
+//       (/qa) when backend.md + backend-cache.md retired (the last two binding
+//       facades, after S74's primitives.md + intrinsics.md): facade-compliance
+//       now applies to NO crate; every retired-facade crate has source as its
+//       canonical surface and is absent from the check. This is the S74 flip
+//       extended to backend (the corrected, simpler form of the deleted FIXME
+//       0218 — restating the source is not a contract check).
+// Sentinel: NONE of the S68-touched crates carries a binding facade as of S75
+// W5c, so none has a facade-compliance contract. This meta-row asserts
+// primitives/intrinsics/backend are all ABSENT from `facade_pairs()` (the empty
+// tombstone) — the positive proof all eight retirements hold.
 #[test]
 fn s68_facade_compliance_test_exists_for_s68_touched_crates() {
     let fc = read_source("tests/facade_compliance.rs");
 
-    // backend: facade still BINDING → must remain in the `facade_pairs()`
-    // text-grep path. This is the only S68-touched crate with a live
-    // facade-compliance contract.
+    // The `facade_pairs()` grep anchor MUST still exist — it is retained as a
+    // documented empty tombstone (returns `vec![]`) so this sentinel's
+    // `split_once` survives the S75 W5c reduction. If a future refactor deletes
+    // the function outright, this lookup fails loudly (the panic below).
     let pairs_block = fc
         .split_once("fn facade_pairs()")
         .and_then(|(_, after)| after.split_once("\nfn "))
@@ -186,29 +190,29 @@ fn s68_facade_compliance_test_exists_for_s68_touched_crates() {
         .unwrap_or_else(|| {
             panic!(
                 "tests/facade_compliance.rs MUST define `facade_pairs()` — the \
-                 binding-facade text-grep path."
+                 binding-facade text-grep anchor (now an empty tombstone)."
             )
         });
-    assert!(
-        pairs_block.contains("cranelisp-backend"),
-        "tests/facade_compliance.rs `facade_pairs()` MUST list `cranelisp-backend` \
-         — its facade (backend.md + backend-cache.md) remains binding, so it is \
-         the one S68-touched crate still under a facade-compliance contract."
-    );
 
-    // primitives + intrinsics: facade RETIRED at S74 W3 → source IS their
-    // canonical surface (public-api.txt + the compiler are the guard), so they
-    // have NO facade-compliance contract. They MUST NOT appear in
-    // `facade_pairs()`; their absence is the positive proof the retirement
-    // holds and that the over-built rustdoc-coverage check did not survive.
-    for name in ["cranelisp-primitives", "cranelisp-intrinsics"] {
+    // primitives + intrinsics + backend: facades ALL RETIRED → source IS each
+    // crate's canonical surface (public-api.txt + the compiler are the guard),
+    // so none has a facade-compliance contract. None MUST appear in
+    // `facade_pairs()`; their collective absence is the positive proof the
+    // retirements hold (primitives/intrinsics retired S74 W3; backend +
+    // backend-cache retired S75 W5b — `backend-cache` was a sub-facade of the
+    // `cranelisp-backend` entry, so absence of `cranelisp-backend` covers both).
+    // The backend POSITIVE assertion (was: backend MUST be present) is removed
+    // at S75 W5c — backend's facade is retired, so it must no longer be
+    // required present. This mirrors exactly the S74 primitives/intrinsics flip.
+    for name in ["cranelisp-primitives", "cranelisp-intrinsics", "cranelisp-backend"] {
         assert!(
             !pairs_block.contains(name),
             "tests/facade_compliance.rs `facade_pairs()` MUST NOT list `{name}` \
-             — its facade retired at S74 W3, so source is its canonical surface \
-             and there is nothing for a facade-compliance test to check. It is \
-             intentionally absent from facade_compliance.rs (S74 W4 \
-             simplification; the corrected form of the deleted FIXME 0218)."
+             — its facade is retired (primitives/intrinsics S74 W3; backend + \
+             backend-cache S75 W5b), so source is its canonical surface and \
+             there is nothing for a facade-compliance test to check. It is \
+             intentionally absent from facade_compliance.rs (all eight facades \
+             retired; `facade_pairs()` is an empty tombstone)."
         );
     }
 }

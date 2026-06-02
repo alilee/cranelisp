@@ -16,21 +16,27 @@
 //!
 //! # Design
 //!
-//! - `Code::Jit { jit, ptr }` — fresh-build batch. `Arc<Jit>` is the
-//!   retention root for the JIT-mmap'd executable pages; `ptr` is the
-//!   runtime address of the per-symbol entry point. Multiple entries from
-//!   the same compile batch share an `Arc<Jit>` clone (one increment per
-//!   defined symbol).
-//! - `Code::Linker { linker, ptr }` — cache-hit `.o`-mapped batch.
-//!   `Arc<Linker>` is the retention root for the mmap'd code regions;
-//!   `ptr` is the linker-resolved per-symbol address.
+//! `Code` carries **lifecycle ownership ONLY** (S75 W2 slim per
+//! `facades/backend.md` §"Code"). The fn ptr for an indirect call lives in
+//! the per-module `GotTable` — read via
+//! `symbol_table.got().load_slot(entry.got_slot.unwrap())`. The GOT is the
+//! single source of truth for callable addresses; there is no per-variant
+//! `ptr` field and no `ptr()` accessor (the S66 same-day `fn_ptr` unification
+//! rollback `1dc57ae` settled the GOT as authoritative).
 //!
-//! # Reclaim (Decision 31 Scenario 2)
+//! - `Code::Jit(Arc<Jit>)` — fresh-build batch. `Arc<Jit>` is the retention
+//!   root for the JIT-mmap'd executable pages. Multiple entries from the same
+//!   compile batch share an `Arc<Jit>` clone (one increment per defined
+//!   symbol).
+//! - `Code::Linker(Arc<Linker>)` — cache-hit `.o`-mapped batch.
+//!   `Arc<Linker>` is the retention root for the mmap'd code regions.
+//!
+//! # Reclaim (Decision 41 Scenario 2; formerly D31)
 //!
 //! Per-redefinition reclaim falls out of refcounting:
 //! 1. REPL user redefines `(defn f [x] x)`.
 //! 2. The old `ModuleEntry::Def` is replaced by `worker::register_def_in_module`;
-//!    the prior `code: Some(Code::Jit { jit, ptr })` value drops.
+//!    the prior `code: Some(Code::Jit(Arc<Jit>))` value drops.
 //! 3. That decrements the `Arc<Jit>` refcount. If no other entry from the
 //!    same batch is still alive, the count hits zero, `Arc::drop` fires
 //!    `Jit::drop`, which calls `unsafe JITModule::free_memory()` and
@@ -40,10 +46,6 @@
 //!    code regions reclaim.
 //!
 //! # Safety
-//!
-//! `ptr` is a raw code address. It is valid as long as the `Arc<Jit>` /
-//! `Arc<Linker>` carrying the backing pages is alive — which is enforced
-//! structurally because they're co-located in the same enum variant.
 //!
 //! The `unsafe impl Send + Sync` is needed because `cranelift_jit::JITModule`
 //! contains non-`Sync` interior mutability (symbol cache); after
@@ -65,91 +67,57 @@ use crate::jit::Jit;
 /// Manual `Debug` impl (instead of `#[derive(Debug)]`) — `Jit` and `Linker`
 /// don't implement `Debug`, but `Code` needs to satisfy `Debug` because
 /// `ModuleEntry<C>: Debug` requires `C: Debug`. The Debug output is
-/// intentionally minimal (variant tag + ptr value); the inner `Arc<Jit>`
-/// / `Arc<Linker>` is opaque (would dump JIT internals which is noise
-/// at the `:?` debug-print level).
+/// intentionally minimal (variant tag only); the inner `Arc<Jit>` /
+/// `Arc<Linker>` is opaque (would dump JIT internals which is noise at the
+/// `:?` debug-print level).
+///
+/// S75 W2 slim per `facades/backend.md` §"Code": variants carry the
+/// lifecycle owner ONLY (no per-variant `ptr`); the `Code::Primitive`
+/// marker is deleted (primitive-ness reads from `kind: DefKind::Primitive`;
+/// primitives entries carry `code: None`).
 #[non_exhaustive]
 #[derive(Clone)]
 pub enum Code {
     /// Fresh-build code emitted by a `compile_to_module` invocation.
-    /// `jit` is the retention root for the JIT-mmap'd pages; `ptr` is the
-    /// per-symbol entry point address.
-    Jit {
-        jit: Arc<Jit>,
-        ptr: *const u8,
-    },
+    /// `Arc<Jit>` is the retention root for the JIT-mmap'd pages; the
+    /// per-symbol entry-point address lives in the per-module `GotTable`.
+    Jit(Arc<Jit>),
     /// Cache-hit code loaded from a `.o` file via the in-process Linker.
-    /// `linker` is the retention root for the mmap'd code regions; `ptr`
-    /// is the linker-resolved per-symbol address.
-    Linker {
-        linker: Arc<Linker>,
-        ptr: *const u8,
-    },
-    /// Process-static lifecycle marker for primitives (Decision 0048 A2,
-    /// revised S68 Phase 3 2026-05-17). No payload — Decision 35's
-    /// "GOT is the single source of truth for callable addresses; no
-    /// per-entry pointer field" invariant is preserved. The marker
-    /// expresses the *lifecycle category* (process-static, externally
-    /// owned by the primitives crate's `PRIMITIVES_TABLE` `LazyLock`)
-    /// at every `match` site over `Code`; the fn ptr continues to live
-    /// in the per-module `GotTable` indexed by `ModuleEntry::Def.got_slot`.
-    /// Wave 3 of S68 constructs primitives' `ModuleEntry::Def` entries
-    /// with `code = Some(Code::Primitive)`.
-    Primitive,
+    /// `Arc<Linker>` is the retention root for the mmap'd code regions; the
+    /// per-symbol resolved address lives in the per-module `GotTable`.
+    Linker(Arc<Linker>),
 }
 
 impl std::fmt::Debug for Code {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Code::Jit { ptr, .. } => f.debug_struct("Code::Jit").field("ptr", ptr).finish(),
-            Code::Linker { ptr, .. } => f.debug_struct("Code::Linker").field("ptr", ptr).finish(),
-            Code::Primitive => f.write_str("Code::Primitive"),
+            Code::Jit(_) => f.write_str("Code::Jit"),
+            Code::Linker(_) => f.write_str("Code::Linker"),
         }
     }
 }
 
 // SAFETY: see module-level docs. The `Arc<Jit>` / `Arc<Linker>` carriers
 // are themselves `Send + Sync` (Arc requires `T: Send + Sync` to be
-// `Send + Sync`); the `*const u8` pointer is an integer handle into pages
-// the Arc keeps alive. `Jit` (cranelift JIT module wrapper) is not
-// auto-`Sync` because of `JITModule`'s interior mutability around its
-// symbol cache, but the post-finalize state we hold here is read-only:
-// `Code` instances only support cloning the Arc (which is thread-safe
-// refcount bumps) and reading `ptr` (no method dispatch on `Jit`).
+// `Send + Sync`). `Jit` (cranelift JIT module wrapper) is not auto-`Sync`
+// because of `JITModule`'s interior mutability around its symbol cache, but
+// the post-finalize state we hold here is read-only: `Code` instances only
+// support cloning the Arc (which is thread-safe refcount bumps). Callable
+// addresses are read from the GOT, not from `Code`.
 unsafe impl Send for Code {}
 unsafe impl Sync for Code {}
 
 impl Code {
     /// Construct a fresh-build `Code::Jit` from the JIT batch's retention
-    /// root and the per-symbol code pointer.
-    pub fn jit(jit: Arc<Jit>, ptr: *const u8) -> Self {
-        Code::Jit { jit, ptr }
+    /// root.
+    pub fn jit(jit: Arc<Jit>) -> Self {
+        Code::Jit(jit)
     }
 
     /// Construct a cache-hit `Code::Linker` from the linker's retention
-    /// root and the per-symbol resolved address.
-    pub fn linker(linker: Arc<Linker>, ptr: *const u8) -> Self {
-        Code::Linker { linker, ptr }
-    }
-
-    /// Read the per-symbol code pointer. Uniform across `Code::Jit` and
-    /// `Code::Linker` — every read site that previously did `c.ptr` on
-    /// the pre-Wave-3b struct now calls `c.ptr()` on the enum.
-    ///
-    /// For `Code::Primitive` (the process-static marker variant added by
-    /// Decision 0048 §"Shape" S68 Phase 3 amendment), this returns
-    /// `std::ptr::null()` — the variant carries no payload because
-    /// Decision 35's "GOT is the single source of truth for callable
-    /// addresses" invariant places the primitives' fn ptr in the
-    /// per-module `GotTable` indexed by `ModuleEntry::Def.got_slot`,
-    /// NOT inside `Code`. Callers needing the primitive's fn ptr must
-    /// read the GOT slot directly via
-    /// `symbol_table.got().load_slot(entry.got_slot.unwrap())`.
-    pub fn ptr(&self) -> *const u8 {
-        match self {
-            Code::Jit { ptr, .. } | Code::Linker { ptr, .. } => *ptr,
-            Code::Primitive => std::ptr::null(),
-        }
+    /// root.
+    pub fn linker(linker: Arc<Linker>) -> Self {
+        Code::Linker(linker)
     }
 }
 
@@ -160,18 +128,21 @@ mod tests {
     // spec: design/int/symbol-table-generics.md §3 Layer 3 + Decision 31
     //       Scenario 2 reclaim primitive.
     //
-    // Construct `Code::Jit { jit, ptr }`; assert `Arc::strong_count` semantics:
+    // Construct `Code::Jit(Arc<Jit>)`; assert `Arc::strong_count` semantics:
     // cloning bumps the count, dropping decrements, and the underlying Jit
     // drops only when the last Arc clone drops.
     #[test]
+    // `Arc<Jit>` is intentionally not Send+Sync (Jit is not Sync) — this test
+    // exercises the production `Code::Jit(Arc<Jit>)` shape's refcount semantics,
+    // so the non-Send-Sync Arc IS the thing under test, not an oversight.
+    #[allow(clippy::arc_with_non_send_sync)]
     fn code_enum_jit_variant_carries_arc_jit() {
         let jit = Arc::new(Jit::new().expect("Jit::new must succeed for test"));
         assert_eq!(Arc::strong_count(&jit), 1, "fresh Arc has refcount 1");
 
-        let fake_ptr = 0xCAFEF00Dusize as *const u8;
-        let code1 = Code::jit(Arc::clone(&jit), fake_ptr);
+        let code1 = Code::jit(Arc::clone(&jit));
         assert_eq!(Arc::strong_count(&jit), 2, "Code::jit clones the Arc");
-        assert_eq!(code1.ptr(), fake_ptr, "Code::ptr() returns Jit ptr");
+        assert!(matches!(code1, Code::Jit(_)), "Code::jit builds Code::Jit");
 
         let code2 = code1.clone();
         assert_eq!(Arc::strong_count(&jit), 3, "Code::clone bumps refcount");
@@ -205,10 +176,9 @@ mod tests {
         let linker = Arc::new(
             crate::cache::linker::Linker::new().expect("Linker::new must succeed for test"),
         );
-        let fake_ptr = 0xDEADBEEFusize as *const u8;
-        let code = Code::linker(Arc::clone(&linker), fake_ptr);
+        let code = Code::linker(Arc::clone(&linker));
 
-        assert_eq!(code.ptr(), fake_ptr, "Code::ptr() returns Linker ptr");
+        assert!(matches!(code, Code::Linker(_)), "Code::linker builds Code::Linker");
         assert_eq!(
             Arc::strong_count(&linker),
             2,
@@ -230,79 +200,5 @@ mod tests {
     fn code_implements_code_store() {
         fn _requires_code_store<T: cranelisp_types::CodeStore>() {}
         _requires_code_store::<Code>();
-    }
-
-    // spec: design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md
-    //       §"Shape" (S68 Phase 3 amendment, 2026-05-17 user revision) —
-    //       `Code::Primitive` marker variant added; no payload (Decision 35
-    //       invariant preserved); expresses process-static lifecycle category
-    //       only. Construction, pattern-matching, and distinctness from
-    //       `Code::Jit` / `Code::Linker` all required.
-    #[test]
-    fn code_primitive_marker_variant_constructible_and_distinct() {
-        // 1. Construction — no payload, no constructor fn needed.
-        let prim = Code::Primitive;
-
-        // 2. Pattern-match against `Code::Primitive` succeeds for a
-        //    Primitive value.
-        let matched_prim = matches!(prim, Code::Primitive);
-        assert!(matched_prim, "Code::Primitive must pattern-match itself");
-
-        // 3. A `Code::Jit { .. }` value MUST NOT pattern-match `Code::Primitive`.
-        let jit_val = Code::jit(
-            Arc::new(Jit::new().expect("Jit::new must succeed for test")),
-            0xDEADBEEFusize as *const u8,
-        );
-        assert!(
-            !matches!(jit_val, Code::Primitive),
-            "Code::Jit value must NOT pattern-match Code::Primitive"
-        );
-        assert!(
-            matches!(jit_val, Code::Jit { .. }),
-            "Code::Jit value must pattern-match Code::Jit"
-        );
-
-        // 4. A `Code::Linker { .. }` value MUST NOT pattern-match `Code::Primitive`.
-        let linker_val = Code::linker(
-            Arc::new(
-                crate::cache::linker::Linker::new().expect("Linker::new must succeed for test"),
-            ),
-            0xCAFEF00Dusize as *const u8,
-        );
-        assert!(
-            !matches!(linker_val, Code::Primitive),
-            "Code::Linker value must NOT pattern-match Code::Primitive"
-        );
-        assert!(
-            matches!(linker_val, Code::Linker { .. }),
-            "Code::Linker value must pattern-match Code::Linker"
-        );
-
-        // 5. `Code::Primitive` value MUST NOT pattern-match Jit or Linker.
-        assert!(
-            !matches!(prim, Code::Jit { .. }),
-            "Code::Primitive must NOT pattern-match Code::Jit"
-        );
-        assert!(
-            !matches!(prim, Code::Linker { .. }),
-            "Code::Primitive must NOT pattern-match Code::Linker"
-        );
-
-        // 6. `Code::Primitive::ptr()` returns null per the Decision 35
-        //    invariant — the GOT is the single source of truth; the
-        //    primitive's fn ptr lives in `SymbolTable.got()`, not inside
-        //    `Code`. Callers needing the ptr read the GOT slot directly.
-        assert!(
-            prim.ptr().is_null(),
-            "Code::Primitive::ptr() returns null per Decision 35 \
-             (GOT is single source of truth; no per-entry pointer field)"
-        );
-
-        // 7. `Code::Primitive` Clone is no-op (no payload to refcount).
-        let prim_clone = prim.clone();
-        assert!(
-            matches!(prim_clone, Code::Primitive),
-            "Code::Primitive clones to Code::Primitive"
-        );
     }
 }

@@ -1,16 +1,33 @@
-// FnCompiler: per-function compilation context.
-//
-// Contains the FunctionBuilder and all state needed to compile one function.
-// NOT a 21-parameter function -- addresses the prototype's primary structural debt.
-//
-// One dispatch method per Expr variant: compile_int_lit, compile_let, etc.
+//! Per-function CLIF emission — internal codegen primitives.
+//!
+//! `FnCompiler` owns a `FunctionBuilder` + `&mut M: Module` and holds all the
+//! state needed to compile one function (NOT a 21-parameter function — this
+//! addresses the prototype's primary structural debt). One dispatch method per
+//! `Expr` variant (`compile_int_lit`, `compile_let`, …).
+//!
+//! These types (`FnCompiler`, `CompileContext`, `MatchContext`, `TracedFnInfo`)
+//! are `pub` codegen primitives reached only via the
+//! `compile_to_module` free function in production; the `pub` exists for
+//! test-side AST-fragment compilation. The GOT-target resolution helpers
+//! `resolve_func_arity` / `resolve_got_target` / `got_data_symbol_name` are the
+//! canonical per-symbol-table probing primitives (no equivalent at the
+//! `cranelisp-types` boundary).
+//!
+//! **Forbidden pattern.** Every primitive — including `not`, `+`, `=`, and the
+//! arithmetic/comparison operators — goes through the SAME GOT-indirect
+//! dispatch path as any user function. Inline substitution (`primitives_inline`)
+//! is a name-keyed shortcut over that path, never a parallel dispatch; backend
+//! has no trait knowledge and MUST NOT key on `(trait, method, type)` triples.
 
-pub mod apply;
-pub mod control_flow;
-pub mod literals;
-pub mod match_codegen;
-pub mod trace_codegen;
-pub mod vec_codegen;
+// Codegen submodules — narrowed to `pub(crate)` in S75 W3 (they export no
+// items externally; codegen lives in `impl FnCompiler` blocks inside them and
+// no out-of-crate consumer exists).
+pub(crate) mod apply;
+pub(crate) mod control_flow;
+pub(crate) mod literals;
+pub(crate) mod match_codegen;
+pub(crate) mod trace_codegen;
+pub(crate) mod vec_codegen;
 
 use std::collections::HashMap;
 
@@ -20,17 +37,41 @@ use cranelift_module::{FuncId, Module};
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    ConstructorInfo, CranelispError, Defn, Expr, FQTypeName, HeapCategory,
+    CranelispError, DefKind, Defn, Expr, FQTypeName,
     ModuleEntry, ModuleFullPath, Span, Symbol, SymbolTable,
     Type, TypeDefInfo,
 };
 
-use crate::heap;
+use crate::heap::{self, HeapCategory};
+
+/// A single field of a constructor, as reconstructed for backend codegen.
+///
+/// The field type is recovered from the constructor `Def`'s `scheme` (a data
+/// constructor's scheme is `Type::Fn(field_types, result_adt)`; a nullary
+/// constructor's scheme is just the result ADT and carries no fields).
+/// Codegen consumes field types (heap classification, drop-glue field decs,
+/// type-substitution); field names are not needed at codegen and are not
+/// carried (minimum mechanism — Principle 6).
+#[derive(Debug, Clone)]
+pub(crate) struct CtorField {
+    pub ty: Type,
+}
+
+/// Backend-internal constructor metadata, reconstructed from a constructor's
+/// `ModuleEntry::Def { kind: DefKind::Constructor { .. }, .. }` entry.
+///
+/// Replaces the retired `cranelisp_types::ConstructorInfo` struct (S70
+/// ctor-as-Def collapse). The metadata (`tag`, `field_count`) is read from
+/// `DefKind::Constructor`; field names from `param_names`; field types
+/// reconstructed from the `Def.scheme`. See `design/backend/compile-to-module.md`
+/// §2.6 and `DefKind::Constructor` rustdoc in `cranelisp-types::module`.
+#[derive(Debug, Clone)]
+pub(crate) struct CtorMeta {
+    pub tag: usize,
+    pub fields: Vec<CtorField>,
+}
 
 // Variable allocation is per-FnCompiler instance via next_var field.
-
-/// Named constant for the user trap code used when match exhaustion occurs.
-pub const MATCH_EXHAUSTION_TRAP: u8 = 1;
 
 /// GOT data symbol name for a module. Single source of truth.
 /// Used as the Cranelift data symbol name for the module's GOT table in both
@@ -40,7 +81,23 @@ pub const MATCH_EXHAUSTION_TRAP: u8 = 1;
 /// underscores. Each `.o` file defines all GOT data symbols it needs
 /// (own module + imported modules) as `Export` with a placeholder value;
 /// the linker/loader patches them at load time.
-pub fn got_data_symbol_name(module_path: &ModuleFullPath) -> String {
+///
+/// # Linker-symbol ABI (preserved here before the S75 W3 `pub(crate)` narrow)
+///
+/// Returns the per-module GOT data-symbol name `__cranelisp_got_{M}` (the
+/// module path flattened, `.`→`_`). This is the relocation target every CLIF
+/// call site references (`Linkage::Import` against `__cranelisp_got_{M}`,
+/// indexed by `SymbolTable[M].symbols[name].got_slot`); the defining `.o`
+/// exports it (`Linkage::Export`) per Decision 23/36. This is the single
+/// source of truth for the GOT data-symbol naming scheme.
+///
+/// Narrowed to `pub(crate)` per the S75 W3 /arch re-ruling: this is a
+/// codegen-internal relocation-symbol naming primitive, not a backend
+/// boundary. `compiler/mod.rs` is the canonical home; `cache::object` re-exports
+/// it `pub(crate)`. int names it (`exe.rs:163`, `worker.rs:3004/3590`) only to
+/// construct the same relocation name int-side — int reaching into backend's
+/// codegen-naming internals; re-wired S77.
+pub(crate) fn got_data_symbol_name(module_path: &ModuleFullPath) -> String {
     let flat = module_path.as_ref().replace('.', "_");
     format!(
         "__cranelisp_got_{}",
@@ -61,8 +118,12 @@ pub fn got_data_symbol_name(module_path: &ModuleFullPath) -> String {
 ///
 /// Returns `None` if the symbol is not found, is not a `Def` with a `got_slot`,
 /// or if the Import chain exceeds the depth limit (10).
-pub fn resolve_got_target<C, L>(
+///
+/// Narrowed to `pub(crate)` in S75 W3 — backend-internal GOT-resolution
+/// primitive (no `cranelisp-types` equivalent; no int caller).
+pub(crate) fn resolve_got_target<C, L>(
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    module_aliases: &cranelisp_types::ModuleAliases,
     current_module: &ModuleFullPath,
     name: &Symbol,
 ) -> Option<(ModuleFullPath, usize)>
@@ -89,7 +150,7 @@ where
         let entry = st.get(bare)?;
         match entry {
             ModuleEntry::Def { got_slot: Some(slot), .. } => Some((module.clone(), *slot)),
-            ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
+            ModuleEntry::Import { source, .. } => {
                 let source_module = source.module.clone();
                 let source_symbol = source.symbol.clone();
                 drop(st);
@@ -104,11 +165,29 @@ where
         return Some(result);
     }
 
-    // 2. Qualified "module/name" — try child-of-current, then absolute.
+    // 2. Qualified "module/name".
     if let Some(slash) = name.as_ref().find('/') {
         let module_part = &name.as_ref()[..slash];
         let bare_name = &name.as_ref()[slash + 1..];
         if !module_part.is_empty() && !bare_name.is_empty() {
+            // 2a. Alias substitution (spec §8.6.6 step 5): the qualified
+            // prefix may be a session-level module alias (import-alias
+            // §8.3.4 or export-mount §8.4.4). The alias is keyed by
+            // `<owner>.<alias>`; substitute the matched alias prefix with
+            // its `target` module path, then resolve the bare name there.
+            // This is the resolution the ad-hoc child/absolute parse below
+            // cannot perform (it has no knowledge of the alias table).
+            let alias_key =
+                ModuleFullPath::from(format!("{current_module}.{module_part}"));
+            if let Some(alias) = module_aliases.get(&alias_key) {
+                let target = alias.target.clone();
+                drop(alias);
+                if let Some(result) = resolve_in_module(symbol_tables, &target, bare_name, 0) {
+                    return Some(result);
+                }
+            }
+
+            // 2b. Child-of-current, then absolute (no-alias fast paths).
             let child_path =
                 ModuleFullPath::from(format!("{}.{}", current_module, module_part));
             if let Some(result) = resolve_in_module(symbol_tables, &child_path, bare_name, 0) {
@@ -139,8 +218,12 @@ where
 /// `current_module`. Replacement for the Sprint-56-retracted
 /// `CompilationEnv::func_arity`. Used when generating closure wrappers for
 /// cross-module function references.
-pub fn resolve_func_arity<C, L>(
+///
+/// Narrowed to `pub(crate)` in S75 W3 — backend-internal arity-resolution
+/// primitive (no int caller).
+pub(crate) fn resolve_func_arity<C, L>(
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    module_aliases: &cranelisp_types::ModuleAliases,
     current_module: &ModuleFullPath,
     name: &Symbol,
 ) -> Option<usize>
@@ -167,7 +250,7 @@ where
         let entry = st.get(bare)?;
         match entry {
             ModuleEntry::Def { param_names, .. } => Some(param_names.len()),
-            ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
+            ModuleEntry::Import { source, .. } => {
                 let source_module = source.module.clone();
                 let source_symbol = source.symbol.clone();
                 drop(st);
@@ -182,11 +265,25 @@ where
         return Some(arity);
     }
 
-    // 2. Qualified "module/name" — try child-of-current, then absolute.
+    // 2. Qualified "module/name".
     if let Some(slash) = name.as_ref().find('/') {
         let module_part = &name.as_ref()[..slash];
         let bare_name = &name.as_ref()[slash + 1..];
         if !module_part.is_empty() && !bare_name.is_empty() {
+            // 2a. Alias substitution (spec §8.6.6 step 5) — mirror
+            // `resolve_got_target` so arity resolution follows the same
+            // qualified-name path as the GOT-slot resolution.
+            let alias_key =
+                ModuleFullPath::from(format!("{current_module}.{module_part}"));
+            if let Some(alias) = module_aliases.get(&alias_key) {
+                let target = alias.target.clone();
+                drop(alias);
+                if let Some(arity) = arity_in_module(symbol_tables, &target, bare_name, 0) {
+                    return Some(arity);
+                }
+            }
+
+            // 2b. Child-of-current, then absolute (no-alias fast paths).
             let child_path =
                 ModuleFullPath::from(format!("{}.{}", current_module, module_part));
             if let Some(arity) = arity_in_module(symbol_tables, &child_path, bare_name, 0) {
@@ -268,6 +365,11 @@ where
     /// constructors, GOT slots, and post-G7 GOT base pointers). The backend
     /// reads GOT slots/bases directly from this map — no env abstraction.
     pub symbol_tables: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    /// Session-level module-alias table (spec §8.6.6). Threaded into
+    /// `resolve_got_target` / `resolve_func_arity` so qualified-name
+    /// resolution can substitute an alias prefix with its target module
+    /// before walking the symbol tables. Added S75 W2 (D41 rotation).
+    pub module_aliases: &'a cranelisp_types::ModuleAliases,
     /// Current module being compiled (for constructor/type lookups).
     pub current_module: ModuleFullPath,
 
@@ -309,6 +411,7 @@ where
             func_ids: self.func_ids,
             func_arities: self.func_arities,
             symbol_tables: self.symbol_tables,
+            module_aliases: self.module_aliases,
             current_module: self.current_module.clone(),
             traced_fns: self.traced_fns,
             alloc_func_id: self.alloc_func_id,
@@ -331,8 +434,13 @@ where
     /// Accepts both bare names (`"SexpStr"`) and qualified names (`"macros/SexpStr"`).
     /// For qualified names, looks up directly in the specified module.
     /// For bare names, searches the current module's symbol table (following imports).
-    /// Returns `(FQTypeName, ConstructorInfo)` if found.
-    pub fn lookup_constructor(&self, name: &str) -> Option<(FQTypeName, ConstructorInfo)> {
+    /// Returns `(FQTypeName, CtorMeta)` if found.
+    ///
+    /// Post-S70 ctor-as-Def: constructors are `ModuleEntry::Def` entries with
+    /// `kind: DefKind::Constructor { type_name, tag, field_count, .. }`. The
+    /// returned `CtorMeta` reconstructs field names (from `param_names`) and
+    /// field types (from the `Def.scheme`'s `Type::Fn` params).
+    pub(crate) fn lookup_constructor(&self, name: &str) -> Option<(FQTypeName, CtorMeta)> {
         // Determine which module to search and the bare name within it.
         let (search_module, bare_name) = if let Some(slash_pos) = name.find('/') {
             let module_str = &name[..slash_pos];
@@ -351,7 +459,7 @@ where
             }
 
             // Follow import chain.
-            if let Some(ModuleEntry::Import { source }) = table.get(bare_name) {
+            if let Some(ModuleEntry::Import { source, .. }) = table.get(bare_name) {
                 let source_mod = source.module.clone();
                 let source_name = source.symbol.clone();
                 drop(table); // Drop guard before getting another
@@ -383,31 +491,82 @@ where
         None
     }
 
-    /// Extract constructor info from a module entry.
+    /// Extract constructor metadata from a module entry.
     ///
-    /// Handles both `ModuleEntry::Constructor` (normal case) and
-    /// `ModuleEntry::TypeDef` with `constructor_scheme` (product types
-    /// where the constructor name equals the type name — the TypeDef
-    /// entry overwrites the Constructor entry during registration).
+    /// Post-S70: constructors are normally `ModuleEntry::Def { kind:
+    /// DefKind::Constructor { type_name, tag, field_count, .. }, .. }`; field
+    /// types are recovered from the `scheme` (`Type::Fn(field_types, _)` for
+    /// data constructors; nullary constructors carry no `Fn`).
+    ///
+    /// **Product types** (single constructor whose name equals the type name,
+    /// e.g. `(deftype Point [:Int x :Int y])`) are stored as a single
+    /// `ModuleEntry::TypeDef` whose `constructor_scheme: Some(_)` carries the
+    /// constructor signature — the same-named constructor `Def` is overwritten
+    /// by the `TypeDef` at registration (see `cranelisp-typecheck::adt`
+    /// `register_type` insert order). For those, the constructor is tag 0 with
+    /// field types from the `constructor_scheme`'s `Type::Fn` params.
     fn extract_constructor<C2: cranelisp_types::CodeStore>(
         entry: &ModuleEntry<C2>,
-    ) -> Option<(FQTypeName, ConstructorInfo)> {
+    ) -> Option<(FQTypeName, CtorMeta)> {
         match entry {
-            ModuleEntry::Constructor { type_name, info, .. } => {
-                Some((type_name.clone(), info.clone()))
+            ModuleEntry::Def { kind, scheme, .. } => {
+                let DefKind::Constructor { type_name, tag, field_count, .. } = &**kind else {
+                    return None;
+                };
+                let field_types: &[Type] = match &scheme.ty {
+                    Type::Fn(params, _) => params.as_slice(),
+                    _ => &[],
+                };
+                let fields: Vec<CtorField> = (0..*field_count)
+                    .map(|i| CtorField {
+                        ty: field_types.get(i).cloned().unwrap_or(Type::Int),
+                    })
+                    .collect();
+                Some((type_name.clone(), CtorMeta { tag: *tag, fields }))
             }
+            // Product type: the constructor shares the type's name and lives on
+            // the TypeDef's `constructor_scheme`.
             ModuleEntry::TypeDef {
                 info,
-                constructor_scheme: Some(_),
+                constructor_scheme: Some(scheme),
                 ..
             } => {
-                // Product type: single constructor with same name as type.
-                // The ConstructorInfo is in info.constructors[0].
-                let ctor = info.constructors.first()?;
-                Some((info.name.clone(), ctor.clone()))
+                let field_types: &[Type] = match &scheme.ty {
+                    Type::Fn(params, _) => params.as_slice(),
+                    _ => &[],
+                };
+                let fields: Vec<CtorField> = field_types
+                    .iter()
+                    .map(|t| CtorField { ty: t.clone() })
+                    .collect();
+                Some((info.name.clone(), CtorMeta { tag: 0, fields }))
             }
             _ => None,
         }
+    }
+
+    /// Materialise `CtorMeta` for every constructor named in a `TypeDefInfo`.
+    ///
+    /// `TypeDefInfo.constructors` is `Vec<Symbol>` (names only) post-S70; each
+    /// name resolves to its own `DefKind::Constructor` Def via the type's
+    /// owning module. Returns the per-constructor metadata in declaration
+    /// order. Used by heap classification, drop-glue emission, and field-type
+    /// resolution — all of which previously walked `Vec<ConstructorInfo>`.
+    pub(crate) fn constructor_metas(&self, type_def: &TypeDefInfo) -> Vec<CtorMeta> {
+        let table = match self.symbol_tables.get(&type_def.name.module) {
+            Some(t) => t,
+            None => return Vec::new(),
+        };
+        type_def
+            .constructors
+            .iter()
+            .filter_map(|ctor_name| {
+                table
+                    .get(ctor_name.as_ref())
+                    .and_then(Self::extract_constructor)
+                    .map(|(_, meta)| meta)
+            })
+            .collect()
     }
 
     /// Look up a TypeDefInfo by FQTypeName from the symbol tables.
@@ -422,7 +581,10 @@ where
 
 /// Match-arm-invariant data bundled to reduce parameter counts in
 /// `compile_constructor_pattern`.
-pub struct MatchContext {
+///
+/// Narrowed to `pub(crate)` in S75 W3 — per-arm codegen state, no out-of-crate
+/// consumer.
+pub(crate) struct MatchContext {
     /// The compiled scrutinee value.
     pub scrut_val: Value,
     /// The inferred type of the scrutinee expression (for field type resolution).
@@ -443,7 +605,12 @@ pub struct MatchContext {
 // Sprint 58 Wave 3b (Decision 35): generic over `C: CodeStore` and
 // `L: LinkerStore` so it can hold `CompileContext<'a, C, L>`. Defaults
 // to `<()>`-pinned for backward compat with the typecheck-product flavour.
-pub struct FnCompiler<'a, M: Module, C = (), L = ()>
+//
+// Narrowed to `pub(crate)` in S75 W3 — the per-function CLIF emitter; no
+// out-of-crate consumer (int reaches codegen only via the free fn
+// `compile_to_module`). Its `pub` methods/fields drop from the public API
+// with the type.
+pub(crate) struct FnCompiler<'a, M: Module, C = (), L = ()>
 where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
@@ -642,10 +809,9 @@ where
         let defn_param_types: Vec<Option<Type>> = compiler.ctx.symbol_tables
             .get(&compiler.ctx.current_module)
             .and_then(|table| {
-                if let Some(ModuleEntry::Def { scheme, .. }) = table.get(defn.name.as_ref()) {
-                    if let Type::Fn(ref param_types, _) = scheme.ty {
+                if let Some(ModuleEntry::Def { scheme, .. }) = table.get(defn.name.as_ref())
+                    && let Type::Fn(ref param_types, _) = scheme.ty {
                         return Some(param_types.iter().map(|t| Some(t.clone())).collect());
-                    }
                 }
                 None
             })
@@ -654,7 +820,7 @@ where
         // Bind function parameters from loop header block params (not entry block).
         // Also record parameter types in variable_types so scope cleanup
         // can emit rc_dec for heap-typed parameters at function exit.
-        for (i, param_name) in defn.params().iter().enumerate() {
+        for (i, (param_name, _)) in defn.params().iter().enumerate() {
             let val = compiler.builder.block_params(loop_header)[i];
             let var = compiler.fresh_variable();
             compiler.builder.declare_var(var, types::I64);
@@ -719,7 +885,11 @@ where
             } => self.compile_if(cond, then_branch, else_branch),
             Expr::Lambda {
                 params, body, span, inferred_type, ..
-            } => self.compile_lambda(params, body, *span, inferred_type.as_deref()),
+            } => {
+                let param_names: Vec<Symbol> =
+                    params.iter().map(|(n, _)| n.clone()).collect();
+                self.compile_lambda(&param_names, body, *span, inferred_type.as_deref())
+            }
             Expr::Apply {
                 callee,
                 args,
@@ -748,6 +918,12 @@ where
                 span,
                 ..
             } => self.compile_par_bind(bindings, body, *span),
+            Expr::ConstrADT {
+                tag,
+                fields,
+                span,
+                ..
+            } => self.compile_constr_adt(*tag, fields, *span),
         }
     }
 
@@ -895,10 +1071,14 @@ where
             None => return,
         };
 
-        let subst = build_adt_type_substitution(ty, &type_def);
+        // Constructor metadata is reconstructed from each ctor's
+        // DefKind::Constructor Def post-S70.
+        let all_ctors = self.ctx.constructor_metas(&type_def);
+        let subst = build_adt_type_substitution(ty, &all_ctors);
 
         // Collect data constructors (those with fields).
-        let data_ctors: Vec<_> = type_def.constructors.iter()
+        let data_ctors: Vec<CtorMeta> = all_ctors
+            .into_iter()
             .filter(|c| !c.fields.is_empty())
             .collect();
 
@@ -974,14 +1154,14 @@ where
     fn emit_drop_glue_field_decs(
         &mut self,
         adt_val: Value,
-        data_ctors: &[&ConstructorInfo],
+        data_ctors: &[CtorMeta],
         subst: &std::collections::HashMap<cranelisp_types::TypeId, Type>,
         dealloc: FuncId,
     ) {
         use crate::heap::HeapAdt;
 
         if data_ctors.len() == 1 {
-            let ctor = data_ctors[0];
+            let ctor = &data_ctors[0];
             self.emit_field_decs(adt_val, ctor, subst, dealloc);
         } else {
             // Multiple data constructors: load the tag and branch to the
@@ -1036,7 +1216,7 @@ where
     fn emit_field_decs(
         &mut self,
         adt_val: Value,
-        ctor: &ConstructorInfo,
+        ctor: &CtorMeta,
         subst: &std::collections::HashMap<cranelisp_types::TypeId, Type>,
         dealloc: FuncId,
     ) {
@@ -1436,7 +1616,7 @@ where
 /// and maps them positionally to the Var IDs found in the type definition.
 pub(crate) fn build_adt_type_substitution(
     ty: &Type,
-    type_def: &TypeDefInfo,
+    ctors: &[CtorMeta],
 ) -> std::collections::HashMap<cranelisp_types::TypeId, Type> {
     // Get concrete type args from the variable's type.
     let concrete_args = match ty {
@@ -1446,7 +1626,7 @@ pub(crate) fn build_adt_type_substitution(
 
     // Build substitution from Var ids to concrete types.
     let mut unique_var_ids: Vec<cranelisp_types::TypeId> = Vec::new();
-    for c in &type_def.constructors {
+    for c in ctors {
         for field in &c.fields {
             collect_var_ids_from_type(&field.ty, &mut unique_var_ids);
         }
@@ -1557,4 +1737,85 @@ mod tests {
     // and through the Jit::compile_defn path. Direct unit testing of FnCompiler
     // requires constructing a full Cranelift context, which is covered by
     // the integration tests.
+
+    use super::*;
+    use cranelisp_types::{
+        DefKind, ModuleAliasEntry, ModuleAliases, ModuleEntry, Scheme, Type, Visibility,
+    };
+
+    fn def_with_slot(slot: usize) -> ModuleEntry {
+        ModuleEntry::Def {
+            scheme: Scheme {
+                type_vars: vec![],
+                constraints: std::collections::HashMap::new(),
+                ty: Type::Int,
+            },
+            visibility: Visibility::Public,
+            docstring: None,
+            param_names: vec![],
+            kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+            callees: vec![],
+            got_slot: Some(slot),
+            trait_origin: None,
+            seq: 0,
+            ast: None,
+            code: None,
+        }
+    }
+
+    // spec: spec/08-modules.md §8.6.6 step 5 — qualified-name resolution
+    //       substitutes a module-alias prefix with its target before walking
+    //       the symbol tables. S75 W2 (D41 rotation) threaded `module_aliases`
+    //       into `resolve_got_target` to perform this substitution; without it
+    //       a qualified `alias/name` whose prefix is an alias (not a real
+    //       child/absolute module) would not resolve.
+    #[test]
+    fn resolve_got_target_follows_module_alias_prefix() {
+        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        // Real target module `core.string` defines `concat` at GOT slot 3.
+        let target = ModuleFullPath::from("core.string");
+        {
+            let mut st = SymbolTable::new(target.clone());
+            st.insert(Symbol::from("concat"), def_with_slot(3));
+            tables.insert(target.clone(), st);
+        }
+        // Current module `user` has NO `str` child module and NO `concat`.
+        let current = ModuleFullPath::from("user");
+        tables.insert(current.clone(), SymbolTable::new(current.clone()));
+
+        // Alias `user.str` → `core.string` (an import-alias owned by `user`).
+        let aliases: ModuleAliases = DashMap::new();
+        aliases.insert(
+            ModuleFullPath::from("user.str"),
+            ModuleAliasEntry::new(target.clone(), Visibility::Private, cranelisp_types::Span::SYNTHETIC),
+        );
+
+        // With the alias table, `str/concat` from `user` resolves to
+        // (core.string, slot 3) via §8.6.6 step-5 substitution.
+        let resolved = resolve_got_target(
+            &tables,
+            &aliases,
+            &current,
+            &Symbol::from("str/concat"),
+        );
+        assert_eq!(
+            resolved,
+            Some((target.clone(), 3)),
+            "alias prefix `str` must substitute to `core.string` and resolve `concat`"
+        );
+
+        // Without the alias entry, the same qualified name does NOT resolve
+        // (no `user.str` child module, no absolute `str` module).
+        let empty_aliases: ModuleAliases = DashMap::new();
+        let unresolved = resolve_got_target(
+            &tables,
+            &empty_aliases,
+            &current,
+            &Symbol::from("str/concat"),
+        );
+        assert_eq!(
+            unresolved, None,
+            "without the alias, `str/concat` has no child/absolute target to resolve"
+        );
+    }
 }

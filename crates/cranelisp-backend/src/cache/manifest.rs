@@ -1,9 +1,19 @@
-// Cache manifest: module->hash mapping and global invalidation keys.
-//
-// The manifest is a single JSON file at the root of the cache directory.
-// It provides O(1) cache-hit checks without reading every module's metadata.
-//
-// See design/backend/module-caching.md §3 for the cache key design.
+//! Cache index + validity — `module -> hash` mapping and global invalidation
+//! keys.
+//!
+//! The manifest is a single JSON file at the root of the cache directory; it
+//! provides O(1) cache-hit checks without reading every module's metadata.
+//! `CacheManifest` is the **single index** (cache invariant 2): per-module
+//! sidecars and objects are referenced via `CacheManifest::modules`,
+//! pair-invariantly.
+//!
+//! `check_manifest` is the validity gate run at **every** cache-hit attempt
+//! (cache invariant 3) before any `super::try_load_cached_module`; it compares
+//! the compiler fingerprint, target triple, cranelift version, and format
+//! version, surfacing a typed `CacheInvalidReason` on mismatch so the caller
+//! recompiles.
+//!
+//! See `design/backend/module-caching.md` §3 for the cache key design.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -72,7 +82,7 @@ impl CacheManifest {
         dependency_hashes: HashMap<String, String>,
     ) {
         self.modules.insert(
-            module_path.0.clone(),
+            module_path.to_string(),
             CachedModuleRef {
                 source_hash,
                 dependency_hashes,
@@ -82,12 +92,12 @@ impl CacheManifest {
 
     /// Remove a module entry.
     pub fn remove_module(&mut self, module_path: &ModuleFullPath) {
-        self.modules.remove(&module_path.0);
+        self.modules.remove(module_path.as_ref());
     }
 
     /// Look up a module's cached reference.
     pub fn get_module(&self, module_path: &ModuleFullPath) -> Option<&CachedModuleRef> {
-        self.modules.get(&module_path.0)
+        self.modules.get(module_path.as_ref())
     }
 }
 
@@ -148,7 +158,7 @@ pub fn check_manifest(
 
     // Check transitive dependency hashes
     for (dep_path, current_dep_hash) in dependency_source_hashes {
-        match entry.dependency_hashes.get(&dep_path.0) {
+        match entry.dependency_hashes.get(dep_path.as_ref()) {
             Some(cached_dep_hash) if cached_dep_hash == current_dep_hash => {}
             _ => return Ok(false), // Dependency changed or new dependency
         }

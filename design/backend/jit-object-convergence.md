@@ -6,7 +6,7 @@
 **Reviewed by**: `/arch` (Phase 3a gate) — blocks Wave 1 until signed off.
 **Scope**: Design-only. No source edits accompany this doc; implementation lands in a later wave under the scope estimate at §9.
 
-**Input context** (read before reviewing this doc): `design/backend/defects-456-reduction.md` (S59 reduction + Phase-2 conclusion), `design/arch/CLAUDE.md` Decisions 23/25/31/32/35/36/37, `design/arch/pipeline-v4.md` §6 + §9, `design/backend/compile-to-module.md` §17, `design/backend/ring2-rc.md`.
+**Input context** (read before reviewing this doc): `design/backend/archive/defects-456-reduction.md` (S59 reduction + Phase-2 conclusion), `design/arch/CLAUDE.md` Decisions 23/25/31/32/35/36/37, `design/arch/pipeline-v4.md` §6 + §9, `design/backend/compile-to-module.md` §17, `design/backend/ring2-rc.md`.
 
 ---
 
@@ -292,7 +292,7 @@ The CLIF-dump (Workstream B) is required to determine which shape the current co
 
 ### 5.4 Wave 2 A.2 audit result (CLIF evidence)
 
-Audited 2026-04-21 using `CRANELISP_CODEGEN_DUMP=*` against `tests/sprint59_defects456_repro::d6_exemplar_propagate_only_does_not_segv` (smallest propagate-focused repro). Dump: 95,027 lines, 320 functions, captured to `/tmp/s60_a2_clif.log`. Full findings at `design/backend/defects-456-reduction.md §"Sprint 60 A.2 audit findings"`; summary here in situ with §5's prediction.
+Audited 2026-04-21 using `CRANELISP_CODEGEN_DUMP=*` against `tests/sprint59_defects456_repro::d6_exemplar_propagate_only_does_not_segv` (smallest propagate-focused repro). Dump: 95,027 lines, 320 functions, captured to `/tmp/s60_a2_clif.log`. Full findings at `design/backend/archive/defects-456-reduction.md §"Sprint 60 A.2 audit findings"`; summary here in situ with §5's prediction.
 
 **§5.2 audit question resolved — current codegen emits pattern (c), not (a).**
 
@@ -323,7 +323,7 @@ Three concrete sites where drop-glue code pointers flow as *raw* values, not GOT
 
 **Refinement of §5.3's specified discipline.** Option (a) is the correct direction, but scope extends beyond closures — the Vec COW helper's element-dec parameter and the heap.rs inline drop-glue dispatch both need GOT-routing too. Estimated scope 180-280 LOC, reconciling with §9.1's lower bound for H3 (150-250 LOC) and pushing toward the upper bound of the combined estimate.
 
-**H3 causality for d6 specifically — partial.** H3's prediction requires a cross-eval reclaim event (Decision 31 Scenario 2) to invalidate a baked address. The d6 repro crashes on a single-shot `--run` invocation with one batch and no redefinition. No reclaim has fired. The crash therefore has a **second root cause** — a correctness bug in the inlined drop-glue emission (likely per-field dec pairing for `Grid (Vec Cell)` where Cell is a multi-variant Mixed ADT). Both fixes are needed; H3 closes the invariant breach; the drop-glue correctness fix closes the d6 symptom. See `defects-456-reduction.md §"Sprint 60 A.2 audit findings"` for the A.3 decomposition.
+**H3 causality for d6 specifically — partial.** H3's prediction requires a cross-eval reclaim event (Decision 31 Scenario 2) to invalidate a baked address. The d6 repro crashes on a single-shot `--run` invocation with one batch and no redefinition. No reclaim has fired. The crash therefore has a **second root cause** — a correctness bug in the inlined drop-glue emission (likely per-field dec pairing for `Grid (Vec Cell)` where Cell is a multi-variant Mixed ADT). Both fixes are needed; H3 closes the invariant breach; the drop-glue correctness fix closes the d6 symptom. See `archive/defects-456-reduction.md §"Sprint 60 A.2 audit findings"` for the A.3 decomposition.
 
 ---
 

@@ -1,30 +1,33 @@
-// cranelisp-backend / src/artefact.rs — return shapes for the backend's
-// non-`compile_to_module` codegen entry points
-//
-// Per `design/arch/facades/backend.md` §"Return shapes":
-//
-// - `compile_to_module` returns `Result<(), CompilationError>` — no
-//   artefact struct. Backend writes Code and Introspection directly into
-//   the passed-in stores per Decision 41.
-//
-// - `load_object` returns a `LinkerArtefact` — the per-module retention
-//   root for cache-hit code (`Arc<Linker>`) plus a per-symbol address map
-//   that `int` walks to populate `Code::Linker` lifecycle owners and write
-//   each per-symbol code address into the entry's GOT slot via
-//   `got().store_slot(slot, ptr)`.
-//
-// - `compile_to_object` returns an `ObjectArtefact` — the native `.o`
-//   bytes plus a sidecar `SymbolTable<(), ()>` for the cache
-//   `.meta.json`. Backend writes nothing to disk; `int`'s
-//   `ObjectCache::write` does the file IO.
-//
-// Both DTOs are `#[non_exhaustive]` per the facade's `#[non_exhaustive]`
-// DTOs policy. They live in `cranelisp-backend` (not `cranelisp-types`)
-// per REV-4 — backend is the sole constructor; `int` is the sole consumer.
-// Hoisting these into `cranelisp-types` would invert the dependency edge
-// `cranelisp-types → cranelisp-backend` that Principle 3 protects (both
-// shapes reference backend-owned `Arc<Linker>` / Cranelift artefacts that
-// `cranelisp-types` may not name).
+//! Return shapes for the backend's codegen entry points.
+//!
+//! Backend's three codegen free functions return:
+//!
+//! - `compile_to_module` returns `CompilationArtifacts` (defined in `lib.rs`,
+//!   not here) by value, and writes the compiled fn pointer directly into the
+//!   entry's GOT slot via `got().store_slot(slot, ptr)`. It constructs no
+//!   `Code` and no per-symbol artefact map: the caller composes `Code::Jit`
+//!   from its own `Arc<Jit>` after the call.
+//!
+//! - `load_object` returns a [`LinkerArtefact`]: the per-module retention root
+//!   for cache-hit code (`Arc<Linker>`) plus a per-symbol address map `int`
+//!   walks to populate `Code::Linker` lifecycle owners and write each
+//!   per-symbol address into the entry's GOT slot via `got().store_slot`.
+//!
+//! - `produce_disasm` returns a `String` (not an artefact).
+//!
+//! [`ObjectArtefact`] is a typed shape that is **not currently produced** by
+//! any backend code path. The object path is `compile_to_module::<ObjectModule>`
+//! followed by the caller's `obj_module.finish().emit()` for the `.o` bytes,
+//! with the sidecar `SymbolTable<(), ()>` serialised by `cache::serialize`.
+//! It is retained only because it is named in the public-API baseline; it is a
+//! delete-candidate for a future backend sprint (removal is a public-API edge
+//! change, out of scope for doc-only work).
+//!
+//! Both DTOs are `#[non_exhaustive]`. They live in `cranelisp-backend` (not
+//! `cranelisp-types`) because both reference backend-owned types
+//! (`Arc<Linker>` / a serialised symbol table); hoisting them into
+//! `cranelisp-types` would invert the `cranelisp-types` -> `cranelisp-backend`
+//! dependency edge that Principle 3 protects.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -67,17 +70,20 @@ pub struct LinkerArtefact {
 unsafe impl Send for LinkerArtefact {}
 unsafe impl Sync for LinkerArtefact {}
 
-/// Return shape of `compile_to_object`.
+/// A sidecar + `.o` pair shape — **not currently produced** by any backend
+/// code path.
 ///
-/// Per `facades/backend.md` §"Return shapes" — the `.o` bytes are the
-/// native host-platform format (Mach-O / ELF / COFF), and the sidecar is
-/// the serialised `SymbolTable<(), ()>` that `int`'s `ObjectCache::write`
-/// pairs as `M.meta.json` alongside `M.o`. Per Decision 25 the sidecar
-/// carries types, schemes, AST bodies, GOT slot layout, structural
-/// decls, and `schema_version` per Decision 34.
+/// The object path is `compile_to_module::<ObjectModule>` plus the caller's
+/// `obj_module.finish().emit()` (which yields the `.o` bytes) and the sidecar
+/// `SymbolTable<(), ()>` serialised by `cache::serialize`; backend never
+/// constructs an `ObjectArtefact`. The two fields below describe the shape a
+/// future single-call object entry might return: the native host-platform
+/// bytes (Mach-O / ELF / COFF) and the no-code/no-linker sidecar
+/// (`C = (), L = ()` per Decision 32; carries types, schemes, AST bodies, GOT
+/// slot layout, structural decls, and `schema_version` per Decisions 25/34).
 ///
-/// Backend writes nothing to disk; the artefact is plain data handed
-/// back to `int` for cache write.
+/// **Delete-candidate.** Retained only because it is named in the public-API
+/// baseline; removal is a public-API edge change for a future backend sprint.
 #[non_exhaustive]
 pub struct ObjectArtefact {
     /// ELF / Mach-O / COFF bytes for the host platform's native object

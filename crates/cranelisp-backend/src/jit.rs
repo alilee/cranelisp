@@ -19,7 +19,19 @@ use cranelisp_types::{ErrorLocation,
 };
 
 /// Compilation artifacts returned by `compile_defn`.
-pub struct CompileArtifacts {
+///
+/// Internal (`pub(crate)`) per the S75 W3-follow narrowing
+/// (`facades/backend.md` §"`jit` shape DTOs (Row 15)"). This is the
+/// lower-level codegen-step record produced inside `Jit::compile_defn`;
+/// `compile_to_module` repackages it into the boundary `CompilationArtifacts`.
+///
+// FIXME(W4): the struct + its fields read no further in-crate now that the
+// JIT-orchestration surface narrowed to `pub(crate)` — its only consumers
+// were int's parallel `pipeline.rs` path (collapses into `compile_to_module`
+// in S77). `allow(dead_code)` is the expected narrowing signal; W4/S77
+// decides delete-vs-fold.
+#[allow(dead_code)]
+pub(crate) struct CompileArtifacts {
     /// Cranelift IR text (captured before machine code generation).
     pub clif_ir: String,
     /// Native disassembly text (None if disasm not supported on this platform).
@@ -33,7 +45,7 @@ use crate::compiler::{CompileContext, FnCompiler};
 /// Build the ISA for the current host architecture.
 ///
 /// Single construction point for the entire backend.
-pub fn build_isa() -> Result<Arc<dyn cranelift::codegen::isa::TargetIsa>, CranelispError> {
+pub(crate) fn build_isa() -> Result<Arc<dyn cranelift::codegen::isa::TargetIsa>, CranelispError> {
     let mut flag_builder = settings::builder();
     flag_builder
         .set("use_colocated_libcalls", "false")
@@ -66,7 +78,13 @@ pub fn build_isa() -> Result<Arc<dyn cranelift::codegen::isa::TargetIsa>, Cranel
 ///
 /// This is the authoritative list of runtime and primitive intrinsics.
 /// All consumers (JIT builder, Linker, IntrinsicTable) derive from this.
-pub struct IntrinsicSymbol {
+///
+/// Internal (`pub(crate)`) per the S75 W3-follow narrowing
+/// (`facades/backend.md` §"`jit` shape DTOs (Row 15)") — the per-record
+/// shape `intrinsic_symbols()` returns. Under the target
+/// `Jit::new(symbol_tables)` + `INTRINSICS_TABLE` read (S77), this record's
+/// home shifts to the intrinsics-published catalog.
+pub(crate) struct IntrinsicSymbol {
     /// JIT symbol name (e.g., "runtime/alloc", "str-concat").
     pub name: &'static str,
     /// Function pointer to the Rust implementation.
@@ -74,6 +92,14 @@ pub struct IntrinsicSymbol {
     /// Number of parameters.
     pub param_count: usize,
     /// Whether this is a runtime-internal function (true) or user-visible primitive (false).
+    ///
+    // FIXME(S77 INTRINSICS_TABLE): no in-crate reader today (was masked while
+    // the struct was `pub`). Kept — not dropped — because the decided S77
+    // target (`intrinsics::INTRINSICS_TABLE`, the published flat Import-catalog
+    // that `Jit::new(symbol_tables)` reads; SPRINT §"Target-stated S77") needs
+    // the runtime-vs-primitive split this flag already encodes. Deleting now
+    // would churn all construction sites in `intrinsic_symbols()` twice.
+    #[allow(dead_code)]
     pub is_runtime: bool,
     /// Whether the function returns an i64 value (false = void).
     pub has_return: bool,
@@ -96,7 +122,30 @@ pub struct IntrinsicSymbol {
 ///
 /// Convention: runtime infrastructure uses `runtime/name` prefix. Intrinsics
 /// not following that convention (`cranelisp_ivar_*`) are spec'd by name.
-pub fn intrinsic_symbols() -> Vec<IntrinsicSymbol> {
+///
+/// # Linker-symbol ABI (preserved here before the S75 W3 `pub(crate)` narrow)
+///
+/// This enumeration IS the intrinsic JIT-symbol registration contract. Each
+/// record is consumed by `JITBuilder::symbol(name, ptr)` at JIT setup (and the
+/// `.o`/`--link` path resolves the same names against the `cranelisp-intrinsics`
+/// archive). The `IntrinsicSymbol { name, ptr, param_count, is_runtime,
+/// has_return }` shape is the registration record. The exact linker-symbol names
+/// registered (the ABI contract a `--link` driver and the JIT both depend on):
+///
+/// - Heap/runtime infrastructure: `runtime/alloc`, `runtime/dealloc`,
+///   `runtime/panic`, `runtime/rc_underflow_check`, `runtime/alloc_string`,
+///   `runtime/string_read`, `runtime/vec_new`, `runtime/vec_drop`,
+///   `runtime/run_io`.
+/// - IVar (lenient evaluation): `cranelisp_ivar_create`, `cranelisp_ivar_spark`,
+///   `cranelisp_ivar_force`.
+/// - Vec COW backend-emitted-call targets: `vec-set-copy`, `vec-push-copy`,
+///   `vec-push-grow`.
+///
+/// Trace symbols are deliberately absent (relocated to int per Decision 40 /
+/// Path B1). Narrowed to `pub(crate)` per the S75 W3 /arch re-ruling — this is
+/// JIT-setup plumbing encapsulated behind the codegen entries, not a backend
+/// boundary; int's only call site (`worker.rs:3545`) re-wires in S77.
+pub(crate) fn intrinsic_symbols() -> Vec<IntrinsicSymbol> {
     vec![
         // Runtime infrastructure (internal, not user-callable)
         IntrinsicSymbol { name: "runtime/alloc", ptr: cranelisp_intrinsics::alloc::heap_alloc as *const u8, param_count: 1, is_runtime: true, has_return: true },
@@ -183,6 +232,14 @@ pub fn jit_free_memory_call_count() -> u64 {
 /// compiled function synchronously and drop the `Jit` only after that call
 /// returns. See Decision 31 in `design/arch/CLAUDE.md` for the full
 /// invariant and REPL-redefinition discussion.
+///
+// FIXME(W4/S77): several fields read only inside the now-`pub(crate)`
+// JIT-orchestration methods, whose only production driver is int's parallel
+// `pipeline.rs` path (out-of-crate). When S77 folds that path into the
+// in-crate `compile_to_module`, these gain real in-crate readers and the
+// allow is removed. The narrowing surfaces the dead-code as the expected
+// signal (see `facades/backend.md` §Row 9).
+#[allow(dead_code)]
 pub struct Jit {
     /// Always `Some` during the JIT's useful life. `take()`n in `Drop` to
     /// invoke `unsafe free_memory()`.
@@ -225,6 +282,14 @@ impl Drop for Jit {
     }
 }
 
+// FIXME(S77): the JIT-orchestration methods below narrowed to `pub(crate)`
+// (S75 W3-follow, `facades/backend.md` §Row 9). Their only production caller is
+// int's parallel `pipeline.rs` path (out-of-crate); in-crate they are reached
+// only from unit tests. They gain in-crate readers when S77 folds the parallel
+// path into `compile_to_module`. The allow holds the gate green while the
+// narrowing signal stands. (W4 deleted the two methods that had NO in-crate
+// caller at all: `build_shared_isa` + `declare_functions_prefixed`.)
+#[allow(dead_code)]
 impl Jit {
     /// Create a new JIT instance for the current host architecture.
     pub fn new() -> Result<Self, CranelispError> {
@@ -245,20 +310,10 @@ impl Jit {
         Self::from_isa(isa, extra_symbols)
     }
 
-    /// Build a shared ISA for the current host architecture.
-    ///
-    /// Returns an `Arc<dyn TargetIsa>` that can be cloned and passed to
-    /// multiple `Jit` instances via `new_with_isa()`. This avoids
-    /// re-probing CPU features when creating many JIT instances (e.g.,
-    /// one per codegen worker in N-core parallel compilation).
-    pub fn build_shared_isa() -> Result<Arc<dyn cranelift::codegen::isa::TargetIsa>, CranelispError> {
-        build_isa()
-    }
-
     /// Create a new JIT instance using a pre-built ISA.
     ///
     /// Accepts extra symbol registrations, same as `new_with_symbols`.
-    /// Use `Jit::build_shared_isa()` to construct the ISA once, then
+    /// Construct the ISA once via the module-level `build_isa()`, then
     /// `Arc::clone` it for each worker's `Jit`.
     pub fn new_with_isa(
         isa: Arc<dyn cranelift::codegen::isa::TargetIsa>,
@@ -331,7 +386,7 @@ impl Jit {
     ///
     /// Delegates to the generic `declare_intrinsics_generic<M>` and stores
     /// the 6 convenience FuncIds on the Jit struct for `build_compile_context`.
-    pub fn declare_intrinsics(&mut self) -> Result<IntrinsicIds, CranelispError> {
+    pub(crate) fn declare_intrinsics(&mut self) -> Result<IntrinsicIds, CranelispError> {
         let generic_ids = declare_intrinsics_generic(self.module_mut())?;
 
         // Store on self for build_compile_context.
@@ -354,7 +409,7 @@ impl Jit {
 
     /// Declare all functions in the JIT module, returning a name->FuncId map.
     /// Used in Batch mode so functions can reference each other.
-    pub fn declare_functions(
+    pub(crate) fn declare_functions(
         &mut self,
         defns: &[&Defn],
     ) -> Result<HashMap<Symbol, FuncId>, CranelispError> {
@@ -373,37 +428,6 @@ impl Jit {
         Ok(func_ids)
     }
 
-    /// Declare functions with a module prefix to avoid name collisions in a
-    /// shared JIT.
-    ///
-    /// Each function is declared as `"{prefix}/{name}"` in the JIT. The
-    /// returned `func_ids` maps **bare** names to FuncIds (for codegen
-    /// within the current module), and `jit_names` maps bare names to
-    /// the qualified JIT symbol name (for downstream reference).
-    #[allow(clippy::type_complexity)]
-    pub fn declare_functions_prefixed(
-        &mut self,
-        defns: &[&Defn],
-        prefix: &str,
-    ) -> Result<(HashMap<Symbol, FuncId>, HashMap<Symbol, Symbol>), CranelispError> {
-        let mut func_ids = HashMap::new();
-        let mut jit_names = HashMap::new();
-        for defn in defns {
-            let qualified_name = format!("{prefix}/{}", defn.name);
-            let sig = self.build_sig(defn.params().len());
-            let func_id = self
-                .module_mut()
-                .declare_function(&qualified_name, Linkage::Export, &sig)
-                .map_err(|e| CranelispError::CodegenError {
-                    message: format!("failed to declare function '{}': {e}", defn.name),
-                    location: ErrorLocation::from_span(defn.span),
-                })?;
-            func_ids.insert(defn.name.clone(), func_id);
-            jit_names.insert(defn.name.clone(), Symbol::from(qualified_name));
-        }
-        Ok((func_ids, jit_names))
-    }
-
     /// Declare imported functions in the JIT module for cross-module linking.
     ///
     /// In Batch mode, when a module calls functions from other modules, those
@@ -414,7 +438,7 @@ impl Jit {
     ///
     /// Each entry is `(name, param_count)`. Returns the declared FuncIds merged
     /// into the provided `func_ids` map.
-    pub fn declare_imported_functions(
+    pub(crate) fn declare_imported_functions(
         &mut self,
         imports: &[(Symbol, usize)],
         func_ids: &mut HashMap<Symbol, FuncId>,
@@ -442,7 +466,7 @@ impl Jit {
     /// The `compile_ctx` bundles all environment needed for codegen: function IDs,
     /// arities, GOT state, and intrinsic IDs. Construct it at the call site using
     /// `Jit::build_compile_context`.
-    pub fn compile_defn<C, L>(
+    pub(crate) fn compile_defn<C, L>(
         &mut self,
         defn: &Defn,
         compile_ctx: CompileContext<'_, C, L>,
@@ -546,7 +570,7 @@ impl Jit {
     ///
     /// `symbol_tables` is the shared DashMap of per-module symbol tables.
     /// `current_module` identifies the module being compiled.
-    pub fn build_compile_context<'a, C, L>(
+    pub(crate) fn build_compile_context<'a, C, L>(
         &self,
         func_ids: &'a HashMap<Symbol, FuncId>,
         func_arities: &'a HashMap<Symbol, usize>,
@@ -554,6 +578,7 @@ impl Jit {
             cranelisp_types::ModuleFullPath,
             cranelisp_types::SymbolTable<C, L>,
         >,
+        module_aliases: &'a cranelisp_types::ModuleAliases,
         current_module: cranelisp_types::ModuleFullPath,
     ) -> CompileContext<'a, C, L>
     where
@@ -564,6 +589,7 @@ impl Jit {
             func_ids,
             func_arities,
             symbol_tables,
+            module_aliases,
             current_module,
             traced_fns: None,
             alloc_func_id: self.alloc_func_id,
@@ -581,7 +607,7 @@ impl Jit {
     }
 
     /// Finalize all pending function definitions.
-    pub fn finalize(&mut self) -> Result<(), CranelispError> {
+    pub(crate) fn finalize(&mut self) -> Result<(), CranelispError> {
         self.module_mut().finalize_definitions().map_err(|e| {
             CranelispError::CodegenError {
                 message: format!("failed to finalize JIT definitions: {e}"),
@@ -591,14 +617,14 @@ impl Jit {
     }
 
     /// Get the finalized code pointer for a function by FuncId.
-    pub fn get_finalized_ptr(&self, func_id: FuncId) -> *const u8 {
+    pub(crate) fn get_finalized_ptr(&self, func_id: FuncId) -> *const u8 {
         self.module().get_finalized_function(func_id)
     }
 
     /// Finalize definitions and return the code pointer for a named function.
     /// Convenience method that looks up the FuncId by name (re-declaring with
     /// the same param count).
-    pub fn finalize_and_get_ptr(
+    pub(crate) fn finalize_and_get_ptr(
         &mut self,
         name: &Symbol,
         param_count: usize,
@@ -622,7 +648,7 @@ impl Jit {
     ///
     /// Must be called after `finalize()`. Re-declares the function with
     /// the same signature to obtain the FuncId, then returns the code pointer.
-    pub fn get_ptr_by_name(
+    pub(crate) fn get_ptr_by_name(
         &mut self,
         name: &Symbol,
         param_count: usize,
@@ -657,7 +683,16 @@ impl Jit {
 }
 
 /// FuncIds for declared runtime intrinsics.
-pub struct IntrinsicIds {
+///
+/// Internal (`pub(crate)`) per the S75 W3-follow narrowing
+/// (`facades/backend.md` §"`jit` shape DTOs (Row 15)") — returned from the
+/// now-`pub(crate)` `Jit::declare_intrinsics`.
+///
+// FIXME(W4/S77): constructed/read only by the now-`pub(crate)`
+// `Jit::declare_intrinsics` whose production caller is int's parallel
+// `pipeline.rs` path (out-of-crate). Allow holds the gate; W4/S77 folds.
+#[allow(dead_code)]
+pub(crate) struct IntrinsicIds {
     pub alloc: FuncId,
     pub dealloc: FuncId,
     pub alloc_string: FuncId,
@@ -671,8 +706,12 @@ pub struct IntrinsicIds {
 /// Replaces the scattered approach where intrinsic FuncIds are stored on
 /// individual Jit fields and ad-hoc lookup maps. This is the single
 /// source of truth for intrinsic function IDs across all module types.
+///
+/// Internal (`pub(crate)`) per the S75 W3-follow narrowing
+/// (`facades/backend.md` §"`jit` shape DTOs (Row 15)") — returned from the
+/// now-`pub(crate)` `declare_intrinsics_generic`.
 #[derive(Default)]
-pub struct IntrinsicFuncIds {
+pub(crate) struct IntrinsicFuncIds {
     /// All intrinsics indexed by JIT symbol name.
     pub by_name: HashMap<Symbol, FuncId>,
     // Convenience accessors for commonly-used intrinsics (used directly by FnCompiler).
@@ -691,7 +730,7 @@ pub struct IntrinsicFuncIds {
 ///
 /// This is the unified intrinsic declaration path. Both `Jit::declare_intrinsics`
 /// and the object path's `declare_intrinsic_imports` delegate to this function.
-pub fn declare_intrinsics_generic<M: Module>(
+pub(crate) fn declare_intrinsics_generic<M: Module>(
     module: &mut M,
 ) -> Result<IntrinsicFuncIds, CranelispError> {
     let mut ids = IntrinsicFuncIds::default();
@@ -783,8 +822,7 @@ mod tests {
             name: Symbol::from("local_fn"),
             docstring: None,
             variants: vec![DefnVariant {
-                params: vec![Symbol::from("x")],
-                param_annotations: vec![],
+                params: vec![(Symbol::from("x"), None)],
                 body: cranelisp_types::Expr::Var {
                     name: Symbol::from("x"),
                     span: Span::new(0, 1),
@@ -883,7 +921,6 @@ mod tests {
             docstring: None,
             variants: vec![DefnVariant {
                 params: vec![],
-                param_annotations: vec![],
                 body: Expr::IntLit {
                     value: 42,
                     span: Span::SYNTHETIC,
@@ -907,10 +944,12 @@ mod tests {
             cranelisp_types::SymbolTable::new(module_path.clone()),
         );
 
+        let module_aliases: cranelisp_types::ModuleAliases = dashmap::DashMap::new();
         let compile_ctx = jit.build_compile_context(
             &func_ids,
             &func_arities,
             &symbol_tables,
+            &module_aliases,
             module_path,
         );
         jit.compile_defn(&defn, compile_ctx).expect("compile");
@@ -977,7 +1016,6 @@ mod tests {
             docstring: None,
             variants: vec![DefnVariant {
                 params: vec![],
-                param_annotations: vec![],
                 body,
                 span: Span::SYNTHETIC,
             }],
@@ -1081,7 +1119,6 @@ mod tests {
                 docstring: None,
                 variants: vec![DefnVariant {
                     params: vec![],
-                    param_annotations: vec![],
                     body: Expr::IntLit {
                         value: 99,
                         span: Span::SYNTHETIC,
@@ -1103,8 +1140,9 @@ mod tests {
                 module_path.clone(),
                 cranelisp_types::SymbolTable::new(module_path.clone()),
             );
+            let module_aliases: cranelisp_types::ModuleAliases = dashmap::DashMap::new();
             let compile_ctx =
-                jit.build_compile_context(&func_ids, &func_arities, &symbol_tables, module_path);
+                jit.build_compile_context(&func_ids, &func_arities, &symbol_tables, &module_aliases, module_path);
             jit.compile_defn(&defn, compile_ctx).expect("compile");
             let ptr = jit.finalize_and_get_ptr(&name, 0).expect("finalize");
             // Leak `jit` so the code pages stay live for the duration of the test.

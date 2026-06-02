@@ -8,7 +8,8 @@
 use cranelift::prelude::*;
 use cranelift_module::Module;
 
-use cranelisp_types::{ErrorLocation, CranelispError, Expr, HeapCategory, MatchArm, Pattern, Span, Symbol};
+use cranelisp_types::{ErrorLocation, CranelispError, Expr, MatchArm, Pattern, Span, Symbol};
+use crate::heap::HeapCategory;
 
 use crate::heap::{self, HeapAdt};
 
@@ -83,8 +84,13 @@ where
                         merge_block,
                         saved_tail,
                     };
+                    // `Pattern::Constructor.name` is a syntactic-stage
+                    // `SymbolRef` (S70). Its `Display` yields `module/name`
+                    // (qualified) or bare `name` — exactly the lookup string
+                    // `lookup_constructor` parses.
+                    let ctor_name = Symbol::from(name.to_string());
                     self.compile_constructor_pattern(
-                        name, bindings, &match_ctx, &arm.body, span,
+                        &ctor_name, bindings, &match_ctx, &arm.body, span,
                     )?;
                 }
             }
@@ -515,7 +521,7 @@ where
         // Collect all unique Var ids across the type's constructors, ordered
         // by first appearance. These correspond positionally to type_params.
         let mut unique_var_ids: Vec<cranelisp_types::TypeId> = Vec::new();
-        for c in &type_def.constructors {
+        for c in &self.ctx.constructor_metas(&type_def) {
             for field in &c.fields {
                 collect_var_ids_from_type(&field.ty, &mut unique_var_ids);
             }
