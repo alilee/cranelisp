@@ -30,7 +30,7 @@ use dashmap::DashMap;
 
 use cranelisp_types::{ErrorLocation,
     CranelispError, FQSymbol, MethodResolutions, ModuleAliases, ModuleEntry,
-    ModuleFullPath, ResolutionGap, ResolvedCall, Scheme, Span,
+    ModuleFullPath, ResolutionGap, ResolveError, ResolvedCall, Scheme, Span,
     Subst, Symbol, SymbolTable, TraitName, Type, TypeDefInfo, TypeId, TypeName,
     Warning, apply,
 };
@@ -716,20 +716,28 @@ where
         state: &CheckState,
         type_name: &TypeName,
         span: Span,
-    ) -> Result<cranelisp_types::FQTypeName, crate::result::ResolveError> {
-        match self.resolve_terminal_entry_and_home(
+    ) -> Result<cranelisp_types::FQTypeName, ResolveError> {
+        let type_not_found = || ResolveError::TypeNotFound {
+            name: type_name.clone(),
+            from_module: state.current_module.clone(),
+            span,
+        };
+        let read = self.current_symbol_table(state);
+        let resolved = cranelisp_types::resolve(
+            self.modules,
+            self.module_aliases,
+            &read.view(),
             &state.current_module,
             type_name.as_ref(),
-        ) {
-            Some((ModuleEntry::TypeDef { info, .. }, _home)) => Ok(info.name.clone()),
-            Some((ModuleEntry::IntrinsicType { .. }, home)) => {
-                Ok(cranelisp_types::FQTypeName::new(home, type_name.clone()))
+            span,
+        )
+        .map_err(|e| project_not_found(e, type_not_found))?;
+        match resolved.entry {
+            ModuleEntry::TypeDef { info, .. } => Ok(info.name.clone()),
+            ModuleEntry::IntrinsicType { .. } => {
+                Ok(cranelisp_types::FQTypeName::new(resolved.home, type_name.clone()))
             }
-            _ => Err(crate::result::ResolveError::TypeNotFound {
-                name: type_name.clone(),
-                from_module: state.current_module.clone(),
-                span,
-            }),
+            _ => Err(type_not_found()),
         }
     }
 
@@ -750,20 +758,26 @@ where
         type_name: &TypeName,
         type_args: Vec<Type>,
         span: Span,
-    ) -> Result<Type, crate::result::ResolveError> {
-        match self.resolve_terminal_entry_and_home(
+    ) -> Result<Type, ResolveError> {
+        let type_not_found = || ResolveError::TypeNotFound {
+            name: type_name.clone(),
+            from_module: state.current_module.clone(),
+            span,
+        };
+        let read = self.current_symbol_table(state);
+        let resolved = cranelisp_types::resolve(
+            self.modules,
+            self.module_aliases,
+            &read.view(),
             &state.current_module,
             type_name.as_ref(),
-        ) {
-            Some((ModuleEntry::TypeDef { info, .. }, _home)) => {
-                Ok(Type::ADT(info.name.clone(), type_args))
-            }
-            Some((ModuleEntry::IntrinsicType { ty, .. }, _home)) => Ok(ty),
-            _ => Err(crate::result::ResolveError::TypeNotFound {
-                name: type_name.clone(),
-                from_module: state.current_module.clone(),
-                span,
-            }),
+            span,
+        )
+        .map_err(|e| project_not_found(e, type_not_found))?;
+        match resolved.entry {
+            ModuleEntry::TypeDef { info, .. } => Ok(Type::ADT(info.name.clone(), type_args)),
+            ModuleEntry::IntrinsicType { ty, .. } => Ok(ty),
+            _ => Err(type_not_found()),
         }
     }
 
@@ -779,14 +793,25 @@ where
         state: &CheckState,
         trait_name: &str,
         span: Span,
-    ) -> Result<ModuleFullPath, crate::result::ResolveError> {
-        match self.resolve_terminal_entry_and_home(&state.current_module, trait_name) {
-            Some((ModuleEntry::TraitDecl { .. }, home)) => Ok(home),
-            _ => Err(crate::result::ResolveError::TraitNotFound {
-                name: TraitName::from(trait_name),
-                from_module: state.current_module.clone(),
-                span,
-            }),
+    ) -> Result<ModuleFullPath, ResolveError> {
+        let trait_not_found = || ResolveError::TraitNotFound {
+            name: TraitName::from(trait_name),
+            from_module: state.current_module.clone(),
+            span,
+        };
+        let read = self.current_symbol_table(state);
+        let resolved = cranelisp_types::resolve(
+            self.modules,
+            self.module_aliases,
+            &read.view(),
+            &state.current_module,
+            trait_name,
+            span,
+        )
+        .map_err(|e| project_not_found(e, trait_not_found))?;
+        match resolved.entry {
+            ModuleEntry::TraitDecl { .. } => Ok(resolved.home),
+            _ => Err(trait_not_found()),
         }
     }
 
@@ -808,34 +833,34 @@ where
         state: &CheckState,
         ctor_name: &str,
         span: Span,
-    ) -> Result<TypeName, crate::result::ResolveError> {
+    ) -> Result<TypeName, ResolveError> {
         let module_path = &state.current_module;
-        let entry = self
-            .resolve_entry_in_module(module_path, ctor_name)
-            .ok_or_else(|| crate::result::ResolveError::ConstructorNotFound {
-                name: Symbol::from(ctor_name),
-                from_module: module_path.clone(),
-                span,
-            })?;
-        match entry {
+        let ctor_not_found = || ResolveError::ConstructorNotFound {
+            name: Symbol::from(ctor_name),
+            from_module: module_path.clone(),
+            span,
+        };
+        let read = self.current_symbol_table(state);
+        let resolved = cranelisp_types::resolve(
+            self.modules,
+            self.module_aliases,
+            &read.view(),
+            module_path,
+            ctor_name,
+            span,
+        )
+        .map_err(|e| project_not_found(e, ctor_not_found))?;
+        match resolved.entry {
             ModuleEntry::Def { kind, .. } => match kind.as_ref() {
                 cranelisp_types::DefKind::Constructor { type_name, .. } => {
                     Ok(type_name.name.clone())
                 }
-                _ => Err(crate::result::ResolveError::ConstructorNotFound {
-                    name: Symbol::from(ctor_name),
-                    from_module: module_path.clone(),
-                    span,
-                }),
+                _ => Err(ctor_not_found()),
             },
             ModuleEntry::TypeDef { info, constructor_scheme: Some(_), .. } => {
                 Ok(info.name.name.clone())
             }
-            _ => Err(crate::result::ResolveError::ConstructorNotFound {
-                name: Symbol::from(ctor_name),
-                from_module: module_path.clone(),
-                span,
-            }),
+            _ => Err(ctor_not_found()),
         }
     }
 
@@ -1099,46 +1124,6 @@ where
         }
     }
 
-    /// Apply §8.6.6 step 5 module-alias substitution to a queried module
-    /// path: find the longest alias-table key that is a dot-segment prefix
-    /// of `module_path`, substitute that key's `target` for the matched
-    /// prefix, and return the rewritten path. If no key matches, the path
-    /// is returned unchanged.
-    ///
-    /// Dot-segment prefix: key `k` is a prefix of `p` iff `k == p` or
-    /// `p` starts with `k` followed by a `.` (so `core.str` matches
-    /// `core.str` and `core.str.inner` but not `core.string`).
-    fn resolve_module_alias(&self, module_path: &ModuleFullPath) -> ModuleFullPath {
-        let queried: &str = module_path.as_ref();
-        let mut best: Option<(usize, ModuleFullPath)> = None;
-        for entry in self.module_aliases.iter() {
-            let key: &str = entry.key().as_ref();
-            let is_prefix = queried == key
-                || (queried.len() > key.len()
-                    && queried.as_bytes()[key.len()] == b'.'
-                    && queried.starts_with(key));
-            if is_prefix {
-                let take = best.as_ref().map(|(len, _)| key.len() > *len).unwrap_or(true);
-                if take {
-                    best = Some((key.len(), entry.value().target.clone()));
-                }
-            }
-        }
-        match best {
-            None => module_path.clone(),
-            Some((matched_len, target)) => {
-                // Substitute `target` for the matched prefix; carry any
-                // remaining dot-segments through.
-                let remainder = &queried[matched_len..]; // "" or ".rest..."
-                if remainder.is_empty() {
-                    target
-                } else {
-                    ModuleFullPath::from(format!("{}{}", target, remainder))
-                }
-            }
-        }
-    }
-
     /// Resolve a qualified name `module_path/name` (spec §8.6.6).
     ///
     /// Bypasses local scope. Checks visibility — private names are inaccessible
@@ -1157,67 +1142,46 @@ where
         module_path: &ModuleFullPath,
         name: &str,
     ) -> Result<(Option<Scheme>, Option<ResolutionGap>), CranelispError> {
-        // §8.6.6 step 5: single-table longest-prefix-match of the queried
-        // module path against the session alias table's keys (which are
-        // owner-prefixed full alias paths). On a match, substitute the
-        // matched entry's `target` for the matched prefix, then continue
-        // resolution with the rewritten path.
-        let resolved_path = self.resolve_module_alias(module_path);
-
-        // Clone-and-drop discipline: clone entry from guard, drop guard,
-        // then check visibility and follow chains. Staging-aware (FIXME 0179).
-        let entry = match self.probe_module_entry_owned(&resolved_path, name) {
-            Some(e) => e,
-            None => {
-                // Distinguish "module absent from symbol tables" (a
-                // cross-module resolution gap — the target module was never
-                // typechecked / loaded) from "module present but symbol
-                // absent" (a genuine not-found that the fallback chain in
-                // `lookup` may still satisfy via another candidate path).
-                //
-                // Only "module absent" is reported as a gap; we still return
-                // `Ok((None, gap))` so the fallback chain (child_path then
-                // abs_path) is not short-circuited — a legitimate match from
-                // another candidate must win. The caller promotes a surviving
-                // gap to `CheckError::Gap` only once the chain is exhausted.
-                let gap = if self.modules.get(&resolved_path).is_none() {
-                    // The named/alias-resolved target is the precise
-                    // cross-module cause: `some.mod` in `some.mod/name`.
-                    Some(ResolutionGap::SymbolTypechecked(FQSymbol {
-                        module: resolved_path.clone(),
-                        symbol: Symbol::from(name),
-                    }))
-                } else {
-                    None
-                };
-                return Ok((None, gap));
-            }
-        };
-
-        // Visibility check: private names are only accessible within the
-        // defining module's subtree
-        if !entry.is_public() && !self.is_in_subtree(&state.current_module, &resolved_path) {
-            return Err(CranelispError::TypeError {
-                message: format!(
-                    "'{}' is private in module '{}'",
-                    name, resolved_path
-                ),
-                location: ErrorLocation::from_span(Span::SYNTHETIC),
-            });
+        // Compose the qualified `module/symbol` form the types primitive
+        // consumes; `resolve` applies §8.6.6 longest-prefix alias substitution
+        // to the module part, chain-follows the symbol within the resolved
+        // module, and runs the §8.7.3 visibility filter. The first-hop view is
+        // unused for a qualified name (the primitive names its module
+        // directly), but the accessor is the canonical way to obtain the
+        // primitive's `View` argument; in cluster mode it unions staging+live
+        // for the current module.
+        let qualified = format!("{module_path}/{name}");
+        let read = self.current_symbol_table(state);
+        match cranelisp_types::resolve(
+            self.modules,
+            self.module_aliases,
+            &read.view(),
+            &state.current_module,
+            &qualified,
+            Span::SYNTHETIC,
+        ) {
+            Ok(resolved) => Ok((self.extract_scheme_from_entry_owned(&resolved.entry, 0), None)),
+            // Module present, symbol absent: a genuine not-found the `lookup`
+            // fallback chain may still satisfy via another candidate. No gap.
+            Err(ResolveError::TypeNotFound { .. })
+            | Err(ResolveError::TraitNotFound { .. })
+            | Err(ResolveError::ConstructorNotFound { .. }) => Ok((None, None)),
+            // Alias-resolved target module absent from the session tables: the
+            // precise cross-module resolution gap. Reported in-band so the
+            // fallback chain is not short-circuited; the `&mut`-holding caller
+            // promotes a surviving gap to `CheckError::Gap`.
+            Err(ResolveError::QualifiedModuleUnknown { module, name: sym, .. }) => Ok((
+                None,
+                Some(ResolutionGap::SymbolTypechecked(FQSymbol { module, symbol: sym })),
+            )),
+            // Visibility violation: a hard error (the symbol exists but is
+            // private to a module outside the accessor's subtree).
+            Err(e @ ResolveError::PrivateInaccessible { .. }) => Err(CranelispError::from(e)),
+            // `ResolveError` is `#[non_exhaustive]`: a future variant is
+            // treated as a non-recoverable not-found (no gap), matching the
+            // conservative "the fallback chain may still satisfy it" default.
+            Err(_) => Ok((None, None)),
         }
-
-        Ok((self.extract_scheme_from_entry_owned(&entry, 0), None))
-    }
-
-    /// Check if `accessor` is within the subtree of `definer`.
-    ///
-    /// A module is in its own subtree, and a child module (e.g. "foo.bar")
-    /// is in the subtree of its parent ("foo").
-    fn is_in_subtree(&self, accessor: &ModuleFullPath, definer: &ModuleFullPath) -> bool {
-        let accessor_str: &str = accessor.as_ref();
-        let definer_str: &str = definer.as_ref();
-        accessor_str == definer_str
-            || accessor_str.starts_with(&format!("{}.", definer_str))
     }
 
     // --- Fresh variable generation ---
@@ -1691,11 +1655,38 @@ where
         var_map: &std::collections::HashMap<Symbol, TypeId>,
         module_path: &ModuleFullPath,
         span: Span,
-    ) -> Result<Type, crate::result::ResolveError> {
+    ) -> Result<Type, ResolveError> {
+        // Leaf-name resolution delegates to the types primitive (S76 §1.3).
+        // A bare `TypeRef` resolves in `module_path` via its first-hop view
+        // (staging-aware in cluster mode); a qualified `TypeRef` composes
+        // `module/name`, which the primitive resolves in the named module
+        // directly (the first-hop view is unconsulted for qualified names).
+        // The structural `TypeExpr` recursion (arity validation, type-var
+        // allocation) stays in `crate::resolve::resolve_type_expr`.
         let resolve_terminal = |tref: &cranelisp_types::TypeRef| -> Option<ModuleEntry<C>> {
-            let root = tref.module.as_ref().unwrap_or(module_path);
-            self.resolve_terminal_entry_and_home(root, tref.name.as_ref())
-                .map(|(entry, _home)| entry)
+            let name: String = match &tref.module {
+                Some(m) => format!("{m}/{}", tref.name),
+                None => tref.name.to_string(),
+            };
+            // First-hop view over `module_path`. Absent module → no entry
+            // (mirrors the prior chain-follow's graceful `None`).
+            let live = self.modules.get(module_path)?;
+            let read = match &self.staging {
+                Some(staging) if staging.module == *module_path => {
+                    SymbolTableRead::Cluster { staging: staging.cell.borrow(), live }
+                }
+                _ => SymbolTableRead::Live(live),
+            };
+            cranelisp_types::resolve(
+                self.modules,
+                self.module_aliases,
+                &read.view(),
+                module_path,
+                &name,
+                span,
+            )
+            .ok()
+            .map(|resolved| resolved.entry)
         };
         crate::resolve::resolve_type_expr(texpr, var_map, &resolve_terminal, span)
     }
@@ -1714,6 +1705,31 @@ where
         self.is_internal_constructor_check_with_state(state, bare_name)
     }
 
+}
+
+/// Re-project a `ResolveError` from the general primitive into a kind-specific
+/// not-found, preserving the richer failures.
+///
+/// The primitive uses `TypeNotFound`-shaped messaging as its neutral
+/// fallback for an unreachable bare name (it does not know the caller's kind).
+/// The kind-specific `resolve_*` wrappers re-label that neutral not-found with
+/// the kind they expected (so a missing trait reads "unknown trait", a missing
+/// constructor reads "unknown constructor", etc.). The discriminating failures
+/// — `PrivateInaccessible` and `QualifiedModuleUnknown` — carry diagnostic
+/// context the wrapper cannot improve on, so they pass through unchanged
+/// (`QualifiedModuleUnknown` in particular is the gap signal `resolve_qualified`
+/// promotes to a load-and-retry).
+fn project_not_found(
+    err: ResolveError,
+    kind_specific: impl FnOnce() -> ResolveError,
+) -> ResolveError {
+    match err {
+        ResolveError::PrivateInaccessible { .. }
+        | ResolveError::QualifiedModuleUnknown { .. } => err,
+        // Every not-found-shaped variant (and any future `#[non_exhaustive]`
+        // addition) re-labels with the caller's kind-specific not-found.
+        _ => kind_specific(),
+    }
 }
 
 /// Advance `next_id` past the maximum TypeId found in `table`'s schemes.

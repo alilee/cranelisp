@@ -366,7 +366,7 @@ impl TestFixture {
     pub fn resolve_type_expr_in_user(
         &self,
         texpr: &cranelisp_types::TypeExpr,
-    ) -> Result<Type, crate::result::ResolveError> {
+    ) -> Result<Type, cranelisp_types::ResolveError> {
         self.env().resolve_type_expr_in_module(
             texpr,
             &std::collections::HashMap::new(),

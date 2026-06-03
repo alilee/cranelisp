@@ -14,10 +14,8 @@
 use std::collections::HashMap;
 
 use cranelisp_types::{
-    CodeStore, ModuleEntry, Span, Symbol, Type, TypeExpr, TypeId, TypeRef,
+    CodeStore, ModuleEntry, ResolveError, Span, Symbol, Type, TypeExpr, TypeId, TypeRef,
 };
-
-use crate::result::ResolveError;
 
 /// Resolve a type expression to a concrete type.
 ///

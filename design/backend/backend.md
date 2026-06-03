@@ -377,6 +377,7 @@ The existing docs under `design/backend/` (this `backend.md` is the master; 5 in
 | Topic | File | Status |
 |---|---|---|
 | Compilation function shape | `compile-to-module.md` | **Live**. Authoritative on §17 generics activation; describes Decision 25 + 32 + 35 outcome. **S75 banner at top of file** states the D41-rotated target (`Result<CompilationArtifacts, CompilationError>` + `module_aliases` param + `produce_disasm`; `compile_to_object` retracted; 3-entry boundary; `Code` slim + `Primitive` drop; `compile_constr_adt` §2.6). The body §8/§9.1 `CompilationResult` text is pre-rotation migration narrative superseded by the banner. |
+| Minimal JIT-setup boundary (S76) | `jit-setup-boundary.md` | **Live**. Authoritative on the `Jit::new(symbol_tables)` constructor (the BC §3 minimal-JIT-setup boundary), `cranelisp_intrinsics::INTRINSICS_TABLE` consumption (construct + cache-hit), the `.meta.json` platform `schema_literal` round-trip (FIXME 0232), and the 0122 `--link` GOT-alignment re-test (fix already in `lib.rs:388`). Confirms the S76 W-Macro change is a backend NO-OP. |
 | Ring 1 codegen | `ring1-codegen.md` | **Live**. Stable. Ring 0/1 primitives backbone |
 | Ring 2 RC discipline | `ring2-rc.md` | **Live**. Authoritative on Decision 24 (uniform consuming convention). §10 addendum (string-literal RC residual through `print`) is current |
 | Per-module GOT | `per-module-got.md` | **Live**. Authoritative on Decision 23's two-GOT runtime. Read alongside `compile-to-module.md` §5 |

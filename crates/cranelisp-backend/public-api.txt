@@ -463,9 +463,7 @@ pub mod cranelisp_backend::jit
 pub struct cranelisp_backend::jit::Jit
 impl cranelisp_backend::jit::Jit
 pub fn cranelisp_backend::jit::Jit::jit_module(&mut self) -> &mut cranelift_jit::backend::JITModule
-pub fn cranelisp_backend::jit::Jit::new() -> core::result::Result<Self, cranelisp_types::error::CranelispError>
-pub fn cranelisp_backend::jit::Jit::new_with_isa(isa: alloc::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>, extra_symbols: &[(&str, *const u8)]) -> core::result::Result<Self, cranelisp_types::error::CranelispError>
-pub fn cranelisp_backend::jit::Jit::new_with_symbols(extra_symbols: &[(&str, *const u8)]) -> core::result::Result<Self, cranelisp_types::error::CranelispError>
+pub fn cranelisp_backend::jit::Jit::new<C, L>(symbol_tables: &cranelisp_types::module::SymbolTables<C, L>) -> core::result::Result<Self, cranelisp_types::error::CranelispError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 impl core::ops::drop::Drop for cranelisp_backend::jit::Jit
 pub fn cranelisp_backend::jit::Jit::drop(&mut self)
 impl !core::marker::Freeze for cranelisp_backend::jit::Jit

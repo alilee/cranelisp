@@ -12,6 +12,21 @@ pub fn cranelisp_intrinsics::alloc::dealloc_count() -> usize
 #[export_name = "runtime/dealloc"] pub c fn cranelisp_intrinsics::alloc::heap_dealloc(base_ptr: i64) -> i64
 pub fn cranelisp_intrinsics::alloc::is_live(ptr: usize) -> bool
 pub fn cranelisp_intrinsics::alloc::reset_counts()
+pub mod cranelisp_intrinsics::catalog
+pub struct cranelisp_intrinsics::catalog::IntrinsicEntry
+pub cranelisp_intrinsics::catalog::IntrinsicEntry::has_return: bool
+pub cranelisp_intrinsics::catalog::IntrinsicEntry::is_runtime: bool
+pub cranelisp_intrinsics::catalog::IntrinsicEntry::name: &'static str
+pub cranelisp_intrinsics::catalog::IntrinsicEntry::param_count: usize
+pub cranelisp_intrinsics::catalog::IntrinsicEntry::ptr: *const u8
+impl core::marker::Freeze for cranelisp_intrinsics::catalog::IntrinsicEntry
+impl !core::marker::Send for cranelisp_intrinsics::catalog::IntrinsicEntry
+impl !core::marker::Sync for cranelisp_intrinsics::catalog::IntrinsicEntry
+impl core::marker::Unpin for cranelisp_intrinsics::catalog::IntrinsicEntry
+impl core::marker::UnsafeUnpin for cranelisp_intrinsics::catalog::IntrinsicEntry
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_intrinsics::catalog::IntrinsicEntry
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_intrinsics::catalog::IntrinsicEntry
+pub fn cranelisp_intrinsics::catalog::intrinsics_table() -> &'static [cranelisp_intrinsics::catalog::IntrinsicEntry]
 pub mod cranelisp_intrinsics::drop
 pub fn cranelisp_intrinsics::drop::consume_closure(ptr: i64)
 pub fn cranelisp_intrinsics::drop::consume_io_tree(ptr: i64)
@@ -129,11 +144,25 @@ pub const cranelisp_intrinsics::vec_runtime::LEN_OFFSET: usize
 #[export_name = "vec-push-copy"] pub c fn cranelisp_intrinsics::vec_runtime::vec_push_copy(vec: i64, val: i64, elem_inc_fn: i64) -> i64
 #[export_name = "vec-push-grow"] pub c fn cranelisp_intrinsics::vec_runtime::vec_push_grow(vec: i64, val: i64) -> i64
 #[export_name = "vec-set-copy"] pub c fn cranelisp_intrinsics::vec_runtime::vec_set_copy(vec: i64, idx: i64, val: i64, elem_inc_fn: i64) -> i64
+pub struct cranelisp_intrinsics::IntrinsicEntry
+pub cranelisp_intrinsics::IntrinsicEntry::has_return: bool
+pub cranelisp_intrinsics::IntrinsicEntry::is_runtime: bool
+pub cranelisp_intrinsics::IntrinsicEntry::name: &'static str
+pub cranelisp_intrinsics::IntrinsicEntry::param_count: usize
+pub cranelisp_intrinsics::IntrinsicEntry::ptr: *const u8
+impl core::marker::Freeze for cranelisp_intrinsics::catalog::IntrinsicEntry
+impl !core::marker::Send for cranelisp_intrinsics::catalog::IntrinsicEntry
+impl !core::marker::Sync for cranelisp_intrinsics::catalog::IntrinsicEntry
+impl core::marker::Unpin for cranelisp_intrinsics::catalog::IntrinsicEntry
+impl core::marker::UnsafeUnpin for cranelisp_intrinsics::catalog::IntrinsicEntry
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_intrinsics::catalog::IntrinsicEntry
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_intrinsics::catalog::IntrinsicEntry
 pub fn cranelisp_intrinsics::alloc_count() -> usize
 pub fn cranelisp_intrinsics::alloc_with_rc(payload_size: usize) -> *mut u8
 pub fn cranelisp_intrinsics::bytes_current() -> usize
 pub fn cranelisp_intrinsics::dealloc_count() -> usize
 #[no_mangle] pub c fn cranelisp_intrinsics::heap_alloc_payload(payload_size: i64) -> i64
+pub fn cranelisp_intrinsics::intrinsics_table() -> &'static [cranelisp_intrinsics::catalog::IntrinsicEntry]
 pub fn cranelisp_intrinsics::register_io_observer(observer: core::option::Option<cranelisp_intrinsics::io_observer::IoObserver>)
 pub fn cranelisp_intrinsics::run_io_trampoline(io_ptr: i64) -> i64
 pub fn cranelisp_intrinsics::trace_anchor() -> &'static std::time::Instant

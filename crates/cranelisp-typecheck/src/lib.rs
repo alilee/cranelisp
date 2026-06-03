@@ -243,7 +243,7 @@ mod unify;
 // minimal synthetic seed the unit suite needs (FIXME 0239 test-oracle).
 pub use checker::{CheckState, TypeCheckEnv, advance_next_id_past_table};
 pub use cluster::{SymbolTableAccess, SymbolTableMut, SymbolTableRead};
-pub use form::check_forms;
+pub use form::{check_forms, check_type_expr};
 pub use result::{CheckError, CheckResult};
 pub use trace::{
     SymbolTableEnsureHook, SymbolTableEnsureOutcome, emit_symbol_table_ensure,

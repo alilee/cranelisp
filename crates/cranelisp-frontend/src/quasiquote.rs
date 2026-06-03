@@ -183,9 +183,10 @@ fn make_gensym_name(base: &str) -> String {
 /// forms into explicit `macros/`-qualified constructor calls.
 ///
 /// Pure Sexp-to-Sexp transformation with no typechecker or backend
-/// access needed. Invoked unconditionally at the top of [`crate::expand()`]
-/// before macro-head dispatch, so user macros see already-desugared
-/// template syntax.
+/// access needed. Invoked by int/typecheck before macro-head dispatch,
+/// so user macros see already-desugared template syntax. (Post-S76
+/// W-Macro the frontend no longer hosts an `expand` entry; quasiquote
+/// desugaring is the frontend's only syntactic-rewrite step.)
 ///
 /// Pub at the crate root per the standing quasiquote API (used by REPL
 /// `/expand` and by user-authored macros at expansion time).

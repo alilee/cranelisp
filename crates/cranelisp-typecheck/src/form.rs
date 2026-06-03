@@ -248,6 +248,121 @@ where
     Ok(())
 }
 
+/// Typecheck a standalone type expression against a symbol-table view,
+/// returning the concrete [`Type`].
+///
+/// `int`'s platform loader uses this to validate a `PlatformFn.type_sig`
+/// (FIXME 0231 / 0233): leaf names in the sig — including schema-declared
+/// ADTs like `Rectangle` in `(Fn [Rectangle] Int)` — resolve through the same
+/// symbol-table view + resolution primitive (§1) that program forms use, so a
+/// name not reachable from `current_module` is a [`CheckError`] (the host
+/// surfaces it as a DLL-load error). Pairs with frontend's `parse_type_expr`
+/// (FIXME 0230).
+///
+/// This is **not** new inference machinery — it is a thin wrapper over the
+/// existing `resolve_type_expr_in_module` path (Principle 6: one general
+/// TypeExpr resolver + thin typed entries). A platform sig is a single type
+/// expression, not a program form, so there is no body inference and no
+/// generalisation; free type variables (`:a`) are each given a fresh `TypeId`
+/// (the sig is implicitly universally quantified over them).
+///
+/// In cluster mode (`ctx` is `SymbolTableAccess::Cluster`) the first-hop view
+/// unions staging+live for `current_module`, exactly as the cluster entry's
+/// resolution does; in live mode it reads the committed table.
+pub fn check_type_expr<C, L>(
+    expr: &cranelisp_types::TypeExpr,
+    ctx: &mut SymbolTableAccess<'_, C, L>,
+    symbol_tables: &SymbolTables<C, L>,
+    module_aliases: &ModuleAliases,
+    current_module: &cranelisp_types::ModuleFullPath,
+    span: Span,
+) -> Result<cranelisp_types::Type, CheckError>
+where
+    C: CodeStore,
+    L: LinkerStore,
+{
+    let next_id = std::sync::atomic::AtomicU32::new(0);
+
+    // Ensure the resolution-root module's live table exists (mirrors
+    // `check_forms`'s seed step; `resolve_type_expr_in_module`'s first-hop
+    // view requires the table to be present).
+    {
+        let env = TypeCheckEnv::<C, L>::new(symbol_tables, &next_id, module_aliases);
+        env.ensure_module_exists(current_module);
+    }
+
+    // Advance `next_id` past type-var IDs already used in the module's stored
+    // schemes so the fresh vars allocated for this sig's `:a` names cannot
+    // collide with quantified vars from registered entries (same hazard
+    // `check_forms` guards against).
+    if let Some(guard) = symbol_tables.get(current_module) {
+        crate::checker::advance_next_id_past_table(&next_id, &guard);
+    }
+
+    // Build the working env, staging-aware in cluster mode (the same
+    // local-`RefCell`-reborrow dance `check_forms` uses).
+    let staging_cell: Option<RefCell<&mut SymbolTable<C, L>>> = match ctx {
+        SymbolTableAccess::Cluster { staging, .. } => {
+            let inner: &mut &mut SymbolTable<C, L> = staging.get_mut();
+            let reborrow: &mut SymbolTable<C, L> = inner;
+            Some(RefCell::new(reborrow))
+        }
+        SymbolTableAccess::Live { .. } => None,
+    };
+    let env = match &staging_cell {
+        Some(cell) => TypeCheckEnv::<C, L>::new_with_staging(
+            symbol_tables,
+            &next_id,
+            current_module.clone(),
+            cell,
+            module_aliases,
+        ),
+        None => TypeCheckEnv::<C, L>::new(symbol_tables, &next_id, module_aliases),
+    };
+
+    // Allocate a fresh `TypeId` for each free type-var name in the sig.
+    let mut var_map: std::collections::HashMap<cranelisp_types::Symbol, cranelisp_types::TypeId> =
+        std::collections::HashMap::new();
+    collect_type_var_ids(expr, &env, &mut var_map);
+
+    env.resolve_type_expr_in_module(expr, &var_map, current_module, span)
+        .map_err(CheckError::from)
+}
+
+/// Walk a `TypeExpr` and allocate a fresh `TypeId` for each distinct free
+/// type-variable name (`TypeExpr::TypeVar`), recording it in `var_map`. Used
+/// by [`check_type_expr`] to quantify a standalone platform sig over its
+/// type vars before leaf-name resolution.
+fn collect_type_var_ids<C, L>(
+    expr: &cranelisp_types::TypeExpr,
+    env: &TypeCheckEnv<'_, C, L>,
+    var_map: &mut std::collections::HashMap<cranelisp_types::Symbol, cranelisp_types::TypeId>,
+) where
+    C: CodeStore,
+    L: LinkerStore,
+{
+    use cranelisp_types::TypeExpr;
+    match expr {
+        TypeExpr::TypeVar(name) => {
+            var_map
+                .entry(name.clone())
+                .or_insert_with(|| env.fresh_var_id().1);
+        }
+        TypeExpr::FnType(params, ret) => {
+            for p in params {
+                collect_type_var_ids(p, env, var_map);
+            }
+            collect_type_var_ids(ret, env, var_map);
+        }
+        TypeExpr::Applied(_name, args) => {
+            for a in args {
+                collect_type_var_ids(a, env, var_map);
+            }
+        }
+        TypeExpr::Named(_) | TypeExpr::SelfType => {}
+    }
+}
+
 /// Lift a failed inner-dispatcher `CranelispError` to `CheckError`, promoting
 /// it to `CheckError::Gap` when a cross-module resolution gap was recorded on
 /// `state.pending_gap` by the resolution caller.
@@ -457,6 +572,92 @@ mod tests {
             }
             _ => panic!("expected Def entry, got {entry:?}"),
         }
+    }
+
+    /// `check_type_expr` (0231): a standalone type expression resolves its
+    /// leaf names against the supplied symbol-table view and yields the
+    /// concrete `Type`. A schema-declared ADT name reachable from the module
+    /// resolves; an unreachable name is a `CheckError` (the +Neg facet — the
+    /// host surfaces this as a DLL-load error).
+    #[test]
+    fn check_type_expr_resolves_known_adt_and_rejects_unknown() {
+        use cranelisp_types::{FQTypeName, Type, TypeDefInfo, TypeRef};
+
+        let modules = modules();
+        // Seed a nullary ADT `Color` into the module's live table.
+        {
+            let mut guard = modules.get_mut(&module_path()).expect("module exists");
+            guard.insert(
+                Symbol::from("Color"),
+                ModuleEntry::TypeDef {
+                    info: TypeDefInfo {
+                        name: FQTypeName::new(module_path(), TypeName::from("Color")),
+                        type_params: vec![],
+                        constructors: vec![],
+                    },
+                    visibility: Visibility::Public,
+                    docstring: None,
+                    constructor_scheme: None,
+                },
+            );
+        }
+
+        let mut ctx: SymbolTableAccess<'_, (), ()> =
+            SymbolTableAccess::live(&modules, module_path());
+
+        // Positive: a reachable ADT name resolves to its ADT type.
+        let color = TypeExpr::Named(TypeRef::new(None, TypeName::from("Color")));
+        let ty = check_type_expr::<(), ()>(
+            &color,
+            &mut ctx,
+            &modules,
+            &no_aliases(),
+            &module_path(),
+            Span::SYNTHETIC,
+        )
+        .expect("Color resolves");
+        assert_eq!(
+            ty,
+            Type::ADT(FQTypeName::new(module_path(), TypeName::from("Color")), vec![])
+        );
+
+        // A function sig over the ADT resolves, and free type vars (`:a`) get
+        // fresh ids rather than failing as unknown names.
+        let fn_sig = TypeExpr::FnType(
+            vec![TypeExpr::TypeVar(Symbol::from("a")), color.clone()],
+            Box::new(TypeExpr::TypeVar(Symbol::from("a"))),
+        );
+        let fn_ty = check_type_expr::<(), ()>(
+            &fn_sig,
+            &mut ctx,
+            &modules,
+            &no_aliases(),
+            &module_path(),
+            Span::SYNTHETIC,
+        )
+        .expect("fn sig over Color + type var resolves");
+        match fn_ty {
+            Type::Fn(params, ret) => {
+                assert_eq!(params.len(), 2);
+                // Both `:a` occurrences map to the same fresh var.
+                assert!(matches!(params[0], Type::Var(_)));
+                assert_eq!(params[0], *ret, "both :a occurrences share one id");
+            }
+            other => panic!("expected Fn type, got {other:?}"),
+        }
+
+        // +Neg: an unreachable name is a CheckError, not a silent success.
+        let nope = TypeExpr::Named(TypeRef::new(None, TypeName::from("Nope")));
+        let err = check_type_expr::<(), ()>(
+            &nope,
+            &mut ctx,
+            &modules,
+            &no_aliases(),
+            &module_path(),
+            Span::SYNTHETIC,
+        )
+        .expect_err("unknown type name must be a CheckError");
+        assert!(matches!(err, CheckError::TypeError { .. }));
     }
 
     /// Multi-form forward-reference: two defns where the second body

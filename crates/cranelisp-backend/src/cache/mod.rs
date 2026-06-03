@@ -115,7 +115,16 @@ pub mod linker;
 ///
 /// Field additions with `#[serde(default)]` whose default matches a fresh-build
 /// value do NOT require a bump.
-pub const CACHE_SCHEMA_VERSION: u32 = 1;
+///
+/// **v2 (S76 W1b):** `SymbolTable.schema_literal: Option<String>` added (the
+/// platform-as-module schema text, FIXME 0232 / `design/backend/jit-setup-boundary.md`
+/// §3). The serialised shape changed, so the version bumps to invalidate stale
+/// caches gracefully (Decision 34) — a `CacheStale::SchemaMismatch` fall-through
+/// to a fresh build, not a cryptic deserialise error. The field is
+/// `#[serde(default)]`-defaulted to `None`, so pre-v2 `.meta.json` files (which
+/// lack it) still deserialise; the bump is the explicit invalidation discipline
+/// Decision 34 requires whenever the on-disk shape moves.
+pub const CACHE_SCHEMA_VERSION: u32 = 2;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///

@@ -1194,3 +1194,168 @@ Decision anchors:
 | 14 | ~~`tests/s68_primitives_uniform.rs::s68_fqtypename_int_platform_io_adt_boundary`~~ | Decision 0047 | REMOVED 2026-05-17 | Same as #12 — `src/platform.rs` site is a constructor argument inside `FQTypeName::new(...)`. |
 | 15 | `tests/s68_primitives_uniform.rs::s68_fqtypename_backend_uses_fqtypename_at_resolved_edges` | Decision 0047 + facades/types.md §"FQTypeName" | `[Tested]` | Shape A — scans `crates/cranelisp-backend/public-api.txt` for any `pub fn` signature using bare `TypeName` (FQTypeName masked first). Asserts zero occurrences. |
 | 16 | `tests/s68_primitives_uniform.rs::s68_trace_in_link_mode_rejected_at_link_time` | spec/04-expressions.md §4.12.9 (post-S68 rework, FIXME 0209) + Decision 0040 Path B1 | `[S68 W3-W4]` | Wave 3/4 — trace runtime fully retired from staticlib; link-time failure becomes the architectural enforcement |
+
+## Sprint 76 Phase 5 Stage 1 — int alignment + the full e2e suite (2026-06-03)
+
+S76 is the **final crate of the facade-retirement arc**: wash the cumulative
+streamlined-crate changes through `int` (`src/`), collapse int's parallel JIT
+pipeline into the single `compile_to_module` entry, and **enable the full
+active e2e suite passing across run / REPL / `--link` / platform** (not merely
+a compile-green workspace). Per `qa.md §Phase 5` this is QA-first: the failing
+tests below scope what the per-crate D/D/R triads make pass.
+
+The sprint's e2e completeness target is the **active suite (≈34 files), all
+modes, plus the re-enabled s68 sentinels** — NOT the 42 quarantined
+`tests/legacy/` files (legacy harvest is deferred to S77 per the SPRINT.md
+scope decision).
+
+### Spec anchors (the `[R4 S76 — tested-by /qa S76]` tags /spec placed)
+
+- `spec/09-macros.md` §9.3.4 (Macro Availability and Definition Order),
+  §9.3.6 (Qualified Macro References), §9.12 (three-pass Bootstrapping Order),
+  §9.2.5 (Macro Body Capabilities), §9.14 #2 (define-before-use limitation).
+- `spec/05-definitions.md` §5.13.2 (REPL ≡ batch cluster unification).
+- `spec/08-modules.md` §8.5.4 (lazy-load for FQ macro references).
+- LOCKED model: `design/arch/macro-availability-model.md §0`.
+
+### W-Macro — the LOCKED macro-availability model (NEW; the headline)
+
+`design/arch/macro-availability-model.md §0` is normative. The model: a macro's
+**expansion** references only (a) **dependency-module** definitions
+(typechecked-before, fetched just-in-time) and (b) **macros** (same-module
+macros included); a **same-module non-macro definition is NOT available at
+expansion** (round-trip safety, §0.3); **defmacro-before-use is normative**
+(§0.2). The three-pass compile (§0.4) structurally enforces it (Pass-1 expand
+precedes Pass-2/3 non-macro registration). NEW test file
+`tests/s76_macro_availability.rs`.
+
+| # | Test | Spec | New/Reg | Status | Resolves at |
+|---|---|---|---|---|---|
+| M1 | `tests/s76_macro_availability.rs::macro_used_before_defmacro_is_unresolved_neg` | §9.3.4 | NEW (neg) | `[S76 W-Macro]` | three-pass impl (typecheck recognition + int Pass-1) — INVERTS retired `spec_09_macros.rs::macro_used_before_defmacro_form_is_hoisted` |
+| M2 | `tests/s76_macro_availability.rs::macro_defined_before_use_expands` | §9.3.4 | NEW (pos) | `[S76 W-Macro]` | three-pass impl — the always-reliable subset |
+| M3 | `tests/s76_macro_availability.rs::macro_clause_calls_same_module_defn_helper_rejected_neg` | §9.3.4, §9.12, §0.8 | NEW (neg) | `[S76 W-Macro]` | three-pass impl — the `stdlib/defs.cl` real-world instance; a REJECTED PROGRAM with a clear diagnostic, NOT a defect. INVERTS retired `spec_09_macros.rs::macro_body_drives_three_level_call_graph` |
+| M4 | `tests/s76_macro_availability.rs::macro_clause_reads_same_module_def_value_rejected_neg` | §9.3.4 | NEW (neg) | `[S76 W-Macro]` | three-pass impl — `def`/`const` value-read variant of M3 |
+| M5 | `tests/s76_macro_availability.rs::macro_clause_calls_imported_helper_at_expansion_works` | §9.2.5 | NEW (pos) | `[S76 W-Macro]` | three-pass impl + just-in-time dependency compile — the correct authoring pattern M3 directs toward |
+| M6 | `tests/s76_macro_availability.rs::fq_macro_reference_expands_without_import` | §9.3.6, §8.5.4 | NEW (pos) | `[S76 W-Macro]` | Pass-1 FQ-macro lazy-load (FIXME 0007 folded in) |
+| M7 | `tests/s76_macro_availability.rs::macro_generates_toplevel_defn` | §9.12 | NEW (pos) | `[S76 W-Macro]` | structural-form re-entry (typecheck re-classifies into same staging frame) |
+| M8 | `tests/s76_macro_availability.rs::macro_generates_defmacro_available_to_later_use` | §9.12 | NEW (pos) | `[S76 W-Macro]` | recursive Pass-1 expand-to-fixpoint (macro-generated defmacro) |
+| M9 | `tests/s76_macro_availability.rs::repl_begin_cluster_forward_macro_use_is_unresolved_neg` | §5.13.2 | NEW (neg) | `[S76 W-Macro]` | REPL ≡ batch — forward macro in begin-cluster fails identically |
+| M10 | `tests/s76_macro_availability.rs::repl_macro_uses_earlier_macro_works` | §5.13.2, §0.1(b) | NEW (pos) | `[S76 W-Macro]` | macros may reference same-module macros (compile-time layer) |
+
+**Existing-test inversions (CRITICAL — these now CONTRADICT the locked spec).**
+Three tests in `tests/spec_09_macros.rs` encode the *retired* module-wide /
+hoisting model. The `/dev` triad MUST resolve the discrepancy (not by reverting
+the spec) — they are flagged here as the durable record:
+
+| Existing test | Was | Now (locked) | Disposition |
+|---|---|---|---|
+| `spec_09_macros.rs::macro_used_before_defmacro_form_is_hoisted` (line 483) | asserts forward macro use SUCCEEDS (hoisted) | §9.3.4: forward use is a plain unresolved reference → MUST fail | INVERT — superseded by M1; `/spec`/`/qa` strike or rewrite the assertion + its `// spec:` comment ("v4 processes all defmacros before other forms" is now false) |
+| `spec_09_macros.rs::macro_body_drives_three_level_call_graph` (line 498) | macro clause calls same-module `defn b`→`a` at expansion → asserts 21 | §9.3.4: same-module non-macro at expansion → REJECTED | INVERT — superseded by M3; rewrite to assert rejection OR move `a`/`b` into a dependency module (then it stays positive) |
+| `spec_09_macros.rs::batch_macro_uses_earlier_macro` (line 260) | macro `inc2` calls earlier macro `inc` | §0.1(b): macros may reference same-module macros — STILL VALID | NO CHANGE — stays green; mirrored by M10 |
+
+The cross-module macro tests (`spec_09_macros.rs::cross_module_macro_*`, lines
+528–684) all reference helpers in **dependency modules** — they are the canonical
+"expansion references a dependency" pattern and STAY GREEN under the lock (M5 is
+the s76-locked-model companion asserting this). `cross_module_macro_emits_qualified_reference`
+(line 577) overlaps M6's FQ-ref capability on the cross-module half.
+
+### W-Enablement — constructor-as-value + single-JIT-setup (cross-crate, green-at-runtime)
+
+| # | Test | Spec / FIXME | New/Reg | Status | Resolves at |
+|---|---|---|---|---|---|
+| E1 | `tests/spec_06_pattern_matching.rs` / `tests/spec_03_types.rs` — `(map Some xs)` constructor-as-value end-to-end | FIXME 0249; roadmap `(map Some xs)` item | NEW (pos) | `[S76 W-Enable]` | 0249-a typecheck got-slots ctor entries + 0249-b int enumerates synthesised ctor `Def`s into the compile batch |
+| E2 | regression — primitives dispatch unbroken after `Jit::new(symbol_tables)` collapse (`spec_appendix_a_builtins.rs::primitive_*` stay green) | Decision 0048; BC §3 | REG | `[S76 W-Enable]` | single-JIT-setup must not regress primitive lookup |
+| E3 | regression — intrinsics dispatch unbroken after `INTRINSICS_TABLE` publish (IO/print, RC ops via `spec_10_io.rs`, `spec_12_runtime.rs` stay green) | BC §4b inv 11 | REG | `[S76 W-Enable]` | `INTRINSICS_TABLE` flat catalog must not regress intrinsic Import-dispatch |
+
+**Author note (E1):** `(map Some xs)` is free-standing language behaviour — author
+it under the relevant spec file (pattern-matching / types) with
+`PreludeVariant::TestStandard` for `map`/`Option`. The constructor-as-value
+assertion is "a bare constructor name used as a first-class function value
+compiles and runs"; keep it minimal so the CLIF is inspectable by eye if it fails.
+
+### W-Integrate — full-suite mode coverage (run / REPL / `--link` / platform)
+
+| # | Surface | Gated files | FIXME | Status | Resolves at |
+|---|---|---|---|---|---|
+| I1 | `--link` GOT-alignment | `tests/link.rs` (incl. the 0122 case) | 0122 | `[S76 W-Integrate]` | re-test once workspace builds; backend fixes in-sprint — failing-not-ignored repro is the durable record either way |
+| I2 | Platform host-wiring round-trip | `tests/spec_platforms.rs`, `tests/platform_errors.rs`, `tests/spec_08_modules.rs` platform paths | 0229–0235 | `[S76 W-Integrate]` | platform wave AFTER int cascade defines host surface; 0235 = round-trip DLL declare→load→call→marshal (`/qa`-authored) |
+| I3 | Conformance triad | `tests/facade_pif_rows.rs` + platform fixtures | 0224–0228 | `[S76 W-Integrate]` | lands with the platform host-wiring wave so `spec_platforms.rs` is fully covered |
+| I4 | Mode-equivalence | all language-behaviour suites via `run_through_all_modes` | — | REG | `[S76 W-Integrate]` | REPL ≡ `--run` ≡ `--link` for every language semantics test (Principle 11 guard, see W-Absorb below) |
+
+**0235 round-trip DLL integration (`/qa` deliverable).** The platform wave's
+witness is a round-trip: a Cranelisp program declares `(platform <name>)`, the
+host `dlopen`s the DLL, a Cranelisp call marshals args host→DLL, the DLL returns,
+the result marshals DLL→host. Lands in `tests/spec_platforms.rs` (extend) using
+`Cranelisp::use_workspace_platforms()` + the `test-capture` / `stdio` differential
+already established in that file. Authored when 0229–0234 define the host surface.
+
+### W-Absorb / W-Collapse — regression guard (the dual-pipeline defect, Principle 11)
+
+The int cascade + `pipeline.rs` JIT-path deletion (the "parallel JIT pipeline"
+collapse) must not regress existing behaviour. The guard is **mode-equivalence**:
+the dual-pipeline defect (Principle 11; `archive/pipeline-convergence-review.md`)
+manifested as REPL/`--run`/`--link` divergence — the same program producing
+different results in different modes. The e2e tests that guard the collapse are
+exactly the `run_through_all_modes` callers across the spec suites (and
+`tests/regression.rs`). No NEW tests are required for the guard — it is the
+**existing** mode-equivalence coverage staying green after the collapse. The
+W-e2e→unit directive (below) catches any mode-specific regression the collapse
+introduces and drives it to an int unit test.
+
+| # | Guard | Status | Note |
+|---|---|---|---|
+| C1 | mode-equivalence across `spec_*.rs` via `run_through_all_modes` | REG | the Principle-11 dual-pipeline guard; must stay green through the collapse |
+| C2 | `tests/regression.rs` mode-divergence cases | REG | known historical divergences; re-confirm green post-collapse |
+| C3 | `tests/process_form_dispatch.rs` cluster-atomic dispatch | REG | Decision 44 atomicity over the Pass-2/3 layer; must survive the three-pass reshape |
+
+### W-Green tail — re-enable the s68 sentinels
+
+| # | Test | FIXME | Status | Resolves at |
+|---|---|---|---|---|
+| G1 | `tests/s68_primitives_uniform.rs::s68_backend_intrinsic_symbols_drops_primitives_paths` (line 319) | 0191 | `[S76 W-Green, currently #[ignore]]` | un-ignore once W-Green lands (int green) — IF the backend dep-ban cleanup is in S76 scope; ELSE keep ignored with the `FIXME 0191` reason and note the backend-sprint dependency |
+| G2 | `tests/s68_primitives_uniform.rs::s68_code_enum_has_primitive_marker_variant` (line 357) | 0221 | `[S76 W-Green, currently #[ignore]]` | as G1 |
+
+**Scope caveat on G1/G2 (flagged for `/sprint`).** SPRINT.md W-Green tail says
+"re-enable the 2 s68 sentinels (0221/0191) once int green." But both sentinels'
+`#[ignore]` reasons name the *backend* `Code::Primitive` deletion as a **deferred
+backend sprint**, not int-green. If S76 does NOT include the backend
+`Code::Primitive` deletion (per the SPRINT scope table, backend privacy items
+"STAY private", and the explicit-deferral list), un-ignoring G1/G2 will fail —
+they assert the deletion landed. **`/qa` reads "re-enable once int green" as: the
+two sentinels that are gated on int-green, which may be a DIFFERENT pair than the
+two `Code::Primitive` sentinels.** Resolution: `/sprint` confirms which two
+sentinels are meant; if it is G1/G2, the backend deletion must be in scope or the
+re-enable cannot pass. Filed here as a scope-arbitration item, not silently
+assumed.
+
+### W-e2e→unit directive (the user's PRIMARY directive — frame for actionability)
+
+Per SPRINT.md W-e2e→unit: **every e2e failure during Phase 5 gets two outputs** —
+(a) a fix OR a tracked defect FIXME + failing-not-ignored repro per
+`feedback_repros_join_suite`; AND (b) **an explicit assessment**: "would a unit
+test inside `src/` (int) have caught this before e2e?" If no, the gap is closed
+with a new `/dev (int)` unit test (`feedback_unit_tests_with_dev`). The
+assessment is recorded PER FAILURE, not just the fix.
+
+`/qa`'s framing so this is actionable in Phase 5:
+
+1. Each failing e2e test above carries a `// FIXME(/dev …)` only when the failure
+   path needs action `/dev` cannot infer from the test (per `qa.md §Defect
+   protocol`). In normal operation the failing test IS the signal.
+2. When an e2e failure is reduced to a minimal repro (per `tests/CLAUDE.md
+   §"Isolating Cross-Crate Failures"`), the repro is committed to `tests/` as a
+   durable record AND the per-crate `/dev` writes the isolating unit test inside
+   `src/` (int) or the owning crate. `/qa` does not author the unit test — but
+   `/qa` records, in the ledger, whether the e2e→unit assessment was done.
+3. The assessment ledger lives in `tests/plan/ledger.md` (the failure ledger),
+   one row per Phase-5 e2e failure: { failing test, root crate, fix-or-FIXME,
+   "unit test would have caught? Y/N", "unit test added? (crate::name)" }.
+
+### Free-standing discipline (root CLAUDE.md)
+
+Every test above is free-standing — `PreludeVariant::None` for core-language /
+macro-availability tests; `PreludeVariant::PrimitivesOnly` for tests needing bare
+primitive names (`add-i64`); `PreludeVariant::TestStandard` ONLY where ADTs /
+operators / `map` are required (E1). **Zero dependency on `stdlib/`** — the
+`stdlib/defs.cl` instance is named in M3's rationale as the real-world case, but
+the test reproduces the shape inline, it does not load stdlib.

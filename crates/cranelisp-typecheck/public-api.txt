@@ -4,6 +4,8 @@ pub cranelisp_typecheck::CheckError::Gap(cranelisp_types::error::ResolutionGap)
 pub cranelisp_typecheck::CheckError::TypeError
 pub cranelisp_typecheck::CheckError::TypeError::location: cranelisp_types::error::ErrorLocation
 pub cranelisp_typecheck::CheckError::TypeError::message: alloc::string::String
+impl core::convert::From<cranelisp_types::resolve::ResolveError> for cranelisp_typecheck::CheckError
+pub fn cranelisp_typecheck::CheckError::from(e: cranelisp_types::resolve::ResolveError) -> cranelisp_typecheck::CheckError
 impl core::error::Error for cranelisp_typecheck::CheckError
 impl core::fmt::Display for cranelisp_typecheck::CheckError
 pub fn cranelisp_typecheck::CheckError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -112,6 +114,7 @@ impl<'a, C, L> !core::panic::unwind_safe::RefUnwindSafe for cranelisp_typecheck:
 impl<'a, C, L> !core::panic::unwind_safe::UnwindSafe for cranelisp_typecheck::TypeCheckEnv<'a, C, L>
 pub fn cranelisp_typecheck::advance_next_id_past_table<C, L>(next_id: &core::sync::atomic::AtomicU32, table: &cranelisp_types::module::SymbolTable<C, L>) where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub fn cranelisp_typecheck::check_forms<C, L>(parsed: alloc::vec::Vec<cranelisp_types::parsed::ParsedEntry>, ctx: &mut cranelisp_typecheck::SymbolTableAccess<'_, C, L>, symbol_tables: &cranelisp_types::module::SymbolTables<C, L>, module_aliases: &cranelisp_types::module::ModuleAliases) -> core::result::Result<(), cranelisp_typecheck::CheckError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_typecheck::check_type_expr<C, L>(expr: &cranelisp_types::ast::TypeExpr, ctx: &mut cranelisp_typecheck::SymbolTableAccess<'_, C, L>, symbol_tables: &cranelisp_types::module::SymbolTables<C, L>, module_aliases: &cranelisp_types::module::ModuleAliases, current_module: &cranelisp_types::newtype::ModuleFullPath, span: cranelisp_types::span::Span) -> core::result::Result<cranelisp_types::types::Type, cranelisp_typecheck::CheckError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub fn cranelisp_typecheck::emit_symbol_table_ensure(module: &cranelisp_types::newtype::ModuleFullPath, outcome: cranelisp_typecheck::SymbolTableEnsureOutcome)
 pub fn cranelisp_typecheck::install_symbol_table_ensure_hook(hook: cranelisp_typecheck::SymbolTableEnsureHook)
 pub type cranelisp_typecheck::SymbolTableEnsureHook = fn(module: &cranelisp_types::newtype::ModuleFullPath, outcome: cranelisp_typecheck::SymbolTableEnsureOutcome)

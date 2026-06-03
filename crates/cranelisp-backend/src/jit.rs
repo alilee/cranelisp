@@ -14,8 +14,9 @@ use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 
-use cranelisp_types::{ErrorLocation, 
-    CranelispError, Defn, Span, Symbol,
+use cranelisp_types::{
+    got_data_symbol_name, CranelispError, Defn, DefKind, ErrorLocation, ModuleEntry,
+    Span, Symbol, SymbolTables,
 };
 
 /// Compilation artifacts returned by `compile_defn`.
@@ -74,112 +75,84 @@ pub(crate) fn build_isa() -> Result<Arc<dyn cranelift::codegen::isa::TargetIsa>,
         })
 }
 
-/// Intrinsic symbol descriptor: JIT name, function pointer, and param count.
-///
-/// This is the authoritative list of runtime and primitive intrinsics.
-/// All consumers (JIT builder, Linker, IntrinsicTable) derive from this.
-///
-/// Internal (`pub(crate)`) per the S75 W3-follow narrowing
-/// (`facades/backend.md` §"`jit` shape DTOs (Row 15)") — the per-record
-/// shape `intrinsic_symbols()` returns. Under the target
-/// `Jit::new(symbol_tables)` + `INTRINSICS_TABLE` read (S77), this record's
-/// home shifts to the intrinsics-published catalog.
-pub(crate) struct IntrinsicSymbol {
-    /// JIT symbol name (e.g., "runtime/alloc", "str-concat").
-    pub name: &'static str,
-    /// Function pointer to the Rust implementation.
-    pub ptr: *const u8,
-    /// Number of parameters.
-    pub param_count: usize,
-    /// Whether this is a runtime-internal function (true) or user-visible primitive (false).
-    ///
-    // FIXME(S77 INTRINSICS_TABLE): no in-crate reader today (was masked while
-    // the struct was `pub`). Kept — not dropped — because the decided S77
-    // target (`intrinsics::INTRINSICS_TABLE`, the published flat Import-catalog
-    // that `Jit::new(symbol_tables)` reads; SPRINT §"Target-stated S77") needs
-    // the runtime-vs-primitive split this flag already encodes. Deleting now
-    // would churn all construction sites in `intrinsic_symbols()` twice.
-    #[allow(dead_code)]
-    pub is_runtime: bool,
-    /// Whether the function returns an i64 value (false = void).
-    pub has_return: bool,
-}
-
-/// Return the authoritative list of runtime intrinsic symbols.
-///
-/// Per Decision 0048 §"Structural invariant — backend dep-ban" (S68 Wave 4):
-/// this enumeration is **intrinsics-only**. User-callable primitives
-/// (`add-i64`, `str-concat`, `vec-len`, `not`, …) are reached through the
-/// standard cross-module GOT-indirect dispatch path against the synthetic
-/// `primitives` module's `SymbolTable<Code, ()>` (statically constructed
-/// in `cranelisp-primitives::PRIMITIVES_TABLE`; Arc-cloned into every
-/// `CompilerSession`'s symbol tables at init by the int crate).
-///
-/// Backend has no Rust-path visibility into primitives' fns — the workspace
-/// DAG forbids the `cranelisp-backend → cranelisp-primitives` dep edge.
-/// The dispatch invariant ("primitives reach code via GOT, never via direct
-/// extern") is enforced structurally per Principle 18.
-///
-/// Convention: runtime infrastructure uses `runtime/name` prefix. Intrinsics
-/// not following that convention (`cranelisp_ivar_*`) are spec'd by name.
-///
-/// # Linker-symbol ABI (preserved here before the S75 W3 `pub(crate)` narrow)
-///
-/// This enumeration IS the intrinsic JIT-symbol registration contract. Each
-/// record is consumed by `JITBuilder::symbol(name, ptr)` at JIT setup (and the
-/// `.o`/`--link` path resolves the same names against the `cranelisp-intrinsics`
-/// archive). The `IntrinsicSymbol { name, ptr, param_count, is_runtime,
-/// has_return }` shape is the registration record. The exact linker-symbol names
-/// registered (the ABI contract a `--link` driver and the JIT both depend on):
-///
-/// - Heap/runtime infrastructure: `runtime/alloc`, `runtime/dealloc`,
-///   `runtime/panic`, `runtime/rc_underflow_check`, `runtime/alloc_string`,
-///   `runtime/string_read`, `runtime/vec_new`, `runtime/vec_drop`,
-///   `runtime/run_io`.
-/// - IVar (lenient evaluation): `cranelisp_ivar_create`, `cranelisp_ivar_spark`,
-///   `cranelisp_ivar_force`.
-/// - Vec COW backend-emitted-call targets: `vec-set-copy`, `vec-push-copy`,
-///   `vec-push-grow`.
-///
-/// Trace symbols are deliberately absent (relocated to int per Decision 40 /
-/// Path B1). Narrowed to `pub(crate)` per the S75 W3 /arch re-ruling — this is
-/// JIT-setup plumbing encapsulated behind the codegen entries, not a backend
-/// boundary; int's only call site (`worker.rs:3545`) re-wires in S77.
-pub(crate) fn intrinsic_symbols() -> Vec<IntrinsicSymbol> {
-    vec![
-        // Runtime infrastructure (internal, not user-callable)
-        IntrinsicSymbol { name: "runtime/alloc", ptr: cranelisp_intrinsics::alloc::heap_alloc as *const u8, param_count: 1, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "runtime/dealloc", ptr: cranelisp_intrinsics::alloc::heap_dealloc as *const u8, param_count: 1, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "runtime/panic", ptr: cranelisp_intrinsics::panic::runtime_panic as *const u8, param_count: 2, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "runtime/rc_underflow_check", ptr: cranelisp_intrinsics::rc::rc_underflow_check as *const u8, param_count: 1, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "runtime/alloc_string", ptr: cranelisp_intrinsics::heap_string::heap_alloc_string as *const u8, param_count: 2, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "runtime/string_read", ptr: cranelisp_intrinsics::heap_string::string_read as *const u8, param_count: 1, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "runtime/vec_new", ptr: cranelisp_intrinsics::vec_runtime::vec_new as *const u8, param_count: 1, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "runtime/vec_drop", ptr: cranelisp_intrinsics::vec_runtime::vec_drop as *const u8, param_count: 2, is_runtime: true, has_return: false },
-        IntrinsicSymbol { name: "runtime/run_io", ptr: cranelisp_intrinsics::io::cranelisp_run_io as *const u8, param_count: 1, is_runtime: true, has_return: true },
-        // IVar intrinsics for lenient evaluation
-        IntrinsicSymbol { name: "cranelisp_ivar_create", ptr: cranelisp_intrinsics::ivar::ivar_create as *const u8, param_count: 1, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "cranelisp_ivar_spark", ptr: cranelisp_intrinsics::ivar::ivar_spark as *const u8, param_count: 1, is_runtime: true, has_return: true },
-        IntrinsicSymbol { name: "cranelisp_ivar_force", ptr: cranelisp_intrinsics::ivar::ivar_force as *const u8, param_count: 1, is_runtime: true, has_return: true },
-        // Vec runtime helpers (backend-emitted-call targets — internal, not
-        // user-callable via the primitives module). `vec-len` is user-callable
-        // and lives in PRIMITIVES_TABLE; it reaches backend codegen through
-        // the GOT, not through this enumeration.
-        IntrinsicSymbol { name: "vec-set-copy", ptr: cranelisp_intrinsics::vec_runtime::vec_set_copy as *const u8, param_count: 4, is_runtime: false, has_return: true },
-        IntrinsicSymbol { name: "vec-push-copy", ptr: cranelisp_intrinsics::vec_runtime::vec_push_copy as *const u8, param_count: 3, is_runtime: false, has_return: true },
-        IntrinsicSymbol { name: "vec-push-grow", ptr: cranelisp_intrinsics::vec_runtime::vec_push_grow as *const u8, param_count: 2, is_runtime: false, has_return: true },
-        // Trace runtime symbols — RELOCATED to int per Decision 40 / Path B1
-        // (S67 W4, FIXME 0197). Backend stops contributing these symbols;
-        // `--link` mode rejects `(trace ...)` at link time per FIXME 0199.
-    ]
-}
-
 /// Register all runtime intrinsics on a JITBuilder by function pointer.
 ///
-/// Delegates to `intrinsic_symbols()` — the single source of truth.
+/// Reads `cranelisp_intrinsics::intrinsics_table()` — the published flat
+/// Import-catalog (BC §4b invariant 11). Backend is a *reader* of this table,
+/// not the owner: the per-record shape (`name`, `ptr`, `param_count`,
+/// `has_return`, `is_runtime`) relocated to `cranelisp-intrinsics` at S76 W1a,
+/// retiring the former in-crate `IntrinsicSymbol` + `intrinsic_symbols()`.
+///
+/// Each entry's `name`/`ptr` becomes a `JITBuilder::symbol(name, ptr)`
+/// registration so backend-emitted `Linkage::Import` calls resolve at JIT
+/// finalize. (The `.o`/`--link` path resolves the same names against the
+/// `cranelisp-intrinsics` archive — see the catalog's `//!` for the ABI
+/// guardrail.) Per Decision 0048 dep-ban, this catalog is intrinsics-only:
+/// user-callable primitives reach codegen through the GOT-indirect path
+/// against `PRIMITIVES_TABLE`, never through this enumeration.
 fn register_intrinsics(builder: &mut JITBuilder) {
-    for sym in intrinsic_symbols() {
-        builder.symbol(sym.name, sym.ptr);
+    for entry in cranelisp_intrinsics::intrinsics_table() {
+        builder.symbol(entry.name, entry.ptr);
+    }
+}
+
+/// Register every `PlatformEffect` primitive's jit-name → GOT-slot ptr on the
+/// builder, walking each module's defs and following `Import` edges to the
+/// defining table (BC §3 derivation 3, the third `Jit::new` step).
+///
+/// The symbol-table key IS the JIT linker name (`src/CLAUDE.md` §"JIT Symbol
+/// Names"; the `jit_name` field was retired — `DefKind::PlatformEffect` has no
+/// name payload). A platform effect contributes a symbol only when its GOT
+/// slot is populated (a non-null pointer the platform DLL loader wrote at
+/// registration). This mirrors int's former `collect_jit_setup` walk
+/// (`worker.rs`), now absorbed behind the boundary; the GOT is the single
+/// source of truth for the runtime address (Sprint 66 Wave 0 amendment).
+fn register_platform_effect_symbols<C, L>(
+    builder: &mut JITBuilder,
+    symbol_tables: &SymbolTables<C, L>,
+) where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    for table in symbol_tables.iter() {
+        for (name, entry) in table.value().all_symbols() {
+            match entry {
+                // Direct def: a PlatformEffect with a populated slot in this
+                // module's own GOT.
+                ModuleEntry::Def {
+                    kind,
+                    got_slot: Some(slot),
+                    ..
+                } if matches!(kind.as_ref(), DefKind::PlatformEffect { .. }) => {
+                    let ptr = table.value().got.load_slot(*slot);
+                    if !ptr.is_null() {
+                        builder.symbol(name.as_ref().to_string(), ptr);
+                    }
+                }
+                // Imported def: follow the edge to the defining table and
+                // register the platform fn from the source module's GOT.
+                ModuleEntry::Import { source, .. } => {
+                    if let Some(source_table) = symbol_tables.get(&source.module)
+                        && let Some(ModuleEntry::Def {
+                            kind,
+                            got_slot: Some(slot),
+                            ..
+                        }) = source_table.get(source.symbol.as_ref())
+                        && matches!(kind.as_ref(), DefKind::PlatformEffect { .. })
+                    {
+                        // The JIT linker name is the defining module's symbol
+                        // key (the canonical jit-name), not the importing
+                        // module's local alias — backend emits the `Import`
+                        // against the source name.
+                        let ptr = source_table.got.load_slot(*slot);
+                        if !ptr.is_null() {
+                            builder.symbol(source.symbol.as_ref().to_string(), ptr);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 }
 
@@ -291,9 +264,59 @@ impl Drop for Jit {
 // caller at all: `build_shared_isa` + `declare_functions_prefixed`.)
 #[allow(dead_code)]
 impl Jit {
-    /// Create a new JIT instance for the current host architecture.
-    pub fn new() -> Result<Self, CranelispError> {
-        Self::new_with_symbols(&[])
+    /// Construct a JIT whose entire symbol set is derived from `symbol_tables`
+    /// — the minimal JIT-setup boundary (BC §3).
+    ///
+    /// The caller (int) assembles nothing: before `JITModule::new`, this
+    /// constructor derives the complete JIT symbol set from `symbol_tables`
+    /// in three steps:
+    ///
+    ///   1. **Intrinsic Import targets** — every entry of
+    ///      `cranelisp_intrinsics::intrinsics_table()` is registered via
+    ///      `JITBuilder::symbol(name, ptr)` (the `register_intrinsics` step,
+    ///      shared with the no-arg path).
+    ///   2. **Per-module GOT data symbols** — one `__cranelisp_got_{M}` →
+    ///      `symbol_tables[M].got.base_ptr()` symbol per module in
+    ///      `symbol_tables` (incl. the synthetic `primitives` module), named
+    ///      via the types-crate `got_data_symbol_name`. Decision 23: the
+    ///      symbol address IS the slab base, no pointer-cell indirection.
+    ///   3. **Platform-effect jit-names** — every `DefKind::PlatformEffect`
+    ///      def with a populated GOT slot registers `(symbol-key,
+    ///      got.load_slot(slot))`; `ModuleEntry::Import` edges are followed to
+    ///      the defining table so an importing module's JIT resolves the
+    ///      platform fn too. (The symbol-table key IS the JIT linker name per
+    ///      `src/CLAUDE.md` §"JIT Symbol Names"; the retired `jit_name` field
+    ///      no longer exists — `DefKind::PlatformEffect { scheduling_class }`.)
+    ///
+    /// `C`/`L` are the symbol-table carrier params; at int's JIT boundary the
+    /// concrete type is `SymbolTables<Code, ()>`. The GOT base-ptr + platform
+    /// jit-name walk read only `got` + `kind`/`got_slot`, so the body is
+    /// `<C, L>`-blind (no `Code` knowledge — Principle 3 / Decision 0048
+    /// dep-ban preserved: backend reaches primitives only through the
+    /// type-erased mount).
+    pub fn new<C, L>(symbol_tables: &SymbolTables<C, L>) -> Result<Self, CranelispError>
+    where
+        C: cranelisp_types::CodeStore,
+        L: cranelisp_types::LinkerStore,
+    {
+        let isa = build_isa()?;
+        let mut builder =
+            JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+
+        // (1) Runtime + backend-emitted-call intrinsic Import targets.
+        register_intrinsics(&mut builder);
+
+        // (2) Per-module GOT data symbols — the symbol address IS the slab
+        // base (Decision 23, no pointer-cell indirection).
+        for entry in symbol_tables.iter() {
+            let name = got_data_symbol_name(entry.key());
+            builder.symbol(name, entry.value().got.base_ptr());
+        }
+
+        // (3) Platform-effect jit-names — walk defs + import chains.
+        register_platform_effect_symbols(&mut builder, symbol_tables);
+
+        Ok(Self::finish_builder(builder))
     }
 
     /// Create a new JIT instance with extra symbol registrations.
@@ -303,7 +326,13 @@ impl Jit {
     /// function calls (P4): when compiling module B that depends on
     /// module A, A's compiled function pointers are passed in as
     /// extra symbols so B can link against them.
-    pub fn new_with_symbols(
+    ///
+    /// `pub(crate)` per design doc §1.4 — the boundary construct path is
+    /// `Jit::new(symbol_tables)`. int's parallel hand-assembly path
+    /// (`worker.rs`) is its only out-of-crate caller and is deleted in
+    /// W-Collapse (S76 W2); the resulting dead-code on int's side is the
+    /// expected narrowing signal.
+    pub(crate) fn new_with_symbols(
         extra_symbols: &[(&str, *const u8)],
     ) -> Result<Self, CranelispError> {
         let isa = build_isa()?;
@@ -315,7 +344,12 @@ impl Jit {
     /// Accepts extra symbol registrations, same as `new_with_symbols`.
     /// Construct the ISA once via the module-level `build_isa()`, then
     /// `Arc::clone` it for each worker's `Jit`.
-    pub fn new_with_isa(
+    ///
+    /// `pub(crate)` per design doc §1.4 — used internally if a shared-ISA
+    /// micro-optimisation for per-symbol batches ever lands; no external
+    /// caller (`feedback_callee_api_for_caller_only`).
+    #[allow(dead_code)]
+    pub(crate) fn new_with_isa(
         isa: Arc<dyn cranelift::codegen::isa::TargetIsa>,
         extra_symbols: &[(&str, *const u8)],
     ) -> Result<Self, CranelispError> {
@@ -335,12 +369,23 @@ impl Jit {
             builder.symbol(name, ptr);
         }
 
+        Ok(Self::finish_builder(builder))
+    }
+
+    /// Finalise a fully-populated `JITBuilder` into a `Jit`.
+    ///
+    /// Shared tail of every construct path (`new`, `from_isa`): builds the
+    /// `JITModule`, makes the codegen context, and zeroes the 6 convenience
+    /// intrinsic-FuncId fields (populated later by `declare_intrinsics`
+    /// during the per-call compile). The caller is responsible for having
+    /// registered all symbols on `builder` first.
+    fn finish_builder(builder: JITBuilder) -> Self {
         let module = JITModule::new(builder);
 
         let ctx = module.make_context();
         let func_ctx = FunctionBuilderContext::new();
 
-        Ok(Jit {
+        Jit {
             module: Some(module),
             ctx,
             func_ctx,
@@ -350,7 +395,7 @@ impl Jit {
             panic_func_id: None,
             vec_new_func_id: None,
             vec_drop_func_id: None,
-        })
+        }
     }
 
     /// Access the inner `JITModule` by shared reference.
@@ -735,26 +780,26 @@ pub(crate) fn declare_intrinsics_generic<M: Module>(
 ) -> Result<IntrinsicFuncIds, CranelispError> {
     let mut ids = IntrinsicFuncIds::default();
 
-    for sym in intrinsic_symbols() {
+    for entry in cranelisp_intrinsics::intrinsics_table() {
         let mut sig = module.make_signature();
-        for _ in 0..sym.param_count {
+        for _ in 0..entry.param_count {
             sig.params.push(AbiParam::new(types::I64));
         }
-        if sym.has_return {
+        if entry.has_return {
             sig.returns.push(AbiParam::new(types::I64));
         }
 
         let func_id = module
-            .declare_function(sym.name, Linkage::Import, &sig)
+            .declare_function(entry.name, Linkage::Import, &sig)
             .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to declare intrinsic '{}': {e}", sym.name),
+                message: format!("failed to declare intrinsic '{}': {e}", entry.name),
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
             })?;
 
-        ids.by_name.insert(Symbol::from(sym.name), func_id);
+        ids.by_name.insert(Symbol::from(entry.name), func_id);
 
         // Set convenience accessors for the 6 special intrinsics.
-        match sym.name {
+        match entry.name {
             "runtime/alloc" => ids.alloc = Some(func_id),
             "runtime/dealloc" => ids.dealloc = Some(func_id),
             "runtime/alloc_string" => ids.alloc_string = Some(func_id),
@@ -783,14 +828,14 @@ mod tests {
     // spec: 12-runtime §12.1 — JIT engine creation
     #[test]
     fn test_jit_creation() {
-        let jit = Jit::new();
+        let jit = Jit::new_with_symbols(&[]);
         assert!(jit.is_ok(), "JIT creation should succeed");
     }
 
     // spec: 12-runtime §12.3 — runtime intrinsic function declarations (alloc, dealloc, panic)
     #[test]
     fn test_intrinsic_declaration() {
-        let mut jit = Jit::new().unwrap();
+        let mut jit = Jit::new_with_symbols(&[]).unwrap();
         let ids = jit.declare_intrinsics();
         assert!(ids.is_ok(), "intrinsic declaration should succeed");
     }
@@ -798,7 +843,7 @@ mod tests {
     // spec: 08-modules §8.3 — imported function declarations for cross-module calls
     #[test]
     fn test_declare_imported_functions() {
-        let mut jit = Jit::new().unwrap();
+        let mut jit = Jit::new_with_symbols(&[]).unwrap();
         let mut func_ids = HashMap::new();
 
         let imports = vec![
@@ -815,7 +860,7 @@ mod tests {
     // spec: 08-modules §8.3 — imported declarations merge with local function declarations
     #[test]
     fn test_declare_imported_functions_merges_with_existing() {
-        let mut jit = Jit::new().unwrap();
+        let mut jit = Jit::new_with_symbols(&[]).unwrap();
 
         // Declare a local function first.
         let defn = Defn {
@@ -873,7 +918,7 @@ mod tests {
         // A freshly-constructed JIT with no compiled code must still drop
         // cleanly — free_memory must tolerate a JIT that has never had
         // anything finalised.
-        let jit = Jit::new().expect("JIT construction");
+        let jit = Jit::new_with_symbols(&[]).expect("JIT construction");
         drop(jit);
         // Reaching here means the drop path returned without panic.
     }
@@ -885,7 +930,7 @@ mod tests {
 
         let before = JIT_FREE_MEMORY_CALL_COUNT.load(Ordering::Relaxed);
         {
-            let _jit = Jit::new().expect("JIT construction");
+            let _jit = Jit::new_with_symbols(&[]).expect("JIT construction");
             // Declaring intrinsics exercises the JIT's declare path so this
             // isn't a trivial empty-module case. `_jit` drops at end of
             // scope.
@@ -911,7 +956,7 @@ mod tests {
         use cranelisp_types::{Expr, Type, Visibility};
         use std::sync::atomic::Ordering;
 
-        let mut jit = Jit::new().expect("JIT construction");
+        let mut jit = Jit::new_with_symbols(&[]).expect("JIT construction");
         jit.declare_intrinsics().expect("intrinsics declare");
 
         // Zero-arg fn returning the literal 42.
@@ -1111,7 +1156,7 @@ mod tests {
         //    Read out its finalised pointer.
         let producer_ptr: *const u8 = {
             use cranelisp_types::{Defn, DefnVariant, Expr, Type, Visibility};
-            let mut jit = Jit::new().expect("producer JIT");
+            let mut jit = Jit::new_with_symbols(&[]).expect("producer JIT");
             jit.declare_intrinsics().expect("intrinsics");
             let name = Symbol::from("producer_fn");
             let defn = Defn {
@@ -1240,5 +1285,249 @@ mod tests {
         drop(consumer);
         // SAFETY: nothing reads `slab_base` after this point.
         unsafe { std::alloc::dealloc(slab_base, layout) };
+    }
+
+    // ----- §1 `Jit::new(symbol_tables)` — the minimal JIT-setup boundary -----
+
+    use cranelisp_types::{
+        ModuleFullPath, Scheme, SchedulingClass, SymbolTable, Type, Visibility,
+    };
+
+    /// Build a `DefKind::PlatformEffect` Def entry with a populated GOT slot,
+    /// returning the entry. Mirrors what the platform DLL loader writes — the
+    /// runtime pointer lands in `table.got` at the allocated slot.
+    fn platform_effect_def(slot: usize) -> ModuleEntry {
+        ModuleEntry::Def {
+            scheme: Scheme {
+                type_vars: vec![],
+                constraints: HashMap::new(),
+                ty: Type::Int,
+            },
+            visibility: Visibility::Public,
+            docstring: None,
+            param_names: vec![],
+            kind: Box::new(DefKind::PlatformEffect {
+                scheduling_class: SchedulingClass::Sequential,
+            }),
+            callees: vec![],
+            got_slot: Some(slot),
+            trait_origin: None,
+            seq: 0,
+            ast: None,
+            code: None,
+        }
+    }
+
+    // spec: design/backend/jit-setup-boundary.md §1 — `Jit::new(symbol_tables)`
+    // constructs from an empty symbol set (no modules) without error.
+    #[test]
+    fn jit_new_from_empty_symbol_tables() {
+        let tables: SymbolTables<(), ()> = dashmap::DashMap::new();
+        let jit = Jit::new(&tables);
+        assert!(jit.is_ok(), "Jit::new with empty symbol_tables must succeed");
+    }
+
+    // spec: design/backend/jit-setup-boundary.md §1.3 — `Jit::new` derives the
+    // per-module GOT data symbol AND the platform-effect jit-name from
+    // `symbol_tables`. Build two modules (one plain, one carrying a
+    // PlatformEffect def with a populated GOT slot) and assert the JIT resolves
+    // the registered platform symbol to the slot pointer via a hand-built
+    // `global_value` thunk — the same observation shape as
+    // `jit_got_symbol_address_is_slab_base`.
+    #[test]
+    fn jit_new_registers_platform_effect_and_got_symbols() {
+        use cranelift_module::Linkage;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        // An address-stable backing storage standing in for the platform fn.
+        static PLATFORM_FN: AtomicU64 = AtomicU64::new(0x1234_5678_9ABC_DEF0);
+        let platform_ptr: *const u8 = &PLATFORM_FN as *const _ as *const u8;
+
+        let tables: SymbolTables<(), ()> = dashmap::DashMap::new();
+
+        // Module 1: plain user module, no platform effects.
+        let plain = ModuleFullPath::from("user");
+        tables.insert(plain.clone(), SymbolTable::new(plain.clone()));
+
+        // Module 2: platform module with a PlatformEffect def whose GOT slot
+        // holds `platform_ptr`.
+        let plat_mod = ModuleFullPath::from("platform.stdio");
+        let mut plat_table = SymbolTable::new(plat_mod.clone());
+        let slot = plat_table.allocate_got_slot();
+        plat_table.got.store_slot(slot, platform_ptr);
+        plat_table.insert(Symbol::from("cranelisp_print"), platform_effect_def(slot));
+        tables.insert(plat_mod.clone(), plat_table);
+
+        let mut jit = Jit::new(&tables).expect("Jit::new must succeed");
+        jit.declare_intrinsics().expect("intrinsics");
+
+        // Hand-build a thunk that declares `cranelisp_print` as Import data and
+        // returns its address. If `Jit::new` registered the platform symbol to
+        // `platform_ptr`, the returned i64 equals `platform_ptr as u64`.
+        let name = Symbol::from("get_platform_addr");
+        let func_id = {
+            let module = jit.jit_module();
+            let mut sig = module.make_signature();
+            sig.returns.push(AbiParam::new(types::I64));
+            let id = module
+                .declare_function(name.as_ref(), Linkage::Export, &sig)
+                .expect("declare thunk");
+            let data_id = module
+                .declare_data("cranelisp_print", Linkage::Import, false, false)
+                .expect("declare platform symbol");
+            let mut ctx = module.make_context();
+            ctx.func.signature = sig;
+            ctx.func.name =
+                cranelift::codegen::ir::UserFuncName::testcase(name.as_bytes());
+            let mut fbc = FunctionBuilderContext::new();
+            {
+                let gv = module.declare_data_in_func(data_id, &mut ctx.func);
+                let mut fb = FunctionBuilder::new(&mut ctx.func, &mut fbc);
+                let entry = fb.create_block();
+                fb.switch_to_block(entry);
+                fb.seal_block(entry);
+                let addr = fb.ins().global_value(types::I64, gv);
+                fb.ins().return_(&[addr]);
+                fb.finalize();
+            }
+            module.define_function(id, &mut ctx).expect("define thunk");
+            module.clear_context(&mut ctx);
+            id
+        };
+
+        jit.finalize().expect("finalize");
+        let ptr = jit.get_finalized_ptr(func_id);
+        // SAFETY: thunk just finalised; signature is `extern "C" fn() -> i64`.
+        let f: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
+        let returned = f() as u64;
+        assert_eq!(
+            returned, platform_ptr as u64,
+            "Jit::new must register the PlatformEffect jit-name to its GOT-slot \
+             pointer; returned={returned:#x}, expected={:#x}",
+            platform_ptr as u64,
+        );
+        // Confirm the address points AT the backing storage (no indirection).
+        let read = unsafe { std::ptr::read_unaligned(returned as *const u64) };
+        assert_eq!(read, PLATFORM_FN.load(Ordering::Relaxed));
+    }
+
+    // spec: design/backend/jit-setup-boundary.md §1.3 — a PlatformEffect with a
+    // null GOT slot (loader has not populated it) contributes no symbol; an
+    // Import edge to a populated PlatformEffect in another module resolves the
+    // platform fn by the defining module's key. Verifies both via reachability
+    // of the imported name.
+    #[test]
+    fn jit_new_follows_import_edge_for_platform_effect() {
+        use cranelift_module::Linkage;
+        use std::sync::atomic::AtomicU64;
+
+        static PLATFORM_FN: AtomicU64 = AtomicU64::new(0xFEED_FACE_DEAD_BEEF);
+        let platform_ptr: *const u8 = &PLATFORM_FN as *const _ as *const u8;
+
+        let tables: SymbolTables<(), ()> = dashmap::DashMap::new();
+
+        // Defining module: platform.stdio defines `print` as a PlatformEffect.
+        let plat_mod = ModuleFullPath::from("platform.stdio");
+        let mut plat_table = SymbolTable::new(plat_mod.clone());
+        let slot = plat_table.allocate_got_slot();
+        plat_table.got.store_slot(slot, platform_ptr);
+        plat_table.insert(Symbol::from("print"), platform_effect_def(slot));
+        tables.insert(plat_mod.clone(), plat_table);
+
+        // Importing module: user imports `print` from platform.stdio.
+        let user = ModuleFullPath::from("user");
+        let mut user_table = SymbolTable::new(user.clone());
+        user_table.insert(
+            Symbol::from("print"),
+            ModuleEntry::Import {
+                source: cranelisp_types::FQSymbol {
+                    module: plat_mod.clone(),
+                    symbol: Symbol::from("print"),
+                },
+                visibility: Visibility::Public,
+            },
+        );
+        tables.insert(user.clone(), user_table);
+
+        let mut jit = Jit::new(&tables).expect("Jit::new must succeed");
+        jit.declare_intrinsics().expect("intrinsics");
+
+        // The platform symbol is registered under the defining module's key
+        // (`print`). A thunk taking its address must resolve to `platform_ptr`.
+        let name = Symbol::from("get_print_addr");
+        let func_id = {
+            let module = jit.jit_module();
+            let mut sig = module.make_signature();
+            sig.returns.push(AbiParam::new(types::I64));
+            let id = module
+                .declare_function(name.as_ref(), Linkage::Export, &sig)
+                .expect("declare thunk");
+            let data_id = module
+                .declare_data("print", Linkage::Import, false, false)
+                .expect("declare platform symbol");
+            let mut ctx = module.make_context();
+            ctx.func.signature = sig;
+            ctx.func.name =
+                cranelift::codegen::ir::UserFuncName::testcase(name.as_bytes());
+            let mut fbc = FunctionBuilderContext::new();
+            {
+                let gv = module.declare_data_in_func(data_id, &mut ctx.func);
+                let mut fb = FunctionBuilder::new(&mut ctx.func, &mut fbc);
+                let entry = fb.create_block();
+                fb.switch_to_block(entry);
+                fb.seal_block(entry);
+                let addr = fb.ins().global_value(types::I64, gv);
+                fb.ins().return_(&[addr]);
+                fb.finalize();
+            }
+            module.define_function(id, &mut ctx).expect("define thunk");
+            module.clear_context(&mut ctx);
+            id
+        };
+
+        jit.finalize().expect("finalize");
+        let ptr = jit.get_finalized_ptr(func_id);
+        // SAFETY: thunk just finalised; signature is `extern "C" fn() -> i64`.
+        let f: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
+        assert_eq!(
+            f() as u64,
+            platform_ptr as u64,
+            "Jit::new must follow the Import edge and register the platform fn \
+             under the defining module's key",
+        );
+    }
+
+    // ----- §2 `intrinsics_table()` consumption -----
+
+    // spec: design/backend/jit-setup-boundary.md §2 — `declare_intrinsics_generic`
+    // reads `cranelisp_intrinsics::intrinsics_table()`, declaring one FuncId per
+    // catalog record. Confirms the re-point preserves the full intrinsic set and
+    // the 6 convenience accessors are populated.
+    #[test]
+    fn declare_intrinsics_generic_covers_the_catalog() {
+        let mut jit = Jit::new_with_symbols(&[]).expect("JIT construction");
+        let module = jit.jit_module();
+        let ids = declare_intrinsics_generic(module).expect("declare");
+
+        let catalog = cranelisp_intrinsics::intrinsics_table();
+        assert_eq!(
+            ids.by_name.len(),
+            catalog.len(),
+            "one declared FuncId per intrinsics_table() record",
+        );
+        for entry in catalog {
+            assert!(
+                ids.by_name.contains_key(&Symbol::from(entry.name)),
+                "intrinsic '{}' must be declared",
+                entry.name,
+            );
+        }
+        // The 6 convenience accessors map to the named runtime intrinsics.
+        assert!(ids.alloc.is_some(), "runtime/alloc accessor");
+        assert!(ids.dealloc.is_some(), "runtime/dealloc accessor");
+        assert!(ids.alloc_string.is_some(), "runtime/alloc_string accessor");
+        assert!(ids.panic.is_some(), "runtime/panic accessor");
+        assert!(ids.vec_new.is_some(), "runtime/vec_new accessor");
+        assert!(ids.vec_drop.is_some(), "runtime/vec_drop accessor");
     }
 }

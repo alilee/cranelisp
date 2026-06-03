@@ -1546,6 +1546,32 @@ fn build_type_expr_from_list(
     Err(parse_err("invalid type expression", span))
 }
 
+/// Parse a single type-expression S-expression into the canonical
+/// `TypeExpr` AST shape.
+///
+/// Bounded: **string in, one `TypeExpr` out**. The source must be a single
+/// type-expression form (a bare type name, a `(Fn [..] R)`, or an applied
+/// `(Name arg..)`) — NOT a program form, NOT a sequence. More than one
+/// form, or zero forms, is a `CranelispError`.
+///
+/// Returns `TypeExpr` (syntactic), NOT `Type` (resolution is typecheck's
+/// `check_type_expr`). Reuses the existing `parse` reader + the
+/// type-expression production already in this module (`build_type_expr`).
+/// No new grammar.
+pub fn parse_type_expr(source: &str) -> Result<TypeExpr, CranelispError> {
+    let sexps = crate::reader::parse(source)?;
+    match sexps.as_slice() {
+        [sexp] => build_type_expr(sexp),
+        other => Err(parse_err(
+            &format!(
+                "type expression must be a single form, found {}",
+                other.len()
+            ),
+            other.first().map(Sexp::span).unwrap_or(Span::SYNTHETIC),
+        )),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -3265,4 +3291,62 @@ mod tests {
         assert!(matches!(expr, Expr::IntLit { value: 42, .. }));
     }
 
+    // FIXME 0230 — `parse_type_expr` parses a bare named type.
+    #[test]
+    fn parse_type_expr_named() {
+        let te = parse_type_expr("Int").unwrap();
+        match te {
+            TypeExpr::Named(r) => assert_eq!(r.name.as_ref(), "Int"),
+            other => panic!("expected Named, got {other:?}"),
+        }
+    }
+
+    // FIXME 0230 — `parse_type_expr` parses a type variable (lowercase).
+    #[test]
+    fn parse_type_expr_type_var() {
+        let te = parse_type_expr("a").unwrap();
+        assert!(matches!(te, TypeExpr::TypeVar(_)));
+    }
+
+    // FIXME 0230 — `parse_type_expr` parses a `(Fn [..] R)` form.
+    #[test]
+    fn parse_type_expr_fn() {
+        let te = parse_type_expr("(Fn [Int] Bool)").unwrap();
+        match te {
+            TypeExpr::FnType(params, ret) => {
+                assert_eq!(params.len(), 1);
+                assert!(matches!(*ret, TypeExpr::Named(_)));
+            }
+            other => panic!("expected FnType, got {other:?}"),
+        }
+    }
+
+    // FIXME 0230 — `parse_type_expr` parses an applied `(Name arg..)` form.
+    #[test]
+    fn parse_type_expr_applied() {
+        let te = parse_type_expr("(Option Int)").unwrap();
+        match te {
+            TypeExpr::Applied(r, args) => {
+                assert_eq!(r.name.as_ref(), "Option");
+                assert_eq!(args.len(), 1);
+            }
+            other => panic!("expected Applied, got {other:?}"),
+        }
+    }
+
+    // FIXME 0230 — more than one form is rejected (string in / one out).
+    #[test]
+    fn parse_type_expr_rejects_multiple_forms() {
+        let err = parse_type_expr("Int Bool").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("single form"), "got: {msg}");
+    }
+
+    // FIXME 0230 — zero forms is rejected.
+    #[test]
+    fn parse_type_expr_rejects_empty() {
+        let err = parse_type_expr("").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("single form"), "got: {msg}");
+    }
 }

@@ -242,57 +242,14 @@
     // covered by `test_resolve_qualified_*` (below) and the chain-follow tests
     // elsewhere in this module.
 
-    // --- is_in_subtree ---
-
-    // spec: 08-modules §8.7 — module is in its own subtree
-    #[test]
-    fn test_is_in_subtree_self() {
-        let tf = TestFixture::new();
-        assert!(tf.env().is_in_subtree(
-            &ModuleFullPath::from("foo"),
-            &ModuleFullPath::from("foo"),
-        ));
-    }
-
-    // spec: 08-modules §8.7 — child module is in parent subtree
-    #[test]
-    fn test_is_in_subtree_child() {
-        let tf = TestFixture::new();
-        assert!(tf.env().is_in_subtree(
-            &ModuleFullPath::from("foo.bar"),
-            &ModuleFullPath::from("foo"),
-        ));
-    }
-
-    // spec: 08-modules §8.7 — grandchild module is in ancestor subtree
-    #[test]
-    fn test_is_in_subtree_grandchild() {
-        let tf = TestFixture::new();
-        assert!(tf.env().is_in_subtree(
-            &ModuleFullPath::from("foo.bar.baz"),
-            &ModuleFullPath::from("foo"),
-        ));
-    }
-
-    // spec: 08-modules §8.7 — unrelated module is not in subtree
-    #[test]
-    fn test_is_not_in_subtree() {
-        let tf = TestFixture::new();
-        assert!(!tf.env().is_in_subtree(
-            &ModuleFullPath::from("other"),
-            &ModuleFullPath::from("foo"),
-        ));
-    }
-
-    // spec: 08-modules §8.7 — string prefix without dot separator is not subtree
-    #[test]
-    fn test_is_not_in_subtree_prefix_mismatch() {
-        let tf = TestFixture::new();
-        assert!(!tf.env().is_in_subtree(
-            &ModuleFullPath::from("foobar"),
-            &ModuleFullPath::from("foo"),
-        ));
-    }
+    // --- subtree visibility (§8.7.3) ---
+    //
+    // The typecheck-local `is_in_subtree` helper retired at S76 — the
+    // §8.7.3 visibility/subtree check now lives in the types-owned resolution
+    // primitive (`cranelisp_types::resolve`), unit-tested there
+    // (`resolve::tests::private_inaccessible_outside_subtree`). The
+    // typecheck-side `resolve_qualified` path that consumes it is covered by
+    // the alias-resolution tests below + the e2e module-resolution suite.
 
     // --- Alias resolution in resolve_qualified ---
 

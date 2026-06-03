@@ -180,6 +180,29 @@ pub struct SymbolTable<C: CodeStore = (), L: LinkerStore = ()> {
     /// `/platform` (NOT by typecheck — see §11.5).
     #[serde(default)]
     pub platforms: Vec<PlatformSpec>,
+    /// Raw `Schema` literal for a platform module — the text exactly as the
+    /// DLL's `declare_platform!` macro embedded it (the ADT-marshaling layout
+    /// declarations). `None` for non-platform modules and for pre-S71 DLLs
+    /// (`stdio`, `test-capture`) that omit the `schema:` arm.
+    ///
+    /// Set at platform-module registration (the platform-as-module migration,
+    /// FIXME 0233 / int). Rides the existing serde round-trip into the cache
+    /// `.meta.json` (`cache/serialize.rs::serialise_meta`) so the host can
+    /// re-parse it on cache-hit to re-populate the loaded DLL's
+    /// `LazyLock<Schema>` for cross-session continuity (FIXME 0232). The host
+    /// **obtains** the literal at first DLL load via the
+    /// `HostCallbacks::validate_schema` callback's existing `schema_ptr`/
+    /// `schema_len` parameters (no new `#[repr(C)]` manifest field, no
+    /// `ABI_VERSION` bump — S76 seam-2 ruling, FIXMEs 0250+0251 merged); this
+    /// field is the cache-layer home for the bytes the host captured there.
+    ///
+    /// Cache-layer only, NOT a DLL-boundary contract: adding it bumps
+    /// `CACHE_SCHEMA_VERSION` (backend), never `ABI_VERSION` (platform).
+    /// `#[serde(default)]` so pre-S71 caches and non-platform modules
+    /// deserialise cleanly as `None`. See `bounded-contexts.md` §3 (cache),
+    /// §5 (platform), §7 (this field).
+    #[serde(default)]
+    pub schema_literal: Option<String>,
     /// Original `(mod child)` / `(mod- child)` declarations in source order;
     /// `visibility == Visibility::Private` distinguishes `(mod-)`. Consumed
     /// by `/int` for submodule loading.
@@ -246,17 +269,20 @@ fn default_got_arc() -> std::sync::Arc<GotTable> {
 /// `Arc<…>` wrapper — see drift note below).
 ///
 /// **Why types-crate (Principle 15 — `facade-types-live-with-behavior`).**
-/// The alias is consumed by three implementation-crate facades:
+/// The alias is consumed by multiple implementation-crate surfaces:
 ///
-/// - `cranelisp-frontend` — `expand(sexp, symbol_tables: &SymbolTables<C, L>, module_aliases: &ModuleAliases) → Result<Sexp, ExpansionError>` (see `crates/cranelisp-frontend/src/lib.rs` //! preamble + `bounded-contexts.md` §1; the per-crate `facades/frontend.md` document was retired in S70 Phase B group B3-C)
-/// - `cranelisp-typecheck` — `check_forms(parsed, ctx, symbol_tables: &SymbolTables)` (see `design/arch/facades/typecheck.md` + Decision 0044)
-/// - `cranelisp` (the `int` integration layer) — `SharedState.symbol_tables: SymbolTables<Code, ()>` (see `design/arch/facades/int.md` + Decision 0035)
+/// - `cranelisp-typecheck` — `check_forms(parsed, ctx, symbol_tables: &SymbolTables, module_aliases: &ModuleAliases)` and `check_type_expr(expr, ctx, symbol_tables, module_aliases, current_module, span)` (see `bounded-contexts.md` §2 + Decision 0044; the per-crate `facades/typecheck.md` document was retired in S72 Wave 5)
+/// - `cranelisp` (the `int` integration layer) — `SharedState.symbol_tables: SymbolTables<Code, ()>` (see `design/arch/facades/int.md` + Decision 0035); int's Pass-1 macro recognition also reads it via `cranelisp_types::resolve_macro_head`
+/// - `cranelisp-backend` — codegen reads `symbol_tables` as the single codegen source (see `bounded-contexts.md` §3)
 ///
-/// Three consumers → types-crate is the canonical home per the placement
-/// heuristic. Any per-frontend or per-typecheck typedef would (a) defeat
+/// (Post-S76 W-Macro `cranelisp-frontend` no longer consumes `SymbolTables` —
+/// macro recognition moved to typecheck + int; the frontend is purely
+/// syntactic. See `bounded-contexts.md` §1.)
+///
+/// Multiple consumers → types-crate is the canonical home per the placement
+/// heuristic. Any per-typecheck or per-int typedef would (a) defeat
 /// the workspace-stable claim, and (b) force one consumer to invert the
-/// dep graph onto another (e.g., typecheck depending on frontend just to
-/// reach the name) — both are direct Principle-3 / Principle-15
+/// dep graph onto another — both are direct Principle-3 / Principle-15
 /// violations.
 ///
 /// **Decision 32 grounds the parameterisation.** `C: CodeStore` and
@@ -444,6 +470,7 @@ impl SymbolTable<(), ()> {
             exports: Vec::new(),
             platforms: Vec::new(),
             submodules: Vec::new(),
+            schema_literal: None,
             schema_version: 0,
             linker: None,
         }
@@ -482,6 +509,7 @@ impl SymbolTable<(), ()> {
             exports: self.exports,
             platforms: self.platforms,
             submodules: self.submodules,
+            schema_literal: self.schema_literal,
             schema_version: self.schema_version,
             linker: None,
         }
@@ -565,6 +593,7 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
             exports: Vec::new(),
             platforms: Vec::new(),
             submodules: Vec::new(),
+            schema_literal: None,
             schema_version: 0,
             linker: None,
         }

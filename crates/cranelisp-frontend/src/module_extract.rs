@@ -34,14 +34,14 @@ use cranelisp_types::{ErrorLocation,
 /// `extract_module_declarations`" rather than a domain concept.
 ///
 /// Per the crate-root preamble §"Re-export policy", this struct is the
-/// second public DTO published by the frontend (the first being
-/// [`ExpansionError`](crate::ExpansionError)). It lives at
+/// frontend's one public DTO (post-S76 W-Macro: `ExpansionError` retired
+/// with the `expand` skeleton). It lives at
 /// `cranelisp_frontend::module_extract::ExtractedDeclarations` (this
 /// module-qualified path is the home-module canonical) and is also
 /// re-exported at the crate root as `cranelisp_frontend::ExtractedDeclarations`
 /// for caller ergonomics — the integration-layer cluster orchestrator
-/// imports it from the root. Single-import readability is the same
-/// argument as `ResolutionGap` per Principle 15's narrowness rule.
+/// imports it from the root. Single-import readability is the
+/// Principle 15 narrowness argument.
 ///
 /// Fed directly into `SymbolTable::write_structural_decls` per Decision 33
 /// — single source of truth for structural decls on `SymbolTable`, no

@@ -329,6 +329,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 span: body_span,
             };
 
+            // 0249-a: constructors are GOT-slotted callable values, exactly
+            // like user fns (program.rs user-fn slotting). Without a slot, a
+            // constructor reached *as a value* (`(map Some xs)`, `(let [f None]
+            // f)`) has no address to load — BC §3's minimal-JIT-setup boundary
+            // assumes the slot exists on the entry before int enumerates the
+            // name into the compile batch (0249-b). Allocated at registration
+            // (Decision 0048 primitives-got-slotting precedent). Nullary
+            // constructors are slotted too — addressability does not depend on
+            // arity. The slot is allocated before the entry is built; the
+            // `&mut` guard is dropped before the later `.insert` re-acquires it.
+            let slot = self.current_symbol_table_mut(state).allocate_got_slot();
             let mut builder = ModuleEntry::def(
                 ctor_scheme,
                 DefKind::Constructor {
@@ -340,7 +351,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             )
             .visibility(visibility)
             .param_names(param_names)
-            .ast(ast);
+            .ast(ast)
+            .got_slot(slot);
             if let Some(doc) = ctor.docstring.clone() {
                 builder = builder.docstring(doc);
             }
@@ -885,6 +897,47 @@ mod tests {
                 panic!("{name} should be Def(Constructor)");
             }
         }
+    }
+
+    // spec: 04-adt §4.2 — constructors are GOT-slotted callable values (0249-a)
+    //
+    // Every synthesised `DefKind::Constructor` entry must carry a `got_slot`,
+    // exactly like a user fn — a constructor reached as a value (`(map Some
+    // xs)`, `(let [f None] f)`) needs an address to load. Distinct
+    // constructors get distinct slots (monotonic allocator, no aliasing). The
+    // +Neg facet: the nullary `None` is slotted too — addressability does not
+    // depend on arity, so a naive "only data ctors need slots" implementation
+    // (which would leave `None` at `None`) is rejected.
+    #[test]
+    fn constructors_get_got_slots() {
+        let mut tc = TestFixture::new();
+        register_option(&mut tc);
+
+        let table = tc.symbol_table();
+        let slot_of = |name: &str| -> Option<usize> {
+            match table.get(name) {
+                Some(ModuleEntry::Def { got_slot, kind, .. }) => {
+                    assert!(
+                        matches!(kind.as_ref(), DefKind::Constructor { .. }),
+                        "{name} should be a Constructor entry"
+                    );
+                    *got_slot
+                }
+                _ => panic!("{name} should be a Def(Constructor) entry"),
+            }
+        };
+
+        // Data constructor `Some` is slotted.
+        let some_slot = slot_of("Some").expect("Some must have a GOT slot");
+        // +Neg: the nullary constructor `None` is slotted too — not left at
+        // `None` by an arity-gated implementation.
+        let none_slot = slot_of("None").expect("nullary None must have a GOT slot");
+
+        // Distinct constructors get distinct slots (monotonic allocator).
+        assert_ne!(
+            some_slot, none_slot,
+            "distinct constructors must not alias the same GOT slot"
+        );
     }
 
     // spec: 03-types §3.3 — polymorphic field type resolves to type variable

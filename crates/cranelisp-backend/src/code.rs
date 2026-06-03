@@ -137,7 +137,7 @@ mod tests {
     // so the non-Send-Sync Arc IS the thing under test, not an oversight.
     #[allow(clippy::arc_with_non_send_sync)]
     fn code_enum_jit_variant_carries_arc_jit() {
-        let jit = Arc::new(Jit::new().expect("Jit::new must succeed for test"));
+        let jit = Arc::new(Jit::new_with_symbols(&[]).expect("Jit::new must succeed for test"));
         assert_eq!(Arc::strong_count(&jit), 1, "fresh Arc has refcount 1");
 
         let code1 = Code::jit(Arc::clone(&jit));

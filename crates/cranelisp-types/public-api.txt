@@ -1142,6 +1142,7 @@ pub cranelisp_types::SymbolTable::next_got_slot: usize
 pub cranelisp_types::SymbolTable::next_seq: u64
 pub cranelisp_types::SymbolTable::path: cranelisp_types::ModuleFullPath
 pub cranelisp_types::SymbolTable::platforms: alloc::vec::Vec<cranelisp_types::PlatformSpec>
+pub cranelisp_types::SymbolTable::schema_literal: core::option::Option<alloc::string::String>
 pub cranelisp_types::SymbolTable::schema_version: u32
 pub cranelisp_types::SymbolTable::submodules: alloc::vec::Vec<cranelisp_types::ModDecl>
 pub cranelisp_types::SymbolTable::symbols: std::collections::hash::map::HashMap<cranelisp_types::Symbol, cranelisp_types::ModuleEntry<C>>

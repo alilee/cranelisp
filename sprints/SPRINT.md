@@ -1,6 +1,6 @@
 # Sprint 76: `int` alignment — wash the facade-arc changes through the binary, enable the full e2e suite
 
-**Status**: PHASE 3 DESIGN
+**Status**: PHASE 5 LANGUAGE (ACTIVE)
 
 **Goal**: Wash the cumulative facade-arc changes all the way through `int` — bring the seven streamlined, facade-retired crates into the `cranelisp` binary (wide latitude to delete code, especially int's parallel JIT pipeline which collapses into the single `compile_to_module` entry), and integrate every change that gates e2e coverage so the **full active e2e suite is enabled and passing across all modes (run / REPL / `--link` / platform)** — not merely a compile-green workspace. Drive int's unit-test coverage from what the e2e suite surfaces. Only user-facing docs + demos defer to next sprint.
 
@@ -76,7 +76,7 @@ The active e2e suite (34 files) has been frozen since S69 because the binary is 
 - **int host-wiring residuals** 0242 / 0098 / 0187 — assess subsumption during W-Absorb; resolve what the cascade doesn't subsume. (0214 folds into W-Retire.)
 - **Conformance triad** 0224–0228 (/qa) — platform-fixture conformance; lands with the platform host-wiring wave so `spec_platforms.rs` is fully covered.
 - **0175** (/arch `expand` invocation gap, S70) — **IN SCOPE as a robust resolution; see W-Macro below.** (User decision 2026-06-02, after interrogating the `expand` factoring: the `cranelisp-marshal` bridge crate is rejected; the gap is resolved by re-architecting, not bridging.)
-- **Re-enable the s68 sentinels** (0221/0191) — the 2 `#[ignore]`'d `s68_primitives_uniform.rs` cases gated on int being green; un-ignore once W-Green lands.
+- **s68 sentinels** (0221/0191) — DEFERRED (user decision 2026-06-03). The 2 `#[ignore]`'d `s68_primitives_uniform.rs` cases are blocked by the **backend `Code::Primitive` deletion** (deferred S73/S75 to a future backend sprint), NOT by int-green as first assumed. That backend cleanup is NOT pulled into S76 (avoids scope creep into backend internals; backend's S76 work stays `Jit::new` + `INTRINSICS_TABLE` + the collapse target). The sentinels stay ignored; the rest of the active suite still fully enables.
 
 ### Explicitly deferred to next sprint
 
@@ -87,7 +87,7 @@ The active e2e suite (34 files) has been frozen since S69 because the binary is 
 
 ### Legacy harvest — DEFERRED to S77 (user decision 2026-06-02)
 
-42 quarantined files under `tests/legacy/` (28 harvest FIXMEs 0116–0149) await porting into the active e2e suite. This is coverage *expansion* from the prototype/pre-migration era, distinct from *integrating* the facade-arc changes. **Deferred to a dedicated /qa harvest sprint (S77)** once S76's integration is settled and green. S76's e2e completeness target is the **34 active files**, all modes, plus the re-enabled s68 sentinels.
+42 quarantined files under `tests/legacy/` (28 harvest FIXMEs 0116–0149) await porting into the active e2e suite. This is coverage *expansion* from the prototype/pre-migration era, distinct from *integrating* the facade-arc changes. **Deferred to a dedicated /qa harvest sprint (S77)** once S76's integration is settled and green. S76's e2e completeness target is the **34 active files**, all modes (the 2 s68 sentinels stay `#[ignore]`'d — blocked by the deferred backend `Code::Primitive` deletion, per the 2026-06-03 decision).
 
 ## FIXME debt
 
@@ -104,7 +104,7 @@ Open FIXMEs targeting skills likely in scope (scanned `design/arch/fixmes/` 2026
 | 0122 | /backend | open | `--link` GOT-alignment defect. **In scope** (W-Integrate) — gates `link.rs`. |
 | 0175 | /arch | open | `expand` invocation gap. **In scope (W-Macro)** — robust re-architecture: frontend::expand private, typecheck recognizes + calls back to int to execute, typecheck owns further processing. /arch design pass → user review → /dev (typecheck+int+frontend). |
 | 0224–0228 | /qa | open | Conformance-triad. **In scope** (W-Integrate) — with platform host-wiring. |
-| 0221, 0191 | /qa, /backend | open | s68 sentinel re-enablement once int green. **In scope** (W-Green tail). |
+| 0221, 0191 | /qa, /backend | open | s68 sentinels — **DEFERRED (not S76)**. Blocked by backend `Code::Primitive` deletion (deferred S73/S75), not int-green. Stay `#[ignore]`'d; future backend sprint. |
 | 0116–0149 | /qa | open | Legacy harvest (28 FIXMEs). **Decision point** — see scope question. |
 
 (Full carry list — S66 carries, harvest 0116–0149 — deferred; not re-enumerated.)
@@ -387,7 +387,54 @@ The W-Macro macro-availability foundation is **settled**. `/arch` has re-grounde
 
 ## Waves (Phase 4)
 
-{Pending — populated after Phase 3. Anticipated shape: QA-first e2e+unit stage, then per-crate D/D/R: dominant `/design`+`/dev`+`/review` on src/ (int), with `/dev (typecheck)` + `/dev (backend)`/`/dev (intrinsics)` enablement waves if the cross-crate items are pulled in.}
+Organized 2026-06-03 from the seven Phase-3 design plans. **Stage 1 (QA-first) is substantially done** — the failing-not-ignored skeletons (`tests/s76_macro_availability.rs` M1–M10 + PLAN.md inventory) are authored. Stage 2 = per-crate D/D/R, sequenced by the dependency chain below. Each `/dev` wave is followed by a narrow `/review` (D/D/R).
+
+**Foundation — LANDED (by /arch, Phases 2–3, in `cranelisp-types`):** `resolve`/`resolve_macro_head`/`Resolved`/`ResolveError`, `MacroExpander`/`MacroInvokeError`, `got_data_symbol_name`, `SymbolTable.schema_literal`. Ready; the producer waves build on it.
+
+### Wave 1 — producer crates (parallel, one internal sequence)
+
+| Skill | Crate | Task | Depends on | Status |
+|---|---|---|---|---|
+| /dev | cranelisp-typecheck | resolve_* re-point onto types primitive; **0249-a** ctor got-slot; `check_type_expr` (0231); macro-entanglement cleanup | types foundation | **DONE** (332 pass/0 skip/0 warn; ResolveError→types; +check_type_expr; notes for int). /review at gate. |
+| /dev | cranelisp-frontend | delete `expand.rs` whole (also clears the `schema_literal` test-literal breakage); `parse_type_expr` (0230) | types foundation | **DONE** (253 pass/0 fail; expand.rs git-rm'd; +parse_type_expr; ResolutionGap re-export dropped; public-api reduced; 4 doc links fixed). /review at gate. |
+| /dev | cranelisp-intrinsics | `intrinsics_table()` catalog (0250-blessed spelling) | types foundation | **DONE** (80 pass; `intrinsics_table()`+`IntrinsicEntry`, 15 entries relocated verbatim; ABI guardrail held; backend-reader switch note provided). /review at gate. |
+| /dev | cranelisp-backend | `Jit::new(symbol_tables)` + `INTRINSICS_TABLE` consumption; `.meta.json` schema (0232) | **intrinsics (1a)** → backend (1b) | **DONE** (174 pass; `Jit::new(symbol_tables)`; `IntrinsicSymbol`/`intrinsic_symbols` deleted; old construct→pub(crate), `new()` removed, 25 test sites migrated; CACHE_SCHEMA_VERSION 1→2 for 0232; 0122 confirmed already-fixed → Wave-3 re-test; filed FIXME 0252 →/design doc-fix). /review at gate. |
+
+*Internal sequence: intrinsics (1a) before backend (1b) — `Jit::new` reads `intrinsics_table()`. typecheck + frontend fully parallel.*
+
+### Wave 2 — int (the big consumer; W-Green milestone)
+
+| Skill | Crate | Task | Depends on | Status |
+|---|---|---|---|---|
+| /dev | src/ (int) | **W-Absorb** (172-error cascade) + **W-Collapse** (worker realign + `pipeline.rs` expr-path delete + `Jit::new` consumption — ONE inseparable wave, Principle 11) + **W-Macro** (`MacroExpander` impl, delete `SymbolTableMacroResolver`/`block_for_macro_codegen`, Pass-1 loop, `resolve_macro_head`) + **W-Enablement** (`derive_codegen_batch` **0249-b**, `into_concrete` mount, `INTRINSICS_TABLE` cache-hit, `generate_startup_object` relocation) | ALL of Wave 1 (0249-b ⇐ 0249-a; collapse ⇐ Jit::new) | pending |
+
+*Exit = **W-Green**: `cargo check --workspace` clean; `cargo nextest run` runnable; first green workspace since S69.*
+
+### Wave 3 — W-Integrate (after int green; gates platform + link e2e)
+
+| Skill | Crate | Task | Depends on | Status |
+|---|---|---|---|---|
+| /dev | src/ (int) | platform host-wiring: 0229 host ADT marshal + `validate_schema` wiring; **0233** platform-as-module + `parse_type_sig` removal | W-Green; frontend `parse_type_expr` + typecheck `check_type_expr` (Wave 1) | pending |
+| /dev | cranelisp-platform | host-wiring completeness (near-zero — delete null callbacks after int wires real ones) | int 0229 | pending |
+| /dev | src/ (repl surface) | `/abi` emitter (0234) | int 0233 | pending |
+| /dev | cranelisp-backend | 0122 `--link` GOT — **re-test only** (already fixed in source); fix only if re-test fails | W-Green | pending |
+| /qa | tests/ | round-trip DLL integration (0235); conformance triad (0224–0228) | int 0229/0233 | pending |
+
+### Wave 4 — W-e2e→unit (the primary directive)
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /qa | tests/ | run the full active suite (all modes); invert the 3 spec-contradicting `spec_09_macros.rs` tests; maintain `tests/plan/ledger.md` | pending |
+| /dev | (per failure's crate) | for EACH e2e failure: fix or tracked-defect+repro, AND the explicit int-unit-coverage-sufficiency assessment → new unit test if the gap is real | pending |
+
+### Wave 5 — W-Retire capstone (late phase)
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /design + /arch | src/ (int) | retire `facades/int.md` → `src/` rustdoc + BC §6; drop int from `facade_compliance.rs`; 8th & final facade data point | pending |
+| /review | src/ (int) | final change-set review | pending |
+
+**Wave gate (each wave→next):** scan `design/arch/fixmes/` for `target: /skill-in-wave` + `status: open`; resolve or explicitly defer before advancing. **Status set to PHASE 5 LANGUAGE (ACTIVE) on user approval of this wave plan.**
 
 ## Notes
 
@@ -403,6 +450,9 @@ The W-Macro macro-availability foundation is **settled**. `/arch` has re-grounde
 - 2026-06-03: **Resolution-helper placement folded in (user decision).** Symbol-table resolution/search *primitives* (resolve a name from a module following imports/reexports/aliases/visibility + Principle-17 chain-following) move onto `SymbolTable`/`SymbolTables` in `cranelisp-types` — extending the `ensure_module_exists` + `got_data_symbol_name` precedent (Principle 15 behavior-with-type; Principle 7 single-source). The *primitive* is types-owned (pure over `symbol_tables` + `module_aliases`, generic `<C,L>`, no `CheckState`); the *view-selection* stays with the caller (int passes committed tables for Pass-1 macro recognition; typecheck passes its staging+live `SymbolTableAccess` union for Pass-2/3 resolution). Effect: macro recognition leaves typecheck's surface entirely (it's a `SymbolTables` method); int does Pass-1 recognition with zero int→typecheck dependency; the current int-side `SymbolTableMacroResolver` resolution logic + typecheck's `resolve_*` family both consolidate onto the types primitives (retiring two scattered copies). No DAG impact.
 - 2026-06-03: **Advanced to PHASE 3 DESIGN.** /arch re-grounds the W-Macro design docs WITH the resolution-helper fold-in (authors the `SymbolTables` resolution-primitive signatures in `cranelisp-types`; cascades BC §7 types / §2 typecheck / §6 int). /spec runs **in parallel** (conflict-free — disjoint file trees; spec semantics already locked in `macro-availability-model.md §5`; the resolution-helper placement is implementation-internal and language-invisible): commits §9.3.4/§5.13.2/§9.12/§8.5.1+§9.3.6/§9.14 per the finalized §5 text and resolves+deletes FIXMEs 0005/0006/0007. /arch does NOT touch those FIXMEs this pass (left for /spec). Per-crate /design + /qa sprint-wide failing-test plan follow.
 - 2026-06-03: **Parallel /arch + /spec pass COMPLETE (conflict-free, as planned).** /spec committed the language change: `09-macros.md` §9.3.4/§9.2.5/new-§9.3.6/§9.12/§9.14, `05-definitions.md` §5.13.2, `08-modules.md` §8.5.4; traceability `[R4 S76 — tested-by /qa S76]`; **FIXMEs 0005/0006/0007 resolved + deleted.** /arch authored `cranelisp-types/src/resolve.rs` (`resolve` + `resolve_macro_head` + `Resolved<C>` + `ResolveError` relocated from typecheck; `View::single`/`union` = primitive-vs-view line; 7 tests green; public-api +~40 additive, no DAG change); cascaded BC §7/§2/§6 + interfaces + both macro docs + facades/int.md (LIVE) + exec-flow-compilation.mmd. **Follow-ups:** `exec-flow-compilation.svg` cosmetic re-render pending (env puppeteer error; mmd canonical); `From<ResolveError> for CheckError` stays typecheck-side (noted for /dev). Macro design + spec now fully settled; remaining Phase 3 = per-crate /design (int, typecheck, backend, intrinsics, platform) + /qa sprint-wide failing-test plan. Working tree carries accumulated uncommitted design work (no git commit pending user request).
+- 2026-06-03: **Phase 3 design fan-out COMPLETE (7 parallel agents, conflict-free).** Plans authored: `design/int/s76-implementation-plan.md` (5 workstreams, deletion inventory, Principle-11 inseparable W-Collapse wave, no open /arch seams), `design/typecheck/s76-resolution-and-enablement.md` (resolve_* re-point onto types primitive; check_forms unchanged; 0249-a one-line; 0231 `check_type_expr` thin wrapper), `design/backend/jit-setup-boundary.md` (`Jit::new(symbol_tables)`; INTRINSICS_TABLE consumption; **0122 ALREADY FIXED in source — re-test only**; W-Macro = backend no-op), `design/intrinsics/intrinsics-table.md` (flat catalog; recommends `pub fn intrinsics_table()` over `pub static` to avoid unsafe), `design/frontend/s76-syntactic-only.md` (delete `expand.rs` whole; quasiquote-only; 0230 `parse_type_expr`), `design/platform/host-wiring-s76.md` (**S71 boundary already landed+green — platform's own delta near-zero**; cross-crate seam map). /qa: `tests/plan/PLAN.md` S76 section + `tests/s76_macro_availability.rs` (10 failing-not-ignored skeletons M1–M10). **FIXMEs resolved+deleted:** 0245 (typecheck), 0247 (qa). **New /arch seams filed:** 0246 (`check_type_expr` surface naming), 0250 (schema_literal field on SymbolTable — backend), 0251 (schema-literal exposure mechanism — platform; renumbered from a 0250 collision by /sprint). **Flagged-not-filed for /arch:** intrinsics `pub fn` vs `pub static` spelling; frontend `parse_type_expr` source_id drop + `ResolutionGap` re-export removal; Principle 15 not in triad's auto-imported 1–13 set. **QA findings:** (1) **CRITICAL** — 3 existing `tests/spec_09_macros.rs` tests now contradict the locked spec (`macro_used_before_defmacro_form_is_hoisted` L483 + `macro_body_drives_three_level_call_graph` L498 must invert; `batch_macro_uses_earlier_macro` L260 stays green) → /qa inverts in Phase 5; (2) **G1/G2 scope tension** — the 2 s68 sentinels (0221/0191) name the *backend Code::Primitive deletion* (deferred S73/S75) as their blocker, not int-green → needs /sprint+user scope decision; (3) W-e2e→unit ledger framing in `tests/plan/ledger.md`. **Phase 3 exit pending:** a short /arch seam-settle pass (0246/0250/0251 + intrinsics spelling + frontend + P15 import) to close the interface set, then Phase 4 wave-org.
+
+- 2026-06-03: **WAVE 1 COMPLETE — gate /review PASS; sound to build Wave 2 on.** Producer crates all green (sequential /dev to respect the no-concurrent-cargo rule): typecheck 332, frontend 253, intrinsics 80, backend 174 — 0 warnings introduced, public-API deltas all sanctioned, deletions clean, `src/`(int) intentionally still red & untouched. Foundation (types resolve-primitive/MacroExpander/schema_literal/got_data_symbol_name) + Wave-1 producers (`check_type_expr`, 0249-a, `parse_type_expr`, `intrinsics_table()`, `Jit::new(symbol_tables)`) are the substrate Wave 2 (int) consumes. **/review:** PASS, 0 Blocker/0 Important; 2 Suggestions (FIXME 0252 backend-design-doc PlatformEffect-shape-stale; FIXME 0253 backend-design-doc `new()`-drop reconciliation — both →/design, no code owed) + a minor `cranelisp-types/error.rs` ResolutionGap-rustdoc staleness for /arch to sweep. **FIXME collision resolved:** backend-filed 0246→0252 (0246 was the in-session check_type_expr, resolved+deleted). **Wave-1→2 GATE reached — held per user direction ("report back before Wave 2").** Wave 2 = the heavy int wave (172-error cascade + inseparable W-Collapse + W-Macro orchestration + W-Enablement), the central/hardest implementation of the arc.
 
 ## Outcome (Phase 7)
 

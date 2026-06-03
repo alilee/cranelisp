@@ -50,6 +50,23 @@
 //! is the single source of truth for callable addresses; [`Code`] carries
 //! lifecycle ownership only (no `ptr` field).
 //!
+//! # The JIT construct boundary — `Jit::new(symbol_tables)`
+//!
+//! The JIT-mode caller (int) constructs a [`jit::Jit`] via the single
+//! construct boundary `Jit::new(symbol_tables)` (BC §3 "Minimal JIT-setup
+//! boundary"). The caller assembles **nothing**: the constructor derives the
+//! entire JIT symbol set from the same `&SymbolTables<C, L>` that feeds codegen
+//! — (1) the intrinsic Import targets from
+//! `cranelisp_intrinsics::intrinsics_table()`, (2) one `__cranelisp_got_{M}` →
+//! `got().base_ptr()` data symbol per module (via the types-crate
+//! `got_data_symbol_name`), and (3) every `DefKind::PlatformEffect` jit-name →
+//! GOT-slot ptr (walking defs + `Import` edges). The body is `<C, L>`-blind
+//! (reads only `got`/`kind`/`got_slot`), preserving the Decision 0048
+//! primitives dep-ban. After construction the caller hands off
+//! `jit.jit_module()` to [`compile_to_module`] and holds `Arc<Jit>` for
+//! lifecycle/reclaim (Decision 31). The legacy hand-assembly constructors
+//! (`new_with_symbols`/`new_with_isa`) are `pub(crate)` — internal/test only.
+//!
 //! # Persistence
 //!
 //! The [`cache`] submodule is backend's persistence half — an internal
@@ -1332,7 +1349,7 @@ mod tests {
     ///
     /// With no GOT slot, intra-module calls compile as direct FuncId calls
     /// (no `__cranelisp_got_{M}` reference is emitted), so JIT-execute test
-    /// helpers can run against a bare `Jit::new()` without registering the
+    /// helpers can run against a bare `Jit::new_with_symbols(&[])` without registering the
     /// GOT base symbol. Tests that specifically exercise the S75 W2 GOT-slot
     /// direct-write (`make_def_entry_slot`) assign an explicit slot and read
     /// the pointer back via `table.got.load_slot(slot)`.
@@ -1419,7 +1436,7 @@ mod tests {
             st.insert(name.clone(), make_def_entry(defn));
         }
 
-        let mut jit = Jit::new()?;
+        let mut jit = Jit::new_with_symbols(&[])?;
         let aliases = empty_aliases();
         let _artifacts = compile_to_module(
             module.clone(),
@@ -1553,7 +1570,7 @@ mod tests {
             }
         }
 
-        let mut jit = Jit::new()?;
+        let mut jit = Jit::new_with_symbols(&[])?;
         let aliases = empty_aliases();
         let _artifacts = compile_to_module(
             module.clone(),
@@ -1700,7 +1717,7 @@ mod tests {
         // because there's no module entry (and no names anyway).
         tables.insert(ModuleFullPath::from("user"), SymbolTable::new(ModuleFullPath::from("user")));
 
-        let mut jit = Jit::new().unwrap();
+        let mut jit = Jit::new_with_symbols(&[]).unwrap();
         let aliases = empty_aliases();
         let result = compile_to_module(
             ModuleFullPath::from("user"),
@@ -3623,7 +3640,7 @@ mod tests {
         enrich_defn_from_side_maps(&mut enriched_defn, &check.method_resolutions, &check.expr_types);
 
         // Compile with direct calls (no GOT).
-        let mut jit = Jit::new().unwrap();
+        let mut jit = Jit::new_with_symbols(&[]).unwrap();
         jit.declare_intrinsics().unwrap();
         let func_ids = jit.declare_functions(&[&enriched_defn]).unwrap();
 
@@ -3674,7 +3691,7 @@ mod tests {
             st.insert(val_a.name.clone(), make_def_entry(val_a.clone()));
             tables.insert(mod_a.clone(), st);
         }
-        let mut jit_a = Jit::new().unwrap();
+        let mut jit_a = Jit::new_with_symbols(&[]).unwrap();
         let aliases = empty_aliases();
         let _artifacts_a = compile_to_module(
             mod_a.clone(),
@@ -3709,7 +3726,7 @@ mod tests {
             tables.insert(mod_b.clone(), st);
         }
 
-        let mut jit_b = Jit::new().unwrap();
+        let mut jit_b = Jit::new_with_symbols(&[]).unwrap();
         let _artifacts_b = compile_to_module(
             mod_b.clone(),
             std::slice::from_ref(&val_b.name),
@@ -3755,7 +3772,7 @@ mod tests {
             tables.insert(module.clone(), st);
         }
 
-        let mut jit = Jit::new().unwrap();
+        let mut jit = Jit::new_with_symbols(&[]).unwrap();
         let aliases = empty_aliases();
         let _artifacts = compile_to_module(
             module.clone(),
@@ -4024,7 +4041,7 @@ mod tests {
             tables.insert(module.clone(), st);
         }
 
-        let mut jit = Jit::new().unwrap();
+        let mut jit = Jit::new_with_symbols(&[]).unwrap();
         let aliases = empty_aliases();
         let artifacts = compile_to_module(
             module.clone(),
@@ -4562,7 +4579,7 @@ mod tests {
             tables.insert(module.clone(), st);
         }
 
-        let mut jit = Jit::new().unwrap();
+        let mut jit = Jit::new_with_symbols(&[]).unwrap();
         let aliases = empty_aliases();
         let artifacts = compile_to_module(
             module.clone(),
@@ -4634,7 +4651,7 @@ mod tests {
             tables.insert(module.clone(), st);
         }
 
-        let mut jit = Jit::new().unwrap();
+        let mut jit = Jit::new_with_symbols(&[]).unwrap();
         let aliases = empty_aliases();
         let result = compile_to_module(
             module,
@@ -4735,7 +4752,7 @@ mod tests {
             tables.insert(module.clone(), st);
         }
 
-        let mut jit = Jit::new().unwrap();
+        let mut jit = Jit::new_with_symbols(&[]).unwrap();
         let aliases = empty_aliases();
         let artifacts = compile_to_module(
             module.clone(),
@@ -4954,7 +4971,7 @@ mod tests {
             let defn = make_int_defn("helper", 7);
             let tables = table_with_def_and_slot(&module, defn.clone(), 0);
 
-            let mut jit = Jit::new().unwrap();
+            let mut jit = Jit::new_with_symbols(&[]).unwrap();
             let aliases = empty_aliases();
             let _artifacts = compile_to_module(
                 module.clone(),
@@ -4992,7 +5009,7 @@ mod tests {
             let defn = make_int_defn("f", 1);
             let tables = table_with_def_and_slot(&module, defn.clone(), 0);
 
-            let mut jit = Jit::new().unwrap();
+            let mut jit = Jit::new_with_symbols(&[]).unwrap();
             let aliases = empty_aliases();
             let _result = compile_to_module(
                 module.clone(),
@@ -5110,7 +5127,7 @@ mod tests {
         let defn = make_int_defn("answer", 42);
         let tables = table_with_def_and_slot(&module, defn.clone(), 0);
 
-        let mut jit = Jit::new().unwrap();
+        let mut jit = Jit::new_with_symbols(&[]).unwrap();
         let aliases = empty_aliases();
         let _result = compile_to_module(
             module.clone(),
@@ -5315,7 +5332,7 @@ mod tests {
         );
         tables.insert(user_path.clone(), user_st);
 
-        let mut jit = Jit::new().unwrap();
+        let mut jit = Jit::new_with_symbols(&[]).unwrap();
         let aliases = empty_aliases();
         let result = compile_to_module(
             user_path.clone(),

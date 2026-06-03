@@ -115,10 +115,40 @@
 //!
 //! No re-exports of dependency-crate items (Principle 15).
 //!
+//! ## The published Import-catalog (`intrinsics_table()`, BC §4b invariant 11)
+//!
+//! [`intrinsics_table`] returns the published flat `name → (signature, ptr)`
+//! catalog of this crate's 15 backend-emitted-call targets — the
+//! Decision-0048-for-intrinsics self-publication (the `PRIMITIVES_TABLE`
+//! precedent applied to intrinsics). Each [`IntrinsicEntry`] carries the
+//! emitted-call ABI `name`, the in-crate fn `ptr`, and the `(param_count,
+//! has_return)` scalar signature — NO `cranelisp-types` type is named
+//! (invariant 10; the value-passing C-ABI is uniformly `i64`-in /
+//! `i64`-or-void-out, so arity + return-ness fully determine the Cranelift
+//! signature).
+//!
+//! **Flat catalog, NOT a mounted GOT-module** (contrast
+//! `cranelisp_primitives::PRIMITIVES_TABLE`): intrinsics are Import-dispatched
+//! (invariant 9 / the §"`JITBuilder::symbol`" narrowing) — not a module, no
+//! `SymbolTable`, no GOT slots. The table is consumed at **three resolution
+//! points, never at codegen**: (a) JIT construct — `JITBuilder::symbol(name,
+//! ptr)`; (b) cache-hit load — `Linker::register_symbol(name, ptr)`; (c)
+//! `--link` — names resolved against this crate's archive. It is exposed as a
+//! `pub fn` returning a `'static` slice (not a `pub static`) to sidestep the
+//! `unsafe impl Sync` a raw-pointer-bearing static would need (S76 seam-3
+//! ruling; Principle 6 — no `unsafe` where a fn suffices).
+//!
+//! Relation to the **retired** `cranelisp_backend::jit::intrinsic_symbols()`:
+//! the data relocated here verbatim (same names/ptrs/arities/`is_runtime`);
+//! backend becomes a *reader* of this catalog, not the owner. The §"Symbol
+//! survival" / per-module `#[export_name]` ABI is UNCHANGED — the table
+//! republishes the established names, it does not redefine them.
+//!
 //! ## Module inventory
 //!
 //! | Module | Role |
 //! |---|---|
+//! | [`catalog`]          | Published Import-catalog — `intrinsics_table()` + `IntrinsicEntry` (BC §4b inv 11) |
 //! | [`alloc`]            | Heap allocator + RC header layout (Decision 11 base-pointer) |
 //! | [`drop`](mod@drop)   | `consume_*` drop-glue helpers (Sexp/SList/Vec/IO/closure) |
 //! | [`heap_string`]      | `HeapString` layout-ABI + alloc/read helpers (opaque to backend, Decision 12) |
@@ -130,6 +160,7 @@
 //! | [`vec_runtime`]      | Vec layout-ABI + COW ops + drop |
 
 pub mod alloc;
+pub mod catalog;
 pub mod drop;
 pub mod heap_string;
 pub mod io;
@@ -148,6 +179,7 @@ pub mod vec_runtime;
 // the per-module path is the canonical reference for everything else (S74 W1
 // narrowing — 17 unused root-duplicate re-exports removed; per-module surface
 // unchanged).
+pub use catalog::{intrinsics_table, IntrinsicEntry}; // backend Jit::new + int worker.rs cache-hit (S76 W1b readers)
 pub use io_observer::{register_io_observer, trace_anchor}; // src/io_trace.rs, src/got_trace.rs
 pub use alloc::{alloc_count, alloc_with_rc, bytes_current, dealloc_count, heap_alloc_payload}; // src/{session_v4,pipeline,platform}.rs
 pub use io::run_io_trampoline; // src/{session_v4,pipeline}.rs
