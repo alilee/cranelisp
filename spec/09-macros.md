@@ -138,7 +138,7 @@ Macro bodies are full Cranelisp expressions. They MAY use:
 - Pattern matching (`match`) on `Sexp` and `SList` values
 - Lambda functions (`fn`)
 - Local bindings (`let`)
-- Calls to any function or macro visible in the macro's defining module scope — this includes functions defined earlier in the same module and functions imported from other modules (see §8.10.3, §8.12.2)
+- Calls, *at expansion time*, to functions defined in **dependency modules** (modules typechecked before the macro's defining module) and to **macros** defined earlier in the same module. A macro body MUST NOT call a same-module non-macro function at expansion time — same-module `defn`/`def`/`const` definitions are processed after macro expansion (§9.12) and do not exist when the macro expands; such a helper MUST live in a dependency module (see §8.10.3, §8.12.2, §9.3.4)
 - Recursive calls (including via helper functions)
 - All `Sexp` and `SList` constructors
 
@@ -255,17 +255,25 @@ Implementations SHOULD limit the number of expansion iterations to prevent infin
 ;; Fixed point reached (no more macros)
 ```
 
-### 9.3.4 Module-Wide Availability
+### 9.3.4 Macro Availability and Definition Order [R4 S76 — tested-by /qa S76]
 
-Within a module (batch compilation), macros are available throughout the module regardless of definition position. The compiler extracts and compiles all `defmacro` forms in a pre-pass before processing other forms. This means a macro MAY be used before its `defmacro` form in source order, consistent with the two-pass model described in [Section 5.13.2](05-definitions.md#5132-repl-input-boundary-and-begin-clusters).
+**A macro MUST be defined before it is used, in source order.** Within a module (and within a REPL `(begin …)` cluster), a `defmacro` is available only to forms that *follow* it. A use of a name that appears textually before its `defmacro` is **not** a macro call: it is an ordinary reference that passes through to the AST builder, and fails name resolution there if the name is otherwise undefined. (This is the *defmacro-before-use* rule; it is the same rule whether the code runs in the REPL or in a batch file — see [Section 5.13.2](05-definitions.md#5132-repl-input-boundary-and-begin-clusters).)
 
-In the REPL, macros MUST be defined before use because forms are evaluated one at a time. A reference to an undefined macro in a REPL expression is an error — it passes through to the AST builder as a regular function call.
+**A macro's expansion may reference only:** (a) definitions in modules that are **dependencies** of the macro's defining module — i.e. modules typechecked before it (the compiler typechecks-and-compiles such a dependency just-in-time when an expansion first needs it; per §8.5.4 lazy loading); and (b) **macros**, including macros defined earlier in the same module (macros are the compile-time layer and depend only on prior modules). **A macro's expansion MUST NOT reference a same-module non-macro definition** (a `defn`, `def`, `const`, `deftype` constructor, or trait method defined in the same module). Such definitions are processed *after* macro expansion (see the three-pass model, §9.12) and do not exist when the macro expands; a macro that needs a helper MUST place that helper in a dependency module, or inline the logic into the macro body.
 
-A `defmacro` body MAY reference any function or macro defined in the same module.
+The module dependency graph is **acyclic**: a dependency typechecked before a module cannot in turn depend on that module.
+
+Forbidding same-module non-macro expansion-time references is what makes REPL session regeneration round-trip-safe. A session written back to a single batch file recompiles identically, because every expansion-time reference resolves against a dependency — not against a same-file definition that would not yet exist at expansion in the regenerated file. The rule is therefore uniform across the REPL and batch: there is no REPL-vs-batch macro-availability divergence.
 
 ### 9.3.5 Span Attribution
 
 The expanded S-expressions SHOULD carry the source location (span) of the original macro call site. This means that error messages resulting from expanded code point to where the macro was invoked, not where the macro was defined.
+
+### 9.3.6 Qualified Macro References [R4 S76 — tested-by /qa S76]
+
+Macros MAY be invoked through qualified names (`module/macro-name`) without an explicit `import`. A qualified macro reference is resolved during macro expansion (the compile-time pass): the compiler lazy-loads, typechecks, and compiles the referenced module just-in-time (per §8.5.4), then expands the macro. There is no syntactic distinction between a qualified macro call and a qualified function call; the distinction is made when the compiler resolves the entry.
+
+Qualified macro references are **not** constrained by source order within the referring module — they target a dependency module, which is always typechecked before the referring module (the dependency graph is acyclic, §9.3.4). This asymmetry is intentional: in-module macro availability follows the defmacro-before-use rule (§9.3.4), while cross-module macro references are available as soon as their defining module can be loaded and typechecked.
 
 ## 9.4 Quasiquote [Tested tests/macros.rs::macro_quasiquote_repl, tests/macros.rs::macro_quasiquote_batch]
 
@@ -873,24 +881,24 @@ Concatenates two strings. Available as a primitive and commonly used in macro he
 (str-concat "foo" "-def")   ; -> "foo-def"
 ```
 
-## 9.12 Bootstrapping Order [Tested tests/macros.rs::macro_uses_another_batch, tests/macros.rs::macro_persists_across_evals]
+## 9.12 Bootstrapping Order [R4 S76 — tested-by /qa S76]
 
-The prelude is loaded in two passes to resolve the circular dependency between type definitions and macro definitions:
+A module is compiled in **three passes**:
 
-1. **Pass 1 -- Type registration**: All `deftype` forms are scanned, parsed to AST, and registered in the type checker. This makes constructors available for use in macro bodies.
+1. **Pass 1 — Recursively typecheck `defmacro`s and expand all macro calls** (both unqualified and qualified `module/macro`). Dependency-module forms a macro clause needs are typechecked-and-compiled just-in-time during this pass. A macro generated by expansion (e.g. via `def` → `(begin (defn …) (defmacro …))`) is itself typechecked and compiled in this pass and becomes available to subsequent expansion; expansion runs to a fixed point. This is the compile-time layer.
 
-2. **Pass 2 -- Sequential compilation**: Forms are processed in source order:
-   - `deftype` forms are skipped (already registered in Pass 1).
-   - `defmacro` forms are compiled (with expansion of any earlier macros in the body), then registered in the macro environment. The compiled macro is immediately available for subsequent forms.
-   - All other forms are expanded through the macro environment, then built into AST, type-checked, and compiled.
+2. **Pass 2 — Register non-macro signatures** of the fully-expanded form set (including macro-generated definitions), so the module's `defn`/`deftype`/`deftrait`/`impl` definitions may forward-reference one another (§5.13.1).
+
+3. **Pass 3 — Type-check non-macro bodies** against the complete registered signature/impl set, and commit.
+
+Because Pass 1 runs before Passes 2–3, the module's own non-macro definitions do not yet exist when a macro expands — this is **why** a macro's expansion cannot reference a same-module non-macro definition (§9.3.4): the restriction is a structural consequence of the pass order, not a separate rule the compiler must police.
 
 This ordering ensures that:
-- Macro bodies can reference all type constructors (from Pass 1).
-- Macro bodies can call helper functions defined earlier in the file.
-- Macro bodies can use earlier macros (e.g., `slist` inside a macro body).
-- User code can use all macros defined above it.
+- Macro bodies may call functions defined in dependency modules, and may use macros defined earlier in the same module.
+- User code can use all macros defined above it (defmacro-before-use, §9.3.4).
+- A macro that needs a type constructor at expansion time references one from a dependency module (same-module constructors are Pass-2/3 entities and do not exist when the macro expands).
 
-A `defmacro` MAY appear at any point in a source file, interleaved with other definitions. It is available to all subsequent forms in the same file and to any module that imports it.
+A `defmacro` MAY appear at any point in a source file, interleaved with other definitions. It is available to the forms that **follow** it in the same file (§9.3.4) and to any module that imports it.
 
 ## 9.13 REPL Integration [Tested tests/macros.rs::macro_visible_in_symbol_table, tests/macros.rs::macro_persists_across_evals, tests/ring3_repl.rs::r3_defmacro_display_single_clause]
 
@@ -914,7 +922,7 @@ user> (double 21)
 The following features are NOT supported by the macro system:
 
 1. **No fully hygienic macros**: Auto-gensym (`x#`) prevents accidental capture in most cases, but macro-introduced names are still subject to capture for names that don't use the `#` suffix (see Section 9.8).
-2. **REPL ordering**: In the REPL, macros must be defined before use (forms are evaluated sequentially). In batch mode, macros are module-wide (see §9.3.4).
+2. **Define-before-use for macros (both REPL and batch)**: A macro must be defined before it is used in source order. A macro's expansion may reference dependency-module definitions and same-module macros, but not same-module non-macro definitions (see §9.3.4, §9.12).
 3. **No user-defined reader macros**: Reader-level extensions (`'`, `` ` ``, `~`, `~@`, `#(...)`) are hardcoded. User-extensible reader macros (`defreader`) are planned but not yet implemented.
 4. **No compile-time type access**: Macro bodies cannot inspect or query the types of their arguments. Macros operate on syntactic structure only.
 5. **Error span limitation**: Error messages from expanded code point to the macro call site, not to the specific location within the macro definition body that produced the problematic form.

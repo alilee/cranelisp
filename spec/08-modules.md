@@ -541,6 +541,8 @@ When a qualified name references a module that has not yet been loaded, the impl
 
 In a REPL environment, qualified name references SHOULD trigger lazy loading of the referenced module.
 
+A qualified name MAY resolve to any kind of symbol, including a **macro**. When the resolved symbol is a macro, the compiler invokes its expansion at the qualified call site, just as for a bare-name macro. Lazy loading applies equally: a qualified macro reference MAY trigger registration and typechecking-and-compilation of its defining module (see §9.3.6 for the macro-specific mechanics).
+
 ## 8.6 Name Resolution [Tested tests/ring2.rs::name_resolution_local_shadows_module, tests/ring2.rs::module_qualified_name_resolution]
 
 Name resolution converts source-level names into their definitions. An implementation MUST follow the resolution layers defined in this section.

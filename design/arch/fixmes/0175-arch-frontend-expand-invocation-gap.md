@@ -4,9 +4,30 @@ target: /arch
 filed_by: /dev (frontend)
 filed_at: 2026-05-13
 sprint_filed: 66
-refers_to: crates/cranelisp-frontend/src/lib.rs //! preamble + per-item rustdoc on pub fn expand + bounded-contexts.md §1 (facades/frontend.md retired S70 B3-C), design/frontend/wave-3a-build-form.md §5, design/arch/fixmes/0098-...migration.md Phase 2 step 2, crates/cranelisp-frontend/Cargo.toml, src/marshal.rs, src/expander.rs
-status: open
+refers_to: crates/cranelisp-frontend/src/lib.rs //! preamble + per-item rustdoc on pub fn expand + bounded-contexts.md §1 §2 §6, design/arch/macro-expansion-ownership.md, crates/cranelisp-types/src/macro_expander.rs, src/marshal.rs, src/expander.rs, design/arch/sequences/exec-flow-compilation.mmd
+status: resolution-designed-impl-pending
 ---
+
+# `cranelisp_frontend::expand` cannot perform macro invocation under current dep rules
+
+## RESOLUTION (S76 W-Macro, Phase 3 — user-arbitrated)
+
+**Direction decided; design formalized; implementation pending /dev waves.**
+
+The `cranelisp-marshal` bridge-crate option (a) is **REJECTED** (user-arbitrated, S76 Phase 2). None of (a)–(d) is adopted as written; instead the two conflated jobs are split along their natural dependency lines:
+
+- **Macro recognition** (walk + macro-vs-fn discrimination + clause matching) moves to **typecheck** — it already resolves every head symbol against the symbol-table view, and needs only `cranelisp-types`.
+- **Macro execution** (marshal + signal-protected JIT call) stays in **int**, behind the injected `cranelisp_types::MacroExpander` callback (trait object). int implements it over its existing `src/expander.rs` invocation core + `src/marshal.rs`.
+- **Frontend** keeps only quasiquote desugaring; `expand` + `ExpansionError` retire from the frontend boundary; the structural-walk skeleton in `crates/cranelisp-frontend/src/expand.rs` is deleted.
+- The expanded `Sexp` is re-classified by typecheck itself (structural-form re-entry resolution = option (a): typecheck re-classifies, NOT signal-back-to-int's-form-pipeline), preserving Decision 44 cluster-atomicity + Principle 17 module-locality.
+
+The callback boundary type (`MacroExpander` trait + `MacroInvokeError`) is authored in `crates/cranelisp-types/src/macro_expander.rs` this change-set; the full design (two-jobs analysis, DAG proof, structural-form re-entry resolution + rationale, interior-factoring choice for /dev) is `design/arch/macro-expansion-ownership.md`. Cascaded: BC §1/§2/§6, `facades/int.md`, `exec-flow-compilation.mmd`+`.svg`.
+
+**This FIXME stays open until /dev lands the implementation** (the `expand` retirement, the typecheck recognition + `MacroExpander` impl, the `src/expander.rs` walk deletion). When the code lands, /dev deletes this file. The architecture is settled; only the implementation remains.
+
+---
+
+## Original issue (preserved for context)
 
 # `cranelisp_frontend::expand` cannot perform macro invocation under current dep rules
 

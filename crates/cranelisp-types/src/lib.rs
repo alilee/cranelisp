@@ -90,6 +90,17 @@
 //! - **View** ([`View`]) — read-only newtype that wraps either two
 //!   `&SymbolTable` references (staging + live, cluster mode) or one
 //!   (committed mode) per Decision 44; typecheck reads through it.
+//! - **Resolution primitive** ([`resolve`], [`resolve_macro_head`],
+//!   [`Resolved`], [`ResolveError`]) — the one query that turns a name into a
+//!   resolved symbol-table entry, following imports/reexports, §8.6.6
+//!   module-path aliases, visibility, and Principle-17 chain-following. Pure
+//!   over `SymbolTables` + `ModuleAliases`; generic over `<C, L>`; no
+//!   inference state. The caller supplies the first-hop [`View`] (committed
+//!   for int's Pass-1 macro recognition; staging ∪ live for typecheck's
+//!   Pass-2/3 body resolution). Consolidates int's former
+//!   `SymbolTableMacroResolver` and typecheck's `resolve_*` family onto one
+//!   walk. See `bounded-contexts.md` §7 + `interfaces.md` §"Resolution
+//!   primitive".
 //! - **Span** ([`Span`]) — byte range in source text; carried on every
 //!   AST node and every error.
 //!
@@ -166,8 +177,10 @@ pub(crate) mod got;
 pub(crate) mod heap;
 pub(crate) mod pipeline;
 pub(crate) mod marshal;
+pub(crate) mod macro_expander;
 pub(crate) mod scheduling;
 pub(crate) mod view;
+pub(crate) mod resolve;
 
 // Tier-2 test-support symbol-table construction helpers. Feature-gated so
 // they are visible to OTHER crates' test suites (`cranelisp-typecheck`'s unit
@@ -210,7 +223,7 @@ pub use module::{
     ImplSexp, ImportNames, ImportSpec, LinkerStore, MacroClauseInfo, MacroParam, ModDecl,
     ModuleAliasEntry, ModuleAliases, ModuleEntry, OverloadVariant, PlatformSpec,
     StructuralDeclEntry, SymbolTable, SymbolTables, ensure_module_exists, for_each_in_module,
-    get_impls_for_type_chain, get_implementing_types_chain, install_module,
+    get_impls_for_type_chain, get_implementing_types_chain, got_data_symbol_name, install_module,
     lookup_trait_decl_chain, lookup_type_def_chain, resolve_module_by_name_chain,
     resolve_terminal_entry_and_home,
 };
@@ -229,6 +242,8 @@ pub use pipeline::{
     GOT_TABLE_SIZE, ModuleStrategy, NULLARY_TAG_THRESHOLD,
 };
 pub use view::View;
+pub use resolve::{Resolved, ResolveError, resolve, resolve_macro_head};
+pub use macro_expander::{MacroExpander, MacroInvokeError};
 pub use marshal::{
     TAG_SNIL, TAG_SCONS,
     TAG_SEXP_INT, TAG_SEXP_FLOAT, TAG_SEXP_BOOL, TAG_SEXP_STR,

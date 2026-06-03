@@ -1,0 +1,409 @@
+# Sprint 76: `int` alignment — wash the facade-arc changes through the binary, enable the full e2e suite
+
+**Status**: PHASE 3 DESIGN
+
+**Goal**: Wash the cumulative facade-arc changes all the way through `int` — bring the seven streamlined, facade-retired crates into the `cranelisp` binary (wide latitude to delete code, especially int's parallel JIT pipeline which collapses into the single `compile_to_module` entry), and integrate every change that gates e2e coverage so the **full active e2e suite is enabled and passing across all modes (run / REPL / `--link` / platform)** — not merely a compile-green workspace. Drive int's unit-test coverage from what the e2e suite surfaces. Only user-facing docs + demos defer to next sprint.
+
+This is the **final crate** of the facade-retirement arc. Seven crates are aligned and their facades retired (types S69 → frontend S70 → platform S71 → typecheck S72 → primitives/intrinsics S74 → backend S75). `int.md` is the last live facade; `int` (`src/`) is the last red crate.
+
+## Scope
+
+### Starting state (measured 2026-06-02)
+
+- **All 7 lib crates + exe-bundle: GREEN.** `cargo check` clean for types, frontend, typecheck, backend, platform, primitives, intrinsics, exe-bundle.
+- **`cranelisp` binary (src/ = int): 172 build errors.** This is the *entire* workspace-green gap. Every error is a streamlined-crate cascade or a parallel-pipeline reach-around. Error clusters:
+
+| Cluster | Count | Root |
+|---|---|---|
+| `ModuleEntry` variant collapse — `Macro`(15), `Reexport`(11), `Constructor`(9), `TraitDecl.decl`(5), `TraitImpl.target_type`(1) | ~41 | int still matches the pre-S70 enum; collapsed into `DefKind::Macro` / per-symbol `Import` / `DefKind::Constructor` / `CtorMeta` |
+| `DefKind` reshape — `SpecialForm`(11), `Primitive` fields `primitive_kind`/`jit_name`(3), `PrimitiveKind` import(3) | ~17 | retired variants/fields; primitive-ness now read from `kind: DefKind::Primitive` (D0048 A2 reversal) |
+| `Code` / `CompilationArtifacts` reshape — `Code::ptr`(9), `code_ptrs`/`artifacts`(2) | ~11 | GOT is the single source of callable addresses (D0041/D0035); no per-entry ptr |
+| typecheck surface — `register_imports`/`register_exports`(7), `Type::from_name`(5)/`io_inner_type`(2) | ~14 | import/export registration is now an int-side / frontend-StructuralDecl alias-installer concern, not typecheck |
+| `DefnVariant` / `Lambda` / `Expr` reshape — `param_annotations`(7), `name` on DefnVariant/Symbol(7) | ~14 | S70 narrows |
+| `ModDecl.visibility` / `is_private`(14) | ~14 | per spec §5.2 visibility field |
+| **backend privacy narrowing** — `ensure_module_exists`(8), `declare_functions`(2), `compile_defn`(2), `finalize_and_get_ptr`(2), `build_compile_context`(2), `declare_intrinsics`(2), `intrinsic_symbols`(1), `generate_startup_object`(1), `got_data_symbol_name`(3) | ~23 | **int reaches into backend internals via a parallel JIT path** — S75 demoted these to `pub(crate)` deliberately (final-state-not-int-deferential). These collapse into `compile_to_module`. |
+| misc type/arity mismatches | ~38 | downstream of the above |
+
+### What this sprint delivers
+
+1. **W-Absorb — int consumes the streamlined types.** Drive int to the streamlined `cranelisp-types` / frontend / typecheck / backend shapes (clusters 1–6 above). Facade-first migration discipline: push int to the target shapes, fix consumers; do not negotiate the streamlined crates back. ([[feedback_facade_first_migration]])
+
+2. **W-Collapse — delete int's parallel JIT pipeline.** The backend-privacy cluster (cluster 7) is int reaching around the single `compile_to_module<M>` entry that S75 affirmed. Collapse int's `pipeline.rs` JIT path into `compile_to_module`; delete the reach-arounds. This is the bulk of the "significant simplification" the user expects, and the "wide latitude to remove code" is explicitly authorised here. Backend privates STAY private — int produces GOT entries and calls the one entry, as primitives/backend designed. ([[feedback_callee_api_for_caller_only]])
+
+3. **W-Green — workspace builds.** `cargo check --workspace` clean; `cargo nextest run` runnable. First green workspace since S69.
+
+4. **W-e2e→unit — e2e findings drive int unit coverage (user's primary directive).** Once green, run the e2e suite. For **every** e2e failure, two outputs are mandatory:
+   - (a) a fix, OR a tracked defect FIXME + failing-not-ignored repro per [[feedback_repros_join_suite]];
+   - (b) **an explicit assessment of int unit-test coverage sufficiency** — "would a unit test inside `src/` have caught this before e2e?" If the answer is no, the gap is closed with a new unit test ([[feedback_unit_tests_with_dev]]). The assessment is recorded per failure, not just the fix.
+
+### W-Enablement — cross-crate, full green-at-runtime (user decision: INCLUDE ALL)
+
+Backend's S75 retired-into-rustdoc design **assumes** int/typecheck/intrinsics enablement that does not yet exist. Per user decision (2026-06-02) all of it lands this sprint, so the workspace is green **and** constructor-as-value / single-JIT-setup work end-to-end (not merely compile-green):
+
+- **FIXME 0249** — (a) `/dev (typecheck)` got-slots `DefKind::Constructor` entries in `register_constructors`; (b) `/dev (int)` `derive_codegen_batch` enumerates synthesised ctor `Def`s into the compile batch so their `Expr::ConstrADT` bodies are lowered and GOT slots populated. Without this, constructor-as-value (`(map Some xs)`) is structurally un-callable. Mirror of the Decision 0048 primitives got-slotting.
+- **`Jit::new(symbol_tables)` collapse** + **`intrinsics::INTRINSICS_TABLE`** (Decision-0048-for-intrinsics — published flat Import-catalog) — the single JIT-setup boundary BC §3 assumes. `/dev (backend)` + `/dev (intrinsics)` + `/dev (int)`.
+
+These sequence behind W-Absorb (int must consume the streamlined types before the JIT-setup collapse is meaningful) and feed W-e2e (constructor-as-value gets a real-pipeline e2e test per the roadmap's pending `(map Some xs)` item).
+
+### W-Retire — int facade, 8th & final data point (user decision: LATE-PHASE CAPSTONE)
+
+The arc's terminal move, positioned in the **late review phase** of this sprint once the workspace is green and int is aligned: fold `facades/int.md` into `src/` crate-root `//!` + per-item `///` rustdoc + `bounded-contexts.md §6`, drop int from `facade_compliance.rs` (source = definition, baseline + compiler = guard, rustdoc = rationale), complete the facade arc. Per [[feedback_retired_facade_drops_compliance]]. Runs after W-Green + W-e2e have settled the surface, so the rustdoc fold reflects the actually-landed shape rather than the target-stating facade text.
+
+### W-Macro — robust 0175 resolution (macro-invocation re-architecture)
+
+User decision (2026-06-02), after interrogating the `expand` factoring against source. The facade put macro **execution** inside `frontend::expand`, but execution needs the JIT + runtime + libc, which frontend is forbidden. Today the *real* executor is `src/expander.rs` (in int); `frontend::expand` is an inert skeleton returning `Gap`; the sequence diagram (`exec-flow-compilation.mmd:86,107`) wrongly depicts frontend doing the expansion. The robust fix re-architects rather than bridges (no `cranelisp-marshal`):
+
+- **Make `frontend::expand` private** (retire it from the public frontend boundary). Frontend keeps only syntactic work — parse, quasiquote desugar, `build_form`.
+- **typecheck owns walk + recognize.** It already iterates the cluster's forms and resolves every head symbol, so it already knows macro-vs-fn; let it own the within-form walk.
+- **typecheck calls back to int to execute a single macro invocation.** Mechanism: int (the orchestrator that already calls `check_forms`) supplies an execution callback (trait object / fn handle) into the typecheck call — so typecheck stays `cranelisp-types`-only (NO circular dep; int depends on typecheck, not the reverse). The callback runs the JIT'd clause under signal protection and marshals `Sexp`↔heap (int's `src/marshal.rs` + `src/expander.rs` invocation core).
+- **typecheck handles further processing of the expanded `Sexp`** — nested macro expansion to fixpoint, and re-classification of expansion results that produce structural forms (`def`→`(begin (defn…)(defmacro…))`, new defmacros/imports). The structural-form re-entry question is the key design call for /arch (typecheck re-classifies vs signals back to the orchestrator's form pipeline).
+
+This is a Phase-3 `/arch` design pass (formalize the target + resolve re-entry + author any callback boundary type in `cranelisp-types` + correct `exec-flow-compilation.mmd` + BC §1 + frontend/int facade text), feeding `/dev` waves in **typecheck + int + frontend**. /arch returns a proposal for **user review before any code commits** (per [[feedback_explicit_decision_review]]). Sequenced with W-Absorb (it touches the same frontend/int/typecheck boundary the cascade realigns).
+
+**GATING DISCOVERY (2026-06-02, user-driven).** The mechanism design (first /arch pass) was found to rest on an unresolved foundation. The user pressure-tested it and surfaced:
+1. `check_forms` takes already-built `Vec<ParsedEntry>` (post-expansion); typecheck cannot `build_form` (frontend is dev-only) — so the expanded result must be built via int.
+2. The two-pass cluster-atomic discipline (Decision 44) means typecheck iterates **all** cluster forms (Pass 1 sigs → Pass 2 bodies) — so recognition belongs in that iteration, not an int pre-pass.
+3. **The foundational tension:** macros must be **compiled mid-sequence** before a sibling form can be expanded, but Decision 44 wants whole-file-as-one-atomic-cluster. The spec is itself inconsistent — §9.8 describes a **sequential** Pass 2 ("compile defmacro, then available to subsequent forms"), while §9.3.4 / §5.13.2 claim a **pre-pass** allowing **use-before-definition** that v4 cannot deliver. **This is open FIXME 0005 (target /spec), with siblings 0006 (bootstrapping two-pass model) + 0007 (FQ macro references).**
+
+**Consequence:** the robust 0175 resolution is gated by a foundational decision about the **macro-availability model** and its reconciliation with Decision 44 cluster-atomicity — and resolving it **will entail a spec change** (the pre-pass / use-before-definition claim must be dropped or reconciled). Per user direction (2026-06-02): a **wide `/arch` deep dive** owns this — generate the option space, weigh the language impact (the spec change is expected, not incidental), reconcile with Decision 44, and land a **viable way forward**. The deep dive precedes the mechanism design; its output routes the spec change to `/spec` (FIXME 0005/0006/0007) and pins the W-Macro mechanism. Returns for user review before `/spec` or `/dev` act. The first /arch mechanism pass (`macro-expansion-ownership.md`, the `MacroExpander` trait) is **provisional** pending this deep dive.
+
+### W-Integrate — everything that gates a fully-enabled e2e suite (separate waves, but in scope)
+
+The active e2e suite (34 files) has been frozen since S69 because the binary is red. "Wash the changes through" means each mode's e2e tests must not just build but **pass**. The items previously sketched as deferrals are the gates — they come in as their own waves:
+
+- **Platform host-wiring** (0229–0235) — host-side ADT marshaling (0229, /int), `parse_type_expr` named API (0230, /frontend), platform sig typecheck entry (0231, /typecheck), `.meta.json` platform schema (0232, /backend), `parse_type_sig` removal + platform-as-module (0233, /int), `/abi` REPL emitter (0234, /repl), round-trip DLL integration tests (0235, /qa). Gates `spec_platforms.rs` + `platform_errors.rs` + `spec_08_modules.rs` platform paths. Sequenced as a dedicated wave after the int cascade defines the host surface.
+- **0122** `--link` GOT-alignment defect — gates `link.rs`. Re-test once workspace builds; fix in-sprint (backend) — a failing-not-ignored repro is the durable record either way.
+- **int host-wiring residuals** 0242 / 0098 / 0187 — assess subsumption during W-Absorb; resolve what the cascade doesn't subsume. (0214 folds into W-Retire.)
+- **Conformance triad** 0224–0228 (/qa) — platform-fixture conformance; lands with the platform host-wiring wave so `spec_platforms.rs` is fully covered.
+- **0175** (/arch `expand` invocation gap, S70) — **IN SCOPE as a robust resolution; see W-Macro below.** (User decision 2026-06-02, after interrogating the `expand` factoring: the `cranelisp-marshal` bridge crate is rejected; the gap is resolved by re-architecting, not bridging.)
+- **Re-enable the s68 sentinels** (0221/0191) — the 2 `#[ignore]`'d `s68_primitives_uniform.rs` cases gated on int being green; un-ignore once W-Green lands.
+
+### Explicitly deferred to next sprint
+
+- **User docs** (/docs) + **demos / showcase** (/repl demo, /examples refresh, /port exemplar showcase) — the Phase 6b user-facing artifacts. Per user direction (2026-06-02): defer to S77.
+- **5 TCO `#[ignore]` cases** in `spec_12_runtime.rs` — blocked on `/spec` FIXME 0141 (§12.5 MUST clause); genuinely outside this arc.
+- **1 perf-budget `#[ignore]`** in `build_confidence.rs` — subprocess overhead under nextest; not a correctness gate.
+- S66 carries (0181/0172/0121/0145/0148/0109/0151/0194), concurrency (S62), perf baseline, Decision 30 module-system redesign — out of arc scope.
+
+### Legacy harvest — DEFERRED to S77 (user decision 2026-06-02)
+
+42 quarantined files under `tests/legacy/` (28 harvest FIXMEs 0116–0149) await porting into the active e2e suite. This is coverage *expansion* from the prototype/pre-migration era, distinct from *integrating* the facade-arc changes. **Deferred to a dedicated /qa harvest sprint (S77)** once S76's integration is settled and green. S76's e2e completeness target is the **34 active files**, all modes, plus the re-enabled s68 sentinels.
+
+## FIXME debt
+
+Open FIXMEs targeting skills likely in scope (scanned `design/arch/fixmes/` 2026-06-02):
+
+| FIXME | Target | Status | Disposition this sprint |
+|---|---|---|---|
+| 0249 | /arch | open | Enablement — constructor got-slotting (a typecheck + b int). Decision point. |
+| 0242 | /int (→/dev int) | open | Host-side ADT marshaling / mount-comment. Assess subsumption in W-Absorb. |
+| 0098 | /dev | open | frontend/typecheck/int ResolutionGap/CheckError/ExpansionError migration. Likely absorbed by W-Absorb. |
+| 0187 | /int (→/dev int) | open | Migrate TypeCheckEnv consumers off narrowed helpers. Likely absorbed. |
+| 0214 | /int (→/dev int) | open | Facade enumerate intrinsics re-exports. Folds into W-Retire if taken. |
+| 0229–0235 | /int, /frontend, /typecheck, /backend, /repl, /qa | open | Platform host-wiring. **In scope** (W-Integrate) — gates platform e2e. |
+| 0122 | /backend | open | `--link` GOT-alignment defect. **In scope** (W-Integrate) — gates `link.rs`. |
+| 0175 | /arch | open | `expand` invocation gap. **In scope (W-Macro)** — robust re-architecture: frontend::expand private, typecheck recognizes + calls back to int to execute, typecheck owns further processing. /arch design pass → user review → /dev (typecheck+int+frontend). |
+| 0224–0228 | /qa | open | Conformance-triad. **In scope** (W-Integrate) — with platform host-wiring. |
+| 0221, 0191 | /qa, /backend | open | s68 sentinel re-enablement once int green. **In scope** (W-Green tail). |
+| 0116–0149 | /qa | open | Legacy harvest (28 FIXMEs). **Decision point** — see scope question. |
+
+(Full carry list — S66 carries, harvest 0116–0149 — deferred; not re-enumerated.)
+
+## Architecture review (Phase 2)
+
+*Authored by `/arch`, 2026-06-02. Reviewed against BC §3/§4a/§4b/§6/§7, `facades/int.md`, FIXME 0249/0175, `design/backend/compile-to-module.md` §2.6/§2.6.5, and the int source reach-around sites. Verified the backend surface with `cargo check` (`compile_to_module` is the S75 5-arg shape returning `CompilationArtifacts`; all nine privacy-cluster items are `pub(crate)`; int build = 173 errors).*
+
+### Q1 — Pipeline-collapse seam: is the parallel JIT-pipeline collapse fully specified?
+
+**Finding: fully specified by BC §3 + backend source rustdoc + `compile-to-module.md`. No NEW public backend surface is required. All nine reach-around items resolve to "int stops calling it" — work moves inside `compile_to_module` / the `Jit::new(symbol_tables)` collapse, OR int owns the link-orchestration assist itself.** One seam below needs a /design ruling (not a new public API), and one types-crate helper is already correctly public.
+
+Critical clarification the scope table understates: the reach-arounds are NOT confined to `src/pipeline.rs`. The int **worker** path (`src/worker.rs::inline_jit_codegen_for_names`, the canonical per-symbol JIT path) is itself red against the S75 backend — it calls the **4-arg** `compile_to_module(module, names, tc_modules, jit.jit_module())` and reads `result.code_ptrs` / constructs `Code::Jit { ptr }` (the pre-D41 shape S75 retired; GOT is now the single address source, D41 #2 backend writes the slot internally). So W-Collapse is two-part: (i) realign the worker path to the S75 5-arg + `CompilationArtifacts` + caller-composes-`Code::Jit`-from-`Arc<Jit>` shape (BC §3 invariant 3); (ii) delete `pipeline.rs`'s hand-rolled `declare_intrinsics → declare_functions → build_compile_context → compile_defn → finalize_and_get_ptr` expression-eval path, routing REPL expression eval through the same worker entry (wrap the expr in the `__repl_expr__` synthetic `Def`, insert into the symbol table, call the unified path). The `pipeline.rs` path and the worker path are the "parallel JIT pipeline"; they converge on ONE call to `compile_to_module`.
+
+Per-item disposition (the named reach-around surface):
+
+| Item | Crate / vis | Disposition | Why no new public API |
+|---|---|---|---|
+| `declare_intrinsics` | backend `pub(crate)` | **int stops calling.** Absorbed: `compile_to_module` already calls `declare_intrinsics_generic(module)` internally (lib.rs:526). The `Jit::new(symbol_tables)` collapse registers intrinsic `Import` targets from `INTRINSICS_TABLE` at construct. | BC §3 "Minimal JIT-setup boundary" — `compile_to_module` drives declare→compile→finalize internally. |
+| `declare_functions` | backend `pub(crate)` | **int stops calling.** Internal to `compile_to_module`'s loop. | Same. |
+| `compile_defn` | backend `pub(crate)` | **int stops calling.** Internal to `compile_to_module`'s loop. | Same. |
+| `build_compile_context` | backend `pub(crate)` | **int stops calling.** Internal — `compile_to_module` builds its own context from `symbol_tables` + `module_aliases`. | Same. |
+| `finalize_and_get_ptr` | backend `pub(crate)` | **int stops calling.** `compile_to_module` finalizes internally via `CodeFinalizer` and writes GOT slots (D41 #2). | BC §3 invariant 1 + 3. |
+| `intrinsic_symbols` | backend `pub(crate)` | **int stops calling at JIT-construct; transitional reader at cache-hit only.** Target: `Jit::new(symbol_tables)` reads `INTRINSICS_TABLE` (BC §4b invariant 11); the cache-hit `Linker::register_symbol` site (`worker.rs:3545`) also migrates to `INTRINSICS_TABLE`. | The catalog's home moves to intrinsics (BC §4b inv 11); `backend::IntrinsicSymbol` retires as a public concept. No NEW backend pub. |
+| `ensure_module_exists` | **types `pub`** | **No change — already correct.** This is a `cranelisp-types` helper (`module.rs:1684`), legitimately public; int's `cranelisp_types::ensure_module_exists` calls are not backend reach-arounds. The `tc.ensure_module_exists` calls go through typecheck's own re-exposed surface. | Already a sanctioned types-crate boundary helper. |
+| `generate_startup_object` | backend `pub(crate)` | **SEAM — needs /design (int) ruling, NOT a new backend pub.** Backend rustdoc (exe.rs:46-50) settled S75 W3: the `--link` `start`-`.o` assist is **int's link-orchestration**, not a backend boundary (BC §3 invariant 7 — "the `--link` `_main` alias is int's job"). int's `pub use cranelisp_backend::exe::generate_startup_object` (exe.rs:20) is broken-by-design. **Ruling: int owns startup-object emission.** The body relocates to int (`src/exe.rs`) — it uses `cranelift_object` directly, which int already depends on transitively; no codegen-from-`symbol_tables` logic, so it does not belong behind `compile_to_module`. Backend deletes the `pub(crate)` body in a future backend streamline (already flagged dead_code at exe.rs:51-55). | Relocation, not re-publication. Keeps BC §3 invariant 7 intact. |
+| `got_data_symbol_name` | backend `pub(crate)` | **int stops calling — subsumed by `Jit::new(symbol_tables)`.** Today int names `__cranelisp_got_{M}` to register the GOT slab base via `JITBuilder::symbol`. Once `Jit::new(symbol_tables)` derives GOT data symbols from `symbol_tables[M].got().base_ptr()` internally (BC §3 target), int no longer computes the name at JIT-construct. **Residual:** the cache-hit `Linker::register_symbol` path (`worker.rs:3590`) and the `--link` startup path (`exe.rs:163`) still need the name. Both are int-owned link-orchestration. **Ruling:** the naming scheme is a single-source-of-truth that must not be duplicated in int. Move the scheme to a `pub fn got_data_symbol_name` on **`cranelisp-types`** (it is pure string formatting over `ModuleFullPath` — zero codegen dependency, peer to `ensure_module_exists`). Both backend and int read the one types-crate function. | A types-crate helper, not a backend pub. `/arch` owns `cranelisp-types`; authored below. |
+
+**Backend conclusion: the collapse is fully specified; backend's public surface does NOT grow.** Two helpers move DOWN to `cranelisp-types` (`got_data_symbol_name` — authored this review) and OUT to int (`generate_startup_object` body relocation — /design (int) executes). The seven JIT-orchestration methods stay `pub(crate)` and int simply stops calling them, per `feedback_callee_api_for_caller_only`.
+
+### Q2 — Enablement sequencing + FIXME 0249 resolution
+
+**FIXME 0249 RESOLVED (this review).** Sequencing confirmed; no shape change to BC §3 (it already names 0249 + the constructor-as-value assumption); the FIXME's two changes are correctly ordered and require NO new cross-crate types.
+
+Verified grounding:
+- **0249-a** (`/dev (typecheck)`): `register_constructors` (`crates/cranelisp-typecheck/src/adt.rs:290`) assigns `got_slot: Some(allocate_got_slot())` to each `DefKind::Constructor` entry. `got_slot` lives on `ModuleEntry::Def` (NOT on the `DefKind` payload — verified `module.rs`), and `SymbolTable::allocate_got_slot()` already exists and is used identically at `program.rs:1566`. **One-line mirror of the user-fn slotting; no type change.**
+- **0249-b** (`/dev (int)`): `derive_codegen_batch` enumerates each `TypeDef`'s synthesised constructor `Def` names into the `names` batch handed to `compile_to_module`, so `compile_constr_adt` lowers each `Expr::ConstrADT` body and `compile_to_module` populates the slot (D41 #2). Backend's consume side is already complete + crate-narrow-tested (`compile-to-module.md` §2.6.6).
+
+**Sequence (within W-Enablement, which itself sequences AFTER W-Absorb per the scope doc):**
+1. **0249-a before 0249-b** — REQUIRED ordering. The slot must exist on the entry before int enumerates the name into the batch; if int enumerates a `got_slot: None` constructor, `compile_to_module` has no slot to write (D41 #2 stores by `got_slot`). Typecheck slot-assignment is the producer; int batch-enumeration is the consumer.
+2. **`Jit::new(symbol_tables)` + `INTRINSICS_TABLE` AFTER the int JIT-setup collapse (W-Collapse), not before.** Rationale: `Jit::new(symbol_tables)` is the *destination* shape of the collapse — it can only be meaningful once int has stopped hand-assembling the flat symbol vector (`collect_jit_setup` + `got_data_defs` + `int_intrinsics` + already-compiled-fn-ptr sweep at `worker.rs:3273-3293`). The collapse and the new constructor are the same edit: the hand-assembly loop is *replaced by* `Jit::new(symbol_tables)`. So W-Collapse (worker realign to S75 `compile_to_module`) and the `Jit::new(symbol_tables)` constructor land together as one backend+int co-edit.
+3. **`INTRINSICS_TABLE` (intrinsics crate) lands with — or just before — `Jit::new(symbol_tables)`.** `Jit::new(symbol_tables)` reads it; the cache-hit `register_symbol` path migrates to it in the same wave. Order: intrinsics publishes `INTRINSICS_TABLE` → backend `Jit::new(symbol_tables)` consumes it → int's two readers (`worker.rs:3545` cache-hit, the deleted hand-assembly) switch.
+
+**Public-surface confirmations for Q2:**
+- **`INTRINSICS_TABLE` needs a NEW published surface on `cranelisp-intrinsics`** — yes. BC §4b invariant 11 target-states it; it does NOT exist in source (verified `grep` → no matches). `/dev (intrinsics)` authors `pub static INTRINSICS_TABLE` (flat `name → (signature, ptr)` catalog — NOT a mounted GOT-module; intrinsics are Import-dispatched, BC §4b invariant 9/11). This is an intrinsics public-API addition; its baseline + crate-root `//!` rustdoc are the canonical surface (facade retired S74). **Author: `/dev (intrinsics)`; /arch approves the surface (approved here as target-stated by BC §4b inv 11).**
+- **`Jit::new(symbol_tables)` IS a backend public-API change** — yes. A new `pub fn new(symbol_tables: &SymbolTables<C, L>) -> Result<Self, CranelispError>` constructor on `Jit` (peer to the existing `pub fn new()` / `new_with_symbols`). It is the minimal-JIT-setup boundary BC §3 already prescribes. The existing `new_with_symbols` / `declare_intrinsics`-style construct path is retired or made `pub(crate)` once the collapse lands. **Author: `/dev (backend)`; /arch approves (target-stated by BC §3 "Minimal JIT-setup boundary"; approved here). Baseline regen + crate-root `//!` update per baseline-diff discipline.**
+
+### Q3 — FIXME subsumption (0242 / 0098 / 0187 / 0214 / 0175) + platform host-wiring ordering
+
+| FIXME | Disposition | Rationale |
+|---|---|---|
+| **0098** (Resolution/Check/Expansion error migration) | **Subsumed by W-Absorb.** | Phase 3 (typecheck) already CLOSED per the FIXME header; Phases 2 (frontend) + 4 (int) are exactly the error-type cascade int absorbs when it adopts the streamlined `CranelispError`/`CheckError`/`ExpansionError` shapes (clusters 1-6). No separate resolution work; the cascade IS the resolution. Delete on W-Absorb close if no residual. |
+| **0187** (TypeCheckEnv consumers off narrowed helpers) | **Subsumed by W-Absorb.** | This is the typecheck-surface cluster (`register_imports`/`register_exports` struck, `Type::from_name`/`io_inner_type` narrows — cluster 4). int adopting the streamlined typecheck surface resolves it by construction. Delete on W-Absorb close. |
+| **0242** (host-side ADT marshaling / primary-mount comment) | **PARTIALLY subsumed; explicit residual.** | Two parts: (i) the int primary-mount comment/call still spells `PRIMITIVES_TABLE` as `<Code,()>` + bare `.clone()` (stale to the S73 `<(),()>` + `into_concrete` shape) — this is a W-Absorb cascade item (int adopts `into_concrete::<Code,()>()` at mount, per BC §4a "Session-integration contract"). (ii) **host-side ADT marshaling** for platform round-trip is genuine NEW work in the **platform host-wiring wave** (it gates `spec_platforms.rs`), NOT subsumed by the type cascade. Split: (i) closes in W-Absorb; (ii) carries into W-Integrate platform wave. |
+| **0214** (facade enumerate intrinsics re-exports) | **Folds into W-Retire.** | This is an int-facade-content question; it dissolves when `facades/int.md` retires (the re-export shape becomes whatever `src/lib.rs` actually exposes, gated by the baseline). Resolve as part of the W-Retire capstone, not before. |
+| **0175** (`expand` invocation gap — target /arch) | **Does NOT block W-Absorb. DEFERRED (not resolved this sprint).** | Verified: option (d) is the de-facto landed state — `cranelisp_frontend::expand` returns `Gap` on macro heads; int keeps calling `src/expander.rs::expand_sexp_recursive` for real invocation, and **macros work end-to-end** through that path. W-Absorb does not require switching int off `src/expander.rs`. The (a)–(d) choice (notably the proposed `cranelisp-marshal` 5th crate) is a real but separable frontend/int dual-source cleanup; forcing a new workspace crate into this already-maximal sprint violates complexity-budget (Principle 6) for no e2e gain. **Ruling: 0175 stays open, explicitly carried; revisit when the dual-source `src/expander.rs` debt is the focus, not riding the int cascade.** Noted as a required-revision-to-scope only if /sprint disagrees. |
+
+**Platform host-wiring (0229–0235) ordering: CONFIRMED correct.** The set must land AFTER the int W-Absorb cascade, because 0233 (`parse_type_sig` removal + platform-as-module) and 0229 (host-side ADT marshaling, the 0242-(ii) residual) both depend on the int host surface being defined by the streamlined shapes first. The scope doc already sequences it as "a dedicated wave after the int cascade defines the host surface" — affirmed. Internal ordering within the wave: 0230 (`parse_type_expr` named API, /frontend) + 0231 (platform sig typecheck entry, /typecheck) are upstream producers; 0229/0233 (/int) consume them; 0232 (`.meta.json` schema, /backend) + 0234 (`/abi` emitter, /repl) + 0235/0224–0228 (/qa round-trip + conformance) close the wave.
+
+### Q4 — int facade-retirement readiness (late-phase W-Retire capstone)
+
+**Apply the now-stable 7-data-point retirement pattern** (types S69 → frontend S70 → platform S71 → typecheck S72 → primitives+intrinsics S74 → backend S75). The pattern: cross-surface narrative + invariants → `bounded-contexts.md §6`; per-item contracts → source rustdoc (`src/lib.rs` crate-root `//!` + per-item `///`); `public-api.txt` baseline gates the surface; drop int from `facade_compliance.rs` (per `feedback_retired_facade_drops_compliance` — source = definition, baseline + compiler = guard, rustdoc = rationale; do NOT substitute a rustdoc-restating self-documentation check).
+
+**Readiness criteria the late-phase wave MUST meet before retiring (do NOT retire now):**
+1. **W-Green + W-e2e settled** — the rustdoc fold must reflect the *actually-landed* `src/` shape, not the target-stating facade text. The facade currently carries large blocks of S67/S68 PFR/PIF *migration sequencing* (the entire "SharedState facade alignment plan (Sprint 67)" table, the "S67 Cluster B landing" notes) that are process/sequencing content — these DIE on retirement (sprint archives hold the temporal record; per `.claude/commands/arch.md` "Process/sequencing content that has no manifestation site dies").
+2. **The collapse landed** — `SharedState`'s field set is stable post-W-Collapse (the parallel-pipeline fields like the pre-cluster-atomic `module_sexps`/`suspend_states` residuals must have resolved or be honestly documented as carried), so the rustdoc describes a real shape.
+3. **Baseline regenerated** — `crates/.../public-api.txt` equivalent for `src/` (int is a binary; the baseline gates `src/lib.rs`'s pub surface). The W-Retire commit regenerates it.
+
+**What `bounded-contexts.md §6` must say at retirement** (it is ALREADY substantially complete — §6.1 cadences, §6.2 handoffs, §6.3 within-cadence window access, in/out-of-scope, what-crosses-the-boundary). The retirement adds: a **"Per-surface documentation" closing paragraph** (mirroring §3/§4a/§4b's pattern) declaring int the 8th and final retirement data point, naming source rustdoc as canonical, and citing the baseline as the PR-time gate. The cross-surface narrative is durable and stays in §6.
+
+**`facades/int.md` content classification (target-stating-only DROPS vs durable FOLDS):**
+
+| Content | Disposition |
+|---|---|
+| The "SharedState facade alignment plan (Sprint 67)" PFR/PIF table + "S67 Cluster B landing" + per-field S68-PIF/PFR direction notes | **DROP** — process/sequencing; sprint-archive holds it. Not a future-reader manifestation site. |
+| Per-method `CompilerSession` signatures + their *intent* (what each does at the boundary) | **FOLD** to per-item `///` rustdoc on the actual `src/` items. The *signature* is the baseline's job; the *why* is the rustdoc's. |
+| `SharedState` field-on-which-side + worker-vs-initiator-reach table | **FOLD** the durable partitioning *principle* into BC §6.3 (already there as the principle); the per-field *table* → `SharedState` struct rustdoc in `src/`. |
+| DTO definitions (`EvalResult`, `CommandResult`, `SymbolInfo`, `ProcessedCluster`, `Introspection`, etc.) | **FOLD** to per-type `///` rustdoc; the `#[non_exhaustive]` + field set is gated by the baseline. The *rejected-alternative* prose (e.g. "No separate `ModuleCheckAccumulator` exists" rationale) folds to the relevant type's rustdoc or BC §6. |
+| `process_cluster`/`insert_cluster` free-fn shape + the "free-fn is canonical, not method" S67 correction | **FOLD** the canonical shape to rustdoc on the actual `src/cluster.rs` items; the "pre-S67 method shape never landed" note is sprint-history → DROP. |
+| Cross-surface commitments (which other facades int consumes) | **FOLD** to BC §6 "What crosses the boundary — Inward: the public surfaces of all five other crates" (already there). |
+
+**Readiness verdict for W-Retire: criteria are clear and achievable; the facade is content-classified above. Execute as the LATE-PHASE capstone after W-Green + W-e2e, per the scope decision. Keep `facades/int.md` LIVE through Phase 3–5 of this sprint.**
+
+### Interim-architecture-risk flags (Principle 8)
+
+- **No interim structures introduced.** W-Collapse, the `Jit::new(symbol_tables)` constructor, `INTRINSICS_TABLE`, and 0249 all move TOWARD the final state (target-stated by BC §3/§4b + Decision 0048). The hand-assembled flat-symbol JIT setup is the interim structure being REMOVED, not added.
+- **Watch item (not a flag):** the worker-path realign (4-arg → S75 5-arg `compile_to_module` + caller-composes-`Code::Jit`) and the `pipeline.rs` expression-path deletion must land in the SAME wave as W-Collapse. Doing one without the other leaves int with one foot in each pipeline — which is the dual-pipeline defect Principle 11 exists to prevent. They are not separable.
+- **`generate_startup_object` relocation:** moving the body to int is final-state (it is link-orchestration int owns per BC §3 inv 7), not interim. The transitional `#[allow(dead_code)] pub(crate)` stub in backend is acceptable to leave for one sprint (backend deletes in a future streamline) — it is dead, not interim-wrong.
+
+### Public-API impact (enumeration)
+
+**Authored by /arch this review (in `crates/cranelisp-types/`):**
+1. `pub fn got_data_symbol_name(module_path: &ModuleFullPath) -> String` — moved DOWN from backend `pub(crate)` to types. Single-source GOT data-symbol naming; consumed by backend (codegen) + int (cache-hit `register_symbol` + `--link` startup). Zero codegen dependency (pure string formatting). *Authored below in this change-set.*
+
+**Approved here, authored by /dev (target-stated, /arch-approved):**
+2. **`cranelisp-intrinsics`**: `pub static INTRINSICS_TABLE` — flat `name → (signature, ptr)` catalog. Target-stated by BC §4b invariant 11. New crate public surface; baseline + crate-root `//!` are canonical. *Author: /dev (intrinsics).*
+3. **`cranelisp-backend`**: `pub fn Jit::new(symbol_tables: &SymbolTables<C, L>)` constructor — the minimal-JIT-setup boundary. Target-stated by BC §3. *Author: /dev (backend); baseline regen required.*
+
+**Reductions (no /arch type authoring — handled by the owning /dev):**
+4. **`cranelisp-backend`**: `generate_startup_object` body relocates to int; the backend `pub(crate)` stub deletes (future backend streamline). Net: backend's pub surface unchanged this sprint (item was already `pub(crate)`).
+5. **`cranelisp-backend`**: the nine `pub(crate)` JIT-orchestration items (`declare_intrinsics`, `declare_functions`, `compile_defn`, `build_compile_context`, `finalize_and_get_ptr`, `intrinsic_symbols`, `got_data_symbol_name`) STAY `pub(crate)` or retire as int stops calling them — no change to the *public* surface.
+6. **`cranelisp-typecheck`**: 0249-a uses existing `allocate_got_slot()` — no surface change.
+7. **`src/` (int)**: `derive_codegen_batch` (0249-b), worker realign, `pipeline.rs` deletion, `into_concrete` mount adoption — all internal to int; no cross-crate surface impact except *consuming* the two new items (2, 3).
+
+**Confirmed: no other cross-crate interface types are needed.** `got_slot` already on `ModuleEntry::Def`; `CompilationArtifacts` already returned; `Code::Jit(Arc<Jit>)` already the lifecycle shape; `into_concrete` already exercised.
+
+### Configuration-cascade map
+
+| Change | Manifestation site (where the commitment lands) | Cascade landing in same change-set |
+|---|---|---|
+| `got_data_symbol_name` → types | `crates/cranelisp-types/src/module.rs` (the fn) + `interfaces.md` (one-line narrative) | Backend rustdoc at `compiler/mod.rs:100` updated to "moved to cranelisp-types" by /dev (backend); int call sites switch by /dev (int). *This review authors the types fn + interfaces note + this map row.* |
+| `Jit::new(symbol_tables)` | `crates/cranelisp-backend/src/jit.rs` (the fn) + crate-root `//!` | BC §3 "Minimal JIT-setup boundary" already states it (no BC edit needed — verified target-stated). Baseline regen by /dev (backend). |
+| `INTRINSICS_TABLE` | `crates/cranelisp-intrinsics/src/lib.rs` (the static) + crate-root `//!` | BC §4b invariant 11 already states it (no BC edit needed — target-stated). Baseline regen by /dev (intrinsics). |
+| FIXME 0249 (constructor got-slotting) | typecheck `adt.rs` + int `derive_codegen_batch`; assumption already in BC §3 "Minimal JIT-setup boundary" + `compile-to-module.md` §2.6.5 | **No BC edit** — already cascaded (S75 named it). FIXME 0249 DELETED this change-set (resolution = confirm sequencing, no shape change). |
+| int facade retirement | `bounded-contexts.md §6` (add "Per-surface documentation" closing para) + `src/lib.rs` rustdoc + drop from `facade_compliance.rs` | LATE-PHASE only; cascade lands in the W-Retire commit. NOT this Phase. `design/arch/CLAUDE.md` facade-table row for int flips to retired in the same W-Retire commit. |
+
+**Decision-cascade discipline check (`feedback_decision_cascade_discipline`):** no new Decision authored. The two new public items are already target-stated in BC (§3, §4b) — they were cascaded when those Decisions/BC sections were written (S75/S74). This review CONFIRMS the cascade is complete, rather than authoring a new one. The only un-landed cascade is the int-facade retirement, deliberately deferred to W-Retire.
+
+### VERDICT
+
+**SIGN-OFF to proceed to Phase 3.** The scope is technically coherent and the four seams are settled:
+- **Q1**: collapse fully specified; no new public backend surface; the two helper relocations (`got_data_symbol_name` → types, authored here; `generate_startup_object` body → int) and the worker-path realign are named.
+- **Q2**: FIXME 0249 RESOLVED (sequencing confirmed, 0249-a before 0249-b, no new types); `INTRINSICS_TABLE` (intrinsics pub) + `Jit::new(symbol_tables)` (backend pub) approved as target-stated, sequenced with the JIT-setup collapse.
+- **Q3**: 0098/0187 subsumed by W-Absorb; 0242 split (mount-comment subsumed, host-marshaling carries to platform wave); 0214 folds to W-Retire; **0175 deferred (does not block; macros work via `src/expander.rs`)**; platform 0229–0235 ordering confirmed after the int cascade.
+- **Q4**: retirement criteria stated; facade content classified; W-Retire is a late-phase capstone gated on W-Green + W-e2e.
+
+**One scope note for /sprint (not a blocker):** 0175's deferral is /arch's ruling, not a scope cut — if /sprint wants the `cranelisp-marshal` cleanup in S76, that is a *separate* added wave and a Principle-6 (complexity-budget) decision for the user, given the sprint is already at maximum int burden. /arch recommends carrying it.
+
+**Edits made by /arch in this change-set:** (1) `crates/cranelisp-types/src/module.rs` — author `pub fn got_data_symbol_name`; (2) `design/arch/interfaces.md` — one-line narrative for it; (3) DELETE `design/arch/fixmes/0249-...md` (resolved); (4) this Architecture review section. No BC edits required (Q2 items already target-stated); int facade kept LIVE.
+
+## W-Macro design (Phase 3)
+
+Second /arch design pass commissioned after the user reopened FIXME 0175 and rejected the `cranelisp-marshal` bridge crate. Full design: `design/arch/macro-expansion-ownership.md`. Boundary type: `crates/cranelisp-types/src/macro_expander.rs`.
+
+### Target shape
+
+Macro expansion is **two jobs** that were conflated in the facade and mis-located in the source:
+
+- **Walk + recognize** (structural traversal, macro-vs-fn discrimination, clause matching, depth bound) needs only the symbol-table view → **typecheck** owns it. typecheck already iterates the cluster's `ParsedEntry` list and resolves every head against `SymbolTableAccess`, so it already knows macro-vs-fn; the within-form descent is added there.
+- **Execute** (marshal `Sexp`↔heap, transmute the GOT'd clause to `extern "C" fn(i64)->i64`, call under `sigsetjmp`/`siglongjmp` signal protection, unmarshal + span-rewrite) needs JIT + runtime + `libc` → **int** owns it, behind a callback. int implements `cranelisp_types::MacroExpander` over its existing `src/expander.rs` invocation core + `src/marshal.rs`.
+- **Frontend** keeps only quasiquote desugaring (`expand_quasiquotes` etc., the public syntactic API); `expand` + `ExpansionError` retire from the boundary; the structural-walk skeleton (`crates/cranelisp-frontend/src/expand.rs`) is **deleted** (it duplicated the walk typecheck now owns — Principle 7).
+
+The callback is the **agreed minimum mechanism** (Principle 6): typecheck holds `&dyn MacroExpander` injected by int (the orchestrator that already calls `check_forms`); int → typecheck is the existing call edge, now carrying the trait object. **DAG proof:** the trait lives in `cranelisp-types`; typecheck adds no dependency (stays `cranelisp-types`-only); no `typecheck → int` edge is created. The graph is unchanged and acyclic.
+
+### Structural-form re-entry resolution
+
+Macros can expand into structural top-level forms (`def` → `(begin (defn …) (defmacro …))`; expansions can introduce `defmacro`s). **Resolution: (a) typecheck re-classifies structural results itself** — the callback returns a raw `Sexp`, typecheck re-walks it through the same per-form classification `check_forms` already runs; spliced `defmacro`/`defn` register into the **same** cluster staging frame.
+
+Rationale: grounded in **Decision 44** (a spliced `defmacro` belongs to *this* cluster — it must register into *this* cluster's staging so it vanishes on cluster failure; option (b) signal-back-to-int's-pipeline would either commit it to live mid-cluster, breaking atomicity, or duplicate Decision 44's staging machinery outside typecheck); in **Principle 17** (re-classification is current-module work via `current_symbol_table_mut()` — no module-set iteration; the retired skeleton's bare-name "probe every module" loop is *eliminated*, a net improvement); and in **Principle 6** (option (a) reuses the existing classify-and-two-pass loop + a splice point, vs. option (b)/(c)'s new signal channel + re-entrant pipeline). **Consequence for the callback signature:** the result is a raw `Sexp`, NOT a classified product — a richer return would force int (execution) to know form classification (typecheck's job), inverting the split, and would couple the callback to `ParsedEntry` (a parse-time transient). The one interior subtlety — *where* the `build_form`-of-result step runs so typecheck adds no `cranelisp-frontend` dep — is pinned by the /dev design wave (FIXME 0245; /arch recommends the `process_cluster`-hosted expand+build fixpoint driven by a typecheck recognition predicate).
+
+### Public-API delta
+
+One new boundary type in `cranelisp-types` (authored this pass; baseline regenerated, +22 lines):
+- `pub trait MacroExpander: Send + Sync { fn invoke(&self, fq: &FQSymbol, args: &[Sexp], call_span: Span) -> Result<Sexp, MacroInvokeError>; }`
+- `pub enum MacroInvokeError { Aborted{..}, Malformed{..} }` (`#[non_exhaustive]`)
+
+Retiring (handled by /dev): frontend `pub fn expand` + `pub enum ExpansionError` drop from the frontend public surface (baseline regen by /dev (frontend)). No other cross-crate type is needed.
+
+### /dev wave breakdown
+
+- **/dev (typecheck)** — add macro recognition to the cluster walk (module-local lookup + clause match); drive the expansion fixpoint; re-classify structural results into the same staging frame; consume the injected `&dyn MacroExpander`; absorb `EXPANSION_DEPTH_LIMIT` as the loop bound. (Preceded by /design (typecheck) authoring `design/typecheck/macro-recognition.md` per FIXME 0245.)
+- **/dev (int)** — implement `cranelisp_types::MacroExpander` over the `src/expander.rs` invocation core + `src/marshal.rs`; delete the free-standing walk (`MacroResolver`, `expand_sexp_recursive`, `expand_macro_call_with_entry`); construct + thread `&dyn MacroExpander` into `process_cluster`'s `check_forms` calls; host the expand+build fixpoint per the §4.3 shape; update `/expand`.
+- **/dev (frontend)** — make `expand` private/deleted; delete `crates/cranelisp-frontend/src/expand.rs` skeleton; retire `ExpansionError`; keep the quasiquote API public; regenerate the frontend baseline + crate-root `//!`.
+
+### FOR USER REVIEW
+
+The user should confirm, before /dev implements:
+
+1. **The two-jobs split** — recognition → typecheck, execution → int via callback, frontend → quasiquote-only. (Formalizes the user's S76 Phase 2 direction.)
+2. **The callback is a `cranelisp-types` trait object** (`&dyn MacroExpander`), not a fn-handle newtype — chosen for legibility under Principle 2; the implementor holds session state behind one vtable.
+3. **Structural-form re-entry = option (a)** — typecheck re-classifies the expansion result itself into the same cluster staging frame (NOT signal-back to int's form pipeline). This is the load-bearing Decision-44/Principle-17 choice.
+4. **The callback returns a raw `Sexp`** (not a classified `Vec<ParsedEntry>` or expression-vs-structural enum) — keeps execution from leaking form-classification knowledge.
+5. **The frontend skeleton is DELETED, not kept private** — Principle 7 (no duplicate walk).
+6. **FIXME 0175 stays open (annotated `resolution-designed-impl-pending`)** until /dev lands — the architecture is settled; only code remains.
+
+## W-Macro deep dive (Phase 3)
+
+**Authored 2026-06-03 by `/arch`.** Wide design-space deep dive resolving the gating foundation under W-Macro. Full analysis: `design/arch/macro-availability-model.md`. `/sprint` relays to the user before `/spec` or `/dev` act.
+
+**The reframe that dissolves the tension.** "Macro availability" is not one decision — it is two: **recognition availability** (when is a head known to be a macro? — answered by Pass-1 signature registration) and **execution availability** (when is the clause code runnable? — answered by JIT-codegen ordering + the existing scheduler gap). The spec inconsistency (FIXMEs 0005/0006/0007) is the symptom of conflating them. The current source already separates them: `src/worker.rs::separate_macros` registers ALL macro signatures cluster-wide in Pass 1 (recognition), but JITs each defmacro in source order in Pass 2 (execution).
+
+**Option space (six options; full table + scoring in the design doc):**
+
+| Option | Use-before-def | D44 | Form-by-form | Note |
+|---|---|---|---|---|
+| (a) pure form-by-form, use-after-def | NO (everywhere) | needs sub-clustering at file scope | perfect | simplest; drops Clojure parity |
+| (b) module pre-pass | YES (batch only) | scopes D44 (macros outside atomic cluster) | poor | reinstates pre-pass; pillar violation |
+| (c) recognition pre-pass | YES (via gap) | intact | good | = current source |
+| (d) scheduler dep node | only with (c) | intact | good | the cross-module half |
+| (e) defmacro = cluster boundary | NO | **amends** D44 | good | §5.13.1 forward-ref tax |
+| **(f) (c)+(d) hybrid — RECOMMENDED** | **YES (in-cluster + cross-module)** | **intact** | **good** | = provisional mechanism, made principled |
+
+**Recommended way forward: Option (f).** Recognition is cluster-wide via Pass-1 signatures (not a macro-specific pre-pass — D44 already registers *all* signatures in Pass 1); execution is on-demand via the existing `MacroInMem` gap (`priority_boost_jit` + `wait_for_inmem`), applied uniformly to in-module forward use and cross-module FQ references. This is **what the source already does**, honours the form-by-form pillar (Principle 6 — minimum mechanism; reuses the existing scheduler gap, no new concept), and keeps Decision 44's atomic-commit property unchanged. **Honest cost:** use-before-def is a best-effort within-cluster convenience, not a guarantee — a cyclic forward macro-uses-macro chain is rejected (consistent with Decision 0030). The always-reliable subset is use-after-definition; **Option (a)** is a legitimate user-selectable simplification (fully predictable, batch/REPL identical) at the cost of Clojure parity.
+
+**Spec change (entailed; recommended text in `macro-availability-model.md` §5; routes to `/spec` via FIXMEs 0005/0006/0007):**
+- **§9.3.4** rewritten: recognition cluster-wide; expansion on-demand within cluster; no-cycle bound. (Drops the "extracts and compiles all defmacro in a pre-pass" claim.)
+- **§5.13.2** internal contradiction fixed — line 629's batch pre-pass paragraph (use-before-def via pre-pass) contradicts line 610-621 (file = one cluster, §5.13.1 two-pass). Struck/rewritten to the uniform cluster-scoped rule.
+- **§9.12** bootstrapping rewritten to form-by-form streaming (Pass-1-registers-all-signatures, not a separate type pre-pass).
+- **§8.5.1 + new §9.3.6** authorize FQ macro references (lazy-load + wait).
+- **§9.14** limitation #2 updated.
+- **REPL/batch unified** as "cluster-scoped availability" — file = one cluster (module-wide); bare REPL input = one-form cluster (no forward); `(begin …)` = multi-form cluster (forward within). Removes the current batch-vs-REPL macro divergence.
+
+**Decision-44 reconciliation (no atomic-commit change; clarifying invariant, manifestation site = BC §2 + Decision 0044 site):** macro expansion runs in int's `process_cluster` expand loop *before* `check_forms`; the `MacroInMem` gap fires from the expand loop (Step 1); `check_forms` receives fully-expanded `Vec<ParsedEntry>` and runs its two passes over them (Step 2). `check_forms` never triggers macro execution, so D44's atomic-commit over the expanded entry set is intact. This **pins** `macro-expansion-ownership.md` §4.3's previously-open interior choice to the "second (Cleaner) shape." D44 is NOT amended (only option (e) would have amended it).
+
+**Resulting W-Macro mechanism (confirms `macro-expansion-ownership.md` + pins §4.3):** typecheck exposes the recognition predicate (module-local, Principle 17); int's expand loop drives walk+execute via the injected `&dyn MacroExpander`, calls `build_form` (keeping it out of typecheck), runs the nested+structural fixpoint, then makes one `check_forms` call. **Public-API delta: none beyond the already-authored `MacroExpander` trait + `MacroInvokeError` enum** (`crates/cranelisp-types/src/macro_expander.rs`). The availability model settles semantics + sequencing, which manifest in spec text + BC invariants + the sequence diagram — not in new code types.
+
+### Concrete-trace confirmation (2026-06-03 — `macro-availability-model.md` §4.4)
+
+`/sprint` commissioned a source-grounded trace of the canonical §9.8 scenario: a macro whose **clause body calls a plain `defn` helper at expansion time** (`helper → m → f`, linear, non-cyclic).
+
+- **VERDICT: Option (f) does NOT handle the scenario as-is.** The source codegen's the macro clause but **not** its `defn` callees; the clause's GOT-indirect call to `helper` hits an **empty slot** at expansion time → crash/UB. Confirmed by an existing in-tree workaround comment at `stdlib/defs.cl:20-22` ("defn-defined helpers are not available during macro compilation") — `/stdlib` already hit this and routed around it. All three source-orderings of `helper` (before/between/after) fail identically: regular-defn codegen is deferred past Pass 2, while macro-clause codegen happens *in* Pass 2.
+- **Mechanism reality vs the doc's aspirational names:** `priority_boost_jit`/`wait_for_inmem` do not exist as code; `block_for_macro_codegen` (`src/scheduler.rs:669`) is **dead** (no call site); `MacroInMem` is not raised in-module. The real in-module path is a *synchronous inline clause compile* in `MacroResolver::resolve_macro` (`src/worker.rs:466`). (Cross-module FQ half does use the scheduler — accurately described.)
+- **D44 interaction:** macro-clause typecheck+codegen commits to **live mid-Pass-2** (`compile_macro_clause_inline` → `check_program_compat`, `src/worker.rs:2538`), *before* the cluster's atomic check (`finalize_module:1271`). So D44 atomic-commit is **already scoped today, not intact** — §4.3's "intact" is a *target*. `helper` is single-typechecked; the macro clause is the double-checked entity.
+- **Cyclic rejection:** intra-cluster macro cycles are **not** caught by `detect_cycle_locked` (module-level, Decision 0030). Bounded by `EXPANSION_DEPTH_LIMIT=100` (if they expand) or fail name-resolution (clause compile is quasiquote-only, not full macro expansion). Bounded + terminating, but via a blunt depth-limit error.
+
+**Does decision 1's cost statement change? YES (cost only; the (f)-vs-(a) choice is unchanged).** Both (f) AND (a) require a **net-new int-side step**: codegen a macro clause's transitive `defn`-callee closure before invoking the clause (wire the dead `block_for_macro_codegen` / reuse the `collect_transitive_uncompiled_deps` closure at `src/worker.rs:2415`). (a) does NOT escape this — the defect is orthogonal to the recognition rule. This is a `/dev` (int) fix, **not** a spec change (§9.8 is the intended behaviour). The `MacroExpander` boundary type is unaffected (interior orchestration only). **Option (f) still stands as the recommendation**; the §4.2 cost was understated and is corrected in the design doc.
+
+**The target facade reproduces the defect too — not just the source.** `facades/int.md:1216-1219` (as-designed gap rationale) states "Functions are NOT speculatively JIT-pushed — the function will be JIT'd when its caller is processed." That is correct for a *function* caller (runs at execute time) but **false for a macro-clause caller** (runs during expansion, before callee codegen). So the W-Macro target design would reproduce the empty-slot crash unless amended. **CASCADE on user approval of decision 1:** the `facades/int.md` "Gap design rationale" gains an exception — a macro clause's transitive `defn` callees ARE boosted+waited when the clause is forced in-mem for expansion. Flagged in `macro-availability-model.md` §4.4; not edited pre-approval.
+
+**Handoff:** `/sprint` should route a `/qa` narrow integration test for the empty-slot failure (minimal repro = `helper`/`m`-calls-`helper`/`f`; the `stdlib/defs.cl` workaround is the real-world instance). `/dev` (int) resolves by wiring the function-callee codegen step within the §4.3 "second shape."
+
+### FOR USER REVIEW (W-Macro deep dive)
+
+`/sprint` relays before `/spec` or `/dev` act. **Decisions 1–3 are normative LANGUAGE CHANGES.**
+
+1. **[LANGUAGE CHANGE] In-module macro availability** — confirm **Option (f)** (cluster-wide recognition + on-demand execution → use-before-def works as common case, best-effort, Clojure-like; cyclic forward macro chains rejected). **Alternative: Option (a)** (use-after-def only, everywhere — strictly simpler, fully predictable, drops Clojure parity). `/arch` leans (f) (matches as-built source + provisional mechanism + spec's Clojure-parity intent); (a) is a legitimate simplification.
+2. **[LANGUAGE CHANGE] REPL/batch unification** — confirm macro availability stated uniformly as cluster-scoped, removing the current divergence + the §5.13.2 internal contradiction. (Holds under both (f) and (a).)
+3. **[LANGUAGE CHANGE] FQ macro references authorized** (FIXME 0007) — `mod/macro` resolves to macros with lazy-load; cross-module half, independent of decision 1.
+4. **[ARCH — D44 reconciliation, no atomic-commit change]** macro execution sits in int's expand loop, before `check_forms`; `MacroInMem` gap fires from the loop; pins `macro-expansion-ownership.md` §4.3 to the "second shape."
+5. **[ARCH — confirms prior]** the `macro-expansion-ownership.md` mechanism stands (two-jobs split, `&dyn MacroExpander`, raw-`Sexp` return, structural re-entry option (a), frontend skeleton deleted); no public-API change beyond the already-authored types.
+
+**Routing once approved:** FIXMEs 0005/0006/0007 carry the refreshed `/arch` spec text → `/spec` commits. `/arch` cascades BC §2/§6 + `exec-flow-compilation.mmd` clarity fix. `/dev` (typecheck/int/frontend) implements. FIXME 0175 stays open (`resolution-designed-impl-pending`) until /dev lands.
+
+> **SUPERSEDED by `## W-Macro DECISION LOCKED` below (2026-06-03).** The five FOR-USER-REVIEW items above were the framing put to the user; the user decided. Decision 1 is neither Option (f) nor Option (a) — it is the stricter dependency-only + defmacro-before-use rule. See the LOCKED section for the settled outcome.
+
+## W-Macro DECISION LOCKED (2026-06-03, user-approved)
+
+The W-Macro macro-availability foundation is **settled**. `/arch` has re-grounded the design docs and finalized the spec-change text. Authoritative doc: `design/arch/macro-availability-model.md` §0 (locked decision) + §5 (finalized spec text).
+
+**Locked principle (user-visible).**
+- A macro's **expansion** may reference only (a) **dependency modules** (typechecked *before* the defining module — fetched just-in-time by pausing the current typecheck to compile the dependency, then resuming) and (b) **macros** (same-module macros included — the compile-time layer, dependent only on prior modules).
+- A **same-module non-macro definition is NOT available at expansion.** Deciding constraint: **round-trip safety** — `regenerate_backing_file` writes the session as one batch module, so a macro's expansion-time references must resolve against dependencies, or the regenerated file fails to recompile. This makes **REPL ≡ batch by construction**.
+- **defmacro-before-use is NORMATIVE** (goes in the spec): within a module a macro must be defined before it is used in source order; a use before its `defmacro` is a plain unresolved reference.
+- Dependencies cannot refer back (acyclic module DAG).
+
+**Three-pass module compile (implementation shape).** (1) Recursively typecheck `defmacro`s + expand all macro calls — local and FQ — compiling dependency forms just-in-time. (2) Scan non-macro signatures. (3) Typecheck non-macro bodies. **The pass order structurally enforces the stage restriction** (Pass 1 precedes Passes 2–3, so same-module non-macro defs don't exist yet at expansion — not a separate check).
+
+**Decision 44 reconciliation — intact.** `check_forms`'s internal two passes ARE Passes 2+3 (the runtime layer, over fully-expanded non-macro forms); the compile-time layer (Pass 1) runs before `check_forms`, resolved against dependencies only. Atomic-commit over the expanded set is intact (the locked decision removes the as-built same-module mid-cluster clause-commit hazard the §4.4 trace found). This **vindicates the deep-dive's "expand before check_forms" shape** — sound *because* helpers are dependencies, not same-module.
+
+**W-Macro mechanism (pinned).** Pass 1 = int's `process_cluster` expand loop: typecheck recognizes macro heads, the `cranelisp_types::MacroExpander` callback (int's impl over `src/expander.rs` + `src/marshal.rs`) executes, dependency forms JIT-compiled on demand. Passes 2+3 = `check_forms`. The dead `block_for_macro_codegen` path is **deleted, not wired** (no same-module `defn` clause-callee case exists under the lock). `facades/int.md` "Gap design rationale" stays unqualified (the §4.4-flagged "boost clause callees" exception is **withdrawn**).
+
+**No public-API delta.** The locked decision settles semantics + sequencing only. The `cranelisp_types::MacroExpander` trait + `MacroInvokeError` enum (already authored, already in `crates/cranelisp-types/public-api.txt`) stand unchanged. No new boundary type.
+
+**Docs cascaded this pass (`/arch`).**
+- `design/arch/macro-availability-model.md` — new §0 (locked decision); §1–§7 annotated SUPERSEDED-as-recommendation with the §4.4 trace retained as the disproof record; §5 rewritten as the finalized spec text.
+- `design/arch/macro-expansion-ownership.md` — §4.3 PINNED box upgraded to the three-pass; the §4.4 "net-new `defn`-callee-codegen step" WITHDRAWN.
+- `bounded-contexts.md` §1 (frontend invariant 8 — defmacro-before-use + three-pass), §2 (typecheck in-scope bullet + invariant 11 — recognition predicate, three-pass, no same-module non-macro at expansion), §6 (int — owns Pass-1 expand loop + supplies `MacroExpander` + just-in-time dependency compile).
+- `facades/int.md` — `process_cluster` §-box rewritten to the three-pass + `block_for_macro_codegen` deletion; "Gap design rationale" amended to keep "functions NOT speculatively JIT-pushed" unqualified.
+- `sequences/exec-flow-compilation.mmd` + `.svg` — three-pass (Pass-1 expand-with-just-in-time-deps → Pass-2 sigs → Pass-3 bodies); regenerated SVG.
+
+**Spec-change handoff to `/spec` (the FIXMEs carry the pointers).**
+- **FIXME 0005** → §9.3.4 (defmacro-before-use + dependency-only expansion) + §5.13.2 (strike pre-pass claim, fix contradiction, reorder example) + §9.14 #2 + Clojure-divergence disposition. Finalized text: `macro-availability-model.md` §5.1/§5.2/§5.5/§5.6.
+- **FIXME 0006** → §9.12 three-pass model + §9.2.5 capability correction (drop "helpers defined earlier in the file"; replace with dependency rule). Finalized text: §5.3.
+- **FIXME 0007** → §8.5.1 + new §9.3.6 FQ macro references (folded into Pass 1). Finalized text: §5.4.
+
+`/spec` commits the spec edits; `/arch` did not edit `spec/`. **The int facade stays LIVE** (retirement is the separate late-phase capstone). FIXME 0175 stays open (`resolution-designed-impl-pending`) until `/dev` lands the implementation. **Next: `/sprint` routes `/spec`** to commit §9.3.4/§5.13.2/§9.12/§9.2.5/§8.5.1/§9.3.6/§9.14 per the finalized text; then `/qa` for the rejected-program diagnostic test (`macro-availability-model.md` §0.8); then `/dev` (typecheck/int/frontend) for the three-pass implementation.
+
+**Resolution-primitive fold-in (2026-06-03, user-approved; `/arch` Phase-3 pass).** A refinement folded in on top of the locked decision — implementation-internal, language-invisible (does NOT touch §0.1–§0.6 macro-availability semantics or `spec/`):
+
+- **Placement.** The symbol-table resolution/search primitive is **types-owned** — `cranelisp_types::resolve` (general) + `resolve_macro_head` (the macro-recognition wrapper) + `Resolved` + `ResolveError`, authored in `crates/cranelisp-types/src/resolve.rs`. Resolving a name (current module → imports/reexports/aliases/visibility + Principle-17 chain-follow) is a **query over the symbol-table data structure** (no inference/unification/substitution), so by Principle 15 (behaviour-with-type) + Principle 7 (single-source) it extends the `ensure_module_exists` + `got_data_symbol_name` precedent. Pure over `symbol_tables` + `module_aliases`, generic `<C, L>`, **no `CheckState`**.
+- **Primitive-vs-view line.** The *search primitive* is types-owned; the *choice of which view to search stays with the caller* (the first-hop `View`): int's Pass-1 macro recognition passes the **committed** view (`View::single(live)`); typecheck's Pass-2/3 body resolution passes the **staging ∪ live union** (`View::union` via its `SymbolTableAccess`). Same primitive, different first-hop view. Cross-module hops always land in already-committed dependency modules, so the view parameterises only the entry point.
+- **Public-API delta** (`crates/cranelisp-types/public-api.txt`, regenerated `cargo public-api --omit blanket-impls,auto-derived-impls`): **+~40 lines** — `pub fn resolve<C,L>(…) -> Result<Resolved<C>, ResolveError>`, `pub fn resolve_macro_head<C,L>(…) -> Result<Option<FQSymbol>, ResolveError>`, `pub struct Resolved<C>` (`entry`/`home`/`fq`), `#[non_exhaustive] pub enum ResolveError` (5 variants) + `message`/`span`/`Display`/`Error`/`From<ResolveError> for CranelispError`. No removals; no DAG change (types has no deps).
+- **Consolidation.** int's `SymbolTableMacroResolver` + `resolve_macro_definition` (`src/worker.rs`) AND typecheck's `resolve_trait`/`resolve_type`/`resolve_constructor`/`resolve_qualified` (`crates/cranelisp-typecheck/src/checker.rs`, S72) **both collapse onto the types primitive** — two scattered chain-walk copies retire. `ResolveError` moves from typecheck to types; the `From<ResolveError> for CheckError` projection stays typecheck-side (CheckError is typecheck-owned).
+- **Docs cascaded this pass:** `crates/cranelisp-types/src/resolve.rs` (NEW, +7 unit tests, all green) + lib.rs export + crate-root `//!`; `bounded-contexts.md` §7 (types — "Resolution primitive" + in-scope family), §2 (typecheck — invariant 10/11 + macro-recognition in-scope bullet: `resolve_*` are callers, recognition leaves typecheck's surface), §6 (int — Pass-1 recognition via the types primitive, zero int→typecheck dep); `interfaces.md` (NEW "Resolution primitive" section); `macro-availability-model.md` §0.7 + new §0.9; `macro-expansion-ownership.md` §2.2 + §5 cascade map.
+- **`spec/` + FIXMEs 0005/0006/0007 untouched** (left for parallel `/spec`). §0 LOCKED semantics intact. `/design (typecheck)` pins the caller-side wiring (re-point `resolve_*` at the primitive) in Phase 3; `/dev` lands it with the three-pass implementation.
+
+## Skill plans (Phase 3)
+
+{Pending — populated after Phase 2.}
+
+## Waves (Phase 4)
+
+{Pending — populated after Phase 3. Anticipated shape: QA-first e2e+unit stage, then per-crate D/D/R: dominant `/design`+`/dev`+`/review` on src/ (int), with `/dev (typecheck)` + `/dev (backend)`/`/dev (intrinsics)` enablement waves if the cross-crate items are pulled in.}
+
+## Notes
+
+- 2026-06-02: Phase 1 scope drafted. Measured starting state: 7 lib crates + exe-bundle green; `cranelisp` binary 172 errors (sole workspace-green gap). Error clusters tabulated above.
+- 2026-06-02: User scope decisions — (1) include ALL cross-crate enablement (0249 + Jit::new + INTRINSICS_TABLE) for full green-at-runtime; (2) int facade retirement as a late-phase capstone this sprint; (3) integrate every e2e-gating item (platform host-wiring, --link, conformance triad) as separate waves so the full active suite passes — only user docs + demos defer to S77; (4) legacy harvest (42 files / 0116–0149) deferred to S77.
+- 2026-06-02: Phase 2 /arch SIGN-OFF on the core scope (Q1–Q4 settled; no backend public-surface growth; FIXME 0249 resolved+deleted; got_data_symbol_name → types). Then user reopened FIXME 0175: after a source-grounded interrogation of the `expand` factoring, REJECTED the `cranelisp-marshal` bridge crate and directed a robust re-architecture (W-Macro added) — frontend::expand private; typecheck recognizes + calls back to int to execute; typecheck owns further processing. Second /arch design pass commissioned (W-Macro), to return a proposal for user review before code commits.
+- 2026-06-02: W-Macro Phase 3 /arch design pass complete (now PROVISIONAL). Formalized the two-jobs split (recognition→typecheck, execution→int via callback, frontend→quasiquote-only); resolved structural-form re-entry as option (a); authored the `MacroExpander` trait + `MacroInvokeError` in `cranelisp-types`; cascaded BC §1/§2/§6, `facades/int.md`, `interfaces.md`, `exec-flow-compilation.mmd`+`.svg`; new design doc `design/arch/macro-expansion-ownership.md`; FIXME 0175 annotated `resolution-designed-impl-pending`; FIXME 0245 filed. 
+- 2026-06-02: USER PRESSURE-TEST reopened the W-Macro foundation across three rounds (check_forms takes ParsedEntry not Sexp; two-pass means typecheck iterates all forms; macros need mid-sequence compilation vs Decision-44 atomicity; spec is self-inconsistent §9.8 sequential vs §9.3.4/§5.13.2 pre-pass — open FIXME 0005/0006/0007). The mechanism design rests on an unresolved macro-availability decision that will entail a SPEC CHANGE. User direction: a WIDE /arch deep dive to generate the option space, weigh language impact, reconcile with Decision 44, and land a viable way forward — precedes mechanism finalization; output routes the spec change to /spec + pins the W-Macro mechanism; returns for user review before /spec or /dev act. Deep dive commissioned.
+- 2026-06-03: Deep dive complete (`design/arch/macro-availability-model.md`). Reframe: recognition availability (Pass-1 signatures, cluster-wide) vs execution availability (gap-driven JIT ordering). RECOMMENDED Option (f) = (c)+(d) hybrid (matches as-built source; D44 intact; no new public API). Spec change drafted (§9.3.4/§5.13.2/§9.12/§8.5.1+§9.3.6/§9.14; REPL/batch unified as cluster-scoped). 5 FOR-USER-REVIEW decisions (1–3 normative language changes). Provisional mechanism (`macro-expansion-ownership.md`) CONFIRMED, §4.3 interior pinned to "cleaner shape" (expand loop before check_forms).
+- 2026-06-03: USER continues discussing decision 1 — asked for a concrete trace of the canonical §9.8 scenario (defmacro whose body calls a defn helper, used to expand a later defn, all one file) under Option (f), specifically the plain-fn-called-by-macro-body compile-time dependency resolving via the scheduler gap mid-cluster + coexistence with D44 atomic commit. /arch commissioned to trace it against actual source + record as a worked, proven example before Option (f) is locked.
+- 2026-06-03: Trace DISPROVED the as-built handling (macro clause bodies can't call defn helpers — §9.8 violation; live `stdlib/defs.cl` workaround). Multi-round user pressure-test then drove the design past Option (f) entirely to a clean **phase-by-dependency** model. Refutations established along the way: (i) batched "expand-all → Pass1 → Pass2" is unsound for compile-time helpers (nothing compiled during the expand phase); (ii) allowing REPL same-module expansion helpers breaks `regenerate_backing_file` round-trip (regenerated single-module file can't use same-file helpers at expansion).
+- 2026-06-03: **W-MACRO DESIGN LOCKED (user decision).** **Principle (user-visible):** a macro's expansion may reference only modules typechecked *before* its defining module (dependencies — fetched just-in-time by pausing the current typecheck), plus macros (same-module macros included — compile-time layer); a same-module **non-macro** definition is NOT available at expansion; dependencies can't refer back (acyclic). **defmacro-before-use is normative** (goes in the spec). **Three-pass module compile:** (1) recursively typecheck defmacros and expand all macro symbols — both local and FQ — compiling dependent forms just-in-time as needed; (2) scan non-macro signatures; (3) typecheck non-macro bodies. The pass order *structurally enforces* the stage restriction (non-macro defs are Pass 2/3, invisible to Pass-1 expansion). Decision 44 intact on the Pass-2/3 runtime layer; round-trip-safe; REPL ≡ batch. W-Macro mechanism pinned: Pass 1 = expand phase (int orchestrates, typecheck recognizes, `MacroExpander` callback executes, deps JIT-compiled on demand); Passes 2+3 = `check_forms`'s internal two passes over fully-expanded non-macro forms. Vindicates the deep-dive's "expand before check_forms" shape — sound *because* helpers are dependencies, not same-module. Routing: /arch re-grounds the design docs; /spec commits §9.8/§9.3.4/§5.13.2 (incl. defmacro-before-use + FQ macro refs) via FIXMEs 0005/0006/0007.
+- 2026-06-03: **Resolution-helper placement folded in (user decision).** Symbol-table resolution/search *primitives* (resolve a name from a module following imports/reexports/aliases/visibility + Principle-17 chain-following) move onto `SymbolTable`/`SymbolTables` in `cranelisp-types` — extending the `ensure_module_exists` + `got_data_symbol_name` precedent (Principle 15 behavior-with-type; Principle 7 single-source). The *primitive* is types-owned (pure over `symbol_tables` + `module_aliases`, generic `<C,L>`, no `CheckState`); the *view-selection* stays with the caller (int passes committed tables for Pass-1 macro recognition; typecheck passes its staging+live `SymbolTableAccess` union for Pass-2/3 resolution). Effect: macro recognition leaves typecheck's surface entirely (it's a `SymbolTables` method); int does Pass-1 recognition with zero int→typecheck dependency; the current int-side `SymbolTableMacroResolver` resolution logic + typecheck's `resolve_*` family both consolidate onto the types primitives (retiring two scattered copies). No DAG impact.
+- 2026-06-03: **Advanced to PHASE 3 DESIGN.** /arch re-grounds the W-Macro design docs WITH the resolution-helper fold-in (authors the `SymbolTables` resolution-primitive signatures in `cranelisp-types`; cascades BC §7 types / §2 typecheck / §6 int). /spec runs **in parallel** (conflict-free — disjoint file trees; spec semantics already locked in `macro-availability-model.md §5`; the resolution-helper placement is implementation-internal and language-invisible): commits §9.3.4/§5.13.2/§9.12/§8.5.1+§9.3.6/§9.14 per the finalized §5 text and resolves+deletes FIXMEs 0005/0006/0007. /arch does NOT touch those FIXMEs this pass (left for /spec). Per-crate /design + /qa sprint-wide failing-test plan follow.
+- 2026-06-03: **Parallel /arch + /spec pass COMPLETE (conflict-free, as planned).** /spec committed the language change: `09-macros.md` §9.3.4/§9.2.5/new-§9.3.6/§9.12/§9.14, `05-definitions.md` §5.13.2, `08-modules.md` §8.5.4; traceability `[R4 S76 — tested-by /qa S76]`; **FIXMEs 0005/0006/0007 resolved + deleted.** /arch authored `cranelisp-types/src/resolve.rs` (`resolve` + `resolve_macro_head` + `Resolved<C>` + `ResolveError` relocated from typecheck; `View::single`/`union` = primitive-vs-view line; 7 tests green; public-api +~40 additive, no DAG change); cascaded BC §7/§2/§6 + interfaces + both macro docs + facades/int.md (LIVE) + exec-flow-compilation.mmd. **Follow-ups:** `exec-flow-compilation.svg` cosmetic re-render pending (env puppeteer error; mmd canonical); `From<ResolveError> for CheckError` stays typecheck-side (noted for /dev). Macro design + spec now fully settled; remaining Phase 3 = per-crate /design (int, typecheck, backend, intrinsics, platform) + /qa sprint-wide failing-test plan. Working tree carries accumulated uncommitted design work (no git commit pending user request).
+
+## Outcome (Phase 7)
+
+{Pending.}

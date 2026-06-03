@@ -1088,6 +1088,8 @@ Decision 23 (updated Sprint 58 Wave 2) records that every CLIF reference to `__c
 
 **Mode dispatch is the Module impl, not the CLIF.** This is the canonical illustration of Principle 11 (single pipeline, mode parameters): one CLIF, two resolvers. Adding a third mode (e.g. AOT to a static archive) would add a third resolver behind a third Module impl — the CLIF would not change.
 
+**Single-source GOT data-symbol name.** The `__cranelisp_got_{M}` naming scheme is produced by one function — `cranelisp_types::got_data_symbol_name(module_path) -> String` (`crates/cranelisp-types/src/module.rs`). It lives in `cranelisp-types` because **two** crates consume it: `cranelisp-backend` (emits the `Linkage::Import`/`Export` relocation symbol during codegen) and `int` (registers the SymbolTable-GOT slab base under this name for the JIT `symbol_lookup_fn`, the cache-hit `Linker::register_symbol`, and the `--link` startup `.o`). It was relocated DOWN from backend's former `pub(crate) compiler::got_data_symbol_name` at S76 (per the /arch S76 Phase 2 review) so the scheme is single-source rather than reached-into across the backend boundary or duplicated in int. It is pure string formatting over `ModuleFullPath`, a peer of `ensure_module_exists`.
+
 Cross-references: Decision 23 (two-GOT framing); Decision 31 (the SymbolTable GOT slot is the redefinition atomic-swap target — the `--run` GOT MUST be mutable for redefinition to work); Decision 36 (function symbol naming + linkage policy — bare-Local is correct because the `.o` data section GOT's relocation initializers are intra-`.o`); Decision 37 (cache-hit codegen-phase order independence is established by the SymbolTable GOT slot LAYOUT being pinned at typecheck time).
 
 ### Module Entries
@@ -1393,40 +1395,84 @@ No changes from v1.
 
 ## REPL Snapshot
 
-```rust
-/// Snapshot of typechecker state for REPL error recovery.
-#[derive(Debug, Clone)]
-pub struct ReplSnapshot {
-    pub next_type_id: TypeId,
-    pub symbol_keys: HashSet<Symbol>,
-    pub subst_len: usize,
-    pub scope_depth: usize,
-}
-```
-
-No changes from v1.
+`ReplSnapshot` was deleted as dead code in S73 (purge Wave 3) — superseded by the cluster-atomic staging-drop rollback mechanism (BC §2 invariant 7). The v1 sketch that lived here is retired; there is no `ReplSnapshot` type.
 
 ---
 
-## Frontend Traits
+## Resolution primitive — `resolve` / `resolve_macro_head` (S76 W-Macro fold-in)
 
 ```rust
-/// Trait for expanding macros during AST building.
-/// Implemented by the binary crate; allows frontend to remain
-/// independent of backend.
-pub trait MacroExpander {
-    fn expand(
-        &mut self,
-        name: &Symbol,
-        args: &[Sexp],
-        span: Span,
-    ) -> Result<Sexp, CranelispError>;
+// crates/cranelisp-types/src/resolve.rs
+pub struct Resolved<C: CodeStore = ()> {
+    pub entry: ModuleEntry<C>,
+    pub home: ModuleFullPath,
+    pub fq: FQSymbol,
+}
 
-    fn is_macro(&self, name: &str) -> bool;
+pub fn resolve<C, L>(
+    symbol_tables: &SymbolTables<C, L>,
+    module_aliases: &ModuleAliases,
+    first_hop: &View<'_, C, L>,        // caller-chosen current-module view
+    current_module: &ModuleFullPath,
+    name: &str,
+    span: Span,
+) -> Result<Resolved<C>, ResolveError>;
+
+pub fn resolve_macro_head<C, L>(
+    symbol_tables: &SymbolTables<C, L>,
+    module_aliases: &ModuleAliases,
+    first_hop: &View<'_, C, L>,
+    current_module: &ModuleFullPath,
+    name: &str,
+    span: Span,
+) -> Result<Option<FQSymbol>, ResolveError>;   // Ok(None) = head is not a macro
+
+#[non_exhaustive]
+pub enum ResolveError {
+    TraitNotFound { name, from_module, span },
+    TypeNotFound { name, from_module, span },
+    ConstructorNotFound { name, from_module, span },
+    QualifiedModuleUnknown { module, name, span },
+    PrivateInaccessible { name, defining_module, from_module, visibility_found, span },
 }
 ```
 
-No changes from v1.
+The single types-owned query that turns a name into a resolved symbol-table entry — following imports/reexports, §8.6.6 module-path aliases, visibility, and Principle-17 chain-following. **Resolving a name is a query over the symbol-table data structure** (no inference, no unification, no substitution), so by Principle 15 (behaviour lives with the type) and Principle 7 (single source) it belongs in `cranelisp-types`, extending the `ensure_module_exists` + `got_data_symbol_name` + chain-follow precedent. It is pure over `symbol_tables` + `module_aliases` (both types-owned), generic over `<C, L>`, and carries **no `CheckState`** — which is what keeps it in the data-only crate.
+
+**The primitive-vs-view line.** The *search primitive* is types-owned: "in this table set, resolve `name` from `current_module` following imports/aliases/visibility/chain." The *choice of which view to search stays with the caller*, supplied as the first-hop `View` over the current module:
+
+- **int's Pass-1 macro recognition** searches the **committed** tables — `View::single(live)` over the live current module. No staging exists during Pass 1 (the expand phase precedes `check_forms`).
+- **typecheck's Pass-2/3 body resolution** searches the **staging ∪ live union** — its `SymbolTableAccess` hands a `View::union(staging, live)`.
+
+Same primitive, different first-hop view. Cross-module hops (chain-following an `Import` edge, or the alias-resolved FQ target) always land in *other, already-committed* modules — staging only ever holds the *current* cluster's module (Principle 17 + Decision 44) — so the view parameterises only the entry point, not the whole walk.
+
+**Consolidation (retires two scattered copies).** `resolve_macro_head` replaces int's `SymbolTableMacroResolver::resolve_macro` chain-walk (`src/worker.rs`) — recognition is now a `cranelisp-types` query with **zero int→typecheck dependency**. typecheck's `resolve_trait` / `resolve_type` / `resolve_constructor` / `resolve_qualified` family (`crates/cranelisp-typecheck/src/checker.rs`, S72) becomes a set of thin callers of `resolve`, each projecting the generic `Resolved` / `ResolveError` to its kind-specific success/error. `ResolveError` moved here with the primitive (it was typecheck-local only because the resolver was); its `From<ResolveError> for CheckError` projection stays in `cranelisp-typecheck` because `CheckError` is typecheck-owned (the types-side projection target is the neutral `CranelispError`). **No DAG impact** — `cranelisp-types` has no dependencies; the primitive adds none.
+
+Per Principle 6 (minimum surface), there is one general primitive (`resolve`) plus thin typed wrappers (`resolve_macro_head` is the first; typecheck's `resolve_*` family are the rest, kept crate-side as projections). See `bounded-contexts.md` §7 (types — the resolution-primitive responsibility), §2 (typecheck — caller), §6 (int — Pass-1 recognition via the primitive).
+
+---
+
+## Macro execution callback — `MacroExpander` (S76 W-Macro, FIXME 0175 resolution)
+
+```rust
+// crates/cranelisp-types/src/macro_expander.rs
+pub trait MacroExpander: Send + Sync {
+    fn invoke(
+        &self,
+        fq: &FQSymbol,
+        args: &[Sexp],
+        call_span: Span,
+    ) -> Result<Sexp, MacroInvokeError>;
+}
+
+#[non_exhaustive]
+pub enum MacroInvokeError {
+    Aborted   { fq: FQSymbol, message: String, span: Span },
+    Malformed { fq: FQSymbol, message: String, span: Span },
+}
+```
+
+The injected capability by which `cranelisp-typecheck` executes one JIT-compiled macro invocation without depending on the integration layer. Macro **recognition** is typecheck's (it already resolves every head against the symbol-table view); macro **execution** (marshal `Sexp`↔heap, the signal-protected `extern "C" fn(i64) -> i64` call) is int's, behind this trait — int implements it over `src/expander.rs`'s invocation core + `src/marshal.rs`. typecheck holds `&dyn MacroExpander` for the duration of a `check_forms` call; the result is a raw `Sexp` that typecheck re-classifies (nested-macro fixpoint + structural-form re-entry). The trait lives in `cranelisp-types` because it crosses the typecheck ↔ int boundary, and adds **no** dependency edge (typecheck stays `cranelisp-types`-only; the int→typecheck call edge already exists and now carries the `&dyn MacroExpander` argument). `Send + Sync` because concurrent typecheck workers may invoke macros in parallel (Decision 38). Replaces the REJECTED `cranelisp-marshal` bridge crate (FIXME 0175). The stale v1 `MacroExpander` sketch (frontend-side, `&mut self` + `is_macro`) is retired by this — there is no frontend macro trait. See `design/arch/macro-expansion-ownership.md`.
 
 ---
 

@@ -1699,6 +1699,34 @@ where
     }
 }
 
+/// The per-module GOT **data-symbol name** — the single source of truth for
+/// the relocation-symbol naming scheme that addresses a module's `GotTable`
+/// slab base.
+///
+/// Every module `M` exposes its GOT slab as a data symbol named
+/// `__cranelisp_got_{flat}`, where `flat` is `M`'s dotted path with `.`
+/// replaced by `_` (and the empty/entry path mapped to `_entry`). Backend
+/// codegen emits a `Linkage::Import` `global_value` against this name for
+/// cross-module GOT-indirect calls (Decision 23/36); int registers the slab
+/// base under this name (JIT `symbol_lookup_fn` / cache-hit
+/// `Linker::register_symbol` / `--link` relocation).
+///
+/// This naming scheme is consumed by **two crates** — `cranelisp-backend`
+/// (codegen relocation) and `int` (JIT/cache/link symbol registration) — so
+/// it lives here in `cranelisp-types`, the data-and-contract home, rather than
+/// being duplicated or reached-into across the backend boundary. It is a pure
+/// string function over `ModuleFullPath` with zero codegen dependency, a peer
+/// of `ensure_module_exists`. Relocated DOWN from `cranelisp-backend`'s
+/// former `pub(crate) compiler::got_data_symbol_name` at S76 per the /arch
+/// Phase 2 review (single-source-of-truth, Principle 7).
+pub fn got_data_symbol_name(module_path: &ModuleFullPath) -> String {
+    let flat = module_path.as_ref().replace('.', "_");
+    format!(
+        "__cranelisp_got_{}",
+        if flat.is_empty() { "_entry" } else { &flat }
+    )
+}
+
 /// Install a pre-built `SymbolTable` at `path`. Used by the cache-hit branch
 /// of `CompilerSession::introduce_module` — the cached metadata is decoded
 /// into a `SymbolTable` and installed atomically. Overwrites any existing

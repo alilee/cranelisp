@@ -620,18 +620,18 @@ Mutual recursion in the REPL is expressed via `(begin form₁ form₂ ... formN)
 (defn g [x] x)       ; (defining g now does not retroactively repair f)
 ```
 
-This rule applies uniformly to all top-level definitions: `defn`, `deftype`, `deftrait`, `impl`, `defmacro`, `const`, `def`. **Macros follow the same rule** -- a macro MUST be defined (or appear earlier in the same `begin` cluster) before its first use. A reference to an undefined macro in a REPL expression is an error.
+This forward-reference rule applies to non-macro top-level definitions: `defn`, `deftype`, `deftrait`, `impl`. **Macros are the exception** -- they follow the **defmacro-before-use** rule (§9.3.4) in both the REPL and batch: a macro MUST be defined before its first use in source order, and a use that appears textually before its `defmacro` is an ordinary reference (it passes through to the AST builder), not a macro call. A `defmacro` is part of the **compile-time layer** that runs *before* the cluster's non-macro forms are registered (the three-pass model, §9.12), so a forward reference to a macro is not resolvable as a macro even within a single cluster. Macro **expansion** may reference dependency-module definitions and same-module macros, never same-module non-macro definitions (§9.3.4). This is the same rule in the REPL and in batch — there is no REPL-vs-batch macro-availability divergence.
 
 **Cluster atomicity**: If type checking fails for any form in the cluster, none of the forms are committed -- the REPL state is unchanged. On success, all forms commit together.
 
 **Module-phase declarations** (`mod`, `import`, `export`, `platform`) MUST NOT appear inside a `begin` cluster. They are processed in the module phase (see §5.13.3 and §2.1), before macro expansion and clusters. A `begin` form in user code that contains a module-phase declaration is a compile-time error.
 
-**Batch (file-level) semantics are unchanged**: §5.13.1's MAY-reference-freely rule continues to apply across the file scope. The orchestrator effectively treats a file's top-level definitions as one cluster. Macros within a module remain available throughout the module regardless of definition position -- all `defmacro` forms are extracted and compiled in a pre-pass before other forms are processed (consistent with Clojure's module-wide macro model):
+**Batch (file-level) non-macro semantics**: §5.13.1's MAY-reference-freely rule continues to apply across the file scope for `defn`/`deftype`/`deftrait`/`impl`. The orchestrator effectively treats a file's top-level non-macro definitions as one cluster (registered in Pass 2/3 of the three-pass model, §9.12). **Macros are the exception**: a `defmacro` is part of the compile-time layer (Pass 1) that runs *before* the cluster's non-macro forms are registered, so a macro is available only to forms that **follow** its `defmacro` in source order — the defmacro-before-use rule (§9.3.4), uniform across REPL and batch:
 
 ```clojure
-;; Batch: both orderings are valid in a module
-(defn f [x] (double x))
+;; Batch: defmacro precedes its use
 (defmacro double [x] `(+ ~x ~x))
+(defn f [x] (double x))
 
 (defmacro triple [x] `(+ ~x ~x ~x))
 (defn g [x] (triple x))
