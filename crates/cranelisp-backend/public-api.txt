@@ -279,7 +279,6 @@ pub cranelisp_backend::compiler::CompileContext::func_ids: &'a std::collections:
 pub cranelisp_backend::compiler::CompileContext::module_aliases: &'a cranelisp_types::module::ModuleAliases
 pub cranelisp_backend::compiler::CompileContext::panic_func_id: core::option::Option<cranelift_module::module::FuncId>
 pub cranelisp_backend::compiler::CompileContext::symbol_tables: &'a dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>
-pub cranelisp_backend::compiler::CompileContext::traced_fns: core::option::Option<&'a [cranelisp_backend::compiler::TracedFnInfo]>
 pub cranelisp_backend::compiler::CompileContext::vec_drop_func_id: core::option::Option<cranelift_module::module::FuncId>
 pub cranelisp_backend::compiler::CompileContext::vec_new_func_id: core::option::Option<cranelift_module::module::FuncId>
 impl<'a, C, L> cranelisp_backend::compiler::CompileContext<'a, C, L> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
@@ -293,21 +292,6 @@ impl<'a, C, L> core::marker::Unpin for cranelisp_backend::compiler::CompileConte
 impl<'a, C, L> core::marker::UnsafeUnpin for cranelisp_backend::compiler::CompileContext<'a, C, L>
 impl<'a, C, L> !core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::compiler::CompileContext<'a, C, L>
 impl<'a, C, L> !core::panic::unwind_safe::UnwindSafe for cranelisp_backend::compiler::CompileContext<'a, C, L>
-pub struct cranelisp_backend::compiler::TracedFnInfo
-pub cranelisp_backend::compiler::TracedFnInfo::arity: usize
-pub cranelisp_backend::compiler::TracedFnInfo::code_ptr: i64
-pub cranelisp_backend::compiler::TracedFnInfo::got_base: i64
-pub cranelisp_backend::compiler::TracedFnInfo::got_slot: usize
-pub cranelisp_backend::compiler::TracedFnInfo::name: alloc::string::String
-pub cranelisp_backend::compiler::TracedFnInfo::param_types: alloc::vec::Vec<cranelisp_types::types::Type>
-pub cranelisp_backend::compiler::TracedFnInfo::result_type: cranelisp_types::types::Type
-impl core::marker::Freeze for cranelisp_backend::compiler::TracedFnInfo
-impl core::marker::Send for cranelisp_backend::compiler::TracedFnInfo
-impl core::marker::Sync for cranelisp_backend::compiler::TracedFnInfo
-impl core::marker::Unpin for cranelisp_backend::compiler::TracedFnInfo
-impl core::marker::UnsafeUnpin for cranelisp_backend::compiler::TracedFnInfo
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::compiler::TracedFnInfo
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::compiler::TracedFnInfo
 pub mod cranelisp_backend::error
 #[non_exhaustive] pub enum cranelisp_backend::error::CompilationError
 pub cranelisp_backend::error::CompilationError::CodegenFailed

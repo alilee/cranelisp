@@ -132,7 +132,7 @@ Higher-order Vec operations such as `vec-map` and `vec-reduce` are NOT primitive
 
 ## A.4 Special Forms [Tested]
 
-Special forms are keywords processed directly by the compiler. They are not functions or macros and cannot be shadowed.
+Special forms are keywords processed directly by the compiler. They are **root special forms** — always available with no import and no module path. They are not functions or macros, their names are reserved, and they cannot be shadowed or bound (see [Section 2.9](02-grammar.md#29-reserved-words)).
 
 **Test infrastructure** — special forms, always in scope (see [repl/spec.md §16](../repl/spec.md#16-test-discovery-and-execution)):
 
@@ -161,4 +161,4 @@ All primitive functions (§A.3) and special forms (§A.4) MUST have docstrings a
 | `import` | Name import: `(import [module [names]])` | [Tested tests/ring2.rs::import_specific_names]
 | `export` | Name re-export: `(export [module [names]])` | [Tested crates/cranelisp-frontend/src/module_extract.rs::test_export_specific]
 | `platform` | Platform DLL declaration (entry module only): `(platform stdio)` | [R4 S9]
-| `trace` | Execution trace: `(trace expr)` — evaluates `expr` with call instrumentation, returns `Trace` ADT | [R4 S20]
+| `trace` | Execution trace: `(trace expr)` — evaluates `expr` with call instrumentation, returns `Trace` ADT. A root special form (always available, no import, no module path), reserved name. The returned `Trace`/`TraceCall` ADT names require explicit import. | [R4 S76]

@@ -14,7 +14,7 @@ The language guarantees the following regardless of which standard library (if a
 
 - **Implicit prelude injection**: When a module named `prelude` is found on the search path, the compiler injects `(import [prelude [*]])` for all user modules (normatively defined in [Section 8.8](08-modules.md#88-prelude)). An empty prelude is valid — the language does not require the prelude to contain anything.
 
-- **Special forms**: The structural special forms (`defn`, `deftype`, `deftrait`, `impl`, `defmacro`, `let`, `if`, `fn`, `match`, `mod`, `import`, `export`, `platform`) are always available without import — they are parser keywords with distinct syntax. Module-scoped special forms (`trace`) require import from their defining module (see [Section 3.2.4](03-types.md#324-trace-type)).
+- **Special forms**: The structural special forms (`defn`, `deftype`, `deftrait`, `impl`, `defmacro`, `let`, `if`, `fn`, `match`, `mod`, `import`, `export`, `platform`) and `trace` are all **root special forms** — parser keywords with distinct syntax, always available without import and with no module path. `trace` produces a distinct trace node; the `Trace` / `TraceCall` types and the field accessors it returns ARE `primitives`-module entries that DO require import — the deliberate form/ADT asymmetry, mirroring `Sexp`-in-`macros` (see [Section 3.2.4](03-types.md#324-trace-type)).
 
 ## 11.2 Compiler-Seeded Types [Tested tests/ring4_trace.rs::trace_type_importable_from_primitives, tests/ring4_trace.rs::trace_field_accessors_importable, tests/io.rs::io_pure_int_type]
 
@@ -64,11 +64,11 @@ Practical notes for library authors:
 
 ## 11.5 Trace Support [R4 S20]
 
-The `Trace` ADT, `TraceCall` constructor, `trace` special form, and field accessor functions (`name`, `params`, `result`, `children`, `nanos`) are compiler-seeded in the `primitives` module but NOT auto-imported (see [Section 3.2.4](03-types.md#324-trace-type)). A standard library SHOULD re-export these and provide additional display functions through a `core.trace` module:
+The `trace` form is a **root special form** — always available with no import and no module path (see [Section 2.3.10](02-grammar.md#2310-trace----execution-trace) and [Section 3.2.4](03-types.md#324-trace-type)); it is NOT a `primitives` entry and cannot be re-exported. The `Trace` ADT, `TraceCall` constructor, and field accessor functions (`name`, `params`, `result`, `children`, `nanos`) ARE compiler-seeded in the `primitives` module and are NOT auto-imported (the deliberate form/ADT asymmetry, see [Section 3.2.4](03-types.md#324-trace-type)). A standard library SHOULD re-export the ADT names and provide additional display functions through a `core.trace` module:
 
 ```clojure
 ;; stdlib/core/trace.cl
-(export [primitives [trace Trace TraceCall name params result children nanos]])
+(export [primitives [Trace TraceCall name params result children nanos]])
 
 ;; Display functions defined here:
 ;; trace-show-tree :: Trace -> String  — full indented call tree
@@ -76,4 +76,4 @@ The `Trace` ADT, `TraceCall` constructor, `trace` special form, and field access
 ;; trace-call-string :: Trace -> String — call signature: "(name p1 p2 ...)"
 ```
 
-Users import the combined package: `(import [core [trace [*]]])` brings in the re-exported primitives and the display functions together. These are not part of the prelude because tracing is a developer tool, not a general-purpose facility.
+Users import the combined package: `(import [core [trace [*]]])` brings in the re-exported `Trace` ADT names and the display functions together (the `trace` form itself is always available without import). These are not part of the prelude because tracing is a developer tool, not a general-purpose facility.

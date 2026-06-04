@@ -135,6 +135,50 @@ pub fn cranelisp_intrinsics::rc::consume_shallow(ptr: i64)
 pub fn cranelisp_intrinsics::rc::is_rc_trace_enabled() -> bool
 pub fn cranelisp_intrinsics::rc::rc_trace(op: &str, ptr: i64, rc: i64)
 #[export_name = "runtime/rc_underflow_check"] pub c fn cranelisp_intrinsics::rc::rc_underflow_check(ptr: i64, old_rc: i64) -> i64
+pub mod cranelisp_intrinsics::trace
+#[repr(i32)] pub enum cranelisp_intrinsics::trace::DescriptorKind
+pub cranelisp_intrinsics::trace::DescriptorKind::Adt = 6
+pub cranelisp_intrinsics::trace::DescriptorKind::Bool = 1
+pub cranelisp_intrinsics::trace::DescriptorKind::Float = 2
+pub cranelisp_intrinsics::trace::DescriptorKind::Fn = 4
+pub cranelisp_intrinsics::trace::DescriptorKind::Int = 0
+pub cranelisp_intrinsics::trace::DescriptorKind::String = 3
+pub cranelisp_intrinsics::trace::DescriptorKind::TypeVar = 7
+pub cranelisp_intrinsics::trace::DescriptorKind::Vec = 5
+impl core::marker::Freeze for cranelisp_intrinsics::trace::DescriptorKind
+impl core::marker::Send for cranelisp_intrinsics::trace::DescriptorKind
+impl core::marker::Sync for cranelisp_intrinsics::trace::DescriptorKind
+impl core::marker::Unpin for cranelisp_intrinsics::trace::DescriptorKind
+impl core::marker::UnsafeUnpin for cranelisp_intrinsics::trace::DescriptorKind
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_intrinsics::trace::DescriptorKind
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_intrinsics::trace::DescriptorKind
+#[repr(C)] pub struct cranelisp_intrinsics::trace::DisplayDescriptor
+pub cranelisp_intrinsics::trace::DisplayDescriptor::_pad: i32
+pub cranelisp_intrinsics::trace::DisplayDescriptor::_pad2: i32
+pub cranelisp_intrinsics::trace::DisplayDescriptor::child0_off: i32
+pub cranelisp_intrinsics::trace::DisplayDescriptor::ctors_off: i32
+pub cranelisp_intrinsics::trace::DisplayDescriptor::kind: i32
+pub cranelisp_intrinsics::trace::DisplayDescriptor::name_off: i32
+impl core::marker::Freeze for cranelisp_intrinsics::trace::DisplayDescriptor
+impl core::marker::Send for cranelisp_intrinsics::trace::DisplayDescriptor
+impl core::marker::Sync for cranelisp_intrinsics::trace::DisplayDescriptor
+impl core::marker::Unpin for cranelisp_intrinsics::trace::DisplayDescriptor
+impl core::marker::UnsafeUnpin for cranelisp_intrinsics::trace::DisplayDescriptor
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_intrinsics::trace::DisplayDescriptor
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_intrinsics::trace::DisplayDescriptor
+pub fn cranelisp_intrinsics::trace::consume_trace_call(ptr: i64)
+#[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_collect_trace() -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_trace_children(trace_ptr: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_trace_enter(name_ptr: i64, name_len: i64, params_count: i64, params_array_ptr: i64)
+#[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_trace_exit(result: i64, result_str_ptr: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_trace_first_child_nanos(trace_adt: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_trace_format(value: i64, descriptor_ptr: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_trace_name(trace_ptr: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_trace_nanos(trace_ptr: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_trace_params(trace_ptr: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_trace_restore_got(got_base: i64, saved_got: i64)
+#[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_trace_result(trace_ptr: i64) -> i64
+#[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_trace_swap_got(got_base: i64, n_slots: i64, slots_ptr: i64, wrappers_ptr: i64) -> i64
 pub mod cranelisp_intrinsics::vec_runtime
 pub const cranelisp_intrinsics::vec_runtime::CAP_OFFSET: usize
 pub const cranelisp_intrinsics::vec_runtime::DATA_PTR_OFFSET: usize

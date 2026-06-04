@@ -626,7 +626,7 @@ trace_expr   = '(' 'trace' expr ')'
 
 The `trace` form evaluates `expr` with function call instrumentation active and returns a `Trace` ADT value capturing the call tree. The body MUST be exactly one expression. The result type is always `Trace`, regardless of the type of `expr`.
 
-`trace` is a parser keyword, like `let`, `if`, and `match`. It is always in scope — no import required. The `Trace` and `TraceCall` types are defined in the `primitives` module and require explicit import for pattern matching (see [Section 3.2.4](03-types.md#324-trace-type)).
+`trace` is a **root special form** — a parser keyword like `let`, `if`, and `match`, recognised by the parser and typechecker before any name lookup. It is always available with no import and no module path (there is no `primitives/trace`), and its name is **reserved** (see [§2.9](#29-reserved-words)). The `Trace` and `TraceCall` types are defined in the `primitives` module and require explicit import for pattern matching (see [Section 3.2.4](03-types.md#324-trace-type)) — the deliberate form/ADT asymmetry described there.
 
 ```clojure
 (trace (fact 5))              ; trace the execution of (fact 5)
@@ -897,3 +897,28 @@ annotation   = COLON_PREFIX               (* :Int, :a, :Num *)
 Where `COLON_PREFIX` is a colon-prefixed symbol from the lexical grammar (e.g., `:Int`, `:a`), and `type_expr_list` is a parenthesized type expression (e.g., `(Option Int)`, `(Fn [Int] Bool)`).
 
 The colon serves as the annotation introducer. A colon immediately followed by an uppercase letter is a named type annotation. A colon immediately followed by a lowercase letter is a type variable or trait constraint. A bare colon followed by a parenthesized form is a compound type annotation.
+
+## 2.9 Reserved Words [R4 S76 — tested-by /qa S76]
+
+The following names are **reserved words** — they are recognised directly by the parser and AST builder (and, for the special forms below, the typechecker) and have dedicated syntax. They are not ordinary identifiers, are always available with no import and no module path, and **cannot be shadowed**:
+
+```ebnf
+reserved_word = 'defn' | 'defn-' | 'deftype' | 'deftype-'
+              | 'deftrait' | 'deftrait-' | 'impl'
+              | 'defmacro' | 'defmacro-'
+              | 'mod' | 'mod-' | 'import' | 'export' | 'platform'
+              | 'let' | 'if' | 'fn' | 'match' | 'vec' | 'trace'
+              | 'discover-tests' | 'run-test'
+```
+
+`trace` is a member of this list: it is a **root special form** (§2.3.10), recognised before any name lookup, always available with no import and no module path (there is no `primitives/trace`).
+
+**Binding rejection.** A program MUST NOT define or bind the name `trace`. Any binder or definition position that names `trace` is **rejected** — it is not allowed-but-shadowed. In particular, each of the following is an error: [R4 S76]
+
+```clojure
+(defn trace [x] x)         ; ERROR: trace is a reserved word
+(let [trace 1] trace)      ; ERROR: trace may not be bound
+(fn [trace] trace)         ; ERROR: trace may not be a parameter
+```
+
+This applies to every binder/definition position — `defn`/`defn-` names, `let`/`match` bindings, `fn`/`defn` parameters, and any other position that introduces the name `trace`. The reservation makes `(trace ...)` unambiguously the trace special form everywhere it appears.

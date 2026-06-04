@@ -59,12 +59,20 @@
 //!
 //! # Scope — what is NOT here
 //!
-//! The 14 int-owned intrinsics (`discover-tests`, `run-test`,
-//! `cranelisp_trace_format`, the `cranelisp_trace_*` family — int-hosted per
-//! Decision 40 / Path B1) and the GOT-dispatched primitives (`add-i64`,
-//! `str-concat`, `vec-len`, …) are deliberately absent. This catalog is the
-//! `cranelisp-intrinsics` crate's contribution only, not the complete JIT symbol
-//! universe — int concatenates its own `int_intrinsics()` at JIT setup.
+//! The two int-owned **test** intrinsics (`discover-tests`, `run-test`) and the
+//! GOT-dispatched primitives (`add-i64`, `str-concat`, `vec-len`, …) are
+//! deliberately absent. This catalog is the `cranelisp-intrinsics` crate's
+//! contribution only, not the complete JIT symbol universe — int concatenates
+//! its own test intrinsics at JIT setup.
+//!
+//! # Trace family present (S76 trace ruling 2026-06-04)
+//!
+//! The 12 `cranelisp_trace_*` entries (incl. the pure descriptor-driven
+//! `cranelisp_trace_format`) ARE in this catalog — the 2026-06-04 user ruling
+//! retracted D40's trace-relocation-to-int and hosts the bodies here (BC §4b
+//! invariant 12; `design/arch/tracing.md`). The table is 27 entries (15 core +
+//! 12 trace). The catalog + its tests are the single owner of the trace
+//! name-agreement contract (closing the prior no-owner gap).
 
 /// One backend-emitted-call target in the published intrinsics catalog.
 ///
@@ -94,9 +102,11 @@ pub struct IntrinsicEntry {
 /// The published flat Import-catalog of this crate's backend-emitted-call
 /// targets (BC §4b invariant 11 — Decision-0048-for-intrinsics).
 ///
-/// Returns a `'static` slice of the 15 entries, relocated verbatim from the
-/// retired `cranelisp_backend::jit::intrinsic_symbols()`. See this module's
-/// `//!` for the consumer contract, the ABI guardrail, and the scope boundary.
+/// Returns a `'static` slice of the 27 entries — 15 core (relocated verbatim
+/// from the retired `cranelisp_backend::jit::intrinsic_symbols()`) plus the 12
+/// `cranelisp_trace_*` family (S76 trace ruling, BC §4b invariant 12). See this
+/// module's `//!` for the consumer contract, the ABI guardrail, and the scope
+/// boundary.
 pub fn intrinsics_table() -> &'static [IntrinsicEntry] {
     &[
         // Runtime infrastructure (internal, not user-callable).
@@ -119,8 +129,23 @@ pub fn intrinsics_table() -> &'static [IntrinsicEntry] {
         IntrinsicEntry { name: "vec-set-copy", ptr: crate::vec_runtime::vec_set_copy as *const u8, param_count: 4, has_return: true, is_runtime: false },
         IntrinsicEntry { name: "vec-push-copy", ptr: crate::vec_runtime::vec_push_copy as *const u8, param_count: 3, has_return: true, is_runtime: false },
         IntrinsicEntry { name: "vec-push-grow", ptr: crate::vec_runtime::vec_push_grow as *const u8, param_count: 2, has_return: true, is_runtime: false },
-        // Trace runtime symbols are deliberately ABSENT — relocated to int per
-        // Decision 40 / Path B1 (S67 W4). `--link` mode rejects `(trace ...)`.
+        // The `(trace ...)` runtime family (S76 trace ruling 2026-06-04 — BC §4b
+        // invariant 12; `design/arch/tracing.md`). Backend emits these as
+        // `Linkage::Import`; this catalog single-sources the name-agreement
+        // contract. `cranelisp_trace_format` is the pure descriptor-driven
+        // formatter (arity `(2, true)` — unchanged from the prior int shim).
+        IntrinsicEntry { name: "cranelisp_trace_enter", ptr: crate::trace::cranelisp_trace_enter as *const u8, param_count: 4, has_return: false, is_runtime: true },
+        IntrinsicEntry { name: "cranelisp_trace_exit", ptr: crate::trace::cranelisp_trace_exit as *const u8, param_count: 2, has_return: true, is_runtime: true },
+        IntrinsicEntry { name: "cranelisp_trace_swap_got", ptr: crate::trace::cranelisp_trace_swap_got as *const u8, param_count: 4, has_return: true, is_runtime: true },
+        IntrinsicEntry { name: "cranelisp_trace_restore_got", ptr: crate::trace::cranelisp_trace_restore_got as *const u8, param_count: 2, has_return: false, is_runtime: true },
+        IntrinsicEntry { name: "cranelisp_collect_trace", ptr: crate::trace::cranelisp_collect_trace as *const u8, param_count: 0, has_return: true, is_runtime: true },
+        IntrinsicEntry { name: "cranelisp_trace_first_child_nanos", ptr: crate::trace::cranelisp_trace_first_child_nanos as *const u8, param_count: 1, has_return: true, is_runtime: true },
+        IntrinsicEntry { name: "cranelisp_trace_name", ptr: crate::trace::cranelisp_trace_name as *const u8, param_count: 1, has_return: true, is_runtime: true },
+        IntrinsicEntry { name: "cranelisp_trace_params", ptr: crate::trace::cranelisp_trace_params as *const u8, param_count: 1, has_return: true, is_runtime: true },
+        IntrinsicEntry { name: "cranelisp_trace_result", ptr: crate::trace::cranelisp_trace_result as *const u8, param_count: 1, has_return: true, is_runtime: true },
+        IntrinsicEntry { name: "cranelisp_trace_children", ptr: crate::trace::cranelisp_trace_children as *const u8, param_count: 1, has_return: true, is_runtime: true },
+        IntrinsicEntry { name: "cranelisp_trace_nanos", ptr: crate::trace::cranelisp_trace_nanos as *const u8, param_count: 1, has_return: true, is_runtime: true },
+        IntrinsicEntry { name: "cranelisp_trace_format", ptr: crate::trace::cranelisp_trace_format as *const u8, param_count: 2, has_return: true, is_runtime: true },
     ]
 }
 
@@ -147,15 +172,28 @@ mod tests {
         "vec-set-copy",
         "vec-push-copy",
         "vec-push-grow",
+        // The `(trace ...)` runtime family (S76 trace ruling — BC §4b inv 12).
+        "cranelisp_trace_enter",
+        "cranelisp_trace_exit",
+        "cranelisp_trace_swap_got",
+        "cranelisp_trace_restore_got",
+        "cranelisp_collect_trace",
+        "cranelisp_trace_first_child_nanos",
+        "cranelisp_trace_name",
+        "cranelisp_trace_params",
+        "cranelisp_trace_result",
+        "cranelisp_trace_children",
+        "cranelisp_trace_nanos",
+        "cranelisp_trace_format",
     ];
 
-    /// Name-set completeness + uniqueness: the table contains exactly the 15
+    /// Name-set completeness + uniqueness: the table contains exactly the 27
     /// expected names — no more, no fewer — and no name repeats (BC §6
     /// guardrail; positive + negative coverage).
     #[test]
-    fn name_set_is_exactly_the_expected_15() {
+    fn name_set_is_exactly_the_expected_27() {
         let names: Vec<&str> = intrinsics_table().iter().map(|e| e.name).collect();
-        assert_eq!(names.len(), 15, "table must hold exactly 15 entries");
+        assert_eq!(names.len(), 27, "table must hold exactly 27 entries");
         assert_eq!(names.len(), EXPECTED_NAMES.len());
 
         // Every expected name present (no drop).
@@ -207,6 +245,19 @@ mod tests {
             ("vec-set-copy", 4, true),
             ("vec-push-copy", 3, true),
             ("vec-push-grow", 2, true),
+            // Trace family (FIXME 0254 / tracing.md §3.3).
+            ("cranelisp_trace_enter", 4, false),
+            ("cranelisp_trace_exit", 2, true),
+            ("cranelisp_trace_swap_got", 4, true),
+            ("cranelisp_trace_restore_got", 2, false),
+            ("cranelisp_collect_trace", 0, true),
+            ("cranelisp_trace_first_child_nanos", 1, true),
+            ("cranelisp_trace_name", 1, true),
+            ("cranelisp_trace_params", 1, true),
+            ("cranelisp_trace_result", 1, true),
+            ("cranelisp_trace_children", 1, true),
+            ("cranelisp_trace_nanos", 1, true),
+            ("cranelisp_trace_format", 2, true),
         ];
         for (name, params, ret) in expected {
             let e = intrinsics_table()
@@ -218,16 +269,20 @@ mod tests {
         }
     }
 
-    /// `is_runtime` classification: `runtime/`-prefixed names are runtime
-    /// infrastructure (true); the `vec-*-copy` / `vec-push-grow` COW targets
-    /// are user-visible-named (false). Documents the classification's intent.
+    /// `is_runtime` classification: `runtime/`-prefixed names + the IVar and
+    /// trace families are runtime infrastructure (true); the `vec-*-copy` /
+    /// `vec-push-grow` COW targets are user-visible-named (false). Documents the
+    /// classification's intent.
     #[test]
     fn is_runtime_classification() {
         for e in intrinsics_table() {
-            let want = e.name.starts_with("runtime/") || e.name.starts_with("cranelisp_ivar_");
+            let want = e.name.starts_with("runtime/")
+                || e.name.starts_with("cranelisp_ivar_")
+                || e.name.starts_with("cranelisp_trace_")
+                || e.name == "cranelisp_collect_trace";
             assert_eq!(
                 e.is_runtime, want,
-                "{} is_runtime classification (runtime/ + ivar are true; vec COW false)",
+                "{} is_runtime classification (runtime/ + ivar + trace are true; vec COW false)",
                 e.name
             );
         }

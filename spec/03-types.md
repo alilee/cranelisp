@@ -91,7 +91,12 @@ Trace
 
 `Trace` is defined in the `primitives` module and participates in the type system as an ordinary ADT. It is the result type of the `trace` special form (see [Section 4.12](04-expressions.md#412-trace-expression)). Unlike most ADTs, `Trace` is not parameterized -- it captures runtime information as formatted strings using the canonical value display format (see [Section 12.9](12-runtime.md#129-value-display-format)). The `params` and `children` fields use `SList` (from the `macros` module) for list structure, enabling pattern-matching traversal with `SCons`/`SNil`.
 
-`Trace`, `TraceCall`, `trace`, and the field accessor functions (`name`, `params`, `result`, `children`, `nanos`) are defined in the `primitives` module but are NOT auto-imported into user scope. User code must import them explicitly (e.g., `(import [primitives [trace Trace TraceCall]])`) or use qualified names (e.g., `primitives/trace`). A standard library MAY re-export these through a convenience module (e.g., `core.trace`) using the `export` mechanism (see [Section 8.4](08-modules.md#84-export)).
+**Form/ADT asymmetry.** There is a deliberate asymmetry between the `trace` *form* and the `Trace` *ADT names*: [R4 S76]
+
+- The **`trace` keyword needs no import**. It is a root special form (see [Section 2.3.10](02-grammar.md#2310-trace----execution-trace) and [Section 4.12.4](04-expressions.md#4124-the-trace-adt)) — always available with no import and no module path, and there is **no** `primitives/trace`. Its name is reserved (see [Section 2.9](02-grammar.md#29-reserved-words)).
+- The **`Trace`, `TraceCall`, and field accessor names** (`name`, `params`, `result`, `children`, `nanos`) **DO require import**. They are `primitives`-module entries that are NOT auto-imported into user scope. User code must import them explicitly (e.g., `(import [primitives [Trace TraceCall name params result children nanos]])`) or use qualified names (e.g., `primitives/Trace`).
+
+This mirrors the `Sexp`-in-`macros` precedent (see [Section 9.1](09-macros.md#91-sexp-data-model)): quasiquote works without import because the expander emits qualified `macros/Sexp...` constructors, while bare `Sexp` constructors must be imported. Likewise the `trace` form works without import, while destructuring the returned `Trace` value requires importing the ADT names. A standard library MAY re-export the ADT names through a convenience module (e.g., `core.trace`) using the `export` mechanism (see [Section 8.4](08-modules.md#84-export)).
 
 ### 3.2.5 TestResult Type [R4]
 

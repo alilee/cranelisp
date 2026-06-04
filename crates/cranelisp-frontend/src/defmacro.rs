@@ -129,13 +129,15 @@ fn parse_param_items(
 
     while i < items.len() {
         match &items[i] {
-            Sexp::Symbol(s, _) if s.starts_with('&') && s.len() > 1 => {
+            Sexp::Symbol(s, sym_span) if s.starts_with('&') && s.len() > 1 => {
                 // Reader produces "&rest" as a single symbol.
                 let rest_name = &s[1..];
+                crate::ast_builder::reject_reserved_binder_name(rest_name, *sym_span)?;
                 rest_param = Some(rest_name.into());
                 i += 1;
             }
-            Sexp::Symbol(pname, _) => {
+            Sexp::Symbol(pname, sym_span) => {
+                crate::ast_builder::reject_reserved_binder_name(pname, *sym_span)?;
                 fixed_params.push(MacroParam::Name(pname.as_str().into()));
                 i += 1;
             }
@@ -171,12 +173,14 @@ fn parse_bracket_pattern(
 
     while j < inner.len() {
         match &inner[j] {
-            Sexp::Symbol(s, _) if s.starts_with('&') && s.len() > 1 => {
+            Sexp::Symbol(s, sym_span) if s.starts_with('&') && s.len() > 1 => {
                 let rest_name = &s[1..];
+                crate::ast_builder::reject_reserved_binder_name(rest_name, *sym_span)?;
                 rest = Some(rest_name.into());
                 j += 1;
             }
-            Sexp::Symbol(pname, _) => {
+            Sexp::Symbol(pname, sym_span) => {
+                crate::ast_builder::reject_reserved_binder_name(pname, *sym_span)?;
                 fixed.push(pname.as_str().into());
                 j += 1;
             }
@@ -233,7 +237,10 @@ pub fn parse_defmacro(sexp: &Sexp) -> Result<DefmacroInfo, CranelispError> {
 
     // Extract name.
     let name: Symbol = match &children[1] {
-        Sexp::Symbol(n, _) => n.as_str().into(),
+        Sexp::Symbol(n, n_span) => {
+            crate::ast_builder::reject_reserved_binder_name(n, *n_span)?;
+            n.as_str().into()
+        }
         _ => {
             return Err(CranelispError::ParseError {
                 message: "defmacro name must be a symbol".to_string(),

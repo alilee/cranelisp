@@ -20,7 +20,15 @@
 //! Wave 4a.pre.exe-bundle (Sprint 66) migrated these re-exports from the
 //! soon-to-be-retired `cranelisp-runtime` shim crate to the terminal
 //! `cranelisp-intrinsics` crate directly — backend-emitted-call targets
-//! (alloc, drop, io, ivar, ops, panic, rc, string-internal, vec-internal).
+//! (alloc, drop, io, ivar, panic, rc, trace, string-internal, vec-internal).
+//!
+//! `trace` rejoined the force-linked set in Sprint 76 (FIXME 0255). The
+//! 2026-06-04 trace ruling (`design/arch/tracing.md` TARGET STATE) retracted
+//! D40's REPL/`--run`-only restriction: `(trace ...)` now works in ALL modes
+//! including `--link`, the 12 trace bodies are ordinary intrinsics published by
+//! `intrinsics_table()`, and backend bakes self-contained display descriptors
+//! that survive `.o` caching. The trace symbols must therefore be present in
+//! `libcranelisp_exe_bundle.a` like every other intrinsic.
 //!
 //! ## Startup-hook discipline — primitives
 //!
@@ -41,10 +49,11 @@ pub use cranelisp_intrinsics::io;
 pub use cranelisp_intrinsics::ivar;
 pub use cranelisp_intrinsics::panic;
 pub use cranelisp_intrinsics::rc;
-// `cranelisp_intrinsics::trace` re-export DELETED per Decision 40 / Path B1
-// (S67 W4, FIXME 0202): `--link` mode rejects `(trace ...)` at compile time
-// (FIXME 0199), so the static archive `libcranelisp_exe_bundle.a` does not
-// need trace symbols.
+// `cranelisp_intrinsics::trace` re-export RESTORED in S76 (FIXME 0255). The
+// 2026-06-04 trace ruling retracted D40's trace half: `(trace ...)` now works
+// in all modes incl. `--link`, so `libcranelisp_exe_bundle.a` must carry the
+// trace symbols (the 12 `cranelisp_trace_*` bodies + the descriptor formatter).
+pub use cranelisp_intrinsics::trace;
 pub use cranelisp_intrinsics::heap_string as intrinsics_string;
 pub use cranelisp_intrinsics::vec_runtime as intrinsics_vec;
 

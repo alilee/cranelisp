@@ -713,19 +713,18 @@ E |- (trace expr) => TraceCall(root_name, root_params, root_result,
 
 The expression `expr` is evaluated exactly once. Its value `v` is used only to produce the root trace node's formatted result string -- the value itself is not accessible from the returned `Trace`.
 
-### 4.12.3 What Is Traced [Tested tests/ring4_trace::trace_user_defined_function]
+### 4.12.3 What Is Traced [R4 S76 — tested-by /qa S76]
 
-Instrumentation applies to **user-defined named functions** that are compiled with an entry in the implementation's function indirection table **and whose source file is under the project root directory**. This includes:
+Instrumentation applies to **every named function that is compiled with an entry in the implementation's function indirection table** — that is, any callable holding an indirection-table slot with a real code pointer. There is no project-root filter and no library/standard-library exclusion: completeness is by construction — if a call goes through an indirection-table slot, it is recorded, regardless of which module the callee lives in or how the callee was reached. This includes: [R4 S76]
 
 - Top-level functions defined with `defn` (including multi-signature variants and monomorphised specializations)
-- Functions imported from other modules, provided the defining module's source is under the project root
+- Functions imported from any module, including library modules discovered through the lib search path (standard library and third-party libraries)
+- Extern primitives in the synthetic `primitives` module (host-implemented functions reached through their indirection-table slot, e.g. `str-concat`, `int-to-string`)
+- Synthetic-module functions (e.g. `macros`-module functions) where they hold an indirection-table slot
 
-The following are NOT instrumented:
+The following are NOT instrumented: [R4 S76]
 
-- **Library modules**: Modules discovered through the lib search path (e.g., standard library, third-party libraries) are not instrumented, even if imported. Only modules whose source files reside under the project root are traced.
-- **Inline primitives**: Arithmetic, comparison, and boolean operations that compile to inline instructions have no callable entry point and cannot be intercepted.
-- **Extern primitives**: Host-implemented functions called via the foreign function interface are not routed through the indirection table.
-- **Compiler-seeded synthetic module functions**: Functions in the `primitives` and `macros` modules are not instrumented.
+- **Inline primitives**: Arithmetic, comparison, and boolean operations that compile to inline instructions have no callable entry point and cannot be intercepted. This is the only category that is structurally invisible.
 - **Anonymous lambdas**: Closures created by `fn` expressions do not have named entries in the indirection table and are not individually traced. Their effects appear as part of the enclosing traced function's execution.
 
 ### 4.12.4 The Trace ADT [Tested tests/ring4_trace::trace_field_name_returns_string]
@@ -753,7 +752,7 @@ The fields are:
 
 The `children` field is a standard `SList` (from the `macros` module). User code traverses it with pattern matching on `SCons`/`SNil`, just like any other `SList` value. The `params` field is likewise an `SList` of formatted argument strings.
 
-`trace` is a parser keyword and is always available without import (see [§2.2](02-grammar.md#22-special-forms)). `Trace`, `TraceCall`, and the field accessors (`name`, `params`, `result`, `children`, `nanos`) are defined in the `primitives` module and require explicit import for pattern matching and field access. See [Section 3.2.4](03-types.md#324-trace-type) for import requirements.
+`trace` is a **root special form** — a parser keyword recognised by the parser and typechecker before any name lookup, always available with no import and no module path (there is no `primitives/trace`). Its name is **reserved**: user code MUST NOT define or bind it (see [§2.3.10](02-grammar.md#2310-trace----execution-trace)). The *ADT* it returns is the opposite: `Trace`, `TraceCall`, and the field accessors (`name`, `params`, `result`, `children`, `nanos`) are defined in the `primitives` module and **require explicit import** for pattern matching and field access. This form/ADT asymmetry is deliberate and mirrors the `Sexp`-in-`macros` precedent (quasiquote works without import because the expander emits qualified constructors; bare `Sexp` constructors need the import). See [Section 3.2.4](03-types.md#324-trace-type) for the import requirements on the ADT names. [R4 S76]
 
 Per [§5.2.6](05-definitions.md#526-generated-accessors), each named field in the `TraceCall` constructor generates an accessor function with the same name as the field. To extract the nanosecond timing from a trace result, use the `nanos` accessor: [R4 S52]
 
@@ -766,17 +765,17 @@ Per [§5.2.6](05-definitions.md#526-generated-accessors), each named field in th
 
 There is no `trace-nanos` function. The accessor name is `nanos`, matching the field name in the `TraceCall` definition.
 
-### 4.12.5 Nested Trace [Tested tests/ring4_trace::trace_nested_single_trace]
+### 4.12.5 Nested Trace [R4 S76 — tested-by /qa S76]
 
-When `trace` expressions are nested, only the outermost trace is active:
+A `(trace ...)` expression MUST NOT be evaluated while another `(trace ...)` is actively tracing on the same thread. An implementation MUST raise a runtime error when a `(trace ...)` form is entered during the evaluation of an enclosing `(trace ...)` body — whether the inner form appears lexically:
 
 ```clojure
 (trace (trace expr))
 ```
 
-The inner `(trace expr)` evaluates `expr` without additional instrumentation -- it does not produce a separate trace tree. The outermost `trace` captures all calls made during the evaluation of the entire expression, including those within the inner `trace`. The result is a single `Trace` value from the outer trace.
+or is reached dynamically through a function call (the body calls a function whose own body contains a `(trace ...)` form). In both cases the inner `(trace ...)` raises a runtime error rather than producing a nested or merged trace tree.
 
-An implementation MUST NOT produce nested or duplicated trace trees from nested `trace` expressions.
+Concurrent tracing on different threads is governed by [§4.12.6](#4126-concurrency) (at most one thread traces; others return an empty trace) — that case is distinct from same-thread re-entrancy and is not an error. [R4 S76]
 
 ### 4.12.6 Concurrency [R4 S20]
 
@@ -787,7 +786,7 @@ Only one trace MAY be active at a time within a program. If multiple threads att
 The `Trace` value returned by `(trace expr)` is an ordinary ADT value. It can be bound with `let`, passed to functions, stored in data structures, and pattern-matched:
 
 ```clojure
-(import [primitives [trace Trace TraceCall name]])
+(import [primitives [Trace TraceCall name]])  ; trace form needs no import
 
 (let [t (trace (fact 5))]
   (name t))
@@ -805,7 +804,7 @@ The `Trace` value returned by `(trace expr)` is an ordinary ADT value. It can be
 **Basic tracing**:
 
 ```clojure
-(import [primitives [trace Trace TraceCall name params result]])
+(import [primitives [Trace TraceCall name params result]])  ; trace form needs no import
 
 (defn fact [n]
   (if (= n 0) 1 (* n (fact (- n 1)))))
@@ -828,7 +827,7 @@ The `Trace` value returned by `(trace expr)` is an ordinary ADT value. It can be
 **Using stdlib display functions**:
 
 ```clojure
-(import [core [trace [*]]])  ; gets trace, Trace, AND display functions
+(import [core [trace [*]]])  ; gets the Trace ADT names AND display functions (the trace form is always available)
 
 (defn fib [n]
   (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
@@ -845,11 +844,9 @@ The `Trace` value returned by `(trace expr)` is an ordinary ADT value. It can be
 ; => the Trace value -- no side effects occurred
 ```
 
-### 4.12.9 Build-Mode Restriction [R4 S68]
+### 4.12.9 Build-Mode Availability [R4 S76 — tested-by /qa S76]
 
-`(trace ...)` is a REPL/`--run`-only special form. In `--link` standalone-binary mode, the form is rejected at **link time**: the trace runtime is not included in the staticlib produced for standalone binaries, so a program that reaches a `(trace ...)` form when built with `--link` will fail with an unresolved-symbol error from the system linker (e.g. `cranelisp_collect_trace` undefined). No compile-time pre-pass is required; the link-time failure is the architectural enforcement.
+`(trace ...)` is available in **all** build modes — REPL, `--run`, and `--link` standalone binaries. The trace runtime is part of the language's runtime support and is present in every produced artefact. A `(trace ...)` form behaves identically across modes: the rules of [§4.12.1](#4121-type) through [§4.12.8](#4128-examples) apply unmodified in every mode. [R4 S76]
 
-The rationale is product-shape: the trace edifice (runtime call-tree stack, observer pathway, indirection-table swapping, and value-display formatting) is REPL/development-only infrastructure. Standalone binaries produced by `--link` do not carry trace machinery, and a program that depends on `(trace ...)` is not portable to that mode.
-
-REPL and `--run` semantics for `(trace ...)` are unchanged by this restriction; the rules in §4.12.1 through §4.12.8 apply unmodified in those modes, where the trace runtime is resolved at JIT-build time.
+In JIT modes (REPL and `--run`) the trace runtime is resolved at JIT-build time; in `--link` mode the trace runtime is linked into the standalone staticlib like any other runtime support, so a `(trace ...)` form in a linked program resolves and runs normally rather than failing at link time.
 

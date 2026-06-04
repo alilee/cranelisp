@@ -44,6 +44,29 @@ Existing `tests/ring4_trace.rs` expectations must change, and new e2e coverage i
    and the descriptor-formatting paths is inspectable via `/clif` / `CRANELISP_CODEGEN_TRACE=1` if a
    descriptor-rendering defect surfaces during the /dev waves.
 
+## Gate-review addenda (S76 Wave 1.5 /review — appended by /sprint)
+
+The Wave 1.5 gate review (PASS-WITH-NOTES) surfaced three items whose durable owner is this FIXME's
+test work:
+
+- **(NOTE-1) Production-baker round-trip gap.** Backend's descriptor round-trip unit tests build blobs
+  with the low-level `DescriptorBlob` primitives, hand-mirroring `bake_adt`'s layout — the production
+  `bake_descriptor`/`bake_adt` ctor-table assembly + concrete-type substitution is verified by
+  inspection only. The e2e descriptor-rendering coverage here (item 3's tree-shape assertions over ADT
+  params/results) is what closes that gap — include at least one traced fn taking/returning a
+  polymorphic ADT at a concrete instantiation (e.g. `(Option Int)`).
+- **(NOTE-2) Panic-unwind stuck guard.** If a JIT body panics mid-trace while `TRACE_BODY_RUNNING` is
+  set, the thread-local flag + trace role stay stuck — a later same-thread `(trace …)` would spuriously
+  raise "nested trace". Same stuck-owner class as the pre-existing role CAS; no RAII cleanup exists.
+  Add a test (or document the limitation with a failing-not-ignored test if it is judged a defect):
+  `(trace (panicking-fn))` followed by a fresh `(trace (ok-fn))` on the same REPL thread.
+- **(NOTE-4) `--link` baked-address risk — verify before declaring §4.12.9 satisfied.** The trace
+  wrapper bakes `code_ptr`/`got_base` as codegen-time absolute `iconst`s read from the live GOT. Valid
+  for REPL/`--run`; for `--link` standalone binaries those addresses belong to the compiling process.
+  The descriptor blob is position-independent (fine), but the baked code/GOT addresses may not be.
+  Item 2's linked-binary e2e is the decisive test — if it fails, the defect goes to /dev (backend)
+  with the repro (object-mode wrapper must reference code/GOT via relocations, not baked `iconst`s).
+
 ## Operational implication / Context
 
 These tests should land WITH or just-after the /dev waves (FIXMEs 0254/0255/0256) so they go green as the

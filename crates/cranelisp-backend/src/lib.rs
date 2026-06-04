@@ -664,7 +664,6 @@ where
             symbol_tables,
             module_aliases,
             current_module: module_path.clone(),
-            traced_fns: None,
             alloc_func_id: intrinsic_ids.alloc,
             dealloc_func_id: intrinsic_ids.dealloc.unwrap_or_else(|| {
                 unreachable!(

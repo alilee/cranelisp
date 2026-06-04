@@ -89,14 +89,21 @@
 //!
 //! ## Int-owned intrinsics (inventory note)
 //!
-//! `discover-tests`, `run-test`, and `cranelisp_trace_format` physically live in
-//! `src/` (int), registered unconditionally — see `src/CLAUDE.md`
-//! §"Int-owned JIT intrinsics". They are NOT in this crate. The `(trace ...)`
-//! machinery (12 `cranelisp_trace_*` fns, the GOT-swap stack, the io_trace ring
-//! buffer + dump + panic-hook, and the `consume_trace_call` ADT walker) relocated
-//! to int's `src/trace.rs` + `src/io_trace.rs` at S67 Wave 4 (Decision 40, Path
-//! B1). The surviving observation surface here is the [`io_observer`]
-//! extension-point API.
+//! The two test-runner intrinsics `discover-tests` and `run-test` physically
+//! live in `src/` (int), registered unconditionally — see `src/CLAUDE.md`
+//! §"Int-owned JIT intrinsics". They are NOT in this crate and NOT in the
+//! catalog (parked — out of scope per the 2026-06-04 ruling).
+//!
+//! The `(trace ...)` runtime is **hosted HERE** (the [`trace`] module — S76
+//! user ruling 2026-06-04 retracting D40's trace-relocation-to-int; BC §4b
+//! invariant 12): the 12 `cranelisp_trace_*` bodies (incl. the pure
+//! descriptor-driven `cranelisp_trace_format`), the `TRACE_STACK` GOT-swap
+//! call-frame stack, `TRACE_THREAD_ID`, the `consume_trace_call` ADT walker,
+//! the `DisplayDescriptor` layout-ABI, and the same-thread nested-trace runtime
+//! guard. They publish through [`intrinsics_table`] like every other intrinsic
+//! and resolve in all modes (REPL / `--run` / `--link`). The unrelated
+//! `io_trace` ring buffer (IO observation) STAYS in int via the [`io_observer`]
+//! callback contract; this crate keeps only the extension-point API.
 //!
 //! ## Consumed surface (the verified real set)
 //!
@@ -118,7 +125,8 @@
 //! ## The published Import-catalog (`intrinsics_table()`, BC §4b invariant 11)
 //!
 //! [`intrinsics_table`] returns the published flat `name → (signature, ptr)`
-//! catalog of this crate's 15 backend-emitted-call targets — the
+//! catalog of this crate's 27 backend-emitted-call targets (15 core + the 12
+//! `cranelisp_trace_*` family, S76 trace ruling) — the
 //! Decision-0048-for-intrinsics self-publication (the `PRIMITIVES_TABLE`
 //! precedent applied to intrinsics). Each [`IntrinsicEntry`] carries the
 //! emitted-call ABI `name`, the in-crate fn `ptr`, and the `(param_count,
@@ -157,6 +165,7 @@
 //! | [`ivar`]             | IVar primitives for lenient evaluation (spec §12.4.3) |
 //! | [`panic`](mod@panic) | `runtime/panic` sentinel for match-exhaustiveness failures |
 //! | [`rc`]               | RC trace + underflow check + `consume_shallow` (Decision 13/24) |
+//! | [`trace`]            | `(trace ...)` runtime — 12 `cranelisp_trace_*` bodies + `TRACE_STACK` + nested-trace guard + `DisplayDescriptor` (BC §4b inv 12) |
 //! | [`vec_runtime`]      | Vec layout-ABI + COW ops + drop |
 
 pub mod alloc;
@@ -168,6 +177,7 @@ pub mod io_observer;
 pub mod ivar;
 pub mod panic;
 pub mod rc;
+pub mod trace;
 pub mod vec_runtime;
 
 // Root re-exports — only the names with a verified root-form Rust consumer.

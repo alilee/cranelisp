@@ -5,7 +5,7 @@
 //! addresses the prototype's primary structural debt). One dispatch method per
 //! `Expr` variant (`compile_int_lit`, `compile_let`, …).
 //!
-//! These types (`FnCompiler`, `CompileContext`, `MatchContext`, `TracedFnInfo`)
+//! These types (`FnCompiler`, `CompileContext`, `MatchContext`)
 //! are `pub` codegen primitives reached only via the
 //! `compile_to_module` free function in production; the `pub` exists for
 //! test-side AST-fragment compilation. The GOT-target resolution helpers
@@ -311,10 +311,14 @@ where
 
 /// Information about a single function to be traced by `(trace ...)`.
 ///
-/// Populated by the integration layer (src/) from the module symbol tables,
-/// then passed into `CompileContext` so the trace codegen can compile wrappers.
+/// **Backend-internal** (S76 FIXME 0255, `tracing.md` §5). Discovery moved into
+/// backend trace-codegen — `trace_codegen::discover_traced_fns` builds these by
+/// iterating `symbol_tables` directly. They no longer cross the int↔backend
+/// boundary, so this type is `pub(crate)` and the `CompileContext::traced_fns`
+/// field is gone. Per-param/result display descriptors are baked at
+/// wrapper-compile time (`trace_codegen`), not carried on this struct.
 #[derive(Debug, Clone)]
-pub struct TracedFnInfo {
+pub(crate) struct TracedFnInfo {
     /// Fully-qualified function name (e.g., "user/fact").
     pub name: String,
     /// GOT base pointer for the module containing this function.
@@ -373,13 +377,6 @@ where
     /// Current module being compiled (for constructor/type lookups).
     pub current_module: ModuleFullPath,
 
-
-    // --- Ring 4 trace context ---
-    /// Functions to instrument when compiling `(trace ...)` expressions.
-    /// Populated by the integration layer from module symbol tables.
-    /// None means trace codegen falls back to "no-swap" path (empty trace).
-    pub traced_fns: Option<&'a [TracedFnInfo]>,
-
     // --- Ring 1 intrinsic FuncIds ---
     /// FuncId for runtime/alloc. None in Ring 0 (no heap).
     pub alloc_func_id: Option<FuncId>,
@@ -413,7 +410,6 @@ where
             symbol_tables: self.symbol_tables,
             module_aliases: self.module_aliases,
             current_module: self.current_module.clone(),
-            traced_fns: self.traced_fns,
             alloc_func_id: self.alloc_func_id,
             dealloc_func_id: self.dealloc_func_id,
             alloc_string_func_id: self.alloc_string_func_id,

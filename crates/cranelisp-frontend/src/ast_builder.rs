@@ -26,13 +26,11 @@ use cranelisp_types::{ErrorLocation,
     TraitMethodSig, TraitName, TraitRef, TypeExpr, TypeName, TypeRef, Visibility,
 };
 
-// `(trace ...)` build is mode-agnostic. Under `--link` standalone-binary mode
-// the architecture's natural missing-symbol failure rejects programs that use
-// `(trace ...)`: backend emits `cranelisp_collect_trace` as `Linkage::Import`,
-// and the system linker errors with "undefined symbol cranelisp_collect_trace"
-// because the trace runtime is not bundled into the staticlib produced for
-// standalone binaries (exe-bundle force-link for trace deleted in commit 0202).
-// No frontend pre-pass check is needed; see spec/04-expressions.md §4.12.9.
+// `(trace ...)` build is mode-agnostic and works in ALL build modes including
+// `--link` — the trace bodies are ordinary intrinsics resolved in every mode
+// (see design/arch/tracing.md §2.5). `trace` is a root special form: its name
+// is reserved and cannot be defined or bound (see `reject_reserved_binder_name`
+// + spec/02-grammar.md §2.9).
 // `Defn` is used by `build_impl_method` to package a method into the
 // `TraitImpl.methods` list. Other AST union types (`TopLevel`, `Program`)
 // are no longer named by frontend code post-FIXME-0156; tests inside this
@@ -50,6 +48,35 @@ fn parse_err(message: &str, span: Span) -> CranelispError {
         message: message.to_string(),
         location: ErrorLocation::from_span(span),
     }
+}
+
+/// Reserved names that root special forms claim. A root special form's name
+/// cannot be defined or bound by user code (spec/02-grammar.md §2.9, Principle
+/// 10's two-category amendment). The set is **only** `trace` — the other root
+/// special forms (`defn`, `let`, `if`, `match`, …) cannot reach a binder
+/// position as a bound *name* because the parser dispatches them in head
+/// position; `trace` is the case that slips through because it can appear as a
+/// plain symbol in a binder slot. Per Principle 6 (complexity has a budget) the
+/// set is not speculatively widened beyond what the ruling requires.
+const RESERVED_BINDER_NAMES: &[&str] = &["trace"];
+
+/// Reject `name` in a binder or definition position when it is a reserved
+/// root-special-form name. Single-sourced (Principle 7) so every binder site
+/// (defn/defn- names, let binders, fn/lambda + defn + method + macro params,
+/// match pattern variable binders, defmacro names) enforces the identical rule.
+///
+/// Reference/head position is NOT a binder: `(trace expr)` stays the
+/// special-form dispatch and never reaches this check. Constructor and field
+/// names in patterns are not binders either — only the variables a pattern
+/// introduces are.
+pub(crate) fn reject_reserved_binder_name(name: &str, span: Span) -> Result<(), CranelispError> {
+    if RESERVED_BINDER_NAMES.contains(&name) {
+        return Err(parse_err(
+            &format!("'{name}' is a reserved special-form name and cannot be defined or bound"),
+            span,
+        ));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -317,7 +344,10 @@ pub(crate) fn parse_defn(
 
 fn get_defn_name(sexp: &Sexp) -> Result<Symbol, CranelispError> {
     match sexp {
-        Sexp::Symbol(name, _) => Ok(name.as_str().into()),
+        Sexp::Symbol(name, span) => {
+            reject_reserved_binder_name(name, *span)?;
+            Ok(name.as_str().into())
+        }
         _ => Err(parse_err("expected function name", sexp.span())),
     }
 }
@@ -906,11 +936,10 @@ fn build_impl_method(sexp: &Sexp) -> Result<Defn, CranelispError> {
 /// calling `build_expr`. Unexpanded macro calls become silent generic
 /// applications and fail later with confusing diagnostics.
 ///
-/// `build_expr` is mode-agnostic. `(trace ...)` in `--link`
-/// standalone-binary mode fails at link time via the architecture's
-/// natural missing-symbol detection (the trace runtime is not bundled
-/// into the staticlib produced by exe-bundle); no frontend pre-pass
-/// check is needed. See `spec/04-expressions.md` §4.12.9.
+/// `build_expr` is mode-agnostic. `(trace ...)` works in ALL build modes
+/// including `--link` — the trace bodies are ordinary intrinsics resolved
+/// in every mode (see `design/arch/tracing.md` §2.5); no frontend pre-pass
+/// check is needed.
 pub fn build_expr(sexp: &Sexp) -> Result<Expr, CranelispError> {
     match sexp {
         Sexp::Int(v, span) => Ok(Expr::IntLit {
@@ -1016,16 +1045,23 @@ fn build_trace(
 ) -> Result<Expr, CranelispError> {
     // (trace expr)
     //
-    // Build is mode-agnostic. `(trace ...)` in `--link` standalone-binary mode
-    // fails at link time via the architecture's natural missing-symbol
-    // detection: backend emits `cranelisp_collect_trace` as `Linkage::Import`,
-    // and the system linker errors with "undefined symbol
-    // cranelisp_collect_trace" because the trace runtime is not bundled into
-    // the staticlib produced by exe-bundle (force-link for trace deleted in
-    // commit 0202). See spec/04-expressions.md §4.12.9. Quoted occurrences
-    // (`'(trace x)`, `` `(trace x) ``) are desugared by the expander into
-    // `Sexp` constructor calls before reaching this builder, so they appear as
-    // `Expr::Apply` to those constructors (not `Expr::Trace`).
+    // `trace` is a root special form (Principle 10's two-category amendment;
+    // design/arch/tracing.md §3.1) — recognised here in head position, always
+    // available with no import and no module path. Build is mode-agnostic and
+    // `(trace ...)` works in ALL build modes including `--link`: the 12 trace
+    // bodies are ordinary intrinsics published through `intrinsics_table()` and
+    // resolve everywhere (JIT symbol registration for REPL/`--run`, the
+    // `cranelisp-intrinsics` archive for `--link`). See tracing.md §2.5. The
+    // earlier `--link` missing-symbol rejection is retracted (D40 trace-half
+    // retracted 2026-06-04).
+    //
+    // The reserved-name enforcement that rejects `trace` in binder/definition
+    // positions lives at the binder sites (`reject_reserved_binder_name`), not
+    // here — this is the legitimate head/reference position.
+    //
+    // Quoted occurrences (`'(trace x)`, `` `(trace x) ``) are desugared by the
+    // expander into `Sexp` constructor calls before reaching this builder, so
+    // they appear as `Expr::Apply` to those constructors (not `Expr::Trace`).
     if children.len() != 2 {
         return Err(parse_err(
             "trace requires exactly one expression",
@@ -1182,7 +1218,8 @@ fn build_let_bindings(
     let mut bindings = Vec::new();
     let mut i = 0;
     while i < items.len() {
-        let (name, _) = expect_symbol(&items[i])?;
+        let (name, name_span) = expect_symbol(&items[i])?;
+        reject_reserved_binder_name(name, name_span)?;
         i += 1;
         if i >= items.len() {
             return Err(parse_err("let binding missing value", items[i - 1].span()));
@@ -1310,6 +1347,8 @@ fn build_pattern(sexp: &Sexp) -> Result<Pattern, CranelispError> {
                     span: *span,
                 })
             } else {
+                // A bare lowercase pattern symbol is a variable binder.
+                reject_reserved_binder_name(name, *span)?;
                 Ok(Pattern::Var {
                     name: name.as_str().into(),
                     span: *span,
@@ -1322,10 +1361,13 @@ fn build_pattern(sexp: &Sexp) -> Result<Pattern, CranelispError> {
                 return Err(parse_err("empty pattern", *span));
             }
             let (name, _) = expect_symbol(&children[0])?;
+            // children[0] is the constructor name (not a binder). The remaining
+            // symbols are variable binders the pattern introduces.
             let bindings = children[1..]
                 .iter()
                 .map(|s| {
-                    let (n, _) = expect_symbol(s)?;
+                    let (n, n_span) = expect_symbol(s)?;
+                    reject_reserved_binder_name(n, n_span)?;
                     Ok(n.into())
                 })
                 .collect::<Result<Vec<_>, CranelispError>>()?;
@@ -1464,11 +1506,13 @@ fn build_annotated_params(
                     items[i].span(),
                 ));
             }
-            let (name, _) = expect_symbol(&items[name_pos])?;
+            let (name, name_span) = expect_symbol(&items[name_pos])?;
+            reject_reserved_binder_name(name, name_span)?;
             params.push((name.into(), Some(te)));
             i = name_pos + 1;
         } else {
-            let (name, _) = expect_symbol(&items[i])?;
+            let (name, name_span) = expect_symbol(&items[i])?;
+            reject_reserved_binder_name(name, name_span)?;
             params.push((name.into(), None));
             i += 1;
         }
@@ -2192,6 +2236,89 @@ mod tests {
             }
             other => panic!("expected Trace, got {other:?}"),
         }
+    }
+
+    // spec: 02-grammar §2.4 — trace in head/reference position is the special
+    // form and still builds Expr::Trace (it is NOT a binder, not rejected).
+    #[test]
+    fn test_trace_head_position_still_builds_trace_node() {
+        match parse_and_build_expr("(trace (f 1))").unwrap() {
+            Expr::Trace { body, .. } => {
+                assert!(matches!(*body, Expr::Apply { .. }), "expected Apply body");
+            }
+            other => panic!("expected Trace, got {other:?}"),
+        }
+    }
+
+    // -- Reserved binder name: `trace` (spec/02-grammar.md §2.9) --
+
+    fn assert_reserved_trace_error(err: CranelispError) {
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("'trace' is a reserved special-form name"),
+            "expected reserved-name error, got: {msg}"
+        );
+    }
+
+    // spec: 02-grammar §2.9 — `trace` rejected as a defn name
+    #[test]
+    fn test_reject_trace_defn_name() {
+        let err = parse_and_build_program("(defn trace [x] x)").unwrap_err();
+        assert_reserved_trace_error(err);
+    }
+
+    // spec: 02-grammar §2.9 — `trace` rejected as a let binder
+    #[test]
+    fn test_reject_trace_let_binder() {
+        let err = parse_and_build_expr("(let [trace 1] trace)").unwrap_err();
+        assert_reserved_trace_error(err);
+    }
+
+    // spec: 02-grammar §2.9 — `trace` rejected as a fn parameter
+    #[test]
+    fn test_reject_trace_fn_param() {
+        let err = parse_and_build_expr("(fn [trace] trace)").unwrap_err();
+        assert_reserved_trace_error(err);
+    }
+
+    // spec: 02-grammar §2.9 — `trace` rejected as a match pattern variable
+    // binder (a bare lowercase pattern symbol is a binder).
+    #[test]
+    fn test_reject_trace_match_pattern_var() {
+        let err = parse_and_build_expr("(match x [trace trace])").unwrap_err();
+        assert_reserved_trace_error(err);
+    }
+
+    // spec: 02-grammar §2.9 — `trace` rejected as a constructor-pattern binding
+    // (the bound variable is a binder; the constructor name is not).
+    #[test]
+    fn test_reject_trace_constructor_pattern_binding() {
+        let err = parse_and_build_expr("(match x [(Some trace) trace])").unwrap_err();
+        assert_reserved_trace_error(err);
+    }
+
+    // spec: 02-grammar §2.9 — `trace` rejected as a defmacro name (any
+    // binder/definition position; spec §2.9 prose covers "any other position").
+    #[test]
+    fn test_reject_trace_defmacro_name() {
+        let err = parse_and_build_program("(defmacro trace [x] x)").unwrap_err();
+        assert_reserved_trace_error(err);
+    }
+
+    // spec: 02-grammar §2.9 — `trace` rejected as a defmacro parameter.
+    #[test]
+    fn test_reject_trace_defmacro_param() {
+        let err = parse_and_build_program("(defmacro m [trace] trace)").unwrap_err();
+        assert_reserved_trace_error(err);
+    }
+
+    // spec: 02-grammar §2.9 — a constructor NAME `Trace` is not a binder and is
+    // unaffected (only the reserved lowercase keyword `trace` is rejected).
+    #[test]
+    fn test_constructor_name_unaffected() {
+        // `traced` (a different name containing the substring) must bind fine.
+        let expr = parse_and_build_expr("(let [traced 1] traced)").unwrap();
+        assert!(matches!(expr, Expr::Let { .. }));
     }
 
     // spec: 02-grammar §2.3.9 — vec is now handled by the prelude vec macro

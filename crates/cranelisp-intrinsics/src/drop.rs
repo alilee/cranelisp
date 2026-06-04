@@ -30,9 +30,11 @@
 //! Integration: each complex-heap extern (`sconcat`, `quote_sexp`,
 //! `str_join`, `cranelisp_run_io`) calls the appropriate consume function
 //! on its heap arguments before returning. The TraceCall consumer
-//! (`consume_trace_call`) lives in `src/trace.rs` per FIXME 0198 — the
-//! TraceCall ADT layout is owned by int with the rest of the trace
-//! machinery.
+//! (`consume_trace_call`) lives in this crate's [`crate::trace`] module
+//! (S76 trace ruling — the `(trace ...)` runtime is intrinsics-hosted, BC §4b
+//! invariant 12). It is a LEAF consumer of this module's generic
+//! `consume_shallow` / SList glue; this module does NOT reference it (no
+//! re-coupling — `tracing.md` §4.1).
 //! Callers compile those args through `compile_consuming_arg_list`, incing
 //! heap-typed Vars. See `design/backend/ring2-rc.md` §3.3.
 

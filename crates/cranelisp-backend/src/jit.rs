@@ -636,7 +636,6 @@ impl Jit {
             symbol_tables,
             module_aliases,
             current_module,
-            traced_fns: None,
             alloc_func_id: self.alloc_func_id,
             dealloc_func_id: self.dealloc_func_id.unwrap_or_else(|| {
                 unreachable!(
