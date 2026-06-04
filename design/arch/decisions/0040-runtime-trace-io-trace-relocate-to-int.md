@@ -6,6 +6,49 @@ status: operative
 
 # 0040 — `(trace ...)` is a REPL/`--run`-only special form; `trace.rs` and `io_trace.rs` relocate to int; intrinsics keeps an `IoObserver` callback contract
 
+> **PARTIAL-RETRACTION BOX (S76, /arch, user-decided 2026-06-04) — the `(trace ...)` half of this Decision is RETRACTED; the `io_trace` / `IoObserver` half STANDS.**
+> The user decided the trace architecture afresh on 2026-06-04. The canonical target-state statement
+> is now `design/arch/tracing.md` (§§1–6); this Decision is archaeology for the trace half. The
+> retraction, clause by clause:
+> - **RETRACTED — "`(trace ...)` is REPL/`--run`-only" + "`--link` rejects the form."** `(trace ...)`
+>   now works in **all modes including `--link`** (`tracing.md` §2.5). The exe-bundle trace force-link
+>   `pub use` line **returns** (it had been deleted as the D40 ladder step); spec §4.12.9's link-time
+>   rejection is REPLACED with all-modes availability.
+> - **RETRACTED — "the 12 `cranelisp_trace_*` bodies + registration relocate to int."** The 12 bodies
+>   relocate **back to `cranelisp-intrinsics`** and publish through `intrinsics_table()` (15→27 entries;
+>   the catalog "trace deliberately ABSENT" scope text flips). `TRACE_STACK` / `TRACE_THREAD_ID` /
+>   `consume_trace_call` move with them. `src/trace.rs`, `build_traced_fns`, `repl_trace_format`,
+>   `TRACE_DISPLAY`, and the trace half of `int_intrinsics()` **delete** (`tracing.md` §4.3). The S76
+>   `Jit::new` registration seam **dissolves for trace** (`tracing.md` §4.2).
+> - **NEW (not in D40) — `trace_format` is a pure intrinsic over codegen-baked display descriptors;**
+>   discovery moves into backend codegen and swaps ALL symbol tables (primitives included); nested trace
+>   is disallowed via a runtime guard. See `tracing.md` §3.4 / §5 / §6.
+> - **STANDS — the `io_trace` / `IoObserver` half.** The `IoObserver` callback contract in
+>   `cranelisp-intrinsics::io_observer` (the ~50-line registration API) and the relocation of the
+>   `io_trace.rs` ring buffer to `src/io_trace.rs` (int) remain valid and unaffected. BC §4b / §6 carry
+>   that contract. This Decision's §"Intrinsics surface — the ~50-line IoObserver contract", §"Int
+>   hosting — … observer state" (the io_trace ring-buffer parts only), §"Intrinsics-side deletions" (the
+>   io_trace.rs ring-buffer deletion only), and the IoObserver Cross-references / Rationale remain
+>   accurate as landed.
+>
+> Full drain of D40 into `tracing.md` + BC is a future fire; this box is the drain-consistency marker.
+> The CORRECTION BOX below (the `--link` link-time-vs-compile-time note) is now moot for trace — trace
+> is no longer rejected in `--link` at all — but retained for narrative continuity.
+
+> **CORRECTION BOX (S76, /arch) — the `--link` enforcement landed at LINK TIME, not compile time.**
+> This Decision's §Shape ("Product-shape constraint (Path B1)") and §Consequences still describe a
+> **compile-time** rejection of `(trace ...)` in `--link` mode (frontend/typecheck emitting a
+> `CompilationError`; FIXME 0199). That mechanism was **abandoned**. The landed shape (spec
+> §4.12.9, finalised S68; source `crates/cranelisp-frontend/src/ast_builder.rs:1019-1028`) is
+> **link-time natural missing-symbol failure**: build is mode-agnostic, backend emits the trace
+> externs as `Linkage::Import` in every mode, and `--link` simply does not bundle the trace runtime
+> into the exe-bundle staticlib — so the system linker errors with an undefined `cranelisp_collect_trace`.
+> "**No compile-time pre-pass is required.**" The rest of this Decision (full relocation of bodies +
+> registration to int, the IoObserver scope-out, the deletion ladder) is accurate as landed. The
+> canonical consolidated statement is now `design/arch/tracing.md` (§2.5 mode availability;
+> §4 symbols/registration; §4.4 the OPEN S76 `Jit::new` seam). This box is a drain-consistency
+> correction; full drain of D40 into `tracing.md` + BC is a future fire.
+
 `(trace ...)` is scoped as a REPL/`--run`-only special form: in `--link`
 standalone-binary mode the form is rejected at compile time. With that
 product constraint, `trace.rs` and `io_trace.rs` (~1700 LOC of dev-tooling
@@ -20,6 +63,12 @@ relocation under the `--link`-rejects-`(trace ...)` premise.
 ## Shape
 
 ### Product-shape constraint (Path B1)
+
+> **STALE — superseded by the CORRECTION BOX at the top of this file.** The
+> compile-time rejection described in this subsection was abandoned; the landed
+> enforcement is link-time natural missing-symbol failure (spec §4.12.9). Read
+> `design/arch/tracing.md` §2.5 for the landed shape. The paragraph below is
+> retained for narrative continuity only.
 
 `(trace ...)` is a REPL/`--run`-only special form. `--link` standalone
 binary mode rejects the form at compile time — frontend (preferred per

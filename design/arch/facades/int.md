@@ -297,8 +297,11 @@ pub struct SharedState {
     // ──────────── Configuration ────────────
     // Sprint 67 Wave 4 follow-up: `codegen_behaviour: CodegenBehaviour` was
     // here. Retired. The frontend `build_form` / `build_expr` boundary is
-    // mode-agnostic; `(trace ...)` in `--link` standalone-binary mode fails at
-    // link time via the architecture's natural missing-symbol detection. The
+    // mode-agnostic; `(trace ...)` is available in ALL modes including `--link`
+    // (S76 user ruling 2026-06-04 — the prior link-time missing-symbol rejection
+    // is retired; the trace bodies are ordinary intrinsics force-linked into the
+    // exe-bundle staticlib, so `cranelisp_collect_trace` et al. resolve in
+    // `--link` exactly as in JIT mode — see tracing.md §2.5). The
     // session-construction value still lives on `SessionSettings` for
     // potential future consumers; no projection onto `SharedState` is needed.
 
@@ -848,7 +851,7 @@ Per Decision 40, the consumer-side ring buffers and formatters that pre-S65 live
 | `io_trace::*` | `src/io_trace.rs` (landed) | Post-Decision-40 consumer-side ring buffer + observer-record + flush + panic hook hosted here in full. Public surface: `record_event`, `record` (the observer callback registered with `cranelisp_intrinsics::register_io_observer`), `install_if_enabled` (env-var gate on `CRANELISP_IO_TRACE=1`), `flush_to_stderr`, `IoTraceFlushGuard`, `install_panic_hook`, plus internal per-thread buffer publishing (`publish_thread_buffer`, `dump_thread_buffer`, `dump_all_buffers`). |
 | `scheduler_trace::*` | `src/observability.rs` (exists) | The pre-existing `observability` module IS the scheduler trace consumer (`SchedulerTraceTag`, `SchedulerTracePayload`, `record_event`, `flush_to_stderr`, `SchedulerTraceFlushGuard`, `TraceFilter`). The facade name `scheduler_trace` is a rename target for clarity; the source can either rename the module or re-export `pub use observability as scheduler_trace`. |
 | `got_trace::*` | `src/got_trace.rs` (exists) | Hosts the post-FIXME-0099 GOT observer ring buffer. The `record`/`install_if_enabled`/`flush_to_stderr`/`install_panic_hook`/`GotTraceFlushGuard` shape already lands. Registration call to `cranelisp_backend::register_got_observer` at session init. |
-| `trace::cranelisp_trace_*` (the `(trace ...)` special-form runtime helpers) | `src/trace.rs` (landed — Decision 40 Path B1) | **Sprint 67 Wave 4 landing**: all 12 `cranelisp_trace_*` JIT-emitted-call bodies relocated from `cranelisp-intrinsics::trace` to int (per FIXMEs 0197 + 0202 + 0204; backend's 12 `IntrinsicSymbol` entries deleted in the same change-set). The file hosts: `cranelisp_trace_enter`, `cranelisp_trace_exit`, `cranelisp_trace_swap_got`, `cranelisp_trace_restore_got`, `cranelisp_collect_trace`, `cranelisp_trace_first_child_nanos`, `cranelisp_trace_name`, `cranelisp_trace_params`, `cranelisp_trace_result`, `cranelisp_trace_children`, `cranelisp_trace_nanos`, plus the int-side fallback `cranelisp_trace_format` (the production symbol is the `repl_trace_format` shim at `session_v4.rs` — the REPL session has access to the TypeChecker for proper display dispatch; `trace.rs`'s body is the unit-test fallback). The `TraceDisplayState` thread-local + `clear_trace_display_state` companion machinery remains at `session_v4.rs` for session-state proximity; trace.rs is host for the 12 JIT-emitted bodies. Registration is via `int_intrinsics()` — see §"Int-owned JIT intrinsics" below. |
+| ~~`trace::cranelisp_trace_*`~~ (the `(trace ...)` special-form runtime helpers) | ~~`src/trace.rs`~~ — **TARGET: DELETED (S76 user ruling 2026-06-04)** | **The `(trace ...)` runtime LEAVES int.** The 2026-06-04 user ruling retracted D40's relocation of the trace bodies to int. TARGET: `src/trace.rs` is **deleted in full** (12 bodies + `TRACE_STACK` + `TRACE_THREAD_ID` + `consume_trace_call`); the bodies relocate to `crates/cranelisp-intrinsics/src/trace.rs` and publish via `intrinsics_table()` (BC §4b invariant 12). `build_traced_fns`, `repl_trace_format`, `TraceDisplayState`, the `TRACE_DISPLAY` thread-local + `set/clear_trace_display_state`, and the trace half of `int_intrinsics()` are all **deleted** — discovery + value-formatting (now a pure descriptor-driven intrinsic) move to backend + intrinsics. See `design/arch/tracing.md` §4.3 (deletion inventory) + FIXME 0256. The unrelated `io_trace`/`scheduler_trace`/`got_trace` ring buffers above STAY. |
 
 **Naming reconciliation.** The pre-S65 facade text said `src/io_trace/` (directory-style); current source has flat `src/io_trace.rs` (file-style). Both shapes satisfy the facade — directory-style is only required when the module grows multiple sub-files. No PFR/PIF needed; the facade text is updated to name the actual file paths.
 
@@ -904,28 +907,16 @@ pub fn install_panic_hook();
 
 Per `src/CLAUDE.md` §"Int-owned JIT intrinsics", `src/session_v4.rs::int_intrinsics()` returns the array of `(JIT-symbol, fn-ptr)` pairs that **every** JIT-build site in int must register with `JITBuilder::symbol(...)` before constructing the `Jit`. Backend-emitted CLIF declares these as `Linkage::Import`; without uniform registration the JIT fails to resolve them.
 
-**Post-Sprint 67 Wave 4 (Decision 40 Path B1 amendment, 2026-05-16) — the trace edifice is complete int-side.** The inventory grew from 3 entries (pre-S67) to 14 entries:
+**TARGET (S76 user ruling 2026-06-04) — `int_intrinsics()` shrinks to TWO entries; the trace half DELETES.** The 2026-06-04 ruling retracts D40's relocation of the trace bodies to int. The 12 `cranelisp_trace_*` symbols (incl. `cranelisp_trace_format`) move to `cranelisp-intrinsics` and publish through `intrinsics_table()` (BC §4b invariant 12) — so `Jit::new(symbol_tables)` picks them up with no int fold-in, and the prior OPEN `Jit::new` registration seam **dissolves for trace**. `int_intrinsics()` reduces to the two **test-runner** symbols (PARKED — out of scope per the user; their relocation, if ever, is a separate question):
 
 | JIT symbol | Rust fn (host) | Reader / use |
 |---|---|---|
 | `discover-tests` | `discover_tests_extern` (`session_v4.rs`) | `(run-tests ...)` special form (Wave 3a-γ) |
 | `run-test` | `run_test_extern` (`session_v4.rs`) | `(run-tests ...)` special form (Wave 3a-γ) |
-| `cranelisp_trace_format` | `repl_trace_format` (`session_v4.rs`) | `(trace ...)` — display-state-aware wrapper (production); `src/trace.rs`'s `cranelisp_trace_format` is the unit-test fallback |
-| `cranelisp_trace_enter` | `crate::trace::cranelisp_trace_enter` | `(trace ...)` — frame entry |
-| `cranelisp_trace_exit` | `crate::trace::cranelisp_trace_exit` | `(trace ...)` — frame exit |
-| `cranelisp_trace_swap_got` | `crate::trace::cranelisp_trace_swap_got` | `(trace ...)` — GOT-swap wrapper install |
-| `cranelisp_trace_restore_got` | `crate::trace::cranelisp_trace_restore_got` | `(trace ...)` — GOT-swap wrapper teardown |
-| `cranelisp_collect_trace` | `crate::trace::cranelisp_collect_trace` | `(trace ...)` — collect frame tree as ADT |
-| `cranelisp_trace_first_child_nanos` | `crate::trace::cranelisp_trace_first_child_nanos` | `(trace ...)` — first-child timing accessor |
-| `cranelisp_trace_name` | `crate::trace::cranelisp_trace_name` | `(trace ...)` — name field accessor |
-| `cranelisp_trace_params` | `crate::trace::cranelisp_trace_params` | `(trace ...)` — params field accessor |
-| `cranelisp_trace_result` | `crate::trace::cranelisp_trace_result` | `(trace ...)` — result field accessor |
-| `cranelisp_trace_children` | `crate::trace::cranelisp_trace_children` | `(trace ...)` — children list accessor |
-| `cranelisp_trace_nanos` | `crate::trace::cranelisp_trace_nanos` | `(trace ...)` — total-nanos field accessor |
 
-The 11 new entries land via FIXMEs 0197 (backend deletion) + 0202 (int registration) + 0204 (host migration). Backend's `IntrinsicSymbol` registry shrinks by 12 entries in the same change-set; the JIT-resolution path for these symbols flips from `cranelisp_intrinsics::trace::*` (pre-S67) to `crate::trace::*` (post-S67).
+The trace deletions land via FIXME 0256 (int deletions) in concert with FIXME 0254 (intrinsics hosts the bodies + catalog) + FIXME 0255 (backend discovery + descriptor baking). The `Jit::new(symbol_tables)` collapse must still account for the two test symbols — that residual is the `Jit::new` seam for the *test* intrinsics, untouched by the trace ruling.
 
-**Trace-in-`--link` rejection (S67 W4 follow-up — subtraction).** Per `spec/04-expressions.md §4.12.9`, `(trace ...)` is REPL/`--run`-only; `--link` rejects programs that use the form. The rejection is **the architecture's natural missing-symbol failure** — there is no frontend pre-pass check, no inline `build_trace` rejection, no `CodegenBehaviour` parameter threaded through `build_form` / `build_expr`. Backend emits `cranelisp_collect_trace` as `Linkage::Import` regardless of mode (one codegen source path; Module as generic param). The JIT path (REPL, `--run`) resolves the import at finalize via `JITBuilder::symbol()` (int_intrinsics() provides the trace runtime symbols). The object path (`--link`) writes the import to `.o`; exe-bundle force-link for trace was deleted in commit 0202, so the trace runtime is not present in the staticlib produced for standalone binaries; the system linker errors with "undefined symbol cranelisp_collect_trace". That link-time error IS the rejection. The earlier `link_mode::validate_*` validator (introduced via FIXME 0199, retired in `4191374`) and its successor inline `build_trace` rejection (commit `4191374`, retired in the Sprint 67 Wave 4 follow-up subtraction) were both engineering around a failure mode the architecture already produces. FIXME 0209 reframes the spec wording from "compile-time error" to "link-time rejection" to align with this mechanism.
+**Trace-in-`--link` — TARGET: SUPPORTED, not rejected.** The 2026-06-04 ruling makes `(trace ...)` work in ALL modes including `--link` (user: "happy to let tracing applications be linked"). The prior `--link` rejection (the natural missing-symbol failure) is **retired**: because the trace bodies are now ordinary intrinsics, exe-bundle force-links them (the `pub use cranelisp_intrinsics::trace;` line returns — FIXME 0255), so `cranelisp_collect_trace` et al. resolve against the staticlib in `--link` exactly as in JIT mode. Spec §4.12.9 flips from "link-time rejection" to "all-modes availability" (FIXME 0257). The display descriptors backend bakes (`tracing.md` §3.4) are emitted as `.rodata` data symbols with relocations so they survive `.o` caching, which is what makes trace `--link`-safe.
 
 **Unconditional registration is mandatory.** Every JIT-build site in this crate folds `int_intrinsics()` into the `JITBuilder::symbol` set before calling `Jit::new_with_symbols`. The two current sites are `worker::inline_jit_codegen_for_names` and `pipeline::compile_and_execute_expr` (plus its trace variant). No syntactic gating — the pre-S66 `program_uses_test_forms` / `program_needs_trace` / `any_compiled_defn_uses_test_forms` helpers were deleted in Wave 3a-γ (see `src/CLAUDE.md`'s forbidden-patterns note + FIXME 0178).
 
@@ -980,19 +971,9 @@ Per the Phase 2 review §3 reach-around catalogue (R5), `generate_startup_object
 pub fn generate_startup_object(entry_module: &ModuleFullPath, main_slot: usize) -> Result<Vec<u8>, CranelispError>;
 ```
 
-### Tracing helpers — `src/trace/` (per Phase 2 reach-around R6)
+### Tracing helpers — TARGET: NONE in int (S76 user ruling 2026-06-04)
 
-Per the Phase 2 review §3 reach-around catalogue (R6), `TracedFnInfo` is an int-only consumer concern — it carries metadata about traced function instances (the GOT-swap wrapper machinery for `(trace ...)`) and lives in int's `src/trace/` per Decision 40's relocation. It is NOT part of backend's facade. If a duplicate type previously existed on backend's side, it deletes; `TracedFnInfo` lives in int, sourced from int's tracing subsystem.
-
-```rust
-#[non_exhaustive]
-pub struct TracedFnInfo {
-    pub fq: FQSymbol,
-    pub original_code_ptr: *const u8,                  // pre-trace GOT slot value
-    pub wrapper_code_ptr: *const u8,                   // post-trace wrapper that emits trace events around the call
-    /* … */
-}
-```
+**Superseded.** The earlier Phase 2 R6 catalogue placed `TracedFnInfo` (the GOT-swap wrapper metadata for `(trace ...)`) in int's `src/trace/` per D40's relocation. The 2026-06-04 trace ruling **retracts** that: discovery of the traced set moves into **backend codegen** (backend iterates `symbol_tables` itself — `design/arch/tracing.md` §5), so `TracedFnInfo` becomes a **backend-internal codegen value**, NOT an int type and NOT a cross-crate boundary type. int holds **no** trace helpers (the bodies are in `cranelisp-intrinsics`, §4b invariant 12). `TracedFnInfo` leaves int's surface entirely. See FIXME 0256 (int deletions) + FIXME 0255 (backend discovery).
 
 ### Public consts
 
@@ -1385,8 +1366,8 @@ All public DTOs published from `int` are `#[non_exhaustive]`:
 - `InputState`, `ContinuationState`, `ReplError`
 - `FileChangeEvent`
 - `Action`, `CliError`
-- `IoTraceFlushGuard`, `SchedulerTraceFlushGuard` (per Decision 40 + FIXME 0103)
-- `CacheWritePacket`, `TracedFnInfo` (per Phase 2 reach-around R4 + R6 — single-consumer relocations)
+- `IoTraceFlushGuard`, `SchedulerTraceFlushGuard` (per Decision 40 + FIXME 0103 — the io_trace / scheduler-trace observability that STAYS in int)
+- `CacheWritePacket` (per Phase 2 reach-around R4 — single-consumer relocation). **`TracedFnInfo` is NOT an int type** — the S76 trace ruling (2026-06-04) moves trace-set discovery into backend codegen, so `TracedFnInfo` becomes backend-internal and leaves int's surface entirely (see §"Tracing helpers" superseded note + `tracing.md` §5 + FIXMEs 0255/0256).
 
 `Code` is a `pub` enum without `#[non_exhaustive]` — both variants are load-bearing per Decision 35 and the integration layer pattern-matches exhaustively at known sites. New variants would be a deliberate extension requiring `/arch` decision.
 
