@@ -16,8 +16,180 @@ use cranelisp_types::{ErrorLocation,
     CranelispError, ModuleEntry, ModuleFullPath, Span, Type,
 };
 
-// Re-export generate_startup_object from the backend for convenience.
-pub use cranelisp_backend::exe::generate_startup_object;
+/// Generate a startup `.o` that defines `start` (exported, referenced by the
+/// linker via `-e _start`) which initializes platforms, calls `main()`,
+/// optionally runs the IO trampoline, and calls `exit()`.
+///
+/// S76 §4.4 (/arch RULED, Phase-2 Q1): int owns startup-object emission — the
+/// `--link` `_main`/`start` alias is int's link-orchestration (BC §3 invariant
+/// 7), NOT a backend boundary. The body was relocated here from the backend's
+/// `pub(crate) generate_startup_object`; it uses Cranelift directly (no
+/// codegen-from-`symbol_tables`), so it does not belong behind
+/// `compile_to_module`. Mirrors the existing `generate_main_alias_object`.
+///
+/// # Arguments
+/// * `platform_manifest_names` — symbol names for platform manifest functions
+///   (e.g., `["cranelisp_platform_manifest"]`). Empty if no platforms.
+/// * `main_returns_io` — if true, inserts a `cranelisp_run_io` call to force
+///   the IO task tree before extracting the exit code.
+/// * `entry_fn_name` — the user `main` symbol (e.g. `main` or `hello/main`).
+pub fn generate_startup_object(
+    platform_manifest_names: &[String],
+    main_returns_io: bool,
+    entry_fn_name: &str,
+) -> Result<Vec<u8>, CranelispError> {
+    use cranelift::prelude::*;
+    use cranelisp_backend::cranelift_module::{default_libcall_names, Linkage, Module};
+    use cranelisp_backend::cranelift_object::{ObjectBuilder, ObjectModule};
+
+    let isa = cranelisp_backend::build_isa(true)?;
+
+    let obj_builder = ObjectBuilder::new(isa, "cranelisp_startup", default_libcall_names())
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to create ObjectBuilder: {e}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
+    let mut obj_module = ObjectModule::new(obj_builder);
+
+    // Declare entry function as imported (user's main function, returns i64).
+    let mut main_sig = obj_module.make_signature();
+    main_sig.returns.push(AbiParam::new(types::I64));
+    let main_func_id = obj_module
+        .declare_function(entry_fn_name, Linkage::Import, &main_sig)
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to declare {entry_fn_name}: {e}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
+
+    // Declare `cranelisp_run_io` as imported (IO trampoline).
+    let run_io_func_id = if main_returns_io {
+        let mut run_io_sig = obj_module.make_signature();
+        run_io_sig.params.push(AbiParam::new(types::I64));
+        run_io_sig.returns.push(AbiParam::new(types::I64));
+        Some(
+            obj_module
+                .declare_function("cranelisp_run_io", Linkage::Import, &run_io_sig)
+                .map_err(|e| CranelispError::CodegenError {
+                    message: format!("failed to declare cranelisp_run_io: {e}"),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                })?,
+        )
+    } else {
+        None
+    };
+
+    // Declare `exit` as imported (libc, takes i32).
+    let mut exit_sig = obj_module.make_signature();
+    exit_sig.params.push(AbiParam::new(types::I32));
+    let exit_func_id = obj_module
+        .declare_function("exit", Linkage::Import, &exit_sig)
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to declare exit: {e}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
+
+    // Declare `cranelisp_init_platform` as imported (if platforms exist).
+    let init_func_id = if !platform_manifest_names.is_empty() {
+        let mut init_sig = obj_module.make_signature();
+        init_sig.params.push(AbiParam::new(types::I64));
+        Some(
+            obj_module
+                .declare_function("cranelisp_init_platform", Linkage::Import, &init_sig)
+                .map_err(|e| CranelispError::CodegenError {
+                    message: format!("failed to declare cranelisp_init_platform: {e}"),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                })?,
+        )
+    } else {
+        None
+    };
+
+    // Declare each platform manifest function as imported.
+    let mut manifest_func_ids = Vec::new();
+    for manifest_name in platform_manifest_names {
+        let manifest_sig = obj_module.make_signature();
+        let fid = obj_module
+            .declare_function(manifest_name, Linkage::Import, &manifest_sig)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare {manifest_name}: {e}"),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            })?;
+        manifest_func_ids.push(fid);
+    }
+
+    // Define `start` (exported entry point).
+    let start_sig = obj_module.make_signature();
+    let start_func_id = obj_module
+        .declare_function("start", Linkage::Export, &start_sig)
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to declare start: {e}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
+
+    let mut func = cranelift::codegen::ir::Function::with_name_signature(
+        cranelift::codegen::ir::UserFuncName::user(0, start_func_id.as_u32()),
+        start_sig,
+    );
+
+    let mut func_ctx = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut func, &mut func_ctx);
+        let entry_block = builder.create_block();
+        builder.append_block_params_for_function_params(entry_block);
+        builder.switch_to_block(entry_block);
+        builder.seal_block(entry_block);
+
+        // 1. Initialize platforms before calling main.
+        if let Some(init_fid) = init_func_id {
+            let init_ref = obj_module.declare_func_in_func(init_fid, builder.func);
+            for &manifest_fid in &manifest_func_ids {
+                let manifest_ref = obj_module.declare_func_in_func(manifest_fid, builder.func);
+                let addr = builder.ins().func_addr(types::I64, manifest_ref);
+                builder.ins().call(init_ref, &[addr]);
+            }
+        }
+
+        // 2. Call main().
+        let main_ref = obj_module.declare_func_in_func(main_func_id, builder.func);
+        let call_inst = builder.ins().call(main_ref, &[]);
+        let main_result = builder.inst_results(call_inst)[0];
+
+        // 3. If main returns IO, force the task tree via trampoline.
+        let ret_val = if let Some(run_io_fid) = run_io_func_id {
+            let run_io_ref = obj_module.declare_func_in_func(run_io_fid, builder.func);
+            let run_inst = builder.ins().call(run_io_ref, &[main_result]);
+            builder.inst_results(run_inst)[0]
+        } else {
+            main_result
+        };
+
+        // 4. Truncate i64 -> i32 for exit code.
+        let exit_code = builder.ins().ireduce(types::I32, ret_val);
+
+        // 5. Call exit(code).
+        let exit_ref = obj_module.declare_func_in_func(exit_func_id, builder.func);
+        builder.ins().call(exit_ref, &[exit_code]);
+
+        // Unreachable after exit, but Cranelift needs a block terminator.
+        builder.ins().trap(TrapCode::user(1).unwrap());
+
+        builder.finalize();
+    }
+
+    let mut ctx = cranelift::codegen::Context::for_function(func);
+    obj_module
+        .define_function(start_func_id, &mut ctx)
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to define start: {e:?}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
+
+    let product = obj_module.finish();
+    product.emit().map_err(|e| CranelispError::CodegenError {
+        message: format!("failed to emit startup object: {e}"),
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
+    })
+}
 
 // ── Main return type ────────────────────────────────────────────────────
 
@@ -160,7 +332,7 @@ pub fn generate_main_alias_object(
     // Declare the per-entry-module GOT data symbol as Linkage::Import.
     // The entry module's `.o` defines this symbol as Export (per Bug B fix
     // in `define_module_got_data` — Sprint 58 Wave 2 / Decision 23).
-    let got_name = cranelisp_backend::compiler::got_data_symbol_name(entry_module);
+    let got_name = cranelisp_types::got_data_symbol_name(entry_module);
     let got_data_id = obj_module
         .declare_data(&got_name, Linkage::Import, false, false)
         .map_err(|e| CranelispError::CodegenError {
@@ -545,22 +717,12 @@ mod tests {
     use std::collections::HashMap;
 
     fn make_main_entry(ty: Type) -> ModuleEntry<crate::code::Code> {
-        ModuleEntry::Def {
-            scheme: Scheme {
-                vars: vec![],
-                constraints: HashMap::new(),
-                ty,
-            },
-            visibility: Visibility::Public,
-            docstring: None,
-            param_names: vec![],
-            kind: Box::new(DefKind::UserFn { constrained_fn: None }),
-            callees: Vec::new(),
-            got_slot: None,
-            trait_origin: None,
-            ast: None,
-            code: None,
-        }
+        ModuleEntry::def(
+            Scheme { type_vars: vec![], constraints: HashMap::new(), ty },
+            DefKind::UserFn { constrained_fn: None },
+        )
+        .visibility(Visibility::Public)
+        .build()
     }
 
     // spec: design/backend/executable-generation.md §7 — main :: () -> Int accepted

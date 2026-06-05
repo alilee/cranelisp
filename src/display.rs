@@ -34,6 +34,11 @@ use cranelisp_backend::heap::{HeapAdt, HeapVec};
 ///   Fn     → "<closure>"
 ///   ADT    → constructor dot notation (see below)
 ///   Vec    → "[elem1 elem2 ...]"
+///
+/// Thin wrapper over `format_field_value`; exercised by this module's unit
+/// tests. `format_result_value` is the production entry point (REPL result
+/// display). Allowed dead in non-test builds.
+#[allow(dead_code)]
 pub fn format_value<C, L>(
     value: i64,
     ty: &Type,
@@ -310,7 +315,7 @@ fn format_string_value(value: i64) -> String {
 /// a redundant `Type.Constructor` display (`Point.Point`). For these types we
 /// suppress the `Type.` prefix and show just the constructor name.
 fn is_single_matching_constructor(type_name: &str, type_info: &TypeDefInfo) -> bool {
-    type_info.constructors.len() == 1 && type_info.constructors[0].name.as_ref() == type_name
+    type_info.constructors.len() == 1 && type_info.constructors[0].as_ref() == type_name
 }
 
 /// Format the constructor display name for an ADT value.
@@ -411,13 +416,43 @@ pub fn format_adt_type_qualified(
 }
 
 /// Find a constructor name by tag, or return a fallback string.
+///
+/// S70: `TypeDefInfo.constructors` is now `Vec<Symbol>` in tag order — the tag
+/// IS the index. (The `ConstructorInfo` struct with explicit `tag`/`fields`
+/// retired; ctor metadata lives on each ctor's `DefKind::Constructor` Def.)
 fn find_constructor_by_tag(type_info: &TypeDefInfo, tag: usize) -> String {
     type_info
         .constructors
-        .iter()
-        .find(|c| c.tag == tag)
-        .map(|c| format!("{}", c.name))
+        .get(tag)
+        .map(|c| c.to_string())
         .unwrap_or_else(|| format!("<tag:{tag}>"))
+}
+
+/// Look up a constructor's field types by reading its `ModuleEntry::Def`'s
+/// scheme. A data constructor's scheme is `forall [vars]. (Fn [field-tys] ADT)`;
+/// the `Fn` param types ARE the field types in declaration order. A nullary
+/// constructor has a non-`Fn` scheme (bare ADT) → no fields.
+///
+/// S70: replaces the retired `ConstructorInfo.fields` lookup.
+fn ctor_field_types<C, L>(
+    fqtn: &FQTypeName,
+    ctor_name: &str,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+) -> Vec<Type>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    let Some(table) = symbol_tables.get(&fqtn.module) else {
+        return Vec::new();
+    };
+    match table.get(ctor_name) {
+        Some(ModuleEntry::Def { scheme, .. }) => match &scheme.ty {
+            Type::Fn(params, _) => params.clone(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
 }
 
 /// Format a heap-allocated ADT value (data constructor with fields).
@@ -446,34 +481,37 @@ where
     // SAFETY: value is a heap pointer to a valid HeapAdt (produced by JIT code).
     let base = value as *const u8;
     let tag = unsafe { *(base.add(HeapAdt::TAG_OFFSET as usize) as *const i64) } as usize;
-    let ctor = type_info.constructors.iter().find(|c| c.tag == tag);
 
-    let Some(ctor) = ctor else {
+    // S70: tag is the index into `constructors: Vec<Symbol>`; field types come
+    // from the ctor Def's scheme.
+    let Some(ctor_name) = type_info.constructors.get(tag).map(|s| s.to_string()) else {
         return format!(":{type_display} <unknown-tag:{tag}>");
     };
+    let fqtn = &type_info.name;
+    let field_types = ctor_field_types(fqtn, &ctor_name, symbol_tables);
 
-    if ctor.fields.is_empty() {
+    if field_types.is_empty() {
         // Nullary constructor stored on heap (shouldn't happen, but handle gracefully).
-        let ctor_display = format_ctor_display(type_name, &ctor.name, type_info);
+        let ctor_display = format_ctor_display(type_name, &ctor_name, type_info);
         return format!(":{type_display} {ctor_display}");
     }
 
     // Build substitution from type_params to type_args for polymorphic ADTs.
-    let subst = build_adt_subst(type_info, type_args);
+    let subst = build_adt_subst(type_info, type_args, symbol_tables);
 
     // Read and format each field.
     let mut field_strs = Vec::new();
-    for (i, field_info) in ctor.fields.iter().enumerate() {
+    for (i, field_ty) in field_types.iter().enumerate() {
         let field_offset = HeapAdt::field_offset(i) as usize;
         let field_val = unsafe { *(base.add(field_offset) as *const i64) };
         // Substitute type args into field type before formatting.
-        let field_ty = substitute_field_type(&field_info.ty, &subst);
+        let field_ty = substitute_field_type(field_ty, &subst);
         let field_str = format_field_value(field_val, &field_ty, symbol_tables);
         field_strs.push(field_str);
     }
 
     let fields_display = field_strs.join(" ");
-    let ctor_display = format_ctor_display(type_name, &ctor.name, type_info);
+    let ctor_display = format_ctor_display(type_name, &ctor_name, type_info);
     format!(":{type_display} ({ctor_display} {fields_display})")
 }
 
@@ -482,16 +520,23 @@ where
 /// The type_params are Symbol names (e.g., "a", "b") but the field types use
 /// Type::Var(TypeId). We need to map from the Var ids used in field types
 /// to the concrete types in type_args.
-fn build_adt_subst(
+fn build_adt_subst<C, L>(
     type_info: &TypeDefInfo,
     type_args: &[Type],
-) -> HashMap<TypeId, Type> {
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+) -> HashMap<TypeId, Type>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     let mut subst = HashMap::new();
-    // Collect all Var ids used in constructor fields, in order.
+    // Collect all Var ids used in constructor fields, in order. S70: field
+    // types are read from each ctor Def's scheme rather than a pre-built
+    // `ConstructorInfo.fields` vector.
     let mut var_ids = Vec::new();
     for ctor in &type_info.constructors {
-        for field in &ctor.fields {
-            collect_var_ids(&field.ty, &mut var_ids);
+        for field_ty in ctor_field_types(&type_info.name, ctor.as_ref(), symbol_tables) {
+            collect_var_ids(&field_ty, &mut var_ids);
         }
     }
     // Map each unique Var id to the corresponding type arg.
@@ -787,7 +832,7 @@ mod tests {
         // (Fn [:Num a :Num a] a) — two params with same constrained var
         let var_id = 100;
         let scheme = Scheme {
-            vars: vec![var_id],
+            type_vars: vec![var_id],
             constraints: HashMap::from([(var_id, vec![FQTraitName::new(
                 ModuleFullPath::from("core.num"),
                 "Num".into(),
@@ -808,7 +853,7 @@ mod tests {
         // (Fn [:Eq :Num a :Eq :Num a] a)
         let var_id = 100;
         let scheme = Scheme {
-            vars: vec![var_id],
+            type_vars: vec![var_id],
             constraints: HashMap::from([(
                 var_id,
                 vec![

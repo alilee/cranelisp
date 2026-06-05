@@ -195,7 +195,7 @@ pub fn process_cluster(
     // finalize. Writes go to the live `SymbolTable` under the Wave 3a-β
     // scaffold (`ClusterContext::Live`); the full staging pivot is FIXME
     // 0176's responsibility.
-    crate::worker::check_program_compat(&shared.symbol_tables, scope, &wrapped)?;
+    crate::worker::check_program_compat(&shared.symbol_tables, &shared.module_aliases, scope, &wrapped)?;
 
     // Wave 3a-β scaffold: writes commit directly through `check_program_compat`,
     // so the staging-drain path is empty. Cluster-level metadata flow back
@@ -226,7 +226,6 @@ fn wrap_exprs_as_synthetic_defns(
                     docstring: None,
                     variants: vec![DefnVariant {
                         params: vec![],
-                        param_annotations: vec![],
                         body: expr.clone(),
                         span,
                     }],

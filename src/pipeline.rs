@@ -4,7 +4,6 @@
 // - Module file resolution
 // - Expression compilation and execution (REPL eval)
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{ErrorLocation, 
@@ -52,154 +51,84 @@ pub fn resolve_module_file(
 // Expression compilation (REPL eval path)
 // ---------------------------------------------------------------------------
 
-/// Compile the current module's `__expr` entry, execute it, and return
+/// Execute the current module's already-compiled `__expr` entry and return
 /// `(value, type)`.
 ///
-/// Sprint 57 Wave 2 G6: the `program: &Program` fallback parameter is gone.
-/// Wave 0 registers `__expr` on the current module's symbol table as a
-/// synthetic zero-arg `Defn` with `ast: Some(_)`; this is the single source
-/// of truth for the expression body (and carries the post-pass resolution
-/// annotations that the pre-annotation program lacked). Callers no longer
-/// pass a `&Program`.
+/// S76 W-Collapse: the REPL expression-eval path no longer hand-rolls a
+/// second JIT. `worker::inline_jit_codegen_for_module` (called by the eval
+/// driver before this fn) compiled the synthetic `__expr` defn through the
+/// unified `compile_to_module` path, which populated its per-module GOT slot
+/// and installed a `Code::Jit(Arc<Jit>)` lifecycle owner on the entry. This
+/// function reads the GOT address, transmutes it to a zero-arg `extern "C"`
+/// fn, calls it, and (for IO results) trampolines inline while the `Arc<Jit>`
+/// on the `__expr` entry keeps the code mapped.
 ///
-/// Sprint 57 Wave 6 (IO-path SIGBUS fix): when the `__expr`'s inferred type
-/// is `IO a`, the raw IO pointer returned by the compiled wrapper is forced
-/// through `run_io_trampoline` *inline* — i.e. before the per-eval `Jit`
-/// drops. The IO tree may carry heap closures whose `code_ptr`s point into
-/// this JIT's mmap'd pages (raw fn pointers, not GOT-indirect). Letting
-/// `jit` drop with an outstanding, un-trampolined IO value would invalidate
-/// those closure pointers via Decision 31's `impl Drop for Jit`
-/// (`JITModule::free_memory()`); a caller-side `run_io_trampoline(value)`
-/// then SIGBUSes dispatching into freed pages. Forcing the tree here
-/// consumes every closure in the IO while its code is still live, then
-/// returns the final unwrapped inner value with unwrapped type — mirroring
-/// `CompilerSession::trampoline` for the batch path. See `tests/io_minimal.rs`
-/// for the minimal reproducer cluster.
-#[allow(clippy::too_many_arguments)]
-pub fn compile_and_execute_expr(
-    jit_symbols: &[(String, *const u8)],
-    got_data_defs: &[(String, *const u8)],
+/// Sprint 57 Wave 6 (IO-path SIGBUS fix, preserved): when `__expr`'s inferred
+/// type is `IO a`, the raw IO pointer is forced through `run_io_trampoline`
+/// *before this fn returns* — the IO tree may carry heap closures whose
+/// `code_ptr`s point into the JIT's mmap'd pages. The `Arc<Jit>` retained on
+/// the `__expr` entry keeps those pages live for the duration of the call +
+/// trampoline. (Eval-result lifetime / reclaim is driven by the `Code::Jit`
+/// `Drop` when the entry is later replaced — `int.md` §5.3.)
+pub fn execute_compiled_expr(
     display: Option<&cranelisp_types::DisplayInfo>,
-    traced_fns: &[cranelisp_backend::compiler::TracedFnInfo],
-    trace_extra_symbols: &[(String, *const u8)],
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    current_module: ModuleFullPath,
+    current_module: &ModuleFullPath,
 ) -> Result<(i64, Type), CranelispError> {
-    // Pull the annotated expression body from the symbol-table entry for
-    // `__expr`. Wave 0 registers it as a synthetic defn with
-    // `ast: Some(...)`. The symbol-table body carries the post-pass
-    // resolution annotations (SigDispatch for Overloaded-base calls,
-    // auto-curry resolutions) that the pre-annotation program lacked.
-    let expr_owned: cranelisp_types::Expr = symbol_tables
-        .get(&current_module)
-        .and_then(|t| match t.get("__expr") {
-            Some(cranelisp_types::ModuleEntry::Def { ast: Some(defn), .. }) => {
-                Some(defn.body().clone())
+    // Read the GOT address + inferred type for the compiled `__expr` entry.
+    let (got_addr, expr_ty) = {
+        let table = symbol_tables.get(current_module).ok_or_else(|| {
+            CranelispError::CodegenError {
+                message: "no symbol table for current module at expr eval".into(),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
             }
-            _ => None,
-        })
-        .ok_or_else(|| CranelispError::CodegenError {
+        })?;
+        let entry = table.get("__expr").ok_or_else(|| CranelispError::CodegenError {
             message: "no `__expr` entry found in current module".into(),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
-    let expr = &expr_owned;
+        let cranelisp_types::ModuleEntry::Def { ast, got_slot: Some(slot), .. } = entry else {
+            return Err(CranelispError::CodegenError {
+                message: "`__expr` entry has no GOT slot (codegen did not run)".into(),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            });
+        };
+        // `ast` is now `DefnVariant` (S69 Submission 35); `body` is a field.
+        let inferred = ast
+            .as_ref()
+            .and_then(|d| d.body.inferred_type().cloned());
+        (table.got.load_slot(*slot), inferred)
+    };
 
-    // Get the type from display info or from the AST node's inferred_type.
+    if got_addr.is_null() {
+        return Err(CranelispError::CodegenError {
+            message: "`__expr` GOT slot is null (codegen did not populate it)".into(),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        });
+    }
+
+    // Type: display info first, then the AST node's inferred_type.
     let ty = display
         .map(|d| d.ty.clone())
-        .or_else(|| expr.inferred_type().cloned())
+        .or(expr_ty)
         .unwrap_or(Type::Int);
 
-    if traced_fns.is_empty() {
-        use cranelisp_types::{ErrorLocation, Defn, DefnVariant, Symbol, Visibility};
+    // SAFETY: `got_addr` is the finalized code pointer for the zero-arg
+    // `__expr` wrapper, written by `compile_to_module`. The `Arc<Jit>` on the
+    // `__expr` entry keeps the pages mapped for the duration of this call.
+    let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(got_addr) };
+    let _ = cranelisp_intrinsics::panic::take_runtime_error();
+    let raw_value = func();
 
-        // Decision 23 (Wave 2 follow-on): per-module GOT slabs are registered
-        // through the JIT's symbol-lookup table — the symbol address IS the
-        // slab base, no extra pointer-cell indirection. Fold `got_data_defs`
-        // into `extra_symbols` so `JITBuilder::symbol()` resolves
-        // `__cranelisp_got_{M}` directly to `GotTable.base_ptr()`.
-        let mut extra_syms: Vec<(&str, *const u8)> = jit_symbols
-            .iter()
-            .map(|(name, ptr)| (name.as_str(), *ptr))
-            .collect();
-        for (name, ptr) in got_data_defs {
-            extra_syms.push((name.as_str(), *ptr));
-        }
-        // Sprint 66 Wave 3a-γ: register int-owned intrinsics unconditionally
-        // at JIT setup (see FIXME 0178 + worker::inline_jit_codegen_for_names
-        // for the rationale). These are intrinsics per
-        // `design/arch/facades/intrinsics.md` — uniform dispatch through
-        // `JITBuilder::symbol()`, no conditional gating.
-        for (name, ptr) in crate::session_v4::int_intrinsics() {
-            extra_syms.push((name, ptr));
-        }
-
-        let mut jit = cranelisp_backend::jit::Jit::new_with_symbols(&extra_syms)?;
-        jit.declare_intrinsics()?;
-
-        let wrapper_name = Symbol::from("__repl_expr__");
-        // Use a synthetic wrapper span that nests the expr span so the
-        // typecheck's pre-eval resolution annotations (keyed by expr.span())
-        // survive through codegen.
-        let wrapper_span = expr.span();
-        let wrapper_defn = Defn {
-            name: wrapper_name.clone(),
-            docstring: None,
-            variants: vec![DefnVariant {
-                params: vec![],
-                param_annotations: vec![],
-                body: expr.clone(),
-                span: wrapper_span,
-            }],
-            visibility: Visibility::Public,
-            span: wrapper_span,
-        };
-
-        let func_ids = jit.declare_functions(&[&wrapper_defn])?;
-        let empty_arities: HashMap<Symbol, usize> = HashMap::new();
-
-        let compile_ctx = jit.build_compile_context(
-            &func_ids,
-            &empty_arities,
-            symbol_tables,
-            current_module.clone(),
-        );
-
-        jit.compile_defn(&wrapper_defn, compile_ctx)?;
-        let code_ptr = jit.finalize_and_get_ptr(&wrapper_name, 0)?;
-
-        // SAFETY: compiled code was just generated and finalized by our JIT.
-        let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code_ptr) };
-        // Clear any stale error before the JIT call.
-        let _ = cranelisp_intrinsics::panic::take_runtime_error();
-        let raw_value = func();
-
-        // Check thread-local error flag (set by runtime_panic in JIT code).
-        if let Some(msg) = cranelisp_intrinsics::panic::take_runtime_error() {
-            return Err(CranelispError::CodegenError {
-                message: format!("runtime error: {msg}"),
-                location: ErrorLocation::from_span(expr.span()),
-            });
-        }
-
-        // Sprint 57 Wave 6: if the wrapper returned an IO value, trampoline
-        // it *now* — while `jit` is still live — and return the unwrapped
-        // inner value. See function docstring for the full rationale.
-        let (value, ty) = unwrap_io_inline(raw_value, ty);
-
-        // `jit` drops here. Safe: if IO, we trampolined; otherwise the
-        // callee returned a non-code value. No fn pointer derived from
-        // `jit` is reachable from `value`.
-        drop(jit);
-        Ok((value, ty))
-    } else {
-        let (value, ty) = compile_and_execute_expr_with_trace(
-            jit_symbols, got_data_defs, expr, traced_fns, trace_extra_symbols,
-            symbol_tables, current_module.clone(),
-            ty,
-        )?;
-        Ok((value, ty))
+    if let Some(msg) = cranelisp_intrinsics::panic::take_runtime_error() {
+        return Err(CranelispError::CodegenError {
+            message: format!("runtime error: {msg}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        });
     }
+
+    // IO trampoline inline (the code is still mapped via the entry's Arc<Jit>).
+    Ok(unwrap_io_inline(raw_value, ty))
 }
 
 /// If `ty` is an `IO a` type, force the IO tree rooted at `raw_value` via
@@ -235,95 +164,17 @@ fn unwrap_io_inline(raw_value: i64, ty: Type) -> (i64, Type) {
         // trampoline by continuations were already released there via
         // `dec_shallow_io` — so this final walk is not a double-free.
         cranelisp_intrinsics::drop::consume_io_tree(raw_value);
-        let inner_type = ty.io_inner_type();
+        let inner_type = ty.unwrap_io().clone();
         (inner_value, inner_type)
     } else {
         (raw_value, ty)
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn compile_and_execute_expr_with_trace(
-    jit_symbols: &[(String, *const u8)],
-    got_data_defs: &[(String, *const u8)],
-    expr: &cranelisp_types::Expr,
-    traced_fns: &[cranelisp_backend::compiler::TracedFnInfo],
-    trace_extra_symbols: &[(String, *const u8)],
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    current_module: ModuleFullPath,
-    ty: Type,
-) -> Result<(i64, Type), CranelispError> {
-    use cranelisp_types::{ErrorLocation, Defn, DefnVariant, Symbol, Visibility};
-
-    let mut extra_syms: Vec<(&str, *const u8)> = jit_symbols
-        .iter()
-        .map(|(name, ptr)| (name.as_str(), *ptr))
-        .collect();
-    for (name, ptr) in trace_extra_symbols {
-        extra_syms.push((name.as_str(), *ptr));
-    }
-    // Decision 23 (Wave 2 follow-on): per-module GOT slabs are registered via
-    // the JIT's symbol-lookup table — the symbol address IS the slab base.
-    for (name, ptr) in got_data_defs {
-        extra_syms.push((name.as_str(), *ptr));
-    }
-    // Sprint 66 Wave 3a-γ: int-owned intrinsics — unconditional registration
-    // (see FIXME 0178). Mirror of `compile_and_execute_expr` above.
-    for (name, ptr) in crate::session_v4::int_intrinsics() {
-        extra_syms.push((name, ptr));
-    }
-
-    let mut jit = cranelisp_backend::jit::Jit::new_with_symbols(&extra_syms)?;
-    jit.declare_intrinsics()?;
-
-    let wrapper_name = Symbol::from("__repl_expr__");
-    let wrapper_defn = Defn {
-        name: wrapper_name.clone(),
-        docstring: None,
-        variants: vec![DefnVariant {
-            params: vec![],
-            param_annotations: vec![],
-            body: expr.clone(),
-            span: expr.span(),
-        }],
-        visibility: Visibility::Public,
-        span: expr.span(),
-    };
-
-    let func_ids = jit.declare_functions(&[&wrapper_defn])?;
-    let empty_arities: HashMap<Symbol, usize> = HashMap::new();
-
-    let mut compile_ctx = jit.build_compile_context(
-        &func_ids,
-        &empty_arities,
-        symbol_tables,
-        current_module.clone(),
-    );
-
-    compile_ctx.traced_fns = Some(traced_fns);
-
-    jit.compile_defn(&wrapper_defn, compile_ctx)?;
-    let code_ptr = jit.finalize_and_get_ptr(&wrapper_name, 0)?;
-
-    let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code_ptr) };
-    // Clear any stale error before the JIT call.
-    let _ = cranelisp_intrinsics::panic::take_runtime_error();
-    let raw_value = func();
-
-    // Check thread-local error flag (set by runtime_panic in JIT code).
-    if let Some(msg) = cranelisp_intrinsics::panic::take_runtime_error() {
-        return Err(CranelispError::CodegenError {
-            message: format!("runtime error: {msg}"),
-            location: ErrorLocation::from_span(expr.span()),
-        });
-    }
-
-    // Sprint 57 Wave 6: trampoline IO inline while `jit` is still live.
-    // See `compile_and_execute_expr` docstring for the full rationale.
-    let (value, ty) = unwrap_io_inline(raw_value, ty);
-    drop(jit);
-    Ok((value, ty))
-}
+// `compile_and_execute_expr_with_trace` — DELETED S76 (W-Collapse + trace
+// ruling). The trace eval path no longer hand-rolls a JIT; trace codegen +
+// discovery are backend-internal and `(trace ...)` flows through the unified
+// `compile_to_module` path like any other form.
 
 // ---------------------------------------------------------------------------
 // Unit tests

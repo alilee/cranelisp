@@ -99,7 +99,7 @@ shape to warrant extraction), the original analysis stands as the design input:
    | Option | expressible → static `declare_adt` builder |
    | IO (Pure/Effect/Bind) | mixed; Bind substrate → static builder |
    | bind primitive | substrate (inline CLIF) → with the externs |
-   | Trace | already owned by Decision 0040 (relocates to `/int` in full) |
+   | Trace | **(corrected 2026-06-05, /arch)** ADT shape (`Trace`/`TraceCall` + field accessors) → static builder in `primitives`, exactly like the other expressible ADTs — it is a `primitives`-module entry per `tracing.md` §2.2. The earlier "owned by Decision 0040 (relocates to /int in full)" was **D40's trace-half, which was RETRACTED 2026-06-04** (`tracing.md`): the *form* `trace` is a root special form (no `primitives` entry); the 12 trace *runtime bodies* live in `cranelisp-intrinsics` (§4.1) and the *codegen* is backend (§3/§5) — none of that is int's. Only the **ADT data declaration** is part of this synthetic-module mount, and it stays in `primitives` (NOT relocated to int). **Currently seeded nowhere in production** (the body was deleted with `register_builtins`); int's mount restores it from the git-history body. See FIXME 0242 §S76-addendum (4). |
    | TestResult + test special forms | ADT expressible; the two fns already int-owned JIT intrinsics |
 
 3. **`/int` orchestrates the mount** — startup mounts substrate tables →

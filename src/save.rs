@@ -116,7 +116,11 @@ fn generate_mod_decls(decls: &[ModDecl]) -> String {
     decls
         .iter()
         .map(|decl| {
-            let keyword = if decl.is_private { "mod-" } else { "mod" };
+            let keyword = if decl.visibility == cranelisp_types::Visibility::Private {
+                "mod-"
+            } else {
+                "mod"
+            };
             format!("({} {})", keyword, decl.name)
         })
         .collect::<Vec<_>>()
@@ -499,7 +503,7 @@ mod tests {
     fn generate_mod_decls_basic() {
         let decls = vec![ModDecl {
             name: "helper".into(),
-            is_private: false,
+            visibility: cranelisp_types::Visibility::Public,
             inline_body: None,
             span: Span::SYNTHETIC,
         }];

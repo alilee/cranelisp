@@ -88,9 +88,9 @@ fn main() {
 /// 3. Fall back to the default `Display` impl when no file is available
 ///    (preserves the pre-Wave-3b error shape for non-file errors).
 fn format_error(err: &CranelispError, entry_file: &Path) -> String {
-    let Some(loc) = err.location() else {
-        return format!("error: {err}");
-    };
+    // `location()` now returns `&ErrorLocation` directly (every error carries
+    // a location). The prior `Option` fallback is no longer reachable.
+    let loc = err.location();
     // Prefer the location's own file; fall back to the entry file.
     let file: PathBuf = match &loc.file {
         Some(p) => p.clone(),

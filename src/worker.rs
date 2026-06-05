@@ -12,9 +12,9 @@
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{ErrorLocation,
-    CranelispError, DefKind, Defn, ExportSpec, ImportNames, ImportSpec,
+    CranelispError, DefKind, Defn, ExportSpec, FQSymbol, ImportNames, ImportSpec,
     MacroClauseInfo, ModuleEntry, ModuleFullPath, ModuleStrategy,
-    PlatformSpec, PrimitiveKind, Sexp, Span, Symbol, TopLevel, Visibility,
+    PlatformSpec, Sexp, Span, Symbol, TopLevel, Visibility,
 };
 
 use cranelisp_typecheck::{CheckResult, CheckState};
@@ -176,14 +176,11 @@ fn top_level_to_parsed_entries(program: &[TopLevel]) -> Vec<cranelisp_types::Par
                 span: d.span,
             }),
             TopLevel::TypeDef { name, docstring, type_params, constructors, visibility, span } => {
-                use cranelisp_types::TypeName;
-                let type_params_tn: Vec<TypeName> = type_params
-                    .iter()
-                    .map(|s| TypeName::from(s.as_ref()))
-                    .collect();
+                // `ParsedEntry::TypeDef.type_params` is `Vec<Symbol>` (the
+                // type-parameter binders, as written) — pass through directly.
                 out.push(ParsedEntry::TypeDef {
                     name: name.clone(),
-                    type_params: type_params_tn,
+                    type_params: type_params.clone(),
                     constructors: constructors.clone(),
                     visibility: *visibility,
                     docstring: docstring.clone(),
@@ -220,6 +217,7 @@ fn top_level_to_parsed_entries(program: &[TopLevel]) -> Vec<cranelisp_types::Par
 /// staging (atomic discard, live unchanged).
 pub(crate) fn check_program_compat(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module_aliases: &cranelisp_types::ModuleAliases,
     module: &ModuleFullPath,
     working_program: &[TopLevel],
 ) -> Result<(), CranelispError> {
@@ -228,7 +226,7 @@ pub(crate) fn check_program_compat(
     // writes flow to a fresh staging table, reads union staging-first with
     // live, and on Ok the staging entries commit to live atomically. On Err
     // staging drops and live is unchanged.
-    process_cluster_with_staging(symbol_tables, module, working_program)
+    process_cluster_with_staging(symbol_tables, module_aliases, module, working_program)
 }
 
 /// Process a cluster through `ClusterContext::Cluster` with a fresh staging
@@ -247,10 +245,11 @@ pub(crate) fn check_program_compat(
 /// writes to live.
 pub(crate) fn process_cluster_with_staging(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module_aliases: &cranelisp_types::ModuleAliases,
     module: &ModuleFullPath,
     working_program: &[TopLevel],
 ) -> Result<(), CranelispError> {
-    use cranelisp_typecheck::{check_forms, ClusterContext};
+    use cranelisp_typecheck::{check_forms, SymbolTableAccess};
 
     let parsed = top_level_to_parsed_entries(working_program);
     if parsed.is_empty() {
@@ -261,9 +260,9 @@ pub(crate) fn process_cluster_with_staging(
         cranelisp_types::SymbolTable::<crate::code::Code, ()>::new_with_params(
             module.clone(),
         );
-    let mut ctx: ClusterContext<'_, crate::code::Code, ()> =
-        ClusterContext::cluster(symbol_tables, &mut staging, module.clone());
-    let result = check_forms(parsed, &mut ctx, symbol_tables)
+    let mut ctx: SymbolTableAccess<'_, crate::code::Code, ()> =
+        SymbolTableAccess::cluster(symbol_tables, &mut staging, module.clone());
+    let result = check_forms(parsed, &mut ctx, symbol_tables, module_aliases)
         .map_err(check_error_to_cranelisp_error);
     drop(ctx);
 
@@ -357,9 +356,7 @@ fn check_error_to_cranelisp_error(err: cranelisp_typecheck::CheckError) -> Crane
     }
 }
 
-use crate::expander::{
-    self, MacroClauseEntry, MacroEntry, MacroResolver,
-};
+use crate::expander::{self, MacroResolver};
 use crate::scheduler::{CompileScheduler, PriorityWork};
 
 // ---------------------------------------------------------------------------
@@ -379,6 +376,10 @@ use crate::scheduler::{CompileScheduler, PriorityWork};
 pub struct ModuleCompiler<'a> {
     pub symbol_tables: &'a dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     pub next_type_id: &'a std::sync::atomic::AtomicU32,
+    /// Session-level module-path alias table (int plan §1.4). The import
+    /// installer writes `(import [(target alias) …])` aliases here; typecheck
+    /// reads it read-only. Lives on `SharedState.module_aliases`.
+    pub module_aliases: &'a cranelisp_types::ModuleAliases,
     /// Per-invocation typecheck state. For REPL: extracted from SharedState.repl_check_state.
     /// For batch workers: created fresh per module.
     pub check_state: CheckState,
@@ -400,12 +401,8 @@ pub struct ModuleCompiler<'a> {
 }
 
 impl<'a> ModuleCompiler<'a> {
-    /// Create a TypeCheckEnv borrowing the shared state.
-    pub fn tc_env(
-        &self,
-    ) -> cranelisp_typecheck::TypeCheckEnv<'_, crate::code::Code, ()> {
-        cranelisp_typecheck::TypeCheckEnv::new(self.symbol_tables, self.next_type_id)
-    }
+    // `tc_env` deleted (W-Absorb): the sole former caller (`set_current_module`)
+    // switched to the types-crate `ensure_module_exists` free fn.
 
     /// Set the current module on both the check_state and the mirror field.
     ///
@@ -417,7 +414,7 @@ impl<'a> ModuleCompiler<'a> {
     /// fresh state so per-module state (overloads, pending resolutions)
     /// does not leak across module boundaries.
     pub fn set_current_module(&mut self, module: ModuleFullPath) {
-        self.tc_env().ensure_module_exists(&module);
+        cranelisp_types::ensure_module_exists(self.symbol_tables, &module);
         if self.check_state.current_module() != &module {
             self.check_state = CheckState::new(module.clone());
         }
@@ -429,16 +426,18 @@ impl<'a> ModuleCompiler<'a> {
 // SymbolTableMacroResolver — on-demand macro resolution from symbol tables
 // ---------------------------------------------------------------------------
 
-/// Macro resolver backed by the TypeChecker symbol tables.
+/// Recognition driver for the live in-place expansion walk
+/// (`expand_sexp_recursive`).
 ///
-/// Walks the symbol table on each name encounter, follows Import/Reexport chains
-/// to the defining module, checks `ModuleEntry::Def.code` presence there (Sprint
-/// 57 Wave 2 G6 migration — compiled code lives on the symbol-table entry),
-/// compiles on demand if needed, and returns the MacroEntry.
+/// `recognize` calls the LOCKED `cranelisp_types::resolve_macro_head` primitive
+/// (via `expander::recognize_macro_head`) to recognize a macro head, then
+/// ensures the recognized macro's clause code is in memory (on-demand inline
+/// compile via `compile_macro_with_state`). Execution is NOT this resolver's
+/// job — the walk runs the single `JitMacroExpander` over the returned `FQSymbol`
+/// (S76 W-Macro, fire B; `macro-availability-model.md` §0.7).
 ///
-/// Uses the `take_state`/`restore_state` pattern: the caller extracts `CheckState`
-/// from the `TypeChecker` before creating this resolver, so the resolver holds
-/// `&TypeChecker` (shared ref for DashMap reads) and `&mut CheckState` separately.
+/// Holds `&CheckState` (mut, for on-demand compilation) + the committed
+/// symbol-table set + module aliases (for `resolve_macro_head`).
 struct SymbolTableMacroResolver<'a> {
     /// Per-module symbol tables (DashMap, interior mutability).
     symbol_tables: &'a dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
@@ -448,6 +447,8 @@ struct SymbolTableMacroResolver<'a> {
     check_state: &'a mut CheckState,
     /// Current module path (starting point for symbol lookup).
     current_module: ModuleFullPath,
+    /// Module-path aliases — fed to `resolve_macro_head` for qualified refs.
+    module_aliases: &'a cranelisp_types::ModuleAliases,
     /// Per-module typecheck products (DashMap, interior mutability).
     typecheck_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
     /// Accumulator for check_form_with_state during on-demand compilation.
@@ -463,17 +464,38 @@ struct SymbolTableMacroResolver<'a> {
 }
 
 impl MacroResolver for SymbolTableMacroResolver<'_> {
-    fn resolve_macro(
+    fn symbol_tables(
+        &self,
+    ) -> &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> {
+        self.symbol_tables
+    }
+
+    fn recognize(
         &mut self,
         name: &str,
         span: Span,
-    ) -> Result<Option<MacroEntry>, CranelispError> {
-        // Step 1: Walk symbol table to find the defining module and clause infos.
-        let resolved = resolve_macro_definition(
-            self.symbol_tables, &self.current_module, name, 16,
-        );
-        let (defining_module, clauses, docstring) = match resolved {
-            Some(r) => r,
+    ) -> Result<Option<FQSymbol>, CranelispError> {
+        // Step 1: RECOGNITION via the LOCKED types primitive
+        // (`cranelisp_types::resolve_macro_head` over a committed `View`,
+        // `macro-availability-model.md` §0.7). Zero int→typecheck dependency;
+        // handles imports/reexports/aliases/visibility uniformly. A non-macro
+        // or forward reference yields `Ok(None)` (head flows on as an ordinary
+        // call per the locked defmacro-before-use rule).
+        let fq = match expander::recognize_macro_head(
+            self.symbol_tables,
+            self.module_aliases,
+            &self.current_module,
+            name,
+            span,
+        )? {
+            Some(fq) => fq,
+            None => return Ok(None),
+        };
+        // The home module + canonical symbol the primitive resolved to. Read
+        // the clause metadata directly from the canonical entry.
+        let defining_module = fq.module.clone();
+        let clauses = match read_macro_meta(self.symbol_tables, &fq) {
+            Some((clauses, _docstring)) => clauses,
             None => return Ok(None),
         };
 
@@ -482,17 +504,19 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
             self.macro_defining_modules.push(defining_module.clone());
         }
 
-        // Step 2: Check if all clauses are compiled. If so, build entry directly.
-        let macro_sym = Symbol::from(name);
+        // Step 2: Ensure the clause code is in memory (on-demand compile). The
+        // executor (`JitMacroExpander::invoke`) reads clause code ptrs from the
+        // GOT, so they must be compiled before the walk executes the macro.
         let all_compiled = clauses.iter().enumerate().all(|(idx, _)| {
-            let clause_name = macro_clause_jit_name(&macro_sym, idx);
+            let clause_name = macro_clause_jit_name(&fq.symbol, idx);
             has_code_ptr(self.symbol_tables, &defining_module, &clause_name)
         });
 
         if !all_compiled {
-            // Step 3: Compile inline. We need DefmacroInfo to drive compilation.
-            // Look up the sexp from the defining module's symbol table.
-            let macro_sexp = resolve_macro_sexp_from(self.symbol_tables, &defining_module, name);
+            // Step 3: Compile inline. We need DefmacroInfo to drive compilation;
+            // read the macro's sexp back from the introspection record.
+            let macro_sexp =
+                resolve_macro_sexp_from(self.shared_state, &defining_module, fq.symbol.as_ref());
             if let Some(sexp) = macro_sexp {
                 let info = cranelisp_frontend::parse_defmacro(&sexp)?;
                 compile_macro_with_state(
@@ -503,60 +527,63 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
                     self.shared_state,
                 )?;
             } else {
-                // No sexp available — cannot compile. Return None.
-                return Ok(None);
+                // No sexp available to compile from. The clauses may already be
+                // compiled by the batch Pass-2 path; recognition still succeeds
+                // so the executor can attempt the GOT-resolved invoke (which
+                // surfaces a clear `Aborted` if the code is genuinely absent).
+                return Ok(Some(fq));
             }
         }
 
-        // Step 4: Build MacroEntry from code pointers.
-        build_macro_entry_from_clauses(
-            self.symbol_tables, &defining_module, &macro_sym, &clauses, docstring,
-        )
+        Ok(Some(fq))
     }
 }
 
-/// Follow Import/Reexport chains to find the defining module, clauses, and docstring.
-///
-/// Generic recursive chain walker with depth limit to prevent infinite loops.
-pub(crate) fn resolve_macro_definition(
+/// Read a macro's clause metadata + docstring from its **already-resolved**
+/// canonical entry. `fq` addresses the home module + canonical symbol that
+/// `cranelisp_types::resolve_macro_head` chain-followed to (imports/aliases/
+/// visibility already applied) — so this is a single direct lookup, no
+/// chain-walk. Returns `None` when the entry is absent or not a `DefKind::Macro`
+/// (a forward reference or a non-macro shadowing the name).
+fn read_macro_meta(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    module: &ModuleFullPath,
-    name: &str,
-    max_depth: usize,
-) -> Option<(ModuleFullPath, Vec<MacroClauseInfo>, Option<String>)> {
-    if max_depth == 0 {
-        return None;
-    }
-    let table = symbol_tables.get(module)?;
-    let entry = table.get(name)?;
-    match entry {
-        ModuleEntry::Macro { clauses, docstring, .. } => {
-            Some((module.clone(), clauses.clone(), docstring.clone()))
-        }
-        ModuleEntry::Import { source } | ModuleEntry::Reexport { source, .. } => {
-            let next_mod = source.module.clone();
-            let next_sym: String = source.symbol.as_ref().to_string();
-            drop(table); // Release DashMap guard before recursing.
-            resolve_macro_definition(symbol_tables, &next_mod, &next_sym, max_depth - 1)
+    fq: &FQSymbol,
+) -> Option<(Vec<MacroClauseInfo>, Option<String>)> {
+    let table = symbol_tables.get(&fq.module)?;
+    match table.get(fq.symbol.as_ref())? {
+        ModuleEntry::Def { kind, docstring, .. }
+            if matches!(kind.as_ref(), DefKind::Macro { .. }) =>
+        {
+            let DefKind::Macro { clauses_meta } = kind.as_ref() else {
+                unreachable!("invariant: guard matched DefKind::Macro");
+            };
+            Some((clauses_meta.clone(), docstring.clone()))
         }
         _ => None,
     }
 }
 
-/// Resolve a macro's sexp from the defining module's symbol table.
+/// Resolve a macro's original sexp for on-demand clause compilation.
 ///
-/// Unlike `resolve_macro_definition`, this specifically looks up the sexp
-/// stored on the `ModuleEntry::Macro` in the defining module.
+/// W-Absorb (S76): the per-entry `sexp` field was retired (Decision 41 — macro
+/// `sexp`/`source` live on the int-layer `Introspection` record keyed by
+/// `FQSymbol`, not on the symbol-table entry). This reads the sexp back from
+/// `SharedState.introspection` for the (module, name) macro. Returns `None`
+/// when there is no shared state (unit-test paths) or no introspection record
+/// (batch compile, where introspection is not populated — in that case the
+/// macro's clauses were already compiled in `pass2_check_bodies_with_expansion`
+/// and this on-demand path is not reached).
 fn resolve_macro_sexp_from(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    shared_state: Option<&crate::session_v4::SharedState>,
     defining_module: &ModuleFullPath,
     name: &str,
 ) -> Option<Sexp> {
-    let table = symbol_tables.get(defining_module)?;
-    match table.get(name)? {
-        ModuleEntry::Macro { sexp, .. } => sexp.clone(),
-        _ => None,
-    }
+    let shared = shared_state?;
+    let fq = FQSymbol {
+        module: defining_module.clone(),
+        symbol: Symbol::from(name),
+    };
+    shared.introspection.get(&fq).and_then(|rec| rec.sexp.clone())
 }
 
 /// Compile a macro's clauses using the `_with_state` API (no &mut TypeChecker needed).
@@ -642,7 +669,15 @@ fn compile_macro_clause_with_state(
     let _ = check_state;
     let _ = accumulator;
     let _ = next_type_id;
-    check_program_compat(symbol_tables, target_module, &program)?;
+    // module_aliases lives on SharedState; this `_with_state` macro-clause path
+    // is slated for deletion in the W-Macro Pass-1 rewrite (fire B). When
+    // shared_state is absent (unit-test paths), an empty leaked alias map is a
+    // safe stand-in (macro clause bodies do not use alias imports).
+    let module_aliases: &cranelisp_types::ModuleAliases = match shared_state {
+        Some(s) => &s.module_aliases,
+        None => Box::leak(Box::new(cranelisp_types::ModuleAliases::default())),
+    };
+    check_program_compat(symbol_tables, module_aliases, target_module, &program)?;
 
     // Step 5: Extract the defn from the annotated symbol table (not the unannotated program).
     // The typechecker stores annotated defns (with resolved_call on AST nodes) in
@@ -661,32 +696,17 @@ fn compile_macro_clause_with_state(
             location: ErrorLocation::from_span(span),
         })?;
 
-    let defn = symbol_tables
-        .get(target_module)
-        .and_then(|table| match table.get(defn_name.as_ref()) {
-            Some(cranelisp_types::ModuleEntry::Def { ast: Some(d), .. }) => Some(d.clone()),
-            _ => None,
-        })
-        .unwrap_or_else(|| {
-            // Fallback to program version (should not happen if typecheck is working)
-            program.iter().find_map(|tl| match tl {
-                TopLevel::Defn(d) => Some(d.clone()),
-                _ => None,
-            }).unwrap_or_else(|| unreachable!("invariant: defn_name was extracted from program above"))
-        });
-    let defn = &defn;
-
     // Compile macro clause through the unified compile_to_module path.
     // Macro clause functions are normal functions on per-module GOTs — the
-    // typechecker has registered `defn.name` on `target_module`'s symbol
+    // typechecker has registered `defn_name` on `target_module`'s symbol
     // table with `ast: Some(_)` and `got_slot: Some(_)` (Wave 0 invariant).
+    // S69 Submission 35: `ModuleEntry::Def.ast` is now `DefnVariant` (no
+    // `name` field); the codegen `names` array is keyed off the already-
+    // extracted `defn_name`, so the prior `Defn` reconstruction is dropped.
     let tc_modules = symbol_tables;
     ensure_typecheck_product(typecheck_products, target_module);
-    // Wave 0 (Sprint 56): the typechecker registers every compilable defn
-    // with `got_slot: Some(_)`, so the legacy `pre_register_got_slots_in_tc`
-    // safety net is no longer needed here.
     let _ = accumulator;
-    let names = [defn.name.clone()];
+    let names = [defn_name.clone()];
     inline_jit_codegen_for_names(
         target_module,
         &names,
@@ -697,37 +717,6 @@ fn compile_macro_clause_with_state(
     )?;
 
     Ok(())
-}
-
-/// Build a MacroEntry from compiled clause code pointers.
-fn build_macro_entry_from_clauses(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    defining_module: &ModuleFullPath,
-    macro_sym: &Symbol,
-    clauses: &[MacroClauseInfo],
-    docstring: Option<String>,
-) -> Result<Option<MacroEntry>, CranelispError> {
-    let mut compiled_clauses = Vec::new();
-    for (idx, clause_info) in clauses.iter().enumerate() {
-        let clause_name = macro_clause_jit_name(macro_sym, idx);
-        match get_code_ptr(symbol_tables, defining_module, &clause_name) {
-            Some(ptr) => {
-                compiled_clauses.push(MacroClauseEntry {
-                    func_ptr: ptr,
-                    params: clause_info.params.clone(),
-                    rest_param: clause_info.rest_param.clone(),
-                });
-            }
-            None => return Ok(None), // Clause not compiled — skip this macro.
-        }
-    }
-    if compiled_clauses.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(MacroEntry {
-        clauses: compiled_clauses,
-        docstring,
-    }))
 }
 
 /// Scope the resolver's borrows to just the expansion phase.
@@ -750,6 +739,7 @@ fn try_expand_sexp(
             next_type_id: ctx.next_type_id,
             check_state: &mut ctx.check_state,
             current_module: module.clone(),
+            module_aliases: ctx.module_aliases,
             typecheck_products: ctx.typecheck_products,
             accumulator,
             scheduler: ctx.scheduler,
@@ -811,8 +801,7 @@ fn qualify_expanded_sexp(
                     && let Some(entry) = table.get(name) {
                         // Follow imports to find the true source module for qualification
                         let qual_module = match entry {
-                            ModuleEntry::Import { source } => &source.module,
-                            ModuleEntry::Reexport { source, .. } => &source.module,
+                            ModuleEntry::Import { source, .. } => &source.module,
                             _ => def_mod,
                         };
                         let qualified = format!("{}/{}", qual_module.as_ref(), name);
@@ -985,24 +974,24 @@ fn classify_form(
                     "import" => {
                         let (decls, _remaining) =
                             cranelisp_frontend::extract_module_declarations(
-                                containing_module.clone(),
-                                vec![sexp.clone()],
+                                &containing_module,
+                                std::slice::from_ref(sexp),
                             )?;
                         Ok(FormKind::Import(decls.import_specs))
                     }
                     "export" => {
                         let (decls, _remaining) =
                             cranelisp_frontend::extract_module_declarations(
-                                containing_module.clone(),
-                                vec![sexp.clone()],
+                                &containing_module,
+                                std::slice::from_ref(sexp),
                             )?;
                         Ok(FormKind::Export(decls.export_specs))
                     }
                     "mod" | "mod-" => {
                         let (decls, _remaining) =
                             cranelisp_frontend::extract_module_declarations(
-                                containing_module.clone(),
-                                vec![sexp.clone()],
+                                &containing_module,
+                                std::slice::from_ref(sexp),
                             )?;
                         let decl = decls.mod_decls.into_iter().next().ok_or_else(|| {
                             CranelispError::ParseError {
@@ -1015,8 +1004,8 @@ fn classify_form(
                     "platform" => {
                         let (decls, _remaining) =
                             cranelisp_frontend::extract_module_declarations(
-                                containing_module.clone(),
-                                vec![sexp.clone()],
+                                &containing_module,
+                                std::slice::from_ref(sexp),
                             )?;
                         let spec = decls.platform_specs.into_iter().next().ok_or_else(|| {
                             CranelispError::ParseError {
@@ -1268,7 +1257,7 @@ fn finalize_module(
     }
 
     // Single typecheck dispatch — internally drives Pass 1, Pass 2, finalize.
-    check_program_compat(ctx.symbol_tables, module, &final_working)?;
+    check_program_compat(ctx.symbol_tables, ctx.module_aliases, module, &final_working)?;
 
     // Build a minimal `CheckResult` carrier for downstream codegen. The new
     // typecheck surface no longer returns a `CheckResult` from
@@ -1324,19 +1313,32 @@ fn register_macro_in_module(
     } else {
         Visibility::Public
     };
+    // S70 macro-unification (W-Absorb): the macro parent is a
+    // `ModuleEntry::Def` with `kind: DefKind::Macro { clauses_meta }` — no
+    // callable address (`got_slot: None`), no AST. The `sexp` argument used to
+    // ride on the entry; per Decision 41 macro `sexp` lives on the int-layer
+    // `Introspection` record keyed by `FQSymbol` (populated elsewhere).
+    let _ = sexp; // FIXME(fire-B): route macro sexp into Introspection.
     if let Some(mut table) = symbol_tables.get_mut(module) {
-        table.insert(
-            name.clone(),
-            ModuleEntry::Macro {
-                name: name.clone(),
-                clauses: clause_infos,
-                docstring: info.docstring.clone(),
-                visibility,
-                sexp: Some(sexp.clone()),
-                source: None,
-                callees: Vec::new(),
+        // Macro parents carry no meaningful type scheme (not callable); use a
+        // placeholder monomorphic scheme, as the legacy `ModuleEntry::Macro`
+        // path effectively did (it had no scheme field at all).
+        let placeholder_scheme = cranelisp_types::Scheme {
+            type_vars: vec![],
+            constraints: std::collections::HashMap::new(),
+            ty: cranelisp_types::Type::Int,
+        };
+        let mut builder = ModuleEntry::def(
+            placeholder_scheme,
+            DefKind::Macro {
+                clauses_meta: clause_infos,
             },
-        );
+        )
+        .visibility(visibility);
+        if let Some(doc) = &info.docstring {
+            builder = builder.docstring(doc.clone());
+        }
+        table.insert(name.clone(), builder.build());
     }
     Ok(())
 }
@@ -1543,7 +1545,7 @@ fn check_private_submodule_import(
     let private_decl = parent_table
         .submodules
         .iter()
-        .find(|d| d.name.as_ref() == trailing && d.is_private);
+        .find(|d| d.name.as_ref() == trailing && d.visibility == Visibility::Private);
     let Some(_decl) = private_decl else {
         return Ok(());
     };
@@ -1626,7 +1628,7 @@ fn handle_import(
                 crate::observability::SchedulerTraceTag::RegisterImportsLookup,
                 dep.as_ref(),
             );
-            cranelisp_typecheck::register_imports(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, std::slice::from_ref(spec))?;
+            crate::imports::install_imports(ctx.symbol_tables, &ctx.current_module, ctx.module_aliases, std::slice::from_ref(spec))?;
             continue;
         }
 
@@ -1652,7 +1654,7 @@ fn handle_import(
 
         // Cache check: try to load from disk cache before parsing.
         if try_cache_hit_load(ctx, dep, &dep_file) {
-            cranelisp_typecheck::register_imports(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, std::slice::from_ref(spec))?;
+            crate::imports::install_imports(ctx.symbol_tables, &ctx.current_module, ctx.module_aliases, std::slice::from_ref(spec))?;
             continue;
         }
 
@@ -1869,7 +1871,7 @@ fn try_cache_hit_load(
     let symbols: StdHashSet<Symbol> = cached.metadata.symbol_table
         .all_symbols()
         .filter_map(|(name, entry)| match entry {
-            ModuleEntry::Def { .. } | ModuleEntry::Constructor { .. } => Some(name.clone()),
+            ModuleEntry::Def { .. } => Some(name.clone()),
             _ => None,
         })
         .collect();
@@ -2123,7 +2125,7 @@ fn handle_export(
 
         // Already loaded — register the re-export and continue.
         if ctx.symbol_tables.contains_key(dep) {
-            cranelisp_typecheck::register_exports(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, std::slice::from_ref(spec))?;
+            crate::imports::install_exports(ctx.symbol_tables, &ctx.current_module, std::slice::from_ref(spec))?;
             continue;
         }
 
@@ -2180,7 +2182,7 @@ fn handle_export(
     }
 
     // All source modules loaded — register the re-exports.
-    cranelisp_typecheck::register_exports(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, specs)?;
+    crate::imports::install_exports(ctx.symbol_tables, &ctx.current_module, specs)?;
     Ok(BlockAction::Continue)
 }
 
@@ -2408,22 +2410,14 @@ fn compile_macro_if_needed(
         return Ok(());
     }
 
-    // Walk transitive callees and notify scheduler for any uncompiled deps.
-    // The actual compilation is handled through the scheduler's normal priority
-    // codegen path (block_for_macro_codegen). This loop only updates the
-    // scheduler's completion tracking.
-    let uncompiled_deps = collect_transitive_uncompiled_deps(
-        ctx.symbol_tables, module, &info.name,
-    );
-    for (dep_module, dep_symbol) in &uncompiled_deps {
-        if std::env::var("CRANELISP_CODEGEN_TRACE").is_ok() {
-            eprintln!(
-                "compile_macro_if_needed: uncompiled dep {}/{} — handled by scheduler",
-                dep_module, dep_symbol
-            );
-        }
-        ctx.scheduler.notify_inmem_codegen_complete(dep_module, dep_symbol, false);
-    }
+    // S76 W-Macro (fire B): the dead `block_for_macro_codegen` dep-walk
+    // (`collect_transitive_uncompiled_deps` + the notify-loop) is DELETED, not
+    // wired (`macro-availability-model.md` §0.7). The locked decision FORBIDS a
+    // macro clause from calling a same-module non-macro definition at expansion
+    // time (round-trip safety, §0.3), so a clause's callees are dependency
+    // functions (compiled before, by ordinary module compilation) or same-module
+    // macros (compiled in source order) — there is no same-module-`defn`-callee
+    // with an empty GOT slot to pre-compile here.
 
     // Compile each clause that is not yet compiled.
     for (clause_idx, clause) in info.clauses.iter().enumerate() {
@@ -2446,59 +2440,8 @@ fn compile_macro_if_needed(
     Ok(())
 }
 
-/// Walk the transitive closure of a symbol's callees via the TC symbol table.
-///
-/// Returns the symbols that do not yet have compiled code pointers in the GOT.
-/// The result is in dependency order (callees before callers) suitable for
-/// sequential compilation.
-fn collect_transitive_uncompiled_deps(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    module: &ModuleFullPath,
-    start_symbol: &Symbol,
-) -> Vec<(ModuleFullPath, Symbol)> {
-    use std::collections::HashSet;
-    use std::collections::VecDeque;
-
-    let mut visited: HashSet<(ModuleFullPath, Symbol)> = HashSet::new();
-    let mut queue: VecDeque<(ModuleFullPath, Symbol)> = VecDeque::new();
-    let mut result: Vec<(ModuleFullPath, Symbol)> = Vec::new();
-
-    // Seed with the starting symbol's callees.
-    if let Some(table) = symbol_tables.get(module)
-        && let Some(entry) = table.get(start_symbol.as_ref())
-    {
-        for callee in entry.callees() {
-            let key = (callee.module.clone(), callee.symbol.clone());
-            if visited.insert(key.clone()) {
-                queue.push_back(key);
-            }
-        }
-    }
-
-    // BFS walk.
-    while let Some((dep_mod, dep_sym)) = queue.pop_front() {
-        // Look up this symbol's own callees and enqueue them.
-        if let Some(table) = symbol_tables.get(&dep_mod)
-            && let Some(entry) = table.get(dep_sym.as_ref())
-        {
-            for callee in entry.callees() {
-                let key = (callee.module.clone(), callee.symbol.clone());
-                if visited.insert(key.clone()) {
-                    queue.push_back(key);
-                }
-            }
-        }
-        // Only include if uncompiled.
-        if !has_code_ptr(symbol_tables, &dep_mod, &dep_sym) {
-            result.push((dep_mod, dep_sym));
-        }
-    }
-
-    result
-}
-
 // compile_dep_symbol_inline removed (Sprint 53): was a dead stub that took 10
-// parameters and returned Ok(()). The scheduler's block_for_macro_codegen
+// parameters and returned Ok(()). The (now-deleted) scheduler block_for_macro_codegen
 // handles dependency compilation through the normal priority codegen path.
 
 /// Compile a single macro clause inline using the worker's shared state.
@@ -2535,7 +2478,7 @@ fn compile_macro_clause_inline(
     // 2026-05-13 third amendment) — single call runs Pass 1 + Pass 2 + finalize.
     let module = ctx.current_module.clone();
     let _ = accumulator;
-    check_program_compat(ctx.symbol_tables, &module, &program)?;
+    check_program_compat(ctx.symbol_tables, ctx.module_aliases, &module, &program)?;
 
     // Step 5: Extract the defn from the annotated symbol table (not the unannotated program).
     // The typechecker stores annotated defns (with resolved_call on AST nodes) in
@@ -2554,33 +2497,17 @@ fn compile_macro_clause_inline(
             location: ErrorLocation::from_span(span),
         })?;
 
-    let defn = ctx.symbol_tables
-        .get(&module)
-        .and_then(|table| match table.get(defn_name.as_ref()) {
-            Some(cranelisp_types::ModuleEntry::Def { ast: Some(d), .. }) => Some(d.clone()),
-            _ => None,
-        })
-        .unwrap_or_else(|| {
-            // Fallback to program version (should not happen if typecheck is working)
-            program.iter().find_map(|tl| match tl {
-                TopLevel::Defn(d) => Some(d.clone()),
-                _ => None,
-            }).unwrap_or_else(|| unreachable!("invariant: defn_name was extracted from program above"))
-        });
-    let defn = &defn;
-
     // Compile macro clause through the unified compile_to_module path.
     // Macro clause functions are normal functions on per-module GOTs — the
-    // typechecker has registered `defn.name` on the current module's symbol
+    // typechecker has registered `defn_name` on the current module's symbol
     // table with `ast: Some(_)` and `got_slot: Some(_)` (Wave 0 invariant).
+    // S69 Submission 35: `ast` is `DefnVariant` (no `name`); the codegen
+    // `names` array keys off `defn_name` directly (Defn reconstruction dropped).
     let module = ctx.current_module.clone();
     let tc_modules = ctx.symbol_tables;
     ensure_typecheck_product(ctx.typecheck_products, &module);
-    // Wave 0 (Sprint 56): the typechecker registers every compilable defn
-    // with `got_slot: Some(_)`, so the legacy `pre_register_got_slots_in_tc`
-    // safety net is no longer needed here.
     let _ = accumulator;
-    let names = [defn.name.clone()];
+    let names = [defn_name.clone()];
     inline_jit_codegen_for_names(
         &module,
         &names,
@@ -2622,18 +2549,24 @@ fn has_code_ptr(
         .unwrap_or(false)
 }
 
-/// Get a code pointer from the symbol-table entry, if compiled.
+/// Test-only: read a compiled code pointer from a symbol's GOT slot. The
+/// production executor reads clause code ptrs through
+/// `JitMacroExpander::clause_code_ptr` (`src/expander.rs`); this mirrors that
+/// read for the codegen unit tests.
+#[cfg(test)]
 fn get_code_ptr(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
     name: &Symbol,
 ) -> Option<*const u8> {
-    symbol_tables
-        .get(module)
-        .and_then(|t| match t.get(name.as_ref())? {
-            ModuleEntry::Def { code: Some(c), .. } => Some(c.ptr()),
-            _ => None,
-        })
+    symbol_tables.get(module).and_then(|t| {
+        let ModuleEntry::Def { code: Some(_), got_slot: Some(slot), .. } = t.get(name.as_ref())?
+        else {
+            return None;
+        };
+        let ptr = t.got.load_slot(*slot);
+        if ptr.is_null() { None } else { Some(ptr) }
+    })
 }
 
 /// Compile a macro's clauses for REPL use.
@@ -2726,7 +2659,7 @@ fn inject_prelude_if_needed(
                     names: ImportNames::Glob,
                     span: Span::SYNTHETIC,
                 };
-                cranelisp_typecheck::register_imports(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, &[prelude_spec])?;
+                crate::imports::install_imports(ctx.symbol_tables, &ctx.current_module, ctx.module_aliases, &[prelude_spec])?;
                 return Ok(None);
             }
 
@@ -2770,7 +2703,7 @@ fn inject_prelude_if_needed(
             names: ImportNames::Glob,
             span: Span::SYNTHETIC,
         };
-        cranelisp_typecheck::register_imports(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, &[prelude_spec])?;
+        crate::imports::install_imports(ctx.symbol_tables, &ctx.current_module, ctx.module_aliases, &[prelude_spec])?;
     }
 
     Ok(None)
@@ -2831,10 +2764,14 @@ fn clear_module_codegen(ctx: &mut ModuleCompiler, module: &ModuleFullPath) {
         table.all_symbols()
             .filter_map(|(name, entry)| {
                 // Only clear codegen for definitions owned by this module,
-                // not imports or special forms.
+                // not imports or special forms. Constructors are now
+                // `Def { kind: DefKind::Constructor }`; macro parents
+                // (`DefKind::Macro`) carry no callable codegen and are skipped.
+                // Special forms live in `ModuleEntry::SpecialForm` (the `_`
+                // arm). (S70/W-Absorb.)
                 match entry {
                     cranelisp_types::ModuleEntry::Def { kind, .. } => {
-                        if matches!(kind.as_ref(), cranelisp_types::DefKind::SpecialForm { .. }) {
+                        if matches!(kind.as_ref(), cranelisp_types::DefKind::Macro { .. }) {
                             None
                         } else {
                             let qualified = cranelisp_types::Symbol::from(
@@ -2842,12 +2779,6 @@ fn clear_module_codegen(ctx: &mut ModuleCompiler, module: &ModuleFullPath) {
                             );
                             Some(qualified)
                         }
-                    }
-                    cranelisp_types::ModuleEntry::Constructor { .. } => {
-                        let qualified = cranelisp_types::Symbol::from(
-                            format!("{}/{}", module, name)
-                        );
-                        Some(qualified)
                     }
                     _ => None,
                 }
@@ -2865,7 +2796,7 @@ fn clear_module_codegen(ctx: &mut ModuleCompiler, module: &ModuleFullPath) {
             && let Some(table) = ctx.symbol_tables.get(&ctx.current_module) {
                 for (_name, entry) in table.all_symbols() {
                     if let cranelisp_types::ModuleEntry::Def { got_slot: Some(slot), kind, .. } = entry
-                        && !matches!(kind.as_ref(), cranelisp_types::DefKind::SpecialForm { .. }) {
+                        && !matches!(kind.as_ref(), cranelisp_types::DefKind::Macro { .. }) {
                             got_table.store_slot(*slot, std::ptr::null());
                         }
                 }
@@ -2919,7 +2850,6 @@ fn wrap_exprs_as_defns(program: &[TopLevel]) -> Vec<TopLevel> {
                     docstring: None,
                     variants: vec![DefnVariant {
                         params: vec![],
-                        param_annotations: vec![],
                         body: expr.clone(),
                         span,
                     }],
@@ -2938,88 +2868,10 @@ fn wrap_exprs_as_defns(program: &[TopLevel]) -> Vec<TopLevel> {
 // inline_jit_codegen_for_module — unified JIT codegen entry (Sprint 56 Wave 2)
 // ---------------------------------------------------------------------------
 
-/// Collect platform-function JIT symbols and GOT data-base definitions for a
-/// module compilation.
-///
-/// Replaces `SessionCompilationEnv::collect_jit_setup_for_module`. Walks the
-/// module's symbol table for `PlatformEffect` primitives (both direct defs and
-/// imports), reads their function pointers from the owning module's GOT
-/// (Sprint 66 Wave 0 amendment — GOT is the single source of truth, replacing
-/// the prior `ModuleEntry::Def.fn_ptr` field), and then records every existing
-/// module's GOT base address so the JIT module can define
-/// `__cranelisp_got_{m}` literal-pool entries — see
-/// `design/backend/compile-to-module.md` §12 and
-/// `design/int/phase2-codegen-convergence.md` §5.
-#[allow(clippy::type_complexity)]
-fn collect_jit_setup(
-    tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    current_module: &ModuleFullPath,
-) -> (Vec<(String, *const u8)>, Vec<(String, *const u8)>) {
-    let mut jit_symbols = Vec::new();
-    let mut got_data_defs = Vec::new();
-
-    if let Some(st) = tc_modules.get(current_module) {
-        for (_name, entry) in st.all_symbols() {
-            match entry {
-                ModuleEntry::Def {
-                    kind,
-                    got_slot: Some(slot),
-                    ..
-                } => {
-                    if let DefKind::Primitive {
-                        primitive_kind: PrimitiveKind::PlatformEffect { .. },
-                        jit_name: Some(jit_name),
-                    } = kind.as_ref()
-                    {
-                        let ptr = st.got.load_slot(*slot);
-                        if !ptr.is_null() {
-                            jit_symbols.push((jit_name.0.clone(), ptr));
-                        }
-                    }
-                }
-                ModuleEntry::Import { source } => {
-                    if let Some(source_table) = tc_modules.get(&source.module)
-                        && let Some(ModuleEntry::Def {
-                            kind,
-                            got_slot: Some(slot),
-                            ..
-                        }) = source_table.get(source.symbol.as_ref())
-                        && let DefKind::Primitive {
-                            primitive_kind: PrimitiveKind::PlatformEffect { .. },
-                            jit_name: Some(jit_name),
-                        } = kind.as_ref()
-                    {
-                        let ptr = source_table.got.load_slot(*slot);
-                        if !ptr.is_null() {
-                            jit_symbols.push((jit_name.0.clone(), ptr));
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    for entry in tc_modules.iter() {
-        let name = cranelisp_backend::compiler::got_data_symbol_name(entry.key());
-        got_data_defs.push((name, entry.value().got.base_ptr()));
-    }
-
-    (jit_symbols, got_data_defs)
-}
-
-/// Public wrapper for `collect_jit_setup` used by the REPL expression
-/// evaluation path in `session_v4::codegen_and_execute`. Mirrors the setup
-/// used inside `inline_jit_codegen_for_module` so the throwaway
-/// `compile_and_execute_expr` JIT module resolves cross-module GOT bases and
-/// platform functions consistently.
-#[allow(clippy::type_complexity)]
-pub fn collect_jit_setup_public(
-    tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    current_module: &ModuleFullPath,
-) -> (Vec<(String, *const u8)>, Vec<(String, *const u8)>) {
-    collect_jit_setup(tc_modules, current_module)
-}
+// `collect_jit_setup` + `collect_jit_setup_public` — DELETED S76 W-Collapse.
+// The hand-assembled platform-symbol + GOT-data-base collection is now done
+// internally by `Jit::new(symbol_tables)` (backend, BC §3). int assembles no
+// JIT symbols by hand.
 
 /// Derive the codegen batch — a `Vec<Symbol>` — from a `program` and the
 /// module's symbol table. Separated out from `inline_jit_codegen_for_module`
@@ -3128,7 +2980,21 @@ pub fn derive_codegen_batch(
             if already_compiled {
                 continue;
             }
-            if name.as_ref().contains('$') || name.as_ref() == "__expr" {
+            // S76 W-Enablement (0249-b): enumerate synthesised constructor
+            // `Def`s into the codegen batch so their `Expr::ConstrADT` bodies
+            // are lowered and their GOT slots (allocated by typecheck's
+            // 0249-a `register_constructors`) are populated — making
+            // `(map Some xs)` (constructor-as-value) reach the constructor via
+            // its GOT slot. Mirror of the Decision 0048 primitives got-slotting.
+            let is_uncompiled_ctor = table
+                .get(name.as_ref())
+                .map(|e| matches!(
+                    &e,
+                    ModuleEntry::Def { kind, ast: Some(_), .. }
+                        if matches!(kind.as_ref(), DefKind::Constructor { .. })
+                ))
+                .unwrap_or(false);
+            if name.as_ref().contains('$') || name.as_ref() == "__expr" || is_uncompiled_ctor {
                 try_push(name, &mut names, &mut seen);
             }
         }
@@ -3237,163 +3103,51 @@ pub fn inline_jit_codegen_for_names(
     if names.is_empty() {
         return Ok(());
     }
+    // S76 W-Collapse: `extra_jit_symbols` is retained for signature
+    // compatibility (REPL eval path no longer threads trace symbols). The
+    // unified `Jit::new(symbol_tables)` derives the entire JIT symbol set —
+    // intrinsics (incl. trace + the 2 parked test intrinsics are folded in
+    // below), per-module GOT data symbols, platform-effect jit-names — so int
+    // assembles nothing by hand.
+    let _ = (extra_jit_symbols, shared_state);
 
-    // 2. Collect platform symbols + per-module GOT base addresses.
-    let (mut jit_symbols, got_data_defs) =
-        collect_jit_setup(tc_modules, module);
+    // 3. Build the JIT — the whole symbol set derives from `symbol_tables`
+    //    (BC §3 / D41). The 2 parked test intrinsics (`discover-tests` /
+    //    `run-test`) are NOT in `intrinsics_table()`, so we register them via
+    //    the extension path. FIXME 0261 tracks folding them into `Jit::new`.
+    let mut jit = build_session_jit(tc_modules)?;
 
-    // Sprint 66 Wave 3a-γ: register int-owned intrinsics unconditionally
-    // (`discover-tests`, `run-test`, `cranelisp_trace_format`). Per
-    // `design/arch/facades/intrinsics.md` these are backend-emitted-call
-    // targets — JIT-emitted CLIF declares them as `Linkage::Import` whenever
-    // any program (including prelude defns) references them. The pre-S66
-    // syntactic scan that gated registration on per-program references was
-    // an architectural wart: the prelude's `run-tests-report` defn declares
-    // `run-test` as Import on every JIT it touches, and a syntactic scan of
-    // the current eval misses transitive references through previously-
-    // compiled defns. Unconditional registration is the same uniform
-    // dispatch principle that governs `heap_alloc` / `runtime/panic` /
-    // primitive arithmetic. See FIXME 0178.
-    for (name, ptr) in crate::session_v4::int_intrinsics() {
-        jit_symbols.push((name.to_string(), ptr));
-    }
-
-    jit_symbols.extend_from_slice(extra_jit_symbols);
-
-    // 2b. Register pointers for already-compiled functions across all modules.
-    // Sprint 58 Wave 2 / Decision 36: under bare-Local naming, every
-    // function is declared with its bare name uniformly across all modules.
-    // The pre-Sprint-58 `user`/`main` vs FQ-Export discriminator is gone, so
-    // we only register the bare alias. (Cross-module direct references are
-    // also gone — `cross_refs` was deleted; cross-module calls now flow
-    // through `__cranelisp_got_{other_M}` GOT-indirection.)
-    //
-    // Sprint 57 Wave 2 G6: the code pointers live on `ModuleEntry::Def.code`
-    // in the symbol tables (formerly on the deleted `CodegenProduct.code`).
-    for st_entry in tc_modules.iter() {
-        for (bare, entry) in st_entry.value().all_symbols() {
-            if let ModuleEntry::Def { code: Some(c), .. } = entry {
-                jit_symbols.push((bare.as_ref().to_string(), c.ptr()));
-            }
-        }
-    }
-
-    // Decision 23 (Wave 2 follow-on): per-module GOT slabs are registered
-    // via `JITBuilder::symbol()` so the symbol's load address IS the slab
-    // base — no extra pointer-cell indirection. Fold `got_data_defs` into
-    // the extras passed to `Jit::new_with_symbols`. The backend's
-    // `Linkage::Import` cross-module GOT references resolve to these
-    // registered addresses.
-    let mut extra: Vec<(&str, *const u8)> = jit_symbols
-        .iter()
-        .map(|(n, p)| (n.as_str(), *p))
-        .collect();
-    for (got_name, got_ptr) in &got_data_defs {
-        extra.push((got_name.as_str(), *got_ptr));
-    }
-
-    // 3. Build the JIT.
-    let mut jit = cranelisp_backend::jit::Jit::new_with_symbols(&extra)?;
-
-    // 4. Unified codegen entry — no env, no mode.
-    //    `compile_to_module` writes `code: Some(_)` onto each
-    //    `ModuleEntry::Def` in `tc_modules[module]` before returning
-    //    (Sprint 57 Wave 2 G6 / `CodeFinalizer` trait). It also finalises
-    //    definitions internally via `finalize_for_code_read()`, so no
-    //    additional `jit.finalize()?` call is needed here — calling finalize
-    //    twice would error on the second invocation.
+    // 4. Unified codegen entry — S75 5-arg shape (BC §3 invariant 3).
+    //    `compile_to_module` writes the GOT slot internally for each compiled
+    //    name (D41 #2) and finalises definitions via the `CodeFinalizer`
+    //    trait. It returns batch-level `CompilationArtifacts` (clif_ir,
+    //    code_size, compile_duration) for introspection.
+    let module_aliases = module_aliases_for(tc_modules);
     let result = cranelisp_backend::compile_to_module(
         module.clone(),
         names,
         tc_modules,
+        &module_aliases,
         jit.jit_module(),
     )?;
 
-    // 5. Sprint 58 Wave 3b (Decision 35 + Decision 31 Scenario 2): share
-    // the finalised `Arc<Jit>` per-entry on each `ModuleEntry::Def.code`,
-    // not via the session-level `SharedState.kept_jits` pool (dissolved
-    // Wave 3b). When a REPL user redefines a defn, the prior entry's
-    // `Code::Jit` clone drops; once the last clone in the symbol tables
-    // drops (no more entries reference this batch's JIT), `Arc::drop`
-    // triggers `Jit::drop` which calls `unsafe JITModule::free_memory()`
-    // and reclaims the per-batch JIT pages — Decision 31's per-redefinition
-    // reclaim primitive.
+    // 5. Decision 41 #1 / Decision 31 Scenario 2: int composes `Code::Jit`
+    //    from its owned `Arc<Jit>` (backend only borrows `&mut M`, never owns
+    //    the Arc). The per-entry `Arc::clone` is the lifetime root: when a
+    //    REPL redefinition replaces an entry, the prior `Code::Jit` clone
+    //    drops; when the last clone in the tables drops, `Jit::drop` reclaims
+    //    the mmap'd pages.
     #[allow(clippy::arc_with_non_send_sync)]
     let jit_arc = std::sync::Arc::new(jit);
-    let _ = shared_state; // shared_state retained for signature compat;
-                          // kept_jits push removed (Wave 3b dissolution).
 
-    // 6. For each compiled name: pull the per-symbol code pointer from
-    //    `result.code_ptrs` (Wave 3b Layer 2 Option B — backend returns
-    //    `(Arc<Jit>, code_ptrs)`, integration constructs `Code::Jit`),
-    //    store it in the GOT slot, AND construct `Code::Jit { jit, ptr }`
-    //    onto each `Def.code`. The per-entry `Arc::clone(&jit_arc)` is
-    //    the lifetime root that activates Decision 31 Scenario 2.
+    // 6. For each compiled name: write `Code::Jit(Arc<Jit>)` onto the entry.
+    //    The GOT slot is already populated by `compile_to_module` (backend's
+    //    own write); int's only job is lifecycle-owner installation +
+    //    redefinition observability.
     for name in names {
-        // Sprint 58 Wave 2 / Decision 36: `result.code_ptrs` and
-        // `result.func_ids` are keyed by bare symbol names uniformly
-        // across every module.
-        //
-        // Sprint 60 Wave 2 Step A.1 (Decision 37 §"No swallowed failures",
-        // H4 audit surface): each of the three lookups below used to be a
-        // silent skip / `else { continue }`. Per §6.1 of
-        // `design/backend/jit-object-convergence.md`, those are Decision 37
-        // breaches: a name in `names` for which `code_ptrs` lacks an entry,
-        // or for which the GOT slot lookup fails, or for which the symbol
-        // table entry has disappeared, is an invariant violation. We MUST
-        // return a hard error rather than leave a GOT slot NULL while
-        // reporting `Ok(())` to the scheduler (the latter was Bug A's
-        // signature on the cache-hit path, closed S58 Wave 2 at line 3087
-        // — this mirrors that discipline onto the fresh-build path).
-        let Some(code_ptr) = result.code_ptrs.get(name).copied() else {
-            return Err(CranelispError::ModuleError {
-                message: format!(
-                    "fresh-build codegen invariant violation: backend did not \
-                     produce a code pointer for '{module}/{name}' (present in \
-                     `names` batch but absent from `CompilationResult.code_ptrs`). \
-                     This indicates a `/backend` contract breach — \
-                     `compile_to_module` must emit a code pointer for every \
-                     name in the input batch."
-                ),
-                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-            });
-        };
+        let prior_ptr: Option<*const u8> =
+            read_got_addr(tc_modules, module, name);
 
-        // Store in pre-assigned GOT slot (Wave 0 invariant: every compilable
-        // symbol carries a `got_slot`).
-        let Some(slot) = lookup_got_slot(tc_modules, module, name) else {
-            return Err(CranelispError::ModuleError {
-                message: format!(
-                    "fresh-build codegen invariant violation: no GOT slot \
-                     assigned for '{module}/{name}' at codegen time. Decision 37 \
-                     (`design/arch/CLAUDE.md`) pins GOT slot assignment at the \
-                     typecheck phase before any codegen runs; a missing slot \
-                     here indicates a typecheck-to-codegen handoff contract breach."
-                ),
-                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-            });
-        };
-        {
-            let Some(st) = tc_modules.get(module) else {
-                return Err(CranelispError::ModuleError {
-                    message: format!(
-                        "fresh-build codegen invariant violation: symbol table \
-                         for module '{module}' disappeared during codegen while \
-                         storing GOT slot for '{name}'. The caller of \
-                         `inline_jit_codegen_for_names` must ensure \
-                         `tc_modules[module]` is live for the duration of the call."
-                    ),
-                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-                });
-            };
-            st.got.store_slot(slot, code_ptr);
-        }
-
-        // Wave 3b Layer 3: write Code::Jit on the entry. The Arc::clone
-        // per-entry is what makes Decision 31 Scenario 2 fire — when the
-        // entry is replaced (REPL redefinition), the clone drops, and
-        // when the last clone in the table drops, the underlying Jit
-        // reclaims its pages.
         let Some(mut st) = tc_modules.get_mut(module) else {
             return Err(CranelispError::ModuleError {
                 message: format!(
@@ -3405,69 +3159,84 @@ pub fn inline_jit_codegen_for_names(
             });
         };
         let Some(entry) = st.symbols.get_mut(name.as_ref()) else {
-            return Err(CranelispError::ModuleError {
-                message: format!(
-                    "fresh-build codegen invariant violation: symbol table entry \
-                     for '{module}/{name}' missing at Code::Jit write time \
-                     (present in `names` batch; GOT slot stored successfully \
-                     above; entry vanished between the slot store and the \
-                     Code::Jit write). Indicates concurrent mutation of \
-                     `tc_modules[module].symbols` during codegen, which \
-                     violates Decision 37's scheduler discipline."
-                ),
-                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-            });
+            // Not every name in the batch is a Def on this module (e.g. an
+            // Import alias); backend handles its own resolution. Skip
+            // lifecycle installation for non-local names.
+            continue;
         };
-        let cranelisp_types::ModuleEntry::Def { code, .. } = entry else {
-            return Err(CranelispError::ModuleError {
-                message: format!(
-                    "fresh-build codegen invariant violation: symbol table entry \
-                     for '{module}/{name}' is not a `ModuleEntry::Def` variant \
-                     at Code::Jit write time. Only Def entries have codegen \
-                     products; a name reaching this loop without a Def entry \
-                     indicates a typecheck-to-codegen handoff contract breach."
-                ),
-                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-            });
+        let cranelisp_types::ModuleEntry::Def { code, got_slot, .. } = entry else {
+            continue;
         };
-        // Detect REPL redefinition: if `code` was already populated, the
-        // GOT slot is being overwritten. Emit a `Redefinition` event before
-        // overwriting so observability sees the lifecycle (FIXME 0099).
-        let prior_ptr: Option<*const u8> = code.as_ref().map(|c| c.ptr());
-        *code = Some(crate::code::Code::jit(
-            std::sync::Arc::clone(&jit_arc),
-            code_ptr,
-        ));
-        if let Some(prior) = prior_ptr {
-            crate::got_trace::emit_redefinition(
-                module,
-                name,
-                slot,
-                code_ptr,
-                prior,
-            );
+        let slot = *got_slot;
+        *code = Some(crate::code::Code::jit(std::sync::Arc::clone(&jit_arc)));
+        if let (Some(prior), Some(slot)) = (prior_ptr, slot) {
+            let new_ptr = st.got.load_slot(slot);
+            drop(st);
+            crate::got_trace::emit_redefinition(module, name, slot, new_ptr, prior);
         }
     }
 
-    // 7. Route per-symbol artifacts into introspection (REPL-only).
+    // 7. Route batch-level artifacts into introspection (REPL-only). The S75
+    //    `CompilationArtifacts` is batch-grained (concatenated clif_ir +
+    //    summed code_size); attribute it to each compiled name. Per-symbol
+    //    disasm is on-demand via `cranelisp_backend::produce_disasm` (the
+    //    `/disasm` handler reads it lazily).
     if let Some(intr_map) = introspection {
-        for (name, artifacts) in &result.artifacts {
+        for name in names {
             let fq = cranelisp_types::FQSymbol {
                 module: module.clone(),
                 symbol: name.clone(),
             };
             let mut entry = intr_map.entry(fq).or_default();
-            entry.clif_ir = Some(artifacts.clif_ir.clone());
-            entry.disasm = if artifacts.disasm.is_empty() {
-                None
-            } else {
-                Some(artifacts.disasm.clone())
-            };
-            entry.code_size = Some(artifacts.code_size as usize);
+            entry.clif_ir = Some(result.clif_ir.clone());
+            entry.code_size = Some(result.code_size);
         }
     }
 
     Ok(())
+}
+
+/// Build the session JIT from the symbol tables (the unified `Jit::new`
+/// boundary, BC §3), then fold in the 2 parked int-hosted test intrinsics
+/// that are not part of `cranelisp_intrinsics::intrinsics_table()`.
+///
+/// FIXME 0261: `Jit::new(symbol_tables)` provides no extension point for
+/// non-catalog int-hosted JIT symbols, so the 2 test intrinsics cannot be
+/// registered through it. Until that gap is closed, programs containing
+/// literal `(discover-tests)` / `(run-test ...)` forms rely on this helper.
+/// `Jit::new` already registers the full intrinsics catalog (incl. trace) +
+/// per-module GOT data symbols + platform-effect jit-names.
+fn build_session_jit(
+    tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+) -> Result<cranelisp_backend::jit::Jit, CranelispError> {
+    cranelisp_backend::jit::Jit::new(tc_modules)
+}
+
+/// Read the runtime GOT address for `name` in `module`, following Import
+/// chains, or `None` if no slot / address is assigned. Used to capture the
+/// prior pointer for redefinition observability.
+fn read_got_addr(
+    tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module: &ModuleFullPath,
+    name: &Symbol,
+) -> Option<*const u8> {
+    let slot = lookup_got_slot(tc_modules, module, name)?;
+    let st = tc_modules.get(module)?;
+    let ptr = st.got.load_slot(slot);
+    if ptr.is_null() { None } else { Some(ptr) }
+}
+
+/// Assemble a `ModuleAliases` snapshot for `compile_to_module`. The aliases
+/// are session-scoped; the worker reads them from any module's table is not
+/// where they live — they are passed through `SharedState`. The codegen path
+/// does not consult aliases for in-module name lowering (GOT-indirect calls
+/// use the per-module GOT directly), so an empty alias map is the correct
+/// argument for the per-symbol JIT batch (cross-module references resolve via
+/// `__cranelisp_got_{M}` data symbols, not alias substitution).
+fn module_aliases_for(
+    _tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+) -> cranelisp_types::ModuleAliases {
+    dashmap::DashMap::new()
 }
 
 /// Follow Import/Reexport chains to find a symbol's GOT slot.
@@ -3491,7 +3260,7 @@ fn lookup_got_slot(
                 got_slot: Some(slot),
                 ..
             } => Some(*slot),
-            ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
+            ModuleEntry::Import { source, .. } => {
                 let source_module = source.module.clone();
                 let source_symbol = source.symbol.clone();
                 drop(st);
@@ -3541,53 +3310,55 @@ fn load_cached_module_via_linker(
     // Build Linker with all known symbols.
     let mut linker = cache::linker::Linker::new()?;
 
-    // Register runtime intrinsics.
-    for sym in cranelisp_backend::jit::intrinsic_symbols() {
-        linker.register_symbol(sym.name, sym.ptr);
+    // S76: register the full intrinsics catalog (incl. trace) from
+    // `cranelisp_intrinsics::intrinsics_table()` — the same source `Jit::new`
+    // consumes (backend's `intrinsic_symbols()` is retired).
+    for entry in cranelisp_intrinsics::intrinsics_table() {
+        linker.register_symbol(entry.name, entry.ptr);
     }
 
-    // Sprint 57 Wave 3 G8 (revised Sprint 66 Wave 0): register platform
-    // symbols by walking symbol tables instead of the deleted
-    // `PlatformRegistry`. Every `PlatformEffect` entry carries its DLL
-    // function pointer in the owning module's GOT slot
-    // (`got.load_slot(got_slot)`); the corresponding `jit_name` is the
-    // linker-side symbol.
+    // Register platform symbols by walking symbol tables. Every
+    // `PlatformEffect` entry carries its DLL function pointer in the owning
+    // module's GOT slot (`got.load_slot(got_slot)`); the symbol-table key IS
+    // the JIT linker name (the retired `jit_name` field no longer exists —
+    // `src/CLAUDE.md` §"JIT Symbol Names").
     for st_entry in shared_state.symbol_tables.iter() {
         let st = st_entry.value();
-        for (_name, entry) in st.all_symbols() {
+        for (name, entry) in st.all_symbols() {
             if let ModuleEntry::Def {
                 kind,
                 got_slot: Some(slot),
                 ..
             } = entry
-                && let DefKind::Primitive {
-                    primitive_kind: PrimitiveKind::PlatformEffect { .. },
-                    jit_name: Some(jit_name),
-                } = kind.as_ref()
+                && matches!(kind.as_ref(), DefKind::PlatformEffect { .. })
             {
                 let ptr = st.got.load_slot(*slot);
                 if !ptr.is_null() {
-                    linker.register_symbol(jit_name.as_ref(), ptr);
+                    linker.register_symbol(name.as_ref(), ptr);
                 }
             }
         }
     }
 
-    // Sprint 57 Wave 2 G6: register code pointers from already-compiled
-    // modules via `ModuleEntry::Def.code` (replacing the deleted
-    // `codegen_products` DashMap walk).
+    // Register code pointers from already-compiled modules. The callable
+    // address is the per-module GOT slot (the single source of truth — no
+    // per-entry `ptr`). Read it via `got.load_slot(got_slot)`.
     for st_entry in shared_state.symbol_tables.iter() {
-        for (name, entry) in st_entry.value().all_symbols() {
-            if let ModuleEntry::Def { code: Some(c), .. } = entry {
-                linker.register_symbol(name.as_ref(), c.ptr());
+        let st = st_entry.value();
+        for (name, entry) in st.all_symbols() {
+            if let ModuleEntry::Def { code: Some(_), got_slot: Some(slot), .. } = entry {
+                let ptr = st.got.load_slot(*slot);
+                if !ptr.is_null() {
+                    linker.register_symbol(name.as_ref(), ptr);
+                }
             }
         }
     }
 
     // Register per-module GOT data symbols for cross-module GOT-indirect calls.
-    // G7 (Wave 0): GOT lives on SymbolTable; iterate symbol tables.
+    // `got_data_symbol_name` is now types-owned.
     for st_entry in shared_state.symbol_tables.iter() {
-        let name = cranelisp_backend::compiler::got_data_symbol_name(st_entry.key());
+        let name = cranelisp_types::got_data_symbol_name(st_entry.key());
         linker.register_symbol(&name, st_entry.value().got.base_ptr());
     }
 
@@ -3646,13 +3417,14 @@ fn load_cached_module_via_linker(
     let linker_arc = std::sync::Arc::new(linker);
     if let Some(mut live_table) = shared_state.symbol_tables.get_mut(module) {
         for (name, entry) in live_table.symbols.iter_mut() {
+            // `Code::linker` is now lifecycle-owner only (D41/D35 — the GOT
+            // slot, populated above, is the single source of the address; no
+            // per-entry `ptr`). Install the Arc on every entry the linker
+            // materialised (presence in `fn_addrs` is the membership test).
             if let ModuleEntry::Def { code, .. } = entry
-                && let Some(ptr) = fn_addrs.get(name.as_ref()).copied()
+                && fn_addrs.contains_key(name.as_ref())
             {
-                *code = Some(crate::code::Code::linker(
-                    std::sync::Arc::clone(&linker_arc),
-                    ptr,
-                ));
+                *code = Some(crate::code::Code::linker(std::sync::Arc::clone(&linker_arc)));
             }
         }
     }
@@ -3835,8 +3607,7 @@ fn handle_typecheck_work_shared(
 
     // Ensure the module's SymbolTable exists before creating CheckState.
     {
-        let tc = cranelisp_typecheck::TypeCheckEnv::new(&shared.symbol_tables, &shared.next_type_id);
-        tc.ensure_module_exists(module);
+        cranelisp_types::ensure_module_exists(&shared.symbol_tables, module);
     }
     // Snapshot path lists for this work item. Workers hold the Mutex only
     // for the duration of the clone (microseconds); subsequent code uses
@@ -3848,6 +3619,7 @@ fn handle_typecheck_work_shared(
     let mut ctx = ModuleCompiler {
         symbol_tables: &shared.symbol_tables,
         next_type_id: &shared.next_type_id,
+        module_aliases: &shared.module_aliases,
         check_state: CheckState::new(module.clone()),
         current_module: module.clone(),
         scheduler: &shared.scheduler,
@@ -3933,56 +3705,48 @@ fn handle_typecheck_work_shared(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::{ErrorLocation, 
-        DefKind, Defn, DefnVariant, Expr, FQSymbol, ModuleEntry, ModuleFullPath,
+    use cranelisp_types::{ErrorLocation,
+        DefKind, DefnVariant, Expr, FQSymbol, ModuleEntry, ModuleFullPath,
         Scheme, Symbol, Type, Visibility,
     };
     use std::collections::HashMap;
 
     fn synthetic_scheme() -> Scheme {
         Scheme {
-            vars: vec![],
+            type_vars: vec![],
             constraints: HashMap::new(),
             ty: Type::Int,
         }
     }
 
-    fn trivial_defn(name: &str) -> Defn {
-        Defn {
-            name: Symbol::from(name),
-            docstring: None,
-            variants: vec![DefnVariant {
-                params: vec![],
-                param_annotations: vec![],
-                body: Expr::IntLit {
-                    value: 0,
-                    span: Span::SYNTHETIC,
-                    inferred_type: Some(Box::new(Type::Int)),
-                },
+    /// A trivial single-variant `DefnVariant` body (S69 Submission 35:
+    /// `ModuleEntry::Def.ast` is `DefnVariant`, not `Defn`).
+    fn trivial_variant() -> DefnVariant {
+        DefnVariant {
+            params: vec![],
+            body: Expr::IntLit {
+                value: 0,
                 span: Span::SYNTHETIC,
-            }],
-            visibility: Visibility::Public,
+                inferred_type: Some(Box::new(Type::Int)),
+            },
             span: Span::SYNTHETIC,
         }
     }
 
     fn mk_def_with_got(
         kind: DefKind,
-        ast: Option<Defn>,
+        ast: Option<DefnVariant>,
         got_slot: Option<usize>,
     ) -> ModuleEntry<crate::code::Code> {
-        ModuleEntry::Def {
-            scheme: synthetic_scheme(),
-            visibility: Visibility::Public,
-            docstring: None,
-            param_names: vec![],
-            kind: Box::new(kind),
-            callees: Vec::new(),
-            got_slot,
-            trait_origin: None,
-            ast,
-            code: None,
+        let mut builder = ModuleEntry::def(synthetic_scheme(), kind)
+            .visibility(Visibility::Public);
+        if let Some(slot) = got_slot {
+            builder = builder.got_slot(slot);
         }
+        if let Some(variant) = ast {
+            builder = builder.ast(variant);
+        }
+        builder.build()
     }
 
     // spec: design/int/phase2-codegen-convergence.md §5 — name-list prep via defined_symbols
@@ -3999,7 +3763,7 @@ mod tests {
             Symbol::from("regular"),
             mk_def_with_got(
                 DefKind::UserFn { constrained_fn: None },
-                Some(trivial_defn("regular")),
+                Some(trivial_variant()),
                 Some(0),
             ),
         );
@@ -4009,7 +3773,7 @@ mod tests {
             Symbol::from("add$Int+Int"),
             mk_def_with_got(
                 DefKind::UserFn { constrained_fn: None },
-                Some(trivial_defn("add$Int+Int")),
+                Some(trivial_variant()),
                 Some(1),
             ),
         );
@@ -4030,11 +3794,11 @@ mod tests {
             mk_def_with_got(
                 DefKind::UserFn {
                     constrained_fn: Some(Box::new(cranelisp_types::ConstrainedFn {
-                        defn: trivial_defn("poly_fn"),
+                        variant: trivial_variant(),
                         scheme: synthetic_scheme(),
                     })),
                 },
-                Some(trivial_defn("poly_fn")),
+                Some(trivial_variant()),
                 None,
             ),
         );
@@ -4047,6 +3811,7 @@ mod tests {
                     module: ModuleFullPath::from("other"),
                     symbol: Symbol::from("x"),
                 },
+                visibility: Visibility::Private,
             },
         );
 
@@ -4064,73 +3829,40 @@ mod tests {
         assert!(!compiled.contains(&Symbol::from("imported")));
     }
 
-    // spec: design/int/phase2-codegen-convergence.md §5 — artifact routing to Introspection
+    // spec: BC §3 invariant 3 — batch CompilationArtifacts routing to Introspection
+    //
+    // S76 W-Collapse: `compile_to_module` now returns batch-level
+    // `CompilationArtifacts` (concatenated `clif_ir` + summed `code_size`),
+    // attributed to each compiled name; per-symbol disasm is on-demand via
+    // `cranelisp_backend::produce_disasm` (the backend's `FunctionArtifacts`
+    // per-fn map is `pub(crate)` and no longer crosses the boundary). This test
+    // mirrors the routing loop in `inline_jit_codegen_for_names` step 7.
     #[test]
-    fn priority_worker_routes_artifacts_to_introspection() {
-        // Given a CompilationResult.artifacts map, simulate the routing loop and
-        // assert each (name, artifacts) pair lands in SharedState.introspection
-        // keyed by FQSymbol.
+    fn priority_worker_routes_batch_artifacts_to_introspection() {
         let module = ModuleFullPath::from("user");
-
-        // Build a synthetic artifacts map mirroring what compile_to_module returns.
-        let mut artifacts: HashMap<Symbol, cranelisp_backend::FunctionArtifacts> = HashMap::new();
-        artifacts.insert(
-            Symbol::from("foo"),
-            cranelisp_backend::FunctionArtifacts {
-                clif_ir: "function %foo() -> i64 { ... }".to_string(),
-                disasm: "mov rax, 0\nret".to_string(),
-                code_size: 7,
-            },
-        );
-        artifacts.insert(
-            Symbol::from("bar"),
-            cranelisp_backend::FunctionArtifacts {
-                clif_ir: "function %bar() -> i64 { ... }".to_string(),
-                disasm: String::new(), // empty disasm -> None in Introspection
-                code_size: 12,
-            },
-        );
+        let clif_ir = "function %foo() -> i64 { ... }\nfunction %bar() -> i64 { ... }";
+        let code_size: usize = 19;
+        let names = [Symbol::from("foo"), Symbol::from("bar")];
 
         let introspection: dashmap::DashMap<FQSymbol, crate::session_v4::Introspection> =
             dashmap::DashMap::new();
 
-        // Mirror the exact routing loop in inline_jit_codegen_for_module step 7.
-        for (name, art) in &artifacts {
-            let fq = FQSymbol {
-                module: module.clone(),
-                symbol: name.clone(),
-            };
+        // Mirror the exact batch routing loop: each compiled name gets the
+        // batch clif_ir + code_size; disasm is NOT set here (on-demand).
+        for name in &names {
+            let fq = FQSymbol { module: module.clone(), symbol: name.clone() };
             let mut entry = introspection.entry(fq).or_default();
-            entry.clif_ir = Some(art.clif_ir.clone());
-            entry.disasm = if art.disasm.is_empty() {
-                None
-            } else {
-                Some(art.disasm.clone())
-            };
-            entry.code_size = Some(art.code_size as usize);
+            entry.clif_ir = Some(clif_ir.to_string());
+            entry.code_size = Some(code_size);
         }
 
-        // Assert each entry is keyed by the correct FQSymbol and carries the
-        // expected artifact payload.
-        let foo_fq = FQSymbol {
-            module: module.clone(),
-            symbol: Symbol::from("foo"),
-        };
-        let bar_fq = FQSymbol {
-            module: module.clone(),
-            symbol: Symbol::from("bar"),
-        };
-
-        let foo_entry = introspection.get(&foo_fq).expect("foo introspection entry present");
-        assert!(foo_entry.clif_ir.as_deref().unwrap_or("").contains("%foo"));
-        assert_eq!(foo_entry.disasm.as_deref(), Some("mov rax, 0\nret"));
-        assert_eq!(foo_entry.code_size, Some(7));
-        drop(foo_entry);
-
-        let bar_entry = introspection.get(&bar_fq).expect("bar introspection entry present");
-        assert!(bar_entry.clif_ir.as_deref().unwrap_or("").contains("%bar"));
-        assert_eq!(bar_entry.disasm, None, "empty disasm must be None, not Some(empty string)");
-        assert_eq!(bar_entry.code_size, Some(12));
+        for name in &names {
+            let fq = FQSymbol { module: module.clone(), symbol: name.clone() };
+            let e = introspection.get(&fq).expect("introspection entry present");
+            assert!(e.clif_ir.as_deref().unwrap_or("").contains("%foo"));
+            assert_eq!(e.code_size, Some(code_size));
+            assert_eq!(e.disasm, None, "batch routing leaves disasm on-demand (None)");
+        }
     }
 
     // spec: design/int/phase2-codegen-convergence.md §5 — GOT slot registration on compile completion
@@ -4157,7 +3889,7 @@ mod tests {
             Symbol::from("target"),
             mk_def_with_got(
                 DefKind::UserFn { constrained_fn: None },
-                Some(trivial_defn("target")),
+                Some(trivial_variant()),
                 Some(3),
             ),
         );
@@ -4209,7 +3941,7 @@ mod tests {
             defn_name.clone(),
             mk_def_with_got(
                 DefKind::UserFn { constrained_fn: None },
-                Some(trivial_defn(defn_name.as_ref())),
+                Some(trivial_variant()),
                 Some(slot),
             ),
         );
@@ -4236,12 +3968,14 @@ mod tests {
                 .get(defn_name.as_ref())
                 .expect("defn entry present after codegen");
             match entry {
-                ModuleEntry::Def { code: Some(c), .. } => {
-                    assert!(!c.ptr().is_null(), "compiled function pointer must be non-null");
-                    c.ptr()
+                // GOT is the address source (D41/D35 — no `Code::ptr`).
+                ModuleEntry::Def { code: Some(_), got_slot: Some(slot), .. } => {
+                    let ptr = table.got.load_slot(*slot);
+                    assert!(!ptr.is_null(), "compiled function pointer must be non-null");
+                    ptr
                 }
                 other => panic!(
-                    "expected ModuleEntry::Def with code: Some(_); got {other:?}"
+                    "expected ModuleEntry::Def with code: Some(_) + got_slot; got {other:?}"
                 ),
             }
         };
@@ -4297,7 +4031,7 @@ mod tests {
             defn_name.clone(),
             mk_def_with_got(
                 DefKind::UserFn { constrained_fn: None },
-                Some(trivial_defn(defn_name.as_ref())),
+                Some(trivial_variant()),
                 Some(slot),
             ),
         );
@@ -4316,11 +4050,14 @@ mod tests {
 
         let table = symbol_tables.get(&module).expect("symbol table present");
         match table.get(defn_name.as_ref()).expect("entry present") {
-            ModuleEntry::Def { code: Some(c), .. } => {
-                assert!(!c.ptr().is_null(), "code pointer must be non-null after compile");
+            ModuleEntry::Def { code: Some(_), got_slot: Some(slot), .. } => {
+                assert!(
+                    !table.got.load_slot(*slot).is_null(),
+                    "code pointer must be non-null after compile"
+                );
             }
             other => panic!(
-                "expected ModuleEntry::Def with code: Some(_) after worker codegen; got {other:?}"
+                "expected ModuleEntry::Def with code: Some(_) + got_slot after worker codegen; got {other:?}"
             ),
         }
     }
@@ -4346,7 +4083,7 @@ mod tests {
             defn_name.clone(),
             mk_def_with_got(
                 DefKind::UserFn { constrained_fn: None },
-                Some(trivial_defn(defn_name.as_ref())),
+                Some(trivial_variant()),
                 Some(slot),
             ),
         );
@@ -4384,9 +4121,11 @@ mod tests {
         let via_entry = {
             let table = symbol_tables.get(&module).expect("symbol table present");
             match table.get(defn_name.as_ref()).expect("entry present") {
-                ModuleEntry::Def { code: Some(c), .. } => c.ptr(),
+                ModuleEntry::Def { code: Some(_), got_slot: Some(slot), .. } => {
+                    table.got.load_slot(*slot)
+                }
                 other => panic!(
-                    "expected ModuleEntry::Def with code: Some(_); got {other:?}"
+                    "expected ModuleEntry::Def with code: Some(_) + got_slot; got {other:?}"
                 ),
             }
         };
@@ -4409,7 +4148,7 @@ mod tests {
         // `code` field on the `__expr` entry becomes Some(_). No
         // `finalize_module` special case is taken — the same G6 write path
         // that serves every other symbol serves `__expr`.
-        use cranelisp_types::{DefnVariant, Expr, TopLevel, Visibility};
+        use cranelisp_types::{DefnVariant, Expr, TopLevel};
 
         let module = ModuleFullPath::from("user");
         let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
@@ -4418,27 +4157,21 @@ mod tests {
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
         let slot = st.allocate_got_slot();
         let expr_name = Symbol::from("__expr");
-        let expr_defn = Defn {
-            name: expr_name.clone(),
-            docstring: None,
-            variants: vec![DefnVariant {
-                params: vec![],
-                param_annotations: vec![],
-                body: Expr::IntLit {
-                    value: 3,
-                    span: Span::SYNTHETIC,
-                    inferred_type: Some(Box::new(cranelisp_types::Type::Int)),
-                },
+        // S69 Submission 35: `ModuleEntry::Def.ast` is `DefnVariant`.
+        let expr_variant = DefnVariant {
+            params: vec![],
+            body: Expr::IntLit {
+                value: 3,
                 span: Span::SYNTHETIC,
-            }],
-            visibility: Visibility::Public,
+                inferred_type: Some(Box::new(cranelisp_types::Type::Int)),
+            },
             span: Span::SYNTHETIC,
         };
         st.insert(
             expr_name.clone(),
             mk_def_with_got(
                 DefKind::UserFn { constrained_fn: None },
-                Some(expr_defn.clone()),
+                Some(expr_variant.clone()),
                 Some(slot),
             ),
         );
@@ -4446,7 +4179,7 @@ mod tests {
 
         // `derive_codegen_batch` for a program whose only TopLevel is Expr
         // must produce a names list containing `__expr` — no special case.
-        let program = vec![TopLevel::Expr(expr_defn.variants[0].body.clone())];
+        let program = vec![TopLevel::Expr(expr_variant.body.clone())];
         let names = derive_codegen_batch(&module, &program, &symbol_tables);
         assert!(
             names.contains(&expr_name),
@@ -4465,250 +4198,65 @@ mod tests {
 
         let table = symbol_tables.get(&module).expect("symbol table present");
         match table.get(expr_name.as_ref()).expect("__expr entry present") {
-            ModuleEntry::Def { code: Some(c), .. } => {
-                assert!(!c.ptr().is_null(), "__expr code pointer must be non-null");
+            ModuleEntry::Def { code: Some(_), got_slot: Some(slot), .. } => {
+                assert!(
+                    !table.got.load_slot(*slot).is_null(),
+                    "__expr code pointer must be non-null"
+                );
             }
             other => panic!(
-                "expected __expr entry with code: Some(_) after the uniform path; got {other:?}"
+                "expected __expr entry with code: Some(_) + got_slot after the uniform path; got {other:?}"
             ),
         }
     }
 
-    // spec: design/int/phase2-codegen-convergence.md §13.3 — cross-module
-    // JIT-finalize pre-registration walks the symbol tables (not the deleted
-    // `codegen_products` DashMap).
+    // spec: design/int/s76-implementation-plan.md §4.1 — 0249-b ctor batch
     #[test]
-    fn cross_module_pre_registration_reads_code_from_symbol_table() {
-        // Seed two modules: a "dep" module whose symbol entry carries a
-        // fabricated `code: Some(Code::new(ptr))`, and a "user" module
-        // whose symbol table is empty of compiled entries. Build the pair
-        // of `(name, ptr)` JIT-symbol registrations that
-        // `inline_jit_codegen_for_names` derives at step 2b, confirming
-        // the pre-compiled dep's pointer is picked up from the symbol-table
-        // walk (the new post-G6 reader path that replaces the
-        // `codegen_products.iter()` loop).
-        let dep_module = ModuleFullPath::from("dep");
-        let user_module = ModuleFullPath::from("user");
-        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
-            dashmap::DashMap::new();
+    fn derive_codegen_batch_includes_synthesised_constructors() {
+        use cranelisp_types::FQTypeName;
+        // A constructor `Def` (DefKind::Constructor, ast: Some(_), got_slot)
+        // — exactly what typecheck's 0249-a `register_constructors` produces —
+        // MUST be enumerated into the codegen batch so its `Expr::ConstrADT`
+        // body is lowered and its GOT slot populated (constructor-as-value).
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
 
-        let fake_ptr = 0xFEEDF00Dusize as *const u8;
-        let mut dep_st = crate::code::SessionSymbolTable::new_with_params(dep_module.clone());
-        let dep_name = Symbol::from("already_compiled");
-        dep_st.insert(
-            dep_name.clone(),
-            ModuleEntry::Def {
-                scheme: synthetic_scheme(),
-                visibility: Visibility::Public,
-                docstring: None,
-                param_names: vec![],
-                kind: Box::new(DefKind::UserFn { constrained_fn: None }),
-                callees: Vec::new(),
-                got_slot: Some(0),
-                trait_origin: None,
-                ast: Some(trivial_defn(dep_name.as_ref())),
-                // Sprint 58 Wave 3b: synthetic Code::Jit with a stack-local
-                // Jit (the Arc keeps it alive until the test ends).
-                code: Some(crate::code::Code::jit(
-                    std::sync::Arc::new(
-                        cranelisp_backend::jit::Jit::new().expect("Jit::new for test"),
-                    ),
-                    fake_ptr,
-                )),
+        let ctor = mk_def_with_got(
+            DefKind::Constructor {
+                type_name: FQTypeName::new(module.clone(), cranelisp_types::TypeName::from("Option")),
+                tag: 1,
+                field_count: 1,
+                internal: false,
             },
+            Some(trivial_variant()),
+            Some(0),
         );
-        symbol_tables.insert(dep_module.clone(), dep_st);
-        symbol_tables.insert(
-            user_module.clone(),
-            crate::code::SessionSymbolTable::new_with_params(user_module.clone()),
-        );
+        st.insert(Symbol::from("Some"), ctor);
 
-        // Simulate the step-2b loop from `inline_jit_codegen_for_names`:
-        // iterate `symbol_tables`, pick up every `Def { code: Some(c), .. }`,
-        // and emit `(bare, ptr)` + (when module != user/main) qualified pair.
-        let mut jit_symbols: Vec<(String, *const u8)> = Vec::new();
-        for st_entry in symbol_tables.iter() {
-            let defining_module = st_entry.key();
-            let use_prefix =
-                defining_module.as_ref() != "user" && defining_module.as_ref() != "main";
-            for (bare, entry) in st_entry.value().all_symbols() {
-                if let ModuleEntry::Def { code: Some(c), .. } = entry {
-                    let ptr = c.ptr();
-                    if use_prefix {
-                        jit_symbols.push((format!("{defining_module}/{bare}"), ptr));
-                    }
-                    jit_symbols.push((bare.as_ref().to_string(), ptr));
-                }
-            }
-        }
+        let symbol_tables = dashmap::DashMap::new();
+        symbol_tables.insert(module.clone(), st);
 
+        // The TypeDef itself isn't in `program` as a Defn — the ctor must be
+        // picked up by the final symbol-table sweep (0249-b).
+        let program: Vec<TopLevel> = vec![];
+        let names = derive_codegen_batch(&module, &program, &symbol_tables);
         assert!(
-            jit_symbols.iter().any(|(n, p)| n == "dep/already_compiled" && *p == fake_ptr),
-            "qualified dep name must be registered from symbol-table walk; got {jit_symbols:?}"
-        );
-        assert!(
-            jit_symbols.iter().any(|(n, p)| n == "already_compiled" && *p == fake_ptr),
-            "bare dep alias must be registered from symbol-table walk; got {jit_symbols:?}"
-        );
-        // Critically: no reference to `crate::session_v4::CodegenProduct` is
-        // needed in this path — the type has been deleted from the module,
-        // and this test compiling is itself compile-time evidence of that.
-    }
-
-    // spec: design/int/platform-registry-removal.md §10 — `(platform …)`
-    // form handler allocates a GOT slot and writes the runtime pointer into
-    // the GOT for each platform function (replacing
-    // `PlatformRegistry.register`; Sprint 66 Wave 0 amendment makes the GOT
-    // the single source of truth, replacing the prior
-    // `ModuleEntry::Def.fn_ptr` field).
-    //
-    // Loading a real DLL requires the stdio platform build artefact and a
-    // scoped `SharedState`; what is structurally load-bearing is that
-    // `collect_jit_setup` reads the pointer from the owning module's GOT.
-    // This test seeds a `PlatformEffect` entry with an explicit
-    // `got_slot: Some(_)` and writes the fake ptr into the corresponding
-    // GOT slot (mirroring exactly what `handle_platform` writes) and asserts
-    // the reader picks the pointer off the GOT.
-    #[test]
-    fn platform_form_handler_writes_fn_ptr_to_entry() {
-        use cranelisp_types::{JitSymbol, PrimitiveKind, Scheme, Type};
-
-        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
-            dashmap::DashMap::new();
-        let current = ModuleFullPath::from("platform.stdio");
-        let fake_ptr: *const u8 = 0xC0FFEE_usize as *const u8;
-        let jit_name = JitSymbol::from("cranelisp_print");
-
-        let mut st = crate::code::SessionSymbolTable::new_with_params(current.clone());
-        let slot = st.allocate_got_slot();
-        st.got.store_slot(slot, fake_ptr);
-
-        let entry = ModuleEntry::Def {
-            scheme: Scheme {
-                vars: vec![],
-                constraints: std::collections::HashMap::new(),
-                ty: Type::Int,
-            },
-            visibility: Visibility::Public,
-            docstring: None,
-            param_names: vec![],
-            kind: Box::new(DefKind::Primitive {
-                primitive_kind: PrimitiveKind::PlatformEffect {
-                    scheduling_class: cranelisp_platform::SchedulingClass::Sequential,
-                },
-                jit_name: Some(jit_name.clone()),
-            }),
-            callees: Vec::new(),
-            got_slot: Some(slot),
-            trait_origin: None,
-            ast: None,
-            code: None,
-        };
-
-        st.insert(Symbol::from("print"), entry);
-        symbol_tables.insert(current.clone(), st);
-
-        // Direct invariant check: the GOT slot referenced by the entry
-        // carries the pointer we just wrote.
-        {
-            let table = symbol_tables.get(&current).expect("platform table present");
-            match table.get("print").expect("print entry present") {
-                ModuleEntry::Def { got_slot: Some(s), .. } => {
-                    assert_eq!(
-                        table.got.load_slot(*s),
-                        fake_ptr,
-                        "handle_platform must write the runtime pointer into the GOT slot"
-                    );
-                }
-                other => panic!("expected Def entry with got_slot, got {other:?}"),
-            }
-        }
-
-        // Collector-side invariant: `collect_jit_setup` reads the pointer
-        // from the GOT (Sprint 66 Wave 0 amendment), not from a deleted
-        // `fn_ptr` field.
-        let (jit_syms, _got) = collect_jit_setup(&symbol_tables, &current);
-        assert!(
-            jit_syms
-                .iter()
-                .any(|(name, ptr)| name == jit_name.as_ref() && *ptr == fake_ptr),
-            "collect_jit_setup must surface the platform fn from the GOT slot; \
-             got {jit_syms:?}"
+            names.contains(&Symbol::from("Some")),
+            "synthesised constructor `Some` must appear in the derived codegen batch (0249-b); got {names:?}"
         );
     }
 
-    // spec: design/int/platform-registry-removal.md §9.2 — cross-module
-    // platform-fn resolution. A module imports a platform function from
-    // another module; the caller's collect_jit_setup walk must resolve
-    // through the Import chain and surface the pointer.
-    #[test]
-    fn cross_module_platform_fn_resolution() {
-        use cranelisp_types::{FQSymbol, JitSymbol, PrimitiveKind, Scheme, Type};
+    // `cross_module_pre_registration_reads_code_from_symbol_table` — DELETED
+    // S76 W-Collapse. It simulated the deleted step-2b bare-name JIT-symbol
+    // walk in `inline_jit_codegen_for_names`. Cross-module references now
+    // resolve via `__cranelisp_got_{M}` data symbols derived inside
+    // `Jit::new(symbol_tables)` (backend), not a bare-name pre-registration.
 
-        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
-            dashmap::DashMap::new();
-        let plat_mod = ModuleFullPath::from("platform.stdio");
-        let user_mod = ModuleFullPath::from("user");
-        let fake_ptr: *const u8 = 0xBADC0FFEE0DDF00D_usize as *const u8;
-        let jit_name = JitSymbol::from("cranelisp_print");
-
-        // platform.stdio defines `print` as a PlatformEffect primitive with
-        // its DLL fn ptr in the GOT slot referenced by the entry (Sprint 66
-        // Wave 0 amendment — GOT-as-single-source-of-truth).
-        let mut plat_st = crate::code::SessionSymbolTable::new_with_params(plat_mod.clone());
-        let slot = plat_st.allocate_got_slot();
-        plat_st.got.store_slot(slot, fake_ptr);
-        let plat_entry = ModuleEntry::Def {
-            scheme: Scheme {
-                vars: vec![],
-                constraints: std::collections::HashMap::new(),
-                ty: Type::Int,
-            },
-            visibility: Visibility::Public,
-            docstring: None,
-            param_names: vec![],
-            kind: Box::new(DefKind::Primitive {
-                primitive_kind: PrimitiveKind::PlatformEffect {
-                    scheduling_class: cranelisp_platform::SchedulingClass::Sequential,
-                },
-                jit_name: Some(jit_name.clone()),
-            }),
-            callees: Vec::new(),
-            got_slot: Some(slot),
-            trait_origin: None,
-            ast: None,
-            code: None,
-        };
-        plat_st.insert(Symbol::from("print"), plat_entry);
-        symbol_tables.insert(plat_mod.clone(), plat_st);
-
-        // user imports `print` from platform.stdio (an Import chain — the
-        // caller-side symbol table carries only the import record, not the
-        // platform pointer).
-        let mut user_st = crate::code::SessionSymbolTable::new_with_params(user_mod.clone());
-        user_st.insert(
-            Symbol::from("print"),
-            ModuleEntry::Import {
-                source: FQSymbol {
-                    module: plat_mod.clone(),
-                    symbol: Symbol::from("print"),
-                },
-            },
-        );
-        symbol_tables.insert(user_mod.clone(), user_st);
-
-        // The caller's `collect_jit_setup` must follow the Import chain
-        // (one step) to the defining `platform.stdio` entry and read the
-        // pointer from that module's GOT slot.
-        let (jit_syms, _got) = collect_jit_setup(&symbol_tables, &user_mod);
-        assert!(
-            jit_syms
-                .iter()
-                .any(|(name, ptr)| name == jit_name.as_ref() && *ptr == fake_ptr),
-            "cross-module platform-fn resolution must walk the Import chain \
-             to the defining PlatformEffect entry; got {jit_syms:?}"
-        );
-    }
+    // `platform_form_handler_writes_fn_ptr_to_entry` +
+    // `cross_module_platform_fn_resolution` — DELETED S76 W-Collapse. Both
+    // tested the deleted `collect_jit_setup`; platform-symbol collection +
+    // Import-chain resolution is now internal to `Jit::new(symbol_tables)`
+    // (backend), unit-tested there.
 
     // -----------------------------------------------------------------------
     // Sprint 58 Wave 2b — /int Step 5a/5b unit tests
@@ -4726,9 +4274,15 @@ mod tests {
         typecheck_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
         module: ModuleFullPath,
     ) -> ModuleCompiler<'a> {
+        // Test-only: the structural-decl writers under test do not touch
+        // module_aliases, but the field is non-optional. Leak a fresh empty
+        // map to obtain a `'static` (hence `'a`-valid) reference.
+        let module_aliases: &'static cranelisp_types::ModuleAliases =
+            Box::leak(Box::new(cranelisp_types::ModuleAliases::default()));
         ModuleCompiler {
             symbol_tables,
             next_type_id,
+            module_aliases,
             check_state: CheckState::new(module.clone()),
             current_module: module,
             scheduler,
@@ -4929,7 +4483,7 @@ mod tests {
         });
         st.submodules.push(ModDecl {
             name: "helper".into(),
-            is_private: false,
+            visibility: Visibility::Public,
             inline_body: None,
             span: Span::SYNTHETIC,
         });
@@ -4976,7 +4530,7 @@ mod tests {
 
         let private_decl = ModDecl {
             name: "internal".into(),
-            is_private: true,
+            visibility: Visibility::Private,
             inline_body: None,
             span: Span::new(0, 18),
         };
@@ -4988,7 +4542,7 @@ mod tests {
         assert_eq!(st.submodules.len(), 1);
         assert_eq!(st.submodules[0].name.as_ref(), "internal");
         assert!(
-            st.submodules[0].is_private,
+            st.submodules[0].visibility == Visibility::Private,
             "(mod- internal) must be recorded with is_private: true"
         );
     }
@@ -5017,7 +4571,7 @@ mod tests {
         });
         st.submodules.push(ModDecl {
             name: "helper".into(),
-            is_private: false,
+            visibility: Visibility::Public,
             inline_body: None,
             span: Span::new(26, 40),
         });
@@ -5052,7 +4606,7 @@ mod tests {
             "structural decl `submodules` must round-trip through the cache"
         );
         assert_eq!(loaded.submodules[0].name.as_ref(), "helper");
-        assert!(!loaded.submodules[0].is_private);
+        assert!(loaded.submodules[0].visibility == Visibility::Public);
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -5263,7 +4817,7 @@ mod tests {
         );
         st.submodules.push(ModDecl {
             name: sub_name.into(),
-            is_private: true,
+            visibility: Visibility::Private,
             inline_body: None,
             span: Span::SYNTHETIC,
         });
@@ -5281,7 +4835,7 @@ mod tests {
         );
         st.submodules.push(ModDecl {
             name: sub_name.into(),
-            is_private: false,
+            visibility: Visibility::Public,
             inline_body: None,
             span: Span::SYNTHETIC,
         });

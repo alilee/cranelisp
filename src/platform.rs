@@ -12,7 +12,7 @@ use cranelisp_platform::{
     ABI_VERSION, HostCallbacks, OwnedPlatformFnDescriptor, PlatformManifest,
 };
 use cranelisp_types::{ErrorLocation, 
-    CranelispError, DefKind, JitSymbol, ModuleEntry, ModuleFullPath, PrimitiveKind, Scheme, Sexp,
+    CranelispError, DefKind, ModuleEntry, ModuleFullPath, Scheme, Sexp,
     Span, Symbol, Type, Visibility,
 };
 
@@ -242,16 +242,17 @@ pub fn load_platform_dll(
 /// (jit_name, function_pointer) pairs for JIT symbol registration.
 pub fn register_platform_in_tc(
     symbol_tables: &dashmap::DashMap<cranelisp_types::ModuleFullPath, crate::code::SessionSymbolTable>,
-    next_type_id: &std::sync::atomic::AtomicU32,
+    // Retained for caller compatibility; no longer needed now that module
+    // creation goes through the types-crate `ensure_module_exists` free fn
+    // (W-Absorb) rather than a `TypeCheckEnv`.
+    _next_type_id: &std::sync::atomic::AtomicU32,
     _check_state: &mut cranelisp_typecheck::CheckState,
     platform: &LoadedPlatform,
 ) -> Result<Vec<(String, *const u8)>, CranelispError> {
     let module_path = ModuleFullPath::from(format!("platform.{}", platform.name));
 
-    let tc = cranelisp_typecheck::TypeCheckEnv::new(symbol_tables, next_type_id);
-
     // Ensure the platform module exists.
-    tc.ensure_module_exists(&module_path);
+    cranelisp_types::ensure_module_exists(symbol_tables, &module_path);
 
     let mut jit_symbols: Vec<(String, *const u8)> = Vec::new();
 
@@ -260,7 +261,7 @@ pub fn register_platform_in_tc(
         let ty = parse_platform_type_sig(&desc.type_sig, &desc.name)?;
 
         let scheme = Scheme {
-            vars: vec![],
+            type_vars: vec![],
             constraints: std::collections::HashMap::new(),
             ty,
         };
@@ -269,30 +270,21 @@ pub fn register_platform_in_tc(
 
         // Insert directly into the module's symbol table.
         if let Some(mut table) = symbol_tables.get_mut(&module_path) {
-            table.insert(
-                Symbol::from(desc.name.as_str()),
-                ModuleEntry::Def {
-                    scheme,
-                    visibility: Visibility::Public,
-                    docstring: if desc.docstring.is_empty() {
-                        None
-                    } else {
-                        Some(desc.docstring.clone())
-                    },
-                    param_names,
-                    kind: Box::new(DefKind::Primitive {
-                        primitive_kind: PrimitiveKind::PlatformEffect {
-                            scheduling_class: desc.scheduling_class,
-                        },
-                        jit_name: Some(JitSymbol::from(desc.jit_name.as_str())),
-                    }),
-                    callees: Vec::new(),
-                    got_slot: None,
-                    trait_origin: None,
-                    ast: None,
-                    code: None,
+            // D0048 A2 / S70: platform effects are `DefKind::PlatformEffect
+            // { scheduling_class }` (the `primitive_kind` / `jit_name` fields
+            // retired; the symbol-table key IS the JIT linker name).
+            let mut builder = ModuleEntry::def(
+                scheme,
+                DefKind::PlatformEffect {
+                    scheduling_class: desc.scheduling_class,
                 },
-            );
+            )
+            .visibility(Visibility::Public)
+            .param_names(param_names);
+            if !desc.docstring.is_empty() {
+                builder = builder.docstring(desc.docstring.clone());
+            }
+            table.insert(Symbol::from(desc.name.as_str()), builder.build());
         }
 
         jit_symbols.push((desc.jit_name.clone(), desc.ptr));
@@ -338,12 +330,14 @@ fn parse_platform_type_sig(sig: &str, fn_name: &str) -> Result<Type, CranelispEr
 fn sexp_to_type(sexp: &Sexp, fn_name: &str) -> Result<Type, CranelispError> {
     match sexp {
         Sexp::Symbol(name, _) => {
-            Type::from_name(name.as_ref()).ok_or_else(|| CranelispError::ModuleError {
-                message: format!(
-                    "unknown type '{}' in platform function '{}' signature",
-                    name, fn_name
-                ),
-                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+            crate::session_v4::intrinsic_type_from_name(name.as_ref()).ok_or_else(|| {
+                CranelispError::ModuleError {
+                    message: format!(
+                        "unknown type '{}' in platform function '{}' signature",
+                        name, fn_name
+                    ),
+                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+                }
             })
         }
         Sexp::List(elems, _) if !elems.is_empty() => {
@@ -700,7 +694,7 @@ mod tests {
         let next_type_id = std::sync::atomic::AtomicU32::new(0);
         let user_mod = ModuleFullPath::from("user");
         symbol_tables.insert(user_mod.clone(), crate::code::SessionSymbolTable::new_with_params(user_mod.clone()));
-        cranelisp_typecheck::register_builtins(&symbol_tables, &next_type_id);
+        crate::bootstrap::mount_synthetic_modules(&symbol_tables, &next_type_id);
         let mut check_state = cranelisp_typecheck::CheckState::new(user_mod);
         let (platform, jit_symbols) = load_and_register_platform(
             &symbol_tables,
@@ -739,7 +733,7 @@ mod tests {
                 }
                 _ => panic!("expected Fn type for print"),
             }
-            assert!(matches!(kind.as_ref(), DefKind::Primitive { primitive_kind: PrimitiveKind::PlatformEffect { .. }, .. }));
+            assert!(matches!(kind.as_ref(), DefKind::PlatformEffect { .. }));
             assert!(docstring.is_some());
         } else {
             panic!("expected Def entry for print");

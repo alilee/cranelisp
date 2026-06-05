@@ -1,14 +1,40 @@
-//! Macro expansion: trait-based resolution and recursive expansion.
+//! Macro expansion: the int-side **execution** half of the two-jobs split
+//! (`design/arch/macro-expansion-ownership.md` §2.3).
 //!
-//! Provides the `MacroResolver` trait for macro lookup during expansion,
-//! and free functions for clause matching, invocation, and span rewriting.
-//! Lives in the binary crate because it wires typecheck + backend.
+//! Per the S76 W-Macro LOCKED decision (`macro-availability-model.md` §0.7),
+//! macro **recognition** is a `cranelisp-types` query
+//! (`cranelisp_types::resolve_macro_head` over a caller-chosen [`View`]) and
+//! macro **execution** is int's capability. This module provides:
+//!
+//! - [`JitMacroExpander`] — the int implementation of
+//!   [`cranelisp_types::MacroExpander`] over the surviving invocation core
+//!   (signal-protected JIT call + `Sexp`↔heap marshal). This is the only
+//!   crate that may touch the JIT + runtime + `libc`.
+//! - The invocation core (`find_matching_clause`, `invoke_clause`,
+//!   `invoke_jit_protected`, `rewrite_spans`) that the impl wraps.
+//!
+//! ## Status (S76 W-Macro, fire B)
+//!
+//! Recognition is now the LOCKED `cranelisp_types::resolve_macro_head` query
+//! (via [`recognize_macro_head`]); execution is the single
+//! [`JitMacroExpander`] boundary impl. The in-place walk
+//! ([`expand_sexp_recursive`]) survives as the live driver (the orchestrator's
+//! Pass-1 three-pass loop with just-in-time dependency compilation is the
+//! target shape — `macro-availability-model.md` §0.4 — but the as-built live
+//! path is the worker-loop walk, not the dead `cluster::process_cluster`
+//! scaffold). The walk's [`MacroResolver`] now does recognition + on-demand
+//! clause compilation only; **all execution flows through `JitMacroExpander`**,
+//! so there is exactly one executor (no `MacroEntry`-based parallel path).
+//!
+//! [`View`]: cranelisp_types::View
 
-use cranelisp_types::{ErrorLocation, 
-    CranelispError, MacroParam, Sexp, Span, Symbol,
-    NULLARY_TAG_THRESHOLD,
+use cranelisp_types::{ErrorLocation,
+    CranelispError, FQSymbol, MacroExpander, MacroInvokeError, MacroParam,
+    ModuleAliases, ModuleEntry, ModuleFullPath, Sexp, Span, Symbol, View,
+    DefKind, NULLARY_TAG_THRESHOLD,
 };
 
+use crate::code::Code;
 use crate::marshal;
 
 /// Maximum recursion depth for macro expansion.
@@ -29,35 +55,242 @@ pub(crate) struct MacroClauseEntry {
     pub(crate) rest_param: Option<Symbol>,
 }
 
-/// A registered macro with all its compiled clauses.
-pub(crate) struct MacroEntry {
-    pub(crate) clauses: Vec<MacroClauseEntry>,
-    #[allow(dead_code)] // Reserved for REPL introspection (/doc command)
-    pub(crate) docstring: Option<String>,
+// ---------------------------------------------------------------------------
+// JitMacroExpander — int's cranelisp_types::MacroExpander implementation
+// ---------------------------------------------------------------------------
+
+/// int's implementation of [`cranelisp_types::MacroExpander`] — the
+/// **execution** half of the macro two-jobs split.
+///
+/// Recognition (is this head a macro? which `FQSymbol`?) is done by the
+/// orchestrator via `cranelisp_types::resolve_macro_head` over a committed
+/// [`View`]; the orchestrator then calls [`MacroExpander::invoke`] with the
+/// recognized macro's `fq`, the call's argument `Sexp`s, and the call span.
+/// This impl:
+///
+/// 1. reads the macro's `clauses_meta` from `symbol_tables[fq.module][fq.symbol]`
+///    (the `DefKind::Macro` entry),
+/// 2. selects the matching clause by arity/bracket-shape,
+/// 3. loads the matched clause's JIT'd code pointer from its GOT slot
+///    (clause functions are normal per-module GOT fns named
+///    `__macro_{name}_clause_{idx}`),
+/// 4. marshals the args, invokes under signal protection, unmarshals the
+///    result, and rewrites every node's span to a fresh synthetic span.
+///
+/// It holds only `cranelisp-types` collections (`&SymbolTables` is the
+/// committed code+GOT store); `Send + Sync` is satisfied because the borrows
+/// are shared-read and the invocation core isolates per-call signal state in
+/// thread-locals.
+pub(crate) struct JitMacroExpander<'a> {
+    /// Committed per-module symbol tables — clause `clauses_meta` + GOT-stored
+    /// clause code pointers are read from here.
+    pub(crate) symbol_tables: &'a dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+}
+
+impl MacroExpander for JitMacroExpander<'_> {
+    fn invoke(
+        &self,
+        fq: &FQSymbol,
+        args: &[Sexp],
+        call_span: Span,
+    ) -> Result<Sexp, MacroInvokeError> {
+        // 1. Read the macro entry's clause metadata from its home module.
+        let clauses_meta = self.macro_clauses(fq).ok_or_else(|| {
+            MacroInvokeError::Aborted {
+                fq: fq.clone(),
+                message: format!(
+                    "macro `{}/{}` has no compiled clauses in its home module \
+                     (orchestrator-sequencing bug — clause not in memory)",
+                    fq.module, fq.symbol
+                ),
+                span: call_span,
+            }
+        })?;
+
+        // 2. Build compiled clause entries (clause-meta + GOT code ptr).
+        let mut compiled: Vec<MacroClauseEntry> = Vec::with_capacity(clauses_meta.len());
+        for (idx, meta) in clauses_meta.iter().enumerate() {
+            let clause_name = Symbol::from(format!("__macro_{}_clause_{}", fq.symbol, idx));
+            let func_ptr = self
+                .clause_code_ptr(&fq.module, &clause_name)
+                .ok_or_else(|| MacroInvokeError::Aborted {
+                    fq: fq.clone(),
+                    message: format!(
+                        "macro `{}/{}` clause {} is not in memory \
+                         (orchestrator-sequencing bug)",
+                        fq.module, fq.symbol, idx
+                    ),
+                    span: call_span,
+                })?;
+            compiled.push(MacroClauseEntry {
+                func_ptr,
+                params: meta.params.clone(),
+                rest_param: meta.rest_param.clone(),
+            });
+        }
+
+        // 3. Select the matching clause by arity/bracket shape.
+        let clause = find_matching_clause(&compiled, args).ok_or_else(|| {
+            MacroInvokeError::Malformed {
+                fq: fq.clone(),
+                message: format!(
+                    "no matching clause for macro `{}/{}` with {} argument(s)",
+                    fq.module,
+                    fq.symbol,
+                    args.len()
+                ),
+                span: call_span,
+            }
+        })?;
+
+        // 4. Marshal + signal-protected invoke + unmarshal + span-rewrite.
+        execute_matched_clause(clause, args, call_span)
+            .map_err(|e| macro_error_to_invoke_error(fq, call_span, e))
+    }
+}
+
+/// The shared single-invocation core: marshal args, call the matched clause
+/// under signal protection, unmarshal, and rewrite spans to fresh synthetic
+/// ones. [`JitMacroExpander::invoke`] (the locked-decision boundary) executes
+/// through this one function — there is no second executor; the legacy walk
+/// also reaches it via `JitMacroExpander`.
+pub(crate) fn execute_matched_clause(
+    clause: &MacroClauseEntry,
+    args: &[Sexp],
+    span: Span,
+) -> Result<Sexp, CranelispError> {
+    let mut result = invoke_clause(clause, args, span)?;
+    rewrite_spans(&mut result, span);
+    Ok(result)
+}
+
+impl JitMacroExpander<'_> {
+    /// Read the `clauses_meta` from the macro's home-module `DefKind::Macro`
+    /// entry. The `fq` is expected to address the canonical entry directly
+    /// (the orchestrator resolved it via `resolve_macro_head`, which
+    /// chain-follows to the home module), so a single direct lookup suffices.
+    fn macro_clauses(&self, fq: &FQSymbol) -> Option<Vec<cranelisp_types::MacroClauseInfo>> {
+        let table = self.symbol_tables.get(&fq.module)?;
+        match table.get(fq.symbol.as_ref())? {
+            ModuleEntry::Def { kind, .. } => match kind.as_ref() {
+                DefKind::Macro { clauses_meta } => Some(clauses_meta.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Load a clause function's compiled code pointer from its per-module GOT
+    /// slot. Returns `None` if the entry is absent or its GOT slot is empty.
+    fn clause_code_ptr(&self, module: &ModuleFullPath, clause_name: &Symbol) -> Option<*const u8> {
+        let table = self.symbol_tables.get(module)?;
+        let ModuleEntry::Def { code: Some(_), got_slot: Some(slot), .. } =
+            table.get(clause_name.as_ref())?
+        else {
+            return None;
+        };
+        let ptr = table.got.load_slot(*slot);
+        if ptr.is_null() { None } else { Some(ptr) }
+    }
+}
+
+/// Project the int-internal `CranelispError` an invocation can produce onto the
+/// `cranelisp-types` boundary `MacroInvokeError`. A `MacroError` (the variant
+/// `invoke_clause` raises for runtime traps / malformed results) maps to
+/// `Aborted`; anything else is also surfaced as `Aborted` with its display.
+fn macro_error_to_invoke_error(fq: &FQSymbol, span: Span, e: CranelispError) -> MacroInvokeError {
+    let message = match &e {
+        CranelispError::MacroError { message, .. } => message.clone(),
+        other => other.to_string(),
+    };
+    MacroInvokeError::Aborted { fq: fq.clone(), message, span }
+}
+
+/// Construct a committed first-hop [`View`] over the live current-module table,
+/// for the orchestrator's Pass-1 recognition call to
+/// `cranelisp_types::resolve_macro_head`. Returns `None` when the current
+/// module has no table yet (no macros are recognizable from an absent module).
+///
+/// This is the int-side glue for the locked recognition mechanism: the caller
+/// passes the returned view to `resolve_macro_head` together with
+/// `symbol_tables` + `module_aliases`. Kept here (next to the executor) so the
+/// recognition + execution glue lives in one place.
+pub(crate) fn committed_view<'a>(
+    symbol_tables: &'a dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    current_module: &ModuleFullPath,
+) -> Option<dashmap::mapref::one::Ref<'a, ModuleFullPath, crate::code::SessionSymbolTable>> {
+    let _ = symbol_tables.get(current_module)?;
+    symbol_tables.get(current_module)
+}
+
+/// Recognize a macro head from the committed tables, per the LOCKED decision
+/// (`macro-availability-model.md` §0.7): a `cranelisp_types::resolve_macro_head`
+/// query over a `View::single(live)` first-hop. Returns the macro's `FQSymbol`
+/// when `name` resolves to a `DefKind::Macro` entry, `Ok(None)` for a non-macro
+/// or forward (pre-`defmacro`) reference, `Err` only for hard resolution
+/// failures (private, unknown qualified module).
+///
+/// Zero int→typecheck dependency: recognition is entirely a `cranelisp-types`
+/// query. This replaces the bespoke `SymbolTableMacroResolver` chain-walk.
+pub(crate) fn recognize_macro_head(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module_aliases: &ModuleAliases,
+    current_module: &ModuleFullPath,
+    name: &str,
+    span: Span,
+) -> Result<Option<FQSymbol>, CranelispError> {
+    let Some(table_ref) = committed_view(symbol_tables, current_module) else {
+        return Ok(None);
+    };
+    let view: View<'_, Code, ()> = View::single(&table_ref);
+    cranelisp_types::resolve_macro_head(
+        symbol_tables,
+        module_aliases,
+        &view,
+        current_module,
+        name,
+        span,
+    )
+    .map_err(CranelispError::from)
 }
 
 // ---------------------------------------------------------------------------
 // MacroResolver trait
 // ---------------------------------------------------------------------------
 
-/// Trait for resolving macro names to compiled entries during expansion.
+/// Recognition driver for the legacy in-place expansion walk
+/// (`expand_sexp_recursive`).
 ///
-/// Implementations look up the symbol table, follow import chains, and
-/// optionally compile macros on demand. The `&mut self` receiver allows
-/// on-demand compilation (the `SymbolTableMacroResolver` in worker.rs
-/// compiles macro clauses the first time they are referenced).
+/// **Recognition** uses the LOCKED types primitive
+/// (`cranelisp_types::resolve_macro_head`, `macro-availability-model.md` §0.7)
+/// — each impl's `recognize` is a thin caller of `recognize_macro_head`. The
+/// `&mut self` receiver lets an impl additionally **ensure the clause code is
+/// in memory** as a side effect of recognition (the worker's
+/// `SymbolTableMacroResolver` compiles macro clauses the first time they are
+/// referenced; the read-only `/expand` resolver does not).
+///
+/// **Execution** is uniform: once `recognize` returns the macro's `FQSymbol`,
+/// the walk executes through the single [`JitMacroExpander`] (the locked
+/// `cranelisp_types::MacroExpander` boundary impl) — there is no per-resolver
+/// executor. `expander()` hands the walk the `&SymbolTables` to build it over.
 pub(crate) trait MacroResolver {
-    /// Resolve a name to a compiled macro entry, if one exists.
+    /// Recognize `name` as a macro head; return its `FQSymbol` if so.
     ///
     /// Returns:
-    /// - `Ok(Some(entry))` — name is a macro, here are its compiled clauses
-    /// - `Ok(None)` — name is not a macro (or not visible in the current scope)
-    /// - `Err(...)` — lookup or on-demand compilation failed
-    fn resolve_macro(
+    /// - `Ok(Some(fq))` — `name` is a macro; its clauses are (or have just been
+    ///   made) in memory, addressable by `fq`.
+    /// - `Ok(None)` — not a macro, or a forward / not-yet-visible reference.
+    /// - `Err(...)` — hard resolution failure or on-demand compilation failure.
+    fn recognize(
         &mut self,
         name: &str,
         span: Span,
-    ) -> Result<Option<MacroEntry>, CranelispError>;
+    ) -> Result<Option<FQSymbol>, CranelispError>;
+
+    /// The committed symbol tables to execute recognized macros over.
+    fn symbol_tables(
+        &self,
+    ) -> &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>;
 }
 
 // ---------------------------------------------------------------------------
@@ -369,11 +602,9 @@ pub(crate) fn expand_sexp_recursive(
         Sexp::List(ref children, span) if !children.is_empty() => {
             // Check if head is a macro name.
             if let Sexp::Symbol(ref name, sym_span) = children[0]
-                && let Some(entry) = resolver.resolve_macro(name, sym_span)? {
+                && let Some(fq) = resolver.recognize(name, sym_span)? {
                     let args = &children[1..];
-                    return expand_macro_call_with_entry(
-                        name, args, span, &entry, resolver, depth,
-                    );
+                    return expand_recognized_macro(fq, args, span, resolver, depth);
                 }
             // Not a macro call — recurse into children.
             let Sexp::List(children, span) = sexp else {
@@ -387,10 +618,8 @@ pub(crate) fn expand_sexp_recursive(
         }
         Sexp::Symbol(ref name, span) => {
             // Bare symbol: check for zero-arg macro.
-            if let Some(entry) = resolver.resolve_macro(name, span)? {
-                return expand_macro_call_with_entry(
-                    name, &[], span, &entry, resolver, depth,
-                );
+            if let Some(fq) = resolver.recognize(name, span)? {
+                return expand_recognized_macro(fq, &[], span, resolver, depth);
             }
             Ok(sexp)
         }
@@ -405,28 +634,26 @@ pub(crate) fn expand_sexp_recursive(
     }
 }
 
-/// Expand a single macro call given a resolved entry, then re-expand the result.
-pub(crate) fn expand_macro_call_with_entry(
-    name: &str,
+/// Execute one recognized macro call through the [`JitMacroExpander`]
+/// (`cranelisp_types::MacroExpander`) boundary, then re-expand the result to
+/// fixpoint. The walk recognized `fq` via the LOCKED types primitive and the
+/// resolver ensured its clause code is in memory; execution is uniform.
+fn expand_recognized_macro(
+    fq: FQSymbol,
     args: &[Sexp],
     span: Span,
-    entry: &MacroEntry,
     resolver: &mut dyn MacroResolver,
     depth: usize,
 ) -> Result<Sexp, CranelispError> {
-    let clause = find_matching_clause(&entry.clauses, args).ok_or_else(|| {
-        CranelispError::MacroError {
-            message: format!(
-                "no matching clause for macro '{name}' with {} arguments",
-                args.len()
-            ),
-            location: ErrorLocation::from_span(span),
-        }
-    })?;
-
-    let mut result = invoke_clause(clause, args, span)?;
-    rewrite_spans(&mut result, span);
-
+    let result = {
+        let expander = JitMacroExpander { symbol_tables: resolver.symbol_tables() };
+        expander
+            .invoke(&fq, args, span)
+            .map_err(|e| CranelispError::MacroError {
+                message: e.to_string(),
+                location: ErrorLocation::from_span(span),
+            })?
+    };
     // Re-expand the result (may contain further macro calls).
     expand_sexp_recursive(result, resolver, depth + 1)
 }
@@ -439,6 +666,122 @@ pub(crate) fn expand_macro_call_with_entry(
 mod tests {
     use super::*;
     use cranelisp_types::Span;
+    use cranelisp_types::{DefKind, MacroClauseInfo, ModuleAliases, Scheme, Type, Visibility};
+    use std::collections::HashMap;
+
+    fn empty_scheme() -> Scheme {
+        Scheme { type_vars: vec![], constraints: HashMap::new(), ty: Type::Int }
+    }
+
+    /// Build a one-module symbol table set with `name` registered as a macro
+    /// (a `DefKind::Macro` entry with `clause_count` clauses).
+    fn tables_with_macro(
+        module: &str,
+        name: &str,
+        clause_count: usize,
+    ) -> dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> {
+        let path = ModuleFullPath::from(module);
+        let tables = dashmap::DashMap::new();
+        let mut st = crate::code::SessionSymbolTable::new_with_params(path.clone());
+        let clauses_meta: Vec<MacroClauseInfo> = (0..clause_count)
+            .map(|_| MacroClauseInfo { params: vec![], rest_param: None })
+            .collect();
+        let entry = ModuleEntry::def(empty_scheme(), DefKind::Macro { clauses_meta })
+            .visibility(Visibility::Public)
+            .build();
+        st.insert(Symbol::from(name), entry);
+        tables.insert(path, st);
+        tables
+    }
+
+    // spec: macro-availability-model.md §0.7 — recognition is the types primitive
+    // (`resolve_macro_head` over a committed View::single(live)).
+    #[test]
+    fn recognize_macro_head_finds_local_macro() {
+        let tables = tables_with_macro("user", "twice", 1);
+        let aliases = ModuleAliases::default();
+        let module = ModuleFullPath::from("user");
+        let fq = recognize_macro_head(&tables, &aliases, &module, "twice", Span::SYNTHETIC)
+            .expect("no hard error")
+            .expect("twice is a macro head");
+        assert_eq!(fq.symbol, Symbol::from("twice"));
+        assert_eq!(fq.module, ModuleFullPath::from("user"));
+    }
+
+    // spec: macro-availability-model.md §0.2 — a forward (pre-defmacro) reference
+    // is NOT a macro head: Ok(None), flows on as an ordinary reference.
+    #[test]
+    fn recognize_macro_head_forward_reference_is_none() {
+        let tables = tables_with_macro("user", "twice", 1);
+        let aliases = ModuleAliases::default();
+        let module = ModuleFullPath::from("user");
+        let r = recognize_macro_head(&tables, &aliases, &module, "not-yet-defined", Span::SYNTHETIC)
+            .expect("no hard error");
+        assert!(r.is_none(), "an undefined name is not a macro head");
+    }
+
+    // spec: macro-availability-model.md §0.7 — recognition over an absent
+    // current module yields Ok(None) (no macros recognizable from nothing).
+    #[test]
+    fn recognize_macro_head_absent_module_is_none() {
+        let tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        let aliases = ModuleAliases::default();
+        let module = ModuleFullPath::from("ghost");
+        let r = recognize_macro_head(&tables, &aliases, &module, "anything", Span::SYNTHETIC)
+            .expect("no hard error");
+        assert!(r.is_none());
+    }
+
+    // spec: macro-expansion-ownership.md §2.3 — JitMacroExpander surfaces a clear
+    // Aborted diagnostic when a recognized macro's clause code is not in memory
+    // (an orchestrator-sequencing condition), rather than misbehaving silently.
+    #[test]
+    fn jit_macro_expander_absent_clause_code_is_clear_abort() {
+        // The macro entry exists (recognition succeeds) but its clause function
+        // was never JIT-compiled, so its GOT slot is empty.
+        let tables = tables_with_macro("user", "twice", 1);
+        let expander = JitMacroExpander { symbol_tables: &tables };
+        let fq = FQSymbol {
+            module: ModuleFullPath::from("user"),
+            symbol: Symbol::from("twice"),
+        };
+        let err = expander
+            .invoke(&fq, &[Sexp::Int(1, Span::SYNTHETIC)], Span::SYNTHETIC)
+            .expect_err("clause code is absent");
+        match err {
+            MacroInvokeError::Aborted { message, .. } => {
+                assert!(
+                    message.contains("not in memory"),
+                    "diagnostic names the in-memory condition: {message}"
+                );
+            }
+            other => panic!("expected Aborted, got {other:?}"),
+        }
+    }
+
+    // spec: macro-availability-model.md §0.7 — a name resolving to a non-macro
+    // entry is not a macro head (the head flows on as an ordinary call).
+    #[test]
+    fn recognize_non_macro_entry_is_none() {
+        let path = ModuleFullPath::from("user");
+        let tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        let mut st = crate::code::SessionSymbolTable::new_with_params(path.clone());
+        let entry = ModuleEntry::def(
+            empty_scheme(),
+            DefKind::UserFn { constrained_fn: None },
+        )
+        .visibility(Visibility::Public)
+        .build();
+        st.insert(Symbol::from("plain-fn"), entry);
+        tables.insert(path, st);
+        let aliases = ModuleAliases::default();
+        let module = ModuleFullPath::from("user");
+        let r = recognize_macro_head(&tables, &aliases, &module, "plain-fn", Span::SYNTHETIC)
+            .expect("no hard error");
+        assert!(r.is_none(), "a regular fn is not a macro head");
+    }
 
     // spec: 09-macros.md section 9.7 — marshal round-trip via expand
     #[test]

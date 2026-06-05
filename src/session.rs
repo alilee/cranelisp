@@ -314,30 +314,10 @@ pub(crate) fn determine_exit_code(value: i64, inner_ty: &Type) -> i32 {
     }
 }
 
-/// Inject an implicit `(import [prelude [*]])` into the typechecker's current
-/// module, unless the current module IS "prelude" (to avoid self-import).
-#[allow(dead_code)]
-pub(crate) fn inject_prelude_import(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
-    next_type_id: &std::sync::atomic::AtomicU32,
-    check_state: &mut cranelisp_typecheck::CheckState,
-    current_module: &ModuleFullPath,
-) -> Result<(), CranelispError> {
-    let prelude_path = ModuleFullPath::from("prelude");
-
-    // Don't self-import prelude into itself.
-    if *current_module == prelude_path {
-        return Ok(());
-    }
-
-    let import_spec = cranelisp_types::ImportSpec {
-        module_path: prelude_path,
-        alias: None,
-        names: cranelisp_types::ImportNames::Glob,
-        span: Span::SYNTHETIC,
-    };
-    cranelisp_typecheck::register_imports(symbol_tables, next_type_id, check_state, &[import_spec])
-}
+// `inject_prelude_import` DELETED (S76 W-Absorb). It was a dead `pub(crate)`
+// helper (zero call sites) wrapping the struck `cranelisp_typecheck::
+// register_imports`. Implicit prelude injection happens in
+// `worker.rs::ensure_prelude_imported` via `crate::imports::install_imports`.
 
 // Sprint 58 Step 5b: `has_compilable_defns` was a presence-check helper used
 // by the now-defunct `codegen_programs` stash drain in `compile_module_object`.

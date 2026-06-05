@@ -660,41 +660,6 @@ impl CompileScheduler {
         Ok(())
     }
 
-    /// Typechecking hit a macro expansion that needs codegenned symbols.
-    /// Moves the current module to TypecheckBlocked.
-    ///
-    /// `needed` is the call graph of uncompiled symbols required for
-    /// macro expansion. Order is a hint (dependencies first via BFS walk).
-    /// Each symbol is pushed to the front of the priority codegen queue.
-    pub fn block_for_macro_codegen(
-        &self,
-        module: &ModuleFullPath,
-        needed: Vec<(ModuleFullPath, Symbol)>,
-    ) {
-        observability::record_module_event(
-            SchedulerTraceTag::ModuleStateBlocked,
-            module.as_ref(),
-        );
-        let mut state = self.lock();
-        Self::set_pool_locked(&mut state, module, ModulePool::TypecheckBlocked);
-
-        if needed.is_empty() {
-            return;
-        }
-
-        // The last entry in `needed` is the macro function itself;
-        // it carries the unblocks for the waiting module.
-        let macro_key = needed.last().map(|(m, s)| (m.clone(), s.clone()));
-
-        Self::push_priority_entries_locked(
-            &mut state, module, &needed, macro_key.as_ref(),
-        );
-
-        // Wake priority workers — new entries in the priority codegen queue.
-        drop(state);
-        self.priority_work_available.notify_all();
-    }
-
     /// All forms in the module have been typechecked.
     /// Moves module from TypecheckWorking to TypecheckDone.
     ///
@@ -1305,7 +1270,7 @@ impl CompileScheduler {
     /// - All work queues are empty (TypecheckFirst, TypecheckNext, and no
     ///   Ready entries in priority_queue), AND
     /// - No modules are in TypecheckWorking (which could produce new work
-    ///   via register_module or block_for_macro_codegen).
+    ///   via register_module).
     ///
     /// This covers several scenarios:
     /// - All modules TypecheckDone/Complete/Failed: no more work.
@@ -1717,73 +1682,6 @@ impl CompileScheduler {
         }
     }
 
-    /// Push priority entries for a macro codegen request.
-    fn push_priority_entries_locked(
-        state: &mut SchedulerState,
-        waiting_module: &ModuleFullPath,
-        needed: &[(ModuleFullPath, Symbol)],
-        macro_key: Option<&(ModuleFullPath, Symbol)>,
-    ) {
-        for (mod_path, sym) in needed {
-            let key = (mod_path.clone(), sym.clone());
-
-            if let Some(existing_idx) =
-                Self::find_priority_entry_locked(state, &key)
-            {
-                if Some(&key) == macro_key {
-                    let entry = &mut state.priority_queue[existing_idx];
-                    if !entry.unblocks.contains(waiting_module) {
-                        entry.unblocks.push(waiting_module.clone());
-                    }
-                }
-                continue;
-            }
-
-            let unblocks = if Some(&key) == macro_key {
-                vec![waiting_module.clone()]
-            } else {
-                Vec::new()
-            };
-
-            let entry = PriorityEntry {
-                module: mod_path.clone(),
-                symbol: sym.clone(),
-                status: PriorityStatus::Ready,
-                unblocks,
-                dependencies: HashSet::new(),
-                dependents: Vec::new(),
-            };
-
-            state.priority_queue.push_front(entry);
-        }
-
-        Self::wire_priority_edges_locked(state, needed);
-    }
-
-    /// Wire forward/reverse edges between priority entries.
-    fn wire_priority_edges_locked(
-        state: &mut SchedulerState,
-        needed: &[(ModuleFullPath, Symbol)],
-    ) {
-        for i in 1..needed.len() {
-            let dep_key = (needed[i - 1].0.clone(), needed[i - 1].1.clone());
-            let consumer_key = (needed[i].0.clone(), needed[i].1.clone());
-
-            let dep_idx = Self::find_priority_entry_locked(state, &dep_key);
-            let consumer_idx =
-                Self::find_priority_entry_locked(state, &consumer_key);
-
-            if let (Some(d), Some(c)) = (dep_idx, consumer_idx) {
-                state.priority_queue[c]
-                    .dependencies
-                    .insert(dep_key.clone());
-                state.priority_queue[d]
-                    .dependents
-                    .push(consumer_key);
-            }
-        }
-    }
-
     /// Satisfy typecheck waiters for all symbols of a cached module.
     fn satisfy_typecheck_waiters_for_all_symbols_locked(
         state: &mut SchedulerState,
@@ -1999,6 +1897,7 @@ mod tests {
             platform_dirs: Mutex::new(Vec::new()),
             module_sexps: Mutex::new(std::collections::HashMap::new()),
             suspend_states: Mutex::new(std::collections::HashMap::new()),
+            module_aliases: cranelisp_types::ModuleAliases::default(),
             // Sprint 67 Cluster B sub-fire 3: ObjectCache facade. Disabled
             // (None) for this unit test — no .o compilation runs here.
             cache: std::sync::Arc::new(crate::cache::ObjectCache::new(None, None)),

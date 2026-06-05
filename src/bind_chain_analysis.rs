@@ -17,7 +17,7 @@ use std::collections::HashSet;
 
 use cranelisp_platform::SchedulingClass;
 use cranelisp_types::{
-    DefKind, Defn, Expr, MatchArm, ModuleEntry, ModuleFullPath, PrimitiveKind, Span,
+    DefKind, Defn, Expr, MatchArm, ModuleEntry, ModuleFullPath, Span,
     Symbol, SymbolTable, TypeExpr, free_vars_expr,
 };
 
@@ -140,7 +140,6 @@ fn collect_bind_chain(expr: Expr) -> (Vec<BindStep>, Expr) {
 
     let Expr::Lambda {
         mut params,
-        mut param_annotations,
         body,
         ..
     } = lambda
@@ -148,8 +147,9 @@ fn collect_bind_chain(expr: Expr) -> (Vec<BindStep>, Expr) {
         unreachable!("invariant: bind lambda is not a Lambda")
     };
 
-    let name = params.remove(0);
-    let annotation = param_annotations.pop().flatten();
+    // S70: `param_annotations` folded into `params: Vec<(Symbol,
+    // Option<TypeExpr>)>`. The per-param annotation rides on the tuple.
+    let (name, annotation) = params.remove(0);
     let inner = *body;
     let binding_span = span;
 
@@ -225,17 +225,13 @@ fn scheduling_class_from_table(
         let entry = table.get(name)?;
         match entry {
             ModuleEntry::Def { kind, .. } => {
-                if let DefKind::Primitive {
-                    primitive_kind: PrimitiveKind::PlatformEffect { scheduling_class },
-                    ..
-                } = kind.as_ref()
-                {
+                if let DefKind::PlatformEffect { scheduling_class } = kind.as_ref() {
                     Some(*scheduling_class)
                 } else {
                     None
                 }
             }
-            ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
+            ModuleEntry::Import { source, .. } => {
                 let next_mod = source.module.clone();
                 let next_sym: String = source.symbol.as_ref().to_string();
                 drop(table);
@@ -371,6 +367,8 @@ fn make_bind(
     body: Expr,
     span: Span,
 ) -> Expr {
+    // S70: `param_annotations` folded into `params: Vec<(Symbol,
+    // Option<TypeExpr>)>` — the annotation rides on the param tuple.
     Expr::Apply {
         callee: Box::new(Expr::Var {
             name: Symbol::from("bind"),
@@ -380,8 +378,7 @@ fn make_bind(
         args: vec![
             io_expr,
             Expr::Lambda {
-                params: vec![name],
-                param_annotations: vec![annotation],
+                params: vec![(name, annotation)],
                 body: Box::new(body),
                 span,
                 inferred_type: None,
@@ -422,9 +419,8 @@ fn recurse_children(
             span,
             inferred_type,
         },
-        Expr::Lambda { params, param_annotations, body, span, inferred_type } => Expr::Lambda {
+        Expr::Lambda { params, body, span, inferred_type } => Expr::Lambda {
             params,
-            param_annotations,
             body: Box::new(transform_expr(*body, symbol_tables, current_module)),
             span,
             inferred_type,
@@ -482,6 +478,16 @@ fn recurse_children(
             span,
             inferred_type,
         },
+        Expr::ConstrADT { type_name, tag, fields, span, inferred_type } => Expr::ConstrADT {
+            type_name,
+            tag,
+            fields: fields
+                .into_iter()
+                .map(|f| transform_expr(f, symbol_tables, current_module))
+                .collect(),
+            span,
+            inferred_type,
+        },
         // Leaf nodes.
         leaf @ (Expr::IntLit { .. }
         | Expr::FloatLit { .. }
@@ -527,9 +533,7 @@ pub(crate) fn scheduling_of(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::{
-        FQSymbol, JitSymbol, PrimitiveKind, Scheme, Span, Symbol, Type, Visibility,
-    };
+    use cranelisp_types::{FQSymbol, Scheme, Span, Symbol, Type, Visibility};
 
     fn make_var(name: &str) -> Expr {
         Expr::Var { name: Symbol::from(name), span: Span::SYNTHETIC, inferred_type: None }
@@ -555,8 +559,7 @@ mod tests {
             args: vec![
                 io_expr,
                 Expr::Lambda {
-                    params: vec![Symbol::from(name)],
-                    param_annotations: vec![None],
+                    params: vec![(Symbol::from(name), None)],
                     body: Box::new(body),
                     span: Span::SYNTHETIC,
                     inferred_type: None,
@@ -569,25 +572,16 @@ mod tests {
     }
 
     fn platform_effect_entry(sc: SchedulingClass) -> ModuleEntry {
-        ModuleEntry::Def {
-            scheme: Scheme {
-                vars: vec![],
+        ModuleEntry::def(
+            Scheme {
+                type_vars: vec![],
                 constraints: std::collections::HashMap::new(),
                 ty: Type::Int,
             },
-            visibility: Visibility::Public,
-            docstring: None,
-            param_names: vec![],
-            kind: Box::new(DefKind::Primitive {
-                primitive_kind: PrimitiveKind::PlatformEffect { scheduling_class: sc },
-                jit_name: Some(JitSymbol::from("test_fn")),
-            }),
-            callees: Vec::new(),
-            got_slot: None,
-            trait_origin: None,
-            ast: None,
-            code: None,
-        }
+            DefKind::PlatformEffect { scheduling_class: sc },
+        )
+        .visibility(Visibility::Public)
+        .build()
     }
 
     /// Build a symbol table setup for bind-chain tests. Creates the
@@ -613,6 +607,7 @@ mod tests {
                         module: plat_mod.clone(),
                         symbol: Symbol::from(*name),
                     },
+                    visibility: Visibility::Private,
                 },
             );
         }
@@ -844,6 +839,7 @@ mod tests {
             Symbol::from("op"),
             ModuleEntry::Import {
                 source: FQSymbol { module: plat.clone(), symbol: Symbol::from("op") },
+                visibility: Visibility::Private,
             },
         );
         tables.insert(m.clone(), cst);

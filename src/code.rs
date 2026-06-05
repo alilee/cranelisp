@@ -40,35 +40,31 @@ mod tests {
         use cranelisp_backend::cache::linker::Linker;
         use cranelisp_backend::jit::Jit;
         use cranelisp_types::{
-            DefKind, Defn, DefnVariant, Expr, ModuleEntry, ModuleFullPath, Scheme, Span,
+            DefKind, DefnVariant, Expr, ModuleEntry, ModuleFullPath, Scheme, Span,
             Symbol, Type, Visibility,
         };
         use std::collections::HashMap;
         use std::sync::Arc;
 
-        fn trivial_defn(name: &str) -> Defn {
-            Defn {
-                name: Symbol::from(name),
-                docstring: None,
-                variants: vec![DefnVariant {
-                    params: vec![],
-                    param_annotations: vec![],
-                    body: Expr::IntLit {
-                        value: 0,
-                        span: Span::SYNTHETIC,
-                        inferred_type: Some(Box::new(Type::Int)),
-                    },
+        /// S69 Submission 35: `ModuleEntry::Def.ast` is `DefnVariant`.
+        fn trivial_variant() -> DefnVariant {
+            DefnVariant {
+                params: vec![],
+                body: Expr::IntLit {
+                    value: 0,
                     span: Span::SYNTHETIC,
-                }],
-                visibility: Visibility::Public,
+                    inferred_type: Some(Box::new(Type::Int)),
+                },
                 span: Span::SYNTHETIC,
             }
         }
 
-        fn mk_def(code: Option<Code>, name: &str) -> SessionModuleEntry {
+        fn mk_def(code: Option<Code>, _name: &str) -> SessionModuleEntry {
+            // Struct literal (not the builder) because this test sets `code`
+            // explicitly, which the builder deliberately does not expose.
             ModuleEntry::Def {
                 scheme: Scheme {
-                    vars: vec![],
+                    type_vars: vec![],
                     constraints: HashMap::new(),
                     ty: Type::Int,
                 },
@@ -79,12 +75,14 @@ mod tests {
                 callees: Vec::new(),
                 got_slot: None,
                 trait_origin: None,
-                ast: Some(trivial_defn(name)),
+                seq: 0,
+                ast: Some(trivial_variant()),
                 code,
             }
         }
 
-        let jit = Arc::new(Jit::new().expect("Jit::new must succeed"));
+        let empty_tables: cranelisp_types::SymbolTables<Code, ()> = dashmap::DashMap::new();
+        let jit = Arc::new(Jit::new(&empty_tables).expect("Jit::new must succeed"));
         let linker = Arc::new(Linker::new().expect("Linker::new must succeed"));
 
         let mut st: SessionSymbolTable =
@@ -93,33 +91,21 @@ mod tests {
             );
         st.insert(
             Symbol::from("fresh"),
-            mk_def(
-                Some(Code::jit(Arc::clone(&jit), 0xAAAAusize as *const u8)),
-                "fresh",
-            ),
+            mk_def(Some(Code::jit(Arc::clone(&jit))), "fresh"),
         );
         st.insert(
             Symbol::from("cached"),
-            mk_def(
-                Some(Code::linker(
-                    Arc::clone(&linker),
-                    0xBBBBusize as *const u8,
-                )),
-                "cached",
-            ),
+            mk_def(Some(Code::linker(Arc::clone(&linker))), "cached"),
         );
 
-        // Both variants coexist in the same table.
+        // Both variants coexist in the same table (S75 slim: lifecycle owner
+        // only; callable address lives in the GOT, not on `Code`).
         match st.get("fresh") {
-            Some(ModuleEntry::Def { code: Some(Code::Jit { ptr, .. }), .. }) => {
-                assert_eq!(*ptr, 0xAAAAusize as *const u8);
-            }
+            Some(ModuleEntry::Def { code: Some(Code::Jit(_)), .. }) => {}
             other => panic!("expected Code::Jit, got {:?}", other),
         }
         match st.get("cached") {
-            Some(ModuleEntry::Def { code: Some(Code::Linker { ptr, .. }), .. }) => {
-                assert_eq!(*ptr, 0xBBBBusize as *const u8);
-            }
+            Some(ModuleEntry::Def { code: Some(Code::Linker(_)), .. }) => {}
             other => panic!("expected Code::Linker, got {:?}", other),
         }
     }

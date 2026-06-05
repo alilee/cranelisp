@@ -37,6 +37,17 @@ pub mod cache;
 
 // Internal — accessed only via `crate::*` paths inside the library.
 pub(crate) mod bind_chain_analysis;
+// bootstrap — synthetic-module mount (FIXME 0242). int reconstructs the
+// special-forms / intrinsic-type / macros / Option / IO / Trace / TestResult
+// seeding that the deleted `cranelisp_typecheck::register_builtins` body
+// performed, building entries directly via `ModuleEntry::def` + plain struct
+// literals. See `design/arch/fixmes/0242-*`.
+pub(crate) mod bootstrap;
+// imports — int-side import/export installer (int plan §1.4). Writes per-symbol
+// `ModuleEntry::Import` bindings + module-path aliases; replaces typecheck's
+// struck `register_imports`/`register_exports`. See `design/arch/fixmes/0242-*`
+// §S76-addendum (2) + bounded-contexts.md §2 invariants 2+8.
+pub(crate) mod imports;
 pub(crate) mod cache_writer;
 pub(crate) mod code;
 pub(crate) mod display;
@@ -52,10 +63,9 @@ pub(crate) mod pretty;
 pub(crate) mod save;
 pub(crate) mod scheduler;
 pub(crate) mod thread_util;
-// trace — int-hosted 12 `cranelisp_trace_*` JIT-emitted-call bodies per
-// Decision 40 / Path B1 (S67 W4). Registered via `int_intrinsics()` at every
-// JIT-build site. The 12 fns retain identical `#[no_mangle]` extern names so
-// backend-emitted CLIF resolves the symbols at `JITBuilder::symbol(...)` time.
-pub(crate) mod trace;
+// trace — DELETED S76 (FIXME 0256, trace ruling 2026-06-04). The 12
+// `cranelisp_trace_*` bodies + the descriptor-driven formatter now live in
+// `cranelisp_intrinsics::trace` and are published via `intrinsics_table()`;
+// `Jit::new(symbol_tables)` registers them. int hosts no `(trace ...)` runtime.
 pub(crate) mod watch;
 pub(crate) mod worker;

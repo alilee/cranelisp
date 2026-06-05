@@ -18,7 +18,7 @@ use cranelisp_types::{ErrorLocation,
     TraitName, Type, TypeName, Warning,
 };
 
-use cranelisp_typecheck::{CheckResult, CheckState, ReplSnapshot, TypeCheckEnv};
+use cranelisp_typecheck::{CheckResult, CheckState};
 
 use crate::code::{Code, SessionSymbolTable};
 use crate::platform::LoadedPlatform;
@@ -40,53 +40,36 @@ use crate::display::{format_type_qualified, format_scheme_display};
 /// compiled, returns `Ok(None)` (silently skipped).
 struct ReadOnlyMacroResolver<'a> {
     symbol_tables: &'a dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
+    module_aliases: &'a cranelisp_types::ModuleAliases,
     current_module: ModuleFullPath,
 }
 
 impl crate::expander::MacroResolver for ReadOnlyMacroResolver<'_> {
-    fn resolve_macro(
+    fn symbol_tables(
+        &self,
+    ) -> &dashmap::DashMap<ModuleFullPath, SessionSymbolTable> {
+        self.symbol_tables
+    }
+
+    fn recognize(
         &mut self,
         name: &str,
-        _span: Span,
-    ) -> Result<Option<crate::expander::MacroEntry>, CranelispError> {
-        // Walk symbol table to find the defining module and clause infos.
-        let resolved = crate::worker::resolve_macro_definition(
-            self.symbol_tables, &self.current_module, name, 16,
-        );
-        let (defining_module, clauses, docstring) = match resolved {
-            Some(r) => r,
-            None => return Ok(None),
-        };
-
-        // Check if all clauses are compiled. If not, return None (no on-demand compilation).
-        // Sprint 57 Wave 2 G6: compiled code lives on `ModuleEntry::Def.code`.
-        let macro_sym = Symbol::from(name);
-        let mut compiled_clauses = Vec::new();
-        for (idx, clause_info) in clauses.iter().enumerate() {
-            let clause_name = Symbol::from(format!("__macro_{}_clause_{}", macro_sym, idx));
-            let code_ptr = self.symbol_tables.get(&defining_module)
-                .and_then(|t| match t.get(clause_name.as_ref())? {
-                    ModuleEntry::Def { code: Some(c), .. } => Some(c.ptr()),
-                    _ => None,
-                });
-            match code_ptr {
-                Some(ptr) => {
-                    compiled_clauses.push(crate::expander::MacroClauseEntry {
-                        func_ptr: ptr,
-                        params: clause_info.params.clone(),
-                        rest_param: clause_info.rest_param.clone(),
-                    });
-                }
-                None => return Ok(None), // Uncompiled clause — skip.
-            }
-        }
-        if compiled_clauses.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(crate::expander::MacroEntry {
-            clauses: compiled_clauses,
-            docstring,
-        }))
+        span: Span,
+    ) -> Result<Option<FQSymbol>, CranelispError> {
+        // RECOGNITION via the LOCKED types primitive (committed `View`,
+        // `macro-availability-model.md` §0.7) — same path as the live
+        // compile-time recognition; no second chain-walk copy. Read-only:
+        // no on-demand compilation. If the macro's clauses are not already in
+        // memory, the executor (`JitMacroExpander::invoke`) surfaces a clear
+        // `Aborted` — `/expand` is only meaningful after the macro is defined
+        // and compiled, which the REPL flow guarantees for a prior input.
+        crate::expander::recognize_macro_head(
+            self.symbol_tables,
+            self.module_aliases,
+            &self.current_module,
+            name,
+            span,
+        )
     }
 }
 
@@ -396,48 +379,64 @@ fn format_mem_snapshot() -> String {
     )
 }
 
+/// Map an intrinsic scalar type name to its `Type` variant. int-local
+/// replacement for the retired `cranelisp_types::Type::from_name` reverse
+/// lookup (S69 Submission 30 — intrinsic types are `ModuleEntry::IntrinsicType`
+/// resolved via the symbol table; this helper covers the introspection
+/// fast-path that recognises a bare `Int`/`Bool`/`Float`/`String` symbol).
+pub(crate) fn intrinsic_type_from_name(name: &str) -> Option<Type> {
+    match name {
+        "Int" => Some(Type::Int),
+        "Bool" => Some(Type::Bool),
+        "Float" => Some(Type::Float),
+        "String" => Some(Type::String),
+        _ => None,
+    }
+}
+
 /// Format a module entry signature for /sig display.
 fn format_entry_sig(entry: &ModuleEntry<Code>, name: &str) -> String {
     match entry {
+        // S70 macro-unification / S69 Submission 35-36 (W-Absorb): constructors
+        // and macros are now `Def` entries discriminated by `kind`; special
+        // forms are their own `ModuleEntry::SpecialForm` variant.
         ModuleEntry::Def { scheme, kind, docstring, .. } => {
-            // Multi-sig: emit one line per variant per repl/spec.md §4.1.1.
-            // The /sig output uses the bare name (no module prefix) to match
-            // the rest of this formatter's behaviour.
-            if let DefKind::Overloaded { variants } = kind.as_ref()
-                && !variants.is_empty()
-            {
-                return format_overloaded_variants_bare(name, variants, docstring.as_deref());
-            }
-            let classification = match kind.as_ref() {
-                DefKind::SpecialForm { description } => {
-                    return format!("{name} ; special form - {description}");
+            match kind.as_ref() {
+                DefKind::Overloaded { variants } if !variants.is_empty() => {
+                    // Multi-sig: one line per variant per repl/spec.md §4.1.1.
+                    format_overloaded_variants_bare(name, variants, docstring.as_deref())
                 }
-                DefKind::Overloaded { .. } => "defn (multi)",
-                _ => "defn",
-            };
-            // Sprint 60 Workstream G — append docstring after classification
-            // per `repl/spec.md §1.1` universal output format: `; {classification}
-            // - {docstring}`. The multi-sig branch above uses the same helper.
-            // See `design/int/dual-path-persistence-collapse.md §9`.
-            let base = format!(":{} {} ; {}", scheme.ty, name, classification);
-            append_docstring_comment(base, docstring.as_deref())
+                DefKind::Constructor { type_name, .. } => {
+                    format!(":{} {} ; constructor of {}", scheme.ty, name, type_name)
+                }
+                DefKind::Macro { clauses_meta } => {
+                    let arity = clauses_meta.first().map(|c| c.params.len()).unwrap_or(0);
+                    format!(
+                        "{name} ; defmacro ({} clause(s), arity {})",
+                        clauses_meta.len(),
+                        arity
+                    )
+                }
+                _ => {
+                    let classification = match kind.as_ref() {
+                        DefKind::Overloaded { .. } => "defn (multi)",
+                        _ => "defn",
+                    };
+                    let base = format!(":{} {} ; {}", scheme.ty, name, classification);
+                    append_docstring_comment(base, docstring.as_deref())
+                }
+            }
         }
-        ModuleEntry::Macro { clauses, .. } => {
-            let arity = clauses.first()
-                .map(|c| c.params.len())
-                .unwrap_or(0);
-            format!("{name} ; defmacro ({} clause(s), arity {})", clauses.len(), arity)
+        ModuleEntry::SpecialForm { description, .. } => {
+            format!("{name} ; special form - {description}")
         }
         ModuleEntry::TypeDef { .. } => {
             format!("{name} ; deftype")
         }
-        ModuleEntry::TraitDecl { decl, .. } => {
-            format!("{name} ; deftrait ({} method(s))", decl.methods.len())
+        ModuleEntry::TraitDecl { info, .. } => {
+            format!("{name} ; deftrait ({} method(s))", info.methods.len())
         }
-        ModuleEntry::Constructor { type_name, scheme, .. } => {
-            format!(":{} {} ; constructor of {}", scheme.ty, name, type_name)
-        }
-        ModuleEntry::Import { source } => {
+        ModuleEntry::Import { source, .. } => {
             format!("{name} ; imported from {}/{}", source.module, source.symbol)
         }
         _ => name.to_string(),
@@ -744,6 +743,15 @@ pub struct SharedState {
     /// TypeCheckEnv instances for concurrent workers.
     pub next_type_id: AtomicU32,
 
+    /// Session-scoped module-path aliases (§8.6.6). int owns alias
+    /// installation (BC §2 invariant 2 — import/export registration is an
+    /// int-side concern, struck from typecheck in S76). typecheck reads this
+    /// read-only via `TypeCheckEnv`/`check_forms`; the resolution primitive
+    /// (`cranelisp_types::resolve`) consults it for qualified-name longest-
+    /// prefix substitution. Populated by the int-side alias installer at
+    /// parse-time (`process_cluster` pre-`check_forms`).
+    pub module_aliases: cranelisp_types::ModuleAliases,
+
     // Sprint 67 Cluster B sub-fire 2d: `current_module: Mutex<ModuleFullPath>`
     // was here. Relocated (PIF) to `CompilerSession::current_repl_module` per
     // `design/arch/facades/int.md` L23 + L222. REPL is single-threaded
@@ -756,8 +764,7 @@ pub struct SharedState {
     /// None in batch mode (CheckState is stack-local per worker).
     ///
     /// **Sprint 67 Cluster B investigation verified LIVE.** Read by both
-    /// REPL eval paths (`session_v4.rs:2395, 3377`) and the
-    /// `tc_snapshot`/`tc_restore` REPL error-recovery primitives; mutated
+    /// REPL eval paths (`session_v4.rs:2395, 3377`); mutated
     /// when `/mod` switches the active module (`set_current_module`,
     /// session_v4.rs:1152). Facade-plan `PIF — relocate to CompilerSession`
     /// (S67 W1 row) is correct in direction but currently load-bearing on
@@ -1061,15 +1068,28 @@ impl CompilerSession {
         // static table's slot ↔ fn-ptr mapping. The dispatch invariant is
         // preserved: every primitive call lands on a GOT slot that holds
         // the static `extern "C" fn` ptr.
+        // S76 (FIXME 0242-i): `PRIMITIVES_TABLE` is now `SymbolTable<(), ()>`;
+        // concretise to the session `<Code, ()>` flavour via `into_concrete`
+        // at the mount. The inner `got: Arc<GotTable>` is Arc-cloned, so the
+        // session's primitives module shares the static GOT (slots already
+        // populated with the Ring-0 shim addresses).
         symbol_tables.insert(
             ModuleFullPath::from("primitives"),
             (*cranelisp_primitives::PRIMITIVES_TABLE)
                 .as_ref()
-                .clone(),
+                .clone()
+                .into_concrete::<Code, ()>(),
         );
 
-        // Seed builtins into symbol tables before any user modules load.
-        cranelisp_typecheck::register_builtins(&symbol_tables, &next_type_id);
+        // S76 (FIXME 0242): the synthetic-module mount — int's reconstruction
+        // of the deleted `cranelisp_typecheck::register_builtins` body. Seeds
+        // special forms (root ""), intrinsic type names + Vec, the `macros`
+        // module (Sexp/SList + sconcat), Option, IO (+ bind), Trace, and the
+        // test infrastructure into the session tables. `primitives` and `user`
+        // are already mounted above; this only adds to them + creates `macros`.
+        // Fresh type vars for the polymorphic ADTs/primitive are allocated
+        // from `next_type_id`, advancing the high-water mark monotonically.
+        crate::bootstrap::mount_synthetic_modules(&symbol_tables, &next_type_id);
 
         // Per FIXME 0174 + Decision 43: Ring 0 primitives (`add-i64`, `not`,
         // …) are now ordinary `ModuleEntry::Def` entries with `got_slot:
@@ -1103,6 +1123,7 @@ impl CompilerSession {
             file_to_module: Mutex::new(HashMap::new()),
             symbol_tables,
             next_type_id,
+            module_aliases: cranelisp_types::ModuleAliases::default(),
             repl_check_state: Mutex::new(Some(CheckState::new(user_module.clone()))),
             typecheck_products: dashmap::DashMap::new(),
             // Sprint 58 Wave 3b: kept_jits / kept_linkers dissolved per
@@ -1217,10 +1238,9 @@ impl CompilerSession {
 
     // -- Convenience accessors for shared TC state --
 
-    /// Create a TypeCheckEnv borrowing the shared state.
-    fn tc_env(&self) -> TypeCheckEnv<'_, Code, ()> {
-        TypeCheckEnv::new(&self.shared.symbol_tables, &self.shared.next_type_id)
-    }
+    // `tc_env` deleted (W-Absorb): all former callers switched to the
+    // types-crate `ensure_module_exists` free fn; no remaining use for a
+    // session-built `TypeCheckEnv`.
 
     /// Get the current module path (REPL carry-forward).
     ///
@@ -1243,8 +1263,7 @@ impl CompilerSession {
     /// module — REPL carry-forward state (subst, env, overloads) is lost
     /// on module switch, matching the prior behaviour.
     fn set_current_module(&mut self, path: ModuleFullPath) {
-        let tc = self.tc_env();
-        tc.ensure_module_exists(&path);
+        cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, &path);
         self.current_repl_module = path.clone();
         // Sprint 66 Wave 3a-γ: keep the test-runner state's `current_module`
         // in sync so `discover-tests` (with empty module arg) targets the
@@ -1387,24 +1406,6 @@ impl CompilerSession {
         )
     }
 
-    /// Take a snapshot for REPL error recovery.
-    fn tc_snapshot(&self) -> ReplSnapshot {
-        let tc = self.tc_env();
-        let cs = self.shared.repl_check_state.lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let cs = cs.as_ref().expect("REPL check state must be initialized");
-        tc.snapshot(cs)
-    }
-
-    /// Restore from a snapshot on REPL error.
-    fn tc_restore(&self, snapshot: ReplSnapshot) {
-        let tc = self.tc_env();
-        let mut guard = self.shared.repl_check_state.lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let cs = guard.as_mut().expect("REPL check state must be initialized");
-        tc.restore(cs, snapshot);
-    }
-
     /// Initialize the file watcher for REPL mode (repl/spec.md §14).
     ///
     /// Creates an OS-level file watcher and registers all currently known
@@ -1509,20 +1510,18 @@ impl CompilerSession {
         let (category, scheme, docstring) = match &entry {
             ModuleEntry::Def { scheme, docstring, kind, .. } => {
                 let cat = match kind.as_ref() {
-                    DefKind::SpecialForm { .. } => SymbolCategory::SpecialForm,
-                    DefKind::Primitive { .. } => SymbolCategory::Fn,
+                    DefKind::Constructor { .. } => SymbolCategory::Constructor,
+                    DefKind::Macro { .. } => SymbolCategory::Macro,
                     _ => SymbolCategory::Fn,
                 };
                 (cat, Some(scheme.clone()), docstring.clone())
             }
+            ModuleEntry::SpecialForm { scheme, docstring, .. } =>
+                (SymbolCategory::SpecialForm, Some(scheme.clone()), docstring.clone()),
             ModuleEntry::TypeDef { .. } =>
                 (SymbolCategory::Type, None, None),
-            ModuleEntry::TraitDecl { decl, .. } =>
-                (SymbolCategory::Trait, None, decl.docstring.clone()),
-            ModuleEntry::Constructor { scheme, .. } =>
-                (SymbolCategory::Constructor, Some(scheme.clone()), None),
-            ModuleEntry::Macro { docstring, .. } =>
-                (SymbolCategory::Macro, None, docstring.clone()),
+            ModuleEntry::TraitDecl { docstring, .. } =>
+                (SymbolCategory::Trait, None, docstring.clone()),
             _ => return None,
         };
         let source = self.shared.introspection.get(&fq)
@@ -1549,18 +1548,18 @@ impl CompilerSession {
                 // by `/imports` separately.
                 let (category, scheme, docstring) = match entry {
                     ModuleEntry::Def { scheme, docstring, kind, .. } => {
-                        if matches!(kind.as_ref(), DefKind::SpecialForm { .. }) {
-                            continue;
-                        }
-                        (SymbolCategory::Fn, Some(scheme.clone()), docstring.clone())
+                        let cat = match kind.as_ref() {
+                            DefKind::Constructor { .. } => SymbolCategory::Constructor,
+                            DefKind::Macro { .. } => SymbolCategory::Macro,
+                            _ => SymbolCategory::Fn,
+                        };
+                        (cat, Some(scheme.clone()), docstring.clone())
                     }
                     ModuleEntry::TypeDef { .. } =>
                         (SymbolCategory::Type, None, None),
-                    ModuleEntry::TraitDecl { decl, .. } =>
-                        (SymbolCategory::Trait, None, decl.docstring.clone()),
-                    ModuleEntry::Macro { docstring, .. } =>
-                        (SymbolCategory::Macro, None, docstring.clone()),
-                    ModuleEntry::Import { .. } | ModuleEntry::Reexport { .. } => continue,
+                    ModuleEntry::TraitDecl { docstring, .. } =>
+                        (SymbolCategory::Trait, None, docstring.clone()),
+                    // Special forms + imports are surfaced by `/imports`.
                     _ => continue,
                 };
                 out.push(SymbolInfo {
@@ -1594,7 +1593,7 @@ impl CompilerSession {
         let mut out = Vec::new();
         if let Some(table) = self.shared.symbol_tables.get(module) {
             for (name, entry) in table.all_symbols() {
-                if let ModuleEntry::Import { source } = entry {
+                if let ModuleEntry::Import { source, .. } = entry {
                     out.push(ImportSpec {
                         module_path: source.module.clone(),
                         alias: None,
@@ -1614,17 +1613,10 @@ impl CompilerSession {
         let mut out = Vec::new();
         if let Some(table) = self.shared.symbol_tables.get(module) {
             for (name, entry) in table.all_symbols() {
-                let is_public = match entry {
-                    ModuleEntry::Def { visibility, .. } |
-                    ModuleEntry::TypeDef { visibility, .. } |
-                    ModuleEntry::TraitDecl { visibility, .. } |
-                    ModuleEntry::Macro { visibility, .. } |
-                    ModuleEntry::Constructor { visibility, .. } =>
-                        matches!(visibility, cranelisp_types::Visibility::Public),
-                    ModuleEntry::Reexport { .. } => true,
-                    _ => false,
-                };
-                if is_public {
+                // Uniform per-entry visibility accessor (S70 — covers Def
+                // [incl. macro/constructor kinds], TypeDef, TraitDecl,
+                // SpecialForm, and public-visibility Import re-export edges).
+                if entry.is_public() {
                     out.push((name.clone(), entry.clone()));
                 }
             }
@@ -2261,7 +2253,7 @@ impl CompilerSession {
 
         // Ensure the dep has a CheckState slot the persistent worker can
         // populate via `ensure_module_exists` — idempotent.
-        self.tc_env().ensure_module_exists(dep_module);
+        cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, dep_module);
 
         // Block on the persistent worker pool driving THIS dep (and every
         // transitive dep it blocks on) to inmem_done. Decision 37 §3.1 —
@@ -2483,21 +2475,19 @@ impl CompilerSession {
         Ok(last_result)
     }
 
-    /// Evaluate a single sexp with TC snapshot/restore for error recovery.
+    /// Evaluate a single sexp.
+    ///
+    /// W-Macro (S76, fire B): the no-op `tc_snapshot`/`tc_restore` carrier is
+    /// deleted. The cluster-atomic staging model (Decision 44) is the rollback
+    /// mechanism — a failed form discards its staging table, leaving live
+    /// byte-identical (the snapshot/restore primitives it replaced were already
+    /// no-ops). Errors propagate directly.
     fn eval_one_form(&mut self, sexp: &Sexp) -> Result<Option<EvalResult>, CranelispError> {
         // Bare symbol introspection (macros, special forms).
         if let Some(result) = self.check_bare_symbol_introspection(sexp) {
             return Ok(Some(result));
         }
-
-        let snapshot = self.tc_snapshot();
-        match self.process_single_form(sexp) {
-            Ok(result) => Ok(result),
-            Err(e) => {
-                self.tc_restore(snapshot);
-                Err(e)
-            }
-        }
+        self.process_single_form(sexp)
     }
 
     /// Process a single sexp through `process_module_forms(Additive)` then codegen.
@@ -2516,7 +2506,7 @@ impl CompilerSession {
 
             let result = {
                 // Extract REPL check_state for worker use, restore after.
-                self.tc_env().ensure_module_exists(&module);
+                cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, &module);
                 let repl_cs = self.shared.repl_check_state.lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .take()
@@ -2526,6 +2516,7 @@ impl CompilerSession {
                 let mut wctx = ModuleCompiler {
                     symbol_tables: &self.shared.symbol_tables,
                     next_type_id: &self.shared.next_type_id,
+                    module_aliases: &self.shared.module_aliases,
                     check_state: repl_cs,
                     current_module: module.clone(),
                     scheduler: &self.shared.scheduler,
@@ -2645,41 +2636,21 @@ impl CompilerSession {
         let has_expr = program.iter().any(|tl| matches!(tl, TopLevel::Expr(_)));
 
         if has_expr {
-            let (jit_syms, got_defs) = crate::worker::collect_jit_setup_public(
+            // S76 W-Collapse: REPL expression eval flows through the SAME
+            // unified `compile_to_module` path as every other defn —
+            // `inline_jit_codegen_for_module` (called above) already compiled
+            // the synthetic `__expr` defn into the module's symbol table with
+            // a populated GOT slot + `Code::Jit` lifecycle owner. We read the
+            // GOT address and call it directly; no second hand-rolled JIT.
+            // (`pipeline::compile_and_execute_expr` + its trace twin are
+            // deleted.) The `Arc<Jit>` retention lives on the `__expr` entry's
+            // `Code::Jit`, so the code stays mapped for the duration of the
+            // call + the IO trampoline below.
+            let (value, ty) = crate::pipeline::execute_compiled_expr(
+                check.display.as_ref(),
                 &self.shared.symbol_tables,
                 module,
-            );
-
-            // Build traced_fns from the session's compiled symbols (project-
-            // root modules only, per spec §4.12.3). When the expression has
-            // no `(trace ...)` form, `compile_and_execute_expr` takes the
-            // non-trace JIT path regardless of `traced_fns` length, so this
-            // is a no-op cost beyond the symbol-table scan.
-            //
-            // Sprint 66 Wave 3a-γ: the `cranelisp_trace_format` symbol is
-            // registered as an intrinsic at JIT setup (no extra-symbols
-            // plumbing); the trace display state is set unconditionally so
-            // the intrinsic always has a valid pointer to read.
-            let traced_fns = self.build_traced_fns(module);
-
-            let display_state = TraceDisplayState {
-                symbol_tables: &self.shared.symbol_tables as *const _,
-            };
-            set_trace_display_state(&display_state);
-
-            let result = crate::pipeline::compile_and_execute_expr(
-                &jit_syms,
-                &got_defs,
-                check.display.as_ref(),
-                &traced_fns,
-                &[],
-                &self.shared.symbol_tables,
-                module.clone(),
-            );
-
-            clear_trace_display_state();
-
-            let (value, ty) = result?;
+            )?;
 
             Ok(EvalResult::Val {
                 value,
@@ -2700,7 +2671,16 @@ impl CompilerSession {
             let symbol_name = last.map(|tl| match tl {
                 TopLevel::Defn(d) => d.name.to_string(),
                 TopLevel::TraitDecl(t) => t.name.to_string(),
-                TopLevel::TraitImpl(t) => format!("{}.{}", t.trait_name, t.target_type),
+                TopLevel::TraitImpl(t) => {
+                    // `target` is a `TypeExpr` (no Display); use its head
+                    // TypeRef name for the impl's display label.
+                    let target = t
+                        .target
+                        .head_ref()
+                        .map(|r| r.name.to_string())
+                        .unwrap_or_else(|| "_".to_string());
+                    format!("{}.{}", t.trait_name.name, target)
+                }
                 TopLevel::TypeDef { name, .. } => name.to_string(),
                 TopLevel::Expr(_) => unreachable!("has_expr was false"),
             }).unwrap_or_default();
@@ -2720,80 +2700,10 @@ impl CompilerSession {
         }
     }
 
-    /// Build `TracedFnInfo` for user-defined functions in project-root modules.
-    ///
-    /// Per spec §4.12.3: only modules whose source files are under the project
-    /// root are instrumented. Library modules (via lib search path) are excluded.
-    fn build_traced_fns(
-        &self,
-        _current_module: &ModuleFullPath,
-    ) -> Vec<cranelisp_backend::compiler::TracedFnInfo> {
-        use cranelisp_backend::compiler::TracedFnInfo;
-
-        let mut traced = Vec::new();
-
-        for tp_entry in self.shared.typecheck_products.iter() {
-            let module_path = tp_entry.key();
-            let tp = tp_entry.value();
-
-            // §4.12.3: only trace project-root modules.
-            if let Some(ref fp) = tp.file_path
-                && !fp.starts_with(&self.shared.project_root) {
-                    continue;
-                }
-
-            // G7 (Wave 0): GOT lives on SymbolTable now.
-            let got_base = match self.shared.symbol_tables.get(module_path) {
-                Some(st) => st.got.base_ptr() as i64,
-                None => continue,
-            };
-
-            let symbols = match self.shared.symbol_tables.get(module_path) {
-                Some(st) => st,
-                None => continue,
-            };
-
-            for (name, entry) in symbols.all_symbols() {
-                // Sprint 57 Wave 2 G6: read `code` from the symbol-table entry
-                // (replaces the deleted `codegen_products[module].code` lookup).
-                if let ModuleEntry::Def {
-                    scheme,
-                    kind,
-                    got_slot: Some(slot),
-                    code: Some(c),
-                    ..
-                } = entry
-                {
-                    // Skip constrained polymorphic base names — they're dispatch
-                    // placeholders (e.g. `!=`, `+`, `<`), not directly callable.
-                    if let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref() {
-                        continue;
-                    }
-                    let code_ptr = c.ptr() as i64;
-                    if code_ptr == 0 {
-                        continue;
-                    }
-
-                    let (param_types, result_type) = match &scheme.ty {
-                        Type::Fn(params, ret) => (params.clone(), *ret.clone()),
-                        _ => continue,
-                    };
-
-                    traced.push(TracedFnInfo {
-                        name: format!("{}/{}", module_path.as_ref(), name.as_ref()),
-                        got_base,
-                        got_slot: *slot,
-                        arity: param_types.len(),
-                        code_ptr,
-                        param_types,
-                        result_type,
-                    });
-                }
-            }
-        }
-
-        traced
-    }
+    // `build_traced_fns` — DELETED S76 (FIXME 0256, trace ruling 2026-06-04).
+    // Trace-target discovery is now backend-internal
+    // (`trace_codegen::discover_traced_fns_from_tables`); int no longer
+    // populates a `traced_fns` list nor threads it into the eval path.
 
     // `compile_dep_inline` — deleted Sprint 59 Workstream A §7 Step 5.
     //
@@ -2822,7 +2732,7 @@ impl CompilerSession {
         }
 
         // Check primitive type names: Int, Bool, Float, String (spec §4.1.3).
-        if Type::from_name(name).is_some() {
+        if intrinsic_type_from_name(name).is_some() {
             return Some(EvalResult::Def {
                 symbol: FQSymbol {
                     module: ModuleFullPath::from("primitives"),
@@ -2855,54 +2765,53 @@ impl CompilerSession {
         let fq_module = resolved_module;
 
         match &resolved_entry {
-            ModuleEntry::Macro { clauses, .. } => {
-                // Zero-arg macros should be expanded, not introspected.
-                let has_zero_arg = clauses.iter().any(|c| {
-                    c.params.is_empty() && c.rest_param.is_none()
-                });
-                if has_zero_arg {
-                    return None;
-                }
-                Some(EvalResult::Def {
-                    symbol: FQSymbol { module: fq_module, symbol: Symbol::from(name) },
-                    ty: Type::Int,
-                    warnings: Vec::new(),
-                })
-            }
-            ModuleEntry::Def { kind: _, scheme, .. } => {
-                // Special forms, primitives, and user functions all get
-                // introspection display per spec §4.1.1, §4.1.2.
-                Some(EvalResult::Def {
-                    symbol: FQSymbol { module: fq_module, symbol: Symbol::from(name) },
-                    ty: scheme.ty.clone(),
-                    warnings: Vec::new(),
-                })
-            }
-            ModuleEntry::TypeDef { .. } => {
-                Some(EvalResult::Def {
-                    symbol: FQSymbol { module: fq_module, symbol: Symbol::from(name) },
-                    ty: Type::Int,
-                    warnings: Vec::new(),
-                })
-            }
-            ModuleEntry::TraitDecl { .. } => {
-                Some(EvalResult::Def {
-                    symbol: FQSymbol { module: fq_module, symbol: Symbol::from(name) },
-                    ty: Type::Int,
-                    warnings: Vec::new(),
-                })
-            }
-            ModuleEntry::Constructor { info, .. } => {
-                // Nullary constructors evaluate to values; non-nullary get introspection.
-                if info.fields.is_empty() {
-                    None
-                } else {
+            ModuleEntry::Def { kind, scheme, .. } => match kind.as_ref() {
+                DefKind::Macro { clauses_meta } => {
+                    // Zero-arg macros should be expanded, not introspected.
+                    let has_zero_arg = clauses_meta
+                        .iter()
+                        .any(|c| c.params.is_empty() && c.rest_param.is_none());
+                    if has_zero_arg {
+                        return None;
+                    }
                     Some(EvalResult::Def {
                         symbol: FQSymbol { module: fq_module, symbol: Symbol::from(name) },
                         ty: Type::Int,
                         warnings: Vec::new(),
                     })
                 }
+                DefKind::Constructor { field_count, .. } => {
+                    // Nullary constructors evaluate to values; non-nullary get
+                    // introspection.
+                    if *field_count == 0 {
+                        None
+                    } else {
+                        Some(EvalResult::Def {
+                            symbol: FQSymbol { module: fq_module, symbol: Symbol::from(name) },
+                            ty: Type::Int,
+                            warnings: Vec::new(),
+                        })
+                    }
+                }
+                // Primitives + user functions get introspection display per
+                // spec §4.1.1, §4.1.2.
+                _ => Some(EvalResult::Def {
+                    symbol: FQSymbol { module: fq_module, symbol: Symbol::from(name) },
+                    ty: scheme.ty.clone(),
+                    warnings: Vec::new(),
+                }),
+            },
+            ModuleEntry::SpecialForm { scheme, .. } => Some(EvalResult::Def {
+                symbol: FQSymbol { module: fq_module, symbol: Symbol::from(name) },
+                ty: scheme.ty.clone(),
+                warnings: Vec::new(),
+            }),
+            ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. } => {
+                Some(EvalResult::Def {
+                    symbol: FQSymbol { module: fq_module, symbol: Symbol::from(name) },
+                    ty: Type::Int,
+                    warnings: Vec::new(),
+                })
             }
             _ => None,
         }
@@ -2915,7 +2824,7 @@ impl CompilerSession {
         if name.is_empty() {
             return "usage: /sig <name>".to_string();
         }
-        if Type::from_name(name).is_some() {
+        if intrinsic_type_from_name(name).is_some() {
             return format!("{name} ; type - builtin type");
         }
         match self.current_symbol_table().get(name) {
@@ -2930,19 +2839,12 @@ impl CompilerSession {
             return "usage: /doc <name>".to_string();
         }
         match self.current_symbol_table().get(name) {
-            Some(ModuleEntry::Def { docstring, .. }) |
-            Some(ModuleEntry::Macro { docstring, .. }) => {
-                match docstring {
-                    Some(doc) => format!("{name}: \"{doc}\""),
-                    None => format!("{name}: no docstring"),
-                }
-            }
-            Some(ModuleEntry::TraitDecl { decl, .. }) => {
-                match &decl.docstring {
-                    Some(doc) => format!("{name}: \"{doc}\""),
-                    None => format!("{name}: no docstring"),
-                }
-            }
+            Some(ModuleEntry::Def { docstring, .. })
+            | Some(ModuleEntry::SpecialForm { docstring, .. })
+            | Some(ModuleEntry::TraitDecl { docstring, .. }) => match docstring {
+                Some(doc) => format!("{name}: \"{doc}\""),
+                None => format!("{name}: no docstring"),
+            },
             Some(_) => format!("{name}: no docstring"),
             None => format!("error: unknown symbol '{name}'"),
         }
@@ -2958,25 +2860,24 @@ impl CompilerSession {
 
         for (name, entry) in table_ref.symbols.iter() {
             match entry {
-                ModuleEntry::Def { kind, scheme, .. } => {
-                    if matches!(kind.as_ref(), DefKind::SpecialForm { .. }) {
-                        continue; // Don't list special forms.
+                ModuleEntry::Def { kind, scheme, .. } => match kind.as_ref() {
+                    DefKind::Macro { .. } => macros.push(format!("  {name}")),
+                    // Constructors are part of their type — not listed
+                    // separately.
+                    DefKind::Constructor { .. } => {}
+                    _ => {
+                        let type_str = format!("{}", scheme.ty);
+                        fns.push(format!("  {name} : {type_str}"));
                     }
-                    let type_str = format!("{}", scheme.ty);
-                    fns.push(format!("  {name} : {type_str}"));
-                }
+                },
                 ModuleEntry::TypeDef { .. } => {
                     types.push(format!("  {name}"));
                 }
                 ModuleEntry::TraitDecl { .. } => {
                     traits.push(format!("  {name}"));
                 }
-                ModuleEntry::Macro { .. } => {
-                    macros.push(format!("  {name}"));
-                }
-                // Import, Reexport, Constructor, PlatformDecl, Ambiguous:
-                // not listed (imports are shown by /imports, constructors
-                // are part of their type).
+                // SpecialForm, Import, Ambiguous: not listed (special forms +
+                // imports are shown by /imports).
                 _ => {}
             }
         }
@@ -3090,7 +2991,7 @@ impl CompilerSession {
         if name.is_empty() {
             return "usage: /info <name>".to_string();
         }
-        if Type::from_name(name).is_some() {
+        if intrinsic_type_from_name(name).is_some() {
             return self.format_builtin_type_display(name);
         }
         let entry = match self.current_symbol_table().get(name) {
@@ -3101,8 +3002,10 @@ impl CompilerSession {
         let (resolved_entry, resolved_module) = self.resolve_entry_for_display(&entry, &module);
         let sig = self.format_def_entry(&resolved_entry, name, &resolved_module);
         // Append code info if available.
-        if !matches!(resolved_entry,
-            ModuleEntry::Macro { .. } | ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. })
+        let is_macro = matches!(&resolved_entry,
+            ModuleEntry::Def { kind, .. } if matches!(kind.as_ref(), DefKind::Macro { .. }));
+        if !is_macro
+            && !matches!(resolved_entry, ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. })
             && let Some(intr) = self.get_introspection(name) {
                 let size_str = intr.code_size
                     .map(|s| format!("{s} bytes"))
@@ -3117,9 +3020,7 @@ impl CompilerSession {
         if expr_src.is_empty() {
             return "usage: /type <expr>".to_string();
         }
-        let snapshot = self.tc_snapshot();
         let result = self.typecheck_only(expr_src);
-        self.tc_restore(snapshot);
         match result {
             Ok(ty) => {
                 let display = format_type_qualified(&ty);
@@ -3159,10 +3060,11 @@ impl CompilerSession {
 
         // Ensure the current module exists before the live ClusterContext
         // tries to take a guard on it.
-        self.tc_env().ensure_module_exists(&module);
+        cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, &module);
 
         crate::worker::check_program_compat(
             &self.shared.symbol_tables,
+            &self.shared.module_aliases,
             &module,
             &working_program,
         )?;
@@ -3192,7 +3094,6 @@ impl CompilerSession {
                         docstring: None,
                         variants: vec![DefnVariant {
                             params: vec![],
-                            param_annotations: vec![],
                             body: expr.clone(),
                             span,
                         }],
@@ -3244,9 +3145,7 @@ impl CompilerSession {
             let root = ModuleFullPath::from("");
             if let Some(root_table) = self.shared.symbol_tables.get(&root) {
                 for (sym, entry) in root_table.all_symbols() {
-                    if let ModuleEntry::Def { kind, .. } = entry
-                        && matches!(kind.as_ref(), DefKind::SpecialForm { .. })
-                    {
+                    if matches!(entry, ModuleEntry::SpecialForm { .. }) {
                         special_forms.push(sym.to_string());
                     }
                 }
@@ -3255,16 +3154,9 @@ impl CompilerSession {
             for (sym, entry) in table.all_symbols() {
                 let name = sym.to_string();
                 match entry {
-                    ModuleEntry::Def { kind, .. } => {
-                        if let DefKind::SpecialForm { .. } = kind.as_ref() {
-                            // Defensive — current modules should no longer
-                            // host special forms (they live at root only).
-                            // Skip to avoid double-listing.
-                            continue;
-                        }
-                        // Skip locally-defined fns and primitives
-                    }
-                    ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
+                    // Special forms live at root only (handled above); skip
+                    // any locally-defined fns / primitives.
+                    ModuleEntry::Import { source, .. } => {
                         if name.contains('$') {
                             continue;
                         }
@@ -3276,7 +3168,7 @@ impl CompilerSession {
                             ImportClass::Fn => fns.push(name),
                         }
                     }
-                    _ => {} // locally defined
+                    _ => {} // locally defined / special form
                 }
             }
 
@@ -3302,8 +3194,7 @@ impl CompilerSession {
             let mut names: Vec<String> = Vec::new();
             for (sym, entry) in table.all_symbols() {
                 let source = match entry {
-                    ModuleEntry::Import { source } => source,
-                    ModuleEntry::Reexport { source } => source,
+                    ModuleEntry::Import { source, .. } => source,
                     _ => continue,
                 };
                 let name = sym.to_string();
@@ -3333,10 +3224,16 @@ impl CompilerSession {
     fn classify_import(&self, source: &FQSymbol) -> ImportClass {
         match self.resolve_to_definition(source) {
             Some(entry) => match entry {
-                ModuleEntry::Macro { .. } => ImportClass::Macro,
+                ModuleEntry::Def { kind, .. } if matches!(kind.as_ref(), DefKind::Macro { .. }) => {
+                    ImportClass::Macro
+                }
+                ModuleEntry::Def { kind, .. }
+                    if matches!(kind.as_ref(), DefKind::Constructor { .. }) =>
+                {
+                    ImportClass::Constructor
+                }
                 ModuleEntry::TraitDecl { .. } => ImportClass::Trait,
                 ModuleEntry::TypeDef { .. } => ImportClass::Type,
-                ModuleEntry::Constructor { .. } => ImportClass::Constructor,
                 _ => ImportClass::Fn,
             },
             None => ImportClass::Fn,
@@ -3353,7 +3250,7 @@ impl CompilerSession {
                 table.get(&current_name)?.clone()
             };
             match &entry {
-                ModuleEntry::Import { source: next } | ModuleEntry::Reexport { source: next } => {
+                ModuleEntry::Import { source: next, .. } => {
                     current_module = next.module.clone();
                     current_name = next.symbol.to_string();
                 }
@@ -3388,7 +3285,7 @@ impl CompilerSession {
         let mut fns: Vec<String> = Vec::new();
 
         for (sym, entry) in table.all_symbols() {
-            if matches!(entry, ModuleEntry::Import { .. } | ModuleEntry::Reexport { .. }) {
+            if matches!(entry, ModuleEntry::Import { .. }) {
                 continue;
             }
             if !entry.is_public() {
@@ -3404,14 +3301,17 @@ impl CompilerSession {
                 continue;
             }
             match entry {
-                ModuleEntry::Macro { .. } => macros.push(name),
-                ModuleEntry::TraitDecl { .. } => traits.push(name),
-                ModuleEntry::TypeDef { .. } | ModuleEntry::Constructor { .. } => types.push(name),
-                ModuleEntry::Def { kind, .. }
-                    if !matches!(kind.as_ref(), DefKind::SpecialForm { .. }) =>
-                {
-                    fns.push(name);
+                ModuleEntry::Def { kind, .. } if matches!(kind.as_ref(), DefKind::Macro { .. }) => {
+                    macros.push(name)
                 }
+                ModuleEntry::Def { kind, .. }
+                    if matches!(kind.as_ref(), DefKind::Constructor { .. }) =>
+                {
+                    types.push(name)
+                }
+                ModuleEntry::TraitDecl { .. } => traits.push(name),
+                ModuleEntry::TypeDef { .. } => types.push(name),
+                ModuleEntry::Def { .. } => fns.push(name),
                 _ => {}
             }
         }
@@ -3462,32 +3362,50 @@ impl CompilerSession {
     fn compile_pending_macros(&mut self) -> Result<(), CranelispError> {
         use crate::worker::ModuleCheckAccumulator;
 
-        // Collect macro names + sexps that need compilation.
+        // Collect macro names + sexps that need compilation. S70/W-Absorb:
+        // macros are `Def { kind: DefKind::Macro { clauses_meta } }`; the
+        // defining `sexp` lives on the int-layer `Introspection` record
+        // (Decision 41), keyed by `FQSymbol`, not on the symbol-table entry.
+        let module = self.current_module_path();
         let mut to_compile: Vec<(Symbol, Sexp)> = Vec::new();
         {
             let table = self.current_symbol_table();
             for (sym, entry) in table.all_symbols() {
-                if let ModuleEntry::Macro { clauses, sexp: Some(sexp), .. } = entry {
-                    let name = Symbol::from(sym.as_ref());
-                    let module = self.current_module_path();
-                    let needs_compile = clauses.iter().enumerate().any(|(idx, _)| {
-                        let clause_name = Symbol::from(
-                            format!("__macro_{}_clause_{}", name, idx),
-                        );
-                        // Sprint 57 Wave 2 G6: check `ModuleEntry::Def.code`
-                        // on the symbol table (replaces the deleted
-                        // `codegen_products` lookup).
-                        let compiled = self.shared.symbol_tables.get(&module)
-                            .and_then(|t| match t.get(clause_name.as_ref())? {
-                                ModuleEntry::Def { code, .. } => Some(code.is_some()),
-                                _ => None,
-                            })
-                            .unwrap_or(false);
-                        !compiled
-                    });
-                    if needs_compile {
-                        to_compile.push((name, sexp.clone()));
-                    }
+                let ModuleEntry::Def { kind, .. } = entry else {
+                    continue;
+                };
+                let DefKind::Macro { clauses_meta } = kind.as_ref() else {
+                    continue;
+                };
+                let name = Symbol::from(sym.as_ref());
+                let fq = FQSymbol {
+                    module: module.clone(),
+                    symbol: name.clone(),
+                };
+                let Some(sexp) = self
+                    .shared
+                    .introspection
+                    .get(&fq)
+                    .and_then(|i| i.sexp.clone())
+                else {
+                    continue;
+                };
+                let needs_compile = clauses_meta.iter().enumerate().any(|(idx, _)| {
+                    let clause_name =
+                        Symbol::from(format!("__macro_{}_clause_{}", name, idx));
+                    let compiled = self
+                        .shared
+                        .symbol_tables
+                        .get(&module)
+                        .and_then(|t| match t.get(clause_name.as_ref())? {
+                            ModuleEntry::Def { code, .. } => Some(code.is_some()),
+                            _ => None,
+                        })
+                        .unwrap_or(false);
+                    !compiled
+                });
+                if needs_compile {
+                    to_compile.push((name, sexp));
                 }
             }
         }
@@ -3497,7 +3415,7 @@ impl CompilerSession {
             let info = cranelisp_frontend::parse_defmacro(sexp)?;
             let mut accumulator = ModuleCheckAccumulator::new();
 
-            self.tc_env().ensure_module_exists(&module);
+            cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, &module);
             let repl_cs = self.shared.repl_check_state.lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .take()
@@ -3507,6 +3425,7 @@ impl CompilerSession {
             let mut wctx = ModuleCompiler {
                 symbol_tables: &self.shared.symbol_tables,
                 next_type_id: &self.shared.next_type_id,
+                module_aliases: &self.shared.module_aliases,
                 check_state: repl_cs,
                 current_module: module.clone(),
                 scheduler: &self.shared.scheduler,
@@ -3546,6 +3465,7 @@ impl CompilerSession {
         let module = self.current_module_path();
         let mut resolver = ReadOnlyMacroResolver {
             symbol_tables: &self.shared.symbol_tables,
+            module_aliases: &self.shared.module_aliases,
             current_module: module,
         };
         crate::expander::expand_sexp_recursive(sexp, &mut resolver, 0)
@@ -3735,10 +3655,7 @@ impl CompilerSession {
         let root = ModuleFullPath::from("");
         let table = self.shared.symbol_tables.get(&root)?;
         match table.get(name)? {
-            ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-                DefKind::SpecialForm { description } => Some(description.clone()),
-                _ => None,
-            },
+            ModuleEntry::SpecialForm { description, .. } => Some(description.clone()),
             _ => None,
         }
     }
@@ -3790,7 +3707,7 @@ impl CompilerSession {
             // Mirrors the pipeline path's `unwrap_io_inline` in pipeline.rs
             // and the extern `cranelisp_run_io` entry in runtime::io.
             cranelisp_intrinsics::drop::consume_io_tree(raw_value);
-            let inner_type = result_type.io_inner_type();
+            let inner_type = result_type.unwrap_io().clone();
             Ok((inner_value, inner_type))
         } else {
             Ok((raw_value, result_type))
@@ -3806,11 +3723,19 @@ impl CompilerSession {
     ) -> Result<*const u8, CranelispError> {
         let module_path = ModuleFullPath::from(module_name);
 
+        // GOT is the single source of callable addresses (D41/D35); read
+        // `main`'s pointer from its GOT slot rather than a `Code::ptr`.
         if let Some(table) = self.shared.symbol_tables.get(&module_path)
-            && let Some(ModuleEntry::Def { code: Some(c), .. }) =
-                table.get(main_sym.as_ref())
+            && let Some(ModuleEntry::Def {
+                code: Some(_),
+                got_slot: Some(slot),
+                ..
+            }) = table.get(main_sym.as_ref())
         {
-            return Ok(c.ptr());
+            let ptr = table.got.load_slot(*slot);
+            if !ptr.is_null() {
+                return Ok(ptr);
+            }
         }
 
         Err(CranelispError::ModuleError {
@@ -4097,7 +4022,7 @@ impl CompilerSession {
                 let module = &symbol.module;
 
                 // Builtin type names (Int, Bool, etc.) from primitives module.
-                if module.as_ref() == "primitives" && Type::from_name(name).is_some() {
+                if module.as_ref() == "primitives" && intrinsic_type_from_name(name).is_some() {
                     return self.format_builtin_type_display(name);
                 }
 
@@ -4129,7 +4054,7 @@ impl CompilerSession {
                     // tree afterwards. See `pipeline::unwrap_io_inline`.
                     let inner_value = cranelisp_intrinsics::run_io_trampoline(*value);
                     cranelisp_intrinsics::drop::consume_io_tree(*value);
-                    let inner_type = ty.io_inner_type();
+                    let inner_type = ty.unwrap_io().clone();
                     format_result_value(
                         inner_value, &inner_type, &self.shared.symbol_tables,
                     )
@@ -4151,21 +4076,35 @@ impl CompilerSession {
     ) -> String {
         match entry {
             ModuleEntry::Def { scheme, kind, docstring, .. } => {
-                if let DefKind::SpecialForm { description } = kind.as_ref() {
-                    return format_special_form_display(name, description);
-                }
-                // Multi-sig: emit one line per variant per repl/spec.md
-                // §1.3 + §4.1.1. Defensive fallback to single-line shape
-                // when `variants` is empty (typecheck invariant: an
-                // Overloaded entry should always have ≥1 variant; the
-                // empty case would be a typecheck bug, not a display
-                // failure).
-                if let DefKind::Overloaded { variants } = kind.as_ref()
-                    && !variants.is_empty()
-                {
-                    return format_overloaded_variants(
-                        name, module, variants, docstring.as_deref(),
-                    );
+                match kind.as_ref() {
+                    // Multi-sig: emit one line per variant per repl/spec.md
+                    // §1.3 + §4.1.1.
+                    DefKind::Overloaded { variants } if !variants.is_empty() => {
+                        return format_overloaded_variants(
+                            name, module, variants, docstring.as_deref(),
+                        );
+                    }
+                    DefKind::Constructor { type_name, .. } => {
+                        let type_str = format_type_qualified(&scheme.ty);
+                        let tn = TypeName::from(type_name.name.as_ref());
+                        let ctor_display = {
+                            let scope = self.current_module_path();
+                            if let Some(info) = cranelisp_types::lookup_type_def_chain(
+                                &self.shared.symbol_tables, &scope, &tn,
+                            ) {
+                                crate::display::format_ctor_display(&tn, name, &info)
+                            } else {
+                                format!("{type_name}.{name}")
+                            }
+                        };
+                        return format!(":{type_str} {module}/{ctor_display} ; deftype");
+                    }
+                    DefKind::Macro { clauses_meta } => {
+                        return format_macro_display(
+                            name, clauses_meta, docstring.as_deref(), module,
+                        );
+                    }
+                    _ => {}
                 }
                 let base = if !scheme.constraints.is_empty() {
                     format_scheme_display(name, scheme, module)
@@ -4181,29 +4120,14 @@ impl CompilerSession {
                 let base = format!("{base} ; {classification}");
                 append_docstring_comment(base, docstring.as_deref())
             }
-            ModuleEntry::Constructor { type_name, scheme, .. } => {
-                let type_str = format_type_qualified(&scheme.ty);
-                let tn = TypeName::from(type_name.name.as_ref());
-                let ctor_display = {
-                    let scope = self.current_module_path();
-                    if let Some(info) = cranelisp_types::lookup_type_def_chain(
-                        &self.shared.symbol_tables, &scope, &tn,
-                    ) {
-                        crate::display::format_ctor_display(&tn, name, &info)
-                    } else {
-                        format!("{type_name}.{name}")
-                    }
-                };
-                format!(":{type_str} {module}/{ctor_display} ; deftype")
+            ModuleEntry::SpecialForm { description, .. } => {
+                format_special_form_display(name, description)
             }
             ModuleEntry::TypeDef { .. } => {
                 self.format_type_display(name, module)
             }
-            ModuleEntry::TraitDecl { decl, .. } => {
-                self.format_trait_display(name, decl.docstring.as_deref())
-            }
-            ModuleEntry::Macro { clauses, docstring, .. } => {
-                format_macro_display(name, clauses, docstring.as_deref(), module)
+            ModuleEntry::TraitDecl { docstring, .. } => {
+                self.format_trait_display(name, docstring.as_deref())
             }
             _ => {
                 // TraitImpl entries have `Trait.Type` symbol names and
@@ -4247,8 +4171,7 @@ impl CompilerSession {
         let mut cur_module = current_module.clone();
         for _ in 0..MAX_DEPTH {
             match &cur_entry {
-                ModuleEntry::Import { source }
-                | ModuleEntry::Reexport { source } => {
+                ModuleEntry::Import { source, .. } => {
                     match self.shared.symbol_tables.get(&source.module) {
                         Some(module_table) => {
                             match module_table.get(source.symbol.as_ref()) {
@@ -4283,7 +4206,10 @@ impl CompilerSession {
         if let Some(info) = cranelisp_types::lookup_type_def_chain(
             &self.shared.symbol_tables, &scope, &tn,
         ) && !info.constructors.is_empty() {
-            let names: Vec<&str> = info.constructors.iter().map(|c| c.name.as_ref()).collect();
+            // `TypeDefInfo.constructors` is now `Vec<Symbol>` (S70 — the
+            // `ConstructorInfo` struct retired; ctor metadata lives on each
+            // ctor's `DefKind::Constructor` entry).
+            let names: Vec<&str> = info.constructors.iter().map(|c| c.as_ref()).collect();
             result.push_str(&format_related_section("match", &names));
         }
         let trait_names = cranelisp_types::get_impls_for_type_chain(
@@ -4674,6 +4600,7 @@ fn compile_module_object(
         module.clone(),
         &names,
         &shared.symbol_tables,
+        &shared.module_aliases,
         &mut obj_module,
     ) {
         Ok(_result) => {
@@ -4784,9 +4711,12 @@ fn discover_test_names(
             continue;
         }
         match entry {
-            ModuleEntry::Def { param_names, code: Some(c), .. }
-                if param_names.is_empty() && !c.ptr().is_null() =>
-            {
+            ModuleEntry::Def {
+                param_names,
+                code: Some(_),
+                got_slot: Some(slot),
+                ..
+            } if param_names.is_empty() && !symbols.got.load_slot(*slot).is_null() => {
                 names.push(format!("{}/{}", module.as_ref(), name.as_ref()));
             }
             _ => continue,
@@ -4815,11 +4745,22 @@ fn run_test_by_name(
     };
     let module = ModuleFullPath::from(module_str);
 
-    // Look up code pointer from the symbol-table entry.
+    // Look up the code pointer from the entry's GOT slot (D41/D35 — GOT is
+    // the single source of callable addresses; no `Code::ptr`).
     let code_ptr = tc_modules.get(&module).and_then(|t| {
-        match t.get(bare_name)? {
-            ModuleEntry::Def { code: Some(c), .. } => Some(c.ptr()),
-            _ => None,
+        let ModuleEntry::Def {
+            code: Some(_),
+            got_slot: Some(slot),
+            ..
+        } = t.get(bare_name)?
+        else {
+            return None;
+        };
+        let ptr = t.got.load_slot(*slot);
+        if ptr.is_null() {
+            None
+        } else {
+            Some(ptr)
         }
     });
 
@@ -4931,67 +4872,33 @@ pub(crate) fn set_test_runner_state(state: &TestRunnerState) {
 /// registered via syntactic scans of each program — see the FIXME 0178 filed
 /// alongside this change.
 ///
-/// The thread-local state these intrinsics read (`TestRunnerState`,
-/// `TraceDisplayState`) is set just-in-time by the REPL eval path; the
-/// intrinsics themselves null-check the pointer and return harmless defaults
-/// when absent.
-pub(crate) fn int_intrinsics() -> [(&'static str, *const u8); 14] {
+/// The thread-local state these intrinsics read (`TestRunnerState`) is set
+/// just-in-time by the REPL eval path; the intrinsics themselves null-check
+/// the pointer and return harmless defaults when absent.
+///
+/// S76 (FIXME 0256): the entire trace family (12 `cranelisp_trace_*` bodies +
+/// the `cranelisp_trace_format` descriptor formatter) left int — they now live
+/// in `cranelisp_intrinsics::trace`, are published via `intrinsics_table()`,
+/// and are registered by `Jit::new(symbol_tables)`. This table reduced from 14
+/// entries to the 2 PARKED test intrinsics (`discover-tests` / `run-test`).
+/// These two are NOT in `intrinsics_table()` (parked, int-hosted REPL-handler
+/// fns) — they remain int-side JIT-emitted-call targets for compiled programs
+/// that contain literal `(discover-tests)` / `(run-test ...)` forms. See
+/// FIXME 0261 for the `Jit::new` extension-point gap that means these two
+/// cannot be folded into `Jit::new` today.
+///
+/// W-Absorb (S76): currently uncalled — the W-Collapse realignment routed
+/// JIT construction through `worker::build_session_jit` → `Jit::new`, which
+/// has no extension point for these parked int-hosted intrinsics (FIXME 0261).
+/// Re-wiring is fire B / backend (the `Jit::new` extension point). Allowed
+/// dead pending that; the transitive helpers (`discover_tests_extern`,
+/// `run_test_extern`, and their `alloc_*` / `test_outcome_to_heap` /
+/// `format_value` callees) are reachable only through this root.
+#[allow(dead_code)]
+pub(crate) fn int_intrinsics() -> [(&'static str, *const u8); 2] {
     [
         ("discover-tests", discover_tests_extern as *const u8),
         ("run-test", run_test_extern as *const u8),
-        // `cranelisp_trace_format` is int-hosted (REPL session has access to
-        // the TypeChecker for proper display dispatch; `crate::trace`'s body
-        // is the unit-test fallback only).
-        ("cranelisp_trace_format", repl_trace_format as *const u8),
-        // Sprint 67 Wave 4 — Decision 40 Path B1: the 12 `cranelisp_trace_*`
-        // JIT-emitted-call targets relocate from `cranelisp-intrinsics::trace`
-        // to int. Backend's 12 IntrinsicSymbol entries delete in the same
-        // change-set (FIXME 0197); int hosting + registration are this fire
-        // (FIXME 0202).
-        (
-            "cranelisp_trace_enter",
-            crate::trace::cranelisp_trace_enter as *const u8,
-        ),
-        (
-            "cranelisp_trace_exit",
-            crate::trace::cranelisp_trace_exit as *const u8,
-        ),
-        (
-            "cranelisp_trace_swap_got",
-            crate::trace::cranelisp_trace_swap_got as *const u8,
-        ),
-        (
-            "cranelisp_trace_restore_got",
-            crate::trace::cranelisp_trace_restore_got as *const u8,
-        ),
-        (
-            "cranelisp_collect_trace",
-            crate::trace::cranelisp_collect_trace as *const u8,
-        ),
-        (
-            "cranelisp_trace_first_child_nanos",
-            crate::trace::cranelisp_trace_first_child_nanos as *const u8,
-        ),
-        (
-            "cranelisp_trace_name",
-            crate::trace::cranelisp_trace_name as *const u8,
-        ),
-        (
-            "cranelisp_trace_params",
-            crate::trace::cranelisp_trace_params as *const u8,
-        ),
-        (
-            "cranelisp_trace_result",
-            crate::trace::cranelisp_trace_result as *const u8,
-        ),
-        (
-            "cranelisp_trace_children",
-            crate::trace::cranelisp_trace_children as *const u8,
-        ),
-        (
-            "cranelisp_trace_nanos",
-            crate::trace::cranelisp_trace_nanos as *const u8,
-        ),
     ]
 }
 
@@ -5124,50 +5031,13 @@ unsafe fn test_outcome_to_heap(outcome: &TestOutcome) -> i64 { unsafe {
 // Trace display support (repl/spec.md §4.12)
 // ---------------------------------------------------------------------------
 
-/// Thread-local display state for `repl_trace_format`. Set before JIT
-/// evaluation of a trace expression, cleared after.
-pub(crate) struct TraceDisplayState {
-    symbol_tables: *const dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
-}
-
-// Only accessed via thread-local Cell (never crosses threads).
-unsafe impl Send for TraceDisplayState {}
-
-thread_local! {
-    static TRACE_DISPLAY: std::cell::Cell<*const TraceDisplayState> =
-        const { std::cell::Cell::new(std::ptr::null()) };
-}
-
-/// Set trace display state before evaluating a trace expression.
-pub(crate) fn set_trace_display_state(state: &TraceDisplayState) {
-    TRACE_DISPLAY.with(|c| c.set(state as *const _));
-}
-
-/// Clear trace display state after evaluation.
-pub fn clear_trace_display_state() {
-    TRACE_DISPLAY.with(|c| c.set(std::ptr::null()));
-}
-
-/// JIT-callable trace format: formats a runtime value using the session's
-/// type definitions. Registered as a JIT symbol to override the runtime's
-/// fallback `cranelisp_trace_format`.
-extern "C" fn repl_trace_format(val: i64, type_ptr: i64) -> i64 {
-    TRACE_DISPLAY.with(|c| {
-        let state_ptr = c.get();
-        let s = if state_ptr.is_null() {
-            "?".to_string()
-        } else {
-            // SAFETY: state_ptr set by set_trace_display_state, valid for
-            // the duration of the JIT expression execution. type_ptr was
-            // leaked by trace_codegen (valid for program lifetime).
-            let state = unsafe { &*state_ptr };
-            let symbol_tables = unsafe { &*state.symbol_tables };
-            let ty = unsafe { &*(type_ptr as *const Type) };
-            crate::display::format_value(val, ty, symbol_tables)
-        };
-        cranelisp_intrinsics::heap_string::alloc_string(s.as_bytes()) as i64
-    })
-}
+// `TraceDisplayState` / `TRACE_DISPLAY` / `set_trace_display_state` /
+// `clear_trace_display_state` / `repl_trace_format` — DELETED S76 (FIXME 0256,
+// trace ruling 2026-06-04). The trace value-formatter is now the pure
+// descriptor-driven `cranelisp_intrinsics::trace::cranelisp_trace_format`
+// (codegen bakes a self-contained `DisplayDescriptor`; no session state). int
+// hosts no trace-display state. `src/display.rs::format_result_value` (REPL
+// result display) is untouched and stays.
 
 // ---------------------------------------------------------------------------
 // Sprint 57 Wave 4 G9 — persistent worker lifecycle tests
@@ -5655,22 +5525,15 @@ mod format_entry_sig_tests {
         ty: Type,
         docstring: Option<String>,
     ) -> ModuleEntry<Code> {
-        ModuleEntry::Def {
-            scheme: Scheme {
-                vars: vec![],
-                constraints: StdHashMap::new(),
-                ty,
-            },
-            visibility: Visibility::Public,
-            docstring,
-            param_names: vec![],
-            kind: Box::new(DefKind::UserFn { constrained_fn: None }),
-            callees: Vec::new(),
-            got_slot: None,
-            trait_origin: None,
-            ast: None,
-            code: None,
+        let mut builder = ModuleEntry::def(
+            Scheme { type_vars: vec![], constraints: StdHashMap::new(), ty },
+            DefKind::UserFn { constrained_fn: None },
+        )
+        .visibility(Visibility::Public);
+        if let Some(doc) = docstring {
+            builder = builder.docstring(doc);
         }
+        builder.build()
     }
 
     // spec: repl/spec.md §1.1 — "; classification - docstring-first-line"
@@ -5741,32 +5604,21 @@ mod format_entry_sig_tests {
 #[cfg(test)]
 mod bare_primitive_value_path_tests {
     use super::*;
-    use cranelisp_types::{DefKind, ModuleEntry, PrimitiveKind, Scheme, Symbol, Type, Visibility,
-    };
+    use cranelisp_types::{DefKind, ModuleEntry, Scheme, Symbol, Type, Visibility};
     use std::collections::HashMap as StdHashMap;
 
     /// Build a `ModuleEntry::Def` for a primitive (matches how
     /// `register_builtins` seeds `primitives/add-i64`).
     fn mk_primitive_def(ty: Type, docstring: Option<&str>) -> ModuleEntry<Code> {
-        ModuleEntry::Def {
-            scheme: Scheme {
-                vars: vec![],
-                constraints: StdHashMap::new(),
-                ty,
-            },
-            visibility: Visibility::Public,
-            docstring: docstring.map(String::from),
-            param_names: vec![],
-            kind: Box::new(DefKind::Primitive {
-                primitive_kind: PrimitiveKind::Inline,
-                jit_name: None,
-            }),
-            callees: Vec::new(),
-            got_slot: None,
-            trait_origin: None,
-            ast: None,
-            code: None,
+        let mut builder = ModuleEntry::def(
+            Scheme { type_vars: vec![], constraints: StdHashMap::new(), ty },
+            DefKind::Primitive,
+        )
+        .visibility(Visibility::Public);
+        if let Some(doc) = docstring {
+            builder = builder.docstring(doc);
         }
+        builder.build()
     }
 
     /// Fresh session with empty lib_dirs and a temp project_root so no
@@ -5819,11 +5671,12 @@ mod bare_primitive_value_path_tests {
         if let Some(mut st) = s.shared.symbol_tables.get_mut(&prelude) {
             st.insert(
                 Symbol::from(primitive_name),
-                ModuleEntry::Reexport {
+                ModuleEntry::Import {
                     source: FQSymbol {
                         module: primitives.clone(),
                         symbol: Symbol::from(primitive_name),
                     },
+                    visibility: Visibility::Public,
                 },
             );
         }
@@ -5837,6 +5690,7 @@ mod bare_primitive_value_path_tests {
                         module: prelude.clone(),
                         symbol: Symbol::from(primitive_name),
                     },
+                    visibility: Visibility::Private,
                 },
             );
         }
