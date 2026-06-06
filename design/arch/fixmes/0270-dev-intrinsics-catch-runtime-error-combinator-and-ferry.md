@@ -46,6 +46,19 @@ codegen change (calling a language closure from intrinsic code is established as
      join-side first-error re-raise.
    - **First-error-wins** matches sequential semantics (first panic aborts the whole
      expression); aggregation is rejected.
+5. **Panic-unwind trace-guard cleanup (folded in 2026-06-06 — user-decided; was 0258
+   NOTE-2 / S76 Wave-1.5 gate review).** When a panic crosses the trace bracket, the
+   trace state must not stay stuck: clear `TRACE_BODY_RUNNING` and release the trace
+   role (`TRACE_THREAD_ID` CAS owner) before the error propagates — otherwise the next
+   same-thread `(trace …)` spuriously raises "nested trace". Same panic-hygiene
+   discipline as the ferry, one layer up (`crates/cranelisp-intrinsics/src/trace.rs` —
+   the guard set/clear sites: `cranelisp_trace_enter` / `cranelisp_collect_trace`).
+   Mechanism is /dev's call (a check in the error path of `collect_trace`, an
+   unwind-safe cleanup around the body-call sites, or guard-clear inside the combinator
+   when the slot is found set — note the combinator and the trace guard are both
+   intrinsics-owned thread-locals, so the cleanup can be wholly in-crate). Pre-existing
+   stuck-owner class (the role CAS had the same hole) — being repaired here because
+   this change-set already owns the panic/slot discipline.
 
 ## Acceptance
 
@@ -57,6 +70,9 @@ codegen change (calling a language closure from intrinsic code is established as
   when this lands.
 - `RUNTIME_ERROR` thread-local is left clean after each combinator call (the RC
   mid-panic indeterminacy caveat is documented, not fixed).
+- Trace-guard cleanup: `(trace (panicking-fn))` followed by `(trace (ok-fn))` on the
+  same thread works — no spurious nested-trace error. /qa's e2e for this shape joins
+  the 0258/0272 batch (landing failing ahead of this fix is fine — repros-join-suite).
 - Workspace green; intrinsics `public-api.txt` regenerated (`intrinsics_table()` content
   changes but its signature does not — confirm baseline delta is only the entry, if any
   surfaces).

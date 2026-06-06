@@ -60,12 +60,14 @@ test work:
   raise "nested trace". Same stuck-owner class as the pre-existing role CAS; no RAII cleanup exists.
   Add a test (or document the limitation with a failing-not-ignored test if it is judged a defect):
   `(trace (panicking-fn))` followed by a fresh `(trace (ok-fn))` on the same REPL thread.
-- **(NOTE-4) `--link` baked-address risk — verify before declaring §4.12.9 satisfied.** The trace
-  wrapper bakes `code_ptr`/`got_base` as codegen-time absolute `iconst`s read from the live GOT. Valid
-  for REPL/`--run`; for `--link` standalone binaries those addresses belong to the compiling process.
-  The descriptor blob is position-independent (fine), but the baked code/GOT addresses may not be.
-  Item 2's linked-binary e2e is the decisive test — if it fails, the defect goes to /dev (backend)
-  with the repro (object-mode wrapper must reference code/GOT via relocations, not baked `iconst`s).
+- **(NOTE-4) `--link` baked-address risk — CONFIRMED at runtime (2026-06-06 /sprint probe) and
+  user-decided FIX IN-SPRINT.** The linked trace binary (match-consumption shape) builds, links, and
+  **SIGBUSes (exit 138)** — the baked compiling-process addresses are the cause. The fix is FIXME
+  **0275** (/dev backend — object-mode relocations per the descriptor-blob template). Item 2's
+  linked-binary e2e lands FAILING first (repros-join-suite) and is 0275's acceptance. A SECOND
+  defect blocks the accessor-consumption shape (`can't resolve symbol nanos` + session park) —
+  FIXME **0276** carries its repros; don't conflate the two when authoring item 2 (use the
+  match-consumption shape for the 0275 acceptance test, the accessor shape for 0276's).
 
 ## Operational implication / Context
 
