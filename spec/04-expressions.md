@@ -724,7 +724,8 @@ Instrumentation applies to **every named function that is compiled with an entry
 
 The following are NOT instrumented: [R4 S76]
 
-- **Inline primitives**: Arithmetic, comparison, and boolean operations that compile to inline instructions have no callable entry point and cannot be intercepted. This is the only category that is structurally invisible.
+- **Inline primitives**: Arithmetic, comparison, and boolean operations that compile to inline instructions have no callable entry point and cannot be intercepted. This category is structurally invisible.
+- **Host-promised extern and intrinsic-backed `primitives` entries**: `primitives`-module entries whose body is a host-supplied extern or runtime intrinsic (e.g. `discover-tests`, `catch-runtime-error`) hold no indirection-table slot of their own — a call to them has no slot to redirect — so they are likewise structurally untraceable. (Note: the *callables that `discover-tests` returns* are ordinary fn values reached through the indirection table, and so ARE traced when invoked; it is only the `discover-tests`/`catch-runtime-error` entries themselves that are untraceable.)
 - **Anonymous lambdas**: Closures created by `fn` expressions do not have named entries in the indirection table and are not individually traced. Their effects appear as part of the enclosing traced function's execution.
 
 ### 4.12.4 The Trace ADT [Tested tests/ring4_trace::trace_field_name_returns_string]

@@ -58,6 +58,7 @@ pub cranelisp_types::DefKind::Overloaded::variants: alloc::vec::Vec<cranelisp_ty
 pub cranelisp_types::DefKind::PlatformEffect
 pub cranelisp_types::DefKind::PlatformEffect::scheduling_class: cranelisp_types::SchedulingClass
 pub cranelisp_types::DefKind::Primitive
+pub cranelisp_types::DefKind::PrimitiveExtern
 pub cranelisp_types::DefKind::UserFn
 pub cranelisp_types::DefKind::UserFn::constrained_fn: core::option::Option<alloc::boxed::Box<cranelisp_types::ConstrainedFn>>
 impl core::marker::Freeze for cranelisp_types::DefKind

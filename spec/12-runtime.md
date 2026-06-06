@@ -150,6 +150,8 @@ A binding is independent if its free variables do not include any name bound ear
 
 Lenient evaluation is semantically transparent — programs MUST NOT depend on whether any particular binding is parallelized. An implementation MAY provide an opt-out mechanism (e.g., an environment variable) for debugging purposes.
 
+A runtime error (§12.7) raised while evaluating any binding — whether evaluated sequentially or in parallel — MUST propagate as if the bindings were evaluated sequentially: the first such error aborts the whole `let` expression. An implementation that evaluates bindings on separate threads MUST therefore convey a worker-thread error back to the joining thread; a parallelised binding's panic MUST NOT be silently discarded. This is what makes the observational-equivalence promise above hold for panics, and it is what lets a `catch-runtime-error` bracket (§12.7.2) enclosing a lenient `let` observe a panic raised in any of its parallelised bindings. The same propagation rule applies to the structured fork-join of automatic `IO` scheduling (§10.12). [R4 S77 — defect repro S76]
+
 ## 12.5 Tail Call Optimization [Tested+Neg tests/ring0.rs::tco_deep_countdown]
 
 Implementations SHOULD optimize self-recursive tail calls into loops. A tail call is a function call in tail position — the last operation before the function returns.
@@ -191,7 +193,7 @@ The following are compile-time errors:
 
 ### 12.7.2 Runtime Panics [Tested]
 
-A **runtime panic** terminates the current evaluation. It does NOT terminate the process in REPL mode (see §12.7.4). There is no mechanism for user code to catch or recover from a runtime panic — it is unconditionally fatal to the expression being evaluated.
+A **runtime panic** terminates the current evaluation. It does NOT terminate the process in REPL mode (see §12.7.4). The panicked evaluation itself cannot resume — it is unconditionally fatal to the expression being evaluated, and any heap values it had partially produced are in an indeterminate state (their drop glue did not run). User code MAY, however, **observe** a runtime panic as a value rather than letting it abort the enclosing computation, by bracketing the risky work in the `catch-runtime-error` combinator (`(Fn [(Fn [] a)] (Result a String))`, see [Appendix A.3](appendix-a-builtins.md#test-discovery-and-error-capture)): the combinator invokes a thunk and returns `(Err message)` if it panicked or `(Ok result)` otherwise. This recovers the panic *message*, not a consistent heap from the aborted thunk — an `(Err …)` result means the bracketed evaluation is void. Only language-level panics (the §12.7.2.1 sources, lowered to a `runtime/panic` call) are observable this way; hardware signals are not (see §12.7.2.1). [R4 S77 — tested-by /qa]
 
 #### 12.7.2.1 Panic Sources [Tested]
 

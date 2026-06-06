@@ -1127,7 +1127,10 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         ///
         /// `got_slot: None` indicates non-callable, non-addressable entries
         /// (special forms, `Overloaded` base entries, `TypeDef` /
-        /// `TraitDecl` / `Macro`, constrained-fn templates).
+        /// `TraitDecl` / `Macro`, constrained-fn templates, and
+        /// `DefKind::PrimitiveExtern` host-promised externs — the key IS the
+        /// ABI name a host promises at JIT-finalize via `Jit::define_symbol`;
+        /// a call resolves `Linkage::Import`, never GOT-indirect).
         got_slot: Option<usize>,
         /// Trait-method origin (Sprint 56 Decision 21). `Some(trait)` when
         /// this `Def` is a trait-method impl — replaces the
@@ -1282,6 +1285,18 @@ pub enum DefKind {
     PlatformEffect {
         scheduling_class: cranelisp_platform::SchedulingClass,
     },
+    /// A host-promised extern primitive (test-discovery design, 2026-06-06).
+    /// Payload-free unit variant — a `primitives`-module callable whose body
+    /// lives in the integration layer (`int`) and is promised at JIT-finalize
+    /// via `Jit::define_symbol`, not bundled (`Primitive`) or DLL-loaded
+    /// (`PlatformEffect`). The symbol-table key IS the ABI name; `got_slot:
+    /// None`, `code: None`; a call lowers `Linkage::Import` against the key
+    /// (the `PlatformEffect` import shape) and is structurally untraceable.
+    /// Motivating member: `discover-tests` (its body reads int's live session
+    /// state — which `cranelisp-intrinsics` cannot, per Principle 18 / D0048).
+    /// `PlatformEffect` is the direct structural precedent. See
+    /// `bounded-contexts.md` §7 + `design/arch/test-discovery.md` §6/§7.
+    PrimitiveExtern,
     UserFn {
         constrained_fn: Option<ConstrainedFn>,
     },

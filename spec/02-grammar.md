@@ -543,7 +543,7 @@ apply_expr   = '(' expr expr* ')'
 
 A parenthesized list whose head is not a special-form keyword is a function application. The first element (callee) MUST evaluate to a function. The remaining elements are arguments. Arguments are evaluated left to right.
 
-If the callee is a keyword (`let`, `if`, `fn`, `match`, `vec`, `trace`, `discover-tests`, `run-test`), the form is parsed as the corresponding special form instead.
+If the callee is a keyword (`let`, `if`, `fn`, `match`, `vec`, `trace`), the form is parsed as the corresponding special form instead.
 
 ```clojure
 (inc 5)                       ; named function call
@@ -908,7 +908,6 @@ reserved_word = 'defn' | 'defn-' | 'deftype' | 'deftype-'
               | 'defmacro' | 'defmacro-'
               | 'mod' | 'mod-' | 'import' | 'export' | 'platform'
               | 'let' | 'if' | 'fn' | 'match' | 'vec' | 'trace'
-              | 'discover-tests' | 'run-test'
 ```
 
 `trace` is a member of this list: it is a **root special form** (§2.3.10), recognised before any name lookup, always available with no import and no module path (there is no `primitives/trace`).

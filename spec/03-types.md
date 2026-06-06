@@ -98,30 +98,49 @@ Trace
 
 This mirrors the `Sexp`-in-`macros` precedent (see [Section 9.1](09-macros.md#91-sexp-data-model)): quasiquote works without import because the expander emits qualified `macros/Sexp...` constructors, while bare `Sexp` constructors must be imported. Likewise the `trace` form works without import, while destructuring the returned `Trace` value requires importing the ADT names. A standard library MAY re-export the ADT names through a convenience module (e.g., `core.trace`) using the `export` mechanism (see [Section 8.4](08-modules.md#84-export)).
 
-### 3.2.5 TestResult Type [R4]
+### 3.2.5 Result Type [R4 S77 — tested-by /qa]
 
 ```
-TestResult
+Result(A, B)
 ```
 
-`TestResult` is a compiler-seeded algebraic data type representing the outcome of running a single test function:
+`Result` is a compiler-seeded algebraic data type representing a success-or-failure outcome:
 
 ```clojure
-(deftype TestResult
-  (TestPass [:String name :Int nanos])
-  (TestFail [:String name :Int nanos :String reason]))
+(deftype (Result a b)
+  (Ok  [:a val])
+  (Err [:b err]))
 ```
 
 | Constructor | Fields | Description |
 |---|---|---|
-| `TestPass` | `name` (String), `nanos` (Int) | Test returned `None` (pass). `name` is the fully-qualified function name; `nanos` is wall-clock elapsed time. |
-| `TestFail` | `name` (String), `nanos` (Int), `reason` (String) | Test returned `Some(reason)` (fail). |
+| `Ok`  | `val` (a) | Success carrying a value of type `a`. |
+| `Err` | `err` (b) | Failure carrying a value of type `b`. |
 
-`TestResult` is a root type — always in scope without import, like `IO` and `Vec`. To trace a failing test, use `(trace (test-fn))` separately (see [Section 4.12](04-expressions.md#412-trace-expression)).
+`Result` is defined in the `primitives` module and participates in the type system as an ordinary parameterised ADT. It is **not** auto-imported into user scope: user code must import it explicitly (e.g., `(import [primitives [Result Ok Err]])`) or use qualified names (e.g., `primitives/Ok`). It is the return type of the `catch-runtime-error` combinator (see [Appendix A.3](appendix-a-builtins.md#test-discovery-and-error-capture)): `(Ok result)` when a protected thunk completes, `(Err message)` when it raised a runtime error. Both constructors carry data, so both are heap-allocated.
 
-A test function is any zero-argument function whose name begins with `test-` and returns `(Option String)`. `None` indicates pass; `Some(reason)` indicates failure with a human-readable reason.
+### 3.2.6 Pair Type [R4 S77 — tested-by /qa]
 
-### 3.2.6 Vec Type [Tested tests/ring1.rs::vec_literal_int]
+```
+Pair(A, B)
+```
+
+`Pair` is a compiler-seeded algebraic data type representing a two-field product:
+
+```clojure
+(deftype (Pair a b)
+  (Pair [:a first :b second]))
+```
+
+| Constructor | Fields | Description |
+|---|---|---|
+| `Pair` | `first` (a), `second` (b) | A value pairing a `first` of type `a` with a `second` of type `b`. |
+
+`Pair` is defined in the `primitives` module and participates in the type system as an ordinary parameterised ADT. It is **not** auto-imported: user code must import it explicitly (e.g., `(import [primitives [Pair]])`) or use qualified names (e.g., `primitives/Pair`). It is the element type of the `discover-tests` result `(Vec (Pair String (Fn [] (Option String))))` (see [Appendix A.3](appendix-a-builtins.md#test-discovery-and-error-capture)) — each pair carries a test's fully-qualified name and its late-bound callable.
+
+A test function is any zero-argument function whose name begins with `test-` and whose type is exactly `(Fn [] (Option String))`. `None` indicates pass; `Some(reason)` indicates failure with a human-readable reason. Test discovery and execution are composed from ordinary library code over `discover-tests` and `catch-runtime-error` (see [Appendix A.3](appendix-a-builtins.md#test-discovery-and-error-capture) and [repl/spec.md §16](../repl/spec.md#16-test-discovery-and-execution)); there is no dedicated test-result type.
+
+### 3.2.7 Vec Type [Tested tests/ring1.rs::vec_literal_int]
 
 ```
 Vec(A)

@@ -725,9 +725,12 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         /// syntax, no runtime address), `Overloaded` base entries (the
         /// mangled variants carry the slots), `TypeDef`/`TraitDecl` and
         /// `Def { kind: DefKind::Macro }` parent entries (no callable
-        /// position; per-clause variant Defs carry the slots), and
+        /// position; per-clause variant Defs carry the slots),
         /// constrained-fn templates whose mono specialisations carry the
-        /// slots.
+        /// slots, and `Def { kind: DefKind::PrimitiveExtern }` host-promised
+        /// externs (`discover-tests` — the symbol-table key IS the ABI name a
+        /// host promises at JIT-finalize via `Jit::define_symbol`; a call
+        /// resolves `Linkage::Import` against that key, never GOT-indirect).
         ///
         /// Direct-call inlining at known call sites does not require a GOT
         /// lookup, but having a slot does not preclude a direct call — the
@@ -1355,6 +1358,42 @@ pub enum DefKind {
     PlatformEffect {
         scheduling_class: SchedulingClass,
     },
+    /// A host-promised extern primitive.
+    ///
+    /// Like `DefKind::PlatformEffect`, this is a host-promised callable whose
+    /// body lives **outside** `cranelisp-primitives` — but the body is supplied
+    /// by the integration layer (`int`) at JIT-finalize via
+    /// `Jit::define_symbol`, not loaded from a platform DLL. The motivating
+    /// member is `discover-tests`: its body must read int's live typed session
+    /// state (the per-module `SymbolTable` + GOT) to enumerate eligible
+    /// `test-*` functions, which `cranelisp-intrinsics` cannot do because it
+    /// cannot name `Code` (Principle 18 / Decision 0048).
+    ///
+    /// **No payload — unit variant** (Principle 6, minimum mechanism). The
+    /// contract is carried entirely by the kind discriminant plus the field
+    /// invariants common to host-promised slot-less kinds:
+    /// - **The symbol-table key IS the ABI name** (`src/CLAUDE.md` §"JIT Symbol
+    ///   Names"); there is no separate `jit_name`. Backend lowers a call to a
+    ///   `PrimitiveExtern` callee as a `Linkage::Import` against the key.
+    /// - **No GOT slot** — `got_slot: None`. The entry joins the slot-less
+    ///   classes enumerated in the `got_slot` rustdoc on `ModuleEntry::Def`:
+    ///   a `PrimitiveExtern` is never invoked GOT-indirect and is never used as
+    ///   an operator-as-value, so it has no module-local callable address. (A
+    ///   call to it resolves to the host-promised symbol, not to a GOT slot —
+    ///   the discovered wrappers it *returns* are the GOT-indirect callables.)
+    /// - **`code: None`** — the body is promised by the publisher, not held on
+    ///   the entry; primitive-ness/provenance reads from `kind`.
+    ///
+    /// `DefKind::PlatformEffect` is the direct structural precedent (a
+    /// host-promised callable whose body lives elsewhere, registered by walking
+    /// the kind at JIT setup). `PrimitiveExtern` is the same shape with the body
+    /// promised by `int` via `Jit::define_symbol` rather than loaded from a DLL,
+    /// and with no `scheduling_class` (it is not an IO effect).
+    ///
+    /// See `design/arch/test-discovery.md` §6 "`DefKind::PrimitiveExtern`" + §7
+    /// (the entry shape) and the `got_slot` slot-less-kinds rustdoc note on
+    /// `ModuleEntry::Def`.
+    PrimitiveExtern,
     /// A user-defined function.
     UserFn {
         constrained_fn: Option<Box<ConstrainedFn>>,
@@ -2468,6 +2507,51 @@ mod tests {
                         other
                     ),
                 }
+            }
+            other => panic!("expected ModuleEntry::Def, got {:?}", other),
+        }
+    }
+
+    // spec: design/arch/test-discovery.md §6/§7 — DefKind::PrimitiveExtern is a
+    //       payload-free unit variant (host-promised extern; key IS the ABI
+    //       name; got_slot None; code None). Pins the serde round-trip alongside
+    //       the other DefKind variants.
+    #[test]
+    fn def_kind_primitive_extern_round_trips() {
+        // Explicit `<()>` annotation: `code: None` is polymorphic in `C`.
+        let entry: ModuleEntry = ModuleEntry::Def {
+            scheme: Scheme {
+                type_vars: vec![],
+                constraints: HashMap::new(),
+                ty: Type::Int,
+            },
+            visibility: Visibility::Public,
+            docstring: None,
+            param_names: vec![],
+            kind: Box::new(DefKind::PrimitiveExtern),
+            callees: Vec::new(),
+            got_slot: None,
+            trait_origin: None,
+            seq: 0,
+            ast: None,
+            code: None,
+        };
+
+        let json = serde_json::to_string(&entry).expect("entry must serialize");
+        let rt: ModuleEntry =
+            serde_json::from_str(&json).expect("entry must deserialize");
+        match rt {
+            ModuleEntry::Def { kind, got_slot, .. } => {
+                assert!(
+                    matches!(*kind, DefKind::PrimitiveExtern),
+                    "kind must round-trip as PrimitiveExtern; got {:?}",
+                    kind
+                );
+                // The slot-less invariant is structural, not just incidental.
+                assert!(
+                    got_slot.is_none(),
+                    "PrimitiveExtern entries carry got_slot: None"
+                );
             }
             other => panic!("expected ModuleEntry::Def, got {:?}", other),
         }

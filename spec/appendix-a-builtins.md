@@ -22,7 +22,8 @@ Registered in the `primitives` and `macros` synthetic modules.
 | `(Vec a)` | `primitives` | Built-in | Resizable array, element access via extern primitives | [Tested tests/ring1.rs::vec_len_three]
 | `(IO a)` | `primitives` | Compiler-seeded ADT | Effectful computation; constructors `Pure`, `Effect`, `Bind` | [R4 S9]
 | `Trace` | `primitives` | Compiler-seeded ADT | Execution trace tree; single constructor `TraceCall` with fields `name` (String), `params` (SList String), `result` (String), `children` (SList Trace), `nanos` (Int). Not auto-imported; requires explicit import. | [Tested tests/ring4_trace.rs::trace_type_importable_from_primitives]
-| `TestResult` | root | Compiler-seeded ADT | Test execution result; constructors `TestPass` (name, nanos) and `TestFail` (name, nanos, reason). Root type — always in scope. | [R4]
+| `(Pair a b)` | `primitives` | Compiler-seeded ADT | Two-field product; single data constructor `Pair` with fields `first` (a), `second` (b). Not auto-imported; requires explicit import or qualified reference. | [R4 S77 — tested-by /qa]
+| `(Result a b)` | `primitives` | Compiler-seeded ADT | Success/failure sum; constructors `Ok` (one field, a) and `Err` (one field, b). Not auto-imported; requires explicit import or qualified reference. | [R4 S77 — tested-by /qa]
 | `Sexp` | `macros` | Compiler-seeded ADT | S-expression value for macro system | [Tested tests/macros.rs::macro_basic_repl]
 | `(SList a)` | `macros` | Compiler-seeded ADT | Cons-list for S-expression manipulation | [Tested tests/macros.rs::macro_basic_repl]
 
@@ -130,17 +131,20 @@ Extern primitives are called via the foreign function interface.
 
 Higher-order Vec operations such as `vec-map` and `vec-reduce` are NOT primitives — they are provided by the standard library (`stdlib/collections/vec.cl` in the reference implementation), built on top of the primitives above. See [Section 11](11-stdlib.md) for the contract a standard library must satisfy.
 
+### Test discovery and error capture
+
+These are ordinary `primitives`-module entries — **not** special forms. They are import-required (or fully qualified): `(import [primitives [discover-tests catch-runtime-error]])` or `(primitives/discover-tests …)`. They are not reserved words and shadow like any imported name. A test is any zero-argument function whose name begins `test-` and whose type is exactly `(Fn [] (Option String))` (`None` = pass, `Some reason` = fail); see [repl/spec.md §16](../repl/spec.md#16-test-discovery-and-execution).
+
+| Function | Type | Description |
+|---|---|---|
+| `discover-tests` | `(Fn [(Vec String)] (IO (Vec (Pair String (Fn [] (Option String))))))` | Discover the eligible tests of the named modules. The argument is a `(Vec String)` of module paths; the result is one `(Pair name callable)` per eligible test — `name` the fully-qualified `"module/test-name"` as a `String`, `callable` a late-bound fn value of type `(Fn [] (Option String))` that performs a GOT-slot-indirect call to the test (so a redefined test runs its current body). Eligibility requires BOTH the `test-` name prefix AND the exact signature `(Fn [] (Option String))`; a mis-typed `test-*` is excluded and warned at discovery time. **Host-promised extern** (`primitives`-module entry, body supplied by the live session); resolves in REPL and `--run`. A `--link` build that references it compiles, then fails at link/load with an unresolved symbol (interim accepted behaviour — no friendly rejection). The no-argument form `(discover-tests)` (current module) and the single-`String` form `(discover-tests "mod.path")` are **standard-library sugar** normalising to the `(Vec String)` form — not the primitive's own signature. | [R4 S77 — tested-by /qa]
+| `catch-runtime-error` | `(Fn [(Fn [] a)] (Result a String))` | Protected-call combinator. Invokes the supplied thunk; if it raised a language-level runtime error (match non-exhaustion, division by zero, vec out-of-bounds — anything the compiler lowers to a `runtime/panic` call, see [Section 12.7](12-runtime.md)) the slot is cleared and `(Err message)` is returned, otherwise `(Ok result)`. Does **not** capture hardware signals (`SIGSEGV`/`SIGBUS`/`SIGILL`/`SIGFPE`). On `(Err …)` any heap values allocated by the aborted evaluation are in an indeterminate RC state — the message is recovered, not a consistent heap; treat the evaluation as void. If `a` instantiates to `(IO x)` the bracket covers only the pure construction of the IO value; effects run later, outside the bracket. Self-contained intrinsic; works in **all modes** including `--link`. | [R4 S77 — tested-by /qa]
+
 ## A.4 Special Forms [Tested]
 
 Special forms are keywords processed directly by the compiler. They are **root special forms** — always available with no import and no module path. They are not functions or macros, their names are reserved, and they cannot be shadowed or bound (see [Section 2.9](02-grammar.md#29-reserved-words)).
 
-**Test infrastructure** — special forms, always in scope (see [repl/spec.md §16](../repl/spec.md#16-test-discovery-and-execution)):
-
-| Form | Type | Description |
-|---|---|---|
-| `(discover-tests)` | `(IO (SList Sexp))` | Discover `test-*` function names in the current module. Returns `SexpSym` values. | [R4]
-| `(discover-tests module)` | `(IO (SList Sexp))` | Discover `test-*` function names in the named module. `module` is a bare module path (e.g., `user.math`) — same syntax as `import`. Returns `SexpSym` values. | [R4]
-| `(run-test name)` | `(IO TestResult)` | Run a single test. Returns `TestPass` or `TestFail`. `name` is a bare qualified symbol (e.g., `user/test-add`) or a `Sexp` expression. To trace a failing test, use `(trace (test-fn))`. | [R4]
+> **Note.** `discover-tests` and `run-test` were previously listed here as special forms. They are **not** special forms. `discover-tests` is now an ordinary import-required `primitives`-module entry (see §A.3 "Test discovery and error capture"), `run-test` is retired (subsumed — running a test is invoking a discovered callable), and the protected-call combinator `catch-runtime-error` joins §A.3. Their names are **not** reserved; only `trace` remains reserved among the test-adjacent names.
 
 ## A.5 Docstrings for Builtins [R1]
 

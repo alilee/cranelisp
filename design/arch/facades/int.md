@@ -237,16 +237,18 @@ pub struct SharedState {
     /// (S67 W1 plan row: facade widens).
     pub promote_nice_workers: AtomicBool,
 
-    /// Test runner state used by the `run-test` / `discover-tests` JIT
-    /// intrinsics (Sprint 66 Wave 3a-γ; src/CLAUDE.md §"Int-owned JIT
-    /// intrinsics"). **Boxed for session-lifetime pointer stability** — the
-    /// `TEST_RUNNER` thread-local stores `*const TestRunnerState` derived
-    /// from this Box, so the alloc must not move. Lifted from per-compile
-    /// init to session-wide init so the test intrinsics may be registered
-    /// unconditionally at every JIT setup (architectural answer to
-    /// FIXME 0177). **Int-internal — S68 PFR** (S67 W1 plan row: facade
-    /// widens). `current_module: Mutex<ModuleFullPath>` sub-field carries
-    /// the REPL `/mod` indirection.
+    /// Test runner state read by the `discover-tests` host-promised extern
+    /// (Sprint 66 Wave 3a-γ; **reshaped by the test-discovery settle
+    /// 2026-06-06** — `discover-tests` is now a `DefKind::PrimitiveExtern`
+    /// promised via `Jit::define_symbol`, not an `int_intrinsics()` JIT
+    /// intrinsic; `run-test` is subsumed by invoking discovered wrappers under
+    /// `catch-runtime-error`). **Boxed for session-lifetime pointer
+    /// stability** — the `TEST_RUNNER` thread-local stores `*const
+    /// TestRunnerState` derived from this Box, so the alloc must not move.
+    /// Session-wide init so `discover_tests_extern` (promised once at session
+    /// init) can dereference it from worker threads. **Int-internal — S68
+    /// PFR** (S67 W1 plan row: facade widens). `current_module:
+    /// Mutex<ModuleFullPath>` sub-field carries the REPL `/mod` indirection.
     pub test_runner_state: Box<TestRunnerState>,
 
     // ──────────── REPL / trace introspection (Decision 38) ────────────
@@ -359,7 +361,7 @@ pub struct DllHandle {
 | `kept_dlls` | SharedState | Platform calls happen on workers (during JIT registration + IO trampoline) |
 | `file_to_module` | SharedState | File-watcher cascade needs the inverse map from any worker that resolves imports |
 | `promote_nice_workers` | SharedState | Initiator sets during hot flush; nice workers read per-iteration to self-promote OS priority |
-| `test_runner_state` | SharedState | JIT-emitted-call intrinsics (`run-test` / `discover-tests`) dereference the session-stable Box from worker threads via thread-local pointer |
+| `test_runner_state` | SharedState | The `discover-tests` host-promised extern (`DefKind::PrimitiveExtern`, promised via `Jit::define_symbol`) dereferences the session-stable Box from worker threads via thread-local pointer (`run-test` subsumed — test-discovery settle 2026-06-06) |
 | `introspection` | SharedState | Codegen workers populate `clif_ir`/`disasm`/`compile_duration` |
 | `repl_check_state` | SharedState (S68 PIF to CompilerSession) | REPL-only carry-forward; deferred relocation pending cluster-atomic completion |
 | `module_sexps` | SharedState (S68 PIF — delete via redesign) | Pre-cluster-atomic cross-thread dep-publishing; in-call-stack value after FIXME 0179 |
@@ -907,18 +909,18 @@ pub fn install_panic_hook();
 
 Per `src/CLAUDE.md` §"Int-owned JIT intrinsics", `src/session_v4.rs::int_intrinsics()` returns the array of `(JIT-symbol, fn-ptr)` pairs that **every** JIT-build site in int must register with `JITBuilder::symbol(...)` before constructing the `Jit`. Backend-emitted CLIF declares these as `Linkage::Import`; without uniform registration the JIT fails to resolve them.
 
-**TARGET (S76 user ruling 2026-06-04) — `int_intrinsics()` shrinks to TWO entries; the trace half DELETES.** The 2026-06-04 ruling retracts D40's relocation of the trace bodies to int. The 12 `cranelisp_trace_*` symbols (incl. `cranelisp_trace_format`) move to `cranelisp-intrinsics` and publish through `intrinsics_table()` (BC §4b invariant 12) — so `Jit::new(symbol_tables)` picks them up with no int fold-in, and the prior OPEN `Jit::new` registration seam **dissolves for trace**. `int_intrinsics()` reduces to the two **test-runner** symbols (PARKED — out of scope per the user; their relocation, if ever, is a separate question):
+**TARGET (S76 user ruling 2026-06-04 + test-discovery settle 2026-06-06) — `int_intrinsics()` DELETES in full.** Two rulings empty it:
 
-| JIT symbol | Rust fn (host) | Reader / use |
-|---|---|---|
-| `discover-tests` | `discover_tests_extern` (`session_v4.rs`) | `(run-tests ...)` special form (Wave 3a-γ) |
-| `run-test` | `run_test_extern` (`session_v4.rs`) | `(run-tests ...)` special form (Wave 3a-γ) |
+- *Trace half (2026-06-04).* The 12 `cranelisp_trace_*` symbols (incl. `cranelisp_trace_format`) move to `cranelisp-intrinsics` and publish through `intrinsics_table()` (BC §4b invariant 12) — so `Jit::new(symbol_tables)` picks them up with no int fold-in, and the prior OPEN `Jit::new` registration seam **dissolves for trace**.
+- *Test half (2026-06-06 test-discovery settle).* The two test-runner symbols that were PARKED in `int_intrinsics()` are superseded by the settled test-discovery design (`design/arch/test-discovery.md`):
+  - **`discover-tests`** is NOT a `JITBuilder::symbol`-registered `int_intrinsics()` entry — it becomes a `primitives`-module `Def { kind: DefKind::PrimitiveExtern }` (BC §7) whose body int promises at session init via backend's **`Jit::define_symbol("discover-tests", discover_tests_extern as *const u8)`** (BC §3 invariant 8). `discover_tests_extern` (`session_v4.rs`) is reshaped to return a heap `(Vec (Pair String (Fn [] (Option String))))` of FQ-name + late-bound GOT-slot-indirect wrapper pairs (eligibility = `test-` prefix AND exact `(Fn [] (Option String))` scheme); it takes the canonical `(Vec String)` of module paths, with no-arg/single-`String` as stdlib-macro sugar.
+  - **`run-test` is subsumed** — running a test = invoking a discovered wrapper, bracketed by the `catch-runtime-error` intrinsic (BC §4b invariant 13). `run_test_extern` and its registration are deleted.
 
-The trace deletions land via FIXME 0256 (int deletions) in concert with FIXME 0254 (intrinsics hosts the bodies + catalog) + FIXME 0255 (backend discovery + descriptor baking). The `Jit::new(symbol_tables)` collapse must still account for the two test symbols — that residual is the `Jit::new` seam for the *test* intrinsics, untouched by the trace ruling.
+With both halves gone, `int_intrinsics()` itself is **deleted**. `discover-tests` resolves through the `Jit::define_symbol` escape hatch (an unresolved `Linkage::Import` against the extern key settles to int's promised ptr at finalize); `catch-runtime-error` and the trace bodies resolve through `intrinsics_table()`. There is no residual int symbol-fold-in into `Jit::new`. The trace deletions land via FIXME 0256 (int deletions) in concert with FIXME 0254 (intrinsics) + FIXME 0255 (backend); the test-discovery int work (PrimitiveExtern publication + `define_symbol` + the reshaped extern + Pair/Result seeds) lands via its own int FIXME (test-discovery design §6).
 
 **Trace-in-`--link` — TARGET: SUPPORTED, not rejected.** The 2026-06-04 ruling makes `(trace ...)` work in ALL modes including `--link` (user: "happy to let tracing applications be linked"). The prior `--link` rejection (the natural missing-symbol failure) is **retired**: because the trace bodies are now ordinary intrinsics, exe-bundle force-links them (the `pub use cranelisp_intrinsics::trace;` line returns — FIXME 0255), so `cranelisp_collect_trace` et al. resolve against the staticlib in `--link` exactly as in JIT mode. Spec §4.12.9 flips from "link-time rejection" to "all-modes availability" (FIXME 0257). The display descriptors backend bakes (`tracing.md` §3.4) are emitted as `.rodata` data symbols with relocations so they survive `.o` caching, which is what makes trace `--link`-safe.
 
-**Unconditional registration is mandatory.** Every JIT-build site in this crate folds `int_intrinsics()` into the `JITBuilder::symbol` set before calling `Jit::new_with_symbols`. The two current sites are `worker::inline_jit_codegen_for_names` and `pipeline::compile_and_execute_expr` (plus its trace variant). No syntactic gating — the pre-S66 `program_uses_test_forms` / `program_needs_trace` / `any_compiled_defn_uses_test_forms` helpers were deleted in Wave 3a-γ (see `src/CLAUDE.md`'s forbidden-patterns note + FIXME 0178).
+**As-built (transitional) — `int_intrinsics()` unconditional registration.** As built today, every JIT-build site in this crate folds `int_intrinsics()` into the `JITBuilder::symbol` set before calling `Jit::new_with_symbols`; the two sites are `worker::inline_jit_codegen_for_names` and `pipeline::compile_and_execute_expr` (plus its trace variant). No syntactic gating — the pre-S66 `program_uses_test_forms` / `program_needs_trace` / `any_compiled_defn_uses_test_forms` helpers were deleted in Wave 3a-γ (see `src/CLAUDE.md`'s forbidden-patterns note + FIXME 0178). **TARGET (per the deletion above):** this fold-in disappears — `int_intrinsics()` is deleted; trace + `catch-runtime-error` resolve via `intrinsics_table()` at `Jit::new(symbol_tables)`, and `discover-tests` resolves via the one-off `Jit::define_symbol` promise at session init. No int-side per-JIT-site symbol fold-in survives.
 
 ### Display surface — `src/display.rs` (per FIXME 0108)
 
@@ -1407,7 +1409,7 @@ These hold across sprints — the contract `int` makes with the rest of the work
 
 13. **`Code::Jit` and `Code::Linker` retention dissolves on session shutdown.** Per Decisions 31 + 35 — `drop(Sess)` drops every `ModuleEntry::Code`; the `Arc<Jit>` and `Arc<Linker>` chains reach refcount 0; custom `Drop` reclaims pages.
 
-14. **Mutual-import deadlock is a known constraint (Decision 30).** Two modules `A` and `B` that each import from the other will deadlock the form-by-form scheduler. Documented; not fixed by this facade. Workaround: `discover-tests` + `run-test` builtins for test scaffolding (per Decision 30's "Safe patterns").
+14. **Mutual-import deadlock is a known constraint (Decision 30).** Two modules `A` and `B` that each import from the other will deadlock the form-by-form scheduler. Documented; not fixed by this facade. Workaround: the `discover-tests` builtin for test scaffolding (reads the parent's symbol table at runtime, no `super` import; per Decision 30's "Safe patterns" — `run-test` subsumed by invoking discovered wrappers under `catch-runtime-error`, test-discovery settle 2026-06-06).
 
 15. **`SharedState` vs `CompilerSession` split is mode-aligned (Decision 38).** `SharedState` carries everything reachable by workers — `symbol_tables`, `scheduler`, `cache`, `kept_dlls`, `introspection`, read-only configuration. `CompilerSession` carries everything reachable only by the initiator thread — watcher channel, REPL eval cursor, worker pool handles, accumulated warnings. Workers receive `Arc<SharedState>` at spawn, never see `CompilerSession`. No worker-side merge step: all mutation happens through interior mutability of the contained types under per-cell locks.
 
