@@ -8,7 +8,13 @@ refers_to: design/platform/sprint71-redesign.md §12 (Next skills), tests/plan/s
 status: open
 ---
 
-## Progress (S76 W3, /qa) — round-trip STILL BLOCKED; construction primitive necessary-but-insufficient
+## Re-pointed (2026-06-07, /arch) — platform-interface.md is now the normative design
+
+`design/arch/platform-interface.md` (user-ratified 2026-06-07) resolves the two blockers this FIXME named: the **schema-type-registration seam** (platforms now declare ADTs as ordinary importable `.cl` modules — `shapes/Rectangle` resolves by FQ auto-load, no schema-ADT-registration step) and the **S-PLAT-1 schema-text-exposure seam** (FIXME 0282, deleted — validation retires; the layout-hash gate replaces it). **What the e2e suite now owes** (carried by a new qa platform-interface FIXME, or this one re-scoped): the **build-load-generate-embed-rebuild** walk (`/platform-schema` generates the artifact, the platform embeds it, `--run`/`--link` accept on hash match) + the **dual hash-gate** coverage (REPL warns-and-loads on stale hash; `--run`/`--link` refuse) + the FQ-named-ADT round-trip (construct a `shapes/Rectangle` in cranelisp source, pass it to a platform fn, assert the value). The old item 4 (`validate_schema` mismatch rejection) re-targets to the **layout-hash mismatch refusal**. Kept open; the test-DLL author is `/platform`, the `tests/`-side e2e file is `/qa`.
+
+---
+
+## Progress (S76 W3, /qa) — round-trip STILL BLOCKED (SUPERSEDED — see re-point above)
 
 /qa attempted the unblocked round-trip half this fire and found it is **not yet
 unblocked** — and the residual blocker is broader than the schema-validation seam

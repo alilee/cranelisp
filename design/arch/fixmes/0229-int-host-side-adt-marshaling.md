@@ -8,7 +8,13 @@ refers_to: design/platform/sprint71-redesign.md §9, design/arch/bounded-context
 status: open
 ---
 
-## Progress (S76 W3 second fire, /dev int) — step 1 DONE; steps 2+4 carry on S-PLAT-1
+## Re-pointed (2026-06-07, /arch) — platform-interface.md is now the normative design
+
+The S-PLAT-1 ruling this FIXME was blocked on is **resolved**: `design/arch/platform-interface.md` (user-ratified 2026-06-07) supersedes the schema-text-exposure question entirely. **`validate_schema` RETIRES** — the layout-hash gate (regenerate-and-compare from live tables) replaces it; no schema text crosses the boundary. FIXME 0282 (the S-PLAT-1 ruling carrier) is **deleted**. **What this FIXME still owes** under the new design: only the `alloc_with_tag` KEEP (DONE + unit-verified — ADT *construction* still needs the host allocator) and coordinating the retirement of `validate_schema` / `null_validate_schema` from `HostCallbacks` (a `/dev platform` change, ABI 2→3). The cross-skill implementation work is carried by the new platform-interface FIXMEs (int load path; platform macro rework). This FIXME's step 2 (`validate_schema` host impl) is **withdrawn — there is nothing to validate**. Kept open only to track the `alloc_with_tag` KEEP + the null-callback cleanup coordination; may close once the platform-interface int/platform FIXMEs absorb it.
+
+---
+
+## Progress (S76 W3 second fire, /dev int) — step 1 DONE; steps 2+4 carry on S-PLAT-1 (SUPERSEDED — see re-point above)
 
 The intrinsics producer landed (`cranelisp_intrinsics::alloc::cranelisp_alloc_with_tag`,
 `crates/cranelisp-intrinsics/src/alloc.rs:252`, `pub extern "C" fn(u32,u32,*const i64)->i64`).

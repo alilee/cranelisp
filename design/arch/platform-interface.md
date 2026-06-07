@@ -15,13 +15,19 @@ when the type module imports/re-exports its ADTs — brittle; §8). Companion to
 `cranelisp-primitives::PRIMITIVES_GOT_SLAB` (the FIXME-0280 precedent this design
 generalises). Owner `/arch`.
 
-**PENDING USER REVIEW — nothing here is cascaded.** No FIXME is filed, no
-spec/facade/BC/source is edited, no `ABI_VERSION` is bumped. This is a doc-only target
-statement for the user to read before any implementation begins. Every open question of
-the first and second convergences is now ruled (§2); §2 is near-empty — the substantive
-direction is settled, awaiting only the user's read of this convergence. Where this
-contradicts the as-built S71 boundary or the host-wiring-s76 recommendation, that is the
-*point* — the contradictions are surfaced in §2 and §8 (superseded options).
+**USER-RATIFIED 2026-06-07 — CASCADED into the architecture configuration (S76 /arch).**
+The target is set in place in `facades/int.md` (load path + `/platform-schema` command +
+injection/`jit_name` retirement) and `bounded-contexts.md` §5 (platform — three exports,
+no schema dialect, no exported fn names), §3 (backend — schema generator + GOT-indirect
+dispatch + startup hash bake), §6 (int — load path + command), §7 (`SymbolTable.schema_literal`
+retires). Implementation is tracked by S77-targeted FIXMEs 0286 (platform macro), 0287
+(backend generator + dispatch + bake), 0288 (int load path + command + `PlatformError`
+variant), 0289 (qa e2e). FIXMEs 0229/0232/0233/0235 re-pointed to this design; 0282 + 0234
+deleted (superseded). No source/spec is edited and no `ABI_VERSION` is bumped yet — those
+land with the FIXMEs. Cascade-when-actioned residue: the new `PlatformError` hash-refusal
+variant (Decision 0042) + `schema_literal` removal in `cranelisp-types`. Where this
+contradicts the as-built S71 boundary, that is the *point* — as-built is marked SUPERSEDED
+in the configuration; the contradictions are surfaced in §2 and §8 (superseded options).
 
 ---
 

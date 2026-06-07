@@ -10,6 +10,10 @@ status: open
 
 # `.meta.json` schema for platform module symbol-table caching
 
+## Re-pointed (2026-06-07, /arch) — platform-interface.md is now the normative design
+
+`design/arch/platform-interface.md` (user-ratified 2026-06-07) **retires this FIXME's deliverable**: there is **no `schema_literal` cache field**. Platforms declare ADTs as ordinary `.cl` modules (which cache through the normal `.meta.json` round-trip with no new field); no schema text crosses the DLL boundary; the cache-restore path re-establishes the GOT by `dlsym`-ing the re-opened dylib. **What backend now owes instead** (carried by the new backend platform-interface FIXME): the **schema generator** (closure-walk + substitution + canonical emit, shared with the trace `DisplayDescriptor` baker) + the **layout-hash baking** for `--link` (regenerate from the compiled `.cl` modules, bake into the startup object for the stub to compare). This FIXME's `schema_literal` extension is **withdrawn**; the field RETIRES from `cranelisp-types` (BC §7). Kept open only until the new backend FIXME supersedes it; may close on filing.
+
 ## Issue
 
 The platform-as-module migration (FIXME 0233) registers platform DLLs

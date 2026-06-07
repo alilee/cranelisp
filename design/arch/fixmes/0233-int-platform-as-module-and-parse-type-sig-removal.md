@@ -8,7 +8,13 @@ refers_to: design/platform/sprint71-redesign.md §12 (Next skills), src/platform
 status: open
 ---
 
-## Progress (S76 W3, /dev int)
+## Re-pointed (2026-06-07, /arch) — platform-interface.md is now the normative design
+
+`design/arch/platform-interface.md` (user-ratified 2026-06-07) supersedes the S-PLAT-1 block (FIXME 0282 deleted) and re-frames step 3. **What this FIXME still owes** under the new design, all carried by the new int platform-interface FIXME: (1) **`inject_primitives_import_for_platform` is DELETED** — sigs are fully-qualified, so the platform module carries ZERO injected imports (the injection wired this sprint was a bare-name convenience, ruled DEAD WRONG); the `parse_and_check_platform_type_sig` rustdoc that cites it is corrected to FQ-driven resolution. (2) The load path adopts the **DLL-exported-GOT model**: `dlsym` the GOT, `GotTable::with_static_backing` **wrapping it in place (no copy)**, `got_slot = manifest index`; the `(jit_name, ptr)` / `JITBuilder::symbol` registration path is DELETED (GOT-indirect dispatch). (3) The **layout-hash check** at load (regenerate via backend generator; REPL warns, `--run` refuses). Step 1 (`parse_type_sig` removal — DONE) stands. Step 3 (`validate_schema`) is **withdrawn** (validation retires; layout-hash gate replaces it). Kept open to track until the new int platform-interface FIXME absorbs it.
+
+---
+
+## Progress (S76 W3, /dev int) — partially superseded; see re-point above
 
 **Step 1 — `parse_type_sig` removal: DONE + verified.** `src/platform.rs`'s
 ad-hoc `parse_platform_type_sig` + `sexp_to_type` + `parse_fn_type` +
