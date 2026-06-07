@@ -4684,11 +4684,13 @@ fn compile_module_object(
 // Test infrastructure: core logic + JIT-callable externs
 // ---------------------------------------------------------------------------
 
-/// Result of running a single test (Rust-side, no heap allocation).
+/// Result of running a single test (Rust-side, no heap allocation). Consumed by
+/// the `/run-tests` slash-command formatter (`format_test_run`); the test name
+/// is held by the caller (the FQ name being run) so it is not duplicated here.
 enum TestOutcome {
-    Pass { name: String, nanos: i64 },
-    Fail { name: String, nanos: i64, reason: String },
-    Panic { name: String, reason: String },
+    Pass,
+    Fail { reason: String },
+    Panic { reason: String },
 }
 
 /// Core: discover test-* function names in a module. No heap allocation.
@@ -4767,33 +4769,23 @@ fn run_test_by_name(
     let code_ptr = match code_ptr {
         Some(ptr) if !ptr.is_null() => ptr,
         _ => return TestOutcome::Fail {
-            name: fq_name.to_string(),
-            nanos: 0,
             reason: "test function not found".to_string(),
         },
     };
 
     // Call the test function.
-    let t0 = std::time::Instant::now();
     let _ = cranelisp_intrinsics::panic::take_runtime_error();
     let value = unsafe {
         let func: extern "C" fn() -> i64 = std::mem::transmute(code_ptr);
         func()
     };
-    let nanos = t0.elapsed().as_nanos() as i64;
 
     if let Some(msg) = cranelisp_intrinsics::panic::take_runtime_error() {
-        return TestOutcome::Panic {
-            name: fq_name.to_string(),
-            reason: msg,
-        };
+        return TestOutcome::Panic { reason: msg };
     }
 
     if (value as usize) < NULLARY_TAG_THRESHOLD {
-        TestOutcome::Pass {
-            name: fq_name.to_string(),
-            nanos,
-        }
+        TestOutcome::Pass
     } else {
         let reason = unsafe {
             let base = value as *const u8;
@@ -4802,11 +4794,7 @@ fn run_test_by_name(
             ) as *const i64);
             cranelisp_intrinsics::heap_string::read_string_as_str(string_ptr).to_string()
         };
-        TestOutcome::Fail {
-            name: fq_name.to_string(),
-            nanos,
-            reason,
-        }
+        TestOutcome::Fail { reason }
     }
 }
 
@@ -4862,50 +4850,17 @@ pub(crate) fn set_test_runner_state(state: &TestRunnerState) {
     TEST_RUNNER.with(|c| c.set(state as *const _));
 }
 
-/// Sprint 66 Wave 3a-γ: int-owned intrinsics inventory.
-///
-/// These three extern functions are backend-emitted-call targets — JIT-emitted
-/// CLIF declares them as `Linkage::Import` and `JITBuilder::symbol(...)` must
-/// resolve them. Per `design/arch/facades/intrinsics.md` they are intrinsics
-/// like `heap_alloc` / `runtime/panic` / primitive arithmetic, and must be
-/// registered uniformly at JIT setup. Pre-S66 they were conditionally
-/// registered via syntactic scans of each program — see the FIXME 0178 filed
-/// alongside this change.
-///
-/// The thread-local state these intrinsics read (`TestRunnerState`) is set
-/// just-in-time by the REPL eval path; the intrinsics themselves null-check
-/// the pointer and return harmless defaults when absent.
-///
-/// S76 (FIXME 0256): the entire trace family (12 `cranelisp_trace_*` bodies +
-/// the `cranelisp_trace_format` descriptor formatter) left int — they now live
-/// in `cranelisp_intrinsics::trace`, are published via `intrinsics_table()`,
-/// and are registered by `Jit::new(symbol_tables)`. This table reduced from 14
-/// entries to the 2 PARKED test intrinsics (`discover-tests` / `run-test`).
-/// These two are NOT in `intrinsics_table()` (parked, int-hosted REPL-handler
-/// fns) — they remain int-side JIT-emitted-call targets for compiled programs
-/// that contain literal `(discover-tests)` / `(run-test ...)` forms. See
-/// FIXME 0261 for the `Jit::new` extension-point gap that means these two
-/// cannot be folded into `Jit::new` today.
-///
-/// W-Absorb (S76): currently uncalled — the W-Collapse realignment routed
-/// JIT construction through `worker::build_session_jit` → `Jit::new`, which
-/// has no extension point for these parked int-hosted intrinsics (FIXME 0261).
-/// Re-wiring is fire B / backend (the `Jit::new` extension point). Allowed
-/// dead pending that; the transitive helpers (`discover_tests_extern`,
-/// `run_test_extern`, and their `alloc_*` / `test_outcome_to_heap` /
-/// `format_value` callees) are reachable only through this root.
-#[allow(dead_code)]
-pub(crate) fn int_intrinsics() -> [(&'static str, *const u8); 2] {
-    [
-        ("discover-tests", discover_tests_extern as *const u8),
-        ("run-test", run_test_extern as *const u8),
-    ]
-}
+// `int_intrinsics()` + `run_test_extern` + the SList/IO/TestResult marshalling
+// helpers DELETED (S76 FIXME 0271). `run-test` is subsumed — running a test is
+// invoking a discovered late-bound wrapper under `catch-runtime-error`. The
+// surviving `discover-tests` extern is host-promised via `Jit::define_symbol`
+// (registered in `worker::build_session_jit`), not a parked-table entry. The
+// trace half of the old table left earlier (FIXME 0256); the table is now gone.
 
 /// Allocate a heap ADT with the given tag and fields.
 ///
 /// Layout: [alloc_size(8) | rc=1(8) | tag(8) | field0(8) | field1(8) | ...]
-/// Returns the base pointer (offset 0 of the allocation).
+/// (mirrors `HeapAdt` in `cranelisp-backend::heap`). Returns the base pointer.
 unsafe fn alloc_heap_adt(tag: i64, fields: &[i64]) -> i64 { unsafe {
     let payload_size = 8 + fields.len() * 8; // tag + fields
     let base = cranelisp_intrinsics::alloc::alloc_with_rc(payload_size);
@@ -4918,113 +4873,318 @@ unsafe fn alloc_heap_adt(tag: i64, fields: &[i64]) -> i64 { unsafe {
     base as i64
 }}
 
-/// Wrap a value in IO Pure: allocates Pure(value) on the heap.
-/// IO Pure tag = 0, single field = the wrapped value.
-unsafe fn alloc_io_pure(value: i64) -> i64 { unsafe {
-    alloc_heap_adt(0, &[value])
-}}
-
-/// Build an SList SCons node: SCons(head, tail).
-/// SCons tag = 1.
-unsafe fn alloc_scons(head: i64, tail: i64) -> i64 { unsafe {
-    alloc_heap_adt(1, &[head, tail])
-}}
-
-/// JIT-callable: discover test functions in a module.
+/// The late-bound test-wrapper closure body — `extern "C" fn(env_ptr) -> i64`.
 ///
-/// Takes a String heap pointer (module path; empty = current module).
-/// Returns IO(SList(Sexp)) — a Pure node wrapping an SList of SexpSym values.
-extern "C" fn discover_tests_extern(module_path_str: i64) -> i64 {
-    TEST_RUNNER.with(|c| {
-        let state_ptr = c.get();
-        if state_ptr.is_null() {
-            return unsafe { alloc_io_pure(0) }; // IO Pure(SNil)
-        }
-
-        let state = unsafe { &*state_ptr };
-        let tc_modules = unsafe { &*state.tc_modules };
-        let current_module = state.current_module.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-
-        let module = if module_path_str == 0
-            || unsafe { cranelisp_intrinsics::heap_string::read_string_as_str(module_path_str) }.is_empty()
-        {
-            current_module
-        } else {
-            let path_str = unsafe { cranelisp_intrinsics::heap_string::read_string_as_str(module_path_str) };
-            ModuleFullPath::from(path_str)
-        };
-
-        // Core logic — shared with slash command.
-        let test_names = discover_test_names(tc_modules, &module);
-
-        // Heap-allocate: SList of SexpSym, wrapped in IO Pure.
-        // SexpSym tag = 4 (Sexp enum: Int=0, Float=1, Bool=2, Str=3, Sym=4).
-        let mut slist: i64 = 0; // SNil
-        for name in test_names.into_iter().rev() {
-            let name_str = cranelisp_intrinsics::heap_string::alloc_string(name.as_bytes()) as i64;
-            let sexp_sym = unsafe { alloc_heap_adt(4, &[name_str]) };
-            slist = unsafe { alloc_scons(sexp_sym, slist) };
-        }
-
-        unsafe { alloc_io_pure(slist) }
-    })
-}
-
-/// JIT-callable: run a single test without tracing.
+/// The closure layout is `[header(16) | code_ptr=this(8) | drop_glue=0(8) |
+/// slot_addr(8)]` (a `HeapClosure` with one capture). The single capture is the
+/// **address of the test's GOT slot** (`GotTable::base_ptr() + slot*8`), which
+/// is stable for the module's lifetime; its *contents* are the test's current
+/// code pointer (updated in place on redefinition). So the wrapper:
 ///
-/// Takes a Sexp (SexpSym with function name).
-/// Returns IO(TestResult) — Pure(TestPass(...)) or Pure(TestFail(...)).
-extern "C" fn run_test_extern(sexp_sym: i64) -> i64 {
-    use cranelisp_types::NULLARY_TAG_THRESHOLD;
-
-    TEST_RUNNER.with(|c| {
-        let state_ptr = c.get();
-        if state_ptr.is_null() {
-            let name = cranelisp_intrinsics::heap_string::alloc_string(b"?") as i64;
-            return unsafe { alloc_io_pure(alloc_heap_adt(0, &[name, 0])) };
-        }
-
-        let state = unsafe { &*state_ptr };
-        let tc_modules = unsafe { &*state.tc_modules };
-
-        // Extract function name from SexpSym.
-        // SexpSym layout: [header(16) | tag=4(8) | sname(8)]
-        let fq_name = if sexp_sym != 0 && (sexp_sym as usize) >= NULLARY_TAG_THRESHOLD {
-            let name_ptr = unsafe { *((sexp_sym as *const u8).add(24) as *const i64) };
-            unsafe { cranelisp_intrinsics::heap_string::read_string_as_str(name_ptr).to_string() }
-        } else {
-            let name = cranelisp_intrinsics::heap_string::alloc_string(b"?") as i64;
-            return unsafe { alloc_io_pure(alloc_heap_adt(0, &[name, 0])) };
-        };
-
-        // Core logic — shared with slash command.
-        let outcome = run_test_by_name(tc_modules, &fq_name);
-
-        // Heap-allocate TestResult, wrapped in IO Pure.
-        unsafe { alloc_io_pure(test_outcome_to_heap(&outcome)) }
-    })
-}
-
-/// Convert a TestOutcome to a heap-allocated TestResult ADT.
-unsafe fn test_outcome_to_heap(outcome: &TestOutcome) -> i64 { unsafe {
-    match outcome {
-        TestOutcome::Pass { name, nanos } => {
-            let name_alloc = cranelisp_intrinsics::heap_string::alloc_string(name.as_bytes()) as i64;
-            alloc_heap_adt(0, &[name_alloc, *nanos]) // TestPass tag=0
-        }
-        TestOutcome::Fail { name, nanos, reason } => {
-            let name_alloc = cranelisp_intrinsics::heap_string::alloc_string(name.as_bytes()) as i64;
-            let reason_alloc = cranelisp_intrinsics::heap_string::alloc_string(reason.as_bytes()) as i64;
-            alloc_heap_adt(1, &[name_alloc, *nanos, reason_alloc]) // TestFail tag=1
-        }
-        TestOutcome::Panic { name, reason } => {
-            let name_alloc = cranelisp_intrinsics::heap_string::alloc_string(name.as_bytes()) as i64;
-            let reason_alloc = cranelisp_intrinsics::heap_string::alloc_string(reason.as_bytes()) as i64;
-            alloc_heap_adt(1, &[name_alloc, 0, reason_alloc]) // TestFail tag=1
-        }
+/// 1. loads the captured slot-address from the closure env (capture offset 0 =
+///    base + 32);
+/// 2. loads the current code pointer from that slot-address (late-binding — a
+///    redefined test runs its new body through the same wrapper);
+/// 3. calls `extern "C" fn() -> i64` and returns the `(Option String)` result.
+///
+/// A null slot (test not yet compiled) returns the sentinel `0` (`None`).
+extern "C" fn discovered_test_wrapper(env_ptr: i64) -> i64 {
+    if env_ptr == 0 {
+        return 0;
     }
+    unsafe {
+        // capture[0] at offset 32 (HeapClosure::CAPTURES_START).
+        let slot_addr = *((env_ptr as *const u8).add(32) as *const i64);
+        if slot_addr == 0 {
+            return 0;
+        }
+        let code_ptr = (slot_addr as *const *const u8).read();
+        if code_ptr.is_null() {
+            return 0;
+        }
+        let func: extern "C" fn() -> i64 = std::mem::transmute(code_ptr);
+        func()
+    }
+}
+
+/// Allocate a late-bound test-wrapper closure capturing `slot_addr` (the stable
+/// address of the test's GOT slot). Layout matches a zero-capture-shape
+/// `compile_lambda` closure with one capture, so the language sees it as an
+/// ordinary `(Fn [] (Option String))` value.
+unsafe fn alloc_test_wrapper_closure(slot_addr: i64) -> i64 { unsafe {
+    // payload = code_ptr(8) + drop_glue_ptr(8) + 1 capture(8) = 24 bytes.
+    let base = cranelisp_intrinsics::alloc::alloc_with_rc(24);
+    *(base.add(16) as *mut i64) = discovered_test_wrapper as *const u8 as i64; // code_ptr
+    *(base.add(24) as *mut i64) = 0; // drop_glue_ptr (no heap captures)
+    *(base.add(32) as *mut i64) = slot_addr; // capture[0] = GOT slot address
+    base as i64
+}}
+
+/// An eligible test discovered for the fn-value return: the FQ name and the
+/// stable address of its GOT slot (for the late-bound wrapper capture).
+struct EligibleTest {
+    fq_name: String,
+    slot_addr: i64,
+}
+
+/// Scan a module for eligible `test-*` fns: prefix `test-` AND the EXACT scheme
+/// `(Fn [] (Option String))` (test-discovery.md q-eligibility). A mis-typed
+/// `test-*` is excluded; the warning is surfaced at the REPL/`--run` boundary
+/// (the extern runs in compiled code and cannot push a Warning, so the warn is
+/// the slash-command path's concern — here we silently exclude).
+///
+/// Returns the eligible tests sorted by FQ name. The slot address is
+/// `got.base_ptr() + slot*8` — stable for the module lifetime, contents updated
+/// in place on redefinition (late binding).
+fn discover_eligible_tests(
+    tc_modules: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
+    module: &ModuleFullPath,
+) -> Vec<EligibleTest> {
+    let mut out = Vec::new();
+    let Some(symbols) = tc_modules.get(module) else {
+        return out;
+    };
+    let got_base = symbols.got.base_ptr() as i64;
+    for (name, entry) in symbols.all_symbols() {
+        if !name.as_ref().starts_with("test-") {
+            continue;
+        }
+        let ModuleEntry::Def {
+            scheme,
+            got_slot: Some(slot),
+            ..
+        } = entry
+        else {
+            continue;
+        };
+        if !test_scheme_is_eligible(scheme) {
+            continue; // mis-typed test-* — excluded (q-eligibility).
+        }
+        out.push(EligibleTest {
+            fq_name: format!("{}/{}", module.as_ref(), name.as_ref()),
+            // slot address = base + slot * size_of::<AtomicPtr<u8>>() (8).
+            slot_addr: got_base + (*slot as i64) * 8,
+        });
+    }
+    out.sort_by(|a, b| a.fq_name.cmp(&b.fq_name));
+    out
+}
+
+/// True iff `scheme` is exactly `(Fn [] (Option String))` — zero-arg returning
+/// `(Option String)` (test-discovery.md q-eligibility). Quantified vars are
+/// permitted only if they do not appear (a monomorphic test); the structural
+/// shape is what matters.
+fn test_scheme_is_eligible(scheme: &cranelisp_types::Scheme) -> bool {
+    let cranelisp_types::Type::Fn(params, ret) = &scheme.ty else {
+        return false;
+    };
+    if !params.is_empty() {
+        return false;
+    }
+    let cranelisp_types::Type::ADT(fqtn, args) = ret.as_ref() else {
+        return false;
+    };
+    fqtn.name.as_ref() == "Option"
+        && fqtn.module.as_ref() == "primitives"
+        && args.len() == 1
+        && matches!(args[0], cranelisp_types::Type::String)
+}
+
+#[cfg(test)]
+mod discover_tests_extern_tests {
+    use super::*;
+    use cranelisp_types::{FQTypeName, ModuleFullPath, Scheme, Type, TypeName};
+    use std::collections::HashMap;
+
+    fn option_string() -> Type {
+        Type::ADT(
+            FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Option")),
+            vec![Type::String],
+        )
+    }
+
+    fn mono_scheme(ty: Type) -> Scheme {
+        Scheme { type_vars: vec![], constraints: HashMap::new(), ty }
+    }
+
+    // spec: design/arch/test-discovery.md §5 — eligibility = test- prefix AND
+    // the EXACT scheme (Fn [] (Option String)).
+    #[test]
+    fn eligible_only_for_exact_zero_arg_option_string() {
+        // The exact eligible shape.
+        assert!(test_scheme_is_eligible(&mono_scheme(Type::Fn(
+            vec![],
+            Box::new(option_string())
+        ))));
+        // Wrong arity (one param) — excluded.
+        assert!(!test_scheme_is_eligible(&mono_scheme(Type::Fn(
+            vec![Type::Int],
+            Box::new(option_string())
+        ))));
+        // Wrong return (Option Int) — excluded.
+        assert!(!test_scheme_is_eligible(&mono_scheme(Type::Fn(
+            vec![],
+            Box::new(Type::ADT(
+                FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Option")),
+                vec![Type::Int],
+            )),
+        ))));
+        // Not a function (a value) — excluded.
+        assert!(!test_scheme_is_eligible(&mono_scheme(Type::Int)));
+    }
+
+    // spec: design/arch/test-discovery.md §6 — the wrapper closure reads its
+    // captured GOT-slot address and indirects to the current code pointer.
+    #[test]
+    fn wrapper_indirects_through_captured_slot_and_is_late_bound() {
+        // Stand up a slot (an AtomicPtr-shaped i64 cell) holding a code pointer.
+        extern "C" fn test_a() -> i64 { 0 }   // None (pass)
+        extern "C" fn test_b() -> i64 { 12345 } // some heap ptr sentinel
+
+        let mut slot: i64 = test_a as *const u8 as i64;
+        let slot_addr = (&raw mut slot) as i64;
+
+        let closure = unsafe { alloc_test_wrapper_closure(slot_addr) };
+        // The closure's code_ptr is the wrapper; capture[0] is the slot address.
+        unsafe {
+            assert_eq!(
+                *((closure as *const u8).add(16) as *const i64),
+                discovered_test_wrapper as *const u8 as i64
+            );
+            assert_eq!(*((closure as *const u8).add(32) as *const i64), slot_addr);
+        }
+
+        // Invoke the wrapper: indirects through the slot to test_a → 0.
+        assert_eq!(discovered_test_wrapper(closure), 0);
+
+        // Late binding: redefine the slot's contents (write THROUGH the slot
+        // address, exactly as a redefinition's GOT store would) → the wrapper
+        // runs the new body. Writing via the pointer (not the local) is also
+        // what the wrapper reads, so there is no dead-store.
+        unsafe { *(slot_addr as *mut i64) = test_b as *const u8 as i64; }
+        assert_eq!(discovered_test_wrapper(closure), 12345);
+
+        // Null env / null slot guard.
+        assert_eq!(discovered_test_wrapper(0), 0);
+    }
+
+    // spec: design/arch/test-discovery.md §6 — null TEST_RUNNER → empty Vec.
+    #[test]
+    fn extern_returns_empty_vec_when_no_session() {
+        // No TEST_RUNNER set on this thread.
+        let v = discover_tests_extern(0);
+        assert_ne!(v, 0, "should return a heap (Vec ...), even if empty");
+        // len field at offset 16 must be 0.
+        let len = unsafe { *((v as *const u8).add(16) as *const i64) };
+        assert_eq!(len, 0);
+    }
+}
+
+/// JIT-callable host-promised extern: discover eligible test functions across
+/// the given module paths and return fn-value pairs.
+///
+/// Argument: a heap `(Vec String)` of module paths (the no-arg / single-String
+/// sugar shapes are normalised to this by the stdlib macro — FIXME 0273). A
+/// null/absent arg falls back to the current module.
+///
+/// Returns a heap `(Vec (Pair String (Fn [] (Option String))))`: each pair is a
+/// heap `Pair` ADT (tag 0, fields `[name_string, callable_closure]`); the
+/// callable is a late-bound wrapper closure (see `discovered_test_wrapper`).
+///
+/// Registered as `discover-tests` via `Jit::define_symbol` in
+/// `worker::build_session_jit` (`DefKind::PrimitiveExtern`, test-discovery.md §6).
+pub(crate) extern "C" fn discover_tests_extern(modules_vec: i64) -> i64 {
+    TEST_RUNNER.with(|c| {
+        let state_ptr = c.get();
+        if state_ptr.is_null() {
+            return unsafe { alloc_empty_vec() };
+        }
+        let state = unsafe { &*state_ptr };
+        let tc_modules = unsafe { &*state.tc_modules };
+
+        // Decode the (Vec String) argument into module paths. A null/empty Vec
+        // falls back to the current module.
+        let module_paths = unsafe { read_module_paths(modules_vec) };
+        let module_paths = if module_paths.is_empty() {
+            vec![state
+                .current_module
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()]
+        } else {
+            module_paths
+        };
+
+        // Union the eligible tests across the named modules.
+        let mut eligible: Vec<EligibleTest> = Vec::new();
+        for module in &module_paths {
+            eligible.extend(discover_eligible_tests(tc_modules, module));
+        }
+
+        // Build the (Vec (Pair String callable)).
+        let pair_ptrs: Vec<i64> = eligible
+            .into_iter()
+            .map(|t| unsafe {
+                let name_str =
+                    cranelisp_intrinsics::heap_string::alloc_string(t.fq_name.as_bytes()) as i64;
+                let callable = alloc_test_wrapper_closure(t.slot_addr);
+                // Pair ctor tag=0, fields [first=name, second=callable].
+                alloc_heap_adt(0, &[name_str, callable])
+            })
+            .collect();
+        unsafe { alloc_vec_from(&pair_ptrs) }
+    })
+}
+
+/// Read a heap `(Vec String)` into owned `ModuleFullPath`s. A null pointer or a
+/// zero-length vec yields an empty list.
+unsafe fn read_module_paths(vec_ptr: i64) -> Vec<ModuleFullPath> { unsafe {
+    if vec_ptr == 0 {
+        return Vec::new();
+    }
+    // HeapVec layout: [header(16) | len(8)@16 | cap(8)@24 | data_ptr(8)@32].
+    let base = vec_ptr as *const u8;
+    let len = *(base.add(16) as *const i64);
+    let data_ptr = *(base.add(32) as *const i64) as *const i64;
+    if len <= 0 || data_ptr.is_null() {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(len as usize);
+    for i in 0..len as usize {
+        let elem = *data_ptr.add(i); // heap String pointer
+        if elem == 0 {
+            continue;
+        }
+        let s = cranelisp_intrinsics::heap_string::read_string_as_str(elem);
+        out.push(ModuleFullPath::from(s));
+    }
+    out
+}}
+
+/// Allocate an empty heap `Vec` (len=0, cap=0, data_ptr=null) via the runtime
+/// `vec_new` so the layout + data-buffer allocation convention match exactly
+/// what backend codegen and `vec_drop` expect.
+unsafe fn alloc_empty_vec() -> i64 {
+    cranelisp_intrinsics::vec_runtime::vec_new(0)
+}
+
+/// Allocate a heap `Vec` whose elements are the given i64 values, using the
+/// runtime `vec_new(cap)` (which allocates the data buffer with the canonical
+/// convention — a raw buffer pointed at by `data_ptr`) and then writing the
+/// elements + len directly. This keeps the buffer reclaimable by `vec_drop`.
+unsafe fn alloc_vec_from(elems: &[i64]) -> i64 { unsafe {
+    let n = elems.len();
+    let base = cranelisp_intrinsics::vec_runtime::vec_new(n as i64) as *mut u8;
+    if n == 0 {
+        return base as i64;
+    }
+    // HeapVec: len@16, cap@24, data_ptr@32; data buffer holds `cap` i64 slots.
+    let data_ptr = *(base.add(32) as *const i64) as *mut i64;
+    for (i, &e) in elems.iter().enumerate() {
+        *data_ptr.add(i) = e;
+    }
+    *(base.add(16) as *mut i64) = n as i64; // len
+    base as i64
 }}
 
 // ---------------------------------------------------------------------------

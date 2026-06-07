@@ -58,3 +58,37 @@ Crate: `src/` (`/dev` narrow, int mode). Normative spec:
 - A mis-typed `test-*` is excluded + warned.
 - `int_intrinsics()` is gone; no dead-remnant table remains.
 - Workspace green; no new warnings on the int path.
+
+## Status — S76 W4b (/dev int)
+
+**Int side LANDED (all five scope items done):**
+
+1. `Pair` (`register_pair_type`) + `Result` (`register_result_type`, tag Ok=0/Err=1)
+   bootstrap seeds in `src/bootstrap.rs`, modelled on `register_option_type`. ✅
+2. `discover-tests` published as `DefKind::PrimitiveExtern` (`got_slot: None`,
+   `code: None`, scheme `(Fn [(Vec String)] (Vec (Pair String (Fn [] (Option
+   String)))))`) in `register_test_infrastructure`. ✅
+3. `Jit::define_symbol("discover-tests", discover_tests_extern)` at session init
+   (in `worker::build_session_jit`). ✅
+4. Live-scan extern reshaped (`session_v4.rs::discover_tests_extern`): takes the
+   `(Vec String)` of module paths, scans for `test-` prefix AND the EXACT scheme
+   `(Fn [] (Option String))` (`test_scheme_is_eligible`), builds late-bound wrapper
+   closures (`discovered_test_wrapper` — GOT-slot-address capture, indirect call →
+   freshness), unions across modules, returns a heap `(Vec (Pair String callable))`.
+   Unit-tested (`discover_tests_extern_tests`: eligibility, late-binding, empty-vec). ✅
+5. `int_intrinsics()` + `run_test_extern` + the SList/IO/TestResult marshalling
+   helpers deleted; `TestResult`/`run-test` retired from bootstrap. ✅
+
+**E2E acceptance BLOCKED on frontend (FIXME 0291).** `(discover-tests ["mod"])`
+fails at PARSE because `cranelisp-frontend` still intercepts `discover-tests` /
+`run-test` in head position (`ast_builder.rs:1021-1022` + `build_discover_tests`)
+— a producer the test-discovery cascade owes to /frontend that Wave 4a did not
+land. test-discovery.md §"Frontend — nothing" requires deleting those arms.
+Filed as FIXME 0291 (`target: /dev`, frontend crate). The int extern, bootstrap
+seed, and define_symbol promise are all in place; once 0291 lands, e2e resolves.
+`catch-runtime-error` (FIXME 0290, also int) is already e2e-verified — it has no
+frontend arm: `(catch-runtime-error (fn [] (/ 1 0)))` → `(Err "runtime panic:
+division by zero")`; `(catch-runtime-error (fn [] (+ 1 2)))` → `(Ok 3)`.
+
+Keep this FIXME OPEN until 0291 lands and the discover-tests e2e (0289 /qa)
+demonstrates the pairs.

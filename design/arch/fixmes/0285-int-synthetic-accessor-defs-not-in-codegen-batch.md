@@ -37,3 +37,40 @@ trace_linked_accessor_consumption_parks_defect.
 
 Blocks accessor-based trace consumption in ALL modes. S76 W4 or S77. The
 failing tests are the durable record; 0276 carries the triage history.
+
+## Status — S76 W4b (/dev int)
+
+**Defect 2 (worker-panic→park) FIXED (int).** `src/worker.rs::priority_worker_loop_shared`
+now wraps both work-item handlers (`handle_typecheck_work_shared`,
+`handle_cached_codegen`) in `catch_unwind` (`AssertUnwindSafe`); a panic — e.g.
+the cranelift `can't resolve symbol …` unresolved-import panic at finalize, or any
+`unreachable!` — is converted to a `CranelispError::CodegenError` and routed
+through `scheduler.notify_module_failed`, so `wait_inmem_complete_blocking`
+returns `ModuleFailed` instead of the main thread parking on the completion
+condvar forever. Verified: the `--link` accessor build now **completes in ≈1.2s
+with a clean error + exit 1** ("worker thread panicked while compiling module
+'prog_acc': can't resolve symbol nanos") rather than hanging. `panic_message`
+extracts the payload string. The hang IS the defect (per the failing test
+comment); it is resolved.
+
+**Batch derivation (proposed resolution #1) DONE (int).**
+`src/worker.rs::derive_codegen_batch`'s final symbol-table sweep now enumerates
+bootstrap-synthesised `ast: Some` NON-constructor `DefKind::Primitive` Defs (the
+accessor family), not just constructors — forward-looking, so any synthesised
+accessor body that routes through a module batch is lowered. (Inert today because
+the accessors live in `primitives`, which is never batch-compiled — see below.)
+
+**Defect 1 (accessor resolution) is BACKEND — filed as FIXME 0292.** Triage
+showed the accessor call does NOT route through `derive_codegen_batch` for the
+primitives-module accessors: a `(nanos t)` call resolves as
+`BuiltinFn { name: "nanos" }`, but `is_extern_primitive` recognises only the
+intrinsic ABI names (`cranelisp_trace_nanos`), not the bare `nanos`. The
+bare-name→intrinsic-name mapping was lost in the W1.5 trace relocation. The
+minimal fix is a backend call-site rewrite (`nanos`→`cranelisp_trace_nanos`,
+Trace-receiver-scoped) — backend's call, filed as FIXME 0292. (The int
+synthesised-body alternative can't be compiled because `primitives` is never
+batch-compiled.)
+
+Keep this FIXME OPEN until 0292 lands and
+`tests/trace.rs::{trace_nanos_accessor_resolves_in_repl,
+trace_linked_accessor_consumption_parks_defect}` both pass.

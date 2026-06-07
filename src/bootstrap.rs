@@ -19,13 +19,21 @@
 //!    `IntrinsicType`, `Vec` as `TypeDef`.
 //! 3. synthetic `macros` module — `SList`/`Sexp` ADTs + `sconcat` primitive.
 //! 4. `Option` ADT in `primitives`.
+//! 4b. `Pair` ADT in `primitives` (test-discovery.md ruling 1 — `discover-tests`
+//!    return shape).
+//! 4c. `Result` ADT in `primitives` (test-discovery.md ruling 2 —
+//!    `catch-runtime-error` return; tag order Ok=0 / Err=1).
 //! 5. `IO` ADT (`Pure`/`Effect`/`Bind`) in `primitives`.
 //! 6. `bind` primitive in `primitives`.
 //! 7. `Trace` ADT (`TraceCall` + field accessors) + `trace` module-scoped
 //!    special form in `primitives` (ADT data declaration only — the 12 runtime
 //!    bodies live in `cranelisp-intrinsics`, codegen in backend; see
 //!    `tracing.md` §2.2 + FIXME 0242 §S76-addendum (4)).
-//! 8. `TestResult` ADT + `discover-tests`/`run-test` primitives in `primitives`.
+//! 8. test-discovery primitives in `primitives`: `discover-tests`
+//!    (`DefKind::PrimitiveExtern`, body promised by int at session init) +
+//!    `catch-runtime-error` (`DefKind::Primitive`, body in
+//!    `cranelisp-intrinsics::panic`). `TestResult`/`run-test` RETIRED
+//!    (test-discovery.md, fourth convergence).
 //!
 //! ## Ordering invariants (legacy body, restated)
 //!
@@ -243,10 +251,12 @@ pub(crate) fn mount_synthetic_modules(
     register_builtin_type_names(symbol_tables); // step 2
     register_macros_module(symbol_tables, next_id); // step 3
     register_option_type(symbol_tables, next_id); // step 4
+    register_pair_type(symbol_tables, next_id); // step 4b (test-discovery.md ruling 1)
+    register_result_type(symbol_tables, next_id); // step 4c (test-discovery.md ruling 1)
     register_io_type(symbol_tables, next_id); // step 5
     register_bind_primitive(symbol_tables, next_id); // step 6
     register_trace_type(symbol_tables); // step 7
-    register_test_infrastructure(symbol_tables); // step 8
+    register_test_infrastructure(symbol_tables, next_id); // step 8
 }
 
 /// Ensure a module exists in the session table.
@@ -521,6 +531,103 @@ fn register_option_type(
     );
 }
 
+// --- Step 4b: Pair ADT (primitives) ---
+
+/// Seed `(Pair a b)` with one 2-field data constructor `Pair` into the
+/// `primitives` module, modelled on [`register_option_type`].
+///
+/// `discover-tests` returns `(Vec (Pair String (Fn [] (Option String))))`
+/// (test-discovery.md ruling 1) — name + late-bound callable. `Pair` is not
+/// otherwise seeded (it lived only in `stdlib/collections/pair.cl`), so it must
+/// join the primitives bootstrap seeds. Both fields carry data → heap-allocated
+/// (no nullary ctor).
+fn register_pair_type(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
+    next_id: &AtomicU32,
+) {
+    let primitives_path = ModuleFullPath::from("primitives");
+    let pair_a = fresh_type_id(next_id);
+    let pair_b = fresh_type_id(next_id);
+    let pair_fqtn = primitives_fqtn("Pair");
+    let mut primitives = symbol_tables
+        .get_mut(&primitives_path)
+        .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
+    register_synth_adt(
+        &mut primitives,
+        &pair_fqtn,
+        "Pair",
+        &["a", "b"],
+        &[pair_a, pair_b],
+        Some("Two-field product — (Pair first second)"),
+        &[SynthCtor {
+            name: "Pair",
+            fields: vec![
+                SynthField {
+                    name: "first",
+                    ty: Type::Var(pair_a),
+                },
+                SynthField {
+                    name: "second",
+                    ty: Type::Var(pair_b),
+                },
+            ],
+            docstring: Some("Construct a pair"),
+            internal: false,
+        }],
+    );
+}
+
+// --- Step 4c: Result ADT (primitives) ---
+
+/// Seed `(Result a b)` with `Ok`/`Err` data constructors into the `primitives`
+/// module, modelled on [`register_option_type`].
+///
+/// `catch-runtime-error :: forall a. (Fn [(Fn [] a)] (Result a String))` returns
+/// a `Result` (test-discovery.md ruling 2). Tag order is **Ok=0 / Err=1**
+/// (declaration order) — the combinator's marshalling in
+/// `cranelisp-intrinsics::panic` assumes this. Both ctors carry one data field →
+/// heap-allocated (no nullary ctor).
+fn register_result_type(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
+    next_id: &AtomicU32,
+) {
+    let primitives_path = ModuleFullPath::from("primitives");
+    let result_a = fresh_type_id(next_id);
+    let result_b = fresh_type_id(next_id);
+    let result_fqtn = primitives_fqtn("Result");
+    let mut primitives = symbol_tables
+        .get_mut(&primitives_path)
+        .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
+    register_synth_adt(
+        &mut primitives,
+        &result_fqtn,
+        "Result",
+        &["a", "b"],
+        &[result_a, result_b],
+        Some("Success or failure — (Ok val) or (Err err)"),
+        &[
+            SynthCtor {
+                name: "Ok",
+                fields: vec![SynthField {
+                    name: "val",
+                    ty: Type::Var(result_a),
+                }],
+                docstring: Some("Success value"),
+                internal: false,
+            },
+            SynthCtor {
+                name: "Err",
+                fields: vec![SynthField {
+                    name: "err",
+                    ty: Type::Var(result_b),
+                }],
+                docstring: Some("Failure value"),
+                internal: false,
+            },
+        ],
+    );
+}
+
 // --- Step 5: IO ADT (primitives) ---
 
 fn register_io_type(
@@ -763,84 +870,86 @@ fn register_trace_type(
     );
 }
 
-// --- Step 8: TestResult ADT + test primitives (primitives) ---
+// --- Step 8: test-discovery primitives (primitives) ---
+//
+// test-discovery.md (fourth convergence, SETTLED): `TestResult`/`run-test`
+// RETIRE; `discover-tests` becomes a `DefKind::PrimitiveExtern` returning
+// fn-value pairs; `catch-runtime-error` is a standalone `DefKind::Primitive`
+// combinator backed by the `cranelisp-intrinsics::panic` C-ABI export.
 
 fn register_test_infrastructure(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
+    next_id: &AtomicU32,
 ) {
     let primitives_path = ModuleFullPath::from("primitives");
-    let test_result_fqtn = primitives_fqtn("TestResult");
-
     let mut primitives = symbol_tables
         .get_mut(&primitives_path)
         .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
 
-    register_synth_adt(
-        &mut primitives,
-        &test_result_fqtn,
-        "TestResult",
-        &[],
-        &[],
-        Some("Test execution result"),
-        &[
-            SynthCtor {
-                name: "TestPass",
-                fields: vec![
-                    SynthField {
-                        name: "name",
-                        ty: Type::String,
-                    },
-                    SynthField {
-                        name: "nanos",
-                        ty: Type::Int,
-                    },
-                ],
-                docstring: Some("Test passed"),
-                internal: false,
-            },
-            SynthCtor {
-                name: "TestFail",
-                fields: vec![
-                    SynthField {
-                        name: "name",
-                        ty: Type::String,
-                    },
-                    SynthField {
-                        name: "nanos",
-                        ty: Type::Int,
-                    },
-                    SynthField {
-                        name: "reason",
-                        ty: Type::String,
-                    },
-                ],
-                docstring: Some("Test failed (no trace)"),
-                internal: false,
-            },
-        ],
+    // The eligible-test callable: `(Fn [] (Option String))` — None=pass,
+    // (Some reason)=fail. The wrapper's own type and the eligibility filter
+    // are the same contract (q-eligibility).
+    let option_string = Type::ADT(primitives_fqtn("Option"), vec![Type::String]);
+    let test_callable = Type::Fn(vec![], Box::new(option_string));
+    // (Pair String (Fn [] (Option String)))
+    let pair_name_callable = Type::ADT(
+        primitives_fqtn("Pair"),
+        vec![Type::String, test_callable],
+    );
+    // (Vec (Pair ...)) — return; (Vec String) — argument (module paths).
+    let vec_pairs = Type::ADT(primitives_fqtn("Vec"), vec![pair_name_callable]);
+    let vec_string = Type::ADT(primitives_fqtn("Vec"), vec![Type::String]);
+
+    // discover-tests :: (Fn [(Vec String)] (Vec (Pair String (Fn [] (Option String)))))
+    //
+    // DefKind::PrimitiveExtern — body promised by int at session init via
+    // `Jit::define_symbol("discover-tests", discover_tests_extern)`. No GOT
+    // slot, no code; backend lowers a call as Linkage::Import against the key.
+    // The no-arg and single-String shapes are stdlib-macro sugar normalising
+    // to the `(Vec String)` form (FIXME 0273, /stdlib).
+    primitives.insert(
+        Symbol::from("discover-tests"),
+        ModuleEntry::def(
+            mono(Type::Fn(vec![vec_string], Box::new(vec_pairs))),
+            DefKind::PrimitiveExtern,
+        )
+        .visibility(Visibility::Public)
+        .param_names(vec![Symbol::from("modules")])
+        .docstring(
+            "Discover eligible test-* functions across the given module paths: \
+             returns (Vec (Pair name late-bound-callable)).",
+        )
+        .build(),
     );
 
-    // discover-tests :: (Fn [String] (IO (SList Sexp)))
-    // run-test       :: (Fn [Sexp] (IO TestResult))
-    let sexp_ty = Type::ADT(macros_fqtn("Sexp"), vec![]);
-    let slist_sexp = Type::ADT(macros_fqtn("SList"), vec![sexp_ty.clone()]);
-    let test_result_ty = Type::ADT(test_result_fqtn.clone(), vec![]);
-    let io_slist_sexp = Type::ADT(primitives_fqtn("IO"), vec![slist_sexp]);
-    let io_test_result = Type::ADT(primitives_fqtn("IO"), vec![test_result_ty]);
-
-    insert_primitive(
-        &mut primitives,
-        "discover-tests",
-        mono(Type::Fn(vec![Type::String], Box::new(io_slist_sexp))),
-        vec!["module"],
-        "Discover test-* functions: (discover-tests) or (discover-tests module)",
+    // catch-runtime-error :: forall a. (Fn [(Fn [] a)] (Result a String))
+    //
+    // A plain forall scheme with EMPTY constraints (modelled on
+    // `register_bind_primitive`) — one runtime body serves every `a` (uniform
+    // i64 ABI), so the constrained-fn monomorphisation machinery is NOT
+    // engaged. JIT name = ABI name = "catch-runtime-error" — resolved from the
+    // intrinsics archive (intrinsics_table() entry); no `define_symbol`.
+    let a = fresh_type_id(next_id);
+    let thunk_ty = Type::Fn(vec![], Box::new(Type::Var(a)));
+    let result_a_string = Type::ADT(
+        primitives_fqtn("Result"),
+        vec![Type::Var(a), Type::String],
     );
-    insert_primitive(
-        &mut primitives,
-        "run-test",
-        mono(Type::Fn(vec![sexp_ty], Box::new(io_test_result))),
-        vec!["name"],
-        "Run a single test without tracing: (run-test name)",
+    let cre_scheme = Scheme {
+        type_vars: vec![a],
+        constraints: HashMap::new(),
+        ty: Type::Fn(vec![thunk_ty], Box::new(result_a_string)),
+    };
+    primitives.insert(
+        Symbol::from("catch-runtime-error"),
+        ModuleEntry::def(cre_scheme, DefKind::Primitive)
+            .visibility(Visibility::Public)
+            .param_names(vec![Symbol::from("thunk")])
+            .docstring(
+                "Invoke a thunk under runtime-error protection: returns \
+                 (Ok result) on success or (Err message) on a runtime panic.",
+            )
+            .build(),
     );
 }
 
@@ -948,16 +1057,77 @@ mod tests {
             prims.get("trace"),
             Some(ModuleEntry::SpecialForm { .. })
         ));
-        assert!(matches!(prims.get("TestResult"), Some(ModuleEntry::TypeDef { .. })));
-        assert!(matches!(prims.get("discover-tests"), Some(ModuleEntry::Def { .. })));
-        assert!(matches!(prims.get("run-test"), Some(ModuleEntry::Def { .. })));
+        // TestResult / run-test RETIRED (test-discovery.md, fourth convergence).
+        assert!(prims.get("TestResult").is_none(), "TestResult must be retired");
+        assert!(prims.get("run-test").is_none(), "run-test must be retired");
+        // discover-tests is now a PrimitiveExtern (host-promised body).
+        assert!(matches!(
+            prims.get("discover-tests"),
+            Some(ModuleEntry::Def { kind, got_slot: None, .. })
+                if matches!(kind.as_ref(), DefKind::PrimitiveExtern)
+        ));
+    }
+
+    #[test]
+    fn mounts_pair_and_result_in_primitives() {
+        let (tables, next_id) = fresh_tables();
+        mount_synthetic_modules(&tables, &next_id);
+        let prims = tables.get(&ModuleFullPath::from("primitives")).unwrap();
+        assert!(matches!(prims.get("Pair"), Some(ModuleEntry::TypeDef { .. })));
+        // Pair ctor is a 2-field data constructor.
+        match prims.get("Pair") {
+            // The constructor `Pair` and the type `Pair` share the name; the
+            // last insert (the TypeDef) wins for the type-name key. The ctor is
+            // checked via the constructor list on the TypeDef.
+            Some(ModuleEntry::TypeDef { info, .. }) => {
+                assert_eq!(info.constructors, vec![Symbol::from("Pair")]);
+            }
+            other => panic!("Pair should be a TypeDef, got {other:?}"),
+        }
+        assert!(matches!(prims.get("Result"), Some(ModuleEntry::TypeDef { .. })));
+        // Ok=tag 0, Err=tag 1 (declaration order — the combinator assumes this).
+        match prims.get("Ok") {
+            Some(ModuleEntry::Def { kind, .. }) => match kind.as_ref() {
+                DefKind::Constructor { tag, field_count, .. } => {
+                    assert_eq!(*tag, 0);
+                    assert_eq!(*field_count, 1);
+                }
+                _ => panic!("Ok should be a Constructor"),
+            },
+            other => panic!("Ok should be a Def, got {other:?}"),
+        }
+        match prims.get("Err") {
+            Some(ModuleEntry::Def { kind, .. }) => match kind.as_ref() {
+                DefKind::Constructor { tag, .. } => assert_eq!(*tag, 1),
+                _ => panic!("Err should be a Constructor"),
+            },
+            other => panic!("Err should be a Def, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mounts_catch_runtime_error_primitive() {
+        let (tables, next_id) = fresh_tables();
+        mount_synthetic_modules(&tables, &next_id);
+        let prims = tables.get(&ModuleFullPath::from("primitives")).unwrap();
+        match prims.get("catch-runtime-error") {
+            Some(ModuleEntry::Def { kind, scheme, .. }) => {
+                assert!(matches!(kind.as_ref(), DefKind::Primitive));
+                // forall a. (Fn [(Fn [] a)] (Result a String)) — one quantified
+                // var, empty constraints (plain forall, not constrained-fn).
+                assert_eq!(scheme.type_vars.len(), 1);
+                assert!(scheme.constraints.is_empty());
+            }
+            other => panic!("catch-runtime-error should be a Primitive Def, got {other:?}"),
+        }
     }
 
     #[test]
     fn next_type_id_advances_monotonically() {
         let (tables, next_id) = fresh_tables();
         mount_synthetic_modules(&tables, &next_id);
-        // SList(1) + Option(1) + IO(1) + Bind(2) + bind(2) = 7 fresh vars.
-        assert_eq!(next_id.load(Ordering::SeqCst), 7);
+        // SList(1) + Option(1) + Pair(2) + Result(2) + IO(1) + Bind(2)
+        // + bind(2) + catch-runtime-error(1) = 12 fresh vars.
+        assert_eq!(next_id.load(Ordering::SeqCst), 12);
     }
 }

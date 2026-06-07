@@ -3300,15 +3300,27 @@ pub fn derive_codegen_batch(
             // 0249-a `register_constructors`) are populated — making
             // `(map Some xs)` (constructor-as-value) reach the constructor via
             // its GOT slot. Mirror of the Decision 0048 primitives got-slotting.
-            let is_uncompiled_ctor = table
+            //
+            // S76 W4b (FIXME 0285): the same uncovered-sibling treatment for
+            // bootstrap-synthesised NON-constructor Defs carrying `ast: Some`
+            // (the Trace field-accessor family — `nanos`/`name`/…). They are
+            // function bodies (synthesised `match` extractions) that MUST be
+            // lowered into the GOT for an accessor call to resolve GOT-indirect.
+            // (Inline `DefKind::Primitive` entries with `ast: None`, e.g.
+            // `bind`/`sconcat`, are excluded — they resolve from the intrinsics
+            // archive and carry no body to compile.)
+            let is_uncompiled_synth_def = table
                 .get(name.as_ref())
                 .map(|e| matches!(
                     &e,
                     ModuleEntry::Def { kind, ast: Some(_), .. }
-                        if matches!(kind.as_ref(), DefKind::Constructor { .. })
+                        if matches!(
+                            kind.as_ref(),
+                            DefKind::Constructor { .. } | DefKind::Primitive
+                        )
                 ))
                 .unwrap_or(false);
-            if name.as_ref().contains('$') || name.as_ref() == "__expr" || is_uncompiled_ctor {
+            if name.as_ref().contains('$') || name.as_ref() == "__expr" || is_uncompiled_synth_def {
                 try_push(name, &mut names, &mut seen);
             }
         }
@@ -3426,9 +3438,10 @@ pub fn inline_jit_codegen_for_names(
     let _ = (extra_jit_symbols, shared_state);
 
     // 3. Build the JIT — the whole symbol set derives from `symbol_tables`
-    //    (BC §3 / D41). The 2 parked test intrinsics (`discover-tests` /
-    //    `run-test`) are NOT in `intrinsics_table()`, so we register them via
-    //    the extension path. FIXME 0261 tracks folding them into `Jit::new`.
+    //    (BC §3 / D41). The host-promised `discover-tests` extern
+    //    (`DefKind::PrimitiveExtern`) is registered via `Jit::define_symbol`
+    //    inside `build_session_jit`. `catch-runtime-error` resolves from the
+    //    intrinsics catalog (no host promise needed). (FIXME 0271)
     let mut jit = build_session_jit(tc_modules)?;
 
     // 4. Unified codegen entry — S75 5-arg shape (BC §3 invariant 3).
@@ -3511,19 +3524,23 @@ pub fn inline_jit_codegen_for_names(
 }
 
 /// Build the session JIT from the symbol tables (the unified `Jit::new`
-/// boundary, BC §3), then fold in the 2 parked int-hosted test intrinsics
-/// that are not part of `cranelisp_intrinsics::intrinsics_table()`.
+/// boundary, BC §3), then register the host-promised `discover-tests` extern.
 ///
-/// FIXME 0261: `Jit::new(symbol_tables)` provides no extension point for
-/// non-catalog int-hosted JIT symbols, so the 2 test intrinsics cannot be
-/// registered through it. Until that gap is closed, programs containing
-/// literal `(discover-tests)` / `(run-test ...)` forms rely on this helper.
-/// `Jit::new` already registers the full intrinsics catalog (incl. trace) +
-/// per-module GOT data symbols + platform-effect jit-names.
+/// `Jit::new` registers the full intrinsics catalog (incl. trace +
+/// `catch-runtime-error`) + per-module GOT data symbols + platform-effect
+/// jit-names. `discover-tests` is a `DefKind::PrimitiveExtern` whose body lives
+/// in int (it reads the live typed session state — `cranelisp-intrinsics`
+/// cannot name `Code`, Principle 18). int promises it here via the additive
+/// `Jit::define_symbol` escape hatch (test-discovery.md §6; FIXME 0271/0269).
 fn build_session_jit(
     tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
 ) -> Result<cranelisp_backend::jit::Jit, CranelispError> {
-    cranelisp_backend::jit::Jit::new(tc_modules)
+    let jit = cranelisp_backend::jit::Jit::new(tc_modules)?;
+    jit.define_symbol(
+        "discover-tests",
+        crate::session_v4::discover_tests_extern as *const u8,
+    );
+    Ok(jit)
 }
 
 /// Read the runtime GOT address for `name` in `module`, following Import
@@ -3848,23 +3865,64 @@ pub struct ModuleSuspendState {
 ///
 /// Sprint 57 Wave 4 G9 per `persistent-workers.md` §4.1.
 pub fn priority_worker_loop_shared(shared: &crate::session_v4::SharedState) {
+    use std::panic::AssertUnwindSafe;
     loop {
         let work = shared.scheduler.take_priority_work_blocking();
         match work {
             Some(PriorityWork::Typecheck(module)) => {
-                if let Err(e) = handle_typecheck_work_shared(shared, &module) {
-                    shared.scheduler.notify_module_failed(&module, e);
+                // FIXME 0285 defect 2 — worker-panic→park robustness. A panic
+                // inside the work handler (e.g. an unresolved-symbol panic from
+                // the JIT at finalize, or any `unreachable!`) would otherwise
+                // unwind this worker thread WITHOUT marking the module Failed —
+                // the main thread then parks on the completion condvar forever
+                // (no notification ever fires) → a hang, not an error+exit.
+                // Catch the unwind, convert it to a module failure, and notify
+                // so `wait_inmem_complete_blocking` returns `ModuleFailed`.
+                let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    handle_typecheck_work_shared(shared, &module)
+                }));
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => shared.scheduler.notify_module_failed(&module, e),
+                    Err(panic) => {
+                        let msg = panic_message(&panic);
+                        shared.scheduler.notify_module_failed(
+                            &module,
+                            CranelispError::CodegenError {
+                                message: format!(
+                                    "worker thread panicked while compiling module \
+                                     '{module}': {msg}"
+                                ),
+                                location: ErrorLocation::from_span_file(
+                                    Span::SYNTHETIC,
+                                    None,
+                                ),
+                            },
+                        );
+                    }
                 }
             }
             Some(PriorityWork::JitCodegen(module, _symbol)) => {
                 // Cache-hit module: load entire .o via Linker (batch load).
                 // Sprint 57 Wave 3 G8: no PlatformRegistry lock — platform
                 // symbols are read from the symbol tables inside the cache
-                // loader.
-                let _ = handle_cached_codegen(
-                    &module, Some(shared),
-                    &shared.scheduler,
-                );
+                // loader. Same panic→Failed robustness (FIXME 0285 defect 2).
+                let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    handle_cached_codegen(&module, Some(shared), &shared.scheduler)
+                }));
+                if let Err(panic) = result {
+                    let msg = panic_message(&panic);
+                    shared.scheduler.notify_module_failed(
+                        &module,
+                        CranelispError::CodegenError {
+                            message: format!(
+                                "worker thread panicked while loading cached \
+                                 module '{module}': {msg}"
+                            ),
+                            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+                        },
+                    );
+                }
             }
             None => break, // Shutdown or all work done.
         }
@@ -3878,6 +3936,19 @@ pub fn priority_worker_loop_shared(shared: &crate::session_v4::SharedState) {
     // `JitWrite` from backend's `compile_to_module` so their thread-local
     // ring buffer must be published before the worker exits.
     crate::got_trace::publish_thread_buffer();
+}
+
+/// Extract a human-readable message from a caught panic payload (FIXME 0285
+/// defect 2). `catch_unwind` yields `Box<dyn Any>`; the common payloads are
+/// `&str` (from `panic!("…")`) and `String` (from formatted panics).
+fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = panic.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic (non-string payload)".to_string()
+    }
 }
 
 /// Handle a Typecheck work item on a persistent priority worker.

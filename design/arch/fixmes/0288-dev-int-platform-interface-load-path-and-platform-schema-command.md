@@ -62,3 +62,59 @@ load path + `/platform-schema` (TARGET)" and BC §6.
 Int half of the platform-interface cascade. Pairs with 0286 (platform macro), 0287 (backend
 generator + dispatch + bake), 0289 (qa e2e). Supersedes the int half of the re-pointed
 0229/0233.
+
+## Status — S76 W4b (/dev int) — CARRIED to S77 as a coordinated cross-crate cut
+
+**Not landed this wave (deliberate — interlocked, not piecemeal-safe).** The
+load-path rewrite cannot land as an isolated int change without either breaking
+the green workspace or producing a half-migrated load path worse than the current
+working one. Three hard interlocks:
+
+1. **PlatformError hash-refusal variant is missing in `cranelisp-types`** (the
+   §6.4 `--run`/`--link` refusal sites consume it). It is `/arch`-owned (Decision
+   0042) — filed as **FIXME 0293** (`target: /arch`). The hash-gate refusal path
+   cannot compile until it exists. The `schema_literal` removal (also §7 cascade)
+   is named in 0293 as the sibling types-crate residue.
+
+2. **The platform crate's three HELD retirements (validate_schema, jit_name,
+   export_name) must land SIMULTANEOUSLY with the consumer deletions.** Wave 4a
+   deliberately HELD them so the workspace stayed green for this int cut.
+   `OwnedPlatformFnDescriptor` still carries `jit_name` + `ptr` (the transitional
+   shape) and `HostCallbacks` still carries `validate_schema`
+   (`null_validate_schema`). Deleting `inject_primitives_import_for_platform` + the
+   `(jit_name, ptr)`/`JITBuilder::symbol` path + the `validate_schema` construction
+   sites on the int side, WITHOUT the platform crate dropping those fields in the
+   same commit, leaves dangling references; doing the reverse breaks the platform
+   crate. This is a single atomic change-set spanning `cranelisp-platform` +
+   `src/platform.rs` + `cranelisp-exe-bundle` — a `/sprint`-coordinated wave-gate
+   landing (FIXME 0286 platform-side + this int-side together), not a narrow int
+   deploy.
+
+3. **The new SymbolTable-from-manifest build needs FQ sigs end-to-end.** The DLL
+   now emits FQ type_sigs (`primitives/Int`, `shapes/Rectangle`); the host resolves
+   them via ordinary module resolution (`check_type_expr` over FQ names) with the
+   associated `.cl` type module(s) FQ-auto-loaded (0268, landed). Wiring the
+   manifest-index→got_slot + `GotTable::with_static_backing` over the dlsym'd
+   `__cranelisp_got_platform_<name>` (wrap-not-copy) is tractable, but it must be
+   validated e2e against the stdio DLL rebuilt with the new macro — which is gated
+   on (2) landing first (the stdio DLL must emit the new exports + FQ sigs).
+
+**Producers confirmed available (Wave 4a) for when the cut lands:**
+- platform macro: exports `__cranelisp_got_platform_<name>` + manifest +
+  `__cranelisp_layout_hash_<name>` + embedded schema (`set_global_schema`).
+- backend: `schema::generate_schema` + `schema::compute_layout_hash` (the
+  `/platform-schema` generator + the hash regeneration); `PlatformLayoutCheck` +
+  `generate_startup_object_checked` (the `--link` startup bake);
+  `cranelisp_check_layout_hash` (intrinsic, the compare-and-abort);
+  `GotTable::with_static_backing` (the wrap-not-copy GOT consumption); the
+  transitional platform GOT-indirect dispatch arm (activates on `got_slot: Some`).
+
+**Recommended sequencing for S77:** /arch lands 0293 (PlatformError variant +
+schema_literal removal) → /sprint coordinates the atomic platform-retirement cut
+(0286 platform-side + this int-side load-path rewrite + exe-bundle bake) in one
+wave gate → 0289 /qa e2e. The `/platform-schema <name>` REPL command
+(`SlashCommand::PlatformSchema`, not yet in source) is additive and can land with
+the int-side cut (thin caller of `schema::generate_schema` over the loaded
+platform's module tables).
+
+Keep this FIXME OPEN.
