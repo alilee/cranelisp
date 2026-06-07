@@ -162,8 +162,9 @@
 //! | [`heap_string`]      | `HeapString` layout-ABI + alloc/read helpers (opaque to backend, Decision 12) |
 //! | [`io`]               | `cranelisp_run_io` IO trampoline (Decision 29) |
 //! | [`io_observer`]      | IO observation extension point — registration + `IoEvent`/`IoEventTag` + `trace_anchor` (Decision 40) |
-//! | [`ivar`]             | IVar primitives for lenient evaluation (spec §12.4.3) |
-//! | [`panic`](mod@panic) | `runtime/panic` sentinel for match-exhaustiveness failures |
+//! | [`ivar`]             | IVar primitives for lenient evaluation (spec §12.4.3) + fork-join error-slot ferry |
+//! | [`layout`]           | `cranelisp_check_layout_hash` — `--link` platform layout-hash gate (platform-interface.md §5.5.4) |
+//! | [`panic`](mod@panic) | `runtime/panic` sentinel + `catch-runtime-error` combinator + error-slot mechanism |
 //! | [`rc`]               | RC trace + underflow check + `consume_shallow` (Decision 13/24) |
 //! | [`trace`]            | `(trace ...)` runtime — 12 `cranelisp_trace_*` bodies + `TRACE_STACK` + nested-trace guard + `DisplayDescriptor` (BC §4b inv 12) |
 //! | [`vec_runtime`]      | Vec layout-ABI + COW ops + drop |
@@ -175,6 +176,7 @@ pub mod heap_string;
 pub mod io;
 pub mod io_observer;
 pub mod ivar;
+pub mod layout;
 pub mod panic;
 pub mod rc;
 pub mod trace;

@@ -205,25 +205,54 @@ where
                     return self.compile_extern_call(op_name, &arg_vals, span);
                 }
 
-                // Unrecognized builtin: treat as extern call.
-                // This covers platform effect functions (PlatformEffect)
-                // whose JIT symbol names (e.g. `cranelisp_print`) are
-                // resolved by the typechecker as the `BuiltinFn { name }`
-                // value. The name here is the platform's mangled jit_name —
-                // NOT a `ModuleEntry`'s symbol name (which would be the bare
-                // form, e.g. `print`) — so `resolve_got_target` would fail
-                // to find an entry. The platform fn ptr reaches the JIT via
-                // `JITBuilder::symbol(jit_name, ptr)` registration (see
-                // `src/worker.rs::collect_jit_setup`), and the cache linker
-                // registers it identically via
-                // `linker.register_symbol(jit_name, ptr)` (worker.rs §3571).
-                // Direct extern is the correct shape for this branch.
-                // Platform functions use consuming convention — the DLL
-                // owns heap args (e.g., `CLString::own()` captures the
-                // string).
+                // Unrecognized builtin: a platform-effect function or a
+                // direct-extern. Platform functions use the consuming
+                // convention — the DLL owns heap args (e.g. `CLString::own()`
+                // captures the string).
                 if !primitives_inline::is_known_builtin(op_name) {
                     let arg_vals = self.compile_consuming_arg_list(args)?;
                     self.in_tail_position = saved_tail;
+                    // Platform GOT-indirect dispatch arm (TARGET shape;
+                    // platform-interface.md §6.2/§6.3, BC §3 "the
+                    // platform-interface codegen role"). When the platform
+                    // entry carries the NEW shape — a populated `got_slot`
+                    // adopted from the DLL's exported GOT
+                    // (`__cranelisp_got_platform_<name>`, manifest index) —
+                    // dispatch GOT-indirect, structurally identical to
+                    // user-module GOT dispatch. Backend does NOT emit the
+                    // platform GOT (the DLL exports it); it emits the
+                    // dispatch, referencing the GOT data symbol as a
+                    // `Linkage::Import` (resolved by `dlsym` in JIT / `ld` in
+                    // `--link`).
+                    //
+                    // TRANSITIONAL MECHANICS: `resolve_got_target` returns
+                    // `Some((module, slot))` IFF the entry carries the new
+                    // `got_slot: Some(_)` shape; the as-built shape carries
+                    // `got_slot: None` (the worker stores the fn ptr via a
+                    // host-allocated slot + `JITBuilder::symbol(jit_name,
+                    // ptr)` direct extern, §9). So this `if`-guard activates
+                    // the new arm exactly when int/platform flip to the
+                    // DLL-exported-GOT model, and keeps the as-built
+                    // direct-extern path live until then — no mode fork, no
+                    // flag (Principle 11). When the flip completes the
+                    // `compile_extern_call` fallback below becomes dead for
+                    // platform fns (the expected narrowing signal).
+                    let sym = Symbol::from(op_name.as_ref());
+                    if crate::compiler::resolve_got_target(
+                        self.ctx.symbol_tables,
+                        self.ctx.module_aliases,
+                        &self.ctx.current_module,
+                        &sym,
+                    )
+                    .is_some()
+                    {
+                        return self.compile_direct_call(&sym, &arg_vals, span);
+                    }
+                    // As-built fallback: direct `Linkage::Import` against the
+                    // mangled jit_name (the platform fn ptr reaches the JIT via
+                    // `JITBuilder::symbol(jit_name, ptr)`; the cache linker
+                    // registers it identically). Retires when the GOT flip
+                    // lands (§6.3 verdict).
                     return self.compile_extern_call(op_name, &arg_vals, span);
                 }
 
@@ -449,6 +478,24 @@ where
                     location: ErrorLocation::from_span(span),
                 })?;
             return self.emit_got_indirect_call_via_data_id(data_id, slot, arg_vals);
+        }
+
+        // Kind-driven `PrimitiveExtern` arm (test-discovery.md §6; BC §3
+        // invariant 8 / §7 types). A host-promised extern (`discover-tests`)
+        // carries `got_slot: None`, so the GOT-indirect resolution above
+        // misses it; it has no `FuncId` in `func_ids` either (no codegen body).
+        // Lower it as a `Linkage::Import` against the entry key — the symbol
+        // table key IS the ABI name — identical in shape to the platform-effect
+        // / intrinsic import path. The body is settled at JIT-finalize via
+        // `Jit::define_symbol` (int's session-init promise) or surfaces as an
+        // unresolved-symbol link error in `--link` (no friendly rejection).
+        if let Some(abi_key) = crate::compiler::resolve_extern_target(
+            self.ctx.symbol_tables,
+            self.ctx.module_aliases,
+            &self.ctx.current_module,
+            name,
+        ) {
+            return self.compile_extern_call(&abi_key, arg_vals, span);
         }
 
         // Direct call: look up FuncId and emit `call`.

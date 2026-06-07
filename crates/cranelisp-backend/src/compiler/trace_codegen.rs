@@ -223,33 +223,16 @@ impl DescriptorBlob {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Concrete-type-arg substitution (replicates int's display.rs::build_adt_subst).
+// Concrete-type-arg substitution — the closure-walk substitution shared with
+// the platform schema generator (BC §3, platform-interface.md §6.0).
+//
+// The substitution primitives (`collect_var_ids`, `subst_for_ctor_fields`) live
+// once in `crate::schema` (their canonical home); this baker consumes them so
+// the walk is a single routine across the two emitters (the descriptor blob here
+// + the schema text there). The shared asset is the WALK, not the output form.
 // ════════════════════════════════════════════════════════════════════════════
 
-/// Collect unique `Type::Var` ids from a type in order of first occurrence.
-/// Replicated from `src/display.rs::collect_var_ids` (NOT imported — int is a
-/// downstream crate; the substitution logic lives where it is used).
-fn collect_var_ids(ty: &Type, ids: &mut Vec<TypeId>) {
-    match ty {
-        Type::Var(id) => {
-            if !ids.contains(id) {
-                ids.push(*id);
-            }
-        }
-        Type::Fn(params, ret) => {
-            for p in params {
-                collect_var_ids(p, ids);
-            }
-            collect_var_ids(ret, ids);
-        }
-        Type::ADT(_, args) | Type::TyConApp(_, args) => {
-            for a in args {
-                collect_var_ids(a, ids);
-            }
-        }
-        Type::Int | Type::Bool | Type::String | Type::Float => {}
-    }
-}
+use crate::schema::subst_for_ctor_fields;
 
 // ════════════════════════════════════════════════════════════════════════════
 // Discovery — swap ALL symbol tables (S76 §5).
@@ -334,23 +317,18 @@ where
     /// type's constructor fields (in first-occurrence order) and map them
     /// positionally to `type_args`.
     fn build_adt_subst(&self, fqtn: &FQTypeName, type_args: &[Type]) -> HashMap<TypeId, Type> {
-        let mut subst = HashMap::new();
         let Some(type_def) = self.ctx.lookup_type_def(fqtn) else {
-            return subst;
+            return HashMap::new();
         };
         let metas = self.ctx.constructor_metas(&type_def);
-        let mut var_ids = Vec::new();
-        for meta in &metas {
-            for field in &meta.fields {
-                collect_var_ids(&field.ty, &mut var_ids);
-            }
-        }
-        for (i, &id) in var_ids.iter().enumerate() {
-            if let Some(arg) = type_args.get(i) {
-                subst.insert(id, arg.clone());
-            }
-        }
-        subst
+        // Reuse the shared closure-walk substitution (canonical home
+        // `crate::schema`) so the baker and the schema generator compute the
+        // positional var→arg mapping identically.
+        let field_type_lists: Vec<Vec<Type>> = metas
+            .iter()
+            .map(|meta| meta.fields.iter().map(|f| f.ty.clone()).collect())
+            .collect();
+        subst_for_ctor_fields(&field_type_lists, type_args)
     }
 
     /// Bake a single type's display descriptor into `blob`, returning the byte

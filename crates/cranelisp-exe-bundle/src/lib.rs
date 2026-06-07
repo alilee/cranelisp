@@ -60,6 +60,11 @@ pub use cranelisp_intrinsics::alloc;
 pub use cranelisp_intrinsics::drop;
 pub use cranelisp_intrinsics::io;
 pub use cranelisp_intrinsics::ivar;
+// `cranelisp_check_layout_hash` — the `--link` platform layout-hash gate
+// (platform-interface.md §5.5.4 / FIXME 0287 seam). Backend declares it
+// `Linkage::Import` in the startup stub and never names the Rust symbol, so it
+// is force-linked here like every other startup intrinsic.
+pub use cranelisp_intrinsics::layout;
 pub use cranelisp_intrinsics::panic;
 pub use cranelisp_intrinsics::rc;
 // `cranelisp_intrinsics::trace` re-export RESTORED in S76 (FIXME 0255). The

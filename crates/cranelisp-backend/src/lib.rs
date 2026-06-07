@@ -67,6 +67,48 @@
 //! lifecycle/reclaim (Decision 31). The legacy hand-assembly constructors
 //! (`new_with_symbols`/`new_with_isa`) are `pub(crate)` — internal/test only.
 //!
+//! # The host-symbol escape hatch — `Jit::define_symbol`
+//!
+//! `Jit::new`'s derivation of the JIT symbol set from `symbol_tables` is the
+//! default; for symbols whose body is neither codegen-emitted, bundled
+//! (`cranelisp-primitives`), nor catalogued
+//! (`cranelisp_intrinsics::intrinsics_table()`) — host-promised externs
+//! (`DefKind::PrimitiveExtern`, BC §3 invariant 8 / §7 types) whose body lives
+//! in `int` and reads live session state — [`jit::Jit::define_symbol`] is the
+//! additive escape hatch. It inserts into the mutable map the JIT's
+//! `symbol_lookup_fn` consults at finalize, so an unresolved `Linkage::Import`
+//! relocation against the extern key settles to int's promised pointer. The
+//! motivating member is `discover-tests`; a `DefKind::PrimitiveExtern` callee
+//! lowers as a `Linkage::Import` against its key (the kind-driven call arm in
+//! `compiler::apply`, resolved by `compiler::resolve_extern_target`). Canonical:
+//! `design/arch/test-discovery.md` §6.
+//!
+//! # The platform-interface codegen role (BC §3, platform-interface.md)
+//!
+//! Backend owns three platform responsibilities (TARGET, user-ratified
+//! 2026-06-07):
+//!
+//! - **The schema generator** ([`schema`]) — given a root type set + a
+//!   `SymbolTable` map, computes the transitive closure of concrete ADT
+//!   layouts and emits the schema artifact text + canonical layout hash
+//!   ([`schema::generate_schema`] / [`schema::compute_layout_hash`]). It
+//!   **shares the closure-walk + concrete-instantiation substitution** with the
+//!   trace `DisplayDescriptor` baker (`compiler::trace_codegen`) — the shared
+//!   asset is the *walk*, not the serialized output form. One generator, three
+//!   callers: int's `/platform-schema` command, the session-load hash check,
+//!   and the `--link` startup-object hash bake.
+//! - **The platform GOT-indirect call arm** — a `DefKind::PlatformEffect` call
+//!   site emits GOT-indirect dispatch against the DLL's exported
+//!   `__cranelisp_got_platform_<name>` at the entry's `got_slot` (the new
+//!   shape), structurally identical to user-module GOT dispatch; the as-built
+//!   direct-extern-against-`jit_name` path stays live while `got_slot: None`
+//!   (transitional discriminator: `compiler::resolve_got_target`). Backend does
+//!   not emit the platform GOT (the DLL exports it).
+//! - **Startup-object hash baking** — [`exe::PlatformLayoutCheck`] +
+//!   `exe::generate_startup_object_checked` bake the compiler-computed layout
+//!   hash + a `cranelisp_check_layout_hash` compare into the `--link` startup
+//!   stub; mismatch aborts at process start with rebuild guidance.
+//!
 //! # Persistence
 //!
 //! The [`cache`] submodule is backend's persistence half — an internal
@@ -105,6 +147,13 @@ pub mod got_observer;
 pub mod heap;
 pub mod jit;
 pub mod primitives_inline;
+
+// Platform-interface schema generator (platform-interface.md §5.5/§6.0; BC §3
+// "the platform-interface codegen role"). The single generator with multiple
+// callers (int's `/platform-schema` command + session-load hash check; the
+// `--link` startup-object hash bake). Shares the closure-walk + substitution
+// with the trace `DisplayDescriptor` baker (`compiler::trace_codegen`).
+pub mod schema;
 
 // Per-symbol lifecycle owner (Decision 35 + Decision 41). Moved here from
 // `src/code.rs` in Sprint 67 Wave 3 per the facade's S67 close-out — the

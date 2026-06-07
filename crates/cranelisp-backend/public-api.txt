@@ -337,6 +337,16 @@ impl core::marker::UnsafeUnpin for cranelisp_backend::error::LinkerError
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::error::LinkerError
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::error::LinkerError
 pub mod cranelisp_backend::exe
+pub struct cranelisp_backend::exe::PlatformLayoutCheck
+pub cranelisp_backend::exe::PlatformLayoutCheck::expected_hash: alloc::string::String
+pub cranelisp_backend::exe::PlatformLayoutCheck::name: alloc::string::String
+impl core::marker::Freeze for cranelisp_backend::exe::PlatformLayoutCheck
+impl core::marker::Send for cranelisp_backend::exe::PlatformLayoutCheck
+impl core::marker::Sync for cranelisp_backend::exe::PlatformLayoutCheck
+impl core::marker::Unpin for cranelisp_backend::exe::PlatformLayoutCheck
+impl core::marker::UnsafeUnpin for cranelisp_backend::exe::PlatformLayoutCheck
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::exe::PlatformLayoutCheck
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::exe::PlatformLayoutCheck
 pub mod cranelisp_backend::got
 pub use cranelisp_backend::got::GotTable
 pub mod cranelisp_backend::got_observer
@@ -446,6 +456,7 @@ pub const cranelisp_backend::heap::NULLARY_THRESHOLD_I64: i64
 pub mod cranelisp_backend::jit
 pub struct cranelisp_backend::jit::Jit
 impl cranelisp_backend::jit::Jit
+pub fn cranelisp_backend::jit::Jit::define_symbol(&self, name: &str, ptr: *const u8)
 pub fn cranelisp_backend::jit::Jit::jit_module(&mut self) -> &mut cranelift_jit::backend::JITModule
 pub fn cranelisp_backend::jit::Jit::new<C, L>(symbol_tables: &cranelisp_types::module::SymbolTables<C, L>) -> core::result::Result<Self, cranelisp_types::error::CranelispError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 impl core::ops::drop::Drop for cranelisp_backend::jit::Jit
@@ -459,6 +470,10 @@ impl !core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::jit::Jit
 impl !core::panic::unwind_safe::UnwindSafe for cranelisp_backend::jit::Jit
 pub fn cranelisp_backend::jit::jit_free_memory_call_count() -> u64
 pub mod cranelisp_backend::primitives_inline
+pub mod cranelisp_backend::schema
+pub fn cranelisp_backend::schema::compute_layout_hash<C, L>(symbol_tables: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, roots: &[cranelisp_types::types::Type]) -> alloc::string::String where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_backend::schema::generate_schema<C, L>(symbol_tables: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, roots: &[cranelisp_types::types::Type]) -> alloc::string::String where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_backend::schema::platform_effect_roots<C, L>(platform_table: &cranelisp_types::module::SymbolTable<C, L>) -> alloc::vec::Vec<cranelisp_types::types::Type> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 #[non_exhaustive] pub enum cranelisp_backend::Code
 pub cranelisp_backend::Code::Jit(alloc::sync::Arc<cranelisp_backend::jit::Jit>)
 pub cranelisp_backend::Code::Linker(alloc::sync::Arc<cranelisp_backend::cache::linker::Linker>)

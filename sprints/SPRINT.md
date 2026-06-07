@@ -440,19 +440,36 @@ The trace target-state decision (`design/arch/tracing.md`; user rulings: trace =
 | /qa | tests/ | **fixture repair: 0263 (prelude export) + 0264 (`[self self]`) + 0267 (M-test helper retype)**; round-trip DLL integration (0235); conformance triad (0224–0228); 0258 trace tests (nested-error, linked-binary e2e — the NOTE-4 decisive test, swap-all expectations) | int 0229/0233 (DLL items); fixture items have no dep | pending |
 | /stdlib | stdlib/ | **0265** — `[self self]` → post-S70 distinct-name sigs in num/eq/ord | none | pending |
 
-### Wave 4 — W-e2e→unit (the primary directive)
+### Wave 4a — target-facade producers (user-decided 2026-06-07: settle ALL target facades in-sprint)
 
 | Skill | Crate | Task | Status |
 |---|---|---|---|
-| /qa | tests/ | run the full active suite (all modes); invert the 3 spec-contradicting `spec_09_macros.rs` tests; maintain `tests/plan/ledger.md` | pending |
-| /dev | (per failure's crate) | for EACH e2e failure: fix or tracked-defect+repro, AND the explicit int-unit-coverage-sufficiency assessment → new unit test if the gap is real | pending |
+| /dev | cranelisp-backend | **0269** `Jit::define_symbol` + **0287** schema generator (shared closure-walk w/ descriptor baker) + platform GOT-indirect call arm + startup hash-bake | pending |
+| /dev | cranelisp-intrinsics | **0270** `catch-runtime-error` combinator + fork-join error-slot FERRY (IVar+Par) + trace-guard panic cleanup (folded B4) | pending |
+| /dev | cranelisp-platform | **0286** macro rework: GOT export (const-array), manifest, schema embed + hash export; retire schema dialect/validate_schema/export_names/jit_name; ABI 2→3 | pending |
 
-### Wave 5 — W-Retire capstone (late phase)
+### Wave 4b — int consumer (settles `facades/int.md` targets as-built)
 
 | Skill | Crate | Task | Status |
 |---|---|---|---|
-| /design + /arch | src/ (int) | retire `facades/int.md` → `src/` rustdoc + BC §6; drop int from `facade_compliance.rs`; 8th & final facade data point | pending |
-| /review | src/ (int) | final change-set review | pending |
+| /dev | src/ (int) | **0271** Pair/Result seeds + discover-tests extern + PrimitiveExtern publication + `define_symbol` registration + `int_intrinsics()` deletion; **0288** platform load-path rewrite (dlsym exports, wrap-not-copy GotTable, manifest→table, hash check, injection deletion) + `/platform-schema` + PlatformError variant; **0285** synthetic accessor Defs into codegen batch + panic→park robustness | pending |
+
+### Wave 4c — W-e2e→unit (the primary directive, against the full surface)
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /qa | tests/ | **0272-B/0289** e2e (test-discovery + platform-interface walks); full active suite (all modes); invert the spec-contradicting `spec_09_macros.rs` tests (+ `macro_used_before_defmacro_form_is_hoisted`); maintain ledger w/ per-failure unit-coverage-sufficiency assessment | pending |
+| /dev | (per failure's crate) | per-failure fix or tracked-defect+repro + unit-coverage assessment | pending |
+
+### Wave 5 — W-Settle + W-Retire capstone
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /design | src/ (int) | reconcile `facades/int.md` to as-built (incl. **0281** priority-JIT trim) | pending |
+| /design + /arch | src/ (int) | retire `facades/int.md` → `src/` rustdoc + BC §6; drop int from `facade_compliance.rs`; 8th & final facade data point — **on a settled surface** | pending |
+| /review | (workspace) | final gate review | pending |
+
+*Exit = target facade implemented across ALL crates/components. Stays S77 (no facade impact): 0273 stdlib runner, 0279 typecheck cyclic-subst, 0283/0284 trace interior defects, legacy harvest, docs/demos.*
 
 **Wave gate (each wave→next):** scan `design/arch/fixmes/` for `target: /skill-in-wave` + `status: open`; resolve or explicitly defer before advancing. **Status set to PHASE 5 LANGUAGE (ACTIVE) on user approval of this wave plan.**
 

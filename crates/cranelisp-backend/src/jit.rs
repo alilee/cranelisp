@@ -8,7 +8,7 @@
 // §"JIT Symbol Names".
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
@@ -231,6 +231,25 @@ pub struct Jit {
     vec_new_func_id: Option<FuncId>,
     /// FuncId for `runtime/vec_drop` — needed by Vec drop glue.
     vec_drop_func_id: Option<FuncId>,
+    /// Host-promised symbol map — the escape hatch consulted at module
+    /// finalization for symbols neither codegen-emitted, bundled
+    /// (`cranelisp-primitives`), nor catalogued
+    /// (`cranelisp_intrinsics::intrinsics_table()`).
+    ///
+    /// A Cranelift `symbol_lookup_fn` installed at construction reads this map
+    /// (a clone of the `Arc` is moved into the closure); `define_symbol`
+    /// inserts post-construction. So when an unresolved `Linkage::Import`
+    /// relocation against `name` is settled at `finalize`, the lookup returns
+    /// the host-promised pointer. The motivating member is the
+    /// `DefKind::PrimitiveExtern` `discover-tests` body, promised by int at
+    /// session init (test-discovery.md §6; BC §3 invariant 8).
+    ///
+    /// Pointers are stored as `usize` (not `*const u8`) so the map and the
+    /// lookup closure are `Send` — the closure must be `Send` per the
+    /// `JITBuilder::symbol_lookup_fn` bound; the conversion to `*const u8`
+    /// happens inside the closure (`feedback_no_global_got`: this is not a GOT,
+    /// it is the host-symbol escape hatch).
+    host_symbols: Arc<Mutex<HashMap<String, usize>>>,
 }
 
 impl Drop for Jit {
@@ -374,12 +393,33 @@ impl Jit {
 
     /// Finalise a fully-populated `JITBuilder` into a `Jit`.
     ///
-    /// Shared tail of every construct path (`new`, `from_isa`): builds the
-    /// `JITModule`, makes the codegen context, and zeroes the 6 convenience
-    /// intrinsic-FuncId fields (populated later by `declare_intrinsics`
-    /// during the per-call compile). The caller is responsible for having
-    /// registered all symbols on `builder` first.
-    fn finish_builder(builder: JITBuilder) -> Self {
+    /// Shared tail of every construct path (`new`, `from_isa`): installs the
+    /// host-symbol escape-hatch `symbol_lookup_fn` over a fresh shared map,
+    /// builds the `JITModule`, makes the codegen context, and zeroes the 6
+    /// convenience intrinsic-FuncId fields (populated later by
+    /// `declare_intrinsics` during the per-call compile). The caller is
+    /// responsible for having registered all eager symbols on `builder` first;
+    /// the lookup fn is the lazy, consulted-at-finalize tail that lets
+    /// `define_symbol` settle host-promised externs added post-construction.
+    fn finish_builder(mut builder: JITBuilder) -> Self {
+        // The host-symbol escape hatch (BC §3 invariant 8). The lookup closure
+        // is consulted by Cranelift at module finalization for any unresolved
+        // `Linkage::Import` relocation not already satisfied by an eager
+        // `JITBuilder::symbol`. It reads the shared map; `define_symbol`
+        // inserts into the same `Arc` post-construction.
+        let host_symbols: Arc<Mutex<HashMap<String, usize>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        {
+            let lookup = Arc::clone(&host_symbols);
+            builder.symbol_lookup_fn(Box::new(move |name: &str| {
+                lookup
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .get(name)
+                    .map(|&addr| addr as *const u8)
+            }));
+        }
+
         let module = JITModule::new(builder);
 
         let ctx = module.make_context();
@@ -395,7 +435,40 @@ impl Jit {
             panic_func_id: None,
             vec_new_func_id: None,
             vec_drop_func_id: None,
+            host_symbols,
         }
+    }
+
+    /// Promise a host symbol's body post-construction — the additive
+    /// host-symbol escape hatch (test-discovery.md §6; BC §3 invariant 8).
+    ///
+    /// Inserts `(name → ptr)` into the map the JIT's `symbol_lookup_fn`
+    /// consults at module finalization. When an unresolved `Linkage::Import`
+    /// relocation against `name` is settled, the lookup returns `ptr`. This is
+    /// the documented escape hatch for host-promised symbols whose body is
+    /// neither codegen-emitted, bundled (`cranelisp-primitives`), nor
+    /// catalogued (`cranelisp_intrinsics::intrinsics_table()`). The motivating
+    /// member is `discover-tests` (a `DefKind::PrimitiveExtern` whose body
+    /// reads int's live session state — Principle 18 / Decision 0048 keep that
+    /// body out of `cranelisp-intrinsics`); int calls this at session init.
+    ///
+    /// Additive only — no forked constructor (Principle 11), no callback
+    /// indirection, no registry. `Jit::new`'s derived-from-`symbol_tables`
+    /// eager registration stands as the default; this only adds host promises
+    /// on top.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must point to a function whose ABI matches the call shape backend
+    /// emits for the extern (an `extern "C"` callable with the entry's arity
+    /// and an `i64` return). It must remain valid for the lifetime of every
+    /// function compiled by this JIT that references `name`. The caller (int)
+    /// guarantees this by promising a `'static` host fn pointer.
+    pub fn define_symbol(&self, name: &str, ptr: *const u8) {
+        self.host_symbols
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(name.to_string(), ptr as usize);
     }
 
     /// Access the inner `JITModule` by shared reference.
@@ -1494,6 +1567,84 @@ mod tests {
             "Jit::new must follow the Import edge and register the platform fn \
              under the defining module's key",
         );
+    }
+
+    // spec: design/arch/test-discovery.md §6 "Backend — `Jit::define_symbol`";
+    //       BC §3 invariant 8 — a host-promised extern (`discover-tests`) whose
+    //       body is neither codegen-emitted, bundled, nor catalogued is settled
+    //       at finalize via `define_symbol`. The lookup-fn the constructor
+    //       installs consults the post-construction map, so an unresolved
+    //       `Linkage::Import` relocation against the promised name settles to
+    //       the host pointer. Mirrors the PlatformEffect observation shape.
+    #[test]
+    fn define_symbol_settles_host_promised_import() {
+        use cranelift_module::Linkage;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        // Address-stable backing storage standing in for the host extern body.
+        static HOST_FN: AtomicU64 = AtomicU64::new(0x0BAD_C0DE_CAFE_F00D);
+        let host_ptr: *const u8 = &HOST_FN as *const _ as *const u8;
+
+        // Empty symbol tables — the symbol is NOT derivable from them; it is a
+        // pure host promise (the `discover-tests` shape).
+        let tables: SymbolTables<(), ()> = dashmap::DashMap::new();
+        let mut jit = Jit::new(&tables).expect("Jit::new must succeed");
+
+        // Promise the body BEFORE compiling the referencing thunk. (Promising
+        // after declare-but-before-finalize would work equally — the map is
+        // consulted at finalize, not at declare; this ordering matches int's
+        // session-init promise.)
+        jit.define_symbol("discover-tests", host_ptr);
+
+        jit.declare_intrinsics().expect("intrinsics");
+
+        // Thunk that references `discover-tests` as Import data and returns its
+        // address. No eager `JITBuilder::symbol` registered it — only the
+        // lookup fn (over the `define_symbol` map) can settle the relocation.
+        let name = Symbol::from("get_extern_addr");
+        let func_id = {
+            let module = jit.jit_module();
+            let mut sig = module.make_signature();
+            sig.returns.push(AbiParam::new(types::I64));
+            let id = module
+                .declare_function(name.as_ref(), Linkage::Export, &sig)
+                .expect("declare thunk");
+            let data_id = module
+                .declare_data("discover-tests", Linkage::Import, false, false)
+                .expect("declare host symbol");
+            let mut ctx = module.make_context();
+            ctx.func.signature = sig;
+            ctx.func.name =
+                cranelift::codegen::ir::UserFuncName::testcase(name.as_bytes());
+            let mut fbc = FunctionBuilderContext::new();
+            {
+                let gv = module.declare_data_in_func(data_id, &mut ctx.func);
+                let mut fb = FunctionBuilder::new(&mut ctx.func, &mut fbc);
+                let entry = fb.create_block();
+                fb.switch_to_block(entry);
+                fb.seal_block(entry);
+                let addr = fb.ins().global_value(types::I64, gv);
+                fb.ins().return_(&[addr]);
+                fb.finalize();
+            }
+            module.define_function(id, &mut ctx).expect("define thunk");
+            module.clear_context(&mut ctx);
+            id
+        };
+
+        jit.finalize().expect("finalize must settle the host-promised import");
+        let ptr = jit.get_finalized_ptr(func_id);
+        // SAFETY: thunk just finalised; signature is `extern "C" fn() -> i64`.
+        let f: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
+        assert_eq!(
+            f() as u64,
+            host_ptr as u64,
+            "define_symbol must settle the unresolved Linkage::Import against \
+             the host-promised pointer",
+        );
+        // Confirm the resolved address points AT the backing storage.
+        let read = unsafe { std::ptr::read_unaligned(f() as u64 as *const u64) };
+        assert_eq!(read, HOST_FN.load(Ordering::Relaxed));
     }
 
     // ----- §2 `intrinsics_table()` consumption -----

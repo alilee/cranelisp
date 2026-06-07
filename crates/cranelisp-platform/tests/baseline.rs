@@ -58,16 +58,15 @@ fn read_source(rel: &str) -> String {
 // T23 per tests/plan/sprint71-platform.md row T23.
 #[test]
 fn sprint71_abi_version_baseline_co_regen() {
-    // (1) Source-side: ABI_VERSION must read `= 2;` after the Wave 2 bump.
-    //     Failing-first: today the source declares `= 1;`.
+    // (1) Source-side: ABI_VERSION must read `= 3;` after the FIXME 0286 bump
+    //     (the three-exports macro rework).
     let lib_rs = read_source("src/lib.rs");
     assert!(
-        lib_rs.contains("pub const ABI_VERSION: u32 = 2;"),
-        "expected `pub const ABI_VERSION: u32 = 2;` in \
-         crates/cranelisp-platform/src/lib.rs (A4 ruling: layout-affecting \
-         HostCallbacks growth mandates a major-bump from 1 to 2). \
-         Sprint 71 Wave 2 lands the bump; if you see this failure post-Wave-2 \
-         the source change was skipped or reverted."
+        lib_rs.contains("pub const ABI_VERSION: u32 = 3;"),
+        "expected `pub const ABI_VERSION: u32 = 3;` in \
+         crates/cranelisp-platform/src/lib.rs (FIXME 0286: the three-exports \
+         macro rework bumps the ABI from 2 to 3). If you see this failure the \
+         source change was skipped or reverted."
     );
 
     // (2) Baseline-side: the `public-api.txt` baseline must enumerate the
@@ -103,17 +102,38 @@ fn sprint71_abi_version_baseline_co_regen() {
     // (cargo-public-api emission shape — fields are emitted as
     // `cranelisp_platform::HostCallbacks::alloc_with_tag` rather than
     // top-level; the null-callback placeholders are at the crate root).
+    // Surface after the FIXME 0286 rework: CLAdt + CLAdtType stay; Schema /
+    // SchemaParseError stay (parser repointed at the generated artifact);
+    // set_global_schema + GOT_TABLE_SIZE join (the embed + GOT export surface).
+    // AnyAdt / GetSchema retired (the marker-type DSL). validate_schema /
+    // null_validate_schema stay transitionally (removed with the int consumers
+    // by FIXME 0288).
     let required_new_exports: &[&str] = &[
         "cranelisp_platform::CLAdt",
         "cranelisp_platform::CLAdtType",
-        "cranelisp_platform::AnyAdt",
         "cranelisp_platform::Schema",
         "cranelisp_platform::SchemaParseError",
+        "cranelisp_platform::set_global_schema",
+        "cranelisp_platform::GOT_TABLE_SIZE",
+        "cranelisp_platform::extract_layout_hash",
         "HostCallbacks::alloc_with_tag",
-        "HostCallbacks::validate_schema",
         "cranelisp_platform::null_alloc_with_tag",
-        "cranelisp_platform::null_validate_schema",
     ];
+    // Retired surface MUST be absent — the marker-type DSL.
+    let must_be_absent: &[&str] = &[
+        "cranelisp_platform::AnyAdt",
+        "cranelisp_platform::GetSchema",
+    ];
+    let leaked: Vec<&&str> = must_be_absent
+        .iter()
+        .filter(|name| baseline.contains(**name))
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "retired marker-type DSL surface still present in the baseline \
+         (FIXME 0286 retires AnyAdt / GetSchema): {:?}. Regenerate the baseline.",
+        leaked.iter().map(|s| **s).collect::<Vec<&str>>()
+    );
     let missing: Vec<&&str> = required_new_exports
         .iter()
         .filter(|name| !baseline.contains(**name))

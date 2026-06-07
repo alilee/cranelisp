@@ -128,8 +128,12 @@ pub mod cranelisp_intrinsics::ivar
 #[export_name = "cranelisp_ivar_create"] pub c fn cranelisp_intrinsics::ivar::ivar_create(thunk: i64) -> i64
 #[export_name = "cranelisp_ivar_force"] pub c fn cranelisp_intrinsics::ivar::ivar_force(ivar: i64) -> i64
 #[export_name = "cranelisp_ivar_spark"] pub c fn cranelisp_intrinsics::ivar::ivar_spark(ivar: i64) -> i64
+pub mod cranelisp_intrinsics::layout
+#[export_name = "cranelisp_check_layout_hash"] pub c fn cranelisp_intrinsics::layout::cranelisp_check_layout_hash(linked: *const u8, expected: *const u8, name: *const u8)
 pub mod cranelisp_intrinsics::panic
+#[export_name = "catch-runtime-error"] pub c fn cranelisp_intrinsics::panic::catch_runtime_error(thunk_closure: i64) -> i64
 #[export_name = "runtime/panic"] pub c fn cranelisp_intrinsics::panic::runtime_panic(msg_ptr: *const u8, msg_len: usize)
+pub fn cranelisp_intrinsics::panic::set_runtime_error(msg: alloc::string::String)
 pub fn cranelisp_intrinsics::panic::take_runtime_error() -> core::option::Option<alloc::string::String>
 pub mod cranelisp_intrinsics::rc
 pub fn cranelisp_intrinsics::rc::consume_shallow(ptr: i64)

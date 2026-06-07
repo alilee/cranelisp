@@ -60,3 +60,66 @@ checklist):
 This is the platform half of the platform-interface cascade. Pairs with 0287 (backend
 generator + GOT-indirect dispatch), 0288 (int load path + `/platform-schema`), 0289 (qa
 e2e). Supersedes the platform half of the re-pointed 0229/0232/0233/0235.
+
+---
+
+## /dev (platform) progress — S76 (status: PARTIAL — kept open, transitional residue owed to 0287/0288)
+
+**Landed in `cranelisp-platform` (workspace green; 42/42 crate tests pass; baseline regenerated):**
+
+- **Exported GOT** — the macro emits `pub static __CRANELISP_PLATFORM_GOT:
+  [AtomicPtr<u8>; GOT_TABLE_SIZE]` under `#[export_name =
+  "__cranelisp_got_platform_<name>"]` (the `PRIMITIVES_GOT_SLAB` precedent), and the
+  `cranelisp_platform_manifest` entry self-populates slot *i* with `functions[i]`'s
+  pointer at DLL load — **manifest order IS GOT slot order** (unit-tested in
+  `tests/macro_expansion.rs::macro_exports_got_in_manifest_order`).
+- **`schema:` embed arm** — replaces the declaration arm; takes the generated artifact
+  text (e.g. `include_str!`), parses it into the per-DLL `Schema`, installs it via the new
+  `set_global_schema` (the `GLOBAL_SCHEMA` OnceLock — replaces the retired `GetSchema`
+  per-type trampoline). `schema:` is **optional** (absent tolerated for first builds).
+- **`__cranelisp_layout_hash_<name>`** — exported as a `&'static str` data symbol,
+  extracted from the artifact's `;; layout-hash:` header at compile time by the new
+  `extract_layout_hash` `const fn`.
+- **Schema parser repointed at the generated-artifact grammar** — `schema.rs` rewritten to
+  parse the backend `generate_schema` S-expr dialect (`(schema (key (Ctor tag (fields))
+  …))`), with the typed-FQ `FieldType` (`Scalar`/`Adt`/`Vec`) shape (§5.5.2). The grammar
+  is **replicated** (no `cranelisp-backend` dep — frontend-independence per §5.5.1) and
+  matches backend's emit. Two-pass-style structure + `ParseLoc` diagnostics kept.
+- **`read_field` is name-based** — `adt.rs` reworked: `CLAdt<T>` stays; `read_field`
+  resolves byte offset + declared `FieldType` by name from the installed global schema.
+- **RETIRED:** the schema declaration dialect, the marker-type DSL (`AnyAdt`, `GetSchema`,
+  `into_typed`, `read_tag_any`), `schema_types:`, `Variant`-shaped schema types. `CLAdtType`
+  KEPT (now FQ `TYPE_NAME`); `alloc_with_tag` KEPT.
+- **ABI_VERSION 2 → 3.**
+- **stdio + test-capture** rebuilt against the new macro (they use the no-schema arm,
+  unchanged source; dylibs rebuilt). Platform load/dispatch e2e (`spec_platforms`,
+  `platform_print_via_test_capture`, `io_trampoline_executes_print_to_stdout`) **pass**.
+
+**TRANSITIONAL RESIDUE — owed to the coordinated 0287/0288 cut (NOT removed here to keep
+the workspace green):**
+
+- **`HostCallbacks::validate_schema` + `null_validate_schema`** — retired-in-place
+  (never invoked; superseded by the layout-hash gate) but the field/fn are KEPT because
+  `src/platform.rs` + `crates/cranelisp-exe-bundle/src/lib.rs` construct `HostCallbacks`
+  with them, and platform is the dependency (int the consumer) — removing them now breaks
+  int, which `/dev (platform)` cannot edit. **0288 removes the int consumers + these two
+  symbols in the same change-set.**
+- **`PlatformFn.jit_name` + `OwnedPlatformFnDescriptor.jit_name` + `derive_jit_name`** —
+  retained because `src/platform.rs` reads `desc.jit_name` and registers fn pointers via
+  `JITBuilder::symbol`; the macro still derives jit_name for that consumer. **0288 removes
+  them with the GOT-indirect load path.**
+- **stdio/test-capture `#[export_name = "cranelisp_print"]` etc.** — KEPT because backend
+  dispatch (`compiler/apply.rs`) still uses `compile_extern_call` → `Linkage::Import`
+  against the mangled name, and `--link` force-loads the rlib to resolve it. **0287's
+  GOT-indirect dispatch retires the direct-extern path; the export_name attributes
+  retire with it.**
+
+Reason for keeping the FIXME OPEN: the three C-ABI/export retirements above are blocked on
+0287 (backend dispatch) + 0288 (int load path) removing the consumers. They are a single
+coordinated cut across three deployments; doing them in platform alone breaks the build.
+Close 0286 when 0287+0288 land and the residue is removed.
+
+**Filed by /dev (platform):** one cross-skill note for `/design platform` — `host-wiring-s76.md`
+(the schema-seam map) is now superseded by the landed embed arm + layout-hash; it needs a
+`/design platform` refresh per this FIXME's Acceptance bullet 4 (not actioned here — not
+`/dev`'s doc to edit).

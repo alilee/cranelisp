@@ -1,38 +1,40 @@
-//! Crate-integration tests for `CLAdt` sum types — rows T12, T13, T14
-//! of `tests/plan/sprint71-platform.md`.
+//! Crate-integration tests for `CLAdt` sum types under the embedded
+//! generated-schema model (FIXME 0286 / platform-interface.md §5.5).
+//!
+//! Name-based field access against synthetic heap fixtures; the schema is the
+//! generated-artifact grammar installed once via `set_global_schema`; marker
+//! types are author-defined and FQ-keyed. Sum-type fields are dot-qualified by
+//! constructor name (`"Some.val"`, `"Cons.head"`).
 
-use cranelisp_platform::{CLAdt, CLAdtType, CLInt, CLOwned, GetSchema, Schema};
-use std::sync::OnceLock;
+use cranelisp_platform::{set_global_schema, CLAdt, CLAdtType, CLInt, CLOwned, Schema};
+use std::sync::Once;
 
-// -----------------------------------------------------------------
-// Marker types
-// -----------------------------------------------------------------
-
-pub struct OptionInt;
-impl CLAdtType for OptionInt { const TYPE_NAME: &'static str = "OptionInt"; }
-impl GetSchema for OptionInt {
-    fn schema() -> &'static Schema {
-        static S: OnceLock<Schema> = OnceLock::new();
-        S.get_or_init(|| Schema::parse(
-            "((OptionInt None (Some ((CLInt val)))))"
-        ).unwrap())
-    }
+struct OptionInt;
+impl CLAdtType for OptionInt {
+    const TYPE_NAME: &'static str = "data/OptionInt";
 }
 
-pub struct ListInt;
-impl CLAdtType for ListInt { const TYPE_NAME: &'static str = "ListInt"; }
-impl GetSchema for ListInt {
-    fn schema() -> &'static Schema {
-        static S: OnceLock<Schema> = OnceLock::new();
-        S.get_or_init(|| Schema::parse(
-            "((ListInt Nil (Cons ((CLInt head) (ListInt tail)))))"
-        ).unwrap())
-    }
+struct ListInt;
+impl CLAdtType for ListInt {
+    const TYPE_NAME: &'static str = "data/ListInt";
 }
 
-// -----------------------------------------------------------------
-// Heap fixture helpers
-// -----------------------------------------------------------------
+static INSTALL: Once = Once::new();
+
+fn install_schema() {
+    INSTALL.call_once(|| {
+        let artifact = "\
+;; layout-hash: sums
+(schema
+  (data/OptionInt
+    (None 0 ())
+    (Some 1 ((val primitives/Int))))
+  (data/ListInt
+    (Nil 0 ())
+    (Cons 1 ((head primitives/Int) (tail data/ListInt)))))";
+        set_global_schema(Schema::parse(artifact).expect("artifact parses"));
+    });
+}
 
 fn alloc_full_heap_adt(tag: u32, fields: &[i64]) -> i64 {
     let payload_size = 8 + fields.len() * 8;
@@ -60,65 +62,50 @@ fn dealloc_heap_adt(base: i64) {
     }
 }
 
-// -----------------------------------------------------------------
-// T12 — CLAdt<OptionInt> — None variant
-// spec: tests/plan/sprint71-platform.md row T12
-// -----------------------------------------------------------------
-
+// spec: design/arch/platform-interface.md §5.5 — None (nullary) variant tag.
 #[test]
-fn t12_option_none() {
+fn option_none() {
+    install_schema();
     let payload = alloc_full_heap_adt(0, &[]);
     let opt: CLAdt<OptionInt> = CLAdt::from_raw(payload);
     assert_eq!(opt.read_tag(), 0);
-    // No read_field for None (nullary variant).
     dealloc_heap_adt(payload);
 }
 
-// -----------------------------------------------------------------
-// T13 — CLAdt<OptionInt> — Some + sum-type dot-qualified lookup
-// spec: tests/plan/sprint71-platform.md row T13
-// -----------------------------------------------------------------
-
+// spec: design/arch/platform-interface.md §5.5 — Some with dot-qualified field.
 #[test]
-fn t13_option_some_dot_qualified() {
+fn option_some_dot_qualified() {
+    install_schema();
     let payload = alloc_full_heap_adt(1, &[7]);
     let opt: CLAdt<OptionInt> = CLAdt::from_raw(payload);
     assert_eq!(opt.read_tag(), 1);
-    let val: CLInt = opt.read_field::<CLInt>("Some.val");
-    assert_eq!(i64::from(val), 7);
+    assert_eq!(i64::from(opt.read_field::<CLInt>("Some.val")), 7);
     dealloc_heap_adt(payload);
 }
 
-// -----------------------------------------------------------------
-// T14 — CLAdt<ListInt> — recursive walk Nil + Cons
-// spec: tests/plan/sprint71-platform.md row T14
-// -----------------------------------------------------------------
-
+// spec: design/arch/platform-interface.md §5.5.2 — recursive walk over a
+// self-referential ADT: the `tail` field is typed `data/ListInt`, looked up in
+// the same schema map.
 #[test]
-fn t14_list_recursive_walk() {
-    // Build Cons(1, Cons(2, Cons(3, Nil)))
+fn list_recursive_walk() {
+    install_schema();
     let nil = alloc_full_heap_adt(0, &[]);
     let cons3 = alloc_full_heap_adt(1, &[3, nil]);
     let cons2 = alloc_full_heap_adt(1, &[2, cons3]);
     let cons1 = alloc_full_heap_adt(1, &[1, cons2]);
 
-    // Iterative walk via repeated own_field. We hold each tail's CLOwned
-    // until consumed.
     let mut node: CLAdt<ListInt> = CLAdt::from_raw(cons1);
     let mut sum: i64 = 0;
-
-    // We collect the owned wrappers so they drop after the loop body — to
-    // avoid use-after-free of the parent's borrowed reference.
     let mut owned_tails: Vec<CLOwned<CLAdt<ListInt>>> = Vec::new();
 
     loop {
         match node.read_tag() {
-            0 => break, // Nil
+            0 => break,
             1 => {
-                let head: CLInt = node.read_field::<CLInt>("Cons.head");
-                sum += i64::from(head);
-                let tail: CLOwned<CLAdt<ListInt>> = node.own_field::<CLAdt<ListInt>>("Cons.tail");
-                node = CLAdt::from_raw(tail.raw_ptr_via_clheap());
+                sum += i64::from(node.read_field::<CLInt>("Cons.head"));
+                let tail: CLOwned<CLAdt<ListInt>> =
+                    node.own_field::<CLAdt<ListInt>>("Cons.tail");
+                node = CLAdt::from_raw(raw_ptr(&tail));
                 owned_tails.push(tail);
             }
             _ => unreachable!(),
@@ -126,25 +113,15 @@ fn t14_list_recursive_walk() {
     }
 
     assert_eq!(sum, 6);
-
-    // Drop the owned tails — they decrement RCs back to original.
     drop(owned_tails);
 
-    // Cleanup
     dealloc_heap_adt(cons1);
     dealloc_heap_adt(cons2);
     dealloc_heap_adt(cons3);
     dealloc_heap_adt(nil);
 }
 
-// Helper trait to access raw_ptr through CLOwned via Deref.
-trait RawPtrViaClheap {
-    fn raw_ptr_via_clheap(&self) -> i64;
-}
-impl RawPtrViaClheap for CLOwned<CLAdt<ListInt>> {
-    fn raw_ptr_via_clheap(&self) -> i64 {
-        use cranelisp_platform::CLHeap;
-        // Deref to inner CLAdt<ListInt>, then take raw_ptr.
-        (**self).raw_ptr()
-    }
+fn raw_ptr(owned: &CLOwned<CLAdt<ListInt>>) -> i64 {
+    use cranelisp_platform::CLHeap;
+    (**owned).raw_ptr()
 }

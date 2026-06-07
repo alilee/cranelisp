@@ -1,19 +1,70 @@
 //! Schema parser + types for the platform-DLL ADT-marshaling surface.
 //!
-//! A `Schema` is a parsed representation of the cranelisp-S-expression
-//! schema literal embedded in `declare_platform! { schema: "...", ... }`.
-//! It is consulted at runtime (DLL-side, callback-free) by `CLAdt<T>`'s
-//! field-access methods to compute byte offsets and validate field types.
+//! A [`Schema`] is the parsed representation of the **compiler-generated
+//! schema artifact** a platform DLL embeds via
+//! `declare_platform! { schema: include_str!("<name>.platform-schema"), … }`.
+//! The artifact is produced by the `/platform-schema <name>` REPL command
+//! (backend's `generate_schema`), never hand-authored — it captures the
+//! transitive closure of every ADT the platform's function signatures reach,
+//! derived from the **resolved module graph** (so the layout it records is the
+//! layout the host actually compiles). See
+//! `design/arch/platform-interface.md` §5.5 (the field-by-name design,
+//! user-ratified 2026-06-07).
 //!
-//! See `design/platform/sprint71-redesign.md` §1–§2 for the BNF, lexical
-//! conventions, error grammar, and parser strategy. The reserved CL
-//! wrapper set is `{CLInt, CLBool, CLFloat, CLString}` this sprint;
-//! `CLIO` is reserved-but-not-parseable (rejected at parse time as a
-//! reserved-for-future field type).
+//! The parsed schema is consulted at runtime (DLL-side, callback-free) by
+//! [`crate::CLAdt`]'s field-access methods to map a field **name** to its byte
+//! offset + declared [`FieldType`] (the typed fields drive nested-ADT
+//! navigation — `read_field("origin")` learns the field is `geometry/Point`
+//! and looks *that* type up in the same map).
 //!
-//! The parser does NOT depend on `cranelisp-frontend` — keeping the DAG
-//! clean per Principle 3 (frontend is upstream of platform; making it a
-//! dep would invert the DAG).
+//! # Artifact grammar (the generated dialect)
+//!
+//! The artifact is an S-expression so the generator's emit and this parser
+//! agree by construction (`platform-interface.md` §2.2 q-schema-grammar —
+//! one dialect, machine-written + machine-read). It mirrors backend's
+//! `crates/cranelisp-backend/src/schema.rs` `generate_schema` output:
+//!
+//! ```text
+//! ;; layout-hash: <hex>
+//! (schema
+//!   (shapes/Rectangle
+//!     (Rectangle 0 ((w primitives/Int) (h primitives/Int))))
+//!   (geometry/Point
+//!     (Point 0 ((x primitives/Int) (y primitives/Int)))))
+//! ```
+//!
+//! - A `;;` line is a comment (the `;; layout-hash:` header is one such — the
+//!   hash is exported separately as `__cranelisp_layout_hash_<name>`, so the
+//!   parser ignores the comment).
+//! - The outer list is `(schema <entry>…)`.
+//! - Each `<entry>` is `(<typekey> <ctor>…)` where `<typekey>` is the
+//!   structured type-expression key (a bare FQ name `module/Type`, or an
+//!   applied form `(module/Type <fieldtype>…)` for a concrete instantiation,
+//!   `platform-interface.md` §5.5.3 — never a mangle).
+//! - Each `<ctor>` is `(<CtorName> <tag> (<field>…))`; `<field>` is
+//!   `(<name> <fieldtype>)`.
+//! - `<fieldtype>` ::= `module/Type` (scalar or zero-arg ADT, bare FQ name)
+//!   | `(module/Type <fieldtype>…)` (parameterised ADT)
+//!   | `(Vec <fieldtype>)`.
+//!
+//! # Replication, not dependency
+//!
+//! The parser deliberately does NOT depend on `cranelisp-frontend` (the reader
+//! that the *generator* side uses) — making frontend a dep would invert the
+//! crate DAG (Principle 3; frontend is upstream of platform). The small S-expr
+//! grammar above is replicated here per `platform-interface.md`'s
+//! frontend-independence note (§5.5.1). It is intentionally tiny — three token
+//! kinds (`(`, `)`, atom) plus `;;` comments.
+//!
+//! # History
+//!
+//! Sprint 71 shipped a hand-authored schema *dialect* (`(Type (CLInt w)…)`
+//! over `CLInt`/`CLBool`/… field types). That declaration dialect **retired**
+//! with the platform-interface rework (FIXME 0286 / `platform-interface.md`
+//! §6.6): platforms stop declaring ADTs (their types are ordinary `.cl`
+//! modules), and the schema becomes a compiler-generated build artifact. The
+//! parser *structure* (two-pass, `ParseLoc` diagnostics, name/field lookups)
+//! survives, repointed at the generated artifact grammar.
 
 use std::collections::HashMap;
 
@@ -21,7 +72,7 @@ use std::collections::HashMap;
 // Public types
 // ---------------------------------------------------------------------
 
-/// Source position within a schema literal — line, column, and raw byte
+/// Source position within a schema artifact — line, column, and raw byte
 /// offset for diagnostic display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParseLoc {
@@ -30,71 +81,103 @@ pub struct ParseLoc {
     pub offset: usize,
 }
 
-/// Parsed schema — owned by the DLL via a `LazyLock<Schema>` static,
-/// consulted by `CLAdt<T>::read_field` to compute byte offsets.
+/// Parsed schema — owned by the DLL via a `LazyLock<Schema>` static
+/// (`declare_platform!`'s `schema:` embed arm parses the embedded artifact
+/// once), consulted by [`crate::CLAdt`]'s field-access methods to map a field
+/// name to its byte offset + declared [`FieldType`].
 ///
-/// `Schema::parse` is fallible per the cranelisp-S-expr grammar in
-/// `design/platform/sprint71-redesign.md` §1.1.
-#[derive(Debug)]
+/// Keyed by the **structured type-expression key string** (`shapes/Rectangle`,
+/// or `(Option shapes/Rectangle)` for a concrete instantiation) — the same key
+/// backend's generator emits (`platform-interface.md` §5.5.3).
+#[derive(Debug, Default)]
 pub struct Schema {
     types: Vec<TypeShape>,
-    by_name: HashMap<String, usize>,
+    by_key: HashMap<String, usize>,
 }
 
-/// A single declared type — product (one variant) or sum (multiple variants).
+/// One schema entry — a type-expression key and its constructor list.
+///
+/// A product type has one constructor; a sum type lists all of them; an enum's
+/// constructors carry empty field lists.
 #[derive(Debug, Clone)]
 pub struct TypeShape {
-    pub name: String,
-    pub variants: Vec<Variant>,
+    /// The structured type-expression key (`shapes/Rectangle`,
+    /// `(Option shapes/Rectangle)`).
+    pub key: String,
+    pub ctors: Vec<Ctor>,
 }
 
-/// A single variant — anonymous for products (one variant named after the
-/// type itself), named for sums.
+/// A single constructor — its name, heap-node tag (discriminant), and ordered
+/// named+typed fields.
 #[derive(Debug, Clone)]
-pub struct Variant {
+pub struct Ctor {
     pub name: String,
+    pub tag: u32,
     pub fields: Vec<Field>,
 }
 
-/// A single named field, with a resolved field type.
+/// A single named field, with a resolved (recursive) field type.
 #[derive(Debug, Clone)]
 pub struct Field {
     pub name: String,
     pub field_type: FieldType,
 }
 
-/// Field type — one of the four reserved CL wrappers or a reference to
-/// another declared ADT in the same schema.
+/// Field type — a recursive type-expression (`platform-interface.md` §5.5.2).
+///
+/// ```text
+/// FieldType ::= Scalar(FQTypeName)              ; primitives/Int, primitives/String, …
+///             | Adt(FQTypeName, Vec<FieldType>) ; geometry/Point, (Option shapes/Rectangle)
+///             | Vec(FieldType)                  ; (Vec primitives/Int)
+/// ```
+///
+/// The recursion lets a field type be a parameterised ADT or a `Vec` of one —
+/// the type-expression shapes a `deftype` field can carry. Typed fields are
+/// what make nested-ADT navigation work: the field's `FieldType` names the type
+/// to look up next in the same schema map.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldType {
-    CLInt,
-    CLBool,
-    CLFloat,
-    CLString,
-    /// Reference to a type-name declared elsewhere in the same schema.
-    Adt(String),
+    /// A scalar leaf — `primitives/Int`, `primitives/Bool`, `primitives/Float`,
+    /// `primitives/String`. The layout is the ABI; no schema entry is needed
+    /// for the type itself.
+    Scalar(String),
+    /// A reference to an ADT, possibly with concrete type arguments. The name
+    /// + args form the lookup key into the same schema map.
+    Adt(String, Vec<FieldType>),
+    /// A `Vec` of an element type.
+    Vec(Box<FieldType>),
 }
 
-/// Parse errors per `design/platform/sprint71-redesign.md` §1.7. Every
-/// variant carries a `ParseLoc` for diagnostic display.
+impl FieldType {
+    /// The four scalar leaf FQ names (their layout is the ABI).
+    fn scalar_name(name: &str) -> Option<FieldType> {
+        match name {
+            "primitives/Int" | "primitives/Bool" | "primitives/Float"
+            | "primitives/String" => Some(FieldType::Scalar(name.to_string())),
+            _ => None,
+        }
+    }
+}
+
+/// Parse errors for the generated schema artifact. Every variant carries a
+/// [`ParseLoc`] for diagnostic display.
+///
+/// Because the artifact is machine-written, a parse error normally signals a
+/// generator/parser grammar drift (a `/dev` bug), not author error — but the
+/// diagnostics stay precise to make such drift fast to find.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SchemaParseError {
     UnexpectedEof { expected: &'static str, at: ParseLoc },
     UnexpectedToken { found: String, expected: &'static str, at: ParseLoc },
     UnclosedParen { opened_at: ParseLoc },
     ExtraCloseParen { at: ParseLoc },
-    InvalidIdentifier { found: String, at: ParseLoc, reason: &'static str },
-    /// User attempted to redefine a reserved CL wrapper name (e.g. `CLInt`)
-    /// as a user-declared ADT type.
-    ReservedTypeName { name: String, at: ParseLoc },
-    /// `CLIO` named as a field type — reserved for future use; not
-    /// permitted as a schema field this sprint.
-    ReservedFieldTypeNotYetSupported { name: &'static str, at: ParseLoc },
-    DuplicateTypeName { name: String, at: ParseLoc, first_at: ParseLoc },
-    /// Field-type identifier neither names a CL wrapper nor a declared type.
-    UnknownFieldType { name: String, at: ParseLoc },
-    /// `()` appeared where a variant clause was expected.
-    EmptyVariantClause { at: ParseLoc },
+    /// The outer list was not `(schema …)`.
+    MissingSchemaKeyword { found: String, at: ParseLoc },
+    /// A constructor's tag token was not a non-negative integer.
+    InvalidTag { found: String, at: ParseLoc },
+    /// A field-type token was empty or otherwise unrenderable.
+    InvalidFieldType { found: String, at: ParseLoc },
+    DuplicateTypeKey { key: String, at: ParseLoc, first_at: ParseLoc },
 }
 
 impl std::fmt::Display for SchemaParseError {
@@ -116,36 +199,26 @@ impl std::fmt::Display for SchemaParseError {
             Self::ExtraCloseParen { at } => {
                 write!(f, "extra close-paren at line {}, col {}", at.line, at.col)
             }
-            Self::InvalidIdentifier { found, at, reason } => write!(
+            Self::MissingSchemaKeyword { found, at } => write!(
                 f,
-                "invalid identifier '{found}' at line {}, col {} ({reason})",
+                "schema artifact must begin '(schema …)', found '{found}' at line {}, col {}",
                 at.line, at.col
             ),
-            Self::ReservedTypeName { name, at } => write!(
+            Self::InvalidTag { found, at } => write!(
                 f,
-                "reserved type name '{name}' cannot be redefined at line {}, col {} \
-                 (reserved CL wrappers: CLInt, CLBool, CLFloat, CLString, CLIO)",
+                "invalid constructor tag '{found}' (expected a non-negative integer) at line {}, col {}",
                 at.line, at.col
             ),
-            Self::ReservedFieldTypeNotYetSupported { name, at } => write!(
+            Self::InvalidFieldType { found, at } => write!(
                 f,
-                "field type '{name}' is reserved for future use and not yet \
-                 supported as a schema field at line {}, col {}",
+                "invalid field type '{found}' at line {}, col {}",
                 at.line, at.col
             ),
-            Self::DuplicateTypeName { name, at, first_at } => write!(
+            Self::DuplicateTypeKey { key, at, first_at } => write!(
                 f,
-                "duplicate type name '{name}' at line {}, col {} (first declared at line {}, col {})",
+                "duplicate type key '{key}' at line {}, col {} (first declared at line {}, col {})",
                 at.line, at.col, first_at.line, first_at.col
             ),
-            Self::UnknownFieldType { name, at } => write!(
-                f,
-                "unknown field type '{name}' at line {}, col {} (not a CL wrapper or declared ADT)",
-                at.line, at.col
-            ),
-            Self::EmptyVariantClause { at } => {
-                write!(f, "empty variant clause '()' at line {}, col {}", at.line, at.col)
-            }
         }
     }
 }
@@ -157,190 +230,147 @@ impl std::error::Error for SchemaParseError {}
 // ---------------------------------------------------------------------
 
 impl Schema {
-    /// Parse a schema literal per `design/platform/sprint71-redesign.md` §1.
-    /// Empty input parses to an empty `Schema` (a DLL that declares no
-    /// ADT-marshaling functions has nothing to declare).
+    /// Parse a generated schema artifact.
     ///
-    /// The schema is wrapped in one outer `(...)` list containing zero or
-    /// more `(TypeName ...)` declarations — no leading `schema` keyword
-    /// per §1.6.
+    /// Empty input (or comments-only — e.g. an artifact carrying only the
+    /// `;; layout-hash:` header for a platform that marshals no ADTs) parses to
+    /// an empty [`Schema`].
+    ///
+    /// The grammar is the `(schema (key (Ctor tag (fields)) …) …)` form
+    /// emitted by backend's `generate_schema` (module rustdoc). `;;` comment
+    /// lines (including the `;; layout-hash:` header) are skipped.
     pub fn parse(src: &str) -> Result<Self, SchemaParseError> {
         let mut parser = Parser::new(src);
-        let mut schema = Schema { types: Vec::new(), by_name: HashMap::new() };
-        let mut decl_locs: HashMap<String, ParseLoc> = HashMap::new();
-        // Shadow structure indexed identically to schema.types[i].variants[j].fields[k]
-        // — captures the original ParseLoc of each field-type identifier so
-        // pass-2 errors can report the exact source position of the bad
-        // reference (per FIXME 0237 resolution).
-        let mut field_type_locs: Vec<Vec<Vec<ParseLoc>>> = Vec::new();
+        let mut schema = Schema::default();
 
         parser.skip_ws_and_comments();
-
-        // Empty input (or comments-only) → empty schema.
         if parser.at_eof() {
             return Ok(schema);
         }
 
-        // Outer list `(...)` wraps the type-decl sequence.
-        let outer_open = parser.expect_lparen("'(' starting the schema's outer list")?;
+        // Outer list `(schema …)`.
+        let outer_open = parser.expect_lparen("'(' starting the schema outer list")?;
+        let keyword = parser.parse_atom("the `schema` keyword")?;
+        if keyword.text != "schema" {
+            return Err(SchemaParseError::MissingSchemaKeyword {
+                found: keyword.text,
+                at: keyword.at,
+            });
+        }
 
-        // Pass 1: read all top-level type-decls; capture field-type names
-        // as raw strings + their ParseLoc shadow positions to be resolved
-        // in pass 2.
+        let mut key_locs: HashMap<String, ParseLoc> = HashMap::new();
         loop {
             parser.skip_ws_and_comments();
-            if let Some(b')') = parser.peek() {
-                parser.bump();
-                break;
+            match parser.peek() {
+                Some(b')') => {
+                    parser.bump();
+                    break;
+                }
+                None => return Err(SchemaParseError::UnclosedParen { opened_at: outer_open }),
+                _ => {}
             }
-            if parser.at_eof() {
-                return Err(SchemaParseError::UnclosedParen { opened_at: outer_open });
-            }
-            let (shape, locs, loc) = parser.parse_type_decl(&decl_locs)?;
-            if let Some(first_at) = decl_locs.get(&shape.name) {
-                return Err(SchemaParseError::DuplicateTypeName {
-                    name: shape.name.clone(),
-                    at: loc,
+            let (shape, at) = parser.parse_type_entry()?;
+            if let Some(first_at) = key_locs.get(&shape.key) {
+                return Err(SchemaParseError::DuplicateTypeKey {
+                    key: shape.key.clone(),
+                    at,
                     first_at: *first_at,
                 });
             }
-            decl_locs.insert(shape.name.clone(), loc);
-            schema.by_name.insert(shape.name.clone(), schema.types.len());
+            key_locs.insert(shape.key.clone(), at);
+            schema.by_key.insert(shape.key.clone(), schema.types.len());
             schema.types.push(shape);
-            field_type_locs.push(locs);
         }
 
-        // Reject trailing garbage after the outer list.
         parser.skip_ws_and_comments();
         if !parser.at_eof() {
             let at = parser.loc();
             return Err(SchemaParseError::UnexpectedToken {
                 found: (parser.peek().unwrap() as char).to_string(),
-                expected: "end of schema after outer list",
+                expected: "end of schema after the outer list",
                 at,
             });
-        }
-
-        // Pass 2: resolve field-type strings against (reserved CL wrappers)
-        // ∪ (declared type names). Self- and forward-references resolve here.
-        // Errors carry the original ParseLoc captured in pass-1 via
-        // `field_type_locs` (FIXME 0237 resolution).
-        let known: Vec<String> = schema.types.iter().map(|t| t.name.clone()).collect();
-        for (ti, shape) in schema.types.iter().enumerate() {
-            for (vi, variant) in shape.variants.iter().enumerate() {
-                for (fi, field) in variant.fields.iter().enumerate() {
-                    if let FieldType::Adt(name) = &field.field_type
-                        && !known.iter().any(|n| n == name)
-                    {
-                        // Unresolved: not a CL wrapper (those resolved
-                        // in pass 1) and not declared in the schema.
-                        // Use the shadow ParseLoc captured during pass-1
-                        // so the error names the actual offending token.
-                        let at = field_type_locs[ti][vi][fi];
-                        return Err(SchemaParseError::UnknownFieldType {
-                            name: name.clone(),
-                            at,
-                        });
-                    }
-                }
-            }
         }
 
         Ok(schema)
     }
 
-    /// Look up a type by name.
-    pub fn lookup_type(&self, name: &str) -> Option<&TypeShape> {
-        self.by_name.get(name).map(|idx| &self.types[*idx])
+    /// Look up a schema entry by its structured type-expression key
+    /// (`shapes/Rectangle`, `(Option shapes/Rectangle)`).
+    pub fn lookup_type(&self, key: &str) -> Option<&TypeShape> {
+        self.by_key.get(key).map(|idx| &self.types[*idx])
     }
 
-    /// Look up a field on a product type. For sum types, use
-    /// `lookup_variant_field_offset` with the variant name.
+    /// Map a (type key, optional ctor name, field name) to the field's byte
+    /// offset within the heap payload.
     ///
-    /// Returns the byte offset of the field within the heap payload
-    /// (per the documented layout rule — tag at offset 0, fields at
-    /// 8-byte slots starting at offset 8). Returns `None` if the
-    /// type/field is not declared.
-    ///
-    /// Per design §4.4, this method accepts dot-qualified names for
-    /// product types as a uniform syntactic convenience
-    /// (`"Rectangle.w"` works alongside `"w"`).
-    pub fn lookup_field_offset(&self, type_name: &str, field_name: &str) -> Option<usize> {
-        let shape = self.lookup_type(type_name)?;
-        if shape.variants.len() != 1 {
-            // Sum types: caller must use lookup_variant_field_offset with
-            // dot-qualified name.
-            return None;
-        }
-        let variant = &shape.variants[0];
-        // Strip the optional product-name qualifier (`Rectangle.w` → `w`).
-        let canonical = field_name
-            .strip_prefix(&format!("{}.", shape.name))
-            .unwrap_or(field_name);
-        for (idx, field) in variant.fields.iter().enumerate() {
-            if field.name == canonical {
-                // Tag at offset 0 (4 bytes) + 4 bytes pad → fields at
-                // 8-byte slots starting at offset 8.
-                return Some(8 + idx * 8);
-            }
-        }
-        None
-    }
-
-    /// Look up a field on a specific variant of a sum type. Returns the
-    /// byte offset within the heap payload (tag at offset 0, fields at
-    /// 8-byte slots starting at offset 8).
-    pub fn lookup_variant_field_offset(
+    /// Layout rule: the u32 tag sits at payload offset 0 (+ 4 bytes pad), so
+    /// the *i*-th field lands at offset `8 + i*8`. For a product (single
+    /// constructor) `ctor_name` may be `None`; for a sum the caller names the
+    /// constructor (e.g. via a dot-qualified `"Some.val"` field name).
+    pub fn field_offset(
         &self,
-        type_name: &str,
-        variant_name: &str,
+        type_key: &str,
+        ctor_name: Option<&str>,
         field_name: &str,
     ) -> Option<usize> {
-        let shape = self.lookup_type(type_name)?;
-        let variant = shape.variants.iter().find(|v| v.name == variant_name)?;
-        for (idx, field) in variant.fields.iter().enumerate() {
-            if field.name == field_name {
-                return Some(8 + idx * 8);
-            }
-        }
-        None
+        let shape = self.lookup_type(type_key)?;
+        let ctor = self.select_ctor(shape, ctor_name)?;
+        ctor.fields
+            .iter()
+            .position(|f| f.name == field_name)
+            .map(|idx| 8 + idx * 8)
     }
 
-    /// Look up a field's declared type — used by `read_field`/`own_field`
-    /// to verify the user's witness `F` against the schema.
-    pub fn lookup_field_type(
+    /// Look up a field's declared [`FieldType`] — drives the type-witness check
+    /// and nested-ADT navigation in [`crate::CLAdt`].
+    pub fn field_type(
         &self,
-        type_name: &str,
-        variant_name: Option<&str>,
+        type_key: &str,
+        ctor_name: Option<&str>,
         field_name: &str,
     ) -> Option<&FieldType> {
-        let shape = self.lookup_type(type_name)?;
-        let variant = if let Some(vn) = variant_name {
-            shape.variants.iter().find(|v| v.name == vn)?
-        } else if shape.variants.len() == 1 {
-            &shape.variants[0]
-        } else {
-            return None;
-        };
-        variant.fields.iter().find(|f| f.name == field_name).map(|f| &f.field_type)
+        let shape = self.lookup_type(type_key)?;
+        let ctor = self.select_ctor(shape, ctor_name)?;
+        ctor.fields.iter().find(|f| f.name == field_name).map(|f| &f.field_type)
     }
 
-    /// Variant names for a sum type (or `[type_name]` for a product).
-    pub fn variant_names(&self, type_name: &str) -> Option<Vec<&str>> {
-        self.lookup_type(type_name)
-            .map(|shape| shape.variants.iter().map(|v| v.name.as_str()).collect())
+    /// Constructor names for a type key (a single self-named ctor for a
+    /// product; all variant names for a sum).
+    pub fn ctor_names(&self, type_key: &str) -> Option<Vec<&str>> {
+        self.lookup_type(type_key)
+            .map(|shape| shape.ctors.iter().map(|c| c.name.as_str()).collect())
     }
 
-    /// True if the schema declares no types — useful for DLLs that don't
-    /// use ADT marshaling.
+    /// True if the schema declares no types — a DLL that marshals no ADTs.
     pub fn is_empty(&self) -> bool {
         self.types.is_empty()
+    }
+
+    /// Pick the constructor named by `ctor_name`, defaulting to the sole
+    /// constructor of a product when `ctor_name` is `None`.
+    fn select_ctor<'s>(
+        &self,
+        shape: &'s TypeShape,
+        ctor_name: Option<&str>,
+    ) -> Option<&'s Ctor> {
+        match ctor_name {
+            Some(cn) => shape.ctors.iter().find(|c| c.name == cn),
+            None if shape.ctors.len() == 1 => Some(&shape.ctors[0]),
+            None => None,
+        }
     }
 }
 
 // ---------------------------------------------------------------------
 // Lexer + parser (private)
 // ---------------------------------------------------------------------
+
+/// A parsed atom token with its source position.
+struct Atom {
+    text: String,
+    at: ParseLoc,
+}
 
 struct Parser<'a> {
     src: &'a [u8],
@@ -363,7 +393,7 @@ impl<'a> Parser<'a> {
     }
 
     fn peek(&self) -> Option<u8> {
-        if self.at_eof() { None } else { Some(self.src[self.pos]) }
+        self.src.get(self.pos).copied()
     }
 
     fn bump(&mut self) -> Option<u8> {
@@ -378,15 +408,20 @@ impl<'a> Parser<'a> {
         Some(b)
     }
 
+    /// Skip whitespace and `;;`-to-end-of-line comments (the `;; layout-hash:`
+    /// header and any other comment lines the generator emits).
     fn skip_ws_and_comments(&mut self) {
         loop {
             match self.peek() {
-                Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'\r') => {
+                Some(b) if b.is_ascii_whitespace() => {
                     self.bump();
                 }
                 Some(b';') => {
+                    // Comment to end of line.
                     while let Some(b) = self.peek() {
-                        if b == b'\n' { break; }
+                        if b == b'\n' {
+                            break;
+                        }
                         self.bump();
                     }
                 }
@@ -399,9 +434,12 @@ impl<'a> Parser<'a> {
         self.skip_ws_and_comments();
         let at = self.loc();
         match self.peek() {
-            Some(b'(') => { self.bump(); Ok(at) }
-            Some(b) => Err(SchemaParseError::UnexpectedToken {
-                found: (b as char).to_string(),
+            Some(b'(') => {
+                self.bump();
+                Ok(at)
+            }
+            Some(other) => Err(SchemaParseError::UnexpectedToken {
+                found: (other as char).to_string(),
                 expected,
                 at,
             }),
@@ -409,280 +447,210 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn expect_rparen(&mut self, open_at: ParseLoc) -> Result<(), SchemaParseError> {
-        self.skip_ws_and_comments();
-        match self.peek() {
-            Some(b')') => { self.bump(); Ok(()) }
-            Some(_) | None => Err(SchemaParseError::UnclosedParen { opened_at: open_at }),
-        }
+    /// True if `b` ends an atom (whitespace, paren, comment-start, or EOF).
+    fn is_atom_terminator(b: u8) -> bool {
+        b.is_ascii_whitespace() || b == b'(' || b == b')' || b == b';'
     }
 
-    fn parse_ident(&mut self) -> Result<(String, ParseLoc), SchemaParseError> {
+    /// Parse a bare atom (no parens). Errors on EOF or an immediate `(`/`)`.
+    fn parse_atom(&mut self, expected: &'static str) -> Result<Atom, SchemaParseError> {
         self.skip_ws_and_comments();
         let at = self.loc();
-        let start = self.pos;
         match self.peek() {
-            Some(b) if b.is_ascii_alphabetic() || b == b'_' => { self.bump(); }
-            Some(b) => return Err(SchemaParseError::UnexpectedToken {
-                found: (b as char).to_string(),
-                expected: "identifier",
-                at,
-            }),
-            None => return Err(SchemaParseError::UnexpectedEof {
-                expected: "identifier",
-                at,
-            }),
+            None => return Err(SchemaParseError::UnexpectedEof { expected, at }),
+            Some(b'(') | Some(b')') => {
+                return Err(SchemaParseError::UnexpectedToken {
+                    found: (self.peek().unwrap() as char).to_string(),
+                    expected,
+                    at,
+                });
+            }
+            _ => {}
         }
+        let start = self.pos;
         while let Some(b) = self.peek() {
-            if b.is_ascii_alphanumeric() || b == b'_' {
-                self.bump();
-            } else {
+            if Self::is_atom_terminator(b) {
                 break;
             }
+            self.bump();
         }
-        let ident = std::str::from_utf8(&self.src[start..self.pos])
-            .expect("ASCII identifier is UTF-8")
+        // SAFETY: the artifact is UTF-8 (parsed from a Rust &str) and atoms
+        // never split a code point — atom terminators are all ASCII.
+        let text = std::str::from_utf8(&self.src[start..self.pos])
+            .unwrap_or_default()
             .to_string();
-        Ok((ident, at))
+        Ok(Atom { text, at })
     }
 
-    fn parse_upper_ident(&mut self, what: &'static str) -> Result<(String, ParseLoc), SchemaParseError> {
-        let (ident, at) = self.parse_ident()?;
-        if !ident.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false) {
-            return Err(SchemaParseError::InvalidIdentifier {
-                found: ident,
-                at,
-                reason: what,
-            });
-        }
-        Ok((ident, at))
-    }
+    /// Parse one `(typekey ctor…)` entry. The cursor is at the opening `(`.
+    fn parse_type_entry(&mut self) -> Result<(TypeShape, ParseLoc), SchemaParseError> {
+        let open = self.expect_lparen("'(' starting a type entry")?;
+        let key = self.parse_type_key()?;
 
-    fn parse_lower_ident(&mut self) -> Result<(String, ParseLoc), SchemaParseError> {
-        let (ident, at) = self.parse_ident()?;
-        if !ident.chars().next().map(|c| c.is_ascii_lowercase() || c == '_').unwrap_or(false) {
-            return Err(SchemaParseError::InvalidIdentifier {
-                found: ident,
-                at,
-                reason: "field name must start with lowercase letter or underscore",
-            });
-        }
-        Ok((ident, at))
-    }
-
-    /// Parse one `(type-name product-or-sum)` declaration. Returns the
-    /// parsed TypeShape, the per-variant per-field ParseLoc shadow vector
-    /// (indexed as `[variant_idx][field_idx]`; populated for pass-2 error
-    /// reporting per FIXME 0237), and the location of its opening paren
-    /// (for duplicate-name diagnostics).
-    fn parse_type_decl(
-        &mut self,
-        _decl_locs: &HashMap<String, ParseLoc>,
-    ) -> Result<(TypeShape, Vec<Vec<ParseLoc>>, ParseLoc), SchemaParseError> {
-        let open_at = self.expect_lparen("'(' starting a type declaration")?;
-        let (type_name, name_at) = self.parse_upper_ident("type name must be UpperCamel")?;
-
-        // Reject reserved CL wrapper names as user-declared types.
-        if is_reserved_cl_name(&type_name) {
-            return Err(SchemaParseError::ReservedTypeName { name: type_name, at: name_at });
-        }
-
-        let (variants, locs) = self.parse_product_or_sum(&type_name)?;
-        self.expect_rparen(open_at)?;
-        Ok((TypeShape { name: type_name, variants }, locs, open_at))
-    }
-
-    fn parse_product_or_sum(
-        &mut self,
-        type_name: &str,
-    ) -> Result<(Vec<Variant>, Vec<Vec<ParseLoc>>), SchemaParseError> {
-        self.skip_ws_and_comments();
-        let at = self.loc();
-        match self.peek() {
-            // A `(` here means either the product field-list `((CLInt x) ...)`
-            // or a data variant clause `(VariantName ((...)))`. We
-            // disambiguate by peeking ahead — if the first inner token is
-            // an identifier whose first byte is uppercase, it's a variant
-            // clause (start of sum); if it's `(` it's a product field-spec.
-            Some(b'(') => {
-                let inner_kind = self.peek_inner_kind(at)?;
-                match inner_kind {
-                    InnerKind::Variant => {
-                        // Sum: one or more variant clauses (parens or bare names)
-                        let mut variants = Vec::new();
-                        let mut variant_locs = Vec::new();
-                        while !self.at_close_paren() {
-                            let (v, locs) = self.parse_variant_clause()?;
-                            variants.push(v);
-                            variant_locs.push(locs);
-                            self.skip_ws_and_comments();
-                        }
-                        Ok((variants, variant_locs))
-                    }
-                    InnerKind::FieldList => {
-                        // Product: parse the single field-list
-                        let (fields, locs) = self.parse_field_list()?;
-                        Ok((
-                            vec![Variant { name: type_name.to_string(), fields }],
-                            vec![locs],
-                        ))
-                    }
-                }
-            }
-            // A bare identifier here means a nullary sum variant clause
-            // (start of a sum type with nullary first variant).
-            Some(b) if (b as char).is_ascii_alphabetic() || b == b'_' => {
-                let mut variants = Vec::new();
-                let mut variant_locs = Vec::new();
-                while !self.at_close_paren() {
-                    let (v, locs) = self.parse_variant_clause()?;
-                    variants.push(v);
-                    variant_locs.push(locs);
-                    self.skip_ws_and_comments();
-                }
-                Ok((variants, variant_locs))
-            }
-            Some(b) => Err(SchemaParseError::UnexpectedToken {
-                found: (b as char).to_string(),
-                expected: "product field-list or sum variant-clause",
-                at,
-            }),
-            None => Err(SchemaParseError::UnexpectedEof {
-                expected: "product field-list or sum variant-clause",
-                at,
-            }),
-        }
-    }
-
-    fn at_close_paren(&mut self) -> bool {
-        self.skip_ws_and_comments();
-        matches!(self.peek(), Some(b')'))
-    }
-
-    /// Look at the contents of the next `(...)` form (already at the
-    /// opening paren) to decide whether it's a field-spec list (product
-    /// shape — first inner token is also `(`) or a variant clause (sum
-    /// shape — first inner token is an identifier).
-    fn peek_inner_kind(&self, at: ParseLoc) -> Result<InnerKind, SchemaParseError> {
-        let mut pos = self.pos + 1; // skip the opening '('
-        while pos < self.src.len() {
-            let b = self.src[pos];
-            if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
-                pos += 1;
-                continue;
-            }
-            if b == b';' {
-                while pos < self.src.len() && self.src[pos] != b'\n' { pos += 1; }
-                continue;
-            }
-            if b == b'(' {
-                return Ok(InnerKind::FieldList);
-            }
-            if b.is_ascii_alphabetic() || b == b'_' {
-                return Ok(InnerKind::Variant);
-            }
-            if b == b')' {
-                // `()` as the only inner form means an empty product
-                // field-list `(MarkerOnly ())` — a valid tag-only product
-                // per design §1.7. We treat this as a field-list shape.
-                return Ok(InnerKind::FieldList);
-            }
-            return Err(SchemaParseError::UnexpectedToken {
-                found: (b as char).to_string(),
-                expected: "field-spec '(' or variant identifier",
-                at,
-            });
-        }
-        Err(SchemaParseError::UnexpectedEof {
-            expected: "field-spec or variant identifier",
-            at,
-        })
-    }
-
-    fn parse_field_list(&mut self) -> Result<(Vec<Field>, Vec<ParseLoc>), SchemaParseError> {
-        let open_at = self.expect_lparen("'(' starting a field list")?;
-        let mut fields = Vec::new();
-        let mut field_type_locs = Vec::new();
+        let mut ctors = Vec::new();
         loop {
             self.skip_ws_and_comments();
-            if let Some(b')') = self.peek() {
-                self.bump();
-                break;
+            match self.peek() {
+                Some(b')') => {
+                    self.bump();
+                    break;
+                }
+                None => return Err(SchemaParseError::UnclosedParen { opened_at: open }),
+                _ => {}
             }
-            let (field, type_loc) = self.parse_field_spec()?;
-            fields.push(field);
-            field_type_locs.push(type_loc);
-            if self.at_eof() {
-                return Err(SchemaParseError::UnclosedParen { opened_at: open_at });
-            }
+            ctors.push(self.parse_ctor()?);
         }
-        Ok((fields, field_type_locs))
+        Ok((TypeShape { key, ctors }, open))
     }
 
-    /// Parse one field-spec `(FieldType field_name)`. Returns the resolved
-    /// `Field` plus the `ParseLoc` of the field-type identifier (for
-    /// pass-2 error reporting per FIXME 0237).
-    fn parse_field_spec(&mut self) -> Result<(Field, ParseLoc), SchemaParseError> {
-        let open_at = self.expect_lparen("'(' starting a field-spec '(field-type field-name)'")?;
-        let (type_ident, type_at) = self.parse_upper_ident("field type must be UpperCamel")?;
-        let (field_name, _name_at) = self.parse_lower_ident()?;
-        self.expect_rparen(open_at)?;
-        let field_type = resolve_field_type(&type_ident, type_at)?;
-        Ok((Field { name: field_name, field_type }, type_at))
-    }
-
-    fn parse_variant_clause(&mut self) -> Result<(Variant, Vec<ParseLoc>), SchemaParseError> {
+    /// Parse a type-expression **key** — a bare FQ name or an applied
+    /// `(module/Type fieldtype…)` form — and render it back to canonical text
+    /// (the same text backend's generator emits, so the keys match by
+    /// construction).
+    fn parse_type_key(&mut self) -> Result<String, SchemaParseError> {
         self.skip_ws_and_comments();
-        let at = self.loc();
         match self.peek() {
-            // Data variant: (VariantName (field-list))
             Some(b'(') => {
-                let open_at = self.expect_lparen("'(' starting a data variant clause")?;
-                let (variant_name, _name_at) = self.parse_upper_ident("variant name must be UpperCamel")?;
-                let (fields, field_type_locs) = self.parse_field_list()?;
-                self.expect_rparen(open_at)?;
-                Ok((Variant { name: variant_name, fields }, field_type_locs))
+                // Applied form — parse as a FieldType and render it.
+                let ft = self.parse_field_type()?;
+                Ok(render_field_type(&ft))
             }
-            // Nullary variant: bare identifier
-            Some(b) if (b as char).is_ascii_alphabetic() || b == b'_' => {
-                let (variant_name, _name_at) = self.parse_upper_ident("variant name must be UpperCamel")?;
-                Ok((Variant { name: variant_name, fields: Vec::new() }, Vec::new()))
+            _ => {
+                let atom = self.parse_atom("a type-expression key")?;
+                Ok(atom.text)
             }
-            Some(b) => Err(SchemaParseError::UnexpectedToken {
-                found: (b as char).to_string(),
-                expected: "variant clause",
-                at,
-            }),
-            None => Err(SchemaParseError::UnexpectedEof {
-                expected: "variant clause",
-                at,
-            }),
+        }
+    }
+
+    /// Parse one `(CtorName tag (field…))` constructor. Cursor at the `(`.
+    fn parse_ctor(&mut self) -> Result<Ctor, SchemaParseError> {
+        let open = self.expect_lparen("'(' starting a constructor")?;
+        let name = self.parse_atom("a constructor name")?;
+        let tag_atom = self.parse_atom("a constructor tag")?;
+        let tag: u32 = tag_atom.text.parse().map_err(|_| SchemaParseError::InvalidTag {
+            found: tag_atom.text.clone(),
+            at: tag_atom.at,
+        })?;
+
+        // Field list `(field…)`.
+        let fields_open = self.expect_lparen("'(' starting the field list")?;
+        let mut fields = Vec::new();
+        loop {
+            self.skip_ws_and_comments();
+            match self.peek() {
+                Some(b')') => {
+                    self.bump();
+                    break;
+                }
+                None => return Err(SchemaParseError::UnclosedParen { opened_at: fields_open }),
+                _ => {}
+            }
+            fields.push(self.parse_field()?);
+        }
+
+        // Close the constructor list.
+        self.skip_ws_and_comments();
+        match self.peek() {
+            Some(b')') => {
+                self.bump();
+            }
+            None => return Err(SchemaParseError::UnclosedParen { opened_at: open }),
+            Some(other) => {
+                let at = self.loc();
+                return Err(SchemaParseError::UnexpectedToken {
+                    found: (other as char).to_string(),
+                    expected: "')' closing the constructor",
+                    at,
+                });
+            }
+        }
+
+        Ok(Ctor { name: name.text, tag, fields })
+    }
+
+    /// Parse one `(name fieldtype)` field pair. Cursor at the `(`.
+    fn parse_field(&mut self) -> Result<Field, SchemaParseError> {
+        let open = self.expect_lparen("'(' starting a field")?;
+        let name = self.parse_atom("a field name")?;
+        let field_type = self.parse_field_type()?;
+        self.skip_ws_and_comments();
+        match self.peek() {
+            Some(b')') => {
+                self.bump();
+            }
+            None => return Err(SchemaParseError::UnclosedParen { opened_at: open }),
+            Some(other) => {
+                let at = self.loc();
+                return Err(SchemaParseError::UnexpectedToken {
+                    found: (other as char).to_string(),
+                    expected: "')' closing the field",
+                    at,
+                });
+            }
+        }
+        Ok(Field { name: name.text, field_type })
+    }
+
+    /// Parse a [`FieldType`]: a bare FQ name (scalar or zero-arg ADT) or an
+    /// applied `(module/Type ft…)` / `(Vec ft)` form.
+    fn parse_field_type(&mut self) -> Result<FieldType, SchemaParseError> {
+        self.skip_ws_and_comments();
+        match self.peek() {
+            Some(b'(') => {
+                let open = self.expect_lparen("'(' starting a field type")?;
+                let head = self.parse_atom("a type name in an applied field type")?;
+                let mut args = Vec::new();
+                loop {
+                    self.skip_ws_and_comments();
+                    match self.peek() {
+                        Some(b')') => {
+                            self.bump();
+                            break;
+                        }
+                        None => {
+                            return Err(SchemaParseError::UnclosedParen { opened_at: open });
+                        }
+                        _ => {}
+                    }
+                    args.push(self.parse_field_type()?);
+                }
+                if head.text == "Vec" {
+                    let elem = args.into_iter().next().ok_or(SchemaParseError::InvalidFieldType {
+                        found: "(Vec)".to_string(),
+                        at: open,
+                    })?;
+                    Ok(FieldType::Vec(Box::new(elem)))
+                } else {
+                    Ok(FieldType::Adt(head.text, args))
+                }
+            }
+            _ => {
+                let atom = self.parse_atom("a field type")?;
+                if atom.text.is_empty() {
+                    return Err(SchemaParseError::InvalidFieldType {
+                        found: atom.text,
+                        at: atom.at,
+                    });
+                }
+                Ok(FieldType::scalar_name(&atom.text)
+                    .unwrap_or_else(|| FieldType::Adt(atom.text, Vec::new())))
+            }
         }
     }
 }
 
-enum InnerKind {
-    FieldList,
-    Variant,
-}
-
-fn is_reserved_cl_name(name: &str) -> bool {
-    matches!(name, "CLInt" | "CLBool" | "CLFloat" | "CLString" | "CLIO")
-}
-
-fn resolve_field_type(name: &str, at: ParseLoc) -> Result<FieldType, SchemaParseError> {
-    match name {
-        "CLInt" => Ok(FieldType::CLInt),
-        "CLBool" => Ok(FieldType::CLBool),
-        "CLFloat" => Ok(FieldType::CLFloat),
-        "CLString" => Ok(FieldType::CLString),
-        "CLIO" => Err(SchemaParseError::ReservedFieldTypeNotYetSupported {
-            name: "CLIO",
-            at,
-        }),
-        // Any other UpperCamel name: treat as a forward/back ADT reference;
-        // resolution validates in pass 2.
-        other => Ok(FieldType::Adt(other.to_string())),
+/// Render a [`FieldType`] back to its canonical artifact text — used to
+/// re-render an applied type-expression *key* so it matches the generator's
+/// emitted key string by construction.
+fn render_field_type(ft: &FieldType) -> String {
+    match ft {
+        FieldType::Scalar(name) => name.clone(),
+        FieldType::Adt(name, args) if args.is_empty() => name.clone(),
+        FieldType::Adt(name, args) => {
+            let arg_strs: Vec<String> = args.iter().map(render_field_type).collect();
+            format!("({name} {})", arg_strs.join(" "))
+        }
+        FieldType::Vec(elem) => format!("(Vec {})", render_field_type(elem)),
     }
 }
 
@@ -694,263 +662,114 @@ fn resolve_field_type(name: &str, at: ParseLoc) -> Result<FieldType, SchemaParse
 mod tests {
     use super::*;
 
-    // T1 — Schema parser — well-formed product type
-    // spec: design/platform/sprint71-redesign.md §1 + tests/plan/sprint71-platform.md row T1
+    // spec: design/arch/platform-interface.md §5.5.2 — a product type parses
+    // to one constructor with ordered named+typed fields; field offsets follow
+    // the tag-at-0 / fields-from-8 layout rule.
     #[test]
-    fn t1_well_formed_product() {
-        let s = Schema::parse("((Rectangle ((CLInt w) (CLInt h))))").unwrap();
-        let r = s.lookup_type("Rectangle").expect("Rectangle declared");
-        assert_eq!(r.variants.len(), 1, "product is a single-variant shape");
-        let v = &r.variants[0];
-        assert_eq!(v.fields.len(), 2);
-        assert_eq!(v.fields[0].name, "w");
-        assert_eq!(v.fields[0].field_type, FieldType::CLInt);
-        assert_eq!(v.fields[1].name, "h");
-        assert_eq!(v.fields[1].field_type, FieldType::CLInt);
-    }
-
-    // T2 — Schema parser — well-formed sum type
-    // spec: design/platform/sprint71-redesign.md §1 + tests/plan/sprint71-platform.md row T2
-    #[test]
-    fn t2_well_formed_sum() {
-        let s = Schema::parse("((OptionInt None (Some ((CLInt val)))))").unwrap();
-        let o = s.lookup_type("OptionInt").expect("OptionInt declared");
-        assert_eq!(o.variants.len(), 2);
-        assert_eq!(o.variants[0].name, "None");
-        assert!(o.variants[0].fields.is_empty(), "None is nullary");
-        assert_eq!(o.variants[1].name, "Some");
-        assert_eq!(o.variants[1].fields.len(), 1);
-        assert_eq!(o.variants[1].fields[0].name, "val");
-        assert_eq!(o.variants[1].fields[0].field_type, FieldType::CLInt);
-    }
-
-    // T3 — Schema parser — recursive sum (ListInt self-reference)
-    // spec: design/platform/sprint71-redesign.md §1.4
-    #[test]
-    fn t3_recursive_sum_listint() {
-        let s = Schema::parse("((ListInt Nil (Cons ((CLInt head) (ListInt tail)))))").unwrap();
-        let l = s.lookup_type("ListInt").expect("ListInt declared");
-        assert_eq!(l.variants.len(), 2);
-        let cons = l.variants.iter().find(|v| v.name == "Cons").unwrap();
-        assert_eq!(cons.fields.len(), 2);
-        assert_eq!(cons.fields[0].field_type, FieldType::CLInt);
-        // The `tail` field self-references ListInt.
-        assert_eq!(cons.fields[1].name, "tail");
-        match &cons.fields[1].field_type {
-            FieldType::Adt(name) => assert_eq!(name, "ListInt"),
-            other => panic!("expected Adt(ListInt), got {other:?}"),
-        }
-    }
-
-    // T4 — Schema parser — nested product (Bounds → Point)
-    // spec: tests/plan/sprint71-platform.md row T4
-    #[test]
-    fn t4_nested_product_bounds_point() {
-        let s = Schema::parse(
-            "((Point ((CLInt x) (CLInt y))) (Bounds ((Point tl) (Point br))))"
-        ).unwrap();
-        assert!(s.lookup_type("Point").is_some());
-        let b = s.lookup_type("Bounds").unwrap();
-        assert_eq!(b.variants[0].fields[0].field_type, FieldType::Adt("Point".to_string()));
-        assert_eq!(b.variants[0].fields[1].field_type, FieldType::Adt("Point".to_string()));
-    }
-
-    // T5 — Schema parser — polymorphic-instantiated naming convention
-    // spec: design/platform/sprint71-redesign.md §1.3
-    #[test]
-    fn t5_polymorphic_instantiation_distinct_types() {
-        let s = Schema::parse(
-            "((OptionInt None (Some ((CLInt val)))) \
-             (OptionString None (Some ((CLString val)))))"
-        ).unwrap();
-        let oi = s.lookup_type("OptionInt").unwrap();
-        let os = s.lookup_type("OptionString").unwrap();
-        assert_eq!(oi.variants[1].fields[0].field_type, FieldType::CLInt);
-        assert_eq!(os.variants[1].fields[0].field_type, FieldType::CLString);
-    }
-
-    // T6 — Schema parser — malformed schema yields position-tagged error
-    // spec: design/platform/sprint71-redesign.md §1.7
-    #[test]
-    fn t6_malformed_missing_close_paren_position_tagged() {
-        let res = Schema::parse("((Rectangle ((CLInt w (CLInt h))))");
-        let err = res.expect_err("missing close-paren should fail");
-        // Every error carries a ParseLoc.
-        match err {
-            SchemaParseError::UnclosedParen { opened_at }
-            | SchemaParseError::UnexpectedEof { at: opened_at, .. }
-            | SchemaParseError::UnexpectedToken { at: opened_at, .. } => {
-                assert!(opened_at.offset > 0, "position past column 0");
-            }
-            other => panic!("expected position-tagged err; got {other:?}"),
-        }
-    }
-
-    // T7 — Schema parser — reserved field-type name conflict
-    // spec: design/platform/sprint71-redesign.md §1.2
-    #[test]
-    fn t7_reserved_type_name_rejected() {
-        let res = Schema::parse("((CLInt ((CLInt foo))))");
-        let err = res.expect_err("redefining CLInt should fail");
-        match err {
-            SchemaParseError::ReservedTypeName { name, .. } => assert_eq!(name, "CLInt"),
-            other => panic!("expected ReservedTypeName, got {other:?}"),
-        }
-    }
-
-    // T8 — Schema parser — offset computation matches layout rule
-    // spec: design/platform/sprint71-redesign.md §3 + tests/plan/sprint71-platform.md row T8
-    #[test]
-    fn t8_offset_computation_matches_layout() {
-        let s = Schema::parse("((Rectangle ((CLInt w) (CLInt h))))").unwrap();
-        // Tag at offset 0 (4 bytes) + 4 bytes pad → first field at 8.
-        assert_eq!(s.lookup_field_offset("Rectangle", "w"), Some(8));
-        assert_eq!(s.lookup_field_offset("Rectangle", "h"), Some(16));
-        // Dot-qualified form is also accepted on products.
-        assert_eq!(s.lookup_field_offset("Rectangle", "Rectangle.w"), Some(8));
-    }
-
-    // CLIO is reserved-but-not-supported per §1.2.
-    #[test]
-    fn clio_field_type_rejected_with_reserved_for_future_error() {
-        let res = Schema::parse("((Foo ((CLIO io))))");
-        let err = res.expect_err("CLIO as field type must be rejected");
-        match err {
-            SchemaParseError::ReservedFieldTypeNotYetSupported { name, .. } => {
-                assert_eq!(name, "CLIO");
-            }
-            other => panic!("expected ReservedFieldTypeNotYetSupported, got {other:?}"),
-        }
-    }
-
-    // CLIO is also rejected as a top-level type-decl name.
-    #[test]
-    fn clio_top_level_type_decl_rejected_as_reserved() {
-        let res = Schema::parse("((CLIO ((CLInt foo))))");
-        match res.expect_err("redefining CLIO should fail") {
-            SchemaParseError::ReservedTypeName { name, .. } => assert_eq!(name, "CLIO"),
-            other => panic!("expected ReservedTypeName, got {other:?}"),
-        }
-    }
-
-    // Duplicate type names rejected.
-    #[test]
-    fn duplicate_type_name_rejected_with_both_locs() {
-        let res = Schema::parse("((Foo ((CLInt a))) (Foo ((CLInt b))))");
-        match res.expect_err("duplicate type should fail") {
-            SchemaParseError::DuplicateTypeName { name, at, first_at } => {
-                assert_eq!(name, "Foo");
-                assert!(at.offset > first_at.offset);
-            }
-            other => panic!("expected DuplicateTypeName, got {other:?}"),
-        }
-    }
-
-    // Unknown field type (forward-ref to a non-declared name).
-    #[test]
-    fn unknown_field_type_rejected() {
-        let res = Schema::parse("((Foo ((Bar b))))");
-        match res.expect_err("unknown field type should fail") {
-            SchemaParseError::UnknownFieldType { name, at } => {
-                assert_eq!(name, "Bar");
-                // FIXME 0237 resolution: the error position points at the
-                // field-type identifier `Bar` (col 9 — `((Foo ((Bar …`),
-                // not a synthetic line-1-col-1 placeholder.
-                assert_eq!(at.line, 1);
-                assert_eq!(at.col, 9);
-            }
-            other => panic!("expected UnknownFieldType, got {other:?}"),
-        }
-    }
-
-    // FIXME 0237 — pass-2 error reports the actual ParseLoc of the bad
-    // reference, not a synthetic line-1-col-1 placeholder. Multi-line
-    // input with the offending token on line 3 must produce
-    // `at.line == 3`.
-    #[test]
-    fn unknown_field_type_reports_correct_line_on_multi_line_schema() {
-        let src = "((Foo ((CLInt a)))\n\
-                   (Bar ((CLInt b)))\n\
-                   (Baz ((Quux q))))";
-        let res = Schema::parse(src);
-        match res.expect_err("Quux is undeclared; pass-2 must error") {
-            SchemaParseError::UnknownFieldType { name, at } => {
-                assert_eq!(name, "Quux");
-                assert_eq!(
-                    at.line, 3,
-                    "FIXME 0237 — the offending `Quux` token is on line 3; \
-                     pass-2 must report that, not the synthetic line-1 placeholder"
-                );
-                // `Quux` starts at col 8 on line 3:
-                //   "(Baz ((Quux q))))"
-                //    1234567^
-                assert_eq!(at.col, 8);
-            }
-            other => panic!("expected UnknownFieldType, got {other:?}"),
-        }
-    }
-
-    // Empty schema parses to an empty Schema per §1.7.
-    #[test]
-    fn empty_schema_parses_to_empty() {
-        let s = Schema::parse("").unwrap();
-        assert!(s.is_empty());
-        let s2 = Schema::parse("  ;; just a comment\n").unwrap();
-        assert!(s2.is_empty());
-    }
-
-    // Empty product `(MarkerOnly ())` parses to a tag-only type.
-    #[test]
-    fn empty_product_marker_only() {
-        let s = Schema::parse("((MarkerOnly ()))").unwrap();
-        let m = s.lookup_type("MarkerOnly").unwrap();
-        assert_eq!(m.variants.len(), 1);
-        assert!(m.variants[0].fields.is_empty());
-    }
-
-    // Sum-type variant field offset lookup.
-    #[test]
-    fn sum_variant_field_offset_lookup() {
-        let s = Schema::parse("((OptionInt None (Some ((CLInt val)))))").unwrap();
-        // Some.val is the first field of the Some variant (offset 8).
+    fn parse_product_rectangle() {
+        let artifact = "\
+;; layout-hash: deadbeef
+(schema
+  (shapes/Rectangle
+    (Rectangle 0 ((w primitives/Int) (h primitives/Int)))))";
+        let schema = Schema::parse(artifact).expect("parses");
+        assert!(!schema.is_empty());
+        let shape = schema.lookup_type("shapes/Rectangle").expect("entry present");
+        assert_eq!(shape.ctors.len(), 1);
+        assert_eq!(shape.ctors[0].name, "Rectangle");
+        assert_eq!(shape.ctors[0].tag, 0);
+        assert_eq!(schema.field_offset("shapes/Rectangle", None, "w"), Some(8));
+        assert_eq!(schema.field_offset("shapes/Rectangle", None, "h"), Some(16));
         assert_eq!(
-            s.lookup_variant_field_offset("OptionInt", "Some", "val"),
-            Some(8)
-        );
-        // Non-existent variant or field returns None.
-        assert!(s.lookup_variant_field_offset("OptionInt", "None", "val").is_none());
-        assert!(s.lookup_variant_field_offset("OptionInt", "Some", "nope").is_none());
-    }
-
-    // Field-type lookup helps the type-witness check.
-    #[test]
-    fn lookup_field_type_helper() {
-        let s = Schema::parse("((Rectangle ((CLInt w) (CLInt h))))").unwrap();
-        assert_eq!(s.lookup_field_type("Rectangle", None, "w"), Some(&FieldType::CLInt));
-        let s2 = Schema::parse("((OptionInt None (Some ((CLInt val)))))").unwrap();
-        assert_eq!(
-            s2.lookup_field_type("OptionInt", Some("Some"), "val"),
-            Some(&FieldType::CLInt)
+            schema.field_type("shapes/Rectangle", None, "w"),
+            Some(&FieldType::Scalar("primitives/Int".to_string()))
         );
     }
 
-    // Variant names accessor.
+    // spec: design/arch/platform-interface.md §5.5.2 — a sum type lists all
+    // constructors with their tags; per-constructor field lookup uses the ctor
+    // name.
     #[test]
-    fn variant_names_accessor() {
-        let s = Schema::parse("((OptionInt None (Some ((CLInt val)))))").unwrap();
-        let names = s.variant_names("OptionInt").unwrap();
+    fn parse_sum_option() {
+        let artifact = "\
+;; layout-hash: abc
+(schema
+  (shapes/OptionInt
+    (None 0 ())
+    (Some 1 ((val primitives/Int)))))";
+        let schema = Schema::parse(artifact).expect("parses");
+        let names = schema.ctor_names("shapes/OptionInt").unwrap();
         assert_eq!(names, vec!["None", "Some"]);
+        assert_eq!(schema.field_offset("shapes/OptionInt", Some("Some"), "val"), Some(8));
+        // None has no fields.
+        assert_eq!(schema.field_offset("shapes/OptionInt", Some("None"), "val"), None);
+        // Unqualified lookup on a sum is ambiguous → None.
+        assert_eq!(schema.field_offset("shapes/OptionInt", None, "val"), None);
     }
 
-    // Line comments work.
+    // spec: design/arch/platform-interface.md §5.5.2 — typed fields drive
+    // nested-ADT navigation: a field whose type is another ADT records that
+    // ADT's key so read_field can look it up in the same map.
     #[test]
-    fn line_comments_are_skipped() {
-        let s = Schema::parse(
-            "; leading comment\n\
-             ((Rectangle ; trailing\n\
-                ((CLInt w) ; w is width\n\
-                 (CLInt h))))"
-        ).unwrap();
-        assert!(s.lookup_type("Rectangle").is_some());
+    fn parse_nested_adt_field() {
+        let artifact = "\
+;; layout-hash: 00
+(schema
+  (shapes/Box
+    (Box 0 ((origin geometry/Point))))
+  (geometry/Point
+    (Point 0 ((x primitives/Int) (y primitives/Int)))))";
+        let schema = Schema::parse(artifact).expect("parses");
+        assert_eq!(
+            schema.field_type("shapes/Box", None, "origin"),
+            Some(&FieldType::Adt("geometry/Point".to_string(), Vec::new()))
+        );
+        // The nested type is reachable in the same map.
+        assert!(schema.lookup_type("geometry/Point").is_some());
+    }
+
+    // spec: design/arch/platform-interface.md §5.5.3 — a concrete
+    // instantiation is keyed by the structured type expression, never a mangle.
+    #[test]
+    fn parse_concrete_instantiation_key() {
+        let artifact = "\
+;; layout-hash: 11
+(schema
+  ((Option shapes/Rectangle)
+    (None 0 ())
+    (Some 1 ((val shapes/Rectangle)))))";
+        let schema = Schema::parse(artifact).expect("parses");
+        assert!(schema.lookup_type("(Option shapes/Rectangle)").is_some());
+    }
+
+    // spec: design/arch/platform-interface.md §5.5.2 — Vec field type round-trips.
+    #[test]
+    fn parse_vec_field_type() {
+        let artifact = "\
+(schema
+  (shapes/Poly
+    (Poly 0 ((verts (Vec primitives/Int))))))";
+        let schema = Schema::parse(artifact).expect("parses");
+        assert_eq!(
+            schema.field_type("shapes/Poly", None, "verts"),
+            Some(&FieldType::Vec(Box::new(FieldType::Scalar("primitives/Int".to_string()))))
+        );
+    }
+
+    // spec: design/arch/platform-interface.md §5.5 — an artifact carrying only
+    // the layout-hash header (a platform that marshals no ADTs) parses to an
+    // empty schema.
+    #[test]
+    fn parse_header_only_is_empty() {
+        let schema = Schema::parse(";; layout-hash: cafe\n").expect("parses");
+        assert!(schema.is_empty());
+    }
+
+    // spec: design/arch/platform-interface.md §5.5.1 — the parser reads the
+    // artifact grammar verbatim; a non-`(schema …)` head is rejected.
+    #[test]
+    fn reject_missing_schema_keyword() {
+        let err = Schema::parse("(notschema)").unwrap_err();
+        assert!(matches!(err, SchemaParseError::MissingSchemaKeyword { .. }));
     }
 }

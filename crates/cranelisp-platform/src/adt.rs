@@ -1,105 +1,129 @@
 //! `CLAdt<T>` — the platform-DLL ADT-marshaling wrapper.
 //!
 //! Joins the `CLInt`/`CLBool`/`CLFloat`/`CLString` family as the heap-ADT
-//! crossing-the-FFI-boundary representation (Sprint 71; grown the
-//! platform ABI from v1 to v2). Generic over a per-type **marker type**
-//! (one per declared cranelisp ADT, auto-emitted by
-//! [`crate::declare_platform!`] from the schema literal), backed by a
-//! per-DLL parsed [`Schema`] value resolved at runtime via the
-//! per-marker-type [`GetSchema`] trampoline.
+//! crossing-the-FFI-boundary representation. `CLAdt<T>` is `#[repr(transparent)]`
+//! over the alloc-base `i64`; the marker type `T` carries the cranelisp
+//! **fully-qualified** type name ([`CLAdtType::TYPE_NAME`], e.g.
+//! `"shapes/Rectangle"`) that keys into the DLL's embedded schema.
 //!
-//! # Marker-type pattern — the layer-1 design
+//! # Field access is by NAME, against the embedded generated schema
 //!
-//! Per arbitrations A7 + A8 + the Phase 2 design walk-through, the DSL
-//! splits into two layers. **Layer 1** (in scope Sprint 71) is the
-//! schema-format-plus-marker-type-pattern landing here. **Layer 2**
-//! (deferred) is the ergonomic surface on top — a typed-newtype
-//! generator proc-macro, a `match-on-tag` macro, or whatever
-//! measurement shows useful — all three options consume the same
-//! schema this sprint settles. The choice between them is gated on
-//! usage data from real platform DLLs.
+//! Per the platform-interface rework (`design/arch/platform-interface.md`
+//! §5.5, user-ratified 2026-06-07; FIXME 0286): a platform no longer *declares*
+//! its ADTs. Its data types are ordinary `.cl` modules; the DLL embeds a
+//! **compiler-generated schema artifact** (`declare_platform! { schema:
+//! include_str!("<name>.platform-schema"), … }`) that records the transitive
+//! closure of every ADT the platform's signatures reach. The macro parses that
+//! artifact once into a per-DLL [`crate::Schema`] and installs it as the
+//! process-global schema ([`set_global_schema`]); [`CLAdt::read_field`] reads
+//! a field **by name**, resolving its byte offset + declared [`FieldType`]
+//! from that schema (the typed fields drive nested-ADT navigation — a field
+//! whose type is `geometry/Point` is looked up *by its key* in the same map).
 //!
-//! DLL authors write `extern "C" fn rect_area(r: CLAdt<Rectangle>) ->
-//! CLInt { r.read_field::<CLInt>("w") ... }`. The `Rectangle` marker
-//! type is auto-emitted by the macro from the schema arm; field-name
-//! lookups consult the DLL-local parsed [`Schema`] via [`GetSchema`]
-//! to compute byte offsets.
-//!
-//! See `design/platform/sprint71-redesign.md` §3–§4 for the full
-//! design (the field-access path) and `design/arch/bounded-contexts.md`
-//! §5 for the cross-surface story.
+//! This **retires the Sprint 71 marker-type DSL**: the hand-authored schema
+//! *declaration* arm, the `LazyLock<Schema>`-as-DSL static, the
+//! `GetSchema`-per-type trampoline, and the `AnyAdt` escape hatch are gone. The
+//! schema is one machine-written artifact per DLL, not a per-type declaration.
 //!
 //! # Read vs construction paths
 //!
-//! Field-access **reads** ([`CLAdt::read_field`] /
-//! [`CLAdt::own_field`] / [`CLAdt::read_tag`]) are **callback-free**:
-//! the DLL computes byte offsets locally from its parsed schema and
-//! transmutes at the offset. No host round-trip, no FFI cost per read.
+//! Field-access **reads** ([`CLAdt::read_field`] / [`CLAdt::own_field`] /
+//! [`CLAdt::read_tag`]) are **callback-free**: the DLL computes the byte offset
+//! locally from the embedded schema and transmutes at the offset. No host
+//! round-trip per read.
 //!
-//! Field-access **construction** ([`CLAdt::construct`]) is the only
-//! path that touches host state — it routes through
-//! [`crate::HostCallbacks::alloc_with_tag`] and panics under the **R1
-//! wired-or-panic gate** until the host-wiring sprint (FIXME 0229)
-//! populates it. The R1 gate's scope shrunk dramatically post-marker-
-//! type-pattern revision: only construction methods gate; the bulk of
-//! the API (the read methods) is fully functional this sprint without
-//! host wiring (Principle 8 — interim shape is named, enumerable, and
-//! removable as a coherent unit).
+//! Field-access **construction** ([`CLAdt::construct`]) is the only path that
+//! touches host state — it routes through [`crate::HostCallbacks::alloc_with_tag`]
+//! (wired by the host since S76; `alloc_with_tag` is KEPT — ADT construction
+//! across the FFI still needs the host allocator, orthogonal to the schema
+//! retirement, `platform-interface.md` §6.6).
+//!
+//! See `design/arch/platform-interface.md` §4–§5.5 (the platform-author
+//! experience + the field-by-name design) and `design/arch/bounded-contexts.md`
+//! §5 for the cross-surface story.
 
 use std::marker::PhantomData;
+use std::sync::OnceLock;
 
 use crate::schema::{FieldType, Schema};
 use crate::{CLHeap, CLOwned, CLType, HEAP_HEADER_SIZE};
 
 // ---------------------------------------------------------------------
-// Marker-type trait family
+// Marker-type trait
 // ---------------------------------------------------------------------
 
-/// Marker trait for typed `CLAdt` parameters.
+/// Marker trait for typed `CLAdt` parameters — carries the cranelisp
+/// **fully-qualified** type name used to key the embedded schema.
 ///
-/// Implemented by the `declare_platform!` macro for each ADT declared in
-/// the schema. DLL authors do not implement this directly.
+/// A DLL author declares one zero-sized marker per ADT they marshal, e.g.
+///
+/// ```ignore
+/// pub struct Rectangle;
+/// impl cranelisp_platform::CLAdtType for Rectangle {
+///     const TYPE_NAME: &'static str = "shapes/Rectangle";
+/// }
+/// ```
+///
+/// (The Sprint 71 `declare_platform!` schema arm auto-emitted these from the
+/// declaration DSL; with the DSL retired the author writes the marker directly
+/// — a few lines, no generated declaration — or a future ergonomic layer
+/// generates them. The marker carries only the FQ key string; the layout comes
+/// from the embedded schema, not the marker.)
 pub trait CLAdtType: 'static {
-    /// The cranelisp type name as it appears in the schema and at runtime.
-    /// Schema lookups use this string to find the type's field layout.
+    /// The cranelisp FQ type-key as it appears in the embedded schema and in
+    /// the function signatures (`"shapes/Rectangle"`). Schema lookups use this
+    /// string to find the type's field layout.
     const TYPE_NAME: &'static str;
 }
 
-/// Default marker for untyped `CLAdt` — used when the DLL author works
-/// generically over heap-ADT values without committing to a specific
-/// type at compile time. See `design/platform/sprint71-redesign.md` §4.6.
-pub struct AnyAdt;
+// ---------------------------------------------------------------------
+// Process-global embedded schema
+// ---------------------------------------------------------------------
 
-impl CLAdtType for AnyAdt {
-    const TYPE_NAME: &'static str = ""; // sentinel — see §4.6
+/// The DLL's embedded, parsed schema. Installed once by the `declare_platform!`
+/// `schema:` embed arm (which parses `include_str!("<name>.platform-schema")`);
+/// read by `CLAdt`'s field-access methods.
+///
+/// Each DLL is its own compilation unit, so this static is per-DLL. The schema
+/// is a single artifact per platform (the transitive closure of every ADT the
+/// platform's sigs reach), so one global is the right cardinality.
+static GLOBAL_SCHEMA: OnceLock<Schema> = OnceLock::new();
+
+/// Install the DLL's parsed schema. Called by the `declare_platform!` macro's
+/// `schema:` embed arm. Idempotent — a second install is ignored (the embed
+/// arm runs once).
+pub fn set_global_schema(schema: Schema) {
+    let _ = GLOBAL_SCHEMA.set(schema);
 }
 
-/// Per-marker-type schema trampoline. Each `declare_platform!`-emitted
-/// marker type implements this to point at the DLL's `LazyLock<Schema>`
-/// static. See `design/platform/sprint71-redesign.md` §7.4 — "option (ii)".
-///
-/// `AnyAdt` does NOT implement `GetSchema`; methods on `CLAdt<AnyAdt>`
-/// are statically restricted to `read_tag()` + `into_typed::<T>()`.
-pub trait GetSchema: CLAdtType {
-    fn schema() -> &'static Schema;
+/// The DLL's embedded schema. Panics if the DLL did not embed one (a
+/// programmer error: `read_field` was called on a platform that declared no
+/// `schema:` arm). Construction-only / scalar-only DLLs never reach this.
+fn global_schema() -> &'static Schema {
+    GLOBAL_SCHEMA.get().unwrap_or_else(|| {
+        panic!(
+            "CLAdt field access requires an embedded schema, but this platform \
+             DLL did not embed one. Add `schema: include_str!(\"<name>.platform-schema\")` \
+             to declare_platform! and regenerate the artifact with /platform-schema. \
+             See design/arch/platform-interface.md §5.5."
+        )
+    })
 }
 
 // ---------------------------------------------------------------------
 // CLAdt<T> wrapper
 // ---------------------------------------------------------------------
 
-/// Heap-ADT value crossing the FFI boundary. Layout per design §3 +
-/// `CLString` convention: the stored `i64` is the **alloc base
-/// pointer** (the `[total_size: i64][rc: i64][tag: u32][pad: u32][fields...]`
-/// allocation's address). `read_tag` / `read_field` add
-/// `HEAP_HEADER_SIZE` (16) to reach the payload; `inc_rc` / `dec_rc`
-/// from `CLHeap` use `base + 8` to find the RC field.
+/// Heap-ADT value crossing the FFI boundary. The stored `i64` is the **alloc
+/// base pointer** (the `[total_size: i64][rc: i64][tag: u32][pad: u32][fields…]`
+/// allocation's address). `read_tag` / `read_field` add [`HEAP_HEADER_SIZE`]
+/// (16) to reach the payload; `inc_rc` / `dec_rc` from [`CLHeap`] use `base + 8`
+/// to find the RC field. Mirrors `CLString`'s base-pointer convention.
 ///
-/// `#[repr(transparent)]` over `i64` plus a zero-sized `PhantomData<T>`
-/// for compile-time witness binding; the JIT and host see exactly one
-/// `i64` payload at every call site.
+/// `#[repr(transparent)]` over `i64` plus a zero-sized `PhantomData<T>` for the
+/// compile-time type-key witness; the JIT and host see exactly one `i64`.
 #[repr(transparent)]
-pub struct CLAdt<T: CLAdtType = AnyAdt>(i64, PhantomData<T>);
+pub struct CLAdt<T: CLAdtType>(i64, PhantomData<T>);
 
 impl<T: CLAdtType> std::fmt::Debug for CLAdt<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -129,124 +153,71 @@ impl<T: CLAdtType> CLHeap for CLAdt<T> {
 
 impl<T: CLAdtType> CLAdt<T> {
     /// Construct from a raw **alloc base** pointer (the address of the
-    /// `[total_size][rc][tag][pad][fields...]` heap allocation). Intended
-    /// for the FFI boundary (where the JIT hands us an `i64` we know to
-    /// be a tagged heap ADT) and for tests using synthetic heap fixtures.
-    ///
-    /// Mirrors `CLString`'s base-pointer convention.
+    /// `[total_size][rc][tag][pad][fields…]` heap allocation). Intended for the
+    /// FFI boundary (where the JIT hands us an `i64` known to be a tagged heap
+    /// ADT) and for tests using synthetic heap fixtures.
     pub fn from_raw(base_ptr: i64) -> Self {
         CLAdt(base_ptr, PhantomData)
     }
 
-    /// Compute the payload pointer (base + HEAP_HEADER_SIZE).
+    /// Compute the payload pointer (base + [`HEAP_HEADER_SIZE`]).
     fn payload_ptr(&self) -> i64 {
         self.0 + HEAP_HEADER_SIZE
     }
-}
 
-// ---------------------------------------------------------------------
-// Method set — typed CLAdt<T: CLAdtType + GetSchema>
-// ---------------------------------------------------------------------
-
-/// The "schema-backed" method set on typed CLAdt. Per design §4.1.
-impl<T: CLAdtType + GetSchema> CLAdt<T> {
     /// Read the runtime tag at the fixed offset payload+0.
     ///
-    /// No schema lookup. No callback. The four bytes at payload+0 are
-    /// always the variant tag (or 0 for products), per design §3.
+    /// No schema lookup. The four bytes at payload+0 are always the variant tag
+    /// (or 0 for products).
     pub fn read_tag(&self) -> u32 {
-        // SAFETY: the FFI invariant guarantees that any CLAdt<T> handed
-        // across the boundary points at a heap-ADT layout with a u32 tag
-        // at payload+0. Reading 4 bytes at that offset is sound.
+        // SAFETY: the FFI invariant guarantees any CLAdt<T> handed across the
+        // boundary points at a heap-ADT layout with a u32 tag at payload+0.
         unsafe { *(self.payload_ptr() as *const u32) }
     }
 
-    /// Read a primitive field by name. Schema lookup computes the byte
-    /// offset from `T::TYPE_NAME` + `field_name`; transmute the i64 at
-    /// that offset to `F`.
+    /// Read a primitive field **by name**, resolving the byte offset from the
+    /// embedded schema for `T::TYPE_NAME`. Sum-type fields are named
+    /// dot-qualified (`"Some.val"`); product fields plain (`"w"`) or
+    /// self-qualified (`"Rectangle.w"`).
     ///
-    /// Panics if the field name is not in T's schema (programmer error
-    /// at the DLL-author level — typo or stale-rename per §4.5), or if
-    /// the field's schema type doesn't match `F`'s witness (per §3.3).
+    /// Panics if the field is not in the schema, or if the schema's declared
+    /// field type does not match `F`'s witness.
     pub fn read_field<F>(&self, field_name: &str) -> F
     where
         F: CLType + CLTypeWitness,
     {
-        let schema = T::schema();
-        let (offset, declared_type) = resolve_field::<T>(schema, field_name);
-        F::check_witness(T::TYPE_NAME, field_name, declared_type);
-
-        // SAFETY: the offset is computed from a parsed schema that the
-        // DLL author authored alongside the type definition; the FFI
-        // invariant guarantees the heap layout matches. Reading the i64
-        // at payload+offset and transmuting to F is sound under the
-        // witness check above.
+        let (offset, declared) = resolve_field::<T>(field_name);
+        F::check_witness(T::TYPE_NAME, field_name, declared);
+        // SAFETY: the offset is computed from the embedded schema, which the
+        // compiler generated from the same resolved module graph the host
+        // compiles; the layout-hash gate refuses a stale schema. Reading the
+        // i64 at payload+offset and transmuting to F is sound under the witness
+        // check above.
         let raw = unsafe { *((self.payload_ptr() + offset as i64) as *const i64) };
         F::from_raw_i64(raw)
     }
 
-    /// Read a heap field by name with inc-on-read. Returns a
-    /// `CLOwned<F>` (dec on drop, mirroring Decision 24).
-    ///
-    /// `F` must be `CLHeap` — `CLString`, or another `CLAdt<U>`.
-    /// Panics on schema miss or witness mismatch.
+    /// Read a heap field by name with inc-on-read. Returns a [`CLOwned<F>`]
+    /// (dec on drop, mirroring Decision 24). `F` must be [`CLHeap`].
     pub fn own_field<F: CLHeap + CLTypeWitness>(&self, field_name: &str) -> CLOwned<F> {
-        let schema = T::schema();
-        let (offset, declared_type) = resolve_field::<T>(schema, field_name);
-        F::check_witness(T::TYPE_NAME, field_name, declared_type);
-
-        // SAFETY: identical justification to `read_field` — schema-driven
-        // offset, FFI invariant on layout, witness check above.
+        let (offset, declared) = resolve_field::<T>(field_name);
+        F::check_witness(T::TYPE_NAME, field_name, declared);
+        // SAFETY: identical to `read_field` — schema-driven offset, FFI layout
+        // invariant, witness check above.
         let raw = unsafe { *((self.payload_ptr() + offset as i64) as *const i64) };
         let f = F::from_raw_i64(raw);
-        // own() does inc-on-read; CLOwned drop will dec, balancing.
         f.own()
     }
 
-    /// Construct a new CLAdt value from a tag + field array. Routes
-    /// through `HostCallbacks::alloc_with_tag`.
-    ///
-    /// **Wired-or-panic** under the R1 gate (design §9): until the host
-    /// wires `alloc_with_tag` (FIXME 0229), this path panics with a
-    /// FIXME-pointing message inside `null_alloc_with_tag`.
-    ///
-    /// Returns `CLOwned<CLAdt<T>>` per design §4.3 — the just-allocated
-    /// heap value has RC=1 (set by `alloc_with_tag`); wrap without re-inc.
+    /// Construct a new `CLAdt` value from a tag + field array, via the host's
+    /// [`crate::HostCallbacks::alloc_with_tag`]. Returns `CLOwned<CLAdt<T>>` —
+    /// the just-allocated value has RC=1 (set by `alloc_with_tag`); wrap
+    /// without re-inc.
     pub fn construct(tag: u32, fields: &[i64]) -> CLOwned<CLAdt<T>> {
         let alloc_with_tag = crate::get_host_alloc_with_tag();
-        let payload_ptr =
-            alloc_with_tag(tag, fields.len() as u32, fields.as_ptr());
+        let payload_ptr = alloc_with_tag(tag, fields.len() as u32, fields.as_ptr());
         let adt = CLAdt::<T>::from_raw(payload_ptr);
-        // No inc — alloc_with_tag sets RC=1 already.
         <CLAdt<T> as CLHeap>::into_owned_consuming(adt)
-    }
-}
-
-// ---------------------------------------------------------------------
-// Method set — untyped escape hatch CLAdt<AnyAdt>
-// ---------------------------------------------------------------------
-
-impl CLAdt<AnyAdt> {
-    /// Read the runtime tag without consulting a schema. Same fixed-offset
-    /// load as the typed version.
-    pub fn read_tag_any(&self) -> u32 {
-        unsafe { *((self.0 + HEAP_HEADER_SIZE) as *const u32) }
-    }
-
-    /// Coerce an untyped `CLAdt<AnyAdt>` to a typed `CLAdt<T>`.
-    /// Performs the type-witness check using `T`'s schema; panics on
-    /// mismatch (per design §3.3).
-    ///
-    /// This is the safe escape-hatch shape: field access on `AnyAdt` is
-    /// not exposed; the DLL author must commit to a marker type via
-    /// `into_typed::<T>()` first.
-    pub fn into_typed<T: CLAdtType + GetSchema>(self) -> CLAdt<T> {
-        // The full witness check is deferred to first field-access call
-        // (per design §3.3 — in-line at each method entry). Here we
-        // simply re-wrap with the new marker. Construction-from-AnyAdt
-        // is by-construction acceptable; bad coercions surface at the
-        // first read_field/own_field call.
-        CLAdt::<T>::from_raw(self.0)
     }
 }
 
@@ -254,24 +225,18 @@ impl CLAdt<AnyAdt> {
 // CLType witness trait — the bound `F: CLTypeWitness` on read_field/own_field
 // ---------------------------------------------------------------------
 
-/// Compile-time + runtime witness for the field-type `F` used at a
-/// `read_field` / `own_field` call site.
-///
-/// The `expected_field_type()` constant tells the runtime check what
-/// the schema must say for a given `F`; the panic on mismatch surfaces
-/// programmer errors at the DLL-author level (typo, stale-rename, or a
-/// DLL author writing wrong code per §3.3).
+/// Compile-time + runtime witness for the field-type `F` at a `read_field` /
+/// `own_field` call site, checked against the embedded schema's declared
+/// [`FieldType`].
 pub trait CLTypeWitness: Sized {
     /// What schema field-type `Self` represents.
     fn expected_field_type() -> ExpectedFieldType;
 
-    /// Build a typed value from the raw i64 representation read from
-    /// the heap. For `CLInt`/`CLBool`/`CLFloat`/`CLString` this is a
-    /// transparent wrap; for `CLAdt<T>` it's `from_raw`.
+    /// Build a typed value from the raw i64 read from the heap.
     fn from_raw_i64(raw: i64) -> Self;
 
-    /// Compare the schema's declared type for a field against this
-    /// witness; panic on mismatch with the §3.3 message.
+    /// Compare the schema's declared type for a field against this witness;
+    /// panic on mismatch.
     fn check_witness(type_name: &str, field_name: &str, declared: &FieldType) {
         let expected = Self::expected_field_type();
         if !expected.matches(declared) {
@@ -281,60 +246,59 @@ pub trait CLTypeWitness: Sized {
                  field:     {field_name}\n  \
                  expected:  {expected:?}\n  \
                  declared:  {declared:?}\n  \
-                 cause:     wrong type witness at the call site, or schema typo.\n  \
-                 see:       design/platform/sprint71-redesign.md §3.3"
+                 cause:     wrong type witness at the call site, or a stale schema.\n  \
+                 see:       design/arch/platform-interface.md §5.5"
             )
         }
     }
 }
 
-/// Witness-side representation of a CL field type. Mirrors `FieldType`
-/// but for ADT references holds no string (the witness is the marker
-/// type `T`, whose `TYPE_NAME` we compare against the schema's ADT
-/// reference).
+/// Witness-side representation of a CL field type. Compared against the
+/// embedded schema's [`FieldType`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExpectedFieldType {
-    CLInt,
-    CLBool,
-    CLFloat,
-    CLString,
-    /// The witness is `CLAdt<T>` with `T::TYPE_NAME == name`.
+    Int,
+    Bool,
+    Float,
+    String,
+    /// The witness is `CLAdt<T>` with `T::TYPE_NAME == key`.
     Adt(&'static str),
 }
 
 impl ExpectedFieldType {
     fn matches(&self, declared: &FieldType) -> bool {
         match (self, declared) {
-            (ExpectedFieldType::CLInt, FieldType::CLInt) => true,
-            (ExpectedFieldType::CLBool, FieldType::CLBool) => true,
-            (ExpectedFieldType::CLFloat, FieldType::CLFloat) => true,
-            (ExpectedFieldType::CLString, FieldType::CLString) => true,
-            (ExpectedFieldType::Adt(name), FieldType::Adt(declared_name)) => name == declared_name,
+            (ExpectedFieldType::Int, FieldType::Scalar(n)) => n == "primitives/Int",
+            (ExpectedFieldType::Bool, FieldType::Scalar(n)) => n == "primitives/Bool",
+            (ExpectedFieldType::Float, FieldType::Scalar(n)) => n == "primitives/Float",
+            (ExpectedFieldType::String, FieldType::Scalar(n)) => n == "primitives/String",
+            // An ADT-typed field: the witness marker's key must match the
+            // declared ADT's name (args ignored — the marker pins the head).
+            (ExpectedFieldType::Adt(key), FieldType::Adt(name, _)) => key == name,
             _ => false,
         }
     }
 }
 
-// CLType wrappers implement the witness trait.
 impl CLTypeWitness for crate::CLInt {
-    fn expected_field_type() -> ExpectedFieldType { ExpectedFieldType::CLInt }
+    fn expected_field_type() -> ExpectedFieldType { ExpectedFieldType::Int }
     fn from_raw_i64(raw: i64) -> Self { crate::CLInt::from(raw) }
 }
 
 impl CLTypeWitness for crate::CLBool {
-    fn expected_field_type() -> ExpectedFieldType { ExpectedFieldType::CLBool }
+    fn expected_field_type() -> ExpectedFieldType { ExpectedFieldType::Bool }
     fn from_raw_i64(raw: i64) -> Self { crate::CLBool::from(raw != 0) }
 }
 
 impl CLTypeWitness for crate::CLFloat {
-    fn expected_field_type() -> ExpectedFieldType { ExpectedFieldType::CLFloat }
+    fn expected_field_type() -> ExpectedFieldType { ExpectedFieldType::Float }
     fn from_raw_i64(raw: i64) -> Self {
         crate::CLFloat::from(f64::from_ne_bytes(raw.to_ne_bytes()))
     }
 }
 
 impl CLTypeWitness for crate::CLString {
-    fn expected_field_type() -> ExpectedFieldType { ExpectedFieldType::CLString }
+    fn expected_field_type() -> ExpectedFieldType { ExpectedFieldType::String }
     fn from_raw_i64(raw: i64) -> Self {
         // SAFETY: CLString is #[repr(transparent)] over i64; this is the
         // standard wrap used at FFI boundaries.
@@ -355,54 +319,51 @@ impl<T: CLAdtType> CLTypeWitness for CLAdt<T> {
 // Internal helpers
 // ---------------------------------------------------------------------
 
-/// Resolve a field name (possibly dot-qualified for sums) to a
-/// (byte_offset, declared_type) tuple. Panics on schema miss with the
-/// §4.5 message.
-fn resolve_field<T: CLAdtType>(
-    schema: &'static Schema,
-    field_name: &str,
-) -> (usize, &'static FieldType) {
-    let type_name = T::TYPE_NAME;
+/// Resolve a field name (possibly dot-qualified for sums) against the embedded
+/// schema to a `(byte_offset, declared_type)` tuple. Panics on schema miss.
+fn resolve_field<T: CLAdtType>(field_name: &str) -> (usize, &'static FieldType) {
+    let schema = global_schema();
+    let type_key = T::TYPE_NAME;
 
-    // Dot-qualified form per design §4.4 — `"Some.val"`.
-    let (variant_name, canonical_field) = if let Some((before, after)) = field_name.split_once('.') {
-        (Some(before), after)
-    } else {
-        (None, field_name)
+    // Dot-qualified form — `"Some.val"` names a sum-type constructor; a
+    // self-qualified `"Rectangle.w"` on a product strips to the bare field.
+    let (ctor_name, canonical_field): (Option<&str>, &str) =
+        match field_name.split_once('.') {
+            Some((before, after)) => (Some(before), after),
+            None => (None, field_name),
+        };
+
+    // For a product, a self-qualifier (`Rectangle.w`) names the type, not a
+    // distinct constructor — treat it as unqualified.
+    let ctor_for_lookup = match ctor_name {
+        Some(cn) if cn == type_key_tail(type_key) => None,
+        other => other,
     };
 
-    // For products: variant_name (if any) must equal type_name; for sums:
-    // variant_name names the variant. We probe both shapes.
-    let offset = if let Some(vn) = variant_name {
-        if vn == type_name {
-            // Product with optional self-qualification: `Rectangle.w`
-            schema.lookup_field_offset(type_name, canonical_field)
-        } else {
-            schema.lookup_variant_field_offset(type_name, vn, canonical_field)
-        }
-    } else {
-        schema.lookup_field_offset(type_name, canonical_field)
-    };
+    let offset = schema.field_offset(type_key, ctor_for_lookup, canonical_field);
+    let declared = schema.field_type(type_key, ctor_for_lookup, canonical_field);
 
-    let declared_type = schema.lookup_field_type(type_name, variant_name, canonical_field);
-
-    match (offset, declared_type) {
+    match (offset, declared) {
         (Some(off), Some(dt)) => (off, dt),
         _ => {
-            let available_variants = schema
-                .variant_names(type_name)
-                .unwrap_or_default()
-                .join(", ");
+            let ctors = schema.ctor_names(type_key).unwrap_or_default().join(", ");
             panic!(
                 "CLAdt::read_field schema lookup miss:\n  \
-                 type:        {type_name}\n  \
+                 type:        {type_key}\n  \
                  asked for:   {field_name}\n  \
-                 variants:    [{available_variants}]\n  \
-                 cause:       field name not declared in this type's schema\n  \
-                 see:         design/platform/sprint71-redesign.md §4.5"
+                 constructors:[{ctors}]\n  \
+                 cause:       field name not in this type's embedded schema (or a \
+                              sum-type field was not dot-qualified)\n  \
+                 see:         design/arch/platform-interface.md §5.5"
             )
         }
     }
+}
+
+/// The unqualified type name of an FQ key (`"shapes/Rectangle"` → `"Rectangle"`)
+/// — used to recognise a self-qualifying field prefix on a product.
+fn type_key_tail(key: &str) -> &str {
+    key.rsplit('/').next().unwrap_or(key)
 }
 
 // ---------------------------------------------------------------------
@@ -413,46 +374,25 @@ fn resolve_field<T: CLAdtType>(
 mod tests {
     use super::*;
     use crate::CLInt;
-    use std::sync::OnceLock;
 
-    // -----------------------------------------------------------------
-    // Test fixtures: synthetic schemas + marker types
-    // -----------------------------------------------------------------
-
-    // Rectangle ((CLInt w) (CLInt h)) — pure product
-    pub struct Rectangle;
-    impl CLAdtType for Rectangle {
-        const TYPE_NAME: &'static str = "Rectangle";
+    // Install a schema for the test process. OnceLock means the first install
+    // in this test binary wins; all fixtures share one combined schema.
+    fn ensure_test_schema() {
+        let artifact = "\
+;; layout-hash: test
+(schema
+  (shapes/Rectangle
+    (Rectangle 0 ((w primitives/Int) (h primitives/Int))))
+  (shapes/OptionInt
+    (None 0 ())
+    (Some 1 ((val primitives/Int)))))";
+        let schema = Schema::parse(artifact).expect("test schema parses");
+        set_global_schema(schema);
     }
-    impl GetSchema for Rectangle {
-        fn schema() -> &'static Schema { rectangle_schema() }
-    }
-    fn rectangle_schema() -> &'static Schema {
-        static S: OnceLock<Schema> = OnceLock::new();
-        S.get_or_init(|| Schema::parse("((Rectangle ((CLInt w) (CLInt h))))").unwrap())
-    }
-
-    // OptionInt sum
-    pub struct OptionInt;
-    impl CLAdtType for OptionInt {
-        const TYPE_NAME: &'static str = "OptionInt";
-    }
-    impl GetSchema for OptionInt {
-        fn schema() -> &'static Schema { option_int_schema() }
-    }
-    fn option_int_schema() -> &'static Schema {
-        static S: OnceLock<Schema> = OnceLock::new();
-        S.get_or_init(|| Schema::parse("((OptionInt None (Some ((CLInt val)))))").unwrap())
-    }
-
-    // -----------------------------------------------------------------
-    // Helpers: synthetic heap fixtures for CLAdt payloads.
-    // -----------------------------------------------------------------
 
     /// Allocate a synthetic full heap-ADT:
-    ///   `[alloc_size: i64][rc: i64][tag: u32][pad: u32][field0: i64]...`
-    /// at the returned alloc base pointer. Caller responsible for
-    /// freeing via `free_cladt_payload`.
+    ///   `[alloc_size: i64][rc: i64][tag: u32][pad: u32][field0: i64]…`
+    /// at the returned alloc base. Free via `free_cladt_payload`.
     fn alloc_cladt_payload(tag: u32, fields: &[i64]) -> i64 {
         let payload_size = 8 + fields.len() * 8;
         let total_size = 16 + payload_size;
@@ -460,11 +400,11 @@ mod tests {
         unsafe {
             let layout = std::alloc::Layout::from_size_align_unchecked(total_size, 8);
             let base = std::alloc::alloc_zeroed(layout);
-            *(base as *mut i64) = total_size as i64; // alloc_size
-            *((base as *mut i64).add(1)) = 1;        // rc = 1
+            *(base as *mut i64) = total_size as i64;
+            *((base as *mut i64).add(1)) = 1;
             let payload = base.add(16);
             *(payload as *mut u32) = tag;
-            *(payload.add(4) as *mut u32) = 0; // pad
+            *(payload.add(4) as *mut u32) = 0;
             for (i, val) in fields.iter().enumerate() {
                 *((payload.add(8 + i * 8)) as *mut i64) = *val;
             }
@@ -481,146 +421,80 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------
-    // T9 — CLAdt::read_tag — fixed offset 0, no callback
-    // -----------------------------------------------------------------
+    struct Rectangle;
+    impl CLAdtType for Rectangle {
+        const TYPE_NAME: &'static str = "shapes/Rectangle";
+    }
 
-    // T9 — spec: design/platform/sprint71-redesign.md §4.1 (read_tag fixed offset 0)
+    struct OptionInt;
+    impl CLAdtType for OptionInt {
+        const TYPE_NAME: &'static str = "shapes/OptionInt";
+    }
+
+    // spec: design/arch/platform-interface.md §5.5 — read_tag is a fixed
+    // offset-0 read, no schema lookup, no callback.
     #[test]
-    fn t9_read_tag_fixed_offset_no_callback() {
+    fn read_tag_fixed_offset_no_callback() {
         let payload = alloc_cladt_payload(42, &[]);
         let r: CLAdt<Rectangle> = CLAdt::from_raw(payload);
         assert_eq!(r.read_tag(), 42);
         free_cladt_payload(payload, 0);
     }
 
-    // -----------------------------------------------------------------
-    // T10 — CLAdt<Rectangle>::read_field::<CLInt>("w") — product
-    // -----------------------------------------------------------------
-
-    // T10 — spec: design/platform/sprint71-redesign.md §4.1 (read_field on product)
+    // spec: design/arch/platform-interface.md §5.5 — read_field on a product
+    // resolves byte offsets BY NAME from the embedded schema.
     #[test]
-    fn t10_read_field_product_rectangle_w() {
+    fn read_field_product_by_name() {
+        ensure_test_schema();
         let payload = alloc_cladt_payload(0, &[3, 4]);
         let r: CLAdt<Rectangle> = CLAdt::from_raw(payload);
-        let w: CLInt = r.read_field::<CLInt>("w");
-        let h: CLInt = r.read_field::<CLInt>("h");
-        assert_eq!(i64::from(w), 3);
-        assert_eq!(i64::from(h), 4);
-        // Dot-qualified form on product also works (§4.4).
-        let w2: CLInt = r.read_field::<CLInt>("Rectangle.w");
-        assert_eq!(i64::from(w2), 3);
+        assert_eq!(i64::from(r.read_field::<CLInt>("w")), 3);
+        assert_eq!(i64::from(r.read_field::<CLInt>("h")), 4);
+        // Self-qualified product field works too.
+        assert_eq!(i64::from(r.read_field::<CLInt>("Rectangle.w")), 3);
         free_cladt_payload(payload, 2);
     }
 
-    // -----------------------------------------------------------------
-    // T12 — CLAdt<OptionInt> — sum, None
-    // -----------------------------------------------------------------
-
-    // T12 — spec: design/platform/sprint71-redesign.md §4.4
+    // spec: design/arch/platform-interface.md §5.5 — sum-type field access is
+    // dot-qualified by constructor name.
     #[test]
-    fn t12_sum_option_none() {
-        let payload = alloc_cladt_payload(0, &[]); // None = tag 0
-        let opt: CLAdt<OptionInt> = CLAdt::from_raw(payload);
-        assert_eq!(opt.read_tag(), 0);
-        free_cladt_payload(payload, 0);
-    }
-
-    // -----------------------------------------------------------------
-    // T13 — CLAdt<OptionInt> — sum, Some + dot-qualified lookup
-    // -----------------------------------------------------------------
-
-    // T13 — spec: design/platform/sprint71-redesign.md §4.4 (sum-type dot-qualified discipline)
-    #[test]
-    fn t13_sum_option_some_dot_qualified_lookup() {
-        let payload = alloc_cladt_payload(1, &[7]); // Some(7) = tag 1, val 7
+    fn read_field_sum_dot_qualified() {
+        ensure_test_schema();
+        let payload = alloc_cladt_payload(1, &[7]);
         let opt: CLAdt<OptionInt> = CLAdt::from_raw(payload);
         assert_eq!(opt.read_tag(), 1);
-        let val: CLInt = opt.read_field::<CLInt>("Some.val");
-        assert_eq!(i64::from(val), 7);
+        assert_eq!(i64::from(opt.read_field::<CLInt>("Some.val")), 7);
         free_cladt_payload(payload, 1);
     }
 
-    // -----------------------------------------------------------------
-    // T16 — type-witness mismatch panics with clear message
-    // -----------------------------------------------------------------
-
-    // T16 — spec: design/platform/sprint71-redesign.md §3.3 (type-witness mismatch)
+    // spec: design/arch/platform-interface.md §5.5 — a witness mismatch panics.
     #[test]
     #[should_panic(expected = "witness mismatch")]
-    fn t16_field_type_witness_mismatch_panics() {
+    fn field_type_witness_mismatch_panics() {
+        ensure_test_schema();
         let payload = alloc_cladt_payload(0, &[3, 4]);
         let r: CLAdt<Rectangle> = CLAdt::from_raw(payload);
-        // Rectangle.w is CLInt, but we ask for CLBool — must panic.
         let _ = r.read_field::<crate::CLBool>("w");
-        // (no free needed — panic before)
     }
 
-    // -----------------------------------------------------------------
-    // T28 — sum-type field lookup discipline (negative: ambiguous)
-    // -----------------------------------------------------------------
-
-    // T28 — spec: design/platform/sprint71-redesign.md §4.4 (dot-qualified discipline)
+    // spec: design/arch/platform-interface.md §5.5 — an unqualified field on a
+    // sum is rejected (ambiguous).
     #[test]
     #[should_panic(expected = "schema lookup miss")]
-    fn t28_sum_unqualified_field_rejected_for_sum() {
+    fn sum_unqualified_field_rejected() {
+        ensure_test_schema();
         let payload = alloc_cladt_payload(1, &[7]);
         let opt: CLAdt<OptionInt> = CLAdt::from_raw(payload);
-        // Unqualified `"val"` is rejected for sums; must dot-qualify.
         let _ = opt.read_field::<CLInt>("val");
     }
 
-    // T28 — positive complement: dot-qualified path works (covered by t13)
-    // The pair is t13 (positive) + t28 (negative).
-
-    // -----------------------------------------------------------------
-    // T26 — read paths do NOT require callback wiring
-    // -----------------------------------------------------------------
-
-    // T26 — spec: design/platform/sprint71-redesign.md §9.1 (read paths callback-free)
-    #[test]
-    fn t26_read_paths_do_not_require_callback_wiring() {
-        // The HostContext / GLOBAL_ALLOC machinery may or may not be init
-        // by other tests in this process; the point of T26 is that
-        // read_tag and read_field do not call any HostCallbacks function.
-        // We exercise both with a synthetic payload and no HostContext::init
-        // having been called on the relevant alloc_with_tag callback —
-        // and assert no panic.
-        let payload = alloc_cladt_payload(7, &[42]);
-        let r: CLAdt<Rectangle> = CLAdt::from_raw(payload);
-        assert_eq!(r.read_tag(), 7);
-        let w: CLInt = r.read_field::<CLInt>("w");
-        assert_eq!(i64::from(w), 42);
-        free_cladt_payload(payload, 1);
-    }
-
-    // -----------------------------------------------------------------
     // CLAdt is #[repr(transparent)] — round-trips through i64.
-    // -----------------------------------------------------------------
-
     #[test]
     fn cladt_repr_transparent_roundtrips() {
         let raw: i64 = 0xDEAD_BEEF_CAFE_BABEu64 as i64;
         let r: CLAdt<Rectangle> = CLAdt::from_raw(raw);
         assert_eq!(r.to_raw(), raw);
         assert_eq!(r.raw_ptr(), raw);
-        // The marker type is invisible at runtime.
         assert_eq!(std::mem::size_of::<CLAdt<Rectangle>>(), std::mem::size_of::<i64>());
-        assert_eq!(std::mem::size_of::<CLAdt<AnyAdt>>(), std::mem::size_of::<i64>());
-    }
-
-    // -----------------------------------------------------------------
-    // CLAdt<AnyAdt> escape hatch: read_tag_any + into_typed
-    // -----------------------------------------------------------------
-
-    #[test]
-    fn anyadt_read_tag_and_into_typed() {
-        let payload = alloc_cladt_payload(99, &[]);
-        let any: CLAdt<AnyAdt> = CLAdt::from_raw(payload);
-        assert_eq!(any.read_tag_any(), 99);
-        // Coerce to typed Rectangle (witness check is deferred to first
-        // field-access call per §3.3).
-        let _r: CLAdt<Rectangle> = any.into_typed::<Rectangle>();
-        free_cladt_payload(payload, 0);
     }
 }

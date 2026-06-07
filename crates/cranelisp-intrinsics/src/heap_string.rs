@@ -108,6 +108,20 @@ unsafe fn read_str(base: *const u8) -> &'static str {
     unsafe { std::str::from_utf8_unchecked(bytes) }
 }
 
+/// Read a heap String's content as an owned `String`, without consuming it.
+///
+/// Used by the fork-join error-slot ferry (`ivar.rs`, `io.rs`) to decode a
+/// ferried panic message stashed in a heap String, so it can be re-raised into
+/// the joining thread's slot via `panic::set_runtime_error`.
+///
+/// # Safety
+///
+/// `base` must point to a valid `HeapString` allocation with valid UTF-8.
+pub(crate) unsafe fn read_str_for_ferry(base: i64) -> String {
+    // SAFETY: caller guarantees `base` is a valid HeapString base pointer.
+    unsafe { read_str(base as *const u8).to_string() }
+}
+
 // ---------------------------------------------------------------------------
 // Extern C interface (called from JIT code)
 // ---------------------------------------------------------------------------

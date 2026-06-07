@@ -376,6 +376,14 @@ fn read_resource_token(io_ptr: i64) -> i64 {
     }
 }
 
+/// Result of running one Par work item: the branch results placed at their
+/// original indices, plus the first runtime panic ferried off the worker thread
+/// (the fork-join error-slot ferry, test-discovery.md §6).
+struct ItemResult {
+    positioned: Vec<(usize, i64)>,
+    error: Option<String>,
+}
+
 /// Work item for Par dispatch.
 enum WorkItem {
     /// A single branch to run independently (token=0).
@@ -452,31 +460,47 @@ fn dispatch_par_branches_with_trace(branch_ptrs: &[i64], parent_ptr: i64) -> Vec
         }
     }
 
-    // Dispatch via rayon and collect results.
-    let item_results: Vec<Vec<(usize, i64)>> = work_items
+    // Dispatch via rayon and collect results. Each work item also ferries any
+    // runtime panic raised on the worker thread back to the join site — the
+    // worker's `take_runtime_error()` slot is a *different* thread-local than the
+    // joining thread reads, so without this the panic is silently swallowed
+    // (test-discovery.md §6 — the fork-join error-slot ferry, first-error-wins).
+    let item_results: Vec<ItemResult> = work_items
         .into_par_iter()
         .map(|item| match item {
             WorkItem::Single(idx, io_ptr) => {
                 let result = run_io_trampoline(io_ptr);
-                vec![(idx, result)]
+                // Worker-side: capture and clear this thread's slot so it does
+                // not pollute later rayon work on the same thread.
+                let err = crate::panic::take_runtime_error();
+                ItemResult { positioned: vec![(idx, result)], error: err }
             }
             WorkItem::SerialGroup(entries) => {
-                entries
-                    .into_iter()
-                    .map(|(idx, io_ptr)| {
-                        let result = run_io_trampoline(io_ptr);
-                        (idx, result)
-                    })
-                    .collect()
+                let mut positioned = Vec::with_capacity(entries.len());
+                let mut error: Option<String> = None;
+                for (idx, io_ptr) in entries {
+                    let result = run_io_trampoline(io_ptr);
+                    if let Some(e) = crate::panic::take_runtime_error()
+                        && error.is_none()
+                    {
+                        error = Some(e);
+                    }
+                    positioned.push((idx, result));
+                }
+                ItemResult { positioned, error }
             }
         })
         .collect();
 
-    // Place results in correct positions.
+    // Place results in correct positions; re-raise the first ferried error into
+    // the joining thread's slot (first-error-wins matches sequential semantics).
     let mut results = vec![0i64; branch_ptrs.len()];
-    for batch in item_results {
-        for (idx, val) in batch {
+    for item in item_results {
+        for (idx, val) in item.positioned {
             results[idx] = val;
+        }
+        if let Some(msg) = item.error {
+            crate::panic::set_runtime_error(msg);
         }
     }
 

@@ -14,10 +14,29 @@
 //! system linker). See `design/backend/executable-generation.md` §4.
 
 use cranelift::prelude::*;
-use cranelift_module::{default_libcall_names, Linkage, Module};
+use cranelift_module::{default_libcall_names, DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
 use cranelisp_types::{ErrorLocation, CranelispError, Span};
+
+/// A per-platform layout-hash check baked into the `--link` startup object
+/// (platform-interface.md §5.5.4 `--link` gate, §7.3; BC §3 "the
+/// platform-interface codegen role" point 3).
+///
+/// `name` is the platform name (`shapes`); `expected_hash` is the hash the
+/// compiler computed from the `.cl` modules it actually compiled (via
+/// `crate::schema::compute_layout_hash`). The startup stub compares
+/// `expected_hash` against the statically-linked `__cranelisp_layout_hash_<name>`
+/// (the DLL/rlib's embedded hash) at process start, aborting with rebuild
+/// guidance on mismatch — a stale platform builds but refuses at run (the
+/// accepted trade vs reading symbols out of rlib archives at build time, §1).
+#[derive(Debug, Clone)]
+pub struct PlatformLayoutCheck {
+    /// The platform name — selects `__cranelisp_layout_hash_<name>`.
+    pub name: String,
+    /// The compiler-computed layout hash (from `schema::compute_layout_hash`).
+    pub expected_hash: String,
+}
 
 /// Generate a startup `.o` that defines `start` (exported, referenced by
 /// the linker via `-e _start`) which initializes platforms, calls `main()`,
@@ -57,6 +76,51 @@ pub(crate) fn generate_startup_object(
     platform_manifest_names: &[String],
     main_returns_io: bool,
     entry_fn_name: &str,
+) -> Result<Vec<u8>, CranelispError> {
+    // Back-compat thin wrapper: no layout-hash checks (the as-built `--link`
+    // path before int/platform flip to the DLL-exported-GOT + layout-hash
+    // model). The hash-baking variant is `generate_startup_object_checked`.
+    generate_startup_object_checked(
+        platform_manifest_names,
+        main_returns_io,
+        entry_fn_name,
+        &[],
+    )
+}
+
+/// Generate the `--link` startup object, baking per-platform layout-hash checks
+/// into the `start` stub (platform-interface.md §5.5.4 `--link` gate, §7.3; BC
+/// §3 point 3).
+///
+/// Identical to [`generate_startup_object`] but, for each
+/// [`PlatformLayoutCheck`], the emitted `start`:
+/// - bakes the compiler-computed `expected_hash` (and the platform `name`) as
+///   `.rodata` data symbols, and
+/// - before calling `main`, declares the statically-linked
+///   `__cranelisp_layout_hash_<name>` as imported data and calls the runtime
+///   intrinsic `cranelisp_check_layout_hash(linked_ptr, expected_ptr,
+///   name_ptr)` (declared `Linkage::Import`), which compares the NUL-terminated
+///   hash strings and aborts with rebuild guidance on mismatch.
+///
+/// **What int's 0288 calls (the seam):** int's `--link` driver (the exe-bundle
+/// path) computes the per-platform hash via `crate::schema::compute_layout_hash`
+/// (the one generator, §6.0) over the modules it compiled, builds a
+/// `PlatformLayoutCheck { name, expected_hash }` per linked platform, and passes
+/// the slice here. **What intrinsics must provide (the runtime seam, owned by
+/// `cranelisp-intrinsics`):** the `cranelisp_check_layout_hash` extern — a
+/// `extern "C" fn(linked: *const u8, expected: *const u8, name: *const u8)` that
+/// strcmps the two NUL-terminated hashes and, on mismatch, prints
+/// `"platform '<name>' layout hash mismatch — run /platform-schema <name> and
+/// rebuild"` and `abort()`s. Backend declares + calls it; it is force-linked
+/// from the intrinsics archive like every other startup intrinsic. (Documented
+/// here per the FIXME 0287 seam note; the intrinsic body is a separate
+/// intrinsics-crate change, flagged in the report.)
+#[allow(dead_code)]
+pub(crate) fn generate_startup_object_checked(
+    platform_manifest_names: &[String],
+    main_returns_io: bool,
+    entry_fn_name: &str,
+    platform_layout_checks: &[PlatformLayoutCheck],
 ) -> Result<Vec<u8>, CranelispError> {
     let isa = crate::cache::object::build_isa(true)?;
 
@@ -131,6 +195,58 @@ pub(crate) fn generate_startup_object(
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
+    // Declare the layout-hash check intrinsic + the per-platform data symbols
+    // (platform-interface.md §5.5.4 `--link` gate). For each check: an imported
+    // `__cranelisp_layout_hash_<name>` data symbol (the rlib's embedded hash), a
+    // baked `.rodata` expected-hash NUL-terminated string, and a baked name
+    // string. The compare-and-abort is the `cranelisp_check_layout_hash` extern.
+    struct LayoutCheckIds {
+        check_fn: cranelift_module::FuncId,
+        per_platform: Vec<(cranelift_module::DataId, cranelift_module::DataId, cranelift_module::DataId)>,
+    }
+    let layout_check_ids = if platform_layout_checks.is_empty() {
+        None
+    } else {
+        // `cranelisp_check_layout_hash(linked: ptr, expected: ptr, name: ptr)`.
+        let mut sig = obj_module.make_signature();
+        sig.params.push(AbiParam::new(types::I64)); // linked hash ptr
+        sig.params.push(AbiParam::new(types::I64)); // expected hash ptr
+        sig.params.push(AbiParam::new(types::I64)); // platform name ptr
+        let check_fn = obj_module
+            .declare_function("cranelisp_check_layout_hash", Linkage::Import, &sig)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare cranelisp_check_layout_hash: {e}"),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            })?;
+
+        let mut per_platform = Vec::with_capacity(platform_layout_checks.len());
+        for check in platform_layout_checks {
+            // The statically-linked hash exported by the platform rlib.
+            let linked_sym = format!("__cranelisp_layout_hash_{}", check.name);
+            let linked_id = obj_module
+                .declare_data(&linked_sym, Linkage::Import, false, false)
+                .map_err(|e| CranelispError::CodegenError {
+                    message: format!("failed to declare {linked_sym}: {e}"),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                })?;
+
+            // Bake the compiler-computed expected hash (NUL-terminated rodata).
+            let expected_id = define_cstr_data(
+                &mut obj_module,
+                &format!("__cranelisp_expected_hash_{}", check.name),
+                &check.expected_hash,
+            )?;
+            // Bake the platform name (NUL-terminated rodata) for the diagnostic.
+            let name_id = define_cstr_data(
+                &mut obj_module,
+                &format!("__cranelisp_layout_name_{}", check.name),
+                &check.name,
+            )?;
+            per_platform.push((linked_id, expected_id, name_id));
+        }
+        Some(LayoutCheckIds { check_fn, per_platform })
+    };
+
     // Declare `cranelisp_init_platform` as imported (if platforms exist)
     let init_func_id = if !platform_manifest_names.is_empty() {
         let mut init_sig = obj_module.make_signature();
@@ -197,6 +313,26 @@ pub(crate) fn generate_startup_object(
             }
         }
 
+        // 1.5. Layout-hash gate (platform-interface.md §5.5.4 `--link`): for
+        // each linked platform, compare the compiler-computed expected hash
+        // against the rlib's statically-linked `__cranelisp_layout_hash_<name>`
+        // and abort on mismatch — BEFORE main runs, so a stale platform refuses
+        // at process start with rebuild guidance.
+        if let Some(ref ids) = layout_check_ids {
+            let check_ref = obj_module.declare_func_in_func(ids.check_fn, builder.func);
+            for &(linked_id, expected_id, name_id) in &ids.per_platform {
+                let linked_gv = obj_module.declare_data_in_func(linked_id, builder.func);
+                let expected_gv = obj_module.declare_data_in_func(expected_id, builder.func);
+                let name_gv = obj_module.declare_data_in_func(name_id, builder.func);
+                let linked_ptr = builder.ins().global_value(types::I64, linked_gv);
+                let expected_ptr = builder.ins().global_value(types::I64, expected_gv);
+                let name_ptr = builder.ins().global_value(types::I64, name_gv);
+                builder
+                    .ins()
+                    .call(check_ref, &[linked_ptr, expected_ptr, name_ptr]);
+            }
+        }
+
         // 2. Call main()
         let main_ref = obj_module.declare_func_in_func(main_func_id, builder.func);
         let call_inst = builder.ins().call(main_ref, &[]);
@@ -241,6 +377,35 @@ pub(crate) fn generate_startup_object(
     Ok(bytes)
 }
 
+/// Define a NUL-terminated read-only data symbol holding `value`, returning its
+/// `DataId`. Used by the layout-hash gate to bake the compiler-computed expected
+/// hash + the platform name as `.rodata` the startup stub passes to
+/// `cranelisp_check_layout_hash`.
+#[allow(dead_code)]
+fn define_cstr_data(
+    obj_module: &mut ObjectModule,
+    sym: &str,
+    value: &str,
+) -> Result<cranelift_module::DataId, CranelispError> {
+    let data_id = obj_module
+        .declare_data(sym, Linkage::Local, false, false)
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to declare data {sym}: {e}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
+    let mut desc = DataDescription::new();
+    let mut bytes = value.as_bytes().to_vec();
+    bytes.push(0); // NUL terminator (C string for the runtime strcmp).
+    desc.define(bytes.into_boxed_slice());
+    obj_module
+        .define_data(data_id, &desc)
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to define data {sym}: {e}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
+    Ok(data_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,5 +445,67 @@ mod tests {
     fn generate_startup_object_qualified_entry() {
         let bytes = generate_startup_object(&[], false, "hello/main").unwrap();
         assert!(!bytes.is_empty(), "startup .o with qualified entry should not be empty");
+    }
+
+    // spec: design/arch/platform-interface.md §5.5.4 `--link` gate / §7.3 — the
+    //       startup object bakes a per-platform layout-hash check (expected hash
+    //       + name as rodata) and a `cranelisp_check_layout_hash` call. The
+    //       emitted `.o` is non-empty and strictly larger than the no-check
+    //       baseline (the baked data + compare call add bytes).
+    #[test]
+    fn generate_startup_object_bakes_layout_check() {
+        let manifest_names = vec!["cranelisp_platform_manifest".to_string()];
+        let baseline = generate_startup_object(&manifest_names, false, "main").unwrap();
+
+        let checks = vec![PlatformLayoutCheck {
+            name: "shapes".to_string(),
+            expected_hash: "deadbeefcafef00d".to_string(),
+        }];
+        let checked = generate_startup_object_checked(
+            &manifest_names,
+            false,
+            "main",
+            &checks,
+        )
+        .unwrap();
+
+        assert!(!checked.is_empty(), "checked startup .o should not be empty");
+        assert!(
+            checked.len() > baseline.len(),
+            "baking the layout-hash check + rodata must enlarge the .o \
+             (checked={}, baseline={})",
+            checked.len(),
+            baseline.len(),
+        );
+        // The baked expected-hash string + the imported linked-hash symbol name
+        // appear verbatim in the object bytes.
+        let needle_hash = b"deadbeefcafef00d";
+        assert!(
+            checked
+                .windows(needle_hash.len())
+                .any(|w| w == needle_hash),
+            "the baked expected hash must appear in the .o rodata",
+        );
+        let needle_sym = b"__cranelisp_layout_hash_shapes";
+        assert!(
+            checked
+                .windows(needle_sym.len())
+                .any(|w| w == needle_sym),
+            "the imported linked-hash symbol must appear in the .o symbol table",
+        );
+    }
+
+    // spec: design/arch/platform-interface.md §5.5.4 — the back-compat
+    //       `generate_startup_object` emits no layout check (the as-built
+    //       `--link` path); equivalent to the checked variant with no checks.
+    #[test]
+    fn generate_startup_object_no_checks_matches_wrapper() {
+        let with_empty =
+            generate_startup_object_checked(&[], false, "main", &[]).unwrap();
+        let wrapper = generate_startup_object(&[], false, "main").unwrap();
+        assert_eq!(
+            with_empty, wrapper,
+            "the wrapper is the no-check variant",
+        );
     }
 }

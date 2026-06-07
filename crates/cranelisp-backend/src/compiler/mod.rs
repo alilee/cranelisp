@@ -214,6 +214,110 @@ where
     None
 }
 
+/// Resolve a callee name to the ABI key of a `DefKind::PrimitiveExtern` entry,
+/// walking `symbol_tables` starting at `current_module` (following Import edges).
+///
+/// A `PrimitiveExtern` entry (`discover-tests`) is a host-promised callable
+/// whose body lives in `int` and is settled at JIT-finalize via
+/// `Jit::define_symbol`. It carries `got_slot: None` (so `resolve_got_target`
+/// returns `None` for it) and **no `jit_name`** — the symbol-table key IS the
+/// ABI name (`src/CLAUDE.md` §"JIT Symbol Names"). Backend lowers a call to it
+/// as a `Linkage::Import` against that key, identical in shape to the
+/// platform-effect / intrinsic import path (test-discovery.md §6
+/// "Backend — one kind-dispatched call arm"; BC §3 invariant 8 / §7 types).
+///
+/// Returns the resolved ABI key (the defining entry's symbol-table key, which
+/// may differ from the local alias when an Import edge was followed), or `None`
+/// if the symbol is absent, is not a `Def`, or is not a `PrimitiveExtern`.
+pub(crate) fn resolve_extern_target<C, L>(
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    module_aliases: &cranelisp_types::ModuleAliases,
+    current_module: &ModuleFullPath,
+    name: &Symbol,
+) -> Option<String>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    const MAX_IMPORT_DEPTH: usize = 10;
+
+    fn probe<C, L>(
+        tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+        module: &ModuleFullPath,
+        bare: &str,
+        depth: usize,
+    ) -> Option<String>
+    where
+        C: cranelisp_types::CodeStore,
+        L: cranelisp_types::LinkerStore,
+    {
+        if depth > MAX_IMPORT_DEPTH {
+            return None;
+        }
+        let st = tables.get(module)?;
+        let entry = st.get(bare)?;
+        match entry {
+            ModuleEntry::Def { kind, .. }
+                if matches!(kind.as_ref(), DefKind::PrimitiveExtern) =>
+            {
+                // The symbol-table key IS the ABI name (no jit_name).
+                Some(bare.to_string())
+            }
+            ModuleEntry::Import { source, .. } => {
+                let source_module = source.module.clone();
+                let source_symbol = source.symbol.clone();
+                drop(st);
+                probe(tables, &source_module, source_symbol.as_ref(), depth + 1)
+            }
+            _ => None,
+        }
+    }
+
+    // 1. Current module first.
+    if let Some(key) = probe(symbol_tables, current_module, name.as_ref(), 0) {
+        return Some(key);
+    }
+
+    // 2. Qualified "module/name" — alias prefix, then child, then absolute.
+    if let Some(slash) = name.as_ref().find('/') {
+        let module_part = &name.as_ref()[..slash];
+        let bare_name = &name.as_ref()[slash + 1..];
+        if !module_part.is_empty() && !bare_name.is_empty() {
+            let alias_key =
+                ModuleFullPath::from(format!("{current_module}.{module_part}"));
+            if let Some(alias) = module_aliases.get(&alias_key) {
+                let target = alias.target.clone();
+                drop(alias);
+                if let Some(key) = probe(symbol_tables, &target, bare_name, 0) {
+                    return Some(key);
+                }
+            }
+            let child_path =
+                ModuleFullPath::from(format!("{}.{}", current_module, module_part));
+            if let Some(key) = probe(symbol_tables, &child_path, bare_name, 0) {
+                return Some(key);
+            }
+            let abs_path = ModuleFullPath::from(module_part);
+            if let Some(key) = probe(symbol_tables, &abs_path, bare_name, 0) {
+                return Some(key);
+            }
+        }
+    }
+
+    // 3. Global fallback — primitives lives in the synthetic `primitives`
+    //    module, reached here when the call site has no explicit import.
+    for entry in symbol_tables.iter() {
+        if entry.key() == current_module {
+            continue;
+        }
+        if let Some(key) = probe(symbol_tables, entry.key(), name.as_ref(), 0) {
+            return Some(key);
+        }
+    }
+
+    None
+}
+
 /// Resolve a function's parameter count by walking `symbol_tables` starting at
 /// `current_module`. Replacement for the Sprint-56-retracted
 /// `CompilationEnv::func_arity`. Used when generating closure wrappers for
@@ -1760,6 +1864,200 @@ mod tests {
             ast: None,
             code: None,
         }
+    }
+
+    /// A `DefKind::PrimitiveExtern` entry — host-promised, slot-less, no
+    /// codegen body. Mirrors the `discover-tests` shape int seeds into the
+    /// `primitives` table.
+    fn primitive_extern_def() -> ModuleEntry {
+        ModuleEntry::Def {
+            scheme: Scheme {
+                type_vars: vec![],
+                constraints: std::collections::HashMap::new(),
+                ty: Type::Int,
+            },
+            visibility: Visibility::Public,
+            docstring: None,
+            param_names: vec![],
+            kind: Box::new(DefKind::PrimitiveExtern),
+            callees: vec![],
+            got_slot: None,
+            trait_origin: None,
+            seq: 0,
+            ast: None,
+            code: None,
+        }
+    }
+
+    // spec: design/arch/test-discovery.md §6 "Backend — one kind-dispatched
+    //       call arm"; BC §3 invariant 8 / §7 types — a `DefKind::PrimitiveExtern`
+    //       callee (`discover-tests`) carries `got_slot: None`, so
+    //       `resolve_got_target` misses it; `resolve_extern_target` recognises
+    //       the kind and returns its ABI key (the symbol-table key, no
+    //       jit_name) for a `Linkage::Import` lowering. Confirms global-fallback
+    //       resolution (the call site has no explicit import of `primitives`)
+    //       and that a non-extern Def is NOT matched.
+    #[test]
+    fn resolve_extern_target_finds_primitive_extern_by_kind() {
+        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+
+        // Synthetic `primitives` module seeds `discover-tests` as a
+        // PrimitiveExtern (got_slot: None) and an ordinary slotted Def.
+        let prims = ModuleFullPath::from("primitives");
+        {
+            let mut st = SymbolTable::new(prims.clone());
+            st.insert(Symbol::from("discover-tests"), primitive_extern_def());
+            st.insert(Symbol::from("add-i64"), def_with_slot(7));
+            tables.insert(prims.clone(), st);
+        }
+        // Call site is in `user`, with no import of `primitives`.
+        let user = ModuleFullPath::from("user");
+        tables.insert(user.clone(), SymbolTable::new(user.clone()));
+        let aliases: ModuleAliases = DashMap::new();
+
+        // The extern resolves via global fallback to its ABI key.
+        assert_eq!(
+            resolve_extern_target(&tables, &aliases, &user, &Symbol::from("discover-tests")),
+            Some("discover-tests".to_string()),
+            "PrimitiveExtern callee resolves to its symbol-table key (ABI name)",
+        );
+        // `resolve_got_target` does NOT match it (no GOT slot).
+        assert_eq!(
+            resolve_got_target(&tables, &aliases, &user, &Symbol::from("discover-tests")),
+            None,
+            "a PrimitiveExtern has no GOT slot — the GOT path must miss it",
+        );
+        // A slotted ordinary Def is NOT a PrimitiveExtern.
+        assert_eq!(
+            resolve_extern_target(&tables, &aliases, &user, &Symbol::from("add-i64")),
+            None,
+            "a slotted UserFn/primitive is not a PrimitiveExtern",
+        );
+        // Absent name resolves to nothing.
+        assert_eq!(
+            resolve_extern_target(&tables, &aliases, &user, &Symbol::from("nonesuch")),
+            None,
+        );
+    }
+
+    /// A `DefKind::PlatformEffect` Def carrying the NEW (TARGET) shape — a
+    /// populated `got_slot` adopted from the DLL's exported GOT (manifest
+    /// index). Contrast the as-built shape which carries `got_slot: None`.
+    fn platform_effect_def_new_shape(slot: usize) -> ModuleEntry {
+        ModuleEntry::Def {
+            scheme: Scheme {
+                type_vars: vec![],
+                constraints: std::collections::HashMap::new(),
+                ty: Type::Int,
+            },
+            visibility: Visibility::Public,
+            docstring: None,
+            param_names: vec![],
+            kind: Box::new(DefKind::PlatformEffect {
+                scheduling_class: cranelisp_types::SchedulingClass::Sequential,
+            }),
+            callees: vec![],
+            got_slot: Some(slot),
+            trait_origin: None,
+            seq: 0,
+            ast: None,
+            code: None,
+        }
+    }
+
+    // spec: design/arch/platform-interface.md §6.2/§6.3; BC §3 "the
+    //       platform-interface codegen role" — the platform GOT-indirect call
+    //       arm activates exactly when the platform entry carries the NEW shape
+    //       (`got_slot: Some(_)`, adopted from the DLL's exported GOT). The
+    //       transitional discriminator is `resolve_got_target`: it resolves the
+    //       new-shape PlatformEffect entry to (module, slot) — so the dispatch
+    //       arm emits GOT-indirect; the as-built `got_slot: None` shape misses
+    //       it and falls to the direct-extern path (kept live until the flip).
+    #[test]
+    fn platform_effect_new_shape_resolves_got_indirect() {
+        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        let plat = ModuleFullPath::from("platform.shapes");
+        {
+            let mut st = SymbolTable::new(plat.clone());
+            // NEW shape: a populated got_slot (DLL-exported-GOT adoption).
+            st.insert(Symbol::from("rectangle-area"), platform_effect_def_new_shape(2));
+            // AS-BUILT shape: got_slot: None — direct-extern fallback.
+            st.insert(
+                Symbol::from("print"),
+                ModuleEntry::Def {
+                    scheme: Scheme {
+                        type_vars: vec![],
+                        constraints: std::collections::HashMap::new(),
+                        ty: Type::Int,
+                    },
+                    visibility: Visibility::Public,
+                    docstring: None,
+                    param_names: vec![],
+                    kind: Box::new(DefKind::PlatformEffect {
+                        scheduling_class: cranelisp_types::SchedulingClass::Sequential,
+                    }),
+                    callees: vec![],
+                    got_slot: None,
+                    trait_origin: None,
+                    seq: 0,
+                    ast: None,
+                    code: None,
+                },
+            );
+            tables.insert(plat.clone(), st);
+        }
+        let user = ModuleFullPath::from("user");
+        tables.insert(user.clone(), SymbolTable::new(user.clone()));
+        let aliases: ModuleAliases = DashMap::new();
+
+        // NEW shape resolves to (defining module, slot) → GOT-indirect arm.
+        assert_eq!(
+            resolve_got_target(&tables, &aliases, &user, &Symbol::from("rectangle-area")),
+            Some((plat.clone(), 2)),
+            "new-shape PlatformEffect resolves GOT-indirect at its adopted slot",
+        );
+        // AS-BUILT shape misses the GOT path → direct-extern fallback stays live.
+        assert_eq!(
+            resolve_got_target(&tables, &aliases, &user, &Symbol::from("print")),
+            None,
+            "as-built got_slot: None PlatformEffect stays on the direct-extern path",
+        );
+    }
+
+    // spec: design/arch/test-discovery.md §6 — `resolve_extern_target` follows
+    //       an Import edge to the defining module and returns the DEFINING
+    //       entry's key (the canonical ABI name), not the importing alias.
+    #[test]
+    fn resolve_extern_target_follows_import_edge() {
+        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        let prims = ModuleFullPath::from("primitives");
+        {
+            let mut st = SymbolTable::new(prims.clone());
+            st.insert(Symbol::from("discover-tests"), primitive_extern_def());
+            tables.insert(prims.clone(), st);
+        }
+        // `user` imports `discover-tests` under a local alias `discover`.
+        let user = ModuleFullPath::from("user");
+        {
+            let mut st = SymbolTable::new(user.clone());
+            st.insert(
+                Symbol::from("discover"),
+                ModuleEntry::Import {
+                    source: cranelisp_types::FQSymbol {
+                        module: prims.clone(),
+                        symbol: Symbol::from("discover-tests"),
+                    },
+                    visibility: Visibility::Public,
+                },
+            );
+            tables.insert(user.clone(), st);
+        }
+        let aliases: ModuleAliases = DashMap::new();
+        assert_eq!(
+            resolve_extern_target(&tables, &aliases, &user, &Symbol::from("discover")),
+            Some("discover-tests".to_string()),
+            "Import edge resolves to the defining module's ABI key, not the local alias",
+        );
     }
 
     // spec: spec/08-modules.md §8.6.6 step 5 — qualified-name resolution

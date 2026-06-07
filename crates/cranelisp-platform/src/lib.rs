@@ -77,26 +77,32 @@
 //! mismatched DLLs with [`PlatformError::AbiVersionMismatch`]. See
 //! [`ABI_VERSION`]'s rustdoc for the bump-rule enumeration.
 //!
-//! # Schema mechanism + marker-type pattern (Sprint 71)
+//! # Schema mechanism — embedded generated artifact (Sprint 76, FIXME 0286)
 //!
-//! For DLLs that work with cranelisp ADT values, the [`declare_platform!`]
-//! macro's `schema:` arm accepts a cranelisp-S-expression literal
-//! declaring the ADT shapes the DLL marshals across the boundary. The
-//! macro auto-emits a marker type per declared ADT (implementing
-//! [`CLAdtType`] + [`GetSchema`]) and a static `LazyLock<Schema>`
-//! initialized at first access by parsing the literal once.
+//! Platforms **do not declare ADTs**. A platform's data types are ordinary
+//! `.cl` modules; its function signatures reference them by fully-qualified
+//! name (`(Fn [shapes/Rectangle] primitives/Int)`). For DLLs that marshal ADT
+//! values, the [`declare_platform!`] macro's `schema:` arm embeds the
+//! **compiler-generated schema artifact** (`/platform-schema`-produced text,
+//! typically `schema: include_str!("<name>.platform-schema")`). The macro
+//! parses that artifact once into the per-DLL [`Schema`] and installs it via
+//! [`set_global_schema`]; it also exports the artifact's `;; layout-hash:`
+//! header as the data symbol `__cranelisp_layout_hash_<name>` for the host's
+//! load/link staleness gate (`design/arch/platform-interface.md` §5.5).
 //!
-//! DLL authors write `extern "C" fn rectangle_area(r: CLAdt<Rectangle>)
-//! -> CLInt { r.read_field::<CLInt>("w") ... }`. Field-access reads are
-//! **callback-free**: [`CLAdt<T>::read_field`] consults the DLL-local
-//! parsed [`Schema`] to compute byte offsets and transmutes at that
-//! offset — no host round-trip per access. Construction
-//! ([`CLAdt::construct`]) does need host help (via the
-//! [`HostCallbacks::alloc_with_tag`] field grown in `ABI_VERSION = 2`);
-//! that path panics under the R1 wired-or-panic gate ([FIXME 0229]
-//! tracks the host-wiring sprint that will populate it).
+//! DLL authors write `extern "C" fn rectangle_area(r: CLAdt<Rectangle>) ->
+//! CLInt { r.read_field::<CLInt>("w") ... }`. Field-access reads are
+//! **callback-free**: [`CLAdt::read_field`] resolves the field's byte offset +
+//! declared [`FieldType`] **by name** from the embedded schema and transmutes
+//! at that offset — no host round-trip per access. Construction
+//! ([`CLAdt::construct`]) routes through [`HostCallbacks::alloc_with_tag`]
+//! (wired by the host since S76).
 //!
-//! [FIXME 0229]: ../../design/arch/fixmes/0229-int-host-side-adt-marshaling.md
+//! The Sprint 71 schema *declaration* dialect (the `LazyLock<Schema>`-as-DSL
+//! static, marker-type auto-emission, `GetSchema`, `schema_types:`) is
+//! **retired** — the schema is one machine-generated artifact, never
+//! hand-authored. See `design/arch/platform-interface.md` §6.6 for the
+//! retirement table.
 //!
 //! # `#[non_exhaustive]` discipline
 //!
@@ -132,10 +138,22 @@ use std::ops::Deref;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 mod schema;
-pub use schema::{Field, FieldType, ParseLoc, Schema, SchemaParseError, TypeShape, Variant};
+pub use schema::{Ctor, Field, FieldType, ParseLoc, Schema, SchemaParseError, TypeShape};
 
 mod adt;
-pub use adt::{AnyAdt, CLAdt, CLAdtType, CLTypeWitness, ExpectedFieldType, GetSchema};
+pub use adt::{set_global_schema, CLAdt, CLAdtType, CLTypeWitness, ExpectedFieldType};
+
+/// GOT table size — re-exported from `cranelisp-types` so the
+/// [`declare_platform!`] macro can size the exported platform GOT
+/// (`__cranelisp_got_platform_<name>`) without the caller crate depending on
+/// `cranelisp-types`. One slot per manifest function; the rest stay null
+/// (the primitives `__cranelisp_got_primitives` precedent, FIXME 0280).
+pub use cranelisp_types::GOT_TABLE_SIZE;
+
+/// Re-exported so the macro's exported-GOT static can name the slot type
+/// (`[AtomicPtr<u8>; GOT_TABLE_SIZE]`) hygienically in the caller crate.
+#[doc(hidden)]
+pub use std::sync::atomic::AtomicPtr as MacroAtomicPtr;
 
 /// Platform ABI version — bump on any layout-affecting change to the
 /// platform DLL boundary.
@@ -158,8 +176,17 @@ pub use adt::{AnyAdt, CLAdt, CLAdtType, CLTypeWitness, ExpectedFieldType, GetSch
 ///
 /// **History**: v1 (Sprint 67-and-prior) — initial ABI; v2 (Sprint 71) —
 /// `HostCallbacks` grows `alloc_with_tag` + `validate_schema` for the
-/// ADT-marshaling surface.
-pub const ABI_VERSION: u32 = 2;
+/// ADT-marshaling surface; v3 (Sprint 76, FIXME 0286 / platform-interface.md
+/// §6.1) — the `declare_platform!` macro reworked to the three-exports model
+/// (exported GOT `__cranelisp_got_platform_<name>` + manifest + embedded
+/// generated schema with `__cranelisp_layout_hash_<name>`); the schema
+/// *declaration* dialect retired (platforms stop declaring ADTs — their types
+/// are ordinary `.cl` modules), `read_field` is now name-based against the
+/// embedded generated artifact. `HostCallbacks::validate_schema` /
+/// `null_validate_schema` and `PlatformFn.jit_name` / `derive_jit_name` are
+/// **transitionally retained** (the int load path reads them until FIXME 0288
+/// removes the consumers) but are no longer author-owed and carry no live role.
+pub const ABI_VERSION: u32 = 3;
 
 /// IO task tree tags -- shared between platform DLLs and the host trampoline.
 pub const IO_TAG_PURE: i64 = 0;
@@ -283,7 +310,12 @@ pub struct PlatformFn {
     /// Name as seen by cranelisp code (e.g. "print").
     pub name: *const u8,
     pub name_len: usize,
-    /// JIT symbol name (e.g. "cranelisp_print").
+    /// JIT symbol name (e.g. "cranelisp_print"). **Transitional (FIXME 0286 /
+    /// §6.6)** — dispatch is GOT-indirect against
+    /// `__cranelisp_got_platform_<name>` at `got_slot`, so this mangled-name
+    /// coordinate no longer drives dispatch. Retained only because the int load
+    /// path still reads it (`OwnedPlatformFnDescriptor.jit_name`); removed with
+    /// the consumer by FIXME 0288. The macro still derives it for that consumer.
     pub jit_name: *const u8,
     pub jit_name_len: usize,
     /// Function pointer (extern "C", all i64 params/returns).
@@ -322,24 +354,16 @@ unsafe impl Sync for PlatformFn {}
 /// `cranelisp_platform_manifest` entry point; [`HostContext::init`]
 /// stores it for the DLL's lifetime.
 ///
-/// # Current shape (ABI v2)
+/// # Current shape (ABI v3)
 ///
-/// As of Sprint 71 (`ABI_VERSION = 2`), the struct carries three
-/// fields: `alloc` (the original, ABI v1+), plus the two grown for the
-/// ADT-marshaling surface — `alloc_with_tag` (consumed by
-/// [`CLAdt::construct`]) and `validate_schema` (called at DLL load
-/// to cross-check the DLL's schema against the host's actual `deftype`
-/// data).
-///
-/// The two new fields use the **named-null-callback** pattern (per A6
-/// / design §5.2): until the host-wiring sprint
-/// ([FIXME 0229]) populates the real implementations, the host
-/// initialises them to the in-crate [`null_alloc_with_tag`] /
-/// [`null_validate_schema`] placeholders. `null_alloc_with_tag` panics
-/// with the R1-gate message naming FIXME 0229; `null_validate_schema`
-/// returns 0 (pass-without-checking).
-///
-/// [FIXME 0229]: ../../design/arch/fixmes/0229-int-host-side-adt-marshaling.md
+/// As of Sprint 76 (`ABI_VERSION = 3`, FIXME 0286), the struct carries three
+/// fields: `alloc` (the original, ABI v1+); `alloc_with_tag` (consumed by
+/// [`CLAdt::construct`] — KEPT, ADT construction across the FFI still needs the
+/// host allocator); and `validate_schema` (**retired-in-place** — superseded by
+/// the layout-hash gate, never invoked; held only for the int construction
+/// sites until FIXME 0288 removes it). `alloc_with_tag` is wired to the real
+/// host intrinsic since S76; `validate_schema` is left at the
+/// [`null_validate_schema`] no-op.
 ///
 /// # Future shape — Decision 0031 callback support
 ///
@@ -380,17 +404,16 @@ pub struct HostCallbacks {
         fields_ptr: *const i64,
     ) -> i64,
 
-    /// Validate the DLL's shipped schema against cranelisp's actual deftype
-    /// data for the named types. Called once at DLL load.
-    ///
-    /// Returns 0 on success, non-zero on failure (with an error message
-    /// written to the DLL-provided buffer).
-    ///
-    /// **Wired-or-panic** (forward-compat null): until populated by the
-    /// host-wiring sprint (FIXME 0229), this field points at
-    /// `null_validate_schema`, which returns 0 unconditionally. Schema
-    /// typos surface at field-access call sites via `SchemaLookupError`
-    /// rather than at DLL load time, until the host wires the real validator.
+    /// **RETIRED-IN-PLACE (transitional, FIXME 0286 / platform-interface.md
+    /// §6.6).** Schema validation is superseded by the layout-hash gate
+    /// (§5.5.4): the host regenerates the schema from its live tables and
+    /// compares the canonical hash to the DLL's exported
+    /// `__cranelisp_layout_hash_<name>`. This callback channel no longer has a
+    /// live role and is **never invoked**. It remains in the `#[repr(C)]`
+    /// struct only because the int load path still constructs `HostCallbacks`
+    /// with this field (`src/platform.rs`, `cranelisp-exe-bundle`); the field —
+    /// and [`null_validate_schema`] — are removed together with those consumer
+    /// sites by FIXME 0288. New platform DLLs never call it.
     pub validate_schema: extern "C" fn(
         schema_ptr: *const u8,
         schema_len: usize,
@@ -425,11 +448,13 @@ pub extern "C" fn null_alloc_with_tag(
     )
 }
 
-/// No-op placeholder for `HostCallbacks::validate_schema`. Returns 0
-/// (passes) unconditionally — schemas are not validated against the
-/// host's actual deftype data until the host-wiring sprint populates
-/// this (per FIXME 0229). Until then, schema typos surface at
-/// field-access call sites rather than at DLL load time.
+/// No-op placeholder for the retired `HostCallbacks::validate_schema` channel.
+/// Returns 0 unconditionally; never invoked.
+///
+/// **Transitional (FIXME 0286 / §6.6).** Schema validation is superseded by the
+/// layout-hash gate (§5.5.4). This placeholder is kept only because the int
+/// load path still names it when constructing `HostCallbacks`; it is removed
+/// with the `validate_schema` field by FIXME 0288.
 pub extern "C" fn null_validate_schema(
     _schema_ptr: *const u8,
     _schema_len: usize,
@@ -1302,103 +1327,121 @@ pub unsafe fn manifest_to_descriptors(
 /// Prepends `cranelisp_` and replaces `-` with `_`. E.g.
 /// `"read-line"` → `"cranelisp_read_line"`.
 ///
-/// Called by [`declare_platform!`] to compute each fn's `jit_name`
-/// field at manifest-build time. The host (`int`) uses the same
-/// derivation when registering platform fn pointers via
-/// `JITBuilder::symbol` keyed by `jit_name`, so the mapping is
-/// invertible by convention.
+/// **Transitional — slated for retirement (FIXME 0286 / platform-interface.md
+/// §6.6).** Dispatch is GOT-indirect against the exported
+/// `__cranelisp_got_platform_<name>` at the entry's `got_slot`, so the
+/// mangled-name extern dispatch this helper feeds is being retired. It is kept
+/// only because the int load path still reads `PlatformFn.jit_name` /
+/// `OwnedPlatformFnDescriptor.jit_name` and registers fn pointers via
+/// `JITBuilder::symbol` until FIXME 0288 reworks that load path to GOT-indirect.
+/// When 0288 removes the consumers, this helper and the `jit_name` manifest
+/// fields go with it. New platform DLLs do not author `jit_name`.
 pub fn derive_jit_name(cl_name: &str) -> String {
     format!("cranelisp_{}", cl_name.replace('-', "_"))
+}
+
+/// Extract the `<hex>` from a generated schema artifact's `;; layout-hash:
+/// <hex>` header line, at compile time, so the [`declare_platform!`] `schema:`
+/// embed arm can export it as `__cranelisp_layout_hash_<name>`
+/// (platform-interface.md §5.5.4).
+///
+/// `const fn` so the macro can use the result to initialise a `&'static str`
+/// data symbol with no runtime work. Scans for the `;; layout-hash:` marker and
+/// returns the trimmed remainder of that line; returns `""` if absent (a
+/// first-build artifact may carry no header — the absence is tolerated, the
+/// layout-hash gate simply compares against an empty hash and the REPL warns).
+pub const fn extract_layout_hash(artifact: &str) -> &str {
+    const MARKER: &[u8] = b";; layout-hash:";
+    let bytes = artifact.as_bytes();
+    let n = bytes.len();
+    let m = MARKER.len();
+    let mut i = 0;
+    while i + m <= n {
+        // Match MARKER at position i.
+        let mut k = 0;
+        while k < m && bytes[i + k] == MARKER[k] {
+            k += 1;
+        }
+        if k == m {
+            // Skip leading spaces after the marker.
+            let mut start = i + m;
+            while start < n && (bytes[start] == b' ' || bytes[start] == b'\t') {
+                start += 1;
+            }
+            // Find end of line.
+            let mut end = start;
+            while end < n && bytes[end] != b'\n' && bytes[end] != b'\r' {
+                end += 1;
+            }
+            // Trim trailing spaces.
+            while end > start && (bytes[end - 1] == b' ' || bytes[end - 1] == b'\t') {
+                end -= 1;
+            }
+            // SAFETY: start/end fall on ASCII boundaries (the hash is hex; the
+            // marker + spaces are ASCII), so the slice is valid UTF-8.
+            let slice = unsafe {
+                std::str::from_utf8_unchecked(
+                    std::slice::from_raw_parts(bytes.as_ptr().add(start), end - start),
+                )
+            };
+            return slice;
+        }
+        i += 1;
+    }
+    ""
 }
 
 /// Declare a platform DLL with metadata and function registrations —
 /// the DLL-author entry point.
 ///
-/// Every platform DLL invokes `declare_platform!` exactly once. The
-/// macro emits:
+/// Every platform DLL invokes `declare_platform!` exactly once. The macro
+/// implements the **three-exports model** (`design/arch/platform-interface.md`
+/// §1/§6.1, user-ratified 2026-06-07; FIXME 0286) — a platform exports its GOT,
+/// its manifest, and (optionally) its embedded generated schema + layout hash:
 ///
-/// - The static `PlatformManifest` shape (per-fn descriptors with
-///   length-prefixed name/jit_name/type_sig/docstring; parallel
-///   `param_names` arrays; `scheduling_class` `u32` discriminant — see
-///   [`PlatformFn`]).
-/// - The exported `cranelisp_platform_manifest` extern symbol the host
-///   resolves at DLL load.
-/// - If a `schema:` arm is supplied: a `LazyLock<Schema>` static + one
-///   marker type per declared ADT (implementing [`CLAdtType`] +
-///   [`GetSchema`]) so DLL authors can write `extern "C" fn rect_area(r:
-///   CLAdt<Rectangle>) -> CLInt { ... }`.
+/// 1. **The exported GOT** — `__cranelisp_got_platform_<name>`, a
+///    `[AtomicPtr<u8>; GOT_TABLE_SIZE]` static (the `__cranelisp_got_primitives`
+///    precedent, FIXME 0280). Slot *i* holds the fn pointer of `functions[i]`
+///    — **manifest order IS GOT slot order** (§5.1). The macro populates the
+///    used slots inside `cranelisp_platform_manifest` at DLL load; the host
+///    wraps the GOT in place (`GotTable::with_static_backing`) and dispatches
+///    GOT-indirect at `got_slot = manifest index`.
+/// 2. **The manifest** — the `cranelisp_platform_manifest` extern fn returning
+///    a [`PlatformManifest`] of [`PlatformFn`] descriptors (name, FQ type_sig,
+///    scheduling class, docstring, param-names). The host builds its
+///    `SymbolTable` from this.
+/// 3. **The embedded schema + layout hash** (optional `schema:` arm) — the
+///    `/platform-schema`-generated artifact text, embedded via `include_str!`,
+///    parsed once into the per-DLL [`Schema`] (`CLAdt::read_field` reads it by
+///    name); the artifact's `;; layout-hash:` header is exported as the data
+///    symbol `__cranelisp_layout_hash_<name>` (§5.5.4). The arm is optional —
+///    an absent schema is tolerated for first builds (the layout-hash gate then
+///    compares against an empty hash; the REPL warns).
 ///
-/// Platform functions themselves are normal `extern "C"` Rust functions
-/// using `CL*` wrapper types — they are defined outside the macro. The
-/// macro handles only manifest generation, host-callback initialisation,
-/// and (with the `schema:` arm) ADT-marshaling support.
+/// Platform functions are normal `extern "C"` Rust functions over the `CL*`
+/// wrapper family — defined outside the macro. **Platforms no longer declare
+/// ADTs:** a platform's data types are ordinary `.cl` modules; the macro's
+/// signatures reference them by fully-qualified name
+/// (`(Fn [shapes/Rectangle] primitives/Int)`). The Sprint 71 schema
+/// *declaration* dialect (the `LazyLock<Schema>`-as-DSL static, the marker-type
+/// auto-emission, `GetSchema`, `schema_types:`) is **retired** (§6.6).
 ///
-/// # F6 audit fold — current (S67 W1 PFR + S71) arm shape
-///
-/// The macro grew from the historical 3-key shape (`name:`, `host:`,
-/// `fns:`) to the current 5-key (`name:`, `version:`, `host:`,
-/// `functions:`, plus optional `schema:` + `schema_types:`) shape over
-/// two refinements:
-///
-/// - **S67 W1 PFR** added `version:`, renamed `fns:` → `functions:`,
-///   changed the brace-delimited `"name" => fn_pointer` pair shape to
-///   the bracket-delimited per-fn structured block (`fn_ident {
-///   cl_name: …, sig: …, doc: …, params: […], scheduling: … }`).
-///   The five per-fn fields are **all required** — none default-able,
-///   none optional. `sig` is the type signature read by typecheck for
-///   call-site checking; `doc` flows into `/sig`/`/doc` REPL
-///   introspection; `params` are the named parameters that surface in
-///   REPL output; `scheduling` is Decision 0026's per-fn class
-///   (Sequential / Commutative / ResourceSerial); `cl_name` is the
-///   kebab-case user-visible name.
-/// - **S71** added the optional `schema:` + `schema_types:` arms for
-///   the ADT-marshaling surface. Both are gated on
-///   `ABI_VERSION = 2`. Backward-compatibility is preserved via a
-///   second arm without the schema keys (existing DLLs continue to
-///   compile unchanged).
-///
-/// # Macro arm structure
-///
-/// `declare_platform!` has up to seven top-level keys, applied positionally:
+/// # Macro keys
 ///
 /// | Key | Required | Shape | Purpose |
 /// |---|---|---|---|
-/// | `name:` | yes | `&'static str` literal | Platform name; surfaces in `PlatformManifest.name` and at REPL `/imports` |
-/// | `version:` | yes | `&'static str` literal | Platform version; surfaces in `PlatformManifest.version` |
+/// | `name:` | yes | `&'static str` literal | Platform name; the GOT/hash export suffix |
+/// | `version:` | yes | `&'static str` literal | Platform version |
 /// | `host:` | yes | identifier of a `static HOST: HostContext` | Where the macro calls `init(callbacks)` |
-/// | `schema:` | optional | `&'static str` literal (cranelisp S-expr) | ADT shape declarations; absent ⇒ no ADT marshaling |
-/// | `schema_types:` | optional (required if `schema:` is present) | `[Name1, Name2, ...]` ident list | Marker types to emit; mirrors the type names declared in the schema literal |
+/// | `schema:` | optional | `&'static str` (the embedded `/platform-schema` artifact, typically `include_str!(...)`) | Embedded generated schema; absent ⇒ no ADT marshaling |
 /// | `functions:` | yes | `[ fn { ... }, ... ]` array | Per-fn descriptors |
 ///
 /// Each per-fn block has five required fields — `cl_name:` (kebab-case
-/// user-visible name), `sig:` (type signature S-expression),
-/// `doc:` (docstring), `params:` (named-parameter ident list),
-/// `scheduling:` ([`SchedulingClass`] expression).
+/// user-visible name), `sig:` (FQ type-signature S-expression), `doc:`
+/// (docstring), `params:` (named-parameter ident list), `scheduling:`
+/// ([`SchedulingClass`] expression).
 ///
-/// The `schema_types:` list is required alongside `schema:` because
-/// `macro_rules!` cannot parse a string-literal to enumerate identifiers
-/// (a proc-macro upgrade is feasible — tracked by FIXME 0238 as a
-/// future refinement). For correctness, every name in `schema_types:`
-/// MUST also appear as a top-level type declaration in the schema
-/// literal; runtime validation catches mismatches.
-///
-/// # Internal structure of the emitted `cranelisp_platform_manifest`
-///
-/// The shared body (see `__declare_platform_body!`) executes in three
-/// phases: **Phase 0** (schema arm only) — emit marker types +
-/// `GetSchema` impls + the `LazyLock<Schema>` static. **Phase 1** —
-/// capture each fn pointer, param-name parallel arrays, scheduling
-/// class. **Phase 2** — derive each `jit_name` via [`derive_jit_name`]
-/// and `Box::leak` the bytes for `'static` lifetime. **Phase 3** —
-/// `Box::leak` the [`PlatformFn`] descriptors slice and return the
-/// [`PlatformManifest`] with the (`abi_version`, `name`, `version`,
-/// `functions`, `function_count`) shape.
-///
-/// The `jit_name` leak is bounded by DLL lifetime — per BC §5 invariant
-/// 6 (no DLL unloading mid-session), the leaked bytes are valid for the
-/// session.
-///
-/// # Example
+/// # Example — no schema (scalar-only platform)
 ///
 /// ```ignore
 /// use cranelisp_platform::*;
@@ -1406,7 +1449,7 @@ pub fn derive_jit_name(cl_name: &str) -> String {
 /// static HOST: HostContext = HostContext::new();
 ///
 /// pub extern "C" fn print_string(s: CLString) -> CLIO<CLInt> {
-///     let owned = s.own();
+///     let owned = s.into_owned_consuming();
 ///     CLIO::effect(move || { println!("{}", owned.as_str()); CLInt::from(0i64) })
 /// }
 ///
@@ -1417,7 +1460,7 @@ pub fn derive_jit_name(cl_name: &str) -> String {
 ///     functions: [
 ///         print_string {
 ///             cl_name: "print",
-///             sig: "(Fn [String] (IO Int))",
+///             sig: "(Fn [primitives/String] (IO primitives/Int))",
 ///             doc: "Print a string followed by a newline",
 ///             params: [s],
 ///             scheduling: SchedulingClass::Sequential,
@@ -1426,19 +1469,18 @@ pub fn derive_jit_name(cl_name: &str) -> String {
 /// }
 /// ```
 ///
-/// # Example — with `schema:` arm
+/// # Example — with the `schema:` embed arm
 ///
 /// ```ignore
 /// declare_platform! {
 ///     name: "shapes",
 ///     version: "0.1.0",
 ///     host: HOST,
-///     schema: "((Rectangle ((CLInt w) (CLInt h))))",
-///     schema_types: [Rectangle],
+///     schema: include_str!("shapes.platform-schema"), // GENERATED — never hand-edited
 ///     functions: [
 ///         rectangle_area {
 ///             cl_name: "rectangle-area",
-///             sig: "(Fn [Rectangle] Int)",
+///             sig: "(Fn [shapes/Rectangle] primitives/Int)", // fully qualified
 ///             doc: "Compute the area of a rectangle",
 ///             params: [r],
 ///             scheduling: SchedulingClass::Commutative,
@@ -1448,13 +1490,14 @@ pub fn derive_jit_name(cl_name: &str) -> String {
 /// ```
 #[macro_export]
 macro_rules! declare_platform {
-    // Arm 1: with optional `schema:` + `schema_types:` keys.
+    // Arm 1: with the `schema:` EMBED arm (the generated artifact text — the
+    // schema *declaration* dialect is retired, §6.6). Installs the parsed
+    // schema for name-based field access and exports the layout-hash.
     (
         name: $platform_name:literal,
         version: $platform_version:literal,
         host: $host:ident,
-        schema: $schema_text:literal,
-        schema_types: [$($schema_type:ident),* $(,)?],
+        schema: $schema_text:expr,
         functions: [
             $(
                 $fn_ident:ident {
@@ -1467,36 +1510,23 @@ macro_rules! declare_platform {
             ),* $(,)?
         ]
     ) => {
-        // Phase 0 — schema emission per design §7.2 + §7.4.
-        //
-        // The DLL-local schema static; LazyLock-initialized at first
-        // access; parsed once from the literal at the declare_platform!
-        // call site.
-        static DLL_SCHEMA: ::std::sync::LazyLock<$crate::Schema> =
-            ::std::sync::LazyLock::new(|| {
-                $crate::Schema::parse($schema_text)
-                    .expect("schema literal failed to parse — fix the schema in declare_platform! and rebuild")
-            });
+        // The embedded generated schema artifact text (typically
+        // `include_str!("<name>.platform-schema")`).
+        const __CRANELISP_PLATFORM_SCHEMA_TEXT: &str = $schema_text;
 
-        $(
-            // Marker type — zero-sized; public so the DLL author can name
-            // it in CLAdt<TypeName> signatures.
-            #[allow(non_camel_case_types)]
-            pub struct $schema_type;
-
-            impl $crate::CLAdtType for $schema_type {
-                const TYPE_NAME: &'static str = stringify!($schema_type);
-            }
-
-            impl $crate::GetSchema for $schema_type {
-                fn schema() -> &'static $crate::Schema { &DLL_SCHEMA }
-            }
-        )*
+        // Export the layout hash (extracted from the artifact's
+        // `;; layout-hash:` header at compile time) as a data symbol the host
+        // compares against its live-tables regeneration (§5.5.4). Carried as a
+        // `&'static str`; the host reads it under the same toolchain.
+        #[unsafe(export_name = concat!("__cranelisp_layout_hash_", $platform_name))]
+        pub static __CRANELISP_LAYOUT_HASH: &str =
+            $crate::extract_layout_hash(__CRANELISP_PLATFORM_SCHEMA_TEXT);
 
         $crate::__declare_platform_body!(
             name: $platform_name,
             version: $platform_version,
             host: $host,
+            schema_text: ::core::option::Option::Some(__CRANELISP_PLATFORM_SCHEMA_TEXT),
             functions: [
                 $(
                     $fn_ident {
@@ -1511,7 +1541,7 @@ macro_rules! declare_platform {
         );
     };
 
-    // Arm 2: no schema — backwards-compatible with pre-S71 callers.
+    // Arm 2: no schema — a scalar-only platform that marshals no ADTs.
     (
         name: $platform_name:literal,
         version: $platform_version:literal,
@@ -1532,6 +1562,7 @@ macro_rules! declare_platform {
             name: $platform_name,
             version: $platform_version,
             host: $host,
+            schema_text: ::core::option::Option::<&str>::None,
             functions: [
                 $(
                     $fn_ident {
@@ -1556,6 +1587,7 @@ macro_rules! __declare_platform_body {
         name: $platform_name:literal,
         version: $platform_version:literal,
         host: $host:ident,
+        schema_text: $schema_text:expr,
         functions: [
             $(
                 $fn_ident:ident {
@@ -1568,12 +1600,52 @@ macro_rules! __declare_platform_body {
             ),* $(,)?
         ]
     ) => {
+        // The exported platform GOT (§5.1) — modelled on
+        // `cranelisp-primitives::PRIMITIVES_GOT_SLAB` (FIXME 0280). Slot i holds
+        // the fn pointer of the i-th declared function (manifest order IS GOT
+        // slot order); the rest stay null. Lives in writable `__DATA` so the
+        // `(trace …)` GOT copy-swap can reach platform slots. The host wraps
+        // this in place via `GotTable::with_static_backing` — no copy.
+        #[unsafe(export_name = concat!("__cranelisp_got_platform_", $platform_name))]
+        pub static __CRANELISP_PLATFORM_GOT:
+            [$crate::MacroAtomicPtr<u8>; $crate::GOT_TABLE_SIZE] =
+            [const { $crate::MacroAtomicPtr::new(::std::ptr::null_mut()) };
+                $crate::GOT_TABLE_SIZE];
+
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn cranelisp_platform_manifest(
             callbacks: *const $crate::HostCallbacks,
         ) -> $crate::PlatformManifest {
             // Initialize the host context (stores callbacks, sets global alloc).
             unsafe { $host.init(callbacks); }
+
+            // Install the embedded generated schema (if this platform marshals
+            // ADTs) so `CLAdt::read_field` resolves field offsets by name
+            // (§5.5). A parse failure is a generator/parser grammar drift — a
+            // `/dev` bug — and aborts loudly.
+            if let ::core::option::Option::Some(schema_text) = $schema_text {
+                let schema = $crate::Schema::parse(schema_text).expect(
+                    "embedded platform schema artifact failed to parse — \
+                     regenerate it with /platform-schema and rebuild",
+                );
+                $crate::set_global_schema(schema);
+            }
+
+            // Populate the exported GOT: slot i ← fn pointer of functions[i].
+            // Manifest order IS GOT slot order (§5.1, answer 1). Done here at
+            // DLL load so a session/`--link` finds the slots resolved; the host
+            // never populates the platform GOT.
+            {
+                let mut __got_slot: usize = 0;
+                $(
+                    __CRANELISP_PLATFORM_GOT[__got_slot].store(
+                        $fn_ident as *const u8 as *mut u8,
+                        ::std::sync::atomic::Ordering::Release,
+                    );
+                    __got_slot += 1;
+                )*
+                let _ = __got_slot;
+            }
 
             // Build function descriptors.
             // Phase 1: Capture each function pointer, param info, and scheduling class
@@ -1954,11 +2026,25 @@ mod tests {
     // `tests/plan/sprint71-platform.md`.
     // ---------------------------------------------------------------------
 
-    // T22 — ABI_VERSION is 2
-    // spec: design/platform/sprint71-redesign.md §6 (ABI_VERSION bump policy)
+    // ABI_VERSION is 3 (FIXME 0286 — the three-exports macro rework).
+    // spec: design/arch/platform-interface.md §6.1
     #[test]
-    fn t22_abi_version_is_2() {
-        assert_eq!(ABI_VERSION, 2);
+    fn abi_version_is_3() {
+        assert_eq!(ABI_VERSION, 3);
+    }
+
+    // spec: design/arch/platform-interface.md §5.5.4 — extract_layout_hash
+    // pulls the hex from the artifact's `;; layout-hash:` header (and returns
+    // "" when absent — a tolerated first-build artifact).
+    #[test]
+    fn extract_layout_hash_reads_header() {
+        assert_eq!(
+            extract_layout_hash(";; layout-hash: deadbeef\n(schema)"),
+            "deadbeef"
+        );
+        assert_eq!(extract_layout_hash("(schema)"), "");
+        // Tolerates leading spaces + trailing whitespace.
+        assert_eq!(extract_layout_hash(";; layout-hash:   abc123  \n"), "abc123");
     }
 
     // T24 — F2 source-move — HostContext does NOT impl Default

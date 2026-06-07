@@ -560,6 +560,30 @@ pub extern "C" fn cranelisp_collect_trace() -> i64 {
     }
 }
 
+/// Panic-unwind trace-guard cleanup (`design/arch/test-discovery.md` §5 scope
+/// item 5; 0258 NOTE-2).
+///
+/// When a runtime panic crosses an actively-tracing `(trace …)` bracket, the
+/// backend may not reach `cranelisp_collect_trace` (the normal guard-clear +
+/// role-release site), leaving `TRACE_BODY_RUNNING` set and the trace role held
+/// by this thread. The next same-thread `(trace …)` would then spuriously raise
+/// "nested trace". This clears the boundary flag and releases the role (only if
+/// this thread owns it) so a subsequent trace starts clean.
+///
+/// Called by [`crate::panic::catch_runtime_error`] when it observes a captured
+/// error (a panic crossed the bracket) — both are intrinsics-owned thread-locals,
+/// so the cleanup is wholly in-crate. Idempotent and safe to call when no trace
+/// is active (the role CAS no-ops and the flag is already false).
+pub(crate) fn clear_trace_guard_on_panic() {
+    let my_tid = current_thread_id();
+    // Release the role only if we own it (pre-existing stuck-owner class — the
+    // role CAS had the same hole; repaired here alongside the flag).
+    TRACE_THREAD_ID
+        .compare_exchange(my_tid, 0, Ordering::SeqCst, Ordering::Relaxed)
+        .ok();
+    TRACE_BODY_RUNNING.with(|f| f.set(false));
+}
+
 // ── Field accessor extern API ─────────────────────────────────────────────────
 //
 // These implement the Trace ADT field accessors registered as extern
@@ -1589,6 +1613,49 @@ mod tests {
         assert!(!TRACE_BODY_RUNNING.with(Cell::get), "collect must clear the flag");
         consume_trace_call(t);
 
+        TRACE_THREAD_ID.store(0, Ordering::SeqCst);
+    }
+
+    // spec: spec/04-expressions.md §4.12.5 — panic-unwind trace-guard cleanup
+    // (0258 NOTE-2 / test-discovery.md §5 item 5). Simulate a panic crossing an
+    // actively-tracing body: role held + TRACE_BODY_RUNNING set. The cleanup
+    // must clear the flag AND release the role so the next trace starts clean.
+    #[test]
+    fn panic_clears_stuck_trace_guard() {
+        let my_tid = current_thread_id();
+        TRACE_THREAD_ID.store(my_tid, Ordering::SeqCst);
+        TRACE_BODY_RUNNING.with(|f| f.set(true));
+
+        clear_trace_guard_on_panic();
+
+        assert!(
+            !TRACE_BODY_RUNNING.with(Cell::get),
+            "cleanup must clear TRACE_BODY_RUNNING after a mid-trace panic"
+        );
+        assert_eq!(
+            TRACE_THREAD_ID.load(Ordering::Relaxed),
+            0,
+            "cleanup must release the trace role after a mid-trace panic"
+        );
+    }
+
+    // The cleanup must NOT steal a role owned by another thread: if this thread
+    // does not own the role, the CAS no-ops and the foreign owner is preserved.
+    #[test]
+    fn panic_cleanup_does_not_steal_foreign_role() {
+        // A foreign owner id distinct from this thread's id.
+        let foreign = current_thread_id() + 100_000;
+        TRACE_THREAD_ID.store(foreign, Ordering::SeqCst);
+        TRACE_BODY_RUNNING.with(|f| f.set(false));
+
+        clear_trace_guard_on_panic();
+
+        assert_eq!(
+            TRACE_THREAD_ID.load(Ordering::Relaxed),
+            foreign,
+            "cleanup must not release a role owned by another thread"
+        );
+        // Restore for other tests.
         TRACE_THREAD_ID.store(0, Ordering::SeqCst);
     }
 }

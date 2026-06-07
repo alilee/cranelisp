@@ -70,9 +70,10 @@
 //! The 12 `cranelisp_trace_*` entries (incl. the pure descriptor-driven
 //! `cranelisp_trace_format`) ARE in this catalog — the 2026-06-04 user ruling
 //! retracted D40's trace-relocation-to-int and hosts the bodies here (BC §4b
-//! invariant 12; `design/arch/tracing.md`). The table is 27 entries (15 core +
-//! 12 trace). The catalog + its tests are the single owner of the trace
-//! name-agreement contract (closing the prior no-owner gap).
+//! invariant 12; `design/arch/tracing.md`). The table is 28 entries (15 core +
+//! 12 trace + `catch-runtime-error`, the protected-call combinator,
+//! `design/arch/test-discovery.md` §6). The catalog + its tests are the single
+//! owner of the trace name-agreement contract (closing the prior no-owner gap).
 
 /// One backend-emitted-call target in the published intrinsics catalog.
 ///
@@ -102,17 +103,23 @@ pub struct IntrinsicEntry {
 /// The published flat Import-catalog of this crate's backend-emitted-call
 /// targets (BC §4b invariant 11 — Decision-0048-for-intrinsics).
 ///
-/// Returns a `'static` slice of the 27 entries — 15 core (relocated verbatim
+/// Returns a `'static` slice of the 28 entries — 15 core (relocated verbatim
 /// from the retired `cranelisp_backend::jit::intrinsic_symbols()`) plus the 12
-/// `cranelisp_trace_*` family (S76 trace ruling, BC §4b invariant 12). See this
-/// module's `//!` for the consumer contract, the ABI guardrail, and the scope
-/// boundary.
+/// `cranelisp_trace_*` family (S76 trace ruling, BC §4b invariant 12) plus
+/// `catch-runtime-error` (the protected-call combinator, test-discovery.md §6).
+/// See this module's `//!` for the consumer contract, the ABI guardrail, and the
+/// scope boundary.
 pub fn intrinsics_table() -> &'static [IntrinsicEntry] {
     &[
         // Runtime infrastructure (internal, not user-callable).
         IntrinsicEntry { name: "runtime/alloc", ptr: crate::alloc::heap_alloc as *const u8, param_count: 1, has_return: true, is_runtime: true },
         IntrinsicEntry { name: "runtime/dealloc", ptr: crate::alloc::heap_dealloc as *const u8, param_count: 1, has_return: true, is_runtime: true },
         IntrinsicEntry { name: "runtime/panic", ptr: crate::panic::runtime_panic as *const u8, param_count: 2, has_return: true, is_runtime: true },
+        // `catch-runtime-error` — the language-level protected-call combinator
+        // (test-discovery.md §6). Self-contained intrinsic (calls the thunk,
+        // reads/clears the slot, marshals a heap `Result`); works in ALL modes
+        // incl. `--link`. User-visible name, so `is_runtime: false`.
+        IntrinsicEntry { name: "catch-runtime-error", ptr: crate::panic::catch_runtime_error as *const u8, param_count: 1, has_return: true, is_runtime: false },
         IntrinsicEntry { name: "runtime/rc_underflow_check", ptr: crate::rc::rc_underflow_check as *const u8, param_count: 1, has_return: true, is_runtime: true },
         IntrinsicEntry { name: "runtime/alloc_string", ptr: crate::heap_string::heap_alloc_string as *const u8, param_count: 2, has_return: true, is_runtime: true },
         IntrinsicEntry { name: "runtime/string_read", ptr: crate::heap_string::string_read as *const u8, param_count: 1, has_return: true, is_runtime: true },
@@ -160,6 +167,7 @@ mod tests {
         "runtime/alloc",
         "runtime/dealloc",
         "runtime/panic",
+        "catch-runtime-error",
         "runtime/rc_underflow_check",
         "runtime/alloc_string",
         "runtime/string_read",
@@ -191,9 +199,9 @@ mod tests {
     /// expected names — no more, no fewer — and no name repeats (BC §6
     /// guardrail; positive + negative coverage).
     #[test]
-    fn name_set_is_exactly_the_expected_27() {
+    fn name_set_is_exactly_the_expected_28() {
         let names: Vec<&str> = intrinsics_table().iter().map(|e| e.name).collect();
-        assert_eq!(names.len(), 27, "table must hold exactly 27 entries");
+        assert_eq!(names.len(), 28, "table must hold exactly 28 entries");
         assert_eq!(names.len(), EXPECTED_NAMES.len());
 
         // Every expected name present (no drop).
@@ -233,6 +241,7 @@ mod tests {
             ("runtime/alloc", 1, true),
             ("runtime/dealloc", 1, true),
             ("runtime/panic", 2, true),
+            ("catch-runtime-error", 1, true),
             ("runtime/rc_underflow_check", 1, true),
             ("runtime/alloc_string", 2, true),
             ("runtime/string_read", 1, true),
@@ -286,8 +295,9 @@ mod tests {
                 e.name
             );
         }
-        // Pin the explicit false set — the user-visible-named backend targets.
-        for name in ["vec-set-copy", "vec-push-copy", "vec-push-grow"] {
+        // Pin the explicit false set — the user-visible-named backend targets
+        // plus the `catch-runtime-error` combinator (a language-level primitive).
+        for name in ["vec-set-copy", "vec-push-copy", "vec-push-grow", "catch-runtime-error"] {
             let e = intrinsics_table().iter().find(|e| e.name == name).unwrap();
             assert!(!e.is_runtime, "{name} must be is_runtime: false");
         }
