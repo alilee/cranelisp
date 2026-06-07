@@ -9,10 +9,10 @@
 (import [primitives [*]])
 
 (deftrait Ord
-  (< [self self] Bool)
-  (> [self self] Bool)
-  (<= [self self] Bool)
-  (>= [self self] Bool))
+  (< [a b] Bool)
+  (> [a b] Bool)
+  (<= [a b] Bool)
+  (>= [a b] Bool))
 
 (impl Ord Int
   (defn < [a b] (lt-i64 a b))

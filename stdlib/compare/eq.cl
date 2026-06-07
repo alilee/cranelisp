@@ -9,8 +9,8 @@
 (import [primitives [*]])
 
 (deftrait Eq
-  (= [self self] Bool)
-  (!= [self self] Bool))
+  (= [a b] Bool)
+  (!= [a b] Bool))
 
 (impl Eq Int
   (defn = [a b] (eq-i64 a b))

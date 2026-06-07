@@ -256,31 +256,27 @@ fn closure_capturing_closure_balanced() {
 // (per spec §12.9.5 — trace uses canonical value display format).
 // =============================================================================
 
-// spec: spec/04-expressions.md §4.12.1 — (trace expr) returns Trace ADT;
-// observable via REPL :Type prefix in `:primitives/Trace`.
+// spec: spec/04-expressions.md §4.12.1 — (trace expr) returns Trace ADT whose
+// root name is the synthetic `::trace::` root (per §4.12.2). Extracted via the
+// TraceCall pattern — NOT the `name` accessor, whose codegen is broken in all
+// modes (see tests/trace.rs::trace_nanos_accessor_resolves_in_repl + FIXME
+// 0276). Trace-tree shape, nested-trace, build-mode, and visibility coverage
+// now lives in tests/trace.rs (the active trace e2e home, FIXME 0258).
 #[test]
 fn trace_returns_trace_value() {
-    // The REPL prints `:primitives/Trace ...` for the result. Use `name`
-    // accessor to extract the root trace name; per spec §4.12.2 the root is
-    // always `::trace::`.
     repl(
-        "(import [primitives [trace Trace TraceCall name]])\n\
+        "(import [primitives [trace Trace TraceCall]])\n\
          (defn id [x] x)\n\
-         (let [t (trace (id 42))] (name t))\n",
+         (let [t (trace (id 42))] (match t [(TraceCall n p r c ns) n]))\n",
     )
     .assert_stdout_contains("::trace::");
 }
 
-// spec: spec/04-expressions.md §4.12.5 — nested (trace ...) still produces a Trace
-#[test]
-fn trace_nested_still_returns_trace() {
-    repl(
-        "(import [primitives [trace Trace TraceCall name]])\n\
-         (defn id [x] x)\n\
-         (let [t (trace (trace (id 7)))] (name t))\n",
-    )
-    .assert_stdout_contains("::trace::");
-}
+// (The former `trace_nested_still_returns_trace` — which asserted the
+// superseded "outermost wins, single tree" behaviour — is retired. Per the
+// 2026-06-04 trace ruling (spec §4.12.5) nested trace is now a RUNTIME ERROR;
+// see tests/trace.rs::trace_nested_dynamic_raises_runtime_error and
+// ::trace_nested_lexical_raises_runtime_error.)
 
 // spec: spec/04-expressions.md §4.12.7 — TraceCall pattern destructures the Trace ADT
 #[test]
@@ -474,6 +470,54 @@ fn lenient_no_lenient_env_var_preserves_correctness() {
         .env("CRANELISP_NO_LENIENT", "1")
         .output()
         .assert_exit(31);
+}
+
+// =============================================================================
+// §12.4.3 Lenient evaluation — panic propagation across the fork-join boundary
+// (FIXME 0272 Half A — pre-existing panic-swallow DEFECT)
+//
+// Per §12.4.3: "A runtime error raised while evaluating any binding — whether
+// evaluated sequentially or in parallel — MUST propagate as if the bindings
+// were evaluated sequentially: the first such error aborts the whole `let`
+// expression. ... a parallelised binding's panic MUST NOT be silently
+// discarded." NEITHER fork-join boundary ferries the runtime-error slot
+// (IVar `ivar_force`; Par `dispatch_par_branches_with_trace`), so a panic
+// inside a lenient-evaluated binding is silently swallowed and the binding
+// yields the sentinel `0` instead of aborting the expression.
+// =============================================================================
+
+// spec: spec/12-runtime.md §12.4.3 — a div-by-zero inside a lenient `let`
+// binding MUST abort the whole expression with a runtime panic; it MUST NOT be
+// swallowed.
+//
+// CURRENT BEHAVIOUR (FAILING): with lenient evaluation ON (the default),
+// `(let [a (div-i64 10 0) b (add-i64 1 2)] a)` evaluates to the sentinel
+// `:primitives/Int 0` — the div-by-zero panic is silently discarded on the
+// joining thread. Deterministic across runs.
+//
+// FIXME(/dev intrinsics) — the fork-join error-slot ferry obligation: every
+// fork-join boundary MUST ferry a worker-side take_runtime_error() back to the
+// join site and re-raise the first error (FIXME 0270; per FIXME 0272 Half A +
+// design/arch/test-discovery.md §"the fork-join error-slot ferry obligation").
+#[test]
+fn lenient_binding_panic_not_swallowed_neg() {
+    repl_prims("(let [a (div-i64 10 0) b (add-i64 1 2)] a)\n")
+        // MUST surface the panic — MUST NOT bind `a` to the sentinel 0.
+        .assert_stdout_contains("division by zero");
+}
+
+// spec: spec/12-runtime.md §12.4.3 — the same `let` under CRANELISP_NO_LENIENT=1
+// DOES panic, proving lenient evaluation (the spark path) is the trigger for
+// the swallow. This control test PASSES today and pins the spark as the cause.
+#[test]
+fn lenient_binding_panic_surfaces_with_no_lenient_control() {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .repl()
+        .stdin("(let [a (div-i64 10 0) b (add-i64 1 2)] a)\n")
+        .env("CRANELISP_NO_LENIENT", "1")
+        .output()
+        .assert_stdout_contains("division by zero");
 }
 
 // =============================================================================

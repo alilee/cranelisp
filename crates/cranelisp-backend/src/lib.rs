@@ -385,8 +385,17 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
             return Ok(());
         }
 
+        // `writable = true` so the GOT atom lands in a WRITABLE section
+        // (`__DATA`, not the read-only `__DATA_CONST`). The `(trace …)` GOT
+        // copy-swap (`cranelisp_trace_swap_got`) installs the debug GOT over
+        // the real GOT with a runtime `memcpy` INTO the GOT base — a store that
+        // segfaults if the atom is in `__DATA_CONST` (dyld maps it read-only).
+        // This mirrors the JIT runtime `GotTable` (a writable heap allocation)
+        // — mode parity, Principles 11–13 (FIXME 0275). Normal call dispatch
+        // only READS the GOT, so the writable placement is observationally
+        // transparent outside tracing.
         let data_id = self
-            .declare_data(name, cranelift_module::Linkage::Export, false, false)
+            .declare_data(name, cranelift_module::Linkage::Export, true, false)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!(
                     "failed to declare GOT data symbol '{name}' as Export: {e}"
@@ -411,7 +420,21 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
         // the section placement differs. Function-address relocations declared
         // below via `desc.write_function_addr` are still applied normally at
         // link time.
-        desc.define(vec![0u8; slot_count * 8].into_boxed_slice());
+        //
+        // Slab SIZE is the full `GOT_TABLE_SIZE` (NOT the live `slot_count`),
+        // matching the runtime `GotTable`'s fixed `GOT_TABLE_SIZE`-slot
+        // allocation (FIXME 0275 — mode parity, Principles 11–13). The
+        // `(trace …)` GOT copy-swap (`cranelisp_trace_swap_got`) memcpy's a
+        // fixed `GOT_TABLE_SIZE * 8` bytes from the GOT base in EVERY mode; in
+        // JIT mode the base is the runtime full-size `GotTable`, so the swap is
+        // in-bounds. If the object-mode slab were sized to `slot_count` only,
+        // the same memcpy would read past the end of the `.o` GOT atom and
+        // SIGBUS in `--link` binaries. Sizing the object slab to match the
+        // runtime table closes that divergence; the trailing slots are
+        // zero-filled and carry no relocation (cost: a fixed
+        // `GOT_TABLE_SIZE * 8` = 8 KiB per module's `.o` GOT atom).
+        let slab_slots = cranelisp_types::GOT_TABLE_SIZE.max(slot_count);
+        desc.define(vec![0u8; slab_slots * 8].into_boxed_slice());
 
         for &(slot, func_id) in slot_funcs {
             // Sanity: slot must be in range; defensive guard against a

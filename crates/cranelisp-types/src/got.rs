@@ -23,8 +23,44 @@ use crate::GOT_TABLE_SIZE;
 /// slots using `store(Release)`. The main thread reads after a flush barrier
 /// ensures happens-before. JIT code reads via raw pointer loads at
 /// `got_base + slot * 8`.
+///
+/// # Backing (heap vs. static)
+///
+/// The default constructor [`GotTable::new`] owns a heap-allocated boxed array
+/// — the model for every user/stdlib module's per-module GOT. The synthetic
+/// `primitives` module is the one exception: its GOT must be addressable as a
+/// **link-time symbol** (`__cranelisp_got_primitives`) so that `--link`-mode
+/// binaries can resolve the GOT-indirect extern-primitive dispatch that
+/// `apply.rs` emits in every mode. A heap address can never be a link symbol,
+/// so `cranelisp-primitives` supplies a `&'static` writable slab exported under
+/// the canonical name and constructs its `GotTable` OVER it via
+/// [`GotTable::with_static_backing`]. The two backings are otherwise behaviourally
+/// identical — both expose the same `[AtomicPtr<u8>; GOT_TABLE_SIZE]` slot array
+/// via [`base_ptr`](GotTable::base_ptr), [`store_slot`](GotTable::store_slot),
+/// and [`load_slot`](GotTable::load_slot).
 pub struct GotTable {
-    slots: Box<[AtomicPtr<u8>; GOT_TABLE_SIZE]>,
+    backing: GotBacking,
+}
+
+/// How a `GotTable` owns (or borrows) its slot array.
+enum GotBacking {
+    /// Heap-owned boxed array — the default per-module model.
+    Heap(Box<[AtomicPtr<u8>; GOT_TABLE_SIZE]>),
+    /// Caller-supplied `'static` slab — the `primitives` model. The caller
+    /// guarantees the reference is `'static`, has exactly `GOT_TABLE_SIZE`
+    /// slots, and lives in a writable section (the trace GOT copy-swap writes
+    /// into it via `memcpy`). See [`GotTable::with_static_backing`].
+    Static(&'static [AtomicPtr<u8>; GOT_TABLE_SIZE]),
+}
+
+impl GotBacking {
+    #[inline]
+    fn slots(&self) -> &[AtomicPtr<u8>; GOT_TABLE_SIZE] {
+        match self {
+            GotBacking::Heap(b) => b,
+            GotBacking::Static(s) => s,
+        }
+    }
 }
 
 // SAFETY: GotTable contains AtomicPtr which is inherently Send+Sync.
@@ -44,7 +80,43 @@ impl GotTable {
             .into_boxed_slice()
             .try_into()
             .unwrap_or_else(|_| unreachable!("invariant: vec has GOT_TABLE_SIZE elements"));
-        GotTable { slots: boxed }
+        GotTable {
+            backing: GotBacking::Heap(boxed),
+        }
+    }
+
+    /// Construct a `GotTable` over a caller-supplied `'static` slot array
+    /// instead of a heap allocation.
+    ///
+    /// This is the construction path for the synthetic `primitives` module's
+    /// GOT (Decision 0048 + FIXME 0280). The `primitives` GOT must be a
+    /// **link-time symbol** (`__cranelisp_got_primitives`) so `--link`-mode
+    /// binaries can resolve the GOT-indirect extern-primitive dispatch
+    /// `apply.rs` emits uniformly in all modes — a heap address cannot be a
+    /// link symbol. `cranelisp-primitives` therefore exports a writable static
+    /// slab under the canonical name and builds its `GotTable` over it.
+    ///
+    /// # Contract — the caller guarantees:
+    ///
+    /// - **`'static`**: the slab outlives every `GotTable` built over it (and
+    ///   every JIT/linked-code reader of `base_ptr()`). A process-lifetime
+    ///   `static` satisfies this trivially.
+    /// - **`GOT_TABLE_SIZE` slots**: enforced by the `&'static [_; GOT_TABLE_SIZE]`
+    ///   type — the array length is part of the type.
+    /// - **Writable**: the slab must live in a writable section (`__DATA`, not
+    ///   `__DATA_CONST`). The `(trace …)` GOT copy-swap (`cranelisp_trace_swap_got`)
+    ///   `memcpy`s the debug GOT INTO this base — a store that segfaults if the
+    ///   backing is read-only. (`AtomicPtr` interior mutability already requires
+    ///   the static be non-`const`; this restates the section constraint the
+    ///   trace swap depends on, mirroring `define_module_got_data`'s Bug-B note.)
+    /// - **Single backing**: at most one live `GotTable` is built over any given
+    ///   static slab (the slab IS the module's one GOT — the "one GOT per module,
+    ///   base address stable for lifetime" invariant). `cranelisp-primitives`
+    ///   builds exactly one, inside `PRIMITIVES_TABLE`'s `LazyLock`.
+    pub fn with_static_backing(slab: &'static [AtomicPtr<u8>; GOT_TABLE_SIZE]) -> Self {
+        GotTable {
+            backing: GotBacking::Static(slab),
+        }
     }
 
     /// Get the base address of the GOT table.
@@ -53,7 +125,7 @@ impl GotTable {
     /// in JIT-generated code. The pointer is stable for the lifetime of the
     /// `GotTable` (the boxed array is never reallocated).
     pub fn base_ptr(&self) -> *const u8 {
-        self.slots.as_ptr() as *const u8
+        self.backing.slots().as_ptr() as *const u8
     }
 
     /// Atomically write a code pointer to a GOT slot.
@@ -65,7 +137,7 @@ impl GotTable {
             slot < GOT_TABLE_SIZE,
             "invariant: GOT slot {slot} out of range"
         );
-        self.slots[slot].store(ptr as *mut u8, Ordering::Release);
+        self.backing.slots()[slot].store(ptr as *mut u8, Ordering::Release);
     }
 
     /// Read a code pointer from a GOT slot.
@@ -76,7 +148,7 @@ impl GotTable {
             slot < GOT_TABLE_SIZE,
             "invariant: GOT slot {slot} out of range"
         );
-        self.slots[slot].load(Ordering::Acquire) as *const u8
+        self.backing.slots()[slot].load(Ordering::Acquire) as *const u8
     }
 }
 
@@ -131,6 +203,41 @@ mod tests {
         let got = GotTable::new();
         assert!(got.load_slot(0).is_null());
         assert!(got.load_slot(1).is_null());
+    }
+
+    // spec: 12-runtime §12.2 — GOT static-backing construction (FIXME 0280)
+    #[test]
+    fn test_with_static_backing_store_and_load() {
+        // A process-lifetime writable static slab — the shape
+        // `cranelisp-primitives` exports as `__cranelisp_got_primitives`.
+        // `std::array::from_fn` cannot build a const initializer, so use a
+        // leaked Box to obtain a genuine `&'static` for the test (the slab is
+        // never freed, satisfying the `'static` + single-backing contract).
+        let slab: &'static [AtomicPtr<u8>; GOT_TABLE_SIZE] = Box::leak(Box::new(
+            std::array::from_fn(|_| AtomicPtr::new(std::ptr::null_mut())),
+        ));
+        let slab_addr = slab.as_ptr() as *const u8;
+
+        let got = GotTable::with_static_backing(slab);
+
+        // base_ptr() must point AT the static slab, not a fresh heap allocation.
+        assert_eq!(
+            got.base_ptr(),
+            slab_addr,
+            "static-backed GotTable must expose the slab address as base_ptr"
+        );
+
+        // Slots start null, and writes land in the static (observable through
+        // both the table API and the raw slab reference — same memory).
+        assert!(got.load_slot(3).is_null());
+        let fake = 0xBEEFusize as *const u8;
+        got.store_slot(3, fake);
+        assert_eq!(got.load_slot(3), fake);
+        assert_eq!(
+            slab[3].load(Ordering::Acquire) as *const u8,
+            fake,
+            "write through the table must be visible on the backing static"
+        );
     }
 
     // spec: 12-runtime §12.2 — atomic GOT: concurrent writes to disjoint slots

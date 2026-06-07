@@ -8,6 +8,66 @@ refers_to: design/platform/sprint71-redesign.md §12 (Next skills), tests/plan/s
 status: open
 ---
 
+## Progress (S76 W3, /qa) — round-trip STILL BLOCKED; construction primitive necessary-but-insufficient
+
+/qa attempted the unblocked round-trip half this fire and found it is **not yet
+unblocked** — and the residual blocker is broader than the schema-validation seam
+(0282) named in the work order.
+
+**What landed (necessary, not sufficient):** `alloc_with_tag` (the host-side ADT
+*construction* primitive) is wired + unit-verified (0229 step 1). This lets the
+host *allocate* a tagged heap-ADT, but it does NOT make a platform-declared ADT
+*referenceable by name* from cranelisp source.
+
+**The hard blocker /qa confirmed by direct probe (NOT 0282):** a platform
+function whose `type_sig` names an ADT (e.g. `rectangle-area : (Fn [Rectangle]
+Int)`) **fails to typecheck at load** with `unknown type 'Rectangle' (from module
+'')`. Reproduced end-to-end with a throwaway `test-adt` cdylib (built against the
+workspace `cranelisp-platform`, `schema:` + `schema_types: [Rectangle]`,
+`rectangle_area` reading `w`/`h`), loaded via `CRANELISP_PLATFORM_PATH` + `--run`:
+
+```
+(platform test-adt)
+(import [platform.test-adt [rectangle-area]])
+(deftype Rectangle [:Int w :Int h])
+(defn main [] (rectangle-area (Rectangle 3 4)))
+```
+
+→ `type error in platform function 'rectangle-area' signature '(Fn [Rectangle]
+Int)': unknown type 'Rectangle'`.
+
+**Root cause (source-confirmed):** `src/platform.rs::register_platform_in_tc`
+registers only the function descriptors (+ injects `(import [primitives [*]])`)
+into the synthetic `platform.<name>` module. It does **not** consume the DLL's
+`GetSchema`/`DLL_SCHEMA` to register the schema-declared ADT **type defs** — there
+is no `register_type_def` for `Rectangle` anywhere in the platform-load path. The
+rustdoc on `parse_and_check_platform_type_sig` (`src/platform.rs:355–357`) names
+this explicitly as a future seam: schema ADT names resolve *"once the platform
+module carries those type defs (host-wiring round-trip; see ... §4 seam
+0231/0233)."* That seam is open.
+
+**Disposition:** ALL FOUR 0235 deliverables remain blocked, not just item 4:
+- Items 1–3 (test-adt DLL + `tests/spec_platforms_adt.rs` round-trip + cache
+  restore) are blocked on the **schema-type-registration seam** — the
+  platform-as-module path must register schema-declared ADT type defs so platform
+  sigs (and importers) can name them. This is the open half of FIXME 0231/0233
+  step 2 (`/int` + `/dev platform`); it is a prerequisite for any CLAdt-typed
+  platform function to typecheck. **NOT 0282.**
+- Item 4 (schema-typo mismatch → `validate_schema` rejection at load) is blocked
+  on the **S-PLAT-1 schema-text-exposure seam** (FIXME 0282, `/arch` ruling
+  pending — Option A manifest field vs Option B macro-invokes-callback).
+
+/qa authored NO e2e test this fire: a `tests/spec_platforms_adt.rs` round-trip
+would fail at platform-sig typecheck (a different, upstream failure than the
+round-trip the test is meant to exercise), and authoring a `platforms/test-adt/`
+cdylib is `/platform`'s domain (this FIXME's step-1 DLL author is `/platform`, not
+`/qa` — only the `tests/`-side e2e file is `/qa`'s). When the schema-type-
+registration seam lands, `/qa` files the failing-first `tests/spec_platforms_adt.rs`
+plan and lands items 1–3; item 4 follows once 0282 resolves.
+
+**Recommended next:** file/track the schema-type-registration seam as the
+prerequisite for 0235 (it belongs with 0231/0233's open half); keep 0235 open.
+
 # Round-trip integration tests once host-side wiring lands
 
 ## Issue

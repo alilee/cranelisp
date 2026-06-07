@@ -220,13 +220,40 @@ pub(crate) fn check_program_compat(
     module_aliases: &cranelisp_types::ModuleAliases,
     module: &ModuleFullPath,
     working_program: &[TopLevel],
-) -> Result<(), CranelispError> {
+) -> Result<Option<cranelisp_types::ResolutionGap>, CranelispError> {
     // Wave 3b-2c.3: FIXME 0179 (cluster-mode read-union via View::union) has
     // landed in typecheck. Cluster mode is now activated as the hot path —
     // writes flow to a fresh staging table, reads union staging-first with
     // live, and on Ok the staging entries commit to live atomically. On Err
     // staging drops and live is unchanged.
+    //
+    // Returns `Ok(Some(gap))` when typecheck surfaces a recoverable
+    // `CheckError::Gap` — the FQ-auto-load orchestration (spec §8.5.4 / §9.3.6,
+    // FIXME 0268) catches an unloaded-module gap here and loads-and-retries.
     process_cluster_with_staging(symbol_tables, module_aliases, module, working_program)
+}
+
+/// Run `check_program_compat` and reject a surviving gap as a hard error.
+///
+/// Used by call sites that do NOT participate in the FQ-auto-load orchestration
+/// (macro-clause compilation, cache-load typecheck, `/type` introspection,
+/// the zero-caller `cluster::process_cluster` scaffold). These paths preserve
+/// the pre-FIXME-0268 behaviour: a `CheckError::Gap` (now surfaced as
+/// `Ok(Some(gap))`) becomes a `TypeError`. Only `finalize_module` and the
+/// Pass-2 expand loop act on a gap by loading the named module and retrying.
+pub(crate) fn check_program_compat_no_gap(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module_aliases: &cranelisp_types::ModuleAliases,
+    module: &ModuleFullPath,
+    working_program: &[TopLevel],
+) -> Result<(), CranelispError> {
+    match check_program_compat(symbol_tables, module_aliases, module, working_program)? {
+        None => Ok(()),
+        Some(gap) => Err(CranelispError::TypeError {
+            message: format!("unresolved cross-module reference: {gap:?}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        }),
+    }
 }
 
 /// Process a cluster through `ClusterContext::Cluster` with a fresh staging
@@ -248,12 +275,12 @@ pub(crate) fn process_cluster_with_staging(
     module_aliases: &cranelisp_types::ModuleAliases,
     module: &ModuleFullPath,
     working_program: &[TopLevel],
-) -> Result<(), CranelispError> {
-    use cranelisp_typecheck::{check_forms, SymbolTableAccess};
+) -> Result<Option<cranelisp_types::ResolutionGap>, CranelispError> {
+    use cranelisp_typecheck::{check_forms, CheckError, SymbolTableAccess};
 
     let parsed = top_level_to_parsed_entries(working_program);
     if parsed.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
 
     let mut staging: crate::code::SessionSymbolTable =
@@ -262,16 +289,23 @@ pub(crate) fn process_cluster_with_staging(
         );
     let mut ctx: SymbolTableAccess<'_, crate::code::Code, ()> =
         SymbolTableAccess::cluster(symbol_tables, &mut staging, module.clone());
-    let result = check_forms(parsed, &mut ctx, symbol_tables, module_aliases)
-        .map_err(check_error_to_cranelisp_error);
+    let result = check_forms(parsed, &mut ctx, symbol_tables, module_aliases);
     drop(ctx);
 
-    // On Err: staging drops on function return — atomic discard.
-    result?;
-
-    // On Ok: commit staging entries to live.
-    commit_staging_to_live(symbol_tables, module, staging);
-    Ok(())
+    match result {
+        // On Ok: commit staging entries to live.
+        Ok(()) => {
+            commit_staging_to_live(symbol_tables, module, staging);
+            Ok(None)
+        }
+        // A recoverable resolution gap (e.g. an FQ reference to a module not
+        // yet loaded). Staging drops here (atomic discard, live unchanged);
+        // the gap is handed back to `finalize_module` for FQ-auto-load
+        // orchestration (FIXME 0268). On retry a fresh staging frame runs.
+        Err(CheckError::Gap(gap)) => Ok(Some(gap)),
+        // A genuine type error — staging drops, live unchanged.
+        Err(e) => Err(check_error_to_cranelisp_error(e)),
+    }
 }
 
 /// Drain `staging.symbols` into the live `SymbolTable` for `module` under a
@@ -461,6 +495,14 @@ struct SymbolTableMacroResolver<'a> {
     /// Defining modules for macros that were resolved during expansion.
     /// Used to qualify bare symbols in expanded output (cross-module hygiene).
     macro_defining_modules: Vec<ModuleFullPath>,
+    /// FQ auto-loading (FIXME 0268, spec §9.3.6): set when `recognize`
+    /// encounters an FQ macro head `mod/macro` whose `mod` is not yet loaded.
+    /// `try_expand_sexp` reads this after the walk and signals the worker loop
+    /// to load the dependency and resume the referencing form. `recognize`
+    /// returns `Ok(None)` in this case (treats the head as an ordinary call for
+    /// the duration of this aborted walk), so the captured module is the
+    /// only signal that a block is needed.
+    blocked_on_fq_module: Option<ModuleFullPath>,
 }
 
 impl MacroResolver for SymbolTableMacroResolver<'_> {
@@ -475,6 +517,26 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
         name: &str,
         span: Span,
     ) -> Result<Option<FQSymbol>, CranelispError> {
+        // FQ auto-loading (FIXME 0268, spec §9.3.6): an FQ head `mod/macro`
+        // whose `mod` is not yet loaded cannot be recognised as a macro yet —
+        // `resolve_macro_head` would surface `QualifiedModuleUnknown`. Capture
+        // the unloaded module so `try_expand_sexp` can signal the worker loop
+        // to load it and resume; return `Ok(None)` for this aborted walk. The
+        // module is loaded with import's file-resolution rules (orchestrator-
+        // owned). Once loaded, the resumed walk recognises the macro normally.
+        if let Some((mod_part, _sym_part)) = name.split_once('/') {
+            // The module part is taken verbatim. Module-path aliases
+            // (`(import [(target alias)])`) only exist when the target is
+            // already being loaded, so an aliased FQ ref to an *unloaded*
+            // module does not arise here; the raw-name check is sufficient
+            // for the no-import FQ case this orchestration targets.
+            let dep = ModuleFullPath::from(mod_part);
+            if !self.symbol_tables.contains_key(&dep) {
+                self.blocked_on_fq_module = Some(dep);
+                return Ok(None);
+            }
+        }
+
         // Step 1: RECOGNITION via the LOCKED types primitive
         // (`cranelisp_types::resolve_macro_head` over a committed `View`,
         // `macro-availability-model.md` §0.7). Zero int→typecheck dependency;
@@ -677,7 +739,7 @@ fn compile_macro_clause_with_state(
         Some(s) => &s.module_aliases,
         None => Box::leak(Box::new(cranelisp_types::ModuleAliases::default())),
     };
-    check_program_compat(symbol_tables, module_aliases, target_module, &program)?;
+    check_program_compat_no_gap(symbol_tables, module_aliases, target_module, &program)?;
 
     // Step 5: Extract the defn from the annotated symbol table (not the unannotated program).
     // The typechecker stores annotated defns (with resolved_call on AST nodes) in
@@ -724,16 +786,27 @@ fn compile_macro_clause_with_state(
 /// Creates a SymbolTableMacroResolver, runs expand_sexp_recursive,
 /// drops the resolver, returns the expanded sexp. After this returns,
 /// ctx and accumulator are available for the caller to use freely.
+/// Outcome of attempting macro expansion on a single Pass-2 form.
+enum ExpandOutcome {
+    /// Expansion ran to fixpoint. `Some(sexp)` = expanded result (differs from
+    /// input); `None` = no expansion (input was not a macro call).
+    Expanded(Option<Sexp>),
+    /// Expansion encountered an FQ macro head `mod/macro` whose module is not
+    /// yet loaded (FIXME 0268). The caller loads `dep_module` and resumes the
+    /// referencing form. No partial expansion is committed.
+    BlockedOnFqModule(ModuleFullPath),
+}
+
 fn try_expand_sexp(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     sexp: &Sexp,
     accumulator: &mut ModuleCheckAccumulator,
-) -> Result<Option<Sexp>, CranelispError> {
+) -> Result<ExpandOutcome, CranelispError> {
     // No need to extract/restore CheckState — TypeCheckEnv borrows are
     // separate from CheckState. The resolver holds &DashMap (from tc_env)
     // and &mut CheckState separately.
-    let (result, defining_modules) = {
+    let (result, defining_modules, blocked_on) = {
         let mut resolver = SymbolTableMacroResolver {
             symbol_tables: ctx.symbol_tables,
             next_type_id: ctx.next_type_id,
@@ -745,18 +818,28 @@ fn try_expand_sexp(
             scheduler: ctx.scheduler,
             shared_state: ctx.shared_state,
             macro_defining_modules: Vec::new(),
+            blocked_on_fq_module: None,
         };
 
         let r = expander::expand_sexp_recursive(sexp.clone(), &mut resolver, 0);
         let dms = std::mem::take(&mut resolver.macro_defining_modules);
-        (r, dms)
+        let blocked = resolver.blocked_on_fq_module.take();
+        (r, dms, blocked)
         // resolver dropped here, releasing all borrows on check_state
     };
+
+    // An FQ macro head named an unloaded module — signal the worker loop to
+    // load it and resume (FIXME 0268). Surface this before propagating any
+    // expansion error, since the aborted walk may itself have errored on the
+    // unrecognised FQ head.
+    if let Some(dep) = blocked_on {
+        return Ok(ExpandOutcome::BlockedOnFqModule(dep));
+    }
 
     let expanded = result?;
 
     if expanded == *sexp {
-        Ok(None)
+        Ok(ExpandOutcome::Expanded(None))
     } else {
         // Qualify bare symbols from defining modules (cross-module macro hygiene).
         let qualified = if defining_modules.is_empty() {
@@ -764,7 +847,7 @@ fn try_expand_sexp(
         } else {
             qualify_expanded_sexp(ctx.symbol_tables, module, &defining_modules, expanded)
         };
-        Ok(Some(qualified))
+        Ok(ExpandOutcome::Expanded(Some(qualified)))
     }
 }
 
@@ -1192,7 +1275,19 @@ pub fn process_module_forms(
 
     match pass2_result {
         Pass2Result::Complete => {
-            finalize_module(ctx, module, &state.expanded_program, &mut state.accumulator, strategy)
+            // On an FQ-auto-load block at the finalize stage, resume Pass 2 at
+            // `sexps.len()` — a no-op loop that re-enters `finalize_module`
+            // with the now-loaded dependency (FIXME 0268).
+            finalize_module(
+                ctx, module, &state.expanded_program, &mut state.accumulator, strategy,
+                sexps.len(),
+            )
+        }
+        Pass2Result::BlockedOnFqModule { form_index, dep_module } => {
+            // An FQ macro reference to an unloaded module surfaced during
+            // expansion (Pass 2). Load the dependency with import's file
+            // resolution rules and resume the referencing form (FIXME 0268).
+            load_fq_dep_module(ctx, module, &dep_module, form_index, Span::SYNTHETIC)
         }
     }
 }
@@ -1244,6 +1339,7 @@ fn finalize_module(
     expanded_program: &[TopLevel],
     accumulator: &mut ModuleCheckAccumulator,
     _strategy: ModuleStrategy,
+    resume_form_index: usize,
 ) -> Result<ProcessResult, CranelispError> {
     let mut final_working = wrap_exprs_as_defns(expanded_program);
 
@@ -1251,13 +1347,41 @@ fn finalize_module(
     // Pre-S66 these flowed through a separate Pass-2 `check_form(CheckBody)`
     // step; under collapsed `check_forms` they ride into the same dispatch
     // alongside the body forms.
-    let defaults_for_body: Vec<Defn> = std::mem::take(&mut accumulator.default_method_defns);
-    for defn in &defaults_for_body {
+    //
+    // CLONE (not `take`) — this `check_forms` may surface an FQ-auto-load gap
+    // and block-and-retry (FIXME 0268), in which case `finalize_module` runs
+    // again over the same `accumulator`; draining the defaults on the first
+    // attempt would lose them on the retry.
+    for defn in &accumulator.default_method_defns {
         final_working.push(TopLevel::Defn(defn.clone()));
     }
 
     // Single typecheck dispatch — internally drives Pass 1, Pass 2, finalize.
-    check_program_compat(ctx.symbol_tables, ctx.module_aliases, module, &final_working)?;
+    // FQ auto-loading (spec §8.5.4 / §9.3.6, FIXME 0268): a recoverable gap
+    // naming an unloaded module is caught at this int boundary, the module is
+    // loaded with the same file-resolution rules as `import`, and the whole
+    // cluster check is retried (resume Pass 2 at `resume_form_index`, a no-op
+    // that re-enters `finalize_module`). Macro-vs-fn discrimination is
+    // orchestrator-owned: only the dependency typecheck-and-compile is forced;
+    // no speculative function JIT push.
+    if let Some(gap) =
+        check_program_compat(ctx.symbol_tables, ctx.module_aliases, module, &final_working)?
+    {
+        if let Some(block) = handle_fq_autoload_gap(ctx, module, &gap, resume_form_index)? {
+            return Ok(block);
+        }
+        // The gap names a module that IS already loaded (or is not an
+        // FQ-module gap we can act on) — surface it as a hard error so the
+        // failure is not silently swallowed.
+        return Err(CranelispError::TypeError {
+            message: format!("unresolved cross-module reference: {gap:?}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        });
+    }
+
+    // Defaults consumed successfully — drain them so a downstream re-entry
+    // (should one occur) does not re-append.
+    accumulator.default_method_defns.clear();
 
     // Build a minimal `CheckResult` carrier for downstream codegen. The new
     // typecheck surface no longer returns a `CheckResult` from
@@ -1349,7 +1473,16 @@ enum Pass2Result {
     /// All forms processed. Expanded program is in the caller's Vec.
     Complete,
     // Note: Import/export/mod/platform blocking is now handled in Pass 0.
-    // Pass 2 no longer needs a Blocked variant.
+    /// An FQ macro reference (`mod/macro`) named a not-yet-loaded module during
+    /// expansion. The caller loads the dependency and resumes the referencing
+    /// form (FIXME 0268, spec §9.3.6). `form_index` is the Pass-2 form to
+    /// re-process; nothing was appended to `expanded_program` for it yet
+    /// (`process_regular_form` extends only after expansion succeeds), so the
+    /// resume is clean.
+    BlockedOnFqModule {
+        form_index: usize,
+        dep_module: ModuleFullPath,
+    },
 }
 
 /// Pass 2: per-sexp expand-then-check, with inline macro compilation
@@ -1370,7 +1503,7 @@ fn pass2_check_bodies_with_expansion(
     accumulator: &mut ModuleCheckAccumulator,
     expanded_program: &mut Vec<TopLevel>,
 ) -> Result<Pass2Result, CranelispError> {
-    for (_form_idx, sexp) in sexps.iter().enumerate().skip(start_form_index) {
+    for (form_idx, sexp) in sexps.iter().enumerate().skip(start_form_index) {
 
         match classify_form(sexp, module)? {
             // Import/export/mod/platform forms are processed in Pass 0
@@ -1388,9 +1521,16 @@ fn pass2_check_bodies_with_expansion(
                 compile_macro_if_needed(ctx, module, &info, sexp.span(), accumulator)?;
             }
             FormKind::Regular => {
-                process_regular_form(
+                if let Some(dep_module) = process_regular_form(
                     ctx, module, sexp, accumulator, expanded_program,
-                )?;
+                )? {
+                    // FQ macro reference to an unloaded module (FIXME 0268).
+                    // Resume this same form after the dependency is loaded.
+                    return Ok(Pass2Result::BlockedOnFqModule {
+                        form_index: form_idx,
+                        dep_module,
+                    });
+                }
             }
         }
     }
@@ -1403,15 +1543,26 @@ fn pass2_check_bodies_with_expansion(
 /// registers any new signatures (for begin-spliced defns), then typechecks
 /// the body. New macros from expansion (e.g. const/def) are registered in
 /// the symbol table and become visible to the resolver for subsequent forms.
+///
+/// Returns `Ok(Some(dep_module))` when expansion encountered an FQ macro head
+/// whose module is not loaded — the caller loads `dep_module` and resumes this
+/// form (FIXME 0268). Returns `Ok(None)` on normal completion.
 fn process_regular_form(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     sexp: &Sexp,
     accumulator: &mut ModuleCheckAccumulator,
     expanded_program: &mut Vec<TopLevel>,
-) -> Result<(), CranelispError> {
+) -> Result<Option<ModuleFullPath>, CranelispError> {
     // Try macro expansion on the raw sexp.
-    let effective_sexp = try_expand_sexp(ctx, module, sexp, accumulator)?;
+    let effective_sexp = match try_expand_sexp(ctx, module, sexp, accumulator)? {
+        ExpandOutcome::Expanded(opt) => opt,
+        ExpandOutcome::BlockedOnFqModule(dep) => {
+            // Nothing has been appended to `expanded_program` for this form —
+            // the caller will resume it after loading `dep`.
+            return Ok(Some(dep));
+        }
+    };
 
     let sexp_to_build = match &effective_sexp {
         Some(expanded) => expanded,
@@ -1435,7 +1586,7 @@ fn process_regular_form(
     }
 
     if regular_sexps.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
 
     let built = build_program_compat(&regular_sexps)?;
@@ -1487,7 +1638,7 @@ fn process_regular_form(
     }
 
     expanded_program.extend(built);
-    Ok(())
+    Ok(None)
 }
 
 // ---------------------------------------------------------------------------
@@ -1693,6 +1844,167 @@ fn handle_import(
     }
 
     Ok(BlockAction::Continue)
+}
+
+/// Whether `dep` is fully loaded (typechecked) and therefore ready to satisfy
+/// an FQ reference without a load.
+///
+/// Mirrors the `handle_import` fast-path gate (Sprint 60 Wave 2 Round 4): a
+/// seeded-but-empty `SymbolTable` may exist in `symbol_tables` before a
+/// module's Defs are populated, so a `contains_key` check alone is not
+/// sufficient. Require a terminal typecheck state via `is_typechecked`.
+fn fq_module_is_loaded(ctx: &ModuleCompiler, dep: &ModuleFullPath) -> bool {
+    ctx.symbol_tables.contains_key(dep) && ctx.scheduler.is_typechecked(dep)
+}
+
+/// FQ auto-loading (spec §8.5.4 / §9.3.6, FIXME 0268).
+///
+/// An FQ reference `mod/sym` (function or macro) to a module that is not yet
+/// loaded surfaces as a gap the orchestrator catches at this boundary. This
+/// helper loads `dep` using the **same module-file resolution rules as
+/// `import`** (no new search semantics) and returns a `ProcessResult::Blocked`
+/// so the worker loop typechecks-and-compiles `dep`, then resumes the
+/// referencing form from `resume_form_index`.
+///
+/// Macro-vs-fn discrimination stays orchestrator-owned and is implicit in the
+/// resume: once `dep` is typechecked-and-compiled, the retry re-dispatches —
+/// an FQ **function** reference resolves against `dep`'s now-live signatures;
+/// an FQ **macro** reference re-expands, and the macro recogniser's existing
+/// on-demand clause compile finds the clause code already JIT'd by `dep`'s
+/// own Pass-2 codegen. No speculative JIT force of functions is performed; the
+/// dependency compile (synchronous via `block_for_typecheck` in the worker
+/// loop) is the only mechanism needed (FIXME 0268 item 3; the
+/// `priority_boost_jit`/`wait_for_inmem` half is consequently unused — see the
+/// PriorityEntry disposition note in `src/scheduler.rs`).
+///
+/// File-not-found surfaces the existing module-not-found error at `span`;
+/// a transitive cycle back to the referencing module is rejected by the
+/// scheduler's existing acyclicity check in `block_for_typecheck`.
+fn load_fq_dep_module(
+    ctx: &mut ModuleCompiler,
+    module: &ModuleFullPath,
+    dep: &ModuleFullPath,
+    resume_form_index: usize,
+    span: Span,
+) -> Result<ProcessResult, CranelispError> {
+    // Already loaded (a peer form imported it, or it was loaded on a prior
+    // retry) — block-then-unblock to re-queue the referencing module without a
+    // file load. Same shape as the cache-hit branch below.
+    if fq_module_is_loaded(ctx, dep) {
+        ctx.scheduler.block_for_typecheck(module, dep, &Symbol::from("*"))?;
+        ctx.scheduler.unblock_module(module);
+        return Ok(ProcessResult::Blocked {
+            form_index: resume_form_index,
+            dep_module: dep.clone(),
+            dep_sexps: Vec::new(),
+        });
+    }
+
+    // Resolve the file — same rules as import (no new search semantics).
+    let dep_file = crate::pipeline::resolve_module_file(dep, ctx.project_root, ctx.lib_dirs)
+        .ok_or_else(|| CranelispError::ModuleError {
+            message: format!(
+                "module '{}' referenced by '{}/...' not found (referenced by '{}')",
+                dep, dep, module
+            ),
+            location: ErrorLocation::from_span_file(span, None),
+        })?;
+
+    // Populate file_to_module mapping for the file watcher (parity with import).
+    if let Some(shared) = ctx.shared_state
+        && let Ok(canonical) = dep_file.canonicalize()
+    {
+        shared
+            .file_to_module
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(canonical, dep.clone());
+    }
+
+    // Cache check: try to load from disk cache before parsing (parity with
+    // import). On a cache hit `dep` is registered `TypecheckDone` synchronously
+    // — there is no future `notify_typecheck_done(dep)` to sweep our waiter, so
+    // we block-then-immediately-unblock to re-queue the referencing module.
+    if try_cache_hit_load(ctx, dep, &dep_file) {
+        ctx.scheduler.block_for_typecheck(module, dep, &Symbol::from("*"))?;
+        ctx.scheduler.unblock_module(module);
+        return Ok(ProcessResult::Blocked {
+            form_index: resume_form_index,
+            dep_module: dep.clone(),
+            dep_sexps: Vec::new(),
+        });
+    }
+
+    // Read + parse + publish dep sexps (shared per-dep prologue).
+    let dep_file_for_err = dep_file.clone();
+    let dep_clone_for_err = dep.clone();
+    let dep_sexps = register_dep(ctx, dep, &dep_file, |e| CranelispError::ModuleError {
+        message: format!(
+            "cannot read module '{}' from '{}': {}",
+            dep_clone_for_err,
+            dep_file_for_err.display(),
+            e
+        ),
+        location: ErrorLocation::from_span_file(span, Some(dep_file_for_err.clone())),
+    })?;
+
+    // Register dep with scheduler (idempotent) and block for its typecheck.
+    // `block_for_typecheck` runs the existing acyclicity check, so a
+    // transitive cycle back to `module` is rejected with the standard error.
+    ctx.scheduler.register_module(dep.clone(), true);
+    ctx.scheduler.block_for_typecheck(module, dep, &Symbol::from("*"))?;
+
+    Ok(ProcessResult::Blocked {
+        form_index: resume_form_index,
+        dep_module: dep.clone(),
+        dep_sexps,
+    })
+}
+
+/// Map a typecheck-surfaced `ResolutionGap` to FQ-auto-load orchestration
+/// (FIXME 0268). Returns `Ok(Some(Blocked))` when the gap names a not-yet-loaded
+/// module that this helper loads; `Ok(None)` when the gap is not an actionable
+/// unloaded-module gap (the caller surfaces it as a hard error rather than
+/// swallowing it).
+///
+/// The actionable gap is `ResolutionGap::SymbolTypechecked(fq)` (the shape
+/// typecheck produces for an FQ value/function reference to an unknown module —
+/// see `crates/cranelisp-typecheck/src/checker.rs` `QualifiedModuleUnknown`
+/// → `SymbolTypechecked`) where `fq.module` is not yet loaded.
+fn handle_fq_autoload_gap(
+    ctx: &mut ModuleCompiler,
+    module: &ModuleFullPath,
+    gap: &cranelisp_types::ResolutionGap,
+    resume_form_index: usize,
+) -> Result<Option<ProcessResult>, CranelispError> {
+    let Some(dep) = gap_target_module(gap) else {
+        return Ok(None);
+    };
+    if fq_module_is_loaded(ctx, &dep) {
+        // The module IS loaded but the symbol still didn't resolve — not an
+        // auto-load case; let the caller surface the error.
+        return Ok(None);
+    }
+    let block = load_fq_dep_module(ctx, module, &dep, resume_form_index, Span::SYNTHETIC)?;
+    Ok(Some(block))
+}
+
+/// The module a `ResolutionGap` names as needing to be loaded, if any.
+///
+/// All three gap variants reduce to "load `fq.module`": `SymbolTypechecked` is
+/// what typecheck produces for an FQ value/function reference to an unknown
+/// module (`QualifiedModuleUnknown` → `SymbolTypechecked`); `MacroInMem` is the
+/// expand-phase macro gap; `Type` is the FQ-type-reference twin. A future
+/// non-exhaustive variant returns `None` (not actionable here).
+fn gap_target_module(gap: &cranelisp_types::ResolutionGap) -> Option<ModuleFullPath> {
+    use cranelisp_types::ResolutionGap;
+    match gap {
+        ResolutionGap::SymbolTypechecked(fq) | ResolutionGap::MacroInMem(fq) => {
+            Some(fq.module.clone())
+        }
+        ResolutionGap::Type(fqt) => Some(fqt.module.clone()),
+        _ => None,
+    }
 }
 
 /// Publish a dep's parsed sexps into `shared.module_sexps` if shared state is
@@ -1943,6 +2255,7 @@ fn try_cache_hit_load(
             ctx.symbol_tables,
             ctx.next_type_id,
             &mut ctx.check_state,
+            ctx.module_aliases,
             &spec.name,
             ctx.project_root,
             ctx.lib_dirs,
@@ -2286,6 +2599,7 @@ fn handle_platform(
         ctx.symbol_tables,
         ctx.next_type_id,
         &mut ctx.check_state,
+        ctx.module_aliases,
         &spec.name,
         ctx.project_root,
         ctx.lib_dirs,
@@ -2478,7 +2792,7 @@ fn compile_macro_clause_inline(
     // 2026-05-13 third amendment) — single call runs Pass 1 + Pass 2 + finalize.
     let module = ctx.current_module.clone();
     let _ = accumulator;
-    check_program_compat(ctx.symbol_tables, ctx.module_aliases, &module, &program)?;
+    check_program_compat_no_gap(ctx.symbol_tables, ctx.module_aliases, &module, &program)?;
 
     // Step 5: Extract the defn from the annotated symbol table (not the unannotated program).
     // The typechecker stores annotated defns (with resolved_call on AST nodes) in
@@ -3542,8 +3856,7 @@ pub fn priority_worker_loop_shared(shared: &crate::session_v4::SharedState) {
                     shared.scheduler.notify_module_failed(&module, e);
                 }
             }
-            Some(PriorityWork::BlockingJitCodegen(module, _symbol))
-            | Some(PriorityWork::JitCodegen(module, _symbol)) => {
+            Some(PriorityWork::JitCodegen(module, _symbol)) => {
                 // Cache-hit module: load entire .o via Linker (batch load).
                 // Sprint 57 Wave 3 G8: no PlatformRegistry lock — platform
                 // symbols are read from the symbol tables inside the cache
@@ -5020,4 +5333,132 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // FQ auto-loading gap→load→retry mechanism (FIXME 0268, spec §8.5.4/§9.3.6)
+    // -----------------------------------------------------------------------
+
+    // spec: spec/08-modules.md §8.5.4 — the typecheck gap for an FQ value/fn
+    // reference to an unloaded module (`SymbolTypechecked`) names the module
+    // the orchestrator must load.
+    #[test]
+    fn gap_target_module_symbol_typechecked_names_module() {
+        let gap = cranelisp_types::ResolutionGap::SymbolTypechecked(FQSymbol {
+            module: ModuleFullPath::from("mac"),
+            symbol: Symbol::from("helper"),
+        });
+        assert_eq!(gap_target_module(&gap), Some(ModuleFullPath::from("mac")));
+    }
+
+    // spec: spec/09-macros.md §9.3.6 — the expand-phase macro gap (`MacroInMem`)
+    // also reduces to "load `fq.module`".
+    #[test]
+    fn gap_target_module_macro_in_mem_names_module() {
+        let gap = cranelisp_types::ResolutionGap::MacroInMem(FQSymbol {
+            module: ModuleFullPath::from("mac"),
+            symbol: Symbol::from("twice"),
+        });
+        assert_eq!(gap_target_module(&gap), Some(ModuleFullPath::from("mac")));
+    }
+
+    // spec: spec/08-modules.md §8.5.4 — an FQ type reference to an unloaded
+    // module (`Type`) names the module via its `FQTypeName`.
+    #[test]
+    fn gap_target_module_type_names_module() {
+        let gap = cranelisp_types::ResolutionGap::Type(cranelisp_types::FQTypeName::new(
+            ModuleFullPath::from("shapes"),
+            cranelisp_types::TypeName::from("Point"),
+        ));
+        assert_eq!(gap_target_module(&gap), Some(ModuleFullPath::from("shapes")));
+    }
+
+    // spec: spec/09-macros.md §9.3.6 — `recognize` captures an FQ macro head
+    // whose module is not loaded as a block signal (returns `Ok(None)` for the
+    // aborted walk so the head flows on as an ordinary reference). This is the
+    // expand-side half of the gap→load→retry mechanism: the captured module
+    // drives `load_fq_dep_module`.
+    #[test]
+    fn recognize_captures_unloaded_fq_macro_module() {
+        use crate::expander::MacroResolver;
+        let module = ModuleFullPath::from("user");
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        symbol_tables.insert(
+            module.clone(),
+            crate::code::SessionSymbolTable::new_with_params(module.clone()),
+        );
+        let next_type_id = std::sync::atomic::AtomicU32::new(0);
+        let scheduler = CompileScheduler::new();
+        let typecheck_products = dashmap::DashMap::new();
+        let module_aliases = cranelisp_types::ModuleAliases::default();
+        let mut check_state = CheckState::new(module.clone());
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        let mut resolver = SymbolTableMacroResolver {
+            symbol_tables: &symbol_tables,
+            next_type_id: &next_type_id,
+            check_state: &mut check_state,
+            current_module: module.clone(),
+            module_aliases: &module_aliases,
+            typecheck_products: &typecheck_products,
+            accumulator: &mut accumulator,
+            scheduler: &scheduler,
+            shared_state: None,
+            macro_defining_modules: Vec::new(),
+            blocked_on_fq_module: None,
+        };
+
+        // `mac` is not loaded — recognising an FQ head `mac/twice` captures it.
+        let r = resolver
+            .recognize("mac/twice", Span::SYNTHETIC)
+            .expect("recognition does not hard-error on an unloaded FQ module");
+        assert!(r.is_none(), "aborted walk treats the head as a non-macro");
+        assert_eq!(
+            resolver.blocked_on_fq_module,
+            Some(ModuleFullPath::from("mac")),
+            "the unloaded FQ module is captured for the worker loop to load"
+        );
+    }
+
+    // spec: spec/09-macros.md §9.3.6 — a bare (non-`/`) head is not an
+    // FQ-module block signal even when unresolved.
+    #[test]
+    fn recognize_bare_head_is_not_fq_block() {
+        use crate::expander::MacroResolver;
+        let module = ModuleFullPath::from("user");
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        symbol_tables.insert(
+            module.clone(),
+            crate::code::SessionSymbolTable::new_with_params(module.clone()),
+        );
+        let next_type_id = std::sync::atomic::AtomicU32::new(0);
+        let scheduler = CompileScheduler::new();
+        let typecheck_products = dashmap::DashMap::new();
+        let module_aliases = cranelisp_types::ModuleAliases::default();
+        let mut check_state = CheckState::new(module.clone());
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        let mut resolver = SymbolTableMacroResolver {
+            symbol_tables: &symbol_tables,
+            next_type_id: &next_type_id,
+            check_state: &mut check_state,
+            current_module: module.clone(),
+            module_aliases: &module_aliases,
+            typecheck_products: &typecheck_products,
+            accumulator: &mut accumulator,
+            scheduler: &scheduler,
+            shared_state: None,
+            macro_defining_modules: Vec::new(),
+            blocked_on_fq_module: None,
+        };
+
+        let r = resolver
+            .recognize("plain-fn", Span::SYNTHETIC)
+            .expect("bare unresolved head is Ok(None)");
+        assert!(r.is_none());
+        assert_eq!(
+            resolver.blocked_on_fq_module, None,
+            "a bare head never triggers FQ-module auto-load"
+        );
+    }
 }

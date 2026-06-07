@@ -28,6 +28,7 @@
 mod e2e;
 
 use e2e::Cranelisp;
+use e2e::PreludeVariant;
 
 // =============================================================================
 // 1. Basic compilation + execution
@@ -250,6 +251,98 @@ fn link_second_invocation_reuses_cached_objects_and_re_emits_exe() {
 }
 
 // =============================================================================
+// 4b. Extern-primitive `--link` (FIXME 0280 / 0286 regression guard)
+// =============================================================================
+
+// spec: spec/appendix-a-builtins.md §A.3 — extern primitives (str-concat,
+//   str-len) are real callable symbols in the synthetic `primitives` module.
+//   A `--link` program that calls them must resolve the primitives GOT at
+//   link time and run correctly.
+//
+// Regression guard for FIXME 0280: before the primitives-GOT static-backing
+// fix, `tests/link.rs` had ZERO extern-primitive coverage, which is why the
+// `___cranelisp_got_primitives not found` link failure went unseen until the
+// /sprint probe. `(str-len (str-concat "ab" "cd"))` builds the heap string
+// "abcd" (len 4); main returns 4, so the produced binary exits 4.
+//
+// (FIXME 0286 part (a) — the durable regression guard for the latent hole.)
+#[test]
+fn link_extern_primitive_str_ops_exits_with_computed_length() {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .file(
+            "sc.cl",
+            "(import [primitives [str-concat str-len]])\n\
+             (defn main [] (str-len (str-concat \"ab\" \"cd\")))\n",
+        )
+        .link_then_run("sc.cl")
+        .output()
+        .assert_exit(4);
+}
+
+// spec: spec/appendix-a-builtins.md §A.3 — (same anchor) extern primitive in a
+//   `--link` binary used purely for its value (no trace). A second shape that
+//   exercises the primitives GOT through a different primitive (`add-i64` is
+//   inline CLIF, so use `str-len` over a literal) to widen the regression
+//   surface beyond the str-concat path.
+//
+// (FIXME 0286 part (a) — second extern-primitive --link shape.)
+#[test]
+fn link_extern_primitive_str_len_of_literal_exits_with_length() {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .file(
+            "sl.cl",
+            "(import [primitives [str-len]])\n\
+             (defn main [] (str-len \"hello\"))\n",
+        )
+        .link_then_run("sl.cl")
+        .output()
+        .assert_exit(5);
+}
+
+// spec: spec/04-expressions.md §4.12.9 — Build-mode availability: a traced
+//   extern-primitive call in a `--link` binary. With FIXME 0280 landed, the
+//   primitives group is swapped in object mode, so extern primitives appear as
+//   trace-tree children in linked binaries (matching REPL/`--run`). The traced
+//   body `(greet "bob")` calls both `str-concat` and `str-len`, so the
+//   `user/greet` node has exactly TWO children, both extern primitives. main
+//   descends to greet (the root's only child) and counts greet's children,
+//   returning count+40 == 42.
+//
+//   This is the link-mode mirror of
+//   trace.rs::trace_extern_primitive_appears_as_child and the structural
+//   complement to the part-(b) linked-tree expectation flip: it asserts that an
+//   extern primitive IS present in a `--link` trace tree. Verified manually by
+//   /qa (FIXME 0286): greet's children are `primitives/str-concat` +
+//   `primitives/str-len` (named via REPL), and the linked binary exits 42.
+//
+// (FIXME 0286 part (a) — the cheap traced extern-primitive --link variant.)
+#[test]
+fn link_traced_extern_primitives_appear_as_children_exit_42() {
+    let src = "(import [primitives [trace Trace TraceCall str-concat str-len]])\n\
+         (import [macros [SCons SNil]])\n\
+         (defn greet [s] (str-len (str-concat \"hi \" s)))\n\
+         (defn slen [acc xs]\n\
+           (match xs [SNil acc (SCons h t) (slen (add-i64 acc 1) t)]))\n\
+         ; c = root's children = [user/greet]; descend into greet, count ITS\n\
+         ; children (str-concat + str-len, both extern primitives) → 2.\n\
+         (defn main []\n\
+           (match (trace (greet \"bob\"))\n\
+             [(TraceCall n p r c ns)\n\
+               (match c [SNil 0\n\
+                         (SCons h t)\n\
+                           (match h [(TraceCall n2 p2 r2 c2 ns2)\n\
+                                     (add-i64 (slen 0 c2) 40)])])]))\n";
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file("tprog.cl", src)
+        .link_then_run("tprog.cl")
+        .output()
+        .assert_exit(42);
+}
+
+// =============================================================================
 // 5. Multi-module linking
 // =============================================================================
 
@@ -270,7 +363,7 @@ fn link_second_invocation_reuses_cached_objects_and_re_emits_exe() {
 fn link_multi_module_project_with_cross_module_call_exits_with_main_value() {
     Cranelisp::new()
         .link_then_run("main.cl")
-        .file("prelude.cl", "(import [primitives [*]])\n")
+        .file("prelude.cl", "(export [primitives [*]])\n")
         .file(
             "main.cl",
             "(import [helper [add-one]])\n(defn main [] (add-one 41))",

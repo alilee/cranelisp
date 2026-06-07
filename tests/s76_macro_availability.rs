@@ -158,6 +158,10 @@ fn macro_clause_reads_same_module_def_value_rejected_neg() {
 
 // spec: spec/09-macros.md §9.2.5 — a macro clause calling a helper from a
 // DEPENDENCY module at expansion time works (helper typechecked-before).
+// Per §9.2.2 every macro parameter is `Sexp` and per §9.2.3 the body MUST
+// return `Sexp`, so the dependency helper takes/returns `Sexp`: `bump` ignores
+// its `Sexp` arg and returns the literal `(SexpInt 42)`, which is the macro's
+// expansion. `wrap 41` therefore expands to `42`. (FIXME 0267 retype.)
 #[test]
 fn macro_clause_calls_imported_helper_at_expansion_works() {
     Cranelisp::new()
@@ -175,12 +179,58 @@ fn macro_clause_calls_imported_helper_at_expansion_works() {
         )
         .file(
             "helper.cl",
-            "(import [primitives [add-i64]])\n\
-             (defn bump [x] (add-i64 x 1))",
+            "(import [macros [*]])\n\
+             (defn bump [s] (SexpInt 42))",
         )
         .run("main.cl")
         .output()
         .assert_exit(42);
+}
+
+// spec: spec/09-macros.md §9.2.3 — a dependency-module helper called unquoted
+// in a macro clause body MUST satisfy the macro-body contract: parameters are
+// `Sexp` (§9.2.2) and the body returns `Sexp` (§9.2.3). An ill-typed helper
+// with the `Int -> Int` shape (the old fixture) is REJECTED with a type error
+// (the body yields `Int` where `Sexp` is required). This is the deliberate
+// negative companion to the positive case above (FIXME 0267 _neg sibling).
+#[test]
+fn macro_clause_calls_imported_helper_ill_typed_rejected_neg() {
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .file(
+            "main.cl",
+            "(import [mac [wrap]])\n(defn main [] (wrap 41))",
+        )
+        .file(
+            "mac.cl",
+            "(import [helper [bump]])\n\
+             (defmacro wrap [a] (bump a))",
+        )
+        // Ill-typed helper: `Int -> Int`. Calling it unquoted in `wrap`'s body
+        // violates §9.2.2/§9.2.3 (macro params/result are `Sexp`).
+        .file(
+            "helper.cl",
+            "(import [primitives [add-i64]])\n\
+             (defn bump [x] (add-i64 x 1))",
+        )
+        .run("main.cl")
+        .output();
+    assert!(
+        out.status.code() != Some(0) && out.status.code() != Some(42),
+        "an `Int -> Int` helper called unquoted in a macro body MUST be \
+         rejected per §9.2.2/§9.2.3; got exit {:?}. stdout={} stderr={}",
+        out.status.code(),
+        out.stdout,
+        out.stderr,
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.contains("error") || combined.contains("Error"),
+        "expected a type-error diagnostic (Sexp expected) per §9.2.3; \
+         stdout={} stderr={}",
+        out.stdout,
+        out.stderr,
+    );
 }
 
 // =============================================================================

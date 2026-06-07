@@ -8,6 +8,64 @@ refers_to: design/platform/sprint71-redesign.md §9, design/arch/bounded-context
 status: open
 ---
 
+## Progress (S76 W3 second fire, /dev int) — step 1 DONE; steps 2+4 carry on S-PLAT-1
+
+The intrinsics producer landed (`cranelisp_intrinsics::alloc::cranelisp_alloc_with_tag`,
+`crates/cranelisp-intrinsics/src/alloc.rs:252`, `pub extern "C" fn(u32,u32,*const i64)->i64`).
+int wired it.
+
+- **Step 1 (alloc_with_tag wiring) — DONE + unit-verified.** Both `HostCallbacks`
+  construction sites now point at the real intrinsic:
+  - `src/platform.rs` (`load_platform_dll`, JIT path): `alloc_with_tag:
+    cranelisp_intrinsics::alloc::cranelisp_alloc_with_tag`.
+  - `crates/cranelisp-exe-bundle/src/lib.rs` (`cranelisp_init_platform`, `--link`
+    path): same.
+  The **R1 gate is removed** — `CLAdt::<T>::construct(...)` no longer routes to
+  the `null_alloc_with_tag` panic at either site. Verified by two int-side unit
+  tests in `src/platform.rs::tests`
+  (`alloc_with_tag_callback_round_trips_two_field_adt`,
+  `alloc_with_tag_callback_round_trips_zero_field_adt`): build the `HostCallbacks`
+  exactly as `load_platform_dll` does, invoke the `alloc_with_tag` field as a DLL
+  would (via `CLAdt::construct`), and assert the heap layout `CLAdt::read_tag`/
+  `read_field` expect — `[total_size | rc=1 | tag@HEAP_HEADER_SIZE | f0@+8 | ...]`,
+  alloc-base returned. (The intrinsic's own layout is also unit-tested in
+  `alloc.rs::test_alloc_with_tag_{zero,two}_fields`; CLAdt read path in adt.rs
+  T9–T13.)
+- **Step 2 (validate_schema host impl) — BLOCKED on S-PLAT-1, NOT on int.** The
+  blocker is not the intrinsic and not the test fixture — it is that **the host
+  has no channel to obtain the DLL's schema text**. The landed `declare_platform!`
+  macro (`crates/cranelisp-platform/src/lib.rs:1450`+) parses the schema into a
+  DLL-local `DLL_SCHEMA: LazyLock<Schema>` static and **neither invokes
+  `validate_schema` at init nor exposes the literal on `PlatformManifest`** (no
+  `schema_*` field). Without the bytes reaching the host, an int-side
+  `validate_schema` impl (re-parse via `Schema::parse` + cross-check type-names
+  against the typecheck symbol-table) has nothing to validate and cannot be
+  written meaningfully. This is exactly the **S-PLAT-1 seam** flagged in
+  `design/platform/host-wiring-s76.md` §3/§6 — it needs (a) an **/arch ruling**
+  (Option A: add `schema_ptr/_len` to `PlatformManifest` → `ABI_VERSION` 2→3 bump;
+  Option B: have `declare_platform!` invoke `validate_schema` at init with the
+  embedded literal — /design recommends B, no ABI bump) and (b) a **platform-crate
+  macro change** to actually pass/expose the bytes. Both are outside int's court.
+  The §6 note said "A FIXME target: /arch will be filed for the ruling" — **that
+  ruling FIXME has not been filed.** Until S-PLAT-1 resolves, `validate_schema`
+  stays at `null_validate_schema` at both sites (schema typos surface at
+  field-access via `SchemaLookupError`, the documented interim behaviour). The
+  0235 test fixture (`platforms/test-adt/`, `/qa`) is also needed to e2e-verify,
+  but the S-PLAT-1 channel is the hard prerequisite.
+- **Step 3 (replace null pointers) — alloc_with_tag DONE; validate_schema carried**
+  (gated by step 2).
+- **Step 4 (delete null callbacks) — NOT int's; carried.** Per design §4 this is a
+  `/dev (platform)` follow-on, AND both placeholders are **still in use**:
+  `null_validate_schema` is the live `validate_schema` value at both sites (step 2
+  blocked), and `null_alloc_with_tag` remains the `GLOBAL_ALLOC_WITH_TAG` fallback
+  in `cranelisp_platform::get_host_alloc_with_tag`. Nothing to delete until
+  validate_schema is wired.
+
+**Net for this FIXME: step 1 fully resolved + unit-verified; steps 2/4 carry,
+blocked on the S-PLAT-1 schema-text-exposure seam (an /arch ruling + a
+platform-crate macro change — neither int's to author). Kept open.** Companion
+0233 step 3 carries the same S-PLAT-1 block.
+
 # Wire host-side ADT marshaling callbacks
 
 ## Issue

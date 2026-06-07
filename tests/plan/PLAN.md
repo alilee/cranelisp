@@ -1235,7 +1235,8 @@ precedes Pass-2/3 non-macro registration). NEW test file
 | M2 | `tests/s76_macro_availability.rs::macro_defined_before_use_expands` | §9.3.4 | NEW (pos) | `[S76 W-Macro]` | three-pass impl — the always-reliable subset |
 | M3 | `tests/s76_macro_availability.rs::macro_clause_calls_same_module_defn_helper_rejected_neg` | §9.3.4, §9.12, §0.8 | NEW (neg) | `[S76 W-Macro]` | three-pass impl — the `stdlib/defs.cl` real-world instance; a REJECTED PROGRAM with a clear diagnostic, NOT a defect. INVERTS retired `spec_09_macros.rs::macro_body_drives_three_level_call_graph` |
 | M4 | `tests/s76_macro_availability.rs::macro_clause_reads_same_module_def_value_rejected_neg` | §9.3.4 | NEW (neg) | `[S76 W-Macro]` | three-pass impl — `def`/`const` value-read variant of M3 |
-| M5 | `tests/s76_macro_availability.rs::macro_clause_calls_imported_helper_at_expansion_works` | §9.2.5 | NEW (pos) | `[S76 W-Macro]` | three-pass impl + just-in-time dependency compile — the correct authoring pattern M3 directs toward |
+| M5 | `tests/s76_macro_availability.rs::macro_clause_calls_imported_helper_at_expansion_works` | §9.2.5 | NEW (pos) | `[Tested tests/s76_macro_availability.rs::macro_clause_calls_imported_helper_at_expansion_works]` | capability GREEN. S76 W3 (/qa, FIXME 0267): fixture retyped to the §9.2.2/§9.2.3 `Sexp -> Sexp` shape (`(defn bump [s] (SexpInt 42))`); just-in-time dependency compile + scheduler dep-order supply the typechecked-before guarantee. Was red on an ill-typed `Int -> Int` fixture, not the capability. |
+| M5b | `tests/s76_macro_availability.rs::macro_clause_calls_imported_helper_ill_typed_rejected_neg` | §9.2.2, §9.2.3 | NEW (neg) | `[Tested tests/s76_macro_availability.rs::macro_clause_calls_imported_helper_ill_typed_rejected_neg]` | S76 W3 (/qa, FIXME 0267 _neg sibling): an `Int -> Int` helper called unquoted in a macro body is REJECTED with the §9.2.3 Sexp-expected type error. Upgrades M5 coverage to `+Neg`. |
 | M6 | `tests/s76_macro_availability.rs::fq_macro_reference_expands_without_import` | §9.3.6, §8.5.4 | NEW (pos) | `[S76 W-Macro]` | Pass-1 FQ-macro lazy-load (FIXME 0007 folded in) |
 | M7 | `tests/s76_macro_availability.rs::macro_generates_toplevel_defn` | §9.12 | NEW (pos) | `[S76 W-Macro]` | structural-form re-entry (typecheck re-classifies into same staging frame) |
 | M8 | `tests/s76_macro_availability.rs::macro_generates_defmacro_available_to_later_use` | §9.12 | NEW (pos) | `[S76 W-Macro]` | recursive Pass-1 expand-to-fixpoint (macro-generated defmacro) |
@@ -1278,16 +1279,33 @@ compiles and runs"; keep it minimal so the CLIF is inspectable by eye if it fail
 | # | Surface | Gated files | FIXME | Status | Resolves at |
 |---|---|---|---|---|---|
 | I1 | `--link` GOT-alignment | `tests/link.rs` (incl. the 0122 case) | 0122 | `[S76 W-Integrate]` | re-test once workspace builds; backend fixes in-sprint — failing-not-ignored repro is the durable record either way |
-| I2 | Platform host-wiring round-trip | `tests/spec_platforms.rs`, `tests/platform_errors.rs`, `tests/spec_08_modules.rs` platform paths | 0229–0235 | `[S76 W-Integrate]` | platform wave AFTER int cascade defines host surface; 0235 = round-trip DLL declare→load→call→marshal (`/qa`-authored) |
-| I3 | Conformance triad | `tests/facade_pif_rows.rs` + platform fixtures | 0224–0228 | `[S76 W-Integrate]` | lands with the platform host-wiring wave so `spec_platforms.rs` is fully covered |
+| I2 | Platform host-wiring round-trip | `tests/spec_platforms.rs`, `tests/platform_errors.rs`, `tests/spec_08_modules.rs` platform paths | 0229–0235 | `[S76 W3 — BLOCKED, no test authored]` | 0235 round-trip STILL blocked (NOT just on 0282): `/qa` probe (S76 W3) confirmed a CLAdt-typed platform fn sig `(Fn [Rectangle] Int)` fails at load with `unknown type 'Rectangle'` — `register_platform_in_tc` does not register schema-declared ADT type defs (open half of 0231/0233). `alloc_with_tag` (construction) landed but is necessary-not-sufficient. Item 4 (mismatch) additionally blocked on 0282. See 0235 progress note. |
+| I3 | Conformance triad | `tests/facade_pif_rows.rs` + `crates/cranelisp-platform/tests/macro_full_arm_compile.rs` | 0224–0228 | `[Tested S76 W3]` ✓ | LANDED. 0224 `platform_clheap_inc_dec_rc_take_ref_self`, 0225 `platform_non_exhaustive_present_on_owned_descriptor_only`, 0227 `platform_repr_c_field_order_frozen`, 0228 `platform_send_sync_claims_match_invariants` (all in `facade_pif_rows.rs`, mechanical checks over `cranelisp-platform/public-api.txt`); 0226 `macro_full_arm_compile.rs::full_arm_invocation_compiles_and_emits_marker_types` (all-arms `declare_platform!` compile witness). FIXMEs 0224–0228 deleted. |
 | I4 | Mode-equivalence | all language-behaviour suites via `run_through_all_modes` | — | REG | `[S76 W-Integrate]` | REPL ≡ `--run` ≡ `--link` for every language semantics test (Principle 11 guard, see W-Absorb below) |
 
-**0235 round-trip DLL integration (`/qa` deliverable).** The platform wave's
-witness is a round-trip: a Cranelisp program declares `(platform <name>)`, the
-host `dlopen`s the DLL, a Cranelisp call marshals args host→DLL, the DLL returns,
-the result marshals DLL→host. Lands in `tests/spec_platforms.rs` (extend) using
-`Cranelisp::use_workspace_platforms()` + the `test-capture` / `stdio` differential
-already established in that file. Authored when 0229–0234 define the host surface.
+**0235 round-trip DLL integration (`/qa` deliverable) — BLOCKED (S76 W3).** The
+platform wave's witness is a round-trip: a Cranelisp program declares `(platform
+<name>)`, the host `dlopen`s the DLL, a Cranelisp call marshals args host→DLL, the
+DLL returns, the result marshals DLL→host. `/qa` attempted the unblocked half in
+S76 W3 and found the **whole** round-trip still blocked. A throwaway `test-adt`
+cdylib (built against workspace `cranelisp-platform`, `schema:` +
+`schema_types: [Rectangle]`, `rectangle_area` reading `w`/`h`) loaded via
+`CRANELISP_PLATFORM_PATH` + `--run` fails at platform-sig typecheck:
+`type error in platform function 'rectangle-area' signature '(Fn [Rectangle]
+Int)': unknown type 'Rectangle'`. Root cause: `src/platform.rs::register_platform_in_tc`
+registers only function descriptors + a primitives glob into `platform.<name>`;
+it does NOT consume the DLL `GetSchema`/`DLL_SCHEMA` to register the schema's ADT
+type defs (the open half of FIXME 0231/0233 step 2; the rustdoc at
+`src/platform.rs:355–357` names it a future seam). So a CLAdt-typed platform fn
+cannot typecheck → no round-trip is expressible from cranelisp source. `alloc_with_tag`
+(host construction) landed (0229 step 1) but is necessary-not-sufficient. Item 4
+(schema-typo → `validate_schema` rejection) is additionally blocked on the
+S-PLAT-1 schema-text-exposure seam (FIXME 0282, `/arch` ruling pending). NO test
+authored — a `tests/spec_platforms_adt.rs` round-trip would fail upstream at sig
+typecheck (not the round-trip under test), and the `platforms/test-adt/` DLL is
+`/platform`'s artefact. 0235 kept open with a precise progress note. Will land in
+`tests/spec_platforms.rs` (extend) using `Cranelisp::use_workspace_platforms()`
+once the schema-type-registration seam lands.
 
 ### W-Absorb / W-Collapse — regression guard (the dual-pipeline defect, Principle 11)
 
@@ -1327,6 +1345,65 @@ two `Code::Primitive` sentinels.** Resolution: `/sprint` confirms which two
 sentinels are meant; if it is G1/G2, the backend deletion must be in scope or the
 re-enable cannot pass. Filed here as a scope-arbitration item, not silently
 assumed.
+
+### W3 trace + lenient + 0279 reduction (FIXMEs 0258 / 0272 / 0276 / 0279 — /qa, 2026-06-07)
+
+New active trace e2e home: `tests/trace.rs` (supersedes quarantined
+`tests/legacy/ring4_trace.rs`; the 4 trace cases formerly in
+`tests/spec_12_runtime.rs` are reconciled — `trace_returns_trace_value`
+rewritten to match-based extraction, the stale `trace_nested_still_returns_trace`
+"outermost wins" test RETIRED).
+
+**FIXME 0258 — trace integration tests (`tests/trace.rs`).**
+
+| # | Test | Spec | Status | Resolves at |
+|---|---|---|---|---|
+| T1 | `trace.rs::trace_nested_dynamic_raises_runtime_error` | §4.12.5 | `[Tested tests/trace.rs::trace_nested_dynamic_raises_runtime_error]` | GREEN — Wave-1.5 guard handles the dynamic case |
+| T2 | `trace.rs::trace_nested_lexical_raises_runtime_error` | §4.12.5 | `[S77]` FAILING | FIXME(/dev intrinsics) — guard misses pure-lexical `(trace (trace e))` (no wrapper fires before inner swap_got ⇒ flag still false ⇒ empty trace, not error) |
+| T3 | `trace.rs::trace_panic_unwind_does_not_stick_guard` | §4.12.5 (NOTE-2) | `[Tested tests/trace.rs::trace_panic_unwind_does_not_stick_guard]` | GREEN — NOTE-2 worry does NOT reproduce in REPL (per-form panic recovery resets the flag); positive guard |
+| T4 | `trace.rs::trace_linked_binary_match_consumption_runs` | §4.12.9 | `[Tested tests/trace.rs::trace_linked_binary_match_consumption_runs]` | GREEN — **FLIPPED (FIXME 0286)**: now asserts WITH extern-primitive children (0280 primitives-GOT static-backing landed; primitives group swapped in object mode). Traced `work` calls `str-concat`+`str-len`; the `user/work` node has 2 extern-primitive children; linked binary exits 42. (Was: WITHOUT children, 0280 interim disposition.) |
+| T5 | `trace.rs::trace_extern_primitive_appears_as_child` | §4.12.3 | `[Tested tests/trace.rs::trace_extern_primitive_appears_as_child]` | GREEN — swap-all surfaces `primitives/str-concat` (REPL) |
+| T6 | `trace.rs::trace_stdlib_fixture_fn_appears_as_child` | §4.12.3 | `[Tested tests/trace.rs::trace_stdlib_fixture_fn_appears_as_child]` | GREEN — prelude `helper` appears as a tree node |
+| T7 | `trace.rs::trace_neg_inline_arithmetic_not_traced` (neg) | §4.12.3 | `[Tested+Neg]` | GREEN — inline `add-i64` produces no node |
+| T8 | `trace.rs::trace_neg_anonymous_lambda_not_traced` (neg) | §4.12.3 | `[Tested+Neg]` | GREEN — anonymous `fn` lambda produces no named node |
+| T9 | `trace.rs::trace_polymorphic_adt_result_renders` (NOTE-1) | §4.12.3 | `[S77]` FAILING | FIXME(/dev backend) — tracing a fn returning `(Option Int)` overflows the ADT DisplayDescriptor formatter (production bake_adt round-trip is a CRASH, not just unverified) |
+| T10 | `trace.rs::trace_adt_value_render_overflows_defect` | §4.12.3 | `[S77]` FAILING | FIXME(/dev backend) — nullary-ADT (`None`) render overflow; the 1-ctor reduction of T9 |
+| T11 | `trace.rs::trace_trait_heavy_prelude_overflows_defect` | §4.12.3 | `[S77]` FAILING | FIXME(/dev backend) — trace swap-all over a trait-heavy prelude (TestStandard) stack-overflows on a `nice-worker` thread; Num+Eq+Ord alone does not, full prelude does (open bisection) |
+
+**FIXME 0276 — link-mode synthetic accessor (`tests/trace.rs`).**
+
+| # | Test | Spec | Status | Resolves at |
+|---|---|---|---|---|
+| A1 | `trace.rs::trace_nanos_accessor_resolves_in_repl` | §4.12.4 | `[S77]` FAILING | FIXME(/dev int) — bootstrap-synthesised accessor Defs (`nanos`/`name`) do NOT resolve even in JIT/REPL ("can't resolve symbol"); broader than --link |
+| A2 | `trace.rs::trace_linked_accessor_consumption_parks_defect` | §4.12.9 | `[S77]` FAILING | FIXME(/dev int) — `--link` accessor consumption PARKS (15s-bounded → Timeout); defect 1 (synthetic-Def emission) + defect 2 (worker-panic→park robustness). Trace-free isolation variant: NOT authored — trace accessors are the only reachable synthetic-AST Defs without a working cross-module path (the 0279 overflow blocks other candidates); noted, skipped |
+
+Mode note (FIXME 0280 RESOLVED / FIXME 0286): linked-binary tests now assert
+WITH extern-primitive children. The 0280 primitives-GOT static-backing fix landed
+(S76 W3); the primitives group is swapped in object mode, so `--link` trace trees
+include extern primitives exactly as REPL/`--run` do (T5). The 0280 interim
+WITHOUT-children disposition is retired. FIXME 0286 deleted.
+
+**FIXME 0286 — extern-primitive `--link` e2e + linked-tree flip (`tests/link.rs` + `tests/trace.rs`, /qa S76 W3).**
+
+| # | Test | Spec | Status | Note |
+|---|---|---|---|---|
+| LP1 | `link.rs::link_extern_primitive_str_ops_exits_with_computed_length` | appendix-A §A.3 | `[Tested]` ✓ | `(str-len (str-concat "ab" "cd"))` links + exits 4. Regression guard for the 0280 latent hole (link.rs had ZERO extern-primitive coverage). |
+| LP2 | `link.rs::link_extern_primitive_str_len_of_literal_exits_with_length` | appendix-A §A.3 | `[Tested]` ✓ | `(str-len "hello")` links + exits 5; second extern-primitive `--link` shape. |
+| LP3 | `link.rs::link_traced_extern_primitives_appear_as_children_exit_42` | §4.12.9 | `[Tested]` ✓ | traced `(greet "bob")` in `--link`; greet's 2 children (`str-concat`+`str-len`) prove extern primitives appear in linked trace trees; exits 42. Link-mode mirror of T5. |
+| (flip) | `trace.rs::trace_linked_binary_match_consumption_runs` (T4) | §4.12.9 | `[Tested]` ✓ | linked-tree expectation flipped to WITH extern-primitive children — see T4. |
+
+**FIXME 0272 Half A — lenient panic-swallow (`tests/spec_12_runtime.rs`).**
+
+| # | Test | Spec | Status | Resolves at |
+|---|---|---|---|---|
+| L1 | `spec_12_runtime.rs::lenient_binding_panic_not_swallowed_neg` (neg) | §12.4.3 | `[S77]` FAILING | FIXME(/dev intrinsics) — fork-join error-slot ferry obligation (FIXME 0270); a div-by-zero in a lenient `let` binding yields sentinel `:primitives/Int 0` instead of panicking |
+| L2 | `spec_12_runtime.rs::lenient_binding_panic_surfaces_with_no_lenient_control` | §12.4.3 | `[Tested]` | GREEN control — `CRANELISP_NO_LENIENT=1` DOES panic, proving the spark path is the trigger. Par/IO variant deferred (needs IO infra; cost-heuristic spark via `--run` with print) |
+
+**FIXME 0279 — io.monad overflow reduction (`tests/regression.rs`).**
+
+| # | Test | Spec | Status | Resolves at |
+|---|---|---|---|---|
+| R1 | `regression.rs::regression_0279_cross_module_polymorphic_import_monomorphisation` | spec/08-modules.md §8.3 | `[S77]` FAILING | FIXME(/typecheck) — reduced from io.monad to a 2-file/3-line repro: importing a polymorphic `(Fn [a] a)` fn cross-module and calling it overflows `cranelisp_types::types::apply` (types.rs:230) via a cyclic/occurs-violating Subst composed at cross-module scheme instantiation. NOT macro/`pure`/`Pure`-specific; the cross-module import of a polymorphic scheme is load-bearing. Likely also the root of the `d6_exemplar_*`/`wave6_*` exemplar overflow cluster |
 
 ### W-e2e→unit directive (the user's PRIMARY directive — frame for actionability)
 

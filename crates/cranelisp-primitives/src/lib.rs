@@ -96,9 +96,52 @@
 //! Rust baseline.
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicPtr;
 use std::sync::{Arc, LazyLock};
 
-use cranelisp_types::{DefKind, ModuleEntry, ModuleFullPath, Scheme, SymbolTable};
+use cranelisp_types::{
+    DefKind, GOT_TABLE_SIZE, GotTable, ModuleEntry, ModuleFullPath, Scheme, SymbolTable,
+};
+
+/// The writable static slab backing the synthetic `primitives` module's GOT,
+/// exported under the canonical link-time symbol `__cranelisp_got_primitives`.
+///
+/// Per FIXME 0280 (Decision 0048): every extern-primitive call site emits
+/// GOT-indirect dispatch against `__cranelisp_got_primitives` in ALL modes
+/// (`apply.rs`). User/stdlib modules' GOTs are link-time data symbols in object
+/// mode (`define_module_got_data`); the primitives GOT must be one too, or
+/// `--link` binaries fail at `ld` ("symbol not found: ___cranelisp_got_primitives").
+/// A heap allocation (the pre-0280 `GotTable::new()` path) can never be a link
+/// symbol, so this slab is a process-static array exported under the name and
+/// the `PRIMITIVES_TABLE` `GotTable` is constructed OVER it via
+/// [`GotTable::with_static_backing`] — ONE GOT serving JIT, cache-restore, and
+/// `--link` (BC §3 invariant 3, single-source-of-truth).
+///
+/// # Safety story
+///
+/// - **Interior mutability without `mut`**: `AtomicPtr<u8>` provides interior
+///   mutability, so the slab is a plain `static` (NOT `static mut`) — slot
+///   writes go through `GotTable::store_slot` (atomic `Release` stores). No
+///   `unsafe` is needed to mutate it.
+/// - **Writable section**: a `static` of interior-mutable cells lands in the
+///   writable `__DATA` segment (NOT `__DATA_CONST`). The `(trace …)` GOT
+///   copy-swap (`cranelisp_trace_swap_got`) `memcpy`s the debug GOT INTO this
+///   base — a store that requires writability (same constraint as
+///   `define_module_got_data`'s Bug-B note). A `const` or read-only static
+///   would segfault there.
+/// - **Alignment 8**: `AtomicPtr<u8>` is pointer-sized and pointer-aligned, so
+///   the array is naturally 8-aligned on 64-bit targets — matching the
+///   `desc.set_align(8)` the object-mode GOT atoms use.
+/// - **`'static` + single backing**: the slab is process-static and exactly one
+///   `GotTable` is built over it (inside `PRIMITIVES_TABLE`'s `LazyLock`),
+///   satisfying `with_static_backing`'s contract.
+///
+/// The `cranelisp_init_primitives()` startup hook (`cranelisp-exe-bundle`)
+/// forces `PRIMITIVES_TABLE`'s `LazyLock` before user code runs, populating the
+/// slab's slots with the harvested extern fn addresses.
+#[unsafe(export_name = "__cranelisp_got_primitives")]
+pub static PRIMITIVES_GOT_SLAB: [AtomicPtr<u8>; GOT_TABLE_SIZE] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; GOT_TABLE_SIZE];
 
 pub mod bool;
 pub mod float;
@@ -125,7 +168,8 @@ use operator::{PrimitiveDef, ring0_primitives, ring1_primitives, ring3_primitive
 ///
 /// Population at static-init time: one `ModuleEntry::Def` per primitive in
 /// the union of `ring0_primitives()` + `ring1_primitives()` +
-/// `ring3_primitives()` + the static `vec-len` row. Each entry's `kind`
+/// `ring3_primitives()` + the four static Vec-query rows (`vec-get`,
+/// `vec-set`, `vec-push`, `vec-len`). Each entry's `kind`
 /// is the payload-free `DefKind::Primitive` unit variant (S69 Submission 36 —
 /// the JIT linker name IS the symbol-table key, no `jit_name` field, no
 /// `primitive_kind` sub-discriminator); `got_slot: Some(N)` indexes the GOT.
@@ -143,6 +187,14 @@ pub static PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<(), ()>>> =
 /// from the `LazyLock` initialiser.
 fn build_primitives_table() -> SymbolTable<(), ()> {
     let mut table = SymbolTable::<(), ()>::new_with_params(ModuleFullPath::from("primitives"));
+
+    // Replace the default heap GOT (from `new_with_params`) with one
+    // constructed over the exported static slab `__cranelisp_got_primitives`
+    // (FIXME 0280). This makes the primitives GOT base a link-time symbol, so
+    // `--link`-mode extern-primitive dispatch resolves at `ld` time. The slab
+    // is process-static; exactly one `GotTable` is built over it here.
+    table.got = Arc::new(GotTable::with_static_backing(&PRIMITIVES_GOT_SLAB));
+
     let shims = extern_shims();
 
     // Union the three primitive registries from `cranelisp-types`.
@@ -155,10 +207,11 @@ fn build_primitives_table() -> SymbolTable<(), ()> {
         insert_primitive_entry(&mut table, prim, &shims);
     }
 
-    // `vec-len` is not in any of the three registry fns (it's a vec query
-    // primitive — the Vec query family lives outside the ring tables). Insert
-    // it with a hand-built scheme matching the source signature.
-    insert_vec_len_entry(&mut table, &shims);
+    // The Vec query family (`vec-get`/`vec-set`/`vec-push`/`vec-len`) is not
+    // in any of the three registry fns — these primitives live outside the
+    // ring tables. Insert them with hand-built polymorphic schemes matching
+    // the appendix-A source signatures.
+    insert_vec_query_entries(&mut table, &shims);
 
     table
 }
@@ -190,32 +243,89 @@ fn insert_primitive_entry(
     );
 }
 
-/// Insert the `vec-len` entry. Not in `ring{0,1,3}_primitives()` — the Vec
-/// query family lives outside the ring tables.
-fn insert_vec_len_entry(
+/// Insert the Vec query family — `vec-get`, `vec-set`, `vec-push`, `vec-len`.
+///
+/// None of these are in `ring{0,1,3}_primitives()`; the Vec query family lives
+/// outside the ring tables. Each carries the **polymorphic** appendix-A scheme
+/// (`spec/appendix-a-builtins.md` §A.3) over a single quantified element type
+/// var `a`, NOT a boundary-erased monomorphic scheme: the user-source argument
+/// is an actual `(Vec a)` value, so the resolved type must unify with one (an
+/// erased `(Fn [Int] …)` scheme fails to unify against a `(Vec Int)` argument
+/// at the call site).
+///
+/// The backend compiles applications of all four inline (`compile_vec_get`,
+/// `compile_vec_set`, `compile_vec_push`, `compile_vec_len` in
+/// `cranelisp-backend::compiler::vec_codegen`) keyed by the primitive name, so
+/// the GOT slot is only ever consulted for `vec-len` (the one op carrying an
+/// `extern "C"` fallback shim, [`vec::vec_len`]); `vec-get`/`vec-set`/`vec-push`
+/// have no extern body and their GOT slots stay null — name resolution is the
+/// sole gap these entries close.
+///
+/// The quantified-var `TypeId` value is arbitrary: `instantiate` remaps every
+/// scheme's `type_vars` to fresh ids on use, so the constant `0` here cannot
+/// collide with any other scheme's vars.
+fn insert_vec_query_entries(
     table: &mut SymbolTable<(), ()>,
     shims: &HashMap<&'static str, *const u8>,
 ) {
-    use cranelisp_types::{Symbol, Type};
-    let slot = table.allocate_got_slot();
-    if let Some(ptr) = shims.get("vec-len") {
-        table.got.store_slot(slot, *ptr);
-    }
-    // `vec-len :: (Fn [Int] Int)` at the boundary scheme. The user-source
-    // type is `(Fn [(Vec a)] Int)`; the primitive-table boundary erases
-    // the Vec to its i64 base-ptr ABI per Decision 11.
-    let scheme = Scheme {
-        type_vars: Vec::new(),
-        constraints: HashMap::new(),
-        ty: Type::Fn(vec![Type::Int], Box::new(Type::Int)),
+    use cranelisp_types::{ModuleFullPath, Symbol, Type, TypeName};
+
+    // The single quantified element-type var `a`, shared by all four schemes.
+    const A: cranelisp_types::TypeId = 0;
+    let vec_a = || {
+        Type::adt(
+            ModuleFullPath::from("primitives"),
+            TypeName::from("Vec"),
+            vec![Type::Var(A)],
+        )
     };
-    table.insert(
-        Symbol::from("vec-len"),
-        ModuleEntry::def(scheme, DefKind::Primitive)
-            .param_names(vec![Symbol::from("v")])
-            .got_slot(slot)
-            .build(),
-    );
+
+    // (name, scheme-ty, param_names). Polymorphic over `a` (§A.3).
+    let entries: Vec<(&str, Type, Vec<Symbol>)> = vec![
+        // vec-get :: forall a. (Fn [(Vec a) Int] a)
+        (
+            "vec-get",
+            Type::Fn(vec![vec_a(), Type::Int], Box::new(Type::Var(A))),
+            vec![Symbol::from("v"), Symbol::from("idx")],
+        ),
+        // vec-set :: forall a. (Fn [(Vec a) Int a] (Vec a))
+        (
+            "vec-set",
+            Type::Fn(vec![vec_a(), Type::Int, Type::Var(A)], Box::new(vec_a())),
+            vec![Symbol::from("v"), Symbol::from("idx"), Symbol::from("val")],
+        ),
+        // vec-push :: forall a. (Fn [(Vec a) a] (Vec a))
+        (
+            "vec-push",
+            Type::Fn(vec![vec_a(), Type::Var(A)], Box::new(vec_a())),
+            vec![Symbol::from("v"), Symbol::from("val")],
+        ),
+        // vec-len :: forall a. (Fn [(Vec a)] Int)
+        (
+            "vec-len",
+            Type::Fn(vec![vec_a()], Box::new(Type::Int)),
+            vec![Symbol::from("v")],
+        ),
+    ];
+
+    for (name, ty, param_names) in entries {
+        let slot = table.allocate_got_slot();
+        if let Some(ptr) = shims.get(name) {
+            table.got.store_slot(slot, *ptr);
+        }
+        let scheme = Scheme {
+            type_vars: vec![A],
+            constraints: HashMap::new(),
+            ty,
+        };
+        table.insert(
+            Symbol::from(name),
+            ModuleEntry::def(scheme, DefKind::Primitive)
+                .param_names(param_names)
+                .got_slot(slot)
+                .build(),
+        );
+    }
 }
 
 /// Harvest of every `#[unsafe(export_name = "…")] pub(crate) extern "C" fn`
@@ -326,13 +436,21 @@ mod tests {
     }
 
     #[test]
-    fn primitives_table_contains_vec_len() {
-        assert!(PRIMITIVES_TABLE.get("vec-len").is_some());
+    fn primitives_table_contains_vec_query_family() {
+        // All four Vec-query primitives must resolve by name (FIXME 0277 — the
+        // production prelude's stdlib/collections/vec.cl uses vec-get/vec-set/
+        // vec-push/vec-len; only vec-len was previously present).
+        for name in ["vec-get", "vec-set", "vec-push", "vec-len"] {
+            assert!(
+                PRIMITIVES_TABLE.get(name).is_some(),
+                "missing Vec-query primitive {name}"
+            );
+        }
     }
 
     #[test]
     fn primitives_table_is_non_empty_with_expected_minimum() {
-        // ring0 (20) + ring1 (~17) + ring3 (1) + vec-len (1) = ~39.
+        // ring0 (20) + ring1 (~17) + ring3 (1) + vec-query (4) = ~42.
         // Hold the floor at 30 to absorb small registry churn without
         // requiring this test to track an exact count.
         assert!(
@@ -458,14 +576,42 @@ mod tests {
     }
 
     #[test]
-    fn content_harness_vec_len_row() {
-        use cranelisp_types::Type;
-        // `vec-len` is not in any ring builder — explicit row. Boundary scheme
-        // is `(Fn [Int] Int)` (Vec erased to its i64 base-ptr ABI, Decision 11),
-        // NOT the user-source `(Fn [(Vec a)] Int)`.
+    fn content_harness_vec_query_rows() {
+        use cranelisp_types::{ModuleFullPath, Type, TypeName};
+        // The Vec-query family is not in any ring builder — explicit rows.
+        // Each carries the POLYMORPHIC appendix-A §A.3 scheme over a single
+        // quantified element var `a` (TypeId 0 here; remapped on instantiate).
+        // A boundary-erased monomorphic scheme (`(Fn [Int] …)`) fails to unify
+        // against a `(Vec a)` argument at the call site — see FIXME 0277.
+        let vec_a = || {
+            Type::adt(
+                ModuleFullPath::from("primitives"),
+                TypeName::from("Vec"),
+                vec![Type::Var(0)],
+            )
+        };
+        // vec-get :: forall a. (Fn [(Vec a) Int] a)
+        assert_content_row(
+            "vec-get",
+            &Type::Fn(vec![vec_a(), Type::Int], Box::new(Type::Var(0))),
+            &["v", "idx"],
+        );
+        // vec-set :: forall a. (Fn [(Vec a) Int a] (Vec a))
+        assert_content_row(
+            "vec-set",
+            &Type::Fn(vec![vec_a(), Type::Int, Type::Var(0)], Box::new(vec_a())),
+            &["v", "idx", "val"],
+        );
+        // vec-push :: forall a. (Fn [(Vec a) a] (Vec a))
+        assert_content_row(
+            "vec-push",
+            &Type::Fn(vec![vec_a(), Type::Var(0)], Box::new(vec_a())),
+            &["v", "val"],
+        );
+        // vec-len :: forall a. (Fn [(Vec a)] Int)
         assert_content_row(
             "vec-len",
-            &Type::Fn(vec![Type::Int], Box::new(Type::Int)),
+            &Type::Fn(vec![vec_a()], Box::new(Type::Int)),
             &["v"],
         );
     }
@@ -572,6 +718,52 @@ mod tests {
         assert_eq!(call_i64("not", 1), 0, "(not true) = false");
         assert_eq!(call_i64_i64("eq-bool", 1, 1), 1);
         assert_eq!(call_i64_i64("eq-bool", 1, 0), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Static-backing harness (FIXME 0280) — the primitives GOT is constructed
+    // over the exported `__cranelisp_got_primitives` static slab, not a heap
+    // allocation, so it is addressable as a link-time symbol in `--link` mode.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn primitives_got_base_is_the_exported_static_slab() {
+        // The table's GOT base_ptr() must point AT the exported static slab.
+        // This is the invariant that makes `__cranelisp_got_primitives` a valid
+        // link-time symbol: the symbol's address (the slab) is the same address
+        // backend-emitted GOT-indirect dispatch reads at runtime.
+        let slab_addr = PRIMITIVES_GOT_SLAB.as_ptr() as *const u8;
+        assert_eq!(
+            PRIMITIVES_TABLE.got.base_ptr(),
+            slab_addr,
+            "primitives GOT must be backed by the exported static slab"
+        );
+    }
+
+    #[test]
+    fn static_slab_slots_populated_after_force() {
+        // Forcing the LazyLock populates the slab's slots with the harvested
+        // extern fn addresses. Read them directly off the static slab (not via
+        // the table API) to prove the writes land in the exported memory that
+        // `--link` binaries address.
+        LazyLock::force(&PRIMITIVES_TABLE);
+        let entry = PRIMITIVES_TABLE
+            .get("add-i64")
+            .expect("add-i64 must be present");
+        let ModuleEntry::Def { got_slot: Some(slot), .. } = entry else {
+            panic!("add-i64 must be a Def with got_slot");
+        };
+        let via_slab =
+            PRIMITIVES_GOT_SLAB[*slot].load(std::sync::atomic::Ordering::Acquire) as *const u8;
+        assert!(
+            !via_slab.is_null(),
+            "static slab slot {slot} for add-i64 must hold the extern fn ptr after force"
+        );
+        assert_eq!(
+            via_slab,
+            ring0::add_i64 as *const u8,
+            "static slab slot must hold add-i64's address"
+        );
     }
 
     #[test]

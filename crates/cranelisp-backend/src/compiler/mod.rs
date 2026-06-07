@@ -321,15 +321,18 @@ where
 pub(crate) struct TracedFnInfo {
     /// Fully-qualified function name (e.g., "user/fact").
     pub name: String,
-    /// GOT base pointer for the module containing this function.
-    pub got_base: i64,
-    /// GOT slot index for this function.
+    /// Module that defines this function (e.g., "user", "primitives"). The
+    /// grouping key for `compile_trace`, and used to reference the module's GOT
+    /// **data symbol** (`got_data_symbol_name`) via relocation in both JIT and
+    /// object mode — the GOT base is never baked as a compiling-process
+    /// `iconst` (FIXME 0275).
+    pub module_path: cranelisp_types::ModuleFullPath,
+    /// GOT slot index for this function. At runtime the wrapper reaches the
+    /// ORIGINAL implementation by loading `got_base[slot]` BEFORE the swap (into
+    /// a per-group originals buffer); the address is never baked at codegen.
     pub got_slot: usize,
     /// Number of parameters.
     pub arity: usize,
-    /// Code pointer for the ORIGINAL implementation (not the wrapper).
-    /// Embedded as `iconst` in the wrapper so it calls the original, not itself.
-    pub code_ptr: i64,
     /// Static parameter types (from function's type scheme).
     pub param_types: Vec<Type>,
     /// Static return type (from function's type scheme).

@@ -9,10 +9,10 @@
 (import [primitives [*]])
 
 (deftrait Num
-  (+ [self self] self)
-  (- [self self] self)
-  (* [self self] self)
-  (/ [self self] self))
+  (+ [a b] self)
+  (- [a b] self)
+  (* [a b] self)
+  (/ [a b] self))
 
 (impl Num Int
   (defn + [a b] (add-i64 a b))

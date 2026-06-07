@@ -8,6 +8,58 @@ refers_to: design/platform/sprint71-redesign.md §12 (Next skills), src/platform
 status: open
 ---
 
+## Progress (S76 W3, /dev int)
+
+**Step 1 — `parse_type_sig` removal: DONE + verified.** `src/platform.rs`'s
+ad-hoc `parse_platform_type_sig` + `sexp_to_type` + `parse_fn_type` +
+`parse_io_type` family (and the bespoke `intrinsic_type_from_name`-based leaf
+resolution) is deleted. `register_platform_in_tc` now calls
+`parse_and_check_platform_type_sig`, which routes each `PlatformFn.type_sig`
+through `cranelisp_frontend::parse_type_expr` (FIXME 0230, landed) +
+`cranelisp_typecheck::check_type_expr` (FIXME 0231, landed). Leaf names resolve
+through the normal symbol-table view: `register_platform_in_tc` injects
+`(import [primitives [*]])` into the synthetic `platform.<name>` module
+(`inject_primitives_import_for_platform`) so `Int`/`String`/`IO`/etc. are
+reachable, exactly like a user module (spec §8.8.1). `module_aliases` is now
+threaded through `load_and_register_platform` → `register_platform_in_tc`.
+Verified: `src/platform.rs::tests::test_register_platform_in_tc` (constructs a
+primitives-seeded table, loads stdio, asserts `print: (Fn [String] (IO …))`
+resolves) PASSES; `tests/spec_platforms.rs::{platform_form_with_stdio_compiles_in_run_mode,
+io_trampoline_executes_print_to_stdout}` stay green. The two ad-hoc-parser unit
+tests (`test_parse_fn_type_sig`, `test_parse_zero_param_type_sig`) were deleted
+(they tested deleted code; coverage now lives in frontend/typecheck unit tests +
+the stdio e2e path).
+
+**Step 2 — platform-as-module: already in place.** `register_platform_in_tc`
+already registers each fn as a `ModuleEntry::Def { kind: PlatformEffect }` in a
+synthetic `platform.<name>` module with a per-fn GOT slot (worker
+`handle_platform` allocates the slot + stores the descriptor ptr; the DLL is
+retained on `SharedState.kept_dlls`). No change needed this sprint.
+
+**Step 3 — schema validation: BLOCKED on S-PLAT-1 (NOT on 0229 anymore).**
+Update (S76 W3 second fire): 0229's `alloc_with_tag` wiring is now DONE (the
+intrinsic landed and int wired it at both sites, R1 gate removed — see 0229's
+progress note). But `validate_schema` is **not** unblocked by that: the real
+blocker is the **S-PLAT-1 schema-text-exposure seam**
+(`design/platform/host-wiring-s76.md` §3/§6). The landed `declare_platform!`
+macro parses the schema into a DLL-local `LazyLock<Schema>` static and neither
+invokes `validate_schema` at init nor exposes the literal on `PlatformManifest`
+— so the host never receives the schema bytes. An int-side `validate_schema`
+impl (re-parse via `Schema::parse`, cross-check declared type-names against the
+typecheck symbol-table) has nothing to validate until that channel exists.
+S-PLAT-1 needs an **/arch ruling** (Option A ABI-bump manifest field vs Option B
+macro invokes the callback; /design recommends B) **+ a platform-crate macro
+change** — both outside int's court; the §6-promised `target: /arch` ruling
+FIXME has not been filed. No schema-bearing DLL fixture exists yet
+(`platforms/test-adt/`, FIXME 0235, `/qa`) for e2e verification regardless.
+Carry to the sprint that resolves S-PLAT-1.
+
+**Remaining for full closure:** step 3 only, blocked on S-PLAT-1 (schema-text
+exposure: /arch ruling + platform-crate macro change). The
+`manifest_to_descriptors` retirement-as-int-facing-API note is moot — int
+already consumes it only inside `load_platform_dll`; no separate retirement
+action needed.
+
 # Replace `parse_type_sig` with frontend+typecheck path; register platforms as normal modules
 
 ## Issue

@@ -108,6 +108,29 @@ pub(crate) fn generate_startup_object(
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
+    // Declare `cranelisp_init_primitives` as imported (zero-arg). The startup
+    // stub MUST call this unconditionally before user code runs (FIXME 0280):
+    // it forces `cranelisp_primitives::PRIMITIVES_TABLE`'s `LazyLock`, which
+    // populates the exported `__cranelisp_got_primitives` static slab with the
+    // extern primitives' fn addresses. Without it the slab slots stay null and
+    // the first GOT-indirect extern-primitive dispatch jumps to null (SIGSEGV).
+    // `cranelisp_init_platform` ALSO forces it (so platform programs were
+    // covered), but a no-platform program calling an extern primitive
+    // (`(str-len (str-concat …))`) reaches user code with an unpopulated GOT
+    // unless we call it here directly. `LazyLock::force` is idempotent, so the
+    // redundant call in the platform path is harmless.
+    let init_primitives_sig = obj_module.make_signature();
+    let init_primitives_func_id = obj_module
+        .declare_function(
+            "cranelisp_init_primitives",
+            Linkage::Import,
+            &init_primitives_sig,
+        )
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to declare cranelisp_init_primitives: {e}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
+
     // Declare `cranelisp_init_platform` as imported (if platforms exist)
     let init_func_id = if !platform_manifest_names.is_empty() {
         let mut init_sig = obj_module.make_signature();
@@ -158,6 +181,11 @@ pub(crate) fn generate_startup_object(
         builder.append_block_params_for_function_params(entry_block);
         builder.switch_to_block(entry_block);
         builder.seal_block(entry_block);
+
+        // 0. Populate the primitives GOT slab before anything else (FIXME 0280).
+        let init_primitives_ref =
+            obj_module.declare_func_in_func(init_primitives_func_id, builder.func);
+        builder.ins().call(init_primitives_ref, &[]);
 
         // 1. Initialize platforms before calling main
         if let Some(init_fid) = init_func_id {

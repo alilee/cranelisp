@@ -199,6 +199,87 @@ pub extern "C" fn heap_alloc_payload(payload_size: i64) -> i64 {
     base as i64 + cranelisp_types::HeapHeader::SIZE as i64
 }
 
+/// Allocate a tagged heap ADT and write its variant tag + fields. Returns the
+/// **alloc base pointer** as i64.
+///
+/// This is the wired implementation of `cranelisp_platform::HostCallbacks::
+/// alloc_with_tag` (FIXME 0229 step 1 / `design/platform/host-wiring-s76.md` §2).
+/// `int`'s host wiring writes this fn pointer into both `HostCallbacks`
+/// construction sites (the JIT path and the `--link` path), replacing
+/// `cranelisp_platform::null_alloc_with_tag` and removing the R1 gate. It is a
+/// **Rust-path host-callback provider** — reached by the `cranelisp_intrinsics::
+/// cranelisp_alloc_with_tag` path, NOT a backend-emitted call. It is therefore
+/// deliberately **absent from [`crate::catalog::intrinsics_table`]** (which
+/// catalogs only the string-named, `Linkage::Import`-resolved targets the
+/// backend emits); a plain `extern "C" fn` is the minimum mechanism (Principle
+/// 6). It is a sibling of [`heap_alloc_payload`], the provider for the
+/// `HostCallbacks::alloc` field.
+///
+/// # Layout produced (the platform↔intrinsics↔int three-way ABI)
+///
+/// Identical to the backend's `ConstrADT` data-constructor emission
+/// (`cranelisp-backend` `HeapAdt`: header | tag@16 | field_0@24 | …) so a host-
+/// constructed ADT value is indistinguishable from a JIT-constructed one:
+///
+/// ```text
+/// total_size = 16 (HeapHeader) + 8 (tag) + 8 * field_count
+/// [total_size: i64][rc: i64 = 1]   ; HeapHeader, written by alloc_with_rc
+/// [tag: u32][pad: u32]             ; payload + 0  (alloc_base + 16)
+/// [field_0: i64][field_1: i64]…    ; payload + 8, +16, …
+/// return: alloc BASE pointer       ; matches CLString / CLAdt::from_raw
+/// ```
+///
+/// The `tag` is the variant discriminant; `field_count` `i64` values are copied
+/// verbatim from `fields_ptr`. The tag is written as a full zeroed 8-byte slot
+/// (u32 tag + 4 bytes pad), which reads back identically to the backend's i64
+/// tag store for the in-range tag values ADT discrimination uses
+/// (little-endian). `alloc_with_rc` zero-initialises the allocation, so the pad
+/// bytes are zero. The data-constructor (non-nullary) layout only — nullary
+/// constructors are bare i64 tags and are never constructed through this path.
+///
+/// # Safety
+///
+/// `fields_ptr` must point to at least `field_count` contiguous `i64` values.
+/// `extern "C"` so it can be stored as a `HostCallbacks` callback fn pointer and
+/// invoked across the platform FFI boundary.
+// The fn must match `cranelisp_platform::HostCallbacks::alloc_with_tag`, which
+// is a *safe* `extern "C" fn(u32, u32, *const i64) -> i64` callback-pointer
+// type. It cannot be `unsafe` without diverging from that ABI signature, so the
+// raw-pointer-deref lint is suppressed with the safety contract stated in the
+// `# Safety` doc section above (caller guarantees `fields_ptr` validity).
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[unsafe(no_mangle)]
+pub extern "C" fn cranelisp_alloc_with_tag(
+    tag: u32,
+    field_count: u32,
+    fields_ptr: *const i64,
+) -> i64 {
+    let field_count = field_count as usize;
+    // Payload = tag slot (8 bytes) + one i64 per field. Mirrors the backend's
+    // `HeapAdt::payload_size(field_count)` (`1 + field_count` i64 slots).
+    let payload_size = (1 + field_count) * std::mem::size_of::<i64>();
+    let base = alloc_with_rc(payload_size);
+
+    // SAFETY: `base` was just allocated with HeapHeader::SIZE + payload_size
+    // bytes (alloc_with_rc never returns null — it calls handle_alloc_error).
+    // The tag goes at the payload start (base + HeapHeader::SIZE); fields follow
+    // at 8-byte strides. The caller guarantees `fields_ptr` addresses
+    // `field_count` i64s.
+    unsafe {
+        let payload = base.add(HeapHeader::SIZE);
+        // Write the 4-byte tag at payload+0; the surrounding 8-byte slot is
+        // already zeroed by alloc_with_rc, so the 4 pad bytes are zero and the
+        // slot reads back as `tag as i64`.
+        *(payload as *mut u32) = tag;
+        let fields = payload.add(std::mem::size_of::<i64>()) as *mut i64;
+        for i in 0..field_count {
+            *fields.add(i) = *fields_ptr.add(i);
+        }
+    }
+
+    base as i64
+}
+
 /// Deallocate a heap object. Reads alloc_size from HeapHeader at base pointer.
 ///
 /// Linker symbol: `runtime/dealloc` (per runtime/* JIT-name convention).
@@ -303,6 +384,79 @@ mod tests {
         assert!(alloc_count() - allocs_before >= 1);
         heap_dealloc(ptr);
         assert!(dealloc_count() - deallocs_before >= 1);
+    }
+
+    // spec: 12-runtime §12.3.1 / design/platform/host-wiring-s76.md §2 —
+    // cranelisp_alloc_with_tag produces the backend ConstrADT heap layout for a
+    // zero-field data constructor: [total_size | rc=1 | tag@16].
+    //
+    // Offsets cross-checked against cranelisp-backend `HeapAdt`: TAG_OFFSET = 16
+    // (HeapHeader::SIZE), FIELDS_START = 24. payload_size(0) = 8 (tag only).
+    #[test]
+    fn test_alloc_with_tag_zero_fields() {
+        let base = cranelisp_alloc_with_tag(3, 0, std::ptr::null());
+        assert_ne!(base, 0);
+        let base = base as *const u8;
+        unsafe {
+            // Header: total_size = 16 (header) + 8 (tag slot).
+            let total_size = *(base as *const i64);
+            assert_eq!(total_size, 24, "header total_size = 16 + 8 (tag)");
+            // RC initialised to 1 by alloc_with_rc.
+            let rc = *(base.add(HeapHeader::RC_OFFSET as usize) as *const i64);
+            assert_eq!(rc, 1);
+            // Tag at payload+0 (base + 16 = HeapAdt::TAG_OFFSET). The u32 tag in
+            // a zeroed 8-byte slot reads back as the i64 the backend stores.
+            let tag_i64 = *(base.add(HeapHeader::SIZE) as *const i64);
+            assert_eq!(tag_i64, 3, "tag at payload+0 reads back as i64");
+        }
+        unsafe { dealloc(base as *mut u8) };
+    }
+
+    // spec: 12-runtime §12.3.1 / design/platform/host-wiring-s76.md §2 —
+    // cranelisp_alloc_with_tag produces the backend ConstrADT layout for a
+    // 2-field data constructor: [total_size | rc=1 | tag@16 | f0@24 | f1@32].
+    //
+    // Mirrors cranelisp-backend `emit_adt_construct` (tag at TAG_OFFSET=16,
+    // fields at field_offset(0)=24, field_offset(1)=32) and the intrinsics-own
+    // trace.rs `alloc_adt` walk (PAYLOAD_OFFSET=16, FIELD0_OFFSET=24).
+    #[test]
+    fn test_alloc_with_tag_two_fields() {
+        let fields: [i64; 2] = [0x1111_2222_3333_4444, -7];
+        let base = cranelisp_alloc_with_tag(1, 2, fields.as_ptr());
+        assert_ne!(base, 0);
+        let base = base as *const u8;
+        unsafe {
+            // Header: total_size = 16 + 8 (tag) + 16 (two fields) = 40.
+            let total_size = *(base as *const i64);
+            assert_eq!(total_size, 40, "header total_size = 16 + 8 + 2*8");
+            let rc = *(base.add(HeapHeader::RC_OFFSET as usize) as *const i64);
+            assert_eq!(rc, 1);
+            // Tag at offset 16 (HeapAdt::TAG_OFFSET).
+            let tag_i64 = *(base.add(16) as *const i64);
+            assert_eq!(tag_i64, 1);
+            // Fields at offsets 24 and 32 (HeapAdt::field_offset(0/1)) — copied
+            // verbatim from fields_ptr.
+            let f0 = *(base.add(24) as *const i64);
+            let f1 = *(base.add(32) as *const i64);
+            assert_eq!(f0, 0x1111_2222_3333_4444);
+            assert_eq!(f1, -7);
+        }
+        unsafe { dealloc(base as *mut u8) };
+    }
+
+    // spec: 12-runtime §12.3.1 — the upper 4 bytes of the tag slot are zero pad
+    // (alloc_with_rc zero-initialises), so a small u32 tag round-trips as i64.
+    #[test]
+    fn test_alloc_with_tag_pad_bytes_zero() {
+        let base = cranelisp_alloc_with_tag(0xABCD, 0, std::ptr::null());
+        let base = base as *const u8;
+        unsafe {
+            let tag_u32 = *(base.add(HeapHeader::SIZE) as *const u32);
+            let pad_u32 = *(base.add(HeapHeader::SIZE + 4) as *const u32);
+            assert_eq!(tag_u32, 0xABCD);
+            assert_eq!(pad_u32, 0, "4 pad bytes after the u32 tag are zero");
+        }
+        unsafe { dealloc(base as *mut u8) };
     }
 
     // spec: 12-runtime §12.3.1 — zero-payload allocation (header only)

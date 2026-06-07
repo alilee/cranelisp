@@ -4130,3 +4130,70 @@
             other => panic!("'add' base should be Def {{ Overloaded, ast: None }}, got {:?}", other),
         }
     }
+
+    // --- §0.8 macro-clause same-module-helper diagnostic (FIXME 0262) ---
+
+    #[test]
+    fn macro_clause_defn_name_is_recognised() {
+        assert!(is_macro_clause_defn_name("__macro_m_clause_0"));
+        assert!(is_macro_clause_defn_name("__macro_make-def-name_clause_3"));
+        // Not a macro-clause shape: ordinary user defns, REPL exprs, trait impls.
+        assert!(!is_macro_clause_defn_name("helper"));
+        assert!(!is_macro_clause_defn_name("__expr"));
+        assert!(!is_macro_clause_defn_name("Double.double$Int"));
+        assert!(!is_macro_clause_defn_name("clause_only"));
+    }
+
+    #[test]
+    fn undefined_var_in_macro_clause_gets_dependency_diagnostic() {
+        // §0.8: a same-module non-macro reference inside a macro clause body
+        // must surface a clear diagnostic naming the symbol AND the
+        // dependency-module rule — not the bare "undefined variable".
+        let err = CranelispError::TypeError {
+            message: "undefined variable: helper".to_string(),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        };
+        let enriched = enrich_macro_clause_resolution_error("__macro_m_clause_0", err);
+        let CranelispError::TypeError { message, .. } = enriched else {
+            panic!("expected TypeError");
+        };
+        // Offending symbol name is preserved (callers substring-match on it).
+        assert!(message.contains("helper"), "message: {message}");
+        // The §0.8 dependency-module direction is present.
+        assert!(
+            message.contains("same-module") || message.contains("dependency"),
+            "message: {message}"
+        );
+    }
+
+    #[test]
+    fn undefined_var_outside_macro_clause_is_unchanged() {
+        // A plain user defn keeps the generic message — no false enrichment.
+        let original = "undefined variable: helper".to_string();
+        let err = CranelispError::TypeError {
+            message: original.clone(),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        };
+        let passed = enrich_macro_clause_resolution_error("f", err);
+        let CranelispError::TypeError { message, .. } = passed else {
+            panic!("expected TypeError");
+        };
+        assert_eq!(message, original);
+    }
+
+    #[test]
+    fn non_undefined_var_error_in_macro_clause_is_unchanged() {
+        // Only "undefined variable" errors are rewritten; other type errors
+        // (e.g. unification mismatch) pass through untouched even inside a
+        // macro-clause defn.
+        let original = "type mismatch: Int vs String".to_string();
+        let err = CranelispError::TypeError {
+            message: original.clone(),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        };
+        let passed = enrich_macro_clause_resolution_error("__macro_m_clause_0", err);
+        let CranelispError::TypeError { message, .. } = passed else {
+            panic!("expected TypeError");
+        };
+        assert_eq!(message, original);
+    }

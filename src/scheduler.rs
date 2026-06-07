@@ -165,43 +165,17 @@ pub enum WaitKind {
     Codegen,
 }
 
-/// Status of a priority codegen queue entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PriorityStatus {
-    /// Codegen has not occurred. A worker can claim this entry.
-    Ready,
-    /// A worker is compiling this symbol.
-    Working,
-    /// Codegen complete; waiting for dependencies to also complete.
-    Waiting,
-}
-
-/// An entry in the priority codegen queue (macro-dep symbols).
-#[derive(Debug)]
-pub struct PriorityEntry {
-    pub module: ModuleFullPath,
-    pub symbol: Symbol,
-    pub status: PriorityStatus,
-
-    /// Modules to unblock when this symbol and all its dependencies
-    /// are callable.
-    pub unblocks: Vec<ModuleFullPath>,
-
-    /// Symbols this entry calls (forward edges). Entries are removed
-    /// as dependencies complete their codegen.
-    pub dependencies: HashSet<(ModuleFullPath, Symbol)>,
-
-    /// Symbols that call THIS entry (reverse edges).
-    pub dependents: Vec<(ModuleFullPath, Symbol)>,
-}
-
 /// Work item returned by `take_priority_work`.
+///
+/// (The `BlockingJitCodegen` variant + the priority-codegen queue it drove were
+/// deleted in Sprint 76 W3 — see the `unblock_module` rustdoc and FIXME 0268.
+/// The cross-module-FQ macro/fn work that variant was retained for is now served
+/// by the synchronous dependency typecheck-and-compile in the worker loop; no
+/// speculative per-symbol JIT boost is needed.)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PriorityWork {
     /// Typecheck a module (from TypecheckFirst or TypecheckNext).
     Typecheck(ModuleFullPath),
-    /// JIT-compile a symbol needed for macro expansion (from priority queue).
-    BlockingJitCodegen(ModuleFullPath, Symbol),
     /// JIT-compile a symbol from a TypecheckDone module.
     JitCodegen(ModuleFullPath, Symbol),
 }
@@ -217,10 +191,9 @@ struct SchedulerState {
     /// Level 1: modules known to be delaying others.
     typecheck_first: VecDeque<ModuleFullPath>,
 
-    /// Level 2: priority codegen queue.
-    priority_queue: VecDeque<PriorityEntry>,
-
     /// Level 3: modules ready but not known to be delaying.
+    /// (Level 2 — the priority codegen queue — was deleted in S76 W3; the
+    /// numbering is retained for continuity with the work-ladder comments.)
     typecheck_next: VecDeque<ModuleFullPath>,
 
     /// Modules in TypecheckDone. Used by priority workers (level 4)
@@ -240,7 +213,6 @@ impl SchedulerState {
         Self {
             modules: HashMap::new(),
             typecheck_first: VecDeque::new(),
-            priority_queue: VecDeque::new(),
             typecheck_next: VecDeque::new(),
             typecheck_done: VecDeque::new(),
             cached_modules: HashSet::new(),
@@ -479,9 +451,10 @@ impl CompileScheduler {
     ///
     /// Checks the work lists in priority order:
     ///   1. Pop from typecheck_first -> Typecheck(module)
-    ///   2. Scan priority_queue for first Ready entry -> BlockingJitCodegen
     ///   3. Pop from typecheck_next -> Typecheck(module)
-    ///   4. (Level 4 — JitCodegen — deferred to later steps.)
+    ///   4. Cache-hit JitCodegen for typecheck_done modules needing inmem load.
+    ///
+    /// (Level 2 — the priority codegen queue scan — was deleted in S76 W3.)
     pub fn take_priority_work(&self) -> Option<PriorityWork> {
         let mut state = self.lock();
         Self::try_take_work_locked(&mut state)
@@ -543,10 +516,7 @@ impl CompileScheduler {
             return Some(PriorityWork::Typecheck(module));
         }
 
-        // Level 2: Priority codegen queue — first Ready entry
-        if let Some(work) = Self::claim_priority_codegen_locked(state) {
-            return Some(work);
-        }
+        // Level 2 (priority codegen queue) deleted in S76 W3 — see PriorityWork.
 
         // Level 3: TypecheckNext
         if let Some(module) = state.typecheck_next.pop_front() {
@@ -617,6 +587,28 @@ impl CompileScheduler {
     /// Sets `blocked_on` for cycle detection.
     ///
     /// Returns Err if a circular dependency is detected.
+    /// Immediately re-queue a module that was just blocked on an
+    /// already-satisfied dependency.
+    ///
+    /// Used by the FQ-auto-load path (FIXME 0268): when an FQ reference names a
+    /// module that is **already loaded** (e.g. a cache hit, or a peer form
+    /// already imported it), the referencing module is registered as
+    /// `TypecheckBlocked` via [`block_for_typecheck`] for resume-state
+    /// uniformity, but there is no future `notify_typecheck_done(dep)` sweep to
+    /// re-queue it (the dep finished before the block was recorded). This drives
+    /// the same `try_unblock` sweep `notify_typecheck_done` performs, clearing
+    /// the `blocked_on` edge and re-queuing the waiter (or, under
+    /// `eval_in_flight`, letting the REPL eval thread drive the retry).
+    pub fn unblock_module(&self, module: &ModuleFullPath) {
+        let mut state = self.lock();
+        if let Some(ms) = state.modules.get_mut(module) {
+            ms.blocked_on = None;
+        }
+        Self::try_unblock_locked(&mut state, module);
+        drop(state);
+        self.priority_work_available.notify_all();
+    }
+
     pub fn block_for_typecheck(
         &self,
         module: &ModuleFullPath,
@@ -733,35 +725,6 @@ impl CompileScheduler {
         drop(state);
         self.priority_work_available.notify_all();
         self.completion.notify_all();
-    }
-
-    /// Priority codegen of a symbol is complete.
-    /// Processes the entry per concurrent-pipeline.md section 4.3.
-    pub fn notify_priority_codegen_complete(
-        &self,
-        module: &ModuleFullPath,
-        symbol: &Symbol,
-    ) {
-        let mut state = self.lock();
-        let key = (module.clone(), symbol.clone());
-
-        // Find the entry in the priority queue and update status.
-        let entry_idx = Self::find_priority_entry_locked(&state, &key);
-        let Some(idx) = entry_idx else { return };
-
-        let deps_empty = state.priority_queue[idx].dependencies.is_empty();
-
-        if deps_empty {
-            // All dependencies callable — resolve this entry.
-            Self::resolve_priority_entry_locked(&mut state, idx);
-        } else {
-            // Still has unresolved dependencies — wait.
-            state.priority_queue[idx].status = PriorityStatus::Waiting;
-        }
-
-        // Wake priority workers — resolved entries may unblock modules.
-        drop(state);
-        self.priority_work_available.notify_all();
     }
 
     /// JIT codegen of a symbol is complete.
@@ -1130,9 +1093,6 @@ impl CompileScheduler {
         state.typecheck_first.retain(|m| m != module);
         state.typecheck_next.retain(|m| m != module);
         state.typecheck_done.retain(|m| m != module);
-
-        // Remove any priority queue entries for this module.
-        state.priority_queue.retain(|e| &e.module != module);
     }
 
     /// Reset all Failed modules, removing them from the scheduler.
@@ -1156,7 +1116,6 @@ impl CompileScheduler {
             state.typecheck_first.retain(|x| x != &m);
             state.typecheck_next.retain(|x| x != &m);
             state.typecheck_done.retain(|x| x != &m);
-            state.priority_queue.retain(|e| e.module != m);
         }
     }
 
@@ -1253,12 +1212,6 @@ impl CompileScheduler {
         state.modules.len()
     }
 
-    /// Number of entries in the priority codegen queue.
-    pub fn priority_queue_len(&self) -> usize {
-        let state = self.lock();
-        state.priority_queue.len()
-    }
-
     // -----------------------------------------------------------------------
     // Internal helpers (all take &mut SchedulerState to avoid re-locking)
     // -----------------------------------------------------------------------
@@ -1267,8 +1220,7 @@ impl CompileScheduler {
     ///
     /// Returns true when no more work items can appear:
     /// - The modules map is empty (no work registered), or
-    /// - All work queues are empty (TypecheckFirst, TypecheckNext, and no
-    ///   Ready entries in priority_queue), AND
+    /// - All work queues are empty (TypecheckFirst, TypecheckNext), AND
     /// - No modules are in TypecheckWorking (which could produce new work
     ///   via register_module).
     ///
@@ -1289,11 +1241,8 @@ impl CompileScheduler {
         {
             return false;
         }
-        if state.priority_queue.iter().any(|e| e.status == PriorityStatus::Ready) {
-            return false;
-        }
         // If any module is being actively processed, it could produce
-        // new work (register deps, block for macro codegen).
+        // new work (register deps).
         let any_working = state.modules.values()
             .any(|ms| ms.pool == ModulePool::TypecheckWorking);
         if any_working {
@@ -1318,23 +1267,6 @@ impl CompileScheduler {
         if let Some(ms) = state.modules.get_mut(module) {
             ms.pool = pool;
         }
-    }
-
-    /// Claim the first Ready entry from the priority codegen queue.
-    /// Sets its status to Working and returns BlockingJitCodegen.
-    fn claim_priority_codegen_locked(
-        state: &mut SchedulerState,
-    ) -> Option<PriorityWork> {
-        for entry in &mut state.priority_queue {
-            if entry.status == PriorityStatus::Ready {
-                entry.status = PriorityStatus::Working;
-                return Some(PriorityWork::BlockingJitCodegen(
-                    entry.module.clone(),
-                    entry.symbol.clone(),
-                ));
-            }
-        }
-        None
     }
 
     /// Take waiters for a specific symbol and wait kind from a module's
@@ -1620,65 +1552,6 @@ impl CompileScheduler {
             Self::set_pool_locked(state, module, ModulePool::Complete);
             // Remove from typecheck_done deque.
             state.typecheck_done.retain(|m| m != module);
-        }
-    }
-
-    /// Find a priority entry by (module, symbol) key.
-    fn find_priority_entry_locked(
-        state: &SchedulerState,
-        key: &(ModuleFullPath, Symbol),
-    ) -> Option<usize> {
-        state.priority_queue.iter().position(|e| {
-            e.module == key.0 && e.symbol == key.1
-        })
-    }
-
-    /// Resolve a priority entry: unblock waiting modules, propagate
-    /// to dependents, and remove the entry.
-    fn resolve_priority_entry_locked(
-        state: &mut SchedulerState,
-        idx: usize,
-    ) {
-        let unblocks = state.priority_queue[idx].unblocks.clone();
-        let dependents = state.priority_queue[idx].dependents.clone();
-        let key = (
-            state.priority_queue[idx].module.clone(),
-            state.priority_queue[idx].symbol.clone(),
-        );
-
-        for waiter_module in &unblocks {
-            Self::try_unblock_locked(state, waiter_module);
-        }
-
-        let mut newly_resolved = Vec::new();
-        for dep_key in &dependents {
-            if let Some(dep_idx) = Self::find_priority_entry_locked(state, dep_key)
-            {
-                state.priority_queue[dep_idx]
-                    .dependencies
-                    .remove(&key);
-                if state.priority_queue[dep_idx].dependencies.is_empty()
-                    && state.priority_queue[dep_idx].status
-                        == PriorityStatus::Waiting
-                {
-                    newly_resolved.push(dep_idx);
-                }
-            }
-        }
-
-        state.priority_queue[idx].status = PriorityStatus::Waiting;
-        state.priority_queue.remove(idx);
-
-        // Recursively resolve any newly-resolved dependents.
-        for dep_key in &dependents {
-            if let Some(dep_idx) = Self::find_priority_entry_locked(state, dep_key)
-                .filter(|&idx| {
-                    state.priority_queue[idx].dependencies.is_empty()
-                        && state.priority_queue[idx].status == PriorityStatus::Waiting
-                })
-            {
-                Self::resolve_priority_entry_locked(state, dep_idx);
-            }
         }
     }
 

@@ -425,6 +425,58 @@ fn is_trait_impl_mangled_name(name: &str) -> bool {
     false
 }
 
+/// Returns true if `name` is a synthesised macro-clause defn — the
+/// `__macro_{macro}_clause_{idx}` shape produced by
+/// `cranelisp_frontend::synthesize_macro_clause_defn`. Typecheck checks each
+/// clause body as an ordinary `defn`; this predicate recovers the "I am inside
+/// a macro clause body" context from the defn name alone, so no clause-body
+/// flag has to be threaded through the inference signatures.
+fn is_macro_clause_defn_name(name: &str) -> bool {
+    // Shape: __macro_{macro}_clause_{idx}. The `_clause_` infix plus the
+    // `__macro_` prefix together are specific enough to never collide with a
+    // user-authored or REPL-synthetic defn name (which never carry the
+    // double-underscore `__macro_` prefix from the frontend synthesiser).
+    name.starts_with("__macro_") && name.contains("_clause_")
+}
+
+/// Enrich a bare "undefined variable" body-resolution error into the §0.8
+/// macro-availability diagnostic when the failing resolution happened inside a
+/// `defmacro` clause body.
+///
+/// Per `design/arch/macro-availability-model.md` §0.8 (DECISION LOCKED
+/// 2026-06-03): a macro's expansion may reference only dependency-module
+/// definitions and macros — NOT same-module non-macro definitions. When a
+/// clause body references such a name, the pass-ordered three-pass model leaves
+/// the name structurally invisible at expansion, so typecheck reports a generic
+/// "undefined variable: helper". This rewrites that into the actionable
+/// diagnostic, preserving the offending symbol name (callers substring-match on
+/// it) and naming the dependency-module rule.
+///
+/// Any non-undefined-variable error (or an error against a non-macro-clause
+/// defn) passes through unchanged.
+fn enrich_macro_clause_resolution_error(
+    defn_name: &str,
+    err: CranelispError,
+) -> CranelispError {
+    const PREFIX: &str = "undefined variable: ";
+    if !is_macro_clause_defn_name(defn_name) {
+        return err;
+    }
+    if let CranelispError::TypeError { message, location } = &err
+        && let Some(sym) = message.strip_prefix(PREFIX)
+    {
+        return CranelispError::TypeError {
+            message: format!(
+                "undefined variable: {sym} — macro expansion may not reference \
+                 same-module non-macro definitions; define `{sym}` in a \
+                 dependency module (or import it)"
+            ),
+            location: location.clone(),
+        };
+    }
+    err
+}
+
 fn mangle_sig(name: &str, param_types: &[Type]) -> Symbol {
     if param_types.is_empty() {
         Symbol::from(format!("{}$", name))
@@ -752,7 +804,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let mr_before: HashSet<Span> = state.method_resolutions.resolved_calls.keys().copied().collect();
         let et_before: HashSet<Span> = state.expr_types.keys().copied().collect();
 
-        self.check_defn_body(state, defn, param_types, ret_ty)?;
+        self.check_defn_body(state, defn, param_types, ret_ty)
+            .map_err(|e| enrich_macro_clause_resolution_error(defn.name.as_ref(), e))?;
         self.resolve_deferred_trait_calls(state, defn.body());
 
         // Per-defn post-passes: resolve auto-curry accumulated during this

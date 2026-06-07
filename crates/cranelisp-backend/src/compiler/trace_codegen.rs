@@ -51,6 +51,73 @@
 //! The trace externs resolve from `cranelisp_intrinsics::catalog::intrinsics_table()`
 //! in every mode (JIT `JITBuilder::symbol`, cache-hit `Linker::register_symbol`,
 //! `--link` archive resolution) — backend just declares them `Linkage::Import`.
+//!
+//! # Object-mode relocation discipline — every baked address is a relocation (FIXME 0275)
+//!
+//! A linked binary runs in a DIFFERENT process from the compiler. Any
+//! compiling-process absolute address baked as an `iconst` is garbage in the
+//! target process — the original symptom was a `--link` binary containing
+//! `(trace …)` SIGBUSing (exit 138). The fix: every address the trace machinery
+//! needs is materialised through a **relocation**, identical in JIT and object
+//! mode (no mode fork), via the `declare_data{,_in_func}` + `global_value`
+//! family that `apply.rs::compile_direct_call` and the descriptor blob already
+//! use. JIT patches the `global_value` to a runtime address; `ObjectModule`
+//! emits one relocation per reference, resolved by `ld` at link time. The four
+//! addresses and how each is now sourced:
+//!
+//! 1. **GOT base** (per traced group). Referenced via the module's GOT **data
+//!    symbol** (`got_data_symbol_name`), declared `Linkage::Import` +
+//!    `global_value` — never the stale `got_base` i64. Grouping is by
+//!    `ModuleFullPath` (each module has its own GOT data symbol) rather than the
+//!    raw base. Object-mode existence: every user/stdlib module compiled in
+//!    this build emits its `__cranelisp_got_{M}` data symbol as
+//!    `Linkage::Export` with per-slot function-address relocations
+//!    (`define_module_got_data`), so referencing it as `Import` resolves at
+//!    link time. The synthetic `primitives` module is NO LONGER an exception
+//!    (FIXME 0280, S76 Wave 3): per Decision 0048 its GOT is still a static in
+//!    `cranelisp-primitives` (`PRIMITIVES_TABLE`), but that static is now an
+//!    EXPORTED writable slab (`PRIMITIVES_GOT_SLAB`,
+//!    `#[unsafe(export_name = "__cranelisp_got_primitives")]`) over which the
+//!    `GotTable` is constructed (`GotTable::with_static_backing`). In JIT/`--run`
+//!    `__cranelisp_got_primitives` is registered as a JIT symbol (`jit.rs`
+//!    registers ALL modules' GOT symbols incl. primitives); in object mode the
+//!    exported static IS the link symbol, so the `Import` reference resolves at
+//!    `ld` time exactly like any user/stdlib module's GOT. The primitives group
+//!    swaps in ALL modes — extern primitives now appear in `--link` trace trees
+//!    (only inline primitives `+`, `-`, … remain invisible in all modes).
+//!
+//! 2. **Original callee code ptr** (per traced fn). The wrapper must call the
+//!    ORIGINAL, not the swapped slot (which now points at the wrapper →
+//!    recursion). We do NOT bake `code_ptr`, and we do NOT `func_addr` against a
+//!    per-callee linker symbol (cross-module + primitives have no in-`.o` symbol
+//!    — their ptrs live only in the startup-populated GOT). Instead, uniformly:
+//!    `compile_trace` loads `got_base[slot]` into a per-group **originals**
+//!    buffer BEFORE the swap installs the wrappers (so the slot still holds the
+//!    real fn), and each wrapper loads its original from `originals[i]`. This is
+//!    the late-bound, mode-agnostic, BC §3-invariant-3-consistent choice (the
+//!    GOT slot is the single source of truth for callable addresses) — one
+//!    uniform path for user / stdlib / primitive callees alike.
+//!
+//! 3. **The slots / wrappers / originals / name buffers.** No leaked `Box`
+//!    (compiling-process heap, garbage in the target). Emitted as data symbols:
+//!    - *slots* — read-only, defined with the compile-time-constant u32 slot
+//!      indices (`emit_ro_data`).
+//!    - *wrappers* — WRITABLE (`emit_zero_data(writable=true)`): the wrapper
+//!      func_addrs are stored at runtime; read by `swap_got`.
+//!    - *originals* — WRITABLE: the pre-swap GOT-slot loads are stored at
+//!      runtime; read by each wrapper.
+//!    - *function name* — read-only bytes (`emit_ro_data`), referenced by the
+//!      wrapper via `global_value` (passed to `cranelisp_trace_enter`).
+//!
+//!    For all of these, `define` with explicit zero bytes (not
+//!    `define_zeroinit`) keeps the writable buffers in a regular `__DATA`
+//!    section so macOS `ld` does not segfault applying relocations against a
+//!    BSS atom (same rationale as `define_module_got_data`).
+//!
+//! 4. **No mode fork.** Every case above is a uniform relocation; JIT and object
+//!    differ only in how Cranelift lowers `global_value` (movz/movk vs ADRP+ADD)
+//!    and who resolves the symbol (JITModule patch vs `ld`). There is no
+//!    JIT-only / object-only branch in this file.
 
 use std::collections::HashMap;
 
@@ -210,7 +277,6 @@ where
     for module_guard in symbol_tables.iter() {
         let module_path = module_guard.key();
         let table = module_guard.value();
-        let got_base = table.got.base_ptr() as i64;
         for (name, entry) in table.all_symbols() {
             let ModuleEntry::Def {
                 got_slot: Some(slot),
@@ -246,10 +312,9 @@ where
             };
             traced.push(TracedFnInfo {
                 name: format!("{module_path}/{name}"),
-                got_base,
+                module_path: module_path.clone(),
                 got_slot: *slot,
                 arity: params.len(),
-                code_ptr,
                 param_types: params.clone(),
                 result_type: (**ret).clone(),
             });
@@ -563,15 +628,37 @@ where
             return self.compile_trace_no_swap(body, span);
         }
 
-        // Group by GOT base address (each module has its own GOT table).
-        let mut got_groups: Vec<(i64, Vec<&TracedFnInfo>)> = Vec::new();
+        // Group by defining module (each module has its own GOT table + GOT
+        // data symbol). Grouping by `module_path` rather than the raw
+        // `got_base` i64 lets each group reference its own GOT **data symbol**
+        // for relocation-based addressing (FIXME 0275) — the raw `got_base` is
+        // only a stale compiling-process address and is never emitted.
+        let mut got_groups: Vec<(cranelisp_types::ModuleFullPath, Vec<&TracedFnInfo>)> = Vec::new();
         for tf in &traced {
-            if let Some(grp) = got_groups.iter_mut().find(|(addr, _)| *addr == tf.got_base) {
+            if let Some(grp) = got_groups
+                .iter_mut()
+                .find(|(m, _)| *m == tf.module_path)
+            {
                 grp.1.push(tf);
             } else {
-                got_groups.push((tf.got_base, vec![tf]));
+                got_groups.push((tf.module_path.clone(), vec![tf]));
             }
         }
+
+        // No object-mode exception: the `primitives` group swaps in ALL modes
+        // like every other module (FIXME 0280, S76 Wave 3). Pre-0280 the
+        // synthetic `primitives` GOT was a runtime HEAP allocation
+        // (`GotTable::new()`), so `__cranelisp_got_primitives` was not a
+        // link-time symbol and the group was skipped in object mode (the
+        // deleted `is_pic` guard). Per FIXME 0280 the primitives GOT is now
+        // constructed over an EXPORTED static slab
+        // (`cranelisp_primitives::PRIMITIVES_GOT_SLAB`,
+        // `#[unsafe(export_name = "__cranelisp_got_primitives")]`), so the
+        // symbol resolves at `ld` time exactly like `__cranelisp_got_{user}` —
+        // referencing it as `Linkage::Import` is sound in object mode too. The
+        // primitives group therefore stays in `got_groups`, and extern
+        // primitives now appear in `--link` trace trees (only inline primitives
+        // `+`, `-`, … remain structurally invisible in all modes).
 
         // Declare trace runtime functions in the module (idempotent for Import linkage).
         let swap_id = self.declare_trace_extern("cranelisp_trace_swap_got", 4, true, span)?;
@@ -579,51 +666,121 @@ where
             self.declare_trace_extern("cranelisp_trace_restore_got", 2, false, span)?;
         let collect_id = self.declare_trace_extern("cranelisp_collect_trace", 0, true, span)?;
 
-        // For each GOT group: compile wrappers and emit swap_got call.
-        let mut swap_results: Vec<(i64, Value)> = Vec::new();
+        // For each GOT group: compile wrappers and emit swap_got call. The saved
+        // value carries the GOT base (a `global_value`, recomputed for restore)
+        // alongside the swap's saved-GOT pointer.
+        let mut swap_results: Vec<(GotGroupRelocs, Value)> = Vec::new();
 
-        for (got_base, group) in &got_groups {
+        for (module_path, group) in &got_groups {
             let n = group.len();
 
-            // Allocate and leak a u32 slots array (known at compile time).
-            let slots: Box<[u32]> = group
-                .iter()
-                .map(|tf| tf.got_slot as u32)
-                .collect::<Vec<_>>()
-                .into_boxed_slice();
-            let slots_ptr = Box::into_raw(slots) as *mut u32 as i64;
+            // --- GOT base: relocation against the module's GOT data symbol ---
+            // (NOT the stale compiling-process `got_base` iconst). Declared
+            // `Linkage::Import`; emitted (object) / registered (JIT) elsewhere.
+            // This is the same pattern `apply.rs::compile_direct_call` uses.
+            let got_sym = crate::compiler::got_data_symbol_name(module_path);
+            let got_data_id = self
+                .module
+                .declare_data(&got_sym, Linkage::Import, false, false)
+                .map_err(|e| CranelispError::CodegenError {
+                    message: format!("failed to declare GOT data '{got_sym}': {e}"),
+                    location: ErrorLocation::from_span(span),
+                })?;
 
-            // Allocate and leak a wrappers buffer (i64, filled at JIT runtime via func_addr).
-            let wrappers_buf: Box<[i64]> = vec![0i64; n].into_boxed_slice();
-            let wrappers_buf_ptr = Box::into_raw(wrappers_buf) as *mut i64 as i64;
+            // --- slots buffer: read-only, known at compile time. Emitted as a
+            // data symbol holding the u32 slot indices (no leak, no absolute). ---
+            let mut slots_bytes = Vec::with_capacity(n * 4);
+            for tf in group {
+                slots_bytes.extend_from_slice(&(tf.got_slot as u32).to_le_bytes());
+            }
+            let slots_data_id = self.emit_ro_data(&slots_bytes, 4, "trace slots", span)?;
 
-            // For each function: compile a trace wrapper, then emit a store of its
-            // code_ptr into the wrappers buffer at runtime.
-            let buf_addr_val = self.builder.ins().iconst(types::I64, wrappers_buf_ptr);
+            // --- wrappers buffer: WRITTEN at runtime (func_addr fill below),
+            // READ by swap_got. Mutable data symbol (no leak, no absolute). ---
+            let wrappers_data_id =
+                self.emit_zero_data(n * 8, 8, true, "trace wrappers", span)?;
+
+            // --- originals buffer: WRITTEN at runtime (the pre-swap GOT-slot
+            // load below), READ by each wrapper to reach the ORIGINAL fn. This
+            // captures the original code pointer from the live GOT *before* the
+            // swap installs the wrappers, so the wrapper reaches the real fn and
+            // not itself — late-bound, mode-agnostic, no baked absolute. ---
+            let originals_data_id =
+                self.emit_zero_data(n * 8, 8, true, "trace originals", span)?;
+
+            // Materialise the GOT base once (one global_value → one relocation
+            // in object mode; JIT patches it to the runtime slab base).
+            let got_base_val = {
+                let gv = self.module.declare_data_in_func(got_data_id, self.builder.func);
+                self.builder.ins().global_value(types::I64, gv)
+            };
+
+            // Materialise the wrappers + originals buffer base addresses.
+            let wrappers_base = {
+                let gv = self.module.declare_data_in_func(wrappers_data_id, self.builder.func);
+                self.builder.ins().global_value(types::I64, gv)
+            };
+            let originals_base = {
+                let gv = self.module.declare_data_in_func(originals_data_id, self.builder.func);
+                self.builder.ins().global_value(types::I64, gv)
+            };
+
+            // For each function:
+            //   (a) capture the ORIGINAL code ptr from the live GOT slot into
+            //       the originals buffer (BEFORE the swap),
+            //   (b) compile its wrapper and store the wrapper's func_addr into
+            //       the wrappers buffer.
             for (i, tf) in group.iter().enumerate() {
-                let wrapper_id = self.compile_trace_wrapper_fn(tf, span)?;
+                let buf_off = (i * 8) as i32;
+
+                // (a) original = load(got_base + slot*8); store into originals[i].
+                let slot_addr = self
+                    .builder
+                    .ins()
+                    .iadd_imm(got_base_val, (tf.got_slot * 8) as i64);
+                let orig_ptr = self.builder.ins().load(
+                    types::I64,
+                    MemFlags::trusted(),
+                    slot_addr,
+                    0,
+                );
+                self.builder
+                    .ins()
+                    .store(MemFlags::trusted(), orig_ptr, originals_base, buf_off);
+
+                // (b) compile wrapper (reads originals[i] for the indirect call).
+                let wrapper_id =
+                    self.compile_trace_wrapper_fn(tf, originals_data_id, i, span)?;
                 let func_ref = self
                     .module
                     .declare_func_in_func(wrapper_id, self.builder.func);
                 let wrapper_ptr_val = self.builder.ins().func_addr(types::I64, func_ref);
-                let offset = (i * 8) as i32;
-                self.builder
-                    .ins()
-                    .store(MemFlags::trusted(), wrapper_ptr_val, buf_addr_val, offset);
+                self.builder.ins().store(
+                    MemFlags::trusted(),
+                    wrapper_ptr_val,
+                    wrappers_base,
+                    buf_off,
+                );
             }
 
             // Emit cranelisp_trace_swap_got(got_base, n_slots, slots_ptr, wrappers_ptr).
-            let got_base_val = self.builder.ins().iconst(types::I64, *got_base);
+            let slots_val = {
+                let gv = self.module.declare_data_in_func(slots_data_id, self.builder.func);
+                self.builder.ins().global_value(types::I64, gv)
+            };
             let n_val = self.builder.ins().iconst(types::I64, n as i64);
-            let slots_val = self.builder.ins().iconst(types::I64, slots_ptr);
-            let wrappers_val = self.builder.ins().iconst(types::I64, wrappers_buf_ptr);
             let swap_ref = self.module.declare_func_in_func(swap_id, self.builder.func);
-            let call = self
-                .builder
-                .ins()
-                .call(swap_ref, &[got_base_val, n_val, slots_val, wrappers_val]);
+            let call = self.builder.ins().call(
+                swap_ref,
+                &[got_base_val, n_val, slots_val, wrappers_base],
+            );
             let saved_got_val = self.builder.inst_results(call)[0];
-            swap_results.push((*got_base, saved_got_val));
+            swap_results.push((
+                GotGroupRelocs {
+                    got_data_id,
+                },
+                saved_got_val,
+            ));
         }
 
         // Compile the body expression.
@@ -641,12 +798,17 @@ where
         // The trace result is the Trace ADT, not the body's value.
         self.emit_body_discard(body_result, body);
 
-        // Restore GOTs in reverse order (for clean nesting semantics).
+        // Restore GOTs in reverse order (for clean nesting semantics). The GOT
+        // base is recomputed via `global_value` against the same GOT data
+        // symbol — never the stale compiling-process `got_base` (FIXME 0275).
         let restore_ref = self
             .module
             .declare_func_in_func(restore_id, self.builder.func);
-        for (got_base, saved_got_val) in swap_results.iter().rev() {
-            let got_base_val = self.builder.ins().iconst(types::I64, *got_base);
+        for (relocs, saved_got_val) in swap_results.iter().rev() {
+            let gv = self
+                .module
+                .declare_data_in_func(relocs.got_data_id, self.builder.func);
+            let got_base_val = self.builder.ins().global_value(types::I64, gv);
             self.builder
                 .ins()
                 .call(restore_ref, &[got_base_val, *saved_got_val]);
@@ -743,9 +905,74 @@ where
     /// wrapper's baked descriptor blob via `global_value` against the blob's data
     /// symbol — mode-agnostic (JIT patches to a runtime address; object emits one
     /// relocation per reference). See `bake_descriptor_blob`.
+    /// Emit a read-only data symbol with the given bytes + alignment, returning
+    /// its `DataId`. Used for compile-time-constant trace buffers (slot index
+    /// array, function-name bytes) — mode-agnostic, no leak, no baked absolute.
+    fn emit_ro_data(
+        &mut self,
+        bytes: &[u8],
+        align: u64,
+        what: &str,
+        span: Span,
+    ) -> Result<cranelift_module::DataId, CranelispError> {
+        let data_id = self
+            .module
+            .declare_anonymous_data(false, false)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare {what} data: {e}"),
+                location: ErrorLocation::from_span(span),
+            })?;
+        let mut desc = cranelift_module::DataDescription::new();
+        desc.set_align(align);
+        desc.define(bytes.to_vec().into_boxed_slice());
+        self.module
+            .define_data(data_id, &desc)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to define {what} data: {e}"),
+                location: ErrorLocation::from_span(span),
+            })?;
+        Ok(data_id)
+    }
+
+    /// Emit a zero-initialised data symbol of `len` bytes, returning its
+    /// `DataId`. `writable = true` for runtime-filled buffers (the wrappers
+    /// buffer filled by `func_addr` stores; the originals buffer filled by the
+    /// pre-swap GOT-slot loads). `define` with explicit zero bytes (not
+    /// `define_zeroinit`) keeps the symbol in a regular `__DATA` section so
+    /// macOS `ld` does not segfault applying the wrapper's relocations against a
+    /// BSS atom (same rationale as `define_module_got_data`).
+    fn emit_zero_data(
+        &mut self,
+        len: usize,
+        align: u64,
+        writable: bool,
+        what: &str,
+        span: Span,
+    ) -> Result<cranelift_module::DataId, CranelispError> {
+        let data_id = self
+            .module
+            .declare_anonymous_data(writable, false)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare {what} data: {e}"),
+                location: ErrorLocation::from_span(span),
+            })?;
+        let mut desc = cranelift_module::DataDescription::new();
+        desc.set_align(align);
+        desc.define(vec![0u8; len].into_boxed_slice());
+        self.module
+            .define_data(data_id, &desc)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to define {what} data: {e}"),
+                location: ErrorLocation::from_span(span),
+            })?;
+        Ok(data_id)
+    }
+
     fn compile_trace_wrapper_fn(
         &mut self,
         tf: &TracedFnInfo,
+        originals_data_id: cranelift_module::DataId,
+        originals_index: usize,
         span: Span,
     ) -> Result<FuncId, CranelispError> {
         assert_eq!(
@@ -781,10 +1008,12 @@ where
         let exit_id = self.declare_trace_extern("cranelisp_trace_exit", 2, true, span)?;
         let format_id = self.declare_trace_extern("cranelisp_trace_format", 2, true, span)?;
 
-        // Leak the function name bytes -- valid for the program lifetime.
-        let name_bytes: Box<[u8]> = tf.name.as_bytes().to_vec().into_boxed_slice();
-        let name_len = name_bytes.len() as i64;
-        let name_ptr = Box::into_raw(name_bytes) as *mut u8 as i64;
+        // Emit the function-name bytes as a read-only data symbol (mode-agnostic;
+        // no leaked compiling-process pointer — FIXME 0275). The wrapper
+        // references it via `global_value` (one relocation in object mode; JIT
+        // patches the runtime address).
+        let name_len = tf.name.len() as i64;
+        let name_data_id = self.emit_ro_data(tf.name.as_bytes(), 1, "trace name", span)?;
 
         // Build and compile the wrapper IR.
         {
@@ -846,7 +1075,10 @@ where
             };
 
             // cranelisp_trace_enter(name_ptr, name_len, params_count, array_ptr)
-            let name_ptr_val = wb.ins().iconst(types::I64, name_ptr);
+            // name_ptr is a relocation against the name data symbol, NOT a baked
+            // compiling-process pointer (FIXME 0275).
+            let name_gv = self.module.declare_data_in_func(name_data_id, wb.func);
+            let name_ptr_val = wb.ins().global_value(types::I64, name_gv);
             let name_len_val = wb.ins().iconst(types::I64, name_len);
             wb.ins().call(
                 enter_ref,
@@ -861,8 +1093,21 @@ where
             orig_sig.returns.push(AbiParam::new(types::I64));
             let sig_ref = wb.import_signature(orig_sig);
 
-            // Call original via embedded code_ptr (bypasses the swapped GOT).
-            let code_ptr_val = wb.ins().iconst(types::I64, tf.code_ptr);
+            // Call the ORIGINAL via the code ptr captured in the originals
+            // buffer (FIXME 0275). `compile_trace` loaded `got_base[slot]` into
+            // `originals[originals_index]` BEFORE the swap installed the
+            // wrappers, so this reaches the real fn — not this wrapper — and
+            // bypasses the swapped GOT. The originals base is materialised by a
+            // `global_value` relocation against the originals data symbol
+            // (mode-agnostic), never a baked compiling-process address.
+            let originals_gv = self.module.declare_data_in_func(originals_data_id, wb.func);
+            let originals_base = wb.ins().global_value(types::I64, originals_gv);
+            let code_ptr_val = wb.ins().load(
+                types::I64,
+                MemFlags::trusted(),
+                originals_base,
+                (originals_index * 8) as i32,
+            );
             let orig_call = wb.ins().call_indirect(sig_ref, code_ptr_val, &args);
             let orig_result = wb.inst_results(orig_call)[0];
 
@@ -893,6 +1138,13 @@ where
         Ok(wrapper_func_id)
     }
 } // impl FnCompiler — trace codegen
+
+/// Per-GOT-group relocation handles retained across the body so the restore
+/// path can recompute the GOT base via the same `global_value` relocation the
+/// swap path used (FIXME 0275 — never the stale compiling-process `got_base`).
+struct GotGroupRelocs {
+    got_data_id: cranelift_module::DataId,
+}
 
 /// One traced function's baked descriptor set: a single read-only data symbol
 /// holding the param descriptors (in order) and the result descriptor, plus the
@@ -1154,7 +1406,22 @@ mod tests {
         assert_eq!(prim.arity, 2);
         assert_eq!(prim.param_types, vec![Type::String, Type::String]);
         assert_eq!(prim.result_type, Type::String);
-        assert_eq!(prim.code_ptr, 0x2000);
+        assert_eq!(prim.module_path, ModuleFullPath::from("primitives"));
+        assert_eq!(prim.got_slot, prims_slot_of_str_concat(&tables));
+    }
+
+    /// Read back the GOT slot the discovery should have recorded for the
+    /// primitive `str-concat` (the discovery records `got_slot`, not the raw
+    /// code pointer, since the wrapper reaches the original via a runtime
+    /// GOT-slot load — FIXME 0275).
+    fn prims_slot_of_str_concat(
+        tables: &DashMap<ModuleFullPath, SymbolTable<(), ()>>,
+    ) -> usize {
+        let g = tables.get(&ModuleFullPath::from("primitives")).unwrap();
+        match g.get("str-concat") {
+            Some(ModuleEntry::Def { got_slot: Some(s), .. }) => *s,
+            _ => panic!("str-concat must be a got-slotted Def"),
+        }
     }
 
     #[test]

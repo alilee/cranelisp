@@ -47,6 +47,36 @@ binary). Two distinct defects:
    even if the fix defers (it converts every future link-mode defect from
    "clear error" into "hang", multiplying triage cost).
 
+## /qa resolution status (S76 W3 — 2026-06-07)
+
+Repros landed in `tests/trace.rs` (failing-not-ignored):
+
+- `trace_linked_accessor_consumption_parks_defect` — FAILING. `(nanos (trace
+  (work 41)))` via `--link` PARKS; the harness `timeout(15s)` converts the park
+  into a `CrError::Timeout` → test failure (added a `timeout(Duration)` builder
+  method to `tests/helpers/e2e.rs` for this). The hang IS the assertion. The
+  worker panics "can't resolve symbol nanos" then the session never exits.
+- `trace_nanos_accessor_resolves_in_repl` — FAILING. **Broader-than-link
+  finding**: the synthetic accessor Defs (`nanos`, `name`) do NOT resolve even
+  in the JIT/REPL path ("can't resolve symbol nanos") — match-based TraceCall
+  extraction works, only the generated accessor FUNCTIONS are missing. So
+  defect 1 (synthetic-Def emission) is NOT link-specific; it is absent from the
+  JIT codegen batch too, surfacing as a clean panic in REPL and a park in
+  --link.
+
+**Trace-free isolation variant (requested in Proposed resolution #1 bullet 2):
+NOT authored.** The trace accessors are the only bootstrap-synthesised
+`ast: Some` Defs reachable without a working cross-module path; the obvious
+alternative candidates (Sexp/Option helpers reached cross-module) are blocked by
+the FIXME 0279 cross-module-polymorphism overflow, so a trace-free isolation
+cannot currently be exercised e2e. Noted and skipped per the bullet's "else note
+that ... and say so".
+
+Triage: defect 1 → **/dev int** (synthetic-Def emission into the codegen batch,
+both JIT and link); defect 2 (worker-panic→park) → **/dev int** robustness item
+(named separately — it converts every future link defect from a clear error into
+a hang). `// FIXME(/dev int)` on both tests; PLAN.md rows A1/A2.
+
 ## Operational implication / Context
 
 User-decided 2026-06-06: the trace `--link` story is fixed in-sprint (0275);

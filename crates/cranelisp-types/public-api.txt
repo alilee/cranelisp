@@ -782,6 +782,7 @@ pub fn cranelisp_types::GotTable::base_ptr(&self) -> *const u8
 pub fn cranelisp_types::GotTable::load_slot(&self, slot: usize) -> *const u8
 pub fn cranelisp_types::GotTable::new() -> Self
 pub fn cranelisp_types::GotTable::store_slot(&self, slot: usize, ptr: *const u8)
+pub fn cranelisp_types::GotTable::with_static_backing(slab: &'static [core::sync::atomic::AtomicPtr<u8>; 1024]) -> Self
 impl core::clone::Clone for cranelisp_types::GotTable
 pub fn cranelisp_types::GotTable::clone(&self) -> Self
 impl core::default::Default for cranelisp_types::GotTable

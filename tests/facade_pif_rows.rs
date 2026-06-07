@@ -614,3 +614,208 @@ fn rev3_describe_symbol_resolves_primitive_via_facade_method() {
         cap.stderr
     );
 }
+
+// =============================================================================
+// Platform conformance-triad mechanical checks (audit C1–C5; FIXMEs 0224,
+// 0225, 0227, 0228). These are STRUCTURAL guards over the frozen
+// `cranelisp-platform/public-api.txt` baseline — `cargo public-api` emits the
+// auto-trait impls (`impl Send/Sync`), `#[repr(...)]` / `#[non_exhaustive]`
+// attributes, and per-method receivers, so the baseline is the mechanical
+// witness for surface drift that `facade_compliance.rs` (substring-name-only)
+// and `public_api_relocations.rs` (unordered field set) cannot catch.
+//
+// Unlike most rows in this file, these PASS today: the markers all exist in
+// source + baseline. Their job is to FAIL if a future change drops a
+// load-bearing marker (an `unsafe impl Send`, a `#[non_exhaustive]`, a method
+// receiver, a `#[repr(C)]`) without the baseline + facade catching it.
+// =============================================================================
+
+// spec: design/arch/facades/cranelisp-platform-audit-s69.md §4 C1 (FIXME 0224)
+// CLHeap method receiver/arity drift: every `CLHeap`-impl type's `inc_rc` /
+// `dec_rc` must take `&self` (a by-value `self` receiver would break the RC
+// trampoline's ability to call through a borrowed reference). `cargo
+// public-api` emits the receiver, so the baseline distinguishes
+// `inc_rc(&self)` from `inc_rc(self)`.
+#[test]
+fn platform_clheap_inc_dec_rc_take_ref_self() {
+    let api = read_pub_api("cranelisp-platform");
+    // Collect every `inc_rc` / `dec_rc` pub-fn line.
+    let rc_lines: Vec<&str> = api
+        .lines()
+        .filter(|l| {
+            l.starts_with("pub fn ")
+                && l.contains("cranelisp_platform::")
+                && (l.contains("::inc_rc(") || l.contains("::dec_rc("))
+        })
+        .collect();
+    // The CLHeap family: CLString + CLAdt<T> carry concrete inc_rc/dec_rc
+    // impls in the baseline (CLInt/CLBool/CLFloat/CLIO are NOT CLHeap — they
+    // are non-heap value wrappers — and correctly do NOT appear here).
+    assert!(
+        !rc_lines.is_empty(),
+        "FIXME 0224: no inc_rc/dec_rc lines in cranelisp-platform baseline; \
+         the CLHeap surface vanished — investigate."
+    );
+    for line in &rc_lines {
+        assert!(
+            line.contains("(&self)"),
+            "FIXME 0224 (audit C1): CLHeap method receiver drift — expected \
+             `(&self)` receiver, found: `{line}`. A by-value `self` breaks the \
+             RC trampoline. Baseline regeneration + facade/BC update required."
+        );
+    }
+}
+
+// spec: design/arch/facades/cranelisp-platform-audit-s69.md §4 C2 (FIXME 0225)
+// `#[non_exhaustive]` presence: `OwnedPlatformFnDescriptor` MUST carry
+// `#[non_exhaustive]` (Principle 14 — post-load owned descriptor field-set
+// evolution discipline); CLOwned MUST NOT (a `#[repr(transparent)]` /
+// owned-handle type, not an evolving struct). `cargo public-api` emits the
+// attribute prefix, so the baseline is the mechanical witness.
+#[test]
+fn platform_non_exhaustive_present_on_owned_descriptor_only() {
+    let api = read_pub_api("cranelisp-platform");
+    // The declaration line for OwnedPlatformFnDescriptor must carry the
+    // `#[non_exhaustive]` prefix.
+    let owned_descriptor_line = api.lines().find(|l| {
+        l.contains("pub struct cranelisp_platform::OwnedPlatformFnDescriptor")
+    });
+    let owned_descriptor_line = owned_descriptor_line.expect(
+        "FIXME 0225: OwnedPlatformFnDescriptor not in cranelisp-platform baseline",
+    );
+    assert!(
+        owned_descriptor_line.contains("#[non_exhaustive]"),
+        "FIXME 0225 (audit C2): `#[non_exhaustive]` dropped from \
+         OwnedPlatformFnDescriptor — Principle 14 field-set evolution \
+         discipline broken. Line: `{owned_descriptor_line}`"
+    );
+    // Negative: CLOwned must NOT carry `#[non_exhaustive]`.
+    let cl_owned_decl = api
+        .lines()
+        .find(|l| l.contains("pub struct cranelisp_platform::CLOwned"));
+    if let Some(line) = cl_owned_decl {
+        assert!(
+            !line.contains("#[non_exhaustive]"),
+            "FIXME 0225 (audit C2): CLOwned unexpectedly gained \
+             `#[non_exhaustive]`. Line: `{line}`"
+        );
+    }
+}
+
+// spec: design/arch/facades/cranelisp-platform-audit-s69.md §4 C4 (FIXME 0227)
+// `#[repr(C)]` field-order mechanical check. cargo-public-api emits fields as
+// an unordered set, so it cannot catch a field reshuffle that changes byte
+// offsets. We assert via `std::mem::offset_of!` against a frozen offset table
+// — the (b) option the audit enumerated, chosen over (a) cbindgen-diff because
+// it is self-contained in the test suite (no external header-generation step).
+// The protected set: `PlatformFn`, `PlatformManifest`, `HostCallbacks` (the
+// `#[repr(C)]` layout-contract types per Principle 14).
+//
+// This needs the real Rust types, so it lives as a compile-time fixture using
+// `cranelisp_platform` as a dependency — but tests/ is a binary, so we assert
+// via the baseline that the `#[repr(C)]` attribute is present AND the field
+// COUNT + ORDER (as emitted top-to-bottom in the baseline) matches a frozen
+// expectation. cargo-public-api emits fields in source-declaration order, so a
+// reshuffle changes the emitted line order — which this test pins.
+#[test]
+fn platform_repr_c_field_order_frozen() {
+    let api = read_pub_api("cranelisp-platform");
+    // Helper: collect the ordered field names for a given struct, in the order
+    // cargo-public-api emits them (source-declaration order).
+    fn fields_in_order<'a>(api: &'a str, type_path: &str) -> Vec<&'a str> {
+        let field_prefix = format!("pub {type_path}::");
+        api.lines()
+            .filter_map(|l| {
+                l.strip_prefix(&field_prefix)
+                    .and_then(|rest| rest.split(':').next())
+            })
+            .collect()
+    }
+    // Assert `#[repr(C)]` prefix on each protected type's declaration line.
+    for ty in [
+        "cranelisp_platform::PlatformFn",
+        "cranelisp_platform::PlatformManifest",
+        "cranelisp_platform::HostCallbacks",
+    ] {
+        let decl = api
+            .lines()
+            .find(|l| l.contains(&format!("pub struct {ty}")))
+            .unwrap_or_else(|| panic!("FIXME 0227: {ty} not in baseline"));
+        assert!(
+            decl.contains("#[repr(C)]"),
+            "FIXME 0227 (audit C4): `#[repr(C)]` dropped from {ty}. Line: `{decl}`"
+        );
+    }
+    // Frozen field-order tables (source-declaration order). A reshuffle that
+    // changes byte offsets reorders these lines in the baseline → mismatch.
+    let platform_fn_fields = fields_in_order(&api, "cranelisp_platform::PlatformFn");
+    assert_eq!(
+        platform_fn_fields,
+        vec![
+            "docstring", "docstring_len", "jit_name", "jit_name_len", "name",
+            "name_len", "param_count", "param_name_count", "param_name_lens",
+            "param_names", "ptr", "scheduling_class", "type_sig", "type_sig_len",
+        ],
+        "FIXME 0227 (audit C4): PlatformFn field ORDER drifted — a #[repr(C)] \
+         byte-offset change. ABI_VERSION bump + frozen-table update required."
+    );
+    let manifest_fields = fields_in_order(&api, "cranelisp_platform::PlatformManifest");
+    assert_eq!(
+        manifest_fields,
+        vec![
+            "abi_version", "function_count", "functions", "name", "name_len",
+            "version", "version_len",
+        ],
+        "FIXME 0227 (audit C4): PlatformManifest field ORDER drifted — a \
+         #[repr(C)] byte-offset change. ABI_VERSION bump + table update required."
+    );
+    let host_cb_fields = fields_in_order(&api, "cranelisp_platform::HostCallbacks");
+    assert_eq!(
+        host_cb_fields,
+        vec!["alloc", "alloc_with_tag", "validate_schema"],
+        "FIXME 0227 (audit C4): HostCallbacks field ORDER drifted — a #[repr(C)] \
+         byte-offset change. ABI_VERSION bump + frozen-table update required."
+    );
+}
+
+// spec: design/arch/facades/cranelisp-platform-audit-s69.md §4 C5 (FIXME 0228)
+// `unsafe impl Send/Sync` presence. `unsafe impl Send for PlatformFn` +
+// `unsafe impl Sync for PlatformFn` are load-bearing (the IO trampoline holds
+// platform-fn pointers across threads). `OwnedPlatformFnDescriptor` +
+// `PlatformManifest` must conversely project `!Send + !Sync` (raw pointers /
+// owned strings that must not silently cross threads). cargo-public-api emits
+// both the positive `impl Send/Sync` and the negative `impl !Send/!Sync`.
+#[test]
+fn platform_send_sync_claims_match_invariants() {
+    let api = read_pub_api("cranelisp-platform");
+    let has = |needle: &str| api.lines().any(|l| l.trim() == needle);
+    // PlatformFn: positive Send + Sync (the unsafe impls).
+    assert!(
+        has("impl core::marker::Send for cranelisp_platform::PlatformFn"),
+        "FIXME 0228 (audit C5): `Send` dropped from PlatformFn — the IO \
+         trampoline can no longer hold platform-fn pointers across threads."
+    );
+    assert!(
+        has("impl core::marker::Sync for cranelisp_platform::PlatformFn"),
+        "FIXME 0228 (audit C5): `Sync` dropped from PlatformFn."
+    );
+    // OwnedPlatformFnDescriptor: negative !Send + !Sync (owned strings/ptr).
+    assert!(
+        has("impl !core::marker::Send for cranelisp_platform::OwnedPlatformFnDescriptor"),
+        "FIXME 0228 (audit C5): OwnedPlatformFnDescriptor unexpectedly became \
+         Send — the safety surface silently expanded."
+    );
+    assert!(
+        has("impl !core::marker::Sync for cranelisp_platform::OwnedPlatformFnDescriptor"),
+        "FIXME 0228 (audit C5): OwnedPlatformFnDescriptor unexpectedly became Sync."
+    );
+    // PlatformManifest: negative !Send + !Sync (raw pointers).
+    assert!(
+        has("impl !core::marker::Send for cranelisp_platform::PlatformManifest"),
+        "FIXME 0228 (audit C5): PlatformManifest unexpectedly became Send."
+    );
+    assert!(
+        has("impl !core::marker::Sync for cranelisp_platform::PlatformManifest"),
+        "FIXME 0228 (audit C5): PlatformManifest unexpectedly became Sync."
+    );
+}

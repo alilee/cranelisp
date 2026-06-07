@@ -8,8 +8,12 @@
 ;; type shapes and module paths.
 ;;
 ;; See tests/plan/strategy.md §"Prelude & Stdlib Test Isolation" for rationale.
+;;
+;; Spec §8.4: re-EXPORT (not import) so primitive fns AND types are Public and
+;; flow through the user module's implicit prelude glob (§8.8). A plain import
+;; is Private and the glob (§8.7.3) skips it — FIXME 0263.
 
-(import [primitives [*]])
+(export [primitives [*]])
 
 ;; --- Core ADTs ---
 
@@ -19,10 +23,10 @@
 ;; --- Numeric trait + impls ---
 
 (deftrait Num
-  (+ [self self] self)
-  (- [self self] self)
-  (* [self self] self)
-  (/ [self self] self))
+  (+ [a b] self)
+  (- [a b] self)
+  (* [a b] self)
+  (/ [a b] self))
 
 (impl Num Int
   (defn + [a b] (add-i64 a b))
@@ -39,8 +43,8 @@
 ;; --- Equality trait + impls ---
 
 (deftrait Eq
-  (= [self self] Bool)
-  (!= [self self] Bool))
+  (= [a b] Bool)
+  (!= [a b] Bool))
 
 (impl Eq Int
   (defn = [a b] (eq-i64 a b))
@@ -61,10 +65,10 @@
 ;; --- Ordering trait + impls ---
 
 (deftrait Ord
-  (< [self self] Bool)
-  (> [self self] Bool)
-  (<= [self self] Bool)
-  (>= [self self] Bool))
+  (< [a b] Bool)
+  (> [a b] Bool)
+  (<= [a b] Bool)
+  (>= [a b] Bool))
 
 (impl Ord Int
   (defn < [a b] (lt-i64 a b))

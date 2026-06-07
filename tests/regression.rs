@@ -2931,3 +2931,82 @@ fn regression_0179_cluster_union_read_staging_and_live() {
         cap.stdout, cap.stderr,
     );
 }
+
+// =============================================================================
+// FIXME 0279 reduction — cross-module monomorphisation of a POLYMORPHIC
+// imported function overflows the compiler (infinite `apply` recursion).
+// =============================================================================
+//
+// Discovered as the `stdlib/io/monad.cl` compiler stack overflow (FIXME 0279,
+// last blocker on the production prelude). Reduced from the full io.monad
+// module to a 2-file, 3-line repro:
+//
+//   util.cl:  (defn f [x] x)            ; polymorphic identity :: (Fn [a] a)
+//   main.cl:  (import [util [f]])
+//             (defn main [] (f 9))      ; monomorphise f at Int
+//
+// Reduction findings (S76 W3 /qa):
+//   - The `do`/`bind!`/`pure` macro+fn surface of io.monad is NOT the cause —
+//     a recursive `do` macro DEFINED-but-unused does not overflow; a
+//     non-recursive macro does not overflow.
+//   - `pure` (the imported fn) IS the trigger, but NOT because of its name or
+//     the `Pure` constructor: an imported `(defn lift [x] (Pure x))` overflows,
+//     and so does an imported `(defn pure [x] x)`.
+//   - The razor: an imported one-arg fn that returns a CONSTANT does NOT
+//     overflow; an imported one-arg fn that returns its PARAMETER (i.e. is
+//     POLYMORPHIC, `(Fn [a] a)`) DOES. A same-module polymorphic identity does
+//     NOT overflow — the cross-module IMPORT is load-bearing.
+//
+// Root cause (lldb backtrace at the overflow): infinite recursion in
+// `cranelisp_types::types::apply` (crates/cranelisp-types/src/types.rs:230) —
+// `apply(subst, Var(id))` chases `id -> mapped` where the substitution maps a
+// type var to a type containing itself (a cyclic/occurs-violating Subst). The
+// cyclic subst is composed while instantiating the cross-module polymorphic
+// scheme.
+//
+// Triage verdict: the defect is the CONSTRUCTION of the cyclic substitution
+// when monomorphising a cross-module polymorphic scheme — a /typecheck
+// responsibility (occurs-check / scheme instantiation / subst composition).
+// `apply` in cranelisp-types is merely where the non-termination manifests.
+//
+// FIXME(/typecheck) — cross-module monomorphisation composes a self-referential
+// Subst (occurs-check failure) for an imported `(Fn [a] a)`-shaped scheme.
+// Lands FAILING (the compile stack-overflows and aborts; bounded by the
+// harness 20s wall-clock so the abort surfaces as a non-success exit, not a
+// suite hang). See FIXME 0279.
+//
+// spec: spec/08-modules.md §8.3 — imported function resolution + use; the
+// polymorphic-scheme instantiation that §3 (types) requires must terminate.
+#[test]
+fn regression_0279_cross_module_polymorphic_import_monomorphisation() {
+    use std::time::Duration;
+    let result = Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .file("util.cl", "(defn f [x] x)\n")
+        .file("main.cl", "(import [util [f]])\n(defn main [] (f 9))\n")
+        .run("main.cl")
+        .timeout(Duration::from_secs(20))
+        .try_output();
+    match result {
+        Ok(out) => {
+            // The program is well-typed and must compile + run. Today it
+            // stack-overflows (abort, no clean exit). A fix makes main exit
+            // with the Int 9 (or 0 per §12.6 for a bare-Int main); the
+            // assertion is simply that the compile did not abort.
+            assert!(
+                !out.stderr.contains("overflowed its stack")
+                    && !out.stderr.contains("stack overflow"),
+                "FIXME 0279: cross-module polymorphic import monomorphisation \
+                 stack-overflowed in `cranelisp_types::types::apply` (cyclic \
+                 Subst). Resolver /typecheck. stdout=\n{}\nstderr=\n{}",
+                out.stdout,
+                out.stderr
+            );
+        }
+        Err(e2e::CrError::Timeout(_)) => {
+            panic!("FIXME 0279: compile did not complete within 20s (worse than \
+                    the expected overflow-abort); resolver /typecheck");
+        }
+        Err(e) => panic!("unexpected harness error: {e}"),
+    }
+}

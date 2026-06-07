@@ -6,4 +6,5 @@ pub mod cranelisp_primitives::marshal
 pub mod cranelisp_primitives::ring0
 pub mod cranelisp_primitives::string
 pub mod cranelisp_primitives::vec
+#[export_name = "__cranelisp_got_primitives"] pub static cranelisp_primitives::PRIMITIVES_GOT_SLAB: [core::sync::atomic::AtomicPtr<u8>; 1024]
 pub static cranelisp_primitives::PRIMITIVES_TABLE: std::sync::lazy_lock::LazyLock<alloc::sync::Arc<cranelisp_types::module::SymbolTable<(), ()>>>

@@ -306,6 +306,15 @@ impl Cranelisp {
         self
     }
 
+    /// Override the hard wall-clock cap (default 30s). Used by tests that
+    /// EXPECT a hang/park and want to bound it so `try_output` returns
+    /// `CrError::Timeout` rather than blocking the suite. The bound IS the
+    /// assertion for park-detection repros — see FIXME 0276.
+    pub fn timeout(mut self, dur: Duration) -> Self {
+        self.timeout = dur;
+        self
+    }
+
     // === Run ================================================================
 
     /// Materialise the invocation, spawn the child, capture output.

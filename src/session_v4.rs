@@ -3062,7 +3062,7 @@ impl CompilerSession {
         // tries to take a guard on it.
         cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, &module);
 
-        crate::worker::check_program_compat(
+        crate::worker::check_program_compat_no_gap(
             &self.shared.symbol_tables,
             &self.shared.module_aliases,
             &module,

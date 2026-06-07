@@ -180,15 +180,19 @@ pub fn load_platform_dll(
 
     // Step 3: Call the manifest function with host callbacks.
     //
-    // FIXME(0229): Sprint 71 grew HostCallbacks by two named-null callback
-    // fields (alloc_with_tag + validate_schema). They default to in-crate
-    // panic-emitting / no-op placeholders under the R1 wired-or-panic
-    // gate. The host-wiring sprint replaces these with real callbacks
-    // (cranelisp_intrinsics::cranelisp_alloc_with_tag + a typecheck-aware
-    // schema validator).
+    // `alloc_with_tag` is wired to the real intrinsic (S76 W3, FIXME 0229
+    // step 1): `cranelisp_intrinsics::cranelisp_alloc_with_tag` allocates a
+    // tagged heap ADT (`[total_size][rc=1][tag|pad][fields...]`, returns the
+    // alloc base) over `alloc::alloc_with_rc`. This removes the R1 gate —
+    // `CLAdt::<T>::construct(...)` no longer panics. `validate_schema` stays
+    // at the no-op placeholder: the host has no channel to obtain the DLL's
+    // schema text (the macro parses it into a DLL-local `LazyLock<Schema>`
+    // and neither invokes `validate_schema` at init nor exposes the literal
+    // on the manifest — the S-PLAT-1 seam, blocked on an /arch ruling +
+    // platform-crate macro change; see FIXME 0233 step 3).
     let callbacks = HostCallbacks {
         alloc: cranelisp_intrinsics::heap_alloc_payload,
-        alloc_with_tag: cranelisp_platform::null_alloc_with_tag,
+        alloc_with_tag: cranelisp_intrinsics::alloc::cranelisp_alloc_with_tag,
         validate_schema: cranelisp_platform::null_validate_schema,
     };
     let manifest = unsafe { manifest_fn(&callbacks) };
@@ -247,6 +251,7 @@ pub fn register_platform_in_tc(
     // (W-Absorb) rather than a `TypeCheckEnv`.
     _next_type_id: &std::sync::atomic::AtomicU32,
     _check_state: &mut cranelisp_typecheck::CheckState,
+    module_aliases: &cranelisp_types::ModuleAliases,
     platform: &LoadedPlatform,
 ) -> Result<Vec<(String, *const u8)>, CranelispError> {
     let module_path = ModuleFullPath::from(format!("platform.{}", platform.name));
@@ -254,11 +259,27 @@ pub fn register_platform_in_tc(
     // Ensure the platform module exists.
     cranelisp_types::ensure_module_exists(symbol_tables, &module_path);
 
+    // FIXME 0233 step 1: platform sig type-names resolve through the normal
+    // symbol-table view + resolution primitive (`check_type_expr`), exactly
+    // like program forms — NOT through a bespoke `intrinsic_type_from_name`
+    // table. For the leaf names (`Int`/`Bool`/`Float`/`String`) and the `IO`
+    // ADT to be reachable from the synthetic `platform.<name>` module, inject
+    // the same `(import [primitives [*]])` binding every user module gets
+    // (spec §8.8.1; primitives is loaded at session init). Idempotent — a
+    // glob-import re-install over an already-imported module is a no-op append.
+    inject_primitives_import_for_platform(symbol_tables, &module_path, module_aliases)?;
+
     let mut jit_symbols: Vec<(String, *const u8)> = Vec::new();
 
     for desc in &platform.descriptors {
-        // Parse the type signature from the S-expression string.
-        let ty = parse_platform_type_sig(&desc.type_sig, &desc.name)?;
+        // Parse + typecheck the signature through the shared frontend +
+        // typecheck surface (FIXME 0233 step 1). `parse_type_expr` lowers the
+        // one S-expr type form to a `TypeExpr`; `check_type_expr` resolves its
+        // leaf names against the `platform.<name>` module's view (primitives
+        // imported above), returning the resolved `Type`.
+        let ty = parse_and_check_platform_type_sig(
+            symbol_tables, module_aliases, &module_path, &desc.type_sig, &desc.name,
+        )?;
 
         let scheme = Scheme {
             type_vars: vec![],
@@ -293,141 +314,78 @@ pub fn register_platform_in_tc(
     Ok(jit_symbols)
 }
 
-/// Parse a platform function's type signature from its S-expression string.
+/// Inject `(import [primitives [*]])` into the synthetic `platform.<name>`
+/// module so platform-sig leaf type-names (`Int`/`Bool`/`Float`/`String` and
+/// the `IO` ADT) resolve through the normal symbol-table view, the same way
+/// every user module reaches them (spec §8.8.1; FIXME 0233 step 1).
 ///
-/// Handles simple cases: `(Fn [T1 T2] R)` where types are primitive names
-/// or `(IO T)` wrappers.
-fn parse_platform_type_sig(sig: &str, fn_name: &str) -> Result<Type, CranelispError> {
-    // Parse the signature as an S-expression.
-    let sexps = cranelisp_frontend::parse(sig).map_err(|_| CranelispError::ModuleError {
+/// Idempotent: `install_imports` appends per-symbol `ModuleEntry::Import`
+/// bindings; re-installing a glob import over an already-imported module
+/// re-writes the same bindings (no duplication hazard for resolution).
+fn inject_primitives_import_for_platform(
+    symbol_tables: &dashmap::DashMap<cranelisp_types::ModuleFullPath, crate::code::SessionSymbolTable>,
+    module_path: &ModuleFullPath,
+    module_aliases: &cranelisp_types::ModuleAliases,
+) -> Result<(), CranelispError> {
+    use cranelisp_types::{ImportNames, ImportSpec};
+    let spec = ImportSpec {
+        module_path: ModuleFullPath::from("primitives"),
+        names: ImportNames::Glob,
+        alias: None,
+        span: Span::SYNTHETIC,
+    };
+    crate::imports::install_imports(
+        symbol_tables,
+        module_path,
+        module_aliases,
+        std::slice::from_ref(&spec),
+    )
+}
+
+/// Parse + typecheck a platform function's type signature (FIXME 0233 step 1).
+///
+/// Replaces the former ad-hoc `parse_platform_type_sig` + `sexp_to_type` +
+/// `parse_fn_type` + `parse_io_type` family (which duplicated a subset of the
+/// frontend + typecheck type-resolution logic and used a bespoke
+/// `intrinsic_type_from_name` table). The signature is one type-expr S-form;
+/// `cranelisp_frontend::parse_type_expr` lowers it to a `TypeExpr`, and
+/// `cranelisp_typecheck::check_type_expr` resolves its leaf names against the
+/// `platform.<name>` module's view (primitives imported by
+/// `inject_primitives_import_for_platform`), returning the resolved `Type`.
+/// Schema-declared ADT names (`(Fn [Rectangle] Int)`) resolve through the same
+/// path once the platform module carries those type defs (host-wiring round-
+/// trip; see `design/platform/host-wiring-s76.md` §4 seam 0231/0233).
+fn parse_and_check_platform_type_sig(
+    symbol_tables: &dashmap::DashMap<cranelisp_types::ModuleFullPath, crate::code::SessionSymbolTable>,
+    module_aliases: &cranelisp_types::ModuleAliases,
+    module_path: &ModuleFullPath,
+    sig: &str,
+    fn_name: &str,
+) -> Result<Type, CranelispError> {
+    let expr = cranelisp_frontend::parse_type_expr(sig).map_err(|e| CranelispError::ModuleError {
         message: format!(
-            "invalid type signature for platform function '{}': {}",
-            fn_name, sig
+            "invalid type signature for platform function '{}': {} ({})",
+            fn_name, sig, e
         ),
         location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
     })?;
 
-    if sexps.len() != 1 {
-        return Err(CranelispError::ModuleError {
-            message: format!(
-                "platform function '{}' type signature must be a single form, got {}",
-                fn_name,
-                sexps.len()
-            ),
-            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-        });
-    }
-
-    sexp_to_type(&sexps[0], fn_name)
-}
-
-/// Convert a parsed S-expression into a Type.
-///
-/// Handles:
-/// - `Int`, `Bool`, `Float`, `String` -> primitive types
-/// - `(Fn [P1 P2] R)` -> function type
-/// - `(IO T)` -> ADT "IO" with inner type
-fn sexp_to_type(sexp: &Sexp, fn_name: &str) -> Result<Type, CranelispError> {
-    match sexp {
-        Sexp::Symbol(name, _) => {
-            crate::session_v4::intrinsic_type_from_name(name.as_ref()).ok_or_else(|| {
-                CranelispError::ModuleError {
-                    message: format!(
-                        "unknown type '{}' in platform function '{}' signature",
-                        name, fn_name
-                    ),
-                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-                }
-            })
-        }
-        Sexp::List(elems, _) if !elems.is_empty() => {
-            if let Sexp::Symbol(head, _) = &elems[0] {
-                match head.as_str() {
-                    "Fn" => parse_fn_type(elems, fn_name),
-                    "IO" => parse_io_type(elems, fn_name),
-                    _ => Err(CranelispError::ModuleError {
-                        message: format!(
-                            "unsupported type constructor '{}' in platform function '{}' signature",
-                            head, fn_name
-                        ),
-                        location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-                    }),
-                }
-            } else {
-                Err(CranelispError::ModuleError {
-                    message: format!(
-                        "invalid type form in platform function '{}' signature",
-                        fn_name
-                    ),
-                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-                })
-            }
-        }
-        _ => Err(CranelispError::ModuleError {
-            message: format!(
-                "invalid type in platform function '{}' signature",
-                fn_name
-            ),
-            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-        }),
-    }
-}
-
-/// Parse `(Fn [P1 P2 ...] R)` into `Type::Fn`.
-fn parse_fn_type(elems: &[Sexp], fn_name: &str) -> Result<Type, CranelispError> {
-    if elems.len() != 3 {
-        return Err(CranelispError::ModuleError {
-            message: format!(
-                "Fn type must have exactly 2 arguments (params and return), got {}",
-                elems.len() - 1
-            ),
-            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-        });
-    }
-
-    // Parse param list.
-    let params = match &elems[1] {
-        Sexp::Bracket(items, _) => {
-            let mut param_types = Vec::new();
-            for item in items {
-                param_types.push(sexp_to_type(item, fn_name)?);
-            }
-            param_types
-        }
-        _ => {
-            return Err(CranelispError::ModuleError {
-                message: format!(
-                    "Fn type params must be a bracket list in platform function '{}'",
-                    fn_name
-                ),
-                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-            });
-        }
-    };
-
-    // Parse return type.
-    let ret = sexp_to_type(&elems[2], fn_name)?;
-
-    Ok(Type::Fn(params, Box::new(ret)))
-}
-
-/// Parse `(IO T)` into `Type::ADT("IO", vec![T])`.
-fn parse_io_type(elems: &[Sexp], fn_name: &str) -> Result<Type, CranelispError> {
-    if elems.len() != 2 {
-        return Err(CranelispError::ModuleError {
-            message: format!(
-                "IO type must have exactly 1 argument, got {}",
-                elems.len() - 1
-            ),
-            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-        });
-    }
-
-    let inner = sexp_to_type(&elems[1], fn_name)?;
-    Ok(Type::ADT(cranelisp_types::FQTypeName::new(
-        ModuleFullPath::from("primitives"),
-        cranelisp_types::TypeName::from("IO"),
-    ), vec![inner]))
+    let mut ctx = cranelisp_typecheck::SymbolTableAccess::live(symbol_tables, module_path.clone());
+    cranelisp_typecheck::check_type_expr(
+        &expr,
+        &mut ctx,
+        symbol_tables,
+        module_aliases,
+        module_path,
+        Span::SYNTHETIC,
+    )
+    .map_err(|e| CranelispError::ModuleError {
+        message: format!(
+            "type error in platform function '{}' signature '{}': {}",
+            fn_name, sig, e
+        ),
+        location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+    })
 }
 
 /// Check if a Sexp is a `(platform name)` form.
@@ -474,6 +432,7 @@ pub fn load_and_register_platform(
     symbol_tables: &dashmap::DashMap<cranelisp_types::ModuleFullPath, crate::code::SessionSymbolTable>,
     next_type_id: &std::sync::atomic::AtomicU32,
     check_state: &mut cranelisp_typecheck::CheckState,
+    module_aliases: &cranelisp_types::ModuleAliases,
     platform_name: &str,
     project_root: &Path,
     lib_dirs: &[PathBuf],
@@ -504,7 +463,9 @@ pub fn load_and_register_platform(
     }
 
     // Step 4: Register in typechecker.
-    let jit_symbols = register_platform_in_tc(symbol_tables, next_type_id, check_state, &platform)?;
+    let jit_symbols = register_platform_in_tc(
+        symbol_tables, next_type_id, check_state, module_aliases, &platform,
+    )?;
 
     Ok((platform, jit_symbols))
 }
@@ -547,46 +508,97 @@ mod tests {
         assert!(result.is_none()); // File doesn't exist, so None.
     }
 
-    // spec: 10-io §10.9.1 — platform type signature parsing
-    #[test]
-    fn test_parse_fn_type_sig() {
-        let ty = parse_platform_type_sig("(Fn [String] (IO Int))", "test").unwrap();
-        match &ty {
-            Type::Fn(params, ret) => {
-                assert_eq!(params.len(), 1);
-                assert_eq!(params[0], Type::String);
-                match ret.as_ref() {
-                    Type::ADT(name, args) => {
-                        assert_eq!(name.name.as_ref(), "IO");
-                        assert_eq!(args.len(), 1);
-                        assert_eq!(args[0], Type::Int);
-                    }
-                    _ => panic!("expected IO ADT return type"),
-                }
-            }
-            _ => panic!("expected Fn type"),
+    // -----------------------------------------------------------------
+    // Host-side ADT marshaling — alloc_with_tag wiring (FIXME 0229 step 1).
+    //
+    // These tests pin the int-side wiring: a `HostCallbacks` constructed
+    // exactly as `load_platform_dll` builds it must carry the REAL
+    // `cranelisp_alloc_with_tag` intrinsic in its `alloc_with_tag` field
+    // (not the R1-gate `null_alloc_with_tag` panic placeholder), and
+    // invoking that field as a platform DLL would (via `CLAdt::construct`)
+    // must produce the heap layout `CLAdt::read_tag`/`read_field` expect:
+    // `[total_size | rc=1 | tag@HEAP_HEADER_SIZE | f0@+8 | f1@+16 ...]`,
+    // returning the alloc BASE pointer. This is the int-side half of the
+    // round-trip; the platform crate unit-tests the CLAdt read path
+    // (adt.rs T9–T13) and the intrinsic crate unit-tests the layout
+    // (alloc.rs `test_alloc_with_tag_*`).
+    // -----------------------------------------------------------------
+
+    /// Build the `HostCallbacks` exactly as `load_platform_dll` does, so the
+    /// test exercises the wiring under test rather than a hand-built struct.
+    fn wired_host_callbacks() -> HostCallbacks {
+        HostCallbacks {
+            alloc: cranelisp_intrinsics::heap_alloc_payload,
+            alloc_with_tag: cranelisp_intrinsics::alloc::cranelisp_alloc_with_tag,
+            validate_schema: cranelisp_platform::null_validate_schema,
         }
     }
 
-    // spec: 10-io §10.9.1 — zero-param function type
+    // spec: design/platform/host-wiring-s76.md §2 — the host wires the real
+    // alloc_with_tag intrinsic; the R1 gate (null_alloc_with_tag panic) is
+    // gone. A two-field ADT constructed through the callback round-trips:
+    // tag + both fields read back at the documented offsets, RC = 1.
     #[test]
-    fn test_parse_zero_param_type_sig() {
-        let ty = parse_platform_type_sig("(Fn [] (IO String))", "test").unwrap();
-        match &ty {
-            Type::Fn(params, ret) => {
-                assert!(params.is_empty());
-                match ret.as_ref() {
-                    Type::ADT(name, args) => {
-                        assert_eq!(name.name.as_ref(), "IO");
-                        assert_eq!(args.len(), 1);
-                        assert_eq!(args[0], Type::String);
-                    }
-                    _ => panic!("expected IO ADT return type"),
-                }
-            }
-            _ => panic!("expected Fn type"),
+    fn alloc_with_tag_callback_round_trips_two_field_adt() {
+        let callbacks = wired_host_callbacks();
+        let fields: [i64; 2] = [0x0BAD_F00D_DEAD_BEEFu64 as i64, -42];
+
+        // Invoke as a platform DLL would (CLAdt::construct → alloc_with_tag).
+        let base = (callbacks.alloc_with_tag)(2, 2, fields.as_ptr());
+        assert_ne!(base, 0, "wired callback must return a non-null alloc base");
+
+        let header = cranelisp_types::HeapHeader::SIZE as i64;
+        // SAFETY: `base` is a freshly allocated tagged-ADT base pointer; the
+        // layout (total_size, rc, tag, fields) is the documented contract.
+        unsafe {
+            let total_size = *(base as *const i64);
+            // 16 header + 8 tag slot + 2*8 fields = 40.
+            assert_eq!(total_size, 40, "total_size = header + tag + 2 fields");
+            let rc = *((base + 8) as *const i64);
+            assert_eq!(rc, 1, "alloc_with_rc initialises RC to 1");
+            // Tag at payload+0 (base + HEAP_HEADER_SIZE) reads back as i64.
+            let tag = *((base + header) as *const i64);
+            assert_eq!(tag, 2, "variant tag at payload+0");
+            // Fields at payload+8 and payload+16 — copied verbatim.
+            let f0 = *((base + header + 8) as *const i64);
+            let f1 = *((base + header + 16) as *const i64);
+            assert_eq!(f0, fields[0], "field 0 copied verbatim");
+            assert_eq!(f1, fields[1], "field 1 copied verbatim");
         }
+
+        // Free via the runtime dealloc (reads total_size from the header).
+        cranelisp_intrinsics::alloc::heap_dealloc(base);
     }
+
+    // spec: design/platform/host-wiring-s76.md §2 — a nullary-shaped data
+    // constructor (zero fields) round-trips through the wired callback:
+    // tag-only payload, RC = 1, alloc base returned (not the R1 panic).
+    #[test]
+    fn alloc_with_tag_callback_round_trips_zero_field_adt() {
+        let callbacks = wired_host_callbacks();
+        let base = (callbacks.alloc_with_tag)(7, 0, std::ptr::null());
+        assert_ne!(base, 0);
+
+        let header = cranelisp_types::HeapHeader::SIZE as i64;
+        // SAFETY: documented tagged-ADT layout for a zero-field constructor.
+        unsafe {
+            let total_size = *(base as *const i64);
+            assert_eq!(total_size, 24, "total_size = 16 header + 8 tag slot");
+            let tag = *((base + header) as *const i64);
+            assert_eq!(tag, 7);
+        }
+        cranelisp_intrinsics::alloc::heap_dealloc(base);
+    }
+
+    // (FIXME 0233 step 1) The ad-hoc `parse_platform_type_sig` + `sexp_to_type`
+    // family — and their two unit tests `test_parse_fn_type_sig` /
+    // `test_parse_zero_param_type_sig` — were deleted. Platform-sig parsing is
+    // now `cranelisp_frontend::parse_type_expr` (unit-tested in frontend) +
+    // `cranelisp_typecheck::check_type_expr` (unit-tested in typecheck); the
+    // integrated platform-sig resolution path is exercised e2e by
+    // `tests/spec_platforms.rs::platform_form_with_stdio_compiles_in_run_mode`
+    // and `::io_trampoline_executes_print_to_stdout` (both load the stdio DLL
+    // and resolve its `(Fn [String] (IO Unit))`-shaped sigs through this path).
 
     // spec: platform-dlls §search — tier 2 project-local resolution
     #[test]
@@ -696,10 +708,12 @@ mod tests {
         symbol_tables.insert(user_mod.clone(), crate::code::SessionSymbolTable::new_with_params(user_mod.clone()));
         crate::bootstrap::mount_synthetic_modules(&symbol_tables, &next_type_id);
         let mut check_state = cranelisp_typecheck::CheckState::new(user_mod);
+        let module_aliases = cranelisp_types::ModuleAliases::default();
         let (platform, jit_symbols) = load_and_register_platform(
             &symbol_tables,
             &next_type_id,
             &mut check_state,
+            &module_aliases,
             "stdio",
             project_root,
             &[],
@@ -786,11 +800,13 @@ mod tests {
         let user_mod = ModuleFullPath::from("user");
         symbol_tables.insert(user_mod.clone(), crate::code::SessionSymbolTable::new_with_params(user_mod.clone()));
         let mut check_state = cranelisp_typecheck::CheckState::new(user_mod);
+        let module_aliases = cranelisp_types::ModuleAliases::default();
         // Try to load with wrong name — manifest says "stdio" but we say "wrong-name"
         let result = load_and_register_platform(
             &symbol_tables,
             &next_type_id,
             &mut check_state,
+            &module_aliases,
             "wrong-name",
             project_root,
             &[],

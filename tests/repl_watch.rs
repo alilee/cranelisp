@@ -36,14 +36,16 @@ use e2e::Cranelisp;
 /// Conventional prelude pulling primitives and defining the Num trait
 /// for Int. Shared across watch tests that use operators (`+`).
 const WATCH_PRELUDE_NUM: &str = "\
-(import [primitives [*]])
-(deftrait Num (+ [self self] self) (- [self self] self) (* [self self] self) (/ [self self] self))
+(export [primitives [*]])
+(deftrait Num (+ [a b] self) (- [a b] self) (* [a b] self) (/ [a b] self))
 (impl Num Int (defn + [a b] (add-i64 a b)) (defn - [a b] (sub-i64 a b)) (defn * [a b] (mul-i64 a b)) (defn / [a b] (div-i64 a b)))
 ";
 
 /// Minimal primitives-only prelude used by tests that only need bare
 /// `add-i64` style calls (no operators or trait dispatch).
-const WATCH_PRELUDE_PRIMS: &str = "(import [primitives [*]])\n";
+/// Re-EXPORT (not import) so the primitives flow through the implicit prelude
+/// glob to the user site as bare names — spec §8.4 / §8.8 (FIXME 0263).
+const WATCH_PRELUDE_PRIMS: &str = "(export [primitives [*]])\n";
 
 // =============================================================================
 // 1. Watch Scope (§14.1)
@@ -305,7 +307,7 @@ fn watch_notifies_when_reload_introduces_type_incompatibility() {
     let stdin = "\
 (+ 1 2)
 /sh sleep 0.3
-/sh echo '(deftrait Num (+ [self self] self)) (impl Num Int (defn + [a b] \"not-an-int\"))' > prelude.cl
+/sh echo '(export [primitives [*]]) (deftrait Num (+ [a b] self)) (impl Num Int (defn + [a b] \"not-an-int\"))' > prelude.cl
 /sh sleep 0.5
 (+ 10 20)
 /quit

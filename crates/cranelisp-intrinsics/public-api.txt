@@ -5,6 +5,7 @@ pub fn cranelisp_intrinsics::alloc::alloc_with_rc(payload_size: usize) -> *mut u
 pub fn cranelisp_intrinsics::alloc::bytes_allocated() -> usize
 pub fn cranelisp_intrinsics::alloc::bytes_current() -> usize
 pub fn cranelisp_intrinsics::alloc::bytes_peak() -> usize
+#[no_mangle] pub c fn cranelisp_intrinsics::alloc::cranelisp_alloc_with_tag(tag: u32, field_count: u32, fields_ptr: *const i64) -> i64
 pub unsafe fn cranelisp_intrinsics::alloc::dealloc(base: *mut u8)
 pub fn cranelisp_intrinsics::alloc::dealloc_count() -> usize
 #[export_name = "runtime/alloc"] pub c fn cranelisp_intrinsics::alloc::heap_alloc(payload_size: i64) -> i64

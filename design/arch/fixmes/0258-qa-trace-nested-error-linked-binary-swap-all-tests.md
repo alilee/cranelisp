@@ -69,6 +69,60 @@ test work:
   FIXME **0276** carries its repros; don't conflate the two when authoring item 2 (use the
   match-consumption shape for the 0275 acceptance test, the accessor shape for 0276's).
 
+## /qa resolution status (S76 W3 — 2026-06-07)
+
+The trace integration test work is COMPLETE. New active home: `tests/trace.rs`
+(13 tests; supersedes `tests/legacy/ring4_trace.rs`). The 4 stale trace cases in
+`tests/spec_12_runtime.rs` reconciled: `trace_returns_trace_value` rewritten to
+match-based extraction (the `name` accessor is broken — see below);
+`trace_nested_still_returns_trace` ("outermost wins") RETIRED. PLAN.md §"W3
+trace + lenient + 0279 reduction" carries the full row ledger.
+
+Item-by-item:
+
+- **Item 1 (nested error).** Dynamic case `trace_nested_dynamic_raises_runtime_error`
+  PASSES (Wave-1.5 guard). Lexical case `trace_nested_lexical_raises_runtime_error`
+  FAILS — **DEFECT**: the pure-lexical `(trace (trace e))` does NOT raise. No
+  wrapper fires before the inner `swap_got`, so `TRACE_BODY_RUNNING` is still
+  `false` and the inner trace is treated as a legit multi-module swap (returns an
+  empty trace). Resolver **/dev intrinsics** (the guard must also catch the
+  no-wrapper-yet lexical case). Durable record: the failing test.
+- **Item 2 (linked binary).** `trace_linked_binary_match_consumption_runs` PASSES
+  — 0275 object-mode relocations landed; the match-consumption shape links + runs
+  (exit 42), no SIGBUS. Asserts WITHOUT extern-primitive children per FIXME 0280
+  (a). No `--link` rejection test existed to retire.
+- **Item 3 (swap-all visibility).** Positives GREEN: `trace_extern_primitive_appears_as_child`
+  (`primitives/str-concat` in REPL), `trace_stdlib_fixture_fn_appears_as_child`
+  (`prelude/helper`). Negatives GREEN (`[Tested+Neg]`): inline arithmetic +
+  anonymous lambda produce no node.
+- **NOTE-1 (production-baker round-trip).** `trace_polymorphic_adt_result_renders`
+  + `trace_adt_value_render_overflows_defect` FAIL — **DEFECT**: tracing ANY fn
+  returning a user ADT value (even nullary `None`) STACK-OVERFLOWS the ADT
+  DisplayDescriptor formatter. The round-trip gap is a CRASH, not merely an
+  unverified path. Resolver **/dev backend** (production `bake_adt`/`bake_descriptor`
+  ctor-table assembly bakes an unbounded descriptor; possibly the intrinsics
+  `cranelisp_trace_format` walk). Also `trace_trait_heavy_prelude_overflows_defect`
+  FAILS — **DEFECT**: trace swap-all over the trait-heavy `TestStandard` prelude
+  overflows on a `nice-worker` thread (Num+Eq+Ord alone does not; full prelude
+  does — open bisection handed to /dev). Resolver **/dev backend** (swap-all
+  discovery / descriptor scaling; the worker-thread signature implicates the
+  lenient spark path).
+- **NOTE-2 (panic-unwind stuck guard).** `trace_panic_unwind_does_not_stick_guard`
+  PASSES — the worry does NOT reproduce in REPL mode (probed both the simple and
+  the precise instrumented-call-then-panic shapes; per-form panic recovery resets
+  the flag). NOT a defect; landed as a positive regression guard, NOT
+  failing-not-ignored. (Verdict overrides the work-order expectation of FAILING.)
+- **NOTE-4 (--link baked-address / accessor).** Match-consumption confirmed
+  working (item 2). The accessor-shape defect is FIXME 0276 (kept separate, not
+  conflated).
+
+NEW DEFECTS surfaced (no free FIXME number — max is 0282; the failing tests are
+the durable record + trigger per `feedback_repros_join_suite`): lexical-guard gap
+(/dev intrinsics), ADT-render overflow (/dev backend), trait-prelude swap-all
+overflow (/dev backend). All carry `// FIXME(/dev …)` inline + a PLAN.md row.
+This FIXME stays OPEN as the trace-defect tracker for the /dev waves (the /qa
+test work itself is done).
+
 ## Operational implication / Context
 
 These tests should land WITH or just-after the /dev waves (FIXMEs 0254/0255/0256) so they go green as the

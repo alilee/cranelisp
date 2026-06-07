@@ -36,9 +36,22 @@
 //! Sprint 68 Wave 3 per `design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md`
 //! §Cascade. The replacement is the explicit `cranelisp_init_primitives()`
 //! startup hook (below) — the standalone binary's startup stub calls it
-//! before user code runs; the hook forces `LazyLock::force(&PRIMITIVES_TABLE)`,
+//! UNCONDITIONALLY before user code runs (FIXME 0280 made the call
+//! unconditional; pre-0280 it rode on `cranelisp_init_platform`, so a
+//! no-platform program calling an extern primitive reached user code with an
+//! unpopulated GOT); the hook forces `LazyLock::force(&PRIMITIVES_TABLE)`,
 //! which references every primitive's fn ptr via the static-init body, so
 //! the linker preserves them as transitive dependencies of the static.
+//!
+//! Since FIXME 0280 (S76 Wave 3) the force ALSO populates the exported writable
+//! static slab `cranelisp_primitives::PRIMITIVES_GOT_SLAB`
+//! (`#[unsafe(export_name = "__cranelisp_got_primitives")]`), over which
+//! `PRIMITIVES_TABLE`'s `GotTable` is constructed. That export is what makes
+//! `__cranelisp_got_primitives` a link-time symbol — `--link`-mode
+//! extern-primitive dispatch (`(str-len (str-concat …))`) now resolves at `ld`
+//! time instead of failing with "symbol not found: ___cranelisp_got_primitives".
+//! The startup hook populates the slab's slots before the first GOT-indirect
+//! dispatch reads them (null slots → SIGSEGV).
 //! See `design/arch/facades/int.md` §"Exe-bundle startup contract —
 //! `cranelisp_init_primitives()`" for the full rationale.
 
@@ -103,13 +116,15 @@ pub extern "C" fn cranelisp_init_platform(manifest_fn_ptr: i64) {
         *const cranelisp_platform::HostCallbacks,
     ) -> cranelisp_platform::PlatformManifest;
     let manifest_fn: ManifestFn = unsafe { std::mem::transmute(manifest_fn_ptr) };
-    // FIXME(0229): Sprint 71 grew HostCallbacks by alloc_with_tag +
-    // validate_schema. Both populated with cranelisp-platform's named-null
-    // placeholders under the R1 gate; the host-wiring sprint replaces
-    // them with real callbacks.
+    // `alloc_with_tag` is wired to the real intrinsic (S76 W3, FIXME 0229
+    // step 1): `cranelisp_alloc_with_tag` allocates a tagged heap ADT and
+    // returns the alloc base, removing the R1 gate in `--link` mode too.
+    // `validate_schema` stays at the no-op placeholder pending the S-PLAT-1
+    // schema-text-exposure seam (FIXME 0233 step 3 — /arch ruling + macro
+    // change).
     let callbacks = cranelisp_platform::HostCallbacks {
         alloc: cranelisp_intrinsics::alloc::heap_alloc,
-        alloc_with_tag: cranelisp_platform::null_alloc_with_tag,
+        alloc_with_tag: cranelisp_intrinsics::alloc::cranelisp_alloc_with_tag,
         validate_schema: cranelisp_platform::null_validate_schema,
     };
     manifest_fn(&callbacks);
