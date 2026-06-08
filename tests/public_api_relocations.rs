@@ -87,11 +87,24 @@ fn public_api_check_runs_against_all_seven_crates() {
             continue;
         }
         // Generate current public-api and diff against baseline.
+        //
+        // Flags MUST match how the committed baselines were generated:
+        // `-s` (`--simplified`, once) omits blanket-impls, and
+        // `--omit auto-derived-impls` drops the `Clone`/`Debug`/`Eq`/`Serialize`
+        // impl lines. The baselines keep auto-*trait* impls (Freeze/Send/Sync)
+        // but exclude auto-*derived* impls — that is the facade-focused surface.
+        // Omitting `--omit auto-derived-impls` here (as the pre-S76 command did)
+        // makes the live output list derive impls that the baselines lack, so
+        // every crate spuriously "drifts" by hundreds of lines. The canonical
+        // regen command is the same: `cargo +nightly public-api -s
+        // --omit auto-derived-impls > crates/{crate}/public-api.txt`.
         let cur = Command::new("cargo")
             .args([
                 "+nightly",
                 "public-api",
                 "--simplified",
+                "--omit",
+                "auto-derived-impls",
                 "--manifest-path",
             ])
             .arg(crate_dir.join("Cargo.toml"))
