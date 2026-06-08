@@ -372,30 +372,30 @@ fn row_30_io_trace_absent_from_intrinsics_pub_api() {
     );
 }
 
-// spec: design/arch/facades/intrinsics.md §"IO observation"
-// SUPERSEDED — facade-authority contradiction; see design/arch/fixmes/0297.
-// This row asserts ZERO `cranelisp_intrinsics::trace::*` lines (pre-S76 D40:
-// trace relocates to int). The S76 trace ruling (src/CLAUDE.md §"Test
-// discovery", 2026-06-04) REVERSES this — trace now lives in
-// `cranelisp_intrinsics::trace` (43 baseline lines), `src/trace.rs` deleted.
-// The committed baseline correctly reflects the ruling, so this assertion is
-// superseded. Flipping it is a facade-authority call (does the intrinsics
-// facade now host trace? D40's current disposition?), NOT a /qa call — filed
-// design/arch/fixmes/0297-arch-trace-host-d40-vs-s76-ruling-contradiction.md
-// targeting /arch. Kept failing-not-ignored per feedback_failing_not_ignored
-// until /arch rules on the test's correct form.
+// spec: design/arch/tracing.md §4.3 — trace bodies host in cranelisp-intrinsics
+// The pre-S76 expectation (Decision 0040: trace relocates to int → ABSENT from
+// intrinsics) is RETRACTED. Decision 0040 carries a PARTIAL-RETRACTION BOX
+// (S76, user-decided 2026-06-04): the `(trace ...)` half is retracted, the 12
+// `cranelisp_trace_*` bodies + `trace_format` relocate BACK to
+// `cranelisp-intrinsics` and publish via `intrinsics_table()`; `src/trace.rs`
+// deletes. `design/arch/tracing.md` (§§1–6, §4.3) is the canonical target.
+// So the contract flips: trace MUST be PRESENT in `cranelisp_intrinsics::trace`.
+// (Cascade residual: the intrinsics facade `intrinsics.md` is still silent on
+// trace — design/arch/fixmes/0297 asks /arch to document the tracing.md
+// hosting there. The as-built + tracing.md are unambiguous, so this test
+// asserts the settled contract now rather than waiting on the facade prose.)
 #[test]
-fn row_33_trace_observer_absent_from_intrinsics_pub_api() {
+fn row_33_trace_bodies_hosted_in_intrinsics_pub_api() {
     let api = read_pub_api("cranelisp-intrinsics");
     let trace_fns = api
         .lines()
         .filter(|l| l.contains("cranelisp_intrinsics::trace::"))
         .count();
-    assert_eq!(
-        trace_fns, 0,
-        "Decision 40 close (trace half): `cranelisp_intrinsics::trace::*` still \
-         leaks {trace_fns} pub-api lines. Facade prescribes hosting in `int`. \
-         /dev (int) Wave 4 row 33 + /dev (intrinsics) post-Wave-4 deletion."
+    assert!(
+        trace_fns > 0,
+        "tracing.md §4.3 / D0040 retraction: the trace family MUST be hosted in \
+         `cranelisp_intrinsics::trace` and published via intrinsics_table(); \
+         found {trace_fns} pub-api lines (expected > 0). src/trace.rs deletes."
     );
 }
 

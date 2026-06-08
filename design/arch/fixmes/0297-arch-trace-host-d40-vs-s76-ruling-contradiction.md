@@ -4,59 +4,50 @@ target: /arch
 filed_by: /qa
 filed_at: 2026-06-08
 sprint_filed: 76
-refers_to: tests/facade_pif_rows.rs::row_33_trace_observer_absent_from_intrinsics_pub_api, src/CLAUDE.md §"Test discovery" (S76 trace ruling 2026-06-04), design/arch/facades/cranelisp-intrinsics-audit-s69.md, crates/cranelisp-intrinsics/public-api.txt
+refers_to: design/arch/facades/cranelisp-intrinsics-audit-s69.md, design/arch/tracing.md §4.3, design/arch/decisions/0040-runtime-trace-io-trace-relocate-to-int.md (PARTIAL-RETRACTION BOX), tests/facade_pif_rows.rs::row_33_trace_bodies_hosted_in_intrinsics_pub_api
 status: open
 ---
 
-# Trace family host — Decision 40 ("trace in int") contradicts the S76 trace ruling ("trace in intrinsics")
+# Cascade: intrinsics facade is silent on the trace family (hosted there per tracing.md / D0040 retraction)
 
 ## Issue
 
-`tests/facade_pif_rows.rs::row_33_trace_observer_absent_from_intrinsics_pub_api`
-asserts ZERO `cranelisp_intrinsics::trace::*` lines in the intrinsics
-public-api baseline, on the basis of pre-S76 Decision 40 ("trace observer
-relocates to `int`"). The S76 trace ruling reverses this:
+The trace-host question is **already settled in the design** — this is a
+cascade gap, not an open arbitration:
 
-> src/CLAUDE.md (S76 trace ruling 2026-06-04): "the trace family —
-> `cranelisp_trace_format` + the 12 `cranelisp_trace_*` bodies — also LEFT
-> int. It lives in `cranelisp_intrinsics::trace`, published via
-> `intrinsics_table()`, registered by `Jit::new`. `src/trace.rs` is deleted."
+- **Decision 0040** carries a PARTIAL-RETRACTION BOX (S76, user-decided
+  2026-06-04): the `(trace ...)` half is retracted; the 12 `cranelisp_trace_*`
+  bodies + `trace_format` relocate **back to `cranelisp-intrinsics`** and
+  publish via `intrinsics_table()`; `src/trace.rs` deletes.
+- **`design/arch/tracing.md`** (§§1–6, §4.3) is the canonical target-state:
+  the trace bodies/table/runtime-guard live in `crates/cranelisp-intrinsics/src/trace.rs`.
+- The as-built agrees: `crates/cranelisp-intrinsics/public-api.txt` carries 43
+  `cranelisp_intrinsics::trace::` lines (baseline regenerated this sprint, zero
+  diff).
 
-`crates/cranelisp-intrinsics/public-api.txt` correctly reflects the ruling:
-it carries 43 `cranelisp_intrinsics::trace::` lines. The committed baseline
-was regenerated this sprint (`cargo +nightly public-api -s --omit
-auto-derived-impls` → zero diff), so the baseline is current and authoritative.
+`/qa` has already fixed the conformance test to the settled contract —
+`tests/facade_pif_rows.rs::row_33_trace_bodies_hosted_in_intrinsics_pub_api`
+now asserts the trace family IS present in `cranelisp_intrinsics::trace`
+(citing tracing.md §4.3), and it passes.
 
-So the test's expectation is **superseded** — trace lives in intrinsics, not
-int. But flipping the assertion (`== 0` → `> 0`, or relocating it to assert
-trace IS in intrinsics) is a facade-authority call, not a `/qa` call: it
-depends on Decision 40's current disposition and whether the intrinsics
-facade now hosts the trace family. `/qa` has left the test failing-not-ignored
-rather than decide this.
+The residual gap: the **intrinsics facade** (`design/arch/facades/cranelisp-intrinsics-audit-s69.md`)
+does **not document the trace family hosting** — a `grep -i trace` over it
+returns nothing. The tracing.md ruling was never cascaded into the intrinsics
+facade's surface description.
 
 ## Proposed resolution
 
-`/arch` to arbitrate:
-
-1. Confirm Decision 40's current disposition — is "trace observer relocates
-   to int" retracted/amended by the S76 trace ruling, and if so where is the
-   amendment recorded (the manifestation site a future reader expects)?
-2. Decide the intrinsics facade's host claim for the trace family
-   (`cranelisp_intrinsics::trace::*`, 43 baseline lines).
-3. Direct `/qa` on the test's correct form — most likely: invert row_33 to
-   assert the trace family IS hosted in `cranelisp_intrinsics::trace` (the
-   S76 target state), paired with a negative guard that `src/trace.rs` /
-   `cranelisp_intrinsics::io_trace` shapes are absent. row_30
-   (`io_trace` absent from intrinsics) is a separate concern and currently
-   passes — confirm io_trace's disposition is unchanged by this.
-
-Once `/arch` rules, `/qa` updates the test to match the ruled facade.
+`/arch` to cascade `tracing.md` §4.3 into the intrinsics facade (the
+manifestation site a future reader expects — `feedback_manifestation_site_question`):
+document that `cranelisp-intrinsics` hosts the trace family
+(`cranelisp_intrinsics::trace::*`, the 12 `cranelisp_trace_*` bodies +
+`trace_format` + `TRACE_STACK`/`TRACE_THREAD_ID` + the nesting guard),
+published via `intrinsics_table()`. No test change is needed — row_33 already
+asserts the settled contract.
 
 ## Operational implication / Context
 
-This is the only row in `facade_pif_rows.rs` whose failure is NOT
-format-staleness or an unmet PIF that the test already correctly tracks. It
-is a genuine facade-authority contradiction surfaced while modernizing the
-file against cargo-public-api 0.51.0. The test stays failing-not-ignored
-(per `memory/feedback_failing_not_ignored.md`) until `/arch` rules; it is the
-durable record of the D40-vs-S76 contradiction.
+Surfaced while `/qa` modernized `facade_pif_rows.rs` against cargo-public-api
+0.51.0. Not a blocker — the design and as-built are unambiguous and the test
+already matches them; this only closes the facade-prose cascade so the
+intrinsics facade reflects the post-S76 trace hosting.
