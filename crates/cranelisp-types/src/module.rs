@@ -180,41 +180,6 @@ pub struct SymbolTable<C: CodeStore = (), L: LinkerStore = ()> {
     /// `/platform` (NOT by typecheck — see §11.5).
     #[serde(default)]
     pub platforms: Vec<PlatformSpec>,
-    /// Raw `Schema` literal for a platform module — the text exactly as the
-    /// DLL's `declare_platform!` macro embedded it (the ADT-marshaling layout
-    /// declarations). `None` for non-platform modules and for pre-S71 DLLs
-    /// (`stdio`, `test-capture`) that omit the `schema:` arm.
-    ///
-    /// Set at platform-module registration (the platform-as-module migration,
-    /// FIXME 0233 / int). Rides the existing serde round-trip into the cache
-    /// `.meta.json` (`cache/serialize.rs::serialise_meta`) so the host can
-    /// re-parse it on cache-hit to re-populate the loaded DLL's
-    /// `LazyLock<Schema>` for cross-session continuity (FIXME 0232). The host
-    /// **obtains** the literal at first DLL load via the
-    /// `HostCallbacks::validate_schema` callback's existing `schema_ptr`/
-    /// `schema_len` parameters (no new `#[repr(C)]` manifest field, no
-    /// `ABI_VERSION` bump — S76 seam-2 ruling, FIXMEs 0250+0251 merged); this
-    /// field is the cache-layer home for the bytes the host captured there.
-    ///
-    /// Cache-layer only, NOT a DLL-boundary contract: adding it bumps
-    /// `CACHE_SCHEMA_VERSION` (backend), never `ABI_VERSION` (platform).
-    /// `#[serde(default)]` so pre-S71 caches and non-platform modules
-    /// deserialise cleanly as `None`. See `bounded-contexts.md` §3 (cache),
-    /// §5 (platform), §7 (this field).
-    ///
-    /// **RETIREMENT PENDING (`platform-interface.md` §6.5 / §6.6 retirement
-    /// list, user-ratified 2026-06-07):** with platforms declaring their ADTs
-    /// as ordinary importable `.cl` modules, a platform's types cache like any
-    /// other module's source and there is no schema literal to round-trip —
-    /// this field deletes. It is **left in place here** because its only
-    /// consumers live OUTSIDE `cranelisp-types` (the backend cache:
-    /// `cache/mod.rs` v2 rustdoc + `cache/serialize.rs` round-trip tests);
-    /// removing the field from types would take the workspace red. Backend
-    /// retires the field + its cache round-trip in its own fire (the
-    /// platform-interface backend cascade, FIXME 0287 / §6.5), at which point
-    /// this field and its construction sites are dropped.
-    #[serde(default)]
-    pub schema_literal: Option<String>,
     /// Original `(mod child)` / `(mod- child)` declarations in source order;
     /// `visibility == Visibility::Private` distinguishes `(mod-)`. Consumed
     /// by `/int` for submodule loading.
@@ -482,7 +447,6 @@ impl SymbolTable<(), ()> {
             exports: Vec::new(),
             platforms: Vec::new(),
             submodules: Vec::new(),
-            schema_literal: None,
             schema_version: 0,
             linker: None,
         }
@@ -521,7 +485,6 @@ impl SymbolTable<(), ()> {
             exports: self.exports,
             platforms: self.platforms,
             submodules: self.submodules,
-            schema_literal: self.schema_literal,
             schema_version: self.schema_version,
             linker: None,
         }
@@ -605,7 +568,6 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
             exports: Vec::new(),
             platforms: Vec::new(),
             submodules: Vec::new(),
-            schema_literal: None,
             schema_version: 0,
             linker: None,
         }

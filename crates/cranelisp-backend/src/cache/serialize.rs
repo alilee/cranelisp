@@ -472,53 +472,6 @@ mod tests {
         );
     }
 
-    /// §3 (design/backend/jit-setup-boundary.md) / FIXME 0232 — the platform
-    /// module's `schema_literal` rides the `.meta.json` serde round-trip for
-    /// free (it is a `SymbolTable` field; no hand-rolled envelope). Set it,
-    /// serialise, deserialise, assert it survives and the schema_version
-    /// matches post-bump.
-    // spec: design/backend/jit-setup-boundary.md §3
-    #[test]
-    fn cache_meta_round_trips_schema_literal() {
-        let dir = tempfile::tempdir().unwrap();
-        let meta_path = dir.path().join("platform.shapes.meta.json");
-
-        let mut table = SymbolTable::new(ModuleFullPath::from("platform.shapes"));
-        table.schema_literal = Some("((Rectangle ((CLInt w) (CLInt h))))".to_string());
-
-        write_meta(&meta_path, &table, super::super::CACHE_SCHEMA_VERSION).unwrap();
-        let loaded = load_meta(&meta_path).expect("cache load should succeed");
-
-        assert_eq!(
-            loaded.schema_literal.as_deref(),
-            Some("((Rectangle ((CLInt w) (CLInt h))))"),
-            "schema_literal must round-trip through the .meta.json sidecar"
-        );
-        assert_eq!(
-            loaded.schema_version,
-            super::super::CACHE_SCHEMA_VERSION,
-            "schema_version must match the (bumped) const after round-trip"
-        );
-    }
-
-    /// Pre-v2 `.meta.json` files lack `schema_literal`; the
-    /// `#[serde(default)]` defaults it to `None` so a table without the field
-    /// still deserialises (FIXME 0232 §"Operational implication" — pre-S71
-    /// DLLs cache without it). Confirms the default is `None`, not an error.
-    // spec: design/backend/jit-setup-boundary.md §3
-    #[test]
-    fn cache_meta_schema_literal_defaults_to_none() {
-        let dir = tempfile::tempdir().unwrap();
-        let meta_path = dir.path().join("user.meta.json");
-
-        let table = SymbolTable::new(ModuleFullPath::from("user"));
-        assert_eq!(table.schema_literal, None, "fresh table has no schema_literal");
-
-        write_meta(&meta_path, &table, super::super::CACHE_SCHEMA_VERSION).unwrap();
-        let loaded = load_meta(&meta_path).expect("cache load should succeed");
-        assert_eq!(loaded.schema_literal, None, "absent schema_literal loads as None");
-    }
-
     /// G.11 Test 2 (test plan §G.11) — cache_schema_version_mismatch_falls_through
     ///
     /// Per design/backend/module-caching.md §14.3 step [3]: schema mismatch

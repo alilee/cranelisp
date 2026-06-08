@@ -116,15 +116,18 @@ pub mod linker;
 /// Field additions with `#[serde(default)]` whose default matches a fresh-build
 /// value do NOT require a bump.
 ///
-/// **v2 (S76 W1b):** `SymbolTable.schema_literal: Option<String>` added (the
-/// platform-as-module schema text, FIXME 0232 / `design/backend/jit-setup-boundary.md`
-/// §3). The serialised shape changed, so the version bumps to invalidate stale
-/// caches gracefully (Decision 34) — a `CacheStale::SchemaMismatch` fall-through
-/// to a fresh build, not a cryptic deserialise error. The field is
-/// `#[serde(default)]`-defaulted to `None`, so pre-v2 `.meta.json` files (which
-/// lack it) still deserialise; the bump is the explicit invalidation discipline
-/// Decision 34 requires whenever the on-disk shape moves.
-pub const CACHE_SCHEMA_VERSION: u32 = 2;
+/// **v2 (S76 W1b):** added `SymbolTable.schema_literal: Option<String>` (the
+/// platform-as-module schema text). RETIRED in v3 — see below.
+///
+/// **v3 (S76 Wave 5):** `SymbolTable.schema_literal` REMOVED. The
+/// platform-interface design (`platform-interface.md` §6.5, user-ratified
+/// 2026-06-07) supersedes it: platforms declare ADTs as ordinary `.cl` modules
+/// (which cache normally), and the DLL-embedded schema + layout-hash gate
+/// replaces the cache round-trip — no schema text crosses the boundary, so
+/// there is nothing to stash on `SymbolTable`. The field deletion changes the
+/// serialised shape, so the version bumps (Decision 34) to invalidate stale v2
+/// caches gracefully via `CacheStale::SchemaMismatch` fall-through.
+pub const CACHE_SCHEMA_VERSION: u32 = 3;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///
