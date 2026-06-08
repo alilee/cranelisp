@@ -170,6 +170,55 @@ where
     let mut state = CheckState::new(current_module.clone());
     let mut accumulator = ModuleCheckAccumulator::new();
 
+    // Rehydrate cross-cluster multi-sig overload resolution state from the
+    // live symbol table. Each REPL form is its own cluster, so `CheckState`
+    // (built fresh per `check_forms` call, above) starts with empty
+    // `overloads` / `resolved_overloads` maps. Those maps are populated only
+    // during the cluster that ran the multi-clause `(defn f …)` — a later
+    // cluster `(f 5)` would otherwise see empty maps: `infer_apply`'s
+    // pending-overload gate (`state.overloads.contains_key`) misses, no
+    // `SigDispatch` is recorded, and codegen calls the bodyless
+    // `DefKind::Overloaded` base → "undefined function: f"; an arity-2 call
+    // unifies against the base scheme (built from the arity-1 clause) →
+    // "arity mismatch". `--run` is unaffected because the whole file is one
+    // cluster (defn + callers share live overload state).
+    //
+    // This mirrors the `advance_next_id_past_table` walk above (which
+    // rehydrates per-session `next_id` from the live table for the
+    // constrained/parametric-poly cross-call case): both reconstruct
+    // per-cluster `CheckState` from the durable live table. The
+    // `DefKind::Overloaded { variants }` base entry carries everything both
+    // maps need — `OverloadVariant { param_types, ret_type, mangled_name }`
+    // reconstructs `resolved_overloads` directly, and the overload keys
+    // populate `overloads` (only the key set is consulted, via the
+    // `contains_key` gate — the `(internal_name, arity)` values are never
+    // read downstream of registration).
+    {
+        let table = symbol_tables.get(&current_module);
+        if let Some(guard) = table {
+            for (name, entry) in guard.all_symbols() {
+                if let cranelisp_types::ModuleEntry::Def { kind, .. } = entry
+                    && let cranelisp_types::DefKind::Overloaded { variants } = kind.as_ref()
+                    && !variants.is_empty()
+                {
+                    let resolved: Vec<(Vec<cranelisp_types::Type>, cranelisp_types::Type, cranelisp_types::Symbol)> =
+                        variants
+                            .iter()
+                            .map(|v| {
+                                (v.param_types.clone(), v.ret_type.clone(), v.mangled_name.clone())
+                            })
+                            .collect();
+                    let overload_keys: Vec<(cranelisp_types::Symbol, usize)> = variants
+                        .iter()
+                        .map(|v| (v.mangled_name.clone(), v.param_types.len()))
+                        .collect();
+                    state.overloads.entry(name.clone()).or_insert(overload_keys);
+                    state.resolved_overloads.entry(name.clone()).or_insert(resolved);
+                }
+            }
+        }
+    }
+
     // Convert the `ParsedEntry` list into the `TopLevel` shapes the existing
     // per-form dispatcher consumes. `Macro` and `Constructor` variants don't
     // yet map to a `TopLevel` form — they are dropped here and handled
@@ -1110,6 +1159,129 @@ mod tests {
             other => panic!(
                 "expected Gap(SymbolTypechecked) with alias-resolved target, got {other:?}"
             ),
+        }
+    }
+
+    /// Cross-cluster multi-sig overload dispatch (Sprint 76 Wave 4c, FIXME
+    /// handed off by /dev int). Each REPL form is a separate `check_forms`
+    /// cluster, so a multi-clause `(defn f ([x] x) ([x y] x))` registered in
+    /// one cluster must still dispatch correctly from a *later* cluster's body
+    /// `(f 5)`. Pre-fix the second cluster built a fresh `CheckState` with
+    /// empty `overloads` maps, so `infer_apply`'s pending-overload gate missed
+    /// → no `SigDispatch`, codegen hit the bodyless `Overloaded` base
+    /// ("undefined function: f"). The fix rehydrates `overloads` /
+    /// `resolved_overloads` from the live `DefKind::Overloaded` base entry at
+    /// the top of `check_forms` (mirroring `advance_next_id_past_table`).
+    ///
+    /// spec: §5.13 multi-signature dispatch; REPL cross-input persistence.
+    #[test]
+    fn check_forms_cross_call_multi_sig_dispatch_resolves_to_variant() {
+        use cranelisp_types::{DefKind, ModuleEntry, ResolvedCall};
+
+        let modules = modules();
+
+        // Cluster 1: register the multi-clause `f`.
+        //   (defn f ([x] x) ([x y] x))
+        let var_x = |sp: Span| Expr::Var {
+            name: Symbol::from("x"),
+            span: sp,
+            inferred_type: None,
+        };
+        let multi_f = ParsedEntry::Def {
+            name: Symbol::from("f"),
+            variants: vec![
+                DefnVariant {
+                    params: vec![(Symbol::from("x"), None)],
+                    body: var_x(Span::SYNTHETIC),
+                    span: Span::SYNTHETIC,
+                },
+                DefnVariant {
+                    params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
+                    body: var_x(Span::SYNTHETIC),
+                    span: Span::SYNTHETIC,
+                },
+            ],
+            visibility: Visibility::Private,
+            docstring: None,
+            span: Span::SYNTHETIC,
+        };
+        {
+            let mut ctx: SymbolTableAccess<'_, (), ()> =
+                SymbolTableAccess::live(&modules, module_path());
+            check_forms::<(), ()>(vec![multi_f], &mut ctx, &modules, &no_aliases())
+                .expect("cluster 1 (multi-sig defn) checks clean");
+        }
+        // Sanity: the live base entry is `Overloaded` with both variants.
+        {
+            let guard = modules.get(&module_path()).expect("module exists");
+            match guard.get("f").expect("f base registered") {
+                ModuleEntry::Def { kind, .. } => match kind.as_ref() {
+                    DefKind::Overloaded { variants } => {
+                        assert_eq!(variants.len(), 2, "both clauses recorded on base");
+                    }
+                    other => panic!("expected Overloaded base, got {other:?}"),
+                },
+                other => panic!("expected Def, got {other:?}"),
+            }
+        }
+
+        // Cluster 2 (a FRESH `CheckState`): a caller body `(f 5)`. The
+        // arity-1 variant has an untyped param (mangles to `f$Var`); `5`
+        // matches it (Var is compatible with Int).
+        let call_span = Span::SYNTHETIC;
+        let caller = ParsedEntry::Def {
+            name: Symbol::from("caller"),
+            variants: vec![DefnVariant {
+                params: vec![],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("f"),
+                        span: Span::SYNTHETIC,
+                        inferred_type: None,
+                    }),
+                    args: vec![Expr::IntLit {
+                        value: 5,
+                        span: Span::SYNTHETIC,
+                        inferred_type: None,
+                    }],
+                    span: call_span,
+                    resolved_call: None,
+                    inferred_type: None,
+                },
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Private,
+            docstring: None,
+            span: Span::SYNTHETIC,
+        };
+        {
+            let mut ctx: SymbolTableAccess<'_, (), ()> =
+                SymbolTableAccess::live(&modules, module_path());
+            check_forms::<(), ()>(vec![caller], &mut ctx, &modules, &no_aliases())
+                .expect("cluster 2 (caller body) checks clean across clusters");
+        }
+
+        // The caller's annotated AST must carry a `SigDispatch` to `f$Var` on
+        // the `(f 5)` Apply — pre-fix this resolved to the bodyless base.
+        let guard = modules.get(&module_path()).expect("module exists");
+        let caller_entry = guard.get("caller").expect("caller registered");
+        let ast = match caller_entry {
+            ModuleEntry::Def { ast: Some(ast), .. } => ast,
+            other => panic!("expected caller Def with annotated ast, got {other:?}"),
+        };
+        let resolved = match &ast.body {
+            Expr::Apply { resolved_call: Some(rc), .. } => rc.as_ref(),
+            other => panic!("expected annotated Apply body, got {other:?}"),
+        };
+        match resolved {
+            ResolvedCall::SigDispatch { mangled_name } => {
+                assert_eq!(
+                    mangled_name.as_ref(),
+                    "f$Var",
+                    "cross-cluster (f 5) must dispatch to the arity-1 variant"
+                );
+            }
+            other => panic!("expected SigDispatch across clusters, got {other:?}"),
         }
     }
 }
