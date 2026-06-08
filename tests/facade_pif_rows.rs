@@ -43,6 +43,28 @@ fn read_pub_api(crate_name: &str) -> String {
         .unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
 }
 
+/// cargo-public-api 0.51.0 prefixes declaration lines with the item's
+/// attributes, e.g. `#[non_exhaustive] pub enum cranelisp_backend::Code`
+/// or `#[repr(C)] pub struct cranelisp_platform::PlatformFn`. Older tool
+/// versions emitted the bare `pub enum …` form. Strip a single leading
+/// `#[ … ] ` attribute segment so a predicate can keep using
+/// `starts_with("pub enum ")` / `starts_with("pub struct ")` against the
+/// declaration body. Lines without an attribute prefix pass through
+/// unchanged.
+fn strip_attr_prefix(line: &str) -> &str {
+    let t = line.trim_start();
+    if let Some(rest) = t.strip_prefix("#[") {
+        // Find the matching `] ` that closes the leading attribute. The
+        // attribute itself never contains `] ` (a `]` immediately followed
+        // by a space) inside its argument list in cargo-public-api output,
+        // so the first occurrence closes it.
+        if let Some(close) = rest.find("] ") {
+            return rest[close + 2..].trim_start();
+        }
+    }
+    t
+}
+
 // =============================================================================
 // Row 1 — `Code` enum lives in cranelisp-backend (Decision 41 close-out)
 // =============================================================================
@@ -57,6 +79,7 @@ fn row_01_code_enum_named_in_backend_pub_api() {
     // Look for the canonical declaration `pub enum cranelisp_backend::…::Code`
     // — facade backend.md §"`Code`" prescribes it as a backend public item.
     let present = api.lines().any(|line| {
+        let line = strip_attr_prefix(line);
         line.starts_with("pub enum ")
             && line.contains("cranelisp_backend::")
             && line.trim_end().ends_with("::Code")
@@ -82,6 +105,7 @@ fn row_01_code_enum_named_in_backend_pub_api() {
 fn rows_02_03_compilation_error_enum_named_in_backend_pub_api() {
     let api = read_pub_api("cranelisp-backend");
     let present = api.lines().any(|line| {
+        let line = strip_attr_prefix(line);
         line.starts_with("pub enum ")
             && line.contains("cranelisp_backend::")
             && line.trim_end().ends_with("::CompilationError")
@@ -99,6 +123,7 @@ fn rows_02_03_compilation_error_enum_named_in_backend_pub_api() {
 fn row_05_linker_error_enum_named_in_backend_pub_api() {
     let api = read_pub_api("cranelisp-backend");
     let present = api.lines().any(|line| {
+        let line = strip_attr_prefix(line);
         line.starts_with("pub enum ")
             && line.contains("cranelisp_backend::")
             && line.trim_end().ends_with("::LinkerError")
@@ -118,11 +143,13 @@ fn row_05_linker_error_enum_named_in_backend_pub_api() {
 fn rows_03_04_linker_and_object_artefact_named_in_backend_pub_api() {
     let api = read_pub_api("cranelisp-backend");
     let linker = api.lines().any(|line| {
+        let line = strip_attr_prefix(line);
         line.starts_with("pub struct ")
             && line.contains("cranelisp_backend::")
             && line.trim_end().ends_with("::LinkerArtefact")
     });
     let object = api.lines().any(|line| {
+        let line = strip_attr_prefix(line);
         line.starts_with("pub struct ")
             && line.contains("cranelisp_backend::")
             && line.trim_end().ends_with("::ObjectArtefact")
@@ -296,21 +323,31 @@ fn row_27_primitives_string_vec_physically_owned_by_primitives_not_reexported() 
                         || l.contains("::string_identity")))
         })
         .count();
-    // Also assert primitives DOES expose them locally.
-    let str_helpers_in_primitives = api
+    // Also assert primitives DOES physically own the string/vec surface.
+    //
+    // Surface-shape note (cargo-public-api 0.51.0): post-relocation the
+    // string/vec helpers live as `pub(crate)` fns inside the primitives
+    // crate (kept linkable via `extern_shims()` per the primitives audit
+    // §"DCE protection"), so they do NOT surface as named pub fns in the
+    // baseline. The witness of physical ownership is the `string` / `vec`
+    // *modules* appearing under `cranelisp_primitives::` — they are absent
+    // from the intrinsics baseline (checked above) and present here. This
+    // is the current shape of "owned by primitives, not re-exported".
+    let string_mod_in_primitives = api
         .lines()
-        .filter(|l| {
-            l.contains("pub")
-                && (l.contains("str_concat") || l.contains("vec_len"))
-        })
-        .count();
+        .any(|l| strip_attr_prefix(l) == "pub mod cranelisp_primitives::string");
+    let vec_mod_in_primitives = api
+        .lines()
+        .any(|l| strip_attr_prefix(l) == "pub mod cranelisp_primitives::vec");
+    let primitives_owns = string_mod_in_primitives && vec_mod_in_primitives;
     assert!(
-        str_helpers_in_intrinsics == 0 && str_helpers_in_primitives > 0,
+        str_helpers_in_intrinsics == 0 && primitives_owns,
         "FIXME 0180 close: string/vec physical relocation incomplete. \
          intrinsics still defines/re-exports {str_helpers_in_intrinsics} \
-         string/vec helpers (should be 0 post-relocation); primitives \
-         defines {str_helpers_in_primitives} (should be > 0). \
-         /dev (primitives) Wave 3 row 27."
+         string/vec helpers (should be 0 post-relocation); primitives owns \
+         `pub mod cranelisp_primitives::string`={string_mod_in_primitives}, \
+         `pub mod cranelisp_primitives::vec`={vec_mod_in_primitives} \
+         (both should be true). /dev (primitives) Wave 3 row 27."
     );
 }
 
@@ -336,7 +373,17 @@ fn row_30_io_trace_absent_from_intrinsics_pub_api() {
 }
 
 // spec: design/arch/facades/intrinsics.md §"IO observation"
-// FIXME(/dev int Wave 4 row 33, D40 close): cranelisp_trace_* + observer relocate to int.
+// SUPERSEDED — facade-authority contradiction; see design/arch/fixmes/0297.
+// This row asserts ZERO `cranelisp_intrinsics::trace::*` lines (pre-S76 D40:
+// trace relocates to int). The S76 trace ruling (src/CLAUDE.md §"Test
+// discovery", 2026-06-04) REVERSES this — trace now lives in
+// `cranelisp_intrinsics::trace` (43 baseline lines), `src/trace.rs` deleted.
+// The committed baseline correctly reflects the ruling, so this assertion is
+// superseded. Flipping it is a facade-authority call (does the intrinsics
+// facade now host trace? D40's current disposition?), NOT a /qa call — filed
+// design/arch/fixmes/0297-arch-trace-host-d40-vs-s76-ruling-contradiction.md
+// targeting /arch. Kept failing-not-ignored per feedback_failing_not_ignored
+// until /arch rules on the test's correct form.
 #[test]
 fn row_33_trace_observer_absent_from_intrinsics_pub_api() {
     let api = read_pub_api("cranelisp-intrinsics");
@@ -749,10 +796,16 @@ fn platform_repr_c_field_order_frozen() {
     // Frozen field-order tables (source-declaration order). A reshuffle that
     // changes byte offsets reorders these lines in the baseline → mismatch.
     let platform_fn_fields = fields_in_order(&api, "cranelisp_platform::PlatformFn");
+    // Frozen field-order table for ABI_VERSION = 3 (Sprint 76, FIXME 0288):
+    // `jit_name` / `jit_name_len` were removed — the former jit_name
+    // mangled-name dispatch retired in favour of the exported linker name
+    // (see crates/cranelisp-platform/src/lib.rs:186-191, 320, 359). The
+    // ABI_VERSION bump (1→3) is the recorded layout-discipline gate for the
+    // removal; this frozen table is updated to match.
     assert_eq!(
         platform_fn_fields,
         vec![
-            "docstring", "docstring_len", "jit_name", "jit_name_len", "name",
+            "docstring", "docstring_len", "name",
             "name_len", "param_count", "param_name_count", "param_name_lens",
             "param_names", "ptr", "scheduling_class", "type_sig", "type_sig_len",
         ],
@@ -770,9 +823,14 @@ fn platform_repr_c_field_order_frozen() {
          #[repr(C)] byte-offset change. ABI_VERSION bump + table update required."
     );
     let host_cb_fields = fields_in_order(&api, "cranelisp_platform::HostCallbacks");
+    // Frozen field-order table for ABI_VERSION = 3 (Sprint 76, FIXME 0288):
+    // `validate_schema` was removed — the v3 ABI surface is
+    // `HostCallbacks { alloc, alloc_with_tag }` (see
+    // crates/cranelisp-platform/src/lib.rs:185-190). The ABI_VERSION bump is
+    // the recorded layout-discipline gate for the removal; table updated.
     assert_eq!(
         host_cb_fields,
-        vec!["alloc", "alloc_with_tag", "validate_schema"],
+        vec!["alloc", "alloc_with_tag"],
         "FIXME 0227 (audit C4): HostCallbacks field ORDER drifted — a #[repr(C)] \
          byte-offset change. ABI_VERSION bump + frozen-table update required."
     );
