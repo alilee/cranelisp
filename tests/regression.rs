@@ -763,11 +763,20 @@ fn d45_real_exemplar_html_run_tests_no_crash() {
     assert_no_signal_crash("d45_real_exemplar_html", &out);
 }
 
-// spec: repl/spec.md §16.3 — single (run-test ...) call (not batch)
+// spec: design/arch/test-discovery.md §4.4 — single-test invocation
+// (not the /run-tests batch loop).
 //
-// FIXME(/backend) — If this test passes and
-// d45_real_exemplar_html_run_tests fails, defect is in the /run-tests
-// dispatch loop, not the individual run-test call.
+// Isolation companion to the batched `/run-tests html` reductions below: if
+// this single-invocation path is clean while the batched path crashes, the
+// defect is in the dispatch loop, not the individual test call. The retired
+// `run-test` special form (src/CLAUDE.md §"Test discovery"; test-discovery.md
+// fourth convergence) is gone — running one test is now invoking its callable
+// directly, bracketed by `catch-runtime-error`. This drives the single
+// exemplar test `html/test-wrap-tag` through that combinator and asserts the
+// child does not crash by signal. (The exemplar's stdlib `Result` shadows the
+// seeded `primitives/Result`, so a *type* error may surface — that is fine;
+// the load-bearing invariant here is "no SIGSEGV/SIGTRAP", per the Sprint 59
+// Defect 4+5 origin.)
 //
 // (carry: legacy/sprint59_defects456_repro::d45_real_exemplar_html_single_run_test_no_crash)
 #[test]
@@ -779,7 +788,11 @@ fn d45_real_exemplar_html_single_run_test_no_crash() {
         .use_workspace_stdlib_for_stdlib_conformance_only()
         .use_workspace_platforms()
         .file("user.cl", "")
-        .stdin("(import [html [test-wrap-tag]])\n(run-test \"html/test-wrap-tag\")\n")
+        .stdin(
+            "(import [html [test-wrap-tag]])\n\
+             (import [primitives [catch-runtime-error]])\n\
+             (catch-runtime-error (fn [] (test-wrap-tag)))\n",
+        )
         .output();
     assert_no_signal_crash("d45_real_exemplar_html_single", &out);
 }

@@ -345,29 +345,45 @@ fn run_tests_empty_module_reports_no_tests() {
     .assert_stdout_contains("No test-* functions found");
 }
 
-// spec: repl/spec.md §16 — `discover-tests` and `run-test` are user-callable
-// primitives; a user can compose their own test runner without relying on
-// the `/run-tests` slash command. Sprint 60 reduction history makes this a
-// load-bearing repro shape: the slash-command path differs from the direct
-// primitive-composition path. The test below defines its own `count-passes`
-// fold over `discover-tests` results and verifies the pass count surfaces.
-// (carry: legacy/sketch_port.rs::sketch_run_tests_pass_fn_called)
+// spec: design/arch/test-discovery.md §4.3 — `discover-tests` and
+// `catch-runtime-error` are user-callable `primitives`; a user composes
+// their own test runner over the discovered name+callable pairs without the
+// `/run-tests` slash command. This is the load-bearing composability shape
+// (ruling 1): the runner folds over the `(Vec (Pair String (Fn [] (Option
+// String))))` discovery result, brackets each late-bound callable with
+// `catch-runtime-error`, and counts passes. The retired `run-test` /
+// `TestResult` (TestPass/TestFail) surface and the SList-of-names return are
+// gone (src/CLAUDE.md §"Test discovery"; test-discovery.md fourth
+// convergence) — this test asserts the current fn-value-pairs surface.
+//
+// Two properties this exercises beyond construction:
+//   - explicit `(Vec String)` module argument — the no-arg `(discover-tests)`
+//     form is STDLIB-MACRO sugar (test-discovery.md §150), and tests are
+//     stdlib-free (CLAUDE.md), so the bare extern is called with `["user"]`.
+//   - q-eligibility (test-discovery.md §162): a `test-*` fn is discovered only
+//     if its type is EXACTLY `(Fn [] (Option String))`. A bare `(defn test-x
+//     [] None)` infers the polymorphic `(Fn [] (Option a))` and is correctly
+//     excluded; `(if true None (Some "..."))` forces `(Option String)`.
 #[test]
-fn discover_tests_and_run_test_user_composition() {
+fn discover_tests_and_catch_runtime_error_user_composition() {
     repl_prims(
-        "(deftype (Option a) None (Some [:a val]))\n\
-         (import [macros [SCons SNil]])\n\
-         (defn test-passing [] None)\n\
-         (defn count-passes [acc names]\n\
-           (match names\n\
-             [SNil (Pure acc)\n\
-              (SCons head tail)\n\
-                (bind (run-test head)\n\
-                      (fn [result]\n\
-                        (match result\n\
-                          [(TestPass n ns) (count-passes (add-i64 acc 1) tail)\n\
-                           (TestFail n ns r) (count-passes acc tail)])))]))\n\
-         (defn my-run-tests [] (bind (discover-tests) (fn [names] (count-passes 0 names))))\n\
+        // test-passing returns None typed (Option String) (the (Some ..) arm
+        // forces the element type); test-failing returns (Some msg). Only the
+        // passing one is counted → expect 1.
+        "(defn test-passing [] (if true None (Some \"never\")))\n\
+         (defn test-failing [] (Some \"boom\"))\n\
+         (defn count-passes [acc i pairs]\n\
+           (if (eq-i64 i (vec-len pairs))\n\
+               acc\n\
+               (match (vec-get pairs i)\n\
+                 [(Pair name run)\n\
+                  (match (catch-runtime-error run)\n\
+                    [(Ok inner)\n\
+                       (match inner\n\
+                         [None      (count-passes (add-i64 acc 1) (add-i64 i 1) pairs)\n\
+                          (Some why) (count-passes acc (add-i64 i 1) pairs)])\n\
+                     (Err msg)  (count-passes acc (add-i64 i 1) pairs)])])))\n\
+         (defn my-run-tests [] (count-passes 0 0 (discover-tests [\"user\"])))\n\
          (my-run-tests)\n",
     )
     .assert_stdout_contains(":primitives/Int 1");

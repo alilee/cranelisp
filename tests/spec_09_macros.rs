@@ -474,21 +474,47 @@ fn multiple_macros_interleaved_with_defns_compose() {
         .assert_exit(6);
 }
 
-// spec: spec/09-macros.md §9.3.4 + spec/05-definitions.md §5.5 — macro
-// hoisting: a macro may be referenced before its defmacro form in
-// source order; the v4 pipeline processes all defmacros before other
-// forms.
-// (carry: legacy/v4_pipeline.rs::v4_macro_forward_reference_succeeds)
+// spec: spec/09-macros.md §9.3.4 — defmacro-before-use is NORMATIVE: a macro
+// MUST be defined before it is used in source order. A use of a name that
+// appears textually BEFORE its `defmacro` is NOT a macro call — it is an
+// ordinary reference that passes through to the AST builder and fails name
+// resolution there. Macros are NOT hoisted. This INVERTS the retired
+// `macro_used_before_defmacro_form_is_hoisted` (carry:
+// legacy/v4_pipeline.rs::v4_macro_forward_reference_succeeds), which asserted
+// the pre-S76 (wrong) hoisting behavior.
+//
+// FAILING-NOT-IGNORED: as built, the forward use is (wrongly) treated as a
+// macro call against the later `defmacro`, then fails expansion with an
+// internal "clause 0 is not in memory (orchestrator-sequencing bug)" message
+// and exits 0 — instead of a clean unresolved-reference diagnostic naming
+// `nope` with a non-zero exit per §9.3.4. Owning skill: /int + /typecheck
+// (macro-availability three-pass; see s76_macro_availability.rs).
 #[test]
-fn macro_used_before_defmacro_form_is_hoisted() {
-    Cranelisp::new()
+fn macro_used_before_defmacro_is_unresolved() {
+    let out = Cranelisp::new()
         .user(
             "(defn main [] (nope 42))\n\
              (defmacro nope [x] x)",
         )
         .run("user.cl")
-        .output()
-        .assert_exit(42);
+        .output();
+    assert!(
+        out.status.code() != Some(42) && out.status.code() != Some(0),
+        "forward macro use MUST NOT be hoisted/expanded; it is a plain \
+         unresolved reference per §9.3.4. exit={:?} stdout={} stderr={}",
+        out.status.code(),
+        out.stdout,
+        out.stderr,
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.to_lowercase().contains("nope")
+            && (combined.contains("error") || combined.contains("Error")),
+        "expected an unresolved-reference diagnostic naming `nope` per §9.3.4; \
+         stdout={} stderr={}",
+        out.stdout,
+        out.stderr,
+    );
 }
 
 // spec: spec/09-macros.md §9.2.5 — macro body invokes fn b which itself

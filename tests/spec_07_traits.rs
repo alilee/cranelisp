@@ -496,7 +496,7 @@ fn trait_deftrait_impl_in_child_module_imported_dispatch_from_parent() {
 #[test]
 fn hkt_deftrait_declaration_with_type_constructor_parameter_succeeds() {
     repl_prims(
-        "(deftrait (Functor f)\n  (fmap [(Fn [a] b) (f a)] (f b)))\n",
+        "(deftrait (Functor f)\n  (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n",
     )
     .assert_stdout_contains_all(&["user/Functor", "deftrait"]);
 }
@@ -515,7 +515,7 @@ fn hkt_deftrait_declaration_with_type_constructor_parameter_succeeds() {
 fn hkt_functor_impl_on_option_dispatches_via_match() {
     repl_prims(
         "(deftype (Option a) None (Some [:a val]))\n\
-         (deftrait (Functor f) (fmap [(Fn [a] b) (f a)] (f b)))\n\
+         (deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
          (impl Functor Option\n  (defn fmap [func opt]\n    (match opt [None None (Some x) (Some (func x))])))\n\
          (match (fmap (fn [x] (add-i64 x 1)) (Some 41)) [(Some v) v None 0])\n",
     )
@@ -535,7 +535,7 @@ fn hkt_functor_impl_on_option_dispatches_via_match() {
 fn hkt_impl_targets_bare_type_constructor_not_applied_form() {
     repl_prims(
         "(deftype (Option a) None (Some [:a val]))\n\
-         (deftrait (Functor f) (fmap [(Fn [a] b) (f a)] (f b)))\n\
+         (deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
          (impl Functor Option\n  (defn fmap [func opt]\n    (match opt [None None (Some x) (Some (func x))])))\n\
          (match (fmap (fn [x] (add-i64 x 1)) (Some 99)) [(Some v) v None 0])\n",
     )

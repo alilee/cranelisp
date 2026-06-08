@@ -46,13 +46,20 @@ fn got_trace_emits_jit_write_event() {
 // fails identically until the observer extension point exists.
 #[test]
 fn got_trace_emits_linker_write_event_on_cache_hit() {
-    // First run populates cache; second run (same TempDir via run_again)
-    // exercises the cache-hit path — observer fires LinkerWrite events
-    // when cached objects are loaded into GOT slots.
+    // LinkerWrite fires ONLY when a cached *dependency* module is loaded
+    // via the linker (Linker::load_object). In `--run` mode the entry
+    // module is always JIT-compiled (JitWrite), never linker-loaded — so a
+    // single-module program can never emit LinkerWrite. This test therefore
+    // uses a two-module program: `main` imports a leaf module `helper`
+    // (leaf top-level defns are public by default). The first (cold) run
+    // populates the cache for both modules; the warm `run_again` run then
+    // loads the cached `helper` object via the linker, firing
+    // `LinkerWrite module=helper symbol=helper-fn`.
     let warm = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user("(defn main [] (Pure 0))\n")
+        .file("helper.cl", "(defn helper-fn [] 7)\n")
+        .user("(import [helper [helper-fn]])\n(defn main [] (Pure (helper-fn)))\n")
         .output();
     let out = warm
         .run_again()

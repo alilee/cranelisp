@@ -382,13 +382,18 @@ fn auto_curry_io_returning_fn() {
 // matches the snapshot fixture (event tags present at minimum).
 #[test]
 fn io_trace_snapshot_pre_post_relocation_byte_equivalent() {
+    // The program MUST dispatch a real platform effect for `PlatformEffect`
+    // to fire (a pure value returns without any effect dispatch). `main`
+    // calls `print` from the stdio platform — an effectful IO action that
+    // routes through the IO trampoline and the platform-effect dispatch path.
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .use_workspace_platforms()
         .run("user.cl")
         .user(
             "(platform stdio)\n\
-             (defn main [] (Pure 0))\n",
+             (import [platform.stdio [print]])\n\
+             (defn main [] (print \"io-trace probe\"))\n",
         )
         .env("CRANELISP_IO_TRACE", "1")
         .output();
