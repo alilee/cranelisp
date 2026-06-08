@@ -1276,17 +1276,48 @@ where
         }
     }
 
+    /// Build a collision-free instantiation substitution mapping each
+    /// quantified variable in `quantified` to a genuinely fresh variable.
+    ///
+    /// Each fresh var is guaranteed NOT to equal any var in `quantified`.
+    /// This is the soundness contract of HM instantiation: instantiating a
+    /// scheme must rename its bound variables apart from any live variable,
+    /// in particular apart from the scheme's own bound variables.
+    ///
+    /// A collision arises across module boundaries when the per-session
+    /// `next_id` counter has not been advanced past an imported scheme's
+    /// quantified TypeIds (e.g. a polymorphic identity `(Fn [a] a)` with
+    /// `type_vars: [1]` instantiated while `next_id` is still ≤ 1). Without
+    /// this guard `fresh_var()` returns `Var(1)`, the substitution becomes the
+    /// identity self-map `{1 -> Var(1)}`, and `apply` chases `1 -> Var(1) ->
+    /// Var(1) -> …` forever (FIXME 0279/0295 — the compiler stack overflow).
+    /// Re-rolling fresh ids on collision makes instantiation correct
+    /// regardless of the counter's state.
+    fn fresh_instantiation_subst(&self, quantified: &[TypeId]) -> Subst {
+        let bound: std::collections::HashSet<TypeId> = quantified.iter().copied().collect();
+        let mut inst_subst = Subst::new();
+        for &var_id in quantified {
+            // Allocate a fresh var that does not collide with any of the
+            // scheme's own quantified vars — re-roll if the counter has not
+            // been advanced past them.
+            let fresh = loop {
+                let (fresh_ty, fresh_id) = self.fresh_var_id();
+                if !bound.contains(&fresh_id) {
+                    break fresh_ty;
+                }
+            };
+            inst_subst.insert(var_id, fresh);
+        }
+        inst_subst
+    }
+
     /// Instantiate a scheme by replacing each quantified variable with a fresh variable.
     /// Uses atomic `fresh_var()` — safe for `&self`.
     pub(crate) fn instantiate_scheme(&self, scheme: &Scheme) -> Type {
         if scheme.type_vars.is_empty() {
             return scheme.ty.clone();
         }
-        let mut inst_subst = Subst::new();
-        for &var_id in &scheme.type_vars {
-            let fresh = self.fresh_var();
-            inst_subst.insert(var_id, fresh);
-        }
+        let inst_subst = self.fresh_instantiation_subst(&scheme.type_vars);
         apply(&inst_subst, &scheme.ty)
     }
 

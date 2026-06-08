@@ -886,3 +886,43 @@
         assert_eq!(info.name.module, m, "resolved Foo's FQ module should be M");
         assert_eq!(info.name.name.as_ref(), "Foo");
     }
+
+    // spec: 03-types §3.5.1 — instantiation must rename bound vars apart from
+    // the scheme's own bound vars even when the fresh-var counter has NOT been
+    // advanced past them (FIXME 0279/0295 cross-module instantiation collision).
+    //
+    // The scheme `forall t1. (Fn [t1] t1)` (an imported polymorphic identity)
+    // instantiated while `next_id == 1` previously built the identity self-map
+    // `{1 -> Var(1)}`, which made `apply` recurse forever (compiler stack
+    // overflow). The collision-free `fresh_instantiation_subst` must produce a
+    // genuinely fresh, NON-colliding var instead.
+    #[test]
+    fn test_instantiate_no_self_map_when_counter_collides() {
+        use std::collections::HashMap;
+        let tf = TestFixture::new();
+        // Force the counter to collide with the scheme's bound var id (1).
+        tf.set_next_id(1);
+
+        let scheme = Scheme {
+            type_vars: vec![1],
+            constraints: HashMap::new(),
+            ty: Type::Fn(vec![Type::Var(1)], Box::new(Type::Var(1))),
+        };
+
+        // Must terminate (no overflow) and produce a fresh, non-colliding var.
+        let inst = tf.instantiate_scheme(&scheme);
+        match inst {
+            Type::Fn(params, ret) => {
+                assert_eq!(params.len(), 1);
+                let pv = match (&params[0], &*ret) {
+                    (Type::Var(a), Type::Var(b)) if a == b => *a,
+                    other => panic!("expected (Fn [tN] tN) with one shared var, got {other:?}"),
+                };
+                assert_ne!(
+                    pv, 1,
+                    "instantiated var must be renamed apart from the scheme's bound var (no self-map)"
+                );
+            }
+            other => panic!("expected a function type, got {other}"),
+        }
+    }

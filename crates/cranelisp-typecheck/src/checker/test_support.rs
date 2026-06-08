@@ -281,6 +281,19 @@ impl TestFixture {
         self.env().fresh_var()
     }
 
+    /// Instantiate a scheme (test convenience) — exercises the collision-free
+    /// `fresh_instantiation_subst` path.
+    pub fn instantiate_scheme(&self, scheme: &Scheme) -> Type {
+        self.env().instantiate_scheme(scheme)
+    }
+
+    /// Force the shared `next_id` counter to a chosen value (test convenience).
+    /// Used to reproduce the cross-module instantiation collision where the
+    /// counter has not been advanced past an imported scheme's bound vars.
+    pub fn set_next_id(&self, value: TypeId) {
+        self.next_id.store(value, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Has impl (test convenience). State-rooted so tests that switch the
     /// active module via `set_current_module` honour the active module.
     pub fn has_impl(&self, trait_name: &TraitName, impl_type: &TypeName) -> bool {

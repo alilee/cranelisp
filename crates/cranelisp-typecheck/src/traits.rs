@@ -1199,11 +1199,25 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             return scheme.ty.clone();
         }
 
-        // Build mapping from old vars to fresh vars
+        // Build mapping from old vars to fresh vars.
+        //
+        // Each fresh var must NOT collide with any of the scheme's own
+        // quantified vars — re-roll on collision. A collision (e.g. a
+        // cross-module scheme whose quantified TypeIds the per-session
+        // `next_id` counter has not been advanced past) would otherwise build
+        // an identity self-map and make `apply` recurse forever
+        // (FIXME 0279/0295). See `instantiate_scheme`'s `fresh_instantiation_subst`.
+        let bound: std::collections::HashSet<cranelisp_types::TypeId> =
+            scheme.type_vars.iter().copied().collect();
         let mut inst_subst = cranelisp_types::Subst::new();
         let mut var_mapping = HashMap::new();
         for &var_id in &scheme.type_vars {
-            let (fresh_ty, fresh_id) = self.fresh_var_id();
+            let (fresh_ty, fresh_id) = loop {
+                let (fresh_ty, fresh_id) = self.fresh_var_id();
+                if !bound.contains(&fresh_id) {
+                    break (fresh_ty, fresh_id);
+                }
+            };
             inst_subst.insert(var_id, fresh_ty);
             var_mapping.insert(var_id, fresh_id);
         }

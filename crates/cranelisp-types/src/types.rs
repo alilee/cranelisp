@@ -227,6 +227,28 @@ pub fn apply(subst: &Subst, ty: &Type) -> Type {
     match ty {
         Type::Var(id) => {
             if let Some(mapped) = subst.get(id) {
+                // Defensive cycle guard: a well-formed substitution never maps
+                // a variable (transitively) to a type containing itself — that
+                // is an occurs-check violation. If one is ever constructed
+                // (see FIXME 0279/0295: a cross-module instantiation building
+                // an identity self-map `{id -> Var(id)}` when the fresh-var
+                // counter collides with an imported scheme's bound vars), the
+                // naive chase `apply(subst, mapped)` recurses forever and
+                // overflows the stack. Detect a direct self-map and treat the
+                // variable as unbound rather than diverging. Instantiation is
+                // fixed at construction (typecheck `fresh_instantiation_subst`)
+                // so this guard should never fire in practice; the
+                // `debug_assert!` surfaces it as a clear failure in debug
+                // builds, and the fallthrough keeps release builds bounded.
+                if let Type::Var(mapped_id) = mapped
+                    && mapped_id == id
+                {
+                    debug_assert!(
+                        false,
+                        "apply: cyclic substitution — Var({id}) maps to itself (occurs-check violation)"
+                    );
+                    return ty.clone();
+                }
                 apply(subst, mapped)
             } else {
                 ty.clone()
@@ -358,6 +380,22 @@ mod tests {
         let mut subst = Subst::new();
         subst.insert(0, Type::Int);
         assert_eq!(apply(&subst, &Type::Var(0)), Type::Int);
+    }
+
+    // FIXME 0279/0295 — defensive cycle guard. A well-formed substitution
+    // never maps a var to itself; if a pathological self-map `{0 -> Var(0)}`
+    // is ever constructed, `apply` must NOT recurse forever. In debug builds
+    // the `debug_assert!` surfaces the occurs-check violation as a panic; in
+    // release builds the fallthrough keeps it bounded (returns the var).
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "cyclic substitution"))]
+    fn test_apply_self_map_does_not_overflow() {
+        let mut subst = Subst::new();
+        subst.insert(0, Type::Var(0)); // identity self-map
+        // Must terminate (panic in debug via the guard; bounded in release).
+        let result = apply(&subst, &Type::Var(0));
+        // Reached only in release builds — the guard returns the var unchanged.
+        assert_eq!(result, Type::Var(0));
     }
 
     #[test]
