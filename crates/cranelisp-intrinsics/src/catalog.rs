@@ -70,7 +70,7 @@
 //! The 12 `cranelisp_trace_*` entries (incl. the pure descriptor-driven
 //! `cranelisp_trace_format`) ARE in this catalog — the 2026-06-04 user ruling
 //! retracted D40's trace-relocation-to-int and hosts the bodies here (BC §4b
-//! invariant 12; `design/arch/tracing.md`). The table is 28 entries (15 core +
+//! invariant 12; `design/arch/tracing.md`). The table is 29 entries (16 core +
 //! 12 trace + `catch-runtime-error`, the protected-call combinator,
 //! `design/arch/test-discovery.md` §6). The catalog + its tests are the single
 //! owner of the trace name-agreement contract (closing the prior no-owner gap).
@@ -103,8 +103,9 @@ pub struct IntrinsicEntry {
 /// The published flat Import-catalog of this crate's backend-emitted-call
 /// targets (BC §4b invariant 11 — Decision-0048-for-intrinsics).
 ///
-/// Returns a `'static` slice of the 28 entries — 15 core (relocated verbatim
-/// from the retired `cranelisp_backend::jit::intrinsic_symbols()`) plus the 12
+/// Returns a `'static` slice of the 29 entries — 16 core (relocated verbatim
+/// from the retired `cranelisp_backend::jit::intrinsic_symbols()`, plus
+/// `cranelisp_ivar_dealloc`, the IVar-aware drop path) plus the 12
 /// `cranelisp_trace_*` family (S76 trace ruling, BC §4b invariant 12) plus
 /// `catch-runtime-error` (the protected-call combinator, test-discovery.md §6).
 /// See this module's `//!` for the consumer contract, the ABI guardrail, and the
@@ -130,6 +131,7 @@ pub fn intrinsics_table() -> &'static [IntrinsicEntry] {
         IntrinsicEntry { name: "cranelisp_ivar_create", ptr: crate::ivar::ivar_create as *const u8, param_count: 1, has_return: true, is_runtime: true },
         IntrinsicEntry { name: "cranelisp_ivar_spark", ptr: crate::ivar::ivar_spark as *const u8, param_count: 1, has_return: true, is_runtime: true },
         IntrinsicEntry { name: "cranelisp_ivar_force", ptr: crate::ivar::ivar_force as *const u8, param_count: 1, has_return: true, is_runtime: true },
+        IntrinsicEntry { name: "cranelisp_ivar_dealloc", ptr: crate::ivar::ivar_dealloc as *const u8, param_count: 1, has_return: true, is_runtime: true },
         // Vec COW backend-emitted-call targets (internal, not user-callable via
         // the primitives module — `vec-len` is user-callable and rides the GOT
         // via PRIMITIVES_TABLE, not this catalog).
@@ -177,6 +179,7 @@ mod tests {
         "cranelisp_ivar_create",
         "cranelisp_ivar_spark",
         "cranelisp_ivar_force",
+        "cranelisp_ivar_dealloc",
         "vec-set-copy",
         "vec-push-copy",
         "vec-push-grow",
@@ -195,13 +198,13 @@ mod tests {
         "cranelisp_trace_format",
     ];
 
-    /// Name-set completeness + uniqueness: the table contains exactly the 27
+    /// Name-set completeness + uniqueness: the table contains exactly the 29
     /// expected names — no more, no fewer — and no name repeats (BC §6
     /// guardrail; positive + negative coverage).
     #[test]
-    fn name_set_is_exactly_the_expected_28() {
+    fn name_set_is_exactly_the_expected_29() {
         let names: Vec<&str> = intrinsics_table().iter().map(|e| e.name).collect();
-        assert_eq!(names.len(), 28, "table must hold exactly 28 entries");
+        assert_eq!(names.len(), 29, "table must hold exactly 29 entries");
         assert_eq!(names.len(), EXPECTED_NAMES.len());
 
         // Every expected name present (no drop).
@@ -251,6 +254,7 @@ mod tests {
             ("cranelisp_ivar_create", 1, true),
             ("cranelisp_ivar_spark", 1, true),
             ("cranelisp_ivar_force", 1, true),
+            ("cranelisp_ivar_dealloc", 1, true),
             ("vec-set-copy", 4, true),
             ("vec-push-copy", 3, true),
             ("vec-push-grow", 2, true),

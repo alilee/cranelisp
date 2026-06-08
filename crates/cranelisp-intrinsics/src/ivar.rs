@@ -118,14 +118,53 @@ pub extern "C" fn ivar_spark(ivar: i64) -> i64 {
         };
 
         if old_rc == 1 {
-            // RC reached 0 — free the IVar.
+            // RC reached 0 — free the IVar (and its ferried error String, if any).
             std::sync::atomic::fence(Ordering::Acquire);
             // SAFETY: RC was 1 (now 0), no other references exist.
-            unsafe { dealloc(ivar as *mut u8) };
+            unsafe { dealloc_ivar(ivar) };
         }
     });
 
     0
+}
+
+/// Deallocate an IVar cell, first freeing any ferried error String it holds.
+///
+/// The fork-join error-slot ferry (test-discovery.md §6) may stash a heap String
+/// pointer in the cell's `error` field (offset 40) when a sparked thunk panics.
+/// `reraise_ferried_error` decodes that String *without consuming it* so every
+/// joiner re-raises the same message, which means the String outlives every read
+/// and must be freed when the cell itself is freed. Both production dealloc paths
+/// — `ivar_spark`'s RC-to-0 branch and the backend's `emit_rc_dec_for_ivar`
+/// (which calls this symbol) — route through here so neither leaks the String.
+///
+/// The error String is always rc=1 (created fresh by the worker in `ivar_force`,
+/// never shared), so a plain `dealloc` is correct — no RC dec is required.
+///
+/// # Safety
+/// `ivar` must be a valid IVar base pointer whose RC has reached 0.
+#[unsafe(export_name = "cranelisp_ivar_dealloc")]
+pub extern "C" fn ivar_dealloc(ivar: i64) -> i64 {
+    // SAFETY: caller guarantees `ivar` is a valid IVar base pointer at rc=0.
+    unsafe { dealloc_ivar(ivar) };
+    0
+}
+
+/// Inner helper: free the ferried error String (if non-null) then the cell.
+///
+/// # Safety
+/// `ivar` must be a valid IVar base pointer whose RC has reached 0.
+unsafe fn dealloc_ivar(ivar: i64) {
+    // SAFETY: ivar is a valid base pointer; error at offset 40 is an aligned i64.
+    let error_str = unsafe { *((ivar as isize + ERROR_OFFSET) as *const i64) };
+    if error_str != 0 {
+        // The ferried error is a plain HeapString with no recursive heap fields
+        // and rc=1 — free it directly.
+        // SAFETY: a non-zero error field is a valid HeapString base pointer.
+        unsafe { dealloc(error_str as *mut u8) };
+    }
+    // SAFETY: caller guarantees rc reached 0; no other references exist.
+    unsafe { dealloc(ivar as *mut u8) };
 }
 
 /// Force an IVar to resolution. Returns the result value.
@@ -229,8 +268,8 @@ pub extern "C" fn ivar_force(ivar: i64) -> i64 {
 /// `panic::set_runtime_error`. Idempotent — calling it from multiple readers
 /// keeps the FIRST error in each reader's slot.
 ///
-/// The error String is left in the IVar's field (freed with the IVar by drop
-/// glue / `dealloc`); decoding it does not consume it, so every joiner sees the
+/// The error String is left in the IVar's field (freed with the IVar by
+/// `ivar_dealloc`); decoding it does not consume it, so every joiner sees the
 /// same message.
 fn reraise_ferried_error(ivar: i64) {
     // SAFETY: caller observed RESOLVED before calling, so the error field is
@@ -410,13 +449,63 @@ mod tests {
             "the ferried message must be the thunk's panic"
         );
 
-        // The error field holds the heap String; free it then the IVar.
+        // The error field holds the heap String; `ivar_dealloc` frees both it
+        // and the cell (the production drop path).
         unsafe {
             let err_str = *((ivar as isize + ERROR_OFFSET) as *const i64);
             assert!(err_str != 0, "error field must hold the ferried String");
-            dealloc(err_str as *mut u8);
-            dealloc(ivar as *mut u8);
+            ivar_dealloc(ivar);
         }
+    }
+
+    // spec: 12-runtime §12.4.3 — deallocating a panicked IVar must free the
+    // ferried error String, not just the cell (production drop path; without
+    // this the heap String leaks on every fork-join panic).
+    #[test]
+    #[cfg(debug_assertions)]
+    fn test_ivar_dealloc_frees_ferried_error_string() {
+        let _ = crate::panic::take_runtime_error(); // clear
+        let thunk = make_panicking_thunk();
+        let ivar = ivar_create(thunk);
+
+        // Force so the ferry stashes the error String in the cell.
+        let _ = ivar_force(ivar);
+        let _ = crate::panic::take_runtime_error(); // drain re-raised slot
+
+        let err_str = unsafe { *((ivar as isize + ERROR_OFFSET) as *const i64) };
+        assert!(err_str != 0, "error field must hold the ferried String");
+        assert!(
+            crate::alloc::is_live(err_str as usize),
+            "error String must be live before dealloc"
+        );
+
+        // Production drop path: dealloc the cell.
+        ivar_dealloc(ivar);
+
+        assert!(
+            !crate::alloc::is_live(err_str as usize),
+            "ivar_dealloc must free the ferried error String (no leak)"
+        );
+        assert!(
+            !crate::alloc::is_live(ivar as usize),
+            "ivar_dealloc must free the cell itself"
+        );
+    }
+
+    // spec: 12-runtime §12.4.3 — ivar_dealloc on a clean (non-panicked) IVar
+    // frees the cell and does not touch the (null) error field.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn test_ivar_dealloc_clean_frees_cell() {
+        let thunk = make_const_thunk(7);
+        let ivar = ivar_create(thunk);
+        let _ = ivar_force(ivar); // thunk freed here
+
+        ivar_dealloc(ivar);
+        assert!(
+            !crate::alloc::is_live(ivar as usize),
+            "ivar_dealloc must free the cell"
+        );
     }
 
     // spec: 12-runtime §12.4.3 — a passing thunk leaves the slot clean (no

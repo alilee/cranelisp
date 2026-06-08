@@ -109,34 +109,36 @@ The macro **two-jobs split** (`design/arch/macro-expansion-ownership.md`) is lan
 
 **Still on the wall (FIXME 0176/0179):** the orchestrator-driven Pass-1 loop in `cluster::process_cluster` with staging-mode activation is still the live path's eventual home. The current live path remains the `process_module_forms` worker loop; `cluster::process_cluster` is a zero-caller facade-conformance scaffold (do not build a second Pass-1 loop there). Same-module non-macro definitions are NOT available at expansion (the §9.3.4 rejection; its diagnostic-message quality is FIXME 0262, `/typecheck`).
 
-## Int-owned JIT intrinsics (Sprint 66 Wave 3a-γ; S76 W-Collapse update)
+## Test discovery — `discover-tests` host-promised extern (S76 W-Collapse / Wave 4b)
 
-Two parked runtime extern functions in `src/session_v4.rs` are JIT-emitted-call
-targets — backend-emitted CLIF declares them as `Linkage::Import` and the JIT
-must resolve them at setup:
+Test discovery is mounted by `bootstrap.rs` as two `primitives` entries, not by a
+`(run-tests ...)` special form:
 
-| JIT symbol | Rust fn | Reader (CLIF emitted from) |
+| Symbol | `DefKind` | Body |
 |---|---|---|
-| `discover-tests` | `discover_tests_extern` | `(run-tests ...)` special form |
-| `run-test` | `run_test_extern` | `(run-tests ...)` special form |
+| `discover-tests` | `PrimitiveExtern` | `discover_tests_extern` in `src/session_v4.rs`, host-promised at session init |
+| `catch-runtime-error` | `Primitive` | `cranelisp-intrinsics::panic`, resolved from the intrinsics archive |
 
-(S76 FIXME 0256, trace ruling 2026-06-04: the trace family — `cranelisp_trace_format`
-+ the 12 `cranelisp_trace_*` bodies — LEFT int. It lives in `cranelisp_intrinsics::trace`,
-is published via `intrinsics_table()`, and is registered by `Jit::new(symbol_tables)`.
-`src/trace.rs` is deleted; int hosts no `(trace ...)` runtime.)
+`discover-tests :: (Fn [(Vec String)] (Vec (Pair String (Fn [] (Option String)))))`
+reads the live typed session state (it needs `Code`, which `cranelisp-intrinsics`
+cannot name — Principle 18), so its body lives in int. `Jit::new` has no extension
+point for it; int promises it via the additive `Jit::define_symbol` escape hatch in
+`worker::build_session_jit` (`jit.define_symbol("discover-tests", discover_tests_extern)`;
+test-discovery.md §6). `catch-runtime-error` needs no `define_symbol` — JIT name = ABI
+name and it resolves from `intrinsics_table()`.
 
-**S76 W-Collapse status — the 2 above are currently UNregistered (FIXME 0261).**
-JIT construction now flows through `worker::build_session_jit` → `Jit::new(symbol_tables)`,
-which derives the whole JIT symbol set from `symbol_tables` + `cranelisp_intrinsics::INTRINSICS_TABLE`
-and has **no extension point** for these 2 parked int-hosted intrinsics. `int_intrinsics()`
-(in `session_v4.rs`) is therefore presently uncalled (`#[allow(dead_code)]`). Programs
-with literal `(discover-tests)` / `(run-test ...)` forms will not resolve those symbols
-until the `Jit::new` extension point lands (backend; FIXME 0261). When it lands, re-wire
-`int_intrinsics()` into the `Jit::new` call and drop the `#[allow]`.
+`TestResult` and `run-test` are **RETIRED** (test-discovery.md, fourth convergence) —
+the old `(run-tests ...)` special form path, `run_test_extern`, `int_intrinsics()`,
+and the SList/IO/TestResult marshalling are all gone. The REPL `/run-tests` command
+(`handle_run_tests`) drives discovery through the same core as `discover_tests_extern`.
+
+(S76 trace ruling 2026-06-04: the trace family — `cranelisp_trace_format` + the 12
+`cranelisp_trace_*` bodies — also LEFT int. It lives in `cranelisp_intrinsics::trace`,
+published via `intrinsics_table()`, registered by `Jit::new`. `src/trace.rs` is deleted.)
 
 **No syntactic gating.** Do not re-introduce per-program scans that gate intrinsic registration — the pre-S66 `program_uses_test_forms` / `program_needs_trace` / `any_compiled_defn_uses_test_forms` helpers were deleted in Wave 3a-γ. See FIXME 0178 for the architectural rationale (forbidden-patterns clause to land on `facades/intrinsics.md`).
 
-The thread-local state these intrinsics dereference (`TestRunnerState`) is set just-in-time before invoking compiled code. `TestRunnerState` lives on `SharedState` (built once in `CompilerSession::new`, stable for session lifetime); the REPL `/mod` command updates only its `current_module` field through its `Mutex`. The intrinsics null-check the pointer and return harmless defaults when no eval is active. (`TraceDisplayState` was deleted with the trace family in S76 — see above.)
+The thread-local state `discover_tests_extern` dereferences (`TestRunnerState`) is set just-in-time before invoking compiled code. `TestRunnerState` lives on `SharedState` (built once in `CompilerSession::new`, stable for session lifetime); the REPL `/mod` command updates only its `current_module` field through its `Mutex`. The intrinsic null-checks the pointer and returns harmless defaults when no eval is active. (`TraceDisplayState` was deleted with the trace family in S76 — see above.)
 
 ## Known regressions from the Wave 3a-β collapse
 

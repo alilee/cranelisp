@@ -235,10 +235,12 @@ where
 
     /// Emit an inline RC dec for an IVar pointer.
     ///
-    /// IVars use atomic RC at offset +8. When dec brings RC to 0,
-    /// call heap_dealloc to free. This is a simplified version of
-    /// the general emit_rc_dec that doesn't need drop glue (IVars
-    /// have no recursive heap fields to clean up).
+    /// IVars use atomic RC at offset +8. When dec brings RC to 0, call
+    /// `cranelisp_ivar_dealloc` to free — that intrinsic frees the IVar cell
+    /// AND any ferried error String stashed in its `error` field by the
+    /// fork-join error-slot ferry (a panicked thunk's message). Plain
+    /// `runtime/dealloc` would leak that String; `cranelisp_ivar_dealloc` is the
+    /// IVar-aware drop path (`ivar.rs`, test-discovery.md §6).
     fn emit_rc_dec_for_ivar(&mut self, ivar_val: Value, span: Span) -> Result<(), CranelispError> {
         // Load current RC from ivar + 8
         let rc_offset = self.builder.ins().iconst(types::I64, 8);
@@ -264,16 +266,17 @@ where
             .ins()
             .brif(is_last, free_block, &[], cont_block, &[]);
 
-        // Free block: call heap_dealloc(ivar_ptr).
+        // Free block: call cranelisp_ivar_dealloc(ivar_ptr) — frees the cell
+        // and any ferried error String (test-discovery.md §6).
         self.builder.switch_to_block(free_block);
         self.builder.seal_block(free_block);
 
-        // Acquire fence before reading object fields (not needed here since
-        // we don't read fields, but consistent with Decision 13).
+        // Acquire fence before the IVar-aware dealloc reads the error field
+        // (consistent with Decision 13).
         self.builder.ins().fence();
 
         let _dealloc_result = self
-            .emit_extern_call_1("runtime/dealloc", ivar_val, span)?;
+            .emit_extern_call_1("cranelisp_ivar_dealloc", ivar_val, span)?;
         self.builder.ins().jump(cont_block, &[]);
 
         // Continue.

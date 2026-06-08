@@ -126,6 +126,7 @@ pub fn cranelisp_intrinsics::io_observer::trace_anchor() -> &'static std::time::
 pub type cranelisp_intrinsics::io_observer::IoObserver = fn(cranelisp_intrinsics::io_observer::IoEventTag, &cranelisp_intrinsics::io_observer::IoEvent)
 pub mod cranelisp_intrinsics::ivar
 #[export_name = "cranelisp_ivar_create"] pub c fn cranelisp_intrinsics::ivar::ivar_create(thunk: i64) -> i64
+#[export_name = "cranelisp_ivar_dealloc"] pub c fn cranelisp_intrinsics::ivar::ivar_dealloc(ivar: i64) -> i64
 #[export_name = "cranelisp_ivar_force"] pub c fn cranelisp_intrinsics::ivar::ivar_force(ivar: i64) -> i64
 #[export_name = "cranelisp_ivar_spark"] pub c fn cranelisp_intrinsics::ivar::ivar_spark(ivar: i64) -> i64
 pub mod cranelisp_intrinsics::layout
