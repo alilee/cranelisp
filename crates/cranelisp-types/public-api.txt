@@ -332,6 +332,12 @@ pub cranelisp_types::PlatformError::DispatchError
 pub cranelisp_types::PlatformError::DispatchError::cause: alloc::string::String
 pub cranelisp_types::PlatformError::DispatchError::fn_name: cranelisp_types::Symbol
 pub cranelisp_types::PlatformError::DispatchError::location: cranelisp_types::ErrorLocation
+pub cranelisp_types::PlatformError::LayoutHashMismatch
+pub cranelisp_types::PlatformError::LayoutHashMismatch::dll: std::path::PathBuf
+pub cranelisp_types::PlatformError::LayoutHashMismatch::expected: alloc::string::String
+pub cranelisp_types::PlatformError::LayoutHashMismatch::found: alloc::string::String
+pub cranelisp_types::PlatformError::LayoutHashMismatch::location: cranelisp_types::ErrorLocation
+pub cranelisp_types::PlatformError::LayoutHashMismatch::platform: alloc::string::String
 pub cranelisp_types::PlatformError::LoadFailed
 pub cranelisp_types::PlatformError::LoadFailed::cause: alloc::string::String
 pub cranelisp_types::PlatformError::LoadFailed::dll: std::path::PathBuf

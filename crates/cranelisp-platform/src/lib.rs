@@ -183,9 +183,12 @@ pub use std::sync::atomic::AtomicPtr as MacroAtomicPtr;
 /// *declaration* dialect retired (platforms stop declaring ADTs — their types
 /// are ordinary `.cl` modules), `read_field` is now name-based against the
 /// embedded generated artifact. `HostCallbacks::validate_schema` /
-/// `null_validate_schema` and `PlatformFn.jit_name` / `derive_jit_name` are
-/// **transitionally retained** (the int load path reads them until FIXME 0288
-/// removes the consumers) but are no longer author-owed and carry no live role.
+/// `null_validate_schema` and `PlatformFn.jit_name` / `derive_jit_name` /
+/// `OwnedPlatformFnDescriptor.jit_name` are **removed** (FIXME 0288 — the int
+/// load path now dispatches GOT-indirect against the exported GOT, so platform
+/// fns need no exported linker name and the host injects no schema-validation
+/// callback). The v3 ABI surface is `HostCallbacks { alloc, alloc_with_tag }` +
+/// the jit_name-free `PlatformFn`.
 pub const ABI_VERSION: u32 = 3;
 
 /// IO task tree tags -- shared between platform DLLs and the host trampoline.
@@ -260,7 +263,7 @@ pub const STRING_HEADER_BYTES: usize = 8;
 /// # Length-prefixed strings (not null-terminated)
 ///
 /// Every string-shaped field is a `(ptr, len)` pair (`name` +
-/// `name_len`, `jit_name` + `jit_name_len`, `type_sig` + `type_sig_len`,
+/// `name_len`, `type_sig` + `type_sig_len`,
 /// `docstring` + `docstring_len`). Length prefixing — rather than
 /// null-termination — avoids forcing every DLL author's toolchain to
 /// guarantee null-termination across the C-ABI surface. The host reads
@@ -294,7 +297,7 @@ pub const STRING_HEADER_BYTES: usize = 8;
 /// # Cross-thread invariants — `Send` + `Sync`
 ///
 /// `unsafe impl Send` and `unsafe impl Sync` are below this declaration
-/// because `PlatformFn` carries raw pointers (`name`, `jit_name`, `ptr`,
+/// because `PlatformFn` carries raw pointers (`name`, `ptr`,
 /// etc.). Safety: every pointer is read-only data with `'static`
 /// lifetime — string-literal byte arrays in the DLL's read-only
 /// segment, `Box::leak`'d descriptors from [`declare_platform!`], or the
@@ -310,15 +313,12 @@ pub struct PlatformFn {
     /// Name as seen by cranelisp code (e.g. "print").
     pub name: *const u8,
     pub name_len: usize,
-    /// JIT symbol name (e.g. "cranelisp_print"). **Transitional (FIXME 0286 /
-    /// §6.6)** — dispatch is GOT-indirect against
-    /// `__cranelisp_got_platform_<name>` at `got_slot`, so this mangled-name
-    /// coordinate no longer drives dispatch. Retained only because the int load
-    /// path still reads it (`OwnedPlatformFnDescriptor.jit_name`); removed with
-    /// the consumer by FIXME 0288. The macro still derives it for that consumer.
-    pub jit_name: *const u8,
-    pub jit_name_len: usize,
-    /// Function pointer (extern "C", all i64 params/returns).
+    /// Function pointer (extern "C", all i64 params/returns). The manifest's
+    /// fn-pointer order IS the GOT slot order (platform-interface.md §5.1); the
+    /// host adopts `got_slot = manifest index` and dispatches GOT-indirect
+    /// against `__cranelisp_got_platform_<name>`. Platform fns need no exported
+    /// linker name (the former `jit_name` mangled-name dispatch retired, FIXME
+    /// 0288).
     pub ptr: *const u8,
     /// Number of i64 parameters.
     pub param_count: u32,
@@ -356,14 +356,14 @@ unsafe impl Sync for PlatformFn {}
 ///
 /// # Current shape (ABI v3)
 ///
-/// As of Sprint 76 (`ABI_VERSION = 3`, FIXME 0286), the struct carries three
-/// fields: `alloc` (the original, ABI v1+); `alloc_with_tag` (consumed by
+/// As of Sprint 76 (`ABI_VERSION = 3`, FIXMEs 0286 + 0288), the struct carries
+/// two fields: `alloc` (the original, ABI v1+) and `alloc_with_tag` (consumed by
 /// [`CLAdt::construct`] — KEPT, ADT construction across the FFI still needs the
-/// host allocator); and `validate_schema` (**retired-in-place** — superseded by
-/// the layout-hash gate, never invoked; held only for the int construction
-/// sites until FIXME 0288 removes it). `alloc_with_tag` is wired to the real
-/// host intrinsic since S76; `validate_schema` is left at the
-/// [`null_validate_schema`] no-op.
+/// host allocator). `alloc_with_tag` is wired to the real host intrinsic. The
+/// former `validate_schema` channel is **gone** (FIXME 0288): schema validation
+/// is superseded by the layout-hash gate (platform-interface.md §5.5.4) — the
+/// host regenerates the schema from its live tables and compares the canonical
+/// hash to the DLL's exported `__cranelisp_layout_hash_<name>`.
 ///
 /// # Future shape — Decision 0031 callback support
 ///
@@ -403,24 +403,6 @@ pub struct HostCallbacks {
         field_count: u32,
         fields_ptr: *const i64,
     ) -> i64,
-
-    /// **RETIRED-IN-PLACE (transitional, FIXME 0286 / platform-interface.md
-    /// §6.6).** Schema validation is superseded by the layout-hash gate
-    /// (§5.5.4): the host regenerates the schema from its live tables and
-    /// compares the canonical hash to the DLL's exported
-    /// `__cranelisp_layout_hash_<name>`. This callback channel no longer has a
-    /// live role and is **never invoked**. It remains in the `#[repr(C)]`
-    /// struct only because the int load path still constructs `HostCallbacks`
-    /// with this field (`src/platform.rs`, `cranelisp-exe-bundle`); the field —
-    /// and [`null_validate_schema`] — are removed together with those consumer
-    /// sites by FIXME 0288. New platform DLLs never call it.
-    pub validate_schema: extern "C" fn(
-        schema_ptr: *const u8,
-        schema_len: usize,
-        err_msg_ptr: *mut u8,
-        err_msg_capacity: usize,
-        err_msg_len_out: *mut usize,
-    ) -> i32,
 }
 
 /// Panic-emitting placeholder for `HostCallbacks::alloc_with_tag`.
@@ -446,23 +428,6 @@ pub extern "C" fn null_alloc_with_tag(
          If you are running tests inside cranelisp-platform, install a synthetic \
          callback via HostContext::init in test setup."
     )
-}
-
-/// No-op placeholder for the retired `HostCallbacks::validate_schema` channel.
-/// Returns 0 unconditionally; never invoked.
-///
-/// **Transitional (FIXME 0286 / §6.6).** Schema validation is superseded by the
-/// layout-hash gate (§5.5.4). This placeholder is kept only because the int
-/// load path still names it when constructing `HostCallbacks`; it is removed
-/// with the `validate_schema` field by FIXME 0288.
-pub extern "C" fn null_validate_schema(
-    _schema_ptr: *const u8,
-    _schema_len: usize,
-    _err_msg_ptr: *mut u8,
-    _err_msg_capacity: usize,
-    _err_msg_len_out: *mut usize,
-) -> i32 {
-    0 // pass — no validation
 }
 
 /// Platform manifest returned by the DLL's entry point.
@@ -1189,7 +1154,6 @@ impl HostContext {
 #[non_exhaustive]
 pub struct OwnedPlatformFnDescriptor {
     pub name: String,
-    pub jit_name: String,
     pub ptr: *const u8,
     pub param_count: usize,
     pub type_sig: String,
@@ -1267,12 +1231,6 @@ pub unsafe fn manifest_to_descriptors(
                 .map_err(|e| utf8_err("function name", e))?
                 .to_string()
         };
-        let func_jit_name = unsafe {
-            let bytes = std::slice::from_raw_parts(func.jit_name, func.jit_name_len);
-            std::str::from_utf8(bytes)
-                .map_err(|e| utf8_err("function jit_name", e))?
-                .to_string()
-        };
         let func_type_sig = unsafe {
             let bytes = std::slice::from_raw_parts(func.type_sig, func.type_sig_len);
             std::str::from_utf8(bytes)
@@ -1307,7 +1265,6 @@ pub unsafe fn manifest_to_descriptors(
 
         descriptors.push(OwnedPlatformFnDescriptor {
             name: func_name,
-            jit_name: func_jit_name,
             ptr: func.ptr,
             param_count: func.param_count as usize,
             type_sig: func_type_sig,
@@ -1321,24 +1278,6 @@ pub unsafe fn manifest_to_descriptors(
 }
 
 // -- declare_platform! macro --
-
-/// Derive the JIT symbol name from a cranelisp function name.
-///
-/// Prepends `cranelisp_` and replaces `-` with `_`. E.g.
-/// `"read-line"` → `"cranelisp_read_line"`.
-///
-/// **Transitional — slated for retirement (FIXME 0286 / platform-interface.md
-/// §6.6).** Dispatch is GOT-indirect against the exported
-/// `__cranelisp_got_platform_<name>` at the entry's `got_slot`, so the
-/// mangled-name extern dispatch this helper feeds is being retired. It is kept
-/// only because the int load path still reads `PlatformFn.jit_name` /
-/// `OwnedPlatformFnDescriptor.jit_name` and registers fn pointers via
-/// `JITBuilder::symbol` until FIXME 0288 reworks that load path to GOT-indirect.
-/// When 0288 removes the consumers, this helper and the `jit_name` manifest
-/// fields go with it. New platform DLLs do not author `jit_name`.
-pub fn derive_jit_name(cl_name: &str) -> String {
-    format!("cranelisp_{}", cl_name.replace('-', "_"))
-}
 
 /// Extract the `<hex>` from a generated schema artifact's `;; layout-hash:
 /// <hex>` header line, at compile time, so the [`declare_platform!`] `schema:`
@@ -1674,34 +1613,26 @@ macro_rules! __declare_platform_body {
                 };
             )*
 
-            // Phase 2: Derive jit_names at runtime and leak for 'static.
-            $(
-                let $fn_ident = {
-                    let jit_name = $crate::derive_jit_name($cl_name);
-                    let jit_bytes: &'static [u8] =
-                        Box::leak(jit_name.into_bytes().into_boxed_slice());
-                    ($fn_ident, jit_bytes)
-                };
-            )*
-
-            // Phase 3: Build PlatformFn descriptors array.
+            // Phase 2: Build PlatformFn descriptors array. Platform fns carry no
+            // exported linker name (the former jit_name mangled-name dispatch
+            // retired, FIXME 0288) — dispatch is GOT-indirect at the manifest
+            // index. The fn pointer in `ptr` is the only address coordinate; the
+            // exported GOT (populated above) carries it for code dispatch.
             let functions: &'static [$crate::PlatformFn] = Box::leak(vec![
                 $(
                     $crate::PlatformFn {
                         name: $cl_name.as_ptr(),
                         name_len: $cl_name.len(),
-                        jit_name: $fn_ident.1.as_ptr(),
-                        jit_name_len: $fn_ident.1.len(),
-                        ptr: ($fn_ident.0).0,
-                        param_count: ($fn_ident.0).3 as u32,
+                        ptr: ($fn_ident).0,
+                        param_count: ($fn_ident).3 as u32,
                         type_sig: $sig.as_ptr(),
                         type_sig_len: $sig.len(),
                         docstring: $doc.as_ptr(),
                         docstring_len: $doc.len(),
-                        param_names: ($fn_ident.0).1,
-                        param_name_lens: ($fn_ident.0).2,
-                        param_name_count: ($fn_ident.0).3,
-                        scheduling_class: ($fn_ident.0).4,
+                        param_names: ($fn_ident).1,
+                        param_name_lens: ($fn_ident).2,
+                        param_name_count: ($fn_ident).3,
+                        scheduling_class: ($fn_ident).4,
                     },
                 )*
             ].into_boxed_slice());
@@ -2129,8 +2060,10 @@ mod tests {
                 "R1 panic message must instruct on the test-side workaround (synthetic callback via HostContext::init)");
     }
 
-    // T27 — HostCallbacks carries the two new fn-pointer fields
-    // spec: design/platform/sprint71-redesign.md §5.1
+    // T27 — HostCallbacks carries the two fn-pointer fields (ABI v3, FIXME
+    // 0288 — `validate_schema` removed; schema validation superseded by the
+    // layout-hash gate, platform-interface.md §5.5.4).
+    // spec: bounded-contexts.md §5 — HostCallbacks { alloc, alloc_with_tag }
     //
     // Structural construction site — confirms the fields exist with the
     // chosen extern "C" fn signatures.
@@ -2140,7 +2073,6 @@ mod tests {
         let cb = HostCallbacks {
             alloc: dummy_alloc,
             alloc_with_tag: null_alloc_with_tag,
-            validate_schema: null_validate_schema,
         };
         // Field-existence verified by the struct literal; assert one
         // pointer-equal sanity check.
@@ -2148,25 +2080,5 @@ mod tests {
             cb.alloc_with_tag as *const () as usize,
             null_alloc_with_tag as *const () as usize
         );
-        assert_eq!(
-            cb.validate_schema as *const () as usize,
-            null_validate_schema as *const () as usize
-        );
-    }
-
-    // null_validate_schema returns 0 (passes) per design §5.5.
-    #[test]
-    fn null_validate_schema_returns_zero() {
-        let schema = b"";
-        let mut err_buf = [0u8; 64];
-        let mut err_len: usize = 0;
-        let result = null_validate_schema(
-            schema.as_ptr(),
-            schema.len(),
-            err_buf.as_mut_ptr(),
-            err_buf.len(),
-            &mut err_len,
-        );
-        assert_eq!(result, 0);
     }
 }

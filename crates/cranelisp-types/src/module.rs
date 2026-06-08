@@ -201,6 +201,18 @@ pub struct SymbolTable<C: CodeStore = (), L: LinkerStore = ()> {
     /// `#[serde(default)]` so pre-S71 caches and non-platform modules
     /// deserialise cleanly as `None`. See `bounded-contexts.md` §3 (cache),
     /// §5 (platform), §7 (this field).
+    ///
+    /// **RETIREMENT PENDING (`platform-interface.md` §6.5 / §6.6 retirement
+    /// list, user-ratified 2026-06-07):** with platforms declaring their ADTs
+    /// as ordinary importable `.cl` modules, a platform's types cache like any
+    /// other module's source and there is no schema literal to round-trip —
+    /// this field deletes. It is **left in place here** because its only
+    /// consumers live OUTSIDE `cranelisp-types` (the backend cache:
+    /// `cache/mod.rs` v2 rustdoc + `cache/serialize.rs` round-trip tests);
+    /// removing the field from types would take the workspace red. Backend
+    /// retires the field + its cache round-trip in its own fire (the
+    /// platform-interface backend cascade, FIXME 0287 / §6.5), at which point
+    /// this field and its construction sites are dropped.
     #[serde(default)]
     pub schema_literal: Option<String>,
     /// Original `(mod child)` / `(mod- child)` declarations in source order;

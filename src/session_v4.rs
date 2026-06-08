@@ -189,6 +189,10 @@ enum ReplCommand<'a> {
     Mod(&'a str),
     RunTests(&'a str),
     RunAllTests,
+    /// `/platform-schema <name>` — print the compiler-generated schema artifact
+    /// for a loaded platform (platform-interface.md §5.5.1 / §6.0). A thin
+    /// caller of the backend schema generator over the loaded platform's tables.
+    PlatformSchema(&'a str),
     Reset,
     Sh(&'a str),
     Unknown(&'a str),
@@ -286,6 +290,7 @@ fn parse_slash_command(input: &str) -> Option<ReplCommand<'_>> {
         "/mod" => ReplCommand::Mod(arg),
         "/run-tests" | "/rt" => ReplCommand::RunTests(arg),
         "/run-all-tests" => ReplCommand::RunAllTests,
+        "/platform-schema" => ReplCommand::PlatformSchema(arg),
         "/reset" => ReplCommand::Reset,
         "/sh" => ReplCommand::Sh(arg),
         _ => ReplCommand::Unknown(cmd),
@@ -315,6 +320,7 @@ fn print_help(stdout: &mut impl Write) {
     let _ = writeln!(stdout, "  /mod [NAME]         Switch module namespace (default: user)");
     let _ = writeln!(stdout, "  /run-tests (/rt) [MOD]  Run test-* functions (current module or named)");
     let _ = writeln!(stdout, "  /run-all-tests      Run all tests in project modules");
+    let _ = writeln!(stdout, "  /platform-schema NAME  Print the generated layout schema for a loaded platform");
     let _ = writeln!(stdout, "  /reset              Clear all state and reload prelude");
     let _ = writeln!(stdout, "  /sh <cmd>       Run a shell command");
 }
@@ -2398,6 +2404,9 @@ impl CompilerSession {
             ReplCommand::RunAllTests => {
                 CommandResult::Final(self.handle_run_all_tests())
             }
+            ReplCommand::PlatformSchema(name) => {
+                CommandResult::Final(self.handle_platform_schema(name))
+            }
             ReplCommand::Reset => {
                 // Clear file watcher state so stale watches don't persist.
                 if let Some(ref mut w) = self.watcher {
@@ -3564,6 +3573,33 @@ impl CompilerSession {
     }
 
     /// /run-all-tests handler: discover and run tests in all project-root modules.
+    /// `/platform-schema <name>` — print the compiler-generated schema artifact
+    /// for a loaded platform (platform-interface.md §5.5.1 / §6.0).
+    ///
+    /// Looks up the loaded platform's `platform.<name>` symbol table, derives
+    /// the referenced-ADT root set from its `DefKind::PlatformEffect` sigs, and
+    /// calls the backend schema generator (the same closure-walk the load-time
+    /// hash gate runs) to emit the artifact text (with the `;; layout-hash:`
+    /// header). The author redirects this to the embed file. A thin caller of
+    /// the backend generator — int does no schema logic of its own.
+    fn handle_platform_schema(&self, name: &str) -> String {
+        let name = name.trim();
+        if name.is_empty() {
+            return "Usage: /platform-schema <name>".to_string();
+        }
+        let module_path = ModuleFullPath::from(format!("platform.{name}"));
+        let roots = match self.module_table(&module_path) {
+            Some(table) => cranelisp_backend::schema::platform_effect_roots(&table),
+            None => {
+                return format!(
+                    "Platform '{name}' is not loaded. Load it first with \
+                     `(platform {name})`, then re-run /platform-schema."
+                );
+            }
+        };
+        cranelisp_backend::schema::generate_schema(&self.shared.symbol_tables, &roots)
+    }
+
     fn handle_run_all_tests(&self) -> String {
         let mut all_names: Vec<String> = Vec::new();
         for entry in self.shared.typecheck_products.iter() {
@@ -3912,11 +3948,18 @@ impl CompilerSession {
         // and tail-calls through the entry module's GOT.
         let entry_fn_name = "main".to_string();
 
-        // Generate startup .o stub.
+        // Generate startup .o stub. The per-platform layout-hash checks
+        // (platform-interface.md §5.5.4 `--link` gate) are derived from the
+        // linked platforms; `collect_platform_manifest_names` is still the
+        // empty-stub pre-existing `--link`-platform registry (the loaded-platform
+        // query is not yet built), so no checks are baked when no platform is
+        // linked. The bake seam is wired and exercised by exe.rs unit tests.
+        let platform_layout_checks: Vec<cranelisp_backend::exe::PlatformLayoutCheck> = Vec::new();
         let startup_bytes = crate::exe::generate_startup_object(
             &platform_manifest_names,
             main_returns_io,
             &entry_fn_name,
+            &platform_layout_checks,
         )?;
 
         // Sprint 67 Cluster B sub-fire 3: cache dir via ObjectCache facade.

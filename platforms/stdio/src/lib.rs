@@ -16,7 +16,6 @@ static HOST: HostContext = HostContext::new();
 /// Uses the consuming capture-RC protocol (Decision 24): `into_owned_consuming`
 /// takes ownership of the caller's transferred reference and releases it on
 /// drop when the Effect thunk runs. See `design/backend/ring2-rc.md` §10.4.
-#[unsafe(export_name = "cranelisp_print")]
 pub extern "C" fn print_string(s: CLString) -> CLIO<CLInt> {
     let owned = s.into_owned_consuming();
     CLIO::effect(move || {
@@ -29,7 +28,6 @@ pub extern "C" fn print_string(s: CLString) -> CLIO<CLInt> {
 ///
 /// Trims trailing newline/carriage return. No capture-RC needed
 /// because this function takes no heap parameters.
-#[unsafe(export_name = "cranelisp_read_line")]
 pub extern "C" fn read_line() -> CLIO<CLString> {
     CLIO::effect(move || {
         let mut buf = String::new();
@@ -47,14 +45,14 @@ declare_platform! {
     functions: [
         print_string {
             cl_name: "print",
-            sig: "(Fn [String] (IO Int))",
+            sig: "(Fn [primitives/String] (primitives/IO primitives/Int))",
             doc: "Print a string followed by a newline",
             params: [s],
             scheduling: SchedulingClass::Sequential,
         },
         read_line {
             cl_name: "read-line",
-            sig: "(Fn [] (IO String))",
+            sig: "(Fn [] (primitives/IO primitives/String))",
             doc: "Read a line from stdin",
             params: [],
             scheduling: SchedulingClass::Sequential,

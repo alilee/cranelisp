@@ -106,8 +106,9 @@ fn sprint71_abi_version_baseline_co_regen() {
     // SchemaParseError stay (parser repointed at the generated artifact);
     // set_global_schema + GOT_TABLE_SIZE join (the embed + GOT export surface).
     // AnyAdt / GetSchema retired (the marker-type DSL). validate_schema /
-    // null_validate_schema stay transitionally (removed with the int consumers
-    // by FIXME 0288).
+    // null_validate_schema / derive_jit_name / the jit_name fields RETIRED
+    // (FIXME 0288 — the int load path now dispatches GOT-indirect; schema
+    // validation superseded by the layout-hash gate).
     let required_new_exports: &[&str] = &[
         "cranelisp_platform::CLAdt",
         "cranelisp_platform::CLAdtType",
@@ -119,10 +120,17 @@ fn sprint71_abi_version_baseline_co_regen() {
         "HostCallbacks::alloc_with_tag",
         "cranelisp_platform::null_alloc_with_tag",
     ];
-    // Retired surface MUST be absent — the marker-type DSL.
+    // Retired surface MUST be absent — the marker-type DSL (S71) + the
+    // jit_name / validate_schema surface (FIXME 0288 — GOT-indirect dispatch +
+    // layout-hash gate).
     let must_be_absent: &[&str] = &[
         "cranelisp_platform::AnyAdt",
         "cranelisp_platform::GetSchema",
+        "cranelisp_platform::derive_jit_name",
+        "cranelisp_platform::null_validate_schema",
+        "HostCallbacks::validate_schema",
+        "PlatformFn::jit_name",
+        "OwnedPlatformFnDescriptor::jit_name",
     ];
     let leaked: Vec<&&str> = must_be_absent
         .iter()

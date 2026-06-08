@@ -6,8 +6,32 @@ filed_at: 2026-06-08
 sprint_filed: 76
 target_sprint: 77
 refers_to: crates/cranelisp-types/src/error.rs (PlatformError enum), decisions/0042-platform-error-adopts-error-location.md, design/arch/platform-interface.md §5.5.4 §6.4, design/arch/fixmes/0288-dev-int-platform-interface-load-path-and-platform-schema-command.md
-status: open
+status: partially-resolved
 ---
+
+## Resolution status (S76 W4b, /dev cranelisp-types)
+
+- **DONE — the `PlatformError::LayoutHashMismatch` variant landed** in
+  `crates/cranelisp-types/src/error.rs` with the proposed shape (`dll`,
+  `platform`, `expected`, `found`, `location: ErrorLocation`), wired into
+  `PlatformError::location()` / `message_static()` / `Display` (the Display
+  message names the platform + both hashes + `run /platform-schema <name> and
+  rebuild the platform`), and surfaces via `CranelispError::Platform`. Unit
+  tests cover the message guidance, the static message, the location accessor,
+  and the `CranelispError` delegation. `public-api.txt` regenerated (additive
+  diff: the new variant + 5 fields). Workspace check green. **0288's
+  `--run`/`--link` refusal sites can now consume this variant.**
+- **DEFERRED — `schema_literal` removal stays with the backend consumer.**
+  Removing `SymbolTable.schema_literal` from `cranelisp-types` would break the
+  ONLY consumers, which live OUTSIDE types: the backend cache
+  (`cache/mod.rs` v2 rustdoc + the two `cache/serialize.rs` round-trip tests).
+  Removing it from types takes the workspace red. Per the load-path rule
+  (keep `cargo check --workspace` green), the field is **left in place with a
+  precise RETIREMENT-PENDING note** on its rustdoc pointing at
+  `platform-interface.md` §6.5/§6.6 and the backend cascade (FIXME 0287). The
+  backend fire (0287) deletes the field + its cache round-trip, then the three
+  construction sites in `module.rs` drop. This FIXME stays OPEN to track that
+  residue.
 
 # cranelisp-types: add the `PlatformError` layout-hash-refusal variant (Decision 0042)
 

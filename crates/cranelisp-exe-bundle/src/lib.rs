@@ -123,14 +123,14 @@ pub extern "C" fn cranelisp_init_platform(manifest_fn_ptr: i64) {
     let manifest_fn: ManifestFn = unsafe { std::mem::transmute(manifest_fn_ptr) };
     // `alloc_with_tag` is wired to the real intrinsic (S76 W3, FIXME 0229
     // step 1): `cranelisp_alloc_with_tag` allocates a tagged heap ADT and
-    // returns the alloc base, removing the R1 gate in `--link` mode too.
-    // `validate_schema` stays at the no-op placeholder pending the S-PLAT-1
-    // schema-text-exposure seam (FIXME 0233 step 3 — /arch ruling + macro
-    // change).
+    // returns the alloc base, removing the R1 gate in `--link` mode too. The
+    // `validate_schema` callback channel is gone (FIXME 0288): schema validation
+    // is superseded by the `--link` layout-hash gate (platform-interface.md
+    // §5.5.4), baked into the startup object as a `cranelisp_check_layout_hash`
+    // compare-and-abort.
     let callbacks = cranelisp_platform::HostCallbacks {
         alloc: cranelisp_intrinsics::alloc::heap_alloc,
         alloc_with_tag: cranelisp_intrinsics::alloc::cranelisp_alloc_with_tag,
-        validate_schema: cranelisp_platform::null_validate_schema,
     };
     manifest_fn(&callbacks);
 }

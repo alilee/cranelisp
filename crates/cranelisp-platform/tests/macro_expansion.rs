@@ -76,7 +76,6 @@ fn invoke_manifest() -> cranelisp_platform::PlatformManifest {
     let callbacks = cranelisp_platform::HostCallbacks {
         alloc: test_alloc,
         alloc_with_tag: cranelisp_platform::null_alloc_with_tag,
-        validate_schema: cranelisp_platform::null_validate_schema,
     };
     unsafe { cranelisp_platform_manifest(&callbacks) }
 }

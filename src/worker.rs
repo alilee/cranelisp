@@ -2253,8 +2253,6 @@ fn try_cache_hit_load(
         }
         match crate::platform::load_and_register_platform(
             ctx.symbol_tables,
-            ctx.next_type_id,
-            &mut ctx.check_state,
             ctx.module_aliases,
             &spec.name,
             ctx.project_root,
@@ -2262,32 +2260,12 @@ fn try_cache_hit_load(
             ctx.platform_dirs,
             spec.span,
         ) {
-            Ok((platform, _jit_syms)) => {
-                // Mirror `handle_platform`'s post-load: walk the synthetic
-                // `platform.{name}` module, allocate a GOT slot for each
-                // entry, and write the descriptor pointer into the GOT. The
-                // GOT is the single source of truth for the entry's runtime
-                // address (Sprint 66 Wave 0 amendment).
-                let plat_path = ModuleFullPath::from(format!("platform.{}", platform.name));
-                if let Some(mut table) = ctx.symbol_tables.get_mut(&plat_path) {
-                    for desc in &platform.descriptors {
-                        let slot = match table.symbols.get(desc.name.as_str()) {
-                            Some(ModuleEntry::Def { got_slot: Some(s), .. }) => *s,
-                            Some(ModuleEntry::Def { got_slot: None, .. }) => {
-                                let s = table.allocate_got_slot();
-                                if let Some(ModuleEntry::Def { got_slot, .. }) =
-                                    table.symbols.get_mut(desc.name.as_str())
-                                {
-                                    *got_slot = Some(s);
-                                }
-                                s
-                            }
-                            _ => continue,
-                        };
-                        table.got.store_slot(slot, desc.ptr);
-                    }
-                }
-                // Retain DLL handle for session lifetime so pointers stay valid.
+            Ok(platform) => {
+                // `register_platform_in_tc` already wrapped the DLL's exported
+                // GOT in place and set `got_slot = manifest index` per entry
+                // (platform-interface.md §6.4); no per-slot allocation / fn-ptr
+                // store is needed on cache-hit either. Retain the DLL handle for
+                // session lifetime so the wrapped slab + pointers stay valid.
                 shared
                     .kept_dlls
                     .lock()
@@ -2595,10 +2573,8 @@ fn handle_platform(
     if module.as_ref().contains('.') {
         return Ok(());
     }
-    let (platform, _jit_syms) = crate::platform::load_and_register_platform(
+    let platform = crate::platform::load_and_register_platform(
         ctx.symbol_tables,
-        ctx.next_type_id,
-        &mut ctx.check_state,
         ctx.module_aliases,
         &spec.name,
         ctx.project_root,
@@ -2607,30 +2583,51 @@ fn handle_platform(
         spec.span,
     )?;
 
-    // Sprint 57 Wave 3 G8 (revised Sprint 66 Wave 0): for each platform
-    // descriptor, allocate a per-module GOT slot and write the runtime
-    // pointer into the GOT. The GOT is the single source of truth for the
-    // entry's runtime address (Sprint 66 Wave 0 amendment — replaces the
-    // prior `ModuleEntry::Def.fn_ptr` field). The entry was inserted in
-    // `register_platform_in_tc` (src/platform.rs) with `got_slot: None`;
-    // this follow-up allocates the slot and stores the pointer.
+    // The platform module's `SymbolTable` now wraps the DLL's exported GOT in
+    // place (`register_platform_in_tc`, platform-interface.md §6.4) and carries
+    // `got_slot = manifest index` per entry — the GOT-indirect dispatch arm in
+    // backend (`apply.rs`) reaches the platform fns identically to any user
+    // module. No per-slot allocation / fn-ptr store is needed here anymore (the
+    // DLL owns + populated the slab); the old G8 slot-allocation loop is gone.
     let module_path = ModuleFullPath::from(format!("platform.{}", platform.name));
-    if let Some(mut table) = ctx.symbol_tables.get_mut(&module_path) {
-        for desc in &platform.descriptors {
-            let slot = match table.symbols.get(desc.name.as_str()) {
-                Some(ModuleEntry::Def { got_slot: Some(s), .. }) => *s,
-                Some(ModuleEntry::Def { got_slot: None, .. }) => {
-                    let s = table.allocate_got_slot();
-                    if let Some(ModuleEntry::Def { got_slot, .. }) =
-                        table.symbols.get_mut(desc.name.as_str())
-                    {
-                        *got_slot = Some(s);
-                    }
-                    s
-                }
-                _ => continue,
-            };
-            table.got.store_slot(slot, desc.ptr);
+
+    // Layout-hash gate (platform-interface.md §5.5.4, §6.4): regenerate the
+    // schema from the live tables (the same backend generator the DLL ran at
+    // /platform-schema time) and compare its canonical hash to the DLL's
+    // exported `__cranelisp_layout_hash_<name>`. REPL warns-and-loads (the
+    // regeneration bootstrap, §5.5.1); `--run` (non-REPL) hard-refuses. A
+    // platform that declared no schema (scalar-only, no ADTs) exports no hash —
+    // tolerated (first-build/absent, §5.5.4).
+    if let Some(dll_hash) = &platform.layout_hash {
+        let roots = ctx
+            .symbol_tables
+            .get(&module_path)
+            .map(|t| cranelisp_backend::schema::platform_effect_roots(&t))
+            .unwrap_or_default();
+        let host_hash =
+            cranelisp_backend::schema::compute_layout_hash(ctx.symbol_tables, &roots);
+        if &host_hash != dll_hash && !host_hash.is_empty() {
+            // is_repl: introspection is populated only for REPL (None in batch
+            // / `--run`), per the `ModuleCompiler.introspection` contract.
+            let is_repl = ctx.introspection.is_some();
+            if is_repl {
+                eprintln!(
+                    "warning: platform '{}' layout hash mismatch (DLL embedded {}, \
+                     host regenerated {}); loading anyway — run `/platform-schema {}` \
+                     and rebuild the platform to refresh its embedded schema.",
+                    platform.name, dll_hash, host_hash, platform.name
+                );
+            } else {
+                return Err(CranelispError::Platform(
+                    cranelisp_types::PlatformError::LayoutHashMismatch {
+                        dll: std::path::PathBuf::from(format!("platform.{}", platform.name)),
+                        platform: platform.name.clone(),
+                        expected: host_hash,
+                        found: dll_hash.clone(),
+                        location: cranelisp_types::ErrorLocation::from_span(spec.span),
+                    },
+                ));
+            }
         }
     }
 

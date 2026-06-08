@@ -252,7 +252,6 @@ impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::Field
 #[repr(C)] pub struct cranelisp_platform::HostCallbacks
 pub cranelisp_platform::HostCallbacks::alloc: fn(i64) -> i64
 pub cranelisp_platform::HostCallbacks::alloc_with_tag: fn(tag: u32, field_count: u32, fields_ptr: *const i64) -> i64
-pub cranelisp_platform::HostCallbacks::validate_schema: fn(schema_ptr: *const u8, schema_len: usize, err_msg_ptr: *mut u8, err_msg_capacity: usize, err_msg_len_out: *mut usize) -> i32
 impl core::marker::Freeze for cranelisp_platform::HostCallbacks
 impl core::marker::Send for cranelisp_platform::HostCallbacks
 impl core::marker::Sync for cranelisp_platform::HostCallbacks
@@ -273,7 +272,6 @@ impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::HostContext
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::HostContext
 #[non_exhaustive] pub struct cranelisp_platform::OwnedPlatformFnDescriptor
 pub cranelisp_platform::OwnedPlatformFnDescriptor::docstring: alloc::string::String
-pub cranelisp_platform::OwnedPlatformFnDescriptor::jit_name: alloc::string::String
 pub cranelisp_platform::OwnedPlatformFnDescriptor::name: alloc::string::String
 pub cranelisp_platform::OwnedPlatformFnDescriptor::param_count: usize
 pub cranelisp_platform::OwnedPlatformFnDescriptor::param_names: alloc::vec::Vec<alloc::string::String>
@@ -301,8 +299,6 @@ impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::ParseLoc
 #[repr(C)] pub struct cranelisp_platform::PlatformFn
 pub cranelisp_platform::PlatformFn::docstring: *const u8
 pub cranelisp_platform::PlatformFn::docstring_len: usize
-pub cranelisp_platform::PlatformFn::jit_name: *const u8
-pub cranelisp_platform::PlatformFn::jit_name_len: usize
 pub cranelisp_platform::PlatformFn::name: *const u8
 pub cranelisp_platform::PlatformFn::name_len: usize
 pub cranelisp_platform::PlatformFn::param_count: u32
@@ -425,9 +421,7 @@ pub fn cranelisp_platform::CLAdt<T>::check_witness(type_name: &str, field_name: 
 pub fn cranelisp_platform::CLAdt<T>::expected_field_type() -> cranelisp_platform::ExpectedFieldType
 pub fn cranelisp_platform::CLAdt<T>::from_raw_i64(raw: i64) -> Self
 pub unsafe fn cranelisp_platform::call_effect_thunk(thunk_ptr: i64) -> i64
-pub fn cranelisp_platform::derive_jit_name(cl_name: &str) -> alloc::string::String
 pub const fn cranelisp_platform::extract_layout_hash(artifact: &str) -> &str
 pub unsafe fn cranelisp_platform::manifest_to_descriptors(manifest: &cranelisp_platform::PlatformManifest) -> core::result::Result<(alloc::string::String, alloc::string::String, alloc::vec::Vec<cranelisp_platform::OwnedPlatformFnDescriptor>), cranelisp_types::error::PlatformError>
 pub c fn cranelisp_platform::null_alloc_with_tag(_tag: u32, _field_count: u32, _fields_ptr: *const i64) -> i64
-pub c fn cranelisp_platform::null_validate_schema(_schema_ptr: *const u8, _schema_len: usize, _err_msg_ptr: *mut u8, _err_msg_capacity: usize, _err_msg_len_out: *mut usize) -> i32
 pub fn cranelisp_platform::set_global_schema(schema: cranelisp_platform::Schema)

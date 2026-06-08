@@ -32,7 +32,6 @@ static INPUT: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 /// Uses the consuming capture-RC protocol (Decision 24): `into_owned_consuming`
 /// takes ownership of the caller's transferred reference and releases it on
 /// drop when the Effect thunk runs. See `design/backend/ring2-rc.md` §10.4.
-#[unsafe(export_name = "cranelisp_print")]
 pub extern "C" fn capture_print(s: CLString) -> CLIO<CLInt> {
     let owned = s.into_owned_consuming();
     CLIO::effect(move || {
@@ -47,7 +46,6 @@ pub extern "C" fn capture_print(s: CLString) -> CLIO<CLInt> {
 /// Return pre-configured input instead of reading from stdin. Returns a deferred IO Effect.
 ///
 /// Pops the first queued line. If the queue is empty, returns an empty string.
-#[unsafe(export_name = "cranelisp_read_line")]
 pub extern "C" fn scripted_read_line() -> CLIO<CLString> {
     CLIO::effect(move || {
         let line = INPUT
@@ -61,14 +59,12 @@ pub extern "C" fn scripted_read_line() -> CLIO<CLString> {
 
 /// Commutative no-op: does nothing, returns Pure 0. Marked Commutative so the
 /// compiler can identify commutative pairs and insert Par nodes.
-#[unsafe(export_name = "cranelisp_commutative_noop")]
 pub extern "C" fn commutative_noop() -> CLIO<CLInt> {
     CLIO::effect(|| CLInt::from(0i64))
 }
 
 /// Commutative sleep: sleeps for `ms` milliseconds and returns the duration.
 /// Marked Commutative for parallelism verification tests (timing-based).
-#[unsafe(export_name = "cranelisp_commutative_sleep_ms")]
 pub extern "C" fn commutative_sleep_ms(ms: CLInt) -> CLIO<CLInt> {
     let duration = i64::from(ms);
     CLIO::effect(move || {
@@ -79,7 +75,6 @@ pub extern "C" fn commutative_sleep_ms(ms: CLInt) -> CLIO<CLInt> {
 
 /// Resource-serial no-op: sets the resource token on the Effect node and returns 0.
 /// Marked ResourceSerial for testing resource token serialization.
-#[unsafe(export_name = "cranelisp_resource_serial_noop")]
 pub extern "C" fn resource_serial_noop(token: CLInt) -> CLIO<CLInt> {
     let resource_token = i64::from(token);
     CLIO::effect_on_resource(resource_token, || CLInt::from(0i64))
@@ -92,35 +87,35 @@ declare_platform! {
     functions: [
         capture_print {
             cl_name: "print",
-            sig: "(Fn [String] (IO Int))",
+            sig: "(Fn [primitives/String] (primitives/IO primitives/Int))",
             doc: "Print a string (captured for testing)",
             params: [s],
             scheduling: SchedulingClass::Sequential,
         },
         scripted_read_line {
             cl_name: "read-line",
-            sig: "(Fn [] (IO String))",
+            sig: "(Fn [] (primitives/IO primitives/String))",
             doc: "Read a line from scripted input (for testing)",
             params: [],
             scheduling: SchedulingClass::Sequential,
         },
         commutative_noop {
             cl_name: "commutative-noop",
-            sig: "(Fn [] (IO Int))",
+            sig: "(Fn [] (primitives/IO primitives/Int))",
             doc: "No-op (Commutative scheduling class, for testing)",
             params: [],
             scheduling: SchedulingClass::Commutative,
         },
         commutative_sleep_ms {
             cl_name: "commutative-sleep-ms",
-            sig: "(Fn [Int] (IO Int))",
+            sig: "(Fn [primitives/Int] (primitives/IO primitives/Int))",
             doc: "Sleep for ms milliseconds and return the duration (Commutative, for testing)",
             params: [ms],
             scheduling: SchedulingClass::Commutative,
         },
         resource_serial_noop {
             cl_name: "resource-serial-noop",
-            sig: "(Fn [Int] (IO Int))",
+            sig: "(Fn [primitives/Int] (primitives/IO primitives/Int))",
             doc: "No-op with resource token (ResourceSerial scheduling class, for testing)",
             params: [token],
             scheduling: SchedulingClass::ResourceSerial,

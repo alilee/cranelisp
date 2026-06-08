@@ -33,14 +33,50 @@ use cranelisp_types::{ErrorLocation,
 /// * `main_returns_io` — if true, inserts a `cranelisp_run_io` call to force
 ///   the IO task tree before extracting the exit code.
 /// * `entry_fn_name` — the user `main` symbol (e.g. `main` or `hello/main`).
+/// * `platform_layout_checks` — per-platform layout-hash checks to bake into the
+///   `start` stub (platform-interface.md §5.5.4 `--link` gate). For each check
+///   the stub declares the rlib's `__cranelisp_layout_hash_<name>` as imported
+///   data, bakes the compiler-computed expected hash + name as `.rodata`, and
+///   calls `cranelisp_check_layout_hash(linked, expected, name)` before `main`
+///   — a stale platform builds but aborts at process start with rebuild
+///   guidance. Empty = no checks (the as-built no-platform path).
 pub fn generate_startup_object(
     platform_manifest_names: &[String],
     main_returns_io: bool,
     entry_fn_name: &str,
+    platform_layout_checks: &[cranelisp_backend::exe::PlatformLayoutCheck],
 ) -> Result<Vec<u8>, CranelispError> {
     use cranelift::prelude::*;
-    use cranelisp_backend::cranelift_module::{default_libcall_names, Linkage, Module};
+    use cranelisp_backend::cranelift_module::{
+        default_libcall_names, DataDescription, Linkage, Module,
+    };
     use cranelisp_backend::cranelift_object::{ObjectBuilder, ObjectModule};
+
+    // Bake a NUL-terminated rodata string and return its DataId (for the
+    // expected-hash + platform-name constants the layout-hash gate reads).
+    fn define_cstr_data(
+        obj_module: &mut ObjectModule,
+        sym: &str,
+        text: &str,
+    ) -> Result<cranelisp_backend::cranelift_module::DataId, CranelispError> {
+        let id = obj_module
+            .declare_data(sym, Linkage::Local, false, false)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare {sym}: {e}"),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            })?;
+        let mut desc = DataDescription::new();
+        let mut bytes = text.as_bytes().to_vec();
+        bytes.push(0);
+        desc.define(bytes.into_boxed_slice());
+        obj_module
+            .define_data(id, &desc)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to define {sym}: {e}"),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            })?;
+        Ok(id)
+    }
 
     let isa = cranelisp_backend::build_isa(true)?;
 
@@ -110,6 +146,57 @@ pub fn generate_startup_object(
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
+    // Declare the layout-hash check intrinsic + per-platform data symbols
+    // (platform-interface.md §5.5.4 `--link` gate). Mirrors backend's
+    // `generate_startup_object_checked` (int owns the startup `.o` emission, BC
+    // §3 invariant 7). For each check: an imported `__cranelisp_layout_hash_<name>`
+    // (the rlib's embedded hash), a baked expected-hash cstring, a baked name
+    // cstring; the compare-and-abort is `cranelisp_check_layout_hash`.
+    struct LayoutCheckIds {
+        check_fn: cranelisp_backend::cranelift_module::FuncId,
+        per_platform: Vec<(
+            cranelisp_backend::cranelift_module::DataId,
+            cranelisp_backend::cranelift_module::DataId,
+            cranelisp_backend::cranelift_module::DataId,
+        )>,
+    }
+    let layout_check_ids = if platform_layout_checks.is_empty() {
+        None
+    } else {
+        let mut sig = obj_module.make_signature();
+        sig.params.push(AbiParam::new(types::I64)); // linked hash ptr
+        sig.params.push(AbiParam::new(types::I64)); // expected hash ptr
+        sig.params.push(AbiParam::new(types::I64)); // platform name ptr
+        let check_fn = obj_module
+            .declare_function("cranelisp_check_layout_hash", Linkage::Import, &sig)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare cranelisp_check_layout_hash: {e}"),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            })?;
+        let mut per_platform = Vec::with_capacity(platform_layout_checks.len());
+        for check in platform_layout_checks {
+            let linked_sym = format!("__cranelisp_layout_hash_{}", check.name);
+            let linked_id = obj_module
+                .declare_data(&linked_sym, Linkage::Import, false, false)
+                .map_err(|e| CranelispError::CodegenError {
+                    message: format!("failed to declare {linked_sym}: {e}"),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                })?;
+            let expected_id = define_cstr_data(
+                &mut obj_module,
+                &format!("__cranelisp_expected_hash_{}", check.name),
+                &check.expected_hash,
+            )?;
+            let name_id = define_cstr_data(
+                &mut obj_module,
+                &format!("__cranelisp_layout_name_{}", check.name),
+                &check.name,
+            )?;
+            per_platform.push((linked_id, expected_id, name_id));
+        }
+        Some(LayoutCheckIds { check_fn, per_platform })
+    };
+
     // Declare `cranelisp_init_platform` as imported (if platforms exist).
     let init_func_id = if !platform_manifest_names.is_empty() {
         let mut init_sig = obj_module.make_signature();
@@ -173,6 +260,25 @@ pub fn generate_startup_object(
                 let manifest_ref = obj_module.declare_func_in_func(manifest_fid, builder.func);
                 let addr = builder.ins().func_addr(types::I64, manifest_ref);
                 builder.ins().call(init_ref, &[addr]);
+            }
+        }
+
+        // 1.5. Layout-hash gate (platform-interface.md §5.5.4 `--link`): compare
+        // the compiler-computed expected hash against the rlib's statically
+        // linked `__cranelisp_layout_hash_<name>` and abort on mismatch — before
+        // main runs, so a stale platform refuses at process start.
+        if let Some(ref ids) = layout_check_ids {
+            let check_ref = obj_module.declare_func_in_func(ids.check_fn, builder.func);
+            for &(linked_id, expected_id, name_id) in &ids.per_platform {
+                let linked_gv = obj_module.declare_data_in_func(linked_id, builder.func);
+                let expected_gv = obj_module.declare_data_in_func(expected_id, builder.func);
+                let name_gv = obj_module.declare_data_in_func(name_id, builder.func);
+                let linked_ptr = builder.ins().global_value(types::I64, linked_gv);
+                let expected_ptr = builder.ins().global_value(types::I64, expected_gv);
+                let name_ptr = builder.ins().global_value(types::I64, name_gv);
+                builder
+                    .ins()
+                    .call(check_ref, &[linked_ptr, expected_ptr, name_ptr]);
             }
         }
 

@@ -17,7 +17,8 @@ use cranelisp_types::{ErrorLocation,
 };
 
 /// A loaded platform DLL. Must remain alive for the process lifetime
-/// (function pointers point into the library's code segment).
+/// (function pointers point into the library's code segment, and the
+/// exported GOT slab lives in the DLL's writable data segment).
 pub struct LoadedPlatform {
     /// The loaded dynamic library handle.
     _library: libloading::Library,
@@ -27,15 +28,31 @@ pub struct LoadedPlatform {
     pub version: String,
     /// Descriptors for each platform function.
     pub descriptors: Vec<OwnedPlatformFnDescriptor>,
+    /// The address of the DLL's exported GOT slab
+    /// (`__cranelisp_got_platform_<name>`), already populated by the manifest
+    /// fn (manifest order IS GOT slot order, platform-interface.md §5.1). The
+    /// host wraps this in place via `GotTable::with_static_backing` — no copy
+    /// (§5.3, §6.4). Lifetime = the dlopen handle (`_library`), kept for the
+    /// session in `SharedState::kept_dlls`. `None` only if the symbol was
+    /// absent (a pre-GOT-export DLL — load aborts before this is consulted).
+    pub got_base: *const std::sync::atomic::AtomicPtr<u8>,
+    /// The DLL's exported layout-hash string
+    /// (`__cranelisp_layout_hash_<name>`), or `None` if the platform declared
+    /// no schema (scalar-only platform — first-build/absent tolerated,
+    /// §5.5.4). Used by the load-time hash gate.
+    pub layout_hash: Option<String>,
 }
 
-// SAFETY: LoadedPlatform holds a Library handle whose code segment is mapped
-// for the process lifetime (DLLs are never unloaded). Function pointers into
-// the code segment are valid from any thread. The `_library` field is never
-// read after construction — only its drop side effect (unloading the DLL) is
-// load-bearing. `OwnedPlatformFnDescriptor` fields are `String`/`usize`/`*const`
-// and are read-only after manifest parsing. Send+Sync are needed for retention
-// in `SharedState::kept_dlls: Mutex<Vec<LoadedPlatform>>`.
+// SAFETY: LoadedPlatform holds a Library handle whose code+data segments are
+// mapped for the process lifetime (DLLs are never unloaded). Function pointers
+// into the code segment, and the `got_base` pointer into the DLL's writable
+// GOT slab, are valid from any thread. The `_library` field is never read after
+// construction — only its drop side effect (unloading the DLL) is load-bearing.
+// `OwnedPlatformFnDescriptor` fields are `String`/`usize`/`*const` and are
+// read-only after manifest parsing; `got_base` is a stable slab address (the
+// slab's `AtomicPtr` slots provide their own interior synchronisation).
+// Send+Sync are needed for retention in
+// `SharedState::kept_dlls: Mutex<Vec<LoadedPlatform>>`.
 unsafe impl Send for LoadedPlatform {}
 unsafe impl Sync for LoadedPlatform {}
 
@@ -184,16 +201,16 @@ pub fn load_platform_dll(
     // step 1): `cranelisp_intrinsics::cranelisp_alloc_with_tag` allocates a
     // tagged heap ADT (`[total_size][rc=1][tag|pad][fields...]`, returns the
     // alloc base) over `alloc::alloc_with_rc`. This removes the R1 gate —
-    // `CLAdt::<T>::construct(...)` no longer panics. `validate_schema` stays
-    // at the no-op placeholder: the host has no channel to obtain the DLL's
-    // schema text (the macro parses it into a DLL-local `LazyLock<Schema>`
-    // and neither invokes `validate_schema` at init nor exposes the literal
-    // on the manifest — the S-PLAT-1 seam, blocked on an /arch ruling +
-    // platform-crate macro change; see FIXME 0233 step 3).
+    // `CLAdt::<T>::construct(...)` no longer panics. The `validate_schema`
+    // callback channel is gone (FIXME 0288): schema validation is superseded
+    // by the layout-hash gate (§5.5.4) — the host regenerates the schema from
+    // its live tables and compares the canonical hash to the DLL's exported
+    // `__cranelisp_layout_hash_<name>`. Calling the manifest fn ALSO populates
+    // the DLL's exported GOT slab (manifest order IS GOT slot order, §5.1),
+    // which we dlsym below.
     let callbacks = HostCallbacks {
         alloc: cranelisp_intrinsics::heap_alloc_payload,
         alloc_with_tag: cranelisp_intrinsics::alloc::cranelisp_alloc_with_tag,
-        validate_schema: cranelisp_platform::null_validate_schema,
     };
     let manifest = unsafe { manifest_fn(&callbacks) };
 
@@ -230,53 +247,104 @@ pub fn load_platform_dll(
         })?
     };
 
+    // Step 6: dlsym the exported GOT slab + the layout-hash data symbol
+    // (platform-interface.md §5.1, §5.5.4, §6.4). The manifest fn above
+    // populated the GOT slab (slot i = functions[i]'s fn ptr). The host wraps
+    // it in place (`GotTable::with_static_backing`) in `register_platform_in_tc`
+    // — no copy; lifetime = this dlopen handle, kept on `SharedState::kept_dlls`.
+    let got_sym_name = format!("__cranelisp_got_platform_{name}");
+    let got_base = unsafe {
+        let sym: libloading::Symbol<*const std::sync::atomic::AtomicPtr<u8>> = library
+            .get(got_sym_name.as_bytes())
+            .map_err(|_e| {
+                CranelispError::Platform(cranelisp_types::PlatformError::LoadFailed {
+                    dll: dll_path.to_path_buf(),
+                    cause: format!(
+                        "platform DLL does not export its GOT symbol '{got_sym_name}' \
+                         (rebuild the platform with the current declare_platform! macro)"
+                    ),
+                    location: location(),
+                })
+            })?;
+        // The exported symbol is the array `[AtomicPtr<u8>; GOT_TABLE_SIZE]`;
+        // `Symbol` derefs to a pointer-to-the-array's-first-element. Take the
+        // raw element address (the slab base).
+        *sym
+    };
+
+    // The layout-hash export is optional (scalar-only platforms declare no
+    // schema; first builds tolerated, §5.5.4).
+    let layout_hash_sym_name = format!("__cranelisp_layout_hash_{name}");
+    let layout_hash: Option<String> = unsafe {
+        library
+            .get::<*const &str>(layout_hash_sym_name.as_bytes())
+            .ok()
+            .map(|sym| (**sym).to_string())
+    };
+
     Ok(LoadedPlatform {
         _library: library,
         name,
         version,
         descriptors,
+        got_base,
+        layout_hash,
     })
 }
 
-/// Register a loaded platform's functions in the typechecker and collect
-/// symbols for JIT registration.
+/// Register a loaded platform's functions in the host symbol tables.
 ///
-/// Creates a `platform.{name}` module in the typechecker and inserts a
-/// `ModuleEntry::Def` for each platform function. Returns the list of
-/// (jit_name, function_pointer) pairs for JIT symbol registration.
+/// Creates the `platform.{name}` module and inserts a `ModuleEntry::Def` per
+/// platform function, with `got_slot = manifest index` and the scheme resolved
+/// from the FQ sig. The module's `GotTable` WRAPS the DLL's exported GOT slab
+/// in place (`GotTable::with_static_backing` — no copy; the dlopen handle on
+/// `SharedState::kept_dlls` keeps it alive), so GOT-indirect dispatch reaches
+/// the platform fns identically to any user/stdlib module (platform-interface.md
+/// §5.3, §6.4). No imports are injected (FQ sigs, §5.3); the old
+/// `(jit_name, ptr)` / `JITBuilder::symbol` direct-extern path is gone — fn
+/// pointers live in the GOT, dispatched GOT-indirect.
 pub fn register_platform_in_tc(
     symbol_tables: &dashmap::DashMap<cranelisp_types::ModuleFullPath, crate::code::SessionSymbolTable>,
-    // Retained for caller compatibility; no longer needed now that module
-    // creation goes through the types-crate `ensure_module_exists` free fn
-    // (W-Absorb) rather than a `TypeCheckEnv`.
-    _next_type_id: &std::sync::atomic::AtomicU32,
-    _check_state: &mut cranelisp_typecheck::CheckState,
     module_aliases: &cranelisp_types::ModuleAliases,
     platform: &LoadedPlatform,
-) -> Result<Vec<(String, *const u8)>, CranelispError> {
+) -> Result<(), CranelispError> {
     let module_path = ModuleFullPath::from(format!("platform.{}", platform.name));
 
-    // Ensure the platform module exists.
+    // Ensure the platform module exists, then WRAP the DLL's exported GOT slab
+    // in place as the module's GOT (platform-interface.md §5.3 / §6.4 — no
+    // copy). The slab was populated by the manifest fn at load (slot i =
+    // functions[i]'s fn ptr); `got_data_symbol_name("platform.<name>")` ==
+    // `__cranelisp_got_platform_<name>` matches the DLL's exported symbol, so
+    // `Jit::new`'s per-module GOT registration (jit.rs step 2) wires the
+    // GOT-indirect data symbol to this slab base for free.
     cranelisp_types::ensure_module_exists(symbol_tables, &module_path);
+    {
+        // SAFETY: `got_base` is the address of the DLL's exported
+        // `[AtomicPtr<u8>; GOT_TABLE_SIZE]` static (`__cranelisp_got_platform_<name>`),
+        // populated by the manifest fn. The DLL handle is retained for the
+        // session (`SharedState::kept_dlls`), so the slab is `'static`-valid for
+        // every reader of the resulting `GotTable`. `with_static_backing`'s
+        // contract (one backing per slab; writable section for the trace swap;
+        // exactly `GOT_TABLE_SIZE` slots) is satisfied by the macro-emitted
+        // static (`#[export_name]` writable `__DATA` array of that exact type).
+        let slab: &'static [std::sync::atomic::AtomicPtr<u8>; cranelisp_types::GOT_TABLE_SIZE] =
+            unsafe { &*(platform.got_base as *const _) };
+        let got = std::sync::Arc::new(cranelisp_types::GotTable::with_static_backing(slab));
+        if let Some(mut table) = symbol_tables.get_mut(&module_path) {
+            table.got = got;
+            // The platform GOT's slots are owned by the DLL; the host never
+            // allocates into it. Advance `next_got_slot` past the manifest so a
+            // later host allocation (if any) cannot collide with a platform slot.
+            table.next_got_slot = platform.descriptors.len();
+        }
+    }
 
-    // FIXME 0233 step 1: platform sig type-names resolve through the normal
-    // symbol-table view + resolution primitive (`check_type_expr`), exactly
-    // like program forms — NOT through a bespoke `intrinsic_type_from_name`
-    // table. For the leaf names (`Int`/`Bool`/`Float`/`String`) and the `IO`
-    // ADT to be reachable from the synthetic `platform.<name>` module, inject
-    // the same `(import [primitives [*]])` binding every user module gets
-    // (spec §8.8.1; primitives is loaded at session init). Idempotent — a
-    // glob-import re-install over an already-imported module is a no-op append.
-    inject_primitives_import_for_platform(symbol_tables, &module_path, module_aliases)?;
-
-    let mut jit_symbols: Vec<(String, *const u8)> = Vec::new();
-
-    for desc in &platform.descriptors {
-        // Parse + typecheck the signature through the shared frontend +
-        // typecheck surface (FIXME 0233 step 1). `parse_type_expr` lowers the
-        // one S-expr type form to a `TypeExpr`; `check_type_expr` resolves its
-        // leaf names against the `platform.<name>` module's view (primitives
-        // imported above), returning the resolved `Type`.
+    for (slot, desc) in platform.descriptors.iter().enumerate() {
+        // Parse + typecheck the FQ signature through the shared frontend +
+        // typecheck surface. `parse_type_expr` lowers the one S-expr type form
+        // to a `TypeExpr`; `check_type_expr` resolves its FQ leaf names
+        // (`primitives/Int`, `shapes/Rectangle`) directly against the named
+        // modules (auto-loaded per FIXME 0268) — NO injected imports (§5.3).
         let ty = parse_and_check_platform_type_sig(
             symbol_tables, module_aliases, &module_path, &desc.type_sig, &desc.name,
         )?;
@@ -289,11 +357,10 @@ pub fn register_platform_in_tc(
 
         let param_names: Vec<Symbol> = desc.param_names.iter().map(|n| Symbol::from(n.as_str())).collect();
 
-        // Insert directly into the module's symbol table.
+        // Insert directly into the module's symbol table with `got_slot =
+        // manifest index` (§5.3) — the GOT-indirect dispatch arm in backend
+        // (`apply.rs`) activates on `got_slot: Some(_)`.
         if let Some(mut table) = symbol_tables.get_mut(&module_path) {
-            // D0048 A2 / S70: platform effects are `DefKind::PlatformEffect
-            // { scheduling_class }` (the `primitive_kind` / `jit_name` fields
-            // retired; the symbol-table key IS the JIT linker name).
             let mut builder = ModuleEntry::def(
                 scheme,
                 DefKind::PlatformEffect {
@@ -301,17 +368,16 @@ pub fn register_platform_in_tc(
                 },
             )
             .visibility(Visibility::Public)
+            .got_slot(slot)
             .param_names(param_names);
             if !desc.docstring.is_empty() {
                 builder = builder.docstring(desc.docstring.clone());
             }
             table.insert(Symbol::from(desc.name.as_str()), builder.build());
         }
-
-        jit_symbols.push((desc.jit_name.clone(), desc.ptr));
     }
 
-    Ok(jit_symbols)
+    Ok(())
 }
 
 /// Inject `(import [primitives [*]])` into the synthetic `platform.<name>`
@@ -322,39 +388,57 @@ pub fn register_platform_in_tc(
 /// Idempotent: `install_imports` appends per-symbol `ModuleEntry::Import`
 /// bindings; re-installing a glob import over an already-imported module
 /// re-writes the same bindings (no duplication hazard for resolution).
-fn inject_primitives_import_for_platform(
-    symbol_tables: &dashmap::DashMap<cranelisp_types::ModuleFullPath, crate::code::SessionSymbolTable>,
-    module_path: &ModuleFullPath,
-    module_aliases: &cranelisp_types::ModuleAliases,
-) -> Result<(), CranelispError> {
-    use cranelisp_types::{ImportNames, ImportSpec};
-    let spec = ImportSpec {
-        module_path: ModuleFullPath::from("primitives"),
-        names: ImportNames::Glob,
-        alias: None,
-        span: Span::SYNTHETIC,
-    };
-    crate::imports::install_imports(
-        symbol_tables,
-        module_path,
-        module_aliases,
-        std::slice::from_ref(&spec),
-    )
+/// Normalise FQ leaf names the frontend type-expr parser leaves under-qualified.
+///
+/// `cranelisp_frontend::parse_type_expr` (`build_type_expr`) decides type-vs-var
+/// by the FIRST character: `primitives/String` starts lowercase, so it parses to
+/// `TypeExpr::TypeVar("primitives/String")` — a free type variable — even though
+/// the post-slash leaf (`String`) is an uppercase TYPE. The resolution layer
+/// (`resolve_type_expr_in_module` → `cranelisp_types::resolve` → `split_qualified`)
+/// already handles a slash inside a leaf name, but only for `Named`/`Applied`
+/// nodes; `TypeVar` nodes are allocated fresh IDs and never resolved. This pass
+/// rewrites any `TypeVar` whose name is module-qualified AND whose post-slash
+/// leaf is uppercase into a `Named(TypeRef)` so resolution sees it as a type.
+/// (`Applied` heads + already-`Named` leaves keep the slash in their `TypeName`
+/// and resolve correctly via `split_qualified`, so they pass through unchanged.)
+///
+/// This is the int-side bridge for the FQ-sig design (platform-interface.md §5.3)
+/// — frontend type-expr parsing of `module/Type` leaves is a separate concern
+/// (the parser change is FIXME 0230's neighbourhood). Keeping the normalisation
+/// at the platform boundary avoids a frontend change for this cut.
+fn fqize_type_expr(expr: cranelisp_types::TypeExpr) -> cranelisp_types::TypeExpr {
+    use cranelisp_types::{TypeExpr, TypeName, TypeRef};
+    match expr {
+        TypeExpr::TypeVar(name) => {
+            let s = name.as_ref();
+            if let Some(slash) = s.find('/') {
+                let leaf = &s[slash + 1..];
+                if leaf.chars().next().is_some_and(|c| c.is_uppercase()) {
+                    return TypeExpr::Named(TypeRef::new(None, TypeName::from(s)));
+                }
+            }
+            TypeExpr::TypeVar(name)
+        }
+        TypeExpr::FnType(params, ret) => TypeExpr::FnType(
+            params.into_iter().map(fqize_type_expr).collect(),
+            Box::new(fqize_type_expr(*ret)),
+        ),
+        TypeExpr::Applied(head, args) => {
+            TypeExpr::Applied(head, args.into_iter().map(fqize_type_expr).collect())
+        }
+        other => other,
+    }
 }
 
-/// Parse + typecheck a platform function's type signature (FIXME 0233 step 1).
+/// Parse + typecheck a platform function's FQ type signature.
 ///
-/// Replaces the former ad-hoc `parse_platform_type_sig` + `sexp_to_type` +
-/// `parse_fn_type` + `parse_io_type` family (which duplicated a subset of the
-/// frontend + typecheck type-resolution logic and used a bespoke
-/// `intrinsic_type_from_name` table). The signature is one type-expr S-form;
-/// `cranelisp_frontend::parse_type_expr` lowers it to a `TypeExpr`, and
-/// `cranelisp_typecheck::check_type_expr` resolves its leaf names against the
-/// `platform.<name>` module's view (primitives imported by
-/// `inject_primitives_import_for_platform`), returning the resolved `Type`.
-/// Schema-declared ADT names (`(Fn [Rectangle] Int)`) resolve through the same
-/// path once the platform module carries those type defs (host-wiring round-
-/// trip; see `design/platform/host-wiring-s76.md` §4 seam 0231/0233).
+/// The signature is one type-expr S-form with FQ leaf refs
+/// (`primitives/Int`, `shapes/Rectangle`); `cranelisp_frontend::parse_type_expr`
+/// lowers it to a `TypeExpr`, `fqize_type_expr` repairs under-qualified leaves
+/// the parser left as type-vars, and `cranelisp_typecheck::check_type_expr`
+/// resolves the FQ leaf names directly against the named modules (auto-loaded
+/// per FIXME 0268), returning the resolved `Type`. NO imports are injected into
+/// the platform module (platform-interface.md §5.3) — the sigs are FQ.
 fn parse_and_check_platform_type_sig(
     symbol_tables: &dashmap::DashMap<cranelisp_types::ModuleFullPath, crate::code::SessionSymbolTable>,
     module_aliases: &cranelisp_types::ModuleAliases,
@@ -369,6 +453,7 @@ fn parse_and_check_platform_type_sig(
         ),
         location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
     })?;
+    let expr = fqize_type_expr(expr);
 
     let mut ctx = cranelisp_typecheck::SymbolTableAccess::live(symbol_tables, module_path.clone());
     cranelisp_typecheck::check_type_expr(
@@ -424,21 +509,21 @@ pub(crate) fn extract_platform_name(sexp: &Sexp) -> Option<(String, Span)> {
 }
 
 /// Full platform loading pipeline: resolve path, load DLL, validate manifest,
-/// register in typechecker.
+/// register in the host symbol tables (GOT wrapped in place, got_slot = manifest
+/// index, FQ sigs — no injected imports, no jit_name registration).
 ///
-/// Returns the loaded platform (must be kept alive) and JIT symbols to register.
-#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+/// Returns the loaded platform; the caller MUST keep it alive (retain on
+/// `SharedState::kept_dlls`) so the wrapped GOT slab + fn pointers stay valid.
+#[allow(clippy::too_many_arguments)]
 pub fn load_and_register_platform(
     symbol_tables: &dashmap::DashMap<cranelisp_types::ModuleFullPath, crate::code::SessionSymbolTable>,
-    next_type_id: &std::sync::atomic::AtomicU32,
-    check_state: &mut cranelisp_typecheck::CheckState,
     module_aliases: &cranelisp_types::ModuleAliases,
     platform_name: &str,
     project_root: &Path,
     lib_dirs: &[PathBuf],
     platform_dirs: &[PathBuf],
     span: Span,
-) -> Result<(LoadedPlatform, Vec<(String, *const u8)>), CranelispError> {
+) -> Result<LoadedPlatform, CranelispError> {
     // Step 1: Resolve the DLL path (§8.11.3).
     let dll_path = resolve_platform_path(platform_name, project_root, lib_dirs, platform_dirs)
         .ok_or_else(|| {
@@ -448,7 +533,7 @@ pub fn load_and_register_platform(
             }
         })?;
 
-    // Step 2: Load and validate the DLL.
+    // Step 2: Load and validate the DLL (dlsym GOT + layout-hash).
     let platform = load_platform_dll(&dll_path, span)?;
 
     // Step 3: Validate manifest name matches declared name.
@@ -462,12 +547,10 @@ pub fn load_and_register_platform(
         });
     }
 
-    // Step 4: Register in typechecker.
-    let jit_symbols = register_platform_in_tc(
-        symbol_tables, next_type_id, check_state, module_aliases, &platform,
-    )?;
+    // Step 4: Register in the host symbol tables (GOT wrap + FQ sigs).
+    register_platform_in_tc(symbol_tables, module_aliases, &platform)?;
 
-    Ok((platform, jit_symbols))
+    Ok(platform)
 }
 
 // ---------------------------------------------------------------------------
@@ -530,7 +613,6 @@ mod tests {
         HostCallbacks {
             alloc: cranelisp_intrinsics::heap_alloc_payload,
             alloc_with_tag: cranelisp_intrinsics::alloc::cranelisp_alloc_with_tag,
-            validate_schema: cranelisp_platform::null_validate_schema,
         }
     }
 
@@ -678,17 +760,20 @@ mod tests {
         assert_eq!(platform.version, "0.1.0");
         assert_eq!(platform.descriptors.len(), 2);
 
-        // Verify function descriptors.
+        // Verify function descriptors. Platform fns carry no exported linker
+        // name (jit_name retired, FIXME 0288) — dispatch is GOT-indirect at the
+        // manifest index.
         let print_desc = &platform.descriptors[0];
         assert_eq!(print_desc.name, "print");
-        assert_eq!(print_desc.jit_name, "cranelisp_print");
         assert_eq!(print_desc.param_count, 1);
         assert!(!print_desc.docstring.is_empty());
 
         let read_desc = &platform.descriptors[1];
         assert_eq!(read_desc.name, "read-line");
-        assert_eq!(read_desc.jit_name, "cranelisp_read_line");
         assert_eq!(read_desc.param_count, 0);
+
+        // The DLL must export its GOT slab (dlsym'd at load).
+        assert!(!platform.got_base.is_null(), "platform must export its GOT");
     }
 
     // spec: 10-io §10.9.1 — register platform functions in typechecker
@@ -707,12 +792,9 @@ mod tests {
         let user_mod = ModuleFullPath::from("user");
         symbol_tables.insert(user_mod.clone(), crate::code::SessionSymbolTable::new_with_params(user_mod.clone()));
         crate::bootstrap::mount_synthetic_modules(&symbol_tables, &next_type_id);
-        let mut check_state = cranelisp_typecheck::CheckState::new(user_mod);
         let module_aliases = cranelisp_types::ModuleAliases::default();
-        let (platform, jit_symbols) = load_and_register_platform(
+        let platform = load_and_register_platform(
             &symbol_tables,
-            &next_type_id,
-            &mut check_state,
             &module_aliases,
             "stdio",
             project_root,
@@ -720,9 +802,6 @@ mod tests {
             &[target_debug],
             Span::SYNTHETIC,
         ).unwrap();
-
-        // Should have registered 2 JIT symbols (print, read-line).
-        assert_eq!(jit_symbols.len(), 2);
 
         // Check the platform.stdio module exists and has the functions.
         let module_path = ModuleFullPath::from("platform.stdio");
@@ -736,9 +815,10 @@ mod tests {
         let read_entry = table.get("read-line");
         assert!(read_entry.is_some(), "read-line should be in platform.stdio");
 
-        // Verify types are correctly parsed.
-        if let Some(ModuleEntry::Def { scheme, kind, docstring, .. }) = print_entry {
-            // print: (Fn [String] (IO Int))
+        // Verify types are correctly parsed AND `got_slot = manifest index`
+        // (platform-interface.md §5.3) — the GOT-indirect dispatch activator.
+        if let Some(ModuleEntry::Def { scheme, kind, docstring, got_slot, .. }) = print_entry {
+            // print: (Fn [primitives/String] (primitives/IO primitives/Int))
             match &scheme.ty {
                 Type::Fn(params, ret) => {
                     assert_eq!(params.len(), 1);
@@ -749,9 +829,20 @@ mod tests {
             }
             assert!(matches!(kind.as_ref(), DefKind::PlatformEffect { .. }));
             assert!(docstring.is_some());
+            assert_eq!(*got_slot, Some(0), "print is manifest index 0");
         } else {
             panic!("expected Def entry for print");
         }
+        if let Some(ModuleEntry::Def { got_slot, .. }) = read_entry {
+            assert_eq!(*got_slot, Some(1), "read-line is manifest index 1");
+        }
+
+        // The platform module's GOT wraps the DLL's exported slab; slot 0 (print)
+        // must be a live (non-null) fn pointer after the manifest populated it.
+        assert!(
+            !table.got.load_slot(0).is_null(),
+            "platform GOT slot 0 must be populated by the DLL manifest"
+        );
 
         // Platform should be kept alive.
         assert_eq!(platform.name, "stdio");
@@ -796,16 +887,12 @@ mod tests {
         }
 
         let symbol_tables = dashmap::DashMap::new();
-        let next_type_id = std::sync::atomic::AtomicU32::new(0);
         let user_mod = ModuleFullPath::from("user");
         symbol_tables.insert(user_mod.clone(), crate::code::SessionSymbolTable::new_with_params(user_mod.clone()));
-        let mut check_state = cranelisp_typecheck::CheckState::new(user_mod);
         let module_aliases = cranelisp_types::ModuleAliases::default();
         // Try to load with wrong name — manifest says "stdio" but we say "wrong-name"
         let result = load_and_register_platform(
             &symbol_tables,
-            &next_type_id,
-            &mut check_state,
             &module_aliases,
             "wrong-name",
             project_root,

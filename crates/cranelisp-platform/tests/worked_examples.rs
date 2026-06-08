@@ -160,7 +160,6 @@ fn install() {
         let cb = HostCallbacks {
             alloc: test_alloc,
             alloc_with_tag: cranelisp_platform::null_alloc_with_tag,
-            validate_schema: cranelisp_platform::null_validate_schema,
         };
         let _ = unsafe { cranelisp_platform_manifest(&cb) };
     });
