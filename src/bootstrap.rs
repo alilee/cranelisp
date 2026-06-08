@@ -130,6 +130,17 @@ fn register_synth_adt(
         type_var_ids.iter().map(|&id| Type::Var(id)).collect(),
     );
 
+    // Same-name single-constructor product types (type name == sole ctor name,
+    // e.g. `Pair`) cannot hold a separate Constructor `Def` and a `TypeDef`
+    // under the same symbol-table key — the TypeDef would clobber the Def,
+    // leaving construction/pattern use unresolvable. The canonical shape
+    // (mirroring user `deftype` via `find_same_name_constructor_scheme`) is a
+    // single `TypeDef` carrying `constructor_scheme: Some(Fn[fields] ADT)`;
+    // construction inlines through it (heap.rs) and pattern/value resolution
+    // routes through it (checker.rs). Capture that scheme here and skip the
+    // colliding Def insert.
+    let mut same_name_ctor_scheme: Option<Scheme> = None;
+
     for (tag, ctor) in ctors.iter().enumerate() {
         let param_names: Vec<Symbol> =
             ctor.fields.iter().map(|f| Symbol::from(f.name)).collect();
@@ -151,6 +162,13 @@ fn register_synth_adt(
                 ),
             }
         };
+
+        if ctor.name == type_name {
+            // Same-name product: route through the TypeDef's constructor_scheme
+            // (below) rather than a colliding Def entry.
+            same_name_ctor_scheme = Some(scheme);
+            continue;
+        }
 
         // Synthesise the DefnVariant body wrapping Expr::ConstrADT — backend
         // lowers this directly (DefKind::Constructor metadata is for pattern
@@ -196,8 +214,10 @@ fn register_synth_adt(
         module.insert(Symbol::from(ctor.name), builder.build());
     }
 
-    // The TypeDef entry — carries the constructor-name list. None of the
-    // synthetic ADTs are same-name product types, so constructor_scheme = None.
+    // The TypeDef entry — carries the constructor-name list. For same-name
+    // product types (e.g. `Pair`) it also carries the constructor_scheme
+    // captured above; for distinct-name ADTs (Option/Result/IO) the ctors are
+    // separate Def entries and constructor_scheme stays None.
     let constructors: Vec<Symbol> = ctors.iter().map(|c| Symbol::from(c.name)).collect();
     let mut docstring = None;
     if let Some(doc) = adt_docstring {
@@ -213,7 +233,7 @@ fn register_synth_adt(
             },
             visibility: Visibility::Public,
             docstring,
-            constructor_scheme: None,
+            constructor_scheme: same_name_ctor_scheme,
         },
     );
 }
@@ -1074,13 +1094,28 @@ mod tests {
         mount_synthetic_modules(&tables, &next_id);
         let prims = tables.get(&ModuleFullPath::from("primitives")).unwrap();
         assert!(matches!(prims.get("Pair"), Some(ModuleEntry::TypeDef { .. })));
-        // Pair ctor is a 2-field data constructor.
+        // `Pair` is a same-name product type: the type and its sole 2-field
+        // constructor share the name, so there is ONE `TypeDef` entry that
+        // MUST carry `constructor_scheme: Some(Fn[a b] (Pair a b))` — without
+        // it `(Pair 1 2)` and `(match _ [(Pair a b) …])` are unresolvable
+        // (the FIXME 0297 defect). Assert the scheme is present and is a
+        // 2-arg constructor function, not just that the type name exists.
         match prims.get("Pair") {
-            // The constructor `Pair` and the type `Pair` share the name; the
-            // last insert (the TypeDef) wins for the type-name key. The ctor is
-            // checked via the constructor list on the TypeDef.
-            Some(ModuleEntry::TypeDef { info, .. }) => {
+            Some(ModuleEntry::TypeDef { info, constructor_scheme, .. }) => {
                 assert_eq!(info.constructors, vec![Symbol::from("Pair")]);
+                let scheme = constructor_scheme
+                    .as_ref()
+                    .expect("Pair (same-name product) must carry constructor_scheme");
+                match &scheme.ty {
+                    Type::Fn(fields, ret) => {
+                        assert_eq!(fields.len(), 2, "Pair constructor takes 2 fields");
+                        assert!(
+                            matches!(ret.as_ref(), Type::ADT(name, _) if name.to_string().ends_with("Pair")),
+                            "Pair constructor returns the Pair ADT, got {ret:?}"
+                        );
+                    }
+                    other => panic!("Pair constructor_scheme must be a Fn type, got {other:?}"),
+                }
             }
             other => panic!("Pair should be a TypeDef, got {other:?}"),
         }
