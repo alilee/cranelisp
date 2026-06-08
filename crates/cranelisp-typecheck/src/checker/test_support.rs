@@ -370,11 +370,6 @@ impl TestFixture {
         env.check_via_forms(&mut self.state, program, ctx, strategy)
     }
 
-    /// Is internal constructor (test convenience).
-    pub fn is_internal_constructor_check(&self, ctor_name: &str) -> bool {
-        self.env().is_internal_constructor_check(ctor_name)
-    }
-
     /// Resolve a `TypeExpr` in the `user` module (test convenience).
     pub fn resolve_type_expr_in_user(
         &self,

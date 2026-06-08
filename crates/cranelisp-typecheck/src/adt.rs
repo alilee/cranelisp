@@ -1234,15 +1234,59 @@ mod tests {
     #[test]
     fn test_is_internal_constructor() {
         let tc = TestFixture::new();
-        // Bind is internal but NOT registered in constructor_to_type,
-        // so this returns false (enforcement is name-resolution-based).
-        // If Bind were in constructor_to_type, this would return true.
-        assert!(!tc.is_internal_constructor_check("Bind"));
-        // Non-internal constructors return false.
-        assert!(!tc.is_internal_constructor_check("Pure"));
-        assert!(!tc.is_internal_constructor_check("Effect"));
+        let primitives_path = ModuleFullPath::from("primitives");
+        let env = tc.env();
+        // Bind carries `internal: true` on its `DefKind::Constructor`. Rooted
+        // at its home module (primitives), the check resolves the Constructor
+        // Def and reads the discriminator.
+        assert!(
+            env.is_internal_constructor_check_in_module(&primitives_path, "Bind"),
+            "Bind must be reported internal"
+        );
+        // Non-internal IO constructors return false.
+        assert!(!env.is_internal_constructor_check_in_module(&primitives_path, "Pure"));
+        assert!(!env.is_internal_constructor_check_in_module(&primitives_path, "Effect"));
         // Unknown constructors return false.
-        assert!(!tc.is_internal_constructor_check("NoSuchCtor"));
+        assert!(!env.is_internal_constructor_check_in_module(&primitives_path, "NoSuchCtor"));
+    }
+
+    // spec: 10-io §10.1 — internal-ctor check chain-follows Import entries.
+    //
+    // Regression for the Wave-4c enforcement defect: when `Bind` is reachable
+    // from a module via a glob import (the realistic shape — `user`/`test`
+    // imports `primitives`), the `internal` discriminator must still be read
+    // through the Import entry. A direct probe returned the Import (not the
+    // Constructor Def) and silently reported `false`, so `(Bind …)` resolved
+    // and compiled in user code.
+    #[test]
+    fn test_is_internal_constructor_through_import() {
+        use cranelisp_types::{ModuleEntry, Symbol, FQSymbol, Visibility};
+        let tc = TestFixture::new();
+        let user_path = ModuleFullPath::from("user");
+        // Seed user-module Imports of `Bind` and its parent `IO` type from
+        // primitives — what a glob import of primitives materialises (both the
+        // constructor name and the type name land as Import entries).
+        {
+            let mut user_tbl = tc.modules.get_mut(&user_path).unwrap();
+            for name in ["Bind", "IO"] {
+                user_tbl.insert(
+                    Symbol::from(name),
+                    ModuleEntry::Import {
+                        source: FQSymbol {
+                            module: ModuleFullPath::from("primitives"),
+                            symbol: Symbol::from(name),
+                        },
+                        visibility: Visibility::Public,
+                    },
+                );
+            }
+        }
+        let env = tc.env();
+        assert!(
+            env.is_internal_constructor_check_in_module(&user_path, "Bind"),
+            "Bind imported into user must still be reported internal \
+             (chain-follow the Import to the primitives Constructor Def)"
+        );
     }
 
     // spec: 10-io §10.1 — exhaustiveness excludes internal constructors

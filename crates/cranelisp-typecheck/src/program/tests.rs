@@ -596,6 +596,132 @@
         assert!(result.display.as_ref().unwrap().scheme.is_none());
     }
 
+    // spec: 10-io §10.1 — internal `Bind` constructor rejected in head position.
+    //
+    // `tc_with_prims()` glob-imports primitives into the `test` module, so
+    // `Bind` is reachable exactly as it is in a real REPL/user module. The
+    // application head must be rejected because `Bind` is internal. The
+    // continuation arg is irrelevant — rejection happens at head resolution.
+    #[test]
+    fn test_internal_bind_constructor_rejected_in_head_position() {
+        let mut tc = tc_with_prims();
+        // (Bind (Pure 1) (Pure 2)) — only the head matters for this gate.
+        let input = TopLevel::Expr(Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("Bind"),
+                span: span(1, 5),
+                inferred_type: None,
+            }),
+            args: vec![
+                Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("Pure"),
+                        span: span(7, 11),
+                        inferred_type: None,
+                    }),
+                    args: vec![Expr::IntLit { value: 1, span: span(12, 13), inferred_type: None }],
+                    span: span(6, 14),
+                    resolved_call: None,
+                    inferred_type: None,
+                },
+                Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("Pure"),
+                        span: span(16, 20),
+                        inferred_type: None,
+                    }),
+                    args: vec![Expr::IntLit { value: 2, span: span(21, 22), inferred_type: None }],
+                    span: span(15, 23),
+                    resolved_call: None,
+                    inferred_type: None,
+                },
+            ],
+            span: span(0, 24),
+            resolved_call: None,
+            inferred_type: None,
+        });
+        let err = tc.check_repl_input_self(&input).expect_err(
+            "internal Bind constructor must be rejected in head position",
+        );
+        assert!(
+            err.message().contains("internal"),
+            "error should explain Bind is internal, got: {}",
+            err.message()
+        );
+    }
+
+    // spec: 10-io §10.1 — internal `Bind` constructor rejected in pattern position.
+    #[test]
+    fn test_internal_bind_constructor_rejected_in_pattern_position() {
+        let mut tc = tc_with_prims();
+        // (match (Pure 1) [(Bind a b) 0 _ 99])
+        let input = TopLevel::Expr(Expr::Match {
+            scrutinee: Box::new(Expr::Apply {
+                callee: Box::new(Expr::Var {
+                    name: Symbol::from("Pure"),
+                    span: span(8, 12),
+                    inferred_type: None,
+                }),
+                args: vec![Expr::IntLit { value: 1, span: span(13, 14), inferred_type: None }],
+                span: span(7, 15),
+                resolved_call: None,
+                inferred_type: None,
+            }),
+            arms: vec![
+                cranelisp_types::MatchArm {
+                    pattern: cranelisp_types::Pattern::Constructor {
+                        name: cranelisp_types::SymbolRef::new(None, Symbol::from("Bind")),
+                        bindings: vec![Symbol::from("a"), Symbol::from("b")],
+                        span: span(17, 27),
+                    },
+                    body: Expr::IntLit { value: 0, span: span(28, 29), inferred_type: None },
+                    span: span(17, 29),
+                },
+                cranelisp_types::MatchArm {
+                    pattern: cranelisp_types::Pattern::Wildcard { span: span(30, 31) },
+                    body: Expr::IntLit { value: 99, span: span(32, 34), inferred_type: None },
+                    span: span(30, 34),
+                },
+            ],
+            span: span(0, 35),
+            compiler_generated: false,
+            inferred_type: None,
+        });
+        let err = tc.check_repl_input_self(&input).expect_err(
+            "internal Bind constructor must be rejected in pattern position",
+        );
+        assert!(
+            err.message().contains("internal"),
+            "error should explain Bind is internal, got: {}",
+            err.message()
+        );
+    }
+
+    // spec: 10-io §10.2 — non-internal IO constructor `Pure` is accepted in
+    // head position (the internal gate must not over-trigger on public ctors).
+    #[test]
+    fn test_non_internal_constructor_accepted_in_head_position() {
+        let mut tc = tc_with_prims();
+        // (Pure 1) — Pure is public; must typecheck cleanly.
+        let input = TopLevel::Expr(Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("Pure"),
+                span: span(1, 5),
+                inferred_type: None,
+            }),
+            args: vec![Expr::IntLit { value: 1, span: span(6, 7), inferred_type: None }],
+            span: span(0, 8),
+            resolved_call: None,
+            inferred_type: None,
+        });
+        let result = tc.check_repl_input_self(&input);
+        assert!(
+            result.is_ok(),
+            "public Pure constructor must be accepted, got: {:?}",
+            result.err().map(|e| e.message().to_string())
+        );
+    }
+
     // spec: 03-types §3.4 — REPL defn produces polymorphic scheme
     #[test]
     fn test_check_repl_defn() {

@@ -594,14 +594,9 @@ where
     /// Check whether a constructor is marked as internal (not user-constructable).
     ///
     /// Per Principle 17 — routes through the principled lookups above.
-    /// Public default-rooted variant defaults to `user`.
-    #[allow(dead_code)] // default-rooted accessor pair; exercised via TestFixture in `#[cfg(test)]`.
-    pub(crate) fn is_internal_constructor_check(&self, ctor_name: &str) -> bool {
-        let user_path = ModuleFullPath::from("user");
-        self.is_internal_constructor_check_in_module(&user_path, ctor_name)
-    }
-
-    /// Module-rooted variant of [`Self::is_internal_constructor_check`].
+    /// Module-rooted: pass the access root explicitly. The production gate
+    /// roots at `state.current_module` via [`Self::is_internal_constructor`];
+    /// tests root at the constructor's home module directly.
     pub(crate) fn is_internal_constructor_check_in_module(
         &self,
         module_path: &ModuleFullPath,
@@ -617,7 +612,12 @@ where
             // Def to read its kind discriminator.
             for c_sym in &info.constructors {
                 if c_sym.as_ref() == ctor_name {
-                    if let Some(entry) = self.probe_module_entry_owned(module_path, c_sym.as_ref())
+                    // Chain-follow Import/Reexport entries to the constructor's
+                    // home Def (e.g. `Bind` imported into `user` resolves to the
+                    // `primitives` Constructor Def). A direct probe would return
+                    // the Import entry, not the Constructor, and miss the
+                    // `internal` discriminator.
+                    if let Some(entry) = self.resolve_entry_in_module(module_path, c_sym.as_ref())
                         && let ModuleEntry::Def { kind, .. } = entry
                         && let cranelisp_types::DefKind::Constructor { internal, .. } = kind.as_ref()
                     {
@@ -630,7 +630,7 @@ where
         false
     }
 
-    /// State-rooted variant of [`Self::is_internal_constructor_check`].
+    /// State-rooted variant of [`Self::is_internal_constructor_check_in_module`].
     pub(crate) fn is_internal_constructor_check_with_state(
         &self,
         state: &CheckState,
