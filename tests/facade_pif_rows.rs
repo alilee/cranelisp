@@ -189,47 +189,47 @@ fn row_06_primitive_for_trait_method_absent_from_backend_pub_api() {
 // Row 7 — operators.rs full retirement (D43 full close; FIXME 0150)
 // =============================================================================
 
-// spec: design/arch/facades/backend.md §"Forbidden patterns"
-// FIXME(/dev backend Wave 3 row 7): operators.rs deletion completes
-// D43; FIXME 0150 closes.
+// spec: design/arch/facades/backend.md §"Operator special-casing is forbidden"
+// What the facade actually forbids (S69 audit F-6 + F-7, grounded in Decision
+// 43 §"Status pointer — Sprint 67 FULL CLOSE"): the TRAIT-KEYED substitution
+// — `primitive_for_trait_method(TraitName, Symbol, TypeName) -> Option<&str>`
+// and the old `operators.rs` home. The NAME-KEYED inline shortcut that
+// survives in `primitives_inline.rs` (`is_known_builtin` +
+// `try_emit_inline_primitive`, keyed by primitive Symbol only) is EXPLICITLY
+// AUTHORISED as a code-size/dispatch-cost optimisation over the standard
+// GOT-indirect path (F-7 — "the reframe stands"). It is live codegen, called
+// from compiler/apply.rs + control_flow.rs — deleting the file would break it.
+// So this row asserts the forbidden pattern is gone, NOT that the file is.
 #[test]
-fn row_07_operators_module_retired_from_backend() {
-    // Three evidence sources for D43 full close (FIXME 0150):
-    //   (a) public-api has no `cranelisp_backend::operators` mod
-    //   (b) src/operators.rs does not exist (renamed/deleted)
-    //   (c) src/primitives_inline.rs is also gone (its only inhabitant —
-    //       `primitive_for_trait_method` — is deleted in row 6; per
-    //       facade §"Forbidden patterns" the entire trait-keyed substitution
-    //       table retires once row 6 lands).
+fn row_07_trait_keyed_substitution_retired_from_backend() {
     let api = read_pub_api("cranelisp-backend");
+    // (a) operators.rs (the pre-rename trait-keyed home) is gone.
     let mod_operators = api
         .lines()
         .any(|l| l.contains("pub mod cranelisp_backend::operators"));
     let path_operators = workspace_root()
         .join("crates/cranelisp-backend/src/operators.rs")
         .exists();
-    // post-row-6, primitives_inline holds only the deleted function plus
-    // trivial helpers — the file itself should be removed at D43 full close.
-    let path_primitives_inline = workspace_root()
-        .join("crates/cranelisp-backend/src/primitives_inline.rs")
-        .exists();
-    let mod_primitives_inline = api
+    // (b) the FORBIDDEN trait-keyed substitution `primitive_for_trait_method`
+    // is absent from backend's primitives_inline.rs (F-6 verified-absent).
+    // The name-keyed `try_emit_inline_primitive`/`is_known_builtin` STAY.
+    let pi_src = std::fs::read_to_string(
+        workspace_root().join("crates/cranelisp-backend/src/primitives_inline.rs"),
+    )
+    .unwrap_or_default(); // absent file ⇒ trivially no trait-keyed substitution
+    let trait_keyed_present = pi_src
         .lines()
-        .any(|l| l.contains("pub mod cranelisp_backend::primitives_inline"));
-    let retired = !mod_operators
-        && !path_operators
-        && !path_primitives_inline
-        && !mod_primitives_inline;
+        .map(|l| l.split("//").next().unwrap_or(l))
+        .any(|code| code.contains("fn primitive_for_trait_method"));
+    let retired = !mod_operators && !path_operators && !trait_keyed_present;
     assert!(
         retired,
-        "D43 full close (FIXME 0150): operators.rs / primitives_inline.rs \
-         residue. pub mod operators={mod_operators}; \
-         src/operators.rs={path_operators}; \
-         pub mod primitives_inline={mod_primitives_inline}; \
-         src/primitives_inline.rs={path_primitives_inline}. Facade \
-         §\"Forbidden patterns\" requires retirement of the entire trait-keyed \
-         substitution table once `primitive_for_trait_method` is gone. \
-         /dev (backend) Wave 3 row 7."
+        "backend.md §\"Operator special-casing is forbidden\" (S69 audit F-6/F-7, \
+         Decision 43): the trait-keyed (TraitName,Symbol,TypeName) substitution \
+         must be gone. pub mod operators={mod_operators}; src/operators.rs=\
+         {path_operators}; primitive_for_trait_method in primitives_inline.rs=\
+         {trait_keyed_present}. (The name-keyed inline shortcut in \
+         primitives_inline.rs is authorised and stays — F-7.)"
     );
 }
 
