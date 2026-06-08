@@ -38,7 +38,7 @@ fn platform_load_failed_carries_form_span() {
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::None)
         .run("user.cl")
-        .user("(platform \"this-dll-does-not-exist\")\n")
+        .user("(platform this-dll-does-not-exist)\n")
         .output();
     // Span prefix: the form starts at line 1, col 1 in user.cl.
     assert!(
@@ -67,7 +67,7 @@ fn platform_manifest_not_found_carries_dll_path() {
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::None)
         .run("user.cl")
-        .user("(platform \"nonexistent-manifest-platform\")\n")
+        .user("(platform nonexistent-manifest-platform)\n")
         .output();
     // Error must mention the DLL search path or the requested DLL name.
     assert!(
@@ -109,7 +109,7 @@ fn platform_abi_version_mismatch_emits_expected_vs_found() {
         .with_prelude(PreludeVariant::None)
         .use_workspace_platforms()
         .run("user.cl")
-        .user("(platform \"stdio-with-stale-abi\")\n")
+        .user("(platform stdio-with-stale-abi)\n")
         .output();
     // We expect either "ABI version mismatch" with both expected+found OR
     // "platform not found" — either way the structured carrier must be
@@ -147,7 +147,7 @@ fn platform_dispatch_error_during_run_carries_fn_name() {
         // can express without a synthetic DLL fixture. Pre-fix, error
         // is generic; post-fix, fn name surfaces structured.
         .user(
-            "(platform \"stdio\")\n\
+            "(platform stdio)\n\
              (defn main [] (Pure 0))\n",
         )
         .output();

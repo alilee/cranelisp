@@ -387,7 +387,7 @@ fn io_trace_snapshot_pre_post_relocation_byte_equivalent() {
         .use_workspace_platforms()
         .run("user.cl")
         .user(
-            "(platform \"stdio\")\n\
+            "(platform stdio)\n\
              (defn main [] (Pure 0))\n",
         )
         .env("CRANELISP_IO_TRACE", "1")
