@@ -280,14 +280,26 @@ fn insert_detecting_ambiguity(
 ) {
     for (name, new_entry) in imports {
         if let Some(existing) = table.get(name.as_ref()) {
-            let is_same_source = match (existing, &new_entry) {
-                (
-                    ModuleEntry::Import { source: s1, .. },
-                    ModuleEntry::Import { source: s2, .. },
-                ) => s1 == s2,
-                _ => false,
-            };
-            if is_same_source {
+            // Same-source duplicate: usually a silent dedup. The ONE exception
+            // is a visibility UPGRADE — a `(export [mod [name]])` re-export of
+            // an already-`(import …)`'d name. The import installs a Private
+            // `Import` binding; the later export installs a Public `Import`
+            // binding with the *same* source. Without this branch the Public
+            // entry would be dropped (silent dedup), leaving the re-exported
+            // name Private — and downstream importers would see
+            // "'name' is not public in '<re-exporting module>'". Re-point to
+            // the more-visible entry so the re-export takes effect (spec §8.4).
+            if let (
+                ModuleEntry::Import { source: s1, visibility: v1 },
+                ModuleEntry::Import { source: s2, visibility: v2 },
+            ) = (existing, &new_entry)
+                && s1 == s2
+            {
+                let upgrades = *v1 == Visibility::Private && *v2 == Visibility::Public;
+                if upgrades {
+                    table.insert(name, new_entry);
+                }
+                // Same source, no upgrade (equal or downgrade) → silent dedup.
                 continue;
             }
 
@@ -491,5 +503,130 @@ mod tests {
             }
             other => panic!("expected an Import binding, got {other:?}"),
         }
+    }
+
+    fn specific_spec(module: &str, name: &str) -> ImportSpec {
+        ImportSpec {
+            module_path: ModuleFullPath::from(module),
+            alias: None,
+            names: ImportNames::Specific(vec![Symbol::from(name)]),
+            span: Span::SYNTHETIC,
+        }
+    }
+
+    fn specific_export(module: &str, name: &str) -> ExportSpec {
+        ExportSpec {
+            module_path: ModuleFullPath::from(module),
+            names: ImportNames::Specific(vec![Symbol::from(name)]),
+            span: Span::SYNTHETIC,
+        }
+    }
+
+    // spec: 08-modules.md §8.4 — a module that first `(import [base [x]])`s a
+    // name (Private binding) and then `(export [base [x]])`s the SAME name MUST
+    // end up with a PUBLIC binding for `x`. Both edges share the same source
+    // (`base/x`); the installer's same-source dedup must NOT swallow the
+    // Public re-export and leave the name Private. Defect A repro
+    // (spec_09::cross_module_macro_transitive_via_reexport_chain): without the
+    // visibility-upgrade branch a downstream importer of the re-exporting
+    // module saw "'x' is not public in '<relay>'".
+    #[test]
+    fn import_then_export_same_source_upgrades_to_public() {
+        let tables = tables();
+        ensure(&tables, "base");
+        ensure(&tables, "relay");
+        ensure(&tables, "downstream");
+        let aliases = ModuleAliases::default();
+
+        // base defines a public `base-val`.
+        tables
+            .get_mut(&ModuleFullPath::from("base"))
+            .unwrap()
+            .insert(Symbol::from("base-val"), primitive_def());
+
+        // relay: (import [base [base-val]]) → Private binding (source base/base-val).
+        install_imports(
+            &tables,
+            &ModuleFullPath::from("relay"),
+            &aliases,
+            &[specific_spec("base", "base-val")],
+        )
+        .unwrap();
+        {
+            let relay = tables.get(&ModuleFullPath::from("relay")).unwrap();
+            assert!(
+                !relay.get("base-val").unwrap().is_public(),
+                "the bare import binding must start Private",
+            );
+        }
+
+        // relay: (export [base [base-val]]) → same source, Public. MUST upgrade.
+        install_exports(
+            &tables,
+            &ModuleFullPath::from("relay"),
+            &[specific_export("base", "base-val")],
+        )
+        .unwrap();
+        {
+            let relay = tables.get(&ModuleFullPath::from("relay")).unwrap();
+            assert!(
+                relay.get("base-val").unwrap().is_public(),
+                "import-then-export of the same source MUST yield a Public \
+                 binding (spec §8.4) — the same-source dedup must not swallow \
+                 the re-export's visibility upgrade",
+            );
+        }
+
+        // Downstream module can now import the re-exported name from relay.
+        install_imports(
+            &tables,
+            &ModuleFullPath::from("downstream"),
+            &aliases,
+            &[specific_spec("relay", "base-val")],
+        )
+        .expect(
+            "a specific import of the re-exported name from relay MUST succeed \
+             — it is now public there",
+        );
+    }
+
+    // spec: 08-modules.md §8.4 — the reverse order (export before import, or a
+    // second identical import after an export) MUST NOT DOWNGRADE an
+    // already-public re-export back to Private. Guards the upgrade branch
+    // against a visibility regression on a later same-source private import.
+    #[test]
+    fn export_then_import_same_source_stays_public() {
+        let tables = tables();
+        ensure(&tables, "base");
+        ensure(&tables, "relay");
+        let aliases = ModuleAliases::default();
+
+        tables
+            .get_mut(&ModuleFullPath::from("base"))
+            .unwrap()
+            .insert(Symbol::from("base-val"), primitive_def());
+
+        // Public re-export first.
+        install_exports(
+            &tables,
+            &ModuleFullPath::from("relay"),
+            &[specific_export("base", "base-val")],
+        )
+        .unwrap();
+        // Then a (redundant) private import of the same source.
+        install_imports(
+            &tables,
+            &ModuleFullPath::from("relay"),
+            &aliases,
+            &[specific_spec("base", "base-val")],
+        )
+        .unwrap();
+
+        let relay = tables.get(&ModuleFullPath::from("relay")).unwrap();
+        assert!(
+            relay.get("base-val").unwrap().is_public(),
+            "a later same-source Private import MUST NOT downgrade an existing \
+             Public re-export",
+        );
     }
 }

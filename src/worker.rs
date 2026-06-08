@@ -1145,6 +1145,27 @@ enum BlockAction {
 ///
 /// `state`: per-module suspension state (accumulator, expanded_program, pass1_done).
 /// May be a resumed state (saved across suspension) or freshly created.
+/// Decide the form index Pass 2 must start from on this invocation.
+///
+/// `start_form_index` is the scheduler-saved resume point, but it carries two
+/// distinct meanings depending on WHICH pass blocked on the previous attempt:
+///
+/// - A **Pass-0** block (an `(import …)` / `(export …)` / `(mod …)` whose
+///   dependency had to be loaded) leaves `pass1_done == false`, so on the
+///   resume this invocation re-runs Pass 0 + Pass 1 over the WHOLE form list
+///   (`is_fresh == true`). Pass 2 must then process every form from 0 —
+///   honouring the saved index would skip the forms *before* the import (e.g. a
+///   `(defn …)` placed before it), so they never reach `expanded_program` and
+///   finalize reports "undefined variable" (Defect B,
+///   spec_08::defn_before_import_resumes_correctly_after_dep_load).
+/// - A **Pass-2** block (an FQ-auto-load gap surfaced *inside* Pass 2) leaves
+///   `pass1_done == true` (`is_fresh == false`) and `expanded_program` already
+///   holds the forms before the block point; resuming at `start_form_index` is
+///   correct and avoids re-appending them.
+fn pass2_resume_index(is_fresh: bool, start_form_index: usize) -> usize {
+    if is_fresh { 0 } else { start_form_index }
+}
+
 pub fn process_module_forms(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
@@ -1267,10 +1288,14 @@ pub fn process_module_forms(
         state.pass1_done = true;
     }
 
-    // --- Pass 2: per-sexp expand-then-check, from start_form_index ---
+    // --- Pass 2: per-sexp expand-then-check ---
     // expanded_program accumulates across suspensions via the caller.
+    // `pass2_resume_index` disambiguates a Pass-0 dep-load resume (start from 0,
+    // Pass 1 just re-ran the whole list) from a genuine Pass-2 resume (honour
+    // the saved index). See its doc for the Defect B rationale.
+    let pass2_start = pass2_resume_index(is_fresh, start_form_index);
     let pass2_result = pass2_check_bodies_with_expansion(
-        ctx, module, sexps, start_form_index, &mut state.accumulator, &mut state.expanded_program,
+        ctx, module, sexps, pass2_start, &mut state.accumulator, &mut state.expanded_program,
     )?;
 
     match pass2_result {
@@ -4128,6 +4153,37 @@ mod tests {
             builder = builder.ast(variant);
         }
         builder.build()
+    }
+
+    // spec: spec/08-modules.md §8.10.1 — suspend/resume of a module that
+    // blocked in Pass 0 (an import dep-load) MUST re-run Pass 2 from the start,
+    // not from the saved block index. Defect B regression guard
+    // (spec_08::defn_before_import_resumes_correctly_after_dep_load): a
+    // `(defn local-fn …)` placed BEFORE the blocking `(import …)` would be
+    // skipped on resume (Pass 2 starting at the import's index 1), dropping it
+    // from the typechecked program → "undefined variable: local-fn".
+    #[test]
+    fn pass0_dep_load_resume_restarts_pass2_from_zero() {
+        // Fresh invocation (Pass 1 just ran over the whole list this call) — the
+        // saved Pass-0 block index (1, the import) MUST be ignored.
+        assert_eq!(
+            pass2_resume_index(true, 1),
+            0,
+            "a Pass-0 dep-load resume (is_fresh) must restart Pass 2 from 0 so \
+             forms before the blocking import are not skipped",
+        );
+        assert_eq!(pass2_resume_index(true, 5), 0);
+        assert_eq!(pass2_resume_index(true, 0), 0);
+    }
+
+    // spec: spec/09-macros.md §9.3.6 — a genuine Pass-2 resume (FQ auto-load
+    // gap surfaced inside Pass 2, pass1_done already true) MUST honour the saved
+    // index: the forms before the block point are already in expanded_program,
+    // so re-processing from 0 would double-append them.
+    #[test]
+    fn pass2_fq_autoload_resume_honours_saved_index() {
+        assert_eq!(pass2_resume_index(false, 3), 3);
+        assert_eq!(pass2_resume_index(false, 0), 0);
     }
 
     // spec: design/int/phase2-codegen-convergence.md §5 — name-list prep via defined_symbols
