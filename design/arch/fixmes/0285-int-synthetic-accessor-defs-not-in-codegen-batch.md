@@ -74,3 +74,31 @@ batch-compiled.)
 Keep this FIXME OPEN until 0292 lands and
 `tests/trace.rs::{trace_nanos_accessor_resolves_in_repl,
 trace_linked_accessor_consumption_parks_defect}` both pass.
+
+## Status — S76 W4b (/dev backend)
+
+**Defect 1 (accessor call resolution) FIXED IN BACKEND + VERIFIED.** FIXME 0292's
+backend half landed: `crates/cranelisp-backend/src/compiler/apply.rs` now rewrites
+the bare accessor names (`name`/`params`/`result`/`children`/`nanos`) to their
+`cranelisp_trace_*` intrinsics, Trace-receiver-scoped, routed through the consuming
+extern path. Proven: clean-path JIT `(nanos (trace (work 41)))` → `:primitives/Int`
+(baseline panicked `can't resolve symbol nanos`). `cargo nextest run -p
+cranelisp-backend` = 197/197 incl. 4 new unit tests. The bare-name→intrinsic
+mapping lost in the W1.5 relocation is restored.
+
+**Both target tests STILL RED — two SEPARATE non-backend defects (see 0292 re-targeted /int):**
+- `trace_nanos_accessor_resolves_in_repl`: blocked by an int REPL
+  forward-reference / prelude-as-cwd-project defect — the test defines `work`
+  before `id`, and in the harness REPL (no `CRANELISP_LIB`) the prelude loads as a
+  project and `(defn work [x] (id x))` errors `undefined variable: id` BEFORE
+  reaching the accessor. Environmental: with `CRANELISP_LIB` set or `id` first, it
+  returns the Int. (0292 §Defect A.)
+- `trace_linked_accessor_consumption_parks_defect`: park/timeout (defect-2) GONE
+  and accessor resolves at link — the binary now LINKS (exit 0), but the produced
+  binary crashes NON-deterministically (heap corruption in the `--link`
+  trace-consume path; JIT runs the same program clean; sibling match-based
+  `--link` test passes). A `--link`-specific trace runtime/relocation defect in
+  the FIXME 0275 family. (0292 §Defect B.)
+
+Keep this FIXME and 0292 OPEN until both defects (A REPL forward-ref / prelude,
+B `--link` trace-consume crash) are resolved and both tests pass.

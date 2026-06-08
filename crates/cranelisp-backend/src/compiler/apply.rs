@@ -7,7 +7,7 @@
 use cranelift::prelude::*;
 use cranelift_module::Module;
 
-use cranelisp_types::{ErrorLocation, CranelispError, Expr, ResolvedCall, Span, Symbol};
+use cranelisp_types::{ErrorLocation, CranelispError, Expr, ResolvedCall, Span, Symbol, Type};
 use crate::heap::HeapCategory;
 
 use crate::heap::{self, HeapAdt, HeapClosure};
@@ -152,6 +152,33 @@ where
                     }
                     // Fall through to extern if compile_vec_op returned None.
                     return self.compile_extern_call(op_name, &arg_vals, span);
+                }
+
+                // Trace ADT field accessors (`name`/`params`/`result`/
+                // `children`/`nanos`) are seeded by int's bootstrap as bare-named
+                // `DefKind::Primitive` entries with NO GOT slot and NO code — the
+                // bodies are the `cranelisp_trace_*` intrinsics in
+                // `cranelisp-intrinsics::trace`, published via `intrinsics_table()`
+                // (FIXME 0256). typecheck resolves the call as
+                // `BuiltinFn { name: "nanos" }` with no rewrite, so without this
+                // intercept the unknown-builtin arm below would emit
+                // `Linkage::Import` for the undefined symbol `nanos`
+                // ("can't resolve symbol nanos" — FIXME 0292 / 0285 defect 1).
+                //
+                // The bare-name → intrinsic-name mapping lost in the W1.5 trace
+                // relocation is restored here: rewrite to `cranelisp_trace_<field>`
+                // and route through `compile_extern_call`, which the catalog
+                // resolves identically in JIT (`JITBuilder::symbol`), cache-hit
+                // (`Linker::register_symbol`), and `--link` (archive force-link).
+                // Scoped to a Trace-typed receiver (the single arg's inferred type
+                // is `primitives/Trace`) so a user `nanos`/`name` field on an
+                // unrelated ADT is not hijacked. The intrinsics use the consuming
+                // convention (each consumes its Trace arg via `consume_trace_call`),
+                // matching the other `cranelisp_trace_*` externs.
+                if let Some(intrinsic) = self.trace_accessor_intrinsic(op_name, args) {
+                    let arg_vals = self.compile_consuming_arg_list(args)?;
+                    self.in_tail_position = saved_tail;
+                    return self.compile_extern_call(intrinsic, &arg_vals, span);
                 }
 
                 if is_extern_primitive(op_name) {
@@ -711,6 +738,31 @@ where
     }
 
     /// Compile a call to an extern primitive (declared as an imported JIT function).
+    /// Map a bare Trace ADT field-accessor name to its `cranelisp_trace_*`
+    /// intrinsic, scoped to a Trace-typed receiver.
+    ///
+    /// The accessors (`name`/`params`/`result`/`children`/`nanos`) are seeded
+    /// by int's bootstrap (`src/bootstrap.rs::register_trace_type`) as bare-named
+    /// `DefKind::Primitive` entries whose runtime bodies are the
+    /// `cranelisp_trace_*` externs in `cranelisp-intrinsics::trace`. typecheck
+    /// resolves a call as `BuiltinFn { name: "nanos" }` without rewriting to the
+    /// ABI name, so backend supplies the bare-name → intrinsic-name mapping here
+    /// (lost in the W1.5 trace relocation — FIXME 0292 / 0285 defect 1).
+    ///
+    /// Returns `Some("cranelisp_trace_<field>")` only when (a) the name is one of
+    /// the five accessors AND (b) the call has exactly one argument whose inferred
+    /// type is the synthetic `primitives/Trace` ADT — so a user `nanos`/`name`
+    /// field on an unrelated ADT is not hijacked. `first_child_nanos` is NOT in
+    /// this set: it is not a seeded field accessor (it is the `/run-tests`
+    /// internal reader) and never reaches a `BuiltinFn` call site.
+    fn trace_accessor_intrinsic(&self, name: &str, args: &[Expr]) -> Option<&'static str> {
+        let intrinsic = trace_accessor_abi_name(name)?;
+        // Scope to a Trace-typed receiver: exactly one arg, inferred type is the
+        // `primitives/Trace` ADT.
+        let [arg] = args else { return None };
+        is_trace_typed(arg.inferred_type()).then_some(intrinsic)
+    }
+
     fn compile_extern_call(
         &mut self,
         name: &str,
@@ -895,4 +947,94 @@ fn is_extern_primitive(name: &str) -> bool {
 /// Check if a builtin name is a Vec primitive (compiled inline by vec_codegen).
 fn is_vec_primitive(name: &str) -> bool {
     matches!(name, "vec-get" | "vec-set" | "vec-push" | "vec-len")
+}
+
+/// Map a bare Trace ADT field-accessor name to its `cranelisp_trace_*` intrinsic
+/// ABI name. Returns `None` for any other name.
+///
+/// These five accessors are seeded as bare-named `DefKind::Primitive` entries by
+/// int's bootstrap; their bodies are the intrinsics in
+/// `cranelisp-intrinsics::trace` (published via `intrinsics_table()`). The
+/// bare-name → ABI-name mapping is restored here (lost in the W1.5 trace
+/// relocation — FIXME 0292 / 0285 defect 1). `first_child_nanos` is excluded
+/// deliberately: it is the `/run-tests` internal reader, not a field accessor,
+/// and never appears as a `BuiltinFn` call head.
+fn trace_accessor_abi_name(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "name" => "cranelisp_trace_name",
+        "params" => "cranelisp_trace_params",
+        "result" => "cranelisp_trace_result",
+        "children" => "cranelisp_trace_children",
+        "nanos" => "cranelisp_trace_nanos",
+        _ => return None,
+    })
+}
+
+/// Whether an inferred type is the synthetic `primitives/Trace` ADT — the
+/// receiver-scope gate for the Trace accessor rewrite (so a user `nanos`/`name`
+/// field on an unrelated ADT is not hijacked).
+fn is_trace_typed(ty: Option<&Type>) -> bool {
+    matches!(
+        ty,
+        Some(Type::ADT(fqtn, _))
+            if fqtn.module.as_ref() == "primitives" && fqtn.name.as_ref() == "Trace"
+    )
+}
+
+#[cfg(test)]
+mod trace_accessor_tests {
+    use super::{is_trace_typed, trace_accessor_abi_name};
+    use cranelisp_types::{FQTypeName, ModuleFullPath, Type, TypeName};
+
+    #[test]
+    fn accessor_names_map_to_intrinsics() {
+        assert_eq!(trace_accessor_abi_name("nanos"), Some("cranelisp_trace_nanos"));
+        assert_eq!(trace_accessor_abi_name("name"), Some("cranelisp_trace_name"));
+        assert_eq!(trace_accessor_abi_name("params"), Some("cranelisp_trace_params"));
+        assert_eq!(trace_accessor_abi_name("result"), Some("cranelisp_trace_result"));
+        assert_eq!(
+            trace_accessor_abi_name("children"),
+            Some("cranelisp_trace_children")
+        );
+    }
+
+    #[test]
+    fn non_accessor_names_do_not_map() {
+        // first_child_nanos is the /run-tests internal reader, not a field
+        // accessor — it must NOT be rewritten via this path.
+        assert_eq!(trace_accessor_abi_name("first_child_nanos"), None);
+        assert_eq!(trace_accessor_abi_name("nano"), None);
+        assert_eq!(trace_accessor_abi_name("foo"), None);
+        assert_eq!(trace_accessor_abi_name(""), None);
+    }
+
+    fn trace_adt() -> Type {
+        Type::ADT(
+            FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Trace")),
+            vec![],
+        )
+    }
+
+    #[test]
+    fn trace_receiver_is_scoped() {
+        assert!(is_trace_typed(Some(&trace_adt())));
+    }
+
+    #[test]
+    fn non_trace_receiver_is_rejected() {
+        // A user ADT named Trace in a different module must not be hijacked.
+        let user_trace = Type::ADT(
+            FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Trace")),
+            vec![],
+        );
+        assert!(!is_trace_typed(Some(&user_trace)));
+        // A same-name field on an unrelated primitives ADT.
+        let other = Type::ADT(
+            FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Option")),
+            vec![Type::Int],
+        );
+        assert!(!is_trace_typed(Some(&other)));
+        assert!(!is_trace_typed(Some(&Type::Int)));
+        assert!(!is_trace_typed(None));
+    }
 }
