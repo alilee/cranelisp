@@ -410,12 +410,19 @@ fn s68_primitives_entries_carry_code_none_kind_primitive() {
     // Negative companion: the reverted `Code::Primitive` marker MUST NOT be
     // constructed anywhere in the primitives source — primitives names no
     // `Code` value post-severance (FIXME 0244 + the Phase 2 bidirectional
-    // severance top-up).
+    // severance top-up). Check CODE only: the module docs legitimately mention
+    // `Code::Primitive` to document that the marker is retired, so strip the
+    // `//`-comment portion of each line before scanning (else the prose that
+    // explains the absence trips the absence check).
+    let names_marker_in_code = src
+        .lines()
+        .map(|l| l.split("//").next().unwrap_or(l))
+        .any(|code| code.contains("Code::Primitive"));
     assert!(
-        !src.contains("Code::Primitive"),
+        !names_marker_in_code,
         "crates/cranelisp-primitives/src/lib.rs MUST NOT name `Code::Primitive` \
-         post-S73 — the marker is reverted (FIXME 0244) and primitives no longer \
-         depends on `cranelisp-backend` (bidirectional severance)."
+         in code post-S73 — the marker is reverted (FIXME 0244) and primitives no \
+         longer depends on `cranelisp-backend` (bidirectional severance)."
     );
 }
 
