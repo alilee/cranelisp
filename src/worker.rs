@@ -579,10 +579,65 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
         });
 
         if !all_compiled {
+            // Step 2a (S77 W-MacroTrait, FIXME 0299): cache-restore parity.
+            //
+            // When `defining_module` is an imported module restored from the
+            // disk cache, `try_cache_hit_load` installs its symbol table at
+            // `TypecheckDone` with `code: None` + empty GOT — the macro's
+            // `DefKind::Macro` entry (recognised above) is present, but the
+            // clause code's `.o` has not been linked into the GOT yet (that is
+            // a separate deferred codegen step, `load_cached_module_via_linker`,
+            // dispatched via the scheduler's cached-codegen work item). On a
+            // fresh build the clause is JIT-codegened inline during the home
+            // module's Pass 2, so it is already in memory; on cache-restore it
+            // is not, and `resolve_macro_sexp_from` returns `None` because the
+            // introspection record (the on-demand recompile source) is never
+            // populated for a cache-restored module. Drive the cached codegen
+            // synchronously here so the clause GOT slot is populated before the
+            // executor reads it. This is the cross-module macro half of the
+            // disk-cache gap noted in `src/CLAUDE.md` ("clause N is not in
+            // memory") and is the RT5 root for `mode_equiv_macro_user_defined`
+            // (repl_cached/run_cached) and the persist-restart macro tests.
+            if defining_module != self.current_module
+                && self.scheduler.cached_module_contains(&defining_module)
+            {
+                let _ = handle_cached_codegen(
+                    &defining_module,
+                    self.shared_state,
+                    self.scheduler,
+                );
+                let now_compiled = clauses.iter().enumerate().all(|(idx, _)| {
+                    let clause_name = macro_clause_jit_name(&fq.symbol, idx);
+                    has_code_ptr(self.symbol_tables, &defining_module, &clause_name)
+                });
+                if now_compiled {
+                    return Ok(Some(fq));
+                }
+            }
+
             // Step 3: Compile inline. We need DefmacroInfo to drive compilation;
             // read the macro's sexp back from the introspection record.
-            let macro_sexp =
-                resolve_macro_sexp_from(self.shared_state, &defining_module, fq.symbol.as_ref());
+            //
+            // S77 W-MacroTrait (FIXME 0299): the on-demand recompile is for
+            // CROSS-MODULE macros only (an imported macro lives in a dependency,
+            // always-available at expansion per `macro-availability-model.md`
+            // §0.1). For a SAME-MODULE macro, a not-yet-compiled clause at the
+            // point a use is recognised means the use precedes the `defmacro` in
+            // source order — a FORWARD reference, which §0.2 (defmacro-before-use
+            // is normative) REJECTS: the use is a plain unresolved reference, not
+            // a macro call. Same-module backward uses never reach here, because
+            // Pass 2's `compile_macro_if_needed` already JIT-compiled the clause
+            // when it processed the (earlier) `defmacro` form. Guarding the
+            // recompile to cross-module preserves the §0.2 rejection that
+            // `macro_used_before_defmacro_is_unresolved_neg` asserts — without
+            // the guard, the introspection sexp (now populated for regeneration,
+            // FIXME 0299 root #2) would let a forward same-module use recompile
+            // its clause and expand, silently hoisting the macro.
+            let macro_sexp = if defining_module != self.current_module {
+                resolve_macro_sexp_from(self.shared_state, &defining_module, fq.symbol.as_ref())
+            } else {
+                None
+            };
             if let Some(sexp) = macro_sexp {
                 let info = cranelisp_frontend::parse_defmacro(&sexp)?;
                 compile_macro_with_state(
@@ -1283,8 +1338,9 @@ pub fn process_module_forms(
 
         pass1_register(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, &working_program, &mut state.accumulator)?;
 
+        let intr = ctx.introspection;
         for (name, info, sexp) in &macro_infos {
-            register_macro_in_module(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, name, info, sexp)?;
+            register_macro_in_module(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, intr, module, name, info, sexp)?;
         }
 
         let defaults = register_default_methods(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, &mut state.accumulator)?;
@@ -1444,10 +1500,12 @@ fn finalize_module(
 /// Parses clause info and stores it as `ModuleEntry::Macro` with the
 /// original sexp for later compilation. No codegen — deferred until
 /// first use.
+#[allow(clippy::too_many_arguments)]
 fn register_macro_in_module(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     _next_type_id: &std::sync::atomic::AtomicU32,
     _check_state: &mut CheckState,
+    introspection: Option<&dashmap::DashMap<FQSymbol, crate::session_v4::Introspection>>,
     module: &ModuleFullPath,
     name: &Symbol,
     info: &cranelisp_frontend::DefmacroInfo,
@@ -1470,8 +1528,36 @@ fn register_macro_in_module(
     // `ModuleEntry::Def` with `kind: DefKind::Macro { clauses_meta }` — no
     // callable address (`got_slot: None`), no AST. The `sexp` argument used to
     // ride on the entry; per Decision 41 macro `sexp` lives on the int-layer
-    // `Introspection` record keyed by `FQSymbol` (populated elsewhere).
-    let _ = sexp; // FIXME(fire-B): route macro sexp into Introspection.
+    // `Introspection` record keyed by `FQSymbol`.
+    //
+    // S77 W-MacroTrait (FIXME 0299): route the macro sexp into Introspection
+    // (REPL mode only — `introspection` is `Some` only when `--repl`). This is
+    // the single source the macro round-trip needs in two places:
+    //   1. `resolve_macro_sexp_from` — the on-demand clause recompile path
+    //      (`SymbolTableMacroResolver::recognize` step 3) reads it back to
+    //      rebuild the clause code when a recognised macro's GOT slot is empty.
+    //   2. `crate::save::generate_module_source` — `regenerate_backing_file`
+    //      writes the live session to `user.cl`; without the macro sexp the
+    //      regenerated file silently DROPS every `defmacro`, so on a cached
+    //      REPL restart a `(defn main [] (twice 21))` body fails with
+    //      `undefined variable: twice`. This was the `mode_equiv_macro_user_
+    //      defined` [repl_cached] + `persist_bug_macro_usage_in_defn` root.
+    // Mirrors the regular-defn introspection population in `process_regular_form`
+    // (worker.rs ~1670). Only sets `sexp`/`source` when absent so a later REPL
+    // eval that captures the verbatim input text can still override `source`.
+    if let Some(intr_map) = introspection {
+        let fq = FQSymbol {
+            module: module.clone(),
+            symbol: name.clone(),
+        };
+        let mut entry = intr_map.entry(fq).or_default();
+        if entry.sexp.is_none() {
+            entry.sexp = Some(sexp.clone());
+        }
+        if entry.source.is_none() {
+            entry.source = Some(crate::pretty::pretty_print(sexp));
+        }
+    }
     if let Some(mut table) = symbol_tables.get_mut(module) {
         // Macro parents carry no meaningful type scheme (not callable); use a
         // placeholder monomorphic scheme, as the legacy `ModuleEntry::Macro`
@@ -1607,7 +1693,8 @@ fn process_regular_form(
     for form in flattened {
         if cranelisp_frontend::is_defmacro(&form) {
             let info = cranelisp_frontend::parse_defmacro(&form)?;
-            register_macro_in_module(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, &info.name, &info, &form)?;
+            let intr = ctx.introspection;
+            register_macro_in_module(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, intr, module, &info.name, &info, &form)?;
             compile_macro_if_needed(ctx, module, &info, form.span(), accumulator)?;
         } else {
             regular_sexps.push(form);
@@ -3712,6 +3799,75 @@ fn lookup_got_slot(
 // Linker-based loading for cached modules (Step 13 — cache-hit inmem codegen)
 // ---------------------------------------------------------------------------
 
+/// Register user-callable primitive externs that the cache-restore `Linker`
+/// would otherwise be unable to resolve (FIXME 0299).
+///
+/// `DefKind::Primitive` entries fall into two groups:
+///   1. Ring primitives (`add-i64`, `str-concat`, …) — these live in the
+///      session `primitives` module with a populated GOT slot (copied from
+///      `cranelisp_primitives::PRIMITIVES_TABLE` by `populate_ring0_got_slots`),
+///      and are already registered by the GOT-pointer walk below.
+///   2. Synthetic `macros`-module primitives (`sconcat`, `quote-sexp`) — seeded
+///      by `bootstrap.rs` with `code: None` and NO GOT slot. Their bodies are
+///      binary-exported symbols (`#[unsafe(export_name = "…")]` in
+///      `cranelisp-primitives`, statically linked into the host). The fresh JIT
+///      resolves them through its `symbol_lookup_fn`/exported-symbol fallback;
+///      the cache `Linker` has none, so we resolve them here via the host's own
+///      symbol table (`dlsym(RTLD_DEFAULT, name)`) and register the address.
+///
+/// We walk every `DefKind::Primitive` with no GOT-stored pointer and attempt a
+/// `dlsym` of its bare name. A miss is silently skipped (the relocation pass
+/// surfaces a clear `unresolved symbol` error if the `.o` actually needs it).
+fn register_binary_exported_primitives(
+    linker: &mut cranelisp_backend::cache::linker::Linker,
+    shared_state: &crate::session_v4::SharedState,
+) {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for st_entry in shared_state.symbol_tables.iter() {
+        let st = st_entry.value();
+        for (name, entry) in st.all_symbols() {
+            let ModuleEntry::Def { kind, got_slot, .. } = entry else {
+                continue;
+            };
+            if !matches!(kind.as_ref(), DefKind::Primitive) {
+                continue;
+            }
+            // Skip primitives whose pointer already lives in a GOT slot — the
+            // GOT-pointer walk registers those. We only need the slot-less
+            // synthetic-module externs here.
+            if let Some(slot) = got_slot
+                && !st.got.load_slot(*slot).is_null()
+            {
+                continue;
+            }
+            let bare = name.as_ref();
+            if !seen.insert(bare.to_string()) {
+                continue;
+            }
+            if let Some(ptr) = dlsym_host_symbol(bare) {
+                linker.register_symbol(bare, ptr);
+            }
+        }
+    }
+}
+
+/// Resolve a symbol exported by the host binary itself (RTLD_DEFAULT). Returns
+/// `None` when the symbol is not exported. Used to register binary-exported
+/// primitive externs with the cache-restore `Linker` (FIXME 0299).
+fn dlsym_host_symbol(name: &str) -> Option<*const u8> {
+    let c_name = std::ffi::CString::new(name).ok()?;
+    // SAFETY: `dlsym(RTLD_DEFAULT, …)` searches the global symbol scope of the
+    // running process for `name`. The returned pointer (when non-null) is the
+    // address of a `'static` `extern "C"` fn statically linked into the host
+    // (`cranelisp-primitives`), valid for the process lifetime.
+    let ptr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c_name.as_ptr()) };
+    if ptr.is_null() {
+        None
+    } else {
+        Some(ptr as *const u8)
+    }
+}
+
 /// Load a cached module's `.o` file via Linker, wiring code pointers into
 /// the per-module GOT. This is the inmem codegen fast-path for cache-hit
 /// modules: one mmap + relocation pass loads all symbols at once.
@@ -3752,6 +3908,20 @@ fn load_cached_module_via_linker(
     for entry in cranelisp_intrinsics::intrinsics_table() {
         linker.register_symbol(entry.name, entry.ptr);
     }
+
+    // S77 W-MacroTrait (FIXME 0299): register user-callable primitive externs
+    // that are NOT in the intrinsics catalog and have no GOT-stored pointer —
+    // notably the synthetic `macros` module's `sconcat`/`quote-sexp` (seeded by
+    // `bootstrap.rs` with `code: None` + no GOT slot). The fresh JIT resolves
+    // these via its `symbol_lookup_fn` falling back to the binary's exported
+    // symbols (each is `#[unsafe(export_name = "...")]` in `cranelisp-primitives`,
+    // statically linked into the host). The cache-restore `Linker` has NO such
+    // dlsym fallback (`cache/linker.rs` resolves only its registered maps), so a
+    // cached `.o` referencing `sconcat` failed with `unresolved symbol: sconcat`
+    // (the disk-cache gap noted in `src/CLAUDE.md`). Mirror the JIT by resolving
+    // every `DefKind::Primitive` whose GOT slot is empty against the host's own
+    // exported symbol and registering it with the linker.
+    register_binary_exported_primitives(&mut linker, shared_state);
 
     // Register platform symbols by walking symbol tables. Every
     // `PlatformEffect` entry carries its DLL function pointer in the owning
@@ -4245,6 +4415,38 @@ mod tests {
     // `(defn local-fn …)` placed BEFORE the blocking `(import …)` would be
     // skipped on resume (Pass 2 starting at the import's index 1), dropping it
     // from the typechecked program → "undefined variable: local-fn".
+    // spec: design/arch/macro-availability-model.md §0 (FIXME 0299) — the
+    // cache-restore Linker must resolve binary-exported primitive externs that
+    // the synthetic `macros` module references (e.g. `sconcat`). The fresh JIT
+    // resolves these via the host's exported symbols; `dlsym_host_symbol` is
+    // int's equivalent for the cache path. A known binary-exported primitive
+    // must resolve to a non-null address; a nonexistent symbol must be None.
+    #[test]
+    fn dlsym_host_symbol_resolves_exported_primitive() {
+        // `sconcat` is `#[unsafe(export_name = "sconcat")]` in
+        // `cranelisp-primitives`, statically linked into the test binary.
+        let ptr = dlsym_host_symbol("sconcat");
+        assert!(
+            ptr.is_some(),
+            "sconcat must be resolvable as a host-exported symbol (cache-restore \
+             Linker depends on this for cross-module macro expansion — FIXME 0299)"
+        );
+        assert!(!ptr.unwrap().is_null());
+
+        // `quote-sexp` is the other synthetic-`macros` primitive extern.
+        assert!(dlsym_host_symbol("quote-sexp").is_some());
+    }
+
+    // spec: (same anchor) — a symbol the host does not export must not resolve,
+    // so a genuine `unresolved symbol` is surfaced by the relocation pass rather
+    // than masked by a bogus address.
+    #[test]
+    fn dlsym_host_symbol_misses_unexported_name() {
+        assert!(
+            dlsym_host_symbol("__cranelisp_definitely_not_a_real_exported_symbol__").is_none()
+        );
+    }
+
     #[test]
     fn pass0_dep_load_resume_restarts_pass2_from_zero() {
         // Fresh invocation (Pass 1 just ran over the whole list this call) — the

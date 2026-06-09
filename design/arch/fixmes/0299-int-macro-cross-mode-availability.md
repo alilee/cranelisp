@@ -10,6 +10,55 @@ status: open
 
 # Macro cross-mode availability — clause/helper not in memory across REPL≢`--run` and cache restart
 
+## RESOLUTION (S77 W-MacroTrait, /dev int — 2026-06-09)
+
+The int orchestration defects behind tests #1 and #2 are FIXED in `src/`
+(`worker.rs`, `session_v4.rs`); both tests now PASS. Test #3 is a **/qa
+test-design defect** (the fixture, not a compiler bug) — handed off via FIXME
+0305. This FIXME stays `open` only because it `refers_to` test #3, which still
+fails until /qa repairs its fixture; the int work is complete.
+
+**Three distinct roots found (not one):**
+
+1. **`mode_equiv_macro_user_defined` [repl_cached] + cross-module imported macro
+   on cache restore** — root: a cross-module macro whose home module is restored
+   from the disk cache is installed at `TypecheckDone` with `code: None` + empty
+   GOT (its `.o` codegen is a deferred step), so at expansion the clause GOT slot
+   is empty → "clause N is not in memory". The introspection-record recompile
+   fallback also fails (cache-restored modules never populate introspection).
+   **Fix** (`worker.rs::SymbolTableMacroResolver::recognize`, new Step 2a): when a
+   recognised macro's clause is not in memory and its home module is registered-
+   as-cached, drive `handle_cached_codegen` synchronously to link the `.o` and
+   populate the GOT before the executor reads it. (This is the cross-module half
+   of the disk-cache gap previously noted as a "Known limitation" in
+   `src/CLAUDE.md`.)
+
+2. **`mode_equiv_macro_user_defined` [repl_cached] same-module REPL macro on
+   restart** — root: `register_macro_in_module` discarded the macro sexp (an old
+   `FIXME(fire-B)`), so it was never written to the int `Introspection` record.
+   Consequence: `regenerate_backing_file` (via `save::generate_module_source`)
+   silently DROPPED every `defmacro` from the regenerated `user.cl`, so a cached
+   REPL restart saw `(defn main [] (twice 21))` with no `twice` →
+   `undefined variable: twice`. **Fix**: `register_macro_in_module` now records
+   the macro sexp/source into `Introspection` (REPL mode), feeding BOTH the
+   on-demand recompile path AND the backing-file regenerator.
+
+3. **`persist_bug_macro_usage_in_defn_survives_session_restart`** — root: the
+   cache-restore `Linker` (`worker.rs::load_cached_module_via_linker`) registers
+   the intrinsics catalog but NOT user-callable primitive externs. The synthetic
+   `macros`-module `sconcat` (and `quote-sexp`) are binary-exported symbols the
+   fresh JIT resolves via its exported-symbol fallback; the cache Linker has no
+   dlsym fallback → a cached stdlib `.o` referencing `sconcat` failed with
+   `unresolved symbol: sconcat`. **Fix**: `register_binary_exported_primitives`
+   resolves slot-less `DefKind::Primitive` symbols via `dlsym(RTLD_DEFAULT, …)`
+   and registers them with the Linker, mirroring the JIT.
+
+Unit tests added: `worker::tests::dlsym_host_symbol_resolves_exported_primitive`,
+`worker::tests::dlsym_host_symbol_misses_unexported_name`.
+
+---
+
+
 ## Issue
 
 Compiled macro clause pointers (and the helper fns macro bodies expand into)

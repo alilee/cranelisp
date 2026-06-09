@@ -2237,12 +2237,28 @@ impl CompilerSession {
         // DEBUG-ONLY guard: the publish-before-register invariant (§8.3 E-3)
         // — dep_sexps are published into shared.module_sexps BEFORE we notify
         // the scheduler. Catches accidental re-ordering in dev builds.
+        //
+        // The invariant has a legitimate escape valve: a persistent worker may
+        // have already popped, typechecked, completed, AND cleaned up the dep
+        // (`handle_typecheck_work_shared` removes `module_sexps[dep]` after a
+        // module reaches Complete — worker.rs Complete arm). On the hot REPL
+        // import path, `handle_import` calls `block_for_typecheck` +
+        // `register_module(dep, true)` BEFORE `register_dep_for_eval` runs,
+        // which wakes a worker; that worker can finish the dep before the eval
+        // thread reaches this point. In that window the dep is correctly absent
+        // from `module_sexps` (it is done), so the assert must also accept "the
+        // dep already reached a terminal typecheck state". Surfaced by S77
+        // W-Module: the `(mod child)`/cross-module resolution fix made the
+        // `(import [helper [...]])` dep actually load, exposing this benign
+        // race in `process_form_dispatch_macro_after_import_succeeds_in_one_eval`.
         debug_assert!(
             self.shared.module_sexps
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .contains_key(dep_module),
-            "register_dep_for_eval MUST publish dep_sexps before calling scheduler.register_module"
+                .contains_key(dep_module)
+                || self.shared.scheduler.is_typechecked(dep_module),
+            "register_dep_for_eval MUST publish dep_sexps before calling \
+             scheduler.register_module (unless a worker already completed the dep)"
         );
         // Sprint 61 Wave 3 step 3e (H4 race closure, Change A): gate the
         // defensive `register_module` call on the same "already published

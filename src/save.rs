@@ -301,7 +301,20 @@ fn generate_fns_and_macros(
     introspection: &DashMap<FQSymbol, Introspection>,
     module_path: &ModuleFullPath,
 ) -> String {
-    let mut items: Vec<(String, Sexp)> = Vec::new();
+    // Partition into macros and non-macro fns. Macros MUST be emitted BEFORE
+    // the functions that use them (S77 W-MacroTrait, FIXME 0299): defmacro-
+    // before-use is normative (`macro-availability-model.md` §0.2), and the
+    // regenerated file must be round-trip-safe (§0.3 — a cached REPL restart
+    // recompiles the regenerated `user.cl` under the SAME availability rules
+    // the live session used). The callee-list `dependency_sort` does NOT model
+    // the macro-use edge (a macro call is not a `callees()` entry), so without
+    // this partition `(defn main [] (twice 21))` could be emitted before
+    // `(defmacro twice …)`, and the restart would reject `twice` as a forward
+    // reference. Per the locked model a macro depends only on PRIOR modules +
+    // other macros (never a same-module non-macro def), so emitting all macros
+    // first is always valid; functions then see every macro defined above them.
+    let mut macro_items: Vec<(String, Sexp)> = Vec::new();
+    let mut fn_items: Vec<(String, Sexp)> = Vec::new();
 
     for (name, entry) in st.all_symbols() {
         // Skip mangled names (impl methods like `show$Int`, macro clause
@@ -313,26 +326,30 @@ fn generate_fns_and_macros(
         // regeneration; skip primitives, constructors, platform effects,
         // overloaded base entries, etc. Per FIXME 0219 — macros surface
         // through the same `ModuleEntry::Def` arm symmetric with UserFn.
-        let include = matches!(
-            entry,
-            ModuleEntry::Def { kind, .. }
-                if matches!(
-                    kind.as_ref(),
-                    cranelisp_types::DefKind::UserFn { .. }
-                        | cranelisp_types::DefKind::Macro { .. }
-                )
-        );
-        if !include {
-            continue;
-        }
+        let is_macro = match entry {
+            ModuleEntry::Def { kind, .. } => match kind.as_ref() {
+                cranelisp_types::DefKind::Macro { .. } => true,
+                cranelisp_types::DefKind::UserFn { .. } => false,
+                _ => continue,
+            },
+            _ => continue,
+        };
         if let Some(sexp) = introspection_sexp(introspection, module_path, name) {
-            items.push((name.to_string(), sexp));
+            if is_macro {
+                macro_items.push((name.to_string(), sexp));
+            } else {
+                fn_items.push((name.to_string(), sexp));
+            }
         }
     }
 
-    let sorted = dependency_sort(items, st);
-    sorted
+    // Dependency-sort each section independently (macro→macro and fn→fn
+    // intra-section edges still matter), then concatenate macros-first.
+    let macros_sorted = dependency_sort(macro_items, st);
+    let fns_sorted = dependency_sort(fn_items, st);
+    macros_sorted
         .into_iter()
+        .chain(fns_sorted)
         .map(|(_, sexp)| sexp.format_indented(0))
         .collect::<Vec<_>>()
         .join("\n\n")
