@@ -10,8 +10,10 @@
 ;; inside a container while preserving the container's structure:
 ;;
 ;;   (deftrait (Functor f)
-;;     (fmap [(Fn [a] b) (f a)] (f b)))
+;;     (fmap [:(Fn [a] b) func :(f a) x] (f b)))
 ;;
+;; HKT method params are named with explicit annotations (spec §7.2.2):
+;; func is the function (a -> b), x is the container (f a).
 ;; The (f a) and (f b) in the signature mean "f applied to a" and
 ;; "f applied to b". When f = Option, fmap transforms the value
 ;; inside a Some and passes None through unchanged.
@@ -35,7 +37,7 @@
 ;; fmap takes a function (a -> b) and a container (f a),
 ;; and returns a new container (f b) with the function applied.
 (deftrait (Functor f)
-  (fmap [(Fn [a] b) (f a)] (f b)))
+  (fmap [:(Fn [a] b) func :(f a) x] (f b)))
 
 ;; --- Implement Functor for Option ---
 

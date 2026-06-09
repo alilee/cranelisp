@@ -18,10 +18,10 @@
 ;; --- Trait declarations ---
 
 (deftrait Eq
-  (= [self self] Bool))
+  (= [a b] Bool))
 
 (deftrait Display
-  (show [self] String))
+  (show [x] String))
 
 ;; === Part 1: Enum types (nullary constructors only) ===
 

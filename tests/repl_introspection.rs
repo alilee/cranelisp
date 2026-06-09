@@ -1565,10 +1565,24 @@ fn mem_alias_m_equivalent_to_mem() {
 // constructor display `(Option.Some 42)` (dot notation). The
 // product-vs-sum display distinction is not isolated elsewhere.
 // (carry: legacy/ring1.rs::repl_adt_product)
+//
+// LAYERED DEFECT (S77 W-Fix triage, /qa): this test failed FIRST on RT1
+// (bare `:Int` in the deftype fields — spec/03-types.md §3.1 requires the type
+// be imported or fully-qualified). The `(import [primitives [Int]])` fixture fix
+// (added below) clears RT1, but the test then STILL FAILS on a genuine
+// product-value DISPLAY defect: a single-constructor product whose ctor name
+// matches the type name displays as `:user/Point Point` (ctor name only, fields
+// dropped) instead of `(Point 3 4)` per repl/spec.md §1.5 line 309. Verified
+// first-hand in a fresh tmpdir; the sum-ctor path `(Option.Some 42)` renders
+// fields correctly, so the formatter CAN show fields — the single-ctor product
+// path drops them. Failing-not-ignored; resolver = FIXME 0302 (/dev int —
+// product single-ctor value formatter).
 #[test]
 fn data_constructor_product_no_dot_notation_display() {
+    // spec/03-types.md §3.1: bare `:Int` MUST be imported (RT1 fixture fix).
     let out = repl(
-        "(deftype Point [:Int x :Int y])\n\
+        "(import [primitives [Int]])\n\
+         (deftype Point [:Int x :Int y])\n\
          (Point 3 4)\n",
     );
     assert!(
@@ -1695,8 +1709,12 @@ fn constrained_fn_display_repeats_num_on_each_param_neg_no_elision() {
 // (carry: legacy/ring2.rs::repl_impl_display_shows_trait_for_type)
 #[test]
 fn impl_form_display_result_is_exactly_impl_trait_for_type() {
+    // spec/03-types.md §3.1: bare type refs (`Int`) MUST be imported or
+    // fully-qualified — import the `Int` type so the trait return-type and
+    // deftype field annotations resolve (RT1 fixture fix, S77 W-Fix).
     let out = repl(
-        "(deftrait (Sizeable a) (size [a] Int))\n\
+        "(import [primitives [Int]])\n\
+         (deftrait (Sizeable a) (size [a] Int))\n\
          (deftype MyType [:Int val])\n\
          (impl Sizeable MyType (defn size [self] 42))\n",
     );

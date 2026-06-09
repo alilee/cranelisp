@@ -454,3 +454,70 @@ fn trace_linked_accessor_consumption_parks_defect() {
         Err(e) => panic!("unexpected harness error: {e}"),
     }
 }
+
+// spec: spec/04-expressions.md §4.12.4 — (same anchor) the accessor-consume
+// crash is MODE-INDEPENDENT. The Phase-2 /arch review proved the RC
+// double-consume / use-after-free of the Trace tree is NOT a `--link`-specific
+// relocation defect (the sibling `..._parks_defect` above masked that by only
+// exercising `--link`): `(nanos (trace (work 41)))` also crashes in `--run`
+// (and REPL). The accessor is routed through `compile_consuming_arg_list`
+// (apply.rs — caller consumes) AND each accessor body calls `consume_trace_call`
+// (cranelisp-intrinsics/src/trace.rs — body consumes), double-freeing the Trace
+// tree. First-hand repro (2026-06-09): 12/12 `--run` invocations crashed with
+// non-deterministic garbage exit codes (80, 17, 154, 106, 124, 23, 196, 232,
+// 159, 255, 118, 59 — never 0); the match-based consume path of the same program
+// exits 0 cleanly 5/5.
+//
+// CURRENT BEHAVIOUR (FAILING): `--run` of the accessor-consume program does NOT
+// exit 0 — it crashes (signal or garbage non-zero exit) before printing a valid
+// nanos Int. A correct fix produces exit 0 with a plausible (non-deterministic
+// nanos) value.
+//
+// FIXME(/dev intrinsics) — reconcile the caller-consumes vs body-consumes
+// contract on the trace field accessors (mirror the correct match-based consume
+// path). See FIXME 0292/0285/0276 (re-pointed → /dev intrinsics, Phase-2).
+#[test]
+fn trace_run_mode_accessor_consume_crashes_defect() {
+    let src = "(import [primitives [trace Trace TraceCall nanos]])\n\
+         (defn work [x] (id x))\n\
+         (defn id [x] x)\n\
+         (defn main [] (nanos (trace (work 41))))\n";
+    // The crash is non-deterministic (RC double-free of the Trace tree races the
+    // heap allocator). A single clean run is possible by luck; run a few times so
+    // the regression guard reliably observes the misbehaviour (first-hand it
+    // crashed 10/10 and 12/12 over two batches). The fix must make ALL
+    // iterations exit 0; kept at 4 to bound per-test wall-clock.
+    let mut clean = 0usize;
+    let mut crashed = 0usize;
+    let mut sample_exit: Option<i32> = None;
+    let mut sample_stderr = String::new();
+    for _ in 0..4 {
+        let out = Cranelisp::new()
+            .with_prelude(PreludeVariant::PrimitivesOnly)
+            .file("prog.cl", src)
+            .run("prog.cl")
+            .timeout(Duration::from_secs(15))
+            .output();
+        if out.status.success() {
+            clean += 1;
+        } else {
+            crashed += 1;
+            if sample_exit.is_none() {
+                sample_exit = out.status.code();
+                sample_stderr = out.stderr.clone();
+            }
+        }
+    }
+    // FAILING today: at least one `--run` iteration crashes. When /dev fixes the
+    // double-consume, every iteration exits 0 (clean == 10, crashed == 0) and
+    // this assertion passes.
+    assert_eq!(
+        crashed, 0,
+        "FIXME 0292 (mode-independent RC double-consume): `--run` of \
+         `(nanos (trace (work 41)))` crashed {crashed}/4 iterations \
+         (clean={clean}); sample exit={sample_exit:?}, stderr=\n{sample_stderr}\n\
+         This proves the defect is NOT `--link`-specific. Resolver: /dev \
+         intrinsics — reconcile caller-consumes vs body-consumes on the trace \
+         accessors."
+    );
+}

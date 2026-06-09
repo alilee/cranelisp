@@ -695,7 +695,10 @@ fn imported_fn_as_higher_order_arg_in_repl_mode() {
     let out = Cranelisp::new()
         .repl()
         .stdin(
-            "(import [primitives [eq-i64 sub-i64 mul-i64 div-i64]])
+            // spec/03-types.md §3.1: bare type refs (`:Int`, `:Bool`) MUST be
+            // imported or fully-qualified — so the type names are imported
+            // alongside the functions (RT1 fixture fix, S77 W-Fix).
+            "(import [primitives [Int Bool eq-i64 sub-i64 mul-i64 div-i64]])
 (defn rem [:Int a :Int b] :Int (sub-i64 a (mul-i64 (div-i64 a b) b)))
 (defn even? [:Int x] :Bool (eq-i64 (rem x 2) 0))
 (defn apply-fn [f x] (f x))

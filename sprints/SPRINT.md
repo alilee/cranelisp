@@ -1,6 +1,6 @@
 # Sprint 77: Settle the architecture, then get to green — Stage 1 of the post-arc consolidation
 
-**Status**: PHASE 4 WAVE ORG — W0 complete (facade SOUND, 70 FIXMEs closed); wave plan drafted; awaiting user go to PHASE 5
+**Status**: PHASE 5 LANGUAGE (ACTIVE) — W0 complete + committed (`ae4ede9`); QA-first + W-Fix underway
 
 **Goal**: Establish that **the facade is genuinely sound** (survey + resolve all 21 outstanding architectural FIXMEs; land any facade changes they imply) AND drive the active suite to **full green** (all 38 failures resolved). The arc's Stages 2–4 assume the facade is settled — W0 makes that a verified fact rather than an assumption.
 

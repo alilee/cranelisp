@@ -24,6 +24,11 @@
 ;; name-surface convenience, not a piece of teaching material.
 ;;
 ;; Primitive groups:
+;;   Primitive types (so bare `:Int`/`:Float`/`:Bool`/`:String`
+;;   annotations resolve without per-file imports — spec 03-types.md
+;;   §3.1: bare type refs MUST be re-exported by the prelude or
+;;   explicitly imported; FQ `:primitives/Int` is always available):
+;;     Int Bool Float String
 ;;   Int arithmetic + comparison + bool:
 ;;     add-i64 sub-i64 mul-i64 div-i64
 ;;     eq-i64 lt-i64 gt-i64 le-i64 ge-i64 not eq-bool
@@ -36,6 +41,7 @@
 ;;   Vec:
 ;;     vec-len vec-get vec-set vec-push
 
+(export [primitives [Int Bool Float String]])
 (export [primitives [add-i64 sub-i64 mul-i64 div-i64
                      eq-i64 lt-i64 gt-i64 le-i64 ge-i64
                      not eq-bool]])

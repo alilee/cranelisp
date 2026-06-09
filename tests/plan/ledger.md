@@ -101,11 +101,11 @@ to true roots. The R1–R10 provisional map in `sprints/SPRINT.md` is
 
 | binary::test | root | class | owner | target |
 |---|---|---|---|---|
-| examples::every_example_runs_with_documented_exit | RT1+RT2 | FIXTURE | /examples (+/qa) | S77 W (fixtures) |
-| repl_introspection::data_constructor_product_no_dot_notation_display | RT1 | FIXTURE | /qa | S77 |
-| repl_introspection::impl_form_display_result_is_exactly_impl_trait_for_type | RT1 | FIXTURE | /qa | S77 |
-| spec_08_modules::imported_fn_as_higher_order_arg_in_repl_mode | RT1 | FIXTURE | /qa | S77 |
-| repl_introspection::bare_primitive_add_i64_at_prompt_displays_type_and_fqn | RT10 | CODE | /int | S77 W8 |
+| examples::every_example_runs_with_documented_exit | RT1+RT2 | FIXTURE | /examples (+/qa) | S77 W-Fix (/examples half — NOT /qa) |
+| repl_introspection::data_constructor_product_no_dot_notation_display | RT1→layered | FIXTURE+CODE | /qa (fixture done) + /int (display) | **RT1 FIXED (Int import); now FAILS on product single-ctor display defect → FIXME 0302** |
+| repl_introspection::impl_form_display_result_is_exactly_impl_trait_for_type | RT1 | FIXTURE | /qa | **FIXED (Int import) — PASSES** |
+| spec_08_modules::imported_fn_as_higher_order_arg_in_repl_mode | RT1 | FIXTURE | /qa | **FIXED (Int Bool import) — PASSES** |
+| repl_introspection::bare_primitive_add_i64_at_prompt_displays_type_and_fqn | RT10 | CODE | /int | S77 W-Repl — **FIXME 0301** |
 | spec_08_modules::multi_dot_module_path_in_import | RT3 | CODE | /int | S77 W6 |
 | spec_08_modules::nested_dependency_chain_compiles | RT3 | CODE | /int | S77 W6 |
 | spec_08_modules::export_glob_reexport | RT3 | CODE | /int | S77 W6 |
@@ -117,19 +117,20 @@ to true roots. The R1–R10 provisional map in `sprints/SPRINT.md` is
 | spec_08_modules::import_dependency_compiles_correctly | RT3 | CODE | /int | S77 W6 |
 | cache::cache_multi_module_transitive_imports | RT3 | CODE | /int | S77 W6 |
 | spec_08_modules::stdlib_module_compiles_and_runs | RT4 | CODE | /int | S77 W6 |
-| process_form_dispatch::process_form_dispatch_macro_after_import_succeeds_in_one_eval | RT4+RT5 | CODE | /int | S77 W7 |
-| build_confidence::mode_equiv_macro_user_defined | RT5 | CODE | /int | S77 W7 |
-| repl_persist::persist_bug_macro_usage_in_defn_survives_session_restart | RT5 | CODE | /int | S77 W7 |
-| trait_imports::trait_method_short_name_resolves_as_value_for_display_show_int | RT6 | CODE | /dev typecheck+backend | S77 W7 |
-| trait_imports::trait_method_short_name_resolves_as_value_for_eq_string | RT6 | CODE | /dev typecheck+backend | S77 W7 |
-| stdlib_trait_impls::stdlib_eq_string_mappable_path | RT6 | CODE | /dev typecheck+backend | S77 W7 |
-| stdlib_trait_impls::stdlib_num_float_mappable_path | RT6 | CODE | /dev typecheck+backend | S77 W7 |
+| process_form_dispatch::process_form_dispatch_macro_after_import_succeeds_in_one_eval | RT4+RT5 | CODE | /int | S77 W-MacroTrait — **FIXME 0299** (couples RT4/0121; verify after W-Module) |
+| build_confidence::mode_equiv_macro_user_defined | RT5 | CODE | /int | S77 W-MacroTrait — **FIXME 0299** |
+| repl_persist::persist_bug_macro_usage_in_defn_survives_session_restart | RT5 | CODE | /int | S77 W-MacroTrait — **FIXME 0299** |
+| trait_imports::trait_method_short_name_resolves_as_value_for_display_show_int | RT6 | CODE | /dev typecheck+backend | S77 W-MacroTrait — **FIXME 0300** |
+| trait_imports::trait_method_short_name_resolves_as_value_for_eq_string | RT6 | CODE | /dev typecheck+backend | S77 W-MacroTrait — **FIXME 0300** |
+| stdlib_trait_impls::stdlib_eq_string_mappable_path | RT6 | CODE | /dev typecheck+backend | S77 W-MacroTrait — **FIXME 0300** |
+| stdlib_trait_impls::stdlib_num_float_mappable_path | RT6 | CODE | /dev typecheck+backend | S77 W-MacroTrait — **FIXME 0300** |
 | trace::trace_adt_value_render_overflows_defect | RT7 | CODE | /dev backend | S77 W1 |
 | trace::trace_polymorphic_adt_result_renders | RT7 | CODE | /dev backend | S77 W1 |
 | trace::trace_trait_heavy_prelude_overflows_defect | RT7 | CODE | /dev backend | S77 W1 |
 | trace::trace_nanos_accessor_resolves_in_repl | RT8a | CODE | /int | S77 W1 |
-| trace::trace_linked_accessor_consumption_parks_defect | RT8b | CODE | /dev intrinsics | S77 W1 |
-| trace::trace_nested_lexical_raises_runtime_error | RT8c | CODE | /dev intrinsics | S77 W1 |
+| trace::trace_linked_accessor_consumption_parks_defect | RT8b | CODE | /dev intrinsics | S77 W-Trace — `--link` face of the RC double-consume (FIXME 0292) |
+| trace::trace_run_mode_accessor_consume_crashes_defect | RT8b | CODE | /dev intrinsics | **NEW (S77 QA-first, 2026-06-09)** — `--run` face; proves Defect-B is MODE-INDEPENDENT (4 iters, crashes non-deterministically). FIXME 0292. |
+| trace::trace_nested_lexical_raises_runtime_error | RT8c | CODE | /dev intrinsics | S77 W-Trace |
 | regression::d6_exemplar_propagate_only_does_not_segv | RT9 | CODE | /dev backend/runtime | S77 W2 |
 | regression::d6_exemplar_propagate_single_pass_does_not_segv | RT9 | CODE | /dev backend/runtime | S77 W2 |
 | regression::d6_exemplar_solve_all_dots_does_not_segv | RT9 | CODE | /dev backend/runtime | S77 W2 |
@@ -144,6 +145,61 @@ to true roots. The R1–R10 provisional map in `sprints/SPRINT.md` is
 across 10 files) · 31 CODE · 3 GATED.
 **Stderr signatures** for each are in `/tmp/s77_fulltest.log` (FAIL blocks);
 representative signatures quoted per-root in the table above.
+
+> **Sprint 77 Phase 5 Stage-1 (QA-first) + W-Fix /qa half (/qa, 2026-06-09, SHA `49fe4de`):**
+>
+> **W0 closes (committed `ae4ede9`):** facade verdict SOUND (zero facade
+> changes); 70 stale/obsolete FIXMEs closed (staged `git rm`); 3 held
+> (0014/0025/0106 → Stage 2); R9/R10 confirmed pure-impl. See SPRINT.md §W0.
+>
+> **Tracking FIXMEs filed for the un-FIXME'd green roots** (failing tests are
+> the durable record; FIXMEs are the cross-skill work request):
+> - **0299** (/int) — RT5 macro cross-mode availability (3 tests:
+>   `mode_equiv_macro_user_defined`, `persist_bug_macro_usage_in_defn…`,
+>   `process_form_dispatch_macro_after_import…`). Note: the 3rd couples RT4
+>   (FIXME 0121 / W-Module) — its stderr is a `submodule 'helper.helper' not
+>   found` resolution error masking the macro path; verify after W-Module.
+> - **0300** (/dev typecheck+backend) — RT6 trait-method-as-value (4 tests).
+>   Symptom A `undefined variable: show`/`=` (escaping wrapper not emitted);
+>   Symptom B wrong impl (`inf.0` for `(let [f +] (f 1.0 2.0))`, `false` for
+>   string `=`). §7.6 MUST already exists — no /spec change.
+> - **0301** (/int) — RT10 bare-primitive display missing `; primitive -
+>   <docstring>` (1 test, repl/spec §1.1).
+>
+> **W-Fix /qa half — RT1 bare-`:Int` FIXTURE defects (validated against
+> spec/03-types.md §3.1 line 20 — bare type refs MUST be imported or FQ; the
+> `unknown type 'Int' (from module '')` error is spec-CORRECT; compiler is
+> right, fixture is wrong):**
+> - `impl_form_display_result_is_exactly_impl_trait_for_type` — added
+>   `(import [primitives [Int]])` → **PASSES** (verified targeted run).
+> - `imported_fn_as_higher_order_arg_in_repl_mode` — added `Int Bool` to the
+>   import → **PASSES** (verified, returns `:primitives/Bool true`). Confirmed
+>   RT1, NOT RT4: pure REPL-mode, no `(mod …)`, no separate files.
+> - `data_constructor_product_no_dot_notation_display` — **LAYERED**: RT1 part
+>   fixed (added `Int` import), but the test then fails on a GENUINE product
+>   single-ctor value-display defect (`:user/Point Point` not `(Point 3 4)` per
+>   repl/spec §1.5 line 309). Per validate-against-spec + "don't paper a real
+>   defect" discipline: fixture part fixed, left FAILING-NOT-IGNORED on the
+>   display defect, filed **FIXME 0302** (/int). The sum-ctor path
+>   `(Option.Some 42)` renders fields correctly — defect is specific to the
+>   single-ctor product (name==type) path.
+> - **`examples::every_example_runs…`** (RT1+RT2 across 10 example files) is the
+>   /examples W-Fix half — NOT /qa. Untouched here.
+>
+> **Defect-B repro tightened:** added
+> `trace::trace_run_mode_accessor_consume_crashes_defect` — a `--run` sibling of
+> `trace_linked_accessor_consumption_parks_defect`. /arch proved the RC double-
+> consume / use-after-free of the Trace tree is MODE-INDEPENDENT; the `--link`-
+> only repro masked that. First-hand: `(nanos (trace (work 41)))` crashed 12/12
+> `--run` invocations (garbage exit codes 80/17/154/106/124/23/196/232/159/255/
+> 118/59, never 0); the match-based consume path of the same program exits 0
+> 5/5. The new test runs 4 `--run` iterations and asserts all exit 0 (FAILS
+> today). FIXME 0292/0285/0276 (re-pointed → /dev intrinsics, Phase-2).
+>
+> **Net failing-test delta:** 38 → 39 (+1: the new Defect-B `--run` sibling);
+> 2 RT1 fixtures now PASS (impl_form, imported_fn_hof), so the green count of
+> the 38 rises by 2 (these flip from CODE-masked-as-fixture to resolved). New
+> FIXMEs: 0299, 0300, 0301, 0302 (next free was 0299; 0298 was the prior max).
 
 > **Sprint 66 Phase 5 Wave 2 addendum (/qa, 2026-05-10) — `process_form_dispatch.rs` revision for Decision 44 (cluster-atomic typecheck)**: After /spec FIXME 0165 resolution (commit `cfca8ac` — REPL inputs are single-form clusters; cross-input forward refs are errors; mutual recursion goes through `(begin ...)`) and /arch FIXME 0166 resolution (commit `5d43041` — Decision 44, the two-pass `check_form_signatures` + `check_form_body` + orchestrator-owned staging shape), the Wave 1 gate test `process_form_dispatch_typecheck_gap_completes_in_one_eval` was spec-incorrect (asserted bare cross-input forward-ref recovery). Revised: (1) renamed to `process_form_dispatch_begin_cluster_resolves_mutual_forward_ref` and rewrapped the forward-ref defns in `(begin ...)` to assert the cluster-atomic shape per Decision 44; (2) added new negative test `process_form_dispatch_bare_forward_ref_errors_clearly` asserting bare cross-input forward refs surface a clear typed error and the failing form does NOT commit (staging drops); (3) reshaped `process_form_dispatch_function_gap_does_not_speculatively_jit` to use a `(begin ...)` cluster so the forward-reference path is exercisable per Decision 44. **Test count delta: +1 (one revised, one new).** **Suite delta on actual run**: 1933 → 1934 tests; **failure count unchanged at 38** (the renamed positive test continues to fail, as expected; the new negative test PASSES today as a positive regression guard — bare cross-input forward refs already error in the current pre-Decision-44 implementation, and the post-Decision-44 typed-Gap path must continue to error with the same observable shape). Final state: 1934 / 1896 passed / 38 failed / 6 skipped vs prior 1933 / 1895 / 38 / 6. The renamed positive test and the speculative-JIT negative will flip from failing to passing when /dev Wave 3a re-fires with the Decision 44 shape (typecheck two-pass split + int `process_cluster` + `View<'_, C, L>` newtype + atomic staging commit). Spec annotation in `spec/05-definitions.md §5.13.2` updated to name both test fns explicitly.
 

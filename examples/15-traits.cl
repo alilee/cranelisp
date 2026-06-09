@@ -18,10 +18,10 @@
 ;; --- Trait declarations and implementations ---
 
 (deftrait Num
-  (+ [self self] self)
-  (- [self self] self)
-  (* [self self] self)
-  (/ [self self] self))
+  (+ [a b] self)
+  (- [a b] self)
+  (* [a b] self)
+  (/ [a b] self))
 
 (impl Num Int
   (defn + [a b] (add-i64 a b))
@@ -36,8 +36,8 @@
   (defn / [a b] (div-f64 a b)))
 
 (deftrait Eq
-  (= [self self] Bool)
-  (!= [self self] Bool))
+  (= [a b] Bool)
+  (!= [a b] Bool))
 
 (impl Eq Int
   (defn = [a b] (eq-i64 a b))
@@ -56,10 +56,10 @@
   (defn != [a b] (not (str-eq a b))))
 
 (deftrait Ord
-  (< [self self] Bool)
-  (> [self self] Bool)
-  (<= [self self] Bool)
-  (>= [self self] Bool))
+  (< [a b] Bool)
+  (> [a b] Bool)
+  (<= [a b] Bool)
+  (>= [a b] Bool))
 
 (impl Ord Int
   (defn < [a b] (lt-i64 a b))
