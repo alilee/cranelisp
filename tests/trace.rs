@@ -422,7 +422,7 @@ fn trace_nanos_accessor_resolves_in_repl() {
 // the process EXIT CODE. `nanos` is a wall-clock nanosecond Int, so returning it
 // directly makes the exit code `nanos mod 256` — non-deterministic non-zero,
 // which is NOT a crash but conflates "consume crashed" with "valid nanos used as
-// exit code" (FIXME 0305). Returning a deterministic `0` keeps the accessor
+// exit code". Returning a deterministic `0` keeps the accessor
 // consume path exercised (the trace is still collected + consumed by `nanos`)
 // while making `status.success()` a clean signal: a real double-consume would
 // still crash this shape.
@@ -468,7 +468,7 @@ fn trace_linked_accessor_consume_runs_clean() {
 // spec: spec/04-expressions.md §4.12.4 — (same anchor) POSITIVE regression
 // guard: the trace field-accessor consume path is SOUND in `--run` mode. The
 // Phase-2 /arch "mode-independent RC double-consume" framing was disproved by
-// the W-Trace backend investigation (FIXME 0292 + 0305): there is no heap
+// the W-Trace backend investigation (FIXME 0292): there is no heap
 // corruption and no RC double-consume. The earlier failing form returned
 // `nanos` from `main`, but `--run`/`--link` use `main`'s return value as the
 // process EXIT CODE; `nanos` is a wall-clock nanosecond Int, so the exit code

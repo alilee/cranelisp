@@ -54,10 +54,10 @@ to true roots. The R1–R10 provisional map in `sprints/SPRINT.md` is
 | **RT2** | Outdated trait-method signature syntax in examples: `(+ [self self] self)` → duplicate param `self`; `(fmap [(Fn [a] b) (f a)] ...)` → `expected symbol`. **Spec §7.1.1 / §7.2.1** require distinct bare names or `:Type name` pairs. Compiler is spec-correct. | **FIXTURE** | /examples | (folded in `examples` row) | example source edit |
 | **RT3** | `--run` entry file with `(mod X)` before `(defn main)` → `entry module has no 'main'` (FIXME 0121). The inline-mod rewrite to `main/user.cl` loses the entry `main`. | **CODE** | /int | 10 | small repros exist (these tests); FIXME 0121 |
 | **RT4** | stdlib search-path / cross-module resolution in `--run`: `module 'helper' ... not found` / `submodule 'helper.helper' not found`. | **CODE** | /int | 2 | exists |
-| **RT5** | Macro cross-mode availability: clause/helper unresolved across REPL≢`--run` and across cache restart (`undefined variable: twice` repl_cached; `unresolved symbol: sconcat` session-2; `clause 0 not in memory`). | **CODE** | /int | 3 | narrow repros exist |
+| **RT5** | Macro cross-mode availability: clause/helper unresolved across REPL≢`--run` and across cache restart (`undefined variable: twice` repl_cached; `unresolved symbol: sconcat` session-2; `clause 0 not in memory`). | **CODE (2 fixed) + TEST-DESIGN (1 fixed)** | /int; /qa | 3 | **RESOLVED S77 W-MacroTrait** — all 3 green: 2 int orchestration fixes (FIXME 0299), 1 /qa fixture repair (FIXME 0305 — process_form_dispatch) |
 | **RT6** | Trait-method-as-value (§7.6): `(let [f show] (f 42))` → `undefined variable: show` (no dispatch wrapper when method escapes); `(let [f +] (f 1.0 2.0))` → wrong impl (`inf.0`, returns Int impl for Float/String). | **CODE** | /dev typecheck + backend | 4 | narrow repros exist |
 | **RT7** | trace ADT-render overflow: tracing a fn returning a user ADT crashes DisplayDescriptor walk (FIXME 0284). | **CODE** | /dev backend | 3 | exists |
-| **RT8** | trace accessor: (a) REPL forward-ref `undefined variable: id` — **TEST-DESIGN**: def order violated §5.13.2 REPL-incremental no-forward-ref (`work` before `id`); fixed by reordering. (b) `--link`+`--run` accessor consume — **TEST-DESIGN** (FIXME 0305): `main` returned `nanos`, used as exit code (`nanos mod 256`), conflated with crash; the consume path is SOUND (backend 0292 verified). Fixed by deterministic-return main. (c) nested-lexical trace guard (FIXME 0283; /dev intrinsics) fixed in W-Trace. | **TEST-DESIGN (a,b); CODE (c, fixed)** | /qa (a,b); /dev intrinsics (c) | 3 | **RESOLVED S77 W-Trace** — all 3 positive guards pass |
+| **RT8** | trace accessor: (a) REPL forward-ref `undefined variable: id` — **TEST-DESIGN**: def order violated §5.13.2 REPL-incremental no-forward-ref (`work` before `id`); fixed by reordering. (b) `--link`+`--run` accessor consume — **TEST-DESIGN**: `main` returned `nanos`, used as exit code (`nanos mod 256`), conflated with crash; the consume path is SOUND (backend 0292 verified). Fixed by deterministic-return main. (c) nested-lexical trace guard (FIXME 0283; /dev intrinsics) fixed in W-Trace. | **TEST-DESIGN (a,b); CODE (c, fixed)** | /qa (a,b); /dev intrinsics (c) | 3 | **RESOLVED S77 W-Trace** — all 3 positive guards pass |
 | **RT9** | exemplar per-frame stack overflow at runtime (FIXME 0296). NOT TCO (P2-verified). Per-frame cost: nested-ADT depth / RC drop-glue / Grid copy frame size. | **CODE** | /dev backend/runtime | 5 | reduced repros exist (d6_*) |
 | **RT10** | REPL introspection display gap: `bare_primitive_add_i64` missing `; primitive - <docstring>`. | **CODE** | /int | 1 | exists |
 | **RT11** | REPL unclosed-paren: single `(` line + EOF → continuation prompt, not parse error (FIXME 0142). | **CODE (or fixture)** | /int | 1 | exists; see ambiguity note |
@@ -117,9 +117,9 @@ to true roots. The R1–R10 provisional map in `sprints/SPRINT.md` is
 | spec_08_modules::import_dependency_compiles_correctly | RT3 | CODE | /int | S77 W6 |
 | cache::cache_multi_module_transitive_imports | RT3 | CODE | /int | S77 W6 |
 | spec_08_modules::stdlib_module_compiles_and_runs | RT4 | CODE | /int | S77 W6 |
-| process_form_dispatch::process_form_dispatch_macro_after_import_succeeds_in_one_eval | RT4+RT5 | CODE | /int | S77 W-MacroTrait — **FIXME 0299** (couples RT4/0121; verify after W-Module) |
-| build_confidence::mode_equiv_macro_user_defined | RT5 | CODE | /int | S77 W-MacroTrait — **FIXME 0299** |
-| repl_persist::persist_bug_macro_usage_in_defn_survives_session_restart | RT5 | CODE | /int | S77 W-MacroTrait — **FIXME 0299** |
+| process_form_dispatch::process_form_dispatch_macro_after_import_succeeds_in_one_eval | RT4+RT5 | TEST-DESIGN | /qa | **GREEN S77 W-MacroTrait** — fixture repaired (FIXME 0305): dropped spec-forbidden `(mod helper)` + `(export [my-double])` from the inline `helper.cl`; the int macro-after-import path was already correct. |
+| build_confidence::mode_equiv_macro_user_defined | RT5 | CODE | /int | **GREEN S77 W-MacroTrait** — FIXME 0299 (cross-module cache-restore clause-in-memory + same-module REPL macro persistence). |
+| repl_persist::persist_bug_macro_usage_in_defn_survives_session_restart | RT5 | CODE | /int | **GREEN S77 W-MacroTrait** — FIXME 0299 (cache-restore Linker dlsym fallback for binary-exported `sconcat`). |
 | trait_imports::trait_method_short_name_resolves_as_value_for_display_show_int | RT6 | CODE | /dev typecheck+backend | S77 W-MacroTrait — **FIXME 0300** |
 | trait_imports::trait_method_short_name_resolves_as_value_for_eq_string | RT6 | CODE | /dev typecheck+backend | S77 W-MacroTrait — **FIXME 0300** |
 | stdlib_trait_impls::stdlib_eq_string_mappable_path | RT6 | CODE | /dev typecheck+backend | S77 W-MacroTrait — **FIXME 0300** |
@@ -128,8 +128,8 @@ to true roots. The R1–R10 provisional map in `sprints/SPRINT.md` is
 | trace::trace_polymorphic_adt_result_renders | RT7 | CODE | /dev backend | S77 W1 |
 | trace::trace_trait_heavy_prelude_overflows_defect | RT7 | CODE | /dev backend | S77 W1 |
 | trace::trace_nanos_accessor_resolves_in_repl | RT8a | TEST-DESIGN | /qa | **GREEN S77 W-Trace** — def order fixed (`id` before `work`) per §5.13.2 REPL no-forward-ref; positive guard for accessor resolution. |
-| trace::trace_linked_accessor_consume_runs_clean | RT8b | TEST-DESIGN | /qa | **GREEN S77 W-Trace** — renamed from `..._parks_defect`; deterministic-return main (FIXME 0305); asserts linked binary builds + exits 0. Park guard retained. |
-| trace::trace_run_mode_accessor_consume_runs_clean | RT8b | TEST-DESIGN | /qa | **GREEN S77 W-Trace** — renamed from `..._crashes_defect`; deterministic-return main (FIXME 0305); 4 iters all exit 0. Consume path SOUND. |
+| trace::trace_linked_accessor_consume_runs_clean | RT8b | TEST-DESIGN | /qa | **GREEN S77 W-Trace** — renamed from `..._parks_defect`; deterministic-return main; asserts linked binary builds + exits 0. Park guard retained. |
+| trace::trace_run_mode_accessor_consume_runs_clean | RT8b | TEST-DESIGN | /qa | **GREEN S77 W-Trace** — renamed from `..._crashes_defect`; deterministic-return main; 4 iters all exit 0. Consume path SOUND. |
 | trace::trace_nested_lexical_raises_runtime_error | RT8c | CODE | /dev intrinsics | S77 W-Trace |
 | regression::d6_exemplar_propagate_only_does_not_segv | RT9 | CODE | /dev backend/runtime | S77 W2 |
 | regression::d6_exemplar_propagate_single_pass_does_not_segv | RT9 | CODE | /dev backend/runtime | S77 W2 |
@@ -154,11 +154,16 @@ representative signatures quoted per-root in the table above.
 >
 > **Tracking FIXMEs filed for the un-FIXME'd green roots** (failing tests are
 > the durable record; FIXMEs are the cross-skill work request):
-> - **0299** (/int) — RT5 macro cross-mode availability (3 tests:
->   `mode_equiv_macro_user_defined`, `persist_bug_macro_usage_in_defn…`,
->   `process_form_dispatch_macro_after_import…`). Note: the 3rd couples RT4
->   (FIXME 0121 / W-Module) — its stderr is a `submodule 'helper.helper' not
->   found` resolution error masking the macro path; verify after W-Module.
+> - **0299** (/int) — RT5 macro cross-mode availability. **RESOLVED S77
+>   W-MacroTrait.** Two int orchestration roots fixed in `src/` —
+>   `mode_equiv_macro_user_defined` (cross-module cache-restore clause-in-memory
+>   + same-module REPL macro persistence) and
+>   `persist_bug_macro_usage_in_defn…` (cache-restore Linker dlsym fallback for
+>   binary-exported `sconcat`); both now green. The 3rd test
+>   (`process_form_dispatch_macro_after_import…`) was a /qa fixture defect, not a
+>   compiler bug — handed off via FIXME 0305 and repaired (spec-forbidden
+>   `(mod helper)` + `(export …)` dropped); now green. All three FIXMEs
+>   (0299/0304/0305) resolved + deleted.
 > - **0300** (/dev typecheck+backend) — RT6 trait-method-as-value (4 tests).
 >   Symptom A `undefined variable: show`/`=` (escaping wrapper not emitted);
 >   Symptom B wrong impl (`inf.0` for `(let [f +] (f 1.0 2.0))`, `false` for
@@ -197,7 +202,7 @@ representative signatures quoted per-root in the table above.
 > today). FIXME 0292/0285/0276 (re-pointed → /dev intrinsics, Phase-2).
 >
 > **W-Trace RESOLUTION (/qa, 2026-06-09) — Defect B was a TEST DEFECT, not code.**
-> The /dev (backend) W-Trace investigation (FIXME 0305) disproved the
+> The /dev (backend) W-Trace investigation (FIXME 0292) disproved the
 > mode-independent RC double-consume: there is no heap corruption. Both
 > accessor-consume tests returned `nanos` from `main`, and `--run`/`--link` use
 > `main`'s return value as the process exit code, so the exit was `nanos mod 256`
@@ -209,7 +214,7 @@ representative signatures quoted per-root in the table above.
 > `trace_nanos_accessor_resolves_in_repl` was also a test-design defect (def
 > order `work` before `id` violated §5.13.2 REPL no-forward-ref) — reordered
 > (`id` first), now PASS. All 14 `trace.rs` tests green. FIXMEs
-> 0305/0292/0285/0276 resolved + deleted.
+> 0292/0285/0276 resolved + deleted.
 >
 > **Net failing-test delta:** 38 → 39 (+1: the new Defect-B `--run` sibling);
 > 2 RT1 fixtures now PASS (impl_form, imported_fn_hof), so the green count of

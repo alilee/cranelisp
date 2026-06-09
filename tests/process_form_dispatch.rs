@@ -44,10 +44,12 @@ use helpers::e2e::{Cranelisp, PreludeVariant};
 // =============================================================================
 
 // spec: spec/08-modules.md §"REPL form sequencing"
-// FIXME(/dev frontend Phase 2 + /dev int Phase 4 of FIXME 0098) — fails
-// until `expand` migrates to `cranelisp-frontend` and emits typed
-// `ExpansionError::Gap(ResolutionGap::MacroInMem(fq))` AND `process_cluster`
-// pattern-matches on the typed contract.
+// Passing guard: the macro-after-import orchestration (cross-module macro
+// clause availability across REPL eval) was resolved in S77 W-MacroTrait
+// (FIXME 0299). The fixture was repaired in the same sprint (FIXME 0305) —
+// the prior `(mod helper)` + `(export [my-double])` lines violated spec
+// §8.1.2 / §8.4 and made the `helper` module fail to compile, masking the
+// (correct) orchestration.
 #[test]
 fn process_form_dispatch_macro_after_import_succeeds_in_one_eval() {
     // Two-module setup: helper module exports a macro; user imports it
@@ -59,10 +61,14 @@ fn process_form_dispatch_macro_after_import_succeeds_in_one_eval() {
         .repl()
         .with_prelude(PreludeVariant::None)
         .file(
+            // Per spec/08-modules.md §8.1.2 a file does not name itself —
+            // a self-naming `(mod helper)` would declare a submodule
+            // `helper.helper` (§8.2), not the module itself. Per §8.4 there
+            // is no bare-local-symbol export form (`export_entry =
+            // module_spec names_list`); a `defmacro` is public by default,
+            // so no `export` is needed for `my-double` to be importable.
             "helper.cl",
-            "(mod helper)\n\
-             (export [my-double])\n\
-             (defmacro my-double [x] `(add-i64 ~x ~x))\n",
+            "(defmacro my-double [x] `(add-i64 ~x ~x))\n",
         )
         .stdin(
             "(import [primitives [*]])\n\

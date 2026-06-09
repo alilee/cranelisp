@@ -318,13 +318,6 @@ fn import_below_use_still_available_before_definitions() {
 // before sibling import. The child file lives at `main/util.cl` because the
 // parent declares (mod util), making the child a proper submodule of `main`.
 // (carry: legacy/modules.rs::import_dependency_compiles_correctly)
-//
-// FIXME(/int): same `--run`-mode defect as FIXME 0121 — the binary's `--run`
-// orchestration does not discover `(mod ...)` declarations in the entry
-// module, so `main.cl`'s `(defn main ...)` becomes invisible after the
-// `(mod util)` line is processed. Failing-not-ignored per
-// `memory/feedback_failing_not_ignored.md`. Ledger entry added at
-// `tests/plan/ledger.md` Wave 5.6 cluster.
 #[test]
 fn import_dependency_compiles_correctly() {
     Cranelisp::new()
@@ -347,10 +340,6 @@ fn import_dependency_compiles_correctly() {
 // stdlib copy returns a different value, so a value mismatch would
 // indicate stdlib precedence (a regression).
 // (carry: legacy/modules.rs::project_root_shadows_stdlib)
-//
-// FIXME(/int): same `--run`-mode defect as FIXME 0121 — `main.cl` declares
-// `(mod helper)` and the `--run` orchestration loses sight of `(defn main)`
-// after the mod declaration. Failing-not-ignored. Ledger entry added.
 #[test]
 fn project_root_shadows_stdlib() {
     let cr = Cranelisp::new()
@@ -394,9 +383,6 @@ fn stdlib_module_compiles_and_runs() {
 // (the prelude-like pattern) compiles. Here `main.shell` defines a function
 // directly; main imports from the shell.
 // (carry: legacy/modules.rs::prelude_like_reexport_compiles)
-//
-// FIXME(/int): same `--run`-mode defect as FIXME 0121 — `main.cl` declares
-// `(mod shell)` and the orchestration loses `(defn main)`. Failing-not-ignored.
 #[test]
 fn prelude_like_reexport_compiles() {
     Cranelisp::new()
@@ -418,9 +404,6 @@ fn prelude_like_reexport_compiles() {
 // (`main.shell.inner`) MUST resolve. The intermediate module has its
 // own `(mod inner)` declaration before importing from the leaf.
 // (carry: legacy/modules.rs::multi_dot_module_path_in_import)
-//
-// FIXME(/int): same `--run`-mode defect as FIXME 0121 — `main.cl` declares
-// `(mod shell)` and the orchestration loses `(defn main)`. Failing-not-ignored.
 #[test]
 fn multi_dot_module_path_in_import() {
     Cranelisp::new()
@@ -446,9 +429,6 @@ fn multi_dot_module_path_in_import() {
 // qualified ref into a leaf module. Mid declares `(mod leaf)` and refers
 // to `main.mid.leaf/value` directly without an explicit import.
 // (carry: legacy/modules.rs::nested_dependency_chain_compiles)
-//
-// FIXME(/int): same `--run`-mode defect as FIXME 0121 — `main.cl` declares
-// `(mod mid)` and the orchestration loses `(defn main)`. Failing-not-ignored.
 #[test]
 fn nested_dependency_chain_compiles() {
     Cranelisp::new()
@@ -526,9 +506,6 @@ fn glob_import_excludes_private_neg() {
 // spec: spec/08-modules.md §8.4.1 — a named re-export makes the source
 // module's binding visible to the importer through the shell module.
 // (carry: legacy/modules.rs::export_specific_reexport)
-//
-// FIXME(/int): same `--run`-mode defect as FIXME 0121 — `main.cl` declares
-// `(mod shell)` and the orchestration loses `(defn main)`. Failing-not-ignored.
 #[test]
 fn export_specific_reexport() {
     Cranelisp::new()
@@ -549,9 +526,6 @@ fn export_specific_reexport() {
 // spec: spec/08-modules.md §8.4.2 — a glob re-export `[*]` re-exports all
 // public names from the source module through the shell.
 // (carry: legacy/modules.rs::export_glob_reexport)
-//
-// FIXME(/int): same `--run`-mode defect as FIXME 0121 — `main.cl` declares
-// `(mod shell)` and the orchestration loses `(defn main)`. Failing-not-ignored.
 #[test]
 fn export_glob_reexport() {
     Cranelisp::new()
@@ -580,9 +554,6 @@ fn export_glob_reexport() {
 // spec: spec/08-modules.md §8.4.4 — re-export semantics MUST compose
 // across a 3-level chain: leaf → mid → shell → main.
 // (carry: legacy/modules.rs::export_transitive_reexport_chain)
-//
-// FIXME(/int): same `--run`-mode defect as FIXME 0121 — `main.cl` declares
-// `(mod shell)` and the orchestration loses `(defn main)`. Failing-not-ignored.
 #[test]
 fn export_transitive_reexport_chain() {
     Cranelisp::new()
@@ -616,9 +587,6 @@ fn export_transitive_reexport_chain() {
 // spec: spec/08-modules.md §8.4.3 — a single shell module MAY re-export
 // names from multiple distinct source modules.
 // (carry: legacy/modules.rs::export_multiple_modules)
-//
-// FIXME(/int): same `--run`-mode defect as FIXME 0121 — `main.cl` declares
-// `(mod shell)` and the orchestration loses `(defn main)`. Failing-not-ignored.
 #[test]
 fn export_multiple_modules() {
     Cranelisp::new()

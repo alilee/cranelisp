@@ -237,19 +237,10 @@ fn cache_multi_module_hit_cross_module_call() {
 
 // spec: design/backend/module-caching.md §8 — multi-module cache hit with transitive imports
 //
-// FIXME(/int): defect surfaced during Sprint 64 Wave 2 Batch 1 audit.
-// The legacy integration-tier form (pre-port) PASSED via in-process
-// `compile_module_graph_cached`, which discovers the entry's `(mod ...)`
-// declarations and treats the entry's parent file as the project's
-// entry module. The e2e form via `--run main.cl` FAILS with
-//   "entry module has no `main` function — batch mode requires (defn main [] ...)"
-// because the `--run` driver does not run the `(mod ...)`
-// declaration-discovery pass before checking for `main` in the entry
-// module. Filed as `design/arch/fixmes/0121-int-run-mode-mod-decl-discovery.md`
-// targeting `/int` (binary entry-point handling).
-//
-// Per parity rule (Sprint 64 §Phase 2): land the failing e2e test, do
-// not fix in-sprint. Ledger entry: `cache::cache_multi_module_transitive_imports`.
+// Regression guard for `--run main.cl` over a project whose entry module
+// carries `(mod ...)` declarations: the `--run` driver discovers the entry's
+// `(mod ...)` declarations before checking for `main`, then serves the whole
+// graph from the disk cache on the second run.
 #[test]
 fn cache_multi_module_transitive_imports() {
     let fresh = project(&[
