@@ -2752,6 +2752,62 @@ fn handle_mod(
     })
 }
 
+/// Outcome of the layout-hash gate (platform-interface.md §5.5.4).
+///
+/// Separating the decision from its enaction (`eprintln!` / `return Err`) makes
+/// the gate's three branches unit-testable without capturing stderr or
+/// dlopening a real DLL: a matching pair → `Accept`, a mismatched pair in the
+/// REPL → `WarnAndLoad` (the regeneration bootstrap), a mismatched pair in
+/// `--run`/`--link` → `Refuse` carrying `PlatformError::LayoutHashMismatch`.
+enum LayoutHashGate {
+    /// Hashes match (or the host hash is empty — first-build/absent tolerated).
+    Accept,
+    /// Mismatch in the REPL: warn and load anyway (the only place the schema
+    /// can be regenerated). Carries the warning text.
+    WarnAndLoad(String),
+    /// Mismatch in `--run`/`--link`: hard refusal carrying both hashes.
+    Refuse(CranelispError),
+}
+
+/// Decide the layout-hash gate outcome from a (DLL hash, host-regenerated hash)
+/// pair (platform-interface.md §5.5.4). Extracted from `handle_platform` as the
+/// smallest pure owner of the compare + REPL/`--run` branch — the surrounding
+/// `handle_platform` needs a full `ModuleCompiler` (and dlopens the platform),
+/// so the dual-gate decision cannot otherwise be driven with a mismatched pair.
+/// Minimum mechanism, no behaviour change: the load path and the unit test call
+/// the same decision.
+fn layout_hash_gate(
+    dll_hash: &str,
+    host_hash: &str,
+    platform_name: &str,
+    is_repl: bool,
+    span: cranelisp_types::Span,
+) -> LayoutHashGate {
+    // A matching pair, or an empty host hash (the host regenerated nothing —
+    // first-build/absent, §5.5.4), accepts.
+    if host_hash == dll_hash || host_hash.is_empty() {
+        return LayoutHashGate::Accept;
+    }
+    if is_repl {
+        LayoutHashGate::WarnAndLoad(format!(
+            "warning: platform '{platform_name}' layout hash mismatch (DLL embedded \
+             {dll_hash}, host regenerated {host_hash}); loading anyway — run \
+             `/platform-schema {platform_name}` and rebuild the platform to refresh \
+             its embedded schema."
+        ))
+    } else {
+        LayoutHashGate::Refuse(CranelispError::Platform(
+            cranelisp_types::PlatformError::LayoutHashMismatch {
+                dll: std::path::PathBuf::from(format!("platform.{platform_name}")),
+                platform: platform_name.to_string(),
+                expected: host_hash.to_string(),
+                found: dll_hash.to_string(),
+                location: cranelisp_types::ErrorLocation::from_span(span),
+            },
+        ))
+    }
+}
+
 /// Handle platform forms: load DLL and register type signatures.
 ///
 /// Platform loading is NOT a cross-module blocking operation. The DLL is
@@ -2801,28 +2857,13 @@ fn handle_platform(
             .unwrap_or_default();
         let host_hash =
             cranelisp_backend::schema::compute_layout_hash(ctx.symbol_tables, &roots);
-        if &host_hash != dll_hash && !host_hash.is_empty() {
-            // is_repl: introspection is populated only for REPL (None in batch
-            // / `--run`), per the `ModuleCompiler.introspection` contract.
-            let is_repl = ctx.introspection.is_some();
-            if is_repl {
-                eprintln!(
-                    "warning: platform '{}' layout hash mismatch (DLL embedded {}, \
-                     host regenerated {}); loading anyway — run `/platform-schema {}` \
-                     and rebuild the platform to refresh its embedded schema.",
-                    platform.name, dll_hash, host_hash, platform.name
-                );
-            } else {
-                return Err(CranelispError::Platform(
-                    cranelisp_types::PlatformError::LayoutHashMismatch {
-                        dll: std::path::PathBuf::from(format!("platform.{}", platform.name)),
-                        platform: platform.name.clone(),
-                        expected: host_hash,
-                        found: dll_hash.clone(),
-                        location: cranelisp_types::ErrorLocation::from_span(spec.span),
-                    },
-                ));
-            }
+        // is_repl: introspection is populated only for REPL (None in batch
+        // / `--run`), per the `ModuleCompiler.introspection` contract.
+        let is_repl = ctx.introspection.is_some();
+        match layout_hash_gate(dll_hash, &host_hash, &platform.name, is_repl, spec.span) {
+            LayoutHashGate::Accept => {}
+            LayoutHashGate::WarnAndLoad(msg) => eprintln!("{msg}"),
+            LayoutHashGate::Refuse(err) => return Err(err),
         }
     }
 
@@ -5938,5 +5979,104 @@ mod tests {
             resolve_module_alias(&aliases, "a.b.c"),
             ModuleFullPath::from("y.c"),
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Layout-hash gate (platform-interface.md §5.5.4) — drives the WIRED
+    // type-definition-drift detection (handle_platform) with mismatched and
+    // matching (dll_hash, host_hash) pairs without dlopening a real DLL. The
+    // dual gate: matching → Accept; mismatch in `--run`/`--link` → Refuse with
+    // PlatformError::LayoutHashMismatch carrying both hashes; mismatch in the
+    // REPL → WarnAndLoad (the regeneration bootstrap).
+    // -----------------------------------------------------------------
+
+    // spec: design/arch/platform-interface.md §5.5.4 — a stale schema in
+    // `--run`/`--link` is REFUSED, carrying both hashes + the platform name so
+    // the message directs the user to `/platform-schema` and rebuild.
+    #[test]
+    fn layout_hash_drift_refuses_in_run_mode() {
+        let outcome = layout_hash_gate(
+            "dll_baked_hash",
+            "host_live_hash",
+            "shapes",
+            /* is_repl */ false,
+            Span::SYNTHETIC,
+        );
+        match outcome {
+            LayoutHashGate::Refuse(CranelispError::Platform(
+                cranelisp_types::PlatformError::LayoutHashMismatch {
+                    platform,
+                    expected,
+                    found,
+                    ..
+                },
+            )) => {
+                assert_eq!(platform, "shapes");
+                // `expected` = host-regenerated (canonical) hash; `found` =
+                // DLL-exported hash (error.rs PlatformError::LayoutHashMismatch).
+                assert_eq!(expected, "host_live_hash");
+                assert_eq!(found, "dll_baked_hash");
+            }
+            other => panic!(
+                "expected Refuse(LayoutHashMismatch), got {}",
+                match other {
+                    LayoutHashGate::Accept => "Accept",
+                    LayoutHashGate::WarnAndLoad(_) => "WarnAndLoad",
+                    LayoutHashGate::Refuse(_) => "Refuse(other error)",
+                }
+            ),
+        }
+    }
+
+    // spec: design/arch/platform-interface.md §5.5.4 — in the REPL a stale
+    // schema WARNS and loads (the regeneration bootstrap), naming both hashes
+    // and the `/platform-schema` rebuild guidance.
+    #[test]
+    fn layout_hash_drift_warns_and_loads_in_repl() {
+        let outcome = layout_hash_gate(
+            "dll_baked_hash",
+            "host_live_hash",
+            "shapes",
+            /* is_repl */ true,
+            Span::SYNTHETIC,
+        );
+        match outcome {
+            LayoutHashGate::WarnAndLoad(msg) => {
+                assert!(msg.contains("shapes"), "warning names the platform");
+                assert!(msg.contains("dll_baked_hash"), "warning names the DLL hash");
+                assert!(msg.contains("host_live_hash"), "warning names the host hash");
+                assert!(
+                    msg.contains("/platform-schema"),
+                    "warning gives the rebuild guidance"
+                );
+            }
+            _ => panic!("expected WarnAndLoad in REPL on mismatch"),
+        }
+    }
+
+    // spec: design/arch/platform-interface.md §5.5.4 — a matching pair ACCEPTS
+    // (no warning, no refusal), in both REPL and `--run`.
+    #[test]
+    fn layout_hash_match_accepts_in_both_modes() {
+        for is_repl in [false, true] {
+            assert!(
+                matches!(
+                    layout_hash_gate("same_hash", "same_hash", "shapes", is_repl, Span::SYNTHETIC),
+                    LayoutHashGate::Accept
+                ),
+                "matching hashes must Accept (is_repl={is_repl})"
+            );
+        }
+    }
+
+    // spec: design/arch/platform-interface.md §5.5.4 — an empty host hash (the
+    // host regenerated nothing: a scalar-only platform / first build / absent
+    // schema) is TOLERATED — Accept, never Refuse, regardless of the DLL hash.
+    #[test]
+    fn layout_hash_empty_host_hash_accepts() {
+        assert!(matches!(
+            layout_hash_gate("dll_baked_hash", "", "shapes", false, Span::SYNTHETIC),
+            LayoutHashGate::Accept
+        ));
     }
 }

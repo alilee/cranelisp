@@ -61,7 +61,7 @@ to true roots. The R1–R10 provisional map in `sprints/SPRINT.md` is
 | **RT9** | exemplar per-frame stack overflow at runtime (FIXME 0296). NOT TCO (P2-verified). Per-frame cost: nested-ADT depth / RC drop-glue / Grid copy frame size. | **CODE** | /dev backend/runtime | 5 | reduced repros exist (d6_*) |
 | **RT10** | REPL introspection display gap: `bare_primitive_add_i64` missing `; primitive - <docstring>`. | **CODE** | /int | 1 | exists |
 | **RT11** | REPL unclosed-paren: single `(` line + EOF → continuation prompt, not parse error (FIXME 0142). | **CODE (or fixture)** | /int | 1 | exists; see ambiguity note |
-| **GATED-A** | platform-interface error shape: needs `with_synthetic_dll` fixture infra + `PlatformError::AbiVersionMismatch`/`DispatchError` carriers (FIXME 0104; SPRINT R9 0287/0289). | **GATED** | /arch + /dev platform (W0) | 2 | exists |
+| **R9** | platform-interface error e2e (FIXME 0104 closed; 0289 carries the deferred drift e2e). 2 e2e tests REFRAMED to assert e2e-observable behaviour today (not-found gate + dispatch success half); ABI-mismatch + layout-hash-drift DETECTION is wired + unit-proven in `src/platform.rs` (`abi_version_mismatch_detected`). Full drift round-trip e2e (ADT-typed `shapes` test-DLL + perturbed-ABI/hash + `DispatchError{fn_name}`) → FIXME 0289 Stage 2. | **REFRAMED → GREEN (detection unit-proven; full drift e2e → 0289)** | /qa | 2 | **RESOLVED S77 W-Platform** — both reframed tests pass |
 | **GATED-B** | SharedState pub-field count 17 > facade ≤13; gated on PIF field moves (FIXME 0176/0179; SPRINT R10). | **GATED** | /arch + /dev int (W0) | 1 | exists |
 
 > **Triage corrections to the SPRINT.md R1–R10 map** (validate-test-against-spec
@@ -137,8 +137,9 @@ to true roots. The R1–R10 provisional map in `sprints/SPRINT.md` is
 | regression::d6_exemplar_solve_minimal_puzzle_no_io_does_not_segv | RT9 | CODE | /dev backend/runtime | S77 W2 |
 | regression::wave6_exemplar_solver_full_run_does_not_stack_overflow | RT9 | CODE | /dev backend/runtime | S77 W2 |
 | repl_negative::parse_error_unclosed_paren_neg | RT11 | CODE? | /int (after /spec arb) | S77 W8 |
-| platform_errors::platform_abi_version_mismatch_emits_expected_vs_found | GATED-A | GATED | /arch+/dev platform | S77 W0 |
-| platform_errors::platform_dispatch_error_during_run_carries_fn_name | GATED-A | GATED | /arch+/dev platform | S77 W0 |
+| platform_errors::platform_unknown_name_emits_structured_not_found (was platform_abi_version_mismatch_emits_expected_vs_found) | R9 | REFRAMED → GREEN | /qa | RESOLVED S77 W-Platform |
+| platform_errors::platform_fn_dispatches_across_dll_boundary (was platform_dispatch_error_during_run_carries_fn_name) | R9 | REFRAMED → GREEN | /qa | RESOLVED S77 W-Platform |
+| (deferred) platform-interface full drift e2e: ADT `shapes` test-DLL + layout-hash/ABI/dispatch-error round-trip | R9 | DEFERRED | /qa + /platform | FIXME 0289 Stage 2 |
 | facade_pif_rows::shared_state_field_count_matches_facade_after_pif | GATED-B | GATED | /arch+/dev int | S77 W0 |
 
 **Counts by class:** 4 FIXTURE (incl. the examples umbrella covering RT1+RT2

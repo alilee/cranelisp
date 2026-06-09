@@ -152,6 +152,35 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Validate a DLL's declared ABI version against the host's `ABI_VERSION`.
+///
+/// Extracted from `load_platform_dll` (Step 4) as the smallest testable owner
+/// of the `manifest.abi_version != ABI_VERSION` branch — `load_platform_dll`
+/// itself dlopens a real DLL, so the comparison cannot otherwise be exercised
+/// with a perturbed version (platform-interface.md §5.2; the manifest's
+/// `abi_version` is a C-ABI fact the host checks at load). Returns
+/// `PlatformError::AbiVersionMismatch { expected, found }` on mismatch (both
+/// values populated so the user message names the host's expected version and
+/// the DLL's stale one), `Ok(())` on match. Minimum mechanism, no behaviour
+/// change — the load path and the unit test call the same branch.
+fn check_abi_version(
+    found: u32,
+    dll_path: &Path,
+    location: ErrorLocation,
+) -> Result<(), CranelispError> {
+    if found != ABI_VERSION {
+        return Err(CranelispError::Platform(
+            cranelisp_types::PlatformError::AbiVersionMismatch {
+                dll: dll_path.to_path_buf(),
+                expected: ABI_VERSION,
+                found,
+                location,
+            },
+        ));
+    }
+    Ok(())
+}
+
 /// Load a platform DLL, validate the manifest, and extract descriptors.
 ///
 /// Steps:
@@ -215,16 +244,7 @@ pub fn load_platform_dll(
     let manifest = unsafe { manifest_fn(&callbacks) };
 
     // Step 4: Validate ABI version.
-    if manifest.abi_version != ABI_VERSION {
-        return Err(CranelispError::Platform(
-            cranelisp_types::PlatformError::AbiVersionMismatch {
-                dll: dll_path.to_path_buf(),
-                expected: ABI_VERSION,
-                found: manifest.abi_version,
-                location: location(),
-            },
-        ));
-    }
+    check_abi_version(manifest.abi_version, dll_path, location())?;
 
     // Step 5: Convert to safe Rust types.
     //
@@ -581,6 +601,48 @@ mod tests {
         let sexps = cranelisp_frontend::parse("(platform stdio)").unwrap();
         let (name, _) = extract_platform_name(&sexps[0]).unwrap();
         assert_eq!(name, "stdio");
+    }
+
+    // -----------------------------------------------------------------
+    // ABI-version-mismatch detection (platform-interface.md §5.2) — drives the
+    // WIRED `manifest.abi_version != ABI_VERSION` branch with a perturbed
+    // version, without dlopening a real DLL (load_platform_dll owns the dlopen;
+    // check_abi_version is the smallest testable owner of the branch).
+    // -----------------------------------------------------------------
+
+    // spec: design/arch/platform-interface.md §5.2 — a DLL whose declared ABI
+    // version differs from the host's `ABI_VERSION` is refused with
+    // PlatformError::AbiVersionMismatch carrying BOTH the expected (host) and
+    // found (DLL) versions correct.
+    #[test]
+    fn abi_version_mismatch_detected() {
+        let dll = Path::new("/fake/stale-abi.dylib");
+        let perturbed = ABI_VERSION + 1;
+        let err = check_abi_version(perturbed, dll, ErrorLocation::unknown())
+            .expect_err("a perturbed ABI version must be refused");
+        match err {
+            CranelispError::Platform(cranelisp_types::PlatformError::AbiVersionMismatch {
+                expected,
+                found,
+                ..
+            }) => {
+                assert_eq!(expected, ABI_VERSION, "expected = host ABI_VERSION");
+                assert_eq!(found, perturbed, "found = the DLL's declared version");
+            }
+            other => panic!("expected AbiVersionMismatch, got {other:?}"),
+        }
+    }
+
+    // spec: design/arch/platform-interface.md §5.2 — a DLL declaring the host's
+    // own `ABI_VERSION` passes the gate (Ok). Guards that check_abi_version's
+    // extraction did not change behaviour on the happy path.
+    #[test]
+    fn abi_version_match_accepts() {
+        let dll = Path::new("/fake/ok.dylib");
+        assert!(
+            check_abi_version(ABI_VERSION, dll, ErrorLocation::unknown()).is_ok(),
+            "the host's own ABI_VERSION must pass the gate"
+        );
     }
 
     // spec: 10-io §10.9.1 — platform path resolution (explicit path bypass)

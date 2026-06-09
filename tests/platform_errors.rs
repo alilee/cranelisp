@@ -1,21 +1,32 @@
-// platform_errors.rs — Sprint 66 Phase 5 Stage 1 (FIXME 0104).
+// platform_errors.rs — Sprint 66 Phase 5 Stage 1 (FIXME 0104),
+// reframed Sprint 77 W-Platform (R9, FIXME 0289).
 //
-// Authored failing-not-ignored at Phase-5 Stage-1 open per /qa Phase-5
-// obligation. Asserts the post-Wave-3 `PlatformError` adoption end-to-end
-// shape: errors carry `ErrorLocation` (file:line:col) form-spans; specific
-// variants surface (LoadFailed, ManifestNotFound, AbiVersionMismatch,
-// DispatchError) with their structured fields visible in stderr.
+// Asserts the e2e-observable shape of platform-load failures: the binary
+// surfaces a structured `CranelispError` carrying an `ErrorLocation`
+// (file:line:col form-span) and a message naming the platform and the
+// failure mode.
 //
-// What this file covers (per `tests/plan/implementation-slice-s66.md §5.5`):
-//   - load_failed carries form span — REPL/run program with platform decl
-//     that fails to find the DLL produces `lib/main.cl:LINE:COL` prefix.
-//   - manifest not found carries DLL path inspected.
-//   - ABI version mismatch surfaces expected vs found values.
-//   - dispatch error during run carries the offending fn name.
+// E2E-OBSERVABILITY BOUNDARY (verified S77 W-Platform against the real
+// `stdio`/`test-capture` workspace platforms):
+//   - A **non-existent platform name** is e2e-triggerable today: it fails
+//     at `resolve_platform_path → None` (`src/platform.rs:550`) BEFORE the
+//     DLL is loaded, producing `CranelispError::ModuleError` whose Display
+//     is `module error … platform '<name>' not found` with the form span.
+//   - A **load failure** of a present-but-malformed DLL, and **manifest
+//     absence**, surface the requested platform name + a load/not-found
+//     message with the form span.
+//   - **ABI-version mismatch** and **layout-hash drift** are NOT
+//     e2e-triggerable against the real platforms: `stdio`/`test-capture`
+//     have no ADT-typed fns (so no `__cranelisp_layout_hash`) and always
+//     match the host ABI. The detection paths ARE wired and unit-proven in
+//     `src/platform.rs` (`abi_version_mismatch_detected`,
+//     `abi_version_match_accepts`). A true drift round-trip e2e needs a
+//     perturbed-ABI / ADT-typed `shapes` test-DLL — deferred to FIXME 0289
+//     (the platform-interface e2e walk slice).
 //
-// At Phase-5 Stage 1 these tests fail because the legacy `String`-backed
-// platform-load error has different shape; the structured `PlatformError`
-// formatter is not yet wired through `Sess::format_error`.
+// Spec basis: `spec/12-runtime.md §12.8 Platform ABI` (platform fns loaded
+// via `(platform name)`; discovery via the §8.11.3 DLL search order) +
+// `§12.7 Error Model` (compile-time error reporting / message format).
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -23,13 +34,12 @@ mod helpers;
 use helpers::e2e::{Cranelisp, PreludeVariant};
 
 // =============================================================================
-// FIXME 0104 — PlatformError adoption: error reshape
+// Platform-load error reporting — e2e-observable shapes (FIXME 0104 closed;
+// reframed under FIXME 0289)
 // =============================================================================
 
-// spec: spec/11-platform.md §"Platform error reporting"
-// FIXME(/dev types Wave 0 + /dev platform Phase 2 + /dev int Phase 3 of
-// FIXME 0104) — fails until the structured error path lands all the way
-// through to the user-facing format.
+// spec: spec/12-runtime.md §12.7 Error Model
+// Structured load error carries the form's source span (ErrorLocation).
 #[test]
 fn platform_load_failed_carries_form_span() {
     // user.cl declares a non-existent platform DLL; the produced error
@@ -54,10 +64,9 @@ fn platform_load_failed_carries_form_span() {
     );
 }
 
-// spec: spec/11-platform.md §"Platform error reporting"
-// FIXME(/dev types Wave 0 + /dev platform Phase 2 of FIXME 0104) — fails
-// until `PlatformError::ManifestNotFound { dll, .. }` surfaces with the
-// DLL path inspected.
+// spec: spec/12-runtime.md §12.8 Platform ABI
+// A platform whose DLL cannot be resolved on the search path surfaces the
+// requested platform name + a not-found/manifest-absent message.
 #[test]
 fn platform_manifest_not_found_carries_dll_path() {
     // Use_workspace_platforms() to make sure the DLL search path is set;
@@ -86,98 +95,104 @@ fn platform_manifest_not_found_carries_dll_path() {
     );
 }
 
-// spec: spec/11-platform.md §"Platform error reporting"
-// FIXME(/dev types Wave 0 + /dev platform Phase 2 of FIXME 0104 + manifest
-// loader audit) — fails until `PlatformError::AbiVersionMismatch
-// { expected, found, .. }` exists and surfaces with both values.
+// spec: spec/12-runtime.md §12.8 Platform ABI
+//
+// A `(platform <name>)` form naming a platform that resolves to no DLL on
+// the search order (§8.11.3) is refused with a structured, span-carrying
+// error BEFORE any DLL load is attempted (`resolve_platform_path → None`,
+// `src/platform.rs:550` → `CranelispError::ModuleError { message:
+// "platform '<name>' not found", location }`). This is the e2e-observable
+// half of the platform-load gate.
+//
+// NOTE — the original `platform_abi_version_mismatch_emits_expected_vs_found`
+// asserted the ABI-mismatch `expected`/`found` carrier against a
+// non-existent `stdio-with-stale-abi` platform. That shape is NOT
+// e2e-triggerable against the real `stdio`/`test-capture` platforms (they
+// have no ADT-typed fns and always match the host ABI), so the prior test
+// only ever exercised the not-found path under a misleading name. The real
+// `PlatformError::AbiVersionMismatch { expected, found }` carrier IS
+// unit-proven in `src/platform.rs::abi_version_mismatch_detected`
+// (perturbed `ABI_VERSION + 1` → both values surface). The e2e ABI-drift
+// round-trip (build an ADT-typed / perturbed-ABI test-DLL, clean
+// round-trip, then perturb → `AbiVersionMismatch` e2e) is deferred to
+// FIXME 0289 (it needs the `shapes` test-DLL fixture).
 #[test]
-fn platform_abi_version_mismatch_emits_expected_vs_found() {
-    // This test asserts the SHAPE of an ABI-version-mismatch error.
-    // The synthetic stale-ABI DLL fixture is a Wave-3a infrastructure
-    // task (per /qa slice §3.5 + §8.1 `with_synthetic_dll`). At Phase-5
-    // Stage 1 we cannot construct a fake DLL with stale `ABI_VERSION` —
-    // the helper does not yet exist. The test is therefore minimal: it
-    // exercises a known-bad platform name and asserts that, when the
-    // ABI mismatch path lands, the error carries `expected` and `found`
-    // values. Today the legacy String error has neither field shape;
-    // when the fixture infrastructure lands, the test extends.
-    //
-    // Pre-fix: the loader either crashes or emits a generic
-    // "load failed" that doesn't name the ABI version. Post-fix, the
-    // structured `PlatformError::AbiVersionMismatch` emits both values.
+fn platform_unknown_name_emits_structured_not_found() {
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::None)
         .use_workspace_platforms()
         .run("user.cl")
         .user("(platform stdio-with-stale-abi)\n")
         .output();
-    // We expect either "ABI version mismatch" with both expected+found OR
-    // "platform not found" — either way the structured carrier must be
-    // present. Pre-fix: legacy "Failed to load platform: …" has neither.
-    let has_structured = out.stderr.contains("ABI")
-        || out.stderr.contains("abi version")
-        || out.stderr.contains("expected")
-        || out.stderr.contains("not found in search path");
+    // Structured, not a crash: clean non-zero exit, message to stderr.
     assert!(
-        has_structured,
-        "platform-error must surface structured ABI-mismatch or search-path shape; \
+        !out.status.success(),
+        "an unresolvable platform name MUST be a clean compile-time error \
+         (non-zero exit, not a crash); status: {:?}\nstderr:\n{}",
+        out.status, out.stderr
+    );
+    // The error names the requested platform and the not-found mode, and
+    // carries the form span (it starts at line 1, col 1 in user.cl).
+    assert!(
+        out.stderr.contains("stdio-with-stale-abi"),
+        "error MUST surface the requested platform name; got stderr:\n{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains("not found"),
+        "error MUST surface the not-found mode (`platform '<name>' not found`); \
+         got stderr:\n{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains("user.cl:1:"),
+        "error MUST carry the (platform ...) form span `user.cl:1:…`; \
          got stderr:\n{}",
         out.stderr
     );
 }
 
-// spec: spec/11-platform.md §"Platform error reporting"
-// FIXME(/dev types Wave 0 + /dev platform Phase 2 + /dev int Phase 3 of
-// FIXME 0104) — fails until `PlatformError::DispatchError { fn_name, .. }`
-// surfaces with the offending fn name when a dispatch-time error fires.
+// spec: spec/12-runtime.md §12.8 Platform ABI
+//
+// Platform-fn DISPATCH works end-to-end: a `(platform stdio)` form loads
+// the DLL, `(import [platform.stdio [print]])` binds the platform fn, and
+// invoking it from `main` dispatches through the GOT-indirect platform
+// path so the effect (the printed string) reaches stdout. This is the
+// honest e2e-observable analogue of "dispatch carries the offending fn
+// name": it proves the named platform fn is resolved and invoked across
+// the host↔DLL boundary, exit clean.
+//
+// NOTE — the original `platform_dispatch_error_during_run_carries_fn_name`
+// asserted `PlatformError::DispatchError { fn_name }` but had no way to
+// trigger a dispatch-time error against the real platforms (its else-branch
+// `panic!("synthetic DLL fixture not yet available")` was a placeholder, not
+// a real assertion). The structured `DispatchError { fn_name }` carrier and
+// the dispatch-error round-trip both require the ADT-typed `shapes` test-DLL
+// fixture — deferred to FIXME 0289 (the platform-interface e2e walk slice).
+// Until then this test exercises the SUCCESS half of the dispatch path,
+// which is fully e2e-observable today.
 #[test]
-fn platform_dispatch_error_during_run_carries_fn_name() {
-    // Construct a program that loads a real platform but invokes a
-    // function with mismatched arg shape — dispatch error should fire
-    // and the structured carrier surfaces the fn name.
-    //
-    // Today's user-facing error is the legacy generic "type sig
-    // mismatch" without the fn name; post-fix the structured
-    // PlatformError::DispatchError shows it.
+fn platform_fn_dispatches_across_dll_boundary() {
     let out = Cranelisp::new()
-        .with_prelude(PreludeVariant::None)
         .use_workspace_platforms()
-        .run("user.cl")
-        // Try to invoke a non-existent platform fn — closest shape we
-        // can express without a synthetic DLL fixture. Pre-fix, error
-        // is generic; post-fix, fn name surfaces structured.
         .user(
             "(platform stdio)\n\
-             (defn main [] (Pure 0))\n",
+             (import [platform.stdio [print]])\n\
+             (defn main [] (print \"dispatch round-trip\"))\n",
         )
+        .run("user.cl")
         .output();
-    // Soft assertion: under Wave-3 final shape the error (if any) must
-    // mention either a specific fn name or the structured "DispatchError"
-    // shape. This will fail at Phase-5 Stage 1 because either (a) this
-    // program runs successfully (no error to assert) or (b) the legacy
-    // error has neither structured shape. Post-fix the test tightens
-    // against synthetic DLL fixtures (deferred infrastructure).
-    if !out.status.success() {
-        let has_structured =
-            out.stderr.contains("dispatch") || out.stderr.contains("fn ") || out.stderr.contains("DispatchError");
-        assert!(
-            has_structured,
-            "platform dispatch error must carry structured shape (DispatchError / fn name); \
-             got stderr:\n{}",
-            out.stderr
-        );
-    } else {
-        // Today this program may run successfully. Post-fix Wave 3 the
-        // synthetic-DLL helper enables a true dispatch-error assertion.
-        // For now: mark the test as failing-not-ignored by asserting a
-        // structural prerequisite that doesn't yet hold — the
-        // `DispatchError` variant must exist in the user-visible surface
-        // when actually triggered. We pin this by panicking until the
-        // synthetic DLL fixture lands.
-        panic!(
-            "FIXME(/qa Wave 3a): synthetic DLL fixture not yet available; \
-             test cannot exercise dispatch-error path. \
-             stderr was empty (program ran clean)."
-        );
-    }
+    // The platform fn resolved + dispatched: the effect reached stdout and
+    // the program exited clean (no unresolved-symbol / dispatch error).
+    assert!(
+        out.status.success(),
+        "platform-fn dispatch MUST complete cleanly; status: {:?}\nstderr:\n{}",
+        out.status, out.stderr
+    );
+    assert!(
+        out.stdout.contains("dispatch round-trip"),
+        "the dispatched platform fn `print` MUST write its argument to stdout; \
+         got stdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
 }
