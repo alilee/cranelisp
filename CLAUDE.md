@@ -197,14 +197,16 @@ Spec headings and table rows use inline annotations to show coverage status:
 | `[Tested+Neg tests/file::test_name]` | Both positive and negative paths tested (see below) |
 | `[Tested]` | Section-level: all sub-requirements have test annotations |
 | `[Tested+Neg]` | Section-level: all sub-requirements have positive AND negative coverage |
-| `[R{N} S{M}]` | Not yet tested; targeted for Ring N, Sprint M |
-| `[R{N} S{M} — tests/file::test_name IGNORED]` | Test exists but is `#[ignore]`'d (known gap) |
+| `[S{M}]` | Not yet tested; scheduled for sprint M |
+| `[S{M} — tests/file::test_name IGNORED]` | Test exists but is `#[ignore]`'d (known gap) |
+
+> The ring axis was retired as a project-wide planning/scheduling axis in Sprint 64 — sprint is the sole scheduling axis. Pre-S64 `[R{N} S{M}]` annotations in archived docs and older spec/test rows are historical; read `R{N}` as "the ring this targeted under the old model" and `S{M}` as the sprint. New annotations use sprint-only `[S{M}]`.
 
 **Positive vs negative coverage.** `[Tested]` means the happy path works — the feature produces correct output for valid input. `[Tested+Neg]` means the test suite also verifies **what must NOT happen**: wrong items are absent, invalid input produces the right error, boundary violations are rejected. A spec section that says "MUST organize symbols into categories" needs positive tests (categories appear) AND negative tests (non-category items are absent, wrong-module items don't leak through). `[Tested]` without `+Neg` is a coverage gap — the feature works but nobody has verified it doesn't also do wrong things.
 
-**Fine-grained annotations** go on individual table rows and MUST requirements — each row should have its own `[Tested ...]` or `[R{N} S{M}]` tag. This makes it possible to see at a glance which specific behaviors are covered and which are not.
+**Fine-grained annotations** go on individual table rows and MUST requirements — each row should have its own `[Tested ...]` or `[S{M}]` tag. This makes it possible to see at a glance which specific behaviors are covered and which are not.
 
-**Section-level annotations** are summaries. A section heading says `[Tested]` only when ALL its sub-requirements have test annotations. A section heading says `[Tested+Neg]` only when ALL its sub-requirements have both positive and negative annotations. If any child is untested, the section heading carries the lowest coverage level of its children (e.g., `[R2 S8]` if any child targets Ring 2 Sprint 8).
+**Section-level annotations** are summaries. A section heading says `[Tested]` only when ALL its sub-requirements have test annotations. A section heading says `[Tested+Neg]` only when ALL its sub-requirements have both positive and negative annotations. If any child is untested, the section heading carries the lowest coverage level of its children (e.g., `[S8]` if any child is scheduled for sprint 8).
 
 **Test-side tracing**: Every test function has a `// spec:` comment naming the spec section it validates:
 ```rust
@@ -220,7 +222,7 @@ fn display_int_result() { ... }
 
 When `/qa` writes a test, it adds the test-side `// spec:` comment. When coverage is verified, the spec-side `[Tested ...]` annotation is added. The two sides cross-reference each other.
 
-**`[Done]` is retired.** It provided no traceability and was applied prematurely. All `[Done]` tags should be replaced with either `[Tested tests/file::test_name]` (if covered) or `[R{N} S{M}]` (if not).
+**`[Done]` is retired.** It provided no traceability and was applied prematurely. All `[Done]` tags should be replaced with either `[Tested tests/file::test_name]` (if covered) or `[S{M}]` (if not).
 
 ## Known Issues
 

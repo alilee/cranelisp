@@ -38,6 +38,113 @@ A failing test without all six fields is treated as a sprint-blocking issue. `/s
 
 ## Current Entries (as of 2026-05-09, Sprint 66 Phase 5 Wave 1, post-S64 baseline carries forward)
 
+### Sprint 77 Phase 3 triage — all 38 failing tests (/qa, 2026-06-09, SHA `49fe4de`)
+
+Full `cargo nextest run --no-fail-fast` captured at `/tmp/s77_fulltest.log`:
+**38 failed / 1094 passed / 8 skipped.** Every failure read against test
+source + spec; classified CODE DEFECT / FIXTURE DEFECT / GATED; collapsed
+to true roots. The R1–R10 provisional map in `sprints/SPRINT.md` is
+**revised** by this triage (key corrections noted below).
+
+**Root summary — 10 true roots:**
+
+| Root | Shape | Class | Owner | # | Repro |
+|---|---|---|---|---|---|
+| **RT1** | Bare `:Int`/`:Bool`/`:MyType` type annotation used without importing the type → `unknown type 'Int' (from module '')`. **Spec §3.1 (normative) REQUIRES import or FQ name** for bare type refs. Compiler is spec-correct. | **FIXTURE** | /qa (+ /examples for example files) | 5 | repros ARE the failing tests; fix = add type imports / use `:primitives/Int` |
+| **RT2** | Outdated trait-method signature syntax in examples: `(+ [self self] self)` → duplicate param `self`; `(fmap [(Fn [a] b) (f a)] ...)` → `expected symbol`. **Spec §7.1.1 / §7.2.1** require distinct bare names or `:Type name` pairs. Compiler is spec-correct. | **FIXTURE** | /examples | (folded in `examples` row) | example source edit |
+| **RT3** | `--run` entry file with `(mod X)` before `(defn main)` → `entry module has no 'main'` (FIXME 0121). The inline-mod rewrite to `main/user.cl` loses the entry `main`. | **CODE** | /int | 10 | small repros exist (these tests); FIXME 0121 |
+| **RT4** | stdlib search-path / cross-module resolution in `--run`: `module 'helper' ... not found` / `submodule 'helper.helper' not found`. | **CODE** | /int | 2 | exists |
+| **RT5** | Macro cross-mode availability: clause/helper unresolved across REPL≢`--run` and across cache restart (`undefined variable: twice` repl_cached; `unresolved symbol: sconcat` session-2; `clause 0 not in memory`). | **CODE** | /int | 3 | narrow repros exist |
+| **RT6** | Trait-method-as-value (§7.6): `(let [f show] (f 42))` → `undefined variable: show` (no dispatch wrapper when method escapes); `(let [f +] (f 1.0 2.0))` → wrong impl (`inf.0`, returns Int impl for Float/String). | **CODE** | /dev typecheck + backend | 4 | narrow repros exist |
+| **RT7** | trace ADT-render overflow: tracing a fn returning a user ADT crashes DisplayDescriptor walk (FIXME 0284). | **CODE** | /dev backend | 3 | exists |
+| **RT8** | trace accessor: (a) REPL forward-ref `undefined variable: id` (def-order; /int); (b) `--link`+`--run` RC double-consume of Trace tree (FIXME 0292/0285/0276; /dev intrinsics); (c) nested-lexical trace guard misses (FIXME 0283; /dev intrinsics). | **CODE** | /dev intrinsics (+ /int for 8a) | 3 | exists |
+| **RT9** | exemplar per-frame stack overflow at runtime (FIXME 0296). NOT TCO (P2-verified). Per-frame cost: nested-ADT depth / RC drop-glue / Grid copy frame size. | **CODE** | /dev backend/runtime | 5 | reduced repros exist (d6_*) |
+| **RT10** | REPL introspection display gap: `bare_primitive_add_i64` missing `; primitive - <docstring>`. | **CODE** | /int | 1 | exists |
+| **RT11** | REPL unclosed-paren: single `(` line + EOF → continuation prompt, not parse error (FIXME 0142). | **CODE (or fixture)** | /int | 1 | exists; see ambiguity note |
+| **GATED-A** | platform-interface error shape: needs `with_synthetic_dll` fixture infra + `PlatformError::AbiVersionMismatch`/`DispatchError` carriers (FIXME 0104; SPRINT R9 0287/0289). | **GATED** | /arch + /dev platform (W0) | 2 | exists |
+| **GATED-B** | SharedState pub-field count 17 > facade ≤13; gated on PIF field moves (FIXME 0176/0179; SPRINT R10). | **GATED** | /arch + /dev int (W0) | 1 | exists |
+
+> **Triage corrections to the SPRINT.md R1–R10 map** (validate-test-against-spec
+> discipline, `feedback_validate_tests_against_spec`):
+> 1. **R1 is NOT a typecheck code defect — it is a FIXTURE defect.** Spec
+>    §3.1 line 20 is normative: bare `:Int` MUST be imported or fully-qualified;
+>    otherwise `unknown type` is the *correct* error. The fix is in the test
+>    fixtures / example prelude (add type exports / FQ names), not in
+>    typecheck. `annotated_params_int` PASSES because its fixture uses
+>    `(export [primitives [*]])` (glob brings in the `Int` type); the failing
+>    cases import only *functions*. This collapses ~5 "R1" failures from CODE
+>    to FIXTURE and removes the biggest provisional /dev-typecheck cluster.
+> 2. **R2 splits**: 10 are the genuine `(mod X)`-before-`main` /int defect
+>    (RT3, FIXME 0121); 2 are the cross-module/stdlib-search resolution defect
+>    (RT4). Both /int code defects, not fixtures — the project layouts are
+>    spec-valid; the inline FIXMEs (pre-S77) already attribute to 0121.
+> 3. **The examples failure (1 test fn, 10 example files) is THREE roots**:
+>    RT1 (6 files, type-import), RT2 (4 files: 3×self + 1×HKT-syntax). All
+>    FIXTURE (example-source), zero compiler defects — the compiler rejects
+>    each per a normative spec clause.
+> 4. **R7 splits**: `data_constructor_product_no_dot_notation_display` and
+>    `impl_form_display_result` are RT1 (type-import), NOT display-format
+>    defects — they never reach display because typecheck rejects the
+>    unimported `:Int` first. Only `bare_primitive_add_i64` (RT10) is a
+>    genuine display-format gap.
+
+**Code-vs-fixture AMBIGUITY needing a second opinion (flag for /sprint → /spec or /int):**
+- **RT11 `parse_error_unclosed_paren_neg`** — the test pipes one unclosed `(`
+  then EOF and expects a parse error; the REPL instead opens a continuation
+  prompt (spec-intended multi-line entry) and emits nothing on EOF. Whether
+  EOF-mid-form MUST surface a parse error (code defect, FIXME 0142) or the
+  test should send a completing token / assert the continuation behaviour
+  (fixture) is a /repl-spec call. Recommend /spec or /repl arbitration before
+  /dev work.
+
+**Per-test ledger rows (38):**
+
+| binary::test | root | class | owner | target |
+|---|---|---|---|---|
+| examples::every_example_runs_with_documented_exit | RT1+RT2 | FIXTURE | /examples (+/qa) | S77 W (fixtures) |
+| repl_introspection::data_constructor_product_no_dot_notation_display | RT1 | FIXTURE | /qa | S77 |
+| repl_introspection::impl_form_display_result_is_exactly_impl_trait_for_type | RT1 | FIXTURE | /qa | S77 |
+| spec_08_modules::imported_fn_as_higher_order_arg_in_repl_mode | RT1 | FIXTURE | /qa | S77 |
+| repl_introspection::bare_primitive_add_i64_at_prompt_displays_type_and_fqn | RT10 | CODE | /int | S77 W8 |
+| spec_08_modules::multi_dot_module_path_in_import | RT3 | CODE | /int | S77 W6 |
+| spec_08_modules::nested_dependency_chain_compiles | RT3 | CODE | /int | S77 W6 |
+| spec_08_modules::export_glob_reexport | RT3 | CODE | /int | S77 W6 |
+| spec_08_modules::prelude_like_reexport_compiles | RT3 | CODE | /int | S77 W6 |
+| spec_08_modules::project_root_shadows_stdlib | RT3 | CODE | /int | S77 W6 |
+| spec_08_modules::export_multiple_modules | RT3 | CODE | /int | S77 W6 |
+| spec_08_modules::export_specific_reexport | RT3 | CODE | /int | S77 W6 |
+| spec_08_modules::export_transitive_reexport_chain | RT3 | CODE | /int | S77 W6 |
+| spec_08_modules::import_dependency_compiles_correctly | RT3 | CODE | /int | S77 W6 |
+| cache::cache_multi_module_transitive_imports | RT3 | CODE | /int | S77 W6 |
+| spec_08_modules::stdlib_module_compiles_and_runs | RT4 | CODE | /int | S77 W6 |
+| process_form_dispatch::process_form_dispatch_macro_after_import_succeeds_in_one_eval | RT4+RT5 | CODE | /int | S77 W7 |
+| build_confidence::mode_equiv_macro_user_defined | RT5 | CODE | /int | S77 W7 |
+| repl_persist::persist_bug_macro_usage_in_defn_survives_session_restart | RT5 | CODE | /int | S77 W7 |
+| trait_imports::trait_method_short_name_resolves_as_value_for_display_show_int | RT6 | CODE | /dev typecheck+backend | S77 W7 |
+| trait_imports::trait_method_short_name_resolves_as_value_for_eq_string | RT6 | CODE | /dev typecheck+backend | S77 W7 |
+| stdlib_trait_impls::stdlib_eq_string_mappable_path | RT6 | CODE | /dev typecheck+backend | S77 W7 |
+| stdlib_trait_impls::stdlib_num_float_mappable_path | RT6 | CODE | /dev typecheck+backend | S77 W7 |
+| trace::trace_adt_value_render_overflows_defect | RT7 | CODE | /dev backend | S77 W1 |
+| trace::trace_polymorphic_adt_result_renders | RT7 | CODE | /dev backend | S77 W1 |
+| trace::trace_trait_heavy_prelude_overflows_defect | RT7 | CODE | /dev backend | S77 W1 |
+| trace::trace_nanos_accessor_resolves_in_repl | RT8a | CODE | /int | S77 W1 |
+| trace::trace_linked_accessor_consumption_parks_defect | RT8b | CODE | /dev intrinsics | S77 W1 |
+| trace::trace_nested_lexical_raises_runtime_error | RT8c | CODE | /dev intrinsics | S77 W1 |
+| regression::d6_exemplar_propagate_only_does_not_segv | RT9 | CODE | /dev backend/runtime | S77 W2 |
+| regression::d6_exemplar_propagate_single_pass_does_not_segv | RT9 | CODE | /dev backend/runtime | S77 W2 |
+| regression::d6_exemplar_solve_all_dots_does_not_segv | RT9 | CODE | /dev backend/runtime | S77 W2 |
+| regression::d6_exemplar_solve_minimal_puzzle_no_io_does_not_segv | RT9 | CODE | /dev backend/runtime | S77 W2 |
+| regression::wave6_exemplar_solver_full_run_does_not_stack_overflow | RT9 | CODE | /dev backend/runtime | S77 W2 |
+| repl_negative::parse_error_unclosed_paren_neg | RT11 | CODE? | /int (after /spec arb) | S77 W8 |
+| platform_errors::platform_abi_version_mismatch_emits_expected_vs_found | GATED-A | GATED | /arch+/dev platform | S77 W0 |
+| platform_errors::platform_dispatch_error_during_run_carries_fn_name | GATED-A | GATED | /arch+/dev platform | S77 W0 |
+| facade_pif_rows::shared_state_field_count_matches_facade_after_pif | GATED-B | GATED | /arch+/dev int | S77 W0 |
+
+**Counts by class:** 4 FIXTURE (incl. the examples umbrella covering RT1+RT2
+across 10 files) · 31 CODE · 3 GATED.
+**Stderr signatures** for each are in `/tmp/s77_fulltest.log` (FAIL blocks);
+representative signatures quoted per-root in the table above.
+
 > **Sprint 66 Phase 5 Wave 2 addendum (/qa, 2026-05-10) — `process_form_dispatch.rs` revision for Decision 44 (cluster-atomic typecheck)**: After /spec FIXME 0165 resolution (commit `cfca8ac` — REPL inputs are single-form clusters; cross-input forward refs are errors; mutual recursion goes through `(begin ...)`) and /arch FIXME 0166 resolution (commit `5d43041` — Decision 44, the two-pass `check_form_signatures` + `check_form_body` + orchestrator-owned staging shape), the Wave 1 gate test `process_form_dispatch_typecheck_gap_completes_in_one_eval` was spec-incorrect (asserted bare cross-input forward-ref recovery). Revised: (1) renamed to `process_form_dispatch_begin_cluster_resolves_mutual_forward_ref` and rewrapped the forward-ref defns in `(begin ...)` to assert the cluster-atomic shape per Decision 44; (2) added new negative test `process_form_dispatch_bare_forward_ref_errors_clearly` asserting bare cross-input forward refs surface a clear typed error and the failing form does NOT commit (staging drops); (3) reshaped `process_form_dispatch_function_gap_does_not_speculatively_jit` to use a `(begin ...)` cluster so the forward-reference path is exercisable per Decision 44. **Test count delta: +1 (one revised, one new).** **Suite delta on actual run**: 1933 → 1934 tests; **failure count unchanged at 38** (the renamed positive test continues to fail, as expected; the new negative test PASSES today as a positive regression guard — bare cross-input forward refs already error in the current pre-Decision-44 implementation, and the post-Decision-44 typed-Gap path must continue to error with the same observable shape). Final state: 1934 / 1896 passed / 38 failed / 6 skipped vs prior 1933 / 1895 / 38 / 6. The renamed positive test and the speculative-JIT negative will flip from failing to passing when /dev Wave 3a re-fires with the Decision 44 shape (typecheck two-pass split + int `process_cluster` + `View<'_, C, L>` newtype + atomic staging commit). Spec annotation in `spec/05-definitions.md §5.13.2` updated to name both test fns explicitly.
 
 > **Sprint 66 Phase 5 Wave 1 (/qa, 2026-05-09)**: 35 failing-not-ignored e2e tests authored sprint-wide per /qa Phase-5 obligation (METHOD §2.2) and `tests/plan/implementation-slice-s66.md §5`. Of those, ~22 are author-able against current API and fail at runtime today; the remainder (paths that strictly require post-Wave-3 API) are surfaced as failing-but-not-yet-actionable (their assertions can't pass until /dev lands the consumer-side API in Wave 3a/3b). New e2e files: `tests/process_form_dispatch.rs` (3 tests, FIXME 0098 critical-path triad), `tests/got_trace.rs` (4 tests incl. 1 negative, FIXME 0099), `tests/public_api_relocations.rs` (1 composite, FIXME 0100), `tests/platform_errors.rs` (4 tests, FIXME 0104), `tests/stdlib_trait_impls.rs` (19 tests incl. 1 negative, FIXME 0150 D43). Extensions: `tests/spec_10_io.rs` +2 (FIXME 0103) + new `tests/fixtures/io_trace_snapshot.txt`; `tests/repl_introspection.rs` +2 incl. 1 negative (FIXME 0108). Per-crate `cargo public-api` baselines committed for the 6 existing crates (`cranelisp-types`, `cranelisp-frontend`, `cranelisp-typecheck`, `cranelisp-backend`, `cranelisp-runtime`, `cranelisp-platform`); `cranelisp-primitives` + `cranelisp-intrinsics` baselines defer to Wave 2 (crates do not exist yet). Disposition for the new failing tests: **`under-investigation (sprint 66 wave 3 target)`**. The 21 S64-baseline failures carry forward unchanged — must not regress. Pre-classified reshape envelope per /qa slice §2.3: 13–23 net-new failures expected within the 47-test budget (95% gate calibration: 932 / 953 baseline + 26-test headroom). At Phase-5 Stage 1 today: ~16 of the new tests fail at runtime (the rest pass already as positive regression guards — e.g., 11/19 stdlib_trait_impls already work pre-D43 because backend's trait-knowledge map intercepts; their failure surface arrives during Phase-4 audit). Authored commit: see Sprint 66 Wave 1 commit (Phase-5 Stage-1 bedrock).
