@@ -134,8 +134,25 @@ thread_local! {
     /// body is actively executing on this thread (i.e. at least one wrapper
     /// has fired since role-acquire and `collect_trace` has not yet run).
     /// A `swap_got` that finds `current_owner == my_tid && TRACE_BODY_RUNNING`
-    /// is a re-entrant `(trace (trace ...))` and raises a runtime error.
+    /// is a re-entrant `(trace (trace ...))` reached DYNAMICALLY (through a
+    /// wrapped call) and raises a runtime error.
     static TRACE_BODY_RUNNING: Cell<bool> = const { Cell::new(false) };
+
+    /// GOT bases currently swapped by the active trace form on this thread
+    /// (`tracing.md` §6 — the LEXICAL nested-trace distinguisher, FIXME 0283).
+    ///
+    /// `cranelisp_trace_swap_got` emits one swap per GOT group (one distinct
+    /// `got_base` per module) for a SINGLE `(trace ...)` form, so within one
+    /// form every `got_base` is unique. A re-entrant `(trace (trace ...))`
+    /// re-swaps a `got_base` the enclosing form ALREADY swapped — including the
+    /// pure-LEXICAL case where the inner form's first swap runs before any
+    /// wrapper has fired (so `TRACE_BODY_RUNNING` is still false). Seeing a
+    /// `got_base` already in this set (while `current_owner == my_tid`) is
+    /// therefore an unambiguous nested-trace signal that the boundary flag
+    /// misses. Cleared by `cranelisp_collect_trace` and the panic-unwind
+    /// cleanup. `restore_got` removes the base it restores.
+    static SWAPPED_GOT_BASES: std::cell::RefCell<Vec<i64>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 fn current_thread_id() -> u64 {
@@ -306,6 +323,9 @@ pub extern "C" fn cranelisp_trace_swap_got(
             start: Instant::now(),
             children: vec![],
         });
+        // Record this form's first swapped GOT base (the LEXICAL nested-trace
+        // distinguisher, FIXME 0283).
+        SWAPPED_GOT_BASES.with(|s| s.borrow_mut().push(got_base));
     } else if current_owner != my_tid {
         // A different thread owns the trace role -> skip (concurrent trace).
         lock_trace_stack().push(TraceFrame {
@@ -318,19 +338,36 @@ pub extern "C" fn cranelisp_trace_swap_got(
         return SENTINEL_SAVED_GOT;
     } else {
         // current_owner == my_tid. Distinguish:
-        //   - legitimate multi-module swap (body not yet running)  => proceed
-        //   - re-entrant (trace (trace ...)) (body running)        => ERROR
-        // The boundary flag is raised by the first `cranelisp_trace_enter`
-        // after role-acquire (the first wrapper to fire). All swap_got calls
-        // for one trace form precede any wrapper, so a legitimate multi-module
-        // swap sees the flag still false; an inner form's swap_got runs while
-        // an outer wrapper is on the stack, so it sees the flag true.
-        if TRACE_BODY_RUNNING.with(Cell::get) {
+        //   - legitimate multi-module swap (a second GOT group of the SAME
+        //     trace form) => proceed
+        //   - re-entrant (trace (trace ...))                       => ERROR
+        //
+        // TWO signals catch the two re-entrancy shapes (`tracing.md` §6,
+        // FIXME 0283):
+        //
+        //   (1) DYNAMIC nesting — `(trace (g))` where g's body reaches an
+        //       inner `(trace ...)` after an instrumented call has fired. By
+        //       then `TRACE_BODY_RUNNING` is true (the first wrapper raised it).
+        //
+        //   (2) LEXICAL nesting — `(trace (trace e))`. The inner form's first
+        //       swap runs BEFORE any wrapper fires, so `TRACE_BODY_RUNNING` is
+        //       still false and signal (1) misses it. But the inner form
+        //       re-swaps a `got_base` the enclosing form ALREADY swapped (each
+        //       form swaps each module's GOT base exactly once), so the
+        //       already-swapped-base check catches it.
+        //
+        // A legitimate multi-module swap of the SAME form contributes a NEW
+        // `got_base` each call (one per module), so it trips neither signal.
+        let already_swapped =
+            SWAPPED_GOT_BASES.with(|s| s.borrow().contains(&got_base));
+        if TRACE_BODY_RUNNING.with(Cell::get) || already_swapped {
             let msg = "nested trace is not supported: (trace ...) may not appear \
                        inside an actively-tracing (trace ...)";
             crate::panic::runtime_panic(msg.as_ptr(), msg.len());
             return SENTINEL_SAVED_GOT;
         }
+        // Legitimate multi-module swap: record this group's base too.
+        SWAPPED_GOT_BASES.with(|s| s.borrow_mut().push(got_base));
     }
 
     let layout = got_layout();
@@ -399,6 +436,14 @@ pub extern "C" fn cranelisp_trace_restore_got(got_base: i64, saved_got: i64) {
         ptr::copy_nonoverlapping(saved_got as *const u8, got_base as *mut u8, GOT_BYTES);
         alloc_mod::dealloc(saved_got as *mut u8, layout);
     }
+    // Drop this base from the swapped-set (FIXME 0283). Remove only the first
+    // matching occurrence so the set tracks live swaps precisely.
+    SWAPPED_GOT_BASES.with(|s| {
+        let mut v = s.borrow_mut();
+        if let Some(i) = v.iter().position(|&b| b == got_base) {
+            v.swap_remove(i);
+        }
+    });
 }
 
 /// Called by wrapper functions at the entry of each traced call.
@@ -543,6 +588,10 @@ pub extern "C" fn cranelisp_collect_trace() -> i64 {
         .compare_exchange(my_tid, 0, Ordering::SeqCst, Ordering::Relaxed)
         .ok();
     TRACE_BODY_RUNNING.with(|f| f.set(false));
+    // End of trace form: clear the swapped-base set (FIXME 0283). All
+    // restore_got calls have already removed their bases; this drains any
+    // residue defensively so the next trace form starts clean.
+    SWAPPED_GOT_BASES.with(|s| s.borrow_mut().clear());
 
     let mut stack = lock_trace_stack();
     if let Some(frame) = stack.pop() {
@@ -582,6 +631,9 @@ pub(crate) fn clear_trace_guard_on_panic() {
         .compare_exchange(my_tid, 0, Ordering::SeqCst, Ordering::Relaxed)
         .ok();
     TRACE_BODY_RUNNING.with(|f| f.set(false));
+    // Also drain the swapped-base set so a post-panic trace form starts clean
+    // (FIXME 0283 — parallel to the boundary-flag reset above).
+    SWAPPED_GOT_BASES.with(|s| s.borrow_mut().clear());
 }
 
 // ── Field accessor extern API ─────────────────────────────────────────────────
@@ -1585,6 +1637,101 @@ mod tests {
         // Cleanup.
         TRACE_THREAD_ID.store(0, Ordering::SeqCst);
         TRACE_BODY_RUNNING.with(|f| f.set(false));
+    }
+
+    // spec: spec/04-expressions.md §4.12.5 — LEXICAL nested trace
+    // `(trace (trace e))` must raise even though no wrapper has fired (so
+    // TRACE_BODY_RUNNING is still false). FIXME 0283. The inner form re-swaps a
+    // GOT base the outer form already swapped; the already-swapped-base check
+    // catches it where the boundary flag misses it.
+    #[test]
+    fn nested_guard_lexical_reentrant_raises() {
+        // Start clean on this thread.
+        TRACE_THREAD_ID.store(0, Ordering::SeqCst);
+        TRACE_BODY_RUNNING.with(|f| f.set(false));
+        SWAPPED_GOT_BASES.with(|s| s.borrow_mut().clear());
+        let _ = crate::panic::take_runtime_error();
+
+        let mut got = vec![0i64; GOT_TABLE_SIZE];
+        let base = got.as_mut_ptr() as i64;
+        let slots: Vec<u32> = vec![0];
+        let wrappers: Vec<i64> = vec![0xfeed];
+
+        // Outer form's swap: claims the role, records `base`.
+        let outer_saved = cranelisp_trace_swap_got(
+            base,
+            1,
+            slots.as_ptr() as i64,
+            wrappers.as_ptr() as i64,
+        );
+        assert_ne!(outer_saved, SENTINEL_SAVED_GOT, "outer swap must proceed");
+        // CRITICAL: no wrapper has fired, so the boundary flag is still false —
+        // this is exactly the lexical-nesting condition the old guard missed.
+        assert!(
+            !TRACE_BODY_RUNNING.with(Cell::get),
+            "precondition: lexical case has body_running == false"
+        );
+
+        // Inner form's swap of the SAME base while the role is held: re-entrant.
+        let inner_saved = cranelisp_trace_swap_got(
+            base,
+            1,
+            slots.as_ptr() as i64,
+            wrappers.as_ptr() as i64,
+        );
+        assert_eq!(
+            inner_saved, SENTINEL_SAVED_GOT,
+            "lexical re-entrant swap must NOT proceed"
+        );
+        let err = crate::panic::take_runtime_error();
+        assert!(
+            err.as_deref()
+                .is_some_and(|m| m.contains("nested trace is not supported")),
+            "lexical nested trace must raise the nested-trace error; got {err:?}"
+        );
+
+        // Cleanup: restore the outer swap + release role/flag/set.
+        cranelisp_trace_restore_got(base, outer_saved);
+        TRACE_THREAD_ID.store(0, Ordering::SeqCst);
+        TRACE_BODY_RUNNING.with(|f| f.set(false));
+        SWAPPED_GOT_BASES.with(|s| s.borrow_mut().clear());
+    }
+
+    // A legitimate two-MODULE swap of ONE form uses two DISTINCT got bases and
+    // must proceed for both (the multi-module case the lexical guard must not
+    // false-positive on). FIXME 0283.
+    #[test]
+    fn nested_guard_two_distinct_bases_allowed() {
+        TRACE_THREAD_ID.store(0, Ordering::SeqCst);
+        TRACE_BODY_RUNNING.with(|f| f.set(false));
+        SWAPPED_GOT_BASES.with(|s| s.borrow_mut().clear());
+        let _ = crate::panic::take_runtime_error();
+
+        let mut got_a = vec![0i64; GOT_TABLE_SIZE];
+        let mut got_b = vec![0i64; GOT_TABLE_SIZE];
+        let base_a = got_a.as_mut_ptr() as i64;
+        let base_b = got_b.as_mut_ptr() as i64;
+        let slots: Vec<u32> = vec![0];
+        let wrappers: Vec<i64> = vec![0xcafe];
+
+        let saved_a = cranelisp_trace_swap_got(
+            base_a, 1, slots.as_ptr() as i64, wrappers.as_ptr() as i64,
+        );
+        let saved_b = cranelisp_trace_swap_got(
+            base_b, 1, slots.as_ptr() as i64, wrappers.as_ptr() as i64,
+        );
+        assert_ne!(saved_a, SENTINEL_SAVED_GOT, "first module swap must proceed");
+        assert_ne!(saved_b, SENTINEL_SAVED_GOT, "second module swap must proceed");
+        assert!(
+            crate::panic::take_runtime_error().is_none(),
+            "distinct-base multi-module swap must NOT raise"
+        );
+
+        cranelisp_trace_restore_got(base_b, saved_b);
+        cranelisp_trace_restore_got(base_a, saved_a);
+        TRACE_THREAD_ID.store(0, Ordering::SeqCst);
+        TRACE_BODY_RUNNING.with(|f| f.set(false));
+        SWAPPED_GOT_BASES.with(|s| s.borrow_mut().clear());
     }
 
     #[test]

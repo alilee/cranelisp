@@ -113,6 +113,26 @@ pub(crate) fn subst_for_ctor_fields(
     let mut subst = Subst::new();
     for (i, &id) in var_ids.iter().enumerate() {
         if let Some(arg) = type_args.get(i) {
+            // Skip an identity self-mapping `{id -> Var(id)}`. It carries no
+            // information (substituting a var for itself is a no-op), but
+            // `cranelisp_types::apply` treats `{id -> Var(id)}` as an
+            // occurs-check violation and `debug_assert!`-panics on it (a panic
+            // that, when this baker runs on a `nice-worker` thread, aborts the
+            // process — observed as the trace ADT-render crash, FIXME 0284).
+            //
+            // This arises whenever a polymorphic type is instantiated at its
+            // own residual type vars — e.g. tracing `mk : (Fn [] (Option a))`
+            // where `a` is unconstrained: the call-site `type_args` for the
+            // result `(Option a)` is `[Var(a)]`, and the positional mapping is
+            // `{ctor_field_var -> Var(a)}` with the same id on both sides.
+            // Omitting the no-op keeps `apply` bounded and the field type
+            // resolves to the residual `TypeVar` descriptor (rendered bare),
+            // which is the correct fallback for an un-instantiated field.
+            if let Type::Var(arg_id) = arg
+                && *arg_id == id
+            {
+                continue;
+            }
             subst.insert(id, arg.clone());
         }
     }
@@ -721,5 +741,43 @@ mod tests {
 
         let roots = platform_effect_roots(tables.get(&plat).unwrap().value());
         assert_eq!(roots, vec![rect], "Rectangle is the only ADT root; Int excluded");
+    }
+
+    // ── subst_for_ctor_fields: identity self-map elision (FIXME 0284) ──────────
+
+    // A polymorphic type instantiated at its OWN residual type var produces a
+    // positional mapping `{field_var -> Var(field_var)}` — the same id on both
+    // sides. `cranelisp_types::apply` treats `{id -> Var(id)}` as an
+    // occurs-check violation and `debug_assert!`-panics on it. The baker must
+    // NOT emit that no-op mapping. This is the bake-side root of the trace
+    // ADT-render crash (e.g. tracing `mk : (Fn [] (Option a))`).
+    #[test]
+    fn subst_skips_identity_self_map() {
+        // Option-shaped: None has no fields, Some has one field of type `a`
+        // (Var(0)). Instantiated at `[Var(0)]` — its own var.
+        let field_type_lists = vec![vec![], vec![Type::Var(0)]];
+        let subst = subst_for_ctor_fields(&field_type_lists, &[Type::Var(0)]);
+        assert!(
+            !subst.contains_key(&0),
+            "identity self-map {{0 -> Var(0)}} must be elided, not inserted: {subst:?}"
+        );
+        // And applying the (empty) subst to the field type must not panic and
+        // must leave the residual var intact (rendered bare downstream).
+        let resolved = cranelisp_types::apply(&subst, &Type::Var(0));
+        assert_eq!(resolved, Type::Var(0));
+    }
+
+    // A non-identity instantiation is still recorded (the elision is narrow:
+    // only `{id -> Var(id)}` is skipped, concrete and cross-var maps stand).
+    #[test]
+    fn subst_keeps_concrete_and_cross_var_maps() {
+        let field_type_lists = vec![vec![Type::Var(0)], vec![Type::Var(1)]];
+        // Var(0) -> Int (concrete), Var(1) -> Var(2) (cross-var, not identity).
+        let subst = subst_for_ctor_fields(
+            &field_type_lists,
+            &[Type::Int, Type::Var(2)],
+        );
+        assert_eq!(subst.get(&0), Some(&Type::Int), "concrete map kept");
+        assert_eq!(subst.get(&1), Some(&Type::Var(2)), "cross-var map kept");
     }
 }

@@ -57,7 +57,7 @@ to true roots. The R1–R10 provisional map in `sprints/SPRINT.md` is
 | **RT5** | Macro cross-mode availability: clause/helper unresolved across REPL≢`--run` and across cache restart (`undefined variable: twice` repl_cached; `unresolved symbol: sconcat` session-2; `clause 0 not in memory`). | **CODE** | /int | 3 | narrow repros exist |
 | **RT6** | Trait-method-as-value (§7.6): `(let [f show] (f 42))` → `undefined variable: show` (no dispatch wrapper when method escapes); `(let [f +] (f 1.0 2.0))` → wrong impl (`inf.0`, returns Int impl for Float/String). | **CODE** | /dev typecheck + backend | 4 | narrow repros exist |
 | **RT7** | trace ADT-render overflow: tracing a fn returning a user ADT crashes DisplayDescriptor walk (FIXME 0284). | **CODE** | /dev backend | 3 | exists |
-| **RT8** | trace accessor: (a) REPL forward-ref `undefined variable: id` (def-order; /int); (b) `--link`+`--run` RC double-consume of Trace tree (FIXME 0292/0285/0276; /dev intrinsics); (c) nested-lexical trace guard misses (FIXME 0283; /dev intrinsics). | **CODE** | /dev intrinsics (+ /int for 8a) | 3 | exists |
+| **RT8** | trace accessor: (a) REPL forward-ref `undefined variable: id` — **TEST-DESIGN**: def order violated §5.13.2 REPL-incremental no-forward-ref (`work` before `id`); fixed by reordering. (b) `--link`+`--run` accessor consume — **TEST-DESIGN** (FIXME 0305): `main` returned `nanos`, used as exit code (`nanos mod 256`), conflated with crash; the consume path is SOUND (backend 0292 verified). Fixed by deterministic-return main. (c) nested-lexical trace guard (FIXME 0283; /dev intrinsics) fixed in W-Trace. | **TEST-DESIGN (a,b); CODE (c, fixed)** | /qa (a,b); /dev intrinsics (c) | 3 | **RESOLVED S77 W-Trace** — all 3 positive guards pass |
 | **RT9** | exemplar per-frame stack overflow at runtime (FIXME 0296). NOT TCO (P2-verified). Per-frame cost: nested-ADT depth / RC drop-glue / Grid copy frame size. | **CODE** | /dev backend/runtime | 5 | reduced repros exist (d6_*) |
 | **RT10** | REPL introspection display gap: `bare_primitive_add_i64` missing `; primitive - <docstring>`. | **CODE** | /int | 1 | exists |
 | **RT11** | REPL unclosed-paren: single `(` line + EOF → continuation prompt, not parse error (FIXME 0142). | **CODE (or fixture)** | /int | 1 | exists; see ambiguity note |
@@ -127,9 +127,9 @@ to true roots. The R1–R10 provisional map in `sprints/SPRINT.md` is
 | trace::trace_adt_value_render_overflows_defect | RT7 | CODE | /dev backend | S77 W1 |
 | trace::trace_polymorphic_adt_result_renders | RT7 | CODE | /dev backend | S77 W1 |
 | trace::trace_trait_heavy_prelude_overflows_defect | RT7 | CODE | /dev backend | S77 W1 |
-| trace::trace_nanos_accessor_resolves_in_repl | RT8a | CODE | /int | S77 W1 |
-| trace::trace_linked_accessor_consumption_parks_defect | RT8b | CODE | /dev intrinsics | S77 W-Trace — `--link` face of the RC double-consume (FIXME 0292) |
-| trace::trace_run_mode_accessor_consume_crashes_defect | RT8b | CODE | /dev intrinsics | **NEW (S77 QA-first, 2026-06-09)** — `--run` face; proves Defect-B is MODE-INDEPENDENT (4 iters, crashes non-deterministically). FIXME 0292. |
+| trace::trace_nanos_accessor_resolves_in_repl | RT8a | TEST-DESIGN | /qa | **GREEN S77 W-Trace** — def order fixed (`id` before `work`) per §5.13.2 REPL no-forward-ref; positive guard for accessor resolution. |
+| trace::trace_linked_accessor_consume_runs_clean | RT8b | TEST-DESIGN | /qa | **GREEN S77 W-Trace** — renamed from `..._parks_defect`; deterministic-return main (FIXME 0305); asserts linked binary builds + exits 0. Park guard retained. |
+| trace::trace_run_mode_accessor_consume_runs_clean | RT8b | TEST-DESIGN | /qa | **GREEN S77 W-Trace** — renamed from `..._crashes_defect`; deterministic-return main (FIXME 0305); 4 iters all exit 0. Consume path SOUND. |
 | trace::trace_nested_lexical_raises_runtime_error | RT8c | CODE | /dev intrinsics | S77 W-Trace |
 | regression::d6_exemplar_propagate_only_does_not_segv | RT9 | CODE | /dev backend/runtime | S77 W2 |
 | regression::d6_exemplar_propagate_single_pass_does_not_segv | RT9 | CODE | /dev backend/runtime | S77 W2 |
@@ -195,6 +195,21 @@ representative signatures quoted per-root in the table above.
 > 118/59, never 0); the match-based consume path of the same program exits 0
 > 5/5. The new test runs 4 `--run` iterations and asserts all exit 0 (FAILS
 > today). FIXME 0292/0285/0276 (re-pointed → /dev intrinsics, Phase-2).
+>
+> **W-Trace RESOLUTION (/qa, 2026-06-09) — Defect B was a TEST DEFECT, not code.**
+> The /dev (backend) W-Trace investigation (FIXME 0305) disproved the
+> mode-independent RC double-consume: there is no heap corruption. Both
+> accessor-consume tests returned `nanos` from `main`, and `--run`/`--link` use
+> `main`'s return value as the process exit code, so the exit was `nanos mod 256`
+> — a non-deterministic non-zero Int mistaken for a crash. Corrected (touch only
+> `tests/`): both renamed to positive guards
+> (`trace_run_mode_accessor_consume_runs_clean`,
+> `trace_linked_accessor_consume_runs_clean`) with a deterministic-`0`-return
+> `main` (consume path still exercised); both now PASS.
+> `trace_nanos_accessor_resolves_in_repl` was also a test-design defect (def
+> order `work` before `id` violated §5.13.2 REPL no-forward-ref) — reordered
+> (`id` first), now PASS. All 14 `trace.rs` tests green. FIXMEs
+> 0305/0292/0285/0276 resolved + deleted.
 >
 > **Net failing-test delta:** 38 → 39 (+1: the new Defect-B `--run` sibling);
 > 2 RT1 fixtures now PASS (impl_form, imported_fn_hof), so the green count of

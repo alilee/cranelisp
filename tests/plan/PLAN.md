@@ -1374,8 +1374,9 @@ rewritten to match-based extraction, the stale `trace_nested_still_returns_trace
 
 | # | Test | Spec | Status | Resolves at |
 |---|---|---|---|---|
-| A1 | `trace.rs::trace_nanos_accessor_resolves_in_repl` | §4.12.4 | `[S77]` FAILING | FIXME(/dev int) — bootstrap-synthesised accessor Defs (`nanos`/`name`) do NOT resolve even in JIT/REPL ("can't resolve symbol"); broader than --link |
-| A2 | `trace.rs::trace_linked_accessor_consumption_parks_defect` | §4.12.9 | `[S77]` FAILING | FIXME(/dev int) — `--link` accessor consumption PARKS (15s-bounded → Timeout); defect 1 (synthetic-Def emission) + defect 2 (worker-panic→park robustness). Trace-free isolation variant: NOT authored — trace accessors are the only reachable synthetic-AST Defs without a working cross-module path (the 0279 overflow blocks other candidates); noted, skipped |
+| A1 | `trace.rs::trace_nanos_accessor_resolves_in_repl` | §4.12.4 | `[Tested]` GREEN (S77 W-Trace) | TEST-DESIGN fix — def order corrected (`id` before `work`) per §5.13.2 REPL no-forward-ref; positive guard: bare `nanos` accessor resolves + returns Int. |
+| A2 | `trace.rs::trace_linked_accessor_consume_runs_clean` | §4.12.9 | `[Tested]` GREEN (S77 W-Trace) | TEST-DESIGN fix (renamed from `..._parks_defect`) — deterministic-return `main` (FIXME 0305); the park is gone, the consume path is sound; asserts linked binary builds + exits 0 (15s park guard retained). Backend 0292 + intrinsics consume verified. |
+| A3 | `trace.rs::trace_run_mode_accessor_consume_runs_clean` | §4.12.4 | `[Tested]` GREEN (S77 W-Trace) | TEST-DESIGN fix (renamed from `..._crashes_defect`) — `--run` sibling; deterministic-return `main` (FIXME 0305); 4 iters all exit 0. The "mode-independent RC double-consume" was the nanos-as-exit-code artifact, not a crash. |
 
 Mode note (FIXME 0280 RESOLVED / FIXME 0286): linked-binary tests now assert
 WITH extern-primitive children. The 0280 primitives-GOT static-backing fix landed

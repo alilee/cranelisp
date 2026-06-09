@@ -382,22 +382,25 @@ fn trace_trait_heavy_prelude_overflows_defect() {
 
 // spec: spec/04-expressions.md §4.12.4 — the TraceCall field accessors
 // (name, params, result, children, nanos) are generated per §5.2.6 and
-// resolve in ALL JIT modes. `(nanos (trace (work 41)))` should return an Int.
+// resolve in ALL JIT modes. `(nanos (trace (work 41)))` returns an Int.
 //
-// CURRENT BEHAVIOUR (FAILING): the bootstrap-synthesised accessor Defs do NOT
-// resolve even in the REPL/JIT path — "can't resolve symbol nanos". The
-// match-based extraction (TraceCall pattern) works; only the generated accessor
-// FUNCTIONS are missing. This is the JIT-mode face of FIXME 0276 defect 1
-// (which also manifests as a `--link` park, below).
+// POSITIVE regression guard (FIXME 0292 backend half DONE + verified): the
+// bare accessor name `nanos` resolves to the `cranelisp_trace_nanos` intrinsic
+// at the call site and consumes the Trace tree, yielding the wall-clock Int.
 //
-// FIXME(/dev int) — bootstrap-synthesised accessor Defs (src/bootstrap.rs,
-// ast: Some) are not emitted into the JIT codegen batch. See FIXME 0276.
+// Def order: `id` is defined BEFORE `work` (which calls it). Each REPL input is
+// a single top-level form (spec/05-definitions.md §5.13.2), and forward
+// references across separate REPL inputs are NOT supported — a name must be
+// defined before the input that references it. The earlier failing form of this
+// test defined `work` before `id`, which is the §5.13.2 forward-reference error
+// (`undefined variable: id`), NOT an accessor-resolution failure. Reordering is
+// the correct fix (spec-mandated REPL incremental no-forward-reference).
 #[test]
 fn trace_nanos_accessor_resolves_in_repl() {
     let out = repl_prims(
         "(import [primitives [trace Trace TraceCall nanos]])\n\
-         (defn work [x] (id x))\n\
          (defn id [x] x)\n\
+         (defn work [x] (id x))\n\
          (nanos (trace (work 41)))\n",
     );
     assert!(
@@ -408,25 +411,31 @@ fn trace_nanos_accessor_resolves_in_repl() {
     );
 }
 
-// spec: spec/04-expressions.md §4.12.9 — (same anchor) FIXME 0276 defect 1+2:
-// `--link` of a program consuming a trace via the `nanos` accessor fails with
-// "can't resolve symbol nanos", and the COMPILE then PARKS forever (worker
-// panic → main thread waits, no exit, no binary). The hang IS the defect.
+// spec: spec/04-expressions.md §4.12.9 — (same anchor) POSITIVE regression
+// guard: a `--link`'d program consuming a trace via the `nanos` accessor builds
+// and runs cleanly. The original `..._parks_defect` form asserted the COMPILE
+// parked forever (worker panic → main thread waits); that park is fixed (the
+// accessor resolves at link, the worker-panic→park robustness fix surfaces a
+// clean error instead of hanging) and the consume path is sound.
 //
-// The test bounds the wall-clock to 15s so the park surfaces as
-// `CrError::Timeout` rather than blocking the suite. A passing fix completes
-// the link and the produced binary exits 0 with a plausible (non-deterministic
-// nanos) value; today the build never completes.
+// Why deterministic-return main: `--link`/`--run` use `main`'s return value as
+// the process EXIT CODE. `nanos` is a wall-clock nanosecond Int, so returning it
+// directly makes the exit code `nanos mod 256` — non-deterministic non-zero,
+// which is NOT a crash but conflates "consume crashed" with "valid nanos used as
+// exit code" (FIXME 0305). Returning a deterministic `0` keeps the accessor
+// consume path exercised (the trace is still collected + consumed by `nanos`)
+// while making `status.success()` a clean signal: a real double-consume would
+// still crash this shape.
 //
-// Lands FAILING (the park → Timeout). FIXME(/dev int) link-batch synthetic-Def
-// derivation (defect 1) + FIXME(/dev int) worker-panic→park robustness
-// (defect 2). See FIXME 0276.
+// The 15s timeout guard is retained as cheap park-regression insurance; we now
+// expect Ok + success.
 #[test]
-fn trace_linked_accessor_consumption_parks_defect() {
+fn trace_linked_accessor_consume_runs_clean() {
     let src = "(import [primitives [trace Trace TraceCall nanos]])\n\
-         (defn work [x] (id x))\n\
          (defn id [x] x)\n\
-         (defn main [] (nanos (trace (work 41))))\n";
+         (defn work [x] (id x))\n\
+         (defn use-it [n] 0)\n\
+         (defn main [] (use-it (nanos (trace (work 41)))))\n";
     let result = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .file("prog.cl", src)
@@ -436,16 +445,17 @@ fn trace_linked_accessor_consumption_parks_defect() {
     match result {
         Err(helpers::e2e::CrError::Timeout(_)) => {
             panic!(
-                "FIXME 0276: --link accessor consumption PARKED (compile never \
-                 completed within 15s). The hang is the defect — resolver \
-                 /dev int link-batch synthetic-Def derivation + worker-panic→park."
+                "--link accessor consumption PARKED (compile never completed \
+                 within 15s). A park regression would resurface here."
             );
         }
         Ok(out) => {
-            // If/when fixed: the build completes and the produced binary runs.
+            // The build completes and the produced binary runs cleanly: the
+            // accessor resolved at link, consumed the Trace tree, and `main`
+            // returned the deterministic 0.
             assert!(
                 out.status.success(),
-                "expected the linked accessor binary to run; \
+                "expected the linked accessor binary to exit 0; \
                  stdout=\n{}\nstderr=\n{}",
                 out.stdout,
                 out.stderr
@@ -455,38 +465,29 @@ fn trace_linked_accessor_consumption_parks_defect() {
     }
 }
 
-// spec: spec/04-expressions.md §4.12.4 — (same anchor) the accessor-consume
-// crash is MODE-INDEPENDENT. The Phase-2 /arch review proved the RC
-// double-consume / use-after-free of the Trace tree is NOT a `--link`-specific
-// relocation defect (the sibling `..._parks_defect` above masked that by only
-// exercising `--link`): `(nanos (trace (work 41)))` also crashes in `--run`
-// (and REPL). The accessor is routed through `compile_consuming_arg_list`
-// (apply.rs — caller consumes) AND each accessor body calls `consume_trace_call`
-// (cranelisp-intrinsics/src/trace.rs — body consumes), double-freeing the Trace
-// tree. First-hand repro (2026-06-09): 12/12 `--run` invocations crashed with
-// non-deterministic garbage exit codes (80, 17, 154, 106, 124, 23, 196, 232,
-// 159, 255, 118, 59 — never 0); the match-based consume path of the same program
-// exits 0 cleanly 5/5.
+// spec: spec/04-expressions.md §4.12.4 — (same anchor) POSITIVE regression
+// guard: the trace field-accessor consume path is SOUND in `--run` mode. The
+// Phase-2 /arch "mode-independent RC double-consume" framing was disproved by
+// the W-Trace backend investigation (FIXME 0292 + 0305): there is no heap
+// corruption and no RC double-consume. The earlier failing form returned
+// `nanos` from `main`, but `--run`/`--link` use `main`'s return value as the
+// process EXIT CODE; `nanos` is a wall-clock nanosecond Int, so the exit code
+// was `nanos mod 256` — a non-deterministic non-zero value mistaken for a crash.
 //
-// CURRENT BEHAVIOUR (FAILING): `--run` of the accessor-consume program does NOT
-// exit 0 — it crashes (signal or garbage non-zero exit) before printing a valid
-// nanos Int. A correct fix produces exit 0 with a plausible (non-deterministic
-// nanos) value.
-//
-// FIXME(/dev intrinsics) — reconcile the caller-consumes vs body-consumes
-// contract on the trace field accessors (mirror the correct match-based consume
-// path). See FIXME 0292/0285/0276 (re-pointed → /dev intrinsics, Phase-2).
+// This guard returns a deterministic `0` from `main` (via `use-it`), so the
+// accessor still collects + consumes the Trace tree but the exit code is fixed.
+// A real double-consume / use-after-free would still crash this shape; a sound
+// consume path exits 0 every iteration.
 #[test]
-fn trace_run_mode_accessor_consume_crashes_defect() {
+fn trace_run_mode_accessor_consume_runs_clean() {
     let src = "(import [primitives [trace Trace TraceCall nanos]])\n\
-         (defn work [x] (id x))\n\
          (defn id [x] x)\n\
-         (defn main [] (nanos (trace (work 41))))\n";
-    // The crash is non-deterministic (RC double-free of the Trace tree races the
-    // heap allocator). A single clean run is possible by luck; run a few times so
-    // the regression guard reliably observes the misbehaviour (first-hand it
-    // crashed 10/10 and 12/12 over two batches). The fix must make ALL
-    // iterations exit 0; kept at 4 to bound per-test wall-clock.
+         (defn work [x] (id x))\n\
+         (defn use-it [n] 0)\n\
+         (defn main [] (use-it (nanos (trace (work 41)))))\n";
+    // Run a few times so a non-deterministic regression (a re-introduced
+    // double-free racing the allocator) reliably surfaces; kept at 4 to bound
+    // per-test wall-clock. A sound consume path exits 0 on every iteration.
     let mut clean = 0usize;
     let mut crashed = 0usize;
     let mut sample_exit: Option<i32> = None;
@@ -508,16 +509,13 @@ fn trace_run_mode_accessor_consume_crashes_defect() {
             }
         }
     }
-    // FAILING today: at least one `--run` iteration crashes. When /dev fixes the
-    // double-consume, every iteration exits 0 (clean == 10, crashed == 0) and
-    // this assertion passes.
     assert_eq!(
         crashed, 0,
-        "FIXME 0292 (mode-independent RC double-consume): `--run` of \
-         `(nanos (trace (work 41)))` crashed {crashed}/4 iterations \
-         (clean={clean}); sample exit={sample_exit:?}, stderr=\n{sample_stderr}\n\
-         This proves the defect is NOT `--link`-specific. Resolver: /dev \
-         intrinsics — reconcile caller-consumes vs body-consumes on the trace \
-         accessors."
+        "`--run` of the deterministic-return accessor-consume program crashed \
+         {crashed}/4 iterations (clean={clean}); sample exit={sample_exit:?}, \
+         stderr=\n{sample_stderr}\n\
+         A non-zero exit here is a real consume-path regression (double-free / \
+         use-after-free of the Trace tree), not the nanos-as-exit-code artifact \
+         (the deterministic 0 return rules that out)."
     );
 }

@@ -575,17 +575,38 @@ where
     /// Discard a body result by decrementing its RC if it is heap-allocated.
     /// Used by both `compile_trace` and `compile_trace_no_swap` to drop the
     /// body value (the trace result is the Trace ADT, not the body's value).
+    ///
+    /// The dec MUST be category-driven: a `Mixed` body type (a sum ADT that
+    /// can be a bare nullary tag OR a heap pointer — e.g. `(Option a)`) must
+    /// use the nullary-guarded dec, else a nullary body value (e.g. `None` = 0)
+    /// makes the unguarded `atomic_rmw Sub [0+8]` fault at address 0x8 (the
+    /// RC offset on a null base) — the trace ADT-render crash, FIXME 0284.
+    /// `AlwaysHeap` is always a real pointer so the plain dec is sound.
     fn emit_body_discard(&mut self, body_val: Value, body: &Expr) {
-        if let Some(ty) = body.inferred_type().cloned()
-            && self.is_heap_type(&ty)
-        {
-            crate::heap::emit_rc_dec(
-                &mut self.builder,
-                self.module,
-                body_val,
-                self.ctx.dealloc_func_id,
-                None,
-            );
+        let Some(ty) = body.inferred_type().cloned() else {
+            return;
+        };
+        match crate::heap::HeapCategory::classify(&ty, Some(self.ctx.symbol_tables)) {
+            crate::heap::HeapCategory::AlwaysHeap => {
+                crate::heap::emit_rc_dec(
+                    &mut self.builder,
+                    self.module,
+                    body_val,
+                    self.ctx.dealloc_func_id,
+                    None,
+                );
+            }
+            crate::heap::HeapCategory::Mixed => {
+                crate::heap::emit_rc_dec_guarded(
+                    &mut self.builder,
+                    self.module,
+                    body_val,
+                    self.ctx.dealloc_func_id,
+                    None,
+                    true,
+                );
+            }
+            crate::heap::HeapCategory::NeverHeap => {}
         }
     }
 
