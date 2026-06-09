@@ -208,10 +208,16 @@ pub extern "C" fn vec_set_copy(vec: i64, idx: i64, val: i64, elem_inc_fn: i64) -
             }
         }
 
-        // Also inc the new value at idx if we're replacing (caller provides val
-        // already at correct RC — no inc needed for the new val itself).
-        // Actually, the new value's RC is managed by the caller. We only inc
-        // the *copied* elements (not the new one being inserted).
+        // Inc the new value too: the returned Vec gains an owning reference to
+        // `val`, while the caller still holds its own reference (which the
+        // caller's scope cleanup will dec). Without this inc, a heap `val`
+        // consumed into the copied Vec is double-counted as one reference and
+        // freed prematurely when the caller dec's its copy — a use-after-free
+        // surfacing as garbage reads on a later access (Sprint 77 W-Exemplar /
+        // FIXME 0296). This mirrors the COW mutate-in-place codegen path, which
+        // inc's new_val before storing it (`compile_vec_set_cow`). NeverHeap
+        // elements pass `elem_inc_fn == 0`, so `call_elem_fn` is a no-op.
+        call_elem_fn(elem_inc_fn, val);
 
         write_len(new_base, len);
         write_cap(new_base, cap);
@@ -540,6 +546,43 @@ mod tests {
         // Delta-based (>=) because parallel tests share the same INC_CALL_COUNT.
         let after = INC_CALL_COUNT.load(std::sync::atomic::Ordering::Relaxed);
         assert!(after - before >= 2);
+
+        vec_drop(v, 0);
+        vec_drop(v2, 0);
+    }
+
+    // spec: 12-runtime §12.3.2 — vec-set copy also inc's the NEW value
+    //
+    // Regression for Sprint 77 W-Exemplar / FIXME 0296: the copied Vec gains an
+    // owning reference to the replacement value, so `vec-set-copy` MUST inc it.
+    // Without this inc, a heap value consumed into the copied Vec while the
+    // caller still owns its own reference (and dec's it at scope exit) is freed
+    // prematurely — a use-after-free that surfaced as the Sudoku-solver runtime
+    // stack overflow (garbage cell value → unbounded `pow2` recursion).
+    #[test]
+    fn test_vec_set_copy_incs_new_value() {
+        let before = INC_CALL_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+
+        let v = vec_new(3);
+        unsafe {
+            let data = read_data_ptr(v as *const u8);
+            *data = 10;
+            *data.add(1) = 20;
+            *data.add(2) = 30;
+            write_len(v as *mut u8, 3);
+        }
+
+        let inc_fn_ptr = test_inc_fn as extern "C" fn(i64) -> i64;
+        let v2 = vec_set_copy(v, 1, 99, inc_fn_ptr as usize as i64);
+
+        // inc_fn must fire for the two retained elements (indices 0, 2) AND for
+        // the new value (99) stored at index 1: three incs total.
+        let after = INC_CALL_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            after - before >= 3,
+            "expected >=3 incs (2 retained + 1 new value), got {}",
+            after - before
+        );
 
         vec_drop(v, 0);
         vec_drop(v2, 0);
