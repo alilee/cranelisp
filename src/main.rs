@@ -410,16 +410,31 @@ fn parse_args() -> (Action, PathBuf, String, SessionSettings) {
 /// Rules:
 /// 1. No target → (cwd, "user")
 /// 2. Target has `/` → (directory portion, final component)
-/// 3. Target is an existing directory → (target, "user")
+/// 3. Target is an existing directory *and not a `.cl` file* → (target, "user")
 /// 4. Bare name → (cwd, target)
 ///
 /// The `.cl` extension is stripped if present. Project root is resolved to
 /// an absolute path.
 fn resolve_target(target: Option<&str>) -> (PathBuf, String) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    resolve_target_from(target, &cwd)
+}
 
+/// Core of `resolve_target`, with the base directory passed explicitly so the
+/// rules are unit-testable independent of the process cwd.
+///
+/// Rule 3 (directory-as-project) fires only when the target names a directory
+/// AND there is no `<target>.cl` file beside it. Per spec §8.11.1 the project
+/// root is the directory *containing the entry file*; a `.cl` file passed as
+/// the target IS the entry, and a same-named directory is its submodule
+/// directory (§8.2.5 child-directory resolution), not a project-root override.
+/// Without this precedence, a project whose entry file declares `(mod child)`
+/// — which creates a sibling `<entry>/` directory — would be misread as a
+/// directory target and the compiler would hunt for a non-existent
+/// `<entry>/user.cl` (FIXME 0121).
+fn resolve_target_from(target: Option<&str>, cwd: &Path) -> (PathBuf, String) {
     let target = match target {
-        None => return (cwd, "user".to_string()),
+        None => return (cwd.to_path_buf(), "user".to_string()),
         Some(t) => t,
     };
 
@@ -436,15 +451,17 @@ fn resolve_target(target: Option<&str>) -> (PathBuf, String) {
             .and_then(|n| n.to_str())
             .unwrap_or("user")
             .to_string();
-        let project_root = make_absolute(dir, &cwd);
+        let project_root = make_absolute(dir, cwd);
         (project_root, module)
-    } else if cwd.join(target).is_dir() {
-        // Rule 3: existing directory.
-        let project_root = make_absolute(Path::new(target), &cwd);
+    } else if cwd.join(target).is_dir() && !cwd.join(format!("{target}.cl")).is_file() {
+        // Rule 3: existing directory with no same-named entry file.
+        let project_root = make_absolute(Path::new(target), cwd);
         (project_root, "user".to_string())
     } else {
-        // Rule 4: bare name.
-        (cwd, target.to_string())
+        // Rule 4: bare name (resolves to `{cwd}/{target}.cl`), which also
+        // covers the case where both `{target}.cl` and `{target}/` exist —
+        // the file is the entry, the directory holds its submodules.
+        (cwd.to_path_buf(), target.to_string())
     }
 }
 
@@ -474,4 +491,77 @@ fn read_file(path: &Path) -> Result<String, CranelispError> {
         message: format!("cannot read '{}': {}", path.display(), e),
         location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(path.to_path_buf())),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Spec §8.11.1: the project root is the directory *containing the entry
+    /// file*. When the target names a `<name>.cl` file in cwd, that file is the
+    /// entry (project root = cwd, module = name) — even if a `<name>/`
+    /// directory also exists holding the file's submodules. This is the FIXME
+    /// 0121 root: a `(mod child)` entry creates a sibling `<entry>/` directory,
+    /// and Rule 3 must NOT mistake it for a directory-as-project target.
+    #[test]
+    fn entry_cl_file_wins_over_same_named_submodule_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path();
+        std::fs::write(cwd.join("main.cl"), "(mod child)\n(defn main [] 0)").unwrap();
+        std::fs::create_dir(cwd.join("main")).unwrap();
+        std::fs::write(cwd.join("main/child.cl"), "(defn helper [] 1)").unwrap();
+
+        // Both `main.cl` (with extension) and bare `main` must resolve to the
+        // FILE as the entry, with project root = cwd.
+        for target in ["main.cl", "main"] {
+            let (root, module) = resolve_target_from(Some(target), cwd);
+            assert_eq!(root, cwd, "target {target:?}: project root must be cwd");
+            assert_eq!(module, "main", "target {target:?}: entry module must be 'main'");
+        }
+    }
+
+    /// Rule 3 still fires for a genuine directory target with no same-named
+    /// `.cl` file beside it: `cranelisp myproj` → (myproj, "user").
+    #[test]
+    fn directory_target_without_entry_file_resolves_to_user() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path();
+        std::fs::create_dir(cwd.join("myproj")).unwrap();
+        std::fs::write(cwd.join("myproj/user.cl"), "(defn main [] 0)").unwrap();
+
+        let (root, module) = resolve_target_from(Some("myproj"), cwd);
+        assert_eq!(root, cwd.join("myproj"));
+        assert_eq!(module, "user");
+    }
+
+    /// Rule 1: no target → (cwd, "user").
+    #[test]
+    fn no_target_resolves_to_cwd_user() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, module) = resolve_target_from(None, tmp.path());
+        assert_eq!(root, tmp.path());
+        assert_eq!(module, "user");
+    }
+
+    /// Rule 2: a target with a directory component splits into
+    /// (directory, final-component).
+    #[test]
+    fn target_with_directory_component_splits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path();
+        let (root, module) = resolve_target_from(Some("examples/hello.cl"), cwd);
+        assert_eq!(root, cwd.join("examples"));
+        assert_eq!(module, "hello");
+    }
+
+    /// Rule 4: a bare name that matches neither a directory nor a file still
+    /// resolves to (cwd, name) — the session reports the missing file later.
+    #[test]
+    fn bare_name_resolves_to_cwd_module() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path();
+        let (root, module) = resolve_target_from(Some("nope"), cwd);
+        assert_eq!(root, cwd);
+        assert_eq!(module, "nope");
+    }
 }

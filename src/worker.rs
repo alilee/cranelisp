@@ -525,12 +525,16 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
         // module is loaded with import's file-resolution rules (orchestrator-
         // owned). Once loaded, the resumed walk recognises the macro normally.
         if let Some((mod_part, _sym_part)) = name.split_once('/') {
-            // The module part is taken verbatim. Module-path aliases
-            // (`(import [(target alias)])`) only exist when the target is
-            // already being loaded, so an aliased FQ ref to an *unloaded*
-            // module does not arise here; the raw-name check is sufficient
-            // for the no-import FQ case this orchestration targets.
-            let dep = ModuleFullPath::from(mod_part);
+            // Resolve the module part through the session alias table FIRST
+            // (§8.6.6). A `(mod util)` declaration registers a short-name
+            // alias `util -> <parent>.util` (and `(import [(target alias)])`
+            // registers `<owner>.alias -> target`); the loaded module's
+            // identity is its full path (§8.1), so the verbatim `mod_part`
+            // need not be a stored module path. Substituting before the
+            // contains-key check means a bare submodule qualified ref
+            // (`util/helper`) loads/finds `<parent>.util` rather than hunting
+            // a non-existent module literally named `util` (FIXME 0121).
+            let dep = resolve_module_alias(self.module_aliases, mod_part);
             if !self.symbol_tables.contains_key(&dep) {
                 self.blocked_on_fq_module = Some(dep);
                 return Ok(None);
@@ -2502,6 +2506,74 @@ fn handle_export(
     Ok(BlockAction::Continue)
 }
 
+/// Register the bare-short-name → full-submodule-path module alias for a
+/// `(mod name)` declaration, so qualified references using the short name
+/// (spec §8.2.6 / §8.5.1, e.g. `util/helper`) resolve to the loaded submodule
+/// `<parent>.name`. Keyed by the bare short name so §8.6.6 longest-prefix
+/// substitution (`substitute_module_alias`) matches the `module_part` of a
+/// bare qualified reference. `Visibility::Private` — the alias serves the
+/// declaring module's own qualified lookups (peers reference a submodule by
+/// its full path or import it). Idempotent: re-declaration overwrites with the
+/// same target (DashMap insert).
+fn register_submodule_alias(
+    ctx: &ModuleCompiler,
+    name: &cranelisp_types::ModuleName,
+    sub_path: &ModuleFullPath,
+    span: Span,
+) {
+    ctx.module_aliases.insert(
+        ModuleFullPath::from(name.as_ref()),
+        cranelisp_types::ModuleAliasEntry::new(
+            sub_path.clone(),
+            Visibility::Private,
+            span,
+        ),
+    );
+}
+
+/// §8.6.6 step 5 longest-prefix module-alias substitution, int-side.
+///
+/// Mirrors `cranelisp_types::resolve::substitute_module_alias` (which is
+/// crate-private to `cranelisp-types`): find the longest alias-table key that
+/// is a dot-segment prefix of `module_part`, substitute its target, and carry
+/// any remaining dot-segments through. No match → the bare `module_part`.
+///
+/// Needed at the int FQ-autoload boundary, which computes the dependency
+/// module to load from a raw `mod/sym` reference *before* typecheck runs — so
+/// it must apply the same alias resolution typecheck would, or a bare
+/// submodule reference (`util/...` after `(mod util)`) would try to load a
+/// module literally named `util`.
+fn resolve_module_alias(
+    module_aliases: &cranelisp_types::ModuleAliases,
+    module_part: &str,
+) -> ModuleFullPath {
+    let mut best: Option<(usize, ModuleFullPath)> = None;
+    for entry in module_aliases.iter() {
+        let key: &str = entry.key().as_ref();
+        let is_prefix = module_part == key
+            || (module_part.len() > key.len()
+                && module_part.as_bytes()[key.len()] == b'.'
+                && module_part.starts_with(key));
+        if is_prefix {
+            let take = best.as_ref().map(|(len, _)| key.len() > *len).unwrap_or(true);
+            if take {
+                best = Some((key.len(), entry.value().target.clone()));
+            }
+        }
+    }
+    match best {
+        None => ModuleFullPath::from(module_part),
+        Some((matched_len, target)) => {
+            let remainder = &module_part[matched_len..];
+            if remainder.is_empty() {
+                target
+            } else {
+                ModuleFullPath::from(format!("{target}{remainder}"))
+            }
+        }
+    }
+}
+
 /// Handle mod forms: write inline body to disk, then load the submodule.
 ///
 /// `(mod util)` declares a submodule whose symbols are accessible via qualified
@@ -2519,6 +2591,17 @@ fn handle_mod(
 
     // Compute submodule path: "main" + "util" → "main.util"
     let sub_path = ModuleFullPath::from(format!("{}.{}", module, decl.name));
+
+    // Register a module-path alias so the short submodule name is usable as a
+    // qualified reference (spec §8.2.6 / §8.5.1 — `(mod util)` makes
+    // `util/helper` resolve to the loaded submodule `<parent>.util`). The
+    // loaded module's identity is its full path (§8.1); without this alias a
+    // bare `util/...` qualified ref hits `QualifiedModuleUnknown` because no
+    // module literally named `util` exists. Keyed by the bare short name so
+    // `substitute_module_alias` (§8.6.6 longest-prefix) matches the
+    // `module_part` of a bare qualified reference. Idempotent across re-entry
+    // (e.g. cache-hit / already-loaded paths below).
+    register_submodule_alias(ctx, &decl.name, &sub_path, decl.span);
 
     // Already loaded — resolution chain handles qualified references.
     if ctx.symbol_tables.contains_key(&sub_path) {
@@ -5583,6 +5666,75 @@ mod tests {
         assert_eq!(
             resolver.blocked_on_fq_module, None,
             "a bare head never triggers FQ-module auto-load"
+        );
+    }
+
+    /// FIXME 0121: a `(mod util)` declaration registers the short-name alias
+    /// `util -> <parent>.util` (via `register_submodule_alias`). The
+    /// int-side FQ-autoload boundary must substitute that alias when computing
+    /// the dependency module for a bare qualified ref `util/...`, mirroring
+    /// typecheck's §8.6.6 longest-prefix substitution — otherwise it tries to
+    /// load a module literally named `util`, which does not exist.
+    #[test]
+    fn resolve_module_alias_substitutes_short_submodule_name() {
+        let aliases = cranelisp_types::ModuleAliases::default();
+        aliases.insert(
+            ModuleFullPath::from("util"),
+            cranelisp_types::ModuleAliasEntry::new(
+                ModuleFullPath::from("main.util"),
+                Visibility::Private,
+                Span::SYNTHETIC,
+            ),
+        );
+
+        // Exact match → the alias target.
+        assert_eq!(
+            resolve_module_alias(&aliases, "util"),
+            ModuleFullPath::from("main.util"),
+        );
+        // A dot-segment remainder is carried through after substitution.
+        assert_eq!(
+            resolve_module_alias(&aliases, "util.inner"),
+            ModuleFullPath::from("main.util.inner"),
+        );
+        // No matching alias → the bare module part unchanged.
+        assert_eq!(
+            resolve_module_alias(&aliases, "other"),
+            ModuleFullPath::from("other"),
+        );
+        // A non-segment-boundary prefix MUST NOT match (`util` is not a
+        // dot-segment prefix of `utility`).
+        assert_eq!(
+            resolve_module_alias(&aliases, "utility"),
+            ModuleFullPath::from("utility"),
+        );
+    }
+
+    /// Longest-prefix wins when multiple alias keys are dot-segment prefixes
+    /// of the queried module part (§8.6.6 step 5).
+    #[test]
+    fn resolve_module_alias_prefers_longest_prefix() {
+        let aliases = cranelisp_types::ModuleAliases::default();
+        aliases.insert(
+            ModuleFullPath::from("a"),
+            cranelisp_types::ModuleAliasEntry::new(
+                ModuleFullPath::from("x"),
+                Visibility::Private,
+                Span::SYNTHETIC,
+            ),
+        );
+        aliases.insert(
+            ModuleFullPath::from("a.b"),
+            cranelisp_types::ModuleAliasEntry::new(
+                ModuleFullPath::from("y"),
+                Visibility::Private,
+                Span::SYNTHETIC,
+            ),
+        );
+        // `a.b.c` matches both `a` and `a.b`; the longer key wins.
+        assert_eq!(
+            resolve_module_alias(&aliases, "a.b.c"),
+            ModuleFullPath::from("y.c"),
         );
     }
 }
