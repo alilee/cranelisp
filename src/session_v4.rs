@@ -2863,15 +2863,36 @@ impl CompilerSession {
         if name.is_empty() {
             return "usage: /doc <name>".to_string();
         }
-        match self.current_symbol_table().get(name) {
-            Some(ModuleEntry::Def { docstring, .. })
-            | Some(ModuleEntry::SpecialForm { docstring, .. })
-            | Some(ModuleEntry::TraitDecl { docstring, .. }) => match docstring {
+        let Some(local) = self.current_symbol_table().get(name).cloned() else {
+            return format!("error: unknown symbol '{name}'");
+        };
+        // Follow import/re-export chains to the defining entry — a bare
+        // primitive (`add-i64`) is reached through the prelude re-export, so
+        // the local entry is an Import, not the Def.
+        let module = self.current_module_path();
+        let (entry, _resolved_module) = self.resolve_entry_for_display(&local, &module);
+        match &entry {
+            ModuleEntry::Def { docstring, kind, .. } => {
+                // Primitive Defs carry `docstring: None`; source the Appendix
+                // A.5 description (§A.5 MUST: `/doc` must surface it).
+                let doc = docstring.as_deref().or_else(|| {
+                    if matches!(kind.as_ref(), DefKind::Primitive { .. }) {
+                        crate::builtin_docs::builtin_docstring(name)
+                    } else {
+                        None
+                    }
+                });
+                match doc {
+                    Some(doc) => format!("{name}: \"{doc}\""),
+                    None => format!("{name}: no docstring"),
+                }
+            }
+            ModuleEntry::SpecialForm { docstring, .. }
+            | ModuleEntry::TraitDecl { docstring, .. } => match docstring {
                 Some(doc) => format!("{name}: \"{doc}\""),
                 None => format!("{name}: no docstring"),
             },
-            Some(_) => format!("{name}: no docstring"),
-            None => format!("error: unknown symbol '{name}'"),
+            _ => format!("{name}: no docstring"),
         }
     }
 
@@ -4171,13 +4192,21 @@ impl CompilerSession {
                     let type_str = format_type_qualified(&scheme.ty);
                     format!(":{type_str} {module}/{name}")
                 };
-                let classification = if matches!(kind.as_ref(), DefKind::Primitive { .. }) {
-                    "primitive"
-                } else {
-                    "defn"
-                };
+                let is_primitive = matches!(kind.as_ref(), DefKind::Primitive { .. });
+                let classification = if is_primitive { "primitive" } else { "defn" };
                 let base = format!("{base} ; {classification}");
-                append_docstring_comment(base, docstring.as_deref())
+                // Primitive entries carry `docstring: None` (the description
+                // lives in Appendix A.5, not on the `cranelisp-primitives` Def);
+                // source it here so the bare-primitive display satisfies the
+                // §A.5 MUST + the §1.1 `; primitive - <doc>` format (FIXME 0301).
+                let doc = docstring
+                    .as_deref()
+                    .or_else(|| if is_primitive {
+                        crate::builtin_docs::builtin_docstring(name)
+                    } else {
+                        None
+                    });
+                append_docstring_comment(base, doc)
             }
             ModuleEntry::SpecialForm { description, .. } => {
                 format_special_form_display(name, description)

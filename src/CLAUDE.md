@@ -63,6 +63,13 @@ All symbols registered in the JIT share a single flat namespace. Names must be u
 - **Serde derives on all cross-boundary types.** `#[derive(Serialize, Deserialize)]` on types in `cranelisp-types`.
 - **`#[serde(skip)]` for runtime-only fields.** Function pointers, JIT handles, `Duration` — skip with sensible defaults.
 
+## REPL display (S77 W-Repl)
+
+- **Builtin docstrings live in `src/builtin_docs.rs`, sourced from Appendix A.5.** `cranelisp-primitives` registers primitive `ModuleEntry::Def`s with `docstring: None` (its `PrimitiveDef` carries no Description text, and that crate is outside the int boundary). `builtin_docs::builtin_docstring(name)` maps the spec primitive name → its §A.3 Description column. It is the single source consulted by both the bare-primitive value display (`format_def_entry` primitive arm) and `/doc` (`handle_doc`), satisfying the §A.5 MUST + the §1.1 `; primitive - <doc>` format (FIXME 0301). When §A.3 gains/renames a primitive, add the row; an uncatalogued name returns `None` (→ bare `; primitive`, no doc).
+- **`/doc` follows the import chain.** `handle_doc` resolves the local entry through `resolve_entry_for_display` before reading the docstring — a bare re-exported primitive (`add-i64`) is an `Import` locally, not the `Def`.
+- **Single-ctor product value display reads the ctor scheme off the `TypeDef` entry.** For `(deftype Point [:Int x :Int y])` the ctor name == type name, so the `Point` symbol-table key holds the `ModuleEntry::TypeDef` (not a separate `Def`); the ctor's scheme rides on `TypeDef.constructor_scheme`. `display::ctor_field_types` checks BOTH the `Def` arm and the `TypeDef { constructor_scheme }` arm — the `Def`-only lookup returned no fields, so `(Point 3 4)` rendered as the bare ctor `Point` (FIXME 0302).
+- **EOF mid-form is a parse error, not a silent exit.** The REPL read loop in `main.rs` accumulates continuation lines until parens balance. At EOF with a pending unbalanced form, the leftover buffer is flushed through `eval` and the parser's `unclosed '('` diagnostic is written to stdout (§5.1) — a complete form submits, so an incomplete form at EOF MUST error (FIXME 0142; user ruling 2026-06-09; spec recording owed via FIXME 0307 /spec).
+
 ## Type System
 
 - **Ring 0 defines the full `Type` enum.** All variants (`Int`, `Bool`, `String`, `Float`, `Fn`, `ADT`, `Var`, `TyConApp`) exist from the start. Rings exercise them incrementally.

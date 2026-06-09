@@ -282,6 +282,34 @@ fn run(
                 s.write_prompt(&mut stdout, compile_ms, eval_ms);
             }
 
+            // EOF reached. If a form was still being accumulated (unbalanced
+            // parens awaiting a continuation line that never came), it is an
+            // incomplete submission — report the parser's diagnostic rather
+            // than silently discarding it. A complete form at the prompt is
+            // submitted/executed, so an incomplete form at EOF MUST error
+            // (repl/spec.md §5.1 + spec/05-definitions.md §5.13.2; user ruling
+            // 2026-06-09; FIXME 0142). Slash commands and whitespace/comment-
+            // only buffers are not incomplete forms.
+            let pending = buffer.trim();
+            if !pending.is_empty()
+                && !pending.starts_with('/')
+                && !s.parens_balanced(&buffer)
+            {
+                match s.eval(&buffer) {
+                    Err(e) => {
+                        let _ = writeln!(stdout, "Error: {e}");
+                    }
+                    // The parser should reject an unbalanced form; if it
+                    // somehow parses, surface any result for symmetry with the
+                    // in-loop path.
+                    Ok(Some(result)) => {
+                        let text = s.format_eval_result(&result);
+                        s.pretty_print(&text, &mut stdout);
+                    }
+                    Ok(None) => {}
+                }
+            }
+
             let _ = writeln!(stdout);
             s.wait_object_complete()?;
         }

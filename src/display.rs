@@ -428,10 +428,23 @@ fn find_constructor_by_tag(type_info: &TypeDefInfo, tag: usize) -> String {
         .unwrap_or_else(|| format!("<tag:{tag}>"))
 }
 
-/// Look up a constructor's field types by reading its `ModuleEntry::Def`'s
-/// scheme. A data constructor's scheme is `forall [vars]. (Fn [field-tys] ADT)`;
-/// the `Fn` param types ARE the field types in declaration order. A nullary
+/// Look up a constructor's field types by reading its scheme.
+///
+/// A data constructor's scheme is `forall [vars]. (Fn [field-tys] ADT)`; the
+/// `Fn` param types ARE the field types in declaration order. A nullary
 /// constructor has a non-`Fn` scheme (bare ADT) → no fields.
+///
+/// Two storage shapes (FIXME 0302):
+///   - **Multi-ctor / ctor-name ≠ type-name**: the constructor is a distinct
+///     `ModuleEntry::Def { kind: Constructor }` keyed by the ctor name.
+///   - **Single-ctor product where ctor name == type name** (e.g.
+///     `(deftype Point [:Int x :Int y])`): the `Point` symbol-table key is
+///     occupied by the `ModuleEntry::TypeDef`, which carries the constructor's
+///     scheme in its `constructor_scheme` field. There is no separate `Def`
+///     under that name, so the `Def` arm misses and we must read
+///     `constructor_scheme` — otherwise field types come back empty and the
+///     value displays as the bare ctor name (`:user/Point Point`) instead of
+///     `(Point 3 4)`.
 ///
 /// S70: replaces the retired `ConstructorInfo.fields` lookup.
 fn ctor_field_types<C, L>(
@@ -446,11 +459,17 @@ where
     let Some(table) = symbol_tables.get(&fqtn.module) else {
         return Vec::new();
     };
-    match table.get(ctor_name) {
-        Some(ModuleEntry::Def { scheme, .. }) => match &scheme.ty {
-            Type::Fn(params, _) => params.clone(),
-            _ => Vec::new(),
-        },
+    let scheme_ty = match table.get(ctor_name) {
+        Some(ModuleEntry::Def { scheme, .. }) => Some(&scheme.ty),
+        // Single-ctor product (ctor name == type name): the ctor scheme rides
+        // on the TypeDef entry, not a separate Def.
+        Some(ModuleEntry::TypeDef { constructor_scheme: Some(scheme), .. }) => {
+            Some(&scheme.ty)
+        }
+        _ => None,
+    };
+    match scheme_ty {
+        Some(Type::Fn(params, _)) => params.clone(),
         _ => Vec::new(),
     }
 }
@@ -878,5 +897,99 @@ mod tests {
     fn format_result_delegates_correctly() {
         let s = format_result(99, &Type::Int);
         assert_eq!(s, ":primitives/Int 99");
+    }
+
+    // --- ctor_field_types: single-ctor product (FIXME 0302) ---
+
+    use cranelisp_types::{DefKind, ModuleEntry, Symbol, TypeDefInfo, Visibility};
+
+    fn point_fqtn() -> FQTypeName {
+        FQTypeName {
+            module: ModuleFullPath::from("user"),
+            name: cranelisp_types::TypeName::from("Point"),
+        }
+    }
+
+    /// Build a `user` module table holding only a single-constructor product
+    /// `Point` whose ctor name == type name. The ctor scheme rides on the
+    /// `TypeDef` entry's `constructor_scheme` (there is no separate `Def`),
+    /// exactly as the typechecker registers it.
+    fn point_product_tables() -> DashMap<ModuleFullPath, SymbolTable> {
+        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        let mut table = SymbolTable::new(ModuleFullPath::from("user"));
+        let info = TypeDefInfo {
+            name: point_fqtn(),
+            type_params: Vec::new(),
+            constructors: vec![Symbol::from("Point")],
+        };
+        // ctor scheme: (Fn [Int Int] Point)
+        let ctor_scheme = Scheme {
+            type_vars: Vec::new(),
+            constraints: HashMap::new(),
+            ty: Type::Fn(
+                vec![Type::Int, Type::Int],
+                Box::new(Type::ADT(point_fqtn(), Vec::new())),
+            ),
+        };
+        table.insert(
+            Symbol::from("Point"),
+            ModuleEntry::TypeDef {
+                info,
+                visibility: Visibility::Public,
+                docstring: None,
+                constructor_scheme: Some(ctor_scheme),
+            },
+        );
+        tables.insert(ModuleFullPath::from("user"), table);
+        tables
+    }
+
+    // spec: repl/spec.md §1.5 (line 309) — single-ctor product whose ctor name
+    // matches the type name. The ctor scheme is stored on the `TypeDef` entry
+    // (the ctor name shares the type's symbol-table key), so `ctor_field_types`
+    // must read `constructor_scheme`; the prior `Def`-only lookup returned no
+    // fields → the value rendered as the bare ctor `Point` not `(Point 3 4)`.
+    #[test]
+    fn ctor_field_types_reads_single_ctor_product_typedef_scheme() {
+        let tables = point_product_tables();
+        let fields = ctor_field_types(&point_fqtn(), "Point", &tables);
+        assert_eq!(
+            fields,
+            vec![Type::Int, Type::Int],
+            "single-ctor product field types must come from the TypeDef \
+             entry's constructor_scheme"
+        );
+    }
+
+    // Negative: a multi-ctor type registers each ctor as a distinct `Def`, so
+    // the `Def` arm still resolves field types — the new `TypeDef` arm does not
+    // mask the common path.
+    #[test]
+    fn ctor_field_types_reads_distinct_def_for_named_ctor() {
+        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        let mut table = SymbolTable::new(ModuleFullPath::from("user"));
+        let fqtn = FQTypeName {
+            module: ModuleFullPath::from("user"),
+            name: cranelisp_types::TypeName::from("Shape"),
+        };
+        // ctor `Circle` keyed separately from its type `Shape`.
+        let ctor_scheme = Scheme {
+            type_vars: Vec::new(),
+            constraints: HashMap::new(),
+            ty: Type::Fn(vec![Type::Float], Box::new(Type::ADT(fqtn.clone(), Vec::new()))),
+        };
+        table.insert(
+            Symbol::from("Circle"),
+            ModuleEntry::def(ctor_scheme, DefKind::Constructor {
+                type_name: fqtn.clone(),
+                tag: 0,
+                field_count: 1,
+                internal: false,
+            })
+            .build(),
+        );
+        tables.insert(ModuleFullPath::from("user"), table);
+        let fields = ctor_field_types(&fqtn, "Circle", &tables);
+        assert_eq!(fields, vec![Type::Float]);
     }
 }
