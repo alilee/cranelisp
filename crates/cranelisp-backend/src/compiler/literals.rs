@@ -6,7 +6,7 @@
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
-use cranelisp_types::{ErrorLocation, CranelispError, Span, Symbol};
+use cranelisp_types::{ErrorLocation, CranelispError, ResolvedCall, Span, Symbol, Type};
 
 use super::FnCompiler;
 use crate::heap::{self, HeapClosure};
@@ -109,10 +109,43 @@ where
         &mut self,
         name: &Symbol,
         span: Span,
+        resolved_call: Option<&ResolvedCall>,
+        inferred_type: Option<&Type>,
     ) -> Result<Value, CranelispError> {
         // Local variable takes priority.
         if let Some(var) = self.variables.get(name) {
             return Ok(self.builder.use_var(*var));
+        }
+
+        // Value-position trait-method reference (spec §7.6). Typecheck
+        // annotates a bare `Expr::Var` that names a trait method used in value
+        // position with its resolved dispatch target (`resolved_call`) and the
+        // concrete `Fn` type (`inferred_type`). Emit a zero-capture
+        // dispatch-wrapper closure that calls the resolved name with the right
+        // arity — the zero-args-applied analogue of auto-curry.
+        //
+        // This REPLACES the hard-coded-Int `compile_operator_as_value` path
+        // (below) for any operator/method typecheck resolved: that path mapped
+        // `=`→`eq-i64`, `+`→`add-i64` unconditionally regardless of operand
+        // type, producing the wrong impl for String/Float values (Symptom B).
+        // With a carried resolution we dispatch to the correct impl
+        // (`str-eq` / `add-f64` / `int-to-string` / mangled trait impl) chosen
+        // by typecheck. No trait knowledge in backend (Decision 43).
+        if let Some(resolved) = resolved_call {
+            let arity = match inferred_type {
+                Some(Type::Fn(params, _)) => params.len(),
+                _ => {
+                    return Err(CranelispError::CodegenError {
+                        message: format!(
+                            "value-position trait method '{name}' has a \
+                             resolved_call but no Fn inferred_type to supply \
+                             arity"
+                        ),
+                        location: ErrorLocation::from_span(span),
+                    });
+                }
+            };
+            return self.compile_trait_method_as_value(resolved, arity, span);
         }
 
         // Nullary constructor reference (e.g. `None`, `Red`): fold to a bare

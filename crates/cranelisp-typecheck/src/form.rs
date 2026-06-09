@@ -726,11 +726,7 @@ mod tests {
             variants: vec![DefnVariant {
                 params: vec![],
                 body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("first"),
-                        span: Span::SYNTHETIC,
-                        inferred_type: None,
-                    }),
+                    callee: Box::new(Expr::var(Symbol::from("first"), Span::SYNTHETIC)),
                     args: vec![],
                     span: Span::SYNTHETIC,
                     inferred_type: None,
@@ -911,11 +907,7 @@ mod tests {
                 variants: vec![DefnVariant {
                     params: vec![],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("first"),
-                            span: Span::SYNTHETIC,
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("first"), Span::SYNTHETIC)),
                         args: vec![],
                         span: Span::SYNTHETIC,
                         inferred_type: None,
@@ -997,11 +989,7 @@ mod tests {
             name: Symbol::from("id"),
             variants: vec![DefnVariant {
                 params: vec![(Symbol::from("x"), None)],
-                body: Expr::Var {
-                    name: Symbol::from("x"),
-                    span: Span::new(11, 12),
-                    inferred_type: None,
-                },
+                body: Expr::var(Symbol::from("x"), Span::new(11, 12)),
                 span: Span::new(10, 13),
             }],
             visibility: Visibility::Private,
@@ -1031,11 +1019,7 @@ mod tests {
             variants: vec![DefnVariant {
                 params: vec![],
                 body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("id"),
-                        span: Span::new(101, 103),
-                        inferred_type: None,
-                    }),
+                    callee: Box::new(Expr::var(Symbol::from("id"), Span::new(101, 103))),
                     args: vec![Expr::IntLit {
                         value: 7,
                         span: Span::new(104, 105),
@@ -1071,11 +1055,10 @@ mod tests {
             name: Symbol::from(name),
             variants: vec![DefnVariant {
                 params: vec![],
-                body: Expr::Var {
-                    name: Symbol::from(qualified_ref),
-                    span: Span::new(11, 11 + qualified_ref.len() as u32),
-                    inferred_type: None,
-                },
+                body: Expr::var(
+                    Symbol::from(qualified_ref),
+                    Span::new(11, 11 + qualified_ref.len() as u32),
+                ),
                 span: Span::new(10, 40),
             }],
             visibility: Visibility::Private,
@@ -1182,11 +1165,7 @@ mod tests {
 
         // Cluster 1: register the multi-clause `f`.
         //   (defn f ([x] x) ([x y] x))
-        let var_x = |sp: Span| Expr::Var {
-            name: Symbol::from("x"),
-            span: sp,
-            inferred_type: None,
-        };
+        let var_x = |sp: Span| Expr::var(Symbol::from("x"), sp);
         let multi_f = ParsedEntry::Def {
             name: Symbol::from("f"),
             variants: vec![
@@ -1234,11 +1213,7 @@ mod tests {
             variants: vec![DefnVariant {
                 params: vec![],
                 body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("f"),
-                        span: Span::SYNTHETIC,
-                        inferred_type: None,
-                    }),
+                    callee: Box::new(Expr::var(Symbol::from("f"), Span::SYNTHETIC)),
                     args: vec![Expr::IntLit {
                         value: 5,
                         span: Span::SYNTHETIC,

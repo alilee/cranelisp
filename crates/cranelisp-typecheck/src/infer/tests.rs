@@ -126,11 +126,7 @@
     fn test_infer_var_defined() {
         let mut tc = tc();
         tc.bind_local_self(Symbol::from("x"), mono(Type::Int));
-        let mut expr = Expr::Var {
-            name: Symbol::from("x"),
-            span: span(0, 1),
-            inferred_type: None,
-        };
+        let mut expr = Expr::var(Symbol::from("x"), span(0, 1));
         assert_eq!(tc.infer_expr_for_test(&mut expr).unwrap(), Type::Int);
     }
 
@@ -138,11 +134,7 @@
     #[test]
     fn test_infer_var_undefined() {
         let mut tc = tc();
-        let mut expr = Expr::Var {
-            name: Symbol::from("x"),
-            span: span(0, 1),
-            inferred_type: None,
-        };
+        let mut expr = Expr::var(Symbol::from("x"), span(0, 1));
         assert!(tc.infer_expr_for_test(&mut expr).is_err());
     }
 
@@ -162,11 +154,7 @@
                     inferred_type: None,
                 },
             )],
-            body: Box::new(Expr::Var {
-                name: Symbol::from("x"),
-                span: span(10, 11),
-                inferred_type: None,
-            }),
+            body: Box::new(Expr::var(Symbol::from("x"), span(10, 11))),
             span: span(0, 12),
             inferred_type: None,
         };
@@ -190,18 +178,10 @@
                 ),
                 (
                     Symbol::from("y"),
-                    Expr::Var {
-                        name: Symbol::from("x"),
-                        span: span(11, 12),
-                        inferred_type: None,
-                    },
+                    Expr::var(Symbol::from("x"), span(11, 12)),
                 ),
             ],
-            body: Box::new(Expr::Var {
-                name: Symbol::from("y"),
-                span: span(14, 15),
-                inferred_type: None,
-            }),
+            body: Box::new(Expr::var(Symbol::from("y"), span(14, 15))),
             span: span(0, 16),
             inferred_type: None,
         };
@@ -301,11 +281,7 @@
         // (fn [x] x)
         let mut expr = Expr::Lambda {
             params: vec![(Symbol::from("x"), None)],
-            body: Box::new(Expr::Var {
-                name: Symbol::from("x"),
-                span: span(8, 9),
-                inferred_type: None,
-            }),
+            body: Box::new(Expr::var(Symbol::from("x"), span(8, 9))),
             span: span(0, 10),
             inferred_type: None,
         };
@@ -327,11 +303,7 @@
         // (fn [:Int x] x)
         let mut expr = Expr::Lambda {
             params: vec![(Symbol::from("x"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")))))],
-            body: Box::new(Expr::Var {
-                name: Symbol::from("x"),
-                span: span(13, 14),
-                inferred_type: None,
-            }),
+            body: Box::new(Expr::var(Symbol::from("x"), span(13, 14))),
             span: span(0, 15),
             inferred_type: None,
         };
@@ -349,11 +321,7 @@
         let mut expr = Expr::Apply {
             callee: Box::new(Expr::Lambda {
                 params: vec![(Symbol::from("x"), None)],
-                body: Box::new(Expr::Var {
-                    name: Symbol::from("x"),
-                    span: span(8, 9),
-                    inferred_type: None,
-                }),
+                body: Box::new(Expr::var(Symbol::from("x"), span(8, 9))),
                 span: span(1, 10),
                 inferred_type: None,
             }),
@@ -375,11 +343,7 @@
         let mut tc = tc();
         // (add-i64 1 2) -> Int
         let mut expr = Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("add-i64"),
-                span: span(1, 8),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("add-i64"), span(1, 8))),
             args: vec![
                 Expr::IntLit {
                     value: 1,
@@ -414,11 +378,7 @@
         let mut tc = tc();
         // (add-f64 1.0 2.0) -> Float
         let mut expr = Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("add-f64"),
-                span: span(1, 8),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("add-f64"), span(1, 8))),
             args: vec![
                 Expr::FloatLit {
                     value: 1.0,
@@ -452,11 +412,7 @@
         let mut tc = tc();
         // (eq-i64 1 2) -> Bool
         let mut expr = Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("eq-i64"),
-                span: span(1, 7),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("eq-i64"), span(1, 7))),
             args: vec![
                 Expr::IntLit {
                     value: 1,
@@ -482,11 +438,7 @@
         let mut tc = tc();
         // (not true) -> Bool
         let mut expr = Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("not"),
-                span: span(1, 4),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("not"), span(1, 4))),
             args: vec![Expr::BoolLit {
                 value: true,
                 span: span(5, 9),
@@ -513,11 +465,7 @@
         let mut tc = tc();
         // (add-i64 1.0 2.0) -- type error: float args to int primitive
         let mut expr = Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("add-i64"),
-                span: span(1, 8),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("add-i64"), span(1, 8))),
             args: vec![
                 Expr::FloatLit {
                     value: 1.0,
@@ -543,11 +491,7 @@
         let mut tc = tc();
         // (add-i64 1) -- too few args, auto-curry returns Fn([Int], Int)
         let mut expr = Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("add-i64"),
-                span: span(1, 8),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("add-i64"), span(1, 8))),
             args: vec![Expr::IntLit {
                 value: 1,
                 span: span(9, 10),
@@ -575,11 +519,7 @@
         let mut tc = tc();
         // (add-i64 1 2 3) -- too many args
         let mut expr = Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("add-i64"),
-                span: span(1, 8),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("add-i64"), span(1, 8))),
             args: vec![
                 Expr::IntLit { value: 1, span: span(9, 10), inferred_type: None, },
                 Expr::IntLit { value: 2, span: span(11, 12), inferred_type: None, },
@@ -602,11 +542,7 @@
 
         // (match Red [Red 1 Green 2 Blue 3])
         let mut expr = Expr::Match {
-            scrutinee: Box::new(Expr::Var {
-                name: Symbol::from("Red"),
-                span: span(7, 10),
-                inferred_type: None,
-            }),
+            scrutinee: Box::new(Expr::var(Symbol::from("Red"), span(7, 10))),
             arms: vec![
                 MatchArm {
                     pattern: Pattern::Constructor {
@@ -663,11 +599,7 @@
 
         // Match with only Red -- missing Green, Blue
         let mut expr = Expr::Match {
-            scrutinee: Box::new(Expr::Var {
-                name: Symbol::from("Red"),
-                span: span(7, 10),
-                inferred_type: None,
-            }),
+            scrutinee: Box::new(Expr::var(Symbol::from("Red"), span(7, 10))),
             arms: vec![MatchArm {
                 pattern: Pattern::Constructor {
                     name: cranelisp_types::SymbolRef::new(None, Symbol::from("Red")),
@@ -697,11 +629,7 @@
 
         // (match Red [Red 1 _ 0])
         let mut expr = Expr::Match {
-            scrutinee: Box::new(Expr::Var {
-                name: Symbol::from("Red"),
-                span: span(7, 10),
-                inferred_type: None,
-            }),
+            scrutinee: Box::new(Expr::var(Symbol::from("Red"), span(7, 10))),
             arms: vec![
                 MatchArm {
                     pattern: Pattern::Constructor {
@@ -743,11 +671,7 @@
 
         // (match Red [x 1]) -- var pattern binds scrutinee
         let mut expr = Expr::Match {
-            scrutinee: Box::new(Expr::Var {
-                name: Symbol::from("Red"),
-                span: span(7, 10),
-                inferred_type: None,
-            }),
+            scrutinee: Box::new(Expr::var(Symbol::from("Red"), span(7, 10))),
             arms: vec![MatchArm {
                 pattern: Pattern::Var {
                     name: Symbol::from("x"),
@@ -825,11 +749,7 @@
         let mut tc = tc();
         // (add-i64 (add-i64 1 2) 3)
         let inner = Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("add-i64"),
-                span: span(9, 16),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("add-i64"), span(9, 16))),
             args: vec![
                 Expr::IntLit {
                     value: 1,
@@ -847,11 +767,7 @@
             inferred_type: None,
         };
         let mut expr = Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("add-i64"),
-                span: span(1, 8),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("add-i64"), span(1, 8))),
             args: vec![
                 inner,
                 Expr::IntLit {
@@ -936,11 +852,7 @@
         // (match (Some 42) [(Some x) x (None 0)])
         let mut expr = Expr::Match {
             scrutinee: Box::new(Expr::Apply {
-                callee: Box::new(Expr::Var {
-                    name: Symbol::from("Some"),
-                    span: span(8, 12),
-                    inferred_type: None,
-                }),
+                callee: Box::new(Expr::var(Symbol::from("Some"), span(8, 12))),
                 args: vec![Expr::IntLit {
                     value: 42,
                     span: span(13, 15),
@@ -957,11 +869,7 @@
                         bindings: vec![Symbol::from("x")],
                         span: span(18, 24),
                     },
-                    body: Expr::Var {
-                        name: Symbol::from("x"),
-                        span: span(26, 27),
-                        inferred_type: None,
-                    },
+                    body: Expr::var(Symbol::from("x"), span(26, 27)),
                     span: span(18, 27),
                 },
                 MatchArm {
@@ -996,11 +904,7 @@
         // (match (Some 42) [(Some x y) x]) -- too many bindings
         let mut expr = Expr::Match {
             scrutinee: Box::new(Expr::Apply {
-                callee: Box::new(Expr::Var {
-                    name: Symbol::from("Some"),
-                    span: span(108, 112),
-                    inferred_type: None,
-                }),
+                callee: Box::new(Expr::var(Symbol::from("Some"), span(108, 112))),
                 args: vec![Expr::IntLit {
                     value: 42,
                     span: span(113, 115),
@@ -1016,11 +920,7 @@
                     bindings: vec![Symbol::from("x"), Symbol::from("y")],
                     span: span(118, 128),
                 },
-                body: Expr::Var {
-                    name: Symbol::from("x"),
-                    span: span(130, 131),
-                    inferred_type: None,
-                },
+                body: Expr::var(Symbol::from("x"), span(130, 131)),
                 span: span(118, 131),
             }],
             span: span(100, 132),
@@ -1041,11 +941,7 @@
         // (match (Some 1) [(None x) x]) -- None is nullary, no bindings allowed
         let mut expr = Expr::Match {
             scrutinee: Box::new(Expr::Apply {
-                callee: Box::new(Expr::Var {
-                    name: Symbol::from("Some"),
-                    span: span(208, 212),
-                    inferred_type: None,
-                }),
+                callee: Box::new(Expr::var(Symbol::from("Some"), span(208, 212))),
                 args: vec![Expr::IntLit {
                     value: 1,
                     span: span(213, 214),
@@ -1061,11 +957,7 @@
                     bindings: vec![Symbol::from("x")],
                     span: span(217, 224),
                 },
-                body: Expr::Var {
-                    name: Symbol::from("x"),
-                    span: span(226, 227),
-                    inferred_type: None,
-                },
+                body: Expr::var(Symbol::from("x"), span(226, 227)),
                 span: span(217, 227),
             }],
             span: span(200, 228),
@@ -1086,11 +978,7 @@
         // Match only Some, missing None
         let mut expr = Expr::Match {
             scrutinee: Box::new(Expr::Apply {
-                callee: Box::new(Expr::Var {
-                    name: Symbol::from("Some"),
-                    span: span(308, 312),
-                    inferred_type: None,
-                }),
+                callee: Box::new(Expr::var(Symbol::from("Some"), span(308, 312))),
                 args: vec![Expr::IntLit {
                     value: 1,
                     span: span(313, 314),
@@ -1106,11 +994,7 @@
                     bindings: vec![Symbol::from("x")],
                     span: span(317, 324),
                 },
-                body: Expr::Var {
-                    name: Symbol::from("x"),
-                    span: span(326, 327),
-                    inferred_type: None,
-                },
+                body: Expr::var(Symbol::from("x"), span(326, 327)),
                 span: span(317, 327),
             }],
             span: span(300, 328),
@@ -1131,11 +1015,7 @@
         let s = span(0, 10);
         let mut expr = Expr::Lambda {
             params: vec![(Symbol::from("x"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")))))],
-            body: Box::new(Expr::Var {
-                name: Symbol::from("x"),
-                span: span(13, 14),
-                inferred_type: None,
-            }),
+            body: Box::new(Expr::var(Symbol::from("x"), span(13, 14))),
             span: s,
             inferred_type: None,
         };
@@ -1160,11 +1040,7 @@
                 vec![TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")))],
             ),
             expr: Box::new(Expr::Apply {
-                callee: Box::new(Expr::Var {
-                    name: Symbol::from("Some"),
-                    span: span(418, 422),
-                    inferred_type: None,
-                }),
+                callee: Box::new(Expr::var(Symbol::from("Some"), span(418, 422))),
                 args: vec![Expr::IntLit {
                     value: 42,
                     span: span(423, 425),
@@ -1221,11 +1097,7 @@
         // (match (Point 1 2) [(Point a b) (add-i64 a b)])
         let mut expr = Expr::Match {
             scrutinee: Box::new(Expr::Apply {
-                callee: Box::new(Expr::Var {
-                    name: Symbol::from("Point"),
-                    span: span(508, 513),
-                    inferred_type: None,
-                }),
+                callee: Box::new(Expr::var(Symbol::from("Point"), span(508, 513))),
                 args: vec![
                     Expr::IntLit {
                         value: 1,
@@ -1249,22 +1121,10 @@
                     span: span(520, 530),
                 },
                 body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("add-i64"),
-                        span: span(532, 539),
-                        inferred_type: None,
-                    }),
+                    callee: Box::new(Expr::var(Symbol::from("add-i64"), span(532, 539))),
                     args: vec![
-                        Expr::Var {
-                            name: Symbol::from("a"),
-                            span: span(540, 541),
-                            inferred_type: None,
-                        },
-                        Expr::Var {
-                            name: Symbol::from("b"),
-                            span: span(542, 543),
-                            inferred_type: None,
-                        },
+                        Expr::var(Symbol::from("a"), span(540, 541)),
+                        Expr::var(Symbol::from("b"), span(542, 543)),
                     ],
                     span: span(531, 544),
                     resolved_call: None,
@@ -1288,11 +1148,7 @@
 
         // (Some 42) -- constructor applied to argument
         let mut expr = Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("Some"),
-                span: span(601, 605),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("Some"), span(601, 605))),
             args: vec![Expr::IntLit {
                 value: 42,
                 span: span(606, 608),
@@ -1317,11 +1173,7 @@
         register_option(&mut tc);
 
         // None on its own should be (Option tN) for some N
-        let mut expr = Expr::Var {
-            name: Symbol::from("None"),
-            span: span(700, 704),
-            inferred_type: None,
-        };
+        let mut expr = Expr::var(Symbol::from("None"), span(700, 704));
 
         let ty = tc.infer_expr_for_test(&mut expr).unwrap();
         match &ty {
@@ -1376,11 +1228,7 @@
                     inferred_type: None,
                 },
             )],
-            body: Box::new(Expr::Var {
-                name: Symbol::from("s"),
-                span: span(915, 916),
-                inferred_type: None,
-            }),
+            body: Box::new(Expr::var(Symbol::from("s"), span(915, 916))),
             span: span(900, 917),
             inferred_type: None,
         };
@@ -1504,11 +1352,7 @@
                     inferred_type: None,
                 },
             )],
-            body: Box::new(Expr::Var {
-                name: Symbol::from("xs"),
-                span: span(1516, 1518),
-                inferred_type: None,
-            }),
+            body: Box::new(Expr::var(Symbol::from("xs"), span(1516, 1518))),
             span: span(1500, 1519),
             inferred_type: None,
         };
@@ -1532,11 +1376,7 @@
         );
         // (vec-len [1 2 3])
         let mut expr = Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("vec-len"),
-                span: span(1601, 1608),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("vec-len"), span(1601, 1608))),
             args: vec![Expr::VecLit {
                 elements: vec![
                     Expr::IntLit { value: 1, span: span(1610, 1611), inferred_type: None, },
@@ -1561,11 +1401,7 @@
         let mut expr = Expr::Lambda {
             params: vec![(Symbol::from("x"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")))))],
             body: Box::new(Expr::VecLit {
-                elements: vec![Expr::Var {
-                    name: Symbol::from("x"),
-                    span: span(1710, 1711),
-                    inferred_type: None,
-                }],
+                elements: vec![Expr::var(Symbol::from("x"), span(1710, 1711))],
                 span: span(1709, 1712),
                 inferred_type: None,
             }),
@@ -1781,16 +1617,8 @@
 
         // (id cfn) — cfn is an argument, NOT in call position → should error
         let mut expr = Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("id"),
-                span: span(3000, 3002),
-                inferred_type: None,
-            }),
-            args: vec![Expr::Var {
-                name: Symbol::from("cfn"),
-                span: span(3003, 3006),
-                inferred_type: None,
-            }],
+            callee: Box::new(Expr::var(Symbol::from("id"), span(3000, 3002))),
+            args: vec![Expr::var(Symbol::from("cfn"), span(3003, 3006))],
             span: span(2999, 3007),
             resolved_call: None,
             inferred_type: None,
@@ -1812,11 +1640,7 @@
 
         // (cfn 1 2) — cfn is in call position → should succeed
         let mut expr = Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("cfn"),
-                span: span(3100, 3103),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("cfn"), span(3100, 3103))),
             args: vec![
                 Expr::IntLit { value: 1, span: span(3104, 3105), inferred_type: None, },
                 Expr::IntLit { value: 2, span: span(3106, 3107), inferred_type: None, },
@@ -1874,14 +1698,10 @@
                 variants: vec![DefnVariant {
                     params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: Span::SYNTHETIC,
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("add-i64"), Span::SYNTHETIC)),
                         args: vec![
-                            Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC, inferred_type: None, },
-                            Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC, inferred_type: None, },
+                            Expr::var(Symbol::from("x"), Span::SYNTHETIC),
+                            Expr::var(Symbol::from("y"), Span::SYNTHETIC),
                         ],
                         span: Span::SYNTHETIC,
                         resolved_call: None,
@@ -1909,14 +1729,10 @@
                 variants: vec![DefnVariant {
                     params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add-f64"),
-                            span: Span::SYNTHETIC,
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("add-f64"), Span::SYNTHETIC)),
                         args: vec![
-                            Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC, inferred_type: None, },
-                            Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC, inferred_type: None, },
+                            Expr::var(Symbol::from("x"), Span::SYNTHETIC),
+                            Expr::var(Symbol::from("y"), Span::SYNTHETIC),
                         ],
                         span: Span::SYNTHETIC,
                         resolved_call: None,
@@ -1966,14 +1782,10 @@
                 variants: vec![DefnVariant {
                     params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("lt-i64"),
-                            span: Span::SYNTHETIC,
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("lt-i64"), Span::SYNTHETIC)),
                         args: vec![
-                            Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC, inferred_type: None, },
-                            Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC, inferred_type: None, },
+                            Expr::var(Symbol::from("x"), Span::SYNTHETIC),
+                            Expr::var(Symbol::from("y"), Span::SYNTHETIC),
                         ],
                         span: Span::SYNTHETIC,
                         resolved_call: None,
@@ -1999,11 +1811,7 @@
 
         // (+ true true)
         let mut expr = Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("+"),
-                span: span(4001, 4002),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("+"), span(4001, 4002))),
             args: vec![
                 Expr::BoolLit { value: true, span: span(4003, 4007), inferred_type: None, },
                 Expr::BoolLit { value: true, span: span(4008, 4012), inferred_type: None, },
@@ -2029,11 +1837,7 @@
 
         // (+ "a" "b")
         let mut expr = Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("+"),
-                span: span(4101, 4102),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("+"), span(4101, 4102))),
             args: vec![
                 Expr::StringLit { value: "a".to_string(), span: span(4103, 4106), inferred_type: None, },
                 Expr::StringLit { value: "b".to_string(), span: span(4107, 4110), inferred_type: None, },
@@ -2059,11 +1863,7 @@
 
         // (< true false)
         let mut expr = Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("<"),
-                span: span(4201, 4202),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("<"), span(4201, 4202))),
             args: vec![
                 Expr::BoolLit { value: true, span: span(4203, 4207), inferred_type: None, },
                 Expr::BoolLit { value: false, span: span(4208, 4213), inferred_type: None, },
@@ -2089,11 +1889,7 @@
 
         // (< "a" "b")
         let mut expr = Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("<"),
-                span: span(4301, 4302),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("<"), span(4301, 4302))),
             args: vec![
                 Expr::StringLit { value: "a".to_string(), span: span(4303, 4306), inferred_type: None, },
                 Expr::StringLit { value: "b".to_string(), span: span(4307, 4310), inferred_type: None, },
@@ -2119,11 +1915,7 @@
 
         // (+ 1 true) — first arg is Int, second is Bool → unification error
         let mut expr = Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("+"),
-                span: span(4401, 4402),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("+"), span(4401, 4402))),
             args: vec![
                 Expr::IntLit { value: 1, span: span(4403, 4404), inferred_type: None, },
                 Expr::BoolLit { value: true, span: span(4405, 4409), inferred_type: None, },
@@ -2145,11 +1937,7 @@
 
         // (+ 1 2) -> Int
         let mut expr = Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("+"),
-                span: span(4501, 4502),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("+"), span(4501, 4502))),
             args: vec![
                 Expr::IntLit { value: 1, span: span(4503, 4504), inferred_type: None, },
                 Expr::IntLit { value: 2, span: span(4505, 4506), inferred_type: None, },
@@ -2183,11 +1971,7 @@
 
         // (+ 1.0 2.0) -> Float
         let mut expr = Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("+"),
-                span: span(4601, 4602),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("+"), span(4601, 4602))),
             args: vec![
                 Expr::FloatLit { value: 1.0, span: span(4603, 4606), inferred_type: None, },
                 Expr::FloatLit { value: 2.0, span: span(4607, 4610), inferred_type: None, },
@@ -2199,4 +1983,294 @@
 
         let ty = tc.infer_expr_for_test(&mut expr).unwrap();
         assert_eq!(ty, Type::Float);
+    }
+
+    // -----------------------------------------------------------------------
+    // §7.6 — trait method as a first-class value (value-position resolution).
+    // FIXME 0300. The trait method appears as a bare Expr::Var bound in a
+    // `let` (escaping the call site as a value); the value-position pass must
+    // resolve it to the correct impl for the operand types read from the Var's
+    // inferred function type. Symptom-B regressions: String `=` and Float `+`.
+    // -----------------------------------------------------------------------
+
+    /// Register Eq (Int + String impls) and Display (Int impl) so the
+    /// value-position §7.6 tests can resolve `=` / `show` as values.
+    fn register_eq_and_display_traits(tc: &mut TestFixture) {
+        use cranelisp_types::{DefnVariant, TraitDecl, TraitImpl, TraitMethodSig, TraitName, TypeExpr, Defn};
+
+        // Eq trait: = :: (Fn [a a] Bool)
+        let eq_decl = TraitDecl {
+            name: TraitName::from("Eq"),
+            docstring: None,
+            type_params: vec![Symbol::from("a")],
+            methods: vec![TraitMethodSig {
+                name: Symbol::from("="),
+                docstring: None,
+                params: vec![
+                    (Symbol::from("lhs"), TypeExpr::TypeVar(Symbol::from("a"))),
+                    (Symbol::from("rhs"), TypeExpr::TypeVar(Symbol::from("a"))),
+                ],
+                ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool"))),
+                span: Span::SYNTHETIC,
+                hkt_param_index: None,
+                default_body: None,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_decl_self(&eq_decl).unwrap();
+
+        // = impl bodies dispatch to a primitive (eq-i64 / str-eq); the actual
+        // body is irrelevant for resolution (primitive_for_trait_method short-
+        // circuits to BuiltinFn), but a valid Defn must be registered.
+        let mk_eq_impl = |target: &str, prim: &str| TraitImpl {
+            trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Eq")),
+            target: cranelisp_types::TypeExpr::Named(
+                cranelisp_types::TypeRef::new(None, TypeName::from(target)),
+            ),
+            type_constraints: vec![],
+            methods: vec![Defn {
+                name: Symbol::from("="),
+                docstring: None,
+                variants: vec![DefnVariant {
+                    params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::var(Symbol::from(prim), Span::SYNTHETIC)),
+                        args: vec![
+                            Expr::var(Symbol::from("x"), Span::SYNTHETIC),
+                            Expr::var(Symbol::from("y"), Span::SYNTHETIC),
+                        ],
+                        span: Span::SYNTHETIC,
+                        resolved_call: None,
+                        inferred_type: None,
+                    },
+                    span: Span::SYNTHETIC,
+                }],
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            }],
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_impl_self(&mk_eq_impl("Int", "eq-i64")).unwrap();
+        tc.register_trait_impl_self(&mk_eq_impl("String", "str-eq")).unwrap();
+
+        // Display trait: show :: (Fn [a] String)
+        let display_decl = TraitDecl {
+            name: TraitName::from("Display"),
+            docstring: None,
+            type_params: vec![Symbol::from("a")],
+            methods: vec![TraitMethodSig {
+                name: Symbol::from("show"),
+                docstring: None,
+                params: vec![(Symbol::from("x"), TypeExpr::TypeVar(Symbol::from("a")))],
+                ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("String"))),
+                span: Span::SYNTHETIC,
+                hkt_param_index: None,
+                default_body: None,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_decl_self(&display_decl).unwrap();
+        let show_int_impl = TraitImpl {
+            trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Display")),
+            target: cranelisp_types::TypeExpr::Named(
+                cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
+            ),
+            type_constraints: vec![],
+            methods: vec![Defn {
+                name: Symbol::from("show"),
+                docstring: None,
+                variants: vec![DefnVariant {
+                    params: vec![(Symbol::from("x"), None)],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::var(Symbol::from("int-to-string"), Span::SYNTHETIC)),
+                        args: vec![Expr::var(Symbol::from("x"), Span::SYNTHETIC)],
+                        span: Span::SYNTHETIC,
+                        resolved_call: None,
+                        inferred_type: None,
+                    },
+                    span: Span::SYNTHETIC,
+                }],
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            }],
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_impl_self(&show_int_impl).unwrap();
+
+        tc.clear_transient_state();
+    }
+
+    /// Build `(let [f <method>] (f <args...>))` where `<method>` is a bare
+    /// trait-method Var bound in value position. Returns the expr plus the
+    /// span of the value-position `<method>` Var (the one the value-position
+    /// pass must resolve).
+    fn let_bound_method_call(method: &str, binding_span: Span, args: Vec<Expr>) -> (Expr, Span) {
+        let f_call = Expr::Apply {
+            callee: Box::new(Expr::var(Symbol::from("f"), Span::new(9000, 9001))),
+            args,
+            span: Span::new(9002, 9100),
+            resolved_call: None,
+            inferred_type: None,
+        };
+        let let_expr = Expr::Let {
+            bindings: vec![(Symbol::from("f"), Expr::var(Symbol::from(method), binding_span))],
+            body: Box::new(f_call),
+            span: Span::new(8000, 9200),
+            inferred_type: None,
+        };
+        (let_expr, binding_span)
+    }
+
+    // spec: 07-traits §7.6 — `=` bound as a value resolves to the String impl
+    // when applied to String operands (Symptom B: must NOT pick the Int impl).
+    #[test]
+    fn value_position_eq_string_resolves_to_str_eq() {
+        let mut tc = tc();
+        register_eq_and_display_traits(&mut tc);
+
+        // (let [f =] (f "a" "b"))
+        let bspan = span(8100, 8101);
+        let (mut expr, value_span) = let_bound_method_call(
+            "=",
+            bspan,
+            vec![
+                Expr::StringLit { value: "a".into(), span: span(9010, 9013), inferred_type: None },
+                Expr::StringLit { value: "b".into(), span: span(9014, 9017), inferred_type: None },
+            ],
+        );
+
+        let ty = tc.infer_expr_for_test(&mut expr).unwrap();
+        assert_eq!(ty, Type::Bool);
+
+        tc.resolve_value_position_trait_methods_for_test(&expr);
+
+        let resolution = tc.state.method_resolutions.resolved_calls.get(&value_span)
+            .expect("value-position `=` Var must be resolved (§7.6)");
+        match resolution {
+            ResolvedCall::BuiltinFn { name } => assert_eq!(name.as_ref(), "str-eq",
+                "String `=` must dispatch to str-eq, not the Int impl"),
+            other => panic!("expected BuiltinFn str-eq, got {other:?}"),
+        }
+    }
+
+    // spec: 07-traits §7.6 — `+` bound as a value resolves to the Float impl
+    // when applied to Float operands (Symptom B: must NOT pick the Int impl).
+    #[test]
+    fn value_position_plus_float_resolves_to_add_f64() {
+        let mut tc = tc();
+        register_num_and_ord_traits(&mut tc);
+
+        // (let [f +] (f 1.0 2.0))
+        let bspan = span(8200, 8201);
+        let (mut expr, value_span) = let_bound_method_call(
+            "+",
+            bspan,
+            vec![
+                Expr::FloatLit { value: 1.0, span: span(9010, 9013), inferred_type: None },
+                Expr::FloatLit { value: 2.0, span: span(9014, 9017), inferred_type: None },
+            ],
+        );
+
+        let ty = tc.infer_expr_for_test(&mut expr).unwrap();
+        assert_eq!(ty, Type::Float);
+
+        tc.resolve_value_position_trait_methods_for_test(&expr);
+
+        let resolution = tc.state.method_resolutions.resolved_calls.get(&value_span)
+            .expect("value-position `+` Var must be resolved (§7.6)");
+        match resolution {
+            ResolvedCall::BuiltinFn { name } => assert_eq!(name.as_ref(), "add-f64",
+                "Float `+` must dispatch to add-f64, not the Int impl"),
+            other => panic!("expected BuiltinFn add-f64, got {other:?}"),
+        }
+    }
+
+    // spec: 07-traits §7.6 — `show` bound as a value resolves to the Int impl
+    // when applied to an Int operand (Symptom A: was `undefined variable: show`).
+    #[test]
+    fn value_position_show_int_resolves_to_int_to_string() {
+        let mut tc = tc();
+        register_eq_and_display_traits(&mut tc);
+
+        // (let [f show] (f 42))
+        let bspan = span(8300, 8301);
+        let (mut expr, value_span) = let_bound_method_call(
+            "show",
+            bspan,
+            vec![Expr::IntLit { value: 42, span: span(9010, 9012), inferred_type: None }],
+        );
+
+        let ty = tc.infer_expr_for_test(&mut expr).unwrap();
+        assert_eq!(ty, Type::String);
+
+        tc.resolve_value_position_trait_methods_for_test(&expr);
+
+        let resolution = tc.state.method_resolutions.resolved_calls.get(&value_span)
+            .expect("value-position `show` Var must be resolved (§7.6)");
+        match resolution {
+            ResolvedCall::BuiltinFn { name } => assert_eq!(name.as_ref(), "int-to-string",
+                "Int `show` must dispatch to int-to-string"),
+            other => panic!("expected BuiltinFn int-to-string, got {other:?}"),
+        }
+    }
+
+    // spec: 07-traits §7.6 — `=` bound as a value resolves to the Int impl
+    // when applied to Int operands (the Int happy-path that previously worked
+    // only because Int was the hard-coded backend default).
+    #[test]
+    fn value_position_eq_int_resolves_to_eq_i64() {
+        let mut tc = tc();
+        register_eq_and_display_traits(&mut tc);
+
+        // (let [f =] (f 1 1))
+        let bspan = span(8400, 8401);
+        let (mut expr, value_span) = let_bound_method_call(
+            "=",
+            bspan,
+            vec![
+                Expr::IntLit { value: 1, span: span(9010, 9011), inferred_type: None },
+                Expr::IntLit { value: 1, span: span(9012, 9013), inferred_type: None },
+            ],
+        );
+
+        let ty = tc.infer_expr_for_test(&mut expr).unwrap();
+        assert_eq!(ty, Type::Bool);
+
+        tc.resolve_value_position_trait_methods_for_test(&expr);
+
+        let resolution = tc.state.method_resolutions.resolved_calls.get(&value_span)
+            .expect("value-position `=` Var must be resolved (§7.6)");
+        match resolution {
+            ResolvedCall::BuiltinFn { name } => assert_eq!(name.as_ref(), "eq-i64"),
+            other => panic!("expected BuiltinFn eq-i64, got {other:?}"),
+        }
+    }
+
+    // spec: 07-traits §7.6 — an ordinary local (non-trait-method) Var bound in
+    // value position must NOT be touched by the pass (resolved_call stays None).
+    #[test]
+    fn value_position_ordinary_local_is_not_resolved() {
+        let mut tc = tc();
+        register_eq_and_display_traits(&mut tc);
+
+        // (let [g 7] (let [f g] (f)))  — `f` here is a local, not a trait
+        // method. Simpler: (let [f 7] f) — the inner `f` Var is a local value.
+        // Build `(let [f 7] f)` and assert the body `f` Var is untouched.
+        let body_span = span(8501, 8502);
+        let mut expr = Expr::Let {
+            bindings: vec![(Symbol::from("f"), Expr::IntLit { value: 7, span: span(8503, 8504), inferred_type: None })],
+            body: Box::new(Expr::var(Symbol::from("f"), body_span)),
+            span: span(8500, 8510),
+            inferred_type: None,
+        };
+
+        let _ = tc.infer_expr_for_test(&mut expr).unwrap();
+        tc.resolve_value_position_trait_methods_for_test(&expr);
+
+        assert!(
+            !tc.state.method_resolutions.resolved_calls.contains_key(&body_span),
+            "ordinary local Var must NOT receive a trait-method resolution"
+        );
     }

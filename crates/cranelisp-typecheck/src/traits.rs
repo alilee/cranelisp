@@ -1633,11 +1633,11 @@ fn build_default_body(
         });
     }
 
-    let x = Expr::Var { name: param_names[0].clone(), span, inferred_type: None, };
-    let y = Expr::Var { name: param_names[1].clone(), span, inferred_type: None, };
-    let not_var = Expr::Var { name: Symbol::from("not"), span, inferred_type: None, };
-    let eq_var = Expr::Var { name: Symbol::from("="), span, inferred_type: None, };
-    let lt_var = Expr::Var { name: Symbol::from("<"), span, inferred_type: None, };
+    let x = Expr::var(param_names[0].clone(), span);
+    let y = Expr::var(param_names[1].clone(), span);
+    let not_var = Expr::var(Symbol::from("not"), span);
+    let eq_var = Expr::var(Symbol::from("="), span);
+    let lt_var = Expr::var(Symbol::from("<"), span);
 
     match (trait_name, method_name) {
         // != → (not (= x y))

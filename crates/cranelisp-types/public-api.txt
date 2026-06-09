@@ -147,6 +147,7 @@ pub cranelisp_types::Expr::Trace::span: cranelisp_types::Span
 pub cranelisp_types::Expr::Var
 pub cranelisp_types::Expr::Var::inferred_type: core::option::Option<alloc::boxed::Box<cranelisp_types::Type>>
 pub cranelisp_types::Expr::Var::name: cranelisp_types::Symbol
+pub cranelisp_types::Expr::Var::resolved_call: core::option::Option<alloc::boxed::Box<cranelisp_types::ResolvedCall>>
 pub cranelisp_types::Expr::Var::span: cranelisp_types::Span
 pub cranelisp_types::Expr::VecLit
 pub cranelisp_types::Expr::VecLit::elements: alloc::vec::Vec<cranelisp_types::Expr>
@@ -156,6 +157,7 @@ impl cranelisp_types::Expr
 pub fn cranelisp_types::Expr::inferred_type(&self) -> core::option::Option<&cranelisp_types::Type>
 pub fn cranelisp_types::Expr::set_inferred_type(&mut self, ty: core::option::Option<alloc::boxed::Box<cranelisp_types::Type>>)
 pub fn cranelisp_types::Expr::span(&self) -> cranelisp_types::Span
+pub fn cranelisp_types::Expr::var(name: cranelisp_types::Symbol, span: cranelisp_types::Span) -> cranelisp_types::Expr
 impl core::marker::Freeze for cranelisp_types::Expr
 impl core::marker::Send for cranelisp_types::Expr
 impl core::marker::Sync for cranelisp_types::Expr

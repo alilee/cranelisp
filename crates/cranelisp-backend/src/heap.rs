@@ -1005,10 +1005,10 @@ mod tests {
 
         let x = Symbol::from("x");
         let expr = Expr::Apply {
-            callee: Box::new(Expr::Var { name: Symbol::from("f"), span: Span::new(0, 1), inferred_type: None }),
+            callee: Box::new(Expr::Var { name: Symbol::from("f"), span: Span::new(0, 1), resolved_call: None, inferred_type: None }),
             args: vec![
-                Expr::Var { name: x.clone(), span: Span::new(2, 3), inferred_type: None },
-                Expr::Var { name: x.clone(), span: Span::new(4, 5), inferred_type: None },
+                Expr::Var { name: x.clone(), span: Span::new(2, 3), resolved_call: None, inferred_type: None },
+                Expr::Var { name: x.clone(), span: Span::new(4, 5), resolved_call: None, inferred_type: None },
             ],
             span: Span::new(0, 6),
             resolved_call: None,

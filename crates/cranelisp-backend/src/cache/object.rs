@@ -580,6 +580,7 @@ mod tests {
                 body: Expr::Var {
                     name: Symbol::from("x"),
                     span: Span::new(20, 21),
+                    resolved_call: None,
                     inferred_type: None,
                 },
                 span: Span::new(0, 25),

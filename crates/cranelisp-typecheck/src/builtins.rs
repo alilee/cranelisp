@@ -667,11 +667,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let synth_body = cranelisp_types::Expr::ConstrADT {
             type_name: io_fqtn.clone(),
             tag: 2,
-            fields: bind_param_names.iter().map(|n| cranelisp_types::Expr::Var {
-                name: n.clone(),
-                span: body_span,
-                inferred_type: None,
-            }).collect(),
+            fields: bind_param_names.iter().map(|n| cranelisp_types::Expr::var(n.clone(), body_span)).collect(),
             span: body_span,
             inferred_type: None,
         };

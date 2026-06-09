@@ -314,11 +314,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 tag: ctor.tag,
                 fields: param_names
                     .iter()
-                    .map(|n| Expr::Var {
-                        name: n.clone(),
-                        span: body_span,
-                        inferred_type: None,
-                    })
+                    .map(|n| Expr::var(n.clone(), body_span))
                     .collect(),
                 span: body_span,
                 inferred_type: None,

@@ -184,6 +184,7 @@ fn register_synth_adt(
                 .map(|n| Expr::Var {
                     name: n.clone(),
                     span: body_span,
+                    resolved_call: None,
                     inferred_type: None,
                 })
                 .collect(),
@@ -724,6 +725,7 @@ fn register_io_type(
             .map(|n| Expr::Var {
                 name: n.clone(),
                 span: body_span,
+                resolved_call: None,
                 inferred_type: None,
             })
             .collect(),

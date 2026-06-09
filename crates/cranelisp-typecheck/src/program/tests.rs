@@ -172,14 +172,10 @@
                 variants: vec![DefnVariant {
                     params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: Span::SYNTHETIC,
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("add-i64"), Span::SYNTHETIC)),
                         args: vec![
-                            Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC, inferred_type: None, },
-                            Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC, inferred_type: None, },
+                            Expr::var(Symbol::from("x"), Span::SYNTHETIC),
+                            Expr::var(Symbol::from("y"), Span::SYNTHETIC),
                         ],
                         span: Span::SYNTHETIC,
                         resolved_call: None,
@@ -207,17 +203,9 @@
             variants: vec![DefnVariant {
                 params: vec![(Symbol::from("x"), None)],
                 body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("add-i64"),
-                        span: span(20, 27),
-                        inferred_type: None,
-                    }),
+                    callee: Box::new(Expr::var(Symbol::from("add-i64"), span(20, 27))),
                     args: vec![
-                        Expr::Var {
-                            name: Symbol::from("x"),
-                            span: span(28, 29),
-                            inferred_type: None,
-                        },
+                        Expr::var(Symbol::from("x"), span(28, 29)),
                         Expr::IntLit {
                             value: 1,
                             span: span(30, 31),
@@ -257,11 +245,7 @@
             docstring: None,
             variants: vec![DefnVariant {
                 params: vec![(Symbol::from("x"), None)],
-                body: Expr::Var {
-                    name: Symbol::from("x"),
-                    span: span(14, 15),
-                    inferred_type: None,
-                },
+                body: Expr::var(Symbol::from("x"), span(14, 15)),
                 span: span(0, 16),
             }],
             visibility: Visibility::Public,
@@ -297,17 +281,9 @@
                 params: vec![(Symbol::from("n"), None)],
                 body: Expr::If {
                     cond: Box::new(Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("eq-i64"),
-                            span: span(20, 26),
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("eq-i64"), span(20, 26))),
                         args: vec![
-                            Expr::Var {
-                                name: Symbol::from("n"),
-                                span: span(27, 28),
-                                inferred_type: None,
-                            },
+                            Expr::var(Symbol::from("n"), span(27, 28)),
                             Expr::IntLit {
                                 value: 0,
                                 span: span(29, 30),
@@ -324,35 +300,15 @@
                         inferred_type: None,
                     }),
                     else_branch: Box::new(Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("mul-i64"),
-                            span: span(36, 43),
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("mul-i64"), span(36, 43))),
                         args: vec![
-                            Expr::Var {
-                                name: Symbol::from("n"),
-                                span: span(44, 45),
-                                inferred_type: None,
-                            },
+                            Expr::var(Symbol::from("n"), span(44, 45)),
                             Expr::Apply {
-                                callee: Box::new(Expr::Var {
-                                    name: Symbol::from("fact"),
-                                    span: span(47, 51),
-                                    inferred_type: None,
-                                }),
+                                callee: Box::new(Expr::var(Symbol::from("fact"), span(47, 51))),
                                 args: vec![Expr::Apply {
-                                    callee: Box::new(Expr::Var {
-                                        name: Symbol::from("sub-i64"),
-                                        span: span(53, 60),
-                                        inferred_type: None,
-                                    }),
+                                    callee: Box::new(Expr::var(Symbol::from("sub-i64"), span(53, 60))),
                                     args: vec![
-                                        Expr::Var {
-                                            name: Symbol::from("n"),
-                                            span: span(61, 62),
-                                            inferred_type: None,
-                                        },
+                                        Expr::var(Symbol::from("n"), span(61, 62)),
                                         Expr::IntLit {
                                             value: 1,
                                             span: span(63, 64),
@@ -429,11 +385,7 @@
                 variants: vec![DefnVariant {
                     params: vec![(Symbol::from("c"), None)],
                     body: Expr::Match {
-                        scrutinee: Box::new(Expr::Var {
-                            name: Symbol::from("c"),
-                            span: span(30, 31),
-                            inferred_type: None,
-                        }),
+                        scrutinee: Box::new(Expr::var(Symbol::from("c"), span(30, 31))),
                         arms: vec![
                             cranelisp_types::MatchArm {
                                 pattern: cranelisp_types::Pattern::Constructor {
@@ -501,17 +453,9 @@
             variants: vec![DefnVariant {
                 params: vec![(Symbol::from("x"), None)],
                 body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("add-i64"),
-                        span: span(16, 23),
-                        inferred_type: None,
-                    }),
+                    callee: Box::new(Expr::var(Symbol::from("add-i64"), span(16, 23))),
                     args: vec![
-                        Expr::Var {
-                            name: Symbol::from("x"),
-                            span: span(24, 25),
-                            inferred_type: None,
-                        },
+                        Expr::var(Symbol::from("x"), span(24, 25)),
                         Expr::BoolLit {
                             value: true,
                             span: span(26, 30),
@@ -545,17 +489,9 @@
             variants: vec![DefnVariant {
                 params: vec![(Symbol::from("x"), None)],
                 body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("add-i64"),
-                        span: span(16, 23),
-                        inferred_type: None,
-                    }),
+                    callee: Box::new(Expr::var(Symbol::from("add-i64"), span(16, 23))),
                     args: vec![
-                        Expr::Var {
-                            name: Symbol::from("x"),
-                            span: span(24, 25),
-                            inferred_type: None,
-                        },
+                        Expr::var(Symbol::from("x"), span(24, 25)),
                         Expr::IntLit {
                             value: 1,
                             span: span(26, 27),
@@ -607,29 +543,17 @@
         let mut tc = tc_with_prims();
         // (Bind (Pure 1) (Pure 2)) — only the head matters for this gate.
         let input = TopLevel::Expr(Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("Bind"),
-                span: span(1, 5),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("Bind"), span(1, 5))),
             args: vec![
                 Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("Pure"),
-                        span: span(7, 11),
-                        inferred_type: None,
-                    }),
+                    callee: Box::new(Expr::var(Symbol::from("Pure"), span(7, 11))),
                     args: vec![Expr::IntLit { value: 1, span: span(12, 13), inferred_type: None }],
                     span: span(6, 14),
                     resolved_call: None,
                     inferred_type: None,
                 },
                 Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("Pure"),
-                        span: span(16, 20),
-                        inferred_type: None,
-                    }),
+                    callee: Box::new(Expr::var(Symbol::from("Pure"), span(16, 20))),
                     args: vec![Expr::IntLit { value: 2, span: span(21, 22), inferred_type: None }],
                     span: span(15, 23),
                     resolved_call: None,
@@ -657,11 +581,7 @@
         // (match (Pure 1) [(Bind a b) 0 _ 99])
         let input = TopLevel::Expr(Expr::Match {
             scrutinee: Box::new(Expr::Apply {
-                callee: Box::new(Expr::Var {
-                    name: Symbol::from("Pure"),
-                    span: span(8, 12),
-                    inferred_type: None,
-                }),
+                callee: Box::new(Expr::var(Symbol::from("Pure"), span(8, 12))),
                 args: vec![Expr::IntLit { value: 1, span: span(13, 14), inferred_type: None }],
                 span: span(7, 15),
                 resolved_call: None,
@@ -704,11 +624,7 @@
         let mut tc = tc_with_prims();
         // (Pure 1) — Pure is public; must typecheck cleanly.
         let input = TopLevel::Expr(Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("Pure"),
-                span: span(1, 5),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("Pure"), span(1, 5))),
             args: vec![Expr::IntLit { value: 1, span: span(6, 7), inferred_type: None }],
             span: span(0, 8),
             resolved_call: None,
@@ -731,11 +647,7 @@
             docstring: None,
             variants: vec![DefnVariant {
                 params: vec![(Symbol::from("x"), None)],
-                body: Expr::Var {
-                    name: Symbol::from("x"),
-                    span: span(14, 15),
-                    inferred_type: None,
-                },
+                body: Expr::var(Symbol::from("x"), span(14, 15)),
                 span: span(0, 16),
             }],
             visibility: Visibility::Public,
@@ -795,16 +707,8 @@
                 variants: vec![DefnVariant {
                     params: vec![(Symbol::from("x"), None)],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add-self"),
-                            span: span(18, 26),
-                            inferred_type: None,
-                        }),
-                        args: vec![Expr::Var {
-                            name: Symbol::from("x"),
-                            span: span(27, 28),
-                            inferred_type: None,
-                        }],
+                        callee: Box::new(Expr::var(Symbol::from("add-self"), span(18, 26))),
+                        args: vec![Expr::var(Symbol::from("x"), span(27, 28))],
                         span: span(17, 29),
                         resolved_call: None,
                         inferred_type: None,
@@ -820,22 +724,10 @@
                 variants: vec![DefnVariant {
                     params: vec![(Symbol::from("y"), None)],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: span(48, 55),
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("add-i64"), span(48, 55))),
                         args: vec![
-                            Expr::Var {
-                                name: Symbol::from("y"),
-                                span: span(56, 57),
-                                inferred_type: None,
-                            },
-                            Expr::Var {
-                                name: Symbol::from("y"),
-                                span: span(58, 59),
-                                inferred_type: None,
-                            },
+                            Expr::var(Symbol::from("y"), span(56, 57)),
+                            Expr::var(Symbol::from("y"), span(58, 59)),
                         ],
                         span: span(47, 60),
                         resolved_call: None,
@@ -895,16 +787,8 @@
                 variants: vec![DefnVariant {
                     params: vec![(Symbol::from("x"), Some(cranelisp_types::TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")))))],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add-self"),
-                            span: span(118, 126),
-                            inferred_type: None,
-                        }),
-                        args: vec![Expr::Var {
-                            name: Symbol::from("x"),
-                            span: span(127, 128),
-                            inferred_type: None,
-                        }],
+                        callee: Box::new(Expr::var(Symbol::from("add-self"), span(118, 126))),
+                        args: vec![Expr::var(Symbol::from("x"), span(127, 128))],
                         span: span(117, 129),
                         resolved_call: None,
                         inferred_type: None,
@@ -920,22 +804,10 @@
                 variants: vec![DefnVariant {
                     params: vec![(Symbol::from("y"), None)],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: span(148, 155),
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("add-i64"), span(148, 155))),
                         args: vec![
-                            Expr::Var {
-                                name: Symbol::from("y"),
-                                span: span(156, 157),
-                                inferred_type: None,
-                            },
-                            Expr::Var {
-                                name: Symbol::from("y"),
-                                span: span(158, 159),
-                                inferred_type: None,
-                            },
+                            Expr::var(Symbol::from("y"), span(156, 157)),
+                            Expr::var(Symbol::from("y"), span(158, 159)),
                         ],
                         span: span(147, 160),
                         resolved_call: None,
@@ -982,17 +854,9 @@
             variants: vec![DefnVariant {
                 params: vec![(Symbol::from("x"), None)],
                 body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("add-i64"),
-                        span: span(16, 23),
-                        inferred_type: None,
-                    }),
+                    callee: Box::new(Expr::var(Symbol::from("add-i64"), span(16, 23))),
                     args: vec![
-                        Expr::Var {
-                            name: Symbol::from("x"),
-                            span: span(24, 25),
-                            inferred_type: None,
-                        },
+                        Expr::var(Symbol::from("x"), span(24, 25)),
                         Expr::IntLit {
                             value: 1,
                             span: span(26, 27),
@@ -1155,14 +1019,10 @@
         let constrained = HashSet::from([Symbol::from("add")]);
         // (add x y) where add is constrained
         let expr = Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("add"),
-                span: span(1, 4),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("add"), span(1, 4))),
             args: vec![
-                Expr::Var { name: Symbol::from("x"), span: span(5, 6), inferred_type: None, },
-                Expr::Var { name: Symbol::from("y"), span: span(7, 8), inferred_type: None, },
+                Expr::var(Symbol::from("x"), span(5, 6)),
+                Expr::var(Symbol::from("y"), span(7, 8)),
             ],
             span: span(0, 9),
             resolved_call: None,
@@ -1184,14 +1044,10 @@
         let constrained = HashSet::from([Symbol::from("add")]);
         // (sub-i64 x y) where sub-i64 is NOT constrained
         let expr = Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("sub-i64"),
-                span: span(1, 8),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("sub-i64"), span(1, 8))),
             args: vec![
-                Expr::Var { name: Symbol::from("x"), span: span(9, 10), inferred_type: None, },
-                Expr::Var { name: Symbol::from("y"), span: span(11, 12), inferred_type: None, },
+                Expr::var(Symbol::from("x"), span(9, 10)),
+                Expr::var(Symbol::from("y"), span(11, 12)),
             ],
             span: span(0, 13),
             resolved_call: None,
@@ -1213,25 +1069,17 @@
             bindings: vec![(
                 Symbol::from("z"),
                 Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("add"),
-                        span: span(10, 13),
-                        inferred_type: None,
-                    }),
+                    callee: Box::new(Expr::var(Symbol::from("add"), span(10, 13))),
                     args: vec![
-                        Expr::Var { name: Symbol::from("x"), span: span(14, 15), inferred_type: None, },
-                        Expr::Var { name: Symbol::from("y"), span: span(16, 17), inferred_type: None, },
+                        Expr::var(Symbol::from("x"), span(14, 15)),
+                        Expr::var(Symbol::from("y"), span(16, 17)),
                     ],
                     span: span(9, 18),
                     resolved_call: None,
                     inferred_type: None,
                 },
             )],
-            body: Box::new(Expr::Var {
-                name: Symbol::from("z"),
-                span: span(20, 21),
-                inferred_type: None,
-            }),
+            body: Box::new(Expr::var(Symbol::from("z"), span(20, 21))),
             span: span(0, 22),
             inferred_type: None,
         };
@@ -1251,11 +1099,7 @@
         let expr = Expr::If {
             cond: Box::new(Expr::BoolLit { value: true, span: span(4, 8), inferred_type: None, }),
             then_branch: Box::new(Expr::Apply {
-                callee: Box::new(Expr::Var {
-                    name: Symbol::from("add"),
-                    span: span(10, 13),
-                    inferred_type: None,
-                }),
+                callee: Box::new(Expr::var(Symbol::from("add"), span(10, 13))),
                 args: vec![
                     Expr::IntLit { value: 1, span: span(14, 15), inferred_type: None, },
                     Expr::IntLit { value: 2, span: span(16, 17), inferred_type: None, },
@@ -1265,11 +1109,7 @@
                 inferred_type: None,
             }),
             else_branch: Box::new(Expr::Apply {
-                callee: Box::new(Expr::Var {
-                    name: Symbol::from("add"),
-                    span: span(20, 23),
-                    inferred_type: None,
-                }),
+                callee: Box::new(Expr::var(Symbol::from("add"), span(20, 23))),
                 args: vec![
                     Expr::IntLit { value: 3, span: span(24, 25), inferred_type: None, },
                     Expr::IntLit { value: 4, span: span(26, 27), inferred_type: None, },
@@ -1302,14 +1142,10 @@
                 variants: vec![DefnVariant {
                     params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("+"),
-                            span: span(18, 19),
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("+"), span(18, 19))),
                         args: vec![
-                            Expr::Var { name: Symbol::from("x"), span: span(20, 21), inferred_type: None, },
-                            Expr::Var { name: Symbol::from("y"), span: span(22, 23), inferred_type: None, },
+                            Expr::var(Symbol::from("x"), span(20, 21)),
+                            Expr::var(Symbol::from("y"), span(22, 23)),
                         ],
                         span: span(17, 24),
                         resolved_call: None,
@@ -1326,11 +1162,7 @@
                 variants: vec![DefnVariant {
                     params: vec![],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add"),
-                            span: span(40, 43),
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("add"), span(40, 43))),
                         args: vec![
                             Expr::IntLit { value: 3, span: span(44, 45), inferred_type: None, },
                             Expr::IntLit { value: 4, span: span(46, 47), inferred_type: None, },
@@ -1390,14 +1222,10 @@
             variants: vec![DefnVariant {
                 params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                 body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("+"),
-                        span: span(18, 19),
-                        inferred_type: None,
-                    }),
+                    callee: Box::new(Expr::var(Symbol::from("+"), span(18, 19))),
                     args: vec![
-                        Expr::Var { name: Symbol::from("x"), span: span(20, 21), inferred_type: None, },
-                        Expr::Var { name: Symbol::from("y"), span: span(22, 23), inferred_type: None, },
+                        Expr::var(Symbol::from("x"), span(20, 21)),
+                        Expr::var(Symbol::from("y"), span(22, 23)),
                     ],
                     span: span(17, 24),
                     resolved_call: None,
@@ -1447,14 +1275,10 @@
             variants: vec![DefnVariant {
                 params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                 body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("+"),
-                        span: span(18, 19),
-                        inferred_type: None,
-                    }),
+                    callee: Box::new(Expr::var(Symbol::from("+"), span(18, 19))),
                     args: vec![
-                        Expr::Var { name: Symbol::from("x"), span: span(20, 21), inferred_type: None, },
-                        Expr::Var { name: Symbol::from("y"), span: span(22, 23), inferred_type: None, },
+                        Expr::var(Symbol::from("x"), span(20, 21)),
+                        Expr::var(Symbol::from("y"), span(22, 23)),
                     ],
                     span: span(17, 24),
                     resolved_call: None,
@@ -1469,11 +1293,7 @@
 
         // Now evaluate an expression that calls the constrained fn: (add 3 4)
         let expr_input = TopLevel::Expr(Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("add"),
-                span: span(100, 103),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("add"), span(100, 103))),
             args: vec![
                 Expr::IntLit { value: 3, span: span(104, 105), inferred_type: None, },
                 Expr::IntLit { value: 4, span: span(106, 107), inferred_type: None, },
@@ -1509,14 +1329,10 @@
             variants: vec![DefnVariant {
                 params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                 body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("+"),
-                        span: span(18, 19),
-                        inferred_type: None,
-                    }),
+                    callee: Box::new(Expr::var(Symbol::from("+"), span(18, 19))),
                     args: vec![
-                        Expr::Var { name: Symbol::from("x"), span: span(20, 21), inferred_type: None, },
-                        Expr::Var { name: Symbol::from("y"), span: span(22, 23), inferred_type: None, },
+                        Expr::var(Symbol::from("x"), span(20, 21)),
+                        Expr::var(Symbol::from("y"), span(22, 23)),
                     ],
                     span: span(17, 24),
                     resolved_call: None,
@@ -1536,11 +1352,7 @@
             variants: vec![DefnVariant {
                 params: vec![],
                 body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("add"),
-                        span: span(200, 203),
-                        inferred_type: None,
-                    }),
+                    callee: Box::new(Expr::var(Symbol::from("add"), span(200, 203))),
                     args: vec![
                         Expr::IntLit { value: 1, span: span(204, 205), inferred_type: None, },
                         Expr::IntLit { value: 2, span: span(206, 207), inferred_type: None, },
@@ -1579,13 +1391,9 @@
             variants: vec![DefnVariant {
                 params: vec![(Symbol::from("x"), None)],
                 body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("add-i64"),
-                        span: span(16, 23),
-                        inferred_type: None,
-                    }),
+                    callee: Box::new(Expr::var(Symbol::from("add-i64"), span(16, 23))),
                     args: vec![
-                        Expr::Var { name: Symbol::from("x"), span: span(24, 25), inferred_type: None, },
+                        Expr::var(Symbol::from("x"), span(24, 25)),
                         Expr::IntLit { value: 1, span: span(26, 27), inferred_type: None, },
                     ],
                     span: span(15, 28),
@@ -1643,14 +1451,10 @@
                 DefnVariant {
                     params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: span(10, 17),
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("add-i64"), span(10, 17))),
                         args: vec![
-                            Expr::Var { name: Symbol::from("x"), span: span(18, 19), inferred_type: None, },
-                            Expr::Var { name: Symbol::from("y"), span: span(20, 21), inferred_type: None, },
+                            Expr::var(Symbol::from("x"), span(18, 19)),
+                            Expr::var(Symbol::from("y"), span(20, 21)),
                         ],
                         span: span(9, 22),
                         resolved_call: None,
@@ -1661,22 +1465,14 @@
                 DefnVariant {
                     params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None), (Symbol::from("z"), None)],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: span(30, 37),
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("add-i64"), span(30, 37))),
                         args: vec![
-                            Expr::Var { name: Symbol::from("x"), span: span(38, 39), inferred_type: None, },
+                            Expr::var(Symbol::from("x"), span(38, 39)),
                             Expr::Apply {
-                                callee: Box::new(Expr::Var {
-                                    name: Symbol::from("add-i64"),
-                                    span: span(41, 48),
-                                    inferred_type: None,
-                                }),
+                                callee: Box::new(Expr::var(Symbol::from("add-i64"), span(41, 48))),
                                 args: vec![
-                                    Expr::Var { name: Symbol::from("y"), span: span(49, 50), inferred_type: None, },
-                                    Expr::Var { name: Symbol::from("z"), span: span(51, 52), inferred_type: None, },
+                                    Expr::var(Symbol::from("y"), span(49, 50)),
+                                    Expr::var(Symbol::from("z"), span(51, 52)),
                                 ],
                                 span: span(40, 53),
                                 resolved_call: None,
@@ -1746,13 +1542,9 @@
                 DefnVariant {
                     params: vec![(Symbol::from("x"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")))))],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: span(110, 117),
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("add-i64"), span(110, 117))),
                         args: vec![
-                            Expr::Var { name: Symbol::from("x"), span: span(118, 119), inferred_type: None, },
+                            Expr::var(Symbol::from("x"), span(118, 119)),
                             Expr::IntLit { value: 1, span: span(120, 121), inferred_type: None, },
                         ],
                         span: span(109, 122),
@@ -1764,11 +1556,7 @@
                 DefnVariant {
                     params: vec![(Symbol::from("x"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool")))))],
                     body: Expr::If {
-                        cond: Box::new(Expr::Var {
-                            name: Symbol::from("x"),
-                            span: span(130, 131),
-                            inferred_type: None,
-                        }),
+                        cond: Box::new(Expr::var(Symbol::from("x"), span(130, 131))),
                         then_branch: Box::new(Expr::IntLit { value: 1, span: span(132, 133), inferred_type: None, }),
                         else_branch: Box::new(Expr::IntLit { value: 0, span: span(134, 135), inferred_type: None, }),
                         span: span(127, 136),
@@ -1816,13 +1604,9 @@
                 DefnVariant {
                     params: vec![(Symbol::from("x"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")))))],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: span(210, 217),
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("add-i64"), span(210, 217))),
                         args: vec![
-                            Expr::Var { name: Symbol::from("x"), span: span(218, 219), inferred_type: None, },
+                            Expr::var(Symbol::from("x"), span(218, 219)),
                             Expr::IntLit { value: 1, span: span(220, 221), inferred_type: None, },
                         ],
                         span: span(209, 222),
@@ -1834,13 +1618,9 @@
                 DefnVariant {
                     params: vec![(Symbol::from("y"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")))))],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: span(230, 237),
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("add-i64"), span(230, 237))),
                         args: vec![
-                            Expr::Var { name: Symbol::from("y"), span: span(238, 239), inferred_type: None, },
+                            Expr::var(Symbol::from("y"), span(238, 239)),
                             Expr::IntLit { value: 2, span: span(240, 241), inferred_type: None, },
                         ],
                         span: span(229, 242),
@@ -1881,14 +1661,10 @@
                 DefnVariant {
                     params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: span(310, 317),
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("add-i64"), span(310, 317))),
                         args: vec![
-                            Expr::Var { name: Symbol::from("x"), span: span(318, 319), inferred_type: None, },
-                            Expr::Var { name: Symbol::from("y"), span: span(320, 321), inferred_type: None, },
+                            Expr::var(Symbol::from("x"), span(318, 319)),
+                            Expr::var(Symbol::from("y"), span(320, 321)),
                         ],
                         span: span(309, 322),
                         resolved_call: None,
@@ -1899,22 +1675,14 @@
                 DefnVariant {
                     params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None), (Symbol::from("z"), None)],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: span(330, 337),
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("add-i64"), span(330, 337))),
                         args: vec![
-                            Expr::Var { name: Symbol::from("x"), span: span(338, 339), inferred_type: None, },
+                            Expr::var(Symbol::from("x"), span(338, 339)),
                             Expr::Apply {
-                                callee: Box::new(Expr::Var {
-                                    name: Symbol::from("add-i64"),
-                                    span: span(341, 348),
-                                    inferred_type: None,
-                                }),
+                                callee: Box::new(Expr::var(Symbol::from("add-i64"), span(341, 348))),
                                 args: vec![
-                                    Expr::Var { name: Symbol::from("y"), span: span(349, 350), inferred_type: None, },
-                                    Expr::Var { name: Symbol::from("z"), span: span(351, 352), inferred_type: None, },
+                                    Expr::var(Symbol::from("y"), span(349, 350)),
+                                    Expr::var(Symbol::from("z"), span(351, 352)),
                                 ],
                                 span: span(340, 353),
                                 resolved_call: None,
@@ -1934,11 +1702,7 @@
         // Expression that calls add with 2 args: (add 1 2)
         let call_span = span(400, 410);
         let call_expr = TopLevel::Expr(Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("add"),
-                span: span(401, 404),
-                inferred_type: None,
-            }),
+            callee: Box::new(Expr::var(Symbol::from("add"), span(401, 404))),
             args: vec![
                 Expr::IntLit { value: 1, span: span(405, 406), inferred_type: None, },
                 Expr::IntLit { value: 2, span: span(407, 408), inferred_type: None, },
@@ -2000,17 +1764,9 @@
             vec![Symbol::from("x")],
             vec![None],
             Expr::Apply {
-                callee: Box::new(Expr::Var {
-                    name: Symbol::from("add-i64"),
-                    span: span(16, 23),
-                    inferred_type: None,
-                }),
+                callee: Box::new(Expr::var(Symbol::from("add-i64"), span(16, 23))),
                 args: vec![
-                    Expr::Var {
-                        name: Symbol::from("x"),
-                        span: span(24, 25),
-                        inferred_type: None,
-                    },
+                    Expr::var(Symbol::from("x"), span(24, 25)),
                     Expr::IntLit {
                         value: 1,
                         span: span(26, 27),
@@ -2059,11 +1815,7 @@
             variants: vec![DefnVariant {
                 params: vec![(Symbol::from("c"), None)],
                 body: Expr::Match {
-                    scrutinee: Box::new(Expr::Var {
-                        name: Symbol::from("c"),
-                        span: span(230, 231),
-                        inferred_type: None,
-                    }),
+                    scrutinee: Box::new(Expr::var(Symbol::from("c"), span(230, 231))),
                     arms: vec![
                         cranelisp_types::MatchArm {
                             pattern: cranelisp_types::Pattern::Constructor {
@@ -2110,16 +1862,8 @@
                 variants: vec![DefnVariant {
                     params: vec![(Symbol::from("x"), None)],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add-self"),
-                            span: span(318, 326),
-                            inferred_type: None,
-                        }),
-                        args: vec![Expr::Var {
-                            name: Symbol::from("x"),
-                            span: span(327, 328),
-                            inferred_type: None,
-                        }],
+                        callee: Box::new(Expr::var(Symbol::from("add-self"), span(318, 326))),
+                        args: vec![Expr::var(Symbol::from("x"), span(327, 328))],
                         span: span(317, 329),
                         resolved_call: None,
                         inferred_type: None,
@@ -2135,22 +1879,10 @@
                 variants: vec![DefnVariant {
                     params: vec![(Symbol::from("y"), None)],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: span(348, 355),
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("add-i64"), span(348, 355))),
                         args: vec![
-                            Expr::Var {
-                                name: Symbol::from("y"),
-                                span: span(356, 357),
-                                inferred_type: None,
-                            },
-                            Expr::Var {
-                                name: Symbol::from("y"),
-                                span: span(358, 359),
-                                inferred_type: None,
-                            },
+                            Expr::var(Symbol::from("y"), span(356, 357)),
+                            Expr::var(Symbol::from("y"), span(358, 359)),
                         ],
                         span: span(347, 360),
                         resolved_call: None,
@@ -2294,14 +2026,10 @@
             vec![Symbol::from("x"), Symbol::from("y")],
             vec![None, None],
             Expr::Apply {
-                callee: Box::new(Expr::Var {
-                    name: Symbol::from("+"),
-                    span: span(400, 401),
-                    inferred_type: None,
-                }),
+                callee: Box::new(Expr::var(Symbol::from("+"), span(400, 401))),
                 args: vec![
-                    Expr::Var { name: Symbol::from("x"), span: span(402, 403), inferred_type: None, },
-                    Expr::Var { name: Symbol::from("y"), span: span(404, 405), inferred_type: None, },
+                    Expr::var(Symbol::from("x"), span(402, 403)),
+                    Expr::var(Symbol::from("y"), span(404, 405)),
                 ],
                 span: span(399, 406),
                 resolved_call: None,
@@ -2362,13 +2090,9 @@
                 DefnVariant {
                     params: vec![(Symbol::from("x"), None)],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: span(610, 617),
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("add-i64"), span(610, 617))),
                         args: vec![
-                            Expr::Var { name: Symbol::from("x"), span: span(618, 619), inferred_type: None, },
+                            Expr::var(Symbol::from("x"), span(618, 619)),
                             Expr::IntLit { value: 1, span: span(620, 621), inferred_type: None, },
                         ],
                         span: span(609, 622),
@@ -2380,14 +2104,10 @@
                 DefnVariant {
                     params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: span(640, 647),
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("add-i64"), span(640, 647))),
                         args: vec![
-                            Expr::Var { name: Symbol::from("x"), span: span(648, 649), inferred_type: None, },
-                            Expr::Var { name: Symbol::from("y"), span: span(650, 651), inferred_type: None, },
+                            Expr::var(Symbol::from("x"), span(648, 649)),
+                            Expr::var(Symbol::from("y"), span(650, 651)),
                         ],
                         span: span(639, 652),
                         resolved_call: None,
@@ -2646,14 +2366,10 @@
                 variants: vec![DefnVariant {
                     params: vec![(Symbol::from("a"), None), (Symbol::from("b"), None)],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("eq-i64"),
-                            span: Span::SYNTHETIC,
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("eq-i64"), Span::SYNTHETIC)),
                         args: vec![
-                            Expr::Var { name: Symbol::from("a"), span: Span::SYNTHETIC, inferred_type: None, },
-                            Expr::Var { name: Symbol::from("b"), span: Span::SYNTHETIC, inferred_type: None, },
+                            Expr::var(Symbol::from("a"), Span::SYNTHETIC),
+                            Expr::var(Symbol::from("b"), Span::SYNTHETIC),
                         ],
                         span: Span::SYNTHETIC,
                         resolved_call: None,
@@ -2883,14 +2599,10 @@
                 variants: vec![DefnVariant {
                     params: vec![(Symbol::from("a"), None), (Symbol::from("b"), None)],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("eq-i64"),
-                            span: Span::SYNTHETIC,
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("eq-i64"), Span::SYNTHETIC)),
                         args: vec![
-                            Expr::Var { name: Symbol::from("a"), span: Span::SYNTHETIC, inferred_type: None, },
-                            Expr::Var { name: Symbol::from("b"), span: Span::SYNTHETIC, inferred_type: None, },
+                            Expr::var(Symbol::from("a"), Span::SYNTHETIC),
+                            Expr::var(Symbol::from("b"), Span::SYNTHETIC),
                         ],
                         span: Span::SYNTHETIC,
                         resolved_call: None,
@@ -2925,10 +2637,10 @@
             vec![Symbol::from("x"), Symbol::from("y")],
             vec![None, None],
             Expr::Apply {
-                callee: Box::new(Expr::Var { name: Symbol::from("add-i64"), span: span(800, 807), inferred_type: None, }),
+                callee: Box::new(Expr::var(Symbol::from("add-i64"), span(800, 807))),
                 args: vec![
-                    Expr::Var { name: Symbol::from("x"), span: span(808, 809), inferred_type: None, },
-                    Expr::Var { name: Symbol::from("y"), span: span(810, 811), inferred_type: None, },
+                    Expr::var(Symbol::from("x"), span(808, 809)),
+                    Expr::var(Symbol::from("y"), span(810, 811)),
                 ],
                 span: span(799, 812),
                 resolved_call: None,
@@ -2942,10 +2654,10 @@
             vec![Symbol::from("a")],
             vec![None],
             Expr::Apply {
-                callee: Box::new(Expr::Var { name: Symbol::from("h"), span: span(830, 831), inferred_type: None, }),
+                callee: Box::new(Expr::var(Symbol::from("h"), span(830, 831))),
                 args: vec![
-                    Expr::Var { name: Symbol::from("a"), span: span(832, 833), inferred_type: None, },
-                    Expr::Var { name: Symbol::from("a"), span: span(834, 835), inferred_type: None, },
+                    Expr::var(Symbol::from("a"), span(832, 833)),
+                    Expr::var(Symbol::from("a"), span(834, 835)),
                 ],
                 span: span(829, 836),
                 resolved_call: None,
@@ -2959,9 +2671,9 @@
             vec![Symbol::from("z")],
             vec![None],
             Expr::Apply {
-                callee: Box::new(Expr::Var { name: Symbol::from("g"), span: span(860, 861), inferred_type: None, }),
+                callee: Box::new(Expr::var(Symbol::from("g"), span(860, 861))),
                 args: vec![
-                    Expr::Var { name: Symbol::from("z"), span: span(862, 863), inferred_type: None, },
+                    Expr::var(Symbol::from("z"), span(862, 863)),
                 ],
                 span: span(859, 864),
                 resolved_call: None,
@@ -3102,9 +2814,9 @@
                 DefnVariant {
                     params: vec![(Symbol::from("x"), None)],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var { name: Symbol::from("add-i64"), span: span(1010, 1017), inferred_type: None, }),
+                        callee: Box::new(Expr::var(Symbol::from("add-i64"), span(1010, 1017))),
                         args: vec![
-                            Expr::Var { name: Symbol::from("x"), span: span(1018, 1019), inferred_type: None, },
+                            Expr::var(Symbol::from("x"), span(1018, 1019)),
                             Expr::IntLit { value: 1, span: span(1020, 1021), inferred_type: None, },
                         ],
                         span: span(1009, 1022),
@@ -3116,10 +2828,10 @@
                 DefnVariant {
                     params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var { name: Symbol::from("add-i64"), span: span(1040, 1047), inferred_type: None, }),
+                        callee: Box::new(Expr::var(Symbol::from("add-i64"), span(1040, 1047))),
                         args: vec![
-                            Expr::Var { name: Symbol::from("x"), span: span(1048, 1049), inferred_type: None, },
-                            Expr::Var { name: Symbol::from("y"), span: span(1050, 1051), inferred_type: None, },
+                            Expr::var(Symbol::from("x"), span(1048, 1049)),
+                            Expr::var(Symbol::from("y"), span(1050, 1051)),
                         ],
                         span: span(1039, 1052),
                         resolved_call: None,
@@ -3170,10 +2882,10 @@
             vec![Symbol::from("x"), Symbol::from("y")],
             vec![None, None],
             Expr::Apply {
-                callee: Box::new(Expr::Var { name: Symbol::from("+"), span: span(1100, 1101), inferred_type: None, }),
+                callee: Box::new(Expr::var(Symbol::from("+"), span(1100, 1101))),
                 args: vec![
-                    Expr::Var { name: Symbol::from("x"), span: span(1102, 1103), inferred_type: None, },
-                    Expr::Var { name: Symbol::from("y"), span: span(1104, 1105), inferred_type: None, },
+                    Expr::var(Symbol::from("x"), span(1102, 1103)),
+                    Expr::var(Symbol::from("y"), span(1104, 1105)),
                 ],
                 span: span(1099, 1106),
                 resolved_call: None,
@@ -3213,7 +2925,7 @@
                 "id",
                 vec![Symbol::from("x")],
                 vec![None],
-                Expr::Var { name: Symbol::from("x"), span: span(1214, 1215), inferred_type: None, },
+                Expr::var(Symbol::from("x"), span(1214, 1215)),
                 Visibility::Public,
                 span(1200, 1216),
             )),
@@ -3222,11 +2934,11 @@
                 vec![Symbol::from("y")],
                 vec![None],
                 Expr::Apply {
-                    callee: Box::new(Expr::Var { name: Symbol::from("id"), span: span(1230, 1232), inferred_type: None, }),
+                    callee: Box::new(Expr::var(Symbol::from("id"), span(1230, 1232))),
                     args: vec![Expr::Apply {
-                        callee: Box::new(Expr::Var { name: Symbol::from("add-i64"), span: span(1234, 1241), inferred_type: None, }),
+                        callee: Box::new(Expr::var(Symbol::from("add-i64"), span(1234, 1241))),
                         args: vec![
-                            Expr::Var { name: Symbol::from("y"), span: span(1242, 1243), inferred_type: None, },
+                            Expr::var(Symbol::from("y"), span(1242, 1243)),
                             Expr::IntLit { value: 1, span: span(1244, 1245), inferred_type: None, },
                         ],
                         span: span(1233, 1246),
@@ -3302,13 +3014,9 @@
             vec![Symbol::from("x")],
             vec![None],
             Expr::Apply {
-                callee: Box::new(Expr::Var {
-                    name: Symbol::from("add-i64"),
-                    span: span(1316, 1323),
-                    inferred_type: None,
-                }),
+                callee: Box::new(Expr::var(Symbol::from("add-i64"), span(1316, 1323))),
                 args: vec![
-                    Expr::Var { name: Symbol::from("x"), span: span(1324, 1325), inferred_type: None, },
+                    Expr::var(Symbol::from("x"), span(1324, 1325)),
                     Expr::BoolLit { value: true, span: span(1326, 1330), inferred_type: None, },
                 ],
                 span: span(1315, 1331),
@@ -3455,14 +3163,10 @@
             vec![Symbol::from("x")],
             vec![None],
             Expr::Apply {
-                callee: Box::new(Expr::Var {
-                    name: Symbol::from("add-i64"),
-                    span: span(101, 108),
-                    inferred_type: None,
-                }),
+                callee: Box::new(Expr::var(Symbol::from("add-i64"), span(101, 108))),
                 args: vec![
-                    Expr::Var { name: Symbol::from("x"), span: span(109, 110), inferred_type: None },
-                    Expr::Var { name: Symbol::from("x"), span: span(111, 112), inferred_type: None },
+                    Expr::var(Symbol::from("x"), span(109, 110)),
+                    Expr::var(Symbol::from("x"), span(111, 112)),
                 ],
                 span: add_span,
                 resolved_call: None,
@@ -3530,14 +3234,10 @@
                 vec![Symbol::from("x")],
                 vec![None],
                 Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("+"),
-                        span: span(201, 202),
-                        inferred_type: None,
-                    }),
+                    callee: Box::new(Expr::var(Symbol::from("+"), span(201, 202))),
                     args: vec![
-                        Expr::Var { name: Symbol::from("x"), span: span(203, 204), inferred_type: None },
-                        Expr::Var { name: Symbol::from("x"), span: span(205, 206), inferred_type: None },
+                        Expr::var(Symbol::from("x"), span(203, 204)),
+                        Expr::var(Symbol::from("x"), span(205, 206)),
                     ],
                     span: plus_span,
                     resolved_call: None,
@@ -3552,11 +3252,7 @@
                 vec![],
                 vec![],
                 Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("double"),
-                        span: span(221, 227),
-                        inferred_type: None,
-                    }),
+                    callee: Box::new(Expr::var(Symbol::from("double"), span(221, 227))),
                     args: vec![
                         Expr::IntLit { value: 5, span: span(228, 229), inferred_type: None },
                     ],
@@ -3629,11 +3325,7 @@
                 bindings: vec![(
                     Symbol::from("x"),
                     Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: span(311, 318),
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("add-i64"), span(311, 318))),
                         args: vec![
                             Expr::IntLit { value: 1, span: span(319, 320), inferred_type: None },
                             Expr::IntLit { value: 2, span: span(321, 322), inferred_type: None },
@@ -3643,11 +3335,7 @@
                         inferred_type: None,
                     },
                 )],
-                body: Box::new(Expr::Var {
-                    name: Symbol::from("x"),
-                    span: span(330, 331),
-                    inferred_type: None,
-                }),
+                body: Box::new(Expr::var(Symbol::from("x"), span(330, 331))),
                 span: span(300, 340),
                 inferred_type: None,
             },
@@ -3705,39 +3393,23 @@
             vec![None, None],
             Expr::If {
                 cond: Box::new(Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("eq-i64"),
-                        span: span(411, 417),
-                        inferred_type: None,
-                    }),
+                    callee: Box::new(Expr::var(Symbol::from("eq-i64"), span(411, 417))),
                     args: vec![
-                        Expr::Var { name: Symbol::from("n"), span: span(418, 419), inferred_type: None },
+                        Expr::var(Symbol::from("n"), span(418, 419)),
                         Expr::IntLit { value: 0, span: span(420, 421), inferred_type: None },
                     ],
                     span: eq_span,
                     resolved_call: None,
                     inferred_type: None,
                 }),
-                then_branch: Box::new(Expr::Var {
-                    name: Symbol::from("acc"),
-                    span: span(426, 429),
-                    inferred_type: None,
-                }),
+                then_branch: Box::new(Expr::var(Symbol::from("acc"), span(426, 429))),
                 else_branch: Box::new(Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("fact"),
-                        span: span(431, 435),
-                        inferred_type: None,
-                    }),
+                    callee: Box::new(Expr::var(Symbol::from("fact"), span(431, 435))),
                     args: vec![
                         Expr::Apply {
-                            callee: Box::new(Expr::Var {
-                                name: Symbol::from("sub-i64"),
-                                span: span(441, 448),
-                                inferred_type: None,
-                            }),
+                            callee: Box::new(Expr::var(Symbol::from("sub-i64"), span(441, 448))),
                             args: vec![
-                                Expr::Var { name: Symbol::from("n"), span: span(449, 450), inferred_type: None },
+                                Expr::var(Symbol::from("n"), span(449, 450)),
                                 Expr::IntLit { value: 1, span: span(451, 452), inferred_type: None },
                             ],
                             span: sub_span,
@@ -3745,14 +3417,10 @@
                             inferred_type: None,
                         },
                         Expr::Apply {
-                            callee: Box::new(Expr::Var {
-                                name: Symbol::from("mul-i64"),
-                                span: span(461, 468),
-                                inferred_type: None,
-                            }),
+                            callee: Box::new(Expr::var(Symbol::from("mul-i64"), span(461, 468))),
                             args: vec![
-                                Expr::Var { name: Symbol::from("n"), span: span(469, 470), inferred_type: None },
-                                Expr::Var { name: Symbol::from("acc"), span: span(471, 474), inferred_type: None },
+                                Expr::var(Symbol::from("n"), span(469, 470)),
+                                Expr::var(Symbol::from("acc"), span(471, 474)),
                             ],
                             span: mul_span,
                             resolved_call: None,
@@ -3822,14 +3490,10 @@
                 vec![Symbol::from("x"), Symbol::from("y")],
                 vec![None, None],
                 Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("+"),
-                        span: span(501, 502),
-                        inferred_type: None,
-                    }),
+                    callee: Box::new(Expr::var(Symbol::from("+"), span(501, 502))),
                     args: vec![
-                        Expr::Var { name: Symbol::from("x"), span: span(503, 504), inferred_type: None },
-                        Expr::Var { name: Symbol::from("y"), span: span(505, 506), inferred_type: None },
+                        Expr::var(Symbol::from("x"), span(503, 504)),
+                        Expr::var(Symbol::from("y"), span(505, 506)),
                     ],
                     span: plus_span,
                     resolved_call: None,
@@ -3843,11 +3507,7 @@
                 vec![],
                 vec![],
                 Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("add"),
-                        span: span(521, 524),
-                        inferred_type: None,
-                    }),
+                    callee: Box::new(Expr::var(Symbol::from("add"), span(521, 524))),
                     args: vec![
                         Expr::IntLit { value: 1, span: span(525, 526), inferred_type: None },
                         Expr::IntLit { value: 2, span: span(527, 528), inferred_type: None },
@@ -4017,14 +3677,10 @@
                 variants: vec![DefnVariant {
                     params: vec![(Symbol::from("x"), None)],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("+"),
-                            span: span(100, 101),
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("+"), span(100, 101))),
                         args: vec![
-                            Expr::Var { name: Symbol::from("x"), span: span(102, 103), inferred_type: None },
-                            Expr::Var { name: Symbol::from("x"), span: span(104, 105), inferred_type: None },
+                            Expr::var(Symbol::from("x"), span(102, 103)),
+                            Expr::var(Symbol::from("x"), span(104, 105)),
                         ],
                         span: span(99, 106),
                         resolved_call: None,
@@ -4122,14 +3778,10 @@
                 DefnVariant {
                     params: vec![(Symbol::from("a"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))))), (Symbol::from("b"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")))))],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: span(510, 517),
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("add-i64"), span(510, 517))),
                         args: vec![
-                            Expr::Var { name: Symbol::from("a"), span: span(518, 519), inferred_type: None },
-                            Expr::Var { name: Symbol::from("b"), span: span(520, 521), inferred_type: None },
+                            Expr::var(Symbol::from("a"), span(518, 519)),
+                            Expr::var(Symbol::from("b"), span(520, 521)),
                         ],
                         span: span(509, 522),
                         resolved_call: None,
@@ -4140,14 +3792,10 @@
                 DefnVariant {
                     params: vec![(Symbol::from("a"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Float"))))), (Symbol::from("b"), Some(TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Float")))))],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add-f64"),
-                            span: span(530, 537),
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("add-f64"), span(530, 537))),
                         args: vec![
-                            Expr::Var { name: Symbol::from("a"), span: span(538, 539), inferred_type: None },
-                            Expr::Var { name: Symbol::from("b"), span: span(540, 541), inferred_type: None },
+                            Expr::var(Symbol::from("a"), span(538, 539)),
+                            Expr::var(Symbol::from("b"), span(540, 541)),
                         ],
                         span: span(529, 542),
                         resolved_call: None,

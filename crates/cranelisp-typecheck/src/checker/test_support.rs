@@ -195,6 +195,17 @@ impl TestFixture {
         env.infer_expr(&mut self.state, expr)
     }
 
+    /// Run the value-position trait-method resolution post-pass over an
+    /// already-inferred expression (test convenience). Mirrors what
+    /// `check_form_body` does after `check_defn_body`.
+    pub fn resolve_value_position_trait_methods_for_test(
+        &mut self,
+        expr: &cranelisp_types::Expr,
+    ) {
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases);
+        env.resolve_value_position_trait_methods(&mut self.state, expr, false);
+    }
+
     /// Clear transient state (test convenience).
     pub fn clear_transient_state(&mut self) {
         TypeCheckEnv::<()>::clear_transient_state(&mut self.state);

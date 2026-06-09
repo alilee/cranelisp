@@ -155,6 +155,19 @@ pub enum Expr {
     Var {
         name: Symbol,
         span: Span,
+        /// How a value-position trait-method reference was resolved by the
+        /// typechecker. `None` for ordinary variable references and before
+        /// typecheck; `Some` only when this `Var` names a trait method used
+        /// in value position (e.g. `(let [f =] (f x y))` — the `=` binding),
+        /// where the typechecker resolves the method against the Var's
+        /// `inferred_type` and records the dispatch target here so backend
+        /// can emit a dispatch-wrapper closure without re-deriving trait
+        /// knowledge (Principle 16; Decision 43 — backend has no trait
+        /// knowledge). Mirrors `Expr::Apply.resolved_call`: this is the
+        /// value-position carrier the side map (overlaid onto `Apply` nodes
+        /// only) cannot reach. Boxed to avoid bloating the `Expr` enum.
+        #[serde(default)]
+        resolved_call: Option<Box<ResolvedCall>>,
         #[serde(default)]
         inferred_type: Option<Box<Type>>,
     },
@@ -275,6 +288,20 @@ pub enum Expr {
 }
 
 impl Expr {
+    /// Constructs an `Expr::Var` with both annotation channels defaulted to
+    /// `None` (`resolved_call` and `inferred_type`). This is the canonical
+    /// construction shape — a bare variable reference at the syntactic stage,
+    /// before typecheck overlays either annotation. Construction sites that
+    /// build a `Var` from a `name` + `span` switch to this constructor so the
+    /// annotation fields are not spelled at every call site (and so a future
+    /// added annotation field defaults here, not at N call sites). Typecheck
+    /// sets `resolved_call` / `inferred_type` post-construction via the
+    /// annotate pass; tests and passes that need a non-default annotation use
+    /// the struct literal directly.
+    pub fn var(name: Symbol, span: Span) -> Expr {
+        Expr::Var { name, span, resolved_call: None, inferred_type: None }
+    }
+
     /// Returns the span of this expression.
     pub fn span(&self) -> Span {
         match self {

@@ -189,11 +189,21 @@ fn annotate_expr_from_maps(
         expr.set_inferred_type(Some(Box::new(ty.clone())));
     }
 
-    // Set resolved_call on Apply nodes from method_resolutions
-    if let Expr::Apply { resolved_call, span: apply_span, .. } = expr
-        && let Some(resolution) = method_resolutions.get(apply_span)
-    {
-        *resolved_call = Some(Box::new(resolution.clone()));
+    // Set resolved_call on Apply nodes (call position) AND Var nodes (value
+    // position — spec §7.6 trait-method-as-value, resolved by
+    // `resolve_value_position_trait_methods`) from method_resolutions.
+    match expr {
+        Expr::Apply { resolved_call, span: apply_span, .. } => {
+            if let Some(resolution) = method_resolutions.get(apply_span) {
+                *resolved_call = Some(Box::new(resolution.clone()));
+            }
+        }
+        Expr::Var { resolved_call, span: var_span, .. } => {
+            if let Some(resolution) = method_resolutions.get(var_span) {
+                *resolved_call = Some(Box::new(resolution.clone()));
+            }
+        }
+        _ => {}
     }
 
     // Recurse into children via the shared enumeration helper.
@@ -807,6 +817,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         self.check_defn_body(state, defn, param_types, ret_ty)
             .map_err(|e| enrich_macro_clause_resolution_error(defn.name.as_ref(), e))?;
         self.resolve_deferred_trait_calls(state, defn.body());
+        self.resolve_value_position_trait_methods(state, defn.body(), false);
 
         // Per-defn post-passes: resolve auto-curry accumulated during this
         // defn's body check. Overload resolution is deferred to finalize
@@ -930,6 +941,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
             self.check_defn_body(state, &internal_defn, param_types, ret_ty)?;
             self.resolve_deferred_trait_calls(state, internal_defn.body());
+            self.resolve_value_position_trait_methods(state, internal_defn.body(), false);
 
             // Per-variant post-passes (auto-curry only; overloads deferred to finalize)
             self.resolve_auto_curry(state);
@@ -1129,9 +1141,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                             span: variant.span,
                         };
                         self.resolve_deferred_trait_calls(state, internal_defn.body());
+                        self.resolve_value_position_trait_methods(state, internal_defn.body(), false);
                     }
                 } else {
                     self.resolve_deferred_trait_calls(state, defn.body());
+                    self.resolve_value_position_trait_methods(state, defn.body(), false);
                 }
             }
         }

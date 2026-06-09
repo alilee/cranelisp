@@ -943,6 +943,7 @@ mod tests {
                 body: cranelisp_types::Expr::Var {
                     name: Symbol::from("x"),
                     span: Span::new(0, 1),
+                    resolved_call: None,
                     inferred_type: None,
                 },
                 span: Span::new(0, 10),

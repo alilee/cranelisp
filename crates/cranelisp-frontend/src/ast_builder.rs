@@ -968,6 +968,7 @@ pub fn build_expr(sexp: &Sexp) -> Result<Expr, CranelispError> {
                 name: name.as_str().into(),
                 span: *span,
                 inferred_type: None,
+                resolved_call: None,
             })
         }
         Sexp::List(children, span) => build_list_expr(children, *span),

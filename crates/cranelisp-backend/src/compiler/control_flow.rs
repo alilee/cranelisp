@@ -1232,6 +1232,143 @@ where
         Ok(base_ptr)
     }
 
+    /// Emit a value-position trait-method reference as a zero-capture
+    /// dispatch-wrapper closure (spec §7.6 — trait methods as first-class
+    /// values).
+    ///
+    /// This is the **zero-args-applied analogue of auto-curry**: where
+    /// `compile_auto_curry` captures some applied args and forwards them plus
+    /// the remaining args to the resolved target, the value-position case
+    /// captures nothing and forwards all `arity` args. The wrapper signature is
+    /// `(env_ptr, arg_0, ..., arg_{arity-1}) -> i64`; the body ignores `env_ptr`
+    /// and calls `emit_curry_target_call` with the typecheck-supplied
+    /// `resolved_call` so the SAME dispatch path is used as direct application.
+    ///
+    /// Per Decision 43, backend has no trait knowledge: typecheck already
+    /// resolved the value-position `Expr::Var` to a concrete target
+    /// (`BuiltinFn { name }` for primitive-implemented methods like `str-eq` /
+    /// `add-f64` / `eq-i64` / `int-to-string`, or `TraitMethod { mangled_name }`
+    /// otherwise). Backend just emits a call to that name. This **replaces** the
+    /// hard-coded-Int `compile_operator_as_value` path (which unconditionally
+    /// dispatched `=`→`eq-i64`, `+`→`add-i64` regardless of operand type — the
+    /// source of Symptom B: String `=`→`false`, Float `+`→`inf.0`).
+    ///
+    /// `arity` is the param count of the Var's `inferred_type`
+    /// (`Type::Fn(params, _)`), supplied by the caller (`compile_var`).
+    pub(crate) fn compile_trait_method_as_value(
+        &mut self,
+        resolved: &ResolvedCall,
+        arity: usize,
+        span: Span,
+    ) -> Result<Value, CranelispError> {
+        let alloc_id =
+            self.ctx
+                .alloc_func_id
+                .ok_or_else(|| CranelispError::CodegenError {
+                    message: "runtime/alloc not declared (need declare_intrinsics)".into(),
+                    location: ErrorLocation::from_span(span),
+                })?;
+
+        // The callable name carried by the resolution — used only for a stable,
+        // unique wrapper symbol name. The actual dispatch target is chosen by
+        // `emit_curry_target_call` from `resolved`.
+        let target_name: Symbol = match resolved {
+            ResolvedCall::TraitMethod { mangled_name, .. } => {
+                Symbol::from(mangled_name.as_ref())
+            }
+            ResolvedCall::BuiltinFn { name, .. } => Symbol::from(name.as_ref()),
+            // Other variants are not produced for value-position trait methods
+            // by typecheck; emit_curry_target_call falls through to a by-name
+            // call, which would fail loudly. Use a placeholder name.
+            _ => Symbol::from("__trait_method_value__"),
+        };
+
+        // Compile the wrapper function: (env_ptr, arg_0..arg_{arity-1}) -> i64.
+        let wrapper_name =
+            format!("__wrap_tmv_{target_name}_{}_{}__", span.start, span.end);
+        let wrapper_param_count = 1 + arity; // env_ptr + user params
+        let mut sig = self.module.make_signature();
+        for _ in 0..wrapper_param_count {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        sig.returns.push(AbiParam::new(types::I64));
+
+        let wrapper_func_id = self
+            .module
+            .declare_function(&wrapper_name, Linkage::Local, &sig)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare trait-method-value wrapper: {e}"),
+                location: ErrorLocation::from_span(span),
+            })?;
+
+        // Build the wrapper body in a separate codegen context.
+        let mut inner_ctx = self.module.make_context();
+        let mut inner_func_ctx = FunctionBuilderContext::new();
+        inner_ctx.func.signature = sig;
+
+        let mut builder =
+            FunctionBuilder::new(&mut inner_ctx.func, &mut inner_func_ctx);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+
+        let block_params = builder.block_params(entry).to_vec();
+        let user_args: Vec<Value> = block_params[1..].to_vec(); // skip env_ptr
+
+        // Dispatch through the SAME path direct application uses.
+        let result = self.emit_curry_target_call(
+            &mut builder,
+            &target_name,
+            &user_args,
+            span,
+            Some(resolved),
+        )?;
+
+        builder.ins().return_(&[result]);
+        builder.seal_all_blocks();
+        builder.finalize();
+
+        self.module
+            .define_function(wrapper_func_id, &mut inner_ctx)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to define trait-method-value wrapper: {e}"),
+                location: ErrorLocation::from_span(span),
+            })?;
+
+        // Allocate a closure with zero captures: [header | code_ptr | drop_glue(0)].
+        let payload_size = HeapClosure::payload_size(0) as i64;
+        let base_ptr = heap::emit_alloc(
+            &mut self.builder,
+            self.module,
+            alloc_id,
+            payload_size,
+        );
+
+        // Store the wrapper function pointer.
+        let wrapper_ref = self
+            .module
+            .declare_func_in_func(wrapper_func_id, self.builder.func);
+        let code_ptr = self.builder.ins().func_addr(types::I64, wrapper_ref);
+        heap::heap_store(
+            &mut self.builder,
+            code_ptr,
+            base_ptr,
+            HeapClosure::CODE_PTR_OFFSET,
+        );
+
+        // Store zero drop glue pointer (no captures to drop).
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        heap::heap_store(
+            &mut self.builder,
+            zero,
+            base_ptr,
+            HeapClosure::DROP_GLUE_PTR_OFFSET,
+        );
+
+        Ok(base_ptr)
+    }
+
     /// Compile a wrapper function body: (env_ptr, params...) -> i64.
     /// Ignores env_ptr and calls the real function with the params.
     fn compile_fn_wrapper_body(

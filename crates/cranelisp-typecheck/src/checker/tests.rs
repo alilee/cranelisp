@@ -561,22 +561,10 @@
                 variants: vec![DefnVariant {
                     params: vec![(Symbol::from("lhs"), None), (Symbol::from("rhs"), None)],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: Span::SYNTHETIC,
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("add-i64"), Span::SYNTHETIC)),
                         args: vec![
-                            Expr::Var {
-                                name: Symbol::from("lhs"),
-                                span: Span::SYNTHETIC,
-                                inferred_type: None,
-                            },
-                            Expr::Var {
-                                name: Symbol::from("rhs"),
-                                span: Span::SYNTHETIC,
-                                inferred_type: None,
-                            },
+                            Expr::var(Symbol::from("lhs"), Span::SYNTHETIC),
+                            Expr::var(Symbol::from("rhs"), Span::SYNTHETIC),
                         ],
                         span: Span::SYNTHETIC,
                         resolved_call: None,

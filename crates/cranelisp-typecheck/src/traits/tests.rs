@@ -249,14 +249,10 @@
                 variants: vec![DefnVariant {
                     params: vec![(Symbol::from("lhs"), None), (Symbol::from("rhs"), None)],
                     body: cranelisp_types::Expr::Apply {
-                        callee: Box::new(cranelisp_types::Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: Span::SYNTHETIC,
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(cranelisp_types::Expr::var(Symbol::from("add-i64"), Span::SYNTHETIC)),
                         args: vec![
-                            cranelisp_types::Expr::Var { name: Symbol::from("lhs"), span: Span::SYNTHETIC, inferred_type: None, },
-                            cranelisp_types::Expr::Var { name: Symbol::from("rhs"), span: Span::SYNTHETIC, inferred_type: None, },
+                            cranelisp_types::Expr::var(Symbol::from("lhs"), Span::SYNTHETIC),
+                            cranelisp_types::Expr::var(Symbol::from("rhs"), Span::SYNTHETIC),
                         ],
                         span: Span::SYNTHETIC,
                         resolved_call: None,
@@ -292,14 +288,10 @@
                 variants: vec![DefnVariant {
                     params: vec![(Symbol::from("lhs"), None), (Symbol::from("rhs"), None)],
                     body: cranelisp_types::Expr::Apply {
-                        callee: Box::new(cranelisp_types::Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: Span::SYNTHETIC,
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(cranelisp_types::Expr::var(Symbol::from("add-i64"), Span::SYNTHETIC)),
                         args: vec![
-                            cranelisp_types::Expr::Var { name: Symbol::from("lhs"), span: Span::SYNTHETIC, inferred_type: None, },
-                            cranelisp_types::Expr::Var { name: Symbol::from("rhs"), span: Span::SYNTHETIC, inferred_type: None, },
+                            cranelisp_types::Expr::var(Symbol::from("lhs"), Span::SYNTHETIC),
+                            cranelisp_types::Expr::var(Symbol::from("rhs"), Span::SYNTHETIC),
                         ],
                         span: Span::SYNTHETIC,
                         resolved_call: None,
@@ -387,14 +379,10 @@
                 variants: vec![DefnVariant {
                     params: vec![(Symbol::from("lhs"), None), (Symbol::from("rhs"), None)],
                     body: cranelisp_types::Expr::Apply {
-                        callee: Box::new(cranelisp_types::Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: Span::SYNTHETIC,
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(cranelisp_types::Expr::var(Symbol::from("add-i64"), Span::SYNTHETIC)),
                         args: vec![
-                            cranelisp_types::Expr::Var { name: Symbol::from("lhs"), span: Span::SYNTHETIC, inferred_type: None, },
-                            cranelisp_types::Expr::Var { name: Symbol::from("rhs"), span: Span::SYNTHETIC, inferred_type: None, },
+                            cranelisp_types::Expr::var(Symbol::from("lhs"), Span::SYNTHETIC),
+                            cranelisp_types::Expr::var(Symbol::from("rhs"), Span::SYNTHETIC),
                         ],
                         span: Span::SYNTHETIC,
                         resolved_call: None,
@@ -576,14 +564,10 @@
                 variants: vec![DefnVariant {
                     params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                     body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: Span::SYNTHETIC,
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("add-i64"), Span::SYNTHETIC)),
                         args: vec![
-                            Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC, inferred_type: None, },
-                            Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC, inferred_type: None, },
+                            Expr::var(Symbol::from("x"), Span::SYNTHETIC),
+                            Expr::var(Symbol::from("y"), Span::SYNTHETIC),
                         ],
                         span: Span::SYNTHETIC,
                         resolved_call: None,
@@ -782,20 +766,12 @@
                     // Default body: (not (= x y)) — parsed Expr per S69 Submission 26
                     // (default_body is now Option<Expr>, was Option<Sexp>).
                     default_body: Some(Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from("not"),
-                            span: Span::SYNTHETIC,
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(Expr::var(Symbol::from("not"), Span::SYNTHETIC)),
                         args: vec![Expr::Apply {
-                            callee: Box::new(Expr::Var {
-                                name: Symbol::from("="),
-                                span: Span::SYNTHETIC,
-                                inferred_type: None,
-                            }),
+                            callee: Box::new(Expr::var(Symbol::from("="), Span::SYNTHETIC)),
                             args: vec![
-                                Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC, inferred_type: None },
-                                Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC, inferred_type: None },
+                                Expr::var(Symbol::from("x"), Span::SYNTHETIC),
+                                Expr::var(Symbol::from("y"), Span::SYNTHETIC),
                             ],
                             span: Span::SYNTHETIC,
                             resolved_call: None,
@@ -880,22 +856,10 @@
                 variants: vec![DefnVariant {
                     params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                     body: cranelisp_types::Expr::Apply {
-                        callee: Box::new(cranelisp_types::Expr::Var {
-                            name: Symbol::from("add-i64"),
-                            span: Span::SYNTHETIC,
-                            inferred_type: None,
-                        }),
+                        callee: Box::new(cranelisp_types::Expr::var(Symbol::from("add-i64"), Span::SYNTHETIC)),
                         args: vec![
-                            cranelisp_types::Expr::Var {
-                                name: Symbol::from("x"),
-                                span: Span::SYNTHETIC,
-                                inferred_type: None,
-                            },
-                            cranelisp_types::Expr::Var {
-                                name: Symbol::from("y"),
-                                span: Span::SYNTHETIC,
-                                inferred_type: None,
-                            },
+                            cranelisp_types::Expr::var(Symbol::from("x"), Span::SYNTHETIC),
+                            cranelisp_types::Expr::var(Symbol::from("y"), Span::SYNTHETIC),
                         ],
                         span: Span::SYNTHETIC,
                         resolved_call: None,
@@ -975,14 +939,10 @@
             variants: vec![DefnVariant {
                 params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                 body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("+"),
-                        span: Span::new(18, 19),
-                        inferred_type: None,
-                    }),
+                    callee: Box::new(Expr::var(Symbol::from("+"), Span::new(18, 19))),
                     args: vec![
-                        Expr::Var { name: Symbol::from("x"), span: Span::new(20, 21), inferred_type: None },
-                        Expr::Var { name: Symbol::from("y"), span: Span::new(22, 23), inferred_type: None },
+                        Expr::var(Symbol::from("x"), Span::new(20, 21)),
+                        Expr::var(Symbol::from("y"), Span::new(22, 23)),
                     ],
                     span: Span::new(17, 24),
                     resolved_call: None,
@@ -1002,11 +962,7 @@
             variants: vec![DefnVariant {
                 params: vec![],
                 body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("add"),
-                        span: Span::new(200, 203),
-                        inferred_type: None,
-                    }),
+                    callee: Box::new(Expr::var(Symbol::from("add"), Span::new(200, 203))),
                     args: vec![
                         Expr::IntLit { value: 1, span: Span::new(204, 205), inferred_type: None },
                         Expr::IntLit { value: 2, span: Span::new(206, 207), inferred_type: None },

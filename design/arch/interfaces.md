@@ -614,7 +614,7 @@ The codegen payload the backend used to consume from `CheckResult` has been redi
 
 | Former `CheckResult` field | New location (source of truth for codegen) |
 |---|---|
-| `method_resolutions: MethodResolutions` | `Expr::Apply.resolved_call` on AST nodes (`ModuleEntry::Def.ast`). |
+| `method_resolutions: MethodResolutions` | `Expr::Apply.resolved_call` (call position) and `Expr::Var.resolved_call` (value position — a trait method bound/passed as a value, e.g. `(let [f =] (f x y))`) on AST nodes (`ModuleEntry::Def.ast`). The two carriers are the call-position and value-position channels for the same `MethodResolutions` map; the value-position carrier (S77, FIXME 0300) closes the gap where a trait method escaping the call site had a type but no resolution. |
 | `expr_types: HashMap<Span, Type>` | `Expr.inferred_type` on every AST node. |
 | `mono_defns: Vec<MonoDefn>` | Registered eagerly by `register_mono_entry` as mangled `ModuleEntry::Def` entries with `ast: Some(_)` carrying fully-concrete annotations. |
 | `default_method_defns: Vec<Defn>` | Registered by `register_mangled_method` as mangled `ModuleEntry::Def` entries with `ast: Some(_)`. |

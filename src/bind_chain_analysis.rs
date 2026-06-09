@@ -373,6 +373,7 @@ fn make_bind(
         callee: Box::new(Expr::Var {
             name: Symbol::from("bind"),
             span,
+            resolved_call: None,
             inferred_type: None,
         }),
         args: vec![
@@ -536,7 +537,7 @@ mod tests {
     use cranelisp_types::{FQSymbol, Scheme, Span, Symbol, Type, Visibility};
 
     fn make_var(name: &str) -> Expr {
-        Expr::Var { name: Symbol::from(name), span: Span::SYNTHETIC, inferred_type: None }
+        Expr::Var { name: Symbol::from(name), span: Span::SYNTHETIC, resolved_call: None, inferred_type: None }
     }
 
     fn make_int(value: i64) -> Expr {
@@ -672,6 +673,7 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("platform.test/get-time"),
                 span: Span::SYNTHETIC,
+                resolved_call: None,
                 inferred_type: None,
             }),
             args: vec![],

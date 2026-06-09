@@ -613,6 +613,85 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         });
     }
 
+    /// Post-inference pass: resolve trait methods used in **value position**
+    /// (spec §7.6 — trait methods are ordinary first-class values).
+    ///
+    /// Sibling of [`Self::resolve_deferred_trait_calls`], which handles the
+    /// *call* position (a trait method as the callee of an `Apply`). This pass
+    /// handles the complementary case: a trait method name appearing as a bare
+    /// `Expr::Var` that is NOT the callee of an enclosing `Apply` — e.g. the
+    /// binding in `(let [f =] (f "hi" "hi"))`, or a method passed to a HOF
+    /// (`(apply2 + 1 2)`). In those positions the method escapes as a value;
+    /// the backend must emit a zero-capture dispatch-wrapper closure, and
+    /// (Decision 43) backend has no trait knowledge, so typecheck must record
+    /// the concrete impl selection here.
+    ///
+    /// For each value-position `Var` whose resolved name is a trait method and
+    /// whose final `inferred_type` is a function type, the method is resolved
+    /// via [`Self::try_resolve_trait_method`] over the concrete parameter types
+    /// read from that function type. The resulting `ResolvedCall`
+    /// (`BuiltinFn { name }` for primitive-implemented methods, e.g. `eq-f64`/
+    /// `str-eq`, or `TraitMethod { mangled_name }` otherwise) is recorded on the
+    /// Var's span in the same `method_resolutions.resolved_calls` map the call
+    /// path uses; `annotate_expr_from_maps` then overlays it onto
+    /// `Expr::Var.resolved_call`.
+    ///
+    /// Ordinary fn / local Vars are left untouched (`is_trait_method_with_state`
+    /// gates the predicate; a `let`-bound local or user fn is not a trait method
+    /// declaration, so it never matches and keeps `resolved_call: None`).
+    ///
+    /// `in_callee_position` is `true` only for the `callee` child of an `Apply`
+    /// — that child is the call path's responsibility and must be skipped here.
+    pub(crate) fn resolve_value_position_trait_methods(
+        &self,
+        state: &mut CheckState,
+        expr: &Expr,
+        in_callee_position: bool,
+    ) {
+        // A bare Var in value position: try to resolve it as a trait method
+        // used as a first-class value.
+        if let Expr::Var { name, span, .. } = expr
+            && !in_callee_position
+            && !state.method_resolutions.resolved_calls.contains_key(span)
+            && self.is_trait_method_with_state(state, name)
+        {
+            // The Var's final type must be a function type for it to be used
+            // as a callable value. Read it from the side map and substitute.
+            let var_ty = state
+                .expr_types
+                .get(span)
+                .map(|t| self.apply_subst(state, t));
+            if let Some(Type::Fn(params, _)) = var_ty {
+                let resolved_params: Vec<Type> =
+                    params.iter().map(|t| self.apply_subst(state, t)).collect();
+                // Mirror the call-path resolution: trait-method impl selection
+                // first, then a primitive-name fallback (the latter only fires
+                // for genuinely primitive-named methods, which trait resolution
+                // already covers — kept for symmetry with infer_apply).
+                if let Ok(Some(resolution)) =
+                    self.try_resolve_trait_method(state, name, &resolved_params, *span)
+                {
+                    state.method_resolutions.resolved_calls.insert(*span, resolution);
+                }
+            }
+        }
+
+        // Recurse. The `callee` child of an `Apply` is the call path's domain
+        // (resolve_deferred_trait_calls / infer_apply) — flag it so this pass
+        // does not also try to resolve it as a value.
+        match expr {
+            Expr::Apply { callee, args, .. } => {
+                self.resolve_value_position_trait_methods(state, callee, true);
+                for arg in args {
+                    self.resolve_value_position_trait_methods(state, arg, false);
+                }
+            }
+            other => crate::program::for_each_child_expr(other, |child| {
+                self.resolve_value_position_trait_methods(state, child, false)
+            }),
+        }
+    }
+
     fn infer_match(
         &self, state: &mut CheckState,
         scrutinee: &Expr,

@@ -973,7 +973,17 @@ where
             Expr::FloatLit { value, .. } => self.compile_float_lit(*value),
             Expr::BoolLit { value, .. } => self.compile_bool_lit(*value),
             Expr::StringLit { value, span, .. } => self.compile_string_lit(value, *span),
-            Expr::Var { name, span, .. } => self.compile_var(name, *span),
+            Expr::Var {
+                name,
+                span,
+                resolved_call,
+                inferred_type,
+            } => self.compile_var(
+                name,
+                *span,
+                resolved_call.as_deref(),
+                inferred_type.as_deref(),
+            ),
             Expr::Let {
                 bindings,
                 body,

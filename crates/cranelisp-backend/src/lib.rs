@@ -1853,6 +1853,7 @@ mod tests {
                 body: Expr::Var {
                 name: Symbol::from("x"),
                 span: Span::new(20, 21),
+                resolved_call: None,
                 inferred_type: None,
                 },
                 span: Span::new(10, 30),
@@ -1954,6 +1955,7 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("Some"),
                 span: Span::new(1, 5),
+                resolved_call: None,
                 inferred_type: None,
             }),
             args: vec![Expr::IntLit {
@@ -1998,6 +2000,7 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("Some"),
                 span: Span::new(11, 15),
+                resolved_call: None,
                 inferred_type: None,
             }),
             args: vec![Expr::IntLit {
@@ -2022,6 +2025,7 @@ mod tests {
                     body: Expr::Var {
                         name: Symbol::from("x"),
                         span: Span::new(31, 32),
+                        resolved_call: None,
                         inferred_type: None,
                     },
                     span: Span::new(22, 32),
@@ -2085,17 +2089,20 @@ mod tests {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("+"),
                             span: Span::new(31, 32),
+                            resolved_call: None,
                             inferred_type: None,
                         }),
                         args: vec![
                             Expr::Var {
                                 name: Symbol::from("n"),
                                 span: Span::new(33, 34),
+                                resolved_call: None,
                                 inferred_type: None,
                             },
                             Expr::Var {
                                 name: Symbol::from("x"),
                                 span: Span::new(35, 36),
+                                resolved_call: None,
                                 inferred_type: None,
                             },
                         ],
@@ -2191,6 +2198,7 @@ mod tests {
                     body: Box::new(Expr::Var {
                         name: Symbol::from("s"),
                         span: lam_body_span,
+                        resolved_call: None,
                         inferred_type: Some(Box::new(string_ty.clone())),
                     }),
                     span: Span::new(15, 22),
@@ -2377,6 +2385,7 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("vec-len"),
                 span: Span::new(1, 8),
+                resolved_call: None,
                 inferred_type: None,
             }),
             args: vec![Expr::VecLit {
@@ -2442,12 +2451,14 @@ mod tests {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("vec-get"),
                     span: Span::new(22, 29),
+                    resolved_call: None,
                     inferred_type: None,
                 }),
                 args: vec![
                     Expr::Var {
                         name: Symbol::from("v"),
                         span: Span::new(30, 31),
+                        resolved_call: None,
                         inferred_type: None,
                     },
                     Expr::IntLit { value: 1, span: Span::new(32, 33), inferred_type: None },
@@ -2507,12 +2518,14 @@ mod tests {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("vec-get"),
                     span: Span::new(121, 128),
+                    resolved_call: None,
                     inferred_type: None,
                 }),
                 args: vec![
                     Expr::Var {
                         name: Symbol::from("v"),
                         span: Span::new(129, 130),
+                        resolved_call: None,
                         inferred_type: None,
                     },
                     Expr::IntLit { value: 0, span: Span::new(131, 132), inferred_type: None },
@@ -2573,12 +2586,14 @@ mod tests {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("vec-get"),
                     span: Span::new(221, 228),
+                    resolved_call: None,
                     inferred_type: None,
                 }),
                 args: vec![
                     Expr::Var {
                         name: Symbol::from("v"),
                         span: Span::new(229, 230),
+                        resolved_call: None,
                         inferred_type: None,
                     },
                     Expr::IntLit { value: 2, span: Span::new(231, 232), inferred_type: None },
@@ -2648,18 +2663,21 @@ mod tests {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("vec-len"),
                     span: Span::new(316, 323),
+                    resolved_call: None,
                     inferred_type: None,
                 }),
                 args: vec![Expr::Apply {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("vec-set"),
                         span: Span::new(321, 328),
+                        resolved_call: None,
                         inferred_type: None,
                     }),
                     args: vec![
                         Expr::Var {
                             name: Symbol::from("v"),
                             span: Span::new(329, 330),
+                            resolved_call: None,
                             inferred_type: None,
                         },
                         Expr::IntLit { value: 1, span: Span::new(331, 332), inferred_type: None },
@@ -2721,12 +2739,14 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("vec-len"),
                 span: Span::new(411, 418),
+                resolved_call: None,
                 inferred_type: None,
             }),
             args: vec![Expr::Apply {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("vec-push"),
                     span: Span::new(416, 424),
+                    resolved_call: None,
                     inferred_type: None,
                 }),
                 args: vec![
@@ -2799,11 +2819,13 @@ mod tests {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("vec-len"),
                     span: Span::new(516, 523),
+                    resolved_call: None,
                     inferred_type: None,
                 }),
                 args: vec![Expr::Var {
                     name: Symbol::from("v"),
                     span: Span::new(524, 525),
+                    resolved_call: None,
                     inferred_type: None,
                 }],
                 span: len_span,
@@ -2852,6 +2874,7 @@ mod tests {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("+"),
                         span: Span::new(604, 605),
+                        resolved_call: None,
                         inferred_type: None,
                     }),
                     args: vec![
@@ -2963,12 +2986,14 @@ mod tests {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("vec-get"),
                     span: Span::new(822, 829),
+                    resolved_call: None,
                     inferred_type: None,
                 }),
                 args: vec![
                     Expr::Var {
                         name: Symbol::from("v"),
                         span: Span::new(830, 831),
+                        resolved_call: None,
                         inferred_type: None,
                     },
                     Expr::IntLit { value: 2, span: Span::new(832, 833), inferred_type: None },
@@ -3025,12 +3050,14 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("vec-len"),
                 span: Span::new(906, 913),
+                resolved_call: None,
                 inferred_type: None,
             }),
             args: vec![Expr::Apply {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("vec-push"),
                     span: Span::new(911, 919),
+                    resolved_call: None,
                     inferred_type: None,
                 }),
                 args: vec![
@@ -3095,12 +3122,14 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("vec-len"),
                 span: Span::new(1011, 1018),
+                resolved_call: None,
                 inferred_type: None,
             }),
             args: vec![Expr::Apply {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("vec-set"),
                     span: Span::new(1016, 1023),
+                    resolved_call: None,
                     inferred_type: None,
                 }),
                 args: vec![
@@ -3184,6 +3213,7 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("vec-len"),
                 span: Span::new(1196, 1203),
+                resolved_call: None,
                 inferred_type: None,
             }),
             args: vec![Expr::VecLit {
@@ -3239,12 +3269,14 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("vec-len"),
                 span: Span::new(1301, 1308),
+                resolved_call: None,
                 inferred_type: None,
             }),
             args: vec![Expr::Apply {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("vec-push"),
                     span: Span::new(1306, 1314),
+                    resolved_call: None,
                     inferred_type: None,
                 }),
                 args: vec![
@@ -3298,6 +3330,7 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("vec-len"),
                 span: Span::new(1401, 1408),
+                resolved_call: None,
                 inferred_type: None,
             }),
             args: vec![Expr::VecLit {
@@ -3433,6 +3466,7 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("+"),
                 span: Span::new(101, 102),
+                resolved_call: None,
                 inferred_type: None,
             }),
             args: vec![
@@ -3471,6 +3505,7 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("="),
                 span: Span::new(201, 202),
+                resolved_call: None,
                 inferred_type: None,
             }),
             args: vec![
@@ -3559,6 +3594,7 @@ mod tests {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("default-ne"),
                         span: Span::new(10, 20),
+                        resolved_call: None,
                         inferred_type: None,
                     }),
                     args: vec![
@@ -3622,10 +3658,11 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("eq-i64"),
                 span: Span::new(31, 37),
+                resolved_call: None,
                 inferred_type: None,
             }),
             args: vec![
-                Expr::Var { name: Symbol::from("n"), span: n_span, inferred_type: None },
+                Expr::Var { name: Symbol::from("n"), span: n_span, resolved_call: None, inferred_type: None },
                 Expr::IntLit { value: 0, span: zero_span, inferred_type: None },
             ],
             span: eq_span,
@@ -3637,10 +3674,11 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("sub-i64"),
                 span: Span::new(51, 58),
+                resolved_call: None,
                 inferred_type: None,
             }),
             args: vec![
-                Expr::Var { name: Symbol::from("n"), span: Span::new(55, 56), inferred_type: None },
+                Expr::Var { name: Symbol::from("n"), span: Span::new(55, 56), resolved_call: None, inferred_type: None },
                 Expr::IntLit { value: 1, span: Span::new(57, 58), inferred_type: None },
             ],
             span: sub_span,
@@ -3654,6 +3692,7 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("countdown"),
                 span: Span::new(71, 80),
+                resolved_call: None,
                 inferred_type: None,
             }),
             args: vec![sub_call],
@@ -3919,6 +3958,7 @@ mod tests {
             fields: vec![Expr::Var {
                 name: Symbol::from("v"),
                 span: Span::new(10, 11),
+                resolved_call: None,
                 inferred_type: Some(Box::new(Type::Int)),
             }],
             span: Span::new(0, 12),
@@ -3985,6 +4025,7 @@ mod tests {
                 Expr::Var {
                     name: Symbol::from("Some"),
                     span: Span::new(100, 104),
+                    resolved_call: None,
                     inferred_type: None,
                 },
             )],
@@ -3992,6 +4033,7 @@ mod tests {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("f"),
                     span: Span::new(110, 111),
+                    resolved_call: None,
                     inferred_type: None,
                 }),
                 args: vec![Expr::IntLit {
@@ -4081,6 +4123,176 @@ mod tests {
             field0, 3,
             "constructor-as-value (map-style first-class use) must construct the ADT \
              with the passed field; got {field0}"
+        );
+    }
+
+    // spec: 07-traits §7.6 — a trait method used as a first-class value
+    // dispatches to the impl chosen by typecheck for the value's type, NOT a
+    // hard-coded default. This is the backend half of FIXME 0300 Symptom B.
+    //
+    // `(let [f +] (f 1.0 2.0))` where typecheck has annotated the value-position
+    // `+` Var with `resolved_call: Some(BuiltinFn { name: "add-f64" })` and
+    // `inferred_type: Fn([Float, Float], Float)`. The new `compile_var` early
+    // branch emits a zero-capture dispatch-wrapper that calls `add-f64` (float
+    // add). The OLD hard-coded `compile_operator_as_value` path mapped `+` →
+    // `add-i64` unconditionally — integer add on the two float bit-patterns —
+    // which yields a garbage / `inf.0`-shaped result, never `3.0`. So a `3.0`
+    // result proves the resolution is honored and the Int path is bypassed.
+    //
+    // `add-f64` is an INLINE builtin (`primitives_inline`), so this runs
+    // end-to-end inside the backend unit-test JIT with no `cranelisp-primitives`
+    // dependency (Decision 48) and no extern symbol.
+    #[test]
+    fn value_position_plus_float_dispatches_add_f64_not_add_i64() {
+        // The value-position `+` reference, fully annotated as typecheck's
+        // value-position resolution pass produces (FIXME 0300 Step 2/3).
+        let plus_as_value = Expr::Var {
+            name: Symbol::from("+"),
+            span: Span::new(100, 101),
+            resolved_call: Some(Box::new(
+                cranelisp_types::ResolvedCall::BuiltinFn {
+                    name: Symbol::from("add-f64"),
+                },
+            )),
+            inferred_type: Some(Box::new(Type::Fn(
+                vec![Type::Float, Type::Float],
+                Box::new(Type::Float),
+            ))),
+        };
+
+        // Consumer: (let [f +] (f 1.0 2.0)) — binds the dispatch-wrapper closure
+        // to `f`, then applies it. `(f 1.0 2.0)` is a local-var closure call.
+        let consumer_body = Expr::Let {
+            bindings: vec![(Symbol::from("f"), plus_as_value)],
+            body: Box::new(Expr::Apply {
+                callee: Box::new(Expr::Var {
+                    name: Symbol::from("f"),
+                    span: Span::new(110, 111),
+                    resolved_call: None,
+                    inferred_type: None,
+                }),
+                args: vec![
+                    Expr::FloatLit {
+                        value: 1.0,
+                        span: Span::new(112, 115),
+                        inferred_type: Some(Box::new(Type::Float)),
+                    },
+                    Expr::FloatLit {
+                        value: 2.0,
+                        span: Span::new(116, 119),
+                        inferred_type: Some(Box::new(Type::Float)),
+                    },
+                ],
+                span: Span::new(109, 120),
+                resolved_call: None,
+                inferred_type: Some(Box::new(Type::Float)),
+            }),
+            span: Span::new(90, 121),
+            inferred_type: Some(Box::new(Type::Float)),
+        };
+
+        let value = test_compile_and_run(
+            &consumer_body,
+            &empty_check(),
+            &empty_tables(),
+        )
+        .expect("value-position + (add-f64) should compile and run");
+
+        let result = f64::from_bits(value as u64);
+        assert_eq!(
+            result, 3.0,
+            "value-position `+` on Floats must dispatch to add-f64 (→ 3.0); \
+             a non-3.0 result means the hard-coded add-i64 path leaked \
+             (FIXME 0300 Symptom B)"
+        );
+    }
+
+    // spec: 07-traits §7.6 — value-position trait method resolved to a TraitMethod
+    // (mangled impl) emits a dispatch-wrapper that calls the *mangled name*, NOT
+    // the hard-coded operator primitive. We assert this WITHOUT a GOT slot for
+    // the impl (which is the int-binary's concern; the four e2e tests cover the
+    // run side after the int slice): the wrapper's `emit_wrapper_call` resolves
+    // the mangled name `Eq.=$String` and — because no slot is registered in this
+    // minimal table — fails with an error naming `Eq.=$String`. That error is
+    // proof-positive that `compile_var` took the resolved-call branch and tried
+    // to dispatch to the typecheck-chosen impl, rather than silently emitting
+    // the hard-coded `eq-i64` (`operator_primitive_name`) which would have
+    // compiled "successfully" to the WRONG impl (Symptom B).
+    #[test]
+    fn value_position_eq_string_dispatches_to_mangled_impl_not_eq_i64() {
+        let module = ModuleFullPath::from("user");
+
+        // `=` on String resolved to the mangled trait-impl name (the non-
+        // primitive TraitMethod path). The wrapper must call this name, not
+        // emit the hard-coded `eq-i64`.
+        let eq_as_value = Expr::Var {
+            name: Symbol::from("="),
+            span: Span::new(50, 51),
+            resolved_call: Some(Box::new(
+                cranelisp_types::ResolvedCall::TraitMethod {
+                    trait_name: cranelisp_types::FQTraitName::new(
+                        module.clone(),
+                        cranelisp_types::TraitName::from("Eq"),
+                    ),
+                    method_name: Symbol::from("="),
+                    impl_type: cranelisp_types::FQTypeName::new(
+                        ModuleFullPath::from("primitives"),
+                        cranelisp_types::TypeName::from("String"),
+                    ),
+                    mangled_name: cranelisp_types::JitSymbol::from("Eq.=$String"),
+                },
+            )),
+            inferred_type: Some(Box::new(Type::Fn(
+                vec![Type::String, Type::String],
+                Box::new(Type::Bool),
+            ))),
+        };
+        let defn = Defn {
+            name: Symbol::from("__expr__"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                body: eq_as_value,
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+
+        let tables = empty_tables();
+        {
+            let mut st = SymbolTable::new(module.clone());
+            st.insert(defn.name.clone(), make_def_entry(defn.clone()));
+            tables.insert(module.clone(), st);
+        }
+
+        let mut jit = Jit::new_with_symbols(&[]).expect("jit init");
+        let aliases = empty_aliases();
+        let names = vec![defn.name.clone()];
+        let result = compile_to_module(
+            module.clone(),
+            &names,
+            &tables,
+            &aliases,
+            jit.jit_module(),
+        );
+        // `CompilationArtifacts` is not `Debug`, so match rather than `expect_err`.
+        let err = match result {
+            Ok(_) => panic!(
+                "without a registered GOT slot for the impl, the dispatch-wrapper's \
+                 call to the mangled name must fail — a clean compile means the \
+                 hard-coded eq-i64 path leaked (FIXME 0300 Symptom B)"
+            ),
+            Err(e) => e,
+        };
+
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("Eq.=$String"),
+            "the codegen error must name the typecheck-chosen mangled impl \
+             `Eq.=$String` (proving the wrapper dispatched to the resolved \
+             target); a silent success or an `eq-i64` reference would mean the \
+             hard-coded operator path leaked (FIXME 0300 Symptom B). Got: {msg}"
         );
     }
 
@@ -4224,12 +4436,12 @@ mod tests {
             variants: vec![
                 DefnVariant {
                     params: vec![(Symbol::from("x"), None)],
-                    body: Expr::Var { name: Symbol::from("x"), span: Span::new(15, 16), inferred_type: None },
+                    body: Expr::Var { name: Symbol::from("x"), span: Span::new(15, 16), resolved_call: None, inferred_type: None },
                     span: variant1_span,
                 },
                 DefnVariant {
                     params: vec![(Symbol::from("a"), None), (Symbol::from("b"), None)],
-                    body: Expr::Var { name: Symbol::from("a"), span: Span::new(45, 46), inferred_type: None },
+                    body: Expr::Var { name: Symbol::from("a"), span: Span::new(45, 46), resolved_call: None, inferred_type: None },
                     span: variant2_span,
                 },
             ],
@@ -4248,6 +4460,7 @@ mod tests {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("f"),
                         span: Span::new(101, 102),
+                        resolved_call: None,
                         inferred_type: None,
                     }),
                     args: vec![Expr::IntLit { value: 42, span: Span::new(103, 105), inferred_type: None }],
@@ -4327,13 +4540,13 @@ mod tests {
             variants: vec![
                 DefnVariant {
                     params: vec![(Symbol::from("x"), None)],
-                    body: Expr::Var { name: Symbol::from("x"), span: Span::new(15, 16), inferred_type: None },
+                    body: Expr::Var { name: Symbol::from("x"), span: Span::new(15, 16), resolved_call: None, inferred_type: None },
                     span: variant1_span,
                 },
                 DefnVariant {
                     params: vec![(Symbol::from("a"), None), (Symbol::from("b"), None)],
                     // Return b (second param) to prove we dispatched to the right variant.
-                    body: Expr::Var { name: Symbol::from("b"), span: Span::new(45, 46), inferred_type: None },
+                    body: Expr::Var { name: Symbol::from("b"), span: Span::new(45, 46), resolved_call: None, inferred_type: None },
                     span: variant2_span,
                 },
             ],
@@ -4352,6 +4565,7 @@ mod tests {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("g"),
                         span: Span::new(101, 102),
+                        resolved_call: None,
                         inferred_type: None,
                     }),
                     args: vec![
@@ -4465,6 +4679,7 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("macros/sconcat"),
                 span: Span::new(2001, 2015),
+                resolved_call: None,
                 inferred_type: None,
             }),
             args: vec![
@@ -4588,6 +4803,7 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("macros/sconcat"),
                 span: Span::new(2101, 2115),
+                resolved_call: None,
                 inferred_type: None,
             }),
             args: vec![
@@ -4775,6 +4991,7 @@ mod tests {
                 body: Expr::Var {
                     name: Symbol::from("x"),
                     span: Span::new(5, 6),
+                    resolved_call: None,
                     inferred_type: Some(Box::new(Type::Int)),
                 },
                 span: Span::new(0, 20),
@@ -4889,6 +5106,7 @@ mod tests {
                 body: Expr::Var {
                     name: Symbol::from("x"),
                     span: Span::new(0, 1),
+                    resolved_call: None,
                     inferred_type: None,
                 },
                 span: Span::new(0, 10),
