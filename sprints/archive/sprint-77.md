@@ -1,6 +1,6 @@
 # Sprint 77: Settle the architecture, then get to green — Stage 1 of the post-arc consolidation
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE) — W0 complete + committed (`ae4ede9`); QA-first + W-Fix underway
+**Status**: COMPLETE (2026-06-10) — get-to-green delivered (1152 passed / 1 relic-failing / 8 skipped); architecture verified sound; int restructure designed → S78 centerpiece.
 
 **Goal**: Establish that **the facade is genuinely sound** (survey + resolve all 21 outstanding architectural FIXMEs; land any facade changes they imply) AND drive the active suite to **full green** (all 38 failures resolved). The arc's Stages 2–4 assume the facade is settled — W0 makes that a verified fact rather than an assumption.
 
@@ -176,6 +176,32 @@ Stage-1 QA-first, then per-crate D/D/R, parallel across owners. Each `/dev` wave
 
 - 2026-06-10: **W-Platform (R9) DONE — reframed by user as test-extension, not feature-build.** /sprint recon confirmed the drift-detection is already WIRED (ABI mismatch `src/platform.rs`; layout-hash type-def drift `src/worker.rs` JIT + `cranelisp_check_layout_hash` --link). /dev (int) extracted testable helpers (`check_abi_version`, `layout_hash_gate`) + 6 unit tests proving the wired detection (behaviour-preserving, 273/273). /qa reframed the 2 mis-written e2e tests to assert e2e-observable structured errors (`platform_unknown_name_emits_structured_not_found`, `platform_fn_dispatches_across_dll_boundary`) — removed the synthetic-DLL `panic!`; fixed 4 mis-cited spec links (spec/11-platform.md doesn't exist → spec/12-runtime.md §12.8). /review PASS (gate refactor behaviour-preserving). The full ADT-DLL drift round-trip e2e deferred to FIXME 0289 (Stage 2, per user "do 1 now, fixme for 2"). platform_errors 4/4, spec_platforms 9/9. Green: ~4 → ~2 (only R10 SharedState remains).
 
+- 2026-06-10: **W-SharedState (R10) → reframed to the int restructure (user-directed).** /dev moved `repl_check_state` cleanly off SharedState (17→16, committed 703b3b1). The last 2 fields (`module_sexps`/`suspend_states`) are cross-thread worker-shared; removing them IS the cluster-atomic worker-loop rebuild. User-requested backgrounding → /arch analysis: (Q1) purely int-internal, no boundary ripple; (Q2) sprawling concurrency-sensitive re-architecture (the S60–S62 heisenbug hot path); (Q3) the "~12-test regression risk" was STALE (read-union landed S66 `a2dcebd`; staging already active); the `shared_state_field_count` test is a **facade-era relic** (introspects an internal struct from a boundary-conformance file; violates the two-tier strategy + 0298 reframe). **User decision**: stop maintaining relic tests destined to be regrounded; spend the effort properly restructuring int toward target state. **/arch authored `design/int/s77-int-restructure.md`** (target flow: `process_cluster` as the single Pass-0/1/2 home, retire `process_module_forms`, block-on-scheduler retry-from-top, in-call-stack threading removing the parking maps; soundness-by-construction removes the heisenbug substrate). **Scope verdict: S78-centerpiece-sized, NOT an S77 wave** (Steps 1+2 = indivisible build-red rebuild of the most dangerous surface; 4 open questions for user sign-off). `shared_state_field_count` left failing-not-ignored (regrounds with the restructure, not by deletion). FIXME 0176 carries the restructure (rationale corrected: read-union landed; real blocker is the process_module_forms retirement).
+
+- 2026-06-10: **Step 0 de-risker — NOT separable (source-proven; folds into S78).** User asked to pull the safe Step 0 (sexps-onto-packet) into S77 before close. /dev separability check (zero edits) DISPROVED §5's "LOW-risk/separable" classification: the entry/REPL module's sexps are read on the RESUME path (one `handle_typecheck_work_shared` read site; resume requeue carries no sexps), kept alive by the H5 fix's unconditional republish — removing `module_sexps` from SharedState breaks H5 and forces the block→resume kernel (S78 Steps 1+2). Step 0 + Steps 1+2 are ONE indivisible change. Filed **0310** (/arch — correct the design doc §5/§2.3). So no Step 0 in S77; the full restructure is S78's indivisible centerpiece. **Close S77 as-is.**
+
 ## Outcome (Phase 7)
 
-{Pending.}
+### Delivered (S77 = "settle the architecture, then get to green")
+- **W0 — architecture verified SOUND**: all 21 architectural FIXMEs surveyed; facade-soundness premise confirmed as fact (no facade changes needed). Full 162-FIXME survey → **70 stale/obsolete closed** with per-item evidence; ledger 162→~90.
+- **Get to green (38 → ~1)**: every real defect across 9 waves —
+  - W-Fix: bare-`:Int` fixtures + 10 stale examples (spec §3.1 tightened S70).
+  - W-Module (0121): entry-file-vs-dir resolution + `(mod X)` short-name alias — 11 tests.
+  - W-Trace (0283/0284 + 3 test-design corrections): nested-guard + ADT-render overflow; 14/14.
+  - W-Exemplar (0296/0031): **real use-after-free** in `vec-set` copy path — solver now correct; 5 tests.
+  - W-MacroTrait RT5 (0299): macro sexp dropped from regen + cache-restore dlsym fallback — 3 tests; RT6 (0300): **§7.6 trait-method-as-value** 5-crate cascade (`Expr::Var.resolved_call`, user-approved) — 4 tests.
+  - W-Repl (0301/0142/0302): bare-primitive docstring + EOF-error + single-ctor display — 3 tests.
+  - W-Platform (R9): drift-detection proven (6 unit tests) + 2 e2e reframed; full ADT-DLL round-trip → 0289 (Stage 2).
+- **Methodology**: investigate-first overturned wrong FIXME/arch framing **6+ times** (Defect-B not a `--link` bug; 0296 a use-after-free not per-frame cost; multiple test-design defects) — the discipline the user pushed for was decisive.
+
+### Deferred (with rationale)
+- **int restructure** (the cluster-atomic worker-loop realization) → **S78 centerpiece** (designed in `design/int/s77-int-restructure.md`; S78-sized per /arch; 4 OQs for user sign-off). `shared_state_field_count` regrounds with it.
+- **Stage 2**: platform-interface round-trip (0289), stdlib runner (0273), legacy harvest (0116–0149), the ~40 deferred-live FIXMEs, the W0 follow-ups (0303/0306/0308 dedup/relocation, 0304/0309 doc).
+- **Stage 3**: perf baseline, concurrency audit (folds into the int restructure).
+- **Stage 4**: W-Retire doc-reorg (0298), Phase-6 user-facing (docs/demos/exemplar showcase).
+- **/spec**: 0307 (EOF-error rule §5.13.2).
+
+### Findings
+- The "162 open FIXMEs" was ~half dead — an accurate ledger was as valuable as the fixes.
+- Several "defects" were test-design defects (nanos-as-exit-code, REPL forward-ref def-order, spec-violating fixtures); validate-against-spec-first + first-hand repro caught them.
+- The int restructure has been deferred across sprints; S77 finally designed it properly rather than half-stepping via relic-test maintenance.
