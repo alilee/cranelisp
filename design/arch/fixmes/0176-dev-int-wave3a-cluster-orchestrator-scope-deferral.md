@@ -5,7 +5,67 @@ filed_by: /dev (int)
 filed_at: 2026-05-13
 sprint_filed: 66
 refers_to: design/int/wave-3a-process-form.md, design/arch/facades/int.md §"process_cluster — the cluster-atomic orchestration loop", design/arch/facades/int.md §"Cluster orchestration result", src/cluster.rs, src/session_v4.rs, src/worker.rs, src/expander.rs, FIXMEs 0098 (Phase 4), 0153, 0156, 0173
-status: open — cluster-shape question RESOLVED by Decision 44 third amendment 2026-05-13; broader scope deferrals still apply
+status: open — cluster-shape question RESOLVED (Decision 44 third amendment 2026-05-13); SharedState field-split PARTIALLY landed (S77 W-SharedState 2026-06-10); module_sexps/suspend_states removal carries (gated on cluster-atomic activation)
+---
+
+## RESOLUTION NOTE for the SharedState field-split (S77 W-SharedState, 2026-06-10)
+
+`/dev` (int), narrow-deployed on `src/`, executed the SharedState PIF field-split
+named in the facade alignment plan (`facades/int.md` §396–408 + the per-field
+table §356–369). Of the **4 prescribed PIF moves** (`module_sexps`,
+`suspend_states`, `current_module`, `repl_check_state`):
+
+- **`current_module` — DONE (pre-S77).** Already PIF-relocated to
+  `CompilerSession.current_repl_module` in S67 Cluster B sub-fire 2d. No work
+  this slice.
+- **`repl_check_state` — DONE (S77 W-SharedState).** PIF-relocated to
+  `CompilerSession.repl_check_state: Mutex<Option<CheckState>>`. The S77 source
+  walk confirmed every access (`set_current_module`, `process_single_form`,
+  `compile_pending_macros` — all `&mut self` REPL methods using a
+  `take()`/restore pattern around a stack-local `ModuleCompiler`) is on the
+  single-threaded initiator; workers never touch it. The relocation is
+  therefore **race-free and did NOT require cluster-atomic activation** — the
+  S67 deferral lumped it with the worker-shared pair, but the source reality is
+  that it is pure initiator-thread REPL-session state. `SharedState` field
+  count: 17 → 16.
+
+- **`module_sexps` + `suspend_states` — HONEST CARRY (still on SharedState).**
+  These two are **genuinely worker-shared, cross-thread** state, NOT a clean
+  field-split:
+  - `handle_typecheck_work_shared` (the persistent priority worker loop,
+    `src/worker.rs:4277`) reads `shared.module_sexps[module]` for the sexps to
+    typecheck, publishes dep_sexps into `shared.module_sexps[dep]` for *other*
+    workers to pick up, and stores/restores `shared.suspend_states[module]`
+    across the block→resume cycle that can hop worker threads.
+  - The initiator (`register_module_with_source` / `republish_module_sexps_*` /
+    `register_dep_for_eval`) publishes into the same maps for the worker pool.
+  - Removing them is exactly the **cluster-atomic redesign** the facade gates on
+    (former FIXME 0179 read-union). Per `src/CLAUDE.md` §"Cluster-Atomic
+    Orchestration", the staging machinery (`worker::process_cluster_with_staging`
+    + `commit_staging_to_live`) is **wired but NOT activated** on the hot path:
+    `check_program_compat` still uses `ClusterContext::Live`. Activating cluster
+    mode without the read-union flip regresses ~12 tests (per-form registration
+    paths read back via the live-only `current_symbol_table` accessor). The live
+    path remains the `process_module_forms` worker loop, which depends on these
+    two maps for cross-thread block→resume.
+  - **Disposition:** moving these off `SharedState` is the broader cluster-atomic
+    rebuild, not a safe field-split. Forcing it this slice would risk a race and
+    a ~12-test regression. Per the project's race-aversion + Principle 8 (no
+    interim implementations — a sub-struct wrapper would be transient scaffolding
+    the rebuild tears down anyway), they stay on `SharedState` until cluster mode
+    activates. The target test `facade_pif_rows::shared_state_field_count_*`
+    stays **failing-not-ignored** at 16 fields (target ≤14) as the durable
+    trigger for that work.
+
+**Residual carry → cluster-atomic activation (this FIXME stays open as the
+carrier).** When the cluster-mode read-union lands (the staging/live read-union
+that lets `process_cluster_with_staging` go live on the hot path), the
+`process_module_forms` worker loop retires, `module_sexps` + `suspend_states`
+become in-call-stack values inside `process_cluster`, and both fields delete from
+`SharedState` (→ 14 fields, target test passes). That is the deeper rebuild named
+in the §"Issue" section below, NOT a field-split, and is the remaining scope of
+this FIXME.
+
 ---
 
 ## RESOLUTION NOTE for the cluster-shape question (2026-05-13)

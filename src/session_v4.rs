@@ -765,18 +765,15 @@ pub struct SharedState {
     // module per `PriorityWork` / `NiceWork` work item and never need to
     // read the REPL's current namespace.
 
-    /// REPL carry-forward: CheckState that persists across REPL evals.
-    /// Contains substitution, scope stack, overloads, module aliases.
-    /// None in batch mode (CheckState is stack-local per worker).
-    ///
-    /// **Sprint 67 Cluster B investigation verified LIVE.** Read by both
-    /// REPL eval paths (`session_v4.rs:2395, 3377`); mutated
-    /// when `/mod` switches the active module (`set_current_module`,
-    /// session_v4.rs:1152). Facade-plan `PIF — relocate to CompilerSession`
-    /// (S67 W1 row) is correct in direction but currently load-bearing on
-    /// SharedState; relocation deferred to S68 review per FIXME 0208 facade
-    /// refresh + S68 cluster-atomic completion.
-    pub repl_check_state: Mutex<Option<CheckState>>,
+    // Sprint 77 W-SharedState (FIXME 0176/0179): `repl_check_state:
+    // Mutex<Option<CheckState>>` was here. PIF-relocated to
+    // `CompilerSession.repl_check_state` per `facades/int.md` §408. The S67
+    // investigation flagged it `PIF — relocate to CompilerSession`; the S77
+    // source walk confirmed every access is on the single-threaded initiator
+    // (REPL `&mut self` methods, `take()`/restore around a stack-local
+    // `ModuleCompiler`) — workers never touch it, so the relocation is
+    // race-free and did NOT need the cluster-atomic flip (unlike
+    // `module_sexps` / `suspend_states`, which remain worker-shared).
 
     // -- Target data model (session-restructure.md) --
     // DashMaps are inherently concurrent and accessible to both priority
@@ -968,6 +965,20 @@ pub struct CompilerSession {
     /// `PriorityWork` / `NiceWork`.
     current_repl_module: ModuleFullPath,
 
+    /// REPL carry-forward: CheckState that persists across REPL evals
+    /// (substitution, scope stack, overloads, module aliases). `None` in
+    /// batch mode — CheckState is stack-local per worker there.
+    ///
+    /// **Sprint 77 W-SharedState (FIXME 0176/0179): PIF-relocated from
+    /// `SharedState.repl_check_state` per `design/arch/facades/int.md` §408.**
+    /// REPL-only carry-forward; every access is on the single-threaded
+    /// initiator (REPL `&mut self` methods use a `take()`/restore pattern
+    /// around a stack-local `ModuleCompiler`). Workers never touch it.
+    /// `Mutex` retained so the inner `take()`/restore keeps the same shape as
+    /// the former `SharedState` field; the `Mutex` is vestigial against
+    /// `&mut self` access and may be unwrapped in a follow-up.
+    repl_check_state: Mutex<Option<CheckState>>,
+
     /// REPL input-active flag — per `repl/spec.md §14` / exec-flow-repl
     /// STEP 1 / STEP 3. Shared with the watcher event handler via `Arc`
     /// clone so the watcher can skip cascade reloads while the user is
@@ -1130,7 +1141,6 @@ impl CompilerSession {
             symbol_tables,
             next_type_id,
             module_aliases: cranelisp_types::ModuleAliases::default(),
-            repl_check_state: Mutex::new(Some(CheckState::new(user_module.clone()))),
             typecheck_products: dashmap::DashMap::new(),
             // Sprint 58 Wave 3b: kept_jits / kept_linkers dissolved per
             // Decision 35; Arc retention now lives on each Code::Jit /
@@ -1193,7 +1203,8 @@ impl CompilerSession {
             worker_pool: crate::worker_pool::WorkerPool::new(
                 priority_worker_handles, nice_worker_handles, nice_workers,
             ),
-            current_repl_module: user_module,
+            current_repl_module: user_module.clone(),
+            repl_check_state: Mutex::new(Some(CheckState::new(user_module))),
             repl_input_active: std::sync::Arc::new(AtomicBool::new(false)),
             warnings: Vec::new(),
         }
@@ -1280,7 +1291,7 @@ impl CompilerSession {
         *self.shared.test_runner_state.current_module.lock()
             .unwrap_or_else(|e| e.into_inner()) = path.clone();
         // Create a new CheckState for the new module.
-        *self.shared.repl_check_state.lock()
+        *self.repl_check_state.lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(CheckState::new(path));
     }
 
@@ -2532,7 +2543,7 @@ impl CompilerSession {
             let result = {
                 // Extract REPL check_state for worker use, restore after.
                 cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, &module);
-                let repl_cs = self.shared.repl_check_state.lock()
+                let repl_cs = self.repl_check_state.lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .take()
                     .unwrap_or_else(|| CheckState::new(module.clone()));
@@ -2567,7 +2578,7 @@ impl CompilerSession {
                     ModuleStrategy::Additive,
                 );
                 // Restore REPL check_state.
-                *self.shared.repl_check_state.lock()
+                *self.repl_check_state.lock()
                     .unwrap_or_else(|e| e.into_inner()) = Some(wctx.check_state);
                 res?
             };
@@ -3462,7 +3473,7 @@ impl CompilerSession {
             let mut accumulator = ModuleCheckAccumulator::new();
 
             cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, &module);
-            let repl_cs = self.shared.repl_check_state.lock()
+            let repl_cs = self.repl_check_state.lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .take()
                 .unwrap_or_else(|| CheckState::new(module.clone()));
@@ -3487,7 +3498,7 @@ impl CompilerSession {
                 &mut wctx, &module, &info, Span::SYNTHETIC, &mut accumulator,
             )?;
             // Restore REPL check_state.
-            *self.shared.repl_check_state.lock()
+            *self.repl_check_state.lock()
                 .unwrap_or_else(|e| e.into_inner()) = Some(wctx.check_state);
         }
         Ok(())

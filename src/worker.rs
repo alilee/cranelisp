@@ -414,8 +414,10 @@ pub struct ModuleCompiler<'a> {
     /// installer writes `(import [(target alias) …])` aliases here; typecheck
     /// reads it read-only. Lives on `SharedState.module_aliases`.
     pub module_aliases: &'a cranelisp_types::ModuleAliases,
-    /// Per-invocation typecheck state. For REPL: extracted from SharedState.repl_check_state.
-    /// For batch workers: created fresh per module.
+    /// Per-invocation typecheck state. For REPL: extracted from
+    /// `CompilerSession.repl_check_state` (S77 W-SharedState — relocated off
+    /// SharedState since it is initiator-only). For batch workers: created
+    /// fresh per module.
     pub check_state: CheckState,
     /// Current module path. Mirrors check_state.current_module (which is pub(crate)).
     /// Updated alongside check_state by set_current_module().

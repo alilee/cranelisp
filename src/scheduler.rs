@@ -1782,7 +1782,8 @@ mod tests {
             next_type_id: std::sync::atomic::AtomicU32::new(0),
             // Sprint 67 Cluster B sub-fire 2d: `current_module` PIF-relocated
             // to `CompilerSession::current_repl_module`.
-            repl_check_state: Mutex::new(None),
+            // Sprint 77 W-SharedState: `repl_check_state` PIF-relocated to
+            // `CompilerSession::repl_check_state` (initiator-only).
             typecheck_products: dashmap::DashMap::new(),
             // Sprint 58 Wave 3b: kept_jits / kept_linkers dissolved per
             // Decision 35.
