@@ -3023,3 +3023,59 @@ fn regression_0279_cross_module_polymorphic_import_monomorphisation() {
         Err(e) => panic!("unexpected harness error: {e}"),
     }
 }
+
+// =============================================================================
+// Sprint 78 — int-internal structural-target guard: SharedState field count
+// =============================================================================
+//
+// RELOCATED in Sprint 78 Wave 1 (plan §3) FROM `tests/facade_pif_rows.rs`
+// (`shared_state_field_count_matches_facade_after_pif`). Per FIXME 0298 this
+// test introspects an int-INTERNAL struct (`SharedState`), not a boundary /
+// public-API surface, so `facade_pif_rows.rs` (boundary-conformance only) was
+// the wrong home. `regression.rs` is the canonical home for cross-cutting
+// int-internal structural guards.
+//
+// This is the standing guard that the cross-thread in-progress parking maps
+// (`module_sexps`, `suspend_states`) do not creep back onto `SharedState` after
+// the Sprint 78 restructure deletes them. The restructure removes EXACTLY those
+// 2 fields from 16 (the `register_dep_for_eval`/republish removal sheds methods,
+// not fields), so the target is `== 14`.
+
+// spec: design/int/s77-int-restructure.md §2.3 — SharedState drops 16 → 14
+//       fields after module_sexps/suspend_states deletion
+#[test]
+fn shared_state_field_count_at_target_14() {
+    // Count `pub` fields in `pub struct SharedState { … }` in session_v4.rs.
+    //
+    // STATUS until the restructure lands (Sprint 78 Steps 1+2): this FAILS at
+    // 16 — and that is the intended loud signal per
+    // `memory/feedback_failing_not_ignored.md`. It is in scope this sprint and
+    // is NOT `#[ignore]`'d. It flips green when Steps 1+2 delete the two maps.
+    let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/session_v4.rs");
+    let text = std::fs::read_to_string(&src)
+        .unwrap_or_else(|e| panic!("read {}: {e}", src.display()));
+    let start = text
+        .find("pub struct SharedState {")
+        .expect("SharedState struct in src/session_v4.rs");
+    let after = &text[start..];
+    let end_offset = after
+        .find("\n}\n")
+        .expect("end of SharedState struct definition");
+    let body = &after[..end_offset];
+    // Count `pub ` field declarations — lines matching `\s+pub <ident>:`.
+    let field_count = body
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            t.starts_with("pub ") && t.contains(':') && !t.starts_with("pub fn")
+        })
+        .count();
+    assert_eq!(
+        field_count, 14,
+        "SharedState has {field_count} pub fields; Sprint 78 restructure target \
+         is exactly 14 (16 − module_sexps − suspend_states; \
+         design/int/s77-int-restructure.md §2.3). Until Steps 1+2 land this \
+         FAILS at 16 — the intended loud signal. After: this is the standing \
+         guard that the two cross-thread parking maps do not creep back."
+    );
+}

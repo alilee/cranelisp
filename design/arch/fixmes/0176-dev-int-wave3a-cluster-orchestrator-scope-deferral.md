@@ -5,7 +5,7 @@ filed_by: /dev (int)
 filed_at: 2026-05-13
 sprint_filed: 66
 refers_to: design/int/wave-3a-process-form.md, design/arch/facades/int.md §"process_cluster — the cluster-atomic orchestration loop", design/arch/facades/int.md §"Cluster orchestration result", src/cluster.rs, src/session_v4.rs, src/worker.rs, src/expander.rs, FIXMEs 0098 (Phase 4), 0153, 0156, 0173
-status: open — cluster-shape question RESOLVED (Decision 44 third amendment 2026-05-13); SharedState field-split PARTIALLY landed (S77 W-SharedState 2026-06-10); module_sexps/suspend_states removal carries (gated on cluster-atomic activation)
+status: open — cluster-shape question RESOLVED (Decision 44 third amendment 2026-05-13); SharedState field-split PARTIALLY landed (S77 W-SharedState 2026-06-10); module_sexps/suspend_states removal carries as the S78 centerpiece (design/int/s77-int-restructure.md), now scoped per FIXME 0310 as ONE indivisible red→green span (no separable "Step 0")
 ---
 
 ## RESOLUTION NOTE for the SharedState field-split (S77 W-SharedState, 2026-06-10)
@@ -65,6 +65,18 @@ become in-call-stack values inside `process_cluster`, and both fields delete fro
 `SharedState` (→ 14 fields, target test passes). That is the deeper rebuild named
 in the §"Issue" section below, NOT a field-split, and is the remaining scope of
 this FIXME.
+
+**Update (S78 Phase 2, 2026-06-10).** The read-union half *already landed*
+(commit `a2dcebd` — `check_program_compat` delegates unconditionally to
+`process_cluster_with_staging`; FIXME 0179 closed). The residual scope of THIS
+FIXME is therefore exactly the S78 restructure centerpiece
+(`design/int/s77-int-restructure.md`): retire `process_module_forms`, lift
+Pass-0/1/2 + the in-call-stack dep-drive into `cluster::process_cluster`, and
+delete `module_sexps` + `suspend_states` (16 → 14 fields). Per FIXME 0310 (now
+actioned + deleted), that removal is **one indivisible red→green span** — there
+is no separable low-risk "Step 0" (the entry-module sexps are read on the resume
+path, so relocating them onto the work packet is entangled with the block→resume
+kernel rewrite). **This FIXME closes when the restructure lands.**
 
 ---
 

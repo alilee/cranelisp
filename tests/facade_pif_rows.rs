@@ -578,53 +578,12 @@ fn fqtypename_binding_resolved_stage_apis_use_fqtypename_not_bare_typename() {
     );
 }
 
-// =============================================================================
-// SharedState facade alignment (FIXME 0176 broader scope, second user-challenge)
-// =============================================================================
-
-// spec: design/arch/facades/int.md §"SharedState facade alignment plan"
-// FIXME(/dev int Wave 3, FIXME 0176 broader scope): per-field PFR/PIF
-// disposition; impl narrows to facade-prescribed shape. PIF fields
-// (module_sexps, suspend_states, current_module, repl_check_state, etc.)
-// move off SharedState; PFR fields stay with facade text widened.
-#[test]
-fn shared_state_field_count_matches_facade_after_pif() {
-    // Count `pub` fields in `pub struct SharedState { … }` in session_v4.rs.
-    // Pre-PIF: ~17 fields (audit count). Post-PIF the facade-prescribed
-    // worker-shareable subset is reachable by either:
-    //   - Strict 8 fields (PIF-prefer for transients) per facade line 119
-    //   - ~13 fields if PFR widens facade to admit Mutex-wrapped configs +
-    //     scheduler-related fields per the alignment plan in int.md §192–230
-    // The alignment plan's net target after PIF moves (module_sexps,
-    // suspend_states, current_module, repl_check_state — 4 PIF removals)
-    // is ~13 fields. We assert ≤ 14 to admit one field of slack.
-    let src = workspace_root().join("src/session_v4.rs");
-    let text = std::fs::read_to_string(&src)
-        .unwrap_or_else(|e| panic!("read {}: {e}", src.display()));
-    let start = text
-        .find("pub struct SharedState {")
-        .expect("SharedState struct in src/session_v4.rs");
-    let after = &text[start..];
-    let end_offset = after
-        .find("\n}\n")
-        .expect("end of SharedState struct definition");
-    let body = &after[..end_offset];
-    // Count `pub ` field declarations — lines matching `\s+pub <ident>:`.
-    let field_count = body
-        .lines()
-        .filter(|l| {
-            let t = l.trim_start();
-            t.starts_with("pub ") && t.contains(':') && !t.starts_with("pub fn")
-        })
-        .count();
-    assert!(
-        field_count <= 14,
-        "FIXME 0176 broader scope: SharedState has {field_count} pub fields; \
-         facade alignment plan (int.md §192 onward) prescribes ≤ 13 \
-         post-PIF (4 PIF moves: module_sexps, suspend_states, current_module, \
-         repl_check_state). /dev (int) Wave 3."
-    );
-}
+// NOTE (Sprint 78 Wave 1, plan §3): `shared_state_field_count_matches_facade_after_pif`
+// was RELOCATED out of this boundary-conformance file into `tests/regression.rs`
+// as `shared_state_field_count_at_target_14`. Per FIXME 0298 it introspects an
+// int-INTERNAL struct (`SharedState`), not a boundary/public-API surface, so it
+// does not belong here. Its spec anchor regrounds from the (retiring) int facade
+// to `design/int/s77-int-restructure.md §2.3` (16 → 14 fields). See regression.rs.
 
 // =============================================================================
 // REV-3 read-side hook — describe_symbol uses shared.symbol_tables +

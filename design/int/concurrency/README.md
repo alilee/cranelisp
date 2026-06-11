@@ -9,7 +9,7 @@ Per-crate diagrams for the integration layer's internal concurrency. The archite
 | `target-state.svg` | High-level int-internal target architecture: smaller session core, single dependency service, unified worker subsystem, narrowed shared-state ownership. |
 | `concurrency-structure-matrix.svg` | Inventory view of the major concurrency structures inside int — owner, readers/writers, interface shape. |
 | `scheduler-lifecycle.svg` | State-machine view of module lifecycle inside the scheduler. Pool transitions, readiness publication points. |
-| `dependency-protocol-target.svg` | Proposed target dependency-publication / registration / wait / resume protocol with a single dependency service. |
+| `dependency-protocol-target.svg` | Target dependency block→resume protocol, in-call-stack (option b — S78 restructure): on a dependency gap the worker drops its stack-local cluster staging, registers the dep, blocks on the scheduler (cycle-check first), the pool processes the dep, `notify_typecheck_done` unblocks the waiter, and the worker retries its cluster from the top against committed live state. No `module_sexps`/`suspend_states` parking maps. See `design/int/s77-int-restructure.md`. |
 | `symbol-publication-target.svg` | Proposed target publication flow with one explicit publication authority. |
 | `compilation-cadence-batch-run.svg` | Sequence diagram of one compilation-cadence batch-run pass: scheduler ↔ priority workers ↔ nice workers ↔ symbol table. The int-internal counterpart to the architectural exec-flow diagrams in `design/arch/sequences/`. |
 

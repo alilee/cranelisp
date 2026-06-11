@@ -22,6 +22,7 @@
 mod helpers;
 
 use helpers::e2e::Cranelisp;
+use std::time::Duration;
 
 // =============================================================================
 // §8.3 Import — specific names + cross-module call
@@ -218,6 +219,46 @@ fn module_cycle_detection_neg() {
     assert!(
         !out.status.success(),
         "import cycles MUST be rejected at compile time (spec §8.10.2); \
+         stdout={} stderr={}",
+        out.stdout, out.stderr
+    );
+}
+
+// spec: spec/08-modules.md §8.10 — circular module imports MUST be rejected
+//
+// OQ-2 (Sprint 78): the tightest 2-node mutual import (m ↔ n) under the
+// in-call-stack dep-drive. The existing `module_cycle_detection_neg` above
+// covers a 3-node chain; this covers the 2-node mutual case that
+// `design/int/s77-int-restructure.md §3.4` reasons about directly — "W blocks
+// M on N; a worker blocks N on M; the second block_for_typecheck detects the
+// M→N→M cycle". It additionally asserts the LIVENESS property OQ-2 names:
+// rejection fires BEFORE any wait (the cycle path runs detect_cycle_locked
+// before adding the waiter), so the subprocess TERMINATES promptly rather than
+// deadlocking. The `.timeout(...)` bound makes a deadlock regression surface as
+// a Timeout panic, not an infinitely-hanging test.
+#[test]
+fn mutual_import_cycle_rejected_before_wait_neg() {
+    // Tightest 2-node mutual cycle: m imports n, n imports m. `main` is the
+    // entry that pulls in m.
+    let out = Cranelisp::new()
+        .file("main.cl", "(import [m [f]])\n(defn main [] (f))")
+        .file("m.cl", "(import [n [g]])\n(defn f [] (g))")
+        .file("n.cl", "(import [m [f]])\n(defn g [] (f))")
+        .run("main.cl")
+        .timeout(Duration::from_secs(10))
+        .output();
+    // (1) Rejection: the program does NOT succeed. (The diagnostic text need
+    //     not say "cycle" — matching `module_cycle_detection_neg`'s note that
+    //     the wording is a UX gap, not a spec violation.)
+    // (2) Liveness: reaching this assertion at all proves the subprocess
+    //     terminated within the 10s bound — `.output()` would have panicked
+    //     with CrError::Timeout on a deadlock regression. This is the OQ-2
+    //     "fires before any wait" evidence: rejection is prompt, not after a
+    //     block-and-deadlock.
+    assert!(
+        !out.status.success(),
+        "2-node mutual import cycle (m ↔ n) MUST be rejected before any wait \
+         (spec §8.10; design/int/s77-int-restructure.md §3.4); \
          stdout={} stderr={}",
         out.stdout, out.stderr
     );

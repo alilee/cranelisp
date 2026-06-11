@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Condvar, Mutex, MutexGuard};
 
-use cranelisp_types::{ErrorLocation, CranelispError, ModuleFullPath, Span, Symbol};
+use cranelisp_types::{ErrorLocation, CranelispError, ModuleFullPath, Sexp, Span, Symbol};
 
 use crate::observability::{
     self, SchedulerTraceTag,
@@ -86,33 +86,24 @@ pub struct ModuleState {
     /// Error that caused this module to fail, if any.
     pub error: Option<CranelispError>,
 
-    /// Form index to resume from when unblocked.
-    /// None = start from the beginning (fresh module).
-    pub resume_from_form: Option<usize>,
+    /// The cluster sexps this module typechecks from (S78 packet model). Held
+    /// here so the requeue path (`try_unblock_locked`) can reconstruct the
+    /// `PriorityWork::Typecheck { module, sexps }` packet after the dep this
+    /// module blocked on completes — the worker re-runs the cluster from the
+    /// top with no saved suspend state. `None` for cache-restored modules
+    /// (registered at `TypecheckDone`, never typechecked from source) and for
+    /// the eval/REPL caller module (driven by the eval thread, never requeued
+    /// onto the pool for a fresh typecheck of its own sexps).
+    pub sexps: Option<std::sync::Arc<[Sexp]>>,
 
     /// Module this module is currently blocked on (forward edge).
     /// Set when entering TypecheckBlocked, cleared when unblocked.
     /// Used for cycle detection.
     pub blocked_on: Option<ModuleFullPath>,
-
-    /// The REPL-eval thread owns this module's post-unblock retry via
-    /// `wait_module_inmem_complete_blocking`. Set immediately before the
-    /// blocking wait in `register_dep_for_eval`; cleared immediately after.
-    ///
-    /// When set, `try_unblock_locked` MUST NOT push the module into
-    /// `typecheck_first` — doing so would let a persistent priority
-    /// worker pop it and race the REPL-eval thread on
-    /// `register_imports` reads of `symbol_tables[dep]`.
-    ///
-    /// Accessed only under the scheduler state lock (no atomics, no
-    /// separate mutex). See
-    /// `design/int/heisenbug-race-closure.md §7.7 + §8.2` for mechanism;
-    /// §3d' for the /arch condition requiring state-lock linearisation.
-    pub eval_in_flight: bool,
 }
 
 impl ModuleState {
-    fn new(pool: ModulePool) -> Self {
+    fn new(pool: ModulePool, sexps: Option<std::sync::Arc<[Sexp]>>) -> Self {
         Self {
             pool,
             waiters: HashMap::new(),
@@ -122,9 +113,8 @@ impl ModuleState {
             object_working: false,
             object_done: false,
             error: None,
-            resume_from_form: None,
+            sexps,
             blocked_on: None,
-            eval_in_flight: false,
         }
     }
 
@@ -142,9 +132,8 @@ impl ModuleState {
             object_working: false,
             object_done: true,
             error: None,
-            resume_from_form: None,
+            sexps: None,
             blocked_on: None,
-            eval_in_flight: false,
         }
     }
 }
@@ -172,13 +161,48 @@ pub enum WaitKind {
 /// The cross-module-FQ macro/fn work that variant was retained for is now served
 /// by the synchronous dependency typecheck-and-compile in the worker loop; no
 /// speculative per-symbol JIT boost is needed.)
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum PriorityWork {
     /// Typecheck a module (from TypecheckFirst or TypecheckNext).
-    Typecheck(ModuleFullPath),
+    ///
+    /// S78 in-call-stack restructure: the cluster's parsed sexps ride ON the
+    /// work packet (`Arc<[Sexp]>`), replacing the former cross-thread
+    /// `SharedState.module_sexps` parking map. The worker reads them off the
+    /// packet; on a dependency gap the worker frees back to the pool and the
+    /// scheduler requeues the SAME packet (sexps included) via
+    /// `try_unblock_locked` — the worker re-runs the cluster from the top
+    /// against now-larger live state with no saved suspend state.
+    Typecheck {
+        module: ModuleFullPath,
+        sexps: std::sync::Arc<[Sexp]>,
+    },
     /// JIT-compile a symbol from a TypecheckDone module.
     JitCodegen(ModuleFullPath, Symbol),
 }
+
+// `PartialEq`/`Eq` were derived pre-S78 (the queue held bare `ModuleFullPath`).
+// With `Arc<[Sexp]>` on the packet, structural equality would require
+// `Sexp: Eq` AND a deep slice compare on every requeue — neither is wanted.
+// No call site compares whole `PriorityWork` values; tests assert on `.module`
+// / the variant shape. Manual `PartialEq` compares only the discriminant +
+// module identity (cheap, sufficient for any "is this the same work item"
+// check), deliberately ignoring the sexps payload.
+impl PartialEq for PriorityWork {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                PriorityWork::Typecheck { module: a, .. },
+                PriorityWork::Typecheck { module: b, .. },
+            ) => a == b,
+            (
+                PriorityWork::JitCodegen(am, asym),
+                PriorityWork::JitCodegen(bm, bsym),
+            ) => am == bm && asym == bsym,
+            _ => false,
+        }
+    }
+}
+impl Eq for PriorityWork {}
 
 // ---------------------------------------------------------------------------
 // SchedulerState — all mutable state behind a Mutex.
@@ -301,9 +325,16 @@ impl CompileScheduler {
     /// Idempotent: if the module is already registered, this is a no-op.
     /// This handles the case where multiple import specs reference the
     /// same dependency module (F2 fix).
+    ///
+    /// S78 packet model: `sexps` are the module's parsed cluster forms, stored
+    /// on the `ModuleState` so the work item the worker pops
+    /// (`PriorityWork::Typecheck { module, sexps }`) and any requeue after a
+    /// dependency block both carry them. Replaces the former
+    /// `SharedState.module_sexps` cross-thread parking map.
     pub fn register_module(
         &self,
         module: ModuleFullPath,
+        sexps: std::sync::Arc<[Sexp]>,
         delays_other: bool,
     ) {
         observability::record_module_event(
@@ -322,7 +353,7 @@ impl CompileScheduler {
         } else {
             ModulePool::TypecheckNext
         };
-        state.modules.insert(module.clone(), ModuleState::new(pool));
+        state.modules.insert(module.clone(), ModuleState::new(pool, Some(sexps)));
         if delays_other {
             state.typecheck_first.push_back(module);
         } else {
@@ -366,9 +397,21 @@ impl CompileScheduler {
             &mut state, &module, &symbols,
         );
 
-        // Wake nice workers — new TypecheckDone module (already object_done
-        // for cached, but wake anyway for consistency).
+        // Wake BOTH worker classes. Nice workers get the new TypecheckDone
+        // module (already object_done for cached, but wake for consistency).
+        // Priority workers MUST also be woken: a cache-restored module enters
+        // with `inmem_done == false` and its in-memory `.o` load is a Level-4
+        // `JitCodegen` priority work item (`try_take_work_locked`); and the
+        // `satisfy_typecheck_waiters` sweep above may have requeued blocked
+        // waiter modules into `typecheck_first`/`typecheck_next` via
+        // `try_unblock_locked`. Both are priority work — signalling only
+        // `object_work_available` leaves a priority worker parked and the
+        // queued work undrained (lost wakeup → a `wait_*_inmem_complete`
+        // caller parks on `completion` forever). The guarded-condvar discipline
+        // requires every state mutation that enqueues priority work to signal
+        // `priority_work_available` under the established lock order.
         drop(state);
+        self.priority_work_available.notify_all();
         self.object_work_available.notify_all();
     }
 
@@ -381,7 +424,16 @@ impl CompileScheduler {
     /// skipped — the watcher will catch the change on the next poll.
     ///
     /// Returns true if the module was re-registered, false if skipped.
-    pub fn re_register_module(&self, module: &ModuleFullPath) -> bool {
+    ///
+    /// S78 packet model: `sexps` are the freshly-reparsed cluster forms,
+    /// stored on the reset `ModuleState` so the worker that pops the
+    /// re-registered work item (and any requeue) typechecks from the new
+    /// source.
+    pub fn re_register_module(
+        &self,
+        module: &ModuleFullPath,
+        sexps: std::sync::Arc<[Sexp]>,
+    ) -> bool {
         observability::record_module_event(
             SchedulerTraceTag::ReRegisterModule,
             module.as_ref(),
@@ -425,9 +477,8 @@ impl CompileScheduler {
                 object_working: false,
                 object_done: false,
                 error: None,
-                resume_from_form: None,
+                sexps: Some(sexps),
                 blocked_on: None,
-                eval_in_flight: false,
             };
         }
 
@@ -496,6 +547,30 @@ impl CompileScheduler {
         }
     }
 
+    /// Build a `PriorityWork::Typecheck` packet for a module popped off a
+    /// typecheck queue: flip it to `TypecheckWorking`, emit the trace tag, and
+    /// attach the module's stored cluster sexps (S78 packet model). If the
+    /// module has no stored sexps (should not happen for a queued typecheck —
+    /// `register_module`/`re_register_module` always store them, and requeue
+    /// preserves them), an empty slice is attached so the worker surfaces an
+    /// empty-cluster no-op rather than panicking.
+    fn dispatch_typecheck_locked(
+        state: &mut SchedulerState,
+        module: ModuleFullPath,
+    ) -> PriorityWork {
+        Self::set_pool_locked(state, &module, ModulePool::TypecheckWorking);
+        observability::record_module_event(
+            SchedulerTraceTag::ModuleStateTypechecking,
+            module.as_ref(),
+        );
+        let sexps = state
+            .modules
+            .get(&module)
+            .and_then(|ms| ms.sexps.clone())
+            .unwrap_or_else(|| std::sync::Arc::from(Vec::new()));
+        PriorityWork::Typecheck { module, sexps }
+    }
+
     /// Try to take a work item from the priority ladder (locked).
     ///
     /// Shared implementation for both blocking and non-blocking variants.
@@ -508,24 +583,14 @@ impl CompileScheduler {
 
         // Level 1: TypecheckFirst
         if let Some(module) = state.typecheck_first.pop_front() {
-            Self::set_pool_locked(state, &module, ModulePool::TypecheckWorking);
-            observability::record_module_event(
-                SchedulerTraceTag::ModuleStateTypechecking,
-                module.as_ref(),
-            );
-            return Some(PriorityWork::Typecheck(module));
+            return Some(Self::dispatch_typecheck_locked(state, module));
         }
 
         // Level 2 (priority codegen queue) deleted in S76 W3 — see PriorityWork.
 
         // Level 3: TypecheckNext
         if let Some(module) = state.typecheck_next.pop_front() {
-            Self::set_pool_locked(state, &module, ModulePool::TypecheckWorking);
-            observability::record_module_event(
-                SchedulerTraceTag::ModuleStateTypechecking,
-                module.as_ref(),
-            );
-            return Some(PriorityWork::Typecheck(module));
+            return Some(Self::dispatch_typecheck_locked(state, module));
         }
 
         // Level 4: JitCodegen for cached modules needing inmem loading.
@@ -597,8 +662,7 @@ impl CompileScheduler {
     /// uniformity, but there is no future `notify_typecheck_done(dep)` sweep to
     /// re-queue it (the dep finished before the block was recorded). This drives
     /// the same `try_unblock` sweep `notify_typecheck_done` performs, clearing
-    /// the `blocked_on` edge and re-queuing the waiter (or, under
-    /// `eval_in_flight`, letting the REPL eval thread drive the retry).
+    /// the `blocked_on` edge and re-queuing the waiter.
     pub fn unblock_module(&self, module: &ModuleFullPath) {
         let mut state = self.lock();
         if let Some(ms) = state.modules.get_mut(module) {
@@ -766,11 +830,17 @@ impl CompileScheduler {
             ms.inmem_done = true;
             ms.inmem_claimed = false;
         }
-        // Evaluate waiter satisfaction for codegen waiters.
+        // Evaluate waiter satisfaction for codegen waiters. This may requeue
+        // blocked waiter modules into the typecheck queues via
+        // `try_unblock_locked` (priority work), so `priority_work_available`
+        // must be signalled alongside `completion` below — a requeue without a
+        // priority-worker wake is a lost wakeup.
         Self::satisfy_codegen_waiters_batch_locked(&mut state, module, symbols);
         Self::try_complete_locked(&mut state, module);
-        // Wake callers waiting for inmem completion.
+        // Wake callers waiting for inmem completion, AND priority workers in
+        // case the waiter sweep requeued typecheck work.
         drop(state);
+        self.priority_work_available.notify_all();
         self.completion.notify_all();
     }
 
@@ -1129,16 +1199,6 @@ impl CompileScheduler {
         state.modules.get(module).map(|ms| ms.pool)
     }
 
-    /// Get a clone of the module state for a module, if registered.
-    /// Returns pool, resume_from_form, and other coordination metadata.
-    pub fn module_resume_from_form(
-        &self,
-        module: &ModuleFullPath,
-    ) -> Option<Option<usize>> {
-        let state = self.lock();
-        state.modules.get(module).map(|ms| ms.resume_from_form)
-    }
-
     /// Check if a module was loaded from cache (vs. compiled from source).
     ///
     /// Used by workers to determine whether a codegen work item should
@@ -1180,18 +1240,6 @@ impl CompileScheduler {
     pub fn cached_module_remove(&self, module: &ModuleFullPath) {
         let mut state = self.lock();
         state.cached_modules.remove(module);
-    }
-
-    /// Set the resume_from_form for a module.
-    pub fn set_resume_from_form(
-        &self,
-        module: &ModuleFullPath,
-        form_index: usize,
-    ) {
-        let mut state = self.lock();
-        if let Some(ms) = state.modules.get_mut(module) {
-            ms.resume_from_form = Some(form_index);
-        }
     }
 
     /// Check if the scheduler is in shutdown state.
@@ -1316,20 +1364,21 @@ impl CompileScheduler {
         }
     }
 
-    /// Try to unblock a module. If the module is TypecheckBlocked and
-    /// has no remaining wait conditions, move it to TypecheckFirst
-    /// (if it has waiters itself) or TypecheckNext (if not).
+    /// Try to unblock a module. If the module is TypecheckBlocked and has no
+    /// remaining wait conditions, move it to TypecheckFirst (if it has waiters
+    /// itself) or TypecheckNext (if not) and requeue it for a worker.
     ///
-    /// Sprint 61 Wave 3 step 3e' — H5 race closure.
-    /// See `design/int/heisenbug-race-closure.md §7.7 + §8.2`. When the
-    /// module has `eval_in_flight == true`, the REPL-eval thread owns
-    /// the post-unblock retry via `wait_module_inmem_complete_blocking`;
-    /// pushing into `typecheck_first` would let a persistent priority
-    /// worker pop the caller and race the REPL-eval thread on
-    /// `register_imports` reads. Suppress the push in that case; the
-    /// eval thread drives the retry when the condvar wakes. The read
-    /// of `eval_in_flight` happens under the scheduler state lock held
-    /// by the caller (`notify_typecheck_done` → `try_unblock_locked`).
+    /// S78: this is the requeue half of the in-call-stack dependency protocol.
+    /// When the dep a module blocked on completes, `notify_typecheck_done`
+    /// sweeps its waiters and calls this to re-enqueue each. The worker that
+    /// pops the requeued module reads its cluster sexps off `ModuleState`
+    /// (`dispatch_typecheck_locked`) and re-runs the cluster from the top
+    /// against now-larger live state. The former `eval_in_flight` push-gate
+    /// (Sprint 61 H5 closure) is GONE — the in-call-stack model keeps each
+    /// cluster's in-progress state on its owning stack frame, so there is no
+    /// shared in-progress state for a racing worker to read, and the REPL-eval
+    /// thread no longer needs to suppress the worker requeue (OQ-3; validated
+    /// by the H5-replay gate staying green under stress after this deletion).
     fn try_unblock_locked(
         state: &mut SchedulerState,
         module: &ModuleFullPath,
@@ -1339,113 +1388,24 @@ impl CompileScheduler {
             return;
         }
 
-        // H5 push-gate: if the REPL-eval thread has registered an
-        // in-flight wait on this module, do not queue it for worker
-        // pickup. The eval thread will drive the retry itself.
-        let eval_in_flight = ms.eval_in_flight;
-
-        if !eval_in_flight {
-            let has_own_waiters = !ms.waiters.is_empty();
-            if has_own_waiters {
-                Self::set_pool_locked(state, module, ModulePool::TypecheckFirst);
-                state.typecheck_first.push_back(module.clone());
-            } else {
-                Self::set_pool_locked(state, module, ModulePool::TypecheckNext);
-                state.typecheck_next.push_back(module.clone());
-            }
+        let has_own_waiters = !ms.waiters.is_empty();
+        if has_own_waiters {
+            Self::set_pool_locked(state, module, ModulePool::TypecheckFirst);
+            state.typecheck_first.push_back(module.clone());
+        } else {
+            Self::set_pool_locked(state, module, ModulePool::TypecheckNext);
+            state.typecheck_next.push_back(module.clone());
         }
 
-        // Always emit the unblock trace event (even when suppressing the
-        // push) so existing observability assertions continue to fire at
-        // their existing sites (per /arch §3d' condition 4). The eval
-        // thread's post-wake retry is the one that advances the module
-        // when the push is suppressed.
         observability::record_module_event(
             SchedulerTraceTag::ModuleStateUnblocked,
             module.as_ref(),
         );
     }
 
-    /// Test-only accessor for the `eval_in_flight` flag. Read under the
-    /// scheduler state lock so reads are linearised with
-    /// `set_eval_in_flight` writes. Lives here (rather than in a test
-    /// module) because `session_v4.rs`'s EvalInFlightGuard panic-unwind
-    /// test needs to inspect the flag across the scheduler boundary.
-    ///
-    /// Sprint 61 Wave 3 step 3f — unit-test support for
-    /// `design/int/heisenbug-race-closure.md §3d' test 3`.
-    #[cfg(test)]
-    pub fn eval_in_flight_for_test(&self, module: &ModuleFullPath) -> bool {
-        let state = self.lock();
-        state
-            .modules
-            .get(module)
-            .map(|ms| ms.eval_in_flight)
-            .unwrap_or(false)
-    }
-
-    /// Test-only: observe a module's current pool. Used by the
-    /// EvalInFlightGuard panic-unwind test to verify the gate is
-    /// disarmed via the public-ish `try_unblock_locked` path.
-    ///
-    /// Sprint 61 Wave 3 step 3f — unit-test support for
-    /// `design/int/heisenbug-race-closure.md §3d' test 3`.
-    #[cfg(test)]
-    pub fn module_pool_for_test(&self, module: &ModuleFullPath) -> Option<ModulePool> {
-        let state = self.lock();
-        state.modules.get(module).map(|ms| ms.pool)
-    }
-
-    /// Test-only: force a module into `TypecheckBlocked` for unit tests
-    /// that exercise `try_unblock_locked` directly without going through
-    /// the full `block_for_typecheck` machinery (cycle detection,
-    /// waiter wiring, needed-module lookup). Clears the typecheck
-    /// queues so the test can observe whether a subsequent call
-    /// re-pushes the module.
-    ///
-    /// Sprint 61 Wave 3 step 3f — unit-test support for
-    /// `design/int/heisenbug-race-closure.md §3d' test 3`.
-    #[cfg(test)]
-    pub fn force_typecheck_blocked_for_test(&self, module: &ModuleFullPath) {
-        let mut state = self.lock();
-        state.typecheck_first.retain(|m| m != module);
-        state.typecheck_next.retain(|m| m != module);
-        if let Some(ms) = state.modules.get_mut(module) {
-            ms.pool = ModulePool::TypecheckBlocked;
-        }
-    }
-
-    /// Test-only: invoke the `try_unblock_locked` gate from outside
-    /// this module. Acquires the scheduler state lock for the call
-    /// shape `notify_typecheck_done` uses internally.
-    ///
-    /// Sprint 61 Wave 3 step 3f — unit-test support for
-    /// `design/int/heisenbug-race-closure.md §3d' test 3`.
-    #[cfg(test)]
-    pub fn try_unblock_for_test(&self, module: &ModuleFullPath) {
-        let mut state = self.lock();
-        Self::try_unblock_locked(&mut state, module);
-    }
-
-    /// Set (or clear) the `eval_in_flight` flag on a module under the
-    /// scheduler state lock.
-    ///
-    /// Sprint 61 Wave 3 step 3e' — H5 race closure.
-    /// Called by `session_v4.rs::register_dep_for_eval` via
-    /// `EvalInFlightGuard`. The flag is read inside
-    /// `try_unblock_locked` — both reader and writer take the same
-    /// scheduler state lock per /arch §3d' condition 2, so the
-    /// set/read pair is linearised by the mutex with no atomics.
-    ///
-    /// If the module is not registered (e.g., reset after failure),
-    /// the call is a no-op; the RAII guard still runs to completion.
-    /// See `design/int/heisenbug-race-closure.md §7.7 + §8.2`.
-    pub fn set_eval_in_flight(&self, module: &ModuleFullPath, value: bool) {
-        let mut state = self.lock();
-        if let Some(ms) = state.modules.get_mut(module) {
-            ms.eval_in_flight = value;
-        }
-    }
+    // `module_pool_for_test` / `force_typecheck_blocked_for_test` /
+    // `try_unblock_for_test` — deleted in S78 Step 3. Their only callers were
+    // the `eval_in_flight` push-gate unit tests, which retired with the gate.
 
     /// A module has failed — locked internal version.
     fn notify_module_failed_locked(
@@ -1670,6 +1630,13 @@ mod tests {
         ModuleFullPath::from(name)
     }
 
+    /// Empty cluster-sexps packet for scheduler unit tests that only exercise
+    /// pool/queue/waiter coordination (S78 packet model — the sexps payload is
+    /// not read by these tests).
+    fn no_sexps() -> std::sync::Arc<[Sexp]> {
+        std::sync::Arc::from(Vec::new())
+    }
+
     #[test]
     fn take_object_codegen_returns_none_on_shutdown() {
         let sched = CompileScheduler::new();
@@ -1681,7 +1648,7 @@ mod tests {
     fn take_object_codegen_object_working_prevents_double_claim() {
         let sched = CompileScheduler::new();
         let m = mod_path("test.mod");
-        sched.register_module(m.clone(), false);
+        sched.register_module(m.clone(), no_sexps(), false);
         sched.notify_typecheck_done(&m);
 
         // First claim should succeed and set object_working.
@@ -1709,7 +1676,7 @@ mod tests {
     fn notify_object_codegen_complete_clears_object_working() {
         let sched = CompileScheduler::new();
         let m = mod_path("test.mod");
-        sched.register_module(m.clone(), false);
+        sched.register_module(m.clone(), no_sexps(), false);
         sched.notify_typecheck_done(&m);
 
         // Claim the module.
@@ -1730,7 +1697,7 @@ mod tests {
     fn wait_object_complete_returns_when_all_done() {
         let sched = CompileScheduler::new();
         let m = mod_path("test.mod");
-        sched.register_module(m.clone(), false);
+        sched.register_module(m.clone(), no_sexps(), false);
         sched.notify_typecheck_done(&m);
 
         // Mark object codegen complete (skip the claim step — direct
@@ -1746,7 +1713,7 @@ mod tests {
     fn wait_object_complete_returns_err_on_failed_module() {
         let sched = CompileScheduler::new();
         let m = mod_path("test.mod");
-        sched.register_module(m.clone(), false);
+        sched.register_module(m.clone(), no_sexps(), false);
         sched.notify_module_failed(
             &m,
             CranelispError::ModuleError {
@@ -1768,8 +1735,6 @@ mod tests {
             project_root: std::path::PathBuf::new(),
             lib_dirs: Mutex::new(Vec::new()),
             platform_dirs: Mutex::new(Vec::new()),
-            module_sexps: Mutex::new(std::collections::HashMap::new()),
-            suspend_states: Mutex::new(std::collections::HashMap::new()),
             module_aliases: cranelisp_types::ModuleAliases::default(),
             // Sprint 67 Cluster B sub-fire 3: ObjectCache facade. Disabled
             // (None) for this unit test — no .o compilation runs here.
@@ -1797,7 +1762,7 @@ mod tests {
         });
 
         let m = mod_path("test.mod");
-        shared.scheduler.register_module(m.clone(), false);
+        shared.scheduler.register_module(m.clone(), no_sexps(), false);
         shared.scheduler.notify_typecheck_done(&m);
 
         // Spawn a nice worker, let it process the module, then shut down.
@@ -1822,7 +1787,7 @@ mod tests {
         // shutdown() still sets the shutdown flag (defensive Drop).
         let sched = CompileScheduler::new();
         let m = mod_path("test.mod");
-        sched.register_module(m, false);
+        sched.register_module(m, no_sexps(), false);
         // Drop without calling shutdown() — the Drop impl should
         // call shutdown() automatically, preventing any parked
         // threads from hanging.
@@ -1996,173 +1961,13 @@ mod tests {
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    // Sprint 61 Wave 3 step 3f — H5 race closure: flag-state invariant
-    // against `try_unblock_locked`.
-    //
-    // Per /arch §3d' "Test authoring (step 3f) requirements" test 2 (/int
-    // unit test): when `eval_in_flight == true` on a caller module,
-    // `try_unblock_locked(caller)` MUST NOT push the caller into the
-    // `typecheck_first` / `typecheck_next` queues. When
-    // `eval_in_flight == false`, it DOES push. The REPL-eval thread owns
-    // the post-unblock retry; pushing lets a persistent priority worker
-    // pop and race.
-    //
-    // See `design/int/heisenbug-race-closure.md §3d' + §3e'` and the fix
-    // site in `try_unblock_locked` at the top of this file.
+    // S78 Step 3 (OQ-3): the `eval_in_flight` push-gate is deleted. The three
+    // `try_unblock_locked_*` flag-state unit tests (Sprint 61 H5 closure) that
+    // probed it retire with it — the in-call-stack model keeps each cluster's
+    // in-progress state on its owning stack frame, so `try_unblock_locked`
+    // unconditionally requeues the unblocked module and the worker re-runs from
+    // the top. The observable H5 parity is guarded by
+    // `tests/repl_persist_race.rs::h5_replay_gate_deterministic_under_scheduler_stress`
+    // (green under 50-iteration stress AFTER this deletion).
     // ──────────────────────────────────────────────────────────────────────
-
-    /// Drive a freshly-registered module into `TypecheckBlocked` via direct
-    /// state manipulation. Used by the flag-state invariant tests to set up
-    /// the exact pre-condition `try_unblock_locked` expects (module in
-    /// `TypecheckBlocked`, no remaining wait conditions) without pulling
-    /// in the full `block_for_typecheck` machinery (cycle detection,
-    /// waiter wiring, etc.) that is irrelevant to the invariant.
-    fn put_in_blocked(sched: &CompileScheduler, module: &ModuleFullPath) {
-        let mut state = sched.lock();
-        // Move from TypecheckFirst → TypecheckBlocked. Remove from the
-        // first-pool deque so the test can unambiguously observe whether
-        // `try_unblock_locked` re-pushes it.
-        state.typecheck_first.retain(|m| m != module);
-        state.typecheck_next.retain(|m| m != module);
-        if let Some(ms) = state.modules.get_mut(module) {
-            ms.pool = ModulePool::TypecheckBlocked;
-        }
-    }
-
-    // spec: design/int/heisenbug-race-closure.md §3d' test 2 — gate active.
-    #[test]
-    fn try_unblock_locked_suppressed_when_eval_in_flight_true() {
-        let sched = CompileScheduler::new();
-        let caller = mod_path("user");
-        sched.register_module(caller.clone(), false);
-        put_in_blocked(&sched, &caller);
-
-        // Arm the flag — the REPL-eval thread "owns" the retry.
-        sched.set_eval_in_flight(&caller, true);
-
-        // Sanity: queues are empty before the call.
-        {
-            let state = sched.lock();
-            assert!(state.typecheck_first.is_empty());
-            assert!(state.typecheck_next.is_empty());
-            let ms = state.modules.get(&caller).unwrap();
-            assert!(ms.eval_in_flight, "flag must be set before gate");
-            assert_eq!(ms.pool, ModulePool::TypecheckBlocked);
-        }
-
-        // Invoke the gate under the lock (same call shape as
-        // `notify_typecheck_done`'s internal sweep).
-        {
-            let mut state = sched.lock();
-            CompileScheduler::try_unblock_locked(&mut state, &caller);
-        }
-
-        // Assert: NO push. Caller remains in TypecheckBlocked. Neither
-        // queue contains it.
-        let state = sched.lock();
-        assert!(
-            state.typecheck_first.is_empty(),
-            "H5 gate MUST suppress push to typecheck_first when \
-             eval_in_flight=true; found: {:?}",
-            state.typecheck_first,
-        );
-        assert!(
-            state.typecheck_next.is_empty(),
-            "H5 gate MUST suppress push to typecheck_next when \
-             eval_in_flight=true; found: {:?}",
-            state.typecheck_next,
-        );
-        let ms = state.modules.get(&caller).unwrap();
-        assert_eq!(
-            ms.pool,
-            ModulePool::TypecheckBlocked,
-            "caller pool must remain TypecheckBlocked when gate suppresses push",
-        );
-    }
-
-    // spec: design/int/heisenbug-race-closure.md §3d' test 2 — gate inactive.
-    #[test]
-    fn try_unblock_locked_pushes_when_eval_in_flight_false() {
-        let sched = CompileScheduler::new();
-        let caller = mod_path("user");
-        sched.register_module(caller.clone(), false);
-        put_in_blocked(&sched, &caller);
-
-        // Flag NOT armed (default false). Worker-driven path should push.
-        {
-            let state = sched.lock();
-            let ms = state.modules.get(&caller).unwrap();
-            assert!(!ms.eval_in_flight, "flag must be unset for this branch");
-        }
-
-        {
-            let mut state = sched.lock();
-            CompileScheduler::try_unblock_locked(&mut state, &caller);
-        }
-
-        // Assert: push happened. Caller has no own-waiters so it goes to
-        // `typecheck_next`, not `typecheck_first`. Either way, the pool
-        // transitions OUT of `TypecheckBlocked`.
-        let state = sched.lock();
-        let ms = state.modules.get(&caller).unwrap();
-        assert_ne!(
-            ms.pool,
-            ModulePool::TypecheckBlocked,
-            "caller must transition out of TypecheckBlocked when \
-             eval_in_flight=false",
-        );
-        let in_first = state.typecheck_first.iter().any(|m| m == &caller);
-        let in_next = state.typecheck_next.iter().any(|m| m == &caller);
-        assert!(
-            in_first || in_next,
-            "caller must be pushed into typecheck_first or typecheck_next \
-             when eval_in_flight=false; first={:?} next={:?}",
-            state.typecheck_first,
-            state.typecheck_next,
-        );
-    }
-
-    // spec: design/int/heisenbug-race-closure.md §3d' condition 2 — clear
-    // via `set_eval_in_flight(false)` re-enables the push path on the
-    // NEXT call. This pins the RAII guard's Drop semantics at the
-    // scheduler-side: the flag is a proper switch, not a one-shot.
-    #[test]
-    fn try_unblock_locked_toggle_flag_switches_gate() {
-        let sched = CompileScheduler::new();
-        let caller = mod_path("user");
-        sched.register_module(caller.clone(), false);
-        put_in_blocked(&sched, &caller);
-
-        // Phase A: flag set, no push.
-        sched.set_eval_in_flight(&caller, true);
-        {
-            let mut state = sched.lock();
-            CompileScheduler::try_unblock_locked(&mut state, &caller);
-        }
-        {
-            let state = sched.lock();
-            assert!(state.typecheck_first.is_empty());
-            assert!(state.typecheck_next.is_empty());
-        }
-
-        // Phase B: flag cleared (RAII Drop equivalent). `try_unblock_locked`
-        // precondition requires `TypecheckBlocked`; the first call did not
-        // move the caller, so the precondition still holds.
-        sched.set_eval_in_flight(&caller, false);
-        {
-            let mut state = sched.lock();
-            CompileScheduler::try_unblock_locked(&mut state, &caller);
-        }
-        // Now the caller must have been pushed.
-        let state = sched.lock();
-        let in_first = state.typecheck_first.iter().any(|m| m == &caller);
-        let in_next = state.typecheck_next.iter().any(|m| m == &caller);
-        assert!(
-            in_first || in_next,
-            "after clearing eval_in_flight, second try_unblock_locked \
-             must push; first={:?} next={:?}",
-            state.typecheck_first,
-            state.typecheck_next,
-        );
-    }
 }

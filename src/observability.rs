@@ -6,7 +6,7 @@
 //! ## Overview
 //!
 //! Thread-local ring-buffer trace of scheduler and worker pool-state
-//! transitions (`register_dep` publish, `register_module` register,
+//! transitions (`register_dep` parse, `register_module` register,
 //! `is_typechecked` hit/miss, pool flips, `clear_module_state`,
 //! `recompile_module`). Activated by the env var
 //! `CRANELISP_SCHEDULER_TRACE`:
@@ -140,10 +140,11 @@ fn filter() -> Option<&'static TraceFilter> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SchedulerTraceTag {
-    /// `register_dep` published dep_sexps to `shared.module_sexps`
-    /// (`src/worker.rs` + form-handler callers, plus
-    /// `src/session_v4.rs::register_dep_for_eval`). This is the
-    /// publish-before-register site that Sprint 58 W6 Defect 1 hardened.
+    /// `register_dep` parsed a dependency's source into the work-packet sexps
+    /// (`src/worker.rs` form-handler + FQ-autoload callers). S78: the former
+    /// `shared.module_sexps` publish this tag named is deleted — the sexps now
+    /// ride the scheduler work packet; the tag marks the parse-and-record site
+    /// immediately before `scheduler.register_module(dep, sexps, true)`.
     RegisterDepPublish,
     /// `scheduler.register_module` — module first enters the scheduler
     /// from a callsite (worker form handler OR REPL session entry).
@@ -184,16 +185,15 @@ pub enum SchedulerTraceTag {
     /// REPL-side state wipe before `reload_module` proceeds. Named for
     /// parity with the sketch / v3 pipeline's `clear_module_state`
     /// method; in v4 this is the `reload_module` prologue that clears
-    /// `typecheck_products`, `suspend_states`, and the module's `code`
-    /// fields.
+    /// `typecheck_products` and the module's `code` fields. (S78: the
+    /// `suspend_states` clear this prologue also performed is gone — that
+    /// cross-thread parking map is deleted.)
     ClearModuleState,
-    /// `session_v4::republish_module_sexps_from_symbol_table` — the
-    /// caller-side H5 REPL-persistence republish fires. Sprint 61 Wave 3
-    /// step 3e instrumentation (H4 race-closure fix Change B): exposes
-    /// the ordering of the REPL-eval thread's user-sexps republish
-    /// relative to the persistent worker's subsequent
-    /// `register_imports` lookup on the dep. Emitted from
-    /// `src/session_v4.rs:1192-1209`.
+    /// S78: NO LONGER EMITTED from production code. This tag named the
+    /// caller-side H5 REPL-persistence republish
+    /// (`republish_module_sexps_from_symbol_table`), which is deleted with the
+    /// `module_sexps` map. The variant is retained for the trace formatter +
+    /// observability unit tests; no production site emits it.
     RepublishFromSymbolTable,
     /// `handle_import` is consulting `symbol_tables[dep]` via the
     /// `register_imports` fast path. Sprint 61 Wave 3 step 3e

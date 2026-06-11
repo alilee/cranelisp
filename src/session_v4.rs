@@ -663,23 +663,14 @@ pub struct SharedState {
     /// `CompilerSession` for persistent-worker access.
     pub platform_dirs: Mutex<Vec<PathBuf>>,
 
-    /// Sexps awaiting typecheck, keyed by module. Populated by
-    /// `register_module_with_source` / `reload_module` on the main thread;
-    /// read (and removed when complete) by persistent priority workers.
-    /// Sprint 57 Wave 4 G9 (per `persistent-workers.md` §5.3).
-    pub module_sexps: Mutex<HashMap<ModuleFullPath, Vec<Sexp>>>,
-
-    /// Per-module suspension state for resuming a partially-typechecked
-    /// module when a dependency becomes available. Worker-local logically,
-    /// but stored here so a blocked module can resume on any worker. Sprint
-    /// 57 Wave 4 G9 (per `persistent-workers.md` §5.3).
-    ///
-    /// **Sprint 67 Cluster B investigation verified LIVE.** The facade-plan
-    /// `PIF — relocate or eliminate` (S67 W1 row, gated on FIXME 0179
-    /// cluster-mode read-union) is correct in direction but the field is
-    /// currently load-bearing for the pre-cluster-atomic resume-on-dep-arrival
-    /// path. Deferred to S68 review per FIXME 0205 + FIXME 0208 facade refresh.
-    pub suspend_states: Mutex<HashMap<ModuleFullPath, crate::worker::ModuleSuspendState>>,
+    // S78 in-call-stack restructure: `module_sexps` and `suspend_states` are
+    // DELETED. The cluster sexps now ride the scheduler work packet
+    // (`PriorityWork::Typecheck { module, sexps }`, stored on `ModuleState`);
+    // the half-finished suspend state is gone (retry-from-top rebuilds it from
+    // the packet sexps each pass). These two cross-thread in-progress parking
+    // maps were the S60–S62 heisenbug substrate (state externalized into a
+    // shared map and re-read by a different thread after an unblock); removing
+    // them removes the substrate. `SharedState` drops 16 → 14 pub fields.
 
     /// Object cache — on-disk `.o` + sidecar pair facade per
     /// `design/arch/facades/int.md` L166 + L519-549. Sprint 67 Cluster B
@@ -772,8 +763,9 @@ pub struct SharedState {
     // source walk confirmed every access is on the single-threaded initiator
     // (REPL `&mut self` methods, `take()`/restore around a stack-local
     // `ModuleCompiler`) — workers never touch it, so the relocation is
-    // race-free and did NOT need the cluster-atomic flip (unlike
-    // `module_sexps` / `suspend_states`, which remain worker-shared).
+    // race-free. (S78 then deleted `module_sexps` / `suspend_states` outright —
+    // the cluster sexps ride the scheduler work packet; no worker-shared
+    // in-progress map remains.)
 
     // -- Target data model (session-restructure.md) --
     // DashMaps are inherently concurrent and accessible to both priority
@@ -859,54 +851,12 @@ fn resolve_priority_worker_count(requested: usize) -> usize {
     }
 }
 
-// ---------------------------------------------------------------------------
-// EvalInFlightGuard — Sprint 61 Wave 3 step 3e' (H5 race closure)
-// ---------------------------------------------------------------------------
-
-/// RAII guard for the `ModuleState::eval_in_flight` flag.
-///
-/// Set the flag on construction and clear it on `Drop` (including on
-/// panic-unwind). Used exclusively by `register_dep_for_eval` to
-/// suppress worker claims of the caller module across the whole
-/// `register_dep_for_eval` invocation: if the flag is set when
-/// `try_unblock_locked(caller)` fires (from `notify_typecheck_done`
-/// on a dep's completion), the caller is not pushed into
-/// `typecheck_first`; the REPL-eval thread drives the retry.
-///
-/// Scope discipline (per /arch §3d' "RAII guard correctness"
-/// paragraph 1, alternative option): the guard scope spans
-/// register_dep_for_eval from immediately-after `caller` is
-/// computed through function exit (normal + panic-unwind). The
-/// narrower scope around `wait_module_inmem_complete_blocking` only
-/// was TRIED FIRST per /arch §3d' condition 3 and found
-/// insufficient — the race window opens at `block_for_typecheck`
-/// inside `handle_import` (BEFORE register_dep_for_eval is called),
-/// so the flag must be set before the function's own body executes.
-/// See `design/int/heisenbug-race-closure.md §3e'` for the
-/// scope-selection validation.
-///
-/// Lock discipline (per /arch §3d' condition 2): both the set (here)
-/// and the read (inside `try_unblock_locked`) take the scheduler state
-/// lock, linearising the set/read pair. No atomics, no separate mutex.
-///
-/// See `design/int/heisenbug-race-closure.md §7.7 + §8.2 + §3e'`.
-struct EvalInFlightGuard<'a> {
-    scheduler: &'a CompileScheduler,
-    module: ModuleFullPath,
-}
-
-impl<'a> EvalInFlightGuard<'a> {
-    fn new(scheduler: &'a CompileScheduler, module: ModuleFullPath) -> Self {
-        scheduler.set_eval_in_flight(&module, true);
-        Self { scheduler, module }
-    }
-}
-
-impl Drop for EvalInFlightGuard<'_> {
-    fn drop(&mut self) {
-        self.scheduler.set_eval_in_flight(&self.module, false);
-    }
-}
+// `EvalInFlightGuard` — deleted in S78 Step 3 (OQ-3). The RAII guard that set
+// `ModuleState::eval_in_flight` across `register_dep_for_eval` to suppress a
+// worker claiming the caller module is gone with the flag it managed. The
+// in-call-stack model keeps the caller's cluster state on the eval thread's
+// stack frame, so no worker can observe it mid-wait — there is no race to
+// suppress. The observable parity is guarded by the H5-replay gate.
 
 /// The outcome of `CompilerSession::introduce_module` (FIXME 0192 Residual
 /// Task 2 — 4-branch lifecycle).
@@ -1133,8 +1083,6 @@ impl CompilerSession {
             project_root,
             lib_dirs: Mutex::new(lib_dirs),
             platform_dirs: Mutex::new(platform_dirs),
-            module_sexps: Mutex::new(HashMap::new()),
-            suspend_states: Mutex::new(HashMap::new()),
             cache: object_cache,
             promote_nice_workers: AtomicBool::new(false),
             file_to_module: Mutex::new(HashMap::new()),
@@ -1797,17 +1745,12 @@ impl CompilerSession {
     /// On write failure, prints a warning and continues — in-memory state
     /// is the ground truth (design/int/session-persistence.md §3.3).
     ///
-    /// **Invariant**: After `regenerate_backing_file` returns, the freshly
-    /// parsed sexps matching the file on disk are installed in
-    /// `SharedState::module_sexps` for the current module. This mirrors the
-    /// publish-before-register invariant enforced by
-    /// `register_module_with_source` / `reload_module` / `register_dep_for_eval`
-    /// (Sprint 58 W6 Defect 1, §8.3 E-3). Without this republish, a persistent
-    /// priority worker that later pops a `Typecheck(current_module)` work item
-    /// would observe the STALE sexps from session startup (e.g. an empty Vec
-    /// if `user.cl` was missing) and mark the module Failed at shutdown —
-    /// the "no parsed sexps for module 'user'" residue documented in
-    /// `design/backend/defects-456-reduction.md §"Sprint 60 Wave 2 Round 3"`.
+    /// S78: the former post-write republish into `SharedState::module_sexps`
+    /// is gone — that cross-thread parking map is deleted. A persistent worker
+    /// only typechecks a module from sexps that ride its scheduler work packet
+    /// (`register_module` / `re_register_module`), so there is no shared sexps
+    /// entry to keep current and no "no parsed sexps for module" residue to
+    /// guard against.
     pub fn regenerate_backing_file(&mut self) {
         let module = self.current_module_path();
 
@@ -1868,77 +1811,19 @@ impl CompilerSession {
                 .insert(canonical, module.clone());
         }
 
-        // Republish the freshly-written source's parsed sexps into
-        // `SharedState::module_sexps` so any subsequent persistent priority
-        // worker that pops a `Typecheck(module)` work item observes the
-        // current-world sexps instead of the stale startup Vec (which may be
-        // empty if `user.cl` did not exist at session start). Defect fix per
-        // `design/backend/defects-456-reduction.md §"Sprint 60 Wave 2
-        // Round 3"` (H5) — mirrors Sprint 58 W6 Defect 1's publish-before-
-        // register discipline for the REPL-time entry-module update path.
-        //
-        // Parse failures here are silently ignored: the source was just
-        // generated by `crate::save::generate_module_source` from the
-        // in-memory symbol table, so a parse failure would be an internal
-        // round-trip bug, not user-actionable. Falling back to NOT
-        // republishing would re-open the exact H5 defect this block closes,
-        // so the only sensible recovery is to leave the stale sexps in place
-        // (matches pre-fix behaviour for the degenerate case).
-        if let Ok(sexps) = cranelisp_frontend::parse(&source) {
-            let mut map = self.shared.module_sexps.lock()
-                .unwrap_or_else(|e| e.into_inner());
-            map.insert(module, sexps);
-        }
-    }
-
-    /// Republish `SharedState::module_sexps[module]` from the module's current
-    /// in-memory symbol table — Sprint 60 Wave 2 Round 3 H5 fix.
-    ///
-    /// Called when the REPL-eval thread is about to block on a dep and the
-    /// caller module has been moved to `TypecheckBlocked`. Ensures that when
-    /// the dep completes and the scheduler unblocks the caller into
-    /// `TypecheckNext`, any persistent priority worker that pops the caller's
-    /// `Typecheck` work item observes the current-world sexps (reflecting the
-    /// form the REPL just processed) instead of a stale or absent entry.
-    ///
-    /// No-op on any of: missing symbol table (module not yet tracked),
-    /// empty generated source (no user-defined content to typecheck), or
-    /// parse failure (internal round-trip bug — leave existing sexps in
-    /// place rather than publish garbage).
-    fn republish_module_sexps_from_symbol_table(&self, module: &ModuleFullPath) {
-        let Some(st) = self.shared.symbol_tables.get(module) else {
-            return;
-        };
-        let source = crate::save::generate_module_source(
-            &st,
-            &self.shared.introspection,
-            module,
-        );
-        if source.trim().is_empty() {
-            return;
-        }
-        if let Ok(sexps) = cranelisp_frontend::parse(&source) {
-            let mut map = self.shared.module_sexps.lock()
-                .unwrap_or_else(|e| e.into_inner());
-            map.insert(module.clone(), sexps);
-            // Sprint 61 Wave 3 step 3e — H4 race closure (Change B).
-            // Fires exactly when the republish succeeds (symbol table
-            // present, source non-empty, parse ok). Post-fix dumps use
-            // this to prove the caller-side republish precedes the
-            // priority worker's `RegisterImportsLookup dep` on the
-            // subsequent user-retry. See
-            // `design/int/heisenbug-race-closure.md §8.1 Change B`.
-            crate::observability::record_module_event(
-                crate::observability::SchedulerTraceTag::RepublishFromSymbolTable,
-                module.as_ref(),
-            );
-        }
+        // S78: the former `module_sexps[module]` republish is gone — there is
+        // no shared sexps map to keep current. A persistent worker only
+        // typechecks `module` from sexps that ride its scheduler work packet
+        // (`register_module` / `re_register_module`), and the REPL eval path
+        // re-derives from the form it is processing; neither reads a shared
+        // map. The H5 "no parsed sexps for module" residue this republish
+        // guarded cannot occur (the map it republished into is deleted).
     }
 
     /// Reload a single module from its source file.
     ///
-    /// Clears the module's stale products, re-parses, publishes sexps to
-    /// `SharedState::module_sexps`, and re-registers with the scheduler.
+    /// Clears the module's stale products, re-parses, and re-registers with
+    /// the scheduler (the fresh sexps ride the re-register work packet — S78).
     /// The persistent priority workers pick up the re-registration and
     /// re-typecheck + re-codegen. Sprint 57 Wave 4 G11 per
     /// `persistent-workers.md` §4.6 — reload via scheduler falls out of
@@ -1972,12 +1857,6 @@ impl CompilerSession {
             module_path.as_ref(),
         );
         self.shared.typecheck_products.remove(module_path);
-        // Clear any stale suspend state from a prior compile of this module.
-        {
-            let mut states = self.shared.suspend_states.lock()
-                .unwrap_or_else(|e| e.into_inner());
-            states.remove(module_path);
-        }
         if let Some(mut st) = self.shared.symbol_tables.get_mut(module_path) {
             for entry in st.symbols.values_mut() {
                 if let ModuleEntry::Def { code, .. } = entry {
@@ -1986,23 +1865,20 @@ impl CompilerSession {
             }
         }
 
-        let sexps = cranelisp_frontend::parse(&source)?;
+        // Parse the new source; the sexps ride the re-register work packet
+        // (S78 — no shared `module_sexps` map). Persistent workers parked on
+        // the priority-work condvar wake and process it (G11 per §4.6).
+        let sexps: std::sync::Arc<[Sexp]> =
+            std::sync::Arc::from(cranelisp_frontend::parse(&source)?);
 
-        // Publish sexps and re-register. Persistent workers parked on the
-        // priority-work condvar wake and process it (G11 per §4.6).
-        {
-            let mut map = self.shared.module_sexps.lock()
-                .unwrap_or_else(|e| e.into_inner());
-            map.insert(module_path.clone(), sexps);
-        }
         // `re_register_module` clears `inmem_done` and re-queues the module
-        // for typecheck. `register_module` would be a no-op because the
-        // module is already in `scheduler.modules`.
-        let re_registered = self.shared.scheduler.re_register_module(module_path);
+        // for typecheck with the fresh sexps. `register_module` would be a
+        // no-op because the module is already in `scheduler.modules`.
+        let re_registered = self.shared.scheduler.re_register_module(module_path, sexps.clone());
         if !re_registered {
             // Module isn't known to the scheduler yet (first-time seed from
             // file watcher) — fall back to register_module.
-            self.shared.scheduler.register_module(module_path.clone(), false);
+            self.shared.scheduler.register_module(module_path.clone(), sexps, false);
         }
 
         // Block until inmem-done for every registered module. The workers
@@ -2040,22 +1916,38 @@ impl CompilerSession {
     /// `CompilerSession` thin forward to `CompileScheduler::re_register_module`
     /// per `design/arch/facades/int.md` §"CompilerSession". Returns
     /// `Ok(true)` if the module was re-registered, `Ok(false)` if the
-    /// scheduler skipped it (unknown module, or currently mid-typecheck).
-    /// The `Result` wrapper is reserved for future error propagation; the
-    /// scheduler's `re_register_module` itself is infallible today.
+    /// scheduler skipped it (unknown module, mid-typecheck, or its backing
+    /// source could not be read).
+    ///
+    /// S78: re-register now requires the module's cluster sexps (they ride the
+    /// work packet). This forward sources them from the module's backing file
+    /// (the file-watcher's `reload_module` is the primary path and already
+    /// carries the on-disk source; this thin forward reads + parses the file
+    /// recorded on the typecheck product). If no backing file or the source
+    /// cannot be read/parsed, the re-register is skipped (`Ok(false)`).
     pub fn re_register_module(
         &mut self,
         module: &ModuleFullPath,
     ) -> Result<bool, CranelispError> {
-        Ok(self.shared.scheduler.re_register_module(module))
+        let Some(file_path) = self.shared.typecheck_products.get(module)
+            .and_then(|tp| tp.file_path.clone())
+        else {
+            return Ok(false);
+        };
+        let Ok(source) = std::fs::read_to_string(&file_path) else {
+            return Ok(false);
+        };
+        let sexps: std::sync::Arc<[Sexp]> =
+            std::sync::Arc::from(cranelisp_frontend::parse(&source)?);
+        Ok(self.shared.scheduler.re_register_module(module, sexps))
     }
 
     /// Register a module with explicit source (internal + test helpers).
     ///
-    /// Enqueues sexps into `SharedState::module_sexps` and registers the
-    /// module with the scheduler; the persistent priority workers parked
-    /// on `priority_work_available` wake and process it. The caller blocks
-    /// on `wait_inmem_complete_blocking` until every registered module
+    /// Parses the source and registers the module with the scheduler (the
+    /// sexps ride the work packet — S78); the persistent priority workers
+    /// parked on `priority_work_available` wake and process it. The caller
+    /// blocks on `wait_inmem_complete_blocking` until every registered module
     /// reaches inmem_done or failure. Sprint 57 Wave 4 G9 per
     /// `persistent-workers.md` §4.3.
     pub fn register_module_with_source(
@@ -2065,7 +1957,8 @@ impl CompilerSession {
         _entry_module_path: &Path,
     ) -> Result<Vec<Warning>, CranelispError> {
         let module = ModuleFullPath::from(module_name);
-        let sexps = cranelisp_frontend::parse(source)?;
+        let sexps: std::sync::Arc<[Sexp]> =
+            std::sync::Arc::from(cranelisp_frontend::parse(source)?);
 
         // Record source hash for manifest generation. Sprint 67 Cluster B
         // sub-fire 3: dispatch via the `ObjectCache` facade method.
@@ -2074,17 +1967,12 @@ impl CompilerSession {
             self.shared.cache.record_source_hash(&module, hash);
         }
 
-        // Publish sexps to workers BEFORE registering, so a worker that wakes
-        // immediately on the scheduler notify finds the sexps ready.
-        {
-            let mut map = self.shared.module_sexps.lock()
-                .unwrap_or_else(|e| e.into_inner());
-            map.insert(module.clone(), sexps);
-        }
-
         // Register module with scheduler (entry module, not delaying others).
-        // Wakes parked priority workers via `priority_work_available.notify_all()`.
-        self.shared.scheduler.register_module(module.clone(), false);
+        // The sexps ride the work packet (S78 — no shared `module_sexps` map);
+        // a worker that wakes on the scheduler notify reads them off the
+        // packet. Wakes parked priority workers via
+        // `priority_work_available.notify_all()`.
+        self.shared.scheduler.register_module(module.clone(), sexps, false);
 
         // Block until every registered module reaches inmem_done (or a
         // module fails). The persistent priority workers do the typecheck
@@ -2096,209 +1984,39 @@ impl CompilerSession {
         Ok(Vec::new())
     }
 
-    /// Drive a REPL-discovered dep through the single `register_module`
-    /// recursion used by every other persistence entry point — Decision 37
-    /// enacted at the REPL-session surface (Sprint 59 Workstream A).
+    /// Block the REPL-eval thread on the persistent worker pool driving a
+    /// dependency (and its transitive deps) to `inmem_done`, then return so the
+    /// eval retry loop re-runs the cluster from the top (S78 in-call-stack
+    /// restructure).
     ///
-    /// Replaces `compile_dep_inline` (Sprint 59 §7 Step 3). The form handler
-    /// that produced `ProcessResult::Blocked` has already published dep_sexps
-    /// into `shared.module_sexps` and called `scheduler.register_module(dep,
-    /// true)` + `block_for_typecheck`. This function's job is to block until
-    /// the persistent priority worker pool brings the dep (and every
-    /// transitive dep) to `inmem_done`. There is no second, session-side
-    /// worker loop — the persistent worker pool is the single orchestrator.
+    /// The dep has ALREADY been registered with the scheduler (its sexps ride
+    /// the dep's work packet) and blocked on (`block_for_typecheck`) inside
+    /// `process_cluster_once`. This function does NOT re-register, re-publish,
+    /// or republish caller sexps — the cross-thread `module_sexps` map that
+    /// those steps fed is deleted, and the caller's cluster state lives on the
+    /// eval thread's own stack frame (no worker reads it). Its sole job is the
+    /// scoped wait.
     fn register_dep_for_eval(
         &mut self,
         dep_module: &ModuleFullPath,
-        dep_sexps: &[Sexp],
     ) -> Result<(), CranelispError> {
-        // Sprint 61 Wave 3 step 3e' — H5 race closure.
-        //
-        // Caller audit per /arch §3d' condition 1:
-        // `grep 'wait_module_inmem_complete_blocking' src/` → 6 matches:
-        // the definition at `scheduler.rs:943`; three comment-only references
-        // (`scheduler.rs:1113`, `session_v4.rs:1473`, `session_v4.rs:2232`);
-        // a doc comment in a test at `session_v4.rs:4587` that explicitly
-        // AVOIDS calling the function (manually replays publish+register
-        // instead). That leaves `register_dep_for_eval` as the SOLE caller
-        // driving post-unblock retries.
-        //
-        // Scope: /arch §3d' offers two scopes for the guard — (i) narrow
-        // around `wait_module_inmem_complete_blocking` only, or (ii) whole
-        // function after `caller` is computed. /arch preferred (i) as
-        // "minimally pessimistic". However, validation with CRANELISP_
-        // SCHEDULER_TRACE revealed that by the time t1 reaches
-        // `wait_module_inmem_complete_blocking`, t2 has frequently already
-        // (a) popped `helper` from `typecheck_first`, (b) typechecked it,
-        // (c) called `notify_typecheck_done(helper)` → `try_unblock_locked(
-        // user)` with `eval_in_flight=false`, and (d) begun typechecking
-        // `user`. The race window opens at `block_for_typecheck(user, helper)`
-        // inside `handle_import` (worker.rs:1300), BEFORE register_dep_for_eval
-        // is called, and persists until t1 sets the flag. Narrow scope is
-        // therefore insufficient.
-        //
-        // Fix: set the flag at the top of register_dep_for_eval (option (ii),
-        // /arch's own "Recommendation" alternative). This is still narrower
-        // than "whole eval function" — the guard scope spans ONLY
-        // register_dep_for_eval's body, and the guard drops at function
-        // return (normal or panic). Per /arch §3d' condition 2, the set
-        // takes the scheduler state lock so the set/read pair with
-        // try_unblock_locked is linearised. Per condition 4, existing
-        // trace tags continue to fire.
-        let caller = self.current_module_path();
-        let _eval_guard = EvalInFlightGuard::new(
-            &self.shared.scheduler,
-            caller.clone(),
-        );
-
-        // Guard: the form handler has usually already published dep_sexps
-        // and registered with the scheduler (Sprint 58 W6 Defect 1 ordering).
-        // Re-publish + re-register defensively so this entry point can also
-        // serve call sites that reach us without a prior form-handler
-        // Blocked result (e.g., tests, alternative eval paths).
-        //
-        // Sprint 61 Wave 3 step 3e — H4 race closure (Change A).
-        //
-        // On the hot path (REPL eval → handle_import → form-handler
-        // `register_dep` + `scheduler.register_module(dep, true)` →
-        // BlockAction::Block → here), the dep is ALREADY published into
-        // `shared.module_sexps` AND registered with the scheduler. Emitting
-        // a second publish+register here races with the priority worker
-        // popping the dep from `typecheck_first` — see
-        // `design/int/heisenbug-race-closure.md §7` for the failing-run dump
-        // interleaving, and §8 for the fix rationale. Skip the defensive
-        // pair when both conditions hold (published AND registered — per
-        // /arch §3d condition 4, never on published alone so that failure
-        // cleanup cannot trap a blocking waiter in this function).
-        //
-        // The caller-sexps republish at `republish_module_sexps_from_symbol_table`
-        // below stays UNCONDITIONAL (per /arch §3d condition 3 — it is the
-        // H5 REPL-persistence fix from Sprint 60 Wave 2 Round 3 and is
-        // caller-side, not dep-side).
-        let already_published = self.shared.module_sexps
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains_key(dep_module);
-        let already_registered = self.shared.scheduler.is_registered(dep_module);
-        let skip_defensive_pair = already_published && already_registered;
-
-        if !skip_defensive_pair {
-            {
-                let mut map = self.shared.module_sexps.lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                map.entry(dep_module.clone())
-                    .or_insert_with(|| dep_sexps.to_vec());
-            }
-            crate::observability::record_module_event(
-                crate::observability::SchedulerTraceTag::RegisterDepPublish,
-                dep_module.as_ref(),
-            );
-        }
-
-        // Sprint 60 Wave 2 Round 3 fix (H5 — REPL persistence residue).
-        //
-        // The REPL-eval thread that reached this point has already called
-        // `handle_import` / `handle_platform` etc. for the current (caller)
-        // module, which in turn called `scheduler.block_for_typecheck(caller,
-        // dep, ...)`. That flipped the caller module to `TypecheckBlocked`.
-        // When `dep_module` completes below and user's waiter is resolved,
-        // the caller is unblocked → moved to `TypecheckNext` → eligible for
-        // a persistent priority worker to pop its `Typecheck(caller)` work
-        // item.
-        //
-        // The worker reads `shared.module_sexps[caller]`. On a fresh session
-        // where `caller` is the entry module `user` with an empty/missing
-        // `user.cl`, that entry was registered at startup, processed by a
-        // worker once (empty sexps → empty program → inmem_done), and then
-        // REMOVED from `module_sexps` (handle_typecheck_work_shared cleans up
-        // after Complete). Without a republish here, the post-unblock worker
-        // pop observes `module_sexps[caller] = None` and fails the module
-        // with "no parsed sexps for module 'X'" — leaving `caller` in
-        // `Failed` state, which `wait_object_complete` surfaces at shutdown
-        // (exit 1). See `design/backend/defects-456-reduction.md
-        // §"Sprint 60 Wave 2 Round 3"` (H5).
-        //
-        // Fix: regenerate the caller module's source from its current
-        // in-memory symbol table (which now includes the just-processed
-        // import / platform form), parse, and republish into
-        // `module_sexps[caller]` before we block. If the post-unblock worker
-        // pop wins the race against the REPL-eval thread resuming, it reads
-        // valid current-world sexps instead of None.
-        //
-        // Mirror of Sprint 58 W6 Defect 1's publish-before-register invariant
-        // applied to the REPL-time entry-module update path (here the
-        // "register" is transitively the caller-module requeue triggered by
-        // tiny's completion in `try_unblock_locked`).
-        if caller != *dep_module {
-            self.republish_module_sexps_from_symbol_table(&caller);
-        }
-        // Sprint 60 Workstream E-2 — reconcile with worker-side consensus:
-        // every dep-registration site (not entry-module registration) passes
-        // `delays_other=true` to land the dep in `ModulePool::TypecheckFirst`,
-        // because the caller IS blocked on this dep (via
-        // `wait_module_inmem_complete_blocking` below). Idempotent-guard on
-        // the scheduler side (`scheduler.rs::register_module`) means this is
-        // a no-op on the hot path where the form handler has already
-        // registered with `true`; on the defensive path (tests, alt eval
-        // paths) it upgrades the dep's pool from TypecheckNext to
-        // TypecheckFirst, matching worker-side consensus. Entry-module sites
-        // (`register_module_with_source`, `reload_module`) stay `false` — they
-        // are the single whole-world waiter and no other module is queued
-        // behind them. See `design/int/dual-path-persistence-collapse.md §8.2`.
-        // DEBUG-ONLY guard: the publish-before-register invariant (§8.3 E-3)
-        // — dep_sexps are published into shared.module_sexps BEFORE we notify
-        // the scheduler. Catches accidental re-ordering in dev builds.
-        //
-        // The invariant has a legitimate escape valve: a persistent worker may
-        // have already popped, typechecked, completed, AND cleaned up the dep
-        // (`handle_typecheck_work_shared` removes `module_sexps[dep]` after a
-        // module reaches Complete — worker.rs Complete arm). On the hot REPL
-        // import path, `handle_import` calls `block_for_typecheck` +
-        // `register_module(dep, true)` BEFORE `register_dep_for_eval` runs,
-        // which wakes a worker; that worker can finish the dep before the eval
-        // thread reaches this point. In that window the dep is correctly absent
-        // from `module_sexps` (it is done), so the assert must also accept "the
-        // dep already reached a terminal typecheck state". Surfaced by S77
-        // W-Module: the `(mod child)`/cross-module resolution fix made the
-        // `(import [helper [...]])` dep actually load, exposing this benign
-        // race in `process_form_dispatch_macro_after_import_succeeds_in_one_eval`.
-        debug_assert!(
-            self.shared.module_sexps
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .contains_key(dep_module)
-                || self.shared.scheduler.is_typechecked(dep_module),
-            "register_dep_for_eval MUST publish dep_sexps before calling \
-             scheduler.register_module (unless a worker already completed the dep)"
-        );
-        // Sprint 61 Wave 3 step 3e (H4 race closure, Change A): gate the
-        // defensive `register_module` call on the same "already published
-        // AND already registered" flag computed above. Emitting a second
-        // register here is what wakes the priority worker into the racing
-        // window (see `design/int/heisenbug-race-closure.md §7.4`).
-        // Idempotency inside `scheduler.register_module` suppresses the
-        // state mutation, but the wake at `scheduler.rs:345` fires
-        // unconditionally — so skipping the whole call on the hot path is
-        // required for the fix.
-        if !skip_defensive_pair {
-            self.shared.scheduler.register_module(dep_module.clone(), true);
-        }
+        // S78 Step 3 (OQ-3): the `eval_in_flight` guard is GONE. The
+        // in-call-stack model keeps the caller's cluster state on the eval
+        // thread's own stack frame — no worker reads it — so there is no race
+        // for the guard to suppress. The H5-replay gate confirms the parity
+        // outcome stays deterministic under stress after this deletion.
 
         // Ensure the dep has a CheckState slot the persistent worker can
         // populate via `ensure_module_exists` — idempotent.
         cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, dep_module);
 
         // Block on the persistent worker pool driving THIS dep (and every
-        // transitive dep it blocks on) to inmem_done. Decision 37 §3.1 —
-        // the single synchronisation primitive, scoped to the target dep.
-        // We cannot use `wait_inmem_complete_blocking` (whole-world wait)
-        // here: the caller (user module) is in TypecheckBlocked state and
-        // can only be resumed by the eval thread's retry loop, not by a
-        // persistent worker — so a whole-world wait would deadlock on the
-        // user module. The old `compile_dep_inline` used `wait_inmem_complete`
-        // (non-blocking) *after* running its own worker loop in-thread to
-        // drive the dep to completion; the collapse replaces the inline
-        // worker loop with a persistent-worker-driven *scoped* blocking wait.
+        // transitive dep it blocks on) to inmem_done. Decision 37 §3.1 — the
+        // single synchronisation primitive, scoped to the target dep. We cannot
+        // use `wait_inmem_complete_blocking` (whole-world wait) here: the caller
+        // (user module) is in TypecheckBlocked state and can only be resumed by
+        // the eval thread's retry loop, not by a persistent worker — so a
+        // whole-world wait would deadlock on the user module.
         match self.shared.scheduler.wait_module_inmem_complete_blocking(dep_module) {
             Ok(()) => Ok(()),
             Err(e) => {
@@ -2526,18 +2244,23 @@ impl CompilerSession {
         self.process_single_form(sexp)
     }
 
-    /// Process a single sexp through `process_module_forms(Additive)` then codegen.
+    /// Process a single REPL sexp as a one-form cluster (Additive), then
+    /// codegen (S78 in-call-stack restructure).
     ///
-    /// Handles blocked dependencies by compiling them inline and retrying.
+    /// The eval-path retry-from-top loop: each pass runs the shared
+    /// `worker::process_cluster_once` core over `[sexp]` with a fresh
+    /// expansion against now-larger live state. On a dependency gap the dep has
+    /// already been registered + blocked on inside the core; this thread waits
+    /// for the pool to bring it to inmem-done (`register_dep_for_eval`) then
+    /// loops. No saved suspend state — the gap does not recur for that dep
+    /// because it is now live.
     fn process_single_form(&mut self, sexp: &Sexp) -> Result<Option<EvalResult>, CranelispError> {
-        use crate::worker::{self, ModuleCheckAccumulator, ProcessResult};
+        use crate::worker::{self, ClusterOnce};
 
         const MAX_DEP_RETRIES: usize = 100;
 
         for retry in 0..MAX_DEP_RETRIES {
             let module = self.current_module_path();
-            let accumulator = ModuleCheckAccumulator::new();
-            let expanded_program = Vec::new();
             let single_sexp = [sexp.clone()];
 
             let result = {
@@ -2564,17 +2287,10 @@ impl CompilerSession {
                     shared_state: Some(&self.shared),
                 };
 
-                let mut suspend_state = worker::ModuleSuspendState {
-                    accumulator,
-                    expanded_program,
-                    pass1_done: false,
-                };
-                let res = worker::process_module_forms(
+                let res = worker::process_cluster_once(
                     &mut wctx,
                     &module,
                     &single_sexp,
-                    0,
-                    &mut suspend_state,
                     ModuleStrategy::Additive,
                 );
                 // Restore REPL check_state.
@@ -2584,7 +2300,7 @@ impl CompilerSession {
             };
 
             match result {
-                ProcessResult::Complete { check_result, program } => {
+                ClusterOnce::Done { program, .. } => {
                     // If program is empty, the form was handled during expansion
                     // (defmacro, import, platform, mod). Return Def with name
                     // extracted from the original sexp.
@@ -2596,27 +2312,25 @@ impl CompilerSession {
                                     symbol: Symbol::from(symbol_name),
                                 },
                                 ty: Type::Int,
-                                warnings: check_result.warnings.clone(),
+                                warnings: Vec::new(),
                             })),
                             // import/platform/mod — no visible result.
                             None => Ok(None),
                         };
                     }
-                    return self.codegen_and_execute(&module, &program, &check_result).map(Some);
+                    let check = CheckResult { warnings: Vec::new(), display: None };
+                    return self.codegen_and_execute(&module, &program, &check).map(Some);
                 }
-                ProcessResult::Blocked { dep_module, dep_sexps, .. } => {
-                    // Sprint 59 Workstream A §7 Step 4 — collapse the
-                    // session-side inline worker-loop orchestrator onto
-                    // the single `register_module` recursion. The form
-                    // handler has published dep_sexps and registered with
-                    // the scheduler; we just block on the persistent
-                    // worker pool driving dep typecheck to completion.
-                    self.register_dep_for_eval(&dep_module, &dep_sexps)?;
+                ClusterOnce::Gap { dep } => {
+                    // The dep has already been registered + blocked on inside
+                    // `process_cluster_once`; block on the persistent worker
+                    // pool driving it to completion, then retry from the top.
+                    self.register_dep_for_eval(&dep)?;
                     if retry == MAX_DEP_RETRIES - 1 {
                         return Err(CranelispError::ModuleError {
                             message: format!(
                                 "dependency chain too deep (>{} retries) while resolving '{}'",
-                                MAX_DEP_RETRIES, dep_module,
+                                MAX_DEP_RETRIES, dep,
                             ),
                             location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
                         });
@@ -5447,143 +5161,55 @@ mod persistent_worker_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    // Sprint 58 Wave 6 Defect 1's publish-before-register invariant is
-    // now structurally preserved by Sprint 59 Workstream A's collapse:
-    // every call site that registers a dep with the scheduler goes
-    // through either (a) `register_dep` in `worker.rs` (form handlers),
-    // which publishes BEFORE its caller's `scheduler.register_module`
-    // call, or (b) `register_dep_for_eval` above, which publishes BEFORE
-    // its own `scheduler.register_module` call. Sprint 60 Workstream E-3
-    // re-sites the deleted unit guard as structural tests below
-    // (`register_dep_for_eval_publish_then_register_is_observable_to_downstream` +
-    // `register_dep_for_eval_uses_delays_other_true`) plus debug-assert
-    // guards inside both functions (see worker.rs::register_dep +
-    // session_v4.rs::register_dep_for_eval). The end-to-end guard remains
-    // `tests/wave6_demo_repros.rs::repl_dep_load_no_race_with_persistent_workers`.
+    // S78 in-call-stack restructure: the former
+    // `register_dep_for_eval_publish_then_register_is_observable_to_downstream`
+    // test probed the deleted `module_sexps` publish-before-register mechanism
+    // (the cross-thread parking map is gone — sexps ride the work packet). It
+    // is retired; the dep-load behaviour it guarded is covered e2e by the
+    // FQ-autoload / dep-chain suite and the H5-replay gate
+    // (`tests/repl_persist_race.rs`).
 
-    // spec: design/int/dual-path-persistence-collapse.md §8.3 — publish-before-
-    // caller-registers invariant, re-sited from the deleted
-    // `compile_dep_inline_publishes_sexps_before_register` unit guard. Drives
-    // `register_dep_for_eval` with a dep NOT yet in `module_sexps` and asserts
-    // that upon return the dep IS present in `module_sexps` AND IS registered
-    // on the scheduler — the shim's contract is "publish THEN register."
-    //
-    // Uses `register_dep_for_eval` (session-side) rather than `register_dep`
-    // (worker-side) because the latter requires a full `ModuleCompiler`
-    // fixture (shared_state, typecheck_products, etc.). The session-side test
-    // covers the same invariant — both paths publish before the scheduler
-    // call — and the debug_assert!s inside both functions cover the worker
-    // side under test conditions.
+    // spec: design/int/s77-int-restructure.md §3.3 — a dep-registration site
+    // (caller blocked on the dep) uses `delays_other=true`, landing the dep in
+    // `ModulePool::TypecheckFirst`. After S78 this is the `register_module`
+    // call inside `drive_module_dep` / the structural form handlers (the
+    // session-side `register_dep_for_eval` no longer registers — the gap-drive
+    // already did). Asserts the scheduler contract the priority ordering
+    // depends on, against the new packet-carrying `register_module` signature.
     #[test]
-    fn register_dep_for_eval_publish_then_register_is_observable_to_downstream() {
-        // priority_workers=0 — no worker races with us to consume the
-        // module_sexps entry. This test asserts ONLY the structural
-        // ordering (publish + register happened) within
-        // `register_dep_for_eval`; it does not require the dep to actually
-        // typecheck. (The debug_assert! inside `register_dep_for_eval`
-        // further verifies the publish-BEFORE-register ordering within
-        // the function body.)
-        let (mut s, root) = test_session(0);
-
-        let dep = ModuleFullPath::from("sprint60_e3_dep_publish");
-        // Pre-condition: dep not published, not registered.
-        assert!(
-            !s.shared.module_sexps.lock().unwrap().contains_key(&dep),
-            "pre: dep must not be in module_sexps"
-        );
-        assert!(
-            s.shared.scheduler.module_pool(&dep).is_none(),
-            "pre: dep must not be registered on scheduler"
-        );
-
-        // Call with a dummy single-form source. With priority_workers=0 no
-        // worker processes the dep, so we observe the post-call state
-        // deterministically.
-        let dep_sexps = cranelisp_frontend::parse("(defn x [] 1)")
-            .expect("parse trivial source");
-        // We can't call register_dep_for_eval without the worker present
-        // (it blocks on `wait_module_inmem_complete_blocking`). Instead,
-        // directly exercise the shim's publish+register steps manually in
-        // the same order they occur in the function body. This mirrors
-        // what the function does from the caller's observable standpoint.
-        {
-            let mut map = s.shared.module_sexps.lock().unwrap();
-            map.entry(dep.clone()).or_insert_with(|| dep_sexps.clone());
-        }
-        // The publish must be visible BEFORE we call register_module
-        // (this is the invariant the deleted unit guard pinned).
-        assert!(
-            s.shared.module_sexps.lock().unwrap().contains_key(&dep),
-            "publish must precede scheduler.register_module"
-        );
-        s.shared.scheduler.register_module(dep.clone(), true);
-
-        // Post-condition: both publish and register succeeded.
-        assert!(
-            s.shared.module_sexps.lock().unwrap().contains_key(&dep),
-            "publish must have happened and be observable"
-        );
-        // Widened to `is_some()`: E-3's contract is publish-then-register
-        // ordering, not specific pool placement. Under parallel test
-        // execution (`test_session` may spawn nice/object workers even with
-        // priority_workers=0) a worker can transition the dep from
-        // `TypecheckFirst` to `TypecheckWorking`/`TypecheckDone` before the
-        // assertion runs — all of those states prove `register_module` was
-        // called. The INITIAL `TypecheckFirst` placement (E-2's contract) is
-        // guarded deterministically by
-        // `register_dep_for_eval_uses_delays_other_true` below, which uses a
-        // standalone `CompileScheduler` with no worker threads.
-        assert!(
-            s.shared.scheduler.module_pool(&dep).is_some(),
-            "dep must be registered on scheduler (any pool state proves register_module was called)"
-        );
-
-        s.shutdown();
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    // spec: design/int/dual-path-persistence-collapse.md §8.2 — the E-2 pool
-    // reconciliation. `register_dep_for_eval` is a dep-registration site
-    // (caller is blocked on this dep), not an entry-module site, so it MUST
-    // use `delays_other=true` matching worker-side consensus
-    // (`register_dep` + form handlers). Assert the dep lands in
-    // `ModulePool::TypecheckFirst`, not `TypecheckNext`.
-    //
-    // Uses a standalone `CompileScheduler` (no worker threads) so the
-    // observed pool is the INITIAL pool assignment. This is a structural
-    // assertion on the scheduler contract that E-2 depends on: passing
-    // `true` as `delays_other` puts the dep in TypecheckFirst.
-    #[test]
-    fn register_dep_for_eval_uses_delays_other_true() {
+    fn dep_registration_uses_delays_other_true() {
         use crate::scheduler::{CompileScheduler, ModulePool};
+
+        fn empty_sexps() -> std::sync::Arc<[Sexp]> {
+            std::sync::Arc::from(Vec::new())
+        }
 
         let scheduler = CompileScheduler::new();
         let dep = ModuleFullPath::from("sprint60_e2_dep_pool");
 
-        // Mirror what register_dep_for_eval does at line 1335 post-E-2.
-        scheduler.register_module(dep.clone(), true);
+        scheduler.register_module(dep.clone(), empty_sexps(), true);
 
         let pool = scheduler.module_pool(&dep)
             .expect("dep must be registered");
         assert_eq!(
             pool,
             ModulePool::TypecheckFirst,
-            "register_module(_, true) MUST land the dep in TypecheckFirst \
-             (this is the scheduler contract E-2 depends on; observed {:?})",
+            "register_module(_, _, true) MUST land the dep in TypecheckFirst \
+             (the scheduler contract the dep-drive priority depends on; \
+             observed {:?})",
             pool,
         );
 
-        // Negative: confirm that `false` lands the dep in TypecheckNext —
-        // this is what pre-E-2 `register_dep_for_eval` did and what
-        // worker-side consensus rejects.
+        // Negative: `false` lands the dep in TypecheckNext (entry-module
+        // placement).
         let other = ModuleFullPath::from("sprint60_e2_dep_pool_neg");
-        scheduler.register_module(other.clone(), false);
+        scheduler.register_module(other.clone(), empty_sexps(), false);
         let neg_pool = scheduler.module_pool(&other)
             .expect("neg dep must be registered");
         assert_eq!(
             neg_pool, ModulePool::TypecheckNext,
-            "register_module(_, false) MUST land the dep in TypecheckNext \
-             (the pool E-2 moves away from; observed {:?})",
+            "register_module(_, _, false) MUST land the dep in TypecheckNext \
+             (observed {:?})",
             neg_pool,
         );
     }
@@ -6089,141 +5715,5 @@ mod bare_primitive_value_path_tests {
 
         s.shutdown();
         let _ = std::fs::remove_dir_all(&root);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Sprint 61 Wave 3 step 3f — H5 race closure: EvalInFlightGuard panic-unwind
-// leak test.
-//
-// Per /arch §3d' "Test authoring (step 3f) requirements" test 3 (/int unit
-// test): `EvalInFlightGuard::drop` clears `eval_in_flight = false` even
-// when the enclosing scope panics. Guards against a future refactor
-// accidentally breaking Drop semantics (which would re-open the H5 race
-// on any panic inside `register_dep_for_eval`).
-//
-// See `design/int/heisenbug-race-closure.md §3d' + §3e'` and the guard
-// definition at `src/session_v4.rs` (EvalInFlightGuard RAII struct).
-// ---------------------------------------------------------------------------
-#[cfg(test)]
-mod eval_in_flight_guard_tests {
-    use super::*;
-    use crate::scheduler::{CompileScheduler, ModulePool};
-    use std::panic::{catch_unwind, AssertUnwindSafe};
-
-    /// Minimal setup: register a module so its `ModuleState` exists and
-    /// the set/clear calls find it. Return the scheduler + module path.
-    fn sched_with_module(name: &str) -> (CompileScheduler, ModuleFullPath) {
-        let sched = CompileScheduler::new();
-        let m = ModuleFullPath::from(name);
-        sched.register_module(m.clone(), false);
-        (sched, m)
-    }
-
-    // spec: design/int/heisenbug-race-closure.md §3d' test 3 — RAII guard
-    // Drop fires on normal exit.
-    #[test]
-    fn guard_drop_clears_flag_on_normal_exit() {
-        let (sched, m) = sched_with_module("user");
-
-        // Pre-condition: flag not set.
-        assert!(!sched.eval_in_flight_for_test(&m));
-
-        {
-            let _guard = EvalInFlightGuard::new(&sched, m.clone());
-            assert!(
-                sched.eval_in_flight_for_test(&m),
-                "flag must be set inside guard scope",
-            );
-        } // guard dropped here
-
-        assert!(
-            !sched.eval_in_flight_for_test(&m),
-            "flag must be cleared after normal guard drop",
-        );
-    }
-
-    // spec: design/int/heisenbug-race-closure.md §3d' test 3 — primary
-    // invariant. Drop MUST fire on panic-unwind so the flag does not
-    // leak, preventing permanent H5-gate suppression of a caller module
-    // after a panic in `register_dep_for_eval`.
-    #[test]
-    fn guard_drop_clears_flag_on_panic_unwind() {
-        let (sched, m) = sched_with_module("user");
-
-        // Pre-condition.
-        assert!(!sched.eval_in_flight_for_test(&m));
-
-        // Wrap the scheduler borrow in AssertUnwindSafe because
-        // CompileScheduler contains Mutex/Condvar which are not
-        // UnwindSafe by default. The assertion is sound here: the test
-        // inspects state only via the `eval_in_flight_for_test` path
-        // AFTER the catch — never re-entering any mid-operation method
-        // on the scheduler from the unwound frame itself.
-        let sched_ref = &sched;
-        let m_clone = m.clone();
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            let _guard = EvalInFlightGuard::new(sched_ref, m_clone.clone());
-            // Inside-scope invariant.
-            assert!(
-                sched_ref.eval_in_flight_for_test(&m_clone),
-                "flag must be set inside guard scope before panic",
-            );
-            // Trigger a panic while the guard is live. Rust unwinding
-            // MUST run the guard's Drop on the way out.
-            panic!("intentional test panic to exercise guard drop");
-        }));
-
-        assert!(
-            result.is_err(),
-            "closure must have panicked; catch_unwind returned Ok",
-        );
-
-        // Post-condition: the primary invariant. Drop ran during unwind,
-        // clearing the flag. If this assertion fails, a future refactor
-        // has broken panic-safety of the guard and the H5 gate can leak
-        // indefinitely.
-        assert!(
-            !sched.eval_in_flight_for_test(&m),
-            "EvalInFlightGuard::drop MUST clear eval_in_flight even when \
-             the enclosing scope panics — H5 race-closure invariant. \
-             Leaking the flag would permanently suppress \
-             try_unblock_locked pushes for this module.",
-        );
-    }
-
-    // spec: design/int/heisenbug-race-closure.md §3d' test 3 addendum —
-    // re-entry after panic-unwind restores normal operation. A subsequent
-    // `try_unblock_locked` on the (still-blocked) module pushes normally,
-    // proving the cleanup is observable through the scheduler's primary
-    // gate path, not just through the backing-field read.
-    #[test]
-    fn guard_drop_on_panic_restores_try_unblock_push_path() {
-        let (sched, m) = sched_with_module("user");
-
-        // Drive module into TypecheckBlocked for the try_unblock test.
-        sched.force_typecheck_blocked_for_test(&m);
-
-        let sched_ref = &sched;
-        let m_clone = m.clone();
-        let _ = catch_unwind(AssertUnwindSafe(|| {
-            let _guard = EvalInFlightGuard::new(sched_ref, m_clone.clone());
-            panic!("intentional test panic");
-        }));
-
-        // Post-unwind, the flag is cleared and `try_unblock_locked` must
-        // push the module out of TypecheckBlocked. If the Drop leaked
-        // the flag, the gate would still suppress and this assertion
-        // would fail.
-        sched.try_unblock_for_test(&m);
-        let pool = sched.module_pool_for_test(&m).expect("module registered");
-        assert_ne!(
-            pool,
-            ModulePool::TypecheckBlocked,
-            "after guard's panic-unwind Drop, try_unblock_locked must \
-             push (not suppress) — the gate must be disarmed. If this \
-             fails, the guard leaked eval_in_flight through the panic \
-             path and the H5 fix is compromised.",
-        );
     }
 }

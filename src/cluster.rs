@@ -25,14 +25,20 @@
 //!   (warnings, resolved-import bindings, introspection records) lives on
 //!   `ProcessedCluster` directly.
 //!
-//! The full `process_cluster` orchestration here delegates to
-//! `worker::check_program_compat`, which constructs `ClusterContext::Live`
-//! and dispatches `check_forms` against the live `SymbolTable`. Until the
-//! shape-pivot to `ClusterContext::Cluster` + staging table lands
-//! (FIXME 0176), writes commit directly to live and `ProcessedCluster` is
-//! produced empty — `insert_cluster` is a no-op. The orchestration shell
-//! still exists for facade conformance and to receive the staging redirect
-//! once upstream stabilises.
+//! ## S78 in-call-stack restructure (FIXME 0176/0179 closed)
+//!
+//! `process_cluster` is the single live worker orchestration entry: it builds a
+//! `ModuleCompiler` over `&SharedState` and drives the shared
+//! `worker::process_cluster_once` core (expand → Pass-0 structural peel →
+//! build → fresh-staging `check_forms`, commit-on-Ok / discard-on-Err). On a
+//! dependency gap the dep is registered with the scheduler (its sexps ride the
+//! dep's work packet) and blocked on, and `process_cluster` returns
+//! `ClusterOutcome::Gap` so the worker frees back to the pool; the scheduler
+//! requeues the blocked module (retry-from-top) when the dep completes. The
+//! REPL eval path (`session_v4::process_single_form`) drives the same
+//! `process_cluster_once` core in its own retry loop. `insert_cluster` commits
+//! the cluster-level REPL/scheduler metadata; the per-symbol staging entries
+//! already committed to live inside `check_program_compat`.
 
 use cranelisp_types::{
     CranelispError, FQSymbol, ImportNames, ModuleEntry, ModuleFullPath, Symbol, Warning,
@@ -157,86 +163,79 @@ impl ProcessedCluster {
 // Cluster orchestration — free functions (Sprint 66 Wave 3a-β target shape)
 // ---------------------------------------------------------------------------
 
-/// Process a cluster of forms against a target module scope.
-///
-/// **Target shape** (per `design/arch/facades/int.md` §"process_cluster"):
-/// expand each form (gap-retry), build into `Vec<ParsedEntry>`, construct
-/// `ClusterContext::Cluster`, run `check_forms` once with whole-cluster
-/// gap-retry, drop ctx, return `ProcessedCluster::from_parts`.
-///
-/// **Current state** (Wave 3a-β in-flight): this free function delegates to
-/// `worker::check_program_compat`, which constructs `ClusterContext::Live`
-/// and dispatches `check_forms` against the live `SymbolTable` directly. The
-/// orchestration shell here is the durable surface; the staging-vs-live
-/// pivot to `ClusterContext::Cluster` is FIXME 0176's responsibility.
-///
-/// Per `facades/int.md` invariants 5 / 5a / 5b — frontend and typecheck
-/// stay pure with respect to live state (return `Gap` values, do not call
-/// the scheduler). `process_cluster` is the sole crate-crossing where gap
-/// values become scheduler calls.
-pub fn process_cluster(
-    shared: &crate::session_v4::SharedState,
-    forms: Vec<cranelisp_types::Sexp>,
-    scope: &ModuleFullPath,
-) -> Result<ProcessedCluster, CranelispError> {
-    // Build the cluster's `Vec<TopLevel>` via the new `build_form` /
-    // `build_expr` boundary (replacing the retired `build_program`). Build is
-    // mode-agnostic. `(trace ...)` in `--link` standalone-binary mode fails at
-    // link time via the architecture's natural missing-symbol detection — the
-    // trace runtime is not bundled into the staticlib produced by exe-bundle.
-    // See spec/04-expressions.md §4.12.9.
-    let working_program = crate::worker::build_program_compat(&forms)?;
-
-    // Wrap any bare `Expr` form as a synthetic `__expr` defn so it flows
-    // through the typecheck dispatch.
-    let wrapped = wrap_exprs_as_synthetic_defns(&working_program);
-
-    // Single `check_forms` call — internally drives Pass 1 + Pass 2 +
-    // finalize. Writes go to the live `SymbolTable` under the Wave 3a-β
-    // scaffold (`ClusterContext::Live`); the full staging pivot is FIXME
-    // 0176's responsibility.
-    crate::worker::check_program_compat_no_gap(&shared.symbol_tables, &shared.module_aliases, scope, &wrapped)?;
-
-    // Wave 3a-β scaffold: writes commit directly through `check_program_compat`,
-    // so the staging-drain path is empty. Cluster-level metadata flow back
-    // through the calling REPL/worker driver until `ProcessedCluster` carries
-    // the full staging diff.
-    Ok(ProcessedCluster::empty())
+/// Outcome of one worker-side `process_cluster` pass (S78 in-call-stack
+/// restructure). Either the cluster fully typechecked (`Done`) — carrying the
+/// `ProcessedCluster` metadata + the expanded program for codegen — or it hit
+/// a dependency gap (`Gap`) which has already been registered + blocked on.
+pub enum ClusterOutcome {
+    Done {
+        processed: ProcessedCluster,
+        program: Vec<cranelisp_types::TopLevel>,
+    },
+    Gap {
+        dep: ModuleFullPath,
+    },
 }
 
-/// Local equivalent of the worker's `wrap_exprs_as_defns` helper. Folds any
-/// `TopLevel::Expr` into a synthetic zero-arg `__expr` defn so it flows
-/// uniformly through the typecheck dispatch.
-fn wrap_exprs_as_synthetic_defns(
-    program: &[cranelisp_types::TopLevel],
-) -> Vec<cranelisp_types::TopLevel> {
-    use cranelisp_types::{Defn, DefnVariant, Span, TopLevel, Visibility};
+/// Process a cluster of forms against a target module scope — the single live
+/// Pass-0/1/2 orchestration entry for the worker path (S78 in-call-stack
+/// restructure; FIXME 0176/0179 residual scope closed).
+///
+/// Builds a `ModuleCompiler` borrowing `&SharedState` and runs the shared
+/// `worker::process_cluster_once` core ONCE, from the top: expand → Pass-0
+/// structural peel (`install_imports`/`install_exports`/mod-alias in-frame) →
+/// `build_form` → fresh-staging `SymbolTableAccess::cluster` → `check_forms`
+/// (commit-on-Ok / discard-on-Err). On a dependency gap the dep is registered
+/// with the scheduler (its sexps ride the dep's work packet) and blocked on
+/// (`block_for_typecheck`) inside the core; this function returns
+/// `ClusterOutcome::Gap` and the worker frees back to the pool. The scheduler
+/// requeues this module when the dep completes and the cluster re-runs from the
+/// top against now-larger live state — no saved suspend state, no parking map.
+///
+/// Per `facades/int.md` invariants 5 / 5a / 5b — frontend and typecheck stay
+/// pure with respect to live state (return `Gap` values, do not call the
+/// scheduler). `process_cluster` is the sole crate-crossing where gap values
+/// become scheduler calls.
+pub fn process_cluster(
+    shared: &crate::session_v4::SharedState,
+    forms: std::sync::Arc<[cranelisp_types::Sexp]>,
+    scope: &ModuleFullPath,
+) -> Result<ClusterOutcome, CranelispError> {
+    use crate::worker::{self, ClusterOnce, ModuleCompiler};
+    use cranelisp_typecheck::CheckState;
 
-    let mut working = Vec::with_capacity(program.len());
-    for top in program {
-        match top {
-            TopLevel::Expr(expr) => {
-                let span = expr.span();
-                let wrapper_span = Span::new(
-                    span.start.saturating_sub(1),
-                    span.end.saturating_add(1),
-                );
-                working.push(TopLevel::Defn(Defn {
-                    name: Symbol::from("__expr"),
-                    docstring: None,
-                    variants: vec![DefnVariant {
-                        params: vec![],
-                        body: expr.clone(),
-                        span,
-                    }],
-                    visibility: Visibility::Public,
-                    span: wrapper_span,
-                }));
-            }
-            other => working.push(other.clone()),
+    cranelisp_types::ensure_module_exists(&shared.symbol_tables, scope);
+
+    let lib_dirs = shared.lib_dirs.lock()
+        .unwrap_or_else(|e| e.into_inner()).clone();
+    let platform_dirs = shared.platform_dirs.lock()
+        .unwrap_or_else(|e| e.into_inner()).clone();
+    let mut ctx = ModuleCompiler {
+        symbol_tables: &shared.symbol_tables,
+        next_type_id: &shared.next_type_id,
+        module_aliases: &shared.module_aliases,
+        check_state: CheckState::new(scope.clone()),
+        current_module: scope.clone(),
+        scheduler: &shared.scheduler,
+        typecheck_products: &shared.typecheck_products,
+        introspection: Some(&shared.introspection),
+        lib_dirs: &lib_dirs,
+        platform_dirs: &platform_dirs,
+        project_root: &shared.project_root,
+        shared_state: Some(shared),
+    };
+
+    match worker::process_cluster_once(
+        &mut ctx,
+        scope,
+        &forms,
+        cranelisp_types::ModuleStrategy::Replace,
+    )? {
+        ClusterOnce::Done { processed, program } => {
+            Ok(ClusterOutcome::Done { processed, program })
         }
+        ClusterOnce::Gap { dep } => Ok(ClusterOutcome::Gap { dep }),
     }
-    working
 }
 
 /// Commit a `ProcessedCluster`'s entries into the live `SymbolTable` for

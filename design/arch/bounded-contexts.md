@@ -441,7 +441,7 @@ These hold across sprints — the contract `cranelisp-platform` makes with the r
 
 Handoffs are how cadences communicate. The pattern matters; the int facade pins the typed objects. Three patterns suffice:
 
-- **REPL → compilation**: the REPL submits work (an evaluation, a module load) and waits. Compilation signals when ready.
+- **REPL → compilation**: the REPL submits work (an evaluation, a module load) and waits. Compilation signals when ready. The dependency-gap case realizes this same "submit and wait on a terminal signal" pattern *within* the compilation cadence: a worker that hits a missing dependency drops its in-progress (stack-local) cluster state, registers the dependency, and blocks on the scheduler's monotonic terminal-readiness signal, then retries its cluster from the top against now-committed live state — no in-progress state is parked in shared maps for another thread to resume. (Int-internal realization; see `design/int/s77-int-restructure.md` + `design/int/concurrency/dependency-protocol-target.mmd`.)
 - **Compilation → REPL**: each evaluation completes with either a displayable result or an error. The REPL formats and prints.
 - **Watcher → REPL → compilation**: file-change events do not flow directly into compilation. They are polled by the REPL at prompt boundaries (avoiding mid-input interleave) and become re-register requests.
 

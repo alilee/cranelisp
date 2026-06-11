@@ -1,32 +1,35 @@
 sequenceDiagram
     autonumber
-    participant Session as REPL / session core
-    participant DepSvc as Dependency service
-    participant Packet as Dep work packet
-    participant Store as Compiler-owned publication store
+    participant W1 as Worker W1 (processing M)
     participant Sched as CompileScheduler
-    participant Worker as Worker subsystem
+    participant W2 as Worker W2 (pool)
+    participant Live as symbol_tables (live DashMap)
 
-    Note over Session,Worker: Target state: one authority owns dependency publication, registration, wait, and resume.
+    Note over W1,Live: Target state (option b, in-call-stack). M's in-progress cluster state lives only on W1's process_cluster stack frame. No module_sexps / suspend_states. The only cross-thread fact is the scheduler's monotonic terminal-readiness signal.
 
-    alt Session or worker discovers dependency
-        Session->>DepSvc: ensure_dependency(dep)
-    else Worker->>DepSvc: ensure_dependency(dep)
+    W1->>W1: process_cluster(shared, sexps_M, M) — expand, build, Pass-0 peel, check_forms over stack-local staging_M
+
+    alt check_forms returns Ok
+        W1->>Live: commit staging_M to Live[M] (atomic drain under write guard)
+        W1->>Sched: notify_typecheck_done(M)
+        Note over W1: Cluster complete. No map touched.
+    else check_forms returns Err(Gap(N)) — M needs module N
+        W1->>W1: drop staging_M (atomic discard, Live[M] unchanged, nothing parked)
+        W1->>Sched: ensure_registered(N) — parse N to a fresh packet carrying sexps_N, register_module(N), wake pool
+        W1->>Sched: block_for_typecheck(M, N, sym)
+        Note over Sched: detect_cycle_locked FIRST (Decision 30). Mutual import M to N to M is rejected before any wait. No cycle here, so add W1 as waiter on N.
+        W1->>Sched: park in wait_for_typecheck (W1 yields, pool slot not held busy)
+
+        W2->>Sched: take_priority_work_blocking — claims packet for N
+        W2->>W2: process_cluster(shared, sexps_N, N) returns Ok
+        W2->>Live: commit staging_N to Live[N] (atomic)
+        W2->>Sched: notify_typecheck_done(N)
+
+        Sched-->>W1: sweep waiter — clear M.blocked_on, requeue M's packet (sexps_M ride the packet)
+        Note over W1: Resume is retry-from-top, not resume-at-index. No saved Pass-2 index, so Defect-B semantics hold by construction.
+        W1->>W1: re-run process_cluster(shared, sexps_M, M) from the top — Pass-0 peel of (import N) now resolves (N in Live), check_forms Ok
+        W1->>Live: commit staging_M to Live[M]
+        W1->>Sched: notify_typecheck_done(M)
     end
 
-    DepSvc->>Store: publish dep payload once
-    DepSvc->>Packet: create dep work packet
-    DepSvc->>Sched: register or join existing dep work
-    DepSvc->>Sched: block/wait using one canonical protocol
-
-    Sched->>Worker: dispatch dep work packet
-    Worker->>Store: consume packet / read published dep payload
-    Worker->>Store: publish completed symbol/module state
-    Worker->>Sched: notify typecheck done / unblock waiters
-
-    Sched-->>DepSvc: dep ready
-    DepSvc-->>Session: resume caller
-
-    Note over DepSvc: Sole publish-before-register authority.
-    Note over Store,Sched: Publication barrier and readiness observation are coupled through one protocol, not mirrored paths.
-    Note over Worker: Workers consume packets rather than reconstructing the protocol from ambient shared maps.
+    Note over W1,Live: Soundness — in-progress cluster state is stack-local (no sharing, no race). Cross-thread signalling is monotonic-terminal-only (publish-once, observe-many). The resumer reads only committed Live[N]. This is the substrate-removal that closes the S60 to S62 heisenbug class.

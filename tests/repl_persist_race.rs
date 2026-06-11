@@ -28,10 +28,27 @@
 //!     (the migration plan step 7 50-loop loop-repro).
 //!   - `design/int/heisenbug-race-closure.md §3b` — reduced repro
 //!     calibration (N=6, K=2, 10 trials).
-//!   - `design/int/heisenbug-race-closure.md §7.7` — H5 gate invariant
-//!     (`ModuleStateTypechecking user` fires only on REPL-eval thread).
-//!   - `design/int/heisenbug-race-closure.md §7.8` — H5 mechanism
-//!     (`eval_in_flight` flag suppresses worker queue push).
+//!   - `design/int/s77-int-restructure.md §3.5` — the S60–S62 heisenbugs
+//!     (incl. H5) cannot recur once in-progress cluster state is stack-local.
+//!     The H5-replay gate + the regrounded liveness/positive-outcome tests
+//!     EVIDENCE this observable parity property (they no longer probe the
+//!     `eval_in_flight`/`EvalInFlightGuard`/`module_sexps` internals that the
+//!     Sprint 78 OQ-3 restructure deletes — see the per-test reground notes).
+//!
+//! Sprint 78 Wave 1 regrounding (plan §1/§4): the three previously
+//! mechanism-pinned tests were regrounded to observable outcomes BEFORE /dev
+//! touches the source, so the suite stops referencing the soon-deleted
+//! internals up front:
+//!   - `h5_gate_typechecking_user_fires_only_on_repl_thread` (parsed `[SCH]`
+//!     for the `eval_in_flight`-suppressed push) → RETIRED, subsumed by
+//!     `h5_replay_gate_deterministic_under_scheduler_stress` (observable
+//!     determinism under scheduler-trace stress; gates the OQ-3 deletion).
+//!   - `h5_normal_completion_does_not_starve_repl_eval_thread` (RAII
+//!     `EvalInFlightGuard` Drop) → `h5_normal_completion_liveness_yields_dep_value`
+//!     (terminates + yields 42).
+//!   - `repl_dep_load_no_race_with_persistent_workers` (absence of the
+//!     `module_sexps`-produced "no parsed sexps" string) → positive
+//!     Cons-list-result assertion (strictly stronger).
 //!
 //! Race rate notes (from ledger):
 //!   - `cache_repl_loads_heisenbug_parallel_stress` — RESOLVED by H5 fix
@@ -41,11 +58,6 @@
 //!     ~5–10% under `--test-threads=6` after H6 fix. Test is the
 //!     active regression surface; failures here may indicate H7
 //!     residue rather than an H5 regression.
-//!   - `h5_gate_typechecking_user_fires_only_on_repl_thread` — passes
-//!     5/5 post-fix (Wave 3 step 3e' SHA `35062ca`).
-//!   - `h5_normal_completion_does_not_starve_repl_eval_thread` — the
-//!     RAII guard / `EvalInFlightGuard` Drop correctness regression
-//!     guard. Passes at HEAD; would fail (timeout) if the flag leaks.
 //!
 //! Per the failing-not-ignored rule (`memory/feedback_failing_not_ignored.md`),
 //! intermittent failures of `heisenbug_race_reduced_concurrent_import_pairs`
@@ -54,6 +66,10 @@
 
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
+
+#[path = "helpers/e2e.rs"]
+mod e2e;
+use e2e::{Cranelisp, PreludeVariant};
 
 fn project_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -358,333 +374,137 @@ fn heisenbug_race_reduced_concurrent_import_pairs() {
 }
 
 // =============================================================================
-// 3. H5 gate invariant — `ModuleStateTypechecking user` fires only on REPL thread
+// 3. H5-replay gate (load-bearing — gates OQ-3 `eval_in_flight` guard deletion)
 // =============================================================================
 
-// spec: design/int/heisenbug-race-closure.md §7.7 — H5 gate invariant
-//   (ModuleStateTypechecking `user` fires exactly once per cycle, on the
-//   REPL-eval thread, never on a worker thread). Also §7.8 (H5 mechanism:
-//   `try_unblock_locked(user)` emits ModuleStateUnblocked on the worker
-//   but the subsequent queue push into `typecheck_first` is suppressed by
-//   the `eval_in_flight` flag — proving absence of a worker claim of `user`).
+// spec: design/int/s77-int-restructure.md §3.5 — the S60–S62 heisenbugs
+//   (incl. H5) cannot recur once in-progress cluster state is stack-local.
+//   This test EVIDENCES that soundness claim (it does not assert the
+//   mechanism): it replays the H5 two-input shape under CRANELISP_SCHEDULER_
+//   TRACE stress and proves the OBSERVABLE outcome (import + call → 99) is
+//   deterministic across the iteration budget.
 //
-// Test shape:
-//   * Drive a minimal import scenario (one helper module, import + call)
-//     through a single subprocess with CRANELISP_SCHEDULER_TRACE=1 so the
-//     full scheduler event stream is dumped to stderr on exit. The minimal
-//     shape (1 session, 1 iteration) is deterministic — the H5 gate should
-//     always hold for the import path, race or no race.
-//   * Parse the `[SCH]` event lines on stderr.
-//   * Walk `Blocked user` (REPL-eval-thread) → matching `Unblocked user`
-//     (worker thread) → ensure no subsequent `Typechecking user` fires on
-//     the same worker thread before another `Blocked user` resets the cycle.
+// Gating relationship (Sprint 78 plan §1 / gate-map §5):
+//   * BEFORE the OQ-3 guard deletion (Step 3): MUST be green with the
+//     `eval_in_flight` guard still present — this establishes the baseline
+//     the deletion must preserve.
+//   * AFTER Step 3 deletes the guard: MUST stay green. Green-here-too is the
+//     soundness evidence that the guard's reason-for-being evaporated. If this
+//     test ever fails post-deletion, OQ-3 is WRONG and Step 3 must revert.
 //
-// Passes at HEAD (H5 fix landed in Wave 3 step 3e'). Would fail pre-fix
-// (two `ModuleStateTypechecking module=user` events — one on t1, one on
-// t2 from the worker claim of the unblocked caller).
+// "Flaky" is a banned disposition on this project (feedback_failing_not_ignored,
+// feedback_repros_join_suite). Determinism = ZERO failures across all
+// iterations: no N-of-M tolerance, no retry. A single iteration without `99`
+// fails the test loudly with the iteration index + the captured `[SCH]` stream.
 //
-// (carry: legacy/sprint23.rs::h5_gate_typechecking_user_fires_only_on_repl_thread)
+// This test SUBSUMES the retired mechanism-probing
+// `h5_gate_typechecking_user_fires_only_on_repl_thread`: that test parsed
+// `[SCH]` events to assert the `eval_in_flight`-suppressed worker-queue-push
+// signature — a mechanism Step 3 deletes (no flag to gate, the `[SCH]`
+// signature may legitimately change shape). The observable-outcome assertion
+// here is the durable H5 guard; the mechanism probe regrounds into it.
+//
+// Iteration count (50) calibration (Sprint 78 plan §1): one subprocess per
+// iteration (lighter than the 2-session cache-delete shape of
+// `cache_repl_loads_heisenbug_parallel_stress` at 20 iter). 50 is a
+// structural-reopening tripwire, not statistical proof — the historical H5
+// flake was ~1/1755. Measured wall-time in isolation is recorded in the
+// Wave 1 report; if it ever threatens the <30s /qa suite budget, reduce to
+// the largest count that stays well under and note it here.
 #[test]
-fn h5_gate_typechecking_user_fires_only_on_repl_thread() {
-    let binary = binary_path();
-    assert!(
-        binary.exists(),
-        "cranelisp binary not found at {binary:?} — run `cargo build` first"
-    );
-    let fixtures = project_root().join("tests").join("fixtures");
+fn h5_replay_gate_deterministic_under_scheduler_stress() {
+    // 50 fresh-tmpdir subprocesses, each under CRANELISP_SCHEDULER_TRACE=1.
+    // The trace plumbing changes timing — running UNDER the trace IS the
+    // stress condition the soundness obligation names (plan §1). On any
+    // failure the captured `[SCH]` stderr stream is dumped for diagnosis.
+    const ITERATIONS: usize = 50;
 
-    let dir = tempfile::tempdir().expect("failed to create temp dir");
-    std::fs::write(
-        dir.path().join("helper.cl"),
-        "(defn helper-val [] 99)",
-    )
-    .unwrap();
+    for iteration in 0..ITERATIONS {
+        // Fresh Cranelisp builder + tmpdir per iteration (the builder is
+        // single-shot; fresh tmpdir is the isolation discipline from
+        // tests/CLAUDE.md §"Fresh Temp Directory per Test").
+        //
+        // PreludeVariant::None: the import + bare-call shape needs only the
+        // helper module; no operators are load-bearing (reduction discipline
+        // — plan §1 prefers None if it reproduces, and it does).
+        let out = Cranelisp::new()
+            .repl()
+            .with_prelude(PreludeVariant::None)
+            .file("helper.cl", "(defn helper-val [] 99)")
+            .env("CRANELISP_SCHEDULER_TRACE", "1")
+            .stdin(
+                "(import [helper [helper-val]])\n\
+                 (helper-val)\n\
+                 /quit\n",
+            )
+            .output();
 
-    let input = "\
-(import [helper [helper-val]])
-(helper-val)
-/quit
-";
-
-    let mut child = Command::new(&binary)
-        .current_dir(dir.path())
-        .env("CRANELISP_LIB", fixtures.as_os_str())
-        .env("CRANELISP_SCHEDULER_TRACE", "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn cranelisp");
-    {
-        use std::io::Write;
-        let stdin = child.stdin.as_mut().expect("stdin");
-        stdin.write_all(input.as_bytes()).expect("write stdin");
-    }
-    let out = child.wait_with_output().expect("wait subprocess");
-
-    let stdout = stdout_str(&out);
-    let stderr = stderr_str(&out);
-
-    // Pre-condition: the subprocess actually completed the import + call.
-    // If the call failed we're looking at the H6 residue, not an H5
-    // violation — the H5 invariant is still meaningful but the test
-    // becomes a false signal. Skip with a clear message so a flake on the
-    // distinct H6 signature does not mask H5 regression.
-    if !stdout.contains("99") {
-        // Allow the H6 residue to surface without failing this H5 test.
-        // H6 is ledgered separately as `heisenbug_race_reduced_concurrent_import_pairs`.
-        // Only the H5-specific assertion below matters here.
-        eprintln!(
-            "note: subprocess did not reach 99 — likely H6 residue on this run. \
-             Proceeding to H5 gate invariant check regardless.\nstdout: {stdout}\n\
-             stderr excerpt: {}",
-            stderr.lines().take(6).collect::<Vec<_>>().join("\n")
+        assert!(
+            out.stdout.contains("99"),
+            "H5-replay gate FAILED at iteration {iteration}/{ITERATIONS}: the \
+             two-input import sequence did not produce 99. This is the H5 race \
+             re-surfacing — if it fires AFTER the OQ-3 guard deletion (Step 3), \
+             OQ-3 is wrong and Step 3 must revert (design/int/\
+             s77-int-restructure.md §3.5).\n\
+             === stdout ===\n{}\n=== [SCH] stderr stream ===\n{}",
+            out.stdout, out.stderr
         );
-    }
-
-    // Parse the dump. Each event line is:
-    //   `[SCH] ts=N thr=ThreadId(N)/ORD TagName\tmodule=X [pool=Y]`
-    //
-    // For H5 we care specifically about the *import-cycle* transitions on
-    // `user` — not the startup cycle where `user` is typechecked the first
-    // time by the worker pool (that is valid and pre-dates the race).
-    //
-    // The H5-pinning signature is:
-    //   * A worker thread emits `ModuleStateUnblocked module=user` (inside
-    //     `try_unblock_locked` from `notify_typecheck_done(helper)`).
-    //   * The SAME worker thread IMMEDIATELY afterwards pops `user` from
-    //     `typecheck_first` and emits `ModuleStateTypechecking module=user`
-    //     (the worker claim of the unblocked caller).
-    // Post-fix, the second event must NOT appear on that same thread —
-    // the `eval_in_flight` flag suppresses the queue push so the worker
-    // has nothing to pop.
-    #[derive(Debug, Clone)]
-    struct Event {
-        thr: String,
-        tag: String,
-    }
-    let mut events: Vec<Event> = Vec::new();
-    for line in stderr.lines() {
-        if !line.starts_with("[SCH] ts=") {
-            continue;
-        }
-        let thr_tok = match line.split_whitespace().find(|t| t.starts_with("thr=")) {
-            Some(t) => t.to_string(),
-            None => continue,
-        };
-        // Only care about `user` module events here.
-        let is_user_mod = line.contains("module=user") && !line.contains("module=user/");
-        if !is_user_mod {
-            continue;
-        }
-        let tag = if line.contains("ModuleStateTypechecking") {
-            "Typechecking"
-        } else if line.contains("ModuleStateUnblocked") {
-            "Unblocked"
-        } else if line.contains("ModuleStateBlocked") {
-            "Blocked"
-        } else if line.contains("ModuleStateTypechecked") {
-            "Typechecked"
-        } else if line.contains("ModuleStateFailed") {
-            "Failed"
-        } else {
-            continue;
-        };
-        events.push(Event {
-            thr: thr_tok,
-            tag: tag.to_string(),
-        });
-    }
-
-    // The H5 gate applies ONLY to REPL-eval-driven block/unblock cycles.
-    // The startup path (worker blocks user on prelude, prelude completes,
-    // worker unblocks + claims user) happens before the REPL eval thread
-    // is live — no `eval_in_flight` flag is armed, and no gate should fire.
-    // That cycle is LEGAL and must not be flagged.
-    //
-    // Identify REPL-driven cycles by the thread that emits `Blocked user`:
-    //   * If `Blocked user` fires on ThreadId(1)/0 (the primary/REPL-eval
-    //     thread in single-subprocess runs), this is a REPL-driven cycle —
-    //     the H5 gate MUST be active.
-    //   * If `Blocked user` fires on a worker thread (the startup cycle
-    //     above), the gate is not expected; skip.
-    const EVAL_THR: &str = "thr=ThreadId(1)/0";
-    for (i, ev) in events.iter().enumerate() {
-        if ev.tag != "Blocked" || ev.thr != EVAL_THR {
-            continue;
-        }
-        // Find the matching `Unblocked user` in the remainder of the stream.
-        let mut unblocked_idx_thr: Option<(usize, String)> = None;
-        for (j, later) in events.iter().enumerate().skip(i + 1) {
-            match later.tag.as_str() {
-                "Unblocked" => {
-                    unblocked_idx_thr = Some((j, later.thr.clone()));
-                    break;
-                }
-                "Blocked" if later.thr == EVAL_THR => {
-                    // Next eval-driven cycle with no Unblocked resolving
-                    // this one. Odd but not an H5 violation; move on.
-                    break;
-                }
-                _ => continue,
-            }
-        }
-        let (u_idx, u_thr) = match unblocked_idx_thr {
-            Some(x) => x,
-            None => continue,
-        };
-        // From u_idx onwards, find any `Typechecking user` on u_thr before
-        // another `Blocked user` resets the cycle.
-        for later in events.iter().skip(u_idx + 1) {
-            if later.tag == "Blocked" {
-                break;
-            }
-            if later.tag == "Typechecking" && later.thr == u_thr {
-                panic!(
-                    "H5 invariant violated: thread {u_thr} emitted \
-                     `ModuleStateUnblocked module=user` (resolving a \
-                     REPL-eval-driven `Blocked user` cycle from {EVAL_THR}), \
-                     then subsequently emitted `ModuleStateTypechecking \
-                     module=user` on the SAME thread. This is the H5-pinning \
-                     signature (see design/int/heisenbug-race-closure.md \
-                     §7.7/§7.8). The `eval_in_flight` gate is not \
-                     suppressing the worker claim of `user` inside \
-                     `try_unblock_locked`.\nEvents:\n{events:#?}\n\
-                     Full stderr:\n{stderr}"
-                );
-            }
-        }
     }
 }
 
 // =============================================================================
-// 4. H5 starvation safety — RAII guard correctness on normal completion path
+// 4. H5 normal-completion liveness — import + call terminates and yields its
+//    value (REGROUNDED from RAII-guard mechanism to observable liveness)
 // =============================================================================
 
-// spec: design/int/heisenbug-race-closure.md §7.8 — `eval_in_flight` flag
-//   is armed at the top of `register_dep_for_eval` and must be cleared on
-//   function exit (normal AND panic) via `EvalInFlightGuard`'s `Drop`. If
-//   the flag leaked — e.g., because Drop semantics broke, or a panic path
-//   bypassed the guard — `try_unblock_locked(caller)` would suppress the
-//   queue push indefinitely, and the REPL eval thread's retry loop would
-//   hang waiting for a typecheck push that never arrives.
+// spec: design/int/s77-int-restructure.md §3.5 — in-call-stack cluster state
+//   is stack-local, so the normal import→call→complete path neither races nor
+//   stalls. This test EVIDENCES the observable property that matters to the
+//   user: the import + call subprocess TERMINATES (does not hang) and yields
+//   the dependency's value (42). It does NOT probe the `EvalInFlightGuard`
+//   RAII mechanism — that guard deletes in OQ-3 Step 3, so an assertion on it
+//   would break the build the moment /dev lands the deletion. The liveness +
+//   value outcome holds today AND after the deletion.
 //
-// This test exercises the NORMAL completion path (a dep that completes
-// cleanly, no forced race). The subprocess must finish within a
-// reasonable timeout — hanging means the flag leaked. The test is
-// asserting ABSENCE of the starvation failure mode, not presence of any
-// specific event.
-//
-// Passes at HEAD. Would fail (timeout) if the flag leaks.
+// Regrounded in Sprint 78 Wave 1 (plan §4 item 2): the prior version asserted
+// the same observable outcome but justified the timeout via `EvalInFlightGuard`
+// Drop correctness + `eval_in_flight` flag leakage. Those internals are gone in
+// Step 3; the observable property (terminates + 42) is the durable guard.
 //
 // (carry: legacy/sprint23.rs::h5_normal_completion_does_not_starve_repl_eval_thread)
 #[test]
-fn h5_normal_completion_does_not_starve_repl_eval_thread() {
-    use std::io::Write;
-    use std::time::{Duration, Instant};
+fn h5_normal_completion_liveness_yields_dep_value() {
+    use std::time::Duration;
 
-    let binary = binary_path();
+    // 15-second ceiling. The assertion only needs to distinguish "completed"
+    // from "hung indefinitely": a regression that re-introduces a stall on the
+    // normal-completion path surfaces as a Timeout, not an infinitely-hanging
+    // test. 15 s is far above typical completion (~0.3–0.8 s observed) and
+    // half the tests/CLAUDE.md per-test 30 s cap. The `Cranelisp` builder's
+    // `.timeout(...)` enforces it: on breach, `.output()` panics with
+    // `CrError::Timeout` (the builder kills the child first), which IS the
+    // liveness-failure signal.
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::None)
+        .file("helper.cl", "(defn helper-val [] 42)")
+        .stdin(
+            "(import [helper [helper-val]])\n\
+             (helper-val)\n\
+             /quit\n",
+        )
+        .timeout(Duration::from_secs(15))
+        .output();
+
+    // The import + call must have executed and yielded 42. If it did not,
+    // the normal-completion path produced a wrong/missing value.
     assert!(
-        binary.exists(),
-        "cranelisp binary not found at {binary:?} — run `cargo build` first"
-    );
-    let fixtures = project_root().join("tests").join("fixtures");
-
-    let dir = tempfile::tempdir().expect("failed to create temp dir");
-    std::fs::write(
-        dir.path().join("helper.cl"),
-        "(defn helper-val [] 42)",
-    )
-    .unwrap();
-
-    // Minimal import + call + quit — the normal H5 happy path. No forced
-    // parallelism, no trace env var: just the flag-clear code path.
-    let input = "\
-(import [helper [helper-val]])
-(helper-val)
-/quit
-";
-
-    let start = Instant::now();
-    // 15-second ceiling. This test asserts ABSENCE of a starvation
-    // pathology: if `EvalInFlightGuard::drop` fails to clear
-    // `eval_in_flight`, `register_dep_for_eval` blocks forever in
-    // `wait_module_inmem_complete_blocking` and the subprocess never
-    // terminates. The assertion only needs to distinguish "completed" from
-    // "hung indefinitely" — any ceiling that is much larger than typical
-    // completion time and much smaller than "infinite" validates the
-    // invariant.
-    //
-    // Calibration (Sprint 61 Wave 3 step 3f investigation, SHA `a9028c0`):
-    //   - Isolation:                  ~0.5 s subprocess wall-clock
-    //   - `--test sprint23` suite:    ~0.8 s subprocess wall-clock (n=15)
-    //   - Whole-workspace nextest:    ~0.28-0.44 s subprocess wall-clock
-    //                                 (n=20, -p cranelisp concurrency)
-    //   - /int §3e'' observed:        one 9/10 failure — 2 s ceiling breached
-    //                                 under heavy nextest + cargo-build contention
-    //
-    // 15 s is ~30x typical worst-case observed, 0.5x the tests/CLAUDE.md
-    // per-test 30 s cap, and still sharply distinguishes "completed" from
-    // the real starvation failure mode (an infinite block on
-    // `wait_module_inmem_complete_blocking`'s condvar). A 15 s breach
-    // genuinely signals a leaked flag, not a busy machine.
-    const TIMEOUT: Duration = Duration::from_secs(15);
-
-    let mut child = Command::new(&binary)
-        .current_dir(dir.path())
-        .env("CRANELISP_LIB", fixtures.as_os_str())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn cranelisp");
-    {
-        let stdin = child.stdin.as_mut().expect("stdin");
-        stdin.write_all(input.as_bytes()).expect("write stdin");
-    }
-
-    // Poll wait with a deadline. If the child is still alive past the
-    // deadline, kill it and fail — starvation signature.
-    loop {
-        match child.try_wait() {
-            Ok(Some(_status)) => break,
-            Ok(None) => {
-                if start.elapsed() > TIMEOUT {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    panic!(
-                        "H5 starvation-absence violated: subprocess did not \
-                         complete within {:?} on the normal-completion path. \
-                         Likely cause: `EvalInFlightGuard` Drop is not firing, \
-                         so `eval_in_flight` stays true and \
-                         `try_unblock_locked(caller)` suppresses the \
-                         typecheck_first push forever. See \
-                         design/int/heisenbug-race-closure.md §7.8 RAII guard \
-                         correctness.",
-                        TIMEOUT,
-                    );
-                }
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            Err(e) => panic!("unexpected error waiting for subprocess: {e}"),
-        }
-    }
-
-    let out = child.wait_with_output().expect("wait subprocess");
-    let stdout = stdout_str(&out);
-    let stderr = stderr_str(&out);
-
-    // Sanity: the import + call must have executed. If helper-val did not
-    // return 42, the test is no longer exercising the "normal completion"
-    // path the invariant is about — surface the distinction clearly.
-    assert!(
-        stdout.contains("42"),
-        "H5 normal-completion path failed to yield helper-val=42. Test \
-         pre-condition not met. This may be the H6 data-plane residue \
-         (ledgered separately as \
-         `heisenbug_race_reduced_concurrent_import_pairs`) firing on this \
-         run — re-run before treating as an H5 regression.\n\
-         stdout: {stdout}\nstderr: {stderr}"
+        out.stdout.contains("42"),
+        "H5 normal-completion liveness: import + call did not yield \
+         helper-val=42. The normal completion path must terminate AND produce \
+         the dependency's value (design/int/s77-int-restructure.md §3.5).\n\
+         === stdout ===\n{}\n=== stderr ===\n{}",
+        out.stdout, out.stderr
     );
 }
 
@@ -707,25 +527,31 @@ fn h5_normal_completion_does_not_starve_repl_eval_thread() {
 //
 // REGRESSION-GUARD: Sprint 58 Wave 6 Defect 1 — race resolved post-S58 W6;
 // this test is the durable record. Owning skill /int (session_v4
-// compile_dep_inline ordering invariant).
+// dep-load ordering invariant).
 // (carry: legacy/wave6_demo_repros.rs::repl_dep_load_no_race_with_persistent_workers)
 
 // spec: repl/spec.md §0.2 — Run Mode parity: REPL `(import ...)` of a
 //       stdlib module MUST produce the same outcome as the equivalent
 //       `--run` invocation (root CLAUDE.md "Defects" §1 — REPL/--run
 //       divergence is a defect)
+//
+// REGROUNDED in Sprint 78 Wave 1 (plan §4 item 3): the prior version asserted
+// the ABSENCE of the error string "no parsed sexps for module" — a symptom
+// produced by the `module_sexps` shared map when a worker dequeued a Typecheck
+// task before the dep's sexps were published. Step 2 deletes `module_sexps`,
+// so that error string can no longer be produced and a "wrong-string-absent"
+// assertion becomes vacuously true (guards nothing). Regrounded to assert the
+// POSITIVE observable outcome: the import + constructor call produces a
+// successful Cons-list result. This is strictly stronger than absence-of-
+// symptom and survives the map deletion.
 #[test]
 fn repl_dep_load_no_race_with_persistent_workers() {
     use std::io::Write;
 
     // Setup: an isolated project root with the repo stdlib symlinked in.
     // Drive the REPL with `--priority-workers 4` so multiple persistent
-    // workers wake on the scheduler notify — this is the configuration
-    // that consistently triggered the compile_dep_inline race per /int's
-    // FIXME #3 diagnosis. The race symptom is the literal error string
-    // "no parsed sexps for module" emitted when a worker dequeues a
-    // Typecheck task before compile_dep_inline has published the dep's
-    // sexps to shared.module_sexps.
+    // workers wake on the scheduler notify — the configuration that
+    // consistently triggered the dep-load race per /int's FIXME #3 diagnosis.
     let td = tempfile::tempdir().expect("create tempdir");
     let cwd = td.path();
     let proj_stdlib = cwd.join("stdlib");
@@ -736,8 +562,8 @@ fn repl_dep_load_no_race_with_persistent_workers() {
         std::fs::create_dir_all(&proj_stdlib).unwrap();
     }
 
-    // The REPL evaluates a bare expression that requires the prelude
-    // graph to be loaded — the same shape /repl saw in Wave 6 demos.
+    // The REPL imports a stdlib module and constructs a value from it — the
+    // same dep-load shape /repl saw in Wave 6 demos.
     let repl_input = "(import [collections.list [Cons Nil]])\n(Cons 1 Nil)\n";
 
     let binary = binary_path();
@@ -761,14 +587,19 @@ fn repl_dep_load_no_race_with_persistent_workers() {
     }
     let out = child.wait_with_output().expect("failed to read output");
 
-    let combined = format!("{}{}", stdout_str(&out), stderr_str(&out));
+    let stdout = stdout_str(&out);
+    let stderr = stderr_str(&out);
+    // POSITIVE outcome: the import + `(Cons 1 Nil)` constructor call resolves
+    // and produces a Cons-list result. The REPL self-documenting display shows
+    // the constructed value's type/value; a successful run names `Cons`.
     assert!(
-        !combined.contains("no parsed sexps for module"),
-        "REPL emitted dep-load race symptom 'no parsed sexps for module'. \
-         Per /int FIXME #3 this means compile_dep_inline registered the dep \
-         with the scheduler before publishing the dep's sexps to \
-         shared.module_sexps. A persistent worker woke on the notify, \
-         dequeued the Typecheck task, and hit the empty map. \
-         Combined output:\n{combined}"
+        stdout.contains("Cons"),
+        "REPL dep-load: (import [collections.list [Cons Nil]]) followed by \
+         (Cons 1 Nil) under --priority-workers 4 did NOT produce a successful \
+         Cons-list result. Under the in-call-stack dep-drive (Sprint 78) the \
+         dep's sexps never leave the processing worker's stack frame, so a \
+         persistent worker cannot observe a half-published module. A failure \
+         here is a real dep-load-ordering regression.\n\
+         === stdout ===\n{stdout}\n=== stderr ===\n{stderr}"
     );
 }

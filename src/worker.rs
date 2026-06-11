@@ -17,7 +17,7 @@ use cranelisp_types::{ErrorLocation,
     PlatformSpec, Sexp, Span, Symbol, TopLevel, Visibility,
 };
 
-use cranelisp_typecheck::{CheckResult, CheckState};
+use cranelisp_typecheck::CheckState;
 
 // Internal per-int compatibility shim for the (post-Decision-44, 2026-05-13
 // third amendment) collapsed `check_forms` surface. The legacy multi-call
@@ -37,10 +37,6 @@ pub struct ModuleCheckAccumulator {
     /// `check_forms` handles this internally and the worker side no longer
     /// drives it.
     pub default_method_defns: Vec<Defn>,
-    /// Per-defn type vars captured during Pass 1, consumed by Pass 2 and
-    /// `compute_display_info_public`. Kept as a placeholder for source
-    /// compatibility; `check_forms` rebuilds this internally.
-    pub defn_type_vars: std::collections::HashMap<Symbol, (Vec<cranelisp_types::Type>, cranelisp_types::Type)>,
 }
 
 impl ModuleCheckAccumulator {
@@ -979,20 +975,38 @@ fn qualify_expanded_sexp(
 // ProcessResult — suspension-aware return type
 // ---------------------------------------------------------------------------
 
-/// Result of processing module forms. Either the module is fully typechecked,
-/// or it blocked on a dependency and needs to be resumed later.
+/// Result of one whole-cluster pass through `process_cluster_once`
+/// (S78 in-call-stack restructure).
+///
+/// Either the cluster fully typechecked in this pass (`Done`), or it hit a
+/// dependency gap (`Gap`). On `Gap` the dependency has ALREADY been registered
+/// with the scheduler and the gapping module blocked on it
+/// (`block_for_typecheck`) — the register-edge is recorded. The caller then
+/// drives the wait: the worker wrapper frees back to the pool (the scheduler
+/// requeues the gapping module when the dep completes), and the eval wrapper
+/// blocks on `wait_module_inmem_complete_blocking(dep)` then retries. Either
+/// way the next pass re-runs the cluster from the top with no saved state —
+/// the gap does not recur for `dep` because `dep` is now in live.
+///
+/// There is no saved suspend state, no resume index, no parking map: the
+/// in-progress cluster state (parsed forms, staging table, expand position)
+/// lived only on this call's stack frame and was dropped when `Gap` returned.
 #[allow(clippy::large_enum_variant)]
-pub enum ProcessResult {
-    /// Module fully typechecked.
-    Complete {
-        check_result: CheckResult,
+pub enum ClusterOnce {
+    /// Cluster fully typechecked. `program` is the expanded `Vec<TopLevel>`
+    /// the caller feeds to codegen (`inline_jit_codegen_for_module`); the
+    /// `ProcessedCluster` carries the cluster-level REPL/scheduler metadata
+    /// committed via `cluster::insert_cluster`.
+    Done {
+        processed: crate::cluster::ProcessedCluster,
         program: Vec<TopLevel>,
     },
-    /// Blocked on a dependency. Resume from the given form index.
-    Blocked {
-        form_index: usize,
-        dep_module: ModuleFullPath,
-        dep_sexps: Vec<Sexp>,
+    /// Hit a dependency gap. `dep` is the module that was registered + blocked
+    /// on; the caller drives the wait + retry. (`dep` may already be loaded in
+    /// the cache-hit / already-imported case — the block-then-unblock was
+    /// issued so the scheduler requeues this module.)
+    Gap {
+        dep: ModuleFullPath,
     },
 }
 
@@ -1174,14 +1188,21 @@ fn classify_form(
 // BlockAction — import/mod handler result
 // ---------------------------------------------------------------------------
 
-/// Signals the Pass 2 loop whether to continue or block.
+/// Signals the structural-peel (Pass 0) whether to continue or that a
+/// dependency was registered + blocked on.
+///
+/// S78: the `Block` arm no longer carries `dep_sexps` — the structural
+/// handler has already parsed the dep and handed its sexps to
+/// `scheduler.register_module(dep, sexps, true)` (the sexps ride the dep's
+/// work packet, not a shared `module_sexps` map). The handler has also called
+/// `block_for_typecheck`, recording the register-edge. The caller
+/// (`process_cluster_once`) returns `ClusterOnce::Gap { dep }`.
 enum BlockAction {
     /// Continue processing the next form.
     Continue,
-    /// Block: a dependency was discovered. Store state and return.
+    /// A dependency was discovered, registered, and blocked on.
     Block {
         dep_module: ModuleFullPath,
-        dep_sexps: Vec<Sexp>,
     },
 }
 
@@ -1189,192 +1210,154 @@ enum BlockAction {
 // process_module_forms — two-pass per-form typecheck (C1)
 // ---------------------------------------------------------------------------
 
-/// Expand, build AST, and typecheck all forms in a module from pre-parsed sexps.
+/// Process a whole cluster of forms once, from the top (S78 in-call-stack
+/// restructure — replaces the legacy `process_module_forms` per-form outer
+/// loop + saved-suspend-state resume).
 ///
-/// Drives the two-pass iteration required by Algorithm W:
-/// - Pass 1 (Register): register type defs, trait decls, signatures.
-///   Defmacro forms are parsed and registered in the module table.
-/// - Pass 2 (CheckBody): per-sexp expand-then-check. Macro calls are
-///   expanded inline (compiling macro deps on demand). Import/export/mod/
-///   platform forms are handled lazily (Step 5).
+/// Runs the full Pass-0 / Pass-1 / Pass-2 sequence over `sexps` against the
+/// live `SymbolTable`, building all in-progress state (parsed forms, staging
+/// table, expand position, accumulator) on THIS call's stack frame:
 ///
-/// On success, notifies the scheduler of each typechecked symbol and
-/// calls `notify_typecheck_done`. On error, calls `notify_module_failed`.
+/// - **Pass 0** — peel structural forms (`import`/`export`/`mod`/`platform`)
+///   and the implicit prelude. A structural dep that is not yet loaded is
+///   registered with the scheduler (its sexps ride the dep's work packet) and
+///   blocked on (`block_for_typecheck`), then this function returns
+///   `ClusterOnce::Gap { dep }` — the in-progress frame is dropped (atomic
+///   discard; live unchanged).
+/// - **Pass 1** — separate macros, build AST, register signatures / macros /
+///   default methods.
+/// - **Pass 2** — per-form expand-then-check. An FQ reference to an unloaded
+///   module surfaces a gap that is driven to readiness (register + block) and
+///   returns `ClusterOnce::Gap { dep }`.
+/// - **Finalize** — single `check_program_compat` (cluster-mode staging,
+///   commit-on-Ok / discard-on-Err). A surviving FQ-auto-load gap is driven;
+///   any other gap is a hard error.
 ///
-/// `start_form_index`: the Pass 2 form to resume from (0 for fresh modules).
-/// On resume, Pass 1 is skipped (already done).
+/// On a `Gap` the caller drives the wait + retry-from-top: the worker wrapper
+/// frees back to the pool (the scheduler requeues this module when `dep`
+/// completes), the eval wrapper blocks on `wait_module_inmem_complete_blocking`
+/// then loops. There is no saved resume index — each pass re-derives from
+/// `sexps` against now-larger live state. The forms-before-import are always
+/// re-processed (Defect-B / OQ-4 preserved by construction).
 ///
-/// `state`: per-module suspension state (accumulator, expanded_program, pass1_done).
-/// May be a resumed state (saved across suspension) or freshly created.
-/// Decide the form index Pass 2 must start from on this invocation.
-///
-/// `start_form_index` is the scheduler-saved resume point, but it carries two
-/// distinct meanings depending on WHICH pass blocked on the previous attempt:
-///
-/// - A **Pass-0** block (an `(import …)` / `(export …)` / `(mod …)` whose
-///   dependency had to be loaded) leaves `pass1_done == false`, so on the
-///   resume this invocation re-runs Pass 0 + Pass 1 over the WHOLE form list
-///   (`is_fresh == true`). Pass 2 must then process every form from 0 —
-///   honouring the saved index would skip the forms *before* the import (e.g. a
-///   `(defn …)` placed before it), so they never reach `expanded_program` and
-///   finalize reports "undefined variable" (Defect B,
-///   spec_08::defn_before_import_resumes_correctly_after_dep_load).
-/// - A **Pass-2** block (an FQ-auto-load gap surfaced *inside* Pass 2) leaves
-///   `pass1_done == true` (`is_fresh == false`) and `expanded_program` already
-///   holds the forms before the block point; resuming at `start_form_index` is
-///   correct and avoids re-appending them.
-fn pass2_resume_index(is_fresh: bool, start_form_index: usize) -> usize {
-    if is_fresh { 0 } else { start_form_index }
-}
-
-pub fn process_module_forms(
+/// On `Done` the cluster's expanded program is returned for codegen; the
+/// cluster-level REPL/scheduler metadata rides on `ProcessedCluster` (committed
+/// via `cluster::insert_cluster`). The per-symbol staging entries already
+/// committed to live inside `check_program_compat`.
+pub fn process_cluster_once(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     sexps: &[Sexp],
-    start_form_index: usize,
-    state: &mut ModuleSuspendState,
     strategy: ModuleStrategy,
-) -> Result<ProcessResult, CranelispError> {
-    let is_fresh = !state.pass1_done;
+) -> Result<ClusterOnce, CranelispError> {
+    // In-call-stack working state — rebuilt from `sexps` every pass, dropped on
+    // a gap. Never lands in a shared map (the S60–S62 heisenbug substrate is
+    // gone). `expanded_program` accumulates within THIS pass only.
+    let mut accumulator = ModuleCheckAccumulator::new();
+    let mut expanded_program: Vec<TopLevel> = Vec::new();
 
-    if is_fresh && strategy == ModuleStrategy::Replace {
+    if strategy == ModuleStrategy::Replace {
         // Set active module. Symbol table is preserved for slot reuse
         // and type-change detection.
         ctx.set_current_module(module.clone());
-        // clear_module_for_replace_public is a no-op with stateless TC;
-        // symbol table clearing happens through the module system.
 
         // Zero GOT slots and clear codegen artifacts for this module's
         // symbols. Slot assignments are preserved so re-compiled code
         // lands in the same slots.
         clear_module_codegen(ctx, module);
 
-        // Prelude injection: inject (import [prelude [*]]) for non-prelude modules
-        // unless the source explicitly references prelude in an import or export (§8.8.1).
-        if let Some(result) = inject_prelude_if_needed(ctx, module, sexps)? {
-            return Ok(result);
+        // Prelude injection: inject (import [prelude [*]]) for non-prelude
+        // modules unless the source explicitly references prelude (§8.8.1).
+        if let Some(dep) = inject_prelude_if_needed(ctx, module, sexps)? {
+            return Ok(ClusterOnce::Gap { dep });
         }
-    } else if is_fresh && strategy == ModuleStrategy::Additive {
-        // Additive: just set the active module. Module state persists
-        // from previous evals — no clear, no re-injection.
-        ctx.set_current_module(module.clone());
     } else {
-        // Resume: set active module (may have been changed by dep processing).
+        // Additive (REPL eval): just set the active module. Module state
+        // persists from previous evals — no clear, no re-injection.
         ctx.set_current_module(module.clone());
     }
 
-    // --- Pass 1: only on fresh start (not on resume after blocking) ---
-    if is_fresh {
-        // Pass 0: Process import/export/mod forms before Pass 1.
-        // Imported symbols must be in scope before pass1_register checks
-        // trait impl bodies. If a dependency isn't loaded yet, we block
-        // and resume here later (pass1_done is still false).
-        for (form_idx, sexp) in sexps.iter().enumerate() {
-            match classify_form(sexp, module)? {
-                FormKind::Import(specs) => {
-                    // Record import specs as structural decls on the module's
-                    // SymbolTable (Sprint 58 Step 5a / Decision 33). Source-order
-                    // append, no dedup. Implicit prelude is NOT recorded here —
-                    // see `inject_prelude_if_needed` for the rationale (option (b)
-                    // in `design/int/symbol-table-cache.md` §3 / CP3).
-                    record_imports_on_symbol_table(ctx, module, &specs);
-                    match handle_import(ctx, module, specs)? {
-                        BlockAction::Continue => {}
-                        BlockAction::Block { dep_module, dep_sexps } => {
-                            return Ok(ProcessResult::Blocked {
-                                form_index: form_idx,
-                                dep_module,
-                                dep_sexps,
-                            });
-                        }
+    // --- Pass 0: structural-form peel (import/export/mod/platform) ---
+    // Imported symbols must be in scope before pass1_register checks trait
+    // impl bodies. An unloaded dep is registered + blocked on, and the cluster
+    // retries from the top once it is live.
+    for sexp in sexps.iter() {
+        match classify_form(sexp, module)? {
+            FormKind::Import(specs) => {
+                record_imports_on_symbol_table(ctx, module, &specs);
+                match handle_import(ctx, module, specs)? {
+                    BlockAction::Continue => {}
+                    BlockAction::Block { dep_module } => {
+                        return Ok(ClusterOnce::Gap { dep: dep_module });
                     }
                 }
-                FormKind::Export(specs) => {
-                    // Record export specs as structural decls on the module's
-                    // SymbolTable (Sprint 58 Step 5a / Decision 33).
-                    record_exports_on_symbol_table(ctx, module, &specs);
-                    match handle_export(ctx, module, &specs)? {
-                        BlockAction::Continue => {}
-                        BlockAction::Block { dep_module, dep_sexps } => {
-                            return Ok(ProcessResult::Blocked {
-                                form_index: form_idx,
-                                dep_module,
-                                dep_sexps,
-                            });
-                        }
-                    }
-                }
-                FormKind::Mod(decl) => {
-                    // Record mod decl as structural decl on the module's
-                    // SymbolTable (Sprint 58 Step 5a / Decision 33).
-                    record_submodule_on_symbol_table(ctx, module, &decl);
-                    match handle_mod(ctx, module, &decl)? {
-                        BlockAction::Continue => {}
-                        BlockAction::Block { dep_module, dep_sexps } => {
-                            return Ok(ProcessResult::Blocked {
-                                form_index: form_idx,
-                                dep_module,
-                                dep_sexps,
-                            });
-                        }
-                    }
-                }
-                FormKind::Platform(spec) => {
-                    // Record platform spec as structural decl on the module's
-                    // SymbolTable (Sprint 58 Step 5a / Decision 33).
-                    record_platform_on_symbol_table(ctx, module, &spec);
-                    handle_platform(ctx, module, &spec)?;
-                }
-                _ => {} // Regular, Defmacro — handled in Pass 2
             }
+            FormKind::Export(specs) => {
+                record_exports_on_symbol_table(ctx, module, &specs);
+                match handle_export(ctx, module, &specs)? {
+                    BlockAction::Continue => {}
+                    BlockAction::Block { dep_module } => {
+                        return Ok(ClusterOnce::Gap { dep: dep_module });
+                    }
+                }
+            }
+            FormKind::Mod(decl) => {
+                record_submodule_on_symbol_table(ctx, module, &decl);
+                match handle_mod(ctx, module, &decl)? {
+                    BlockAction::Continue => {}
+                    BlockAction::Block { dep_module } => {
+                        return Ok(ClusterOnce::Gap { dep: dep_module });
+                    }
+                }
+            }
+            FormKind::Platform(spec) => {
+                record_platform_on_symbol_table(ctx, module, &spec);
+                handle_platform(ctx, module, &spec)?;
+            }
+            _ => {} // Regular, Defmacro — handled in Pass 1 / Pass 2.
         }
-
-        let (regular_sexps, macro_infos) = separate_macros(sexps, module)?;
-
-        // Build AST for regular (non-macro) forms. Build is mode-agnostic;
-        // `(trace ...)` in `--link` standalone-binary mode fails at link time
-        // via the architecture's natural missing-symbol detection — no
-        // frontend pre-pass check is needed.
-        let program = build_program_compat(&regular_sexps)?;
-        let working_program = wrap_exprs_as_defns(&program);
-
-        pass1_register(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, &working_program, &mut state.accumulator)?;
-
-        let intr = ctx.introspection;
-        for (name, info, sexp) in &macro_infos {
-            register_macro_in_module(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, intr, module, name, info, sexp)?;
-        }
-
-        let defaults = register_default_methods(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, &mut state.accumulator)?;
-        state.accumulator.default_method_defns = defaults;
-        state.pass1_done = true;
     }
+
+    // --- Pass 1: register signatures / macros / default methods ---
+    let (regular_sexps, macro_infos) = separate_macros(sexps, module)?;
+
+    // Build AST for regular (non-macro) forms. Build is mode-agnostic;
+    // `(trace ...)` in `--link` standalone-binary mode fails at link time via
+    // the architecture's natural missing-symbol detection.
+    let program = build_program_compat(&regular_sexps)?;
+    let working_program = wrap_exprs_as_defns(&program);
+
+    pass1_register(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, &working_program, &mut accumulator)?;
+
+    let intr = ctx.introspection;
+    for (name, info, sexp) in &macro_infos {
+        register_macro_in_module(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, intr, module, name, info, sexp)?;
+    }
+
+    let defaults = register_default_methods(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, &mut accumulator)?;
+    accumulator.default_method_defns = defaults;
 
     // --- Pass 2: per-sexp expand-then-check ---
-    // expanded_program accumulates across suspensions via the caller.
-    // `pass2_resume_index` disambiguates a Pass-0 dep-load resume (start from 0,
-    // Pass 1 just re-ran the whole list) from a genuine Pass-2 resume (honour
-    // the saved index). See its doc for the Defect B rationale.
-    let pass2_start = pass2_resume_index(is_fresh, start_form_index);
     let pass2_result = pass2_check_bodies_with_expansion(
-        ctx, module, sexps, pass2_start, &mut state.accumulator, &mut state.expanded_program,
+        ctx, module, sexps, &mut accumulator, &mut expanded_program,
     )?;
 
     match pass2_result {
         Pass2Result::Complete => {
-            // On an FQ-auto-load block at the finalize stage, resume Pass 2 at
-            // `sexps.len()` — a no-op loop that re-enters `finalize_module`
-            // with the now-loaded dependency (FIXME 0268).
-            finalize_module(
-                ctx, module, &state.expanded_program, &mut state.accumulator, strategy,
-                sexps.len(),
+            // Finalize: single `check_program_compat` over the expanded
+            // cluster. A surviving FQ-auto-load gap is driven (register +
+            // block) and surfaces as `Gap`; any other gap is a hard error.
+            finalize_cluster(
+                ctx, module, &expanded_program, &mut accumulator,
             )
         }
-        Pass2Result::BlockedOnFqModule { form_index, dep_module } => {
+        Pass2Result::BlockedOnFqModule { dep_module } => {
             // An FQ macro reference to an unloaded module surfaced during
-            // expansion (Pass 2). Load the dependency with import's file
-            // resolution rules and resume the referencing form (FIXME 0268).
-            load_fq_dep_module(ctx, module, &dep_module, form_index, Span::SYNTHETIC)
+            // expansion (Pass 2). Drive the dependency (register + block) with
+            // import's file-resolution rules; the cluster retries from the top
+            // once it is live (FIXME 0268).
+            drive_module_dep(ctx, module, &dep_module, Span::SYNTHETIC)?;
+            Ok(ClusterOnce::Gap { dep: dep_module })
         }
     }
 }
@@ -1408,54 +1391,48 @@ fn separate_macros(
     Ok((regular_sexps, macro_infos))
 }
 
-/// Finalize a fully typechecked module: run post-passes and build CheckResult.
+/// Finalize a fully expanded cluster: single `check_program_compat` dispatch,
+/// then build the `Done` outcome (S78 — replaces the legacy `finalize_module`).
 ///
-/// Per Decision 44's 2026-05-13 third amendment, the typecheck dispatch
-/// has collapsed onto a single `check_forms` call per cluster. The pre-S66
-/// shape (`pass1_register` + per-form `check_form(CheckBody)` +
-/// `finalize_check_result`) is consolidated here into one
-/// `check_program_compat` invocation over `expanded_program` plus the
-/// accumulated default-method defns. `accumulator.defn_type_vars` is no
-/// longer published across the facade — the worker side fabricates the
-/// display info from whatever `__expr` defn was registered into the live
-/// `SymbolTable`, falling back to `None` for the multi-defn case (a follow-up
-/// FIXME will surface display info via accessor on `ProcessedCluster`).
-fn finalize_module(
+/// Per Decision 44's 2026-05-13 third amendment, the typecheck dispatch is one
+/// `check_forms` call over `expanded_program` plus the accumulated
+/// default-method defns. The cluster-mode staging path inside
+/// `check_program_compat` commits per-symbol entries to live on `Ok` / discards
+/// on `Err`.
+///
+/// FQ auto-loading (spec §8.5.4 / §9.3.6, FIXME 0268): a recoverable gap naming
+/// an unloaded module is driven to readiness here (register + block, same
+/// file-resolution rules as `import`) and surfaces as `ClusterOnce::Gap` — the
+/// cluster retries from the top once the dep is live. No speculative function
+/// JIT push; the synchronous dependency typecheck-and-compile is the only
+/// mechanism.
+fn finalize_cluster(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     expanded_program: &[TopLevel],
     accumulator: &mut ModuleCheckAccumulator,
-    _strategy: ModuleStrategy,
-    resume_form_index: usize,
-) -> Result<ProcessResult, CranelispError> {
+) -> Result<ClusterOnce, CranelispError> {
     let mut final_working = wrap_exprs_as_defns(expanded_program);
 
     // Append default-method defns the trait-impl Pass-1 step had deferred.
-    // Pre-S66 these flowed through a separate Pass-2 `check_form(CheckBody)`
-    // step; under collapsed `check_forms` they ride into the same dispatch
-    // alongside the body forms.
-    //
-    // CLONE (not `take`) — this `check_forms` may surface an FQ-auto-load gap
-    // and block-and-retry (FIXME 0268), in which case `finalize_module` runs
-    // again over the same `accumulator`; draining the defaults on the first
-    // attempt would lose them on the retry.
+    // Under collapsed `check_forms` they ride into the same dispatch alongside
+    // the body forms. CLONE (not `take`) — `check_program_compat` may surface
+    // an FQ-auto-load gap, in which case the whole cluster retries from the
+    // top (a fresh `finalize_cluster` runs); draining here would lose them.
     for defn in &accumulator.default_method_defns {
         final_working.push(TopLevel::Defn(defn.clone()));
     }
 
-    // Single typecheck dispatch — internally drives Pass 1, Pass 2, finalize.
-    // FQ auto-loading (spec §8.5.4 / §9.3.6, FIXME 0268): a recoverable gap
-    // naming an unloaded module is caught at this int boundary, the module is
-    // loaded with the same file-resolution rules as `import`, and the whole
-    // cluster check is retried (resume Pass 2 at `resume_form_index`, a no-op
-    // that re-enters `finalize_module`). Macro-vs-fn discrimination is
-    // orchestrator-owned: only the dependency typecheck-and-compile is forced;
-    // no speculative function JIT push.
     if let Some(gap) =
         check_program_compat(ctx.symbol_tables, ctx.module_aliases, module, &final_working)?
     {
-        if let Some(block) = handle_fq_autoload_gap(ctx, module, &gap, resume_form_index)? {
-            return Ok(block);
+        // Map the gap to its target module and drive it (register + block) if
+        // it is a not-yet-loaded module we can act on.
+        if let Some(dep) = gap_target_module(&gap)
+            && !fq_module_is_loaded(ctx, &dep)
+        {
+            drive_module_dep(ctx, module, &dep, Span::SYNTHETIC)?;
+            return Ok(ClusterOnce::Gap { dep });
         }
         // The gap names a module that IS already loaded (or is not an
         // FQ-module gap we can act on) — surface it as a hard error so the
@@ -1466,35 +1443,21 @@ fn finalize_module(
         });
     }
 
-    // Defaults consumed successfully — drain them so a downstream re-entry
-    // (should one occur) does not re-append.
+    // Defaults consumed successfully — drain them.
     accumulator.default_method_defns.clear();
 
-    // Build a minimal `CheckResult` carrier for downstream codegen. The new
-    // typecheck surface no longer returns a `CheckResult` from
-    // `check_forms`; downstream code consumes only `warnings` (none today)
-    // and `display` (handled by REPL via direct SymbolTable lookups).
-    let check_result = CheckResult {
-        warnings: Vec::new(),
-        display: None,
-    };
-
-    // NOTE: notify_typecheck_done is NOT called here. The caller is
-    // responsible for stashing the program and calling
-    // notify_typecheck_done AFTER, so that nice workers cannot claim
-    // the module before the stash is populated.
-
-    // Build a program view for nice worker stashing. The nice worker no
-    // longer reads program contents — it enumerates via `defined_symbols()`
-    // — but a non-empty `program` still signals "has compilable defns".
-    // Expression forms flow through as `TopLevel::Expr`; regular defns and
-    // trait impls are passed through unchanged.
+    // Build a program view for codegen. The nice worker no longer reads program
+    // contents — it enumerates via `defined_symbols()` — but a non-empty
+    // `program` signals "has compilable defns" and drives `derive_codegen_batch`.
     let program: Vec<TopLevel> = expanded_program.to_vec();
 
-    Ok(ProcessResult::Complete {
-        check_result,
-        program,
-    })
+    // Cluster-level metadata. The per-symbol staging entries already committed
+    // to live inside `check_program_compat`; introspection/warnings flow back
+    // through the calling driver (REPL) / are empty (worker). The
+    // `ProcessedCluster` carrier is committed via `cluster::insert_cluster`.
+    let processed = crate::cluster::ProcessedCluster::empty();
+
+    Ok(ClusterOnce::Done { processed, program })
 }
 
 /// Register a defmacro in the module table (Pass 1).
@@ -1591,13 +1554,11 @@ enum Pass2Result {
     Complete,
     // Note: Import/export/mod/platform blocking is now handled in Pass 0.
     /// An FQ macro reference (`mod/macro`) named a not-yet-loaded module during
-    /// expansion. The caller loads the dependency and resumes the referencing
-    /// form (FIXME 0268, spec §9.3.6). `form_index` is the Pass-2 form to
-    /// re-process; nothing was appended to `expanded_program` for it yet
-    /// (`process_regular_form` extends only after expansion succeeds), so the
-    /// resume is clean.
+    /// expansion. The caller drives the dependency and the cluster retries from
+    /// the top once it is live (FIXME 0268, spec §9.3.6). S78: no `form_index`
+    /// — the whole cluster re-runs (retry-from-top), so there is no Pass-2
+    /// resume index to honour.
     BlockedOnFqModule {
-        form_index: usize,
         dep_module: ModuleFullPath,
     },
 }
@@ -1616,11 +1577,10 @@ fn pass2_check_bodies_with_expansion(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     sexps: &[Sexp],
-    start_form_index: usize,
     accumulator: &mut ModuleCheckAccumulator,
     expanded_program: &mut Vec<TopLevel>,
 ) -> Result<Pass2Result, CranelispError> {
-    for (form_idx, sexp) in sexps.iter().enumerate().skip(start_form_index) {
+    for sexp in sexps.iter() {
 
         match classify_form(sexp, module)? {
             // Import/export/mod/platform forms are processed in Pass 0
@@ -1642,11 +1602,8 @@ fn pass2_check_bodies_with_expansion(
                     ctx, module, sexp, accumulator, expanded_program,
                 )? {
                     // FQ macro reference to an unloaded module (FIXME 0268).
-                    // Resume this same form after the dependency is loaded.
-                    return Ok(Pass2Result::BlockedOnFqModule {
-                        form_index: form_idx,
-                        dep_module,
-                    });
+                    // The cluster retries from the top after the dep is loaded.
+                    return Ok(Pass2Result::BlockedOnFqModule { dep_module });
                 }
             }
         }
@@ -1945,8 +1902,9 @@ fn handle_import(
             }
         })?;
 
-        // Register dep with scheduler (idempotent — skips if already registered).
-        ctx.scheduler.register_module(dep.clone(), true);
+        // Register dep with scheduler (idempotent — skips if already
+        // registered). The sexps ride the dep's work packet (S78).
+        ctx.scheduler.register_module(dep.clone(), dep_sexps, true);
 
         // Block for typecheck (F1: called inside handle_import).
         ctx.scheduler.block_for_typecheck(
@@ -1957,7 +1915,6 @@ fn handle_import(
 
         return Ok(BlockAction::Block {
             dep_module: dep.clone(),
-            dep_sexps,
         });
     }
 
@@ -1975,47 +1932,40 @@ fn fq_module_is_loaded(ctx: &ModuleCompiler, dep: &ModuleFullPath) -> bool {
     ctx.symbol_tables.contains_key(dep) && ctx.scheduler.is_typechecked(dep)
 }
 
-/// FQ auto-loading (spec §8.5.4 / §9.3.6, FIXME 0268).
+/// Drive a dependency module to readiness — the register-edge half of the
+/// in-call-stack gap protocol (S78; FIXME 0268 for the FQ-auto-load case).
 ///
-/// An FQ reference `mod/sym` (function or macro) to a module that is not yet
-/// loaded surfaces as a gap the orchestrator catches at this boundary. This
-/// helper loads `dep` using the **same module-file resolution rules as
-/// `import`** (no new search semantics) and returns a `ProcessResult::Blocked`
-/// so the worker loop typechecks-and-compiles `dep`, then resumes the
-/// referencing form from `resume_form_index`.
+/// Resolves the module file with the **same rules as `import`** (no new search
+/// semantics), parses it, registers it with the scheduler (sexps ride the dep's
+/// work packet), and records the M→dep edge via `block_for_typecheck` (which
+/// runs the acyclicity check FIRST, so a transitive cycle back to `module` is
+/// rejected with the standard error before any wait — OQ-2). It does NOT wait:
+/// the caller (`process_cluster_once`'s caller — the worker wrapper or the eval
+/// wrapper) drives the wait + retry-from-top after this returns and the cluster
+/// surfaces `ClusterOnce::Gap`.
 ///
-/// Macro-vs-fn discrimination stays orchestrator-owned and is implicit in the
-/// resume: once `dep` is typechecked-and-compiled, the retry re-dispatches —
-/// an FQ **function** reference resolves against `dep`'s now-live signatures;
-/// an FQ **macro** reference re-expands, and the macro recogniser's existing
-/// on-demand clause compile finds the clause code already JIT'd by `dep`'s
-/// own Pass-2 codegen. No speculative JIT force of functions is performed; the
-/// dependency compile (synchronous via `block_for_typecheck` in the worker
-/// loop) is the only mechanism needed (FIXME 0268 item 3; the
-/// `priority_boost_jit`/`wait_for_inmem` half is consequently unused — see the
-/// PriorityEntry disposition note in `src/scheduler.rs`).
+/// For an already-loaded dep (peer import, prior retry, or cache hit) there is
+/// no future `notify_typecheck_done(dep)` sweep, so we block-then-immediately-
+/// unblock to re-queue the referencing module.
 ///
-/// File-not-found surfaces the existing module-not-found error at `span`;
-/// a transitive cycle back to the referencing module is rejected by the
-/// scheduler's existing acyclicity check in `block_for_typecheck`.
-fn load_fq_dep_module(
+/// Macro-vs-fn discrimination is orchestrator-owned and implicit in the retry:
+/// once `dep` is typechecked-and-compiled, the cluster re-runs — an FQ function
+/// reference resolves against `dep`'s now-live signatures; an FQ macro
+/// reference re-expands and the recogniser's on-demand clause compile finds the
+/// clause code already JIT'd by `dep`'s own Pass-2 codegen. No speculative
+/// function JIT push.
+fn drive_module_dep(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     dep: &ModuleFullPath,
-    resume_form_index: usize,
     span: Span,
-) -> Result<ProcessResult, CranelispError> {
-    // Already loaded (a peer form imported it, or it was loaded on a prior
-    // retry) — block-then-unblock to re-queue the referencing module without a
-    // file load. Same shape as the cache-hit branch below.
+) -> Result<(), CranelispError> {
+    // Already loaded — block-then-unblock to re-queue the referencing module
+    // without a file load (no future notify sweep would fire).
     if fq_module_is_loaded(ctx, dep) {
         ctx.scheduler.block_for_typecheck(module, dep, &Symbol::from("*"))?;
         ctx.scheduler.unblock_module(module);
-        return Ok(ProcessResult::Blocked {
-            form_index: resume_form_index,
-            dep_module: dep.clone(),
-            dep_sexps: Vec::new(),
-        });
+        return Ok(());
     }
 
     // Resolve the file — same rules as import (no new search semantics).
@@ -2041,19 +1991,14 @@ fn load_fq_dep_module(
 
     // Cache check: try to load from disk cache before parsing (parity with
     // import). On a cache hit `dep` is registered `TypecheckDone` synchronously
-    // — there is no future `notify_typecheck_done(dep)` to sweep our waiter, so
-    // we block-then-immediately-unblock to re-queue the referencing module.
+    // — block-then-immediately-unblock to re-queue the referencing module.
     if try_cache_hit_load(ctx, dep, &dep_file) {
         ctx.scheduler.block_for_typecheck(module, dep, &Symbol::from("*"))?;
         ctx.scheduler.unblock_module(module);
-        return Ok(ProcessResult::Blocked {
-            form_index: resume_form_index,
-            dep_module: dep.clone(),
-            dep_sexps: Vec::new(),
-        });
+        return Ok(());
     }
 
-    // Read + parse + publish dep sexps (shared per-dep prologue).
+    // Read + parse dep sexps (shared per-dep prologue).
     let dep_file_for_err = dep_file.clone();
     let dep_clone_for_err = dep.clone();
     let dep_sexps = register_dep(ctx, dep, &dep_file, |e| CranelispError::ModuleError {
@@ -2066,45 +2011,13 @@ fn load_fq_dep_module(
         location: ErrorLocation::from_span_file(span, Some(dep_file_for_err.clone())),
     })?;
 
-    // Register dep with scheduler (idempotent) and block for its typecheck.
-    // `block_for_typecheck` runs the existing acyclicity check, so a
-    // transitive cycle back to `module` is rejected with the standard error.
-    ctx.scheduler.register_module(dep.clone(), true);
+    // Register dep with scheduler (sexps ride the packet) and block on it.
+    // `block_for_typecheck` runs the acyclicity check, so a transitive cycle
+    // back to `module` is rejected with the standard error.
+    ctx.scheduler.register_module(dep.clone(), dep_sexps, true);
     ctx.scheduler.block_for_typecheck(module, dep, &Symbol::from("*"))?;
 
-    Ok(ProcessResult::Blocked {
-        form_index: resume_form_index,
-        dep_module: dep.clone(),
-        dep_sexps,
-    })
-}
-
-/// Map a typecheck-surfaced `ResolutionGap` to FQ-auto-load orchestration
-/// (FIXME 0268). Returns `Ok(Some(Blocked))` when the gap names a not-yet-loaded
-/// module that this helper loads; `Ok(None)` when the gap is not an actionable
-/// unloaded-module gap (the caller surfaces it as a hard error rather than
-/// swallowing it).
-///
-/// The actionable gap is `ResolutionGap::SymbolTypechecked(fq)` (the shape
-/// typecheck produces for an FQ value/function reference to an unknown module —
-/// see `crates/cranelisp-typecheck/src/checker.rs` `QualifiedModuleUnknown`
-/// → `SymbolTypechecked`) where `fq.module` is not yet loaded.
-fn handle_fq_autoload_gap(
-    ctx: &mut ModuleCompiler,
-    module: &ModuleFullPath,
-    gap: &cranelisp_types::ResolutionGap,
-    resume_form_index: usize,
-) -> Result<Option<ProcessResult>, CranelispError> {
-    let Some(dep) = gap_target_module(gap) else {
-        return Ok(None);
-    };
-    if fq_module_is_loaded(ctx, &dep) {
-        // The module IS loaded but the symbol still didn't resolve — not an
-        // auto-load case; let the caller surface the error.
-        return Ok(None);
-    }
-    let block = load_fq_dep_module(ctx, module, &dep, resume_form_index, Span::SYNTHETIC)?;
-    Ok(Some(block))
+    Ok(())
 }
 
 /// The module a `ResolutionGap` names as needing to be loaded, if any.
@@ -2125,53 +2038,33 @@ fn gap_target_module(gap: &cranelisp_types::ResolutionGap) -> Option<ModuleFullP
     }
 }
 
-/// Publish a dep's parsed sexps into `shared.module_sexps` if shared state is
-/// available. No-op for REPL contexts that don't use SharedState.
-///
-/// MUST be called BEFORE `scheduler.register_module(dep, ...)` so that any
-/// persistent priority worker that wakes on the scheduler notify finds the
-/// sexps already published. See Sprint 58 Wave 6 Defect 1 — the integration
-/// repro is `tests/wave6_demo_repros.rs::repl_dep_load_no_race_with_persistent_workers`,
-/// and the unit guard is `session_v4.rs::persistent_worker_tests::compile_dep_inline_publishes_sexps_before_register`.
-fn publish_dep_sexps(
-    ctx: &ModuleCompiler,
-    dep: &ModuleFullPath,
-    dep_sexps: &[Sexp],
-) {
-    if let Some(shared) = ctx.shared_state {
-        let mut map = shared.module_sexps.lock()
-            .unwrap_or_else(|e| e.into_inner());
-        map.entry(dep.clone()).or_insert_with(|| dep_sexps.to_vec());
-    }
-}
-
-/// Run the per-dep prologue that every persistent-worker form handler
-/// (handle_import, handle_export, handle_mod, inject_prelude_if_needed)
-/// used to inline before calling `scheduler.register_module`:
+/// Run the per-dep prologue that every structural form handler
+/// (handle_import, handle_export, handle_mod, inject_prelude_if_needed) and the
+/// FQ-auto-load drive run before `scheduler.register_module`:
 ///
 ///   1. read source from dep_file
 ///   2. parse to sexps
 ///   3. record source hash in CacheState
 ///   4. stash source text on the typecheck product for /source
 ///   5. update file_to_module for the file watcher
-///   6. publish dep_sexps to `shared.module_sexps` (Sprint 58 W6 Defect 1
-///      publish-before-register ordering).
 ///
-/// Does NOT call `scheduler.register_module` or `block_for_typecheck` —
-/// the caller does that, so the shim is reusable regardless of whether
-/// the caller intends to block. Returns the parsed sexps so the caller
-/// can forward them through `ProcessResult::Blocked` / `BlockAction::Block`.
+/// S78 in-call-stack restructure: the prologue NO LONGER publishes to a shared
+/// `module_sexps` map (that map is deleted). It returns the parsed sexps as an
+/// `Arc<[Sexp]>` so the caller hands them straight to
+/// `scheduler.register_module(dep, sexps, true)` — the sexps ride the dep's
+/// own work packet. The publish-before-register race window (the S60–S62
+/// heisenbug substrate) is gone: there is no map for a racing worker to read
+/// empty.
 ///
-/// Sprint 59 Workstream A §7 Step 1 — collapse the 5 publish-before-register
-/// sites (Sprint 58 W6 Defect 1) onto a single prologue. The caller-specific
-/// error framing (span / message wording) is produced by `prologue_err`,
-/// because each form handler has a slightly different error message shape.
+/// Does NOT call `scheduler.register_module` or `block_for_typecheck` — the
+/// caller does that. The caller-specific error framing (span / message
+/// wording) is produced by `prologue_err`.
 fn register_dep(
     ctx: &mut ModuleCompiler,
     dep: &ModuleFullPath,
     dep_file: &Path,
     prologue_err: impl FnOnce(std::io::Error) -> CranelispError,
-) -> Result<Vec<Sexp>, CranelispError> {
+) -> Result<std::sync::Arc<[Sexp]>, CranelispError> {
     // file_to_module mapping for the file watcher (Step 14).
     if let Some(shared) = ctx.shared_state
         && let Ok(canonical) = dep_file.canonicalize()
@@ -2186,7 +2079,8 @@ fn register_dep(
     // 1. read source.
     let source = std::fs::read_to_string(dep_file).map_err(prologue_err)?;
     // 2. parse.
-    let dep_sexps = cranelisp_frontend::parse(&source)?;
+    let dep_sexps: std::sync::Arc<[Sexp]> =
+        std::sync::Arc::from(cranelisp_frontend::parse(&source)?);
 
     // 3. record source hash for manifest generation. Sprint 67 Cluster B
     //    sub-fire 3: ObjectCache facade.
@@ -2203,27 +2097,9 @@ fn register_dep(
         }
     }
 
-    // 5. publish BEFORE scheduler notify (Sprint 58 W6 Defect 1 ordering).
-    publish_dep_sexps(ctx, dep, &dep_sexps);
     crate::observability::record_module_event(
         crate::observability::SchedulerTraceTag::RegisterDepPublish,
         dep.as_ref(),
-    );
-
-    // Sprint 60 Workstream E-3 — debug-only structural guard: when shared
-    // state is available, the publish above MUST have succeeded before we
-    // return so the caller's subsequent `scheduler.register_module(dep, _)`
-    // finds sexps ready in shared.module_sexps. Catches accidental reordering
-    // in dev builds. See `design/int/dual-path-persistence-collapse.md §8.3`.
-    debug_assert!(
-        ctx.shared_state.is_none()
-            || ctx.shared_state.unwrap()
-                .module_sexps
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .contains_key(dep),
-        "register_dep MUST publish dep_sexps to shared.module_sexps before returning \
-         so the caller's scheduler.register_module call cannot race persistent workers"
     );
 
     Ok(dep_sexps)
@@ -2505,14 +2381,13 @@ fn register_transitive_cached_imports(
             Ok(s) => s,
             Err(_) => continue,
         };
-        let _ = dep_sexps; // already published into shared.module_sexps by the shim.
-        // Register with scheduler — the worker loop processes this dep's
-        // typecheck and eventually marks it `inmem_done`. We do NOT block
-        // here (we are inside the outer module's typecheck); the outer
-        // module either already typechecked or its own normal import-block
-        // chain handles its dependency on this dep. `delays_other=true`
-        // matches worker-side consensus (see §8.2 rationale).
-        ctx.scheduler.register_module(transitive_dep.clone(), true);
+        // Register with scheduler — the sexps ride the dep's work packet (S78).
+        // The worker loop processes this dep's typecheck and eventually marks
+        // it `inmem_done`. We do NOT block here (we are inside the outer
+        // module's typecheck); the outer module either already typechecked or
+        // its own normal import-block chain handles its dependency on this dep.
+        // `delays_other=true` matches worker-side consensus (see §8.2 rationale).
+        ctx.scheduler.register_module(transitive_dep.clone(), dep_sexps, true);
     }
 }
 
@@ -2580,13 +2455,12 @@ fn handle_export(
             }
         })?;
 
-        // Register dep with scheduler and block.
-        ctx.scheduler.register_module(dep.clone(), true);
+        // Register dep with scheduler (sexps ride the packet) and block.
+        ctx.scheduler.register_module(dep.clone(), dep_sexps, true);
         ctx.scheduler.block_for_typecheck(module, dep, &Symbol::from("*"))?;
 
         return Ok(BlockAction::Block {
             dep_module: dep.clone(),
-            dep_sexps,
         });
     }
 
@@ -2740,8 +2614,8 @@ fn handle_mod(
         }
     })?;
 
-    // Register dep with scheduler and block for typecheck.
-    ctx.scheduler.register_module(sub_path.clone(), true);
+    // Register dep with scheduler (sexps ride the packet) and block.
+    ctx.scheduler.register_module(sub_path.clone(), dep_sexps, true);
     ctx.scheduler.block_for_typecheck(
         module,
         &sub_path,
@@ -2750,7 +2624,6 @@ fn handle_mod(
 
     Ok(BlockAction::Block {
         dep_module: sub_path,
-        dep_sexps,
     })
 }
 
@@ -3176,13 +3049,14 @@ fn register_default_methods(
 /// `(export [prelude ...])`. This allows modules to control their prelude
 /// relationship — specific imports, null import (§8.3.6), or re-export.
 ///
-/// Returns `Some(ProcessResult::Blocked { .. })` if the prelude must be compiled
-/// first, `None` if prelude is already loaded, not found, or suppressed.
+/// Returns `Some(dep_module)` (the prelude path) if the prelude was registered
+/// + blocked on and the cluster must retry once it is live; `None` if prelude
+/// is already loaded, not found, or suppressed (S78 in-call-stack shape).
 fn inject_prelude_if_needed(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     sexps: &[Sexp],
-) -> Result<Option<ProcessResult>, CranelispError> {
+) -> Result<Option<ModuleFullPath>, CranelispError> {
     let prelude_path = ModuleFullPath::from("prelude");
     if *module == prelude_path {
         return Ok(None);
@@ -3213,8 +3087,8 @@ fn inject_prelude_if_needed(
             }
 
             // Run the shared per-dep prologue (read source, parse, record
-            // source hash, stash source text, update file_to_module, publish
-            // dep_sexps). Sprint 59 Workstream A §7 Step 1/2.
+            // source hash, stash source text, update file_to_module). The
+            // sexps ride the prelude's work packet (S78).
             let prelude_file_for_err = prelude_file.clone();
             let prelude_sexps = register_dep(ctx, &prelude_path, &prelude_file, |e| {
                 CranelispError::ModuleError {
@@ -3227,18 +3101,14 @@ fn inject_prelude_if_needed(
                 }
             })?;
 
-            ctx.scheduler.register_module(prelude_path.clone(), true);
+            ctx.scheduler.register_module(prelude_path.clone(), prelude_sexps, true);
             ctx.scheduler.block_for_typecheck(
                 module,
                 &prelude_path,
                 &Symbol::from("*"),
             )?;
 
-            return Ok(Some(ProcessResult::Blocked {
-                form_index: 0,
-                dep_module: prelude_path,
-                dep_sexps: prelude_sexps,
-            }));
+            return Ok(Some(prelude_path));
         }
         // No prelude file found. Per spec §8.9.1: primitives are NOT
         // available as bare names without explicit import or prelude.
@@ -4132,21 +4002,12 @@ fn handle_cached_codegen(
 // priority_worker_loop — dispatch scheduler work items
 // ---------------------------------------------------------------------------
 
-/// Per-module suspension state preserved across blocking/resumption.
-///
-/// Groups the mutable state that `process_module_forms` accumulates across
-/// suspensions: the typechecker accumulator, expanded program forms, and
-/// a flag tracking whether Pass 1 has completed.
-pub struct ModuleSuspendState {
-    pub accumulator: ModuleCheckAccumulator,
-    /// Expanded program forms accumulated across suspensions.
-    /// Forms processed before the block point are preserved here.
-    pub expanded_program: Vec<TopLevel>,
-    /// Whether Pass 1 (register signatures) has been completed for this module.
-    /// Prevents re-running Pass 1 on resume when start_form_index is 0
-    /// (which happens when a module blocks on its very first form).
-    pub pass1_done: bool,
-}
+// `ModuleSuspendState` — deleted in the S78 in-call-stack restructure. The
+// per-module half-finished state (accumulator, expanded program, pass1-done
+// flag) that used to be saved across a thread-hopping resume is gone: in the
+// retry-from-top model the whole cluster re-runs from its packet sexps against
+// now-larger live state, so there is nothing to save. All in-progress state
+// lives on `process_cluster_once`'s stack frame and is dropped on a gap.
 
 // `priority_worker_loop` — deleted Sprint 59 Workstream A §7 Step 5.
 //
@@ -4187,7 +4048,7 @@ pub fn priority_worker_loop_shared(shared: &crate::session_v4::SharedState) {
     loop {
         let work = shared.scheduler.take_priority_work_blocking();
         match work {
-            Some(PriorityWork::Typecheck(module)) => {
+            Some(PriorityWork::Typecheck { module, sexps }) => {
                 // FIXME 0285 defect 2 — worker-panic→park robustness. A panic
                 // inside the work handler (e.g. an unresolved-symbol panic from
                 // the JIT at finalize, or any `unreachable!`) would otherwise
@@ -4197,7 +4058,7 @@ pub fn priority_worker_loop_shared(shared: &crate::session_v4::SharedState) {
                 // Catch the unwind, convert it to a module failure, and notify
                 // so `wait_inmem_complete_blocking` returns `ModuleFailed`.
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    handle_typecheck_work_shared(shared, &module)
+                    handle_typecheck_work_shared(shared, &module, &sexps)
                 }));
                 match result {
                     Ok(Ok(())) => {}
@@ -4269,131 +4130,56 @@ fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
-/// Handle a Typecheck work item on a persistent priority worker.
+/// Handle a Typecheck work item on a persistent priority worker (S78
+/// in-call-stack restructure).
 ///
-/// Reads the sexps + suspend state from `SharedState`, builds a
-/// `ModuleCompiler` borrowing `&SharedState` directly, runs
-/// `process_module_forms` followed by `inline_jit_codegen_for_module`
-/// (Sprint 56 Wave 2 — unified JIT codegen entry), then stashes + notifies.
-/// Sprint 57 Wave 4 G9 per `persistent-workers.md` §4.3.
+/// The cluster sexps arrive ON the work packet (`sexps`), not from a shared
+/// `module_sexps` map. Drives the single live orchestration
+/// (`cluster::process_cluster`) and:
+///
+/// - on `Done` — runs `inline_jit_codegen_for_module`, commits the
+///   cluster-level metadata via `cluster::insert_cluster`, and calls
+///   `notify_typecheck_done`;
+/// - on `Gap` — does NOTHING further. The dependency has already been
+///   registered + blocked on inside `process_cluster`; this worker returns and
+///   frees back to the pool. When `dep` completes,
+///   `notify_typecheck_done(dep)` → `try_unblock_locked(module)` requeues this
+///   module (its sexps persist on its `ModuleState`), and a worker re-runs the
+///   cluster from the top against now-larger live state. No saved suspend
+///   state, no parking map.
 fn handle_typecheck_work_shared(
     shared: &crate::session_v4::SharedState,
     module: &ModuleFullPath,
+    sexps: &std::sync::Arc<[Sexp]>,
 ) -> Result<(), CranelispError> {
-    let start_idx = shared.scheduler.module_resume_from_form(module)
-        .flatten()
-        .unwrap_or(0);
-
-    // Clone sexps from shared map (don't remove — needed on resume).
-    let sexps = {
-        let map = shared.module_sexps.lock()
-            .unwrap_or_else(|e| e.into_inner());
-        map.get(module)
-            .ok_or_else(|| CranelispError::ModuleError {
-                message: format!("no parsed sexps for module '{}'", module),
-                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-            })?
-            .clone()
-    };
-
-    // Take or create suspend state for this module.
-    let mut state = {
-        let mut states = shared.suspend_states.lock()
-            .unwrap_or_else(|e| e.into_inner());
-        states.remove(module).unwrap_or_else(|| ModuleSuspendState {
-            accumulator: ModuleCheckAccumulator::new(),
-            expanded_program: Vec::new(),
-            pass1_done: false,
-        })
-    };
-
-    // Ensure the module's SymbolTable exists before creating CheckState.
-    {
-        cranelisp_types::ensure_module_exists(&shared.symbol_tables, module);
-    }
-    // Snapshot path lists for this work item. Workers hold the Mutex only
-    // for the duration of the clone (microseconds); subsequent code uses
-    // the snapshot without re-locking.
-    let lib_dirs = shared.lib_dirs.lock()
-        .unwrap_or_else(|e| e.into_inner()).clone();
-    let platform_dirs = shared.platform_dirs.lock()
-        .unwrap_or_else(|e| e.into_inner()).clone();
-    let mut ctx = ModuleCompiler {
-        symbol_tables: &shared.symbol_tables,
-        next_type_id: &shared.next_type_id,
-        module_aliases: &shared.module_aliases,
-        check_state: CheckState::new(module.clone()),
-        current_module: module.clone(),
-        scheduler: &shared.scheduler,
-        typecheck_products: &shared.typecheck_products,
-        introspection: Some(&shared.introspection),
-        lib_dirs: &lib_dirs,
-        platform_dirs: &platform_dirs,
-        project_root: &shared.project_root,
-        shared_state: Some(shared),
-    };
-
-    match process_module_forms(
-        &mut ctx, module, &sexps, start_idx,
-        &mut state,
-        ModuleStrategy::Replace,
-    ) {
-        Ok(ProcessResult::Complete { check_result: _, program }) => {
+    match crate::cluster::process_cluster(shared, std::sync::Arc::clone(sexps), module)? {
+        crate::cluster::ClusterOutcome::Done { processed, program } => {
             // Unified JIT codegen via compile_to_module (Sprint 56 Wave 2).
             inline_jit_codegen_for_module(
-                ctx.scheduler,
+                &shared.scheduler,
                 module,
                 &program,
-                ctx.symbol_tables,
+                &shared.symbol_tables,
                 Some(&shared.introspection),
                 &[],
-                ctx.shared_state,
+                Some(shared),
             )?;
 
-            // Sprint 58 Step 5b: nice workers walk
-            // `symbol_tables[module].defined_symbols()` directly; no
-            // `codegen_programs` stash anymore. The `program` from
-            // `process_module_forms` is consumed only by the inline JIT
-            // codegen above.
-            let _ = program;
-            ctx.scheduler.notify_typecheck_done(module);
+            // Commit the cluster-level REPL/scheduler metadata. (Per-symbol
+            // staging entries already committed to live inside
+            // `check_program_compat`; this drains introspection records.)
+            crate::cluster::insert_cluster(shared, processed, module);
 
-            // Clean up — module is done.
-            {
-                let mut map = shared.module_sexps.lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                map.remove(module);
-            }
-            // suspend state was already removed above (taken out of map)
+            // Sprint 58 Step 5b: nice workers walk
+            // `symbol_tables[module].defined_symbols()` directly. The
+            // `program` is consumed only by the inline JIT codegen above.
+            shared.scheduler.notify_typecheck_done(module);
         }
-        Ok(ProcessResult::Blocked {
-            form_index,
-            dep_module,
-            dep_sexps,
-        }) => {
-            // Save resume state in scheduler.
-            ctx.scheduler.set_resume_from_form(module, form_index);
-            // Store dep sexps for workers to pick up.
-            {
-                let mut map = shared.module_sexps.lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                map.entry(dep_module).or_insert(dep_sexps);
-            }
-            // Put suspend state back for resume.
-            {
-                let mut states = shared.suspend_states.lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                states.insert(module.clone(), state);
-            }
-        }
-        Err(e) => {
-            // Clean up on failure.
-            {
-                let mut map = shared.module_sexps.lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                map.remove(module);
-            }
-            return Err(e);
+        crate::cluster::ClusterOutcome::Gap { dep } => {
+            // The dependency was registered + blocked on inside the cluster
+            // pass; this worker frees back to the pool. The scheduler requeues
+            // `module` (sexps persist on its ModuleState) when `dep` completes.
+            let _ = dep;
         }
     }
 
@@ -4451,13 +4237,6 @@ mod tests {
         builder.build()
     }
 
-    // spec: spec/08-modules.md §8.10.1 — suspend/resume of a module that
-    // blocked in Pass 0 (an import dep-load) MUST re-run Pass 2 from the start,
-    // not from the saved block index. Defect B regression guard
-    // (spec_08::defn_before_import_resumes_correctly_after_dep_load): a
-    // `(defn local-fn …)` placed BEFORE the blocking `(import …)` would be
-    // skipped on resume (Pass 2 starting at the import's index 1), dropping it
-    // from the typechecked program → "undefined variable: local-fn".
     // spec: design/arch/macro-availability-model.md §0 (FIXME 0299) — the
     // cache-restore Linker must resolve binary-exported primitive externs that
     // the synthetic `macros` module references (e.g. `sconcat`). The fresh JIT
@@ -4490,29 +4269,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn pass0_dep_load_resume_restarts_pass2_from_zero() {
-        // Fresh invocation (Pass 1 just ran over the whole list this call) — the
-        // saved Pass-0 block index (1, the import) MUST be ignored.
-        assert_eq!(
-            pass2_resume_index(true, 1),
-            0,
-            "a Pass-0 dep-load resume (is_fresh) must restart Pass 2 from 0 so \
-             forms before the blocking import are not skipped",
-        );
-        assert_eq!(pass2_resume_index(true, 5), 0);
-        assert_eq!(pass2_resume_index(true, 0), 0);
-    }
-
-    // spec: spec/09-macros.md §9.3.6 — a genuine Pass-2 resume (FQ auto-load
-    // gap surfaced inside Pass 2, pass1_done already true) MUST honour the saved
-    // index: the forms before the block point are already in expanded_program,
-    // so re-processing from 0 would double-append them.
-    #[test]
-    fn pass2_fq_autoload_resume_honours_saved_index() {
-        assert_eq!(pass2_resume_index(false, 3), 3);
-        assert_eq!(pass2_resume_index(false, 0), 0);
-    }
+    // S78 in-call-stack restructure: the `pass0_dep_load_resume_restarts_pass2
+    // _from_zero` and `pass2_fq_autoload_resume_honours_saved_index` unit tests
+    // probed the deleted `pass2_resume_index` helper. The retry-from-top model
+    // has NO saved resume index — the whole cluster re-runs from its packet
+    // sexps every pass, so forms-before-import are always re-processed by
+    // construction (Defect-B / OQ-4). The behaviour is guarded e2e by
+    // `tests/spec_08_modules.rs::defn_before_import_resumes_correctly_after_dep_load`.
 
     // spec: design/int/phase2-codegen-convergence.md §5 — name-list prep via defined_symbols
     #[test]
