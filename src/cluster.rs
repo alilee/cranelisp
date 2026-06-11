@@ -214,6 +214,7 @@ pub fn process_cluster(
         symbol_tables: &shared.symbol_tables,
         next_type_id: &shared.next_type_id,
         module_aliases: &shared.module_aliases,
+        prelude_fallback: &shared.prelude_fallback,
         check_state: CheckState::new(scope.clone()),
         current_module: scope.clone(),
         scheduler: &shared.scheduler,

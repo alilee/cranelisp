@@ -663,6 +663,27 @@ fn cache_invalidation_on_dep_change_e2e() {
 // session* (stdin-driven) cache write/load/reset surface — a distinct
 // angle preserved per Wave 5.5/5.6 multi-angle rule. `cache_writer_survives_reset`
 // is the sole `/reset`-+-cache test in the codebase.
+//
+// SPRINT 78 WAVE 4 (/qa) NOTE — the three TestStandard-prelude tests below
+// (`cache_repl_writes_manifest_on_prelude_load`,
+//  `cache_repl_second_session_loads_prelude_from_cache`,
+//  `cache_repl_writer_survives_slash_reset`) are currently RED, but NOT on a
+// stdlib coupling: they use the QA-owned `PreludeVariant::TestStandard` fixture
+// (`tests/fixtures/preludes/test-standard.cl`), which loads NO real workspace
+// stdlib, so there is nothing to decouple. They fail at the FIRST session on a
+// genuine TRAIT-OPERATOR codegen defect: `(+ N M)` against a prelude that
+// declares `Num`/`impl Num Int` raises `undefined function: +`
+// ("codegen failed for /"). The SAME defect reds ~12 tests in
+// `tests/spec_07_traits.rs` (`operator_plus_int`, `operator_plus_float`,
+// `trait_impl_body_uses_operator`, `constrained_polymorphism_int_then_float`,
+// …) — those carry the minimal repro. The cache trio are downstream
+// casualties: the empty-prelude / plain-fn cache siblings
+// (`cache_repl_empty_prelude_session_2_evaluates_literal`,
+//  `cache_repl_minimal_plain_fn_prelude_restored_on_session_2`) PASS, proving
+// the cache-hit machinery is fine and the failure is the prelude's operator
+// dispatch, not the cache. Left failing-not-ignored; resolution is a compiler
+// skill (/typecheck or /backend, trait-operator dispatch), NOT a /qa change.
+// FIXME 0312 mis-attributed these to the stdlib glob collision.
 // =============================================================================
 
 // spec: design/int/repl-lifecycle.md §4.1 — Cache Write After Module Compilation.

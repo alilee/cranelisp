@@ -184,6 +184,165 @@ This is strictly an int/REPL presentation choice; it has no spec consequence and
 
 ---
 
+## 2.7 REALIZATION — fallback-bit home + cross-crate threading (the load-bearing pin)
+
+> **This section pins the one genuinely-unpinned piece** (§6 open-item 4): where the per-module `prelude_fallback: bool` lives and the **exact channel** by which it reaches typecheck's two resolution chokepoints — so the `/dev (cranelisp-typecheck)` and `/dev (src/)` agents implement against one contract. The MODEL (§2.1–§2.6) is settled; this is its concrete wiring. **Source-confirmed against the working tree (2026-06-11).**
+
+### 2.7.1 The home — a session-side companion `DashMap`, exactly parallel to `module_aliases`
+
+`module_aliases` is the precedent and the template. Confirmed in source:
+
+- **Type:** `pub type ModuleAliases = dashmap::DashMap<ModuleFullPath, ModuleAliasEntry>` (`crates/cranelisp-types/src/module.rs:419`). A session-level map keyed by `ModuleFullPath`.
+- **Home:** owned on `SharedState` — `pub module_aliases: cranelisp_types::ModuleAliases` (`src/session_v4.rs:750`). int owns population; typecheck reads it **read-only**.
+- **Threading:** carried into typecheck as `module_aliases: &'a ModuleAliases` on `TypeCheckEnv` (`checker.rs:204`), supplied via `TypeCheckEnv::new`/`new_with_staging` (`checker.rs:348,380`) and as the 4th argument to `check_forms(parsed, ctx, symbol_tables, module_aliases)` (`form.rs:83–88`). int threads `&self.shared.module_aliases` at every call site (`src/cluster.rs:216`, `src/worker.rs:288`, `src/session_v4.rs:2301/3228/3268/4464`).
+
+**Decision: the fallback bit rides a companion map of identical shape, threaded through the identical channel.** Introduce (int-owned, in `cranelisp-types` as a *type alias only* — see the cranelisp-types note below):
+
+```rust
+// session-side, owned on SharedState alongside module_aliases:
+pub prelude_fallback: dashmap::DashMap<ModuleFullPath, bool>,
+```
+
+- **Keyed by `ModuleFullPath`** — same key space as `module_aliases` and `symbol_tables`. A module path present with value `true` ⇒ fallback ON; absent OR `false` ⇒ fallback OFF. (Absence-as-OFF is the natural default: synthetic modules, `prelude` itself, and any prelude-referencing module are simply never inserted.)
+- **Populated by int** in `inject_prelude_if_needed` (§2.7.3) — the one site that already decides the ON/OFF condition.
+- **Read by typecheck** at the two chokepoints (§2.7.2), via a borrowed `&'a PreludeFallback` carried on `TypeCheckEnv` next to `module_aliases`.
+
+**Why a companion map, not a `SymbolTable.prelude_fallback: bool` field.** `SymbolTable` is a `cranelisp-types` type; adding a `bool` field to it is a `cranelisp-types` *structural* change (touches serde/cache schema, every constructor, the `()`↔`<Code, ()>` flavour conversions). The companion map keeps the bit **session-side and out of the serialized symbol-table shape** — it is recomputed per session from source (`sexps_reference_prelude`), never cached. This is the §6 open-item-4 "session-side, cranelisp-types-free" fork, now **selected**. Confirmed: no field is added to any cached/serialized type.
+
+### 2.7.2 The cranelisp-types question — type alias is NOT a structural change
+
+The companion map's *type* (`DashMap<ModuleFullPath, bool>`) is naturally expressed as a `cranelisp-types` **type alias** living beside `ModuleAliases` (`module.rs:419`), so both int and typecheck name the same type without int↔typecheck depending on each other:
+
+```rust
+// crates/cranelisp-types/src/module.rs, beside ModuleAliases:
+/// Session-level per-module prelude-outer-scope fallback flags (S78 §2.7).
+/// `module_path → true` ⇒ bare-name inner-miss falls back to the `prelude`
+/// module's table. Absent/false ⇒ no fallback. int populates; typecheck reads.
+pub type PreludeFallback = dashmap::DashMap<ModuleFullPath, bool>;
+```
+
+**This is a type *alias*, not a new struct/enum/field on any existing type** — it adds no data to `SymbolTable`, `ModuleEntry`, `Scheme`, or any cached type. It is the same category of addition as `ModuleAliases` itself (a bare alias over a `DashMap`). Per the no-`cranelisp-types`-*change* constraint as the user means it (no change to the *interface data model* — no marker on entries, no field on tables), **this satisfies "cranelisp-types-free."** A bare type alias beside an existing identical alias is configuration plumbing, not a model change.
+
+> **The honest fork, surfaced for the resolving fire.** Two realizations, both cranelisp-types-data-model-free:
+> - **(a) Type alias in `cranelisp-types`** (recommended) — `PreludeFallback` alias beside `ModuleAliases`; `check_forms` gains a 5th parameter `prelude_fallback: &PreludeFallback`. Clean naming, mirrors `module_aliases` exactly. Adds one alias line to a `cranelisp-types` file → **needs an `/arch` nod** (the file is `/arch`-owned) but is NOT a data-model change.
+> - **(b) Define the alias int-side** (`src/`), pass `&DashMap<ModuleFullPath, bool>` directly as the 5th `check_forms` param using the bare `dashmap` type. Zero `cranelisp-types` edit. Slightly less self-documenting at the typecheck boundary, but fully `/arch`-untouched.
+>
+> **Recommendation: (a).** It mirrors the `ModuleAliases` precedent exactly and reads correctly at the typecheck boundary. The `/arch` nod is for a single type-alias line, not a model change. If `/arch` declines even the alias, fall to (b) with no loss of behavior. **Either way, `check_forms` gains one parameter** (§2.7.4) — that IS an int↔typecheck boundary change the two `/dev` agents must land in lockstep.
+
+### 2.7.3 The exact `check_forms` signature change (int↔typecheck boundary)
+
+The bit must reach typecheck's resolution, and `check_forms` is the single entry. Today:
+
+```rust
+pub fn check_forms<C, L>(
+    parsed: Vec<ParsedEntry>,
+    ctx: &mut SymbolTableAccess<'_, C, L>,
+    symbol_tables: &SymbolTables<C, L>,
+    module_aliases: &ModuleAliases,
+) -> Result<(), CheckError>
+```
+
+Target — **one added parameter**, threaded onto `TypeCheckEnv` exactly as `module_aliases` is:
+
+```rust
+pub fn check_forms<C, L>(
+    parsed: Vec<ParsedEntry>,
+    ctx: &mut SymbolTableAccess<'_, C, L>,
+    symbol_tables: &SymbolTables<C, L>,
+    module_aliases: &ModuleAliases,
+    prelude_fallback: &PreludeFallback,   // NEW — session-side, read-only
+) -> Result<(), CheckError>
+```
+
+- `TypeCheckEnv` gains `pub(crate) prelude_fallback: &'a PreludeFallback` beside `module_aliases` (`checker.rs:204`); `new` / `new_with_staging` gain the matching parameter (`checker.rs:345,375`).
+- **All int call sites** thread `&self.shared.prelude_fallback` (the new SharedState field) at the same points they thread `&self.shared.module_aliases`: `src/worker.rs:288`, `src/cluster.rs:216`, `src/session_v4.rs:2301/3228/3268/4464`, and the `ModuleCompiler`/`WorkerCtx` carriers (`worker.rs:412,483`) gain a parallel `prelude_fallback: &'a PreludeFallback` field.
+- **Test call sites** in `form.rs` / `platform.rs` pass `&PreludeFallback::default()` (empty ⇒ all-OFF, matching today's no-prelude unit-test envs).
+
+**This is a known, bounded boundary change** — additive (one read-only parameter), mechanical at every call site, and symmetric with the existing `module_aliases` thread. It needs the two `/dev` agents to agree on the parameter name/position (pinned here) and lands in one cross-crate change-set. **Flag: needs an `/arch` nod** for the `PreludeFallback` alias under realization (a) — see §2.7.2.
+
+### 2.7.4 The installer populates the bit — `inject_prelude_if_needed` (`src/worker.rs:3055`)
+
+`inject_prelude_if_needed` already computes the exact ON condition (it early-returns OFF for `*module == "prelude"` and when `sexps_reference_prelude(sexps)` is true; `worker.rs:3061,3067`). The change:
+
+- **On the ON path** (module did not reference prelude, prelude is loaded/loadable): instead of the two `install_imports([prelude_spec])` flatten calls (`worker.rs:3085`, `:3125`), **`ctx.prelude_fallback.insert(module.clone(), true)`**. Keep the discovery / `register_dep` / `register_module` / `block_for_typecheck` drive verbatim — prelude must still be loaded for the fallback to consult its table.
+- **On the OFF paths** (early returns): do nothing — absence-is-OFF (§2.7.1). No insert needed.
+
+`ModuleCompiler` (`worker.rs:412`) gains `prelude_fallback: &'a PreludeFallback` so `inject_prelude_if_needed` can write it; int threads `&self.shared.prelude_fallback` where it builds the `ModuleCompiler` (the same place it threads `module_aliases`).
+
+### 2.7.5 The resolution-fallback algorithm — the two chokepoints
+
+**Chokepoint 1 — `probe_module_entry_owned` (`checker.rs:979`), the chain-follow family.** This is the single entry for `lookup_in_current_module` → `lookup` (value/scheme) AND `resolve_terminal_entry_and_home` → `resolve_entry_in_current_module` (entries: constructors, trait decls, type defs). The fallback fires **only for the bare-name, current-module probe** — i.e. when the *caller* is probing `state.current_module` and missed. The cleanest pin keeps `probe_module_entry_owned` itself a pure single-module primitive (it is also called for *explicitly named* modules via `resolve_fq_symbol`, which must NOT fall back) and adds the fallback at the **current-module callers**:
+
+```text
+fn probe_current_or_prelude(env, state, name) -> Option<ModuleEntry>:
+    if let Some(e) = env.probe_module_entry_owned(&state.current_module, name):
+        return Some(e)
+    // inner miss — consult the outer scope iff the bit is ON for this module
+    if env.prelude_fallback.get(&state.current_module).map(|b| *b).unwrap_or(false):
+        // chain-follow from prelude's OWN table; primitives reach here via
+        // prelude's (export [primitives [*]]) Import edges (Decision 0048)
+        return env.probe_module_entry_owned(&ModuleFullPath::from("prelude"), name)
+    None
+```
+
+- `lookup_in_current_module` (`checker.rs:957–969`) and `resolve_entry_in_current_module` (`checker.rs:1081`) call `probe_current_or_prelude` instead of probing `current_module` directly. Both already chain-follow downstream (the existing `extract_scheme_from_entry_owned` / `resolve_terminal_entry_and_home` machinery), so the prelude `Import`→primitives edge is followed for free — **primitives-via-prelude survives via the re-export chain-follow through the FALLBACK, not a name-key** (the §2 green-guard constraint).
+- **Explicit `fq.module`-qualified probes do NOT fall back:** `resolve_fq_symbol` (`checker.rs:1071`) and `resolve_terminal_entry_and_home(explicit_module, …)` keep calling the bare `probe_module_entry_owned` on the *named* module. The fallback is wired only at the two *current-module* entry points. (The `lookup` qualified branch at `checker.rs:914–951` is unaffected — it names modules directly.)
+
+**Chokepoint 2 — the `current_symbol_table`→`View` (`checker.rs:416`) feeding the 6 `cranelisp_types::resolve` callers.** The bare-name `resolve` callers (`resolve_type` :726, `resolve_trait` :768, `resolve_constructor` family :803/:844, `resolve_type_expr_in_module` :1711) build their `first_hop` from `current_symbol_table(state)`. **Pin: make the bare-name first-hop a two-hop view** — `current_symbol_table` returns a view that, when the bit is ON for `state.current_module`, presents `union(current, prelude)` with current-first, so `first_hop.lookup(name)` transparently falls back. This is the one-chokepoint option (touches `current_symbol_table` + the `SymbolTableRead`/`View` it returns, both int-typecheck-local) and is **preferred** over retrofitting 5 call-site retries. **No change to `cranelisp_types::resolve` itself** — the fallback is in the view handed to it.
+   - The view already has a `union` mode (`SymbolTableRead::Cluster { staging, live }` does staging∪live; `checker.rs:425`). The prelude two-hop is the same union shape with a third source (prelude live) gated on the bit. /dev extends `SymbolTableRead`/`View` with a prelude arm (int-typecheck-local; no `cranelisp-types` view-type change if `View::union` already takes N sources — /dev confirms the `View` arity at implementation).
+   - `resolve_macro_head` (`resolve.rs:357`, via int's `recognize_macro_head`) wraps the same `resolve` → a prelude-defined bare macro head flows through the two-hop view with **no separate change**.
+
+**How this fixes the 3 import-shadow REDs (§/qa).** Under flattening, an explicit `(import [m [foo]])` of a prelude-provided `foo` produced TWO `Import` entries in M's inner table (the flattened prelude `foo` + the explicit `foo`) → `insert_detecting_ambiguity` fired `Ambiguous` → bare `foo` poisoned → "undefined variable". Under the outer-scope model, **prelude `foo` is no longer in M's inner table at all** (flattening removed, §2.7.4). M's table holds the explicit import as the *sole* `foo` entry → no ambiguity, it wins, exit-1005-clean. The fallback never enters (inner hit). **Fix is structural, not a skip.**
+
+**How this preserves the 12 greens.** Local-def shadow (inner hit before fallback); explicit-vs-explicit ambiguity ×2 (both in inner table, fallback never consulted); prelude refusal `(import [prelude []])` / selective (bit OFF → no fallback, exactly as the OFF gate today); primitives-via-prelude ×3 (the fallback hop chain-follows prelude's `(export [primitives [*]])` → canonical primitive entry, §2.7.5 chokepoint-1 bullet). The qualified-still-works greens are untouched (qualified never used flattening).
+
+### 2.7.6 Introspection reads the bit too (`describe_symbol` + `handle_imports`)
+
+`describe_symbol` (`session_v4.rs:1451`) and `handle_imports` (`session_v4.rs:2898`) run **session-side** (not through `check_forms`), so they read `self.shared.prelude_fallback` directly (the SharedState field) — no threading needed, they already hold `&self.shared`. Detailed in §2.6 (presentation) and §2.7.8 (split).
+
+### 2.7.7 cranelisp-types-free confirmation (summary)
+
+| Surface | Change | cranelisp-types data-model touched? |
+|---|---|---|
+| Fallback bit storage | `DashMap<ModuleFullPath, bool>` on `SharedState` (`src/`) | No — session-side, unserialized |
+| Type name | `PreludeFallback` type **alias** beside `ModuleAliases` (realization (a)) | **Alias only** — no struct/enum/field; `/arch` nod for the alias line |
+| `check_forms` | +1 read-only param `prelude_fallback` | No — signature, not data model |
+| `TypeCheckEnv` | +1 borrowed field `&'a PreludeFallback` | No — typecheck-internal |
+| Resolution | fallback at the 2 current-module chokepoints | No — at callers/view, NOT inside `cranelisp_types::resolve` |
+
+**No `ModuleEntry`/`Scheme`/`SymbolTable`/cache-schema change.** The only `cranelisp-types` *file* touch is the one-line `PreludeFallback` alias under realization (a) — surfaced for the `/arch` nod, NOT a data-model change. Under (b) even that is zero.
+
+### 2.7.8 The `/dev (cranelisp-typecheck)` vs `/dev (src/)` split + shared interface + landing order
+
+**Shared interface (the contract both agents implement against):**
+- `check_forms` gains 5th param `prelude_fallback: &PreludeFallback` (§2.7.3).
+- `PreludeFallback = DashMap<ModuleFullPath, bool>`; `true`/present ⇒ ON, absent/`false` ⇒ OFF.
+- Semantics: int inserts `(module, true)` exactly when `inject_prelude_if_needed` takes its ON path; typecheck falls back to the `prelude` module's table on a bare-name current-module miss iff the bit is ON.
+
+**`/dev (cranelisp-typecheck)` does:**
+1. Add `prelude_fallback: &'a PreludeFallback` to `TypeCheckEnv` + `new`/`new_with_staging` + the `check_forms` 5th param (§2.7.3).
+2. **Chokepoint 1:** add `probe_current_or_prelude` and route `lookup_in_current_module` + `resolve_entry_in_current_module` through it; leave `resolve_fq_symbol` / explicit-module probes on the bare primitive (§2.7.5).
+3. **Chokepoint 2:** extend `current_symbol_table` + `SymbolTableRead`/`View` with the prelude two-hop (bit-gated) so the 6 `cranelisp_types::resolve` bare-name callers fall back transparently (§2.7.5).
+4. Unit tests inside the crate: bare-name-via-prelude-fallback hit/miss, bit-OFF no-fallback, explicit-import-wins-no-ambiguity, qualified-no-fallback (per `feedback_unit_tests_with_dev`).
+
+**`/dev (src/)` does:**
+1. Add `pub prelude_fallback: PreludeFallback` to `SharedState` (`session_v4.rs:750` neighbourhood); init `::default()` everywhere `module_aliases` is init (`session_v4.rs:1111`, `scheduler.rs:1796`).
+2. Add `PreludeFallback` alias (realization (a), `cranelisp-types`, `/arch` nod) OR int-side (realization (b)).
+3. Thread `&self.shared.prelude_fallback` at every `check_forms`/`ModuleCompiler`/`WorkerCtx` site that threads `module_aliases` (§2.7.3); add the `prelude_fallback` field to `ModuleCompiler` (`worker.rs:412`) + `WorkerCtx` (`worker.rs:483`).
+4. **Installer:** `inject_prelude_if_needed` replaces the two `install_imports([prelude_spec])` with `ctx.prelude_fallback.insert(module.clone(), true)`, keeping the load drive (§2.7.4).
+5. **Delete `is_seeded`** (`imports.rs:311–317`) + fix the doc comment (`imports.rs:273–276`); `insert_detecting_ambiguity` reverts to uniform `Ambiguous` (§2.3 item 3).
+6. **Introspection:** `handle_imports` `Prelude (implicit)` group + `describe_symbol` prelude hop, both gated on `self.shared.prelude_fallback` (§2.6, §2.7.6).
+
+**Landing order — `/dev (src/)` field + alias first, then lockstep on the signature.** The `check_forms` 5th-param change breaks the build the moment either side lands alone. Sequence:
+1. **`/dev (src/)`** lands the `SharedState.prelude_fallback` field + the `PreludeFallback` alias (the *type* the signature will name) — build stays green (no caller passes it yet).
+2. **Lockstep signature flip:** `/dev (cranelisp-typecheck)` adds the `check_forms`/`TypeCheckEnv` param AND `/dev (src/)` threads `&self.shared.prelude_fallback` at every call site **in the same change-set** (the build is red between these two edits — expected; `feedback_facade_first_migration` / additive-boundary discipline). The two `/dev` agents coordinate this one commit.
+3. **`/dev (cranelisp-typecheck)`** lands the two chokepoint algorithms (now the bit is readable end-to-end); the import-shadow REDs go green.
+4. **`/dev (src/)`** lands the installer `is_seeded` deletion + introspection adds; the remaining REDs go green, the 12 greens hold.
+
+The typecheck chokepoints (step 3) and the installer deletion (step 4) are **independent once the bit is threaded** (step 2) — they can land in either order or in parallel, but both must be present for the full §2 test set to pass (chokepoints make primitives-via-prelude resolve through the fallback; installer deletion stops the flattening that poisons import-shadow). **Neither alone is shippable** — landing the installer deletion without the chokepoints would break primitives-via-prelude (the flattened entry that was resolving them is gone with no fallback to replace it). The two `/dev` agents land within one wave; `/qa` gates on the full 18-test set (12 green-hold + 6 red-fix) green.
+
+---
+
 ## 3. Single-orchestration for the entry module (B1)
 
 ### 3.1 The defect (restated structurally)
@@ -282,7 +441,7 @@ The "no module special-casing except synthetic + prelude" rule is currently **im
 1. **/spec §8.6.4/§8.8 editorial alignment (NON-gating)** — the prelude-as-outer-scope model is **settled** (user, 2026-06-11) and grounded in the existing §8.6.4 `let`-analogy text; it needs no new model ruling. The minimal wording change makes the outer-scope framing *normative* rather than describing prelude as flattened-with-a-shadow-exception. **Specify (do not enact):** in §8.6.4, state that the implicit prelude is an **outer scope consulted on a resolution miss in the module's own (inner) scope**, not a set of bindings materialised into the module table; the existing "shadow just as inner `let` shadows outer" line then reads literally. In §8.8 (implicit-prelude injection / §8.8.1 "module does not reference prelude"), state that "injection" means **activating the prelude outer-scope fallback** for the module (ON unless the module refuses/references prelude), not copying prelude's bindings in. This is editorial; §2's implementation does **not** gate on it. File `target: /spec` FIXME at the resolving fire.
 2. **§3 fix choice — (3b) minimal vs (3a) uniform** — recommended (3b) for S78-fold, (3a) deferred. **User picks** whether the Blocker fix is the minimal ownership-marker (3b) or the full submit+wait convergence (3a).
 3. **Disposition split (§5.1)** — S78-fold §3 / S79 §1+§2. **User confirms** the split (or folds all into S78). The blast-radius walk (§2.5) confirms §2 is `cranelisp-typecheck`+`src/` with **no cross-crate (`cranelisp-types`) dependency and no /spec model gate** — so the only reason to keep §2 in S79 is scope hygiene of the restructure close, not an external blocker.
-4. **Where the per-module fallback bit lives** — recommended home is the per-module `SymbolTable` (a `prelude_fallback: bool`), readable by both int (which sets it in `inject_prelude_if_needed`) and typecheck (which consults it at the resolution chokepoints). `SymbolTable` is a `cranelisp-types` type, so a `bool` field there *would* be a `cranelisp-types` change — **alternative: hold the bit session-side** keyed by `ModuleFullPath` (int-owned `SharedState`), passed into typecheck via the existing `ModuleCompiler`/`check_forms` threading (the same channel `module_aliases` already uses read-only). **The session-side home keeps §2 cranelisp-types-free** and is recommended; /arch confirms at the resolving fire. (This is the one place the "no cranelisp-types change" claim has a fork — both forks are surfaced.)
+4. **Where the per-module fallback bit lives** — **RESOLVED (§2.7, Wave-4 design):** session-side companion `DashMap<ModuleFullPath, bool>` on `SharedState`, exactly parallel to `module_aliases`, threaded into typecheck as a new 5th read-only `check_forms` parameter `prelude_fallback: &PreludeFallback` and carried on `TypeCheckEnv`. The `SymbolTable`-field option is **rejected** (it would be a `cranelisp-types` data-model/cache-schema change). The session-side home keeps the bit unserialized and recomputed-per-session. **The one residual `/arch` touch** is a single `PreludeFallback` type-*alias* line beside `ModuleAliases` (`cranelisp-types/src/module.rs:419`) under realization (a) — an alias, NOT a data-model change; realization (b) defines it int-side for zero `cranelisp-types` touch. The `check_forms` +1-param signature change is an int↔typecheck boundary the two `/dev` agents land in lockstep (§2.7.3, §2.7.8). **/arch nod needed only for the alias line.**
 5. **Principle 19 (§5.3)** — proposed; authored at Phase-7 close on sign-off.
 
 ---
@@ -290,4 +449,5 @@ The "no module special-casing except synthetic + prelude" rule is currently **im
 ## Change history
 
 - 2026-06-10 (`/arch`, Phase-5 PIVOT audit-first pass): authored. Source-verified the four hardcoded-`"user"` manifestations + the dual-orchestration B1 against the working tree (`main.rs:172`, `session_v4.rs:1005/1154/2682/3626/4559/1953/2257`, `imports.rs:277/311`, `bootstrap.rs:295`, `scheduler.rs:89/334/1382`). Verdict: ctor pre-seed vestigial/deletable (special forms at root `""`, `register_builtins`→`mount_synthetic_modules` touches no `user`); two-tier import model recommended via a `cranelisp-types` implied-provenance marker (2.3a); single-orchestration via ownership-marker `sexps: None` (3b minimal, S78-fold) with submit+wait (3a) as S79 convergence; disposition split §3→S78 / §1+§2→S79; Principle 19 proposed for Phase-7 authoring. Audit-first: doc + surfaced sign-off items only; no canonical-set edits, no code/test changes enacted.
+- 2026-06-11 (`/design` (int), Wave-4 realization pin): authored **§2.7 REALIZATION** pinning the load-bearing unknown (§6 open-item 4) — fallback-bit home + cross-crate threading + resolution algorithm + `/dev` split. Source-confirmed: `ModuleAliases = DashMap<ModuleFullPath, ModuleAliasEntry>` (`module.rs:419`) on `SharedState` (`session_v4.rs:750`), threaded as `check_forms`'s 4th param (`form.rs:83`) onto `TypeCheckEnv` (`checker.rs:204`). **Pinned:** companion `PreludeFallback = DashMap<ModuleFullPath, bool>` session-side on `SharedState`, +1 read-only `check_forms` param, parallel to `module_aliases` at every call site — **no `cranelisp-types` data-model change** (only a one-line type-alias under realization (a), `/arch` nod; realization (b) is int-side, zero-touch). **Resolution algorithm:** `probe_current_or_prelude` wrapper at the 2 current-module chokepoints (`lookup_in_current_module`+`resolve_entry_in_current_module` via `probe_module_entry_owned`; `current_symbol_table`→`View` two-hop for the 6 `resolve` callers); explicit/`fq.module` probes do NOT fall back. Fixes the 3 import-shadow REDs structurally (prelude no longer in inner table → explicit import sole entry, no `Ambiguous`); preserves primitives-via-prelude via the fallback's chain-follow of prelude's `(export [primitives [*]])` (not a name-key). **§2.7.8 `/dev` split + landing order:** src/ lands field+alias first; lockstep `check_forms` signature flip; then typecheck chokepoints + src/ installer/`is_seeded`-delete/introspection, gated together on the 18-test set. §6 open-item-4 marked RESOLVED. Doc-only; no code/test changes; no canonical-set edits.
 - 2026-06-11 (`/arch`, settled-model §2 reshape + blast-radius walk): §2 rewritten from the two-tier-flattened model to the **prelude-as-outer-scope fallback** model settled by the user (2026-06-11; `project_prelude_outer_scope`). Provenance-marker (2.3a) + install-order (2.3b) proposals **deleted/rejected**; `cranelisp-types` dependency **dropped**. Added §2.5 BLAST RADIUS (source-walked: typecheck `probe_module_entry_owned` `checker.rs:979` + `current_symbol_table`→`View` `checker.rs:416` feeding 6 `cranelisp_types::resolve` callers — **two chokepoints**; installer `inject_prelude_if_needed` `worker.rs:3055` + `is_seeded` delete `imports.rs:311`; introspection `handle_imports` `session_v4.rs:2898` + `describe_symbol` `session_v4.rs:1451`; `/list`+`/exports` unaffected; **backend FQSymbol/GOT-based — UNAFFECTED**, verified `jit.rs:110–157`). Added §2.6 `/imports` presentation decision (distinct `Prelude (implicit)` group). §5 sizing re-scoped: §2 is `cranelisp-typecheck`+`src/`, **NO `cranelisp-types` change, NO marker, NO /spec model gate** (only editorial §8.6.4/§8.8 alignment). §6 reframed: dropped the marker open-item; added the per-module-fallback-bit home question (session-side recommended to stay cranelisp-types-free). §1, §3, §4 carried unchanged. Audit-first: doc-only; no code/test changes; no canonical-set edits.

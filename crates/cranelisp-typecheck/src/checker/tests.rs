@@ -799,6 +799,86 @@
         );
     }
 
+    // spec: 08-modules §8.6.4 prelude-as-outer-scope + arch Decision 45 +
+    // FIXME 0315 — trait-method dispatch + impl discovery fall back to the
+    // implicit-prelude OUTER SCOPE. A bare operator (`+`) backed by a
+    // prelude `deftrait Num` + `impl Num Int` must resolve from a user
+    // module that does NOT import the trait, GATED on the per-module
+    // prelude-fallback bit. With the bit OFF (prelude refusal / selective
+    // import), resolution must fail — proving the fallback is the bit, not a
+    // name-key.
+    #[test]
+    fn test_trait_method_dispatch_falls_back_to_prelude_outer_scope() {
+        let mut tf = TestFixture::new();
+
+        let prelude = ModuleFullPath::from("prelude");
+        let user = ModuleFullPath::from("user");
+
+        // 1. Prelude declares trait `Num` (method `+`) and `impl Num Int`.
+        //    Glob primitives into prelude so the impl body (`add-i64`) and
+        //    the bare type name `Int` resolve there.
+        tf.set_current_module(prelude.clone());
+        seed_glob_import(&mut tf, &ModuleFullPath::from("primitives"));
+        tf.register_trait_decl_self(&make_unary_trait_decl("Num", "+"))
+            .unwrap();
+        tf.register_trait_impl_self(&make_int_op_impl("Num", "+"))
+            .unwrap();
+
+        // 2. Switch to `user`. It does NOT import `Num` — the only path to
+        //    the trait is the implicit-prelude outer scope. Prove the
+        //    pre-fallback state first: with the bit OFF, the bare `+` is
+        //    invisible (this is the regression FIXME 0315 captured).
+        tf.set_current_module(user.clone());
+        assert!(
+            tf.method_to_trait(&Symbol::from("+")).is_none(),
+            "bit OFF: bare `+` must not resolve to a trait without an explicit \
+             import or the prelude fallback"
+        );
+        assert!(
+            !tf.has_impl(&TraitName::from("Num"), &TypeName::from("Int")),
+            "bit OFF: `impl Num Int` lives in prelude and must be invisible \
+             without the fallback"
+        );
+
+        // 3. Turn the prelude-fallback bit ON for `user` (what
+        //    `inject_prelude_if_needed` does for an ordinary entry module).
+        tf.prelude_fallback.insert(user.clone(), true);
+
+        // method→trait origin now resolves via the outer scope.
+        assert_eq!(
+            tf.method_to_trait(&Symbol::from("+")),
+            Some(TraitName::from("Num")),
+            "bit ON: bare `+` resolves to prelude trait `Num` via the outer scope"
+        );
+        // impl discovery now finds the prelude-resident `impl Num Int`.
+        assert!(
+            tf.has_impl(&TraitName::from("Num"), &TypeName::from("Int")),
+            "bit ON: `impl Num Int` is discovered through the prelude fallback"
+        );
+
+        // Full dispatch of `(+ Int Int)` resolves (the FIXME 0315 repro).
+        let resolved = tf
+            .try_resolve_trait_method_self(
+                &Symbol::from("+"),
+                &[Type::Int, Type::Int],
+                Span::SYNTHETIC,
+            )
+            .expect("dispatch must not error")
+            .expect("`(+ Int Int)` must resolve to a ResolvedCall via prelude");
+        // (Num, +, Int) collapses to the inline primitive `add-i64`
+        // (primitive_for_trait_method short-circuit) — the resolution
+        // reaching this arm at all proves the prelude trait + impl were
+        // both discovered through the fallback.
+        match resolved {
+            cranelisp_types::ResolvedCall::BuiltinFn { name } => {
+                assert_eq!(name.as_ref(), "add-i64");
+            }
+            other => panic!(
+                "expected BuiltinFn(add-i64) for (Num,+,Int); got {other:?}"
+            ),
+        }
+    }
+
     // spec: arch Principle 17 + slice §1.A α1/α2/α3 — short-name lookup is
     // current-module-only. If `foo` is absent from the current module's
     // symbol table, the lookup fails — no fallback to primitives, no
@@ -913,4 +993,219 @@
             }
             other => panic!("expected a function type, got {other}"),
         }
+    }
+
+    // --- S78 §2.7: implicit-prelude outer-scope fallback ---
+
+    /// Seed a public value `name` (a zero-arg `UserFn` of type `Int`) into
+    /// module `path`. Returns the fixture to the previously-current module is
+    /// the caller's job.
+    fn seed_value(tf: &mut TestFixture, path: &str, name: &str) {
+        tf.set_current_module(ModuleFullPath::from(path));
+        tf.symbol_table_mut().insert(
+            Symbol::from(name),
+            ModuleEntry::def(
+                crate::scheme::mono(Type::Int),
+                DefKind::UserFn { constrained_fn: None },
+            )
+            .visibility(Visibility::Public)
+            .build(),
+        );
+    }
+
+    /// Turn the prelude-fallback bit ON for `module`.
+    fn set_fallback_on(tf: &TestFixture, module: &str) {
+        tf.prelude_fallback.insert(ModuleFullPath::from(module), true);
+    }
+
+    // spec: 08-modules §8.6.4 / §8.8.1 — the implicit prelude is an OUTER SCOPE.
+    // With the fallback bit ON, a bare name absent from module M's own table
+    // resolves against the `prelude` module's table (value/scheme path).
+    #[test]
+    fn prelude_fallback_resolves_bare_value_when_bit_on() {
+        let mut tf = TestFixture::new();
+        // prelude defines `map`; M does not.
+        seed_value(&mut tf, "prelude", "map");
+        let m = ModuleFullPath::from("app");
+        tf.set_current_module(m.clone());
+        set_fallback_on(&tf, "app");
+
+        let state = CheckState::new(m.clone());
+        let (scheme, _gap) = tf.env().lookup(&state, "map");
+        assert!(
+            scheme.is_some(),
+            "bare `map` must resolve via the prelude outer-scope fallback when the bit is ON"
+        );
+    }
+
+    // spec: 08-modules §8.6.4 — bit OFF ⇒ no implicit prelude fallback. A
+    // module that refuses/references prelude (or simply has the bit unset)
+    // does NOT see prelude names by bare reference.
+    #[test]
+    fn prelude_fallback_absent_when_bit_off() {
+        let mut tf = TestFixture::new();
+        seed_value(&mut tf, "prelude", "map");
+        let m = ModuleFullPath::from("app_off");
+        tf.set_current_module(m.clone());
+        // No `set_fallback_on` — bit is absent (== OFF).
+
+        let state = CheckState::new(m.clone());
+        let (scheme, _gap) = tf.env().lookup(&state, "map");
+        assert!(
+            scheme.is_none(),
+            "bare `map` must NOT resolve when the prelude-fallback bit is OFF/absent"
+        );
+    }
+
+    // spec: 08-modules §8.6.1 — a local/explicit definition shadows the
+    // implicit prelude (inner scope consulted before the outer fallback).
+    #[test]
+    fn prelude_fallback_inner_definition_shadows_prelude() {
+        let mut tf = TestFixture::new();
+        // Both prelude and M define `map`; M's own def must win (inner first).
+        seed_value(&mut tf, "prelude", "map");
+        let m = ModuleFullPath::from("app_shadow");
+        seed_value(&mut tf, "app_shadow", "map");
+        tf.set_current_module(m.clone());
+        set_fallback_on(&tf, "app_shadow");
+
+        // The entry path resolves to M's own Def (home == M), not prelude's.
+        let state = CheckState::new(m.clone());
+        let entry = tf
+            .env()
+            .resolve_entry_in_current_module(&state, "map")
+            .expect("map resolves (inner def present)");
+        // M's own entry is a canonical Def (not an Import to prelude).
+        assert!(
+            matches!(entry, ModuleEntry::Def { .. }),
+            "inner definition must shadow the prelude outer scope"
+        );
+    }
+
+    // spec: 08-modules §8.6.4 — primitives reach user code VIA prelude's
+    // re-export, resolved THROUGH the fallback (not a name-key). prelude holds
+    // an `Import` edge to a primitive; a bare reference in M falls back to
+    // prelude, then chain-follows the re-export to the canonical entry.
+    #[test]
+    fn prelude_fallback_chain_follows_reexport_to_primitive() {
+        let mut tf = TestFixture::new();
+        // `prims` defines the canonical `add-i64`.
+        seed_value(&mut tf, "prims", "add-i64");
+        // prelude re-exports it (an Import edge, like `(export [prims [*]])`).
+        tf.set_current_module(ModuleFullPath::from("prelude"));
+        tf.symbol_table_mut().insert(
+            Symbol::from("add-i64"),
+            ModuleEntry::Import {
+                source: FQSymbol {
+                    module: ModuleFullPath::from("prims"),
+                    symbol: Symbol::from("add-i64"),
+                },
+                visibility: Visibility::Public,
+            },
+        );
+        let m = ModuleFullPath::from("app_prim");
+        tf.set_current_module(m.clone());
+        set_fallback_on(&tf, "app_prim");
+
+        // Value path: the scheme is extracted by chain-following prelude's
+        // Import edge to the canonical `prims/add-i64` Def.
+        let state = CheckState::new(m.clone());
+        let (scheme, _gap) = tf.env().lookup(&state, "add-i64");
+        assert!(
+            scheme.is_some(),
+            "bare `add-i64` must resolve through the prelude re-export chain via the fallback"
+        );
+
+        // Entry path: chain-follows to the terminal canonical Def in `prims`.
+        let entry = tf
+            .env()
+            .resolve_entry_in_current_module(&state, "add-i64")
+            .expect("add-i64 resolves to its terminal entry");
+        assert!(
+            matches!(entry, ModuleEntry::Def { .. }),
+            "fallback + chain-follow must land on the canonical primitive Def, not the Import edge"
+        );
+    }
+
+    // spec: 08-modules §8.6.6 — an explicit `mod/sym`-qualified reference names
+    // its module directly and MUST NOT fall back to prelude. Even with the bit
+    // ON, `prelude/absent` for a name prelude does not define stays unresolved
+    // (no fallback re-entry), and a qualified name to a module that lacks the
+    // symbol does not get rescued by prelude.
+    #[test]
+    fn prelude_fallback_qualified_never_falls_back() {
+        let mut tf = TestFixture::new();
+        // prelude defines `helper`; module `other` does NOT.
+        seed_value(&mut tf, "prelude", "helper");
+        seed_module(&mut tf, "other", vec![("something_else", Visibility::Public)]);
+        let m = ModuleFullPath::from("app_qual");
+        tf.set_current_module(m.clone());
+        set_fallback_on(&tf, "app_qual");
+
+        // Qualified `other/helper` must NOT be rescued by the prelude fallback —
+        // it names `other` directly, and `other` has no `helper`.
+        let result = tf.resolve_qualified(&ModuleFullPath::from("other"), "helper").unwrap();
+        assert!(
+            result.is_none(),
+            "qualified `other/helper` must not fall back to prelude (qualified names never fall back)"
+        );
+    }
+
+    // spec: 08-modules §8.6.4 — the prelude module itself does not fall back
+    // onto itself (no self-referential outer scope). A bare miss in `prelude`
+    // with the bit (hypothetically) ON does not loop.
+    #[test]
+    fn prelude_module_does_not_fall_back_onto_itself() {
+        let mut tf = TestFixture::new();
+        tf.set_current_module(ModuleFullPath::from("prelude"));
+        // Even with the bit ON for prelude (which int never sets), a bare miss
+        // must not recurse onto prelude again.
+        tf.prelude_fallback.insert(ModuleFullPath::from("prelude"), true);
+
+        let state = CheckState::new(ModuleFullPath::from("prelude"));
+        let (scheme, _gap) = tf.env().lookup(&state, "definitely_absent");
+        assert!(scheme.is_none(), "prelude must not fall back onto itself");
+    }
+
+    // spec: 08-modules §8.6.4 — the `resolve`-family chokepoint (resolve_type)
+    // also falls back: a bare TYPE name absent from M resolves against prelude
+    // when the bit is ON, and does not when OFF.
+    #[test]
+    fn prelude_fallback_resolves_bare_type_via_resolve_family() {
+        use cranelisp_types::TypeName;
+        let mut tf = TestFixture::new();
+        // prelude defines a nullary ADT `Maybe`.
+        tf.set_current_module(ModuleFullPath::from("prelude"));
+        tf.register_type_def_self(
+            &TypeName::from("Maybe"),
+            &None,
+            &[],
+            &[cranelisp_types::ConstructorDef {
+                name: Symbol::from("Nothing"),
+                docstring: None,
+                fields: vec![],
+                span: Span::SYNTHETIC,
+            }],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+
+        let m = ModuleFullPath::from("app_type");
+        tf.set_current_module(m.clone());
+
+        // Bit OFF: bare `Maybe` does not resolve from M.
+        let state = CheckState::new(m.clone());
+        assert!(
+            tf.env().resolve_type(&state, &TypeName::from("Maybe"), Span::SYNTHETIC).is_err(),
+            "bare type `Maybe` must NOT resolve via resolve_type when the bit is OFF"
+        );
+
+        // Bit ON: bare `Maybe` resolves to prelude's TypeDef.
+        set_fallback_on(&tf, "app_type");
+        let resolved = tf
+            .env()
+            .resolve_type(&state, &TypeName::from("Maybe"), Span::SYNTHETIC)
+            .expect("bare type `Maybe` resolves via the prelude fallback when the bit is ON");
+        assert_eq!(resolved.module.as_ref(), "prelude", "Maybe's home is prelude");
     }

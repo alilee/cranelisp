@@ -49,7 +49,7 @@ use cranelisp_types::{
     Span, SymbolTable, SymbolTables, TopLevel,
 };
 
-use crate::checker::{CheckState, TypeCheckEnv};
+use crate::checker::{CheckState, PreludeFallback, TypeCheckEnv};
 use crate::cluster::SymbolTableAccess;
 use crate::program::{CheckPass, ModuleCheckAccumulator};
 use crate::result::CheckError;
@@ -85,6 +85,7 @@ pub fn check_forms<C, L>(
     ctx: &mut SymbolTableAccess<'_, C, L>,
     symbol_tables: &SymbolTables<C, L>,
     module_aliases: &ModuleAliases,
+    prelude_fallback: &PreludeFallback,
 ) -> Result<(), CheckError>
 where
     C: CodeStore,
@@ -100,7 +101,8 @@ where
     // writes; the live table must exist before staging can shadow it).
     let next_id = std::sync::atomic::AtomicU32::new(0);
     {
-        let env = TypeCheckEnv::<C, L>::new(symbol_tables, &next_id, module_aliases);
+        let env =
+            TypeCheckEnv::<C, L>::new(symbol_tables, &next_id, module_aliases, prelude_fallback);
         env.ensure_module_exists(&current_module);
     }
 
@@ -145,8 +147,11 @@ where
             current_module.clone(),
             cell,
             module_aliases,
+            prelude_fallback,
         ),
-        None => TypeCheckEnv::<C, L>::new(symbol_tables, &next_id, module_aliases),
+        None => {
+            TypeCheckEnv::<C, L>::new(symbol_tables, &next_id, module_aliases, prelude_fallback)
+        }
     };
 
     // Advance `next_id` past any type variable IDs already used in stored
@@ -323,6 +328,7 @@ pub fn check_type_expr<C, L>(
     ctx: &mut SymbolTableAccess<'_, C, L>,
     symbol_tables: &SymbolTables<C, L>,
     module_aliases: &ModuleAliases,
+    prelude_fallback: &PreludeFallback,
     current_module: &cranelisp_types::ModuleFullPath,
     span: Span,
 ) -> Result<cranelisp_types::Type, CheckError>
@@ -336,7 +342,8 @@ where
     // `check_forms`'s seed step; `resolve_type_expr_in_module`'s first-hop
     // view requires the table to be present).
     {
-        let env = TypeCheckEnv::<C, L>::new(symbol_tables, &next_id, module_aliases);
+        let env =
+            TypeCheckEnv::<C, L>::new(symbol_tables, &next_id, module_aliases, prelude_fallback);
         env.ensure_module_exists(current_module);
     }
 
@@ -365,8 +372,11 @@ where
             current_module.clone(),
             cell,
             module_aliases,
+            prelude_fallback,
         ),
-        None => TypeCheckEnv::<C, L>::new(symbol_tables, &next_id, module_aliases),
+        None => {
+            TypeCheckEnv::<C, L>::new(symbol_tables, &next_id, module_aliases, prelude_fallback)
+        }
     };
 
     // Allocate a fresh `TypeId` for each free type-var name in the sig.
@@ -507,6 +517,13 @@ mod tests {
         ModuleAliases::new()
     }
 
+    /// Empty prelude-fallback map ⇒ every module's fallback bit is OFF, matching
+    /// the no-prelude unit-test envs. S78 §2.7.3: "Test call sites pass
+    /// `&PreludeFallback::default()` (empty ⇒ all-OFF)."
+    fn no_fallback() -> PreludeFallback {
+        PreludeFallback::default()
+    }
+
     fn modules() -> Arc<DashMap<ModuleFullPath, SymbolTable<(), ()>>> {
         let m: DashMap<ModuleFullPath, SymbolTable<(), ()>> = DashMap::new();
         m.insert(module_path(), SymbolTable::<(), ()>::new_with_params(module_path()));
@@ -610,7 +627,7 @@ mod tests {
         let modules = modules();
         let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
         let parsed = vec![one_variant_defn("solo")];
-        check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases()).expect("clean check_forms");
+        check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases(), &no_fallback()).expect("clean check_forms");
 
         let guard = modules.get(&module_path()).expect("module exists");
         let entry = guard.get("solo").expect("solo registered");
@@ -661,6 +678,7 @@ mod tests {
             &mut ctx,
             &modules,
             &no_aliases(),
+            &no_fallback(),
             &module_path(),
             Span::SYNTHETIC,
         )
@@ -681,6 +699,7 @@ mod tests {
             &mut ctx,
             &modules,
             &no_aliases(),
+            &no_fallback(),
             &module_path(),
             Span::SYNTHETIC,
         )
@@ -702,6 +721,7 @@ mod tests {
             &mut ctx,
             &modules,
             &no_aliases(),
+            &no_fallback(),
             &module_path(),
             Span::SYNTHETIC,
         )
@@ -740,7 +760,7 @@ mod tests {
         };
 
         let parsed = vec![first, second];
-        check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases()).expect("clean check_forms");
+        check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases(), &no_fallback()).expect("clean check_forms");
 
         let guard = modules.get(&module_path()).expect("module exists");
         assert!(guard.get("first").is_some(), "first registered");
@@ -762,7 +782,7 @@ mod tests {
         // Pre-S66: this would fail with "missing type vars" because Pass 1
         // and Pass 2 ran in separate calls with separate accumulators.
         // Post-S66: the accumulator persists; this succeeds.
-        check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases())
+        check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases(), &no_fallback())
             .expect("state threading should keep type vars alive across passes");
     }
 
@@ -781,7 +801,7 @@ mod tests {
             macro_entry("m"),
             constructor_entry(),
         ];
-        let r = check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases());
+        let r = check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases(), &no_fallback());
         // The TypeDef + TraitDecl + Defn registrations should succeed; the
         // TraitImpl with an empty method set is also valid. Macros and
         // constructors are no-ops at this surface.
@@ -809,7 +829,7 @@ mod tests {
         let mut ctx: SymbolTableAccess<'_, (), ()> =
             SymbolTableAccess::cluster(&modules, &mut staging, module_path());
         let parsed = vec![one_variant_defn("clustered")];
-        let r = check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases());
+        let r = check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases(), &no_fallback());
         assert!(r.is_ok(), "cluster-mode check_forms returns structured Result: {r:?}");
     }
 
@@ -841,7 +861,7 @@ mod tests {
             let mut ctx: SymbolTableAccess<'_, (), ()> =
                 SymbolTableAccess::cluster(&modules, &mut staging, module_path());
             let parsed = vec![one_variant_defn("staged_defn")];
-            check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases())
+            check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases(), &no_fallback())
                 .expect("cluster mode check_forms succeeds");
         }
 
@@ -920,7 +940,7 @@ mod tests {
                 span: Span::SYNTHETIC,
             };
             let parsed = vec![first, second];
-            check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases()).expect(
+            check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases(), &no_fallback()).expect(
                 "cluster-mode forward reference must resolve via staging read union",
             );
         }
@@ -949,7 +969,7 @@ mod tests {
         let modules = modules();
         let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
         let parsed = vec![one_variant_defn("livewrite")];
-        check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases()).expect("live mode");
+        check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases(), &no_fallback()).expect("live mode");
         let guard = modules.get(&module_path()).expect("module exists");
         assert!(guard.get("livewrite").is_some());
     }
@@ -962,7 +982,7 @@ mod tests {
         let modules = modules();
         let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
         let parsed = vec![macro_entry("m"), constructor_entry()];
-        let r = check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases());
+        let r = check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases(), &no_fallback());
         assert!(r.is_ok(), "macro-only / constructor-only cluster is a no-op: {r:?}");
     }
 
@@ -999,7 +1019,7 @@ mod tests {
         {
             let mut ctx: SymbolTableAccess<'_, (), ()> =
                 SymbolTableAccess::live(&modules, module_path());
-            check_forms::<(), ()>(vec![id_defn], &mut ctx, &modules, &no_aliases())
+            check_forms::<(), ()>(vec![id_defn], &mut ctx, &modules, &no_aliases(), &no_fallback())
                 .expect("call 1: register id as constrained-poly");
         }
 
@@ -1037,7 +1057,7 @@ mod tests {
         };
         let mut ctx2: SymbolTableAccess<'_, (), ()> =
             SymbolTableAccess::live(&modules, module_path());
-        check_forms::<(), ()>(vec![caller_defn], &mut ctx2, &modules, &no_aliases())
+        check_forms::<(), ()>(vec![caller_defn], &mut ctx2, &modules, &no_aliases(), &no_fallback())
             .expect("call 2: monomorphise (id 7) — must not overflow");
 
         // Assert: `id$Int` mono entry is registered in live.
@@ -1082,7 +1102,7 @@ mod tests {
             SymbolTableAccess::live(&modules, module_path());
         // Body references `some.mod/thing`; `some.mod` is not in `modules`.
         let parsed = vec![defn_referencing("uses_missing", "some.mod/thing")];
-        let r = check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases());
+        let r = check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases(), &no_fallback());
         match r {
             Err(CheckError::Gap(cranelisp_types::ResolutionGap::SymbolTypechecked(fq))) => {
                 assert_eq!(
@@ -1129,7 +1149,7 @@ mod tests {
         // Body references `r/thing`; `r` is an alias to `real.target` which is
         // absent. The gap must carry the RESOLVED target.
         let parsed = vec![defn_referencing("uses_alias", "r/thing")];
-        let r = check_forms::<(), ()>(parsed, &mut ctx, &modules, &aliases);
+        let r = check_forms::<(), ()>(parsed, &mut ctx, &modules, &aliases, &no_fallback());
         match r {
             Err(CheckError::Gap(cranelisp_types::ResolutionGap::SymbolTypechecked(fq))) => {
                 assert_eq!(
@@ -1187,7 +1207,7 @@ mod tests {
         {
             let mut ctx: SymbolTableAccess<'_, (), ()> =
                 SymbolTableAccess::live(&modules, module_path());
-            check_forms::<(), ()>(vec![multi_f], &mut ctx, &modules, &no_aliases())
+            check_forms::<(), ()>(vec![multi_f], &mut ctx, &modules, &no_aliases(), &no_fallback())
                 .expect("cluster 1 (multi-sig defn) checks clean");
         }
         // Sanity: the live base entry is `Overloaded` with both variants.
@@ -1232,7 +1252,7 @@ mod tests {
         {
             let mut ctx: SymbolTableAccess<'_, (), ()> =
                 SymbolTableAccess::live(&modules, module_path());
-            check_forms::<(), ()>(vec![caller], &mut ctx, &modules, &no_aliases())
+            check_forms::<(), ()>(vec![caller], &mut ctx, &modules, &no_aliases(), &no_fallback())
                 .expect("cluster 2 (caller body) checks clean across clusters");
         }
 

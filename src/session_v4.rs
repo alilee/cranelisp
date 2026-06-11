@@ -749,6 +749,20 @@ pub struct SharedState {
     /// parse-time (`process_cluster` pre-`check_forms`).
     pub module_aliases: cranelisp_types::ModuleAliases,
 
+    /// Per-module prelude-outer-scope fallback flags (S78 §2.7 — prelude as
+    /// an OUTER SCOPE, not flattened into each table). `module_path → true`
+    /// ⇒ a bare-name inner-table miss falls back to the `prelude` module's
+    /// own table (chain-following its `(export [primitives [*]])` re-exports
+    /// to the canonical primitive entries). Absent OR `false` ⇒ no fallback.
+    /// int populates this in `inject_prelude_if_needed` (the one site that
+    /// decides the ON/OFF condition via `sexps_reference_prelude`); typecheck
+    /// reads it read-only via `TypeCheckEnv`/`check_forms` (the 5th param) at
+    /// its two bare-name resolution chokepoints. The synthetic `prelude`
+    /// module itself, and any module that references/refuses prelude, are
+    /// simply never inserted (absence-is-OFF). Session-side and unserialized
+    /// — recomputed per session from source, never cached.
+    pub prelude_fallback: cranelisp_typecheck::PreludeFallback,
+
     // Sprint 67 Cluster B sub-fire 2d: `current_module: Mutex<ModuleFullPath>`
     // was here. Relocated (PIF) to `CompilerSession::current_repl_module` per
     // `design/arch/facades/int.md` L23 + L222. REPL is single-threaded
@@ -1109,6 +1123,7 @@ impl CompilerSession {
             symbol_tables,
             next_type_id,
             module_aliases: cranelisp_types::ModuleAliases::default(),
+            prelude_fallback: cranelisp_typecheck::PreludeFallback::default(),
             typecheck_products: dashmap::DashMap::new(),
             // Sprint 58 Wave 3b: kept_jits / kept_linkers dissolved per
             // Decision 35; Arc retention now lives on each Code::Jit /
@@ -1484,10 +1499,37 @@ impl CompilerSession {
             match cur_hit {
                 Some(e) => (e, current.clone()),
                 None => {
-                    let root = ModuleFullPath::from("");
-                    let root_table = self.shared.symbol_tables.get(&root)?;
-                    let root_hit = root_table.get(name).cloned()?;
-                    (root_hit, root)
+                    // S78 §2.7.6 — prelude hop. A bare prelude-provided name
+                    // (e.g. `/sig map`) is no longer flattened into the current
+                    // table; when this module's fallback bit is ON, probe
+                    // prelude's OWN table before root, mirroring the typecheck
+                    // outer-scope fallback so `/sig`/`/doc`/`/info`/`/type` on a
+                    // prelude name still resolve.
+                    let prelude_path = ModuleFullPath::from("prelude");
+                    let prelude_on = self
+                        .shared
+                        .prelude_fallback
+                        .get(&current)
+                        .map(|b| *b)
+                        .unwrap_or(false);
+                    let prelude_hit = if prelude_on && current != prelude_path {
+                        self.shared
+                            .symbol_tables
+                            .get(&prelude_path)
+                            .and_then(|t| t.get(name).cloned())
+                            .map(|e| (e, prelude_path.clone()))
+                    } else {
+                        None
+                    };
+                    match prelude_hit {
+                        Some(pair) => pair,
+                        None => {
+                            let root = ModuleFullPath::from("");
+                            let root_table = self.shared.symbol_tables.get(&root)?;
+                            let root_hit = root_table.get(name).cloned()?;
+                            (root_hit, root)
+                        }
+                    }
                 }
             }
         };
@@ -2299,6 +2341,7 @@ impl CompilerSession {
                     symbol_tables: &self.shared.symbol_tables,
                     next_type_id: &self.shared.next_type_id,
                     module_aliases: &self.shared.module_aliases,
+                    prelude_fallback: &self.shared.prelude_fallback,
                     check_state: repl_cs,
                     current_module: module.clone(),
                     scheduler: &self.shared.scheduler,
@@ -2516,9 +2559,41 @@ impl CompilerSession {
             });
         }
 
-        let entry = {
+        let module = self.current_module_path();
+        // S78 §2.7.6 — prelude is an OUTER SCOPE, not flattened into the
+        // current table. A bare prelude-provided name (e.g. `add-i64`) is no
+        // longer an `Import` entry here, so the current-table lookup misses;
+        // when the per-module fallback bit is ON, hop to prelude's own table
+        // (where `add-i64` is the `(export …)` re-export Import edge) so the
+        // bare-value display still chains to `primitives/add-i64`. The hop
+        // returns the entry from prelude's table, then `resolve_entry_for_display`
+        // chains it the rest of the way (prelude → primitives).
+        let (entry, lookup_module) = {
             let guard = self.current_symbol_table();
-            guard.get(name)?.clone()
+            match guard.get(name) {
+                Some(e) => (e.clone(), module.clone()),
+                None => {
+                    drop(guard);
+                    let prelude_path = ModuleFullPath::from("prelude");
+                    let prelude_on = module != prelude_path
+                        && self
+                            .shared
+                            .prelude_fallback
+                            .get(&module)
+                            .map(|b| *b)
+                            .unwrap_or(false);
+                    if !prelude_on {
+                        return None;
+                    }
+                    let pe = self
+                        .shared
+                        .symbol_tables
+                        .get(&prelude_path)?
+                        .get(name)?
+                        .clone();
+                    (pe, prelude_path)
+                }
+            }
         };
 
         // Resolve import/reexport chains fully. Sprint 61 Slice 1: the
@@ -2527,8 +2602,8 @@ impl CompilerSession {
         // of an intermediate `Reexport` that the match below would drop
         // through `_ => None`. See
         // `design/int/bare-primitive-value-path.md` candidate 2.
-        let module = self.current_module_path();
-        let (resolved_entry, resolved_module) = self.resolve_entry_for_display(&entry, &module);
+        let (resolved_entry, resolved_module) =
+            self.resolve_entry_for_display(&entry, &lookup_module);
 
         // Use the resolved module for re-export provenance (spec §8.9:
         // introspection MUST display the original defining module). The
@@ -2593,6 +2668,43 @@ impl CompilerSession {
     // -- Slash command handlers (subset for initial implementation) --
 
     /// /sig handler: show type signature of a symbol.
+    /// S78 §2.7.6 — look up a bare name for introspection, honouring the
+    /// prelude outer scope. Returns `(entry, lookup_module)` where
+    /// `lookup_module` is the table the entry was found in (the current module,
+    /// or `prelude` when the current table missed and the per-module fallback
+    /// bit is ON). Used by `/sig`, `/doc` so prelude-provided bare names (e.g.
+    /// `add-i64`) resolve even though prelude is no longer flattened into the
+    /// current table.
+    fn lookup_with_prelude_fallback(
+        &self,
+        name: &str,
+    ) -> Option<(ModuleEntry<Code>, ModuleFullPath)> {
+        let module = self.current_module_path();
+        if let Some(e) = self.current_symbol_table().get(name) {
+            return Some((e.clone(), module));
+        }
+        let prelude_path = ModuleFullPath::from("prelude");
+        if module == prelude_path {
+            return None;
+        }
+        let on = self
+            .shared
+            .prelude_fallback
+            .get(&module)
+            .map(|b| *b)
+            .unwrap_or(false);
+        if !on {
+            return None;
+        }
+        let e = self
+            .shared
+            .symbol_tables
+            .get(&prelude_path)?
+            .get(name)?
+            .clone();
+        Some((e, prelude_path))
+    }
+
     fn handle_sig(&self, name: &str) -> String {
         if name.is_empty() {
             return "usage: /sig <name>".to_string();
@@ -2600,8 +2712,8 @@ impl CompilerSession {
         if intrinsic_type_from_name(name).is_some() {
             return format!("{name} ; type - builtin type");
         }
-        match self.current_symbol_table().get(name) {
-            Some(entry) => format_entry_sig(entry, name),
+        match self.lookup_with_prelude_fallback(name) {
+            Some((entry, _)) => format_entry_sig(&entry, name),
             None => format!("error: unknown symbol '{name}'"),
         }
     }
@@ -2611,14 +2723,15 @@ impl CompilerSession {
         if name.is_empty() {
             return "usage: /doc <name>".to_string();
         }
-        let Some(local) = self.current_symbol_table().get(name).cloned() else {
+        let Some((local, lookup_module)) = self.lookup_with_prelude_fallback(name) else {
             return format!("error: unknown symbol '{name}'");
         };
         // Follow import/re-export chains to the defining entry — a bare
         // primitive (`add-i64`) is reached through the prelude re-export, so
-        // the local entry is an Import, not the Def.
-        let module = self.current_module_path();
-        let (entry, _resolved_module) = self.resolve_entry_for_display(&local, &module);
+        // the local entry is an Import, not the Def. The chain-follow starts
+        // from `lookup_module` (current module, or prelude when the fallback
+        // hop fired) so the prelude→primitives edge is walked.
+        let (entry, _resolved_module) = self.resolve_entry_for_display(&local, &lookup_module);
         match &entry {
             ModuleEntry::Def { docstring, kind, .. } => {
                 // Primitive Defs carry `docstring: None`; source the Appendix
@@ -2794,12 +2907,12 @@ impl CompilerSession {
         if intrinsic_type_from_name(name).is_some() {
             return self.format_builtin_type_display(name);
         }
-        let entry = match self.current_symbol_table().get(name) {
-            Some(e) => e.clone(),
+        let (entry, lookup_module) = match self.lookup_with_prelude_fallback(name) {
+            Some(pair) => pair,
             None => return format!("error: unknown symbol '{name}'"),
         };
-        let module = self.current_module_path();
-        let (resolved_entry, resolved_module) = self.resolve_entry_for_display(&entry, &module);
+        let (resolved_entry, resolved_module) =
+            self.resolve_entry_for_display(&entry, &lookup_module);
         let sig = self.format_def_entry(&resolved_entry, name, &resolved_module);
         // Append code info if available.
         let is_macro = matches!(&resolved_entry,
@@ -2865,6 +2978,7 @@ impl CompilerSession {
         crate::worker::check_program_compat_no_gap(
             &self.shared.symbol_tables,
             &self.shared.module_aliases,
+            &self.shared.prelude_fallback,
             &module,
             &working_program,
         )?;
@@ -2921,6 +3035,51 @@ impl CompilerSession {
             }
             _ => None,
         }
+    }
+
+    /// S78 §2.6 — prelude's own public symbol names, for the `/imports`
+    /// "Prelude (implicit)" group. Returns the sorted public names prelude
+    /// makes available (its own `Def`s plus its `(export …)` re-exports such
+    /// as `add-i64`) — but ONLY when the CURRENT module's prelude-fallback bit
+    /// is ON. When the bit is OFF (the module refused/references prelude), or
+    /// the current module IS prelude, or prelude is not loaded, returns empty
+    /// so the group is absent (no implicit fallback is active).
+    fn prelude_implicit_names(&self) -> Vec<String> {
+        let current = self.current_module_path();
+        let prelude_path = ModuleFullPath::from("prelude");
+        if current == prelude_path {
+            return Vec::new();
+        }
+        let on = self
+            .shared
+            .prelude_fallback
+            .get(&current)
+            .map(|b| *b)
+            .unwrap_or(false);
+        if !on {
+            return Vec::new();
+        }
+        let Some(table) = self.shared.symbol_tables.get(&prelude_path) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = Vec::new();
+        for (sym, entry) in table.all_symbols() {
+            // Public symbols only — both prelude's own defs and its re-export
+            // `(export …)` Import edges (e.g. `add-i64`) are user-visible.
+            if !entry.is_public() {
+                continue;
+            }
+            let name = sym.to_string();
+            // Skip mangled multi-sig / overload variants and special forms
+            // (special forms are surfaced from root in their own category).
+            if name.contains('$') || matches!(entry, ModuleEntry::SpecialForm { .. }) {
+                continue;
+            }
+            names.push(name);
+        }
+        names.sort();
+        names.dedup();
+        names
     }
 
     /// /imports handler: list imports in current module by category.
@@ -2984,8 +3143,29 @@ impl CompilerSession {
             append_name_category(&mut output, "Types", &types);
             append_name_category(&mut output, "Fns", &fns);
 
+            // S78 §2.6 — prelude is an OUTER SCOPE, not flattened into this
+            // module's table, so prelude-provided names no longer appear in the
+            // explicit categories above. When the per-module fallback bit is ON
+            // (the module did not refuse/reference prelude), append a distinct
+            // "Prelude (implicit)" group enumerating prelude's OWN public
+            // symbols — preserving discoverability while making the inner/outer
+            // scope layering visible. Absent when the bit is OFF (refusal).
+            let prelude_names = self.prelude_implicit_names();
+            if !prelude_names.is_empty() {
+                output.push_str(
+                    "Prelude (implicit):  \
+                     ; available via the prelude outer scope, \
+                     shadowed by any explicit import/def of the same name\n",
+                );
+                for name in &prelude_names {
+                    output.push_str("  ");
+                    output.push_str(name);
+                    output.push('\n');
+                }
+            }
+
             if special_forms.is_empty() && macros.is_empty() && traits.is_empty()
-                && types.is_empty() && fns.is_empty()
+                && types.is_empty() && fns.is_empty() && prelude_names.is_empty()
             {
                 output.push_str("(no imports)");
             }
@@ -3226,6 +3406,7 @@ impl CompilerSession {
                 symbol_tables: &self.shared.symbol_tables,
                 next_type_id: &self.shared.next_type_id,
                 module_aliases: &self.shared.module_aliases,
+                prelude_fallback: &self.shared.prelude_fallback,
                 check_state: repl_cs,
                 current_module: module.clone(),
                 scheduler: &self.shared.scheduler,
@@ -3879,10 +4060,39 @@ impl CompilerSession {
                     return self.format_builtin_type_display(name);
                 }
 
+                let cur_module = self.current_module_path();
                 let entry = self.current_symbol_table().get(name).cloned();
+                // S78 §2.7.6 — prelude outer-scope hop. A bare prelude-provided
+                // name (e.g. `add-i64`) is no longer flattened into the current
+                // table; when the per-module fallback bit is ON, look it up in
+                // prelude's own table (the `(export …)` re-export edge) so the
+                // chain-follow below still reaches `primitives/add-i64`.
+                let (entry, lookup_module) = match entry {
+                    Some(e) => (Some(e), cur_module.clone()),
+                    None => {
+                        let prelude_path = ModuleFullPath::from("prelude");
+                        let prelude_on = cur_module != prelude_path
+                            && self
+                                .shared
+                                .prelude_fallback
+                                .get(&cur_module)
+                                .map(|b| *b)
+                                .unwrap_or(false);
+                        if prelude_on {
+                            let pe = self
+                                .shared
+                                .symbol_tables
+                                .get(&prelude_path)
+                                .and_then(|t| t.get(name).cloned());
+                            (pe, prelude_path)
+                        } else {
+                            (None, cur_module.clone())
+                        }
+                    }
+                };
                 // Follow import chains to the definition.
                 let (entry, resolved_module) = match entry {
-                    Some(ref e) => self.resolve_entry_for_display(e, module),
+                    Some(ref e) => self.resolve_entry_for_display(e, &lookup_module),
                     None => {
                         // TraitImpl entries have `Trait.Type` names; not in symbol table.
                         if let Some((trait_name, target_type)) = name.split_once('.') {

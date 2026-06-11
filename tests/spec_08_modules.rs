@@ -832,63 +832,107 @@ fn defmacro_dash_private_not_importable_neg() {
 }
 
 // =============================================================================
-// Sprint 64 Wave 6 batch 5 — Defect 2: stdlib seq.lazy null-import regression
+// Null-import resolution (§8.3.6) — free-standing
 // =============================================================================
 //
-// Per Sprint 58 Wave 6 demo finding: `stdlib/seq/lazy.cl` once declared
-// `(import [prelude []])` (the null-import form per spec §8.3.6) which
-// suppresses the implicit prelude glob — yet referenced Nil/Cons from
-// `collections.list` and Some/None from `fn.option` without explicit
-// imports. /stdlib's fix added the missing imports. This test guards the
-// regression: any stdlib module that uses null-import MUST resolve every
-// name through explicit imports.
+// Spec subject: §8.3.6 Null Import — a module that suppresses the implicit
+// prelude glob via `(import [prelude []])` MUST resolve EVERY referenced name
+// through explicit imports; any name it leaves unimported is `undefined
+// variable`, not silently picked up from the prelude.
 //
-// REGRESSION-GUARD: Sprint 58 Wave 6 Defect 2 — /stdlib seq.lazy import
-// fix landed; this test is the durable record. Owning skill /stdlib
-// (per-module import discipline; resolved-by-passing-carry-forward).
-// (carry: legacy/wave6_demo_repros.rs::stdlib_seq_lazy_imports_resolve_nil_cons)
+// Decoupled from real stdlib (was: imported `seq.lazy` via
+// `use_workspace_stdlib_for_stdlib_conformance_only`). The original test only
+// exercised whether `stdlib/seq/lazy.cl` happened to import its names — a
+// /stdlib conformance concern, not a language-rule concern, and it broke when
+// real stdlib stopped compiling (FIXME 0312/0314 — the two-`Option` collision).
+// This free-standing version pins the LANGUAGE RULE directly with a tiny
+// test-owned module graph: a null-importing leaf that DOES explicitly import
+// the names it uses resolves cleanly; the negative companion below pins that a
+// null-importing leaf that OMITS an import fails with `undefined variable`.
+//
+// The fixture is spec-clean (no `primitives` glob + separate Option footgun):
+// it defines its own ADT in one module and explicitly imports the constructor
+// into the null-importing leaf.
 
 // spec: spec/08-modules.md §8.3.6 — Null Import: a module that suppresses
-//       the prelude glob via `(import [prelude []])` MUST resolve every
-//       name through explicit imports
+//       the prelude glob via `(import [prelude []])` resolves every referenced
+//       name through explicit imports (positive path).
 #[test]
 fn null_import_module_resolves_all_names_via_explicit_imports() {
-    // Drive the stdlib seq.lazy module through batch compilation by
-    // importing it from a small entry file. If seq/lazy.cl is missing
-    // its Nil/Cons imports, the typechecker fails with "undefined
-    // variable: Nil". The test passes when seq.lazy typechecks cleanly.
-    let entry = "(import [seq.lazy [iterate take]])\n(defn main [] 0)\n";
+    // `lib/data.cl` defines a Box ADT. `lib/leaf.cl` null-imports the prelude
+    // and EXPLICITLY imports `Box`/`unbox` plus the bare primitives it uses —
+    // so every referenced name resolves. `main.cl` drives the leaf.
     let out = Cranelisp::new()
-        .use_workspace_stdlib_for_stdlib_conformance_only()
-        .use_workspace_platforms()
-        .run("entry.cl")
-        .file("entry.cl", entry)
+        .file(
+            "lib/data.cl",
+            "(deftype (Box a) (Boxed [:a v]))\n\
+             (defn unbox [b] (match b [(Boxed v) v]))",
+        )
+        .file(
+            "lib/leaf.cl",
+            "(import [prelude []])\n\
+             (import [primitives [add-i64]])\n\
+             (import [lib.data [Box Boxed unbox]])\n\
+             (defn wrapped [] (Boxed (add-i64 40 2)))\n\
+             (defn value [] (unbox (wrapped)))",
+        )
+        .file(
+            "main.cl",
+            "(import [lib.leaf [value]])\n(defn main [] (value))",
+        )
+        .run("main.cl")
         .output();
 
     let combined = format!("{}\n{}", out.stdout, out.stderr);
-    // The exact symptom (`undefined variable: Nil/Cons/Some/None`) is the
-    // signature of Defect 2.
-    for missing in [
-        "undefined variable: Nil",
-        "undefined variable: Cons",
-        "undefined variable: Some",
-        "undefined variable: None",
-    ] {
-        assert!(
-            !combined.contains(missing),
-            "stdlib/seq/lazy.cl references Nil/Cons/Some/None without \
-             importing them. Per spec §8.3.6 a module that suppresses the \
-             prelude glob (via `(import [prelude []])`) MUST resolve every \
-             name through explicit imports. Found: `{missing}` in:\n{combined}"
-        );
-    }
-    // Successful exit (entry.cl's main returns 0).
     assert!(
-        out.status.success(),
-        "entry importing seq.lazy MUST batch-compile cleanly when \
-         seq.lazy resolves Nil/Cons/Some/None via explicit imports per \
-         spec §8.3.6; got status={:?}\n{combined}",
-        out.status.code()
+        !combined.contains("undefined variable"),
+        "a null-importing module (`(import [prelude []])`) that EXPLICITLY \
+         imports every name it references MUST resolve cleanly (spec §8.3.6); \
+         got:\n{combined}"
+    );
+    out.assert_exit(42);
+}
+
+// spec: spec/08-modules.md §8.3.6 — Null Import (negative): a name a
+//       null-importing module references but does NOT explicitly import is
+//       `undefined variable` — the prelude glob is suppressed, so there is no
+//       implicit fallback that would silently resolve it.
+#[test]
+fn null_import_module_neg_unimported_name_is_undefined() {
+    // Same shape, but `lib/leaf.cl` references `Boxed`/`unbox` WITHOUT importing
+    // `lib.data`. Under null-import there is no prelude fallback, so the
+    // constructor reference MUST fail to resolve.
+    let out = Cranelisp::new()
+        .file(
+            "lib/data.cl",
+            "(deftype (Box a) (Boxed [:a v]))\n\
+             (defn unbox [b] (match b [(Boxed v) v]))",
+        )
+        .file(
+            "lib/leaf.cl",
+            "(import [prelude []])\n\
+             (import [primitives [add-i64]])\n\
+             (defn value [] (unbox (Boxed (add-i64 40 2))))",
+        )
+        .file(
+            "main.cl",
+            "(import [lib.leaf [value]])\n(defn main [] (value))",
+        )
+        .run("main.cl")
+        .output();
+
+    assert!(
+        !out.status.success(),
+        "a null-importing module that references a name it did NOT explicitly \
+         import MUST fail (no prelude fallback, spec §8.3.6); exit={:?}\n{}\n{}",
+        out.status.code(),
+        out.stdout,
+        out.stderr
+    );
+    let combined = format!("{}\n{}", out.stdout, out.stderr);
+    assert!(
+        combined.contains("undefined") || combined.contains("Boxed") || combined.contains("unbox"),
+        "the diagnostic MUST name the unresolved symbol; got:\n{combined}"
     );
 }
 

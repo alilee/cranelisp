@@ -548,23 +548,33 @@ fn h5_normal_completion_liveness_yields_dep_value() {
 fn repl_dep_load_no_race_with_persistent_workers() {
     use std::io::Write;
 
-    // Setup: an isolated project root with the repo stdlib symlinked in.
-    // Drive the REPL with `--priority-workers 4` so multiple persistent
-    // workers wake on the scheduler notify — the configuration that
-    // consistently triggered the dep-load race per /int's FIXME #3 diagnosis.
+    // Setup: an isolated project root with a TEST-OWNED dep module (NOT the
+    // real workspace stdlib). Drive the REPL with `--priority-workers 4` so
+    // multiple persistent workers wake on the scheduler notify — the
+    // configuration that consistently triggered the dep-load race per /int's
+    // FIXME #3 diagnosis.
+    //
+    // SPRINT 78 WAVE 4 (/qa) DECOUPLING: the prior version symlinked the real
+    // repo `stdlib/` into cwd and imported `collections.list [Cons Nil]`. After
+    // the `is_seeded` deletion (S78 Wave 4) the real stdlib stops compiling
+    // (FIXME 0312/0314 — the two-`Option` glob collision), red-ing this test
+    // even though its SUBJECT is the scheduler dep-load ordering, not stdlib.
+    // The dep-load shape — REPL imports a sibling module's constructor under
+    // persistent-worker pressure and constructs a value from it — is preserved
+    // with a tiny spec-clean test-owned ADT module (`mylist.cl`, no `primitives`
+    // glob + separate Option footgun), so the test is free-standing per root
+    // CLAUDE.md "Stdlib separation".
     let td = tempfile::tempdir().expect("create tempdir");
     let cwd = td.path();
-    let proj_stdlib = cwd.join("stdlib");
-    if !proj_stdlib.exists() {
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(project_root().join("stdlib"), &proj_stdlib).unwrap();
-        #[cfg(not(unix))]
-        std::fs::create_dir_all(&proj_stdlib).unwrap();
-    }
+    std::fs::write(
+        cwd.join("mylist.cl"),
+        "(deftype (MyList a) MyNil (MyCons [:a head :(MyList a) tail]))\n",
+    )
+    .unwrap();
 
-    // The REPL imports a stdlib module and constructs a value from it — the
-    // same dep-load shape /repl saw in Wave 6 demos.
-    let repl_input = "(import [collections.list [Cons Nil]])\n(Cons 1 Nil)\n";
+    // The REPL imports the test-owned dep module and constructs a Cons-list
+    // value from it — the same dep-load shape /repl saw in Wave 6 demos.
+    let repl_input = "(import [mylist [MyCons MyNil]])\n(MyCons 1 MyNil)\n";
 
     let binary = binary_path();
     assert!(
@@ -589,13 +599,14 @@ fn repl_dep_load_no_race_with_persistent_workers() {
 
     let stdout = stdout_str(&out);
     let stderr = stderr_str(&out);
-    // POSITIVE outcome: the import + `(Cons 1 Nil)` constructor call resolves
-    // and produces a Cons-list result. The REPL self-documenting display shows
-    // the constructed value's type/value; a successful run names `Cons`.
+    // POSITIVE outcome: the import + `(MyCons 1 MyNil)` constructor call
+    // resolves and produces a Cons-list result. The REPL self-documenting
+    // display shows the constructed value's type/value; a successful run names
+    // `MyCons`.
     assert!(
-        stdout.contains("Cons"),
-        "REPL dep-load: (import [collections.list [Cons Nil]]) followed by \
-         (Cons 1 Nil) under --priority-workers 4 did NOT produce a successful \
+        stdout.contains("MyCons"),
+        "REPL dep-load: (import [mylist [MyCons MyNil]]) followed by \
+         (MyCons 1 MyNil) under --priority-workers 4 did NOT produce a successful \
          Cons-list result. Under the in-call-stack dep-drive (Sprint 78) the \
          dep's sexps never leave the processing worker's stack frame, so a \
          persistent worker cannot observe a half-published module. A failure \

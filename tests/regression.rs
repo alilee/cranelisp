@@ -2465,6 +2465,17 @@ fn s60_drop_glue_no_intermediate_fn_passes() {
 //
 // Owning skill: /int (REPL session_v4 lifecycle wiring). FIXME 0146 is
 // the harvest target.
+//
+// SPRINT 78 WAVE 4 (/qa) DECOUPLING: reductions #2–#5 exercise the
+// REPL-eval'd import + scheduler lifecycle against a tiny `tiny.cl` fixture;
+// their stdlib load was incidental. They now use the free-standing
+// `run_repl_in_tmpdir_no_stdlib` helper (empty test-owned prelude, no
+// `CRANELISP_LIB` → real stdlib) so they no longer red on the real-stdlib
+// two-`Option` glob collision (FIXME 0312/0314). Reduction #1 genuinely runs
+// the REAL exemplar `/run-tests html` and stays on the real-stdlib helper —
+// see its body note: it is an exemplar/stdlib-conformance test, NOT a
+// free-standing language test, and is left RED as an 0314-pending carry until
+// /stdlib resolves the collision.
 // =============================================================================
 
 /// Drive the REPL binary from `cwd` (a fresh tempdir) with piped stdin.
@@ -2485,6 +2496,55 @@ fn run_repl_in_tmpdir(cwd: &Path, stdin_input: &str) -> std::process::Output {
         .current_dir(cwd)
         .env("CRANELISP_LIB", stdlib)
         .env("CRANELISP_PLATFORM_PATH", platform)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn cranelisp REPL");
+    {
+        use std::io::Write;
+        if let Some(stdin) = child.stdin.as_mut() {
+            let _ = stdin.write_all(stdin_input.as_bytes());
+        }
+    }
+    child.wait_with_output().expect("failed to read REPL output")
+}
+
+/// Drive the REPL binary from `cwd` (a fresh tempdir) with piped stdin,
+/// DECOUPLED from the real workspace `stdlib/`.
+///
+/// Sprint 78 Wave 4 (/qa): the sibling `run_repl_in_tmpdir` sets
+/// `CRANELISP_LIB` to the real repo `stdlib/`, so the REPL loads
+/// `stdlib/prelude.cl` at startup. After the `is_seeded` deletion the real
+/// stdlib stops compiling (FIXME 0312/0314 — the two-`Option` glob collision),
+/// which red-ed reductions 2–5 even though their SUBJECT (REPL-eval'd import
+/// against an empty/absent entry `user.cl` + scheduler lifecycle) has nothing
+/// to do with stdlib — the stdlib load was purely incidental.
+///
+/// This helper drops a test-owned EMPTY `prelude.cl` in the cwd (so the
+/// binary's prelude auto-discovery finds a spec-clean, compiling prelude that
+/// shadows stdlib per §8.8.2) and does NOT set `CRANELISP_LIB`. The reductions
+/// thus exercise the same REPL-import + shutdown/eval lifecycle on a tiny
+/// `tiny.cl` fixture, free-standing per root CLAUDE.md "Stdlib separation".
+fn run_repl_in_tmpdir_no_stdlib(cwd: &Path, stdin_input: &str) -> std::process::Output {
+    let binary = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("debug")
+        .join("cranelisp");
+    assert!(
+        binary.exists(),
+        "cranelisp binary not built at {binary:?} — run `cargo build` first"
+    );
+    // Empty test-owned prelude — shadows real stdlib (§8.8.2); spec-clean
+    // (no `primitives` glob + separate Option footgun). Only dropped if the
+    // test did not already place its own prelude/user content needing it.
+    let prelude = cwd.join("prelude.cl");
+    if !prelude.exists() {
+        std::fs::write(&prelude, ";; empty test-owned prelude (no stdlib)\n").unwrap();
+    }
+    let mut child = std::process::Command::new(&binary)
+        .current_dir(cwd)
+        // NO CRANELISP_LIB — do not load the real workspace stdlib.
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -2520,6 +2580,17 @@ fn combined_out(o: &std::process::Output) -> String {
 // the /quit variant (#3 below). Kept as a regression guard.
 //
 // (carry: legacy/sprint60_run_tests_reduction.rs::s60_run_tests_reduction_1_exemplar_batched_failing)
+//
+// **/stdlib-0314-PENDING CARRY (Sprint 78 Wave 4, /qa).** This reduction runs
+// the REAL exemplar `/run-tests html` and therefore genuinely needs the real
+// workspace stdlib + exemplar — it is an exemplar/stdlib-CONFORMANCE test, not
+// a free-standing language test, so it CANNOT be decoupled (unlike its
+// siblings #2–#5). It is currently RED because the `is_seeded` deletion (S78
+// Wave 4) exposed a real two-`Option` glob collision in stdlib that stops the
+// real stdlib compiling (FIXME 0312/0314). It stays failing-not-ignored as the
+// durable record; closure is /stdlib's `fn.option` re-export fix (FIXME 0314),
+// not a /qa decouple. Its purpose IS exemplar/stdlib conformance, so it belongs
+// to that lane's get-to-green, not QA's free-standing suite.
 #[test]
 fn s60_run_tests_reduction_1_exemplar_batched_failing() {
     let exemplar_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("exemplar");
@@ -2570,7 +2641,7 @@ fn s60_run_tests_reduction_2_repl_import_empty_user_failing() {
     // NO user.cl — the entry module sources to "" (empty sexps).
 
     let input = "(import [tiny [answer]])\n";
-    let out = run_repl_in_tmpdir(cwd, input);
+    let out = run_repl_in_tmpdir_no_stdlib(cwd, input);
     let exit = out.status.code();
     let combined = combined_out(&out);
 
@@ -2609,7 +2680,7 @@ fn s60_run_tests_reduction_3_quit_variant_failing() {
     std::fs::write(cwd.join("tiny.cl"), "(defn answer [] 42)\n").unwrap();
 
     let input = "(import [tiny [answer]])\n/quit\n";
-    let out = run_repl_in_tmpdir(cwd, input);
+    let out = run_repl_in_tmpdir_no_stdlib(cwd, input);
     let exit = out.status.code();
     let combined = combined_out(&out);
 
@@ -2648,7 +2719,7 @@ fn s60_run_tests_reduction_4_second_form_variant_failing() {
     // Import then a bare literal — the second iteration gives the watcher
     // a chance to observe the regenerate_backing_file write.
     let input = "(import [tiny [answer]])\n42\n";
-    let out = run_repl_in_tmpdir(cwd, input);
+    let out = run_repl_in_tmpdir_no_stdlib(cwd, input);
     let exit = out.status.code();
     let combined = combined_out(&out);
 
@@ -2682,7 +2753,7 @@ fn s60_run_tests_reduction_5_import_in_file_passes_control() {
     std::fs::write(cwd.join("user.cl"), "(import [tiny [answer]])\n").unwrap();
 
     // Empty stdin — entry module resolution alone drives the import.
-    let out = run_repl_in_tmpdir(cwd, "");
+    let out = run_repl_in_tmpdir_no_stdlib(cwd, "");
     let exit = out.status.code();
     let combined = combined_out(&out);
 
@@ -2729,6 +2800,13 @@ fn s60_run_tests_reduction_5_import_in_file_passes_control() {
 // or /int (run-tests dispatch loop).
 //
 // (carry: legacy/wave6_demo_repros.rs::run_tests_batched_invocation_no_crash)
+//
+// **/stdlib-0314-PENDING CARRY (Sprint 78 Wave 4, /qa).** Like
+// `s60_run_tests_reduction_1`, this runs the REAL exemplar `/run-tests html`
+// against the real workspace stdlib + platforms — an exemplar/stdlib
+// CONFORMANCE test that CANNOT be made free-standing. Currently RED on the
+// `is_seeded`-exposed two-`Option` stdlib collision (FIXME 0312/0314). Left
+// failing-not-ignored; closure is /stdlib (FIXME 0314), not a /qa decouple.
 #[test]
 fn wave6_run_tests_batched_html_completes_without_crash() {
     use std::io::Write;
@@ -3039,18 +3117,23 @@ fn regression_0279_cross_module_polymorphic_import_monomorphisation() {
 // (`module_sexps`, `suspend_states`) do not creep back onto `SharedState` after
 // the Sprint 78 restructure deletes them. The restructure removes EXACTLY those
 // 2 fields from 16 (the `register_dep_for_eval`/republish removal sheds methods,
-// not fields), so the target is `== 14`.
+// not fields). Wave 4 §2.7 then ADDS the one legitimate session-side field
+// `prelude_fallback: cranelisp_typecheck::PreludeFallback` (the prelude-outer-
+// scope companion map, parallel to `module_aliases`; session-side + unserialized
+// — NOT creep). So the target is `== 15` (16 − module_sexps − suspend_states +
+// prelude_fallback). `module_sexps`/`suspend_states` stay deleted.
 
 // spec: design/int/s77-int-restructure.md §2.3 — SharedState drops 16 → 14
-//       fields after module_sexps/suspend_states deletion
+//       after module_sexps/suspend_states deletion; S78 Wave 4 §2.7 then adds
+//       prelude_fallback → 15.
 #[test]
 fn shared_state_field_count_at_target_14() {
     // Count `pub` fields in `pub struct SharedState { … }` in session_v4.rs.
     //
-    // STATUS until the restructure lands (Sprint 78 Steps 1+2): this FAILS at
-    // 16 — and that is the intended loud signal per
-    // `memory/feedback_failing_not_ignored.md`. It is in scope this sprint and
-    // is NOT `#[ignore]`'d. It flips green when Steps 1+2 delete the two maps.
+    // Target is 15: 16 − module_sexps − suspend_states (S78 restructure) +
+    // prelude_fallback (S78 Wave 4 §2.7 prelude-outer-scope companion). The
+    // two cross-thread parking maps stay deleted; this guards that they do not
+    // creep back while admitting the one legitimate Wave-4 field addition.
     let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/session_v4.rs");
     let text = std::fs::read_to_string(&src)
         .unwrap_or_else(|e| panic!("read {}: {e}", src.display()));
@@ -3071,11 +3154,12 @@ fn shared_state_field_count_at_target_14() {
         })
         .count();
     assert_eq!(
-        field_count, 14,
-        "SharedState has {field_count} pub fields; Sprint 78 restructure target \
-         is exactly 14 (16 − module_sexps − suspend_states; \
-         design/int/s77-int-restructure.md §2.3). Until Steps 1+2 land this \
-         FAILS at 16 — the intended loud signal. After: this is the standing \
-         guard that the two cross-thread parking maps do not creep back."
+        field_count, 15,
+        "SharedState has {field_count} pub fields; Sprint 78 target is exactly \
+         15 (16 − module_sexps − suspend_states + prelude_fallback; \
+         design/int/s77-int-restructure.md §2.3 + S78 Wave 4 §2.7). This is the \
+         standing guard that the two cross-thread parking maps \
+         (module_sexps/suspend_states) do not creep back, while admitting the \
+         one legitimate Wave-4 session-side field `prelude_fallback`."
     );
 }

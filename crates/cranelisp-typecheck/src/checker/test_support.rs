@@ -18,6 +18,10 @@ pub(crate) struct TestFixture {
     /// Session-level module-alias table (§8.6.6). Tests that exercise
     /// alias-resolution seed this directly; most leave it empty.
     pub module_aliases: cranelisp_types::ModuleAliases,
+    /// Session-level per-module prelude-outer-scope fallback flags (S78 §2.7).
+    /// Tests that exercise the implicit-prelude fallback seed this directly
+    /// (`module → true`); most leave it empty (all-OFF).
+    pub prelude_fallback: crate::checker::PreludeFallback,
 }
 
 impl TestFixture {
@@ -51,6 +55,7 @@ impl TestFixture {
             next_id,
             state: CheckState::new(current_module),
             module_aliases: cranelisp_types::ModuleAliases::new(),
+            prelude_fallback: crate::checker::PreludeFallback::new(),
         }
     }
 
@@ -58,7 +63,7 @@ impl TestFixture {
     /// fixture's module-alias table so alias-resolution tests see seeded
     /// aliases.
     pub fn env(&self) -> TypeCheckEnv<'_> {
-        TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases)
+        TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback)
     }
 
     /// Switch the active module. Creates the module's symbol table if needed.
@@ -105,7 +110,7 @@ impl TestFixture {
         visibility: cranelisp_types::Visibility,
         span: Span,
     ) -> Result<(), CranelispError> {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases);
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
         env.register_type_def(&mut self.state, name, docstring, type_params, constructors, visibility, span)
     }
 
@@ -114,7 +119,7 @@ impl TestFixture {
         &mut self,
         decl: &cranelisp_types::TraitDecl,
     ) -> Result<(), CranelispError> {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases);
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
         env.register_trait_decl(&mut self.state, decl)
     }
 
@@ -123,7 +128,7 @@ impl TestFixture {
         &mut self,
         impl_: &cranelisp_types::TraitImpl,
     ) -> Result<Vec<cranelisp_types::Defn>, CranelispError> {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases);
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
         env.register_trait_impl(&mut self.state, impl_)
     }
 
@@ -134,7 +139,7 @@ impl TestFixture {
         arg_types: &[Type],
         span: Span,
     ) -> Result<Option<cranelisp_types::ResolvedCall>, CranelispError> {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases);
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
         env.try_resolve_trait_method(&mut self.state, name, arg_types, span)
     }
 
@@ -149,7 +154,7 @@ impl TestFixture {
         &mut self,
         program: &[cranelisp_types::TopLevel],
     ) -> Result<crate::result::CheckResult, CranelispError> {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases);
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
         let ctx = cranelisp_types::CompileContext {
             module: self.state.current_module.clone(),
             codegen: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
@@ -172,7 +177,7 @@ impl TestFixture {
         &mut self,
         input: &cranelisp_types::TopLevel,
     ) -> Result<crate::result::CheckResult, CranelispError> {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases);
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
         let ctx = cranelisp_types::CompileContext {
             module: self.state.current_module.clone(),
             codegen: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
@@ -191,7 +196,7 @@ impl TestFixture {
         &mut self,
         expr: &mut cranelisp_types::Expr,
     ) -> Result<Type, CranelispError> {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases);
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
         env.infer_expr(&mut self.state, expr)
     }
 
@@ -202,7 +207,7 @@ impl TestFixture {
         &mut self,
         expr: &cranelisp_types::Expr,
     ) {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases);
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
         env.resolve_value_position_trait_methods(&mut self.state, expr, false);
     }
 
@@ -339,7 +344,7 @@ impl TestFixture {
         pass: crate::program::CheckPass,
         accumulator: &mut crate::program::ModuleCheckAccumulator,
     ) -> Result<crate::program::FormCheckResult, CranelispError> {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases);
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
         env.check_form(module, form, pass, &mut self.state, accumulator)
     }
 
@@ -350,7 +355,7 @@ impl TestFixture {
         accumulator: &mut crate::program::ModuleCheckAccumulator,
         result: crate::program::FormCheckResult,
     ) {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases);
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
         env.merge_form_result(module, &mut self.state, accumulator, result);
     }
 
@@ -362,7 +367,7 @@ impl TestFixture {
         working_program: &[cranelisp_types::TopLevel],
         strategy: cranelisp_types::ModuleStrategy,
     ) -> Result<crate::result::CheckResult, CranelispError> {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases);
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
         env.finalize_check_result(module, &mut self.state, accumulator, working_program, strategy)
     }
 
@@ -377,7 +382,7 @@ impl TestFixture {
         ctx: &cranelisp_types::CompileContext,
         strategy: cranelisp_types::ModuleStrategy,
     ) -> Result<crate::result::CheckResult, CranelispError> {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases);
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
         env.check_via_forms(&mut self.state, program, ctx, strategy)
     }
 
@@ -409,7 +414,7 @@ impl TestFixture {
         decl: &cranelisp_types::TraitDeclInfo,
         impl_: &cranelisp_types::TraitImpl,
     ) -> Result<Vec<cranelisp_types::Defn>, CranelispError> {
-        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases);
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
         env.generate_default_methods(&self.state, decl, impl_)
     }
 

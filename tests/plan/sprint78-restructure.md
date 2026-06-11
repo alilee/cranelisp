@@ -330,3 +330,58 @@ left unread.
 construction) are all settled in SPRINT.md; the tests evidence them. No FIXME is
 owed to `/spec`, `/arch`, or `/design` from this plan — the restructure is
 int-interior re-plumbing with no language-surface change.
+
+---
+
+## 8. Wave 4 — prelude-as-outer-scope (§2) e2e tests (authored Phase 5 Stage 1 by `/qa`)
+
+**Grounding:** `design/int/s78-entry-module.md §2` (settled model); `spec/08-modules.md`
+§8.6.4 (explicit shadows implicit prelude — outer scope, not flattened),
+§8.6.5 (ambiguity poisoning over the inner scope only), §8.8.1 (implicit prelude
+= activated fallback), §8.9.1 (primitives qualified-only, reached via prelude).
+
+**The §2 tripwire:** the model makes the implicit prelude an OUTER scope resolved
+by a lookup fallback, NOT materialised into each module's table. Under the
+CURRENT flattened + `is_seeded` model, an explicit import of a name the prelude
+also provides *poisons* the colliding bare name (the flattened prelude `Import`
+entry sits in the same inner table). The tests that exercise
+explicit-import-shadows-prelude are therefore **RED-by-design** — they go green
+when `/dev` lands the outer-scope fallback (deletes `is_seeded`, stops
+flattening). All other shapes (local shadow, ambiguity, refusal, selective,
+primitives-via-prelude) already behave correctly and stand as GREEN guards that
+must stay green after the reshape.
+
+| Test | File | Classification | Spec/design anchor |
+|---|---|---|---|
+| `local_defn_silently_shadows_prelude` | `spec_08_prelude_outer_scope.rs` | GREEN guard | `s78-entry-module.md §2` |
+| `local_defn_shadows_prelude_neg_no_ambiguity_error` | `spec_08_prelude_outer_scope.rs` | GREEN guard (neg) | `s78-entry-module.md §2` |
+| `explicit_glob_import_silently_shadows_prelude` | `spec_08_prelude_outer_scope.rs` | **RED-by-design** (§2 tripwire) | `s78-entry-module.md §2` |
+| `explicit_specific_import_silently_shadows_prelude` | `spec_08_prelude_outer_scope.rs` | **RED-by-design** (§2 tripwire) | `s78-entry-module.md §2` |
+| `explicit_import_shadows_prelude_neg_no_ambiguity_error` | `spec_08_prelude_outer_scope.rs` | **RED-by-design** (neg) | `s78-entry-module.md §2` |
+| `two_explicit_globs_same_name_is_ambiguous` | `spec_08_prelude_outer_scope.rs` | GREEN guard | `spec/08-modules.md §8.6.5` |
+| `two_explicit_specific_imports_same_name_is_error` | `spec_08_prelude_outer_scope.rs` | GREEN guard | `spec/08-modules.md §8.6.4` |
+| `explicit_import_no_collision_resolves` | `spec_08_prelude_outer_scope.rs` | GREEN control | `spec/08-modules.md §8.6.4` |
+| `prelude_refusal_neg_prelude_name_not_bare` | `spec_08_prelude_outer_scope.rs` | GREEN guard | `spec/08-modules.md §8.8.1` |
+| `prelude_refusal_qualified_primitive_still_resolves` | `spec_08_prelude_outer_scope.rs` | GREEN guard | `spec/08-modules.md §8.9.1` |
+| `selective_prelude_import_brings_named_name` | `spec_08_prelude_outer_scope.rs` | GREEN guard | `s78-entry-module.md §2.3` |
+| `selective_prelude_import_neg_other_name_not_bare` | `spec_08_prelude_outer_scope.rs` | GREEN guard (neg) | `s78-entry-module.md §2.3` |
+| `bare_primitive_resolves_via_prelude_reexport` | `spec_08_prelude_outer_scope.rs` | GREEN guard | `spec/08-modules.md §8.9.1` |
+| `qualified_primitive_resolves_in_normal_module` | `spec_08_prelude_outer_scope.rs` | GREEN guard | `spec/08-modules.md §8.9.1` |
+| `bare_primitive_and_prelude_defn_coexist` | `spec_08_prelude_outer_scope.rs` | GREEN guard | `s78-entry-module.md §2.2 (4)` |
+| `imports_shows_prelude_implicit_group` | `repl_introspection.rs` | **RED-by-design** (§2.6) | `s78-entry-module.md §2.6` |
+| `imports_neg_prelude_names_not_in_explicit_categories` | `repl_introspection.rs` | **RED-by-design** (§2.6 neg) | `s78-entry-module.md §2.6` |
+| `imports_neg_no_prelude_group_when_refused` | `repl_introspection.rs` | **RED-by-design** (§2.6 neg) | `s78-entry-module.md §2.6` |
+
+**Run result (`-j 2`, 2026-06-11):** `spec_08_prelude_outer_scope` 15 tests →
+12 passed / 3 RED-by-design in 4.3s; the three `/imports` presentation tests in
+`repl_introspection.rs` → 3 RED-by-design in 0.7s. Total 6 RED-by-design tripwires
++ 12 GREEN guards.
+
+**RED failure mode (the durable evidence the reshape is owed):** the three
+import-shadow tests fail with `type error: undefined variable: gulp` — the
+flattened prelude `Import` entry collides with the explicit `libc` import and
+poisons the bare name. The three `/imports` tests fail because no
+"Prelude (implicit)" group exists in the current REPL output. All six flip green
+when `/dev` lands the outer-scope fallback. No FIXME owed to `/spec` — §8.6.4 /
+§8.8.1 already state the outer-scope model (the `/spec` Wave 4 editorial align has
+landed).

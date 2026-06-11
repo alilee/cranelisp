@@ -1794,6 +1794,7 @@ mod tests {
             lib_dirs: Mutex::new(Vec::new()),
             platform_dirs: Mutex::new(Vec::new()),
             module_aliases: cranelisp_types::ModuleAliases::default(),
+            prelude_fallback: cranelisp_typecheck::PreludeFallback::default(),
             // Sprint 67 Cluster B sub-fire 3: ObjectCache facade. Disabled
             // (None) for this unit test — no .o compilation runs here.
             cache: std::sync::Arc::new(crate::cache::ObjectCache::new(None, None)),

@@ -271,9 +271,14 @@ fn collect_member_glob(
 }
 
 /// Insert import entries, marking same-name entries from different sources as
-/// ambiguous (spec §8.6.4); same-source duplicates silently dedup; seeded
-/// builtins (`user`/`primitives`) take priority; directly-defined entries
-/// take priority over incoming imports.
+/// ambiguous (spec §8.6.4); same-source duplicates silently dedup;
+/// directly-defined entries take priority over incoming imports.
+///
+/// S78 §2: the former `is_seeded` name-keyed skip (`user`/`primitives`-sourced
+/// imports bypass §8.6.4 ambiguity) is DELETED. It papered over a collision
+/// the *flattened* implicit prelude created in the inner table; under the
+/// prelude-as-outer-scope model prelude is no longer flattened here, so two
+/// indirect entries from different sources revert to uniform `Ambiguous`.
 fn insert_detecting_ambiguity(
     table: &mut SessionSymbolTable,
     imports: Vec<(Symbol, ModuleEntry<Code>)>,
@@ -308,13 +313,9 @@ fn insert_detecting_ambiguity(
                 (ModuleEntry::Import { .. }, ModuleEntry::Import { .. })
             );
             if both_indirect {
-                let is_seeded = |entry: &ModuleEntry<Code>| -> bool {
-                    matches!(entry, ModuleEntry::Import { source, .. }
-                        if { let m: &str = source.module.as_ref(); m == "user" || m == "primitives" })
-                };
-                if is_seeded(existing) || is_seeded(&new_entry) {
-                    continue;
-                }
+                // Two indirect entries from different sources (the same-source
+                // case was handled above) → §8.6.4 ambiguity. Uniform — no
+                // name-keyed exemption (S78 §2: `is_seeded` deleted).
                 table.insert(
                     name,
                     ModuleEntry::Ambiguous {

@@ -328,6 +328,115 @@ fn imports_neg_no_primitives_leak_on_fresh_session() {
 }
 
 // =============================================================================
+// /imports — Prelude-as-outer-scope presentation (S78 Wave 4 §2.6)
+//
+// Under the SETTLED prelude-as-outer-scope model
+// (`design/int/s78-entry-module.md §2.6`), `/imports` lists prelude-provided
+// names under a DISTINCT "Prelude (implicit)" group — present only when the
+// per-module prelude fallback is ON. The explicit-import categories
+// (Fns/Types/Traits/Macros) narrow to what the module actually imported.
+//
+// CLASSIFICATION: RED-by-design (the §2.6 tripwire). Under the CURRENT
+// flattened model, prelude names are materialised into the module table as
+// indistinguishable `Import` entries and render FLAT under Fns/Types — there
+// is no "Prelude (implicit)" group, and a refusing module still shows the
+// (already-flattened) prelude names. These tests stay failing-not-ignored
+// until /dev lands the §2.6 `/imports` group + the per-module fallback bit.
+//
+// These tests construct the builder directly with a custom `prelude.cl`
+// (re-exporting primitives + defining sentinel `gulp`) so the provided
+// names are known. cwd is the per-test tmpdir, so the project-root prelude
+// shadows stdlib (§8.8.2) and the REPL picks it up.
+// =============================================================================
+
+/// Pipe `lines` to a REPL whose project-root `prelude.cl` re-exports
+/// primitives and defines sentinel `gulp`.
+fn repl_with_gulp_prelude(lines: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .prelude("(export [primitives [*]])\n(defn gulp [x] (add-i64 x 1))\n")
+        .repl()
+        .stdin(lines)
+        .output()
+}
+
+// spec: design/int/s78-entry-module.md §2.6 — when the prelude fallback is ON,
+//   `/imports` renders prelude-provided names under a distinct
+//   "Prelude (implicit)" group (a header containing "Prelude" and "implicit").
+//
+// CLASSIFICATION: RED-by-design. Current output lists `gulp`/`add-i64` flat
+// under `Fns:` with no "Prelude (implicit)" header.
+#[test]
+fn imports_shows_prelude_implicit_group() {
+    let out = repl_with_gulp_prelude("/imports\n");
+    let lower = out.stdout.to_lowercase();
+    assert!(
+        lower.contains("prelude") && lower.contains("implicit"),
+        "/imports MUST render a 'Prelude (implicit)' group for prelude-provided \
+         names when the fallback is ON; got:\n{}",
+        out.stdout
+    );
+    // The prelude-provided names themselves remain visible (discoverability).
+    assert!(
+        out.stdout.contains("gulp"),
+        "/imports MUST still surface the prelude-provided 'gulp'; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: design/int/s78-entry-module.md §2.6 — the prelude-provided names MUST
+//   NOT be mixed into the explicit-import categories; they belong to the
+//   distinct "Prelude (implicit)" group. Here, with NO explicit imports, the
+//   explicit `Fns:` category MUST NOT list the prelude-provided `gulp`.
+//
+// CLASSIFICATION: RED-by-design (negative companion). Current output lists
+// `gulp` under a flat `Fns:` category — exactly what the model forbids.
+#[test]
+fn imports_neg_prelude_names_not_in_explicit_categories() {
+    let out = repl_with_gulp_prelude("/imports\n");
+    // No explicit imports were made, so the explicit `Fns:` category must be
+    // absent (prelude names live in the Prelude group, not here).
+    let in_flat_fns = out
+        .stdout
+        .lines()
+        .skip_while(|l| !l.trim_start().starts_with("Fns:"))
+        .skip(1)
+        .take_while(|l| l.starts_with("  ") || l.trim().is_empty())
+        .any(|l| l.trim() == "gulp" || l.trim() == "add-i64");
+    assert!(
+        !in_flat_fns,
+        "/imports MUST NOT list prelude-provided names under a flat explicit \
+         'Fns:' category — they belong to the 'Prelude (implicit)' group; \
+         got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: design/int/s78-entry-module.md §2.6 — when a module REFUSES the prelude
+//   (`(import [prelude []])`), the fallback bit is OFF and the
+//   "Prelude (implicit)" group is ABSENT (no implicit fallback is active).
+//
+// CLASSIFICATION: RED-by-design. Current REPL flattens the prelude before the
+// refusal line, so prelude names still appear; and there is no group concept
+// to suppress. This pins the model's "group absent when refused".
+#[test]
+fn imports_neg_no_prelude_group_when_refused() {
+    let out = repl_with_gulp_prelude("(import [prelude []])\n/imports\n");
+    let lower = out.stdout.to_lowercase();
+    assert!(
+        !(lower.contains("prelude") && lower.contains("implicit")),
+        "/imports MUST NOT render a 'Prelude (implicit)' group when the module \
+         refuses the prelude; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("gulp"),
+        "after refusing the prelude, the prelude-provided 'gulp' MUST NOT appear \
+         in /imports (no implicit fallback is active); got:\n{}",
+        out.stdout
+    );
+}
+
+// =============================================================================
 // /sig, /doc, /info, /type — repl/spec.md §3.1, §3.2
 // =============================================================================
 
@@ -1876,15 +1985,19 @@ fn bare_primitive_unknown_name_produces_undefined_error_neg() {
 // (carry: legacy/sprint61_bare_primitive.rs::bare_primitive_two_hop_reexport_chain_lands_on_terminal_def)
 #[test]
 fn bare_primitive_two_hop_reexport_chain_lands_on_terminal_def() {
-    // Use the workspace stdlib so the real prelude (which re-exports
-    // primitives per stdlib/prelude.cl:49-52) is loaded — this creates the
-    // three-module chain user → prelude → primitives the design doc
-    // §"Post-implementation note" §1 describes.
-    let out = Cranelisp::new()
-        .repl()
-        .use_workspace_stdlib_for_stdlib_conformance_only()
-        .stdin("add-i64\n")
-        .output();
+    // Decoupled from real stdlib (was:
+    // `use_workspace_stdlib_for_stdlib_conformance_only`, which broke when real
+    // stdlib stopped compiling — FIXME 0312/0314). The chain this test pins is
+    // a LANGUAGE rule, not a stdlib fact: a prelude that re-exports primitives
+    // (`(export [primitives [*]])`) creates the user → prelude → primitives
+    // hop, and a bare reference MUST resolve to the terminal `primitives` Def.
+    //
+    // `PreludeVariant::PrimitivesOnly` IS exactly that re-export prelude
+    // (`tests/fixtures/preludes/primitives-only.cl` = `(export [primitives
+    // [*]])`), dropped as `prelude.cl` in the per-test cwd (shadowing stdlib
+    // §8.8.2). So the bare `add-i64` walks user → prelude → primitives with a
+    // test-owned, spec-clean prelude and never loads real stdlib.
+    let out = repl_prims("add-i64\n");
     let display = &out.stdout;
 
     // The resolver MUST walk user → prelude → primitives and produce the

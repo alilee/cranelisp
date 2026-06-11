@@ -48,6 +48,31 @@ use crate::traits::ActiveConstraints;
 /// Maximum depth for following Import/Reexport chains (spec §8.6.2).
 const IMPORT_CHAIN_DEPTH_LIMIT: usize = 10;
 
+/// Session-level per-module prelude-outer-scope fallback flags (S78 §2.7).
+///
+/// `module_path → true` ⇒ a bare-name inner-miss in that module falls back to
+/// the `prelude` module's own table (the implicit prelude as an *outer scope*,
+/// spec §8.6.4 / §8.8.1). Absent OR `false` ⇒ no fallback (the module refuses
+/// or explicitly references prelude, or is a synthetic / the `prelude` module
+/// itself). `int` populates this map in `inject_prelude_if_needed`; typecheck
+/// reads it **read-only** at the two bare-name resolution chokepoints.
+///
+/// This is the session-side companion to [`cranelisp_types::ModuleAliases`] —
+/// identical key space (`ModuleFullPath`), identical threading channel
+/// (`TypeCheckEnv` + `check_forms`'s parameter list). It is **session-side and
+/// unserialized** (recomputed per session from source via `sexps_reference_prelude`),
+/// so it carries no data on the cached `SymbolTable` shape. Per the S78 §2.7.2
+/// realization fork the alias lives **here** in `cranelisp-typecheck` (option b),
+/// leaving `cranelisp-types` untouched.
+pub type PreludeFallback = dashmap::DashMap<ModuleFullPath, bool>;
+
+/// The canonical name of the implicit-prelude outer-scope module.
+///
+/// A module whose [`PreludeFallback`] bit is ON resolves bare-name inner-misses
+/// against this module's own table (chain-following its `(export [primitives [*]])`
+/// re-export edges to canonical primitive entries, Decision 0048).
+pub(crate) const PRELUDE_MODULE: &str = "prelude";
+
 /// Per-check transient state for type inference.
 ///
 /// Created or reused by each `check()` call. Contains all state that is
@@ -202,6 +227,16 @@ where
     /// call). The real session table always arrives caller-supplied via
     /// `new` or `new_with_staging` — there is no empty default.
     pub(crate) module_aliases: &'a ModuleAliases,
+    /// Session-level per-module prelude-outer-scope fallback flags (S78 §2.7).
+    ///
+    /// Read-only here: `int` populates the map in `inject_prelude_if_needed`,
+    /// typecheck consults it at the two bare-name resolution chokepoints
+    /// (`probe_current_or_prelude` and the `current_symbol_table` two-hop view).
+    /// When the bit for `state.current_module` is `true`, a bare-name miss in
+    /// the inner (current-module) scope falls back to the `prelude` module's
+    /// table. Threaded identically to `module_aliases` — borrowed from the
+    /// orchestrator's session state, carried on the env. See [`PreludeFallback`].
+    pub(crate) prelude_fallback: &'a PreludeFallback,
 }
 
 /// Per-cluster staging override carried on `TypeCheckEnv`.
@@ -346,12 +381,14 @@ where
         modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
         next_id: &'a AtomicU32,
         module_aliases: &'a ModuleAliases,
+        prelude_fallback: &'a PreludeFallback,
     ) -> Self {
         TypeCheckEnv {
             modules,
             next_id,
             staging: None,
             module_aliases,
+            prelude_fallback,
         }
     }
 
@@ -378,6 +415,7 @@ where
         staging_module: ModuleFullPath,
         staging_cell: &'a RefCell<&'a mut SymbolTable<C, L>>,
         module_aliases: &'a ModuleAliases,
+        prelude_fallback: &'a PreludeFallback,
     ) -> Self {
         TypeCheckEnv {
             modules,
@@ -387,6 +425,7 @@ where
                 cell: staging_cell,
             }),
             module_aliases,
+            prelude_fallback,
         }
     }
 
@@ -702,6 +741,94 @@ where
         self.modules
     }
 
+    /// Resolve a bare (unqualified) `name` via [`cranelisp_types::resolve`]
+    /// against the current module, falling back to the implicit-prelude
+    /// **outer scope** on a not-found miss when the module's
+    /// [`PreludeFallback`] bit is ON (S78 §2.7.5 — Chokepoint 2).
+    ///
+    /// This is the single bare-name chokepoint for the `resolve`-based
+    /// resolver family (`resolve_type`, `resolve_trait`, the
+    /// `resolve_constructor` family, `resolve_type_expr_in_module`). It mirrors
+    /// the first-hop-view resolve those callers used directly, then — on a
+    /// not-found-class error (`TypeNotFound` / `TraitNotFound` /
+    /// `ConstructorNotFound`, the neutral bare-name miss the primitive emits) —
+    /// retries `resolve` rooted at the `prelude` module with a single-source
+    /// view over prelude's own live table. The retried resolve chain-follows
+    /// prelude's `(export [primitives [*]])` re-export edges to the canonical
+    /// entry, so primitives-via-prelude resolve through the fallback (not a
+    /// name-key). `PrivateInaccessible` and `QualifiedModuleUnknown` are NOT
+    /// retried — a private prelude entry must stay inaccessible, and a
+    /// qualified `mod/sym` reference never falls back (it names its module
+    /// directly; the qualified branch inside `resolve` is taken before any
+    /// first-hop lookup).
+    ///
+    /// The two-hop is realized caller-side (a retry with a prelude-rooted view),
+    /// NOT inside `cranelisp_types::resolve` — the shared `View` newtype carries
+    /// at most staging+live, and `cranelisp-types` is left untouched (S78
+    /// §2.7.5: "No change to `cranelisp_types::resolve` itself").
+    fn resolve_current_or_prelude(
+        &self,
+        state: &CheckState,
+        name: &str,
+        span: Span,
+    ) -> Result<cranelisp_types::Resolved<C>, ResolveError> {
+        let read = self.current_symbol_table(state);
+        let first = cranelisp_types::resolve(
+            self.modules,
+            self.module_aliases,
+            &read.view(),
+            &state.current_module,
+            name,
+            span,
+        );
+        match first {
+            Ok(resolved) => Ok(resolved),
+            Err(e) if Self::is_not_found(&e) => {
+                // Inner miss — consult the prelude outer scope iff the bit is ON.
+                if state.current_module.as_ref() != PRELUDE_MODULE
+                    && self
+                        .prelude_fallback
+                        .get(&state.current_module)
+                        .map(|b| *b)
+                        .unwrap_or(false)
+                    && let Some(prelude_guard) =
+                        self.modules.get(&ModuleFullPath::from(PRELUDE_MODULE))
+                {
+                    let prelude_view = cranelisp_types::View::single(prelude_guard.value());
+                    let prelude_module = ModuleFullPath::from(PRELUDE_MODULE);
+                    // Root the retry at `prelude` so the first-hop view + the
+                    // chain-follow committed walk both start from prelude's
+                    // table; the visibility filter is evaluated relative to the
+                    // ORIGINAL `current_module` (a bare prelude reference must be
+                    // public to reach an arbitrary user module).
+                    return cranelisp_types::resolve(
+                        self.modules,
+                        self.module_aliases,
+                        &prelude_view,
+                        &prelude_module,
+                        name,
+                        span,
+                    );
+                }
+                Err(e)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Whether a [`ResolveError`] is the neutral bare-name not-found class that
+    /// the prelude fallback retries on (S78 §2.7.5). `PrivateInaccessible` and
+    /// `QualifiedModuleUnknown` are excluded — those are decisive failures, not
+    /// inner-scope misses.
+    fn is_not_found(e: &ResolveError) -> bool {
+        matches!(
+            e,
+            ResolveError::TypeNotFound { .. }
+                | ResolveError::TraitNotFound { .. }
+                | ResolveError::ConstructorNotFound { .. }
+        )
+    }
+
     /// Resolve a bare type name to its `FQTypeName` via symbol-table
     /// chain-follow from `state.current_module`. Phase B Part 5 successor
     /// to the retired `fqtn_for_bare_type_name`: returns
@@ -722,16 +849,9 @@ where
             from_module: state.current_module.clone(),
             span,
         };
-        let read = self.current_symbol_table(state);
-        let resolved = cranelisp_types::resolve(
-            self.modules,
-            self.module_aliases,
-            &read.view(),
-            &state.current_module,
-            type_name.as_ref(),
-            span,
-        )
-        .map_err(|e| project_not_found(e, type_not_found))?;
+        let resolved = self
+            .resolve_current_or_prelude(state, type_name.as_ref(), span)
+            .map_err(|e| project_not_found(e, type_not_found))?;
         match resolved.entry {
             ModuleEntry::TypeDef { info, .. } => Ok(info.name.clone()),
             ModuleEntry::IntrinsicType { .. } => {
@@ -764,16 +884,9 @@ where
             from_module: state.current_module.clone(),
             span,
         };
-        let read = self.current_symbol_table(state);
-        let resolved = cranelisp_types::resolve(
-            self.modules,
-            self.module_aliases,
-            &read.view(),
-            &state.current_module,
-            type_name.as_ref(),
-            span,
-        )
-        .map_err(|e| project_not_found(e, type_not_found))?;
+        let resolved = self
+            .resolve_current_or_prelude(state, type_name.as_ref(), span)
+            .map_err(|e| project_not_found(e, type_not_found))?;
         match resolved.entry {
             ModuleEntry::TypeDef { info, .. } => Ok(Type::ADT(info.name.clone(), type_args)),
             ModuleEntry::IntrinsicType { ty, .. } => Ok(ty),
@@ -799,16 +912,9 @@ where
             from_module: state.current_module.clone(),
             span,
         };
-        let read = self.current_symbol_table(state);
-        let resolved = cranelisp_types::resolve(
-            self.modules,
-            self.module_aliases,
-            &read.view(),
-            &state.current_module,
-            trait_name,
-            span,
-        )
-        .map_err(|e| project_not_found(e, trait_not_found))?;
+        let resolved = self
+            .resolve_current_or_prelude(state, trait_name, span)
+            .map_err(|e| project_not_found(e, trait_not_found))?;
         match resolved.entry {
             ModuleEntry::TraitDecl { .. } => Ok(resolved.home),
             _ => Err(trait_not_found()),
@@ -840,16 +946,9 @@ where
             from_module: module_path.clone(),
             span,
         };
-        let read = self.current_symbol_table(state);
-        let resolved = cranelisp_types::resolve(
-            self.modules,
-            self.module_aliases,
-            &read.view(),
-            module_path,
-            ctor_name,
-            span,
-        )
-        .map_err(|e| project_not_found(e, ctor_not_found))?;
+        let resolved = self
+            .resolve_current_or_prelude(state, ctor_name, span)
+            .map_err(|e| project_not_found(e, ctor_not_found))?;
         match resolved.entry {
             ModuleEntry::Def { kind, .. } => match kind.as_ref() {
                 cranelisp_types::DefKind::Constructor { type_name, .. } => {
@@ -964,8 +1063,50 @@ where
     /// [`Self::probe_module_entry_owned`], so in-cluster writes are visible
     /// to downstream resolution.
     fn lookup_in_current_module(&self, state: &CheckState, name: &str) -> Option<Scheme> {
-        let entry = self.probe_module_entry_owned(&state.current_module, name)?;
+        let entry = self.probe_current_or_prelude(state, name)?;
         self.extract_scheme_from_entry_owned(&entry, 0)
+    }
+
+    /// Probe a bare (unqualified) `name` against the **current module**, and on
+    /// an inner miss fall back to the implicit-prelude **outer scope** when the
+    /// module's [`PreludeFallback`] bit is ON (S78 §2.7.5 — Chokepoint 1).
+    ///
+    /// This is the single bare-name entry point for the chain-follow family:
+    /// `lookup_in_current_module` (value/scheme path) and
+    /// `resolve_entry_in_current_module` (entry path — constructors, trait
+    /// decls, type defs) both route through it. The fallback fires **only** for
+    /// the current-module bare-name probe; explicit `fq.module`-qualified
+    /// probes (`resolve_fq_symbol`, `resolve_terminal_entry_and_home` on a
+    /// named module) keep calling the bare [`Self::probe_module_entry_owned`]
+    /// primitive directly and never fall back.
+    ///
+    /// On the fallback hop the probe lands on the `prelude` module's own table;
+    /// the caller's downstream chain-follow (`extract_scheme_from_entry_owned`
+    /// / `chain_follow_to_home`) follows prelude's `(export [primitives [*]])`
+    /// `Import` edges to the canonical primitive entry — so primitives reach
+    /// user code *via* the prelude re-export through this fallback, not via any
+    /// name-key (the S78 §2 structural-not-skip guarantee).
+    pub(crate) fn probe_current_or_prelude(
+        &self,
+        state: &CheckState,
+        name: &str,
+    ) -> Option<ModuleEntry<C>> {
+        if let Some(entry) = self.probe_module_entry_owned(&state.current_module, name) {
+            return Some(entry);
+        }
+        // Inner miss — consult the prelude outer scope iff the fallback bit is
+        // ON for this module. Absent/`false` ⇒ no fallback (§2.7.1
+        // absence-is-OFF). Never fall back from the prelude module onto itself.
+        if state.current_module.as_ref() != PRELUDE_MODULE
+            && self
+                .prelude_fallback
+                .get(&state.current_module)
+                .map(|b| *b)
+                .unwrap_or(false)
+        {
+            return self.probe_module_entry_owned(&ModuleFullPath::from(PRELUDE_MODULE), name);
+        }
+        None
     }
 
     /// Probe a name in `module_path`'s symbol table, returning an owned
@@ -1079,7 +1220,76 @@ where
     /// Staging-aware (FIXME 0179): consults staging first via
     /// [`Self::probe_module_entry_owned`].
     pub(crate) fn resolve_entry_in_current_module(&self, state: &CheckState, name: &str) -> Option<ModuleEntry<C>> {
-        self.resolve_terminal_entry_and_home(&state.current_module, name).map(|(e, _home)| e)
+        // Bare-name current-module probe with implicit-prelude outer-scope
+        // fallback (S78 §2.7.5 Chokepoint 1). The fallback's first hop probes
+        // the current module; on a miss with the bit ON it re-probes `prelude`.
+        // From whichever module yields the head entry, `chain_follow_to_home`
+        // follows `Import`/`Reexport` edges to the terminal — so a prelude
+        // re-export of a primitive resolves to the canonical entry. We
+        // chain-follow starting from the module that hosts the head entry so
+        // the recorded `home` is correct.
+        let entry = self.probe_module_entry_owned(&state.current_module, name);
+        if let Some(entry) = entry {
+            return self
+                .chain_follow_to_home(entry, state.current_module.clone(), 0)
+                .map(|(e, _home)| e);
+        }
+        if state.current_module.as_ref() != PRELUDE_MODULE
+            && self
+                .prelude_fallback
+                .get(&state.current_module)
+                .map(|b| *b)
+                .unwrap_or(false)
+        {
+            let prelude = ModuleFullPath::from(PRELUDE_MODULE);
+            let entry = self.probe_module_entry_owned(&prelude, name)?;
+            return self.chain_follow_to_home(entry, prelude, 0).map(|(e, _home)| e);
+        }
+        None
+    }
+
+    /// Resolve a bare name to its terminal `(entry, home)` against the current
+    /// module, falling back to the implicit-prelude **outer scope** on an inner
+    /// miss when the module's [`PreludeFallback`] bit is ON (S78 §2.7.5 —
+    /// Chokepoint 1, trait-method/impl-discovery extension for FIXME 0315).
+    ///
+    /// This is the `(entry, home)`-returning sibling of
+    /// [`Self::resolve_entry_in_current_module`]. The trait-method dispatch
+    /// path (`method_to_trait_with_state`) and the impl-discovery path
+    /// (`has_impl_with_state` via [`ModuleReadView::has_impl`]) both root the
+    /// trait/method reference at `state.current_module` and chain-follow per
+    /// Decision 45 Pattern B; when the trait + impl live in the prelude (the
+    /// current module misses, bit ON), the chain-follow head must be sought in
+    /// the prelude's own table first. Routing those sites through this helper
+    /// mirrors the value/type/constructor fallback the other chokepoints
+    /// already perform — a bare operator (`+`, `==`, …) backed by a prelude
+    /// `deftrait`/`impl` resolves through the fallback, not a name-key.
+    ///
+    /// The recorded `home` is the module that hosts the **terminal** entry, so
+    /// downstream impl scans (`for_each_in_module(home, …)`) land on the trait's
+    /// true defining module regardless of which scope (current or prelude)
+    /// supplied the head reference.
+    pub(crate) fn resolve_terminal_entry_or_prelude(
+        &self,
+        state: &CheckState,
+        name: &str,
+    ) -> Option<(ModuleEntry<C>, ModuleFullPath)> {
+        if let Some(found) =
+            self.resolve_terminal_entry_and_home(&state.current_module, name)
+        {
+            return Some(found);
+        }
+        if state.current_module.as_ref() != PRELUDE_MODULE
+            && self
+                .prelude_fallback
+                .get(&state.current_module)
+                .map(|b| *b)
+                .unwrap_or(false)
+        {
+            let prelude = ModuleFullPath::from(PRELUDE_MODULE);
+            return self.resolve_terminal_entry_and_home(&prelude, name);
+        }
+        None
     }
 
     /// Chain-follow a name starting from `module_path` to its canonical home,
@@ -1509,12 +1719,23 @@ where
     }
 
     /// State-rooted variant of [`Self::method_to_trait`].
+    ///
+    /// Roots the method-name probe at `state.current_module` and, on an inner
+    /// miss, consults the implicit-prelude outer scope when the module's
+    /// fallback bit is ON (S78 §2.7.5 / FIXME 0315) — so a bare operator backed
+    /// by a prelude `deftrait` (e.g. `(+ a b)` against a prelude `Num`) is
+    /// recognised as a trait method.
     pub(crate) fn method_to_trait_with_state(
         &self,
         state: &CheckState,
         method_name: &Symbol,
     ) -> Option<TraitName> {
-        self.method_to_trait_in_module(&state.current_module, method_name)
+        let (entry, _home) =
+            self.resolve_terminal_entry_or_prelude(state, method_name.as_ref())?;
+        match entry {
+            ModuleEntry::Def { trait_origin: Some(fqtn), .. } => Some(fqtn.name.clone()),
+            _ => None,
+        }
     }
 
     /// Check if a method belongs to a specific trait, via trait_origin on ModuleEntry::Def.
@@ -1546,13 +1767,44 @@ where
     }
 
     /// State-rooted variant of [`Self::has_impl`].
+    ///
+    /// Chain-follows the trait reference from `state.current_module`, falling
+    /// back to the implicit-prelude outer scope on an inner miss when the
+    /// module's fallback bit is ON (S78 §2.7.5 / FIXME 0315). Once the trait's
+    /// defining module is located (whether the head reference came from the
+    /// current module or the prelude), the `TraitImpl` scan runs over that home
+    /// only (Decision 45 Pattern B) — so a prelude `impl Num Int` is discovered
+    /// for a bare `(+ …)` in a user module that misses the trait locally.
     pub(crate) fn has_impl_with_state(
         &self,
         state: &CheckState,
         trait_name: &TraitName,
         impl_type: &TypeName,
     ) -> bool {
-        self.has_impl_in_module(&state.current_module, trait_name, impl_type)
+        // Chain-follow the trait reference to its defining module, with the
+        // prelude outer-scope fallback for bare prelude-backed traits.
+        let (terminal, trait_home) =
+            match self.resolve_terminal_entry_or_prelude(state, trait_name.as_ref()) {
+                Some(t) => t,
+                None => return false,
+            };
+        if !matches!(terminal, ModuleEntry::TraitDecl { .. }) {
+            return false;
+        }
+        // Scan the trait's home only (Principle 17 shape 3). Staging-aware.
+        let mut found = false;
+        self.for_each_in_module(&trait_home, |_key, entry| {
+            if found {
+                return;
+            }
+            if let ModuleEntry::TraitImpl { trait_name: tn, impl_type: it, .. } = entry
+                && &tn.name == trait_name
+                && &it.name == impl_type
+            {
+                found = true;
+            }
+        });
+        found
     }
 
     /// Module-rooted variant of trait-impl-type enumeration (Decision 45 Pattern B).
@@ -1695,6 +1947,7 @@ where
         // The structural `TypeExpr` recursion (arity validation, type-var
         // allocation) stays in `crate::resolve::resolve_type_expr`.
         let resolve_terminal = |tref: &cranelisp_types::TypeRef| -> Option<ModuleEntry<C>> {
+            let is_bare = tref.module.is_none();
             let name: String = match &tref.module {
                 Some(m) => format!("{m}/{}", tref.name),
                 None => tref.name.to_string(),
@@ -1708,16 +1961,49 @@ where
                 }
                 _ => SymbolTableRead::Live(live),
             };
-            cranelisp_types::resolve(
+            let first = cranelisp_types::resolve(
                 self.modules,
                 self.module_aliases,
                 &read.view(),
                 module_path,
                 &name,
                 span,
-            )
-            .ok()
-            .map(|resolved| resolved.entry)
+            );
+            match first {
+                Ok(resolved) => Some(resolved.entry),
+                // Bare-name miss → implicit-prelude outer-scope fallback
+                // (S78 §2.7.5 Chokepoint 2). Only for a bare `TypeRef`; a
+                // qualified `m/name` names its module directly and never
+                // falls back. The bit is keyed on `module_path` (the module
+                // the type expr is being resolved against).
+                Err(e) if is_bare && Self::is_not_found(&e) => {
+                    drop(read);
+                    if module_path.as_ref() != PRELUDE_MODULE
+                        && self
+                            .prelude_fallback
+                            .get(module_path)
+                            .map(|b| *b)
+                            .unwrap_or(false)
+                        && let Some(prelude_guard) =
+                            self.modules.get(&ModuleFullPath::from(PRELUDE_MODULE))
+                    {
+                        let prelude_view = cranelisp_types::View::single(prelude_guard.value());
+                        let prelude_module = ModuleFullPath::from(PRELUDE_MODULE);
+                        return cranelisp_types::resolve(
+                            self.modules,
+                            self.module_aliases,
+                            &prelude_view,
+                            &prelude_module,
+                            &name,
+                            span,
+                        )
+                        .ok()
+                        .map(|resolved| resolved.entry);
+                    }
+                    None
+                }
+                Err(_) => None,
+            }
         };
         crate::resolve::resolve_type_expr(texpr, var_map, &resolve_terminal, span)
     }

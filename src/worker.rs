@@ -214,6 +214,7 @@ fn top_level_to_parsed_entries(program: &[TopLevel]) -> Vec<cranelisp_types::Par
 pub(crate) fn check_program_compat(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module_aliases: &cranelisp_types::ModuleAliases,
+    prelude_fallback: &cranelisp_typecheck::PreludeFallback,
     module: &ModuleFullPath,
     working_program: &[TopLevel],
 ) -> Result<Option<cranelisp_types::ResolutionGap>, CranelispError> {
@@ -226,7 +227,13 @@ pub(crate) fn check_program_compat(
     // Returns `Ok(Some(gap))` when typecheck surfaces a recoverable
     // `CheckError::Gap` — the FQ-auto-load orchestration (spec §8.5.4 / §9.3.6,
     // FIXME 0268) catches an unloaded-module gap here and loads-and-retries.
-    process_cluster_with_staging(symbol_tables, module_aliases, module, working_program)
+    process_cluster_with_staging(
+        symbol_tables,
+        module_aliases,
+        prelude_fallback,
+        module,
+        working_program,
+    )
 }
 
 /// Run `check_program_compat` and reject a surviving gap as a hard error.
@@ -240,10 +247,17 @@ pub(crate) fn check_program_compat(
 pub(crate) fn check_program_compat_no_gap(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module_aliases: &cranelisp_types::ModuleAliases,
+    prelude_fallback: &cranelisp_typecheck::PreludeFallback,
     module: &ModuleFullPath,
     working_program: &[TopLevel],
 ) -> Result<(), CranelispError> {
-    match check_program_compat(symbol_tables, module_aliases, module, working_program)? {
+    match check_program_compat(
+        symbol_tables,
+        module_aliases,
+        prelude_fallback,
+        module,
+        working_program,
+    )? {
         None => Ok(()),
         Some(gap) => Err(CranelispError::TypeError {
             message: format!("unresolved cross-module reference: {gap:?}"),
@@ -269,6 +283,7 @@ pub(crate) fn check_program_compat_no_gap(
 pub(crate) fn process_cluster_with_staging(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module_aliases: &cranelisp_types::ModuleAliases,
+    prelude_fallback: &cranelisp_typecheck::PreludeFallback,
     module: &ModuleFullPath,
     working_program: &[TopLevel],
 ) -> Result<Option<cranelisp_types::ResolutionGap>, CranelispError> {
@@ -285,7 +300,13 @@ pub(crate) fn process_cluster_with_staging(
         );
     let mut ctx: SymbolTableAccess<'_, crate::code::Code, ()> =
         SymbolTableAccess::cluster(symbol_tables, &mut staging, module.clone());
-    let result = check_forms(parsed, &mut ctx, symbol_tables, module_aliases);
+    let result = check_forms(
+        parsed,
+        &mut ctx,
+        symbol_tables,
+        module_aliases,
+        prelude_fallback,
+    );
     drop(ctx);
 
     match result {
@@ -410,6 +431,11 @@ pub struct ModuleCompiler<'a> {
     /// installer writes `(import [(target alias) …])` aliases here; typecheck
     /// reads it read-only. Lives on `SharedState.module_aliases`.
     pub module_aliases: &'a cranelisp_types::ModuleAliases,
+    /// Per-module prelude-outer-scope fallback flags (S78 §2.7). int's
+    /// `inject_prelude_if_needed` sets `(module, true)` when a module gets
+    /// the implicit prelude; typecheck reads it read-only at its bare-name
+    /// resolution chokepoints. Lives on `SharedState.prelude_fallback`.
+    pub prelude_fallback: &'a cranelisp_typecheck::PreludeFallback,
     /// Per-invocation typecheck state. For REPL: extracted from
     /// `CompilerSession.repl_check_state` (S77 W-SharedState — relocated off
     /// SharedState since it is initiator-only). For batch workers: created
@@ -796,7 +822,22 @@ fn compile_macro_clause_with_state(
         Some(s) => &s.module_aliases,
         None => Box::leak(Box::new(cranelisp_types::ModuleAliases::default())),
     };
-    check_program_compat_no_gap(symbol_tables, module_aliases, target_module, &program)?;
+    // Same Option<&SharedState> handling as `module_aliases`: a macro clause
+    // body does not use prelude bare-name fallback (its synthesised body uses
+    // qualified `macros/*` refs), so an empty map (all-OFF) is a safe stand-in.
+    let prelude_fallback: &cranelisp_typecheck::PreludeFallback = match shared_state {
+        Some(s) => &s.prelude_fallback,
+        None => Box::leak(Box::new(
+            cranelisp_typecheck::PreludeFallback::default(),
+        )),
+    };
+    check_program_compat_no_gap(
+        symbol_tables,
+        module_aliases,
+        prelude_fallback,
+        target_module,
+        &program,
+    )?;
 
     // Step 5: Extract the defn from the annotated symbol table (not the unannotated program).
     // The typechecker stores annotated defns (with resolved_call on AST nodes) in
@@ -1275,6 +1316,16 @@ pub fn process_cluster_once(
         // Additive (REPL eval): just set the active module. Module state
         // persists from previous evals — no clear, no re-injection.
         ctx.set_current_module(module.clone());
+
+        // S78 §2.7 — the per-module prelude-fallback bit was set ON at the
+        // entry module's startup compile. If a REPL form now explicitly
+        // references prelude (`(import [prelude []])` refusal, or a selective
+        // `(import [prelude [...]])`), the implicit fallback must turn OFF for
+        // this module (spec §8.8.1) — matching the Replace-path gate. The bit
+        // is OFF iff the module references prelude (absence-is-OFF).
+        if sexps_reference_prelude(sexps) {
+            ctx.prelude_fallback.insert(module.clone(), false);
+        }
     }
 
     // --- Pass 0: structural-form peel (import/export/mod/platform) ---
@@ -1424,7 +1475,13 @@ fn finalize_cluster(
     }
 
     if let Some(gap) =
-        check_program_compat(ctx.symbol_tables, ctx.module_aliases, module, &final_working)?
+        check_program_compat(
+            ctx.symbol_tables,
+            ctx.module_aliases,
+            ctx.prelude_fallback,
+            module,
+            &final_working,
+        )?
     {
         // Map the gap to its target module and drive it (register + block) if
         // it is a not-yet-loaded module we can act on.
@@ -2900,7 +2957,13 @@ fn compile_macro_clause_inline(
     // 2026-05-13 third amendment) — single call runs Pass 1 + Pass 2 + finalize.
     let module = ctx.current_module.clone();
     let _ = accumulator;
-    check_program_compat_no_gap(ctx.symbol_tables, ctx.module_aliases, &module, &program)?;
+    check_program_compat_no_gap(
+        ctx.symbol_tables,
+        ctx.module_aliases,
+        ctx.prelude_fallback,
+        &module,
+        &program,
+    )?;
 
     // Step 5: Extract the defn from the annotated symbol table (not the unannotated program).
     // The typechecker stores annotated defns (with resolved_call on AST nodes) in
@@ -3067,6 +3130,16 @@ fn inject_prelude_if_needed(
         return Ok(None);
     }
 
+    // S78 §2.7 — prelude is an OUTER SCOPE, not flattened into this module's
+    // table. We are on the ON path (the module neither IS `prelude` nor
+    // references it), so record the per-module fallback bit ON: bare-name
+    // inner-table misses in this module fall back to prelude's own table
+    // (chain-following its `(export [primitives [*]])` re-exports). The bit
+    // is set unconditionally here — every code path below merely ensures
+    // prelude is LOADED (so the fallback has a table to consult); none of
+    // them flatten prelude's symbols into this module anymore.
+    ctx.prelude_fallback.insert(module.clone(), true);
+
     if !ctx.symbol_tables.contains_key(&prelude_path) {
         // Discover prelude through the same lazy path as any user import.
         let prelude_file = crate::session::resolve_prelude(
@@ -3074,15 +3147,9 @@ fn inject_prelude_if_needed(
             ctx.lib_dirs,
         );
         if let Some(prelude_file) = prelude_file {
-            // Cache check: try to load prelude from disk cache.
+            // Cache check: load prelude from disk cache (so the fallback has a
+            // table to consult). No flatten — the bit was set above.
             if try_cache_hit_load(ctx, &prelude_path, &prelude_file) {
-                let prelude_spec = ImportSpec {
-                    module_path: prelude_path,
-                    alias: None,
-                    names: ImportNames::Glob,
-                    span: Span::SYNTHETIC,
-                };
-                crate::imports::install_imports(ctx.symbol_tables, &ctx.current_module, ctx.module_aliases, &[prelude_spec])?;
                 return Ok(None);
             }
 
@@ -3111,18 +3178,14 @@ fn inject_prelude_if_needed(
             return Ok(Some(prelude_path));
         }
         // No prelude file found. Per spec §8.9.1: primitives are NOT
-        // available as bare names without explicit import or prelude.
-        // No implicit injection — modules that need primitives must
-        // either have a prelude that re-exports them or import explicitly.
+        // available as bare names without explicit import or prelude. The
+        // fallback bit set above is harmless — with no `prelude` table to
+        // consult, a bare-name fallback probe simply misses (modules that
+        // need primitives must have a prelude that re-exports them or import
+        // explicitly).
     } else {
-        // Prelude already loaded — register the import.
-        let prelude_spec = ImportSpec {
-            module_path: prelude_path,
-            alias: None,
-            names: ImportNames::Glob,
-            span: Span::SYNTHETIC,
-        };
-        crate::imports::install_imports(ctx.symbol_tables, &ctx.current_module, ctx.module_aliases, &[prelude_spec])?;
+        // Prelude already loaded — nothing to flatten; the bit set above
+        // makes the fallback consult prelude's own table on a bare-name miss.
     }
 
     Ok(None)
@@ -4807,10 +4870,13 @@ mod tests {
         // map to obtain a `'static` (hence `'a`-valid) reference.
         let module_aliases: &'static cranelisp_types::ModuleAliases =
             Box::leak(Box::new(cranelisp_types::ModuleAliases::default()));
+        let prelude_fallback: &'static cranelisp_typecheck::PreludeFallback =
+            Box::leak(Box::new(cranelisp_typecheck::PreludeFallback::default()));
         ModuleCompiler {
             symbol_tables,
             next_type_id,
             module_aliases,
+            prelude_fallback,
             check_state: CheckState::new(module.clone()),
             current_module: module,
             scheduler,

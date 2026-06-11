@@ -2000,18 +2000,60 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// iterates the current module's symbol table; `Import`/`Reexport`
     /// entries are chain-followed to their terminal `TraitDecl` so traits
     /// imported (e.g., via the prelude) are reachable.
+    ///
+    /// When the current module misses and its prelude-fallback bit is ON, the
+    /// prelude's own table is iterated as the implicit-prelude outer scope
+    /// (S78 §2.7.5 / FIXME 0315) — so an HKT trait declared in the prelude with
+    /// a non-zero `hkt_param_index` dispatches on the correct argument even
+    /// when the current module never imports it explicitly.
     fn find_hkt_param_index_in_registry(
         &self,
         state: &CheckState,
         method_name: &str,
     ) -> Option<usize> {
-        // Staging-aware (FIXME 0179): iterate the unioned View so in-cluster
-        // TraitDecl registrations are visible.
-        let r = self.current_symbol_table(state);
-        let names: Vec<Symbol> = r.view().iter().map(|(name, _)| name.clone()).collect();
+        if let Some(idx) =
+            self.find_hkt_param_index_in_module(state, &state.current_module, method_name)
+        {
+            return Some(idx);
+        }
+        if state.current_module.as_ref() != crate::checker::PRELUDE_MODULE
+            && self
+                .prelude_fallback
+                .get(&state.current_module)
+                .map(|b| *b)
+                .unwrap_or(false)
+        {
+            let prelude = ModuleFullPath::from(crate::checker::PRELUDE_MODULE);
+            return self.find_hkt_param_index_in_module(state, &prelude, method_name);
+        }
+        None
+    }
+
+    /// Iterate `module_path`'s symbol table for a `TraitDecl` carrying
+    /// `method_name`, returning that method's `hkt_param_index`. Shared by the
+    /// current-module probe and the prelude outer-scope fallback in
+    /// [`Self::find_hkt_param_index_in_registry`].
+    fn find_hkt_param_index_in_module(
+        &self,
+        state: &CheckState,
+        module_path: &ModuleFullPath,
+        method_name: &str,
+    ) -> Option<usize> {
+        // Staging-aware (FIXME 0179): iterate the unioned View when probing the
+        // current module so in-cluster TraitDecl registrations are visible. For
+        // the prelude fallback the prelude is never the staging module, so a
+        // plain owned-name snapshot is sufficient.
+        let names: Vec<Symbol> = if *module_path == state.current_module {
+            let r = self.current_symbol_table(state);
+            r.view().iter().map(|(name, _)| name.clone()).collect()
+        } else {
+            let mut names = Vec::new();
+            self.for_each_in_module(module_path, |name, _entry| names.push(name.clone()));
+            names
+        };
         for name in &names {
             if let Some(terminal) =
-                self.resolve_terminal_entry_and_home(&state.current_module, name.as_ref()).map(|(e, _home)| e)
+                self.resolve_terminal_entry_and_home(module_path, name.as_ref()).map(|(e, _home)| e)
                 && let ModuleEntry::TraitDecl { info, .. } = terminal
             {
                 for method in &info.methods {

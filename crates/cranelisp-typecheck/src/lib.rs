@@ -241,7 +241,7 @@ mod unify;
 // production mount is reconstructed by `int` at session init (FIXME 0242).
 // The `builtins` module is now entirely `#[cfg(test)]` test-support — the
 // minimal synthetic seed the unit suite needs (FIXME 0239 test-oracle).
-pub use checker::{CheckState, TypeCheckEnv, advance_next_id_past_table};
+pub use checker::{CheckState, PreludeFallback, TypeCheckEnv, advance_next_id_past_table};
 pub use cluster::{SymbolTableAccess, SymbolTableMut, SymbolTableRead};
 pub use form::{check_forms, check_type_expr};
 pub use result::{CheckError, CheckResult};

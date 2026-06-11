@@ -553,7 +553,7 @@ Resolution proceeds through three layers, in order:
 
 1. **Local environment**: `let` bindings, `fn` parameters, and `match` pattern variables. These are lexically scoped -- pushed on entry to a binding form and popped on exit.
 
-2. **Module scope**: Definitions within the current module, plus names brought in via `import`. This layer consults the current module's symbol table, following `Import` and `Reexport` references to their source modules.
+2. **Module scope**: Definitions within the current module, plus names brought in via `import`. This layer consults the current module's symbol table (the **inner scope**), following `Import` and `Reexport` references to their source modules. When the inner scope misses and the module receives the implicit prelude (§8.8.1), this layer falls back to the prelude's public bindings (the **outer scope**, per §8.6.4) before proceeding to the root module.
 
 3. **Root module**: Special forms (`if`, `let`, `fn`, `match`, `do`, etc.) live in a distinguished root module that is always consulted. Special forms are available without import or qualification.
 
@@ -608,9 +608,13 @@ Same-source duplicates (the same name arriving through two re-export paths from 
 
 #### Explicit Imports Shadow the Implicit Prelude [R4 S20]
 
-The implicit prelude glob (`(import [prelude [*]])`, injected per §8.8) is processed **before** any explicit imports in the module. Explicit imports — whether glob (`(import [grid [*]])`) or specific (`(import [grid [solve]])`) — shadow prelude-provided names without producing a duplicate-import error. This is intentional: explicit imports take precedence over the implicit prelude, just as inner `let` bindings shadow outer ones.
+The implicit prelude is an **outer scope**, not a set of bindings materialised into the module's symbol table. A module's own symbol table is its **inner scope**: it holds only the module's local definitions and its *explicit* imports/re-exports. The implicit prelude (injected per §8.8) is a separate **outer scope** — the `prelude` module's own public bindings — consulted **only on a resolution miss in the inner scope**. Prelude bindings are NOT copied into the module's table.
 
-When an explicit glob import brings in a name that was already provided by the prelude, the explicit version silently replaces the prelude version. This means the module loses access to the prelude's binding for that bare name. Remediation strategies:
+Because resolution consults the inner scope before falling back to the outer prelude scope, explicit imports and local definitions shadow prelude-provided names automatically — without producing a duplicate-import error. The shadow is a lookup ordering (inner before outer), not a same-table override. This is exactly the scope layering the resolution layers in §8.6.1 describe: explicit imports take precedence over the implicit prelude, just as inner `let` bindings shadow outer ones.
+
+The conflict rules above (duplicate imports, definition-over-import, rename/mount collisions, and the §8.6.5 ambiguity poisoning) operate over the **inner scope only** — the module's local definitions and its explicit imports. The implicit-prelude outer scope never participates in these checks: a name an explicit import (or a local definition) provides does not collide with a same-named prelude binding, because the prelude binding is not in the inner table. Two *explicit* entries that produce the same local name remain a conflict exactly as before.
+
+When an explicit glob import brings in a name that the prelude would also provide, the explicit version (in the inner scope) is found first, and the prelude's binding is simply never consulted for that bare name. This means the module loses bare-name access to the prelude's binding. Remediation strategies:
 
 - **Qualified access**: Use `prelude/Some` or `primitives/Some` to reach the shadowed name.
 - **Selective import**: Replace `(import [grid [*]])` with `(import [grid [solve other-fn]])` to avoid importing names that collide.
@@ -710,17 +714,17 @@ A private name:
 
 ### 8.8.1 Implicit Import
 
-When a module's source does not reference `prelude` in any `import` or `export` form, the implementation MUST inject an implicit glob import:
+When a module's source does not reference `prelude` in any `import` or `export` form, the implementation MUST make the prelude's public names available to that module as bare symbols, with the same effect as if the module had written:
 
 ```clojure
 (import [prelude [*]])    ; implicit -- injected by the compiler
 ```
 
-This makes all public names from the prelude available as bare symbols.
+The prelude is supplied as an **outer scope** (per §8.6.4): the prelude's public bindings are NOT copied into the module's symbol table; instead, the implementation **activates a prelude-resolution fallback** for the module, so that a bare name that misses in the module's own (inner) scope is resolved against the `prelude` module's public bindings. This is the scope-layering view of "injecting the implicit prelude" — the fallback is on, not a set of materialised bindings. The observable effect is identical to a glob import of the prelude's public names, except that explicit imports and local definitions shadow prelude names structurally (inner scope consulted first) and never collide with the prelude (§8.6.4).
 
-An explicit `(import [prelude [...]])` or `(export [prelude [...]])` suppresses the implicit glob. The module author may import specific prelude names, suppress the prelude entirely with a null import (§8.3.6), or re-export prelude symbols without receiving the full glob.
+An explicit `(import [prelude [...]])` or `(export [prelude [...]])` suppresses the implicit prelude — i.e. the prelude-resolution fallback is NOT activated for that module. The module author may import specific prelude names (those named bindings enter the inner scope as ordinary explicit imports, with no fallback), suppress the prelude entirely with a null import (§8.3.6), or re-export prelude symbols without receiving the implicit fallback. In every case the rule is the same: a module that references `prelude` gets no implicit fallback; a module that does not gets the fallback activated.
 
-A `(mod prelude)` declaration does not suppress the implicit import, but the declared submodule shadows the library prelude during module resolution.
+A `(mod prelude)` declaration does not suppress the implicit fallback, but the declared submodule shadows the library prelude during module resolution.
 
 ### 8.8.2 Regular Module Semantics
 

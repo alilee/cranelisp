@@ -476,11 +476,17 @@ fn parse_and_check_platform_type_sig(
     let expr = fqize_type_expr(expr);
 
     let mut ctx = cranelisp_typecheck::SymbolTableAccess::live(symbol_tables, module_path.clone());
+    // Platform type signatures are FULLY QUALIFIED (`primitives/Int`,
+    // `shapes/Rectangle`; platform-interface.md §5.3 — NO injected imports),
+    // so the prelude bare-name outer-scope fallback (S78 §2.7) never fires
+    // here. An empty map (all-OFF) is the correct, complete input.
+    let prelude_fallback = cranelisp_typecheck::PreludeFallback::default();
     cranelisp_typecheck::check_type_expr(
         &expr,
         &mut ctx,
         symbol_tables,
         module_aliases,
+        &prelude_fallback,
         module_path,
         Span::SYNTHETIC,
     )
