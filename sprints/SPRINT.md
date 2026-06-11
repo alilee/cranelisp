@@ -126,10 +126,11 @@ Target design: `design/int/s78-entry-module.md` (§1 entry-module, §2 prelude-a
 
 | Skill | Crate | Task | Status |
 |---|---|---|---|
-| /qa | tests/ | B1 repro (`--run`-then-REPL-import-gap → no parallel re-typecheck of entry module); entry-module-is-not-`user` tests (program with no `user` module compiles+runs; `/mod` no-arg → entry module; entry named non-`user`). | pending |
-| /design | src/ | Refine §1+§3 (entry-module concept; B1 ownership-as-data not-pool-enqueued). | pending |
-| /dev | src/ | §3: entry module not pool-claimable (ownership-as-data), fix false `scheduler.rs:94` invariant. §1: delete vestigial `"user"` seed (`session_v4.rs:1005`); `handle_mod`/`current_repl_module`/FQ-parse defaults → entry module. | pending |
-| /review | src/ | Change-set review. | pending |
+| /qa | tests/ | B1 repro + entry-module-is-not-`user` tests. | **DONE** (3 RED→target tripwires + 4 GREEN guards + B1 guard) |
+| /dev | src/ | §1: `entry_module` threaded into `CompilerSession::new`; vestigial `"user"` seed → `ensure_module_exists(entry_module)`; `current_repl_module`/`repl_check_state`/`TestRunnerState`/`handle_mod("")`/`run_test_by_name` → entry module. §3: `ModuleState.eval_owned: bool` (role-as-data, NOT name skip); `mark_eval_owned` + `try_unblock_locked` early-return; false `scheduler.rs:89-97` comment corrected. | **DONE** (3 RED→GREEN; 80/80 touched; field-count 14; no warnings) |
+| /review | src/ | Change-set review. | **PASS-WITH-FINDINGS** |
+
+**Wave 3 RESULT: §1+§3 LANDED, /review PASS.** No name-keyed special-casing reintroduced (`is_seeded` is the deferred §2 item, untouched). `eval_owned` closes the concurrent B1 dual-orchestration correctly (eval thread sole orchestrator of its gaps; no stranding; `--run`/`--link` unaffected; vestigial-seed deletion safe; double-guard = honest defense-in-depth). **Carries to Wave 5:** I1 (watcher `re_register_module` re-arms pool-claim on reload — SAFE because reload is eval-synchronous/no-concurrent-eval, but the `scheduler.rs:488-490` + `src/CLAUDE.md` "sole orchestrator across re-register" comment overstates → tighten wording) + S1 (`scheduler.rs:757` stale `"user"` example). **Phase 7:** S2 Principle 19 ("No module is privileged by name").
 
 ### Wave 4 — Prelude-as-outer-scope (§2) — cranelisp-typecheck + src/ + spec
 

@@ -949,6 +949,14 @@ pub struct CompilerSession {
     /// facade-prescribed `warnings()` accessor a real backing store. The
     /// worker → session warning merge wiring is FIXME 0205's broader scope.
     warnings: Vec<Warning>,
+
+    /// The session's ENTRY module — the `main`-bearing / REPL-target module
+    /// the session was asked to compile (S78 §1). Named by the CLI target,
+    /// defaulting to `"user"` only when no target is given. It is the "home"
+    /// module: `/mod` with no argument returns the REPL cursor here. `"user"`
+    /// is ONLY its default name, never a privileged identity — every program
+    /// has an entry module, but most have NO `user` module at all.
+    entry_module: ModuleFullPath,
 }
 
 impl CompilerSession {
@@ -968,6 +976,7 @@ impl CompilerSession {
     pub fn new(
         settings: SessionSettings,
         project_root: PathBuf,
+        entry_module_name: &str,
     ) -> Self {
         // Lib dirs: stdlib location(s), NOT including project_root.
         // Project root is tier 2 in §8.11.2, searched separately.
@@ -1002,15 +1011,23 @@ impl CompilerSession {
         let symbol_tables: dashmap::DashMap<ModuleFullPath, SessionSymbolTable> =
             dashmap::DashMap::new();
         let next_type_id = AtomicU32::new(0);
-        let user_module = ModuleFullPath::from("user");
+        // S78 §1: the ENTRY module is an ordinary module. `"user"` is only its
+        // default NAME (passed by `main.rs` when no CLI target is given); it is
+        // NOT a privileged identity. The session seeds the REPL cursor /
+        // check-state / test-runner state off this name (below), and lazily
+        // creates the entry module's symbol table by its real name so any
+        // pre-first-input REPL introspection (`/list`, `/imports` on an empty
+        // session) finds a table. The real entry registration (`register_module`
+        // → `register_entry_module`) is name-agnostic and runs later; this seed
+        // is just the create-by-real-name table the cursor points at.
+        let entry_module = ModuleFullPath::from(entry_module_name);
 
-        // Seed the "user" module before register_builtins (which registers special forms on it).
-        // Sprint 58 Wave 3b: `<Code, ()>` flavour via `new_with_params` on the
-        // generic impl (not the `<()>`-pinned `SymbolTable::new`).
-        symbol_tables.insert(
-            user_module.clone(),
-            SessionSymbolTable::new_with_params(user_module.clone()),
-        );
+        // S78 §1: create the entry module's table by its REAL name (never a
+        // hardcoded "user" literal). Special forms mount at root "" and
+        // synthetic modules mount in `mount_synthetic_modules` — neither needs
+        // a pre-seeded entry table; this exists only so pre-first-input REPL
+        // introspection has a table for the cursor's module.
+        cranelisp_types::ensure_module_exists(&symbol_tables, &entry_module);
 
         // S68 Wave 4 (Decision 0048): Arc-clone the statically-constructed
         // `PRIMITIVES_TABLE` into the session's symbol tables at
@@ -1023,7 +1040,7 @@ impl CompilerSession {
         // equivalent to any other module via the standard cross-module
         // GOT-indirect call path.
         //
-        // `register_builtins` (next call) short-circuits the primitives-
+        // `mount_synthetic_modules` (next call) short-circuits the primitives-
         // module creation (its `if !contains_key` check finds the entry).
         // Subsequent `register_primitives` / `register_ring1_primitives` /
         // etc. `get_mut` the same module and *overwrite* the Symbol entries
@@ -1052,8 +1069,10 @@ impl CompilerSession {
         // of the deleted `cranelisp_typecheck::register_builtins` body. Seeds
         // special forms (root ""), intrinsic type names + Vec, the `macros`
         // module (Sexp/SList + sconcat), Option, IO (+ bind), Trace, and the
-        // test infrastructure into the session tables. `primitives` and `user`
-        // are already mounted above; this only adds to them + creates `macros`.
+        // test infrastructure into the session tables. `primitives` is already
+        // mounted above; this adds to it + the root "" + creates `macros`. It
+        // does NOT touch the entry module (it is an ordinary module, seeded by
+        // its real name above and registered name-agnostically later — S78 §1).
         // Fresh type vars for the polymorphic ADTs/primitive are allocated
         // from `next_type_id`, advancing the high-water mark monotonically.
         crate::bootstrap::mount_synthetic_modules(&symbol_tables, &next_type_id);
@@ -1075,7 +1094,8 @@ impl CompilerSession {
         // a `Mutex` so `/mod` may update it without rebuilding the state.
         let test_runner_state = Box::new(TestRunnerState {
             tc_modules: std::ptr::null(), // patched immediately after Arc construction
-            current_module: Mutex::new(user_module.clone()),
+            // S78 §1: seed off the ENTRY module name, not a hardcoded "user".
+            current_module: Mutex::new(entry_module.clone()),
         });
 
         let shared = Arc::new(SharedState {
@@ -1151,10 +1171,13 @@ impl CompilerSession {
             worker_pool: crate::worker_pool::WorkerPool::new(
                 priority_worker_handles, nice_worker_handles, nice_workers,
             ),
-            current_repl_module: user_module.clone(),
-            repl_check_state: Mutex::new(Some(CheckState::new(user_module))),
+            // S78 §1: the REPL cursor + carry-forward CheckState start at the
+            // ENTRY module (its real name), not a hardcoded "user".
+            current_repl_module: entry_module.clone(),
+            repl_check_state: Mutex::new(Some(CheckState::new(entry_module.clone()))),
             repl_input_active: std::sync::Arc::new(AtomicBool::new(false)),
             warnings: Vec::new(),
+            entry_module,
         }
     }
 
@@ -2679,8 +2702,14 @@ impl CompilerSession {
 
     /// /mod handler: switch module namespace.
     fn handle_mod(&mut self, name: &str) {
-        let target = if name.is_empty() { "user" } else { name };
-        let path = ModuleFullPath::from(target);
+        // S78 §1.4: `/mod` with no argument returns to the "home" module — the
+        // ENTRY module — NOT a hardcoded "user". `"user"` is only the entry
+        // module's default name when no CLI target is given.
+        let path = if name.is_empty() {
+            self.entry_module.clone()
+        } else {
+            ModuleFullPath::from(name)
+        };
         self.set_current_module(path);
     }
 
@@ -3393,7 +3422,11 @@ impl CompilerSession {
 
         for name in test_names {
             // Core test execution — shared with run_test_extern.
-            let outcome = run_test_by_name(&self.shared.symbol_tables, name);
+            let outcome = run_test_by_name(
+                &self.shared.symbol_tables,
+                name,
+                &self.current_repl_module,
+            );
             let dots = ".".repeat(40usize.saturating_sub(name.len()));
             match &outcome {
                 TestOutcome::Pass { .. } => {
@@ -3565,6 +3598,21 @@ impl CompilerSession {
         &self,
     ) -> Result<(), crate::scheduler::SchedulerError> {
         self.shared.scheduler.wait_inmem_complete()
+    }
+
+    /// Transfer orchestration ownership of the ENTRY module to the eval thread
+    /// (S78 §3 / B1). Called by the REPL driver (`main.rs`) once startup
+    /// typecheck has completed and the eval loop is about to take over.
+    ///
+    /// After this, the eval thread is the entry module's *sole* orchestrator:
+    /// a dependency gap the eval thread hits during a REPL form is driven by
+    /// the eval thread's own wait+retry (`register_dep_for_eval`), and the
+    /// scheduler will NOT requeue the entry onto the pool for a concurrent
+    /// re-typecheck of its own sexps. This closes the B1 dual-orchestration —
+    /// keyed on the entry module's orchestration role (`eval_owned`), carried
+    /// as data on its `ModuleState`, never on the name `"user"`.
+    pub fn mark_entry_eval_owned(&self) {
+        self.shared.scheduler.mark_eval_owned(&self.entry_module);
     }
 
     /// Promotes nice workers to normal priority before blocking, ensuring
@@ -4550,15 +4598,18 @@ fn discover_test_names(
 fn run_test_by_name(
     tc_modules: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
     fq_name: &str,
+    default_module: &ModuleFullPath,
 ) -> TestOutcome {
     use cranelisp_types::NULLARY_TAG_THRESHOLD;
 
-    // Parse "module/name" into module path and bare name.
-    let (module_str, bare_name) = match fq_name.rsplit_once('/') {
-        Some((m, n)) => (m, n),
-        None => ("user", fq_name),
+    // Parse "module/name" into module path and bare name. S78 §1.4: an
+    // unqualified name defaults to the current/entry module, NOT a hardcoded
+    // "user" — for a non-`user` entry program a hardcoded "user" mis-routes
+    // the lookup to a non-existent table.
+    let (module, bare_name) = match fq_name.rsplit_once('/') {
+        Some((m, n)) => (ModuleFullPath::from(m), n),
+        None => (default_module.clone(), fq_name),
     };
-    let module = ModuleFullPath::from(module_str);
 
     // Look up the code pointer from the entry's GOT slot (D41/D35 — GOT is
     // the single source of callable addresses; no `Code::ptr`).
@@ -5048,7 +5099,7 @@ mod persistent_worker_tests {
             priority_workers,
             nice_workers: 0,
         };
-        let mut s = CompilerSession::new(settings, tmp_root.clone());
+        let mut s = CompilerSession::new(settings, tmp_root.clone(), "user");
         s.set_lib_dirs(vec![]);
         (s, tmp_root)
     }
@@ -5525,7 +5576,7 @@ mod bare_primitive_value_path_tests {
             priority_workers: 0,
             nice_workers: 0,
         };
-        let mut s = CompilerSession::new(settings, tmp_root.clone());
+        let mut s = CompilerSession::new(settings, tmp_root.clone(), "user");
         s.set_lib_dirs(vec![]);
         (s, tmp_root)
     }

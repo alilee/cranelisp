@@ -603,3 +603,118 @@ fn repl_dep_load_no_race_with_persistent_workers() {
          === stdout ===\n{stdout}\n=== stderr ===\n{stderr}"
     );
 }
+
+// =============================================================================
+// 5. B1 — entry-module single-orchestration (Sprint 78 §3 / /review Blocker B1)
+// =============================================================================
+//
+// spec: design/int/s78-entry-module.md §3 — the entry module must be
+//   single-orchestrated. Today (pre-§3) the entry/REPL module is BOTH
+//   eval-thread-driven (`process_single_form`) AND pool-claimable
+//   (registered with `sexps: Some(...)`; `try_unblock_locked` requeues it on
+//   a dependency gap). For a fresh REPL the entry source is empty, so the
+//   worker re-typecheck is a benign no-op. The LATENT defect surfaces when
+//   the entry module's `ModuleState.sexps` is NON-EMPTY *and* it hits a
+//   dependency gap: a pool worker can then re-typecheck the entry's (stale)
+//   sexps concurrently with the eval thread's retry of the same live table —
+//   the in-progress-sharing class the S78 restructure was meant to remove,
+//   relocated to `ModuleState.sexps`.
+//
+// This test builds exactly that scenario without a `--run`-then-REPL mode
+// (the binary has none — `--run` `process::exit`s): launch the REPL with a
+// POSITIONAL entry name `app`, where `app.cl` is a non-empty entry module
+// (`(import [helper [val]])` + two defns) whose import drives a dependency
+// gap to `helper.cl`. The entry's sexps are therefore non-empty AND a gap
+// fires — the precise condition under which `try_unblock_locked(app)` would
+// requeue the entry to a worker.
+//
+// The assertion is the CORRECT, DETERMINISTIC result: switching to the entry
+// module (`/mod app`) and calling `(run)` yields `99`, with no panic / crash
+// / wrong value, across modest repetition. Per the Sprint 78 investigation
+// (SPRINT.md Notes — "the user-module dual-orchestration is structurally
+// present but produces no observable correctness failure under heavy stress;
+// NOT a sprint-blocking defect"), this race is BENIGN-BY-LUCK and cannot be
+// made to fail observably here. The test is therefore the regression GUARD
+// that the §3 single-orchestration fix keeps the scenario correct — it stays
+// GREEN before and after the fix; it does not (and is not expected to) flake.
+// No N-of-M tolerance is encoded.
+//
+// dyld-aware: iteration count is modest (5) and runs serially — no
+// concurrent spawn of many large debug binaries (SPRINT.md: high `-j` on
+// debug test binaries is a macOS dyld cold-start stall, not a cranelisp bug).
+
+/// Run the REPL binary with a POSITIONAL entry-module name (so the entry is
+/// `entry`, not the default `user`), piped stdin, and an isolated CWD.
+fn run_repl_with_entry(dir: &std::path::Path, entry: &str, input: &str) -> Output {
+    let binary = binary_path();
+    assert!(
+        binary.exists(),
+        "cranelisp binary not found at {binary:?} — run `cargo build` first"
+    );
+
+    let mut child = Command::new(&binary)
+        .current_dir(dir)
+        .arg(entry) // positional target → REPL entry module = `entry`
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to start cranelisp binary");
+    {
+        use std::io::Write;
+        let stdin = child.stdin.as_mut().expect("failed to open stdin");
+        stdin
+            .write_all(input.as_bytes())
+            .expect("failed to write input");
+    }
+    child.wait_with_output().expect("failed to read output")
+}
+
+// spec: design/int/s78-entry-module.md §3 — entry-module single-orchestration.
+//   B1 scenario: non-empty entry module (`app`) + import gap (`helper`) under
+//   a REPL. The entry's eval of `(run)` MUST deterministically yield 99 with
+//   no concurrent-re-typecheck corruption, across repetition.
+#[test]
+fn b1_entry_module_non_empty_with_import_gap_single_orchestrated() {
+    const ITERATIONS: usize = 5;
+
+    for iteration in 0..ITERATIONS {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+
+        // Non-empty entry module `app`: an import (the gap trigger) + a defn
+        // that uses the imported name. Its `ModuleState.sexps` is non-empty.
+        std::fs::write(
+            dir.path().join("app.cl"),
+            "(import [helper [val]])\n(defn run [] (val))\n",
+        )
+        .unwrap();
+        // The dependency the import gap drives.
+        std::fs::write(dir.path().join("helper.cl"), "(defn val [] 99)\n").unwrap();
+
+        // Switch the REPL cursor to the entry module, then evaluate `(run)`.
+        let input = "/mod app\n(run)\n";
+        let out = run_repl_with_entry(dir.path(), "app", input);
+        let stdout = stdout_str(&out);
+        let stderr = stderr_str(&out);
+
+        // CORRECT deterministic result: `(run)` resolves through the
+        // import-gap-driven `helper` and yields 99.
+        assert!(
+            stdout.contains(":primitives/Int 99"),
+            "iteration {iteration}: entry module 'app' (non-empty sexps + import \
+             gap to 'helper') MUST evaluate (run) to 99 deterministically. A \
+             wrong/absent value here would indicate the entry module was \
+             re-typechecked on a pool worker concurrently with the eval thread \
+             (s78-entry-module.md §3 / B1).\n\
+             === stdout ===\n{stdout}\n=== stderr ===\n{stderr}"
+        );
+        // Negative: no crash / panic from a concurrent second orchestrator.
+        let lc = format!("{stdout}{stderr}").to_lowercase();
+        assert!(
+            !lc.contains("panic") && !lc.contains("segmentation") && !lc.contains("abort"),
+            "iteration {iteration}: B1 scenario MUST NOT crash/panic (single \
+             orchestrator owns the entry module).\n\
+             === stdout ===\n{stdout}\n=== stderr ===\n{stderr}"
+        );
+    }
+}

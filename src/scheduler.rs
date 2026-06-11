@@ -91,10 +91,27 @@ pub struct ModuleState {
     /// `PriorityWork::Typecheck { module, sexps }` packet after the dep this
     /// module blocked on completes — the worker re-runs the cluster from the
     /// top with no saved suspend state. `None` for cache-restored modules
-    /// (registered at `TypecheckDone`, never typechecked from source) and for
-    /// the eval/REPL caller module (driven by the eval thread, never requeued
-    /// onto the pool for a fresh typecheck of its own sexps).
+    /// (registered at `TypecheckDone`, never typechecked from source).
     pub sexps: Option<std::sync::Arc<[Sexp]>>,
+
+    /// **Orchestration ownership (S78 §3 / B1).** `true` once the eval thread
+    /// (the REPL) becomes this module's *sole* orchestrator — it is the entry
+    /// module and the REPL loop has taken it over after startup. While
+    /// `eval_owned`, the scheduler MUST NOT requeue this module onto the pool
+    /// for a fresh typecheck of its own sexps (`try_unblock_locked` early-
+    /// returns): the eval thread drives every retry itself (it blocks on the
+    /// *dependency* via `wait_module_inmem_complete_blocking` and re-runs the
+    /// cluster from the top). Two orchestrators on one module is the
+    /// in-progress-sharing class the S78 restructure removed; the role flag
+    /// keeps the single-owner invariant *structurally* — keyed on the module's
+    /// orchestration ROLE carried as data, NEVER on a `"user"`/name match.
+    ///
+    /// `false` for every pool-orchestrated module: `--run`/`--link` entry
+    /// modules (the pool drives them; requeue is correct there) and all
+    /// dependency modules. The entry module is `eval_owned` only in REPL mode,
+    /// and only after its startup content has been pool-typechecked (ownership
+    /// transfers pool → eval thread when the REPL loop begins).
+    pub eval_owned: bool,
 
     /// Module this module is currently blocked on (forward edge).
     /// Set when entering TypecheckBlocked, cleared when unblocked.
@@ -114,6 +131,7 @@ impl ModuleState {
             object_done: false,
             error: None,
             sexps,
+            eval_owned: false,
             blocked_on: None,
         }
     }
@@ -133,6 +151,7 @@ impl ModuleState {
             object_done: true,
             error: None,
             sexps: None,
+            eval_owned: false,
             blocked_on: None,
         }
     }
@@ -465,9 +484,13 @@ impl CompileScheduler {
         state.cached_modules.remove(module);
 
         // Reset ModuleState for re-processing. Keep waiters — other
-        // modules may still be waiting on this module's symbols.
+        // modules may still be waiting on this module's symbols. Preserve the
+        // `eval_owned` orchestration role across re-register (S78 §3): if the
+        // REPL entry module's source is re-registered by the watcher, the eval
+        // thread remains its sole orchestrator.
         if let Some(ms) = state.modules.get_mut(module) {
             let waiters = std::mem::take(&mut ms.waiters);
+            let eval_owned = ms.eval_owned;
             *ms = ModuleState {
                 pool: ModulePool::TypecheckFirst,
                 waiters,
@@ -478,6 +501,7 @@ impl CompileScheduler {
                 object_done: false,
                 error: None,
                 sexps: Some(sexps),
+                eval_owned,
                 blocked_on: None,
             };
         }
@@ -1131,6 +1155,27 @@ impl CompileScheduler {
         state.modules.contains_key(module)
     }
 
+    /// Transfer orchestration ownership of a module to the eval thread (S78 §3
+    /// / B1). Marks the module `eval_owned` and drops its stored cluster sexps.
+    ///
+    /// Called by the REPL once startup typecheck of the entry module has
+    /// completed and the eval loop is about to take over: from this point the
+    /// eval thread is the module's *sole* orchestrator. The `eval_owned` flag
+    /// makes `try_unblock_locked` refuse to requeue the module onto the pool
+    /// (the eval thread drives its own retries); clearing `sexps` is belt-and-
+    /// braces so even a stray dispatch finds an empty cluster (no-op) rather
+    /// than re-typechecking stale forms. Idempotent; a no-op for an
+    /// unregistered module (e.g. a fresh empty REPL whose entry was never
+    /// pool-registered with content). Keyed on the caller's knowledge of which
+    /// module is eval-owned — the scheduler never inspects the module's name.
+    pub fn mark_eval_owned(&self, module: &ModuleFullPath) {
+        let mut state = self.lock();
+        if let Some(ms) = state.modules.get_mut(module) {
+            ms.eval_owned = true;
+            ms.sexps = None;
+        }
+    }
+
     /// Reset a module from Failed back to an unregistered state.
     ///
     /// Used by the REPL after a failed dependency compilation. Removes
@@ -1385,6 +1430,19 @@ impl CompileScheduler {
     ) {
         let Some(ms) = state.modules.get(module) else { return };
         if ms.pool != ModulePool::TypecheckBlocked {
+            return;
+        }
+        // S78 §3 / B1: an eval-owned module (the REPL entry module, once the
+        // eval thread is its sole orchestrator) is NEVER requeued onto the pool
+        // for a fresh typecheck of its own sexps. The eval thread drives every
+        // retry itself — it blocks on the *dependency* and re-runs the cluster
+        // from the top. Requeuing here would hand a second orchestrator (a pool
+        // worker) the entry's sexps to re-typecheck concurrently with the eval
+        // thread (the dual-orchestration the restructure removed). The skip is
+        // keyed on the orchestration ROLE (`eval_owned`), carried as data on the
+        // ModuleState — NOT on the module's name. The eval thread clears the
+        // blocked_on edge through its own wait/retry path.
+        if ms.eval_owned {
             return;
         }
 

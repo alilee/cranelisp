@@ -162,9 +162,12 @@ fn run(
 ) -> Result<(), CranelispError> {
     use std::io::{self, BufRead, Write};
 
-    // §2.2: CompilerSession::new(settings, project_root).
-    // Workers are spawned and parked on condvars immediately.
-    let mut s = CompilerSession::new(settings, project_root.to_path_buf());
+    // §2.2: CompilerSession::new(settings, project_root, entry_module_name).
+    // Workers are spawned and parked on condvars immediately. S78 §1: the
+    // entry module name (the CLI target, or `"user"` default) seeds the REPL
+    // cursor / check-state / test-runner "home" — the entry module is ordinary,
+    // `"user"` is only its default name.
+    let mut s = CompilerSession::new(settings, project_root.to_path_buf(), entry_module_name);
 
     // §3.1: Register the entry module. Front-end work (resolve, parse,
     // extract declarations) then enqueue for typechecking. Workers wake
@@ -203,6 +206,12 @@ fn run(
 
             // Wait for entry module (prelude) to be ready.
             s.wait_inmem_complete()?;
+
+            // S78 §3 / B1: startup typecheck is done — the eval thread now
+            // becomes the entry module's SOLE orchestrator. Transfer ownership
+            // so the scheduler never requeues the entry onto the pool for a
+            // concurrent re-typecheck while the eval thread drives it.
+            s.mark_entry_eval_owned();
 
             // Initialize file watcher now that modules are loaded.
             s.init_watcher();

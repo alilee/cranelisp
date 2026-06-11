@@ -961,3 +961,56 @@ fn defn_before_import_resumes_correctly_after_dep_load() {
     // currently NOT asserted — the run-mode child SEGVs (exit 139) on
     // this shape. Re-enable when the downstream defect is resolved.
 }
+
+// =============================================================================
+// S78 §1 — Entry module is ordinary; `"user"` is only the default CLI name.
+// design/int/s78-entry-module.md §1 (entry-module concept, name-agnostic).
+//
+// The entry module is the `main`-bearing module the session is asked to
+// compile + run. Under `--run <file>` it is named after the file (`main.rs`
+// `resolve_target_from` → file stem), NOT a literal `"user"`. Most programs
+// have NO `user` module at all. These are GREEN behaviour-preservation guards
+// that the §1 de-special-casing must keep passing (the `--run` entry
+// registration is already name-agnostic — `main.rs:172`).
+// =============================================================================
+
+// spec: design/int/s78-entry-module.md §1 — a `--run` program whose entry
+//   file is named non-`user` compiles and runs. The entry module is `sudoku`
+//   (the file stem), an ordinary module; there is no `user` module anywhere.
+#[test]
+fn entry_module_named_non_user_runs() {
+    Cranelisp::new()
+        .file("sudoku.cl", "(defn main [] 7)")
+        .run("sudoku.cl")
+        .output()
+        .assert_exit(7);
+}
+
+// spec: design/int/s78-entry-module.md §1 — a program with NO `user` module
+//   anywhere works end-to-end: the entry (named `myapp`) imports a sibling
+//   (`board`), and neither file is `user.cl`. Exercises cross-module call +
+//   import-gap drive against a non-`user` entry.
+#[test]
+fn program_with_no_user_module_runs_end_to_end() {
+    Cranelisp::new()
+        .file(
+            "myapp.cl",
+            "(import [board [cell]])\n(defn main [] (cell))",
+        )
+        .file("board.cl", "(defn cell [] 42)")
+        .run("myapp.cl")
+        .output()
+        .assert_exit(42);
+}
+
+// spec: design/int/s78-entry-module.md §1 — regression: the CLI default
+//   entry name (`user`, when no target is given) still works. `--run user.cl`
+//   names the entry `user` and runs it.
+#[test]
+fn entry_module_default_user_name_still_runs() {
+    Cranelisp::new()
+        .user("(defn main [] 5)")
+        .run("user.cl")
+        .output()
+        .assert_exit(5);
+}

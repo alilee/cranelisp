@@ -537,3 +537,119 @@ fn mod_switch_round_trip_math_to_user() {
         out.stdout
     );
 }
+
+// =============================================================================
+// S78 §1 — Entry module is first-class; the REPL targets the ENTRY module,
+// not a hardcoded `"user"`. design/int/s78-entry-module.md §1.3/§1.4.
+//
+// A REPL launched with a positional target (`cranelisp myapp`) registers
+// `myapp` as the entry module (`main.rs` resolve_target → register_module).
+// The REPL cursor (`current_repl_module`) and the `/mod` no-arg "home"
+// target are the ENTRY module — `"user"` is ONLY the default name when no
+// target is given. These tests run the binary with a positional entry name
+// via `cli_flag` (REPL mode, no `--run`).
+//
+// RED-BY-DESIGN until §1 lands: `current_repl_module` is hardcoded to
+// `"user"` at `session_v4.rs:1154`, and `handle_mod("")` hardcodes `"user"`
+// at `session_v4.rs:2682`. So today the prompt shows `user>` and defns land
+// in `user/` even when the entry is `myapp`. The §1 fix threads the entry
+// name through, making these GREEN.
+// =============================================================================
+
+// spec: design/int/s78-entry-module.md §1.3 — the REPL prompt reflects the
+//   ENTRY module. Launched as `cranelisp myapp`, the prompt MUST be `myapp>`,
+//   not the hardcoded `user>`. RED until `current_repl_module` is seeded with
+//   the entry name.
+#[test]
+fn repl_prompt_targets_entry_module_not_hardcoded_user() {
+    let out = Cranelisp::new()
+        .repl()
+        .file("myapp.cl", "(defn main [] 0)")
+        .cli_flag("myapp")
+        .stdin("\n")
+        .output()
+        .assert_ok();
+    assert!(
+        out.stdout.contains("myapp>"),
+        "REPL with entry 'myapp' MUST show prompt 'myapp>' (the entry module), \
+         not a hardcoded 'user>' (s78-entry-module.md §1.3); got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: design/int/s78-entry-module.md §1.3 (negative) — when the entry
+//   module is `myapp`, the REPL MUST NOT operate in a `user` module. A bare
+//   `(defn ...)` lands in the entry module, so its display is `myapp/...`,
+//   NOT `user/...`. Verifies the wrong module does not leak in.
+#[test]
+fn repl_defn_lands_in_entry_module_neg_not_user() {
+    let out = Cranelisp::new()
+        .repl()
+        .file("myapp.cl", "(defn main [] 0)")
+        .cli_flag("myapp")
+        .stdin("(defn foo [] 1)\n")
+        .output()
+        .assert_ok();
+    assert!(
+        out.stdout.contains("myapp/foo"),
+        "a defn in a REPL with entry 'myapp' MUST register as 'myapp/foo' \
+         (the entry module), got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("user/foo"),
+        "a defn in a REPL with entry 'myapp' MUST NOT land in a 'user' module \
+         (s78-entry-module.md §1.3 — `\"user\"` is not privileged); got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: design/int/s78-entry-module.md §1.4 — `/mod` with NO argument returns
+//   to the ENTRY module ("home"), not a literal `"user"`. With entry `myapp`,
+//   after `/mod scratch` a bare `/mod` MUST return the prompt to `myapp>`.
+//   RED until `handle_mod("")` resolves to the entry module.
+#[test]
+fn mod_no_arg_returns_to_entry_module_not_user() {
+    let out = Cranelisp::new()
+        .repl()
+        .file("myapp.cl", "(defn main [] 0)")
+        .cli_flag("myapp")
+        .stdin("/mod scratch\n/mod\n")
+        .output()
+        .assert_ok();
+    // After the no-arg `/mod` the prompt must return to the entry module.
+    // We assert the final prompt is `myapp>` (the entry), not `user>`.
+    let returned_to_entry = out
+        .stdout
+        .rsplit("scratch>")
+        .next()
+        .map(|tail| tail.contains("myapp>"))
+        .unwrap_or(false);
+    assert!(
+        returned_to_entry,
+        "`/mod` no-arg MUST return to the entry module 'myapp', not a hardcoded \
+         'user' (s78-entry-module.md §1.4); got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: design/int/s78-entry-module.md §1.4 — regression (GREEN): when NO
+//   target is given, the entry module defaults to `"user"`, so `/mod` no-arg
+//   "home" IS `user>`. This pins that `"user"` survives as the legitimate
+//   default name (not as a privileged identity).
+#[test]
+fn mod_no_arg_default_entry_is_user() {
+    let out = repl("/mod scratch\n/mod\n").assert_ok();
+    let returned_to_user = out
+        .stdout
+        .rsplit("scratch>")
+        .next()
+        .map(|tail| tail.contains("user>"))
+        .unwrap_or(false);
+    assert!(
+        returned_to_user,
+        "with no CLI target, `/mod` no-arg MUST return to the default entry \
+         'user' (s78-entry-module.md §1.4); got:\n{}",
+        out.stdout
+    );
+}
