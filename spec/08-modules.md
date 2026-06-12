@@ -780,7 +780,9 @@ Platform modules are loaded from dynamic libraries (DLLs) via the `platform` spe
 (platform stdio)     ; loads platform.stdio from a DLL
 ```
 
-The platform name is resolved to a DLL file via the platform DLL search order (§8.11.3). This registers a synthetic module named `platform.stdio` containing the functions exported by the platform library. Platform functions that perform side effects MUST return `IO _`.
+The platform name is resolved to a DLL file via the platform DLL search order (§8.11.3). This registers a synthetic module named `platform.stdio` containing the functions exported by the platform library. Every platform function MUST return `IO _`.
+
+A platform function is foreign native code: the compiler cannot inspect its body and therefore cannot verify whether it performs side effects. The compiler MUST trust the declared signature. A platform function whose declared type were pure (e.g. `(Fn [a] b)`) would be treated as pure by the typechecker — eligible for memoization, reordering, elision, and lenient/parallel sparking — while the foreign host is free to perform arbitrary effects. Treating unverifiable foreign code as pure is therefore unsound. The only sound treatment is to require every platform function to sequence its effects through `IO`, so the requirement is **unconditional** — not conditioned on whether the function "appears to" perform side effects. The platform ABI contract (§[10.10](10-io.md#1010-platform-abi-contract)) describes the corresponding C-ABI level. (A trusted-pure foreign-function escape hatch, if ever introduced, would be a separate explicit feature — never the default.)
 
 Platform module names follow the pattern `platform.<name>`.
 
