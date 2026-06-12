@@ -55,6 +55,39 @@ These interact — e.g. terminal-source dedup may make most real glob+specific
 overlaps benign without a precedence tier. Pick a coherent model + cascade to
 §8.6.4/§8.6.5 + `insert_detecting_ambiguity`.
 
+## Related finding — the prelude-fallback retry is duplicated 5× (target /arch, fold into this review)
+
+Surfaced post-close (user, 2026-06-12) while reflecting on why the S78 §2
+prelude-fallback regression needed ~4 separate fix sites. **All bare-name
+resolution paths DO route through one primitive — `cranelisp_types::resolve()`
+(`crates/cranelisp-types/src/resolve.rs:260`)** — but the *prelude outer-scope
+retry* layered on top of it is hand-rolled at **5 sites**, because `resolve()`
+is deliberately data-only and cannot see the session-side `prelude_fallback`
+bit. The identical 3-step wrapper (resolve in current view → on miss, if the
+module's bit is ON, resolve again rooted at `prelude` → public-only I-1 filter)
+repeats in:
+- `checker.rs:880` `resolve_current_or_prelude` (value/type)
+- `checker.rs:1219` `probe_current_or_prelude` (entry/scheme)
+- `checker.rs:1345` `resolve_entry_in_current_module` (ctor value+pattern, internal-gate)
+- `checker.rs:1392` `resolve_terminal_entry_or_prelude` (trait-method)
+- `src/expander.rs:289` `recognize_macro_head` (macro head — **a different crate**, duplicates the whole thing)
+
+This fragmentation is *why* the "fallback wired for path X not Y" gap recurred
+4× across S78 (value/type/ctor → trait [0315] → macro-head → ctor gates [0317]).
+
+**Proposed unification (for /arch — touches `cranelisp-types`, /arch-only):** a
+`resolve_with_fallback(symbol_tables, module_aliases, first_hop_view,
+current_module, name, fallback_on: bool, prelude_path, span)` in
+`cranelisp-types`. Passing the *already-looked-up* bit as a plain `bool` (caller
+does its own `prelude_fallback.get(module)`) + the prelude `ModuleFullPath`
+(a types-owned type) keeps types data-only — **no reverse dependency** on
+typecheck's `PreludeFallback`. Collapses all 5 bespoke wrappers (incl. the
+cross-crate expander one) to a single seam; visibility filtering moves in too
+(data-layer already). Makes any future bare-name path get the fallback for free
+instead of re-deriving it. NOT blocking; evaluate alongside the ambiguity-model
+decision since both touch the module-traversal primitives. See
+`memory/feedback_thread_cross_cutting_at_one_seam.md`.
+
 ## Operational implication / Context
 
 NOT blocking — S78 closed with stdlib green (overlaps removed) and the language
