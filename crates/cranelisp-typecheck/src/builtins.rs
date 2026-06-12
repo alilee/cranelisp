@@ -332,7 +332,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     },
                     visibility: Visibility::Public,
                     docstring: Some(desc.to_string()),
-                    constructor_scheme: None,
                 },
             );
         }
@@ -442,7 +441,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     },
                     visibility: Visibility::Public,
                     docstring: None,
-                    constructor_scheme: None,
                 },
             );
         }
@@ -508,7 +506,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     },
                     visibility: Visibility::Public,
                     docstring: None,
-                    constructor_scheme: None,
                 },
             );
         }
@@ -692,6 +689,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     tag: 2,
                     field_count: bind_field_count,
                     internal: true,
+                    // `Bind` is a sum ctor of `IO` (Pure/Effect/Bind), not a
+                    // product type — it has no type facet (S79 Option 3a).
+                    type_def: None,
                 },
             )
             .docstring("Chain IO actions (internal — constructed by bind primitive)")
@@ -1149,7 +1149,7 @@ mod tests {
     ) -> Option<(usize, usize, bool, FQTypeName)> {
         match table.get(name)? {
             ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-                DefKind::Constructor { tag, field_count, internal, type_name } => {
+                DefKind::Constructor { tag, field_count, internal, type_name, .. } => {
                     Some((*tag, *field_count, *internal, type_name.clone()))
                 }
                 _ => None,

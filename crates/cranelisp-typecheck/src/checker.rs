@@ -73,6 +73,37 @@ pub type PreludeFallback = dashmap::DashMap<ModuleFullPath, bool>;
 /// re-export edges to canonical primitive entries, Decision 0048).
 pub(crate) const PRELUDE_MODULE: &str = "prelude";
 
+/// The **type-def view** of a resolved `ModuleEntry` — the single reader that
+/// replaces the retired `ModuleEntry::TypeDef.constructor_scheme` smuggling
+/// field (S79 Option 3a, FIXME 0319).
+///
+/// A type name resolves to one of two shapes:
+/// - a `ModuleEntry::TypeDef` — the **sum/enum** case, type name distinct from
+///   every ctor name; or
+/// - a `ModuleEntry::Def { kind: DefKind::Constructor { type_def: Some(td), .. } }`
+///   — the **single-ctor product** case, where the got-slotted ctor `Def` IS
+///   its own type and carries the type facet (type-name == ctor-name).
+///
+/// This accessor yields `Some(&TypeDefInfo)` for either shape, so every site
+/// that needs an entry *as a type* (resolution, arity validation, exhaustiveness,
+/// introspection) reads it uniformly without caring which facet survived under
+/// the `"Rectangle"` key.
+pub(crate) fn type_def_view_of<C: cranelisp_types::CodeStore>(
+    entry: &ModuleEntry<C>,
+) -> Option<&TypeDefInfo> {
+    match entry {
+        ModuleEntry::TypeDef { info, .. } => Some(info),
+        ModuleEntry::Def { kind, .. } => match kind.as_ref() {
+            cranelisp_types::DefKind::Constructor {
+                type_def: Some(td),
+                ..
+            } => Some(&**td),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Per-check transient state for type inference.
 ///
 /// Created or reused by each `check()` call. Contains all state that is
@@ -310,13 +341,16 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-    /// Probe this module for a `TypeDef` named `name`, chain-following
-    /// `Import`/`Reexport` entries to their terminal `TypeDef`.
+    /// Probe this module for a type-def named `name`, chain-following
+    /// `Import`/`Reexport` entries to their terminal entry.
+    ///
+    /// Yields the type-def view via [`type_def_view_of`] so a **single-ctor
+    /// product** type (whose surviving `"Rectangle"` entry is the got-slotted
+    /// ctor `Def` carrying `type_def: Some(..)`) resolves as a type just as a
+    /// sum/enum `TypeDef` does.
     pub(crate) fn lookup_type_def(&self, name: &TypeName) -> Option<TypeDefInfo> {
-        match self.env.resolve_entry_in_module(self.module_path, name.as_ref())? {
-            ModuleEntry::TypeDef { info, .. } => Some(info),
-            _ => None,
-        }
+        let entry = self.env.resolve_entry_in_module(self.module_path, name.as_ref())?;
+        type_def_view_of(&entry).cloned()
     }
 
     /// Probe this module for a `TraitDecl` named `trait_name`, chain-following
@@ -590,9 +624,12 @@ where
     /// Per Principle 17 — current-module-only short-name lookup, with
     /// per-symbol chain-follow on `Import`/`Reexport` entries. Public
     /// default-rooted variant defaults to `user`. Returns the bare TypeName
-    /// of the parent type. Also handles product types where the constructor
-    /// has the same name as the type — in that case the
-    /// `ModuleEntry::TypeDef` with `constructor_scheme` is the authority.
+    /// of the parent type. A **single-ctor product** type resolves through the
+    /// `Def { kind: Constructor }` arm exactly like a sum ctor (S79 Option 3a):
+    /// the product ctor's surviving entry under the `"Rectangle"` key is the
+    /// got-slotted ctor `Def`, whose `DefKind::Constructor.type_name` names the
+    /// parent type. There is no longer a separate `TypeDef`-via-`constructor_scheme`
+    /// path to consult.
     #[allow(dead_code)] // default-rooted accessor pair; exercised via TestFixture in `#[cfg(test)]`.
     pub(crate) fn lookup_constructor_type(&self, ctor_name: &str) -> Option<TypeName> {
         let user_path = ModuleFullPath::from("user");
@@ -613,10 +650,6 @@ where
                 }
                 _ => None,
             },
-            ModuleEntry::TypeDef { info, constructor_scheme: Some(_), .. } => {
-                // Product type: constructor has same name as type.
-                Some(info.name.name.clone())
-            }
             _ => None,
         }
     }
@@ -632,6 +665,13 @@ where
     /// prelude head binding is reachable (I-1): the prelude head is filtered on
     /// [`Self::prelude_terminal_visible`] before the parent-type read, so a
     /// private prelude ctor does not leak.
+    ///
+    /// The production caller (the `infer.rs` pattern-ctor `exists` gate) was
+    /// retired when the product-fallback leg was deleted (S79 Option 3a — product
+    /// ctors now resolve through their own `Def` like sum ctors); the
+    /// prelude-outer-scope behaviour remains exercised by the `#[cfg(test)]`
+    /// chokepoint regressions in `checker/tests.rs`.
+    #[allow(dead_code)] // prelude-outer-scope chokepoint; exercised via TestFixture in `#[cfg(test)]`.
     pub(crate) fn lookup_constructor_type_with_state(
         &self,
         state: &CheckState,
@@ -975,8 +1015,10 @@ where
         let resolved = self
             .resolve_current_or_prelude(state, type_name.as_ref(), span)
             .map_err(|e| project_not_found(e, type_not_found))?;
+        if let Some(info) = type_def_view_of(&resolved.entry) {
+            return Ok(info.name.clone());
+        }
         match resolved.entry {
-            ModuleEntry::TypeDef { info, .. } => Ok(info.name.clone()),
             ModuleEntry::IntrinsicType { .. } => {
                 Ok(cranelisp_types::FQTypeName::new(resolved.home, type_name.clone()))
             }
@@ -1010,8 +1052,10 @@ where
         let resolved = self
             .resolve_current_or_prelude(state, type_name.as_ref(), span)
             .map_err(|e| project_not_found(e, type_not_found))?;
+        if let Some(info) = type_def_view_of(&resolved.entry) {
+            return Ok(Type::ADT(info.name.clone(), type_args));
+        }
         match resolved.entry {
-            ModuleEntry::TypeDef { info, .. } => Ok(Type::ADT(info.name.clone(), type_args)),
             ModuleEntry::IntrinsicType { ty, .. } => Ok(ty),
             _ => Err(type_not_found()),
         }
@@ -1079,9 +1123,6 @@ where
                 }
                 _ => Err(ctor_not_found()),
             },
-            ModuleEntry::TypeDef { info, constructor_scheme: Some(_), .. } => {
-                Ok(info.name.name.clone())
-            }
             _ => Err(ctor_not_found()),
         }
     }
@@ -1314,11 +1355,10 @@ where
         }
 
         match entry {
+            // A single-ctor product type's scheme lives canonically on its
+            // got-slotted ctor `Def` (S79 Option 3a) — the `TypeDef`-via-
+            // `constructor_scheme` smuggling arm is retired.
             ModuleEntry::Def { scheme, .. } => Some(scheme.clone()),
-            ModuleEntry::TypeDef {
-                constructor_scheme: Some(scheme),
-                ..
-            } => Some(scheme.clone()),
             ModuleEntry::Import { source, .. } => {
                 self.resolve_fq_symbol(source, depth + 1)
             }
@@ -1366,6 +1406,38 @@ where
             .probe_module_entry_owned(&prelude, name)
             .filter(Self::prelude_terminal_visible)?;
         self.chain_follow_to_home(entry, prelude, 0).map(|(e, _home)| e)
+    }
+
+    /// Resolve a **constructor reference** in a pattern to its terminal
+    /// `ModuleEntry`, dispatching on whether the name is bare or
+    /// module-qualified.
+    ///
+    /// - **Bare** (`SCons`): rooted at `state.current_module` with the
+    ///   implicit-prelude outer-scope fallback (Principle 17 + S78 §2) — exactly
+    ///   [`Self::resolve_entry_in_current_module`].
+    /// - **Qualified** (`macros/SCons`): an FQ reference that bypasses import
+    ///   scope (spec §8.6.6) and roots directly in the named module via
+    ///   [`Self::resolve_entry_in_module`]. Quasiquote macros lower their
+    ///   templates into qualified `macros/SCons`/`macros/SNil` patterns, so this
+    ///   arm is load-bearing for every macro. The prior `lookup_constructor_scheme`
+    ///   product-fallback leg (which performed this `/`-split before reading the
+    ///   scheme) was retired with S79 Option 3a; the split lives here now so a
+    ///   qualified SUM ctor still resolves through its `Def { Constructor }`
+    ///   entry. No product special-case — a single-ctor product type's ctor
+    ///   `Def` carries `type_name`/`tag` identically.
+    pub(crate) fn resolve_constructor_entry(
+        &self,
+        state: &CheckState,
+        name: &str,
+    ) -> Option<ModuleEntry<C>> {
+        if let Some(slash_pos) = name.find('/') {
+            let module_str = &name[..slash_pos];
+            let bare_name = &name[slash_pos + 1..];
+            let module_path = ModuleFullPath::from(module_str);
+            self.resolve_entry_in_module(&module_path, bare_name)
+        } else {
+            self.resolve_entry_in_current_module(state, name)
+        }
     }
 
     /// Resolve a bare name to its terminal `(entry, home)` against the current

@@ -76,7 +76,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 },
                 visibility,
                 docstring: None,
-                constructor_scheme: None,
             },
         );
 
@@ -135,22 +134,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let type_args: Vec<Type> = type_var_ids.iter().map(|&id| Type::Var(id)).collect();
         let adt_type = Type::ADT(fqtn.clone(), type_args);
 
-        // Ensure the type is pre-seeded (the `register_type_def` path pre-seeds;
-        // direct callers may not have, so do it here defensively).
-        self.current_symbol_table_mut(state).insert(
-            Symbol::from(name.as_ref()),
-            ModuleEntry::TypeDef {
-                info: TypeDefInfo {
-                    name: fqtn.clone(),
-                    type_params: type_params.to_vec(),
-                    constructors: vec![],
-                },
-                visibility,
-                docstring: None,
-                constructor_scheme: None,
-            },
-        );
-
         // Capture ctor names for the TypeDefInfo before consuming ctor_infos
         // during per-ctor Def registration.
         let ctor_names: Vec<Symbol> =
@@ -162,9 +145,45 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             constructors: ctor_names,
         };
 
+        // **Product/sum split (S79 Option 3a, FIXME 0319).** A single-ctor
+        // **product** type has type-name == ctor-name, so the type and its
+        // constructor collide on one symbol-table key (`"Rectangle"`). Rather
+        // than overwrite the got-slotted ctor `Def` with a `ModuleEntry::TypeDef`
+        // (the prior model — which dropped the ctor's `param_names` field names
+        // and broke product-ctor-as-first-class-value), the surviving entry is
+        // the **got-slotted ctor `Def`** carrying a **type facet**
+        // (`DefKind::Constructor { type_def: Some(..) }`) so it ALSO answers as
+        // its own type. A sum/enum type registers a separate `ModuleEntry::TypeDef`
+        // under its distinct key and its ctors carry `type_def: None`.
+        let is_product = ctor_infos.len() == 1
+            && ctor_infos[0].name.as_ref() == name.as_ref();
+        let product_type_def: Option<TypeDefInfo> =
+            is_product.then(|| type_def_info.clone());
+
+        if !is_product {
+            // Sum/enum: pre-seed the type entry (the `register_type_def` path
+            // pre-seeds; direct callers may not have, so do it here
+            // defensively) so recursive ctor-field resolution can see the type
+            // while constructors register.
+            self.current_symbol_table_mut(state).insert(
+                Symbol::from(name.as_ref()),
+                ModuleEntry::TypeDef {
+                    info: TypeDefInfo {
+                        name: fqtn.clone(),
+                        type_params: type_params.to_vec(),
+                        constructors: vec![],
+                    },
+                    visibility,
+                    docstring: None,
+                },
+            );
+        }
+
         // Register each constructor as a ModuleEntry::Def with
-        // kind: DefKind::Constructor { type_name, tag, field_count, internal }
-        // and a synthesised DefnVariant body wrapping Expr::ConstrADT.
+        // kind: DefKind::Constructor { type_name, tag, field_count, internal,
+        // type_def } and a synthesised DefnVariant body wrapping Expr::ConstrADT.
+        // The product ctor receives the type facet (`type_def: Some(..)`); every
+        // sum/enum ctor receives `type_def: None`.
         self.register_constructors(
             state,
             &fqtn,
@@ -172,22 +191,23 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             &adt_type,
             type_var_ids,
             visibility,
+            product_type_def.as_ref(),
+            docstring,
         );
 
-        // If a single constructor has the same name as the type (product type),
-        // store its scheme so lookups find the constructor through the TypeDef.
-        let ctor_scheme = self.find_same_name_constructor_scheme(state, name);
-
-        // Register the type in the symbol table
-        self.current_symbol_table_mut(state).insert(
-            Symbol::from(name.as_ref()),
-            ModuleEntry::TypeDef {
-                info: type_def_info,
-                visibility,
-                docstring: docstring.clone(),
-                constructor_scheme: ctor_scheme,
-            },
-        );
+        // Register the sum/enum type's separate `TypeDef` entry. The product
+        // case has NO `TypeDef` entry — its type facet lives on the ctor `Def`
+        // registered just above, under the shared `"Rectangle"` key.
+        if !is_product {
+            self.current_symbol_table_mut(state).insert(
+                Symbol::from(name.as_ref()),
+                ModuleEntry::TypeDef {
+                    info: type_def_info,
+                    visibility,
+                    docstring: docstring.clone(),
+                },
+            );
+        }
     }
 
     /// Allocate fresh type variables for type parameters.
@@ -259,34 +279,23 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         })
     }
 
-    /// If a constructor has the same name as the type, return its scheme.
-    /// This supports product-type syntax like `(deftype Point [:Int x :Int y])`.
-    fn find_same_name_constructor_scheme(
-        &self,
-        state: &CheckState,
-        type_name: &TypeName,
-    ) -> Option<Scheme> {
-        let ctor_sym = Symbol::from(type_name.as_ref());
-        let r = self.current_symbol_table(state);
-        let v = r.view();
-        if let Some(ModuleEntry::Def { scheme, kind, .. }) = v.lookup(&ctor_sym) {
-            if matches!(kind.as_ref(), DefKind::Constructor { .. }) {
-                Some(scheme.clone())
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-
     /// Register constructors in the current module's symbol table.
     ///
     /// Each constructor becomes a `ModuleEntry::Def` with
-    /// `kind: DefKind::Constructor { type_name, tag, field_count, internal }`
-    /// and a synthesised `DefnVariant` body whose body expression is
+    /// `kind: DefKind::Constructor { type_name, tag, field_count, internal,
+    /// type_def }` and a synthesised `DefnVariant` body whose body expression is
     /// `Expr::ConstrADT { type_name, tag, fields, span }` (per S69 Submission 35
     /// and `DefKind::Constructor` rustdoc in `cranelisp_types::module`).
+    ///
+    /// **Product type facet (S79 Option 3a, FIXME 0319).** When
+    /// `product_type_def` is `Some`, this registration is for a single-ctor
+    /// **product** type (type-name == ctor-name); the lone ctor's `Def` carries
+    /// `type_def: Some(..)` so the shared `"Rectangle"` entry answers both as a
+    /// got-slotted ctor `Def` AND as its own type. Sum/enum ctors pass `None`
+    /// and carry `type_def: None`. `type_docstring` is the deftype-level
+    /// docstring, applied to the product ctor's `Def` when the ctor itself has
+    /// none (the product `Def` has no separate `TypeDef` entry to hold it).
+    #[allow(clippy::too_many_arguments)]
     fn register_constructors(
         &self,
         state: &mut CheckState,
@@ -295,8 +304,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         adt_type: &Type,
         type_var_ids: &[TypeId],
         visibility: Visibility,
+        product_type_def: Option<&TypeDefInfo>,
+        type_docstring: &Option<String>,
     ) {
         for ctor in ctor_builds {
+            // The product type facet (if any) attaches to the ctor whose name
+            // matches the type name — for a product that is the single ctor.
+            let ctor_type_def: Option<Box<TypeDefInfo>> = product_type_def
+                .filter(|td| td.name.name.as_ref() == ctor.name.as_ref())
+                .map(|td| Box::new(td.clone()));
             let ctor_scheme = build_constructor_scheme(
                 ctor, adt_type, type_var_ids,
             );
@@ -336,6 +352,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // arity. The slot is allocated before the entry is built; the
             // `&mut` guard is dropped before the later `.insert` re-acquires it.
             let slot = self.current_symbol_table_mut(state).allocate_got_slot();
+            let is_product_ctor = ctor_type_def.is_some();
             let mut builder = ModuleEntry::def(
                 ctor_scheme,
                 DefKind::Constructor {
@@ -343,13 +360,19 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     tag: ctor.tag,
                     field_count: ctor.fields.len(),
                     internal: ctor.internal,
+                    type_def: ctor_type_def,
                 },
             )
             .visibility(visibility)
             .param_names(param_names)
             .ast(ast)
             .got_slot(slot);
-            if let Some(doc) = ctor.docstring.clone() {
+            // Ctor docstring wins; for the product ctor (which has no separate
+            // `TypeDef` entry) fall back to the deftype-level docstring.
+            let doc = ctor.docstring.clone().or_else(|| {
+                if is_product_ctor { type_docstring.clone() } else { None }
+            });
+            if let Some(doc) = doc {
                 builder = builder.docstring(doc);
             }
             self.current_symbol_table_mut(state).insert(ctor.name.clone(), builder.build());

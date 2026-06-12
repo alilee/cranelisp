@@ -159,17 +159,18 @@ struct WalkedCtor {
 /// found (the caller treats it as a leaf — its layout is the ABI or it is
 /// unresolved).
 ///
-/// Handles both authoring shapes:
-/// - **sum/enum constructors** — `ModuleEntry::Def { kind:
-///   DefKind::Constructor { tag, field_count, .. }, param_names, scheme }`;
-///   field names from `param_names`, field types from the scheme's `Fn` params;
-/// - **product types** — `ModuleEntry::TypeDef { constructor_scheme: Some(_),
-///   .. }` whose same-named constructor lives on the TypeDef; field names from
-///   the TypeDef's docstring-free `param_names` carrier on the wrapping entry is
-///   absent, so product field names come from the TypeDef's constructor Def
-///   (the constructor Def is overwritten by the TypeDef at registration, but a
-///   sibling `Def` entry for the product ctor name is not retained) — for those
-///   we fall back to the constructor scheme's param positions.
+/// Constructors are uniformly `ModuleEntry::Def { kind: DefKind::Constructor {
+/// tag, field_count, .. }, param_names, scheme }` — field names from
+/// `param_names`, field types from the scheme's `Fn` params (S79 Option 3a;
+/// product ctors are got-slotted `Def`s exactly like sum ctors, no longer
+/// absorbed into a `ModuleEntry::TypeDef`).
+///
+/// The TypeDefInfo (which names the type's constructors) is read from either:
+/// - a separate `ModuleEntry::TypeDef` entry — the **sum/enum** case
+///   (`Option` keyed distinctly from `Some`/`None`); or
+/// - the **product** ctor `Def`'s `DefKind::Constructor { type_def: Some(..) }`
+///   type facet — the single-ctor product case (type-name == ctor-name), where
+///   the surviving `"Rectangle"` entry IS the got-slotted ctor `Def`.
 fn ctors_of<C, L>(
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     fqtn: &FQTypeName,
@@ -181,11 +182,16 @@ where
 {
     let table = symbol_tables.get(&fqtn.module)?;
     let type_entry = table.get(fqtn.name.as_ref())?;
-    let ModuleEntry::TypeDef { info, constructor_scheme, .. } = type_entry else {
-        return None;
+    // The TypeDefInfo lives on a `TypeDef` entry (sum/enum) or on the product
+    // ctor `Def`'s `type_def` facet (single-ctor product, type-name==ctor-name).
+    let info = match type_entry {
+        ModuleEntry::TypeDef { info, .. } => info.clone(),
+        ModuleEntry::Def { kind, .. } => match &**kind {
+            DefKind::Constructor { type_def: Some(td), .. } => (**td).clone(),
+            _ => return None,
+        },
+        _ => return None,
     };
-    let info = info.clone();
-    let product_scheme = constructor_scheme.clone();
     drop(table);
 
     // Gather per-constructor (name, tag, field (name, ty)) lists.
@@ -222,28 +228,6 @@ where
             raws.push(Raw {
                 name: ctor_name.clone(),
                 tag: *tag,
-                field_names: names,
-                field_types,
-            });
-        } else if ctor_name == &Symbol::from(fqtn.name.as_ref())
-            && let Some(scheme) = &product_scheme
-        {
-            // Product type: the same-named constructor's signature lives on the
-            // TypeDef's `constructor_scheme`. Field types from its Fn params;
-            // names are positional (`_0`, `_1`, …) since the product ctor's
-            // param_names are not retained as a sibling Def — the schema's named
-            // access still works against these positional names, which the
-            // generator emits and the DLL parser reads back verbatim.
-            let field_types: Vec<Type> = match &scheme.ty {
-                Type::Fn(params, _) => params.clone(),
-                _ => Vec::new(),
-            };
-            let names: Vec<Symbol> = (0..field_types.len())
-                .map(|i| Symbol::from(format!("_{i}")))
-                .collect();
-            raws.push(Raw {
-                name: ctor_name.clone(),
-                tag: 0,
                 field_names: names,
                 field_types,
             });
@@ -590,11 +574,30 @@ mod tests {
         FQTypeName::new(ModuleFullPath::from(module), name.into())
     }
 
-    /// Register a product `deftype` (single same-named ctor) into `tables`.
+    /// Register a product `deftype` (single same-named ctor) into `tables`,
+    /// supplying positional `_{i}` field names. Use `register_product_named`
+    /// to supply real declared names.
     fn register_product(
         tables: &DashMap<ModuleFullPath, SymbolTable>,
         module: &str,
         name: &str,
+        field_types: Vec<Type>,
+    ) {
+        let param_names: Vec<Symbol> = (0..field_types.len())
+            .map(|i| Symbol::from(format!("_{i}")))
+            .collect();
+        register_product_named(tables, module, name, param_names, field_types);
+    }
+
+    /// Register a product `deftype` with explicit declared field names —
+    /// the S79 Option 3a dual-facet shape: a got-slotted ctor `Def` with
+    /// `DefKind::Constructor { type_def: Some(..), .. }` carrying its real
+    /// `param_names` (field names) and `scheme` (field types).
+    fn register_product_named(
+        tables: &DashMap<ModuleFullPath, SymbolTable>,
+        module: &str,
+        name: &str,
+        param_names: Vec<Symbol>,
         field_types: Vec<Type>,
     ) {
         let m = ModuleFullPath::from(module);
@@ -606,19 +609,33 @@ mod tests {
         let scheme = Scheme {
             type_vars: vec![],
             constraints: HashMap::new(),
-            ty: Type::Fn(field_types, Box::new(adt)),
+            ty: Type::Fn(field_types.clone(), Box::new(adt)),
+        };
+        let type_def = cranelisp_types::TypeDefInfo {
+            name: fqtn(module, name),
+            type_params: vec![],
+            constructors: vec![Symbol::from(name)],
         };
         st.insert(
             Symbol::from(name),
-            ModuleEntry::TypeDef {
-                info: cranelisp_types::TypeDefInfo {
-                    name: fqtn(module, name),
-                    type_params: vec![],
-                    constructors: vec![Symbol::from(name)],
-                },
+            ModuleEntry::Def {
+                scheme,
                 visibility: Visibility::Public,
                 docstring: None,
-                constructor_scheme: Some(scheme),
+                param_names,
+                kind: Box::new(DefKind::Constructor {
+                    type_name: fqtn(module, name),
+                    tag: 0,
+                    field_count: field_types.len(),
+                    internal: false,
+                    type_def: Some(Box::new(type_def)),
+                }),
+                callees: vec![],
+                got_slot: Some(0),
+                trait_origin: None,
+                seq: 0,
+                ast: None,
+                code: None,
             },
         );
         tables.insert(m, st);
@@ -630,10 +647,11 @@ mod tests {
     #[test]
     fn product_type_schema_lists_typed_fields() {
         let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
-        register_product(
+        register_product_named(
             &tables,
             "shapes",
             "Rectangle",
+            vec![Symbol::from("w"), Symbol::from("h")],
             vec![Type::Int, Type::Int],
         );
 
@@ -642,9 +660,11 @@ mod tests {
 
         assert!(text.starts_with(";; layout-hash: "), "header line present");
         assert!(text.contains("(shapes/Rectangle"), "type keyed by FQ name");
+        // S79 Option 3a: the product ctor `Def`'s real `param_names` (w/h) are
+        // emitted, NOT positional `_0`/`_1` — the FIXME 0319 field-name fix.
         assert!(
-            text.contains("(Rectangle 0 ((_0 primitives/Int) (_1 primitives/Int)))"),
-            "ctor tag 0 with two typed fields; got:\n{text}",
+            text.contains("(Rectangle 0 ((w primitives/Int) (h primitives/Int)))"),
+            "ctor tag 0 with two real-named typed fields; got:\n{text}",
         );
     }
 

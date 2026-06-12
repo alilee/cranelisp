@@ -3929,13 +3929,14 @@ impl CompilerSession {
             });
         }
 
-        // Collect platform manifest names and rlib paths.
-        // TODO: When platform linking is needed, these functions will
-        // query the loaded platform registry.
-        let platform_manifest_names =
-            crate::exe::collect_platform_manifest_names();
-        let platform_rlib_paths =
-            crate::exe::find_platform_rlibs();
+        // Source the platforms the program loaded at compile time (via
+        // `(platform "…")` → `load_and_register_platform`, retained on
+        // `kept_dlls`) and derive the three `--link` inputs from them
+        // (platform-interface.md §7.3): the rlib paths the linker force-loads,
+        // the manifest symbol names the startup stub calls, and the per-platform
+        // layout-hash checks the startup stub bakes.
+        let (platform_manifest_names, platform_rlib_paths, platform_layout_checks) =
+            self.linked_platform_link_data()?;
 
         // Sprint 58 Wave 2 / Decision 36: every user-defined function is
         // declared bare-`Linkage::Local` by `compile_to_module` (no
@@ -3946,12 +3947,12 @@ impl CompilerSession {
         let entry_fn_name = "main".to_string();
 
         // Generate startup .o stub. The per-platform layout-hash checks
-        // (platform-interface.md §5.5.4 `--link` gate) are derived from the
-        // linked platforms; `collect_platform_manifest_names` is still the
-        // empty-stub pre-existing `--link`-platform registry (the loaded-platform
-        // query is not yet built), so no checks are baked when no platform is
-        // linked. The bake seam is wired and exercised by exe.rs unit tests.
-        let platform_layout_checks: Vec<cranelisp_backend::exe::PlatformLayoutCheck> = Vec::new();
+        // (platform-interface.md §5.5.4 `--link` gate) are derived above from the
+        // linked platforms (`linked_platform_link_data`): for each platform that
+        // exported a layout hash, the compiler regenerates the schema from the
+        // live `platform.<name>` table and bakes the resulting expected hash, so
+        // a stale platform builds but aborts at process start. Empty when no
+        // platform is linked (the as-built no-platform path).
         let startup_bytes = crate::exe::generate_startup_object(
             &platform_manifest_names,
             main_returns_io,
@@ -4011,6 +4012,92 @@ impl CompilerSession {
             &bundle_lib,
             &platform_rlib_paths,
         )
+    }
+
+    /// Derive the three `--link` platform inputs from the loaded-platform
+    /// registry (`SharedState::kept_dlls`) — platform-interface.md §7.3.
+    ///
+    /// Each `(platform "<name>")` declaration in the entry program loaded a DLL
+    /// at compile time, retained on `kept_dlls`. For the standalone binary the
+    /// linker must statically link those platforms instead. Returns, in order:
+    ///
+    /// - **manifest names** — the symbol the startup stub calls to populate each
+    ///   platform's GOT (`collect_platform_manifest_names`);
+    /// - **rlib paths** — the static archives the linker `-force_load`s
+    ///   (`find_platform_rlibs`), so the platform's `#[export_name]` GOT +
+    ///   manifest + layout-hash symbols resolve in the produced binary;
+    /// - **layout-hash checks** — for each platform that exported a layout hash
+    ///   (i.e. marshals ADTs), the compiler regenerates the schema from the live
+    ///   `platform.<name>` table (the same backend generator the load-time gate
+    ///   runs) and bakes the expected hash into the startup stub, so a stale
+    ///   statically-linked platform aborts at process start (§5.5.4 `--link`
+    ///   gate).
+    fn linked_platform_link_data(
+        &self,
+    ) -> Result<
+        (
+            Vec<String>,
+            Vec<PathBuf>,
+            Vec<cranelisp_backend::exe::PlatformLayoutCheck>,
+        ),
+        CranelispError,
+    > {
+        let platform_names: Vec<String> = {
+            let guard = self
+                .shared
+                .kept_dlls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            guard.iter().map(|p| p.name.clone()).collect()
+        };
+
+        let manifest_names =
+            crate::exe::collect_platform_manifest_names(platform_names.len());
+
+        let rlib_paths = crate::exe::find_platform_rlibs(
+            &platform_names,
+            &self.shared.project_root,
+            &self.lib_dirs(),
+            &self.platform_dirs(),
+        )?;
+
+        // Per-platform layout-hash checks: only for platforms that exported a
+        // layout hash. The expected hash is regenerated from the live tables (NOT
+        // read from the DLL) — the `--link` gate compares the compiler's
+        // freshly-computed hash against the statically-linked
+        // `__cranelisp_layout_hash_<name>`, so a drifted platform refuses.
+        let mut layout_checks = Vec::new();
+        {
+            let guard = self
+                .shared
+                .kept_dlls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            for platform in guard.iter() {
+                if platform.layout_hash.is_none() {
+                    // Scalar-only platform (no ADTs) exports no hash — no gate.
+                    continue;
+                }
+                let module_path =
+                    ModuleFullPath::from(format!("platform.{}", platform.name));
+                let roots = self
+                    .shared
+                    .symbol_tables
+                    .get(&module_path)
+                    .map(|t| cranelisp_backend::schema::platform_effect_roots(&t))
+                    .unwrap_or_default();
+                let expected_hash = cranelisp_backend::schema::compute_layout_hash(
+                    &self.shared.symbol_tables,
+                    &roots,
+                );
+                layout_checks.push(cranelisp_backend::exe::PlatformLayoutCheck {
+                    name: platform.name.clone(),
+                    expected_hash,
+                });
+            }
+        }
+
+        Ok((manifest_names, rlib_paths, layout_checks))
     }
 
     // -- REPL display utilities (pipeline-v4.md §6) --
@@ -4153,17 +4240,30 @@ impl CompilerSession {
                             name, module, variants, docstring.as_deref(),
                         );
                     }
-                    DefKind::Constructor { type_name, .. } => {
+                    DefKind::Constructor { type_name, type_def, .. } => {
                         let type_str = format_type_qualified(&scheme.ty);
                         let tn = TypeName::from(type_name.name.as_ref());
+                        // Resolve the type's `TypeDefInfo` so `format_ctor_display`
+                        // can suppress the redundant `Type.Ctor` dot for a
+                        // single-ctor product (`Point`, not `Point.Point`). A
+                        // single-ctor product type's `name` key is THIS ctor `Def`
+                        // (type-name == ctor-name; FIXME 0319), so `type_def` on
+                        // `kind` is the authoritative facet — prefer it; fall back
+                        // to the chain lookup for sum/enum ctors whose type is a
+                        // separate `TypeDef` entry. Reaching the spurious
+                        // `{type_name}.{name}` branch (e.g. `user/Point.Point`,
+                        // which the outer `{module}/` then double-qualifies to
+                        // `user/user/Point.Point`) is the Root-C defect (FIXME 0321).
                         let ctor_display = {
-                            let scope = self.current_module_path();
-                            if let Some(info) = cranelisp_types::lookup_type_def_chain(
-                                &self.shared.symbol_tables, &scope, &tn,
-                            ) {
-                                crate::display::format_ctor_display(&tn, name, &info)
-                            } else {
-                                format!("{type_name}.{name}")
+                            let info = type_def.as_deref().cloned().or_else(|| {
+                                let scope = self.current_module_path();
+                                cranelisp_types::lookup_type_def_chain(
+                                    &self.shared.symbol_tables, &scope, &tn,
+                                )
+                            });
+                            match info {
+                                Some(info) => crate::display::format_ctor_display(&tn, name, &info),
+                                None => format!("{tn}.{name}"),
                             }
                         };
                         return format!(":{type_str} {module}/{ctor_display} ; deftype");

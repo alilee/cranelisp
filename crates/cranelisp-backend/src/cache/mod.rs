@@ -127,7 +127,19 @@ pub mod linker;
 /// there is nothing to stash on `SymbolTable`. The field deletion changes the
 /// serialised shape, so the version bumps (Decision 34) to invalidate stale v2
 /// caches gracefully via `CacheStale::SchemaMismatch` fall-through.
-pub const CACHE_SCHEMA_VERSION: u32 = 3;
+///
+/// **v4 (S79 R2.2 — ctor dual-facet, FIXME 0320):** the serialised shape of two
+/// `ModuleEntry`-reachable types changed (Option 3a, FIXME 0319):
+/// `ModuleEntry::TypeDef` LOST `constructor_scheme: Option<Scheme>` (retired),
+/// and `DefKind::Constructor` GAINED `type_def: Option<Box<TypeDefInfo>>` (the
+/// product-type facet — `Some` iff the ctor IS its own type). Both are
+/// `#[serde(default)]` so old caches deserialise without a hard error, but the
+/// *meaning* changed: a stale v3 product-type entry is a `TypeDef`-only record
+/// with no surviving got-slotted ctor `Def`, which the new model cannot
+/// reconstruct — it would silently mis-load (lost field names; a §4.2.1
+/// violation masked behind a cache hit). Decision 34 mandates the bump so stale
+/// v3 caches are rejected as version-mismatch rather than mis-loaded.
+pub const CACHE_SCHEMA_VERSION: u32 = 4;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///

@@ -38,6 +38,111 @@ A failing test without all six fields is treated as a sprint-blocking issue. `/s
 
 ## Current Entries (as of 2026-05-09, Sprint 66 Phase 5 Wave 1, post-S64 baseline carries forward)
 
+### Sprint 79 R2.3 — product-ctor dual-facet cascade REGRESSED ~104 e2e tests (/qa, 2026-06-12, SHA `3339e2d` + uncommitted cascade)
+
+**The R2.3 green-up is NOT green.** A full `cargo nextest run -j2 --no-fail-fast`
+over the FIXME-0319 product-ctor cascade (cranelisp-types→typecheck→backend→int,
+which `cargo check -p cranelisp` confirmed compiles) is **1090 passed / 105
+failed / 8 skipped** (1208s wall, cold-load). The committed baseline was
+1175/1175 green at SHA `9bbdf65`. Only ONE of the 105 (`batch_main_pure_int_…`,
+below) is intended-RED; the other **104 are real cascade regressions**.
+`cargo check` did not run tests, so the cascade's "compiles green" verification
+missed this. Full log at `/tmp/s79_qa_fulltest.log`; clean fail list at
+`/tmp/s79_fails_clean.txt`. Cross-skill handoff filed as **FIXME 0321**
+(target /dev). Two TIGHT minimal guards committed in `tests/regression.rs`.
+
+**Root breakdown (105 unique failing tests):**
+
+| Root | # | Signature | Owner | Repro |
+|---|---|---|---|---|
+| **A** | ~89 | `unknown constructor in pattern: macros/SCons` (quasiquote macro / SList SUM-ctor pattern resolution at the FIXME-0319/0317 pattern-ctor chokepoint) | /dev typecheck | `regression::s79_quasiquote_macro_resolves_macros_scons_in_clause_body` |
+| **B-prim** | 2 | `unknown type \`primitives\` (from module '')` — FQ field-type `:primitives/Int` mis-split (spec §3.1; was GREEN cement) | /dev typecheck/types | `regression::s79_fq_field_type_primitives_int_resolves_without_import` |
+| **B-shapes** | 6 | `unknown type \`shapes/Rectangle\` (from module '')` — `src/platform.rs::fqize_type_expr` produces `TypeRef::new(None, "shapes/Rectangle")` (whole slashed string as name, module None) | /dev int | `spec_platforms_adt::platform_adt_roundtrip_run` (+5 siblings) |
+| **C** | ~3 | product-ctor display: `user/user/Point.Point` def-entry + value renders raw pointer not `(Point 3 4)` (repl/spec §1.5) | /dev int (display.rs) | `repl_introspection::data_constructor_product_no_dot_notation_display` |
+| **D** | 1 | intended-RED forcing test (NOT a regression — see entry below) | /dev typecheck | `spec_10_io::batch_main_pure_int_return_is_rejected` |
+
+| Field | Value |
+|---|---|
+| SHA | `3339e2d` (committed) + uncommitted FIXME-0319 cascade in working tree |
+| Owning skill | /dev (narrow per crate, order: typecheck Root A → typecheck/types Root B-prim → int Root B-shapes → int Root C); see FIXME 0321 |
+| Target sprint | S79 (the cascade must not commit as green with these open) |
+| Disposition | `under-investigation` — cascade regressions; failing-not-ignored. Root A (~89) clears the bulk (quasiquote underlies stdlib + macros); fix it first. |
+| Rationale | Every full-suite failure read against stderr + spec + the committed-baseline green count; collapsed to 4 regression roots + 1 intended-RED. The minimal repros (the two `s79_*` regression guards) compile + fail with the exact root signatures (verified targeted run). Per `feedback_scope_from_test_run` the scope was taken from the real test run, not prose. |
+
+**Blocked by Root B-shapes:** the S79-task-2 schema regen + the platform ADT
+round-trip. `(platform shapes)` cannot LOAD until `shapes/Rectangle` resolves, so
+`/platform-schema shapes` cannot be driven and the committed placeholder
+`platforms/shapes/src/shapes.platform-schema` (correct `w`/`h` field body,
+sentinel layout-hash) cannot be regenerated this wave. The shapes dylib + binary
+build cleanly. The backend schema generator itself is sound — its unit test
+`product_type_schema_lists_typed_fields` (the 0319 fix) PASSES; the failure is
+upstream (platform load), not in the generator.
+
+**First-class product-ctor-as-value (S79 task 3) — GREEN, no new test owed:** the
+§4.2.1 guards `spec_05_definitions::single_ctor_product_constructor_as_first_class_value`
+(let-bound) and `…_passed_as_higher_order_arg` (`--run`, exit 7) already exist
+(authored an earlier wave) and PASS post-correction — the latent §4.2.1 violation
+is fixed. The 4 int product-ctor unit tests (`mounts_pair_and_result_in_primitives`,
+`ctor_field_types_reads_single_ctor_product_def_scheme`,
+`ctor_field_types_reads_distinct_def_for_named_ctor`,
+`derive_codegen_batch_includes_synthesised_constructors`) all PASS (dyld cold-load
+~47s, NOT a hang — confirmed the S78 hazard diagnosis).
+
+### Sprint 79 — batch `main` MUST return `IO _` enforcement (forcing function, /qa, 2026-06-12, SHA `3339e2d`)
+
+Failing-first negative test authored as the forcing function for the
+`main : (Fn [] (IO _))` enforcement gap. The spec MANDATES a batch-mode
+(`--run` / `--link`) `main` return `IO _` (spec/02-grammar.md §2.1 ~line 25;
+spec/10-io.md §10.6 ~line 244–247; spec/12-runtime.md §12.6 ~line 173). The
+compiler currently accepts a bare-`Int` (pure, non-`IO`) `main` as an
+unenforced leniency. Until enforcement lands, this test is RED.
+
+| Field | Value |
+|---|---|
+| Test name | `spec_10_io::batch_main_pure_int_return_is_rejected` |
+| SHA | `3339e2d` |
+| stderr signature | `--run: a pure (bare-Int) main MUST be rejected — \`main :: (Fn [] (IO _))\` (spec/10-io.md §10.6); compiler accepted it.` (panics at `tests/spec_10_io.rs:288` — `--run` half: child exited 0, leniently accepting `(defn main [] 0)`) |
+| Owning skill | /dev (typecheck — enforce `main :: (Fn [] (IO _))` at the batch entry-point check) |
+| Target sprint | S79 (enforcement) — but **rides RED while the enforcement sweep schedules** (see ripple below); if enforcement does not land this sprint, disposition = `out-of-scope (owner=/dev typecheck)`, target S80, and the BATCH bare-`Int` main sweep (link.rs, build_confidence.rs, examples/, exemplar.rs repros) is the gating cost. |
+| Disposition | `under-investigation` — RED-until-enforcement forcing function. Un-ignored per `memory/feedback_failing_not_ignored.md`. **NOTE**: enforcing `main : IO _` breaks every BATCH-mode bare-`Int` main in the suite (a suite-wide sweep, see S79 report); the test cannot go green in isolation — enforcement + the corpus reshape land together. |
+| Rationale | The suite cannot be green without the enforcement change — that is the intended forcing-function state (user directive 2026-06-12). The existing positive tests that encode the leniency (`spec_10_io::run_mode_main_returns_int_exit_code`, `link.rs::link_main_returning_zero_exits_zero`, the `build_confidence.rs` mode-equiv corpus, `examples.rs` 01–20) become the sweep surface once enforcement lands. |
+
+### Sprint 79 — platform-interface ADT e2e walks (FIXME 0289 "option 2") + FQTypeName boundary cement (/qa, 2026-06-12, SHA `3339e2d`)
+
+Wave 0 authored two new e2e files. **`spec_platforms_adt.rs`** is FAILING-FIRST
+per FIXME 0289 items 1–3, gated on three dependencies that land in parallel
+waves: the ADT-typed **`shapes`** test-DLL fixture (`/platform`), **R1**
+(`--link` platform wiring + startup-stub baked-hash comparison), and **R2**
+(live `--run`/REPL schema regeneration + layout-hash dual gate). Spec basis
+`spec/10-io.md §10.10` (Platform ABI Contract) + `design/arch/platform-interface.md`
+§7.2/§7.3. **`spec_fqtypename_boundary.rs`** is the FQTypeName CEMENT — EXPECTED
+GREEN (confirms existing compliance per the /arch audit, (D)-count = 0); RED here
+would be an unexpected alias-collapse leak. Spec basis `spec/08-modules.md §8.5`
+(Qualified Names) + Decision 0047.
+
+| Test name | Expected | Gating dependency | Disposition |
+|---|---|---|---|
+| `spec_platforms_adt::platform_adt_roundtrip_run` | RED | `shapes` fixture + R2 | `under-investigation` — round-trip `--run`; ADT crosses (exit 12). |
+| `spec_platforms_adt::platform_adt_roundtrip_link` | RED | `shapes` fixture + R1 | `under-investigation` — round-trip `--link`; produced binary exits 12 (RED-until-R1). |
+| `spec_platforms_adt::platform_adt_hash_gate_run_refuses` | RED | `shapes` fixture + R2 | `under-investigation` — dual hash-gate, `--run` refuses (names `shapes`, both hashes, rebuild guidance; does NOT compute 12). |
+| `spec_platforms_adt::platform_adt_hash_gate_repl_warns_and_loads` | RED | `shapes` fixture + R2 | `under-investigation` — dual hash-gate, REPL warns-and-loads (continues). |
+| `spec_platforms_adt::platform_adt_hash_gate_link_refuses` | RED | `shapes` fixture + R1 | `under-investigation` — dual hash-gate, `--link` refuses (startup abort); RED-until-R1. |
+| `spec_platforms_adt::platform_adt_roundtrip_cache_restore` | RED | `shapes` fixture + R2 | `under-investigation` — cache-restore round-trip; second run cache-hit via `CRANELISP_MODULE_TRACE=1`, still 12. |
+| `spec_platforms_adt::platform_stdio_print_link` | RED | R1 | `under-investigation` — minimal R1 guard: `--link` `(platform stdio)` prints "hello" (RED-until-R1). |
+| `spec_platforms_adt::platform_stdio_print_run_control` | GREEN | none (control) | the `--run` companion to the R1 guard — passes today; pins the gap to R1 when the `_link` half fails. |
+| `spec_fqtypename_boundary::fqtypename_cross_module_same_short_name_resolve_distinctly` | GREEN | already-compliant | CEMENT — `a/Box`/`b/Box` resolve distinctly (exit 14); RED would be FQTypeName collapse. |
+| `spec_fqtypename_boundary::fqtypename_cross_module_same_short_name_neg_no_alias_collapse` | GREEN | already-compliant | CEMENT (neg) — cross-type `b/Box` value vs `a/Box` pattern MUST be rejected. |
+| `spec_fqtypename_boundary::fqtypename_repl_introspection_displays_fully_qualified` | GREEN | already-compliant | CEMENT — REPL displays `:user/Box` (FQ in type position). |
+| `spec_fqtypename_boundary::fqtypename_repl_introspection_neg_no_bare_short_name_in_type_position` | GREEN | already-compliant | CEMENT (neg) — bare `:Box` tag MUST NOT appear. |
+
+| Field | Value |
+|---|---|
+| SHA | `3339e2d` |
+| Owning skill | platform `--run`/REPL halves → /dev (after `shapes` fixture from /platform + R2 from int/backend); `--link` halves + R1 guard → /dev (R1 platform link wiring); FQTypeName cement → none (expected green) |
+| Target sprint | S79 (fixture + R1 + R2 land this sprint per the platform-interface cascade); if a dependency slips, disposition = `out-of-scope (owner=/dev)` target S80. The FQTypeName cement rows carry no failure disposition (expected green). |
+| Disposition | platform rows `under-investigation` — RED-until-(fixture+R1/R2); FQTypeName rows expected-green (verified in Wave A's consolidated run). Un-ignored per `memory/feedback_failing_not_ignored.md`. |
+| Contract-mismatch risk | the `shapes` fixture contract (platform name `shapes`; `(deftype Rectangle [:Int w :Int h])`; fn `area : (Fn [shapes/Rectangle] primitives/Int)`; `(area (Rectangle 3 4)) ⇒ 12`) is mirrored in `spec_platforms_adt.rs` consts `SHAPES_PROGRAM`/`SHAPES_PROGRAM_DRIFTED`. If `/platform`'s fixture diverges (different fn name, ADT shape, or expected value), reconcile in Wave A. Also flag: the exact `main` shape (bare-`Int` vs `IO _`) interacts with the S79 `main : IO _` enforcement sweep — see the note in `spec_platforms_adt.rs`. |
+
 ### Sprint 77 Phase 3 triage — all 38 failing tests (/qa, 2026-06-09, SHA `49fe4de`)
 
 Full `cargo nextest run --no-fail-fast` captured at `/tmp/s77_fulltest.log`:

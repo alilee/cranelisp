@@ -509,8 +509,8 @@ impl ModuleEntry<()> {
                 ModuleEntry::SpecialForm { scheme, param_names, docstring, description, visibility }
             }
             ModuleEntry::Import { source, visibility } => ModuleEntry::Import { source, visibility },
-            ModuleEntry::TypeDef { info, visibility, docstring, constructor_scheme } => {
-                ModuleEntry::TypeDef { info, visibility, docstring, constructor_scheme }
+            ModuleEntry::TypeDef { info, visibility, docstring } => {
+                ModuleEntry::TypeDef { info, visibility, docstring }
             }
             ModuleEntry::IntrinsicType { ty, visibility, docstring } => {
                 ModuleEntry::IntrinsicType { ty, visibility, docstring }
@@ -865,11 +865,20 @@ pub enum ModuleEntry<C: CodeStore = ()> {
     /// source of truth (Principle 7). The entry owns the docstring; the
     /// `info` payload carries only the type's structural metadata (name,
     /// type-parameter binders, constructor names).
+    /// **`constructor_scheme` retired (S79 Option 3a).** A single-ctor
+    /// **product** type no longer survives as a `TypeDef` entry that smuggled
+    /// the ctor's function-type `Scheme` in a `constructor_scheme:
+    /// Option<Scheme>` field. The product case now survives as a got-slotted
+    /// ctor `Def` carrying a type facet (`DefKind::Constructor { type_def:
+    /// Some(..) }`); the ctor's scheme lives canonically on that `Def`'s own
+    /// `scheme`. `ModuleEntry::TypeDef` entries are therefore only ever the
+    /// **sum/enum** case (type name distinct from every ctor name), and carry
+    /// no constructor scheme — consumers read each ctor's scheme from its own
+    /// `Def`. See `DefKind::Constructor.type_def` rustdoc + `bounded-contexts.md` §7.
     TypeDef {
         info: TypeDefInfo,
         visibility: Visibility,
         docstring: Option<String>,
-        constructor_scheme: Option<Scheme>,
     },
     /// Compiler-intrinsic scalar type (Int, Bool, Float, String).
     ///
@@ -1392,12 +1401,51 @@ pub enum DefKind {
     /// `internal: true` for compiler-internal constructors that users cannot
     /// directly construct or pattern-match (e.g., `IO.Bind` is constructed only
     /// by `bind`).
+    ///
+    /// **Product-type dual facet — `type_def` (S79 Option 3a).** A
+    /// **single-ctor product type** (`(deftype Rectangle [:Int w :Int h])`)
+    /// has type-name == ctor-name, so the type and its constructor collide on
+    /// one symbol-table key (`"Rectangle"`). Rather than let a
+    /// `ModuleEntry::TypeDef` overwrite the got-slotted ctor `Def` (the prior
+    /// model — which dropped the ctor's `param_names` field names and broke
+    /// product-ctor-as-first-class-value, a §4.2.1 spec violation propped up
+    /// by six bespoke `constructor_scheme` fallback legs), the surviving
+    /// `"Rectangle"` entry is the **got-slotted ctor `Def`** (exactly like a
+    /// sum ctor) carrying a **type facet** so it ALSO answers as its own type.
+    ///
+    /// - `type_def: Some(..)` ⟺ **this constructor IS its own type** — the
+    ///   single-ctor product case (type-name == ctor-name). The carried
+    ///   `TypeDefInfo` (`name` / `type_params` / `constructors`) is the
+    ///   type-def view a consumer reads when it needs the entry *as a type*
+    ///   (resolution, introspection, schema). Field names are NOT duplicated
+    ///   here — they stay on the ctor `Def`'s `param_names`, the single source
+    ///   (Principle 7); `TypeDefInfo` deliberately carries no `field_names`
+    ///   list.
+    /// - `type_def: None` ⟺ an **ordinary sum/enum constructor** whose type is
+    ///   a *separate* `ModuleEntry::TypeDef` entry under a distinct key
+    ///   (`Option` vs `Some`/`None`). The ctor answers only as a value/callable.
+    ///
+    /// In short: product ctors are got-slotted `Def`s that carry their type
+    /// facet — they are NOT absorbed into a `ModuleEntry::TypeDef`. The prior
+    /// `ModuleEntry::TypeDef.constructor_scheme: Option<Scheme>` smuggling
+    /// field (the seam the six fallback legs keyed on) is retired; the ctor's
+    /// function-type signature lives canonically on the `Def`'s own `scheme`.
+    /// See `design/arch/bounded-contexts.md` §7 "Multi-legged authoring".
     Constructor {
         type_name: FQTypeName,
         tag: usize,
         field_count: usize,
         #[serde(default)]
         internal: bool,
+        /// The type facet for a single-ctor **product** type (type-name ==
+        /// ctor-name). `Some(TypeDefInfo)` iff this constructor IS its own
+        /// type — the entry answers both as a got-slotted ctor `Def` AND as
+        /// its type. `None` for ordinary sum/enum ctors whose type is a
+        /// separate `ModuleEntry::TypeDef` entry. Boxed to keep the common
+        /// (`None`) variant small. Field names are NOT stored here — they live
+        /// on the Def's `param_names` (single source, Principle 7).
+        #[serde(default)]
+        type_def: Option<Box<TypeDefInfo>>,
     },
     /// A multi-clause macro parent entry (S69 Submission 13 macro-unification).
     ///
@@ -1883,6 +1931,7 @@ where
 pub fn lookup_type_def_chain<C, L>(
     modules: &dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>,
     scope: &ModuleFullPath,
+    // FQTypeName exception 2 (context-supplied: scope IS the resolution context; returns FQ TypeDefInfo)
     name: &TypeName,
 ) -> Option<TypeDefInfo>
 where
@@ -1907,6 +1956,7 @@ where
 pub fn lookup_trait_decl_chain<C, L>(
     modules: &dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>,
     scope: &ModuleFullPath,
+    // FQTypeName exception 2 (context-supplied: scope IS the resolution context; returns FQ TypeDefInfo)
     trait_name: &TraitName,
 ) -> Option<TraitDeclInfo>
 where
@@ -1932,6 +1982,7 @@ pub fn get_impls_for_type_chain<C, L>(
     modules: &dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>,
     scope: &ModuleFullPath,
     type_name: &TypeName,
+    // FQTypeName exception 1 (reverse-lookup-for-display: bare names projected off FQ entries for introspection enumeration within scope)
 ) -> Vec<TraitName>
 where
     C: CodeStore,
@@ -1982,6 +2033,7 @@ pub fn get_implementing_types_chain<C, L>(
     modules: &dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>,
     scope: &ModuleFullPath,
     trait_name: &TraitName,
+    // FQTypeName exception 1 (reverse-lookup-for-display: bare names projected off FQ entries for introspection enumeration within scope)
 ) -> Vec<TypeName>
 where
     C: CodeStore,
@@ -2139,7 +2191,6 @@ mod tests {
                 },
                 visibility: Visibility::Public,
                 docstring: None,
-                constructor_scheme: None,
             },
         );
 

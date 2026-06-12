@@ -50,6 +50,7 @@ pub cranelisp_types::DefKind::Constructor
 pub cranelisp_types::DefKind::Constructor::field_count: usize
 pub cranelisp_types::DefKind::Constructor::internal: bool
 pub cranelisp_types::DefKind::Constructor::tag: usize
+pub cranelisp_types::DefKind::Constructor::type_def: core::option::Option<alloc::boxed::Box<cranelisp_types::TypeDefInfo>>
 pub cranelisp_types::DefKind::Constructor::type_name: cranelisp_types::FQTypeName
 pub cranelisp_types::DefKind::Macro
 pub cranelisp_types::DefKind::Macro::clauses_meta: alloc::vec::Vec<cranelisp_types::MacroClauseInfo>
@@ -246,7 +247,6 @@ pub cranelisp_types::ModuleEntry::TraitImpl::methods: alloc::vec::Vec<cranelisp_
 pub cranelisp_types::ModuleEntry::TraitImpl::trait_name: cranelisp_types::FQTraitName
 pub cranelisp_types::ModuleEntry::TraitImpl::visibility: cranelisp_types::Visibility
 pub cranelisp_types::ModuleEntry::TypeDef
-pub cranelisp_types::ModuleEntry::TypeDef::constructor_scheme: core::option::Option<cranelisp_types::Scheme>
 pub cranelisp_types::ModuleEntry::TypeDef::docstring: core::option::Option<alloc::string::String>
 pub cranelisp_types::ModuleEntry::TypeDef::info: cranelisp_types::TypeDefInfo
 pub cranelisp_types::ModuleEntry::TypeDef::visibility: cranelisp_types::Visibility

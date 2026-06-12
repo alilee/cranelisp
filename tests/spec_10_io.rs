@@ -249,6 +249,79 @@ fn run_mode_main_returns_int_exit_code() {
 }
 
 // =============================================================================
+// Entry-point return type enforcement — batch `main` MUST return `IO _`
+// =============================================================================
+//
+// FAILING-FIRST forcing function (S79). The spec REQUIRES a batch-mode
+// (`--run` / `--link`) `main` to return `IO _`:
+//   - spec/02-grammar.md §2.1 "Batch Mode" (~line 25): main "returns a value
+//     of type `IO _`".
+//   - spec/10-io.md §10.6 "Entry Point" (~line 244–247): "The return type of
+//     `main` MUST be `IO _`" → `main :: (Fn [] (IO _))`.
+//   - spec/12-runtime.md §12.6 "Entry Point" (~line 173): same MUST; exit code
+//     is the inner Int of the resulting `IO Int`.
+// REPL mode is EXEMPT (spec/10-io.md §10.6.2 — no `main` requirement).
+//
+// The compiler currently accepts a bare-`Int` `main` as an unenforced
+// leniency (e.g. `run_mode_main_returns_int_exit_code` above, and the
+// `(defn main [] 42)` corpus in tests/link.rs + tests/build_confidence.rs).
+// This test is RED today: a pure (non-`IO`) batch `main` is NOT yet rejected.
+// It is the forcing function — the suite cannot go green until `main : IO _`
+// is enforced. Un-ignored on purpose (memory/feedback_failing_not_ignored.md).
+//
+// spec: spec/10-io.md §10.6 (Entry Point) + spec/02-grammar.md §2.1 (Batch Mode)
+// + spec/12-runtime.md §12.6 (Entry Point) — a batch `main` returning a bare
+// `Int` (not `IO _`) MUST be rejected with a spec-grounded error.
+#[test]
+fn batch_main_pure_int_return_is_rejected() {
+    // A pure (bare-`Int`) main: `(defn main [] 0)` has type `(Fn [] Int)`,
+    // which violates `main :: (Fn [] (IO _))`. Both batch entry modes
+    // (`--run` and `--link`) MUST refuse it.
+    let pure_main = "(defn main [] 0)";
+
+    // --- `--run` half ---
+    let run_out = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user(pure_main)
+        .output();
+    assert!(
+        !run_out.status.success(),
+        "--run: a pure (bare-Int) main MUST be rejected — `main :: (Fn [] (IO _))` \
+         (spec/10-io.md §10.6); compiler accepted it.\nstdout:\n{}\nstderr:\n{}",
+        run_out.stdout, run_out.stderr
+    );
+    let run_combined = format!("{}{}", run_out.stdout, run_out.stderr);
+    assert!(
+        run_combined.contains("main") && run_combined.contains("IO"),
+        "--run: rejection MUST name `main` and the `IO _` requirement \
+         (spec/10-io.md §10.6, spec/12-runtime.md §12.6).\ncombined:\n{}",
+        run_combined
+    );
+
+    // --- `--link` half ---
+    let link_out = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .link("user.cl")
+        .user(pure_main)
+        .output();
+    assert!(
+        !link_out.status.success(),
+        "--link: a pure (bare-Int) main MUST be rejected — `main :: (Fn [] (IO _))` \
+         (spec/02-grammar.md §2.1, spec/10-io.md §10.6); compiler accepted it.\n\
+         stdout:\n{}\nstderr:\n{}",
+        link_out.stdout, link_out.stderr
+    );
+    let link_combined = format!("{}{}", link_out.stdout, link_out.stderr);
+    assert!(
+        link_combined.contains("main") && link_combined.contains("IO"),
+        "--link: rejection MUST name `main` and the `IO _` requirement \
+         (spec/10-io.md §10.6, spec/12-runtime.md §12.6).\ncombined:\n{}",
+        link_combined
+    );
+}
+
+// =============================================================================
 // IO branch consistency — spec/10-io.md §10.7.2
 // =============================================================================
 

@@ -1711,7 +1711,6 @@ mod tests {
                 info: type_def_info.clone(),
                 visibility: Visibility::Public,
                 docstring: None,
-                constructor_scheme: None,
             },
         );
 
@@ -1730,6 +1729,7 @@ mod tests {
                 tag,
                 field_count,
                 internal: false,
+                type_def: None,
             }),
             callees: vec![],
             got_slot: None,
@@ -4004,6 +4004,7 @@ mod tests {
                     tag: 1,
                     field_count: 1,
                     internal: false,
+                    type_def: None,
                 }),
                 callees,
                 got_slot,

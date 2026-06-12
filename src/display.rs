@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    FQTypeName, ModuleEntry, ModuleFullPath, Scheme, Symbol, SymbolTable, Type,
+    DefKind, FQTypeName, ModuleEntry, ModuleFullPath, Scheme, Symbol, SymbolTable, Type,
     TypeDefInfo, TypeId, NULLARY_TAG_THRESHOLD,
 };
 
@@ -336,6 +336,14 @@ pub fn format_ctor_display(
 }
 
 /// Look up a TypeDefInfo from symbol tables by FQTypeName.
+///
+/// Reads an entry **as a type** — the int-side mirror of typecheck's
+/// `type_def_view_of` (S79 Option 3a, FIXME 0319/0321). A sum/enum type's
+/// `name` key is a `ModuleEntry::TypeDef`; a single-ctor **product** type's
+/// `name` key collides with its sole constructor, so the surviving entry is the
+/// got-slotted ctor `Def { kind: Constructor { type_def: Some(td), .. } }` that
+/// carries the type facet `td`. Both must answer here, else a product value
+/// renders as a raw pointer (Root C).
 fn lookup_type_def_from_tables<C, L>(
     fqtn: &FQTypeName,
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
@@ -348,6 +356,12 @@ where
     let type_key = Symbol::from(fqtn.name.as_ref());
     match table.get(type_key.as_ref()) {
         Some(ModuleEntry::TypeDef { info, .. }) => Some(info.clone()),
+        // A single-ctor product type: the entry is the ctor `Def` carrying the
+        // type facet on its `DefKind::Constructor.type_def`.
+        Some(ModuleEntry::Def { kind, .. }) => match kind.as_ref() {
+            DefKind::Constructor { type_def: Some(td), .. } => Some((**td).clone()),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -434,17 +448,14 @@ fn find_constructor_by_tag(type_info: &TypeDefInfo, tag: usize) -> String {
 /// `Fn` param types ARE the field types in declaration order. A nullary
 /// constructor has a non-`Fn` scheme (bare ADT) → no fields.
 ///
-/// Two storage shapes (FIXME 0302):
-///   - **Multi-ctor / ctor-name ≠ type-name**: the constructor is a distinct
-///     `ModuleEntry::Def { kind: Constructor }` keyed by the ctor name.
-///   - **Single-ctor product where ctor name == type name** (e.g.
-///     `(deftype Point [:Int x :Int y])`): the `Point` symbol-table key is
-///     occupied by the `ModuleEntry::TypeDef`, which carries the constructor's
-///     scheme in its `constructor_scheme` field. There is no separate `Def`
-///     under that name, so the `Def` arm misses and we must read
-///     `constructor_scheme` — otherwise field types come back empty and the
-///     value displays as the bare ctor name (`:user/Point Point`) instead of
-///     `(Point 3 4)`.
+/// Single storage shape (S79 Option 3a, FIXME 0319): every constructor — sum,
+/// enum, AND single-ctor product — is a got-slotted `ModuleEntry::Def { kind:
+/// Constructor }` keyed by the ctor name, carrying the field types on its own
+/// `scheme`. A single-ctor product where ctor name == type name (e.g.
+/// `(deftype Point [:Int x :Int y])`) is the SAME `Def` (it additionally carries
+/// a `type_def: Some(..)` type facet), so the `Def` arm matches it too. The old
+/// `ModuleEntry::TypeDef.constructor_scheme` product-fallback leg (FIXME 0302) is
+/// retired — there is no separate `TypeDef` entry under a product's name.
 ///
 /// S70: replaces the retired `ConstructorInfo.fields` lookup.
 fn ctor_field_types<C, L>(
@@ -460,12 +471,9 @@ where
         return Vec::new();
     };
     let scheme_ty = match table.get(ctor_name) {
+        // Every constructor — sum, enum, and single-ctor product — is now a
+        // got-slotted `Def`; field types come off its `scheme`.
         Some(ModuleEntry::Def { scheme, .. }) => Some(&scheme.ty),
-        // Single-ctor product (ctor name == type name): the ctor scheme rides
-        // on the TypeDef entry, not a separate Def.
-        Some(ModuleEntry::TypeDef { constructor_scheme: Some(scheme), .. }) => {
-            Some(&scheme.ty)
-        }
         _ => None,
     };
     match scheme_ty {
@@ -899,9 +907,9 @@ mod tests {
         assert_eq!(s, ":primitives/Int 99");
     }
 
-    // --- ctor_field_types: single-ctor product (FIXME 0302) ---
+    // --- ctor_field_types: single-ctor product (S79 Option 3a, FIXME 0319) ---
 
-    use cranelisp_types::{DefKind, ModuleEntry, Symbol, TypeDefInfo, Visibility};
+    use cranelisp_types::{DefKind, ModuleEntry, Symbol, TypeDefInfo};
 
     fn point_fqtn() -> FQTypeName {
         FQTypeName {
@@ -911,9 +919,10 @@ mod tests {
     }
 
     /// Build a `user` module table holding only a single-constructor product
-    /// `Point` whose ctor name == type name. The ctor scheme rides on the
-    /// `TypeDef` entry's `constructor_scheme` (there is no separate `Def`),
-    /// exactly as the typechecker registers it.
+    /// `Point` whose ctor name == type name. The `Point` key holds a got-slotted
+    /// ctor `Def` carrying the field types on its own `scheme` AND a type facet
+    /// (`type_def: Some(..)`), exactly as the typechecker registers it (S79
+    /// Option 3a). There is no separate `TypeDef` entry.
     fn point_product_tables() -> DashMap<ModuleFullPath, SymbolTable> {
         let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
         let mut table = SymbolTable::new(ModuleFullPath::from("user"));
@@ -933,37 +942,39 @@ mod tests {
         };
         table.insert(
             Symbol::from("Point"),
-            ModuleEntry::TypeDef {
-                info,
-                visibility: Visibility::Public,
-                docstring: None,
-                constructor_scheme: Some(ctor_scheme),
-            },
+            ModuleEntry::def(ctor_scheme, DefKind::Constructor {
+                type_name: point_fqtn(),
+                tag: 0,
+                field_count: 2,
+                internal: false,
+                type_def: Some(Box::new(info)),
+            })
+            .param_names(vec![Symbol::from("x"), Symbol::from("y")])
+            .build(),
         );
         tables.insert(ModuleFullPath::from("user"), table);
         tables
     }
 
     // spec: repl/spec.md §1.5 (line 309) — single-ctor product whose ctor name
-    // matches the type name. The ctor scheme is stored on the `TypeDef` entry
-    // (the ctor name shares the type's symbol-table key), so `ctor_field_types`
-    // must read `constructor_scheme`; the prior `Def`-only lookup returned no
-    // fields → the value rendered as the bare ctor `Point` not `(Point 3 4)`.
+    // matches the type name. The `Point` key holds the got-slotted ctor `Def`
+    // (with a `type_def: Some(..)` facet); `ctor_field_types` reads its `scheme`
+    // exactly like any other ctor — the prior `constructor_scheme` product
+    // fallback (FIXME 0302) is retired (S79 Option 3a, FIXME 0319).
     #[test]
-    fn ctor_field_types_reads_single_ctor_product_typedef_scheme() {
+    fn ctor_field_types_reads_single_ctor_product_def_scheme() {
         let tables = point_product_tables();
         let fields = ctor_field_types(&point_fqtn(), "Point", &tables);
         assert_eq!(
             fields,
             vec![Type::Int, Type::Int],
-            "single-ctor product field types must come from the TypeDef \
-             entry's constructor_scheme"
+            "single-ctor product field types come off the product ctor Def's scheme"
         );
     }
 
     // Negative: a multi-ctor type registers each ctor as a distinct `Def`, so
-    // the `Def` arm still resolves field types — the new `TypeDef` arm does not
-    // mask the common path.
+    // the `Def` arm resolves field types for sum ctors too — same arm as the
+    // product case (no product special-case remains).
     #[test]
     fn ctor_field_types_reads_distinct_def_for_named_ctor() {
         let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
@@ -985,11 +996,32 @@ mod tests {
                 tag: 0,
                 field_count: 1,
                 internal: false,
+                type_def: None,
             })
             .build(),
         );
         tables.insert(ModuleFullPath::from("user"), table);
         let fields = ctor_field_types(&fqtn, "Circle", &tables);
         assert_eq!(fields, vec![Type::Float]);
+    }
+
+    // --- Root C (FIXME 0321): product-ctor value display ---
+
+    // spec: repl/spec.md §1.5 — a single-ctor product type's `name` key is its
+    // ctor `Def` carrying the `type_def` facet, NOT a `ModuleEntry::TypeDef`.
+    // `lookup_type_def_from_tables` (the "entry as a type" reader) MUST extract
+    // the facet for products too — else a product VALUE falls through to the raw
+    // pointer fallback in `format_adt_value` (`:user/Point <rawptr>`) instead of
+    // `(Point 3 4)`. Guards the Root-C value-display regression.
+    #[test]
+    fn lookup_type_def_resolves_product_ctor_facet() {
+        let tables = point_product_tables();
+        let info = lookup_type_def_from_tables(&point_fqtn(), &tables)
+            .expect("a product type resolves via its ctor Def's type_def facet");
+        assert_eq!(info.name, point_fqtn());
+        assert_eq!(info.constructors, vec![Symbol::from("Point")]);
+        // The product ctor's name matches the type name → `format_ctor_display`
+        // suppresses the redundant dot, yielding bare `Point` not `Point.Point`.
+        assert_eq!(format_ctor_display("Point", "Point", &info), "Point");
     }
 }

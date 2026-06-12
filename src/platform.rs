@@ -369,6 +369,14 @@ pub fn register_platform_in_tc(
             symbol_tables, module_aliases, &module_path, &desc.type_sig, &desc.name,
         )?;
 
+        // FIXME 0318 / spec §8.11: a platform fn MUST return `IO _`. Foreign
+        // native code's purity is unverifiable — the compiler can only trust the
+        // declared signature — so a platform fn typed pure would be memoized /
+        // reordered / elided / sparked under lenient eval while the host does
+        // arbitrary effects: unsound. The only sound treatment of foreign code is
+        // to sequence its effects, which the `IO` return type forces.
+        require_io_return(&ty, &platform.name, &desc.name)?;
+
         let scheme = Scheme {
             type_vars: vec![],
             constraints: std::collections::HashMap::new(),
@@ -410,43 +418,80 @@ pub fn register_platform_in_tc(
 /// re-writes the same bindings (no duplication hazard for resolution).
 /// Normalise FQ leaf names the frontend type-expr parser leaves under-qualified.
 ///
-/// `cranelisp_frontend::parse_type_expr` (`build_type_expr`) decides type-vs-var
-/// by the FIRST character: `primitives/String` starts lowercase, so it parses to
-/// `TypeExpr::TypeVar("primitives/String")` — a free type variable — even though
-/// the post-slash leaf (`String`) is an uppercase TYPE. The resolution layer
-/// (`resolve_type_expr_in_module` → `cranelisp_types::resolve` → `split_qualified`)
-/// already handles a slash inside a leaf name, but only for `Named`/`Applied`
-/// nodes; `TypeVar` nodes are allocated fresh IDs and never resolved. This pass
-/// rewrites any `TypeVar` whose name is module-qualified AND whose post-slash
-/// leaf is uppercase into a `Named(TypeRef)` so resolution sees it as a type.
-/// (`Applied` heads + already-`Named` leaves keep the slash in their `TypeName`
-/// and resolve correctly via `split_qualified`, so they pass through unchanged.)
+/// `cranelisp_frontend::parse_type_expr` (`build_type_expr`) lowers a slashed
+/// type leaf with the WHOLE slashed string in one field:
+/// - `primitives/String` is classified by its post-slash leaf (`String`,
+///   uppercase) as a type, but `build_type_expr`/`parse_annotation_name` puts
+///   the whole string into the leaf so a leading-lowercase form parses to
+///   `TypeExpr::TypeVar("primitives/String")` (a free type variable);
+/// - `shapes/Rectangle` parses uppercase-first to
+///   `TypeExpr::Named(TypeRef { module: None, name: "shapes/Rectangle" })`.
+///
+/// In BOTH cases the slashed module prefix sits inside the leaf string, NOT in
+/// `TypeRef.module`. `check_type_expr`'s resolver builds its lookup key from
+/// `tref.module` + `tref.name` (qualified only when `module: Some(_)`), so a
+/// `module: None` node whose `name` literally contains a slash is looked up as
+/// a type named `"shapes/Rectangle"` in module `''` — which never resolves
+/// (Root B-shapes, FIXME 0321). This pass re-partitions every such slashed leaf
+/// (in `TypeVar`, `Named`, and `Applied` heads) into
+/// `TypeRef { module: Some(prefix), name: leaf }` via `split_slashed_type_ref`,
+/// so the resolver names the module directly.
 ///
 /// This is the int-side bridge for the FQ-sig design (platform-interface.md §5.3)
 /// — frontend type-expr parsing of `module/Type` leaves is a separate concern
 /// (the parser change is FIXME 0230's neighbourhood). Keeping the normalisation
 /// at the platform boundary avoids a frontend change for this cut.
 fn fqize_type_expr(expr: cranelisp_types::TypeExpr) -> cranelisp_types::TypeExpr {
-    use cranelisp_types::{TypeExpr, TypeName, TypeRef};
+    use cranelisp_types::TypeExpr;
     match expr {
-        TypeExpr::TypeVar(name) => {
-            let s = name.as_ref();
-            if let Some(slash) = s.find('/') {
-                let leaf = &s[slash + 1..];
-                if leaf.chars().next().is_some_and(|c| c.is_uppercase()) {
-                    return TypeExpr::Named(TypeRef::new(None, TypeName::from(s)));
-                }
-            }
-            TypeExpr::TypeVar(name)
-        }
+        // `primitives/String` parses lowercase-first → `TypeVar`; a slashed leaf
+        // with an uppercase post-slash name is really a qualified TYPE. Split it.
+        TypeExpr::TypeVar(name) => match split_slashed_type_ref(name.as_ref()) {
+            Some(tref) => TypeExpr::Named(tref),
+            None => TypeExpr::TypeVar(name),
+        },
+        // `shapes/Rectangle` parses uppercase-first (the reader classifies on the
+        // post-slash leaf) → `Named(TypeRef { module: None, name:
+        // "shapes/Rectangle" })` — the WHOLE slashed string lands in `name`.
+        // `check_type_expr`'s resolver builds its lookup key from `tref.module` +
+        // `tref.name`, so an un-split `name` names a type literally called
+        // `"shapes/Rectangle"` in module `''` (never resolves). Re-partition the
+        // slash into `{ module: Some("shapes"), name: "Rectangle" }`.
+        TypeExpr::Named(tref) => match split_slashed_type_ref(tref.name.as_ref()) {
+            Some(split) => TypeExpr::Named(split),
+            None => TypeExpr::Named(tref),
+        },
         TypeExpr::FnType(params, ret) => TypeExpr::FnType(
             params.into_iter().map(fqize_type_expr).collect(),
             Box::new(fqize_type_expr(*ret)),
         ),
         TypeExpr::Applied(head, args) => {
+            // The applied head may itself be slashed (`(option/Option Int)`);
+            // re-partition it, and recurse into the type arguments.
+            let head = split_slashed_type_ref(head.name.as_ref()).unwrap_or(head);
             TypeExpr::Applied(head, args.into_iter().map(fqize_type_expr).collect())
         }
         other => other,
+    }
+}
+
+/// Re-partition a slashed type-leaf string (`shapes/Rectangle`) into a
+/// `TypeRef { module: Some("shapes"), name: "Rectangle" }`, matching the
+/// `TypeRef` doc convention (`(option/Option Int)` →
+/// `{ module: Some("option"), name: "Option" }`). Returns `None` when the
+/// string carries no `/` or its post-slash leaf is not an uppercase TYPE (a
+/// type variable, not a type) — the caller keeps the node unchanged.
+///
+/// This mirrors `cranelisp_types::resolve::split_qualified` (crate-private
+/// there), kept inline at the platform boundary so the FQ-leaf repair does not
+/// reach across the int→types edge for a one-line split.
+fn split_slashed_type_ref(name: &str) -> Option<cranelisp_types::TypeRef> {
+    use cranelisp_types::{ModuleFullPath, TypeName, TypeRef};
+    let (module_part, leaf) = name.split_once('/')?;
+    if leaf.chars().next().is_some_and(|c| c.is_uppercase()) {
+        Some(TypeRef::new(Some(ModuleFullPath::from(module_part)), TypeName::from(leaf)))
+    } else {
+        None
     }
 }
 
@@ -494,6 +539,41 @@ fn parse_and_check_platform_type_sig(
         message: format!(
             "type error in platform function '{}' signature '{}': {}",
             fn_name, sig, e
+        ),
+        location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+    })
+}
+
+/// Enforce that a platform fn's checked type returns `IO _` (FIXME 0318 / spec
+/// §8.11 — "Platform functions MUST return `IO _`").
+///
+/// `ty` is the platform fn's resolved type. The acceptable shape is a function
+/// whose return type is the `IO` ADT (`(Fn [..] (IO a))`); a zero-param IO value
+/// (`(IO a)` with no `Fn` wrapper) is also accepted defensively. Anything else —
+/// a pure return (`(Fn [..] Int)`), or a non-`IO` ADT return — is rejected with a
+/// diagnostic naming the platform, the function, and the requirement.
+///
+/// Rationale (FIXME 0318): foreign native code's purity is unverifiable, so the
+/// compiler must trust the declared signature; the only sound treatment of a
+/// foreign effect is to sequence it, which `IO` forces. Every existing platform
+/// (`stdio`, `test-capture`) already returns `IO _`, so this is low-ripple.
+fn require_io_return(ty: &Type, platform_name: &str, fn_name: &str) -> Result<(), CranelispError> {
+    let ret = match ty {
+        Type::Fn(_, ret) => ret.as_ref(),
+        other => other,
+    };
+    let is_io = matches!(ret, Type::ADT(name, _) if name.name.as_ref() == "IO");
+    if is_io {
+        return Ok(());
+    }
+    Err(CranelispError::ModuleError {
+        message: format!(
+            "platform function '{platform_name}/{fn_name}' must return `IO _` \
+             (declared signature is not IO); every platform function MUST return \
+             `IO _` because foreign code's purity is unverifiable — the compiler \
+             trusts the declared signature, so a non-IO platform fn would be \
+             treated as pure (memoized, reordered, elided) while the host performs \
+             effects. Wrap the return in IO."
         ),
         location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
     })
@@ -586,6 +666,70 @@ pub fn load_and_register_platform(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------
+    // FIXME 0318 / spec §8.11 — every platform fn MUST return `IO _`.
+    // `require_io_return` is the smallest testable owner of the gate
+    // `register_platform_in_tc` applies after the sig is checked (the full
+    // path dlopens a real DLL; this drives the rejection with a perturbed
+    // sig type, no DLL needed — the check is on the resolved return type).
+    // -----------------------------------------------------------------
+
+    fn io_int() -> Type {
+        Type::ADT(
+            cranelisp_types::FQTypeName::new(
+                ModuleFullPath::from("primitives"),
+                cranelisp_types::TypeName::from("IO"),
+            ),
+            vec![Type::Int],
+        )
+    }
+
+    // spec: design/arch/fixmes/0318 / spec §8.11 — a platform fn declaring a
+    // non-IO return (`(Fn [Int] Int)`) is REJECTED, naming the platform + fn +
+    // the IO requirement.
+    #[test]
+    fn platform_fn_non_io_return_is_rejected() {
+        let pure_sig = Type::Fn(vec![Type::Int], Box::new(Type::Int));
+        let err = require_io_return(&pure_sig, "shapes", "area")
+            .expect_err("a non-IO platform fn sig must be rejected");
+        match err {
+            CranelispError::ModuleError { message, .. } => {
+                assert!(message.contains("shapes/area"), "names platform/fn: {message}");
+                assert!(message.contains("IO"), "names the IO requirement: {message}");
+            }
+            other => panic!("expected ModuleError, got {other:?}"),
+        }
+    }
+
+    // spec: design/arch/fixmes/0318 / spec §8.11 — an IO-returning platform fn
+    // (`(Fn [String] (IO Int))`, the stdio `print` shape) passes the gate.
+    #[test]
+    fn platform_fn_io_return_accepted() {
+        let io_sig = Type::Fn(vec![Type::String], Box::new(io_int()));
+        assert!(
+            require_io_return(&io_sig, "stdio", "print").is_ok(),
+            "an IO-returning platform fn must pass the gate"
+        );
+    }
+
+    // spec: design/arch/fixmes/0318 — a non-IO ADT return (e.g. a bare
+    // `shapes/Rectangle`) is also rejected — only the `IO` ADT satisfies the gate.
+    #[test]
+    fn platform_fn_non_io_adt_return_is_rejected() {
+        let rect = Type::ADT(
+            cranelisp_types::FQTypeName::new(
+                ModuleFullPath::from("shapes"),
+                cranelisp_types::TypeName::from("Rectangle"),
+            ),
+            vec![],
+        );
+        let sig = Type::Fn(vec![Type::Int], Box::new(rect));
+        assert!(
+            require_io_return(&sig, "shapes", "make").is_err(),
+            "a non-IO ADT return must be rejected"
+        );
+    }
 
     // spec: 10-io §10.9.1 — platform declaration recognized
     #[test]
@@ -972,5 +1116,85 @@ mod tests {
         // This won't match because resolve_platform_path("wrong-name") won't find
         // the stdio DLL. So we'll get a "not found" error instead.
         assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------
+    // FQ type-leaf split (Root B-shapes, FIXME 0321) — the platform sig
+    // FQ-leaf repair MUST re-partition a slashed type leaf into
+    // `TypeRef { module: Some(prefix), name: leaf }`, not leave the whole
+    // slashed string in `name` with `module: None` (which `check_type_expr`
+    // looks up as a type literally named `"shapes/Rectangle"` in module `''`).
+    // -----------------------------------------------------------------
+
+    // spec: design/arch/platform-interface.md §5.3 — FQ sig leaf partition
+    #[test]
+    fn split_slashed_type_ref_partitions_module_and_name() {
+        let tref = split_slashed_type_ref("shapes/Rectangle")
+            .expect("an uppercase post-slash leaf is a qualified type");
+        assert_eq!(tref.module, Some(ModuleFullPath::from("shapes")));
+        assert_eq!(tref.name.as_ref(), "Rectangle");
+    }
+
+    // spec: design/arch/platform-interface.md §5.3 — multi-component module path
+    #[test]
+    fn split_slashed_type_ref_keeps_full_module_path() {
+        let tref = split_slashed_type_ref("core.option/Option")
+            .expect("dotted module path is preserved as the module part");
+        assert_eq!(tref.module, Some(ModuleFullPath::from("core.option")));
+        assert_eq!(tref.name.as_ref(), "Option");
+    }
+
+    // spec: design/arch/platform-interface.md §5.3 — a non-slashed name or a
+    // lowercase post-slash leaf (a type variable, e.g. `a` / `m/a`) is NOT a
+    // qualified type and is left for the caller to keep unchanged.
+    #[test]
+    fn split_slashed_type_ref_rejects_non_type_leaves() {
+        assert!(split_slashed_type_ref("Rectangle").is_none(), "no slash → no split");
+        assert!(split_slashed_type_ref("a").is_none(), "bare type var → no split");
+        assert!(
+            split_slashed_type_ref("m/a").is_none(),
+            "lowercase post-slash leaf is a type variable, not a type"
+        );
+    }
+
+    // spec: design/arch/platform-interface.md §5.3 — `fqize_type_expr` repairs
+    // the WHOLE platform sig: a slashed leaf in a `Named` node (the production
+    // shape — `build_type_expr` classifies `shapes/Rectangle` as uppercase and
+    // emits `Named(TypeRef { module: None, name: "shapes/Rectangle" })`) is
+    // re-partitioned; a `primitives/Int`-shaped `TypeVar` is lifted to a split
+    // `Named`. Drives the exact `area` sig from the `shapes` fixture.
+    #[test]
+    fn fqize_type_expr_repairs_named_and_typevar_leaves_in_fn_sig() {
+        use cranelisp_types::TypeExpr;
+        let sig = "(Fn [shapes/Rectangle] (primitives/IO primitives/Int))";
+        let expr = cranelisp_frontend::parse_type_expr(sig).unwrap();
+        let fixed = fqize_type_expr(expr);
+
+        let TypeExpr::FnType(params, ret) = fixed else {
+            panic!("expected an Fn type expr");
+        };
+        // The single param `shapes/Rectangle` is now a split, qualified `Named`.
+        assert_eq!(params.len(), 1);
+        let TypeExpr::Named(param_ref) = &params[0] else {
+            panic!("param must be a Named type ref, got {:?}", params[0]);
+        };
+        assert_eq!(param_ref.module, Some(ModuleFullPath::from("shapes")));
+        assert_eq!(param_ref.name.as_ref(), "Rectangle");
+
+        // The return `(primitives/IO primitives/Int)` is an Applied whose head
+        // (`primitives/IO`) and arg (`primitives/Int`) are both split.
+        let TypeExpr::Applied(head, args) = ret.as_ref() else {
+            panic!("return must be an Applied IO type, got {ret:?}");
+        };
+        assert_eq!(head.module, Some(ModuleFullPath::from("primitives")));
+        assert_eq!(head.name.as_ref(), "IO");
+        assert_eq!(args.len(), 1);
+        match &args[0] {
+            TypeExpr::Named(arg_ref) => {
+                assert_eq!(arg_ref.module, Some(ModuleFullPath::from("primitives")));
+                assert_eq!(arg_ref.name.as_ref(), "Int");
+            }
+            other => panic!("IO arg must be a split Named Int, got {other:?}"),
+        }
     }
 }

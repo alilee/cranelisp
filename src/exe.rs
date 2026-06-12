@@ -772,14 +772,91 @@ fn log_link_summary(
 
 // ── Platform rlib locator ───────────────────────────────────────────────
 
-/// Find platform rlib paths.
+/// Find the static `.rlib` for each linked platform (platform-interface.md §1).
 ///
-/// Currently returns an empty list. When platform linking is implemented,
-/// this will query loaded platform modules for their rlib paths.
-pub fn find_platform_rlibs() -> Vec<PathBuf> {
-    // TODO: When platform modules are implemented, discover rlib paths
-    // from the loaded platform registry.
-    Vec::new()
+/// A `--link` of a platform-using program statically links the platform's rlib
+/// (`-force_load`ed by [`link_executable`]) so the platform's `#[export_name]`
+/// GOT + manifest + layout-hash symbols (`__cranelisp_got_platform_<name>`,
+/// `cranelisp_platform_manifest`, `__cranelisp_layout_hash_<name>`) resolve as
+/// ordinary linker symbols in the produced binary — no `dlopen` exists in a
+/// linked program (§1, §7.3).
+///
+/// The cdylib the live session `dlopen`ed and the rlib `--link` needs are sibling
+/// artifacts the platform crate builds together (`crate-type = ["cdylib",
+/// "rlib"]`); only the rlib carries the archive members `-force_load` needs. We
+/// re-resolve the rlib by platform name against the same search roots
+/// [`crate::platform::resolve_platform_path`] uses for the dylib, swapping the
+/// extension to `rlib` and the Cargo `libcranelisp_<name>` naming (rlibs are
+/// always lib-prefixed).
+///
+/// A platform whose rlib cannot be located is an error: the program declared
+/// `(platform "<name>")`, so the standalone binary cannot run without it.
+pub fn find_platform_rlibs(
+    platform_names: &[String],
+    project_root: &Path,
+    lib_dirs: &[PathBuf],
+    platform_dirs: &[PathBuf],
+) -> Result<Vec<PathBuf>, CranelispError> {
+    let mut rlibs = Vec::with_capacity(platform_names.len());
+    for name in platform_names {
+        let rlib = resolve_platform_rlib(name, project_root, lib_dirs, platform_dirs)
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: format!(
+                    "platform '{name}' was loaded at compile time but its static \
+                     rlib (lib{}.rlib) could not be found for --link; build the \
+                     platform crate (it must produce both a cdylib and an rlib) \
+                     or place the rlib on the platform search path",
+                    format!("cranelisp_{}", name.replace('-', "_")),
+                ),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            })?;
+        rlibs.push(rlib);
+    }
+    Ok(rlibs)
+}
+
+/// Resolve a single platform's static `.rlib` against the dylib search roots.
+///
+/// Mirrors [`crate::platform::resolve_platform_path`] (project tree → lib dirs →
+/// platform dirs) but for the `lib{crate_name}.rlib` artifact. The bare
+/// `{name}.rlib` form is also tried for an explicitly-placed rlib.
+fn resolve_platform_rlib(
+    name: &str,
+    project_root: &Path,
+    lib_dirs: &[PathBuf],
+    platform_dirs: &[PathBuf],
+) -> Option<PathBuf> {
+    let crate_name = format!("cranelisp_{}", name.replace('-', "_"));
+
+    let check_dir = |dir: &Path| -> Option<PathBuf> {
+        let cargo_candidate = dir.join(format!("lib{crate_name}.rlib"));
+        if cargo_candidate.is_file() {
+            return Some(cargo_candidate);
+        }
+        let plain = dir.join(format!("{name}.rlib"));
+        if plain.is_file() {
+            return Some(plain);
+        }
+        None
+    };
+
+    // Tier 1: {project_root}/platforms/
+    if let Some(path) = check_dir(&project_root.join("platforms")) {
+        return Some(path);
+    }
+    // Tier 2: {lib_dir}/platforms/
+    for lib_dir in lib_dirs {
+        if let Some(path) = check_dir(&lib_dir.join("platforms")) {
+            return Some(path);
+        }
+    }
+    // Tier 3: extra platform dirs (includes target/debug, target/release).
+    for dir in platform_dirs {
+        if let Some(path) = check_dir(dir) {
+            return Some(path);
+        }
+    }
+    None
 }
 
 // ── Bundle library locator ──────────────────────────────────────────────
@@ -831,14 +908,34 @@ pub fn find_bundle_lib() -> Result<PathBuf, CranelispError> {
 
 // ── Platform manifest name collection ───────────────────────────────────
 
-/// Collect platform manifest symbol names.
+/// The C-ABI symbol every platform DLL/rlib exports for its manifest entry
+/// point (`declare_platform!` emits it `#[unsafe(no_mangle)]`, so it is the same
+/// link name for every platform — `cranelisp-platform/src/lib.rs`).
 ///
-/// Currently returns an empty list. When platform modules are implemented,
-/// this will query the loaded platform registry.
-pub fn collect_platform_manifest_names() -> Vec<String> {
-    // TODO: When platform modules are implemented, discover manifest names
-    // from the loaded platform registry.
-    Vec::new()
+/// Calling it populates that platform's exported GOT (manifest order IS GOT slot
+/// order) and returns the descriptor block. The startup stub declares it as an
+/// imported zero-arg fn and passes its address to `cranelisp_init_platform`
+/// (`generate_startup_object`).
+const PLATFORM_MANIFEST_SYMBOL: &str = "cranelisp_platform_manifest";
+
+/// Collect the platform manifest symbol names the startup stub must call
+/// (one per linked platform, to force each platform's GOT-population code in).
+///
+/// Sourced from the loaded-platform registry (`SharedState::kept_dlls`) by the
+/// caller, which passes the platform count.
+///
+/// **Single-platform `--link` is fully supported.** Because `declare_platform!`
+/// exports the manifest entry point `#[unsafe(no_mangle)]`, every platform
+/// shares the link name `cranelisp_platform_manifest`; `-force_load`ing two
+/// platform rlibs would collide on that symbol (and on `__cranelisp_init_*`
+/// helpers). Multi-platform `--link` therefore needs per-platform mangled
+/// manifest names — out of scope for S79 (no program links more than one
+/// platform). With one linked platform the shared name resolves unambiguously.
+pub fn collect_platform_manifest_names(platform_count: usize) -> Vec<String> {
+    // One manifest call per linked platform (each populates its own GOT). With
+    // the shared no_mangle symbol this is correct for the single-platform case;
+    // see the doc comment for the multi-platform limitation.
+    vec![PLATFORM_MANIFEST_SYMBOL.to_string(); platform_count]
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -963,18 +1060,65 @@ mod tests {
         unsafe { std::env::remove_var("CRANELISP_BUNDLE_PATH") };
     }
 
-    // spec: design/backend/executable-generation.md — platform rlib discovery (empty)
+    // spec: platform-interface.md §7.3 — no linked platforms ⇒ no rlibs.
     #[test]
-    fn find_platform_rlibs_empty() {
-        let rlibs = find_platform_rlibs();
+    fn find_platform_rlibs_empty_when_no_platforms() {
+        let dir = tempfile::tempdir().unwrap();
+        let rlibs = find_platform_rlibs(&[], dir.path(), &[], &[]).unwrap();
         assert!(rlibs.is_empty());
     }
 
-    // spec: design/backend/executable-generation.md — platform manifest collection (empty)
+    // spec: platform-interface.md §7.3 — a declared platform whose rlib is
+    // absent is a hard --link error (the standalone binary needs the static
+    // platform code).
     #[test]
-    fn collect_platform_manifest_names_empty() {
-        let names = collect_platform_manifest_names();
-        assert!(names.is_empty());
+    fn find_platform_rlibs_missing_is_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = find_platform_rlibs(
+            &["shapes".to_string()],
+            dir.path(),
+            &[],
+            &[],
+        )
+        .unwrap_err();
+        match err {
+            CranelispError::CodegenError { message, .. } => {
+                assert!(message.contains("shapes"));
+                assert!(message.contains("rlib"));
+            }
+            _ => panic!("expected CodegenError"),
+        }
+    }
+
+    // spec: platform-interface.md §7.3 — the rlib resolves against the platform
+    // search roots (tier 3) under the Cargo `libcranelisp_<name>.rlib` name.
+    #[test]
+    fn find_platform_rlibs_resolves_cargo_rlib() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target-debug");
+        std::fs::create_dir_all(&target).unwrap();
+        let rlib = target.join("libcranelisp_shapes.rlib");
+        std::fs::write(&rlib, b"fake rlib").unwrap();
+
+        let rlibs = find_platform_rlibs(
+            &["shapes".to_string()],
+            dir.path(),
+            &[],
+            &[target],
+        )
+        .unwrap();
+        assert_eq!(rlibs, vec![rlib]);
+    }
+
+    // spec: platform-interface.md §7.3 — manifest symbol per linked platform;
+    // none linked ⇒ none collected.
+    #[test]
+    fn collect_platform_manifest_names_counts() {
+        assert!(collect_platform_manifest_names(0).is_empty());
+        assert_eq!(
+            collect_platform_manifest_names(1),
+            vec!["cranelisp_platform_manifest".to_string()]
+        );
     }
 
     // spec: design/backend/executable-generation.md §5 — LinkerConfig for macOS

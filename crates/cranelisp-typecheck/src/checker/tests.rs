@@ -1455,6 +1455,68 @@
         );
     }
 
+    // spec: 09-macros §9.3 + 08-modules §8.6.6 — FIXME 0321 Root A. A
+    // module-QUALIFIED SUM ctor (`macros/SCons`) resolves in pattern position
+    // from a user module that has NOT imported `macros`. This is the
+    // macro-clause-body context: quasiquote macros lower their templates into
+    // qualified `macros/SCons`/`macros/SNil` ctor patterns, and an FQ reference
+    // bypasses import scope (spec §8.6.6) to root directly in the named module.
+    //
+    // The S79 Option-3a cascade deleted the `lookup_constructor_scheme`
+    // product-fallback leg, which was the only path that split the qualified
+    // name on `/`. Without that split, the pattern-ctor resolver looked up the
+    // literal key `"macros/SCons"` in the current module + prelude, missed, and
+    // raised "unknown constructor in pattern: macros/SCons" — taking out ~89
+    // macro-dependent tests. `resolve_constructor_entry` restores the split: a
+    // qualified ctor roots in its named module via `resolve_entry_in_module`,
+    // resolving through its `Def { Constructor }` entry. SCons is a SUM ctor
+    // (`type_def: None` + a separate `TypeDef`); this must NOT depend on the
+    // product type facet.
+    #[test]
+    fn fq_sum_ctor_resolves_in_pattern_from_unimporting_module() {
+        use cranelisp_types::TypeName;
+        let mut tf = TestFixture::new();
+        // A user module that has NOT imported `macros` — the clause-fn body's
+        // resolution context. No prelude fallback bit is set, so the qualified
+        // reference cannot leak in via the outer scope; it must resolve purely
+        // through the FQ `module/name` split.
+        let m = ModuleFullPath::from("user");
+        tf.set_current_module(m.clone());
+        let state = CheckState::new(m.clone());
+        let env = tf.env();
+
+        // Bare `SCons` does NOT resolve from this module (no import, no
+        // fallback) — proving the qualified arm, not an ambient import, is what
+        // makes the resolution succeed.
+        assert!(
+            env.resolve_constructor_entry(&state, "SCons").is_none(),
+            "bare `SCons` must NOT resolve from a module that has not imported macros"
+        );
+
+        // Qualified `macros/SCons` resolves to the SUM ctor's `Def`.
+        let entry = env
+            .resolve_constructor_entry(&state, "macros/SCons")
+            .expect("qualified `macros/SCons` must resolve via the FQ module split");
+        match entry {
+            ModuleEntry::Def { kind, .. } => match kind.as_ref() {
+                DefKind::Constructor { type_name, type_def, .. } => {
+                    assert_eq!(
+                        type_name.name,
+                        TypeName::from("SList"),
+                        "macros/SCons is the SList SUM ctor"
+                    );
+                    assert!(
+                        type_def.is_none(),
+                        "a SUM ctor carries `type_def: None` (the separate TypeDef \
+                         holds the type) — it must NOT be confused with a product facet"
+                    );
+                }
+                other => panic!("expected Constructor Def, got {other:?}"),
+            },
+            other => panic!("expected ModuleEntry::Def, got {other:?}"),
+        }
+    }
+
     // spec: 10-io §10.1 + 08-modules §8.6.4 — (b) the internal-ctor reject gate
     // sees a PUBLIC-but-INTERNAL prelude ctor (`Bind`) through the fallback and
     // reports `internal: true`. `Bind` is registered `Visibility::Public` in

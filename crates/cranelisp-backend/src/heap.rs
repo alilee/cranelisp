@@ -345,9 +345,19 @@ where
 {
     symbol_tables.get(&fqtn.module)
         .map(|table| {
+            // The TypeDefInfo lives on a `TypeDef` entry (sum/enum) or, for a
+            // single-ctor product type (S79 Option 3a), on the product ctor
+            // `Def`'s `type_def` facet — a product is never mixed (one ctor),
+            // but resolve uniformly for robustness.
             let type_key = Symbol::from(fqtn.name.as_ref());
             let ctor_names: Vec<Symbol> = match table.get(type_key.as_ref()) {
                 Some(ModuleEntry::TypeDef { info, .. }) => info.constructors.clone(),
+                Some(ModuleEntry::Def { kind, .. }) => match &**kind {
+                    cranelisp_types::DefKind::Constructor { type_def: Some(td), .. } => {
+                        td.constructors.clone()
+                    }
+                    _ => return false,
+                },
                 _ => return false,
             };
             // Walk each constructor NAME → its DefKind::Constructor Def for the
@@ -380,20 +390,15 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
+    // S79 Option 3a: product ctors are got-slotted `Def`s exactly like sum
+    // ctors (with a `type_def: Some(..)` facet), so the one `Def` arm covers
+    // both — its `field_count` is the arity. The prior `TypeDef`-with-
+    // `constructor_scheme` product leg is retired.
     match table.get(ctor_name.as_ref()) {
         Some(ModuleEntry::Def { kind, .. }) => match &**kind {
             cranelisp_types::DefKind::Constructor { field_count, .. } => Some(*field_count),
             _ => None,
         },
-        // Product type: same-named constructor stored on the TypeDef's
-        // `constructor_scheme` (a `Type::Fn(field_types, _)`); its arity is the
-        // field count. (See `CompileContext::extract_constructor`.)
-        Some(ModuleEntry::TypeDef { constructor_scheme: Some(scheme), .. }) => {
-            match &scheme.ty {
-                Type::Fn(params, _) => Some(params.len()),
-                _ => Some(0),
-            }
-        }
         _ => None,
     }
 }
@@ -486,9 +491,20 @@ impl HeapCategory {
             return HeapCategory::Mixed;
         };
 
+        // The TypeDefInfo (which names the type's constructors) lives on a
+        // `TypeDef` entry (sum/enum) or, for a single-ctor **product** type
+        // (S79 Option 3a), on the got-slotted product ctor `Def`'s
+        // `DefKind::Constructor { type_def: Some(..) }` type facet — the
+        // product `type_name` key IS the ctor `Def`, not a `TypeDef`.
         let type_key = Symbol::from(fqtn.name.as_ref());
         let ctor_names: Vec<Symbol> = match table.get(type_key.as_ref()) {
             Some(ModuleEntry::TypeDef { info, .. }) => info.constructors.clone(),
+            Some(ModuleEntry::Def { kind, .. }) => match &**kind {
+                cranelisp_types::DefKind::Constructor { type_def: Some(td), .. } => {
+                    td.constructors.clone()
+                }
+                _ => return HeapCategory::Mixed,
+            },
             _ => return HeapCategory::Mixed,
         };
 
@@ -574,7 +590,13 @@ mod heap_category_tests {
     }
 
     /// Build a constructor `Def` entry under the ctor-as-Def shape.
-    fn ctor_def_entry(type_fqtn: &FQTypeName, spec: &CtorSpec) -> ModuleEntry {
+    /// `type_def` is `Some(..)` for a single-ctor product type (the ctor IS
+    /// its own type — S79 Option 3a dual facet), `None` for sum/enum ctors.
+    fn ctor_def_entry(
+        type_fqtn: &FQTypeName,
+        spec: &CtorSpec,
+        type_def: Option<Box<TypeDefInfo>>,
+    ) -> ModuleEntry {
         let scheme = Scheme {
             type_vars: vec![],
             constraints: std::collections::HashMap::new(),
@@ -592,6 +614,7 @@ mod heap_category_tests {
                 tag: spec.tag,
                 field_count: spec.field_count,
                 internal: false,
+                type_def,
             }),
             callees: vec![],
             got_slot: None,
@@ -603,11 +626,15 @@ mod heap_category_tests {
     }
 
     /// Build a DashMap with a single module, mirroring the production
-    /// registration order (`cranelisp-typecheck::adt::register_type`): each
-    /// constructor `Def` is inserted FIRST, then the `TypeDef` is inserted
-    /// under the type name. For a **product type** (single constructor whose
-    /// name equals the type name) the `TypeDef` overwrites the same-named ctor
-    /// `Def` and carries `constructor_scheme: Some(Type::Fn(field_types, adt))`.
+    /// registration shape (S79 Option 3a, `cranelisp-typecheck::adt`):
+    /// every constructor — sum, enum, OR product — is a got-slotted
+    /// `ModuleEntry::Def { kind: DefKind::Constructor { .. }, .. }`. For a
+    /// **product type** (single constructor whose name equals the type name)
+    /// that `Def` ALSO carries the type facet `type_def: Some(TypeDefInfo)`
+    /// and IS the `type_name` key — there is no separate `TypeDef` entry, and
+    /// the prior `constructor_scheme`-smuggling `TypeDef` is retired. For
+    /// sum/enum types each ctor `Def` is keyed distinctly and a separate
+    /// `ModuleEntry::TypeDef` is inserted under the type name.
     fn tables_with_type(
         type_name: &str,
         type_params: &[&str],
@@ -617,46 +644,41 @@ mod heap_category_tests {
         let mut st = SymbolTable::new(ModuleFullPath::from(TEST_MOD));
         let fqtn = test_fqtn(type_name);
 
-        // Insert ctor Defs first (production order).
-        for spec in ctors {
-            st.insert(Symbol::from(spec.name), ctor_def_entry(&fqtn, spec));
-        }
-
-        // Product type: single ctor named like the type → store its signature
-        // on the TypeDef's constructor_scheme (Int placeholder field types).
-        let constructor_scheme = if ctors.len() == 1 && ctors[0].name == type_name {
-            let field_count = ctors[0].field_count;
-            let ty = if field_count == 0 {
-                Type::ADT(fqtn.clone(), vec![])
-            } else {
-                Type::Fn(
-                    (0..field_count).map(|_| Type::Int).collect(),
-                    Box::new(Type::ADT(fqtn.clone(), vec![])),
-                )
-            };
-            Some(Scheme {
-                type_vars: vec![],
-                constraints: std::collections::HashMap::new(),
-                ty,
-            })
-        } else {
-            None
-        };
-
         let info = TypeDefInfo {
             name: fqtn.clone(),
             type_params: type_params.iter().map(|s| Symbol::from(*s)).collect(),
             constructors: ctors.iter().map(|c| Symbol::from(c.name)).collect(),
         };
-        st.insert(
-            Symbol::from(type_name),
-            ModuleEntry::TypeDef {
-                info,
-                visibility: Visibility::Public,
-                docstring: None,
-                constructor_scheme,
-            },
-        );
+
+        let is_product = ctors.len() == 1 && ctors[0].name == type_name;
+
+        // Insert ctor Defs. The product ctor carries its type facet and IS the
+        // type-name key; sum/enum ctors carry `type_def: None`.
+        for spec in ctors {
+            let type_def = if is_product {
+                Some(Box::new(info.clone()))
+            } else {
+                None
+            };
+            st.insert(
+                Symbol::from(spec.name),
+                ctor_def_entry(&fqtn, spec, type_def),
+            );
+        }
+
+        // Sum/enum: a separate `TypeDef` entry under the type name. A product
+        // type needs NONE — its got-slotted ctor `Def` already answers as the
+        // type via its `type_def` facet.
+        if !is_product {
+            st.insert(
+                Symbol::from(type_name),
+                ModuleEntry::TypeDef {
+                    info,
+                    visibility: Visibility::Public,
+                    docstring: None,
+                },
+            );
+        }
         tables.insert(ModuleFullPath::from(TEST_MOD), st);
         tables
     }

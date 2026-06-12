@@ -3170,3 +3170,72 @@ fn shared_state_field_count_at_target_14() {
          one legitimate Wave-4 session-side field `prelude_fallback`."
     );
 }
+
+// =============================================================================
+// Sprint 79 R2.3 — product-ctor dual-facet cascade regressions (FIXME 0321)
+// =============================================================================
+//
+// The S79 Option-3 product-ctor-as-Def correction (FIXME 0319) cascaded across
+// cranelisp-types → typecheck → backend → src/(int). `cargo check -p cranelisp`
+// went green, but the e2e suite regressed by ~104 tests. These two guards are
+// the TIGHT minimal reductions for the two distinct cascade-regression roots so
+// `/dev` (typecheck) has the smallest possible repro for each. Failing-not-
+// ignored per `memory/feedback_failing_not_ignored.md`. Both were GREEN before
+// the cascade (suite was 1175/1175 at SHA 9bbdf65) and went RED after it.
+//
+// ROOT A (the dominant root — ~89 of the 105 S79 failures): a single quasiquote
+// macro's clause body fails to resolve `macros/SCons` (the `SList` SUM
+// constructor) in a compiler-generated pattern. The macro expander lowers the
+// quasiquoted template into `SList` values; the clause fn's pattern-match over
+// `SList` cannot find `macros/SCons` after the dual-facet cascade. `SCons` is a
+// SUM ctor (registered with `type_def: None` + a separate `TypeDef` by
+// `bootstrap.rs::register_synth_adt`), so the regression is in the
+// pattern-constructor resolution chokepoint that FIXME 0319/0317 touched
+// (`lookup_constructor_type_with_state` / `is_internal_constructor_check_with_state`
+// in `crates/cranelisp-typecheck/src/checker.rs`), NOT in the product-ctor
+// path itself. This guard is the smallest case: ONE quasiquote macro, used once.
+
+// spec: spec/09-macros.md §9.3 — quasiquote macro expansion
+// FIXME(/dev typecheck): `macros/SCons` pattern unresolved in macro-clause body
+// after the FIXME 0319 dual-facet cascade. See FIXME 0321.
+#[test]
+fn s79_quasiquote_macro_resolves_macros_scons_in_clause_body() {
+    Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(
+            "(import [primitives [add-i64]])\n\
+             (defmacro inc [x] `(add-i64 ~x 1))\n\
+             (defn main [] (inc 40))",
+        )
+        .output()
+        .assert_exit(41);
+}
+
+// ROOT B (FQ type-leaf split — ~8 failures across spec_fqtypename_boundary +
+// spec_platforms_adt): a FULLY-QUALIFIED type leaf in field-type position
+// (`:primitives/Int`) fails with `unknown type \`primitives\` (from module '')`.
+// Spec §3.1 says an FQ type ref needs no import; this was GREEN cement before the
+// cascade. The FQ leaf is mis-split: `primitives/Int` resolves with the wrong
+// module/name partition (the error names module '' and type `primitives`). The
+// same symptom class hits the platform-sig path via `src/platform.rs::
+// fqize_type_expr`, which produces `TypeRef::new(None, "shapes/Rectangle")` —
+// module `None`, name = the whole slashed string — so `shapes/Rectangle` never
+// resolves (the 6 spec_platforms_adt failures + the blocked schema regen).
+
+// spec: spec/03-types.md §3.1 — fully-qualified type references need no import
+// FIXME(/dev typecheck): FQ type leaf `primitives/Int` mis-split in field-type
+// position after the FIXME 0319 dual-facet cascade. See FIXME 0321.
+#[test]
+fn s79_fq_field_type_primitives_int_resolves_without_import() {
+    Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(
+            "(deftype Box (ABox [:primitives/Int n]))\n\
+             (defn unbox [b] (match b [(ABox n) n]))\n\
+             (defn main [] (unbox (ABox 7)))",
+        )
+        .output()
+        .assert_exit(7);
+}

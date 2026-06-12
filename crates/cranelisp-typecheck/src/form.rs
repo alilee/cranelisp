@@ -430,7 +430,7 @@ fn collect_type_var_ids<C, L>(
 /// when an alias-resolved target module is ABSENT from the session symbol
 /// tables. Because resolution returns `(None, gap)` so the `lookup` fallback
 /// chain can still satisfy the name via another candidate path, the
-/// `&mut`-holding caller (`infer_var` / `lookup_constructor_scheme`) stores
+/// `&mut`-holding caller (`infer_var`) stores
 /// the surviving gap on `state.pending_gap`. The gap surfaces here only once
 /// the overall lookup fails and the per-form dispatcher reports a not-found
 /// `TypeError`. At that point the pending gap (carrying the alias-resolved
@@ -663,7 +663,6 @@ mod tests {
                     },
                     visibility: Visibility::Public,
                     docstring: None,
-                    constructor_scheme: None,
                 },
             );
         }

@@ -1,6 +1,6 @@
     use super::*;
     use crate::checker::TestFixture;
-    use cranelisp_types::{ConstructorDef, FQSymbol, FQTypeName, ModuleEntry, ModuleFullPath, Span, Symbol, TypeName, Visibility};
+    use cranelisp_types::{ConstructorDef, FQSymbol, FQTypeName, ModuleEntry, ModuleFullPath, Scheme, Span, Symbol, TypeName, Visibility};
 
     /// Seed glob-import edges from `source` into the fixture's CURRENT module,
     /// mirroring `(import [source [*]])`. Import registration is no longer a
@@ -511,6 +511,71 @@
             }
             other => panic!("expected Fn type, got {:?}", other),
         }
+    }
+
+    // spec: 05-definitions §5.2.7 — an under-applied ADT constructor is an
+    // ARITY ERROR, not an auto-curry. With the S79 product-ctor dual facet a
+    // single-ctor product (`Point`) is an ordinary got-slotted ctor `Def` whose
+    // function-type scheme is curry-shaped; without the ctor guard in
+    // `try_auto_curry` it would silently curry into `Fn([Int], Point)`. The
+    // constructor must reject the partial application instead.
+    #[test]
+    fn test_infer_product_ctor_under_application_is_arity_error() {
+        let mut tc = tc();
+        // (deftype Point [:Int x :Int y]) — single-ctor product (dual facet).
+        tc.register_type_def_self(
+            &TypeName::from("Point"),
+            &None,
+            &[],
+            &[ConstructorDef {
+                name: Symbol::from("Point"),
+                docstring: None,
+                fields: vec![
+                    cranelisp_types::FieldDef {
+                        name: Symbol::from("x"),
+                        type_expr: TypeExpr::Named(cranelisp_types::TypeRef::new(
+                            None,
+                            TypeName::from("Int"),
+                        )),
+                        span: Span::SYNTHETIC,
+                    },
+                    cranelisp_types::FieldDef {
+                        name: Symbol::from("y"),
+                        type_expr: TypeExpr::Named(cranelisp_types::TypeRef::new(
+                            None,
+                            TypeName::from("Int"),
+                        )),
+                        span: Span::SYNTHETIC,
+                    },
+                ],
+                span: Span::SYNTHETIC,
+            }],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+
+        // (Point 1) — one arg for a two-field ctor. MUST be an arity error,
+        // NOT a curried closure.
+        let mut expr = Expr::Apply {
+            callee: Box::new(Expr::var(Symbol::from("Point"), span(1, 6))),
+            args: vec![Expr::IntLit {
+                value: 1,
+                span: span(7, 8),
+                inferred_type: None,
+            }],
+            span: span(0, 9),
+            resolved_call: None,
+            inferred_type: None,
+        };
+        let err = tc
+            .infer_expr_for_test(&mut expr)
+            .expect_err("under-applied product ctor must be an arity error, not a curry");
+        let msg = err.message();
+        assert!(
+            msg.contains("Point") && (msg.contains("expects") || msg.contains("argument")),
+            "expected a constructor arity diagnostic naming Point; got: {msg}"
+        );
     }
 
     // spec: 03-types §3.8.3 — too many args is still an arity error

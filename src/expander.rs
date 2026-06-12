@@ -267,6 +267,17 @@ pub(crate) fn recognize_macro_head(
     name: &str,
     span: Span,
 ) -> Result<Option<FQSymbol>, CranelispError> {
+    // A `:`-prefixed symbol is a TYPE ANNOTATION (`:Int`, `:primitives/Int`,
+    // `:core.option/Option`), never a macro head. It must not be fed to
+    // `resolve_macro_head`: that primitive splits a qualified name on `/` and
+    // would treat `:primitives` as a module qualifier, surfacing a spurious
+    // `QualifiedModuleUnknown` hard error (`module ':primitives' referenced by
+    // ':primitives/Int' is not loaded`) that aborts the cluster before the
+    // field type is ever resolved. The sibling `qualify_expanded_sexp` guards
+    // this same case; mirror it here at the recognition seam (FIXME 0322).
+    if name.starts_with(':') {
+        return Ok(None);
+    }
     let first = {
         let Some(table_ref) = committed_view(symbol_tables, current_module) else {
             return Ok(None);

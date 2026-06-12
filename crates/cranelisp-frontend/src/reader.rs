@@ -373,7 +373,14 @@ fn read_colon_prefix(r: &mut Reader) -> Result<Sexp, CranelispError> {
         if is_symbol_start(b) {
             let sym_start = r.pos;
             consume_symbol_chars(r);
-            let name = &r.src[sym_start..r.pos];
+            // A `:`-annotation may name a *qualified* type: `:primitives/Int`,
+            // `:core.option/Option`. Without this, `consume_symbol_chars` stops
+            // at `/` (not a symbol char) and the annotation would tokenize as
+            // three forms (`:primitives`, `/`, `Int`) — spec §3.1 requires an FQ
+            // type ref to read as a single qualified leaf. Mirror the qualified /
+            // dotted-module logic of `read_symbol_or_keyword`.
+            let first_part = r.src[sym_start..r.pos].to_string();
+            let name = read_qualified_tail(r, &first_part);
             let end = r.pos as u32;
             let full = format!(":{name}");
             return Ok(Sexp::Symbol(full, Span::new(start, end)));
@@ -651,6 +658,77 @@ fn read_qualified_symbol(
     let end = r.pos as u32;
     let full = format!("{module_part}/{local}");
     Ok(Sexp::Symbol(full, Span::new(start, end)))
+}
+
+/// Given an already-consumed first symbol segment, consume any qualified or
+/// dotted-module-path continuation and return the full name string.
+///
+/// Handles, mirroring `read_symbol_or_keyword`:
+///   - `first/local`            -> `"first/local"`
+///   - `first.seg.../local`     -> `"first.seg.../local"` (dotted module path)
+///   - `first` (no `/`)         -> `"first"` (unchanged; dots left untouched —
+///     a colon annotation never names a dotted *symbol*, only a possibly-dotted
+///     module path that ends in `/`)
+///
+/// Used by `read_colon_prefix` so a `:`-prefixed type annotation can carry a
+/// qualified type name (`:primitives/Int`, `:core.option/Option`).
+fn read_qualified_tail(r: &mut Reader, first_part: &str) -> String {
+    // Simple qualified: `first/local`.
+    if r.peek() == Some(b'/') {
+        r.advance(1); // skip '/'
+        if let Ok(local) = read_local_name(r) {
+            return format!("{first_part}/{local}");
+        }
+        // No valid local name after '/': leave position at the consumed '/'
+        // and return the bare first part (the AST builder reports the error).
+        return first_part.to_string();
+    }
+
+    // Dotted module path leading to `/`: `first.seg.../local`.
+    if r.peek() == Some(b'.') {
+        let saved_pos = r.pos;
+        let mut module = first_part.to_string();
+        let mut found_slash = false;
+        while r.peek() == Some(b'.') {
+            let dot_pos = r.pos;
+            r.advance(1); // skip '.'
+            if let Some(b) = r.peek() {
+                if is_symbol_start(b) {
+                    let seg_start = r.pos;
+                    consume_symbol_chars(r);
+                    let segment = &r.src[seg_start..r.pos];
+                    module.push('.');
+                    module.push_str(segment);
+                    if r.peek() == Some(b'/') {
+                        found_slash = true;
+                        break;
+                    }
+                    continue;
+                }
+                // Not a symbol start: back up and stop.
+                r.pos = dot_pos;
+                break;
+            }
+            r.pos = dot_pos;
+            break;
+        }
+
+        if found_slash {
+            r.advance(1); // skip '/'
+            if let Ok(local) = read_local_name(r) {
+                return format!("{module}/{local}");
+            }
+            return module;
+        }
+
+        // No `/` terminated the dotted run — a colon annotation does not name a
+        // dotted symbol (`:Option.Some` is not a type). Rewind so the dots are
+        // left unconsumed and return the bare first part.
+        r.pos = saved_pos;
+        return first_part.to_string();
+    }
+
+    first_part.to_string()
 }
 
 /// Read the local name portion of a qualified symbol (after '/').
@@ -1168,6 +1246,50 @@ mod tests {
     #[test]
     fn test_parse_bare_colon() {
         assert_symbol(&parse_one(": "), ":");
+    }
+
+    // spec: 03-types §3.1 — a colon-prefixed FQ type annotation reads as ONE
+    // qualified token, not three (`:primitives`, `/`, `Int`). FIXME 0321
+    // Root B-prim: an FQ type ref needs no import; `:primitives/Int` MUST be
+    // valid in annotation position.
+    #[test]
+    fn test_parse_colon_prefix_qualified() {
+        assert_symbol(&parse_one(":primitives/Int"), ":primitives/Int");
+    }
+
+    // spec: 03-types §3.1 — multi-dot module path in a colon annotation reads
+    // as one qualified token (`:core.option/Option`).
+    #[test]
+    fn test_parse_colon_prefix_qualified_dotted_module() {
+        assert_symbol(&parse_one(":core.option/Option"), ":core.option/Option");
+    }
+
+    // spec: 03-types §3.1 — the qualified colon annotation survives in field
+    // position: the deftype field type is the single qualified leaf, not split.
+    #[test]
+    fn test_parse_deftype_fq_field_type_single_token() {
+        // (deftype Box (ABox [:primitives/Int n]))
+        let sexp = parse_one("(deftype Box (ABox [:primitives/Int n]))");
+        let Sexp::List(top, _) = &sexp else {
+            panic!("expected List, got {sexp:?}");
+        };
+        // top[2] is the ctor form `(ABox [:primitives/Int n])`.
+        let Sexp::List(ctor, _) = &top[2] else {
+            panic!("expected ctor List, got {:?}", top[2]);
+        };
+        // ctor[1] is the field bracket `[:primitives/Int n]`.
+        let Sexp::Bracket(fields, _) = &ctor[1] else {
+            panic!("expected field Bracket, got {:?}", ctor[1]);
+        };
+        // Exactly two items: the FQ type annotation and the field name — NOT
+        // three (`:primitives`, `/`, `Int`) plus the name.
+        assert_eq!(
+            fields.len(),
+            2,
+            "FQ field type must read as one token; got {fields:?}"
+        );
+        assert_symbol(&fields[0], ":primitives/Int");
+        assert_symbol(&fields[1], "n");
     }
 
     // -- Lists --

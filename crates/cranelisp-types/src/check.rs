@@ -212,6 +212,7 @@ pub struct TypeDefInfo {
 /// each declared signature (spec §5.4.5).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraitDeclInfo {
+    // FQTypeName exception 2 (receiver-pinned: payload of ModuleEntry::TraitDecl, keyed local-to-home-module; FQ = FQTraitName::new(home, name))
     pub name: TraitName,
     pub type_params: Vec<Symbol>,
     pub methods: Vec<TraitMethodSig>,

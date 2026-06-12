@@ -47,6 +47,50 @@ add a name-key shortcut to primitives; primitives reach user code only *via*
 prelude's `(export [primitives [*]])` re-export, chain-followed through the
 fallback (the §2 structural-not-skip guarantee).
 
+## Product-ctor dual facet (S79 Option 3a, FIXME 0319)
+
+A **single-ctor product** type (`(deftype Rectangle [:Int w :Int h])`) has
+type-name == ctor-name, so type and ctor collide on one symbol-table key. The
+surviving `"Rectangle"` entry is the **got-slotted ctor `Def`** (exactly like a
+sum ctor) carrying a **type facet**: `DefKind::Constructor { type_def:
+Some(Box<TypeDefInfo>), .. }`. A **sum/enum** type registers a separate
+`ModuleEntry::TypeDef` and its ctors carry `type_def: None`. The retired
+`ModuleEntry::TypeDef.constructor_scheme` smuggling field (and the six bespoke
+fallback legs that keyed on it) are gone — a product ctor's scheme lives
+canonically on its own `Def.scheme`, its field names on `Def.param_names`.
+
+- **`checker::type_def_view_of(&ModuleEntry) -> Option<&TypeDefInfo>`** is the
+  single "entry as a type" reader: `Some` for `TypeDef`, OR for a product ctor's
+  `type_def: Some(td)`. Every site needing an entry *as a type* routes through
+  it — `ModuleReadView::lookup_type_def`, `resolve_type`,
+  `concrete_type_for_impl_target`, AND `resolve.rs::resolve_named` /
+  `resolve_applied` (the source-annotation `TypeExpr::Named`/`Applied`
+  resolvers — S79 follow-up, FIXME 0321 Root A). `resolve.rs` imports the
+  accessor from `checker` and matches `IntrinsicType` first, then routes every
+  other terminal entry through `type_def_view_of` so a product type used in
+  TYPE position (`:Box`, `(Box Int)`) answers. Do NOT re-pattern `TypeDef`
+  directly when a product type must also answer; use the accessor.
+- **Product ctors do NOT auto-curry.** Because a product ctor's `Def.scheme` is
+  curry-shaped (`Fn([Int,Int], Point)`), an under-applied `(Point 1)` would
+  otherwise fall into `infer.rs::try_auto_curry` and silently return a closure
+  instead of an arity error. The guard: at the top of `try_auto_curry`, when the
+  `Expr::Var` callee resolves to a `DefKind::Constructor` Def (via
+  `resolve_constructor_entry`), return a `TypeError` ("constructor X expects N
+  arguments but got M") rather than currying (spec §5.2.7). Sum ctors hit the
+  same guard. Over-application is still rejected by the normal arity check (the
+  `arg_types.len() < params.len()` curry-precondition fails, so the unify error
+  propagates).
+- **`adt.rs::register_type_def_with_ctor_infos`** computes `is_product`
+  (`ctors.len()==1 && ctor-name==type-name`) and either registers a separate
+  `TypeDef` (sum/enum) OR attaches the facet to the lone ctor `Def` (product) —
+  never both. `register_constructors` takes `product_type_def: Option<&...>` and
+  the deftype docstring (product ctor falls back to it, having no `TypeDef`).
+- **Ctor → parent-type** lookups (`lookup_constructor_type_in_module`,
+  `resolve_constructor`) and **pattern-ctor resolution** (`infer.rs`) read the
+  `Def { kind: Constructor }.type_name` arm for products too — no product
+  special-case. `infer.rs::lookup_constructor_scheme` (the old product-fallback
+  leg) is deleted.
+
 ## Module-locality (Principle 17)
 
 Short-name lookup is current-module-only, with per-symbol chain-follow on

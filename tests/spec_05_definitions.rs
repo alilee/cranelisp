@@ -177,6 +177,11 @@ fn deftype_product_shortcut_field_names() {
 // (let-bound, then called as a function). Distinct from operator-as-value
 // and defn-as-value first-class shapes.
 // (carry: legacy/sketch_port.rs::sketch_adt_first_class_constructor)
+//
+// NOTE: `MySome` is a SUM constructor (ctor name `MySome` ≠ type name `MyOpt`),
+// so it keys distinctly in the symbol table. The single-ctor PRODUCT case where
+// ctor name == type name (the `R`/`R` collision) is the
+// `single_ctor_product_constructor_as_first_class_value` guard below.
 #[test]
 fn deftype_constructor_as_first_class_value() {
     repl_prims(
@@ -184,6 +189,56 @@ fn deftype_constructor_as_first_class_value() {
          (let [f MySome] (match (f 42) [MyNone 0 (MySome v) v]))\n",
     )
     .assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/04-expressions.md §4.2.1 — a single-ctor PRODUCT constructor used
+// as a first-class value (let-bound, then called as a function).
+//
+// This is the §4.2.1 spec-violation GUARD for the S79 Option-3 product-ctor-as-
+// Def correction (FIXME 0319). For a single-ctor product `(deftype R [:Int w
+// :Int h])` the constructor name `R` collides with the type name `R` on the
+// symbol-table key. Before the dual-facet correction the surviving entry was the
+// `TypeDef`, which carries no GOT slot and is absent from `defined_symbols()` —
+// so referencing the product ctor as a VALUE (`(let [f R] ...)`, `(g R ...)`)
+// failed to compile (`undefined variable: R` / no codegen). §4.2.1 says "data
+// constructors ... evaluate to constructor functions ... a function value that
+// ... can be ... bound with `let`, passed as an argument" — the product ctor
+// MUST be a first-class value exactly like the sum ctor above. The correction
+// makes the surviving `"R"` entry the got-slotted ctor `Def` carrying a type
+// facet, so the product ctor flows through `defined_symbols()` and got-slots
+// like any other ctor. This was RED before the correction; it is GREEN now.
+#[test]
+fn single_ctor_product_constructor_as_first_class_value() {
+    // let-bound product ctor, then called: (f 3 4) builds (R 3 4), area = 7.
+    repl_prims(
+        "(deftype R [:Int w :Int h])\n\
+         (defn add-fields [c] (match c [(R a b) (add-i64 a b)]))\n\
+         (let [f R] (add-fields (f 3 4)))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 7");
+}
+
+// spec: spec/04-expressions.md §4.2.1 — a single-ctor PRODUCT constructor passed
+// as a higher-order argument (the `(map R …)`-style use). Companion to
+// `single_ctor_product_constructor_as_first_class_value`: there the product ctor
+// is let-bound; here it crosses a function-call boundary as an argument value
+// (`(apply2 R 3 4)`), exercising the same "product ctor is a first-class value"
+// requirement on the argument-passing path. Runs through `--run` (the product
+// ctor's value must survive into batch codegen / `defined_symbols()`); exit = 7.
+#[test]
+fn single_ctor_product_constructor_passed_as_higher_order_arg() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [primitives [Int add-i64]])\n\
+             (deftype R [:Int w :Int h])\n\
+             (defn apply2 [f a b] (f a b))\n\
+             (defn area [c] (match c [(R w h) (add-i64 w h)]))\n\
+             (defn main [] (area (apply2 R 3 4)))",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(7);
 }
 
 // =============================================================================

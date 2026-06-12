@@ -20,12 +20,17 @@ The target is set in place in `facades/int.md` (load path + `/platform-schema` c
 injection/`jit_name` retirement) and `bounded-contexts.md` §5 (platform — three exports,
 no schema dialect, no exported fn names), §3 (backend — schema generator + GOT-indirect
 dispatch + startup hash bake), §6 (int — load path + command), §7 (`SymbolTable.schema_literal`
-retires). Implementation is tracked by S77-targeted FIXMEs 0286 (platform macro), 0287
-(backend generator + dispatch + bake), 0288 (int load path + command + `PlatformError`
-variant), 0289 (qa e2e). FIXMEs 0229/0232/0233/0235 re-pointed to this design; 0282 + 0234
-deleted (superseded). No source/spec is edited and no `ABI_VERSION` is bumped yet — those
-land with the FIXMEs. Cascade-when-actioned residue: the new `PlatformError` hash-refusal
-variant (Decision 0042) + `schema_literal` removal in `cranelisp-types`. Where this
+retires). **Implementation status (updated S79 /arch Phase-2, 2026-06-12):** the mechanism
+LANDED across S76 W4a/W4b — **0286** (platform macro), **0287** (backend generator + dispatch
+arm + startup bake), and **0288** (int load path + `/platform-schema` command + hash gate) are
+all resolved + deleted; the `PlatformError::LayoutHashMismatch` variant + `schema_literal`
+removal (the Decision-0042 / §7 cascade residue) both LANDED — `schema_literal` is gone from
+`cranelisp-types` (only a cache version-history changelog comment remains). `ABI_VERSION`
+bumped 2→3. **Only `0289` (qa e2e) remains open** — gated on the `shapes` ADT-typed test-DLL
+fixture (`/platform`), which does not yet exist; the backend GOT-indirect arm is landed-and-
+dormant, activating on `got_slot: Some(_)` when that fixture appears. FIXMEs 0233/0238 are now
+STALE (superseded by W4b) → close; 0229's `validate_schema` half retired (`alloc_with_tag` KEEP
+landed). Where this
 contradicts the as-built S71 boundary, that is the *point* — as-built is marked SUPERSEDED
 in the configuration; the contradictions are surfaced in §2 and §8 (superseded options).
 

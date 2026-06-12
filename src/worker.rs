@@ -552,7 +552,17 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
         // to load it and resume; return `Ok(None)` for this aborted walk. The
         // module is loaded with import's file-resolution rules (orchestrator-
         // owned). Once loaded, the resumed walk recognises the macro normally.
-        if let Some((mod_part, _sym_part)) = name.split_once('/') {
+        // A `:`-prefixed symbol is a TYPE ANNOTATION (`:Int`, `:primitives/Int`,
+        // `:core.option/Option`), NOT a module-qualified value reference — it
+        // must never be treated as an FQ-autoload candidate. Without this skip,
+        // `:primitives/Int` splits into `mod_part = ":primitives"` and the
+        // recogniser registers a bogus blocked FQ-module dep `:primitives`,
+        // contaminating resolution (the field type then fails with
+        // `unknown type 'primitives' (from module '')`). The sibling
+        // `qualify_expanded_sexp` already guards this exact case (FIXME 0322).
+        if !name.starts_with(':')
+            && let Some((mod_part, _sym_part)) = name.split_once('/')
+        {
             // Resolve the module part through the session alias table FIRST
             // (§8.6.6). A `(mod util)` declaration registers a short-name
             // alias `util -> <parent>.util` (and `(import [(target alias)])`
@@ -4824,6 +4834,7 @@ mod tests {
                 tag: 1,
                 field_count: 1,
                 internal: false,
+                type_def: None,
             },
             Some(trivial_variant()),
             Some(0),
@@ -5751,6 +5762,66 @@ mod tests {
             resolver.blocked_on_fq_module, None,
             "a bare head never triggers FQ-module auto-load"
         );
+    }
+
+    // spec: spec/09-macros.md §9.3.6 (FIXME 0322) — a `:`-prefixed symbol is a
+    // TYPE ANNOTATION (`:primitives/Int`), never a module-qualified value/macro
+    // reference. The FQ-autoload pre-scan in `recognize` must NOT split it on
+    // `/` and treat `:primitives` as an unloaded module: doing so registers a
+    // bogus `:primitives` block dep and contaminates resolution (the field type
+    // then fails with `unknown type 'primitives' (from module '')`). The sibling
+    // `qualify_expanded_sexp` already guards this with a `starts_with(':')` skip.
+    #[test]
+    fn recognize_skips_colon_prefixed_type_annotation() {
+        use crate::expander::MacroResolver;
+        let module = ModuleFullPath::from("user");
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        symbol_tables.insert(
+            module.clone(),
+            crate::code::SessionSymbolTable::new_with_params(module.clone()),
+        );
+        let next_type_id = std::sync::atomic::AtomicU32::new(0);
+        let scheduler = CompileScheduler::new();
+        let typecheck_products = dashmap::DashMap::new();
+        let module_aliases = cranelisp_types::ModuleAliases::default();
+        let prelude_fallback = cranelisp_typecheck::PreludeFallback::default();
+        let mut check_state = CheckState::new(module.clone());
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        let mut resolver = SymbolTableMacroResolver {
+            symbol_tables: &symbol_tables,
+            next_type_id: &next_type_id,
+            check_state: &mut check_state,
+            current_module: module.clone(),
+            module_aliases: &module_aliases,
+            prelude_fallback: &prelude_fallback,
+            typecheck_products: &typecheck_products,
+            accumulator: &mut accumulator,
+            scheduler: &scheduler,
+            shared_state: None,
+            macro_defining_modules: Vec::new(),
+            blocked_on_fq_module: None,
+        };
+
+        // The FQ type annotation `:primitives/Int` must NOT be mis-split into a
+        // `:primitives` block dep — it is a type leaf, not a value reference.
+        let r = resolver
+            .recognize(":primitives/Int", Span::SYNTHETIC)
+            .expect("a `:`-prefixed annotation is Ok(None), not a hard error");
+        assert!(r.is_none(), "a type annotation is never a macro head");
+        assert_eq!(
+            resolver.blocked_on_fq_module, None,
+            "a `:`-prefixed type annotation must NOT register an FQ-module block \
+             dep (FIXME 0322 — `:primitives` is not a module qualifier)"
+        );
+
+        // A bare `:Int` annotation (no `/`) is likewise inert.
+        let r = resolver
+            .recognize(":Int", Span::SYNTHETIC)
+            .expect("a bare `:`-prefixed annotation is Ok(None)");
+        assert!(r.is_none());
+        assert_eq!(resolver.blocked_on_fq_module, None);
     }
 
     /// FIXME 0121: a `(mod util)` declaration registers the short-name alias

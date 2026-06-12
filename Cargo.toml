@@ -11,6 +11,7 @@ members = [
     "crates/cranelisp-exe-bundle",
     "platforms/stdio",
     "platforms/test-capture",
+    "platforms/shapes",
 ]
 resolver = "2"
 

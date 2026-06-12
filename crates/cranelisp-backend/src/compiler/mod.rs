@@ -596,18 +596,18 @@ where
 
     /// Extract constructor metadata from a module entry.
     ///
-    /// Post-S70: constructors are normally `ModuleEntry::Def { kind:
+    /// Post-S70: constructors are uniformly `ModuleEntry::Def { kind:
     /// DefKind::Constructor { type_name, tag, field_count, .. }, .. }`; field
     /// types are recovered from the `scheme` (`Type::Fn(field_types, _)` for
     /// data constructors; nullary constructors carry no `Fn`).
     ///
     /// **Product types** (single constructor whose name equals the type name,
-    /// e.g. `(deftype Point [:Int x :Int y])`) are stored as a single
-    /// `ModuleEntry::TypeDef` whose `constructor_scheme: Some(_)` carries the
-    /// constructor signature — the same-named constructor `Def` is overwritten
-    /// by the `TypeDef` at registration (see `cranelisp-typecheck::adt`
-    /// `register_type` insert order). For those, the constructor is tag 0 with
-    /// field types from the `constructor_scheme`'s `Type::Fn` params.
+    /// e.g. `(deftype Point [:Int x :Int y])`) are NO LONGER special — S79
+    /// Option 3a makes the product ctor a got-slotted `Def` exactly like a sum
+    /// ctor (with a `DefKind::Constructor { type_def: Some(..) }` type facet);
+    /// the prior `ModuleEntry::TypeDef.constructor_scheme` smuggling field is
+    /// retired. The product ctor enters this routine through the one `Def` arm
+    /// below, reading its field types from the `Def`'s own `scheme`.
     fn extract_constructor<C2: cranelisp_types::CodeStore>(
         entry: &ModuleEntry<C2>,
     ) -> Option<(FQTypeName, CtorMeta)> {
@@ -626,23 +626,6 @@ where
                     })
                     .collect();
                 Some((type_name.clone(), CtorMeta { tag: *tag, fields }))
-            }
-            // Product type: the constructor shares the type's name and lives on
-            // the TypeDef's `constructor_scheme`.
-            ModuleEntry::TypeDef {
-                info,
-                constructor_scheme: Some(scheme),
-                ..
-            } => {
-                let field_types: &[Type] = match &scheme.ty {
-                    Type::Fn(params, _) => params.as_slice(),
-                    _ => &[],
-                };
-                let fields: Vec<CtorField> = field_types
-                    .iter()
-                    .map(|t| CtorField { ty: t.clone() })
-                    .collect();
-                Some((info.name.clone(), CtorMeta { tag: 0, fields }))
             }
             _ => None,
         }
@@ -673,10 +656,19 @@ where
     }
 
     /// Look up a TypeDefInfo by FQTypeName from the symbol tables.
+    ///
+    /// The info lives on a `ModuleEntry::TypeDef` entry (sum/enum) or, for a
+    /// single-ctor **product** type (S79 Option 3a), on the got-slotted product
+    /// ctor `Def`'s `DefKind::Constructor { type_def: Some(..) }` type facet —
+    /// the product `type_name` key IS the ctor `Def`, not a `TypeDef`.
     pub fn lookup_type_def(&self, fqtn: &FQTypeName) -> Option<TypeDefInfo> {
         let table = self.symbol_tables.get(&fqtn.module)?;
         match table.get(fqtn.name.as_ref()) {
             Some(ModuleEntry::TypeDef { info, .. }) => Some(info.clone()),
+            Some(ModuleEntry::Def { kind, .. }) => match &**kind {
+                DefKind::Constructor { type_def: Some(td), .. } => Some((**td).clone()),
+                _ => None,
+            },
             _ => None,
         }
     }

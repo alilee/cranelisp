@@ -101,6 +101,7 @@ pub enum ResolveError {
     /// Trait name is not reachable from the calling module's import scope,
     /// nor anywhere on its chain-follow path.
     TraitNotFound {
+        // FQTypeName exception 1 (display: echoes the as-written bare name for the diagnostic; lookup failed so no FQ exists)
         name: TraitName,
         from_module: ModuleFullPath,
         span: Span,
@@ -110,6 +111,7 @@ pub enum ResolveError {
     /// there is no hardcoded fallback; intrinsics are reached through the
     /// `primitives` module's import bindings like any other name.
     TypeNotFound {
+        // FQTypeName exception 1 (display: echoes the as-written bare name for the diagnostic; lookup failed so no FQ exists)
         name: TypeName,
         from_module: ModuleFullPath,
         span: Span,

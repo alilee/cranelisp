@@ -1224,7 +1224,13 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         info: TypeDefInfo,
         visibility: Visibility,
         docstring: Option<String>,   // S72 Phase B — direct field; un-nested from TypeDefInfo
-        constructor_scheme: Option<Scheme>,
+        // S79 Option 3a (FIXME 0319): `constructor_scheme: Option<Scheme>` RETIRED.
+        // A single-ctor product type (type-name == ctor-name) no longer survives
+        // as a TypeDef that smuggled the ctor's Scheme here; it survives as a
+        // got-slotted ctor Def carrying a type facet
+        // (DefKind::Constructor { type_def: Some(TypeDefInfo) }), and the ctor
+        // scheme lives on that Def's own `scheme`. TypeDef entries are now only
+        // ever the sum/enum case.
     },
     TraitDecl {
         info: TraitDeclInfo,         // S72 Phase B — slimmed payload; no longer embeds AST TraitDecl
@@ -1302,6 +1308,24 @@ pub enum DefKind {
     },
     Overloaded {
         variants: Vec<OverloadVariant>,
+    },
+    /// An ADT constructor. `type_def` is the **product-type dual facet**
+    /// (S79 Option 3a, FIXME 0319): `Some(Box<TypeDefInfo>)` iff this ctor IS
+    /// its own type (single-ctor product, type-name == ctor-name) — the entry
+    /// answers both as a got-slotted ctor `Def` AND as its type; `None` for
+    /// ordinary sum/enum ctors whose type is a separate `ModuleEntry::TypeDef`.
+    /// Field names live on the Def's `param_names`, NOT in `TypeDefInfo`
+    /// (single source, Principle 7). Replaces the retired
+    /// `ModuleEntry::TypeDef.constructor_scheme` smuggling field.
+    Constructor {
+        type_name: FQTypeName,
+        tag: usize,
+        field_count: usize,
+        internal: bool,
+        type_def: Option<Box<TypeDefInfo>>,
+    },
+    Macro {
+        clauses_meta: Vec<MacroClauseInfo>,
     },
     // SpecialForm retired from DefKind (S69 Submission 36) — promoted to its
     // own `ModuleEntry::SpecialForm` variant. PrimitiveKind enum retired

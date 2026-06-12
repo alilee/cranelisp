@@ -17,6 +17,8 @@ use cranelisp_types::{
     CodeStore, ModuleEntry, ResolveError, Span, Symbol, Type, TypeExpr, TypeId, TypeRef,
 };
 
+use crate::checker::type_def_view_of;
+
 /// Resolve a type expression to a concrete type.
 ///
 /// `var_map` maps type variable names (e.g., `:a`) to their allocated TypeIds.
@@ -75,7 +77,9 @@ fn type_not_found(name: &TypeRef, span: Span) -> ResolveError {
 
 /// Resolve a named type by matching its terminal `ModuleEntry`.
 ///
-/// `TypeDef` resolves to `Type::ADT(info.name, [])`; `IntrinsicType` returns
+/// A `TypeDef` (sum/enum) OR a single-ctor **product**'s ctor `Def`
+/// (`Constructor { type_def: Some(..) }`, S79 dual facet) resolves to
+/// `Type::ADT(info.name, [])` via [`type_def_view_of`]; `IntrinsicType` returns
 /// its bare `Type` variant (`Type::Int`, etc.) directly.
 fn resolve_named<C: CodeStore>(
     name: &TypeRef,
@@ -83,9 +87,12 @@ fn resolve_named<C: CodeStore>(
     span: Span,
 ) -> Result<Type, ResolveError> {
     match resolve_terminal(name) {
-        Some(ModuleEntry::TypeDef { info, .. }) => Ok(Type::ADT(info.name, vec![])),
         Some(ModuleEntry::IntrinsicType { ty, .. }) => Ok(ty),
-        _ => Err(type_not_found(name, span)),
+        Some(entry) => match type_def_view_of(&entry) {
+            Some(info) => Ok(Type::ADT(info.name.clone(), vec![])),
+            None => Err(type_not_found(name, span)),
+        },
+        None => Err(type_not_found(name, span)),
     }
 }
 
@@ -101,28 +108,33 @@ fn resolve_applied<C: CodeStore>(
     span: Span,
 ) -> Result<Type, ResolveError> {
     match resolve_terminal(name) {
-        Some(ModuleEntry::TypeDef { info, .. }) => {
-            let expected_arity = info.type_params.len();
-            if args.len() != expected_arity {
-                return Err(ResolveError::TypeNotFound {
-                    name: name.name.clone(),
-                    from_module: name
-                        .module
-                        .clone()
-                        .unwrap_or_else(|| cranelisp_types::ModuleFullPath::from("")),
-                    span,
-                });
-            }
-            let resolved_args: Vec<Type> = args
-                .iter()
-                .map(|a| resolve_type_expr(a, var_map, resolve_terminal, span))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(Type::ADT(info.name, resolved_args))
-        }
         // Intrinsics are zero-arity; applied form short-circuits to the bare
         // `Type` (the parser can emit `Applied` with empty args).
         Some(ModuleEntry::IntrinsicType { ty, .. }) => Ok(ty),
-        _ => Err(type_not_found(name, span)),
+        // `TypeDef` (sum/enum) OR a product ctor's type facet (S79 dual facet)
+        // both answer as a type via `type_def_view_of`.
+        Some(entry) => match type_def_view_of(&entry) {
+            Some(info) => {
+                let expected_arity = info.type_params.len();
+                if args.len() != expected_arity {
+                    return Err(ResolveError::TypeNotFound {
+                        name: name.name.clone(),
+                        from_module: name
+                            .module
+                            .clone()
+                            .unwrap_or_else(|| cranelisp_types::ModuleFullPath::from("")),
+                        span,
+                    });
+                }
+                let resolved_args: Vec<Type> = args
+                    .iter()
+                    .map(|a| resolve_type_expr(a, var_map, resolve_terminal, span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Type::ADT(info.name.clone(), resolved_args))
+            }
+            None => Err(type_not_found(name, span)),
+        },
+        None => Err(type_not_found(name, span)),
     }
 }
 
@@ -130,8 +142,9 @@ fn resolve_applied<C: CodeStore>(
 mod tests {
     use super::*;
     use cranelisp_types::{
-        FQTypeName, ModuleFullPath, TypeDefInfo, TypeName, Visibility,
+        DefKind, FQTypeName, ModuleFullPath, Scheme, TypeDefInfo, TypeName, Visibility,
     };
+    use std::collections::HashMap as StdHashMap;
 
     /// Test entry type: the unit `CodeStore` marker used in the crate's
     /// other unit tests for `ModuleEntry<()>`.
@@ -166,8 +179,35 @@ mod tests {
             },
             visibility: Visibility::Public,
             docstring: None,
-            constructor_scheme: None,
         }
+    }
+
+    /// Build a single-ctor **product** entry: a got-slotted ctor `Def`
+    /// carrying the type facet (`type_def: Some(..)`), per the S79 dual-facet
+    /// model. The entry answers as its own type via `type_def_view_of`.
+    fn product_ctor_entry(name: &str, arity: usize) -> Entry {
+        let info = TypeDefInfo {
+            name: test_fqtn(name),
+            type_params: (0..arity)
+                .map(|i| Symbol::from(format!("t{i}")))
+                .collect(),
+            constructors: vec![],
+        };
+        ModuleEntry::def(
+            Scheme {
+                type_vars: vec![],
+                constraints: StdHashMap::new(),
+                ty: Type::ADT(test_fqtn(name), vec![]),
+            },
+            DefKind::Constructor {
+                type_name: test_fqtn(name),
+                tag: 0,
+                field_count: 0,
+                internal: false,
+                type_def: Some(Box::new(info)),
+            },
+        )
+        .build()
     }
 
     /// A resolver closure backed by a small fixture map keyed on bare name.
@@ -400,5 +440,49 @@ mod tests {
             ty,
             Type::ADT(test_fqtn("Either"), vec![Type::Int, Type::String])
         );
+    }
+
+    // spec: 03-types §3.2.2 — a single-ctor PRODUCT type used in TYPE position
+    // resolves to its ADT. Its symbol-table entry is the got-slotted ctor `Def`
+    // carrying the type facet (S79 dual facet), NOT a `TypeDef`; resolution must
+    // route through `type_def_view_of` so the product type answers as a type.
+    #[test]
+    fn test_resolve_product_ctor_as_type() {
+        let var_map = HashMap::new();
+        let mut map: HashMap<&'static str, Entry> = HashMap::new();
+        // `(deftype Box [:Int n])` — type-name == ctor-name == "Box".
+        map.insert("Box", product_ctor_entry("Box", 0));
+        let r = resolver(&map);
+
+        let ty = resolve_type_expr(&named("Box"), &var_map, &r, Span::SYNTHETIC).unwrap();
+        assert_eq!(ty, Type::ADT(test_fqtn("Box"), vec![]));
+    }
+
+    // spec: 03-types §3.2.2 — applied form of a parametric single-ctor product
+    // type resolves with arity validation, again via the ctor `Def` type facet.
+    #[test]
+    fn test_resolve_applied_product_ctor_as_type() {
+        let var_map = HashMap::new();
+        let mut map = intrinsics_map();
+        // `(deftype (Wrap a) (Wrap [:a inner]))` — product, arity 1.
+        map.insert("Wrap", product_ctor_entry("Wrap", 1));
+        let r = resolver(&map);
+
+        let texpr = TypeExpr::Applied(
+            TypeRef::new(None, TypeName::from("Wrap")),
+            vec![named("Int")],
+        );
+        let ty = resolve_type_expr(&texpr, &var_map, &r, Span::SYNTHETIC).unwrap();
+        assert_eq!(ty, Type::ADT(test_fqtn("Wrap"), vec![Type::Int]));
+
+        // Wrong arity on a product type still fails the arity gate.
+        let bad = TypeExpr::Applied(
+            TypeRef::new(None, TypeName::from("Wrap")),
+            vec![named("Int"), named("Bool")],
+        );
+        assert!(matches!(
+            resolve_type_expr(&bad, &var_map, &r, Span::SYNTHETIC).unwrap_err(),
+            ResolveError::TypeNotFound { .. }
+        ));
     }
 }

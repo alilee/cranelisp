@@ -369,6 +369,42 @@ mod tests {
         FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from(name))
     }
 
+    // Decision 0047 (FQTypeName binding) cement. `Type::adt` is the one
+    // constructor inside cranelisp-types that takes a bare `TypeName` and lifts
+    // it to the fully-qualified `Type::ADT(FQTypeName, _)` form — the single
+    // place a bare-name leak could originate from within the crate. This test
+    // pins (a) the module context is preserved (non-empty, == the supplied
+    // module), and (b) module is load-bearing for identity — same local name in
+    // different modules produces distinct, unequal ADT types. A regression that
+    // dropped the module qualification (the FQTypeName leak Decision 0047
+    // forbids) is caught here. See design/arch/bounded-contexts.md §7.
+    #[test]
+    fn test_adt_construction_is_fully_qualified() {
+        let ty = Type::adt(
+            ModuleFullPath::from("option"),
+            TypeName::from("Option"),
+            vec![Type::Int],
+        );
+        match &ty {
+            Type::ADT(fq, args) => {
+                assert!(!fq.module.is_empty(), "FQTypeName module must be populated");
+                assert_eq!(fq.module, "option", "module context must be preserved");
+                assert_eq!(fq.name, "Option");
+                assert_eq!(args, &vec![Type::Int]);
+            }
+            other => panic!("Type::adt must produce Type::ADT, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_adt_same_name_different_module_are_distinct() {
+        let a = Type::adt(ModuleFullPath::from("foo"), TypeName::from("T"), vec![]);
+        let b = Type::adt(ModuleFullPath::from("bar"), TypeName::from("T"), vec![]);
+        // Module is load-bearing for identity — a bare-name-only ADT would
+        // collapse these to equal, which Decision 0047 forbids.
+        assert_ne!(a, b, "same local name in different modules must not be equal");
+    }
+
     #[test]
     fn test_apply_identity() {
         let subst = Subst::new();

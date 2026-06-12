@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use cranelisp_types::{ErrorLocation, 
-    CranelispError, Expr, MatchArm, ModuleEntry, Pattern, ResolvedCall, Scheme, Span, Symbol,
+    CranelispError, Expr, MatchArm, ModuleEntry, Pattern, ResolvedCall, Span, Symbol,
     Type, TypeExpr,
 };
 
@@ -496,7 +496,29 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // expressions) would silently produce no resolution, causing miscompilation.
         // Reject them with a clear error — the user can bind to a variable first.
         let callee_name = match callee {
-            Expr::Var { name, .. } => name.clone(),
+            Expr::Var { name, .. } => {
+                // ADT constructors do NOT auto-curry: an under-applied
+                // constructor is an arity error (spec §5.2.7). With the S79
+                // product-ctor dual facet a single-ctor product is an ordinary
+                // got-slotted ctor `Def` whose function-type scheme is curry-
+                // shaped, so it would otherwise fall through to the generic
+                // curry path here; reject it with a clear arity diagnostic.
+                if let Some(cranelisp_types::ModuleEntry::Def { kind, .. }) =
+                    self.resolve_constructor_entry(state, name.as_ref())
+                    && let cranelisp_types::DefKind::Constructor { field_count, .. } =
+                        kind.as_ref()
+                {
+                    return Err(CranelispError::TypeError {
+                        message: format!(
+                            "constructor {name} expects {field_count} argument{} but got {}",
+                            if *field_count == 1 { "" } else { "s" },
+                            arg_types.len(),
+                        ),
+                        location: ErrorLocation::from_span(span),
+                    });
+                }
+                name.clone()
+            }
             _ => {
                 return Err(CranelispError::TypeError {
                     message: "auto-curry requires a named function; bind this expression to a variable first".to_string(),
@@ -808,11 +830,27 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // live on `DefKind::Constructor` post-S70 (the prior
         // `ModuleEntry::Constructor` variant was retired). The lookup
         // returns the terminal entry, following Import chains.
-        if let Some(entry) = self.resolve_entry_in_current_module(state, name.as_ref()) {
+        //
+        // The pattern ctor name may be **bare** (`SCons`, resolved in the
+        // current module with the implicit-prelude outer-scope fallback per
+        // Principle 17 + S78 §2) OR **module-qualified** (`macros/SCons`, an FQ
+        // reference that bypasses import scope and roots directly in the named
+        // module — spec §8.6.6). Quasiquote macros lower their templates into
+        // qualified `macros/SCons`/`macros/SNil` ctor patterns, so the
+        // qualified arm is load-bearing for every macro. `resolve_constructor_entry`
+        // dispatches on the `/` to the right rooting; the prior
+        // `lookup_constructor_scheme` product-fallback leg (which split the `/`)
+        // was retired with S79 Option 3a, so the split must live here.
+        if let Some(entry) = self.resolve_constructor_entry(state, name.as_ref()) {
             if let cranelisp_types::ModuleEntry::Def { kind, .. } = &entry {
                 if let cranelisp_types::DefKind::Constructor { type_name, tag, .. } = kind.as_ref() {
                     // Use the shared `instantiate_ctor` helper for the
                     // resolution+instantiation core (Trigger 2 sharing).
+                    // Single-ctor product types resolve here too (S79 Option
+                    // 3a) — their got-slotted ctor `Def` carries `type_name`/
+                    // `tag` exactly like a sum ctor; the prior
+                    // `constructor_scheme`-on-`TypeDef` product-fallback leg
+                    // is retired.
                     let (fq_sym, instantiated) = self.instantiate_ctor(
                         state, type_name, *tag, span,
                     )?;
@@ -824,53 +862,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
         }
 
-        // Fallback: the ctor's name doesn't resolve to a Def with
-        // DefKind::Constructor (e.g., product-type single-ctor cases that
-        // route through `constructor_scheme` on TypeDef). Use the legacy
-        // scheme lookup until the type-def-product path is migrated.
-        let ctor_scheme = self.lookup_constructor_scheme(state, name, span)?;
-        let instantiated = self.instantiate(state, &ctor_scheme);
-        self.unify_pattern_with_scrutinee(state,
-            name, bindings, &instantiated, scrutinee_ty, span,
-        )
-    }
-
-    /// Look up a constructor's type scheme from the symbol table.
-    ///
-    /// Supports module-qualified names (e.g. `macros/SCons`): strips the module
-    /// prefix for the `constructor_to_type` registry lookup, then uses the full
-    /// qualified name for scheme resolution (which already handles `/`).
-    fn lookup_constructor_scheme(
-        &self, state: &mut CheckState,
-        name: &Symbol,
-        span: Span,
-    ) -> Result<Scheme, CranelispError> {
-        // Constructor name can be bare (`SCons`, looked up in current module
-        // via Principle 17 import-scoped resolution) or fully qualified
-        // (`macros/SCons`, looked up in the named module directly — FQ refs
-        // bypass the import system per the module-locality model).
-        let exists = if let Some(slash_pos) = name.as_ref().find('/') {
-            let module_str = &name.as_ref()[..slash_pos];
-            let bare_name = &name.as_ref()[slash_pos + 1..];
-            let module_path = cranelisp_types::ModuleFullPath::from(module_str);
-            self.lookup_constructor_type_in_module(&module_path, bare_name)
-                .is_some()
-        } else {
-            self.lookup_constructor_type_with_state(state, name.as_ref())
-                .is_some()
-        };
-        if !exists {
-            return Err(CranelispError::TypeError {
-                message: format!("unknown constructor in pattern: {name}"),
-                location: ErrorLocation::from_span(span),
-            });
-        }
-
-        // Get the scheme from the symbol table (handles qualified names via lookup)
-        let (scheme, gap) = self.lookup(state, name);
-        state.pending_gap = gap;
-        scheme.ok_or_else(|| CranelispError::TypeError {
-            message: format!("constructor {name} has no type scheme"),
+        // The name does not resolve to a constructor `Def`.
+        Err(CranelispError::TypeError {
+            message: format!("unknown constructor in pattern: {name}"),
             location: ErrorLocation::from_span(span),
         })
     }

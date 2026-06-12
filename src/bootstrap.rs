@@ -104,15 +104,24 @@ struct SynthCtor {
     internal: bool,
 }
 
-/// Register a synthetic ADT into `module` exactly as the deleted
-/// `register_type_def` / `register_type_def_with_ctor_infos` pair did:
+/// Register a synthetic ADT into `module` exactly as the
+/// `register_type_def_with_ctor_infos` cascade does (S79 Option 3a, FIXME 0319):
 ///
-/// - a `ModuleEntry::TypeDef` entry keyed by the type name, carrying the
-///   constructor-name list;
-/// - one `ModuleEntry::Def { kind: DefKind::Constructor { .. } }` per
-///   constructor, with a scheme `forall [type_vars]. (Fn [field-tys] ADT)` (or
-///   bare `ADT` for nullary), `param_names` = field names, and an `ast`
-///   carrying a synthesised `DefnVariant` whose body is `Expr::ConstrADT`.
+/// - **Sum/enum** (distinct ctor names — `Option`/`Result`/`IO`): a separate
+///   `ModuleEntry::TypeDef` entry keyed by the type name carrying the
+///   constructor-name list, plus one got-slotted `ModuleEntry::Def { kind:
+///   DefKind::Constructor { type_def: None, .. } }` per constructor.
+/// - **Single-ctor product** (type-name == sole ctor-name — `Pair`): NO separate
+///   `TypeDef` entry. The lone ctor's got-slotted `Def` IS the `"Pair"` key and
+///   carries the **type facet** `DefKind::Constructor { type_def: Some(..) }`, so
+///   the same entry answers both as a constructor AND as its own type. The
+///   retired `ModuleEntry::TypeDef.constructor_scheme` smuggling field is gone —
+///   the product ctor's scheme lives on its own `Def.scheme`, its field names on
+///   `Def.param_names`.
+///
+/// Each ctor `Def` has a scheme `forall [type_vars]. (Fn [field-tys] ADT)` (or
+/// bare `ADT` for nullary), `param_names` = field names, and an `ast` carrying a
+/// synthesised `DefnVariant` whose body is `Expr::ConstrADT`.
 ///
 /// `type_var_ids` are the (already-allocated) ids quantified in each ctor
 /// scheme; `adt_type` is `Type::ADT(fqtn, [Var(id)…])`.
@@ -130,16 +139,21 @@ fn register_synth_adt(
         type_var_ids.iter().map(|&id| Type::Var(id)).collect(),
     );
 
-    // Same-name single-constructor product types (type name == sole ctor name,
-    // e.g. `Pair`) cannot hold a separate Constructor `Def` and a `TypeDef`
-    // under the same symbol-table key — the TypeDef would clobber the Def,
-    // leaving construction/pattern use unresolvable. The canonical shape
-    // (mirroring user `deftype` via `find_same_name_constructor_scheme`) is a
-    // single `TypeDef` carrying `constructor_scheme: Some(Fn[fields] ADT)`;
-    // construction inlines through it (heap.rs) and pattern/value resolution
-    // routes through it (checker.rs). Capture that scheme here and skip the
-    // colliding Def insert.
-    let mut same_name_ctor_scheme: Option<Scheme> = None;
+    // **Product/sum split (S79 Option 3a, FIXME 0319), mirroring
+    // `register_type_def_with_ctor_infos`.** A single-ctor **product** (type
+    // name == sole ctor name, e.g. `Pair`) has its type and constructor collide
+    // on one symbol-table key. Rather than overwrite the got-slotted ctor `Def`
+    // with a `TypeDef` (the old model — which dropped `param_names` field names),
+    // the surviving `"Pair"` entry is the got-slotted ctor `Def` carrying a
+    // **type facet** (`type_def: Some(..)`). A sum/enum type registers a separate
+    // `TypeDef` and its ctors carry `type_def: None`.
+    let constructors: Vec<Symbol> = ctors.iter().map(|c| Symbol::from(c.name)).collect();
+    let type_def_info = TypeDefInfo {
+        name: fqtn.clone(),
+        type_params: type_params.iter().map(|p| Symbol::from(*p)).collect(),
+        constructors,
+    };
+    let is_product = ctors.len() == 1 && ctors[0].name == type_name;
 
     for (tag, ctor) in ctors.iter().enumerate() {
         let param_names: Vec<Symbol> =
@@ -163,12 +177,13 @@ fn register_synth_adt(
             }
         };
 
-        if ctor.name == type_name {
-            // Same-name product: route through the TypeDef's constructor_scheme
-            // (below) rather than a colliding Def entry.
-            same_name_ctor_scheme = Some(scheme);
-            continue;
-        }
+        // The product ctor (type-name == ctor-name) carries the type facet;
+        // sum/enum ctors carry `type_def: None`.
+        let ctor_type_def: Option<Box<TypeDefInfo>> = if is_product {
+            Some(Box::new(type_def_info.clone()))
+        } else {
+            None
+        };
 
         // Synthesise the DefnVariant body wrapping Expr::ConstrADT — backend
         // lowers this directly (DefKind::Constructor metadata is for pattern
@@ -204,39 +219,35 @@ fn register_synth_adt(
                 tag,
                 field_count: ctor.fields.len(),
                 internal: ctor.internal,
+                type_def: ctor_type_def,
             },
         )
         .visibility(Visibility::Public)
         .param_names(param_names)
         .ast(ast);
-        if let Some(doc) = ctor.docstring {
+        // The product ctor has no separate TypeDef to hold the deftype-level
+        // docstring, so fall back to it when the ctor itself has none.
+        let ctor_doc = ctor.docstring.or(if is_product { adt_docstring } else { None });
+        if let Some(doc) = ctor_doc {
             builder = builder.docstring(doc);
         }
         module.insert(Symbol::from(ctor.name), builder.build());
     }
 
-    // The TypeDef entry — carries the constructor-name list. For same-name
-    // product types (e.g. `Pair`) it also carries the constructor_scheme
-    // captured above; for distinct-name ADTs (Option/Result/IO) the ctors are
-    // separate Def entries and constructor_scheme stays None.
-    let constructors: Vec<Symbol> = ctors.iter().map(|c| Symbol::from(c.name)).collect();
-    let mut docstring = None;
-    if let Some(doc) = adt_docstring {
-        docstring = Some(doc.to_string());
-    }
-    module.insert(
-        Symbol::from(type_name),
-        ModuleEntry::TypeDef {
-            info: TypeDefInfo {
-                name: fqtn.clone(),
-                type_params: type_params.iter().map(|p| Symbol::from(*p)).collect(),
-                constructors,
+    // Register the sum/enum type's separate `TypeDef` entry (carries the
+    // constructor-name list). The product case has NO `TypeDef` — its type facet
+    // lives on the ctor `Def` registered above, under the shared type-name key.
+    if !is_product {
+        let docstring = adt_docstring.map(|d| d.to_string());
+        module.insert(
+            Symbol::from(type_name),
+            ModuleEntry::TypeDef {
+                info: type_def_info,
+                visibility: Visibility::Public,
+                docstring,
             },
-            visibility: Visibility::Public,
-            docstring,
-            constructor_scheme: same_name_ctor_scheme,
-        },
-    );
+        );
+    }
 }
 
 /// Insert a `DefKind::Primitive` `Def` entry into `module`.
@@ -372,6 +383,7 @@ fn register_builtin_type_names(
     }
 
     // Vec stays as TypeDef — no Type::Vec variant (vec is Type::ADT(Vec, [elem])).
+    // It has no surface constructor, so it is not a product (no type facet).
     primitives.insert(
         Symbol::from("Vec"),
         ModuleEntry::TypeDef {
@@ -382,7 +394,6 @@ fn register_builtin_type_names(
             },
             visibility: Visibility::Public,
             docstring: Some("builtin vector type".to_string()),
-            constructor_scheme: None,
         },
     );
 }
@@ -749,6 +760,9 @@ fn register_io_type(
                 tag: 2,
                 field_count: 2,
                 internal: true,
+                // `IO` is a sum type (`Pure`/`Effect`/`Bind`) with a separate
+                // `TypeDef`; `Bind` is not its own type.
+                type_def: None,
             },
         )
         .visibility(Visibility::Public)
@@ -1095,19 +1109,34 @@ mod tests {
         let (tables, next_id) = fresh_tables();
         mount_synthetic_modules(&tables, &next_id);
         let prims = tables.get(&ModuleFullPath::from("primitives")).unwrap();
-        assert!(matches!(prims.get("Pair"), Some(ModuleEntry::TypeDef { .. })));
-        // `Pair` is a same-name product type: the type and its sole 2-field
-        // constructor share the name, so there is ONE `TypeDef` entry that
-        // MUST carry `constructor_scheme: Some(Fn[a b] (Pair a b))` — without
-        // it `(Pair 1 2)` and `(match _ [(Pair a b) …])` are unresolvable
-        // (the FIXME 0297 defect). Assert the scheme is present and is a
-        // 2-arg constructor function, not just that the type name exists.
+        // `Pair` is a same-name single-ctor **product** type (S79 Option 3a,
+        // FIXME 0319): the type and its sole 2-field constructor share the name,
+        // so the surviving `"Pair"` entry is the got-slotted ctor `Def` carrying
+        // a **type facet** (`type_def: Some(..)`) — NOT a `TypeDef`. The ctor
+        // scheme `(Fn [a b] (Pair a b))` lives on the `Def`'s own `scheme`, its
+        // field names on `param_names`. Without this, `(Pair 1 2)`,
+        // `(match _ [(Pair a b) …])` and `Pair` as a first-class value are
+        // unresolvable. Assert the dual facet, not just the name's existence.
         match prims.get("Pair") {
-            Some(ModuleEntry::TypeDef { info, constructor_scheme, .. }) => {
-                assert_eq!(info.constructors, vec![Symbol::from("Pair")]);
-                let scheme = constructor_scheme
-                    .as_ref()
-                    .expect("Pair (same-name product) must carry constructor_scheme");
+            Some(ModuleEntry::Def { kind, scheme, param_names, .. }) => {
+                match kind.as_ref() {
+                    DefKind::Constructor { type_def: Some(td), field_count, .. } => {
+                        assert_eq!(
+                            td.constructors,
+                            vec![Symbol::from("Pair")],
+                            "Pair's type facet lists its sole ctor"
+                        );
+                        assert_eq!(*field_count, 2, "Pair constructor takes 2 fields");
+                    }
+                    other => panic!(
+                        "Pair (product) must be DefKind::Constructor with type_def: Some, got {other:?}"
+                    ),
+                }
+                assert_eq!(
+                    param_names,
+                    &vec![Symbol::from("first"), Symbol::from("second")],
+                    "Pair field names ride on the ctor Def's param_names"
+                );
                 match &scheme.ty {
                     Type::Fn(fields, ret) => {
                         assert_eq!(fields.len(), 2, "Pair constructor takes 2 fields");
@@ -1116,10 +1145,10 @@ mod tests {
                             "Pair constructor returns the Pair ADT, got {ret:?}"
                         );
                     }
-                    other => panic!("Pair constructor_scheme must be a Fn type, got {other:?}"),
+                    other => panic!("Pair ctor scheme must be a Fn type, got {other:?}"),
                 }
             }
-            other => panic!("Pair should be a TypeDef, got {other:?}"),
+            other => panic!("Pair should be a got-slotted ctor Def, got {other:?}"),
         }
         assert!(matches!(prims.get("Result"), Some(ModuleEntry::TypeDef { .. })));
         // Ok=tag 0, Err=tag 1 (declaration order — the combinator assumes this).
