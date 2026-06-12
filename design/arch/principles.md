@@ -26,3 +26,4 @@ Each Principle is one file at `principles/NN-{slug}.md`. Index:
 - [Principle 16](principles/16-punctuation-symbols-are-not-special.md) — Punctuation symbols are not special
 - [Principle 17](principles/17-module-locality-in-typecheck.md) — Module locality in typecheck
 - [Principle 18](principles/18-enforce-invariants-structurally.md) — Enforce architectural invariants structurally where possible (S68 — motivating context: Decision 0048 §"Structural invariant — backend dep-ban", user-arbitrated revision 2026-05-17)
+- [Principle 19](principles/19-no-module-privileged-by-name.md) — No module is privileged by name (S78 — motivating context: entry-module de-special-casing + prelude-as-outer-scope, user-approved 2026-06-11)

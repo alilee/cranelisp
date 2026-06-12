@@ -41,6 +41,10 @@ use crate::display::{format_type_qualified, format_scheme_display};
 struct ReadOnlyMacroResolver<'a> {
     symbol_tables: &'a dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
     module_aliases: &'a cranelisp_types::ModuleAliases,
+    /// Per-module prelude-fallback bits — so `/expand` recognizes a
+    /// prelude-provided macro from a user module via the implicit outer scope
+    /// (S78 §2; public-only per I-1), matching the live compile-time path.
+    prelude_fallback: &'a cranelisp_typecheck::PreludeFallback,
     current_module: ModuleFullPath,
 }
 
@@ -66,6 +70,7 @@ impl crate::expander::MacroResolver for ReadOnlyMacroResolver<'_> {
         crate::expander::recognize_macro_head(
             self.symbol_tables,
             self.module_aliases,
+            self.prelude_fallback,
             &self.current_module,
             name,
             span,
@@ -3447,6 +3452,7 @@ impl CompilerSession {
         let mut resolver = ReadOnlyMacroResolver {
             symbol_tables: &self.shared.symbol_tables,
             module_aliases: &self.shared.module_aliases,
+            prelude_fallback: &self.shared.prelude_fallback,
             current_module: module,
         };
         crate::expander::expand_sexp_recursive(sexp, &mut resolver, 0)

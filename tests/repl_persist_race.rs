@@ -556,8 +556,10 @@ fn repl_dep_load_no_race_with_persistent_workers() {
     //
     // SPRINT 78 WAVE 4 (/qa) DECOUPLING: the prior version symlinked the real
     // repo `stdlib/` into cwd and imported `collections.list [Cons Nil]`. After
-    // the `is_seeded` deletion (S78 Wave 4) the real stdlib stops compiling
-    // (FIXME 0312/0314 — the two-`Option` glob collision), red-ing this test
+    // the `is_seeded` deletion (S78 Wave 4) the real stdlib momentarily stopped
+    // compiling (FIXME 0312/0314 — the two-`Option` glob collision, since CLOSED
+    // in S78 Wave 6 via the `fn.option`/`fn.result`/`collections.pair` re-export
+    // of the canonical `primitives` ADTs), red-ing this test
     // even though its SUBJECT is the scheduler dep-load ordering, not stdlib.
     // The dep-load shape — REPL imports a sibling module's constructor under
     // persistent-worker pressure and constructs a value from it — is preserved

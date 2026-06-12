@@ -223,6 +223,10 @@ pub(crate) fn committed_view<'a>(
     symbol_tables.get(current_module)
 }
 
+/// The prelude module name — the implicit OUTER SCOPE consulted on a bare-name
+/// inner-table miss when a module's `PreludeFallback` bit is ON (S78 §2).
+const PRELUDE_MODULE: &str = "prelude";
+
 /// Recognize a macro head from the committed tables, per the LOCKED decision
 /// (`macro-availability-model.md` §0.7): a `cranelisp_types::resolve_macro_head`
 /// query over a `View::single(live)` first-hop. Returns the macro's `FQSymbol`
@@ -230,28 +234,104 @@ pub(crate) fn committed_view<'a>(
 /// or forward (pre-`defmacro`) reference, `Err` only for hard resolution
 /// failures (private, unknown qualified module).
 ///
-/// Zero int→typecheck dependency: recognition is entirely a `cranelisp-types`
-/// query. This replaces the bespoke `SymbolTableMacroResolver` chain-walk.
+/// **Prelude outer-scope fallback (S78 §2).** Since the prelude is no longer
+/// flattened into each module's inner table, prelude-provided macros (`cond`,
+/// `when`, `do`, `str`, `thread-first`, `case`, `vec`, …) are NOT in the current
+/// module's table. When the first-hop recognition misses (`Ok(None)` — a bare
+/// name unreachable from the current module) AND the module's
+/// `prelude_fallback` bit is ON (and current ≠ `prelude`), recognition retries
+/// `resolve_macro_head` against the `prelude` module's OWN view, rooted at
+/// `prelude` (so prelude's `(export …)` re-exports chain-follow correctly).
+///
+/// **Public-only (the I-1 lesson).** Rooting the retry at `prelude` makes
+/// `cranelisp_types`'s visibility check see `from_module = prelude`, and
+/// `in_subtree(prelude, prelude)` is true — so a PRIVATE prelude macro would be
+/// recognized. Reachability must instead be judged relative to the ORIGINAL
+/// `current_module` (a user module is never in prelude's subtree), so the retry
+/// hit is post-filtered on the canonical entry's `is_public()`: a private
+/// prelude macro is treated as NOT a macro head (`Ok(None)`) and must not leak.
+/// Only PUBLIC prelude macros (and the chain-follow through public re-exports)
+/// reach a user module.
+///
+/// A FQ (`mod/macro`) reference never falls back — it names its module directly,
+/// and `resolve_macro_head`'s qualified branch resolves it (or surfaces
+/// `QualifiedModuleUnknown`, an `Err`, which short-circuits before any retry).
+///
+/// Mostly zero int→typecheck dependency: recognition is a `cranelisp-types`
+/// query; the fallback bit is the session-side `PreludeFallback` companion map.
 pub(crate) fn recognize_macro_head(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module_aliases: &ModuleAliases,
+    prelude_fallback: &cranelisp_typecheck::PreludeFallback,
     current_module: &ModuleFullPath,
     name: &str,
     span: Span,
 ) -> Result<Option<FQSymbol>, CranelispError> {
-    let Some(table_ref) = committed_view(symbol_tables, current_module) else {
+    let first = {
+        let Some(table_ref) = committed_view(symbol_tables, current_module) else {
+            return Ok(None);
+        };
+        let view: View<'_, Code, ()> = View::single(&table_ref);
+        cranelisp_types::resolve_macro_head(
+            symbol_tables,
+            module_aliases,
+            &view,
+            current_module,
+            name,
+            span,
+        )
+        .map_err(CranelispError::from)?
+    };
+    if first.is_some() {
+        return Ok(first);
+    }
+
+    // First-hop inner-table miss. Consult the prelude OUTER SCOPE iff the bit is
+    // ON for this module (and the module is not prelude itself — a module never
+    // falls back onto itself). Absence-is-OFF (§2.7.1).
+    if current_module.as_ref() == PRELUDE_MODULE
+        || !prelude_fallback.get(current_module).map(|b| *b).unwrap_or(false)
+    {
+        return Ok(None);
+    }
+    let prelude_module = ModuleFullPath::from(PRELUDE_MODULE);
+    let Some(prelude_ref) = committed_view(symbol_tables, &prelude_module) else {
         return Ok(None);
     };
-    let view: View<'_, Code, ()> = View::single(&table_ref);
-    cranelisp_types::resolve_macro_head(
+    let prelude_view: View<'_, Code, ()> = View::single(&prelude_ref);
+    let prelude_hit = cranelisp_types::resolve_macro_head(
         symbol_tables,
         module_aliases,
-        &view,
-        current_module,
+        &prelude_view,
+        // Root the retry at `prelude` so the chain-follow + terminal `home` are
+        // correct. Visibility is re-judged below relative to the ORIGINAL user
+        // module via the public-only filter (the I-1 lesson).
+        &prelude_module,
         name,
         span,
     )
-    .map_err(CranelispError::from)
+    .map_err(CranelispError::from)?;
+    match prelude_hit {
+        Some(fq) if prelude_macro_public(symbol_tables, &fq) => Ok(Some(fq)),
+        // A private prelude macro is NOT reachable as a bare name from a user
+        // module (the I-1 public-only discipline) — treat it as not-a-macro-head
+        // so it does not leak and does not shadow.
+        _ => Ok(None),
+    }
+}
+
+/// Whether the canonical macro entry `fq` (resolved through the prelude retry)
+/// is PUBLIC. A user module is never in the prelude subtree, so only public
+/// prelude bindings are reachable through the implicit outer scope (S78 §2 /
+/// `/review` I-1). A missing entry is treated as not-public (not reachable).
+fn prelude_macro_public(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    fq: &FQSymbol,
+) -> bool {
+    symbol_tables
+        .get(&fq.module)
+        .and_then(|table| table.get(fq.symbol.as_ref()).map(|e| e.is_public()))
+        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -700,8 +780,9 @@ mod tests {
     fn recognize_macro_head_finds_local_macro() {
         let tables = tables_with_macro("user", "twice", 1);
         let aliases = ModuleAliases::default();
+        let pf = cranelisp_typecheck::PreludeFallback::default();
         let module = ModuleFullPath::from("user");
-        let fq = recognize_macro_head(&tables, &aliases, &module, "twice", Span::SYNTHETIC)
+        let fq = recognize_macro_head(&tables, &aliases, &pf, &module, "twice", Span::SYNTHETIC)
             .expect("no hard error")
             .expect("twice is a macro head");
         assert_eq!(fq.symbol, Symbol::from("twice"));
@@ -714,8 +795,9 @@ mod tests {
     fn recognize_macro_head_forward_reference_is_none() {
         let tables = tables_with_macro("user", "twice", 1);
         let aliases = ModuleAliases::default();
+        let pf = cranelisp_typecheck::PreludeFallback::default();
         let module = ModuleFullPath::from("user");
-        let r = recognize_macro_head(&tables, &aliases, &module, "not-yet-defined", Span::SYNTHETIC)
+        let r = recognize_macro_head(&tables, &aliases, &pf, &module, "not-yet-defined", Span::SYNTHETIC)
             .expect("no hard error");
         assert!(r.is_none(), "an undefined name is not a macro head");
     }
@@ -727,8 +809,9 @@ mod tests {
         let tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
             dashmap::DashMap::new();
         let aliases = ModuleAliases::default();
+        let pf = cranelisp_typecheck::PreludeFallback::default();
         let module = ModuleFullPath::from("ghost");
-        let r = recognize_macro_head(&tables, &aliases, &module, "anything", Span::SYNTHETIC)
+        let r = recognize_macro_head(&tables, &aliases, &pf, &module, "anything", Span::SYNTHETIC)
             .expect("no hard error");
         assert!(r.is_none());
     }
@@ -777,10 +860,81 @@ mod tests {
         st.insert(Symbol::from("plain-fn"), entry);
         tables.insert(path, st);
         let aliases = ModuleAliases::default();
+        let pf = cranelisp_typecheck::PreludeFallback::default();
         let module = ModuleFullPath::from("user");
-        let r = recognize_macro_head(&tables, &aliases, &module, "plain-fn", Span::SYNTHETIC)
+        let r = recognize_macro_head(&tables, &aliases, &pf, &module, "plain-fn", Span::SYNTHETIC)
             .expect("no hard error");
         assert!(r.is_none(), "a regular fn is not a macro head");
+    }
+
+    /// Build a one-module symbol table set with `name` registered as a macro
+    /// with the given `visibility` (for prelude-fallback public-only tests).
+    fn tables_with_macro_vis(
+        module: &str,
+        name: &str,
+        visibility: cranelisp_types::Visibility,
+    ) -> dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> {
+        use cranelisp_types::MacroClauseInfo;
+        let path = ModuleFullPath::from(module);
+        let tables = dashmap::DashMap::new();
+        let mut st = crate::code::SessionSymbolTable::new_with_params(path.clone());
+        let clauses_meta = vec![MacroClauseInfo { params: vec![], rest_param: None }];
+        let entry = ModuleEntry::def(empty_scheme(), DefKind::Macro { clauses_meta })
+            .visibility(visibility)
+            .build();
+        st.insert(Symbol::from(name), entry);
+        tables.insert(path, st);
+        tables
+    }
+
+    // spec: design/int/s78-entry-module.md §2 — a PUBLIC prelude-provided macro
+    // is recognized from a user module via the implicit outer scope when the
+    // module's prelude_fallback bit is ON (the §2 regression fix).
+    #[test]
+    fn recognize_macro_head_falls_back_to_public_prelude_macro() {
+        let tables = tables_with_macro_vis("prelude", "when", cranelisp_types::Visibility::Public);
+        // The user module exists but has no `when` in its inner table.
+        let user = ModuleFullPath::from("user");
+        tables.insert(user.clone(), crate::code::SessionSymbolTable::new_with_params(user.clone()));
+        let aliases = ModuleAliases::default();
+        let pf = cranelisp_typecheck::PreludeFallback::default();
+        pf.insert(user.clone(), true);
+        let fq = recognize_macro_head(&tables, &aliases, &pf, &user, "when", Span::SYNTHETIC)
+            .expect("no hard error")
+            .expect("public prelude macro is recognized via the outer scope");
+        assert_eq!(fq.symbol, Symbol::from("when"));
+        assert_eq!(fq.module, ModuleFullPath::from("prelude"));
+    }
+
+    // spec: design/int/s78-entry-module.md §2 / /review I-1 — a PRIVATE prelude
+    // macro must NOT be recognized from a user module through the implicit outer
+    // scope (public-only). It is treated as not-a-macro-head and does not leak.
+    #[test]
+    fn recognize_macro_head_does_not_leak_private_prelude_macro() {
+        let tables = tables_with_macro_vis("prelude", "secret", cranelisp_types::Visibility::Private);
+        let user = ModuleFullPath::from("user");
+        tables.insert(user.clone(), crate::code::SessionSymbolTable::new_with_params(user.clone()));
+        let aliases = ModuleAliases::default();
+        let pf = cranelisp_typecheck::PreludeFallback::default();
+        pf.insert(user.clone(), true);
+        let r = recognize_macro_head(&tables, &aliases, &pf, &user, "secret", Span::SYNTHETIC)
+            .expect("no hard error");
+        assert!(r.is_none(), "a private prelude macro must not leak to a user module");
+    }
+
+    // spec: design/int/s78-entry-module.md §2.7.1 — absence-is-OFF: with the bit
+    // OFF for the module, NO prelude fallback fires (the name stays unbound).
+    #[test]
+    fn recognize_macro_head_no_fallback_when_bit_off() {
+        let tables = tables_with_macro_vis("prelude", "when", cranelisp_types::Visibility::Public);
+        let user = ModuleFullPath::from("user");
+        tables.insert(user.clone(), crate::code::SessionSymbolTable::new_with_params(user.clone()));
+        let aliases = ModuleAliases::default();
+        // Bit absent ⇒ OFF.
+        let pf = cranelisp_typecheck::PreludeFallback::default();
+        let r = recognize_macro_head(&tables, &aliases, &pf, &user, "when", Span::SYNTHETIC)
+            .expect("no hard error");
+        assert!(r.is_none(), "no fallback when the prelude_fallback bit is OFF");
     }
 
     // spec: 09-macros.md section 9.7 — marshal round-trip via expand

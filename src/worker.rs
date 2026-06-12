@@ -507,6 +507,10 @@ struct SymbolTableMacroResolver<'a> {
     current_module: ModuleFullPath,
     /// Module-path aliases — fed to `resolve_macro_head` for qualified refs.
     module_aliases: &'a cranelisp_types::ModuleAliases,
+    /// Per-module prelude-fallback bits — fed to `recognize_macro_head` so a
+    /// prelude-provided macro (`cond`/`when`/`str`/…) is recognized from a user
+    /// module via the implicit outer scope (S78 §2; public-only per I-1).
+    prelude_fallback: &'a cranelisp_typecheck::PreludeFallback,
     /// Per-module typecheck products (DashMap, interior mutability).
     typecheck_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
     /// Accumulator for check_form_with_state during on-demand compilation.
@@ -574,6 +578,7 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
         let fq = match expander::recognize_macro_head(
             self.symbol_tables,
             self.module_aliases,
+            self.prelude_fallback,
             &self.current_module,
             name,
             span,
@@ -911,6 +916,7 @@ fn try_expand_sexp(
             check_state: &mut ctx.check_state,
             current_module: module.clone(),
             module_aliases: ctx.module_aliases,
+            prelude_fallback: ctx.prelude_fallback,
             typecheck_products: ctx.typecheck_products,
             accumulator,
             scheduler: ctx.scheduler,
@@ -5671,6 +5677,7 @@ mod tests {
         let scheduler = CompileScheduler::new();
         let typecheck_products = dashmap::DashMap::new();
         let module_aliases = cranelisp_types::ModuleAliases::default();
+        let prelude_fallback = cranelisp_typecheck::PreludeFallback::default();
         let mut check_state = CheckState::new(module.clone());
         let mut accumulator = ModuleCheckAccumulator::new();
 
@@ -5680,6 +5687,7 @@ mod tests {
             check_state: &mut check_state,
             current_module: module.clone(),
             module_aliases: &module_aliases,
+            prelude_fallback: &prelude_fallback,
             typecheck_products: &typecheck_products,
             accumulator: &mut accumulator,
             scheduler: &scheduler,
@@ -5716,6 +5724,7 @@ mod tests {
         let scheduler = CompileScheduler::new();
         let typecheck_products = dashmap::DashMap::new();
         let module_aliases = cranelisp_types::ModuleAliases::default();
+        let prelude_fallback = cranelisp_typecheck::PreludeFallback::default();
         let mut check_state = CheckState::new(module.clone());
         let mut accumulator = ModuleCheckAccumulator::new();
 
@@ -5725,6 +5734,7 @@ mod tests {
             check_state: &mut check_state,
             current_module: module.clone(),
             module_aliases: &module_aliases,
+            prelude_fallback: &prelude_fallback,
             typecheck_products: &typecheck_products,
             accumulator: &mut accumulator,
             scheduler: &scheduler,

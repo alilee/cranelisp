@@ -10,7 +10,10 @@
 (import [prelude []])
 (import [primitives [*]])
 
-(import [fn.option [Option Some None]])
+;; `Option`/`Some`/`None` come in via the `primitives` glob above (primitives
+;; seeds the canonical `Option` ADT, which `fn.option` re-exports). Importing
+;; them again from `fn.option` would bring the SAME names from a second
+;; immediate source and collide (spec §8.6.4) — so we rely on the glob.
 (import [macros [SexpSym SexpList SCons SNil Sexp SList]])
 
 (defmacro list "Construct a list from elements"

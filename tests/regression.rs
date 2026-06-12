@@ -2471,11 +2471,12 @@ fn s60_drop_glue_no_intermediate_fn_passes() {
 // their stdlib load was incidental. They now use the free-standing
 // `run_repl_in_tmpdir_no_stdlib` helper (empty test-owned prelude, no
 // `CRANELISP_LIB` → real stdlib) so they no longer red on the real-stdlib
-// two-`Option` glob collision (FIXME 0312/0314). Reduction #1 genuinely runs
-// the REAL exemplar `/run-tests html` and stays on the real-stdlib helper —
-// see its body note: it is an exemplar/stdlib-conformance test, NOT a
-// free-standing language test, and is left RED as an 0314-pending carry until
-// /stdlib resolves the collision.
+// two-`Option` glob collision (FIXME 0312/0314, since CLOSED in S78 Wave 6 by
+// the `fn.option`/`fn.result`/`collections.pair` re-export of the canonical
+// `primitives` ADTs). Reduction #1 genuinely runs the REAL exemplar
+// `/run-tests html` and stays on the real-stdlib helper — see its body note:
+// it is an exemplar/stdlib-conformance test, NOT a free-standing language
+// test, and is retained as the sanctioned exemplar/stdlib-conformance guard.
 // =============================================================================
 
 /// Drive the REPL binary from `cwd` (a fresh tempdir) with piped stdin.
@@ -2516,8 +2517,11 @@ fn run_repl_in_tmpdir(cwd: &Path, stdin_input: &str) -> std::process::Output {
 /// Sprint 78 Wave 4 (/qa): the sibling `run_repl_in_tmpdir` sets
 /// `CRANELISP_LIB` to the real repo `stdlib/`, so the REPL loads
 /// `stdlib/prelude.cl` at startup. After the `is_seeded` deletion the real
-/// stdlib stops compiling (FIXME 0312/0314 — the two-`Option` glob collision),
-/// which red-ed reductions 2–5 even though their SUBJECT (REPL-eval'd import
+/// stdlib briefly stopped compiling (FIXME 0312/0314 — the two-`Option` glob
+/// collision, since CLOSED in S78 Wave 6 by the
+/// `fn.option`/`fn.result`/`collections.pair` re-export of the canonical
+/// `primitives` ADTs), which red-ed reductions 2–5 even though their SUBJECT
+/// (REPL-eval'd import
 /// against an empty/absent entry `user.cl` + scheduler lifecycle) has nothing
 /// to do with stdlib — the stdlib load was purely incidental.
 ///
@@ -2581,16 +2585,17 @@ fn combined_out(o: &std::process::Output) -> String {
 //
 // (carry: legacy/sprint60_run_tests_reduction.rs::s60_run_tests_reduction_1_exemplar_batched_failing)
 //
-// **/stdlib-0314-PENDING CARRY (Sprint 78 Wave 4, /qa).** This reduction runs
+// **EXEMPLAR/STDLIB CONFORMANCE GUARD (Sprint 78, /qa).** This reduction runs
 // the REAL exemplar `/run-tests html` and therefore genuinely needs the real
 // workspace stdlib + exemplar — it is an exemplar/stdlib-CONFORMANCE test, not
 // a free-standing language test, so it CANNOT be decoupled (unlike its
-// siblings #2–#5). It is currently RED because the `is_seeded` deletion (S78
-// Wave 4) exposed a real two-`Option` glob collision in stdlib that stops the
-// real stdlib compiling (FIXME 0312/0314). It stays failing-not-ignored as the
-// durable record; closure is /stdlib's `fn.option` re-export fix (FIXME 0314),
-// not a /qa decouple. Its purpose IS exemplar/stdlib conformance, so it belongs
-// to that lane's get-to-green, not QA's free-standing suite.
+// siblings #2–#5). It now PASSES: FIXME 0312/0314 (the two-`Option` glob
+// collision the `is_seeded` deletion in S78 Wave 4 had exposed) were CLOSED in
+// S78 Wave 6, when /stdlib re-exported the canonical `primitives` ADTs through
+// `fn.option`/`fn.result`/`collections.pair`, so the real stdlib compiles
+// again. It is retained as the one sanctioned exemplar/stdlib-CONFORMANCE
+// regression guard — its purpose IS exemplar/stdlib conformance, so it belongs
+// to that lane, not QA's free-standing suite.
 #[test]
 fn s60_run_tests_reduction_1_exemplar_batched_failing() {
     let exemplar_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("exemplar");
@@ -2801,12 +2806,14 @@ fn s60_run_tests_reduction_5_import_in_file_passes_control() {
 //
 // (carry: legacy/wave6_demo_repros.rs::run_tests_batched_invocation_no_crash)
 //
-// **/stdlib-0314-PENDING CARRY (Sprint 78 Wave 4, /qa).** Like
+// **EXEMPLAR/STDLIB CONFORMANCE GUARD (Sprint 78, /qa).** Like
 // `s60_run_tests_reduction_1`, this runs the REAL exemplar `/run-tests html`
 // against the real workspace stdlib + platforms — an exemplar/stdlib
-// CONFORMANCE test that CANNOT be made free-standing. Currently RED on the
-// `is_seeded`-exposed two-`Option` stdlib collision (FIXME 0312/0314). Left
-// failing-not-ignored; closure is /stdlib (FIXME 0314), not a /qa decouple.
+// CONFORMANCE test that CANNOT be made free-standing. It now PASSES: the
+// `is_seeded`-exposed two-`Option` stdlib collision (FIXME 0312/0314) was
+// CLOSED in S78 Wave 6 via the `fn.option`/`fn.result`/`collections.pair`
+// re-export of the canonical `primitives` ADTs. Retained as a sanctioned
+// exemplar/stdlib-conformance guard.
 #[test]
 fn wave6_run_tests_batched_html_completes_without_crash() {
     use std::io::Write;

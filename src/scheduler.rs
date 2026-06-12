@@ -486,8 +486,16 @@ impl CompileScheduler {
         // Reset ModuleState for re-processing. Keep waiters — other
         // modules may still be waiting on this module's symbols. Preserve the
         // `eval_owned` orchestration role across re-register (S78 §3): if the
-        // REPL entry module's source is re-registered by the watcher, the eval
-        // thread remains its sole orchestrator.
+        // REPL entry module's source is re-registered by the watcher, the
+        // post-reload dependency-completion requeues still skip the eval-owned
+        // module (`try_unblock_locked` early-return). Note this DOES reset the
+        // pool to TypecheckFirst + restores `sexps` + pushes the module onto
+        // `typecheck_first`, so a POOL worker re-typechecks it on this reload
+        // pass — that is SAFE because the watcher reload runs synchronously on
+        // the eval thread (`poll_and_reload` / `reload_module`), blocking the
+        // eval loop, so there is no concurrent eval claim. The reload pass
+        // itself is pool-driven but eval-synchronous; the B1 dual-orchestration
+        // defect (concurrent pool claim during eval) stays closed.
         if let Some(ms) = state.modules.get_mut(module) {
             let waiters = std::mem::take(&mut ms.waiters);
             let eval_owned = ms.eval_owned;
@@ -754,8 +762,10 @@ impl CompileScheduler {
         let mut state = self.lock();
 
         // Skip modules not registered with the scheduler (e.g., the REPL
-        // "user" module in Additive mode). Without this guard the
-        // typecheck_done deque grows unbounded.
+        // entry module in Additive mode). Without this guard the
+        // typecheck_done deque grows unbounded. (Keyed on `contains_key`, not
+        // the module name — the entry module's name is the CLI target, not
+        // necessarily "user", per S78 §1.)
         if !state.modules.contains_key(module) {
             return;
         }

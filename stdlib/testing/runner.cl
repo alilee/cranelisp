@@ -15,7 +15,9 @@
 (import [prelude []])
 
 (import [primitives [*]])
-(import [fn.option [Option Some None]])
+;; `Option`/`Some`/`None` come in via the `primitives` glob above (primitives
+;; seeds the canonical `Option` ADT). Re-importing them from `fn.option` would
+;; bring the SAME names from a second immediate source and collide (spec §8.6.4).
 (import [macros [SexpSym SexpStr SexpList SCons SNil Sexp SList]])
 (import [core.trace [trace-show-tree]])
 

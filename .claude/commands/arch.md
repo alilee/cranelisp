@@ -18,6 +18,7 @@
 @design/arch/principles/16-punctuation-symbols-are-not-special.md
 @design/arch/principles/17-module-locality-in-typecheck.md
 @design/arch/principles/18-enforce-invariants-structurally.md
+@design/arch/principles/19-no-module-privileged-by-name.md
 
 # /arch — Compiler Architect
 

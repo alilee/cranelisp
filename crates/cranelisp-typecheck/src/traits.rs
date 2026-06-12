@@ -133,13 +133,19 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Allocate a fresh type variable for the trait's type parameter
         let (_, type_var_id) = self.fresh_var_id();
 
-        // Register each method with a constrained polymorphic scheme
+        // Register each method with a constrained polymorphic scheme. The
+        // method binding inherits the trait's visibility (a Private trait's
+        // methods are Private Defs) so a private trait does not leak its
+        // operators as bare names through the prelude outer-scope fallback
+        // (`/review` I-1); within the trait's own subtree they stay reachable
+        // (the `cranelisp_types::resolve` visibility check honours `in_subtree`).
         for method in &decl.methods {
-            self.register_trait_method(state, 
+            self.register_trait_method(state,
                 &decl.name,
                 method,
                 type_var_id,
                 &decl.type_params,
+                decl.visibility,
                 decl.span,
             )?;
         }
@@ -217,11 +223,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 ty: Type::Fn(param_tys, Box::new(ret_ty)),
             };
 
-            // Register the method name as a symbol with trait_origin
+            // Register the method name as a symbol with trait_origin. The method
+            // inherits the trait's visibility (I-1 — see `register_trait_decl`).
             let mut builder = cranelisp_types::ModuleEntry::def(
                 method_scheme,
                 cranelisp_types::DefKind::UserFn { constrained_fn: None },
             )
+            .visibility(decl.visibility)
             .param_names(method.params.iter().map(|(n, _)| n.clone()).collect())
             .trait_origin(fq_trait_name.clone());
             if let Some(doc) = method.docstring.clone() {
@@ -252,6 +260,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     }
 
     /// Register a single trait method with its constrained polymorphic scheme.
+    #[allow(clippy::too_many_arguments)]
     fn register_trait_method(
         &self,
         state: &mut CheckState,
@@ -259,6 +268,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         method: &TraitMethodSig,
         type_var_id: TypeId,
         trait_type_params: &[Symbol],
+        visibility: Visibility,
         span: Span,
     ) -> Result<(), CranelispError> {
         let method_type =
@@ -276,11 +286,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             ty: method_type,
         };
 
-        // Register the method name as a symbol with trait_origin
+        // Register the method name as a symbol with trait_origin. The method
+        // inherits the trait's visibility (I-1 — see `register_trait_decl`).
         let mut builder = cranelisp_types::ModuleEntry::def(
             method_scheme,
             cranelisp_types::DefKind::UserFn { constrained_fn: None },
         )
+        .visibility(visibility)
         .param_names(method.params.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>())
         .trait_origin(fq_trait_name);
         if let Some(doc) = method.docstring.clone() {
@@ -2012,43 +2024,52 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         method_name: &str,
     ) -> Option<usize> {
         if let Some(idx) =
-            self.find_hkt_param_index_in_module(state, &state.current_module, method_name)
+            self.find_hkt_param_index_in_module(state, &state.current_module, method_name, false)
         {
             return Some(idx);
         }
-        if state.current_module.as_ref() != crate::checker::PRELUDE_MODULE
-            && self
-                .prelude_fallback
-                .get(&state.current_module)
-                .map(|b| *b)
-                .unwrap_or(false)
-        {
-            let prelude = ModuleFullPath::from(crate::checker::PRELUDE_MODULE);
-            return self.find_hkt_param_index_in_module(state, &prelude, method_name);
-        }
-        None
+        // Inner miss — consult the prelude outer scope iff the bit is ON
+        // (`prelude_fallback_target`; absence-is-OFF, never self-fallback). Only
+        // PUBLIC prelude `TraitDecl`s are reachable as a bare method through the
+        // implicit outer scope (`/review` I-1) — `public_only = true`.
+        let prelude = self.prelude_fallback_target(&state.current_module)?;
+        self.find_hkt_param_index_in_module(state, &prelude, method_name, true)
     }
 
     /// Iterate `module_path`'s symbol table for a `TraitDecl` carrying
     /// `method_name`, returning that method's `hkt_param_index`. Shared by the
     /// current-module probe and the prelude outer-scope fallback in
     /// [`Self::find_hkt_param_index_in_registry`].
+    ///
+    /// `public_only` filters the scanned `module_path` bindings to PUBLIC heads
+    /// only — set for the prelude outer-scope fallback hop so a Private prelude
+    /// `TraitDecl` does not leak its methods as bare names (`/review` I-1).
     fn find_hkt_param_index_in_module(
         &self,
         state: &CheckState,
         module_path: &ModuleFullPath,
         method_name: &str,
+        public_only: bool,
     ) -> Option<usize> {
         // Staging-aware (FIXME 0179): iterate the unioned View when probing the
         // current module so in-cluster TraitDecl registrations are visible. For
         // the prelude fallback the prelude is never the staging module, so a
-        // plain owned-name snapshot is sufficient.
+        // plain owned-name snapshot is sufficient. When `public_only`, drop
+        // non-public head bindings before chain-following (I-1).
         let names: Vec<Symbol> = if *module_path == state.current_module {
             let r = self.current_symbol_table(state);
-            r.view().iter().map(|(name, _)| name.clone()).collect()
+            r.view()
+                .iter()
+                .filter(|(_, entry)| !public_only || entry.is_public())
+                .map(|(name, _)| name.clone())
+                .collect()
         } else {
             let mut names = Vec::new();
-            self.for_each_in_module(module_path, |name, _entry| names.push(name.clone()));
+            self.for_each_in_module(module_path, |name, entry| {
+                if !public_only || entry.is_public() {
+                    names.push(name.clone());
+                }
+            });
             names
         };
         for name in &names {

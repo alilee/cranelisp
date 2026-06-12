@@ -2,11 +2,18 @@
 ;;
 ;; A simple two-element tuple. Used for map entries and multi-value returns.
 ;;
-;; Spec: plan-stdlib.md §3.3
+;; `Pair` is seeded by `primitives` (it is part of the return type of
+;; `discover-tests :: ... (Vec (Pair String (Fn [] (Option String))))`).
+;; To keep ONE canonical `Pair` type across the system, this module
+;; RE-EXPORTS the primitives `Pair` rather than defining a second, distinct
+;; ADT — mirroring `fn.option`. The combinators below operate over the SAME
+;; `primitives/Pair` type.
+;;
+;; Spec: plan-stdlib.md §3.3, 08-modules.md §8.6.4
 
 (import [prelude []])
-
-(deftype (Pair a b) (Pair [:a first :b second]))
+(import [primitives [Pair]])
+(export [primitives [Pair]])
 
 (defn first "Extract the first element of a pair" [p]
   (match p

@@ -844,7 +844,10 @@ fn defmacro_dash_private_not_importable_neg() {
 // `use_workspace_stdlib_for_stdlib_conformance_only`). The original test only
 // exercised whether `stdlib/seq/lazy.cl` happened to import its names — a
 // /stdlib conformance concern, not a language-rule concern, and it broke when
-// real stdlib stopped compiling (FIXME 0312/0314 — the two-`Option` collision).
+// the real stdlib momentarily stopped compiling (FIXME 0312/0314 — the
+// two-`Option` collision, since CLOSED in S78 Wave 6 via the
+// `fn.option`/`fn.result`/`collections.pair` re-export of the canonical
+// `primitives` ADTs).
 // This free-standing version pins the LANGUAGE RULE directly with a tiny
 // test-owned module graph: a null-importing leaf that DOES explicitly import
 // the names it uses resolves cleanly; the negative companion below pins that a

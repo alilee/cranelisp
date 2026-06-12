@@ -16,7 +16,9 @@
 (import [prelude []])
 (import [primitives [*]])
 (import [collections.list [Nil Cons]])
-(import [fn.option [None Some]])
+;; `None`/`Some` come in via the `primitives` glob above (primitives seeds the
+;; canonical `Option` ADT). Re-importing them from `fn.option` would bring the
+;; SAME names from a second immediate source and collide (spec §8.6.4).
 
 (deftype (Seq a) "A lazy sequence with thunked tail"
   SeqNil

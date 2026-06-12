@@ -1986,8 +1986,10 @@ fn bare_primitive_unknown_name_produces_undefined_error_neg() {
 #[test]
 fn bare_primitive_two_hop_reexport_chain_lands_on_terminal_def() {
     // Decoupled from real stdlib (was:
-    // `use_workspace_stdlib_for_stdlib_conformance_only`, which broke when real
-    // stdlib stopped compiling — FIXME 0312/0314). The chain this test pins is
+    // `use_workspace_stdlib_for_stdlib_conformance_only`, which broke when the
+    // real stdlib momentarily stopped compiling — FIXME 0312/0314, since CLOSED
+    // in S78 Wave 6 via the `fn.option`/`fn.result`/`collections.pair`
+    // re-export of the canonical `primitives` ADTs). The chain this test pins is
     // a LANGUAGE rule, not a stdlib fact: a prelude that re-exports primitives
     // (`(export [primitives [*]])`) creates the user → prelude → primitives
     // hop, and a bare reference MUST resolve to the terminal `primitives` Def.

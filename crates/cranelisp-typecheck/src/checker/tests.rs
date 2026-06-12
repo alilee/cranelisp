@@ -1209,3 +1209,392 @@
             .expect("bare type `Maybe` resolves via the prelude fallback when the bit is ON");
         assert_eq!(resolved.module.as_ref(), "prelude", "Maybe's home is prelude");
     }
+
+    // --- S78 §2 / `/review` I-1: prelude private-symbol visibility ---
+    //
+    // The implicit-prelude OUTER SCOPE exposes only PUBLIC prelude bindings as
+    // bare names in a user module. A Private top-level def in prelude's own
+    // table must NOT be bare-reachable through the fallback (a future private
+    // prelude helper would otherwise silently leak into every user module's
+    // bare-name scope). PUBLIC prelude re-exports stay reachable (regression
+    // guard). Covered across BOTH the value/`resolve`-family path and the
+    // trait/chain-follow path.
+
+    /// Seed a value `name` with explicit `vis` into module `path`.
+    fn seed_value_vis(tf: &mut TestFixture, path: &str, name: &str, vis: Visibility) {
+        tf.set_current_module(ModuleFullPath::from(path));
+        tf.symbol_table_mut().insert(
+            Symbol::from(name),
+            ModuleEntry::def(
+                crate::scheme::mono(Type::Int),
+                DefKind::UserFn { constrained_fn: None },
+            )
+            .visibility(vis)
+            .build(),
+        );
+    }
+
+    // spec: 08-modules §8.7.3 — a PRIVATE prelude def is NOT reachable as a
+    // bare name from a user module, even with the fallback bit ON. Value path
+    // (`lookup`) AND entry path (`resolve_entry_in_current_module`) both miss.
+    #[test]
+    fn prelude_private_def_not_bare_reachable_value_path() {
+        let mut tf = TestFixture::new();
+        // prelude has a PRIVATE helper `secret` (top-level defns default Private).
+        seed_value_vis(&mut tf, "prelude", "secret", Visibility::Private);
+        let m = ModuleFullPath::from("app_priv");
+        tf.set_current_module(m.clone());
+        set_fallback_on(&tf, "app_priv");
+
+        let state = CheckState::new(m.clone());
+        let (scheme, _gap) = tf.env().lookup(&state, "secret");
+        assert!(
+            scheme.is_none(),
+            "a PRIVATE prelude def must NOT resolve as a bare name (I-1 visibility leak)"
+        );
+        assert!(
+            tf.env().resolve_entry_in_current_module(&state, "secret").is_none(),
+            "a PRIVATE prelude def must NOT resolve via the entry chokepoint either"
+        );
+    }
+
+    // spec: 08-modules §8.7.3 — a PRIVATE prelude def must not SHADOW a user
+    // module's own binding of the same name. With both a private prelude
+    // `helper` and the user's own public `helper`, the bare name resolves to
+    // the USER's binding (inner scope), never the private prelude one.
+    #[test]
+    fn prelude_private_def_does_not_shadow_user_binding() {
+        let mut tf = TestFixture::new();
+        seed_value_vis(&mut tf, "prelude", "helper", Visibility::Private);
+        let m = ModuleFullPath::from("app_own");
+        seed_value(&mut tf, "app_own", "helper"); // user's own PUBLIC helper
+        tf.set_current_module(m.clone());
+        set_fallback_on(&tf, "app_own");
+
+        let state = CheckState::new(m.clone());
+        let entry = tf
+            .env()
+            .resolve_entry_in_current_module(&state, "helper")
+            .expect("user's own `helper` resolves (inner scope)");
+        // The user's own canonical Def wins; the private prelude binding is
+        // neither returned nor consulted (inner hit before the fallback).
+        let (_, home) = tf
+            .env()
+            .resolve_terminal_entry_or_prelude(&state, "helper")
+            .expect("terminal resolves to the user's binding");
+        assert_eq!(home, m, "bare `helper` resolves to the user module, not prelude");
+        assert!(matches!(entry, ModuleEntry::Def { .. }));
+    }
+
+    // spec: 08-modules §8.7.3 (regression guard for the I-1 fix) — a PUBLIC
+    // prelude re-export stays reachable through the fallback; the public-only
+    // filter must NOT regress the legitimate case. prelude PUBLICLY re-exports
+    // `prims/add-i64`; bare `add-i64` in a user module resolves through the
+    // fallback + chain-follow to the canonical primitive Def.
+    #[test]
+    fn prelude_public_reexport_still_reachable_after_visibility_fix() {
+        let mut tf = TestFixture::new();
+        seed_value(&mut tf, "prims", "add-i64"); // canonical, public
+        tf.set_current_module(ModuleFullPath::from("prelude"));
+        tf.symbol_table_mut().insert(
+            Symbol::from("add-i64"),
+            ModuleEntry::Import {
+                source: FQSymbol {
+                    module: ModuleFullPath::from("prims"),
+                    symbol: Symbol::from("add-i64"),
+                },
+                visibility: Visibility::Public, // PUBLIC re-export
+            },
+        );
+        let m = ModuleFullPath::from("app_pub");
+        tf.set_current_module(m.clone());
+        set_fallback_on(&tf, "app_pub");
+
+        let state = CheckState::new(m.clone());
+        assert!(
+            tf.env().lookup(&state, "add-i64").0.is_some(),
+            "a PUBLIC prelude re-export must stay reachable (no I-1 over-filter)"
+        );
+        let entry = tf
+            .env()
+            .resolve_entry_in_current_module(&state, "add-i64")
+            .expect("public re-export resolves to its terminal Def");
+        assert!(matches!(entry, ModuleEntry::Def { .. }));
+    }
+
+    // spec: 08-modules §8.7.3 — a PRIVATE prelude TYPE is NOT bare-reachable via
+    // the `resolve`-family chokepoint (resolve_type), even with the bit ON; a
+    // PUBLIC prelude type IS. Guards the post-filter on the `cranelisp_types::
+    // resolve` retry path.
+    #[test]
+    fn prelude_private_type_not_reachable_via_resolve_family() {
+        use cranelisp_types::TypeName;
+        let mut tf = TestFixture::new();
+        // prelude defines a PRIVATE nullary ADT `Hidden`.
+        tf.set_current_module(ModuleFullPath::from("prelude"));
+        tf.register_type_def_self(
+            &TypeName::from("Hidden"),
+            &None,
+            &[],
+            &[cranelisp_types::ConstructorDef {
+                name: Symbol::from("HiddenCtor"),
+                docstring: None,
+                fields: vec![],
+                span: Span::SYNTHETIC,
+            }],
+            Visibility::Private,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+
+        let m = ModuleFullPath::from("app_hidden");
+        tf.set_current_module(m.clone());
+        set_fallback_on(&tf, "app_hidden");
+
+        let state = CheckState::new(m.clone());
+        assert!(
+            tf.env().resolve_type(&state, &TypeName::from("Hidden"), Span::SYNTHETIC).is_err(),
+            "a PRIVATE prelude type must NOT resolve via resolve_type through the fallback (I-1)"
+        );
+    }
+
+    // spec: 08-modules §8.7.3 — a PRIVATE prelude `deftrait`'s method is NOT
+    // discoverable as a bare operator through the trait/chain-follow fallback
+    // (`resolve_terminal_entry_or_prelude` → `method_to_trait`). A PUBLIC
+    // prelude trait's method IS (regression guard).
+    #[test]
+    fn prelude_private_trait_method_not_reachable() {
+        let mut tf = TestFixture::new();
+
+        // PUBLIC prelude trait `PubT` with method `pub-op` — reachable.
+        tf.set_current_module(ModuleFullPath::from("prelude"));
+        tf.register_trait_decl_self(&make_unary_trait_decl("PubT", "pub-op"))
+            .unwrap();
+        // PRIVATE prelude trait `PrivT` with method `priv-op` — NOT reachable.
+        let mut priv_decl = make_unary_trait_decl("PrivT", "priv-op");
+        priv_decl.visibility = Visibility::Private;
+        tf.register_trait_decl_self(&priv_decl).unwrap();
+
+        let m = ModuleFullPath::from("app_trait");
+        tf.set_current_module(m.clone());
+        set_fallback_on(&tf, "app_trait");
+
+        let state = CheckState::new(m.clone());
+        let env = tf.env();
+        assert_eq!(
+            env.method_to_trait_with_state(&state, &Symbol::from("pub-op")),
+            Some(TraitName::from("PubT")),
+            "a PUBLIC prelude trait's method must resolve via the trait fallback"
+        );
+        assert!(
+            env.method_to_trait_with_state(&state, &Symbol::from("priv-op")).is_none(),
+            "a PRIVATE prelude trait's method must NOT leak as a bare operator (I-1)"
+        );
+    }
+
+    // --- S78 §2 / FIXME 0317: constructor-resolution chokepoints fall back to
+    // the implicit-prelude OUTER SCOPE ---
+    //
+    // The two ctor chokepoints the §2 work missed:
+    //  - `lookup_constructor_type_with_state` (the pattern-ctor `exists` gate)
+    //  - `is_internal_constructor_check_with_state` (the internal-ctor reject gate)
+    // both rooted at `current_module` with no outer-scope retry. With the prelude
+    // no longer flattened, a primitives ADT ctor re-exported through prelude is
+    // not an Import entry in the user table, so these paths missed it.
+
+    // spec: 08-modules §8.6.4 — (a) a PUBLIC prelude ctor resolves in PATTERN
+    // position via the outer-scope fallback. A bare ctor name absent from the
+    // user module resolves its parent type through the prelude fallback when the
+    // bit is ON — exactly as it does in value position.
+    #[test]
+    fn prelude_fallback_resolves_pattern_ctor_when_bit_on() {
+        use cranelisp_types::TypeName;
+        let mut tf = TestFixture::new();
+        // prelude defines a PUBLIC sum ADT `Maybe2` with ctors `Nada`/`Just2`.
+        tf.set_current_module(ModuleFullPath::from("prelude"));
+        tf.register_type_def_self(
+            &TypeName::from("Maybe2"),
+            &None,
+            &[],
+            &[
+                cranelisp_types::ConstructorDef {
+                    name: Symbol::from("Nada"),
+                    docstring: None,
+                    fields: vec![],
+                    span: Span::SYNTHETIC,
+                },
+                cranelisp_types::ConstructorDef {
+                    name: Symbol::from("Just2"),
+                    docstring: None,
+                    fields: vec![],
+                    span: Span::SYNTHETIC,
+                },
+            ],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+
+        let m = ModuleFullPath::from("app_pat");
+        tf.set_current_module(m.clone());
+        let state = CheckState::new(m.clone());
+
+        // Bit OFF: the bare ctor's parent type does not resolve from M.
+        assert!(
+            tf.env().lookup_constructor_type_with_state(&state, "Just2").is_none(),
+            "bit OFF: bare pattern ctor `Just2` must NOT resolve without the fallback"
+        );
+
+        // Bit ON: the pattern-ctor `exists` gate falls back to prelude and finds
+        // the parent type `Maybe2`.
+        set_fallback_on(&tf, "app_pat");
+        assert_eq!(
+            tf.env().lookup_constructor_type_with_state(&state, "Just2"),
+            Some(TypeName::from("Maybe2")),
+            "bit ON: bare pattern ctor `Just2` resolves its parent type via the prelude fallback"
+        );
+    }
+
+    // spec: 10-io §10.1 + 08-modules §8.6.4 — (b) the internal-ctor reject gate
+    // sees a PUBLIC-but-INTERNAL prelude ctor (`Bind`) through the fallback and
+    // reports `internal: true`. `Bind` is registered `Visibility::Public` in
+    // `primitives`; prelude PUBLICLY re-exports it; a user module reaching it via
+    // the fallback must still have it rejected (its `internal: true` Constructor
+    // discriminator, NOT its visibility, is the rejection).
+    #[test]
+    fn prelude_fallback_internal_ctor_gate_rejects_bind() {
+        let mut tf = TestFixture::new();
+        // prelude PUBLICLY re-exports `Bind` from primitives (an Import edge,
+        // like `(export [primitives [*]])`).
+        tf.set_current_module(ModuleFullPath::from("prelude"));
+        tf.symbol_table_mut().insert(
+            Symbol::from("Bind"),
+            ModuleEntry::Import {
+                source: FQSymbol {
+                    module: ModuleFullPath::from("primitives"),
+                    symbol: Symbol::from("Bind"),
+                },
+                visibility: Visibility::Public,
+            },
+        );
+        // Also re-export a NON-internal IO ctor `Pure` to prove the gate returns
+        // false for a reachable-but-not-internal ctor (not just "unreachable").
+        tf.symbol_table_mut().insert(
+            Symbol::from("Pure"),
+            ModuleEntry::Import {
+                source: FQSymbol {
+                    module: ModuleFullPath::from("primitives"),
+                    symbol: Symbol::from("Pure"),
+                },
+                visibility: Visibility::Public,
+            },
+        );
+
+        let m = ModuleFullPath::from("app_bind");
+        tf.set_current_module(m.clone());
+        let state = CheckState::new(m.clone());
+
+        // Bit OFF: the user table has no `Bind`, so the gate misses it and (the
+        // §2 regression) fails to reject — false.
+        assert!(
+            !tf.env().is_internal_constructor_check_with_state(&state, "Bind"),
+            "bit OFF: `Bind` absent from the user table — gate cannot reject it"
+        );
+
+        // Bit ON: the gate falls back to prelude, chain-follows the re-export to
+        // the canonical primitives Constructor Def, and reads `internal: true`.
+        set_fallback_on(&tf, "app_bind");
+        assert!(
+            tf.env().is_internal_constructor_check_with_state(&state, "Bind"),
+            "bit ON: `Bind` is rejected as internal through the prelude fallback"
+        );
+        // A reachable-but-non-internal ctor (`Pure`) is NOT rejected.
+        assert!(
+            !tf.env().is_internal_constructor_check_with_state(&state, "Pure"),
+            "bit ON: `Pure` is reachable through the fallback but NOT internal"
+        );
+    }
+
+    // spec: 08-modules §8.6.4 — (c) bit OFF ⇒ no fallback for the ctor
+    // chokepoints. With the bit absent/OFF, neither the pattern-ctor gate nor the
+    // internal-ctor gate consults prelude.
+    #[test]
+    fn prelude_fallback_ctor_chokepoints_off_when_bit_off() {
+        use cranelisp_types::TypeName;
+        let mut tf = TestFixture::new();
+        // prelude PUBLICLY re-exports `Bind`, and defines a public ctor `Solo`.
+        tf.set_current_module(ModuleFullPath::from("prelude"));
+        tf.symbol_table_mut().insert(
+            Symbol::from("Bind"),
+            ModuleEntry::Import {
+                source: FQSymbol {
+                    module: ModuleFullPath::from("primitives"),
+                    symbol: Symbol::from("Bind"),
+                },
+                visibility: Visibility::Public,
+            },
+        );
+        tf.register_type_def_self(
+            &TypeName::from("SoloT"),
+            &None,
+            &[],
+            &[cranelisp_types::ConstructorDef {
+                name: Symbol::from("Solo"),
+                docstring: None,
+                fields: vec![],
+                span: Span::SYNTHETIC,
+            }],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+
+        let m = ModuleFullPath::from("app_off_ctor");
+        tf.set_current_module(m.clone());
+        let state = CheckState::new(m.clone());
+        // No `set_fallback_on` — bit is absent (== OFF).
+
+        assert!(
+            tf.env().lookup_constructor_type_with_state(&state, "Solo").is_none(),
+            "bit OFF: pattern-ctor gate must NOT fall back to prelude"
+        );
+        assert!(
+            !tf.env().is_internal_constructor_check_with_state(&state, "Bind"),
+            "bit OFF: internal-ctor gate must NOT fall back to prelude"
+        );
+    }
+
+    // spec: 08-modules §8.7.3 (I-1) — (d) a PRIVATE prelude ctor is NOT reachable
+    // through the fallback. A private sum-ADT ctor in prelude's own table must
+    // not resolve as a bare pattern ctor in a user module, even with the bit ON.
+    #[test]
+    fn prelude_private_ctor_not_reachable_via_fallback() {
+        use cranelisp_types::TypeName;
+        let mut tf = TestFixture::new();
+        // prelude defines a PRIVATE sum ADT `HiddenT` with ctor `HiddenC`.
+        tf.set_current_module(ModuleFullPath::from("prelude"));
+        tf.register_type_def_self(
+            &TypeName::from("HiddenT"),
+            &None,
+            &[],
+            &[cranelisp_types::ConstructorDef {
+                name: Symbol::from("HiddenC"),
+                docstring: None,
+                fields: vec![],
+                span: Span::SYNTHETIC,
+            }],
+            Visibility::Private,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+
+        let m = ModuleFullPath::from("app_priv_ctor");
+        tf.set_current_module(m.clone());
+        set_fallback_on(&tf, "app_priv_ctor");
+
+        let state = CheckState::new(m.clone());
+        assert!(
+            tf.env().lookup_constructor_type_with_state(&state, "HiddenC").is_none(),
+            "a PRIVATE prelude ctor must NOT resolve as a bare pattern ctor (I-1)"
+        );
+    }

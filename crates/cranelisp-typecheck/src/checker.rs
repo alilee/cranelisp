@@ -622,12 +622,35 @@ where
     }
 
     /// State-rooted variant of [`Self::lookup_constructor_type`].
+    ///
+    /// Bare-name current-module probe with the implicit-prelude **outer scope**
+    /// fallback (S78 §2.7.5 — Chokepoint 1; FIXME 0317). On an inner miss in
+    /// `current_module`, when the module's [`PreludeFallback`] bit is ON, the
+    /// lookup retries rooted at `prelude` so a primitives ADT constructor
+    /// re-exported through the prelude (`Pair`, `Some`, …) resolves as a bare
+    /// ctor in pattern position just as it does as a value. Only a PUBLIC
+    /// prelude head binding is reachable (I-1): the prelude head is filtered on
+    /// [`Self::prelude_terminal_visible`] before the parent-type read, so a
+    /// private prelude ctor does not leak.
     pub(crate) fn lookup_constructor_type_with_state(
         &self,
         state: &CheckState,
         ctor_name: &str,
     ) -> Option<TypeName> {
-        self.lookup_constructor_type_in_module(&state.current_module, ctor_name)
+        if let Some(tn) =
+            self.lookup_constructor_type_in_module(&state.current_module, ctor_name)
+        {
+            return Some(tn);
+        }
+        // Inner miss — consult the prelude outer scope iff the bit is ON. The
+        // I-1 public-only filter is applied to the prelude head entry (the same
+        // binding `lookup_constructor_type_in_module` would chain-follow); a
+        // private prelude ctor is treated as not-found and the parent-type read
+        // is skipped.
+        let prelude = self.prelude_fallback_target(&state.current_module)?;
+        self.probe_module_entry_owned(&prelude, ctor_name)
+            .filter(Self::prelude_terminal_visible)?;
+        self.lookup_constructor_type_in_module(&prelude, ctor_name)
     }
 
     /// Check whether a constructor is marked as internal (not user-constructable).
@@ -670,12 +693,45 @@ where
     }
 
     /// State-rooted variant of [`Self::is_internal_constructor_check_in_module`].
+    ///
+    /// Bare-name current-module gate with the implicit-prelude **outer scope**
+    /// fallback (S78 §2.7.5 — Chokepoint 1; FIXME 0317). Under §2 a re-exported
+    /// internal ctor (`Bind`/`Pure`/`Effect`) is no longer an `Import` entry in
+    /// the user table, so the `current_module`-rooted gate alone misses it and
+    /// the value/pattern resolution (which DOES fall back) would let the
+    /// internal ctor through. We mirror the value/pattern fallback: resolve the
+    /// ctor's terminal entry via [`Self::resolve_entry_in_current_module`] (which
+    /// already consults the prelude outer scope under the ON bit and applies the
+    /// I-1 public-only filter), then read the canonical `internal` discriminator
+    /// off the terminal `DefKind::Constructor`. `Bind`/`Pure`/`Effect` are
+    /// registered `Visibility::Public` in `primitives`, so the I-1 filter does
+    /// NOT hide them — what rejects them is their `internal: true` discriminator,
+    /// reached through the fallback.
     pub(crate) fn is_internal_constructor_check_with_state(
         &self,
         state: &CheckState,
         ctor_name: &str,
     ) -> bool {
-        self.is_internal_constructor_check_in_module(&state.current_module, ctor_name)
+        // Current-module-only gate first (covers in-module and locally-imported
+        // ctors, plus product-type single-ctor cases routed through the
+        // chain-follow in `is_internal_constructor_check_in_module`).
+        if self.is_internal_constructor_check_in_module(&state.current_module, ctor_name) {
+            return true;
+        }
+        // The current-module gate returns `false` for both "found, not internal"
+        // and "not found". Under §2 the re-exported internal ctor is absent from
+        // the user table, so re-resolve through the prelude-aware terminal-entry
+        // path and read the `internal` discriminator off the canonical
+        // Constructor Def. `resolve_entry_in_current_module` already applies the
+        // outer-scope fallback (bit-gated, self-guarded) and the I-1 public
+        // filter, so a private prelude ctor never reaches here.
+        if let Some(ModuleEntry::Def { kind, .. }) =
+            self.resolve_entry_in_current_module(state, ctor_name)
+            && let cranelisp_types::DefKind::Constructor { internal, .. } = kind.as_ref()
+        {
+            return *internal;
+        }
+        false
     }
 
     /// Open a single-module read view rooted at `module_path`.
@@ -741,6 +797,50 @@ where
         self.modules
     }
 
+    /// The prelude module to consult as the **outer scope** when a bare-name
+    /// lookup misses in `current_module`, or `None` when no fallback should fire
+    /// (S78 §2.7 — the one per-module ON/OFF condition, single source of truth
+    /// for every bare-name resolution chokepoint).
+    ///
+    /// Returns `Some(prelude_path)` iff the [`PreludeFallback`] bit is ON for
+    /// `current_module` **and** `current_module` is not the prelude module
+    /// itself (a module never falls back onto itself). Absent/`false` ⇒ `None`
+    /// (§2.7.1 absence-is-OFF). This dedups the bit+self-guard that was
+    /// copy-pasted across the six bare-name chokepoints
+    /// (`resolve_current_or_prelude`, `probe_current_or_prelude`,
+    /// `resolve_entry_in_current_module`, `resolve_terminal_entry_or_prelude`,
+    /// `resolve_type_expr_in_module`'s leaf resolver, and
+    /// `find_hkt_param_index_in_registry`).
+    pub(crate) fn prelude_fallback_target(
+        &self,
+        current_module: &ModuleFullPath,
+    ) -> Option<ModuleFullPath> {
+        if current_module.as_ref() != PRELUDE_MODULE
+            && self.prelude_fallback.get(current_module).map(|b| *b).unwrap_or(false)
+        {
+            Some(ModuleFullPath::from(PRELUDE_MODULE))
+        } else {
+            None
+        }
+    }
+
+    /// Whether a prelude-fallback **terminal** entry is reachable as a bare name
+    /// from an arbitrary user module — i.e. only PUBLIC prelude bindings are
+    /// reachable through the implicit outer scope (S78 §2 / `/review` I-1).
+    ///
+    /// Evaluating reachability relative to the ORIGINAL `current_module` (the
+    /// user module that issued the bare reference), the `cranelisp-types`
+    /// visibility rule is `entry.is_public() || in_subtree(current_module,
+    /// home)`. A user module is never in the prelude subtree, so the rule
+    /// reduces to `entry.is_public()`. We therefore post-filter every
+    /// prelude-hop terminal on its visibility: a private prelude entry is
+    /// treated as **not found** (it must NOT resolve and must NOT shadow), while
+    /// prelude's PUBLIC re-exports (and the chain-follow through them to
+    /// `primitives`) stay reachable.
+    fn prelude_terminal_visible(entry: &ModuleEntry<C>) -> bool {
+        entry.is_public()
+    }
+
     /// Resolve a bare (unqualified) `name` via [`cranelisp_types::resolve`]
     /// against the current module, falling back to the implicit-prelude
     /// **outer scope** on a not-found miss when the module's
@@ -761,6 +861,17 @@ where
     /// qualified `mod/sym` reference never falls back (it names its module
     /// directly; the qualified branch inside `resolve` is taken before any
     /// first-hop lookup).
+    ///
+    /// I-1 (`/review`): the prelude-rooted retry passes `prelude` as the
+    /// `current_module` arg so the chain-follow + terminal `home` are correct,
+    /// but that would make `cranelisp_types::resolve`'s visibility check see
+    /// `from_module = prelude` (and `in_subtree(prelude, prelude)` is true), so a
+    /// Private prelude entry would resolve. Reachability must instead be judged
+    /// relative to the ORIGINAL user `current_module` (never in prelude's
+    /// subtree), so the retry result is post-filtered on
+    /// [`Self::prelude_terminal_visible`]: a private terminal is treated as
+    /// not-found and the original inner-scope error surfaces. Only PUBLIC prelude
+    /// entries (and the chain-follow through public re-exports) are reachable.
     ///
     /// The two-hop is realized caller-side (a retry with a prelude-rooted view),
     /// NOT inside `cranelisp_types::resolve` — the shared `View` newtype carries
@@ -785,30 +896,42 @@ where
             Ok(resolved) => Ok(resolved),
             Err(e) if Self::is_not_found(&e) => {
                 // Inner miss — consult the prelude outer scope iff the bit is ON.
-                if state.current_module.as_ref() != PRELUDE_MODULE
-                    && self
-                        .prelude_fallback
-                        .get(&state.current_module)
-                        .map(|b| *b)
-                        .unwrap_or(false)
-                    && let Some(prelude_guard) =
-                        self.modules.get(&ModuleFullPath::from(PRELUDE_MODULE))
+                if let Some(prelude_module) =
+                    self.prelude_fallback_target(&state.current_module)
+                    && let Some(prelude_guard) = self.modules.get(&prelude_module)
                 {
                     let prelude_view = cranelisp_types::View::single(prelude_guard.value());
-                    let prelude_module = ModuleFullPath::from(PRELUDE_MODULE);
-                    // Root the retry at `prelude` so the first-hop view + the
-                    // chain-follow committed walk both start from prelude's
-                    // table; the visibility filter is evaluated relative to the
-                    // ORIGINAL `current_module` (a bare prelude reference must be
-                    // public to reach an arbitrary user module).
-                    return cranelisp_types::resolve(
+                    // The retry is rooted at `prelude` so the first-hop view and
+                    // the chain-follow committed walk both start from prelude's
+                    // own table (this gives the terminal entry its correct
+                    // `home`). But `cranelisp_types::resolve` would then evaluate
+                    // visibility with `from_module = prelude`, and
+                    // `in_subtree(prelude, prelude)` is true — so a Private entry
+                    // in prelude's own table would resolve. That is the I-1 leak.
+                    // Reachability must be judged relative to the ORIGINAL
+                    // `current_module` (a user module, never in prelude's
+                    // subtree), so only PUBLIC prelude entries are reachable as
+                    // bare names: post-filter the terminal on its visibility and
+                    // treat a private hit as not-found (it does NOT resolve and
+                    // does NOT shadow). Prelude's PUBLIC re-exports of primitives
+                    // chain-follow to a public terminal and stay reachable.
+                    return match cranelisp_types::resolve(
                         self.modules,
                         self.module_aliases,
                         &prelude_view,
                         &prelude_module,
                         name,
                         span,
-                    );
+                    ) {
+                        Ok(resolved) if Self::prelude_terminal_visible(&resolved.entry) => {
+                            Ok(resolved)
+                        }
+                        // Private prelude terminal (or a genuine prelude miss):
+                        // surface the ORIGINAL inner-scope not-found, not the
+                        // private-prelude detail — to the user module the name is
+                        // simply unbound.
+                        _ => Err(e),
+                    };
                 }
                 Err(e)
             }
@@ -1086,6 +1209,13 @@ where
     /// `Import` edges to the canonical primitive entry — so primitives reach
     /// user code *via* the prelude re-export through this fallback, not via any
     /// name-key (the S78 §2 structural-not-skip guarantee).
+    ///
+    /// Only PUBLIC prelude bindings are reachable through the implicit outer
+    /// scope (`/review` I-1): a Private entry in prelude's own table is NOT
+    /// returned (it does not resolve, does not shadow). Reachability is judged
+    /// relative to the original user `current_module`, which is never in
+    /// prelude's subtree — so the rule reduces to `is_public()` on the prelude
+    /// head entry. Prelude's public re-exports stay reachable.
     pub(crate) fn probe_current_or_prelude(
         &self,
         state: &CheckState,
@@ -1095,18 +1225,11 @@ where
             return Some(entry);
         }
         // Inner miss — consult the prelude outer scope iff the fallback bit is
-        // ON for this module. Absent/`false` ⇒ no fallback (§2.7.1
-        // absence-is-OFF). Never fall back from the prelude module onto itself.
-        if state.current_module.as_ref() != PRELUDE_MODULE
-            && self
-                .prelude_fallback
-                .get(&state.current_module)
-                .map(|b| *b)
-                .unwrap_or(false)
-        {
-            return self.probe_module_entry_owned(&ModuleFullPath::from(PRELUDE_MODULE), name);
-        }
-        None
+        // ON for this module (`prelude_fallback_target`; absence-is-OFF, never
+        // self-fallback). Public-only filter per I-1.
+        let prelude = self.prelude_fallback_target(&state.current_module)?;
+        self.probe_module_entry_owned(&prelude, name)
+            .filter(Self::prelude_terminal_visible)
     }
 
     /// Probe a name in `module_path`'s symbol table, returning an owned
@@ -1234,18 +1357,15 @@ where
                 .chain_follow_to_home(entry, state.current_module.clone(), 0)
                 .map(|(e, _home)| e);
         }
-        if state.current_module.as_ref() != PRELUDE_MODULE
-            && self
-                .prelude_fallback
-                .get(&state.current_module)
-                .map(|b| *b)
-                .unwrap_or(false)
-        {
-            let prelude = ModuleFullPath::from(PRELUDE_MODULE);
-            let entry = self.probe_module_entry_owned(&prelude, name)?;
-            return self.chain_follow_to_home(entry, prelude, 0).map(|(e, _home)| e);
-        }
-        None
+        // Inner miss — consult the prelude outer scope iff the bit is ON. Only a
+        // PUBLIC prelude head binding is reachable (I-1): filter the prelude head
+        // before chain-following, so a private prelude entry resolves to
+        // not-found (does not shadow a user binding).
+        let prelude = self.prelude_fallback_target(&state.current_module)?;
+        let entry = self
+            .probe_module_entry_owned(&prelude, name)
+            .filter(Self::prelude_terminal_visible)?;
+        self.chain_follow_to_home(entry, prelude, 0).map(|(e, _home)| e)
     }
 
     /// Resolve a bare name to its terminal `(entry, home)` against the current
@@ -1279,17 +1399,15 @@ where
         {
             return Some(found);
         }
-        if state.current_module.as_ref() != PRELUDE_MODULE
-            && self
-                .prelude_fallback
-                .get(&state.current_module)
-                .map(|b| *b)
-                .unwrap_or(false)
-        {
-            let prelude = ModuleFullPath::from(PRELUDE_MODULE);
-            return self.resolve_terminal_entry_and_home(&prelude, name);
-        }
-        None
+        // Inner miss — consult the prelude outer scope iff the bit is ON. Only a
+        // PUBLIC prelude head binding is reachable (I-1): probe + filter the
+        // prelude head before chain-following to its terminal, so a private
+        // prelude trait/def does not leak as a bare name.
+        let prelude = self.prelude_fallback_target(&state.current_module)?;
+        let head = self
+            .probe_module_entry_owned(&prelude, name)
+            .filter(Self::prelude_terminal_visible)?;
+        self.chain_follow_to_home(head, prelude, 0)
     }
 
     /// Chain-follow a name starting from `module_path` to its canonical home,
@@ -1978,17 +2096,15 @@ where
                 // the type expr is being resolved against).
                 Err(e) if is_bare && Self::is_not_found(&e) => {
                     drop(read);
-                    if module_path.as_ref() != PRELUDE_MODULE
-                        && self
-                            .prelude_fallback
-                            .get(module_path)
-                            .map(|b| *b)
-                            .unwrap_or(false)
-                        && let Some(prelude_guard) =
-                            self.modules.get(&ModuleFullPath::from(PRELUDE_MODULE))
+                    // Inner miss — consult the prelude outer scope iff the bit is
+                    // ON for `module_path`. Only PUBLIC prelude terminals are
+                    // reachable (I-1): post-filter the prelude-retry terminal on
+                    // its visibility (reachability judged relative to the original
+                    // `module_path`, never in prelude's subtree).
+                    if let Some(prelude_module) = self.prelude_fallback_target(module_path)
+                        && let Some(prelude_guard) = self.modules.get(&prelude_module)
                     {
                         let prelude_view = cranelisp_types::View::single(prelude_guard.value());
-                        let prelude_module = ModuleFullPath::from(PRELUDE_MODULE);
                         return cranelisp_types::resolve(
                             self.modules,
                             self.module_aliases,
@@ -1998,7 +2114,8 @@ where
                             span,
                         )
                         .ok()
-                        .map(|resolved| resolved.entry);
+                        .map(|resolved| resolved.entry)
+                        .filter(Self::prelude_terminal_visible);
                     }
                     None
                 }

@@ -1,6 +1,6 @@
 # Sprint 78: int restructure — cluster-atomic orchestration + in-call-stack dependency threading
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 2 (D/D/R on src/)
+**Status**: PHASE 7 CLOSE — green (1175/1175), outcome final, awaiting user close approval + commit
 
 **Goal**: Transform `int` to its target-state flow per `design/int/s77-int-restructure.md` and get the suite largely green — `cluster::process_cluster` as the single Pass-0/1/2 orchestration with in-call-stack dependency threading, deleting the cross-thread `module_sexps`/`suspend_states` parking maps that are the S60–S62 heisenbug substrate. Land it complete to the target shape: no substantial interim change persists past the sprint (Principle 8 — no interim implementations carried forward).
 
@@ -145,7 +145,11 @@ Target design: `design/int/s78-entry-module.md` (§1 entry-module, §2 prelude-a
 
 | /dev | cranelisp-typecheck | 2 value/type/ctor chokepoints + `check_forms` 5th param (354 green) **+ FIXME 0315 trait-operator fallback** (`resolve_terminal_entry_or_prelude`; `spec_07_traits` 32/32, `cache` 47/47). | **DONE** |
 | /dev | src/ | `SharedState.prelude_fallback` (→15 fields); thread the bit; installer sets bit + delete `is_seeded`; `/imports` "Prelude (implicit)" group + `describe_symbol` prelude hop. | **DONE** |
-| /review | cranelisp-typecheck, src/ | Per-crate change-set review. | pending |
+| /review | cranelisp-typecheck, src/ | Per-crate change-set review. | **PASS-WITH-FINDINGS** |
+
+**Wave 4 /review verdict:** §2 faithful — no name-keyed special-casing, `cranelisp-types` untouched, public-api diff = +5th param + `PreludeFallback` alias only, bit lifecycle correct, `is_seeded` deletion clean, trait-method boundary right, hkt-fallback justified. **I-1 (Important — fix before close):** prelude fallback roots `visibility_check` at `prelude` (`in_subtree(prelude,prelude)==true`) → a **Private prelude symbol would leak as a bare name** in every user module (no impact today — shipped prelude is pure public re-exports — but latent; and the inline comment asserts the opposite safety property). Fix: public-only filter on the prelude retry + correct comments + unit test (`target: /dev cranelisp-typecheck`, cc /arch). **S-3** fallback-probe guard duplicated ~9 sites → extract helper (`/dev`). **S-2** design-doc refresh: caller-retry chosen vs §2.7.5's preferred two-hop view (`/design`). **S-1** cosmetic `insert(false)` vs `remove`.
+
+**Wave 4 I-1 + S-3 FIXED (`/dev typecheck`, uncommitted):** prelude retry made public-only across all hop sites (private prelude symbol NOT bare-reachable; contradictory comments corrected); also closed a deeper latent gap — trait-method `Def` entries now inherit the trait's declared visibility (a private prelude trait's operators can't leak). `prelude_fallback_target` helper extracts the duplicated guard (6 typecheck sites). 5 new visibility unit tests; typecheck 360/360; §2 e2e no-regression; public-api unchanged. **Carries to W5:** S-2 design-doc refresh (caller-retry chosen); session-side `prelude_fallback` guard dedup (src/, mirror the helper); trait-method-visibility propagation flagged for /review eye.
 
 **Wave 4 RESULT: §2 prelude-as-outer-scope COMPLETE.** `is_seeded` deleted; prelude resolved as outer-scope fallback (value/type/ctor + trait-method/operator dispatch); `/imports` group; no `cranelisp-types` change; field-count→15. **Findings surfaced + resolved:** FIXME 0315 (trait-operator regression — the §2 typecheck change missed the trait/impl path; FIXED). **Carries:** FIXME 0312/0314 — deleting `is_seeded` exposed a REAL stdlib two-`Option` collision (`primitives` seeds its own `Option`; `stdlib/fn/option.cl` defines a second); per user ruling overlapping imports MUST collide → stdlib must fix (0314: `fn.option` re-exports `primitives/Option`). `/qa` decoupled its tests from real stdlib (free-standing fixtures); **2 exemplar tests** (`s60_run_tests_reduction_1`, `wave6_run_tests_batched_html`) genuinely need real stdlib+exemplar → left RED as documented **/stdlib-0314-pending carries** (exemplar/stdlib conformance, not QA free-standing). FIXME 0313 (field-count + exit-1005) resolved+deleted by /qa.
 
@@ -153,8 +157,17 @@ Target design: `design/int/s78-entry-module.md` (§1 entry-module, §2 prelude-a
 
 | Skill | Crate | Task | Status |
 |---|---|---|---|
-| /dev | src/ | Expunge stale/false comments (the `scheduler.rs:94` invariant lands in W3; `session_v4.rs:1007` stale special-forms comment; `is_seeded` doc); reconcile FIXME 0311 (I1 `BlockAction` doc, I2 `ProcessedCluster` dead-scaffold) + /review S1/S2 tombstones. | pending |
-| /arch | design/ | Expunge canonical-set references (`bounded-contexts.md §6`, `facades/int.md`, `src/CLAUDE.md`); author Principle 19 ("No module is privileged by name") if user-approved. | pending |
+| /dev | src/ | W3 I1+S1 comment fixes; S-1 `insert(false)`→`remove`; session-side `prelude_fallback_target` dedup (5 sites). No behaviour change; tests green; 2 exemplar fails confirmed pre-existing (0312/0314). | **DONE** |
+| /design | design/int | FIXME 0311 reconciled (packet-1b, commit-in-`check_program_compat`, core-in-`worker.rs`) + deleted; S-2 §2.7.5 refresh (caller-retry chosen). | **DONE** |
+| /arch | design/arch | **Principle 19 authored** (file + index); canonical expunge (`bounded-contexts §6` trait-method→outer-scope; `facades/int.md` `inject_prelude_if_needed`+bit). | **DONE** |
+
+### Wave 6 — stdlib two-`Option` fix (user-directed: clear the carries before close)
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /stdlib | stdlib/ | Resolve 0312/0314: `stdlib/fn/option.cl` re-exports `primitives/Option`/`Some`/`None` (keep combinators over the same type) instead of defining a second ADT → the glob+specific overlap dedups (same source). Audit stdlib for the same footgun (Pair/Result/other primitives-seeded ADTs). Verify stdlib compiles + the 2 exemplar tests (`s60_run_tests_reduction_1`, `wave6_run_tests_batched_html`) go GREEN. | pending |
+
+**Wave 5 RESULT: cleanup complete.** Two flagged follow-ups (close-items): (1) **Principle 19 `@import`-block propagation** to `.claude/commands/{arch,design,dev,review}.md` (4 files) — outside `/arch`+`/sprint` lanes; needs user action or OK. (2) int-facade `SharedState` field enumeration currency (add `prelude_fallback`, 15) — int `/design` minor. **All build waves (1–5) DONE.**
 
 **Wave gate (each de-special wave):** scan `design/arch/fixmes/` for open `target: /dev`/`/qa`/`/typecheck`/`/spec`; tests green at sane `-j` (dyld — use `-j 2` or `--release` for stress, NOT high-concurrency debug).
 
@@ -184,4 +197,30 @@ Target design: `design/int/s78-entry-module.md` (§1 entry-module, §2 prelude-a
 
 ## Outcome (Phase 7)
 
-{Pending.}
+**Theme:** int restructure + entry-module/prelude de-special-casing. The centerpiece (int restructure) was scoped as the sprint; user direction at the W2/W3 boundary expanded it into a full de-special-casing arc ("no module privileged by name") across 6 waves.
+
+### Delivered
+- **Int restructure (W1–2, commit `73f9c74`):** `cluster::process_cluster` is the single Pass-0/1/2 orchestration; **requeue-on-pool** worker model (workers never block — a worker that hits a dependency gap frees to the pool; the scheduler requeues the blocked module when its dep completes; in-progress state is stack-local). Deleted the cross-thread `module_sexps`/`suspend_states` parking maps + `eval_in_flight` guard + `process_module_forms` (~1650 LOC). `SharedState` 16→14. **Verified sound** — the investigated "deadlock" was **macOS dyld cold-start on large debug test binaries** (`--list` = 31s cold / 0.00s warm), NOT a cranelisp bug.
+- **Entry-module de-special-casing (W3, commit `1845ef2`):** the entry module is ordinary; `"user"` is only the CLI default name. Entry name threaded into `CompilerSession::new`; vestigial `"user"` constructor seed deleted; `current_repl_module`/`handle_mod("")`/FQ-parse defaults → entry module. **B1 single-orchestration** via a `ModuleState.eval_owned` role-flag (entry module not pool-claimable — by role-as-data, never a `"user"` name match).
+- **Prelude-as-outer-scope (W4, commit `6d9d00f` + I-1/S-3):** `is_seeded` (the `m=="user"||"primitives"` name-hack) **deleted**; the implicit prelude is now an OUTER SCOPE resolved by a per-module `prelude_fallback` bit (value/type/ctor + trait-method/operator dispatch), NOT flattened. Overlapping imports collide per spec §8.6.4 (user ruling). `/imports` "Prelude (implicit)" group. Private-prelude-symbol leak (I-1) closed (public-only retry + trait-method visibility inheritance). `SharedState` 14→15 (`prelude_fallback`). **No `cranelisp-types` change.**
+- **Cleanup + Principle 19 (W5):** comment-accuracy + dedup; FIXME 0311 mechanism-divergence doc reconciliation; **Principle 19 — "No module is privileged by name"** authored + registered in all 4 skill `@import` blocks.
+- **stdlib two-`Option` fix (W6):** `fn.option`/`fn.result`/`collections.pair` re-export the canonical `primitives` ADTs; the redundant glob+specific overlaps dropped in 3 modules; the 2 exemplar tests green.
+- **Spec:** §8.6.1/§8.6.4/§8.8.1 editorial alignment (prelude = outer scope, conflict detection scoped to the inner tier).
+- **Tests/baseline: final = 1175/1175 passed, 8 skipped** (`cargo nextest -j2 --no-fail-fast`, 147s). The close baseline **earned its keep** — it caught a close-blocking regression the per-wave checks missed (they ran only touched files; nobody ran the stdlib-conformance suite). The regression had two halves, both instances of the recurring "§2 fallback wired for path X not path Y" gap, both fixed this sprint:
+  - **Macro-recognition (int, W7a):** first baseline = 1138/1172, 34 failed — `src/expander.rs::recognize_macro_head` built `View::single(current)` with no prelude hop, so ALL prelude-provided macros (cond/when/do/str/thread-first/last/const/def/case/vec) degraded to fn calls → type error (~31 of 34: `spec_11_stdlib` macro suite + `persist_bug_*`). `/dev`(int) extended `recognize_macro_head` to the public-only prelude fallback (mirror 0315/I-1), threaded the bit through both macro resolvers, +3 unit tests. Re-baseline → 1172/1175.
+  - **Constructor resolution (typecheck, W7b — FIXME 0317):** the remaining 3 (`spec_10_io bind_constructor_rejected`/`bind_pattern_rejected`, `spec_12_runtime discover_…composition`) — two ctor chokepoints in `cranelisp-typecheck` (`lookup_constructor_type_with_state` pattern-ctor gate + `is_internal_constructor_check_with_state` reject gate) rooted at `current_module` with no fallback. `/dev`(typecheck) threaded both through the prelude fallback (public-head I-1 filter; the `Bind` subtlety — public-but-`internal:true`, rejected on the discriminator not visibility), +4 unit tests (typecheck 360→364). FIXME 0317 resolved. Final re-baseline → **1175/1175**.
+  - **The recurrence is the lesson:** the gap appeared 4× (value/type/ctor → trait-method [0315] → macro-head [int] → two ctor gates [typecheck]) because the §2 fallback was retrofitted chokepoint-by-chokepoint rather than at a single resolution seam. The W7b audit swept `cranelisp-typecheck` for further un-threaded bare-name paths and found none (trait dispatch already covered by 0315; HKT-param + impl-registration lookups are not the regression class) — so the surface is now believed closed.
+
+### Deferred (with rationale)
+- **FIXME 0316 (`/spec`+`/arch`)** — reconsider the import-ambiguity model: §8.6.4 same-source dedup is **immediate-source**-keyed not terminal-source (a re-export doesn't dedup a glob+specific overlap), AND the open question (user, 2026-06-12) whether glob `[*]` imports should be ambiguity-protected as peers of specific imports. **User-directed NOTE, not blocking** — stdlib green; no red test on it.
+- Pre-existing non-S78 FIXMEs (0303/0306/0307/0308/0309) — out of scope.
+
+### Findings (methodology)
+- **investigate-first overturned a wrong diagnosis:** `/sprint`'s "lost-wakeup deadlock" framing was WRONG — the `/dev` wait/notify audit + a real-binary repro pass proved the scheduler discipline correct and the "hang" was macOS dyld. Consistent with the S77 investigate-first lesson. Cost: a chased phantom; benefit: the restructure confirmed sound + the dyld test-infra hazard documented.
+- **dyld test-infra hazard:** large debug test binaries cold-start 30s+ in `_dyld_start` before `main`; high-`-j` nextest looks like a hang. Use `-j 2` / `--release` for stress runs; not a cranelisp regression.
+- **QA-first earned its keep:** caught the trait-operator dispatch regression (0315 — §2 missed the trait/impl resolution path) and the real latent stdlib two-`Option` collision that `is_seeded` was masking.
+- **Decisions (user-led design discussion):** the entry-module concept; prelude-as-outer-scope (fallback, not flattened — the faithful realization of the spec's "inner `let` shadows outer" scope model); overlapping imports collide; role-as-data over name-literals (Principle 19); provenance-marker REJECTED (ambiguity is binary; provenance is error-message richness).
+
+### Carries to next sprint
+- FIXME 0316 (import-ambiguity model).
+- The pre-existing FIXME backlog (the ~88-item ledger surveyed in S77) continues.

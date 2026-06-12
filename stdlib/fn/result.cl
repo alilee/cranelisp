@@ -3,11 +3,18 @@
 ;; The Result type represents a computation that can succeed (Ok) or fail
 ;; (Err). Used for error handling without exceptions.
 ;;
-;; Spec: plan-stdlib.md §3.3
+;; `Result` is seeded by `primitives` (it is the return type of
+;; `catch-runtime-error :: forall a. (Fn [(Fn [] a)] (Result a String))`).
+;; To keep ONE canonical `Result` type across the system, this module
+;; RE-EXPORTS the primitives `Result`/`Ok`/`Err` rather than defining a
+;; second, distinct ADT — mirroring `fn.option`. The combinators below
+;; operate over the SAME `primitives/Result` type.
+;;
+;; Spec: plan-stdlib.md §3.3, 08-modules.md §8.6.4
 
 (import [prelude []])
-
-(deftype (Result a e) (Ok [:a val]) (Err [:e err]))
+(import [primitives [Result Ok Err]])
+(export [primitives [Result Ok Err]])
 
 (defn is-ok? "Test if a Result is Ok" [r]
   (match r
