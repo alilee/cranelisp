@@ -1,12 +1,58 @@
 ---
 number: 0128
-target: /runtime
+target: /qa
 filed_by: /qa
 filed_at: 2026-05-03
 sprint_filed: 64
 refers_to: tests/legacy/observability_io.rs
 status: open
+harvested_by: /dev (S81 — no slice for cranelisp-intrinsics/-primitives; crate-internal home is int's src/io_trace.rs, already covered; re-targeted to /qa for deletion)
 ---
+
+## S81 /dev harvest disposition (re-targeted to /qa for deletion)
+
+**Nothing to port into `cranelisp-intrinsics` / `cranelisp-primitives`.** The
+`io_trace` module this file imports (`record_event`, `dump_thread_buffer`,
+`IO_TRACE_BUFFER_CAPACITY`, `IoTraceEvent`, `IoTracePayload`, `IoTraceTag`,
+`format_event_line`) relocated (per FIXME 0103 / Decision 40) into **`src/io_trace.rs`
+(the int binary crate)**, NOT into either successor runtime crate. That is
+outside the S81 /dev runtime-harvest scope (intrinsics + primitives).
+
+The crate-internal slice this FIXME names is **already covered** by the
+`#[cfg(test)] mod tests` in `src/io_trace.rs`:
+
+- ring-buffer wrap/capacity bound → `ring_buffer_wraps_at_capacity`,
+  `dump_clears_thread_buffer` (covers `io_trace_ring_buffer_bounded_by_capacity`)
+- event size bound → `event_size_is_bounded`
+- observer dispatch / event-type mapping → `record_forwards_trampoline_enter_to_ring`
+  (covers the TrampolineEnter taxonomy mapping)
+- unset = no event output → `install_if_enabled_no_op_when_unset`
+  (covers `io_trace_unset_means_no_event_output_to_stderr` at the install layer)
+- flush guard / panic hook → `flush_guard_drops_without_panic`,
+  `install_panic_hook_is_idempotent`
+
+The subprocess-shaped tests (the TrampolineEnter/Exit/PlatformEffect taxonomy and
+the `sched_class=` payload field, observed from the binary's stderr; and the
+cache-`.meta.json` non-leak negative) are **e2e-shaped** and are covered in
+`tests/spec_10_io.rs`:
+
+- `io_trace_snapshot_pre_post_relocation_byte_equivalent` — pins the event-tag
+  taxonomy present in stderr under `CRANELISP_IO_TRACE=1` against
+  `tests/fixtures/io_trace_snapshot.txt` (covers the full-trampoline-sequence +
+  core-sequential-event-types + PlatformEffect/sched_class assertions)
+- `io_observer_registration_lives_in_intrinsics` — structural home check
+
+`io_trace_off_path_subprocess_completes_within_generous_ceiling` was already
+RESOLVED at quarantine time (per the file's own header) — the per-test TempDir
+isolation removed the concurrency-contention this guarded.
+
+**Remaining action (/qa):** delete `tests/legacy/observability_io.rs` + remove
+its row from `tests/legacy/README.md`. No crate-internal slice belongs to
+`cranelisp-intrinsics`/`cranelisp-primitives`; the int-side slice is covered in
+`src/io_trace.rs` `#[cfg(test)]` and the e2e slice in `tests/spec_10_io.rs`.
+If /qa judges any int-side `src/io_trace.rs` assertion still missing, that is an
+int-crate `/dev` task (not in this S81 runtime-harvest scope) — file separately.
+Left `status: open` — the /qa deletion closes it.
 
 # Harvest tests/legacy/observability_io.rs into cranelisp-runtime io_trace unit tests
 

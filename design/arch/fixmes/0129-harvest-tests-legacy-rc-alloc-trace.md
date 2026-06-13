@@ -1,12 +1,53 @@
 ---
 number: 0129
-target: /runtime
+target: /qa
 filed_by: /qa
 filed_at: 2026-05-04
 sprint_filed: 64
 refers_to: tests/legacy/rc_alloc_trace.rs
 status: open
+harvested_by: /dev (S81, ported crate-internal RC-balance slice to cranelisp-intrinsics #[cfg(test)])
 ---
+
+## S81 /dev harvest disposition (re-targeted to /qa for deletion)
+
+The crate-internal "alloc count == dealloc count for every category of heap
+value" slice is **ported** into a new `#[cfg(test)] mod rc_balance` in
+`crates/cranelisp-intrinsics/src/drop.rs` — where the counters (`crate::alloc`)
+and the drop glue actually live (the D43 runtime split routed the
+allocator/RC/drop-glue here; there is no `cranelisp-runtime` to harvest into,
+and `cranelisp-primitives` builds `SymbolTable<(),()>` with no runtime-counter
+dependency per Decision 48, so it is NOT a counter home). The new module uses a
+shared `assert_balanced` helper (the crate-internal analogue of the legacy
+`assert_rc_balanced`) asserting **exact** parity through the real runtime drop
+primitives, stronger than the legacy `>=` checks. New tests (10), one per
+invariant cluster named in this FIXME:
+
+- `rc_balance_adt_sum_with_string_field` — ADT sum heap field freed with container
+- `rc_balance_adt_product_two_string_fields` — product, both fields freed
+- `rc_balance_nested_recursive` — nested ADT recursive RC walk
+- `rc_balance_closure_env` — closure environment freed
+- `rc_balance_closure_captures_string` — single-capture env + capture freed (inline drop glue)
+- `rc_balance_closure_multiple_captures` — multiple captures freed
+- `rc_balance_vec_cow_set` — Vec COW: original + copy both freed (no double-free/leak)
+- `rc_balance_vec_of_strings` — Vec element Strings freed with the Vec
+- `rc_balance_consume_unused_string_param` — consuming convention: callee frees unused heap param
+- `rc_balance_consume_multiple_unused_params` — multiple unused heap params freed
+
+These complement the pre-existing per-primitive counter tests already in
+`crates/cranelisp-intrinsics/src/{alloc,rc,drop,heap_string,vec_runtime}.rs`
+`#[cfg(test)]` modules (which together already cover String/Vec/ADT/closure/IO
+counter parity at the primitive level).
+
+The whole-program `assert_rc_balanced` (stderr `CRANELISP_RC_TRACE=1` parsing)
+form is the e2e tier; its language-observable property is preserved in
+`tests/spec_12_runtime.rs` (heap-using bodies run cleanly).
+
+**Remaining action (/qa):** delete `tests/legacy/rc_alloc_trace.rs` + remove its
+row from `tests/legacy/README.md`. Crate-internal slice is fully ported (gate
+green: `cargo nextest run -p cranelisp-intrinsics` 138 passed; canonical
+`cargo nextest run` 1289 passed / 0 failed / 0 skipped). Left `status: open` —
+the /qa deletion closes it.
 
 # Harvest tests/legacy/rc_alloc_trace.rs into cranelisp-runtime + cranelisp-backend unit tests
 
