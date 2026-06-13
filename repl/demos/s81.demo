@@ -1,0 +1,63 @@
+; Cranelisp Sprint 81 — :Type annotations & introspection
+
+; The self-documenting REPL: every entry produces useful feedback —
+; a value, a type, or an actionable error. Never an opaque failure.
+
+; ── :Type annotation reader-macro ────────────────────────────────────
+
+; `:Type` is a reader-macro-like annotation. It binds the IMMEDIATELY
+; FOLLOWING form (in every position) and unifies that form's inferred
+; type with the named type. It is a CHECK, not a cast — it never changes
+; a value. We've already met it as deftype fields and defn params.
+
+; The annotation's type name must be in scope. The stdlib prelude
+; re-exports primitive FUNCTIONS but not primitive TYPES, so we bring
+; Int and Float into scope explicitly. (FQ `:primitives/Int` always works.)
+(import [primitives [Int Float]])
+
+; With Int in scope, the bare type name resolves to the primitive type.
+Int
+
+; Annotate a literal. 42 already infers as Int; the annotation unifies
+; with that — so this is the identity on 42, echoed with its type.
+:Int 42
+
+; The annotation is a check: it must UNIFY. Annotating an Int literal
+; with Float is a mismatch, reported precisely — not an opaque error.
+:Float 42
+
+; The type must also be known. An unknown name is rejected by name.
+:Foo 42
+
+; `:Type` is NOT a function and `(:Type form)` is NOT a special form.
+; The reader binds `:Int` to the single following element 42, yielding a
+; one-element list — then an Int is applied as a function, which fails:
+; Int is not callable.
+(:Int 42)
+
+; Here the annotation unifies FIRST (Int literal vs Float) and that
+; mismatch precedes the not-a-function error — typecheck before apply.
+(:Float 42)
+
+; Five entries, five useful responses: a value, a unify error, an
+; unknown-type error, a not-callable error, and a unify-precedes error.
+; Nothing opaque.
+
+; ── Introspection on a user definition ───────────────────────────────
+
+; Define a function, then look at it through the introspection surface.
+(defn square [x] (mul-i64 x x))
+(square 9)
+
+; /source shows the definition as you wrote it.
+/source square
+
+; /sexp shows the parsed s-expression form.
+/sexp square
+
+; (Not staged here: `(trace expr)` runs as a root special form with no
+; import, and platform dispatch errors surface as DispatchError — both
+; are covered by the e2e suite (dispatch-funnel e2e, FIXME 0327/0337).)
+
+; Every construct entered produced useful feedback — the
+; self-documenting-REPL contract, end to end.

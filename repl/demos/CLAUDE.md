@@ -106,6 +106,7 @@ The REPL process `chdir`s into this directory, so `.cache` artifacts and any oth
 | `ring4q.demo` | 4Q | Sprint 59 — /sig docstring dash separator, test-form AST scan for trace extern, dual-path persistence collapse (cache restore + fresh compile share one register_module recursion) |
 | `ring4r.demo` | 4R | Sprint 60 — Clean & Green: JIT/object convergence (one code path, one RC contract for captured values + .o relocation), /sig docstring format conformance, /clif permanent, manifest.json compiler_mtime build marker |
 | `ring4s.demo` | 4S | Sprint 61 — bare-primitive name echo at prompt (re-exported primitives resolve through user → prelude → primitives per §8.9), scheduler + IO trace env vars (CRANELISP_SCHEDULER_TRACE / CRANELISP_IO_TRACE merge-sortable event logs), capture-return-inc fix for `(fn [_] b)` / `bind` closures |
+| `s81.demo` | 4 | Sprint 81 — `:Type` annotation reader-macro (5 self-documenting cases: value / unify error / unknown-type / not-callable / unify-precedes), introspection on a user defn (`/source`, `/sexp`). Imports `[primitives [Int Float]]` since the stdlib prelude re-exports primitive functions but not primitive types. |
 | `v4a.demo` | — | Pipeline v4 skeleton — --v4 delegates to old pipeline, identical results |
 | `v4b.demo` | — | Pipeline v4 scheduler — primitive-only programs compile through scheduler-driven path |
 | `v4c.demo` | — | Pipeline v4 robust — error recovery (type error + undefined var), platform IO (print, bind), PlatformRegistry |

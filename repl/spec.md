@@ -11,18 +11,22 @@ The `cranelisp` binary supports the following invocation modes:
 The general invocation form is:
 
 ```
-cranelisp [target] [--run | --link | --release] [--no-color] [--no-cache]
+cranelisp [target] [--run | --link] [--no-color] [--no-cache] [--priority-workers N] [--nice-workers N]
 ```
 
-The optional positional `[target]` specifies the project root and entry module (see §0.5). Flags modify the behaviour applied to the resolved entry module. No flag takes a parameter — all are boolean modifiers.
+The optional positional `[target]` specifies the project root and entry module (see §0.5). The mode flags (`--run`, `--link`) and the modifier flags (`--no-color`, `--no-cache`) are boolean modifiers and take no parameter; `--priority-workers` and `--nice-workers` each take a numeric argument `N`. Flags modify the behaviour applied to the resolved entry module.
+
+The modifier and worker flags (`--no-color`, `--no-cache`, `--priority-workers`, `--nice-workers`) are detailed in §0.6.
 
 | Mode | Invocation | Description | Status |
 |---|---|---|---|
-| REPL | `cranelisp [target]` | Interactive REPL (default when no mode flag) | [R4 S52] |
-| Run | `cranelisp [target] --run` | Compile and execute `main`, then exit | [R4 S52] |
-| Link | `cranelisp [target] --link` | Compile and produce linkable object file | [R4 S52] |
-| Version | `cranelisp --version` | Print version string and exit | [R4] |
-| Help | `cranelisp --help` | Print usage summary and exit | [R4] |
+| REPL | `cranelisp [target]` | Interactive REPL (default when no mode flag) | [Tested] |
+| Run | `cranelisp [target] --run` | Compile and execute `main`, then exit | [Tested] |
+| Link | `cranelisp [target] --link` | Compile and produce linkable object file | [Tested] |
+| Version | `cranelisp --version` | Print version string and exit | Future — not implemented (errors `unknown flag` today); see §0.4 |
+| Help | `cranelisp --help` | Print usage summary and exit | Future — not implemented (errors `unknown flag` today); see §0.4 |
+
+> The synopsis above is the as-built CLI. There is **no** `--release` flag (it errors `unknown flag`), and `--version`/`--help` are not yet implemented (§0.4). The keep-this-consistent companion is `user/cli-reference.md` — the two MUST agree.
 
 ### 0.1 REPL Mode [Tested]
 
@@ -68,11 +72,15 @@ Invalid arguments (e.g., unknown flags, `--run` and `--link` together) MUST prin
 
 ### 0.4 Future: `--version` and `--help` [R4]
 
+**Not yet implemented.** As built, `cranelisp --version` and `cranelisp --help` both error `unknown flag: --version` / `unknown flag: --help` (the usage hint to stderr) and exit with status code 1 — they are parsed like any other unrecognised flag (§0.3).
+
+When implemented:
+
 `cranelisp --version` SHOULD print the version string (format: `cranelisp <semver>`) to stdout and exit with status code 0.
 
 `cranelisp --help` SHOULD print a usage summary listing all supported flags and their descriptions to stdout and exit with status code 0.
 
-These are not yet implemented. When added, they MUST follow standard CLI conventions (GNU-style long flags, stdout for informational output, exit code 0 on success).
+When added, they MUST follow standard CLI conventions (GNU-style long flags, stdout for informational output, exit code 0 on success).
 
 ### 0.5 Positional Target Resolution [R4 S52]
 
@@ -142,6 +150,19 @@ The positional target supports only file-system paths (`/`-separated), not Crane
 | Submodule `core.str` | `cranelisp core/str` | `cranelisp core.str` |
 
 Dotted names (e.g. `core.str`) MUST be treated as a single module name, not as a path separator. If a user passes `core.str`, the binary resolves it as entry module `core.str` in cwd — which will fail if no file `core.str.cl` exists.
+
+### 0.6 Modifier and Worker Flags
+
+These flags modify behaviour but do not select a mode. They may appear in any mode (subject to the noted incompatibility) and in any position relative to the target.
+
+| Flag | Argument | Effect | Default |
+|---|---|---|---|
+| `--no-color` | none | Disable ANSI colour in REPL and diagnostic output. | colour on |
+| `--no-cache` | none | Bypass the on-disk module cache (recompile from source). **MUST error if combined with `--link`** (link mode relies on the object cache) — usage hint to stderr, exit code 1. | cache on |
+| `--priority-workers` | `N` (numeric) | Number of priority compilation workers. A non-numeric `N` is an error (usage hint to stderr, exit code 1). | `1` |
+| `--nice-workers` | `N` (numeric) | Number of background ("nice") compilation workers. A non-numeric `N` is an error. | `1` |
+
+This table is kept consistent with `user/cli-reference.md`; the two MUST agree.
 
 ## Design Principle
 
