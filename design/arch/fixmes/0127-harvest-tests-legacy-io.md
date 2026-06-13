@@ -4,8 +4,29 @@ target: /int
 filed_by: /qa
 filed_at: 2026-05-03
 sprint_filed: 64
-refers_to: tests/legacy/io.rs, tests/legacy/io_minimal.rs, tests/legacy/sprint61_io_closure_regression.rs
+refers_to: tests/legacy/io.rs, tests/legacy/io_minimal.rs
 status: open
+---
+
+## S81 partial closure (/qa, "clean & green" wave)
+
+The `sprint61_io_closure_regression.rs` portion is CLOSED via **path 1
+(delete)** per the "Proposed resolution" below. The file
+(`tests/legacy/sprint61_io_closure_regression.rs`, 215 LOC, 2 tests) was
+DELETED and its README row removed. Its regression intent (capture-return-inc
+double-free) is preserved in
+`tests/spec_10_io.rs::capture_return_inc_does_not_double_free` via the same
+minimal repro through the new `Cranelisp` harness.
+
+The OTHER two files named by this FIXME remain to be harvested and this FIXME
+stays OPEN for them:
+
+- `tests/legacy/io.rs` (1,360 LOC, 76 tests) — IO surface + runtime-ABI +
+  typecheck-inference harvest (see "Proposed resolution" for io.rs).
+- `tests/legacy/io_minimal.rs` (120 LOC, 5 tests) — Sprint 57 W6 JIT-drop
+  reduction guards → `cranelisp-backend` `#[cfg(test)]`.
+
+The `refers_to` line was narrowed to drop the deleted file.
 ---
 
 # Harvest tests/legacy/io*.rs into runtime + backend + typecheck unit tests

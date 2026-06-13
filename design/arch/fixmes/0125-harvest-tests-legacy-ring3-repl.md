@@ -8,6 +8,33 @@ refers_to: tests/legacy/ring3_repl.rs
 status: open
 ---
 
+## S81 partial closure (/qa, "clean & green" wave)
+
+The 9 zero-assertion stub tests (`let _s = repl_session();` bodies, each
+preceded by a `// TODO: Reaches into TC internals` comment) were DELETED
+from `tests/legacy/ring3_repl.rs` per the "16 stubs delete cleanly"
+disposition below — the actual count of zero-assertion stubs in the file
+was **9**, not the ~16 estimated when this FIXME was filed:
+
+- `r3_list_macros_category_via_symbol_table`
+- `r3_list_neg_macros_not_in_functions`
+- `r3_info_macro_clause_count`
+- `r3_info_macro_docstring`
+- `r3_sig_macro_params`
+- `r3_sig_macro_variadic`
+- `r3_macro_docstring_stored`
+- `r3_macro_no_docstring`
+- `r3_neg_non_macros_absent_from_macros`
+
+These had zero load-bearing assertions; their user-observable spec coverage
+is already in `tests/repl_introspection.rs` (see "Issue" below). **41 non-stub
+tests remain** in `tests/legacy/ring3_repl.rs` — these still reach `ReplSession`
+internals (`s.session.format_eval_result`, `s.eval`, macro-environment shape)
+and are the genuine harvest target for `/int` (with `/typecheck`). This FIXME
+stays OPEN for that residual harvest. The file is NOT deleted.
+
+---
+
 # Harvest tests/legacy/ring3_repl.rs into REPL session + typecheck unit tests
 
 ## Issue

@@ -171,11 +171,13 @@ The **one Principle-8 hazard** is 0109: a *partial* god-file decomposition (extr
 
 | Agent | Skill | Domain | Items | Status |
 |---|---|---|---|---|
-| A | stale-sweep | `design/arch/fixmes/` (read source) | Verify+delete stale CODE fixmes: 0008, 0009, 0025, 0032, 0044, 0098, 0100, 0103, 0104, 0108, 0176, 0233, 0271, 0287, 0319, 0321 (0229 is partial — trim, don't delete) | pending |
-| B | /spec | `spec/` | 0141 (§12.5 SHOULD→MUST), 0113 (strip ring annotations), 0278 (Self), 0307 (EOF record), confirm 0317/0318 annotations + delete those fixmes | pending |
-| C | /docs + /repl | `user/`, `repl/` | 0051 (canonical introspection), 0309 (docstring dash), 0274 (repl test-discovery), 0035, 0050 | pending |
-| D | /design + /arch (doc-accuracy) | `design/`, crate rustdoc, `facades/int.md` | 0014, 0106, 0212, 0214, 0252, 0253, 0266, 0297 (verify 0102) | pending |
-| E | /qa (zero-skips) — **after batch commit** | `tests/`, benches | TCO×5 un-ignore (post-0141), s68×2 flip, perf→release bench, 0326 prune, cheap harvest closures (0126/0139/0127c/0125-stubs) | pending |
+| A | stale-sweep | `design/arch/fixmes/` (read source) | 0008/0009/0025/0032/0044/0098/0100/0103/0104/0108/0176/0233/0271/0287/0319/0321/0323 | ✅ 17/17 verified+deleted |
+| B | /spec | `spec/` | 0141 (§12.5 SHOULD→MUST), 0113 (strip ring annotations), 0278 (`self`), 0307 (EOF record), 0317/0318 verified-landed+deleted | ✅ done (6) |
+| C | /docs + /repl | `user/`, `repl/` | 0309/0274/0035 fixed; 0051 deleted (user/ removed S76, moot); **0050 kept open** (target /int) | ✅ done (4 closed) |
+| D | /design + /arch (doc-accuracy) | `design/`, crate docs, `facades/int.md` | 0014/0102/0106/0212/0214/0252/0253/0297 closed; **0266 kept open** (1-line bootstrap.rs mount-move → /dev int wave) | ✅ done (8 closed) |
+| E | /qa (zero-skips) | `tests/`, `benches/` | TCO×5 un-ignore, s68×2 flip, perf→criterion bench, 0326 prune (full close), harvest closures (0126/0139 deleted; 0125/0127 partial) | ✅ **1231 passed / 0 failed / 1 skipped** (+7, −8 skips) |
+
+**Reduction captured (committed `5d5515e` + zero-skips): 38 FIXMEs closed** (35 batch-1 + 0126/0139/0326). Suite **1231/0/1** — the lone skip is the sanctioned 0289-i5 dispatch funnel (out of the reduction; attempted in the platform wave). Fixme store: ~73 → ~35 open. **Kept open with notes:** 0050 (→/int), 0266 (→/dev int), 0125/0127 (harvest partials, →/int).
 
 ### Per-component waves (W4–W12) — designed after the reduction is captured
 

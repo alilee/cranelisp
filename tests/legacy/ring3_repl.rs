@@ -94,67 +94,16 @@ fn r3_defmacro_display_three_clauses() {
 // §11.5 Scenario 4: /list after defmacro — Macros category appears (§11.2.1)
 // =============================================================================
 
-// spec: repl/spec.md §11.2.1 — macros registered as ModuleEntry::Macro in symbol table
-// TODO: Reaches into TC internals (s.core.tc.symbol_table()). Replace with:
-// - Round-trip via /list command asserting Macros category appears, or
-// - Unit tests in typecheck crate verifying ModuleEntry::Macro registration.
-#[test]
-fn r3_list_macros_category_via_symbol_table() {
-    let _s = repl_session();
-}
-
-// spec: repl/spec.md §11.2.1, §3.3 — macros appear in Macros, not in Functions
-// TODO: Reaches into TC internals. Replace with:
-// - /list output asserting 'double' in Macros category and 'inc' in Functions, or
-// - Unit tests in typecheck crate for ModuleEntry categorization.
-#[test]
-fn r3_list_neg_macros_not_in_functions() {
-    let _s = repl_session();
-}
 
 // =============================================================================
 // §11.5 Scenario 5: /info on multi-clause macro (§11.2.2)
 // =============================================================================
 
-// spec: repl/spec.md §11.2.2 — /info macro clause count in symbol table
-// TODO: Reaches into TC internals. Replace with:
-// - /info output asserting 3 clause signatures shown, or
-// - Unit tests in typecheck crate for clause registration.
-#[test]
-fn r3_info_macro_clause_count() {
-    let _s = repl_session();
-}
-
-// spec: repl/spec.md §11.2.2 — macro without docstring has None
-// TODO: Reaches into TC internals. Replace with:
-// - /doc output asserting no docstring shown, or
-// - Unit tests in typecheck crate for docstring storage.
-#[test]
-fn r3_info_macro_docstring() {
-    let _s = repl_session();
-}
 
 // =============================================================================
 // §11.5 Scenario 6: /sig on variadic macro (§11.2.3)
 // =============================================================================
 
-// spec: repl/spec.md §11.2.3 — macro clause params recorded in symbol table
-// TODO: Reaches into TC internals. Replace with:
-// - /sig output asserting param names [x y], or
-// - Unit tests in typecheck crate for clause param registration.
-#[test]
-fn r3_sig_macro_params() {
-    let _s = repl_session();
-}
-
-// spec: repl/spec.md §11.2.3 — variadic macro clause with & rest
-// TODO: Reaches into TC internals. Replace with:
-// - /sig output asserting rest param shown, or
-// - Unit tests in typecheck crate for rest param registration.
-#[test]
-fn r3_sig_macro_variadic() {
-    let _s = repl_session();
-}
 
 // =============================================================================
 // §11.5 Scenario 8: Bare macro name lookup (§11.4)
@@ -208,23 +157,6 @@ fn r3_special_form_defmacro() {
 // §9.2.4 Macro docstrings
 // =============================================================================
 
-// spec: 09-macros.md §9.2.4 — macro with docstring stores it
-// TODO: Reaches into TC internals. Replace with:
-// - /doc output asserting "Increment by one" shown, or
-// - Unit tests in typecheck crate for docstring storage.
-#[test]
-fn r3_macro_docstring_stored() {
-    let _s = repl_session();
-}
-
-// spec: 09-macros.md §9.2.4 — macro without docstring has None
-// TODO: Reaches into TC internals. Replace with:
-// - /doc output asserting no docstring, or
-// - Unit tests in typecheck crate for docstring storage.
-#[test]
-fn r3_macro_no_docstring() {
-    let _s = repl_session();
-}
 
 // =============================================================================
 // §9.3.4 Define-before-use
@@ -279,14 +211,6 @@ fn r3_auto_gensym_prevents_capture() {
 // Negative tests: Ring 3 REPL
 // =============================================================================
 
-// spec: repl/spec.md §11.2.1 — non-macros absent from Macros category
-// TODO: Reaches into TC internals. Replace with:
-// - /list output asserting 'foo' in Functions, 'Color' in Types, 'my-mac' in Macros, or
-// - Unit tests in typecheck crate for ModuleEntry categorization.
-#[test]
-fn r3_neg_non_macros_absent_from_macros() {
-    let _s = repl_session();
-}
 
 // /expand neg coverage moved to E2E tests: e2e_s11_1_neg_expand_non_macro_unchanged
 

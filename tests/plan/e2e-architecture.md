@@ -454,3 +454,73 @@ adjacent item is owned elsewhere and already planned.
 | Shared harness | `Cranelisp` builder already owns build+link+capture; setup script removes the per-binary `Once` band-aids; tests stay declarative. |
 | Coverage contract | §10.6.3 mode-output equivalence, §10.10 platform load + ABI/hash gate, §12.6 `--link` standalone; gaps = no clean-tree canary (add), residual D4 link-driver red (Wave-2E, `/dev`). |
 | Prototype made? | Yes — config + script committed, validated clean-tree 14/14 link + 7/7 examples/platform. |
+
+## 8. Test-output pruning discipline (FIXME 0326, S81)
+
+The "clean & green" standard requires the working tree to stay flat
+run-over-run: repeated `cargo nextest run` invocations MUST NOT accumulate
+artifacts on disk. FIXME 0326 (filed S81) flagged the risk. The audit and
+the chosen discipline:
+
+### 8.1 Where output lands — audit result
+
+The active e2e harness (`tests/helpers/e2e.rs`, the `Cranelisp` builder) is
+the only test-side mechanism that writes to disk, and it is **already
+RAII-clean by construction**:
+
+- **Per-test scratch is a `tempfile::TempDir`.** `Cranelisp::new()` allocates
+  a fresh `tempfile::tempdir()` (system `$TMPDIR`, not the source tree). The
+  handle is carried through `CrInvocationOwned` into the resulting
+  `CrOutput._td: Option<TempDir>`, and the `TempDir` `Drop` impl recursively
+  removes the directory when the test's `CrOutput` goes out of scope —
+  including on the failure/panic path (a panicking test still unwinds and
+  drops `CrOutput`).
+- **Everything the child writes lands inside that tmpdir.** The child's cwd
+  is the tmpdir (`cmd.current_dir(&self.cwd)`); the module cache
+  (`.cranelisp-cache/`) resolves relative to cwd; the `--link` produced
+  executable and its intermediate `.o` files are emitted at
+  `self.tmpdir.path().join(stem)`. All of it is reclaimed with the TempDir.
+- **Empirical confirmation.** A full `cargo nextest run` (1231 tests) with a
+  `/tmp/.tmp*` count snapshot before and after shows **0 → 0** leaked temp
+  dirs. No accumulation in the source tree, no accumulation in `$TMPDIR`.
+
+The historical accumulation vector — the persistent
+`tests/{suite}/.runs/{RUN_TS}/` trees (one timestamped subdir per run, never
+pruned) — belonged to the **quarantined legacy suites** (Sprint 23, v4_*,
+sprint59/60, examples_run, wave6). Those files are NOT compiled
+(`tests/legacy/`), and no active test or the harness references `.runs/` or
+`RUN_TS` any longer. The matching `.gitignore` entries are stale (they guard
+trees the active suite never creates) but harmless.
+
+The remaining on-disk footprint is the **five `--link` prereq artifacts** in
+`target/debug/` built by the nextest setup script (§2.2). These are
+**bounded, not accumulating**: the setup script rebuilds them in place (one
+`cargo build -p` snapshot), it does not append. They are reclaimed by the
+normal `cargo clean` / `rm -rf target` that already governs all build output.
+
+### 8.2 Discipline (the smallest mechanism that holds)
+
+Because the harness is already RAII-clean and the only persistent footprint
+is bounded `target/` build output, **no new pruning mechanism is required** —
+the discipline is to PRESERVE the existing one:
+
+1. **Per-test scratch MUST be a `tempfile::TempDir` carried in `CrOutput`.**
+   Never use the source-tree `.runs/{RUN_TS}/` pattern in a new active test —
+   that pattern accumulates and is reserved for the frozen legacy archive. A
+   test that needs a project on disk uses `Cranelisp::new()` +
+   `with_project(...)` / `file(...)`, which writes under the auto-cleaned
+   tmpdir.
+2. **No test may write outside its tmpdir.** Reaffirms `tests/CLAUDE.md
+   §"Fresh Temp Directory per Test"`. Writes to `project_root()`,
+   `exemplar/`, `examples/`, `stdlib/`, `tests/fixtures/`, or a bare relative
+   path leak past the RAII boundary and are forbidden.
+3. **Bounded `target/` build output is reclaimed by `cargo clean`,** not by a
+   per-run teardown. Adding a nextest teardown that `rm`s the five prereq
+   artifacts would only force a rebuild on the next run (slower, no cleaner),
+   so it is deliberately NOT done.
+4. **A new platform/link fixture extends the setup script** (§2.2), keeping
+   its artifact in the same bounded `target/debug/` set — it does not
+   introduce a new persistent scratch root.
+
+This keeps the tree flat run-over-run with zero new harness code: the
+`TempDir` drop is the pruning mechanism, and it already runs on every test.

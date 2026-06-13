@@ -14,11 +14,9 @@ into the owning crate's `#[cfg(test)]` unit tests.
 | `wave4_g9.rs` | 534 | 4 | /int | 0119 | 2026-05-03 |
 | `repl_experience.rs` | 3120 | 190 | /int (with /typecheck, /backend) | 0124 | 2026-05-03 |
 | `repl_negative_old.rs` | 917 | 31 | /int (with /typecheck) | 0124 | 2026-05-03 |
-| `ring3_repl.rs` | 825 | 50 | /int (with /typecheck) | 0125 | 2026-05-03 |
-| `v4_repl_eval.rs` | 567 | 14 | /int (optional — carry-forward complete) | 0126 | 2026-05-03 |
+| `ring3_repl.rs` | 763 | 41 | /int (with /typecheck) | 0125 | 2026-05-03 |
 | `io.rs` | 1360 | 76 | /int (with /typecheck, /backend, /runtime) | 0127 | 2026-05-03 |
 | `io_minimal.rs` | 120 | 5 | /int (Sprint 57 W6 reductions; with /backend) | 0127 | 2026-05-03 |
-| `sprint61_io_closure_regression.rs` | 215 | 2 | /backend (capture-return-inc; optional) | 0127 | 2026-05-03 |
 | `observability_io.rs` | 446 | 7 | /runtime (io_trace internals) | 0128 | 2026-05-03 |
 | `rc_alloc_trace.rs` | 1191 | 81 | /runtime (with /backend co-owner) | 0129 | 2026-05-04 |
 | `ring4_trace_taxonomy.rs` | 578 | 31 | /typecheck (with /runtime co-owner) | 0130 | 2026-05-04 |
@@ -34,7 +32,6 @@ into the owning crate's `#[cfg(test)]` unit tests.
 | `sketch_port.rs` | 1886 | 296 | /qa (test-shape harvest) | 0136 | 2026-05-04 |
 | `macros.rs` | 441 | 58 | /frontend (with /typecheck) | 0137 | 2026-05-04 |
 | `modules.rs` | 530 | 39 | /frontend (with /int) | 0138 | 2026-05-04 |
-| `sprint59_neg.rs` | 271 | 12 | /int (optional — carry-forward complete) | 0139 | 2026-05-04 |
 | `examples.rs` | 132 | 15 | /port | 0143 | 2026-05-05 |
 | `examples_run.rs` | 193 | 1 | /port | 0143 | 2026-05-05 |
 | `exemplar.rs` | 78 | 3 | /port | 0143 | 2026-05-05 |

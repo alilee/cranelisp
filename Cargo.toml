@@ -82,3 +82,11 @@ serial_test = "3"
 tempfile = "3"
 regex = "1"
 once_cell = "1"
+criterion = "0.5"
+
+# Release-mode REPL startup-latency benchmark (relocated S81 from
+# tests/build_confidence.rs — FIXME 0326). Not part of the nextest suite;
+# run via `cargo build --release && cargo bench --bench startup_latency`.
+[[bench]]
+name = "startup_latency"
+harness = false

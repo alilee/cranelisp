@@ -539,20 +539,17 @@ fn lenient_binding_panic_surfaces_with_no_lenient_control() {
 // =============================================================================
 // §12.5 Tail Call Optimization — Wave 5.6 dedupe-recovery carries
 //
-// The 5 TCO carries below are #[ignore]'d pending FIXME 0141 — `/spec`
-// upgrading §12.5 from `SHOULD` to `MUST` for self-recursive TCO. The
-// implementation already provides loop-based self-TCO (per
-// `memory/macros.md §"Tail Call Optimization (TCO)"`), so the assertions
-// pass against the current binary; the gate is normative, not behavioural.
-// Once §12.5's verb upgrades, /qa removes the `#[ignore]` attributes
-// (target Sprint 65). Citations resolve through the linter today — only
-// the normative authority is missing.
+// FIXME 0141 (§12.5 SHOULD→MUST for self-recursive TCO) ratified by /spec
+// and landed in the tree (Sprint 81). The implementation has shipped
+// structural loop-based self-TCO since S22 (per `memory/macros.md
+// §"Tail Call Optimization (TCO)"`), so these assertions pass against the
+// current binary, and §12.5 is now normatively MUST — so they are
+// un-ignored. Citations resolve through the linter.
 // =============================================================================
 
 // spec: spec/12-runtime.md §12.5 — self-recursive tail calls optimised; deep
 // countdown completes without stack overflow.
 // (carry: legacy/ring0.rs::tco_deep_countdown)
-#[ignore = "TCO MUST clause not yet in spec — FIXME 0141; target S65"]
 #[test]
 fn tco_deep_countdown() {
     // Without TCO, 1_000_000 frames overflow the default thread stack.
@@ -568,7 +565,6 @@ fn tco_deep_countdown() {
 
 // spec: spec/12-runtime.md §12.5 — TCO across an accumulator parameter.
 // (carry: legacy/ring0.rs::tco_accumulator)
-#[ignore = "TCO MUST clause not yet in spec — FIXME 0141; target S65"]
 #[test]
 fn tco_accumulator() {
     // sum of 1..100 = 5050; recursion depth 100 is well under any
@@ -587,7 +583,6 @@ fn tco_accumulator() {
 // spec: spec/12-runtime.md §12.5 — match arm is a tail-position context;
 // recursion through it does not grow the stack.
 // (carry: legacy/ring0.rs::tco_match_tail_position)
-#[ignore = "TCO MUST clause not yet in spec — FIXME 0141; target S65"]
 #[test]
 fn tco_match_tail_position() {
     // 100_000-iteration loop using match in tail position. Without TCO
@@ -605,7 +600,6 @@ fn tco_match_tail_position() {
 
 // spec: spec/12-runtime.md §12.5 — let body is a tail-position context.
 // (carry: legacy/ring0.rs::tco_let_body_tail_position)
-#[ignore = "TCO MUST clause not yet in spec — FIXME 0141; target S65"]
 #[test]
 fn tco_let_body_tail_position() {
     // 100_000-iteration loop where the recursive call sits inside a
@@ -624,7 +618,6 @@ fn tco_let_body_tail_position() {
 // spec: spec/12-runtime.md §12.5 — non-tail recursion is NOT optimised but
 // still produces the correct value at modest depth (negative-of-TCO).
 // (carry: legacy/ring0.rs::tco_non_tail_recursion_unchanged)
-#[ignore = "TCO MUST clause not yet in spec — FIXME 0141; target S65"]
 #[test]
 fn tco_non_tail_recursion_unchanged() {
     // sum of 0..10 via non-tail recursion (the recursive call is inside

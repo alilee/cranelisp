@@ -261,35 +261,19 @@ fn mode_equiv_if_else_branching() {
 // =============================================================================
 
 // spec: repl/spec.md §7.1 — REPL startup latency budget (≤ 500ms from
-// invocation to first prompt). The full subprocess run (including process
-// teardown on EOF) must complete within the budget on a developer machine.
-// (carry: legacy/e2e.rs::e2e_s7_1_startup_under_500ms)
+// invocation to first prompt).
 //
-// IGNORE: subprocess overhead under nextest (process spawn + dynamic linker
-// resolution + tempfile creation) inflates the wall-clock window beyond the
-// in-process spec budget. Observed ~640ms on a debug-mode binary on aarch64
-// macOS. The legacy e2e form passed only because cargo test reused process
-// state across tests; nextest's per-test process model adds overhead. The
-// spec property holds (the binary's first-prompt latency is fast — REPL
-// banner appears in <1ms in interactive use); the budget cannot be
-// reliably observed end-to-end through `cargo nextest run`. FIXME(/qa)
-// re-evaluate once a release-mode benchmark harness is available.
-#[ignore = "perf budget — subprocess overhead under nextest exceeds 500ms; \
-            spec property holds in interactive use; FIXME(/qa) for nightly \
-            release-mode benchmark"]
-#[test]
-fn perf_startup_latency_under_500ms() {
-    let out = Cranelisp::new()
-        .repl()
-        .stdin("")
-        .output()
-        .assert_ok();
-    assert!(
-        out.elapsed.as_millis() < 500,
-        "REPL startup took {}ms, spec §7.1 budget is < 500ms",
-        out.elapsed.as_millis()
-    );
-}
+// RELOCATED S81 (FIXME 0326) to `benches/startup_latency.rs` (criterion,
+// release-mode). The end-to-end subprocess wall-clock window under a
+// `cargo nextest run` DEBUG build (process spawn + dynamic-linker resolution
+// + tempfile creation + EOF teardown) inflates beyond the in-process spec
+// budget — observed ~640ms — so this was previously a permanent `#[ignore]`
+// that contributed measurement noise rather than a regression signal. The
+// spec property holds in interactive use; it is now observed where it is
+// meaningful: a release-mode criterion benchmark. Run with
+// `cargo build --release && cargo bench --bench startup_latency`. No nextest
+// happy-path test replaces it (a debug-build subprocess timing assertion is
+// inherently flaky).
 
 // spec: repl/spec.md §7.2 — Simple expression evaluation latency budget
 // (≤ 50ms from Enter to result). Subprocess overhead inflates the

@@ -306,15 +306,12 @@ fn s68_exe_bundle_publishes_cranelisp_init_primitives_hook() {
 // `cranelisp_primitives::*` paths are deleted.
 // =============================================================================
 
-// spec: design/arch/fixmes/0191-*.md — `intrinsic_symbols()` primitives entries
-//       retirement + backend dep-ban source cleanup; Decision 0048 §"Structural
-//       invariant — backend dep-ban" (S73 Phase 2: → bidirectional severance).
-//       This is the DEFERRED backend-side work: the `intrinsic_symbols()` shrink
-//       and the backend Cargo.toml dep-line removal are the future backend sprint
-//       (FIXME 0191) — backend is UNTOUCHED this sprint. The body's source-grep
-//       assertions are kept intact so they re-enable when the backend sprint
-//       lands the dep-ban cleanup.
-#[ignore = "backend sprint — Code::Primitive deletion deferred; FIXME 0221/0191"]
+// spec: design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md
+//       §"Structural invariant — backend dep-ban" (S73 Phase 2: → bidirectional
+//       severance). The `intrinsic_symbols()` shrink and the backend dep-ban
+//       source cleanup have landed: `jit.rs` / `primitives_inline.rs` no longer
+//       name `cranelisp_primitives`. Un-ignored S81 (the backend cleanup shipped;
+//       the assertion passes against the current source).
 #[test]
 fn s68_backend_intrinsic_symbols_drops_primitives_paths() {
     let jit = read_source("crates/cranelisp-backend/src/jit.rs");
@@ -340,35 +337,44 @@ fn s68_backend_intrinsic_symbols_drops_primitives_paths() {
 }
 
 // =============================================================================
-// #10 — `Code` enum carries the `Code::Primitive` marker variant.
+// #10 — `Code` enum MUST NOT carry a `Code::Primitive` marker variant.
 //
-// Failing-now. Wave 2 (backend additive prep, serial gate) lands the variant
-// before Wave 3 can construct entries with `code = Some(Code::Primitive)`.
+// The S68 `Code::Primitive` marker (A2) was REVERSED by FIXME 0244 (S73
+// Phase 2) and the variant DELETED from `code.rs` (S68/S76). `Code` now
+// carries only `Jit` and `Linker` lifecycle owners; primitive-ness reads
+// from `kind: DefKind::Primitive`. This is the absence guard.
 // =============================================================================
 
 // spec: design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md
 //       §"Shape" — A2 (`Code::Primitive` marker) REVERSED by FIXME 0244 (S73
-//       Phase 2). The S73 *target* is the variant DELETED from `code.rs`, but
-//       that deletion is the deferred backend sprint (FIXME 0221) — backend is
-//       UNTOUCHED this sprint (the variant still exists). This test's body
-//       asserts the variant's presence (the pre-deletion state); it is ignored
-//       until the backend sprint deletes the variant, at which point the body
-//       flips to asserting absence and is re-enabled.
-#[ignore = "backend sprint — Code::Primitive deletion deferred; FIXME 0221/0191"]
+//       Phase 2). The variant deletion has landed: `code.rs` carries only
+//       `Jit(Arc<Jit>)` and `Linker(Arc<Linker>)`. Flipped to assert ABSENCE +
+//       un-ignored S81 (the deletion shipped; the marker must never reappear).
 #[test]
-fn s68_code_enum_has_primitive_marker_variant() {
+fn s68_code_enum_has_no_primitive_marker_variant() {
     let src = read_source("crates/cranelisp-backend/src/code.rs");
 
-    // Failing-now: at authoring time the `Code` enum has only `Jit { … }`
-    // and `Linker { … }` variants. Wave 2 adds `Primitive` as a no-payload
-    // marker (full word per user direction; not abbreviated to `Prim`).
+    // The `Code` enum MUST carry only `Jit` and `Linker` variants — no
+    // `Primitive` marker. Strip `//`-comments first: the module rustdoc
+    // legitimately mentions `Code::Primitive` to document that the marker is
+    // retired, so the prose that explains the absence must not trip the check.
+    let declares_primitive_variant = src
+        .lines()
+        .map(|l| l.split("//").next().unwrap_or(l))
+        .any(|code| {
+            code.contains("Primitive,")
+                || code.contains("Primitive ,")
+                || code.trim() == "Primitive"
+                || code.contains("Primitive {")
+                || code.contains("Primitive(")
+        });
     assert!(
-        src.contains("Primitive,") || src.contains("Primitive ,") || src.contains("Primitive\n"),
-        "Code enum MUST carry a `Primitive` marker variant per Decision 0048 §Shape \
-         (S68 Phase 3 amendment, 2026-05-17 user revision). Variant carries no payload — \
-         it expresses the process-static lifecycle category only. \
-         crates/cranelisp-backend/src/code.rs must include `Primitive` alongside \
-         `Jit {{ ... }}` and `Linker {{ ... }}`."
+        !declares_primitive_variant,
+        "Code enum MUST NOT carry a `Primitive` marker variant per FIXME 0244 \
+         (S73 Phase 2 reversal of Decision 0048 A2). The variant is deleted; \
+         primitive-ness reads from `kind: DefKind::Primitive`, not a `Code` \
+         marker. crates/cranelisp-backend/src/code.rs must carry only \
+         `Jit(Arc<Jit>)` and `Linker(Arc<Linker>)`."
     );
 }
 
