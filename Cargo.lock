@@ -377,6 +377,7 @@ dependencies = [
  "cranelift-native",
  "cranelift-object",
  "cranelisp-intrinsics",
+ "cranelisp-platform",
  "cranelisp-types",
  "dashmap",
  "libc",

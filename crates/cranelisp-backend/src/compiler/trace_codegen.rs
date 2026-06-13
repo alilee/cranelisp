@@ -907,7 +907,10 @@ where
     /// Emit a read-only data symbol with the given bytes + alignment, returning
     /// its `DataId`. Used for compile-time-constant trace buffers (slot index
     /// array, function-name bytes) — mode-agnostic, no leak, no baked absolute.
-    fn emit_ro_data(
+    ///
+    /// `pub(crate)` so the platform-dispatch fn-name bake (`apply.rs::stamp_platform_fn_name`,
+    /// S81 / FIXME 0327) reuses the same data-symbol family per BC §3.
+    pub(crate) fn emit_ro_data(
         &mut self,
         bytes: &[u8],
         align: u64,

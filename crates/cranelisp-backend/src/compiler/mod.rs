@@ -214,6 +214,105 @@ where
     None
 }
 
+/// Resolve a callee name to `(defining_module, slot, defining_bare_name)` **iff**
+/// the resolved entry is a `DefKind::PlatformEffect` Def (the GOT-indirect
+/// platform-dispatch arm).
+///
+/// Mirrors `resolve_got_target`'s import-chain walk but returns `Some` only when
+/// the terminal Def carries `kind: DefKind::PlatformEffect { .. }` — used by the
+/// backend to discriminate the platform-fn dispatch arm (the only arm that bakes
+/// the fn-name and stamps it into the returned Effect node's field-3 post-call,
+/// S81 / FIXME 0327 the fault-guarded dispatch funnel, step 2/4; BC §3 "the
+/// platform-dispatch fn-name bake" + §5 invariant 9 Option A). The returned bare
+/// name is the **defining** entry's key (the canonical name at the end of the
+/// import chain), composed with the defining module into the FQ name the backend
+/// bakes. A non-PlatformEffect entry (user fn, primitive, trait method) returns
+/// `None` so its dispatch arm is left untouched — only platform effects stamp.
+pub(crate) fn resolve_platform_effect_target<C, L>(
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    module_aliases: &cranelisp_types::ModuleAliases,
+    current_module: &ModuleFullPath,
+    name: &Symbol,
+) -> Option<(ModuleFullPath, usize, Symbol)>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    const MAX_IMPORT_DEPTH: usize = 10;
+
+    fn resolve_in_module<C, L>(
+        tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+        module: &ModuleFullPath,
+        bare: &str,
+        depth: usize,
+    ) -> Option<(ModuleFullPath, usize, Symbol)>
+    where
+        C: cranelisp_types::CodeStore,
+        L: cranelisp_types::LinkerStore,
+    {
+        if depth > MAX_IMPORT_DEPTH {
+            return None;
+        }
+        let st = tables.get(module)?;
+        let entry = st.get(bare)?;
+        match entry {
+            ModuleEntry::Def { got_slot: Some(slot), kind, .. }
+                if matches!(kind.as_ref(), DefKind::PlatformEffect { .. }) =>
+            {
+                Some((module.clone(), *slot, Symbol::from(bare)))
+            }
+            ModuleEntry::Import { source, .. } => {
+                let source_module = source.module.clone();
+                let source_symbol = source.symbol.clone();
+                drop(st);
+                resolve_in_module(tables, &source_module, source_symbol.as_ref(), depth + 1)
+            }
+            _ => None,
+        }
+    }
+
+    // 1. Current module.
+    if let Some(result) = resolve_in_module(symbol_tables, current_module, name.as_ref(), 0) {
+        return Some(result);
+    }
+    // 2. Qualified "module/name" (alias substitution, then child/absolute).
+    if let Some(slash) = name.as_ref().find('/') {
+        let module_part = &name.as_ref()[..slash];
+        let bare_name = &name.as_ref()[slash + 1..];
+        if !module_part.is_empty() && !bare_name.is_empty() {
+            let alias_key =
+                ModuleFullPath::from(format!("{current_module}.{module_part}"));
+            if let Some(alias) = module_aliases.get(&alias_key) {
+                let target = alias.target.clone();
+                drop(alias);
+                if let Some(result) = resolve_in_module(symbol_tables, &target, bare_name, 0) {
+                    return Some(result);
+                }
+            }
+            let child_path =
+                ModuleFullPath::from(format!("{}.{}", current_module, module_part));
+            if let Some(result) = resolve_in_module(symbol_tables, &child_path, bare_name, 0) {
+                return Some(result);
+            }
+            let abs_path = ModuleFullPath::from(module_part);
+            if let Some(result) = resolve_in_module(symbol_tables, &abs_path, bare_name, 0) {
+                return Some(result);
+            }
+        }
+    }
+    // 3. Global fallback.
+    for entry in symbol_tables.iter() {
+        if entry.key() == current_module {
+            continue;
+        }
+        if let Some(result) = resolve_in_module(symbol_tables, entry.key(), name.as_ref(), 0) {
+            return Some(result);
+        }
+    }
+
+    None
+}
+
 /// Resolve a callee name to the ABI key of a `DefKind::PrimitiveExtern` entry,
 /// walking `symbol_tables` starting at `current_module` (following Import edges).
 ///
@@ -2023,6 +2122,75 @@ mod tests {
             resolve_got_target(&tables, &aliases, &user, &Symbol::from("print")),
             None,
             "as-built got_slot: None PlatformEffect stays on the direct-extern path",
+        );
+    }
+
+    // spec: design/arch/bounded-contexts.md §5 invariant 9 + §3 "the
+    //       platform-dispatch fn-name bake" (S81 / FIXME 0327, the dispatch
+    //       funnel step 2/4) — `resolve_platform_effect_target` is the
+    //       discriminator that decides whether the GOT-indirect arm stamps the
+    //       baked fn-name into the returned Effect node's field-3. It must
+    //       return `Some((defining_module, slot, defining_bare_name))` for a
+    //       new-shape `DefKind::PlatformEffect`, follow Import edges to the
+    //       DEFINING entry (so the baked FQ name is canonical, not the local
+    //       alias), and return `None` for every other kind — so ONLY the
+    //       PlatformEffect arm stamps and user fns / primitives / trait methods
+    //       are left untouched.
+    #[test]
+    fn resolve_platform_effect_target_discriminates_kind_and_follows_imports() {
+        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        let plat = ModuleFullPath::from("platform.shapes");
+        {
+            let mut st = SymbolTable::new(plat.clone());
+            // New-shape PlatformEffect — the only kind that stamps.
+            st.insert(Symbol::from("rectangle-area"), platform_effect_def_new_shape(2));
+            // A slotted USER fn at the same module — must NOT match.
+            st.insert(Symbol::from("helper"), def_with_slot(5));
+            tables.insert(plat.clone(), st);
+        }
+        // `user` imports `rectangle-area` under a local alias `area`.
+        let user = ModuleFullPath::from("user");
+        {
+            let mut st = SymbolTable::new(user.clone());
+            st.insert(
+                Symbol::from("area"),
+                ModuleEntry::Import {
+                    source: cranelisp_types::FQSymbol {
+                        module: plat.clone(),
+                        symbol: Symbol::from("rectangle-area"),
+                    },
+                    visibility: Visibility::Public,
+                },
+            );
+            tables.insert(user.clone(), st);
+        }
+        let aliases: ModuleAliases = DashMap::new();
+
+        // Direct reference in the defining module: Some(module, slot, bare).
+        assert_eq!(
+            resolve_platform_effect_target(
+                &tables, &aliases, &plat, &Symbol::from("rectangle-area")
+            ),
+            Some((plat.clone(), 2, Symbol::from("rectangle-area"))),
+            "new-shape PlatformEffect resolves to (defining module, slot, defining bare name)",
+        );
+        // Import-aliased reference resolves to the DEFINING entry — so the baked
+        // FQ name is `platform.shapes/rectangle-area`, never `user/area`.
+        assert_eq!(
+            resolve_platform_effect_target(&tables, &aliases, &user, &Symbol::from("area")),
+            Some((plat.clone(), 2, Symbol::from("rectangle-area"))),
+            "Import edge resolves to the defining module + canonical name, not the local alias",
+        );
+        // A slotted USER fn is NOT a PlatformEffect → None (its arm must not stamp).
+        assert_eq!(
+            resolve_platform_effect_target(&tables, &aliases, &plat, &Symbol::from("helper")),
+            None,
+            "a slotted UserFn must not be discriminated as a platform effect",
+        );
+        // Absent name → None.
+        assert_eq!(
+            resolve_platform_effect_target(&tables, &aliases, &user, &Symbol::from("nonesuch")),
+            None,
         );
     }
 

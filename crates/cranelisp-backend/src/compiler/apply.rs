@@ -7,13 +7,29 @@
 use cranelift::prelude::*;
 use cranelift_module::Module;
 
-use cranelisp_types::{ErrorLocation, CranelispError, Expr, ResolvedCall, Span, Symbol, Type};
+use cranelisp_types::{ErrorLocation, CranelispError, Expr, HeapHeader, ResolvedCall, Span, Symbol, Type};
 use crate::heap::HeapCategory;
 
 use crate::heap::{self, HeapAdt, HeapClosure};
 use crate::primitives_inline;
 
 use super::FnCompiler;
+
+/// Absolute byte offset of the `IO_TAG_EFFECT` node's fn-name handle field
+/// (field-3) from the node **base** pointer.
+///
+/// The Effect node base layout is `[HeapHeader | tag | thunk_ptr | resource_token
+/// | fn_name_handle]`. The platform constants `IO_EFFECT_RESOURCE_OFFSET` /
+/// [`cranelisp_platform::IO_EFFECT_FN_NAME_OFFSET`] are **payload** offsets
+/// (relative to the start of the payload, which sits one `HeapHeader` past the
+/// base — see `CLIO::effect_on_resource`, `crates/cranelisp-platform/src/lib.rs`).
+/// The trampoline reads fields at `base + HeapHeader::SIZE + payload_offset`
+/// (`crates/cranelisp-intrinsics/src/io.rs` `FIELD_*_OFFSET`). So the absolute
+/// offset is composed from the named constants — never hard-coded to 40 — so a
+/// header-size or payload-layout change propagates here automatically (S81 /
+/// FIXME 0327 the dispatch funnel, step 2/4; BC §5 invariant 9).
+const EFFECT_FN_NAME_ABS_OFFSET: i64 =
+    HeapHeader::SIZE as i64 + cranelisp_platform::IO_EFFECT_FN_NAME_OFFSET;
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where
@@ -273,7 +289,33 @@ where
                     )
                     .is_some()
                     {
-                        return self.compile_direct_call(&sym, &arg_vals, span);
+                        let node_val = self.compile_direct_call(&sym, &arg_vals, span)?;
+                        // Step 2/4 of the fault-guarded dispatch funnel (S81 /
+                        // FIXME 0327; BC §3 + §5 invariant 9 Option A). When this
+                        // GOT-indirect arm dispatched a `DefKind::PlatformEffect`,
+                        // the call returned an `IO_TAG_EFFECT` node whose field-3
+                        // the DLL initialised to null. Bake the statically-known
+                        // FQ fn-name and stamp the baked pointer into field-3 so
+                        // the intrinsics fault guard (step 3) can surface
+                        // `DispatchError { fn_name }`. ONLY the PlatformEffect arm
+                        // stamps — `resolve_platform_effect_target` returns `Some`
+                        // exactly when the resolved entry is a PlatformEffect
+                        // (user fns / primitives / trait methods reach
+                        // `compile_direct_call` elsewhere and are left untouched,
+                        // so their result is not an Effect node and must not be
+                        // written to).
+                        if let Some((module, _slot, bare)) =
+                            crate::compiler::resolve_platform_effect_target(
+                                self.ctx.symbol_tables,
+                                self.ctx.module_aliases,
+                                &self.ctx.current_module,
+                                &sym,
+                            )
+                        {
+                            let fq_name = format!("{module}/{bare}");
+                            self.stamp_platform_fn_name(node_val, &fq_name, span)?;
+                        }
+                        return Ok(node_val);
                     }
                     // As-built fallback: direct `Linkage::Import` against the
                     // mangled jit_name (the platform fn ptr reaches the JIT via
@@ -540,6 +582,60 @@ where
             let call = self.builder.ins().call(local_func, arg_vals);
             Ok(self.builder.inst_results(call)[0])
         }
+    }
+
+    /// Bake the platform fn's fully-qualified name as a relocated, position-
+    /// independent read-only data symbol and emit IR that stamps its address
+    /// into the returned `IO_TAG_EFFECT` node's fn-name field (field-3), AFTER
+    /// the platform-fn GOT-indirect call has returned the node pointer.
+    ///
+    /// This is step 2/4 of the fault-guarded dispatch funnel (S81 / FIXME 0327;
+    /// BC §3 "the platform-dispatch fn-name bake" + §5 invariant 9 Option A).
+    /// The DLL's `CLIO::effect*` constructor allocates the node and inits
+    /// field-3 to null (it cannot know the cranelisp-level fn-name); the backend
+    /// stamps the statically-known name here. The intrinsics IO trampoline reads
+    /// field-3 in the fault guard (step 3) to surface
+    /// `PlatformError::DispatchError { fn_name }`; a node the backend did NOT
+    /// stamp keeps field-3 null and degrades to `"<unknown>"`, never a crash.
+    ///
+    /// The baked datum is a **NUL-terminated** UTF-8 byte sequence — the same
+    /// self-describing C-string convention the layout-hash gate bakes
+    /// (`exe.rs::define_cstr_data`) — so the trampoline reads it without a
+    /// separate length channel. It is emitted via the **same data-symbol family
+    /// as the trace `DisplayDescriptor` baker** (`emit_ro_data` →
+    /// `declare_anonymous_data` + `define_data`), so it survives `.o` caching:
+    /// the address is materialised by a `global_value` relocation (object mode)
+    /// / JIT-patched runtime address (JIT mode), never a baked compiling-process
+    /// pointer (mirrors `trace_codegen` FIXME 0275).
+    ///
+    /// `node_val` is the Effect node base pointer returned by the platform call.
+    /// `fq_name` is the platform fn's fully-qualified `module/symbol` name.
+    fn stamp_platform_fn_name(
+        &mut self,
+        node_val: Value,
+        fq_name: &str,
+        span: Span,
+    ) -> Result<(), CranelispError> {
+        // Bake the FQ name as NUL-terminated read-only data (mode-agnostic,
+        // cache-safe — same family as the trace name baker, trace_codegen.rs).
+        let bytes = platform_fn_name_bytes(fq_name);
+        let name_data_id = self.emit_ro_data(&bytes, 1, "platform fn-name", span)?;
+
+        // Materialise the baked name's address (one relocation in object mode;
+        // JIT patches the runtime address).
+        let name_gv = self.module.declare_data_in_func(name_data_id, self.builder.func);
+        let name_ptr = self.builder.ins().global_value(types::I64, name_gv);
+
+        // Stamp it into field-3 at the absolute offset composed from the named
+        // ABI constants (HeapHeader::SIZE + IO_EFFECT_FN_NAME_OFFSET), never a
+        // hard-coded 40.
+        self.builder.ins().store(
+            MemFlags::trusted(),
+            name_ptr,
+            node_val,
+            EFFECT_FN_NAME_ABS_OFFSET as i32,
+        );
+        Ok(())
     }
 
     /// Emit a GOT-indirect call using a data symbol reference.
@@ -949,6 +1045,16 @@ fn is_vec_primitive(name: &str) -> bool {
     matches!(name, "vec-get" | "vec-set" | "vec-push" | "vec-len")
 }
 
+/// The byte payload baked for a platform fn-name handle (S81 / FIXME 0327, the
+/// dispatch funnel step 2/4): the FQ name as UTF-8 with a trailing NUL — the
+/// self-describing C-string convention the trampoline fault guard reads (step 3)
+/// without a separate length channel, mirroring `exe.rs::define_cstr_data`.
+fn platform_fn_name_bytes(fq_name: &str) -> Vec<u8> {
+    let mut bytes = fq_name.as_bytes().to_vec();
+    bytes.push(0); // NUL terminator — C-string read by the trampoline guard.
+    bytes
+}
+
 /// Map a bare Trace ADT field-accessor name to its `cranelisp_trace_*` intrinsic
 /// ABI name. Returns `None` for any other name.
 ///
@@ -1036,5 +1142,52 @@ mod trace_accessor_tests {
         assert!(!is_trace_typed(Some(&other)));
         assert!(!is_trace_typed(Some(&Type::Int)));
         assert!(!is_trace_typed(None));
+    }
+}
+
+#[cfg(test)]
+mod platform_fn_name_stamp_tests {
+    use super::{platform_fn_name_bytes, EFFECT_FN_NAME_ABS_OFFSET};
+    use cranelisp_types::HeapHeader;
+
+    // spec: design/arch/bounded-contexts.md §5 invariant 9 (S81 / FIXME 0327,
+    //       the fault-guarded dispatch funnel step 2/4) — the absolute byte
+    //       offset of the Effect node's fn-name field (field-3) MUST be composed
+    //       from the named ABI constants (HeapHeader::SIZE + the platform
+    //       payload offset), NEVER hard-coded. The Effect node base layout is
+    //       [HeapHeader(16) | tag | thunk_ptr | resource_token | fn_name_handle],
+    //       so field-3 sits at base+40. This pins the composition: if the header
+    //       size or the platform payload offset changes, this assertion catches
+    //       a stale hard-coded value.
+    #[test]
+    fn effect_fn_name_offset_is_composed_from_named_constants() {
+        // Composed value equals header + payload offset.
+        assert_eq!(
+            EFFECT_FN_NAME_ABS_OFFSET,
+            HeapHeader::SIZE as i64 + cranelisp_platform::IO_EFFECT_FN_NAME_OFFSET,
+        );
+        // And it lands one i64 past the resource token (base+40 today).
+        assert_eq!(
+            EFFECT_FN_NAME_ABS_OFFSET,
+            HeapHeader::SIZE as i64 + cranelisp_platform::IO_EFFECT_RESOURCE_OFFSET + 8,
+        );
+    }
+
+    // spec: design/arch/bounded-contexts.md §5 invariant 9 — the baked fn-name
+    //       handle is a NUL-terminated UTF-8 byte sequence (the C-string the
+    //       trampoline fault guard reads in step 3, degrading a null handle to
+    //       "<unknown>"). This is the same self-describing convention the
+    //       layout-hash gate bakes (exe.rs::define_cstr_data).
+    #[test]
+    fn baked_fn_name_is_nul_terminated_utf8() {
+        let bytes = platform_fn_name_bytes("platform.shapes/rectangle-area");
+        assert_eq!(*bytes.last().unwrap(), 0u8, "must be NUL-terminated");
+        assert_eq!(
+            &bytes[..bytes.len() - 1],
+            b"platform.shapes/rectangle-area",
+            "the name bytes precede the NUL terminator verbatim",
+        );
+        // An empty name still produces a valid (just-NUL) C string.
+        assert_eq!(platform_fn_name_bytes(""), vec![0u8]);
     }
 }

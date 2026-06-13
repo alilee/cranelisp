@@ -10,6 +10,12 @@ cranelisp-types = { path = "../cranelisp-types" }
 # primitive fn ptrs exclusively through the cross-module SymbolTable + GOT
 # mechanism in cranelisp-types. Compliance: tests/no_primitives_dep.rs.
 cranelisp-intrinsics = { path = "../cranelisp-intrinsics" }
+# IO_TAG_EFFECT node layout constants (IO_EFFECT_FN_NAME_OFFSET) — the ABI
+# source of truth for the Effect-node field offsets the platform-dispatch
+# fn-name stamp writes to (S81 / FIXME 0327, the fault-guarded dispatch funnel).
+# Already transitive via cranelisp-intrinsics; named directly so the absolute
+# field-3 offset is composed from the named constant, never hard-coded.
+cranelisp-platform = { path = "../cranelisp-platform" }
 cranelift = "0.116"
 cranelift-module = "0.116"
 cranelift-jit = "0.116"
