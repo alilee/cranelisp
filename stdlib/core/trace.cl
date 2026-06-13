@@ -34,10 +34,10 @@
   [ps]
   (match ps
     [(SCons head tail)
-      (match tail
-        [(SCons _ _) (str-concat head (str-concat " " (format-params tail)))]
-        [SNil head])]
-    [SNil ""]))
+       (match tail
+         [(SCons _ _) (str-concat head (str-concat " " (format-params tail)))
+          SNil         head])
+     SNil ""]))
 
 (defn trace-show
   "Format a single Trace node as \"(name p1 ...) => result [Xms]\"."
@@ -65,8 +65,8 @@
   [ch indent]
   (match ch
     [(SCons head tail)
-      (str-concat (trace-show-node head indent) (trace-show-children tail indent))]
-    [SNil ""]))
+       (str-concat (trace-show-node head indent) (trace-show-children tail indent))
+     SNil ""]))
 
 (defn trace-show-tree
   "Format a trace tree as a multi-line string.

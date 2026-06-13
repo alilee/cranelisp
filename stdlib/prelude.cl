@@ -38,6 +38,19 @@
 (export [control      [when unless cond case]])
 (export [defs         [const const- def def-]])
 
+;; ── Primitive TYPE re-exports ────────────────────────────────────────
+;;
+;; The four intrinsic scalar types are re-exported so that bare type refs
+;; (`:Int`/`:Float`/`:Bool`/`:String` in `:Type` annotations, `deftype`
+;; fields, and `deftrait` signatures) resolve without per-file imports.
+;; spec 03-types.md §3.1: a bare type reference MUST be re-exported by the
+;; prelude or explicitly imported; FQ `:primitives/Int` is always available.
+;; Mirrors examples/lib/prelude.cl:44. Without this, a stdlib-prelude program
+;; using `(deftype P [:Int x])` or a bare `:Int 42` annotation errored with
+;; `unknown type 'Int' (from module '')`.
+
+(export [primitives [Int Bool Float String]])
+
 ;; ── Primitive re-exports ─────────────────────────────────────────────
 ;;
 ;; Ring 0/1 named primitives are re-exported through the prelude so that

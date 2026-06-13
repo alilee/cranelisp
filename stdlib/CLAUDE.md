@@ -2,13 +2,22 @@
 
 Standard library for Cranelisp. Owned by `/stdlib` skill.
 
-## Current State (Sprint 17 Wave 2)
+## Current State (Sprint 81 Wave I-5)
 
-The prelude is now a **pure re-export shell** — zero inline definitions. All macros
-have been moved to their plan-designated domain modules. The `do` macro uses IO
-semantics (bind-based) per spec §10.4. Module discovery extended to process
-`(export ...)` forms so the prelude can reference root-level domain modules
-without import statements.
+The prelude is a **pure re-export shell** — zero inline definitions. All macros
+live in their plan-designated domain modules. The `do` macro uses IO semantics
+(bind-based) per spec §10.4. Module discovery processes `(export ...)` forms so
+the prelude can reference root-level domain modules without import statements.
+
+Sprint 81 W-I-5 delivered: (1) the in-language test runner in
+`testing/runner.cl` (FIXME 0273) — an ordinary `vec-map`/`vec-filter` runner
+over the fn-value pairs `discover-tests` returns, retiring the dead
+`run-tests-*` special-form fold helpers; (2) primitive TYPE re-exports
+(`Int`/`Bool`/`Float`/`String`) added to `prelude.cl` (Finding B) so bare
+`:Int`-style annotations resolve under the stdlib prelude; (3) a clean
+stdlib-side fix to `core/trace.cl`'s separate-bracket `match` arms (FIXME 0339
+— the parser was correct; the as-written separate-bracket arm form is not spec
+grammar). See the per-feature sections below.
 
 ### Module Tree (implemented)
 
@@ -40,10 +49,11 @@ stdlib/
   collections/vec.cl      ; vec macro + Vec utility functions
   testing.cl              ; shell: (mod assertions) (mod runner)
   testing/assertions.cl   ; assert-eq, assert-true, assert-false
-  testing/runner.cl       ; check macro, run-tests-pass-default, run-tests-fail-default, run-tests-report
-  core.cl                 ; shell for core.syntax + core.io (+ re-exports)
+  testing/runner.cl       ; in-language test runner over discover-tests pairs + check macro
+  core.cl                 ; shell for core.syntax + core.io + core.trace (+ re-exports)
   core/syntax.cl          ; SList helpers (standalone, not prelude dep)
   core/io.cl              ; IO combinators: pure, >>, map-io, when-io, unless-io, sequence-io
+  core/trace.cl           ; Trace ADT re-export + trace-show/trace-show-tree display fns
   io.cl                   ; shell: (mod monad)
   io/monad.cl             ; pure, do (IO bind-based), bind! macros
   derive.cl               ; derive macro: derive-Eq, derive-Ord, derive-Display
@@ -60,7 +70,24 @@ stdlib/
 - Default trait with primitive impls
 - Pair and Either types with operations
 - Testing assertions (assert-eq, assert-true, assert-false)
-- Testing runner (check macro, run-tests-pass-default, run-tests-fail-default, run-tests-report)
+- In-language test runner (`testing/runner.cl`, FIXME 0273): an ordinary
+  `vec-map`/`vec-filter` runner over the `(Vec (Pair String (Fn [] (Option
+  String))))` pairs that `discover-tests` returns — NO macro runner. `run-one`
+  folds each test three-way via `catch-runtime-error`: `(Err msg)`=PANIC,
+  `(Ok None)`=pass, `(Ok (Some why))`=assertion FAIL → an `Outcome`
+  (Passed/Failed/Panicked). `run-all` = `vec-map run-one` over `(discover-tests
+  [])`; `run-matching substr` filters on the pair name first (fresh every call —
+  the callables are late-bound through the live GOT). `report`/`tally`/
+  `tally-line`/`passed?` present + aggregate. `discover-here` is a sugar macro
+  normalising the no-arg (current module) and module-name shapes to the canonical
+  `(primitives/discover-tests [<Vec String>])` extern. The retired `run-tests`
+  special-form fold helpers (`run-tests-pass-default`/`-fail-default`/`-report`)
+  are gone — `compile_run_tests` was deleted.
+  - **Runtime scope:** `discover-tests` is a host-promised extern resolved only
+    in a LIVE REPL session, so `run-all`/`run-matching` run in the REPL but NOT
+    when `testing.runner` is compiled as a `--run`/cache dependency object
+    (test-discovery.md §4.5 dev-session framing). The pure helpers (`run-one`,
+    `present-one`, `tally`, `report`, `passed?`) work in every mode.
 - Threading macros (`->`, `->>`) in `fn/threading.cl`
 - String operations + `str` macro in `text/string.cl`
 - Int operations (rem, abs, sign, negate, even?, odd?, min-int, max-int, clamp)
@@ -94,12 +121,35 @@ stdlib/
 - `num.float`: abs-float, sign-float, negate-float, min-float, max-float, clamp-float
 - `text.string`: blank?, repeat-str, index-of, reverse-str, pad-left, pad-right
 - `testing.assertions`: assert-eq, assert-true, assert-false
-- `testing.runner`: check, run-tests-pass-default, run-tests-fail-default, run-tests-report
+- `testing.runner`: run-one, run-all, run-matching, report, tally, tally-line,
+  passed?, present-one, the Outcome/Tally ADTs, discover-here, check
 - `derive`: derive, derive-Eq, derive-Ord, derive-Display
 - `core.io`: >>, map-io, when-io, unless-io, sequence-io
+- `core.trace`: Trace, TraceCall, name/params/result/children/nanos accessors,
+  trace-show, trace-show-tree (the `(trace …)` form itself is a ROOT SPECIAL FORM —
+  no import needed; only the Trace ADT + accessors + display fns are re-exported)
+- `primitives` (test discovery): discover-tests, catch-runtime-error, Pair,
+  Result/Ok/Err — see the packaging decision below
 
-### Prelude re-exports
+### `discover-tests` / `catch-runtime-error` / Pair / Result prelude-packaging decision (0273 §3)
 
+These are NOT re-exported through the stdlib prelude. The prelude stays a thin,
+predictable convenience surface (traits, operators, the common types, named
+arithmetic primitives); the test-discovery surface is a focused, import-on-demand
+capability used by `testing.runner` and by anyone composing their own runner.
+Users reach them with `(import [primitives [discover-tests catch-runtime-error
+Pair Ok Err]])` or FQ `primitives/…`, exactly as the design states ("whether the
+prelude re-exports these names is a stdlib packaging choice"). `Pair`/`Result` are
+seeded in `primitives` and RE-EXPORTED (not redefined) by
+`collections/pair.cl` / `fn/result.cl`, keeping ONE canonical type each.
+
+Primitive TYPES: Int, Bool, Float, String (Finding B / Wave I-4 — re-exported so
+bare `:Int`/`:Float`/`:Bool`/`:String` in `:Type` annotations, `deftype` fields,
+and `deftrait` sigs resolve without per-file imports; spec 03-types.md §3.1
+requires the prelude to re-export bare type refs or they must be explicitly
+imported. FQ `:primitives/Int` is always available. Mirrors examples/lib/prelude.cl.
+Without this, a stdlib-prelude program using `(deftype P [:Int x])` or a bare
+`:Int 42` annotation errored `unknown type 'Int' (from module '')`.)
 Traits: Eq, Ord, Num, Display (with =, !=, <, >, <=, >=, +, -, *, /, show)
 Types: Option (None, Some), Result (Ok, Err), List (Nil, Cons, empty?)
 Functions: pure, str-eq
