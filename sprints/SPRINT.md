@@ -191,9 +191,12 @@ Collected from the 9-agent design fan-out (2026-06-13). **Headline: the design p
 - **qa-harvest (W11):** 0147→`#[cfg(test)]` unit (e2e preserved); **0119 → carry with 0109 Wave D** (its `worker.rs` home moves under decomposition) or land now if worker.rs survives A/B/C — */sprint call*; 0131→unit; 0125/0127 remainder→unit; 0136 audit-and-delete (capture any uncovered assertion + the 11 known-fails as sub-FIXMEs before `git rm`).
 - **Phase 6 (W12):** /port (exemplar full-grid solve replay green — project-scale gate), /stdlib (audit vs post-S78/S79 model + 0273), /examples (`every_example_runs_with_documented_exit` green + 0143). Defects → failing-not-ignored tests + FIXMEs.
 
-### /arch rulings owed before their waves implement
-- **0327** — dispatch-funnel boundary (gates W8 0289-i5).
-- **0220** — cache-hit Introspection rehydration: where/whether (gates the int 0220 item; `target: /arch`).
+### /arch rulings — RESOLVED (2026-06-13)
+- **0327** — dispatch-funnel boundary: **implementation-ready.** Guard at the intrinsics IO-trampoline `call_effect_thunk`; **Option A node-widen (IO_TAG_EFFECT 24→32 bytes, ABI 3→4)** with the **DLL reserving field-3 (null) and the backend stamping the baked fn-name AFTER the GOT-indirect call returns** (the §9a "stamp at node construction" was corrected — the node is built inside the DLL, unreachable by backend). int composes `DispatchError{fn_name}`. **Corrected a wrong prior Phase-2 BC §5 inv-9 claim** ("ride the scheduling_class channel" — `scheduling_class` is consumed at the call site in `bind_chain_analysis` and never reaches the trampoline). Recorded in BC §5 inv 9 / §4b inv 14 / §3. Stays open until the funnel lands.
+- **0220** — cache-hit Introspection rehydration: **ruled lazy on-demand re-read** (option a), grounded in D1/D1b REPL-only. NOT a no-op — residual real gap (`save::generate_fns_and_macros` drops a cache-restored regular fn with no introspection record). Int shape: one private `SharedState::rehydrate_introspection(fq)`, no new cross-crate type. Recorded in BC §6; left open for the int wave.
+
+### Pacing checkpoint (user: "pace it") — 2026-06-13
+**Stale-sweep batch 3 + arch rulings landed before the substantive impl waves.** 14 more FIXMEs closed (0172/0187/0232/0238/0039/0040/0041/0235/0010/0241/0281/0011/0229/0258 — re-confirmed stale; trace tests re-verified 14/14). **Fixme store: 64 → 50 open** (cumulative S81: **52 closed**, 101→50). Suite green. **0101 left open** (mis-scoped — /sprint-owned runtime/platform audit scheduling, folds into this arc's platform + a future runtime pass; not int impl). Next: the per-component D/D/R impl waves (Phase-5 Stage-1 /qa failing tests first), paced — awaiting user go.
 
 ## Waves (Phase 4)
 

@@ -78,3 +78,13 @@ SharedState reduction is gated on the 0176/0179 cluster-mode redesign (a large
 same-crate pipeline effort), and (b) the W-Retire doc-reorg is best done as one
 deliberate pass, not at sprint close. The reframing above means neither blocks
 the *boundary* from being considered settled.
+
+## Absorbed: FIXME 0281 (int-facade dead-API trim) — S81
+
+The S81 stale-FIXME sweep (batch 3) confirmed FIXME 0281 stale and folded it
+into this FIXME. 0281 asked to trim the dead `priority_boost_jit` /
+`wait_for_inmem` priority-codegen pseudocode from the int facade. That subsystem
+was never needed and is already deleted from source (B5 disposition — see
+`src/CLAUDE.md` and `src/scheduler.rs`); only retrospective comments remain. The
+dead-API references therefore do not carry into the retired int facade, so the
+0281 trim is subsumed by the W-Retire doc-reorg tracked here. 0281 deleted in S81.

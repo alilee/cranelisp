@@ -320,6 +320,8 @@ The backend does not directly interact with `SchedulingClass`. The independence 
 
 The resource tokens, however, are a runtime concern: they are embedded in Effect nodes by platform DLL code and read by the trampoline's `dispatch_par_branches`. The backend emits the Par node structure; the trampoline reads tokens from the branches.
 
+**Scheduling class in trampoline trace events (resolution of FIXME 0011).** The `PlatformEffect` trace event emitted at the trampoline site (`cranelisp-intrinsics/src/io.rs`) carries `scheduling_class: 0` — a placeholder rather than the effect's real `PlatformFn.scheduling_class`. FIXME 0011 asked whether the Effect node payload should be extended with an extra field so trampoline events carry the real class inline. The disposition, confirmed against Slice-4 evidence, is **resolution (b): no IR-payload extension**. No Slice-4 consumer requires the class to be present on the trampoline event itself; where the scheduling class is needed for trace interpretation it is recovered by **cross-trace correlation** — joining the trampoline event to the originating `ParBind` classification trace by event ordering — rather than by threading the class through the Effect node. The live site therefore keeps `scheduling_class: 0` deliberately.
+
 ### 6.4 Dependencies
 
 The Par handler requires:

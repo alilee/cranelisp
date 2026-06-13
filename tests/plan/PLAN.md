@@ -1359,16 +1359,16 @@ rewritten to match-based extraction, the stale `trace_nested_still_returns_trace
 | # | Test | Spec | Status | Resolves at |
 |---|---|---|---|---|
 | T1 | `trace.rs::trace_nested_dynamic_raises_runtime_error` | §4.12.5 | `[Tested tests/trace.rs::trace_nested_dynamic_raises_runtime_error]` | GREEN — Wave-1.5 guard handles the dynamic case |
-| T2 | `trace.rs::trace_nested_lexical_raises_runtime_error` | §4.12.5 | `[S77]` FAILING | FIXME(/dev intrinsics) — guard misses pure-lexical `(trace (trace e))` (no wrapper fires before inner swap_got ⇒ flag still false ⇒ empty trace, not error) |
+| T2 | `trace.rs::trace_nested_lexical_raises_runtime_error` | §4.12.5 | `[Tested tests/trace.rs::trace_nested_lexical_raises_runtime_error]` | GREEN (S81) — lexical-guard defect resolved (FIXME 0258); pure-lexical `(trace (trace e))` now raises a runtime error |
 | T3 | `trace.rs::trace_panic_unwind_does_not_stick_guard` | §4.12.5 (NOTE-2) | `[Tested tests/trace.rs::trace_panic_unwind_does_not_stick_guard]` | GREEN — NOTE-2 worry does NOT reproduce in REPL (per-form panic recovery resets the flag); positive guard |
 | T4 | `trace.rs::trace_linked_binary_match_consumption_runs` | §4.12.9 | `[Tested tests/trace.rs::trace_linked_binary_match_consumption_runs]` | GREEN — **FLIPPED (FIXME 0286)**: now asserts WITH extern-primitive children (0280 primitives-GOT static-backing landed; primitives group swapped in object mode). Traced `work` calls `str-concat`+`str-len`; the `user/work` node has 2 extern-primitive children; linked binary exits 42. (Was: WITHOUT children, 0280 interim disposition.) |
 | T5 | `trace.rs::trace_extern_primitive_appears_as_child` | §4.12.3 | `[Tested tests/trace.rs::trace_extern_primitive_appears_as_child]` | GREEN — swap-all surfaces `primitives/str-concat` (REPL) |
 | T6 | `trace.rs::trace_stdlib_fixture_fn_appears_as_child` | §4.12.3 | `[Tested tests/trace.rs::trace_stdlib_fixture_fn_appears_as_child]` | GREEN — prelude `helper` appears as a tree node |
 | T7 | `trace.rs::trace_neg_inline_arithmetic_not_traced` (neg) | §4.12.3 | `[Tested+Neg]` | GREEN — inline `add-i64` produces no node |
 | T8 | `trace.rs::trace_neg_anonymous_lambda_not_traced` (neg) | §4.12.3 | `[Tested+Neg]` | GREEN — anonymous `fn` lambda produces no named node |
-| T9 | `trace.rs::trace_polymorphic_adt_result_renders` (NOTE-1) | §4.12.3 | `[S77]` FAILING | FIXME(/dev backend) — tracing a fn returning `(Option Int)` overflows the ADT DisplayDescriptor formatter (production bake_adt round-trip is a CRASH, not just unverified) |
-| T10 | `trace.rs::trace_adt_value_render_overflows_defect` | §4.12.3 | `[S77]` FAILING | FIXME(/dev backend) — nullary-ADT (`None`) render overflow; the 1-ctor reduction of T9 |
-| T11 | `trace.rs::trace_trait_heavy_prelude_overflows_defect` | §4.12.3 | `[S77]` FAILING | FIXME(/dev backend) — trace swap-all over a trait-heavy prelude (TestStandard) stack-overflows on a `nice-worker` thread; Num+Eq+Ord alone does not, full prelude does (open bisection) |
+| T9 | `trace.rs::trace_polymorphic_adt_result_renders` (NOTE-1) | §4.12.3 | `[Tested tests/trace.rs::trace_polymorphic_adt_result_renders]` | GREEN (S81) — ADT-render-overflow defect resolved (FIXME 0258); tracing a fn returning `(Option Int)` renders cleanly (production bake_adt round-trip no longer overflows) |
+| T10 | `trace.rs::trace_adt_value_render_overflows_defect` | §4.12.3 | `[Tested tests/trace.rs::trace_adt_value_render_overflows_defect]` | GREEN (S81) — ADT-render-overflow defect resolved (FIXME 0258); nullary-ADT (`None`) render no longer overflows (the 1-ctor reduction of T9) |
+| T11 | `trace.rs::trace_trait_heavy_prelude_overflows_defect` | §4.12.3 | `[Tested tests/trace.rs::trace_trait_heavy_prelude_overflows_defect]` | GREEN (S81) — trait-prelude-overflow defect resolved (FIXME 0258); trace swap-all over a trait-heavy prelude (TestStandard) no longer stack-overflows on a `nice-worker` thread |
 
 **FIXME 0276 — link-mode synthetic accessor (`tests/trace.rs`).**
 

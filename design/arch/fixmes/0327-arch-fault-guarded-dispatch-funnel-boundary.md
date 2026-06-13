@@ -5,10 +5,71 @@ filed_by: /design (platform)
 filed_at: 2026-06-13
 sprint_filed: 81
 refers_to: design/platform/platform.md §9a, crates/cranelisp-intrinsics/src/io.rs:192, crates/cranelisp-platform/src/lib.rs:679 §707, crates/cranelisp-types/src/error.rs:261, src/expander.rs:494, design/arch/fixmes/0289-qa-platform-interface-e2e-walks.md (item 5), design/arch/bounded-contexts.md §4b §5 §6
-status: open
+status: open    # RULED by /arch S81 (implementation-ready); closes when the funnel lands
+ruled_at: 2026-06-13
+implementing_skills: /platform (node-widen + ABI 3→4 + fixture), /backend (bake + post-call stamp), /dev int (trampoline guard in intrinsics + DispatchError compose), /qa (un-ignore 0289-item-5)
+recorded_in: design/arch/bounded-contexts.md §5 invariant 9 (canonical) + §4b invariant 14 (intrinsics half) + §3 (backend bake bullet); design/platform/platform.md §9a (platform /design home)
 ---
 
 # Ratify the fault-guarded FFI-dispatch funnel boundary — guard placement + fn-name plumbing + DispatchError construction path
+
+## /arch ruling (S81, 2026-06-13) — IMPLEMENTATION-READY (FIXME stays OPEN, closes when the funnel lands)
+
+The /design (platform) recommendation is **RATIFIED with one factual correction**. The
+canonical ruling is **BC §5 invariant 9** (rewritten this pass — the prior Phase-2
+"zero public-surface delta, ride the `scheduling_class` channel" reading was WRONG and is
+superseded; see below); BC §4b invariant 14 records the intrinsics half; BC §3 records the
+backend bake. Coordinates:
+
+1. **Guard placement — CONFIRMED.** The fault guard wraps the `call_effect_thunk`
+   invocation in the **intrinsics IO trampoline** (`io.rs:192`), not `call_effect_thunk`
+   and not each platform fn. `call_effect_thunk` stays a thin reclaim primitive in
+   `cranelisp-platform`. Grounds: Principle 7 (single force site), Principle 6 (one guard).
+
+2. **fn-name plumbing — Option A CONFIRMED; ABI 3→4 ACCEPTED.** The `IO_TAG_EFFECT` node
+   widens to a **fourth `i64` field** (24→32 bytes) carrying a baked fn-name handle.
+   **Factual correction to the /design proposal:** the proposal said the name is "stamped at
+   the dispatch arm into the Effect node it builds." But the Effect node is built **inside
+   the DLL** (`CLIO::effect_on_resource`, `lib.rs:679-697`), which the backend cannot reach.
+   The corrected shape: (a) the DLL's `CLIO::effect*` **reserves** the field (allocates 32
+   bytes, inits field-3 to null); (b) the backend bakes the statically-known fn-name at the
+   GOT-indirect `DefKind::PlatformEffect` arm (same data-symbol family as the trace
+   `DisplayDescriptor` baker) and emits IR that **stamps the baked pointer into the returned
+   node's field-3 AFTER the platform-fn call returns**. A node the backend did not stamp (or
+   an out-of-tree DLL building nodes itself) degrades to a null name → `fn_name: "<unknown>"`,
+   not a crash. **Option B (thread-local at the dispatch arm) is REJECTED** — stale under
+   Bind/Par deferred force (the as-built `io.rs:189` `scheduling_class: 0` placeholder is the
+   exact same gap). **Why the prior "zero-delta / scheduling_class channel" reading was
+   wrong:** `scheduling_class` is read at the *call site* in int (`bind_chain_analysis.rs`)
+   BEFORE the IO tree is built — it never reaches the trampoline (hence the `0` placeholder).
+   There is no call-site→trampoline channel; the name must travel WITH the node. ABI bump
+   `ABI_VERSION` 3→4 (cheap pre-1.0) is the cost, ACCEPTED.
+
+3. **Two-layer construction — CONFIRMED.** Intrinsics guard captures the fault
+   (signal/panic/slot via `take_runtime_error()`) + the field-3 fn-name and returns an
+   intrinsics-internal fault outcome (NOT a `PlatformError` — intrinsics is diagnostics-free
+   by charter). **int composes `PlatformError::DispatchError { fn_name, cause, location }`** at
+   its runtime-error surface (mirrors `invoke_jit_protected`: intrinsics sets the slot, int
+   reads + composes), surfacing via `CranelispError::Platform`.
+
+4. **Public-surface deltas.** `cranelisp-platform`: node-widen + `CLIO::effect*` + `ABI_VERSION`
+   3→4 (baseline regen). `cranelisp-intrinsics`: possibly a fault-outcome carrier (internal by
+   default; baseline-visible only if it must cross to int as a named type). `cranelisp-types`:
+   **UNCHANGED** (`DispatchError` already exists) — CONFIRMED. `cranelisp-backend`: codegen-
+   internal bake, no public-surface delta expected.
+
+5. **Cross-component sequence:** (1) /platform node-widen + ABI 3→4 + fixture (regen platform
+   baseline) → (2) /backend bake + post-call stamp → (3) /dev int trampoline guard (in
+   intrinsics) + compose `DispatchError` → (4) /qa un-ignore 0289-item-5. **Regen-coordination
+   flag:** sequence the backend dispatch-arm change with the **0325 backend baseline regen** so
+   the backend `public-api.txt` is regenerated ONCE, not in two uncoordinated commits.
+
+The funnel is implementation-ready for the S81 platform/backend/int/qa waves. This FIXME stays
+OPEN and closes when the funnel lands (the e2e in FIXME 0289 item 5 goes green).
+
+---
+
+## Original /design (platform) recommendation (preserved below)
 
 ## Issue
 

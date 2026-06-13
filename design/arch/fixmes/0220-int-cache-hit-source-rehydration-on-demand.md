@@ -5,10 +5,57 @@ filed_by: /arch
 filed_at: 2026-05-25
 sprint_filed: 70
 refers_to: src/session_v4.rs §Introspection, src/save.rs, design/arch/decisions/0041-compile-to-module-per-symbol-jit-direct-writes.md, design/arch/bounded-contexts.md §int, repl/spec.md §15.4
-status: open
+status: open    # RULED by /arch S81 — design settled; left open for the /dev int wave (the lazy re-read + non-macro .cl regen fix)
+ruled_at: 2026-06-13
+resolves_to: /dev int    # design arbitrated by /arch; residual implementation is int's
+recorded_in: design/arch/bounded-contexts.md §6 In-scope (cache-hit introspection rehydration bullet)
 ---
 
 # Cache-hit source rehydration on demand (REPL-edit + `.cl` regen for cache-loaded modules)
+
+## /arch ruling (S81, 2026-06-13) — design SETTLED; open for the /dev int wave
+
+RULED: **lazy on-demand re-read** — option (a) of the "WHEN to trigger" question below.
+NOT eager-at-restore (b), NOT the rejected serialize-into-cache non-fix. Grounded in
+D1/D1b (`design/arch/d1-introspection-repl-only.md`; `memory/introspection-repl-only-principle.md`):
+introspection is REPL-only and does not exist outside REPL; **any data the compile pipeline
+reads must live on the symbol table, not introspection.** Canonical home for this disposition:
+**BC §6 In-scope** ("Cache-hit introspection rehydration" bullet). Summary:
+
+1. **No rehydration owed for compile-necessary data — it is already on the symbol table.**
+   The load-bearing concern this FIXME raised (on-demand macro-clause recompile + `.cl` regen
+   silently dropping cache-loaded macros) is **already resolved by D1**: macro source rides
+   `DefKind::Macro.macro_sexp` (serialized, cache-survives) — `worker::resolve_macro_sexp_from`
+   reads it; `save::generate_fns_and_macros` uses it as the macro fallback. Every other Def
+   kind carries its compile input as `ast: Option<DefnVariant>`. So the "empty regeneration"
+   failure no longer applies to macros, and no compiler read depends on introspection on
+   cache-hit.
+
+2. **REPL-display data rehydrates LAZILY on first `/source`/`/sexp`/`/expand`/`/clif`/`/disasm`
+   (or `.cl` regen) request** for a cache-loaded symbol with an absent record — by re-reading +
+   re-parsing the backing `.cl` (the cache key, always present), and regenerating CLIF/disasm
+   from the resident GOT-slot code via the existing `produce_disasm` path. Lazy + content-fresh;
+   the read-only REPL session pays nothing.
+
+3. **Residual concrete gap (the real implementation work): non-macro `.cl` regeneration.**
+   `save::generate_fns_and_macros` sources a `UserFn`'s text from `introspection_sexp` only
+   (its `.or(macro_table_sexp)` covers macros, never UserFns) — so a cache-restored regular
+   function with no introspection record is dropped from the regenerated `.cl`. Fix: the same
+   lazy re-read (re-parse the backing file for the symbol's region) OR reconstruction from the
+   entry's `ast`. REPL-only; touches neither the cache nor D1.
+
+4. **Int-side shape:** one int-crate private path (`SharedState::rehydrate_introspection(fq)`):
+   FQSymbol → backing-file path (the watcher/loader already maps this) → re-parse → populate
+   the REPL `Introspection` entry → return it. No new cross-crate type or trait. `frontend`
+   owns the parse; file-IO + populate is int's.
+
+**Disposition: NOT a no-op** (item 3 is a live gap). Left **OPEN** for the /dev int wave; the
+design questions below are answered (lazy per-symbol, re-read the backing file; the
+`source_range`-in-cache micro-optimisation is OPTIONAL, defer unless profiling motivates it).
+
+---
+
+## Original filing (preserved below)
 
 ## Issue
 

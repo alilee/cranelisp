@@ -76,19 +76,8 @@ fn trace_nested_dynamic_raises_runtime_error() {
 // spec: spec/04-expressions.md §4.12.5 — lexical `(trace (trace expr))` MUST
 // raise a runtime error. The spec is explicit: the inner `(trace ...)` raises
 // "rather than producing a nested or merged trace tree", whether lexical OR
-// dynamic.
-//
-// CURRENT BEHAVIOUR (FAILING): the pure-lexical `(trace (trace e))` does NOT
-// raise — the inner trace's swap_got runs before any wrapper fires (no
-// instrumented call precedes it), so TRACE_BODY_RUNNING is still false and the
-// guard treats it as a legitimate multi-module swap. The inner trace then
-// finds the role already owned and returns an EMPTY trace. The lexical
-// re-entrancy escapes the runtime guard.
-//
-// FIXME(/dev intrinsics) — the nested-trace guard (crates/cranelisp-intrinsics/
-// src/trace.rs) must also catch the lexical case where no wrapper has yet
-// fired inside the enclosing trace. Repro is minimal (2 forms); see FIXME 0258
-// item 1 + the gate finding.
+// dynamic. The nested-trace guard now catches the pure-lexical case (resolved
+// S81; the prior lexical re-entrancy escape was fixed).
 #[test]
 fn trace_nested_lexical_raises_runtime_error() {
     repl_prims(
@@ -282,21 +271,8 @@ fn trace_neg_anonymous_lambda_not_traced() {
 // This closes the production-baker round-trip gap (the descriptor round-trip
 // unit tests hand-mirror bake_adt; this is the only e2e exercise of the real
 // bake_descriptor/bake_adt ctor-table assembly + concrete-type substitution).
-//
-// CURRENT BEHAVIOUR (FAILING): tracing ANY fn that returns a user ADT value
-// (even a nullary `None`, here `(Some 7)`) STACK-OVERFLOWS the descriptor
-// formatter (`cranelisp_trace_format` over the backend-baked DisplayDescriptor
-// for the ADT). The process aborts with "has overflowed its stack" before the
-// REPL can print the result.
-//
-// FIXME(/dev backend) — the production `bake_adt` / `bake_descriptor`
-// ctor-table assembly for ADT-typed params/results bakes a self-referential or
-// otherwise unbounded DisplayDescriptor (the round-trip gap NOTE-1 flagged is a
-// CRASH, not merely an unverified path). Triage: backend descriptor baking
-// (FIXME 0254/0255 lineage), possibly the intrinsics formatter walk
-// (cranelisp-intrinsics/src/trace.rs cranelisp_trace_format). Repro is minimal
-// (3 forms, nullary ADT). See `trace_neg_adt_value_render_overflows_DEFECT`
-// for the even-smaller nullary-only witness.
+// The prior ADT-render stack-overflow in the descriptor formatter was resolved
+// S81 (FIXME 0258); tracing a fn returning a user ADT value now renders cleanly.
 #[test]
 fn trace_polymorphic_adt_result_renders() {
     let out = repl_prims(
@@ -326,11 +302,9 @@ fn trace_polymorphic_adt_result_renders() {
 
 // spec: spec/04-expressions.md §4.12.3 — (same anchor) the minimal witness for
 // the ADT-render overflow: tracing a fn that returns a NULLARY constructor
-// (None) also overflows the descriptor formatter. A fn returning a String does
-// NOT overflow — the defect is specific to ADT-typed values. Lands FAILING.
-//
-// FIXME(/dev backend) — same resolver as `trace_polymorphic_adt_result_renders`
-// (ADT DisplayDescriptor baking). This is the 1-constructor reduction.
+// (None). This is the 1-constructor reduction of
+// `trace_polymorphic_adt_result_renders`. Resolved S81 (FIXME 0258); the nullary
+// value now renders without overflowing the descriptor formatter.
 #[test]
 fn trace_adt_value_render_overflows_defect() {
     repl_prims(
@@ -347,20 +321,13 @@ fn trace_adt_value_render_overflows_defect() {
 
 // spec: spec/04-expressions.md §4.12.3 — (same anchor) trait-heavy prelude
 // overflow witness. With the trait-bearing `TestStandard` prelude loaded,
-// `(trace (f 5))` — even for an `f` that uses only inline `add-i64` —
-// STACK-OVERFLOWS on a worker thread. A single trait+impl, or Num+Eq+Ord
-// without Display, does NOT overflow; the full prelude (4 traits, ~14 impls)
-// does. The overflow fires on a `nice-worker` rayon thread, implicating the
-// interaction of trace swap-all discovery with lenient-eval sparks over a
-// large multi-module symbol set. Lands FAILING.
-//
-// FIXME(/dev backend) — trace swap-all discovery / DisplayDescriptor baking
-// does not scale to a realistic trait-heavy prelude (unbounded recursion or
-// per-module re-entry). Triage: same descriptor/discovery lineage as the ADT
-// overflow; the worker-thread signature suggests the swap interacts with the
-// lenient spark path. Reduction plateaued at "full TestStandard overflows,
-// Num+Eq+Ord does not" — the remaining bisection (which exact module count /
-// Display-block interaction) is the open unknown handed to /dev.
+// `(trace (f 5))` — even for an `f` that uses only inline `add-i64` — formerly
+// stack-overflowed on a worker thread with the full trait-bearing prelude
+// loaded (4 traits, ~14 impls); a single trait+impl or Num+Eq+Ord without
+// Display did not. The overflow fired on a `nice-worker` rayon thread, in the
+// interaction of trace swap-all discovery with lenient-eval sparks over a large
+// multi-module symbol set. Resolved S81 (FIXME 0258); trace swap-all over the
+// trait-heavy prelude now scales without overflowing.
 #[test]
 fn trace_trait_heavy_prelude_overflows_defect() {
     Cranelisp::new()
