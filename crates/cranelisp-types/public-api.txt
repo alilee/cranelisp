@@ -1037,8 +1037,6 @@ impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::ModuleName
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::ModuleName
 pub struct cranelisp_types::MonoDefn
 pub cranelisp_types::MonoDefn::defn: cranelisp_types::Defn
-pub cranelisp_types::MonoDefn::expr_types: std::collections::hash::map::HashMap<cranelisp_types::Span, cranelisp_types::Type>
-pub cranelisp_types::MonoDefn::resolutions: cranelisp_types::MethodResolutions
 impl core::marker::Freeze for cranelisp_types::MonoDefn
 impl core::marker::Send for cranelisp_types::MonoDefn
 impl core::marker::Sync for cranelisp_types::MonoDefn

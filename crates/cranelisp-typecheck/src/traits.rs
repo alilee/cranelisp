@@ -1347,21 +1347,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         );
         crate::program::apply_subst_to_defn(&state.subst, &mut mono_defn_ast);
 
-        // Phase B Part 3: Stop populating the per-mono side maps. The
-        // `mono_defn_ast` was just annotated by `annotate_defn_from_maps` +
-        // `apply_subst_to_defn` above — every typed expression carries its
-        // `inferred_type` and every `Expr::Apply` carries `resolved_call`
-        // directly on the AST. Backend's `is_empty()` fallthrough at
-        // `cranelisp-backend/src/lib.rs:1267` uses `&check.expr_types`
-        // / `&check.method_resolutions` when these per-mono maps are empty,
-        // and the AST annotation pass on `Defn.body` is what those overlays
-        // cached anyway. Step A of the FIXME 0033 migration; Step B (delete
-        // the struct fields) is backend-triad scope.
-        let _ = (&resolutions, &mono_expr_types); // produced for inner-call resolution but not propagated
+        // FIXME 0033 (S81 W-G): `MonoDefn` no longer carries per-mono side
+        // maps. The `mono_defn_ast` was just annotated by
+        // `annotate_defn_from_maps` + `apply_subst_to_defn` above — every typed
+        // expression carries its `inferred_type` and every `Expr::Apply` /
+        // `Expr::Var` carries `resolved_call` directly on the AST, which is the
+        // single source of truth for the resolved-stage data. `resolutions` +
+        // `mono_expr_types` are still produced here (they drive inner-call
+        // resolution + the call-site dispatch recorded by callers) but no
+        // longer propagated onto `MonoDefn` — annotations live on the AST.
+        let _ = (&resolutions, &mono_expr_types); // produced for inner-call resolution; not propagated onto MonoDefn
         let mono_defn = MonoDefn {
             defn: mono_defn_ast,
-            resolutions: cranelisp_types::MethodResolutions::default(),
-            expr_types: std::collections::HashMap::new(),
         };
 
         // Wave 0 (§9.4): register the mono specialisation as a symbol-table

@@ -132,14 +132,27 @@ pub enum ResolvedCall {
     },
 }
 
-/// A monomorphised function definition with its specific method resolutions.
+/// A monomorphised function definition — a thin wrapper over a fully-annotated
+/// `Defn`.
+///
+/// **No side maps (S81 W-G, FIXME 0033).** This type previously carried
+/// `resolutions: MethodResolutions` and `expr_types: HashMap<Span, Type>` —
+/// Span-keyed side maps materialised by `recheck_body_for_mono`. After the
+/// Phase-1 AST-annotation migration those maps are redundant:
+/// `monomorphise_call` (in `cranelisp-typecheck::traits`) annotates `defn`
+/// in place via `annotate_defn_from_maps` + `apply_subst_to_defn`, so every
+/// typed expression carries its `inferred_type` and every `Expr::Apply` /
+/// `Expr::Var` carries its `resolved_call` directly on the AST. No consumer
+/// read the side maps for information not already on the annotated `defn`:
+/// backend codegen reads `mono.defn` (overlaying only the *global*
+/// `CheckResult` side maps for legacy scaffolding), and `register_mono_entry`
+/// reads `mono.defn` to build the symbol-table entry. The side maps were
+/// produced (set to `default()`/empty at construction) but never read —
+/// dropping them makes `MonoDefn` a single-field wrapper. Single source of
+/// truth (Principle 7): annotations live on the AST, not on a parallel side map.
 #[derive(Debug, Clone)]
 pub struct MonoDefn {
     pub defn: Defn,
-    pub resolutions: MethodResolutions,
-    /// Per-mono expression types (subset of the full program's expr_types).
-    /// Avoids O(n*m) cloning of the full expr_types map for each mono defn.
-    pub expr_types: HashMap<Span, Type>,
 }
 
 /// Display information for REPL output (inferred type and optional scheme).

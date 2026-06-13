@@ -700,16 +700,23 @@ No changes from v1.
 ### Monomorphised Definitions
 
 ```rust
-/// A monomorphised function definition with its specific resolutions.
-#[derive(Debug)]
+/// A monomorphised function definition — a thin wrapper over a fully-annotated `Defn`.
+#[derive(Debug, Clone)]
 pub struct MonoDefn {
     pub defn: Defn,
-    pub resolutions: MethodResolutions,
-    pub expr_types: HashMap<Span, Type>,
 }
 ```
 
-No changes from v1.
+**S81 W-G (FIXME 0033): side maps dropped.** `MonoDefn` previously carried
+`resolutions: MethodResolutions` and `expr_types: HashMap<Span, Type>` — Span-keyed
+side maps. After the Phase-1 AST-annotation migration these are redundant:
+`monomorphise_call` (in `cranelisp-typecheck::traits`) annotates `defn` in place
+(`annotate_defn_from_maps` + `apply_subst_to_defn`), so every typed expression carries
+its `inferred_type` and every call site its `resolved_call` directly on the AST. No
+consumer read the side maps for information not already on the annotated `defn`
+(backend reads `mono.defn`; `register_mono_entry` reads `mono.defn`); the maps were
+produced-but-never-read. Dropping them makes `MonoDefn` a single-field wrapper —
+single source of truth (Principle 7): resolved-stage data lives on the AST.
 
 ---
 

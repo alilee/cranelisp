@@ -1043,3 +1043,80 @@
             );
         }
     }
+
+    // spec: design/typecheck/ast-annotation.md §9.4 — resolved-stage annotations
+    // live on the `MonoDefn.defn` AST, not on a side map (FIXME 0033).
+    //
+    // Pins the invariant that makes the S81 W-G `MonoDefn` side-map drop safe:
+    // `monomorphise_call` returns a `MonoDefn` whose `defn` AST already carries
+    // every `inferred_type` (concrete) and every call-site `resolved_call`. The
+    // dropped `MonoDefn.resolutions` / `MonoDefn.expr_types` Span-keyed maps held
+    // exactly this data; with them gone, the single source of truth is the AST.
+    // This test reads the returned `MonoDefn` directly (not the registered
+    // symbol-table entry) so it asserts the contract on `MonoDefn` itself.
+    #[test]
+    fn fixme0033_monodefn_annotations_live_on_defn_ast_not_side_maps() {
+        use cranelisp_types::Expr;
+        let mut tc = tc_with_prims();
+        register_num_for_int(&mut tc);
+
+        // Template: (defn add [x y] (+ x y)) — constrained on Num via the `+`.
+        let add_defn = cranelisp_types::TopLevel::Defn(Defn {
+            name: Symbol::from("add"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::var(Symbol::from("+"), Span::new(18, 19))),
+                    args: vec![
+                        Expr::var(Symbol::from("x"), Span::new(20, 21)),
+                        Expr::var(Symbol::from("y"), Span::new(22, 23)),
+                    ],
+                    span: Span::new(17, 24),
+                    resolved_call: None,
+                    inferred_type: None,
+                },
+                span: Span::new(0, 25),
+            }],
+            visibility: Visibility::Public,
+            span: Span::new(0, 25),
+        });
+        tc.check_repl_input_self(&add_defn).unwrap();
+
+        // Drive `monomorphise_call` directly for `(add 1 2)` and capture the
+        // returned `MonoDefn`. Construct the env borrowing individual fields so
+        // `&mut tc.state` stays available (the test_support borrow-split idiom).
+        let mono = {
+            let env = TypeCheckEnv::new(
+                &tc.modules,
+                &tc.next_id,
+                &tc.module_aliases,
+                &tc.prelude_fallback,
+            );
+            env.monomorphise_call(
+                &mut tc.state,
+                &Symbol::from("add"),
+                &[Type::Int, Type::Int],
+                Span::new(199, 208),
+            )
+            .unwrap()
+            .expect("(add 1 2) must monomorphise")
+        };
+
+        // The mono body is the single variant's body. Every inferred_type on it
+        // is concrete — that is the data the dropped `expr_types` side map held.
+        let body = &mono.defn.variants.first().expect("mono has a variant").body;
+        assert_types_concrete(body);
+
+        // The `+` call site carries a concrete `resolved_call` directly on the
+        // AST node — the data the dropped `resolutions` side map held.
+        if let Expr::Apply { resolved_call, .. } = body {
+            assert!(
+                resolved_call.is_some(),
+                "mono body's + call site must carry resolved_call on the AST node \
+                 (the dropped MethodResolutions side map is no longer the carrier)"
+            );
+        } else {
+            panic!("mono body should be Apply, got {:?}", body);
+        }
+    }
