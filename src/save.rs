@@ -48,7 +48,7 @@ use crate::session_v4::Introspection;
 /// belt-and-braces guard.
 pub fn generate_module_source(
     symbol_table: &crate::code::SessionSymbolTable,
-    introspection: &DashMap<FQSymbol, Introspection>,
+    introspection: Option<&DashMap<FQSymbol, Introspection>>,
     module_path: &ModuleFullPath,
 ) -> String {
     let mut sections = Vec::new();
@@ -229,7 +229,7 @@ fn generate_exports(specs: &[ExportSpec]) -> String {
 /// FIXME 0220 (lazy re-read on demand); the symmetric None-skip is the
 /// correct behaviour at this site.
 fn introspection_sexp(
-    introspection: &DashMap<FQSymbol, Introspection>,
+    introspection: Option<&DashMap<FQSymbol, Introspection>>,
     module_path: &ModuleFullPath,
     name: &cranelisp_types::Symbol,
 ) -> Option<Sexp> {
@@ -238,13 +238,13 @@ fn introspection_sexp(
         symbol: name.clone(),
     };
     introspection
-        .get(&fq)
+        .and_then(|m| m.get(&fq))
         .and_then(|intro| intro.sexp.clone())
 }
 
 fn generate_traits(
     st: &crate::code::SessionSymbolTable,
-    introspection: &DashMap<FQSymbol, Introspection>,
+    introspection: Option<&DashMap<FQSymbol, Introspection>>,
     module_path: &ModuleFullPath,
 ) -> String {
     let mut items: Vec<(String, String)> = Vec::new();
@@ -265,7 +265,7 @@ fn generate_traits(
 
 fn generate_types(
     st: &crate::code::SessionSymbolTable,
-    introspection: &DashMap<FQSymbol, Introspection>,
+    introspection: Option<&DashMap<FQSymbol, Introspection>>,
     module_path: &ModuleFullPath,
 ) -> String {
     let mut items: Vec<(String, String)> = Vec::new();
@@ -298,7 +298,7 @@ fn generate_impls(st: &crate::code::SessionSymbolTable) -> String {
 
 fn generate_fns_and_macros(
     st: &crate::code::SessionSymbolTable,
-    introspection: &DashMap<FQSymbol, Introspection>,
+    introspection: Option<&DashMap<FQSymbol, Introspection>>,
     module_path: &ModuleFullPath,
 ) -> String {
     // Partition into macros and non-macro fns. Macros MUST be emitted BEFORE
@@ -326,15 +326,27 @@ fn generate_fns_and_macros(
         // regeneration; skip primitives, constructors, platform effects,
         // overloaded base entries, etc. Per FIXME 0219 — macros surface
         // through the same `ModuleEntry::Def` arm symmetric with UserFn.
-        let is_macro = match entry {
+        // For macros, capture the symbol-table `macro_sexp` (D1 ruling §6) as a
+        // fallback source: a cache-restored-then-REPL-edited `defmacro` has no
+        // introspection record (introspection is REPL-only and absent on cache
+        // restore), but `macro_sexp` round-trips the cache — without this
+        // fallback `regenerate_backing_file` would silently DROP the macro from
+        // the regenerated `.cl`, breaking a cached REPL restart that uses it.
+        let (is_macro, macro_table_sexp) = match entry {
             ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-                cranelisp_types::DefKind::Macro { .. } => true,
-                cranelisp_types::DefKind::UserFn { .. } => false,
+                cranelisp_types::DefKind::Macro { macro_sexp, .. } => {
+                    (true, Some(macro_sexp.clone()))
+                }
+                cranelisp_types::DefKind::UserFn { .. } => (false, None),
                 _ => continue,
             },
             _ => continue,
         };
-        if let Some(sexp) = introspection_sexp(introspection, module_path, name) {
+        // Prefer the introspection record (carries the verbatim REPL input text
+        // when present); fall back to the symbol-table `macro_sexp` for macros.
+        let sexp = introspection_sexp(introspection, module_path, name)
+            .or(macro_table_sexp);
+        if let Some(sexp) = sexp {
             if is_macro {
                 macro_items.push((name.to_string(), sexp));
             } else {

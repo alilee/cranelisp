@@ -1,0 +1,15 @@
+[package]
+name = "cranelisp-shapes-badabi"
+version = "0.1.0"
+edition = "2024"
+
+# Distinct crate name → distinct output artifact (`libcranelisp_shapes_badabi`),
+# so the exported `cranelisp_platform_manifest` symbol does NOT collide with the
+# real `shapes` platform's (`libcranelisp_shapes`). Platform name = "shapes-badabi"
+# so the host's discovery (`resolve_platform_path` → `libcranelisp_{name}.{ext}`,
+# `-`→`_`) finds this artifact for `(platform shapes-badabi)`.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+cranelisp-platform = { path = "../../crates/cranelisp-platform" }

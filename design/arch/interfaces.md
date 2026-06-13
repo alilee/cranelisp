@@ -565,6 +565,14 @@ pub enum CompileMode {
 }
 ```
 
+> **`CompileMode` is NOT the run-mode signal (D1, S80).** `CompileMode` is the
+> *codegen-strategy* axis (GOT-indirect vs direct vs whole-program). The
+> REPL-vs-`--run`-vs-`--link` *session* axis — which gates REPL-only introspection
+> population and the platform layout-hash refuse-vs-warn behavior — is the separate
+> **`RunMode`** enum (`Repl`/`Run`/`Link`), an **int-internal** type on
+> `SharedState` set from `main.rs`'s `Action`. The two are orthogonal and MUST NOT
+> be conflated. See `design/arch/d1-introspection-repl-only.md` and `bounded-contexts.md` §6.
+
 ### ModuleStrategy (NEW)
 
 ```rust

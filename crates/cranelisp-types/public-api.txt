@@ -54,6 +54,7 @@ pub cranelisp_types::DefKind::Constructor::type_def: core::option::Option<alloc:
 pub cranelisp_types::DefKind::Constructor::type_name: cranelisp_types::FQTypeName
 pub cranelisp_types::DefKind::Macro
 pub cranelisp_types::DefKind::Macro::clauses_meta: alloc::vec::Vec<cranelisp_types::MacroClauseInfo>
+pub cranelisp_types::DefKind::Macro::macro_sexp: cranelisp_types::Sexp
 pub cranelisp_types::DefKind::Overloaded
 pub cranelisp_types::DefKind::Overloaded::variants: alloc::vec::Vec<cranelisp_types::OverloadVariant>
 pub cranelisp_types::DefKind::PlatformEffect

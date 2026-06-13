@@ -1456,7 +1456,15 @@ macro_rules! declare_platform {
         // Export the layout hash (extracted from the artifact's
         // `;; layout-hash:` header at compile time) as a data symbol the host
         // compares against its live-tables regeneration (§5.5.4). Carried as a
-        // `&'static str`; the host reads it under the same toolchain.
+        // `&'static str` — a `(ptr, len)` fat reference into the schema rodata.
+        // BOTH run-mode readers dereference this fat reference and use its `len`,
+        // so neither depends on a NUL terminator (the D2 fix lives in the reader,
+        // `cranelisp-intrinsics::layout` — see its doc):
+        //   - `--run` reads `library.get::<*const &str>` → `**sym` (`src/platform.rs`).
+        //   - `--link`'s startup stub passes THIS symbol's address to
+        //     `cranelisp_check_layout_hash`, which reads it as `*const &str` —
+        //     the same (ptr, len) view, so the two modes read identically.
+        // Platform-agnostic: an ordinary Rust static, correct on Mach-O / ELF / PE.
         #[unsafe(export_name = concat!("__cranelisp_layout_hash_", $platform_name))]
         pub static __CRANELISP_LAYOUT_HASH: &str =
             $crate::extract_layout_hash(__CRANELISP_PLATFORM_SCHEMA_TEXT);

@@ -42,9 +42,12 @@
 
 ;; Expected: 6 + 9 + 30 + 20 + 25 + 7 = 97
 (defn main []
-  (add-i64 (single-bind)
-    (add-i64 (multi-bind)
-      (add-i64 (nested-let)
-        (add-i64 (shadowing)
-          (add-i64 (distance-squared 2 7)
-                   (abs -7)))))))
+  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
+  ;; return `IO _`. The inner Int is the exit code (preserved).
+  (Pure
+    (add-i64 (single-bind)
+      (add-i64 (multi-bind)
+        (add-i64 (nested-let)
+          (add-i64 (shadowing)
+            (add-i64 (distance-squared 2 7)
+                     (abs -7))))))))

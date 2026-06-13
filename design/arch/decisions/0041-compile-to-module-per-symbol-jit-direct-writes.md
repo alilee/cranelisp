@@ -6,6 +6,21 @@ status: operative
 
 # 0041 — `compile_to_module` per-symbol JIT cardinality; `Code` moves to `cranelisp-backend`; backend writes the GOT slot, the caller composes `Code`; returns `CompilationArtifacts`; `produce_disasm` is a separate on-demand backend function
 
+> **D1 partial reversal (S80 Wave 2D, 2026-06-13).** D41's settlement that macro
+> `sexp`/`source` lives on the int-layer `Introspection` record (not on the
+> symbol-table entry) is **reversed for the macro `sexp` *compile-path* field only**.
+> The user ruling: introspection is REPL-slash-command-only and MUST be populated
+> only in REPL mode; any data the *compile* pipeline reads belongs on the symbol
+> table. The on-demand macro-clause recompile (`resolve_macro_sexp_from`) was a
+> compile-path read sourced from `introspection`, which forced S78 to populate
+> introspection unconditionally and broke the REPL-vs-batch discriminator. Macro
+> source now lives on `DefKind::Macro.macro_sexp` (serialized — survives cache
+> restore); introspection reverts to REPL-only; the run-mode signal is an explicit
+> `RunMode` carrier on `SharedState`, not `introspection.is_some()`. D41's *symmetry*
+> rationale still holds for every OTHER Def kind and for the introspection *display*
+> readers. Canonical: `design/arch/d1-introspection-repl-only.md` (+ BC §6 + the
+> `DefKind::Macro` rustdoc).
+
 > **S75 W2 correction + drain pointer (2026-06-02, user-approved; manifestation site repointed S75 W5b).** Two parts of this Decision were corrected because they target-stated something not embodiable crate-narrow, and the corrected substance now lives at its manifestation site. **`facades/backend.md` was retired S75 W5b** (7th facade-retirement data point); the canonical home is now `bounded-contexts.md` §3 (backend — invariant 3 + "Who composes `Code`") + the `crates/cranelisp-backend/src/{lib,code}.rs` source rustdoc (per `.claude/commands/arch.md` §"No separate Decision log"). This Decision file is in the drain backlog (`design/arch/CLAUDE.md`); the corrected statements below are kept consistent with BC §3 + the source rustdoc so no contradicting copy remains until the file drains. (Below, the historical `facades/backend.md §...` citations are retained as the pre-retirement narrative trail — read them as "BC §3 + the backend source rustdoc".)
 > 1. **#1 — `Code` construction is the CALLER's, not backend's.** `compile_to_module<M>` is generic over `M` and only borrows `&mut M`, so it never owns the `Arc<Jit>` needed to build `Code::Jit` (int wraps `Arc::new(jit)` *after* the call). This is symmetric with the cache-hit path (`load_object` returns `LinkerArtefact { Arc<Linker> }`; the caller composes `Code::Linker`). The embodiable rule, uniform across both modes: **backend writes the GOT slot (#2); the caller composes the `Code` lifecycle owner.** There is no `SymbolTable::write_code` requirement at backend's boundary. See `facades/backend.md` §"Free functions" ("Who constructs `Code`") + §"`Code`" + BC §3 invariant 3.
 > 2. **`produce_disasm` is real, with a caller-supplied `code_size`.** Signature is `produce_disasm(fq, code_size, symbol_tables)` — the caller passes back the `code_size` it received in `CompilationArtifacts` (backend never reads it from persisted entry metadata; `ModuleEntry::Def` does not carry it). Body: resolve `fq` → GOT ptr → read `ptr..ptr+code_size` → capstone-disassemble (capstone is /arch-blessed as a direct backend dep, already in the tree via cranelift's `disas` feature). See `facades/backend.md` §"Free functions" (`produce_disasm` prose) + §"Consumed surface" (capstone).

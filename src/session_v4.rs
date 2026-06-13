@@ -79,6 +79,53 @@ impl crate::expander::MacroResolver for ReadOnlyMacroResolver<'_> {
 }
 
 // ---------------------------------------------------------------------------
+// RunMode (D1 ruling — design/arch/d1-introspection-repl-only.md §4)
+// ---------------------------------------------------------------------------
+
+/// Which CLI verb launched this session — the explicit run-mode carrier that
+/// replaces the `introspection.is_some()` proxy (D1 ruling §4).
+///
+/// `RunMode` is an **int-internal** property of the running session; it is NOT
+/// a `cranelisp-types` boundary type (frontend / typecheck / backend never see
+/// it). It is deliberately **distinct** from backend's
+/// `CompileMode::{Interactive, Batch, Release}` codegen-strategy axis (which
+/// governs GOT-indirect-vs-direct codegen, not REPL-vs-batch session
+/// behaviour). Do not conflate the two.
+///
+/// Two consumers:
+/// - `populates_introspection()` — introspection is a REPL slash-command
+///   facility (`/sig`, `/doc`, `/source`, `/clif`) and is populated ONLY in
+///   `Repl` mode. The compile pipeline reads nothing from it; compile-necessary
+///   data (macro `sexp`) lives on the symbol table.
+/// - `is_repl()` — the platform layout-hash gate's REPL discriminator (REPL
+///   warns-and-loads on drift; `--run`/`--link` refuse).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunMode {
+    /// `cranelisp` with no/REPL target — interactive prompt; populates
+    /// introspection; layout-hash drift WARNS-AND-LOADS.
+    Repl,
+    /// `cranelisp --run <file>` — batch execute then `process::exit`;
+    /// no introspection; layout-hash drift REFUSES.
+    Run,
+    /// `cranelisp --link <file>` — produce a standalone executable;
+    /// no introspection; layout-hash drift REFUSES.
+    Link,
+}
+
+impl RunMode {
+    /// Introspection is REPL-only.
+    pub fn populates_introspection(self) -> bool {
+        matches!(self, RunMode::Repl)
+    }
+
+    /// The layout-hash gate's `is_repl` discriminator (REPL warns; Run/Link
+    /// refuse).
+    pub fn is_repl(self) -> bool {
+        matches!(self, RunMode::Repl)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SessionSettings (pipeline-v4.md §10)
 // ---------------------------------------------------------------------------
 
@@ -89,6 +136,10 @@ pub struct SessionSettings {
     pub codegen_behaviour: CodegenBehaviour,
     pub priority_workers: usize,
     pub nice_workers: usize,
+    /// Which CLI verb launched the session (D1 ruling §4). Threaded onto
+    /// `SharedState.run_mode`; the explicit REPL-vs-batch signal replacing the
+    /// `introspection.is_some()` proxy.
+    pub run_mode: RunMode,
 }
 
 // ---------------------------------------------------------------------------
@@ -420,7 +471,7 @@ fn format_entry_sig(entry: &ModuleEntry<Code>, name: &str) -> String {
                 DefKind::Constructor { type_name, .. } => {
                     format!(":{} {} ; constructor of {}", scheme.ty, name, type_name)
                 }
-                DefKind::Macro { clauses_meta } => {
+                DefKind::Macro { clauses_meta, .. } => {
                     let arity = clauses_meta.first().map(|c| c.params.len()).unwrap_or(0);
                     format!(
                         "{name} ; defmacro ({} clause(s), arity {})",
@@ -830,8 +881,21 @@ pub struct SharedState {
     /// (end of session) all pointers are simultaneously invalidated, which
     /// is fine because nothing can still be calling them after drop.
     pub kept_dlls: Mutex<Vec<LoadedPlatform>>,
-    /// Per-symbol introspection data, REPL-only (replaces def_codegen for slash commands).
-    pub introspection: dashmap::DashMap<FQSymbol, Introspection>,
+    /// Per-symbol introspection data, **REPL-only** (D1/D1b). `Some(map)` only
+    /// under `RunMode::Repl`; `None` in `--run`/`--link` — the store does not
+    /// exist in batch (it is not merely unpopulated). The compile pipeline reads
+    /// nothing from it (macro `sexp`, the one compile datum, lives on the symbol
+    /// table per D1). Slash commands (`/sig`,`/doc`,`/source`,`/sexp`,`/clif`,
+    /// `/disasm`) read it; absent ⇒ they no-op.
+    pub introspection: Option<dashmap::DashMap<FQSymbol, Introspection>>,
+
+    /// Which CLI verb launched this session (D1 ruling §4). The explicit
+    /// REPL-vs-batch signal: `run_mode.populates_introspection()` gates
+    /// introspection population to `Repl` only (`cluster::process_cluster`);
+    /// `run_mode.is_repl()` drives the platform layout-hash gate
+    /// (`worker.rs` `handle_platform`). Replaces the former
+    /// `introspection.is_some()` proxy.
+    pub run_mode: RunMode,
 
     /// Test runner state used by the `run-test` / `discover-tests` intrinsics
     /// (Sprint 66 Wave 3a-γ).
@@ -1027,6 +1091,11 @@ impl CompilerSession {
 
         let nice_workers = settings.nice_workers;
 
+        // D1 ruling §4: capture the run-mode before `settings` is consumed
+        // below; it is carried on `SharedState` as the explicit REPL-vs-batch
+        // signal (introspection gating + layout-hash gate).
+        let run_mode = settings.run_mode;
+
         let symbol_tables: dashmap::DashMap<ModuleFullPath, SessionSymbolTable> =
             dashmap::DashMap::new();
         let next_type_id = AtomicU32::new(0);
@@ -1134,7 +1203,11 @@ impl CompilerSession {
             // Decision 35; Arc retention now lives on each Code::Jit /
             // Code::Linker on `ModuleEntry::Def.code`.
             kept_dlls: Mutex::new(Vec::new()),
-            introspection: dashmap::DashMap::new(),
+            // D1b: the introspection STORE is REPL-only — `Some(empty map)`
+            // under `RunMode::Repl`, `None` in `--run`/`--link` (no allocation
+            // in batch). Same `run_mode` carrier that gates population (D1 §4).
+            introspection: run_mode.populates_introspection().then(dashmap::DashMap::new),
+            run_mode,
             test_runner_state,
         });
 
@@ -1456,14 +1529,16 @@ impl CompilerSession {
     /// symbol has no introspection record (production batch mode) or no
     /// captured source. Reads `shared.introspection[fq]`.
     pub fn symbol_source(&self, fq: &FQSymbol) -> Option<String> {
-        self.shared.introspection.get(fq)
+        self.shared.introspection.as_ref()
+            .and_then(|m| m.get(fq))
             .and_then(|intr| intr.source.clone())
     }
 
     /// REPL `/sexp` — parsed s-expression of a symbol's defining form, or
     /// `None`. Reads `shared.introspection[fq]`.
     pub fn symbol_sexp(&self, fq: &FQSymbol) -> Option<Sexp> {
-        self.shared.introspection.get(fq)
+        self.shared.introspection.as_ref()
+            .and_then(|m| m.get(fq))
             .and_then(|intr| intr.sexp.clone())
     }
 
@@ -1471,14 +1546,16 @@ impl CompilerSession {
     /// Populated only when `CRANELISP_CODEGEN_TRACE` or REPL-trace mode is
     /// active. Reads `shared.introspection[fq]`.
     pub fn symbol_clif(&self, fq: &FQSymbol) -> Option<String> {
-        self.shared.introspection.get(fq)
+        self.shared.introspection.as_ref()
+            .and_then(|m| m.get(fq))
             .and_then(|intr| intr.clif_ir.clone())
     }
 
     /// REPL `/disasm` — disassembled native code of a symbol, or `None`.
     /// Same trace-mode gating as `symbol_clif`. Reads `shared.introspection[fq]`.
     pub fn symbol_disasm(&self, fq: &FQSymbol) -> Option<String> {
-        self.shared.introspection.get(fq)
+        self.shared.introspection.as_ref()
+            .and_then(|m| m.get(fq))
             .and_then(|intr| intr.disasm.clone())
     }
 
@@ -1559,7 +1636,8 @@ impl CompilerSession {
                 (SymbolCategory::Trait, None, docstring.clone()),
             _ => return None,
         };
-        let source = self.shared.introspection.get(&fq)
+        let source = self.shared.introspection.as_ref()
+            .and_then(|m| m.get(&fq))
             .and_then(|intr| intr.source.clone());
         Some(SymbolDescription {
             fq,
@@ -1848,7 +1926,7 @@ impl CompilerSession {
         // Generate source text.
         let source = crate::save::generate_module_source(
             &st,
-            &self.shared.introspection,
+            self.shared.introspection.as_ref(),
             &module,
         );
 
@@ -2268,7 +2346,10 @@ impl CompilerSession {
                             module: symbol.module.clone(),
                             symbol: symbol.symbol.clone(),
                         };
-                        self.shared.introspection.entry(fq).or_default().source = Some(src.to_string());
+                        // D1b: the store is REPL-only; absent in batch.
+                        if let Some(m) = self.shared.introspection.as_ref() {
+                            m.entry(fq).or_default().source = Some(src.to_string());
+                        }
                     }
                     all_warnings.extend(result.warnings().iter().cloned());
                     last_result = Some(result);
@@ -2351,7 +2432,11 @@ impl CompilerSession {
                     current_module: module.clone(),
                     scheduler: &self.shared.scheduler,
                     typecheck_products: &self.shared.typecheck_products,
-                    introspection: Some(&self.shared.introspection),
+                    // D1/D1b: introspection is REPL-only. The store is `Some`
+                    // only under `RunMode::Repl` (D1b ctor gate), so `.as_ref()`
+                    // is the single adaptor — `None` in batch, no second
+                    // discriminator to drift.
+                    introspection: self.shared.introspection.as_ref(),
                     lib_dirs: &lib_dirs_snap,
                     platform_dirs: &platform_dirs_snap,
                     project_root: &self.shared.project_root,
@@ -2449,7 +2534,7 @@ impl CompilerSession {
             module,
             program,
             &self.shared.symbol_tables,
-            Some(&self.shared.introspection),
+            self.shared.introspection.as_ref(),
             &[],
             Some(&self.shared),
         )?;
@@ -2619,7 +2704,7 @@ impl CompilerSession {
 
         match &resolved_entry {
             ModuleEntry::Def { kind, scheme, .. } => match kind.as_ref() {
-                DefKind::Macro { clauses_meta } => {
+                DefKind::Macro { clauses_meta, .. } => {
                     // Zero-arg macros should be expanded, not introspected.
                     let has_zero_arg = clauses_meta
                         .iter()
@@ -2837,7 +2922,7 @@ impl CompilerSession {
             module: self.current_module_path(),
             symbol: Symbol::from(name),
         };
-        self.shared.introspection.get(&fq)
+        self.shared.introspection.as_ref().and_then(|m| m.get(&fq))
     }
 
     /// /source handler: show original source text of a definition.
@@ -3359,7 +3444,7 @@ impl CompilerSession {
                 let ModuleEntry::Def { kind, .. } = entry else {
                     continue;
                 };
-                let DefKind::Macro { clauses_meta } = kind.as_ref() else {
+                let DefKind::Macro { clauses_meta, .. } = kind.as_ref() else {
                     continue;
                 };
                 let name = Symbol::from(sym.as_ref());
@@ -3370,7 +3455,8 @@ impl CompilerSession {
                 let Some(sexp) = self
                     .shared
                     .introspection
-                    .get(&fq)
+                    .as_ref()
+                    .and_then(|m| m.get(&fq))
                     .and_then(|i| i.sexp.clone())
                 else {
                     continue;
@@ -3416,7 +3502,9 @@ impl CompilerSession {
                 current_module: module.clone(),
                 scheduler: &self.shared.scheduler,
                 typecheck_products: &self.shared.typecheck_products,
-                introspection: Some(&self.shared.introspection),
+                // D1/D1b: introspection is REPL-only. The store is `Some` only
+                // under `RunMode::Repl`, so `.as_ref()` is the single adaptor.
+                introspection: self.shared.introspection.as_ref(),
                 lib_dirs: &lib_dirs_snap,
                 platform_dirs: &platform_dirs_snap,
                 project_root: &self.shared.project_root,
@@ -3689,6 +3777,19 @@ impl CompilerSession {
         &mut self,
         module_name: &str,
     ) -> Result<(i64, Type), CranelispError> {
+        // Enforce the batch-mode signature `(Fn [] (IO _))` before running
+        // (spec §10.6 / §12.6). `--run` reaches `main` through this seam (NOT
+        // `link_by_name`), so the same `validate_main` gate the `--link` path
+        // applies must be applied here — otherwise a bare-`Int`/`Bool` main
+        // would be leniently accepted under `--run`. The REPL never calls
+        // `trampoline`, so it stays exempt (§10.6.2).
+        let module_path = ModuleFullPath::from(module_name);
+        if let Some(table) = self.module_table(&module_path) {
+            crate::exe::validate_main(&table)?;
+        }
+        // (If the entry table is absent, the code-ptr lookup below produces the
+        // "no `main`" diagnostic — no separate handling needed here.)
+
         // Look up main's compiled code on its symbol-table entry (G6).
         let main_sym = cranelisp_types::Symbol::from("main");
         let code_ptr = self.lookup_main_code_ptr(module_name, &main_sym)?;
@@ -3908,7 +4009,10 @@ impl CompilerSession {
                 location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
             }
         })?;
-        let main_return = crate::exe::validate_main(&entry_table)?;
+        // Enforce the batch-mode signature `(Fn [] (IO _))` (spec §10.6 /
+        // §12.6). A valid `main` always returns `IO _` after this gate — the
+        // startup stub therefore always trampolines the IO result.
+        crate::exe::validate_main(&entry_table)?;
         // Sprint 58 Wave 2 / Decision 36: read the entry module's `main`
         // GOT slot index now (before dropping the table guard). The alias
         // `.o` (emitted below) routes the system linker's `_main` import
@@ -3916,7 +4020,9 @@ impl CompilerSession {
         let main_got_slot = crate::exe::entry_main_got_slot(&entry_table)?;
         drop(entry_table);
 
-        let main_returns_io = main_return == crate::exe::MainReturnKind::Io;
+        // Every main accepted by `validate_main` returns `IO _`, so the startup
+        // stub always includes the IO trampoline.
+        let main_returns_io = true;
 
         // Collect .o paths from nice workers. Sprint 67 Cluster B sub-fire 3:
         // ObjectCache facade.
@@ -4275,7 +4381,7 @@ impl CompilerSession {
                         };
                         return format!(":{type_str} {module}/{ctor_display} ; deftype");
                     }
-                    DefKind::Macro { clauses_meta } => {
+                    DefKind::Macro { clauses_meta, .. } => {
                         return format_macro_display(
                             name, clauses_meta, docstring.as_deref(), module,
                         );
@@ -5421,6 +5527,7 @@ mod persistent_worker_tests {
             codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
             priority_workers,
             nice_workers: 0,
+            run_mode: RunMode::Repl,
         };
         let mut s = CompilerSession::new(settings, tmp_root.clone(), "user");
         s.set_lib_dirs(vec![]);
@@ -5898,6 +6005,7 @@ mod bare_primitive_value_path_tests {
             codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
             priority_workers: 0,
             nice_workers: 0,
+            run_mode: RunMode::Repl,
         };
         let mut s = CompilerSession::new(settings, tmp_root.clone(), "user");
         s.set_lib_dirs(vec![]);

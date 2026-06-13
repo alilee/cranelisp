@@ -39,11 +39,14 @@
 
 ;; Expected: 42 + 7 + 25 + 40 + 6 + 7 + 3 + 5 = 135
 (defn main []
-  (add-i64 (double 21)
-    (add-i64 (add 3 4)
-      (add-i64 (sum-of-squares 3 4)
-        (add-i64 (quadruple 10)
-          (add-i64 (inc 5)
-            (add-i64 (max 3 7)
-              (add-i64 (min 3 7)
-                       (clamp 5 1 10)))))))))
+  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
+  ;; return `IO _`. The inner Int is the exit code (preserved).
+  (Pure
+    (add-i64 (double 21)
+      (add-i64 (add 3 4)
+        (add-i64 (sum-of-squares 3 4)
+          (add-i64 (quadruple 10)
+            (add-i64 (inc 5)
+              (add-i64 (max 3 7)
+                (add-i64 (min 3 7)
+                         (clamp 5 1 10))))))))))

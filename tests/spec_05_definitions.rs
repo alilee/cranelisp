@@ -230,11 +230,11 @@ fn single_ctor_product_constructor_passed_as_higher_order_arg() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Int add-i64]])\n\
+            "(import [primitives [Int add-i64 Pure]])\n\
              (deftype R [:Int w :Int h])\n\
              (defn apply2 [f a b] (f a b))\n\
              (defn area [c] (match c [(R w h) (add-i64 w h)]))\n\
-             (defn main [] (area (apply2 R 3 4)))",
+             (defn main [] (Pure (area (apply2 R 3 4))))",
         )
         .run("main.cl")
         .output()
@@ -317,7 +317,8 @@ fn forward_reference_between_defns() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(defn main [] (use-helper))\n\
+            "(import [primitives [Pure]])\n\
+             (defn main [] (Pure (use-helper)))\n\
              (defn use-helper [] (helper-fn))\n\
              (defn helper-fn [] 5)",
         )
@@ -346,7 +347,7 @@ fn defns_mutual_forward_references() {
             "(import [primitives [*]])\n\
              (defn is-positive [n] (if (gt-i64 n 0) 1 0))\n\
              (defn classify [n] (if (eq-i64 (is-positive n) 1) (add-i64 n 10) (sub-i64 0 n)))\n\
-             (defn main [] (add-i64 (classify 5) (classify (sub-i64 0 3))))",
+             (defn main [] (Pure (add-i64 (classify 5) (classify (sub-i64 0 3)))))",
         )
         .run("main.cl")
         .output()

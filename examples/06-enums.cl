@@ -71,9 +71,12 @@
 
 ;; Expected: 2 + 0 + 1 + 1 + 1 + 99 = 104
 (defn main []
-  (add-i64 (color-to-int Green)
-    (add-i64 (if (is-red Blue) 1 0)
-      (add-i64 (if (is-vertical North) 1 0)
-        (add-i64 (yes-no-to-int Yes)
-          (add-i64 (dir-to-int (opposite South))
-                   (red-or-other Blue)))))))
+  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
+  ;; return `IO _`. The inner Int is the exit code (preserved).
+  (Pure
+    (add-i64 (color-to-int Green)
+      (add-i64 (if (is-red Blue) 1 0)
+        (add-i64 (if (is-vertical North) 1 0)
+          (add-i64 (yes-no-to-int Yes)
+            (add-i64 (dir-to-int (opposite South))
+                     (red-or-other Blue))))))))

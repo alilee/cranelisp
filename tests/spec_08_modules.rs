@@ -34,7 +34,7 @@ fn import_specific_name_compiles_and_runs() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [util [helper]])\n(defn main [] (helper))",
+            "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (helper)))",
         )
         .file("util.cl", "(defn helper [] 42)")
         .run("main.cl")
@@ -52,7 +52,7 @@ fn import_glob_brings_in_all_exports() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [util [*]])\n(defn main [] (helper))",
+            "(import [primitives [Pure]])\n(import [util [*]])\n(defn main [] (Pure (helper)))",
         )
         .file("util.cl", "(defn helper [] 17)")
         .run("main.cl")
@@ -74,7 +74,7 @@ fn qualified_name_resolution() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [util [helper]])\n(defn main [] (util/helper))",
+            "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (util/helper)))",
         )
         .file("util.cl", "(defn helper [] 99)")
         .run("main.cl")
@@ -142,7 +142,7 @@ fn local_let_shadows_imported_name() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [util [helper]])\n(defn main [] (let [helper 7] helper))",
+            "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (let [helper 7] helper)))",
         )
         .file("util.cl", "(defn helper [] 100)")
         .run("main.cl")
@@ -160,7 +160,7 @@ fn synthetic_primitives_module_available() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [*]])\n(defn main [] (add-i64 1 2))",
+            "(import [primitives [*]])\n(defn main [] (Pure (add-i64 1 2)))",
         )
         .run("main.cl")
         .output()
@@ -338,7 +338,7 @@ fn import_below_use_still_available_before_definitions() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(defn main [] (helper))\n(import [util [helper]])",
+            "(import [primitives [Pure]])\n(defn main [] (Pure (helper)))\n(import [util [helper]])",
         )
         .file("util.cl", "(defn helper [] 42)")
         .run("main.cl")
@@ -364,7 +364,7 @@ fn import_dependency_compiles_correctly() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(mod util)\n(import [main.util [helper]])\n(defn main [] (helper))",
+            "(import [primitives [Pure]])\n(mod util)\n(import [main.util [helper]])\n(defn main [] (Pure (helper)))",
         )
         .file("main/util.cl", "(defn helper [] 99)")
         .run("main.cl")
@@ -386,7 +386,7 @@ fn project_root_shadows_stdlib() {
     let cr = Cranelisp::new()
         .file(
             "main.cl",
-            "(mod helper)\n(defn main [] (helper/val))",
+            "(import [primitives [Pure]])\n(mod helper)\n(defn main [] (Pure (helper/val)))",
         )
         .file("main/helper.cl", "(defn val [] 100)")
         // Stdlib copy with a DIFFERENT value — if the resolver picked
@@ -406,7 +406,7 @@ fn stdlib_module_compiles_and_runs() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(mod helper)\n(defn main [] (helper/compute))",
+            "(import [primitives [Pure]])\n(mod helper)\n(defn main [] (Pure (helper/compute)))",
         )
         // Note: NO `main/helper.cl` at project root — only in stdlib.
         .file("stdlib/main/helper.cl", "(defn compute [] 55)")
@@ -429,7 +429,7 @@ fn prelude_like_reexport_compiles() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(mod shell)\n(import [main.shell [get-val]])\n(defn main [] (get-val))",
+            "(import [primitives [Pure]])\n(mod shell)\n(import [main.shell [get-val]])\n(defn main [] (Pure (get-val)))",
         )
         .file("main/shell.cl", "(defn get-val [] 88)")
         .run("main.cl")
@@ -450,7 +450,7 @@ fn multi_dot_module_path_in_import() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(mod shell)\n(import [main.shell [relay]])\n(defn main [] (relay))",
+            "(import [primitives [Pure]])\n(mod shell)\n(import [main.shell [relay]])\n(defn main [] (Pure (relay)))",
         )
         .file(
             "main/shell.cl",
@@ -475,7 +475,7 @@ fn nested_dependency_chain_compiles() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(mod mid)\n(import [main.mid [relay]])\n(defn main [] (relay))",
+            "(import [primitives [Pure]])\n(mod mid)\n(import [main.mid [relay]])\n(defn main [] (Pure (relay)))",
         )
         .file(
             "main/mid.cl",
@@ -552,7 +552,7 @@ fn export_specific_reexport() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(mod shell)\n(import [main.shell [val]])\n(defn main [] (val))",
+            "(import [primitives [Pure]])\n(mod shell)\n(import [main.shell [val]])\n(defn main [] (Pure (val)))",
         )
         .file(
             "main/shell.cl",
@@ -572,10 +572,10 @@ fn export_glob_reexport() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [add-i64]])\n\
+            "(import [primitives [add-i64 Pure]])\n\
              (mod shell)\n\
              (import [main.shell [a b]])\n\
-             (defn main [] (add-i64 (a) (b)))",
+             (defn main [] (Pure (add-i64 (a) (b))))",
         )
         .file(
             "main/shell.cl",
@@ -600,9 +600,10 @@ fn export_transitive_reexport_chain() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(mod shell)\n\
+            "(import [primitives [Pure]])\n\
+             (mod shell)\n\
              (import [main.shell [deep-val]])\n\
-             (defn main [] (deep-val))",
+             (defn main [] (Pure (deep-val)))",
         )
         .file(
             "main/shell.cl",
@@ -633,10 +634,10 @@ fn export_multiple_modules() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [add-i64]])\n\
+            "(import [primitives [add-i64 Pure]])\n\
              (mod shell)\n\
              (import [main.shell [alpha beta]])\n\
-             (defn main [] (add-i64 (alpha) (beta)))",
+             (defn main [] (Pure (add-i64 (alpha) (beta))))",
         )
         .file(
             "main/shell.cl",
@@ -881,7 +882,7 @@ fn null_import_module_resolves_all_names_via_explicit_imports() {
         )
         .file(
             "main.cl",
-            "(import [lib.leaf [value]])\n(defn main [] (value))",
+            "(import [primitives [Pure]])\n(import [lib.leaf [value]])\n(defn main [] (Pure (value)))",
         )
         .run("main.cl")
         .output();
@@ -952,9 +953,10 @@ fn multiple_import_forms_in_one_module() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [alpha [get-alpha]])\n\
+            "(import [primitives [Pure]])\n\
+             (import [alpha [get-alpha]])\n\
              (import [beta [get-beta]])\n\
-             (defn main [] (primitives/add-i64 (get-alpha) (get-beta)))",
+             (defn main [] (Pure (primitives/add-i64 (get-alpha) (get-beta))))",
         )
         .file("alpha.cl", "(defn get-alpha [] 50)")
         .file("beta.cl", "(defn get-beta [] 60)")
@@ -983,9 +985,10 @@ fn defn_before_import_resumes_correctly_after_dep_load() {
     let out = Cranelisp::new()
         .file(
             "main.cl",
-            "(defn local-fn [] 10)\n\
+            "(import [primitives [Pure]])\n\
+             (defn local-fn [] 10)\n\
              (import [util [remote-fn]])\n\
-             (defn main [] (primitives/add-i64 (local-fn) (remote-fn)))",
+             (defn main [] (Pure (primitives/add-i64 (local-fn) (remote-fn))))",
         )
         .file("util.cl", "(defn remote-fn [] 32)")
         .run("main.cl")
@@ -1027,7 +1030,7 @@ fn defn_before_import_resumes_correctly_after_dep_load() {
 #[test]
 fn entry_module_named_non_user_runs() {
     Cranelisp::new()
-        .file("sudoku.cl", "(defn main [] 7)")
+        .file("sudoku.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 7))")
         .run("sudoku.cl")
         .output()
         .assert_exit(7);
@@ -1042,7 +1045,7 @@ fn program_with_no_user_module_runs_end_to_end() {
     Cranelisp::new()
         .file(
             "myapp.cl",
-            "(import [board [cell]])\n(defn main [] (cell))",
+            "(import [primitives [Pure]])\n(import [board [cell]])\n(defn main [] (Pure (cell)))",
         )
         .file("board.cl", "(defn cell [] 42)")
         .run("myapp.cl")
@@ -1056,7 +1059,7 @@ fn program_with_no_user_module_runs_end_to_end() {
 #[test]
 fn entry_module_default_user_name_still_runs() {
     Cranelisp::new()
-        .user("(defn main [] 5)")
+        .user("(import [primitives [Pure]])\n(defn main [] (Pure 5))")
         .run("user.cl")
         .output()
         .assert_exit(5);

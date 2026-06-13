@@ -49,9 +49,12 @@
 
 ;; Expected: 42 + 10 + 10 + 20 + 7 + 30 = 119
 (defn main []
-  (add-i64 (id 42)
-    (add-i64 (choose true 10 20)
-      (add-i64 (use-first)
-        (add-i64 (use-second)
-          (add-i64 (same-pair 7)
-                   (pick-best 10 30 20)))))))
+  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
+  ;; return `IO _`. The inner Int is the exit code (preserved).
+  (Pure
+    (add-i64 (id 42)
+      (add-i64 (choose true 10 20)
+        (add-i64 (use-first)
+          (add-i64 (use-second)
+            (add-i64 (same-pair 7)
+                     (pick-best 10 30 20))))))))

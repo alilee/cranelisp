@@ -74,11 +74,14 @@
 
 ;; Expected: 5 + 60 + 99 + 6 + 3 + 6 + 300 + 62 = 541
 (defn main []
-  (add-i64 (test-literal)
-    (add-i64 (test-get)
-      (add-i64 (test-set)
-        (add-i64 (test-push)
-          (add-i64 (test-from-empty)
-            (add-i64 (test-set-chain)
-              (add-i64 (test-as-arg)
-                       (test-vec-in-adt)))))))))
+  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
+  ;; return `IO _`. The inner Int is the exit code (preserved).
+  (Pure
+    (add-i64 (test-literal)
+      (add-i64 (test-get)
+        (add-i64 (test-set)
+          (add-i64 (test-push)
+            (add-i64 (test-from-empty)
+              (add-i64 (test-set-chain)
+                (add-i64 (test-as-arg)
+                         (test-vec-in-adt))))))))))

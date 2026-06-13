@@ -278,6 +278,35 @@ fn e2e_s3_3_list_neg_no_primitives_in_user() { ... }
 - **Error boundaries**: Valid input must NOT produce errors; invalid input must NOT succeed silently
 - **Display format**: Output must NOT contain unqualified names where qualified names are required
 
+## `--link` / platform e2e prerequisites (nextest setup script)
+
+The `--link` and platform e2e tests invoke the `cranelisp` binary, whose
+`--link` path links five workspace members it has **no Cargo dependency
+edge to** — it resolves them at runtime by scanning `target/debug/`:
+`cranelisp-exe-bundle` (`libcranelisp_exe_bundle.a`), `cranelisp-stdio`,
+`cranelisp-test-capture`, `cranelisp-shapes`, `cranelisp-shapes-badabi`
+(`lib*.{rlib,so}`). Because nothing depends on them, a plain `cargo
+nextest run` never compiles them, and the `--link` path fails with
+`could not find libcranelisp_exe_bundle.a`.
+
+The fix is a **nextest setup script** (`.config/nextest.toml` →
+`tests/scripts/build-link-prereqs.sh`) that builds all five in **one
+`cargo build -p` invocation** before any test runs. One invocation =>
+one consistent snapshot of the shared crates (closes the rlib-vs-bundle
+skew hazard). Cheap no-op when current. Design + root-cause:
+`tests/plan/e2e-architecture.md`.
+
+**Rules:**
+
+- **A test MUST NOT shell out to `cargo build`.** The artifact set is a
+  suite-level invariant owned by the setup script. Do not re-introduce
+  per-binary `std::sync::Once` build helpers (the retired
+  `ensure_platform_cdylibs_built()` band-aid).
+- **A new platform/link fixture extends the script**, not a per-test
+  build. Add the crate to `tests/scripts/build-link-prereqs.sh`.
+- `CRANELISP_PLATFORM_PATH` env wiring is per-test runtime config (lives
+  in the harness / test), NOT a build step — that is fine to keep.
+
 ## Build Commands
 
 Always use `cargo nextest run` (per `memory/feedback_test_serialization.md`).

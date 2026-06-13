@@ -17,14 +17,13 @@
 ;; produces 42 as the program result. Effect nodes (from platform
 ;; functions like print) execute their side effects during forcing.
 ;;
-;; Prerequisites:
-;;   Build the stdio platform DLL before running this example:
-;;     cargo build -p cranelisp-stdio
-;;   Then run:
-;;     cargo run -- --run examples/21-hello-io.cl
+;; Running:
+;;   Use the justfile recipe, which builds the platform cdylibs and puts
+;;   target/debug on the platform search path so the stdio DLL resolves:
+;;     just run-example examples/21-hello-io.cl
 ;;
-;;   The platform DLL is found via examples/platforms/stdio.dylib
-;;   (a symlink to target/debug/libcranelisp_stdio.dylib).
+;;   The recipe sets CRANELISP_PLATFORM_PATH=target/debug; discovery then
+;;   finds cargo's libcranelisp_stdio.{so,dylib,dll} directly (no symlinks).
 
 ;; Platform declaration: load the stdio DLL for print/read-line.
 ;; This must appear before any platform function imports.

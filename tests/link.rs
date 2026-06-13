@@ -43,7 +43,7 @@ use e2e::PreludeVariant;
 fn link_hello_produces_executable_with_main_exit_code() {
     Cranelisp::new()
         .link_then_run("hello.cl")
-        .file("hello.cl", "(defn main [] 42)")
+        .file("hello.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 42))")
         .output()
         .assert_exit(42);
 }
@@ -56,7 +56,7 @@ fn link_hello_produces_executable_with_main_exit_code() {
 fn link_main_returning_zero_exits_zero() {
     Cranelisp::new()
         .link_then_run("zero.cl")
-        .file("zero.cl", "(defn main [] 0)")
+        .file("zero.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 0))")
         .output()
         .assert_exit(0);
 }
@@ -103,7 +103,7 @@ fn link_main_returning_io_pure_zero_exits_zero_or_errors_clearly() {
 fn link_default_output_is_entry_stem_no_extension() {
     let out = Cranelisp::new()
         .link("examples/hello.cl")
-        .file("examples/hello.cl", "(defn main [] 0)")
+        .file("examples/hello.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 0))")
         .output()
         .assert_ok();
 
@@ -137,9 +137,12 @@ fn link_error_when_main_function_missing() {
     );
 }
 
-// spec: design/backend/executable-generation.md §7 — main wrong return type.
-//   `(defn main [] "hello")` (returns String) → error mentions `main` and
-//   one of the acceptable types (Int / IO).
+// spec: spec/10-io.md §10.6 (Entry Point) + design/backend/executable-generation.md §7 —
+//   main wrong return type. `(defn main [] "hello")` returns `String`, which
+//   violates `main :: (Fn [] (IO _))`. A batch main MUST return `IO _`; the
+//   error names `main` and the required `IO` shape. (Post-S80-Wave-1 the bare
+//   `Int` acceptance is gone — the only conformant return type is `IO _`, so
+//   the diagnostic names `IO`, not an `Int`-or-`IO` disjunction.)
 //
 // (carry: legacy/sprint23.rs::link_error_main_wrong_return_type)
 #[test]
@@ -152,8 +155,8 @@ fn link_error_when_main_returns_wrong_type() {
     assert!(!out.status.success(), "should fail on wrong main type");
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        combined.contains("main") && (combined.contains("Int") || combined.contains("IO")),
-        "error should mention main and acceptable types: {combined}"
+        combined.contains("main") && combined.contains("IO"),
+        "error should mention main and the required `IO _` shape: {combined}"
     );
 }
 
@@ -188,7 +191,7 @@ fn link_error_when_bundle_library_missing_names_it() {
     // must name the bundle.
     let out = Cranelisp::new()
         .link("hello.cl")
-        .file("hello.cl", "(defn main [] 0)")
+        .file("hello.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 0))")
         .env("CRANELISP_BUNDLE_PATH", "")
         .output();
 
@@ -235,7 +238,7 @@ fn link_neg_no_cache_flag_is_rejected() {
 fn link_second_invocation_reuses_cached_objects_and_re_emits_exe() {
     let first = Cranelisp::new()
         .link_then_run("hello.cl")
-        .file("hello.cl", "(defn main [] 7)")
+        .file("hello.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 7))")
         .output()
         .assert_exit(7);
 
@@ -272,8 +275,8 @@ fn link_extern_primitive_str_ops_exits_with_computed_length() {
         .with_prelude(PreludeVariant::None)
         .file(
             "sc.cl",
-            "(import [primitives [str-concat str-len]])\n\
-             (defn main [] (str-len (str-concat \"ab\" \"cd\")))\n",
+            "(import [primitives [str-concat str-len Pure]])\n\
+             (defn main [] (Pure (str-len (str-concat \"ab\" \"cd\"))))\n",
         )
         .link_then_run("sc.cl")
         .output()
@@ -293,8 +296,8 @@ fn link_extern_primitive_str_len_of_literal_exits_with_length() {
         .with_prelude(PreludeVariant::None)
         .file(
             "sl.cl",
-            "(import [primitives [str-len]])\n\
-             (defn main [] (str-len \"hello\"))\n",
+            "(import [primitives [str-len Pure]])\n\
+             (defn main [] (Pure (str-len \"hello\")))\n",
         )
         .link_then_run("sl.cl")
         .output()
@@ -320,7 +323,7 @@ fn link_extern_primitive_str_len_of_literal_exits_with_length() {
 // (FIXME 0286 part (a) — the cheap traced extern-primitive --link variant.)
 #[test]
 fn link_traced_extern_primitives_appear_as_children_exit_42() {
-    let src = "(import [primitives [trace Trace TraceCall str-concat str-len]])\n\
+    let src = "(import [primitives [trace Trace TraceCall str-concat str-len Pure]])\n\
          (import [macros [SCons SNil]])\n\
          (defn greet [s] (str-len (str-concat \"hi \" s)))\n\
          (defn slen [acc xs]\n\
@@ -328,12 +331,12 @@ fn link_traced_extern_primitives_appear_as_children_exit_42() {
          ; c = root's children = [user/greet]; descend into greet, count ITS\n\
          ; children (str-concat + str-len, both extern primitives) → 2.\n\
          (defn main []\n\
-           (match (trace (greet \"bob\"))\n\
+           (Pure (match (trace (greet \"bob\"))\n\
              [(TraceCall n p r c ns)\n\
                (match c [SNil 0\n\
                          (SCons h t)\n\
                            (match h [(TraceCall n2 p2 r2 c2 ns2)\n\
-                                     (add-i64 (slen 0 c2) 40)])])]))\n";
+                                     (add-i64 (slen 0 c2) 40)])])])))\n";
     Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .file("tprog.cl", src)
@@ -366,7 +369,7 @@ fn link_multi_module_project_with_cross_module_call_exits_with_main_value() {
         .file("prelude.cl", "(export [primitives [*]])\n")
         .file(
             "main.cl",
-            "(import [helper [add-one]])\n(defn main [] (add-one 41))",
+            "(import [helper [add-one]])\n(defn main [] (Pure (add-one 41)))",
         )
         .file(
             "helper.cl",

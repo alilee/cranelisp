@@ -363,6 +363,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cranelisp-shapes-badabi"
+version = "0.1.0"
+dependencies = [
+ "cranelisp-platform",
+]
+
+[[package]]
 name = "cranelisp-stdio"
 version = "0.1.0"
 dependencies = [

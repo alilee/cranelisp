@@ -614,16 +614,16 @@ pub(crate) fn extract_platform_name(sexp: &Sexp) -> Option<(String, Span)> {
     None
 }
 
-/// Full platform loading pipeline: resolve path, load DLL, validate manifest,
-/// register in the host symbol tables (GOT wrapped in place, got_slot = manifest
-/// index, FQ sigs — no injected imports, no jit_name registration).
+/// Resolve a platform's DLL path, load + validate it, and confirm the manifest
+/// name matches the declared name — but do NOT register the sigs in the symbol
+/// tables.
 ///
-/// Returns the loaded platform; the caller MUST keep it alive (retain on
-/// `SharedState::kept_dlls`) so the wrapped GOT slab + fn pointers stay valid.
-#[allow(clippy::too_many_arguments)]
-pub fn load_and_register_platform(
-    symbol_tables: &dashmap::DashMap<cranelisp_types::ModuleFullPath, crate::code::SessionSymbolTable>,
-    module_aliases: &cranelisp_types::ModuleAliases,
+/// This is the load half of `load_and_register_platform`, split out so the
+/// worker can interpose the §7.2 "resolve + compile associated `.cl` type
+/// module(s) BEFORE sigs" step between loading the DLL (which surfaces the
+/// descriptor sig strings naming `shapes/Rectangle` etc.) and registering the
+/// sigs (which resolve those FQ type refs against the now-loaded type modules).
+pub fn load_platform_checked(
     platform_name: &str,
     project_root: &Path,
     lib_dirs: &[PathBuf],
@@ -653,7 +653,99 @@ pub fn load_and_register_platform(
         });
     }
 
-    // Step 4: Register in the host symbol tables (GOT wrap + FQ sigs).
+    Ok(platform)
+}
+
+/// The set of EXTERNAL `.cl` type-modules a platform's function signatures
+/// reference (platform-interface.md §7.2 "q-assoc-discovery").
+///
+/// A platform sig like `(Fn [shapes/Rectangle] (primitives/IO primitives/Int))`
+/// references the user type-module `shapes` (via `shapes/Rectangle`). Such a
+/// module must be resolved + registered BEFORE the sig is checked, because the
+/// sig-check resolves `shapes/Rectangle` against module `shapes`'s symbol table
+/// — and an unresolved FQ sig type-ref surfaces as a `ModuleError`, NOT a
+/// `ResolutionGap`, so the ordinary FQ-autoload retry (FIXME 0268) never fires
+/// for platform sigs. This pre-resolve closes that gap.
+///
+/// Modules that are always synthetically present are excluded: `primitives`
+/// (intrinsic types + `IO`), `macros`, and any already-loaded module the caller
+/// filters out. Returns the distinct external module paths in first-seen order
+/// (deterministic, so the worker drives a stable dep at a time).
+pub fn referenced_sig_modules(descriptors: &[OwnedPlatformFnDescriptor]) -> Vec<ModuleFullPath> {
+    let mut seen: Vec<ModuleFullPath> = Vec::new();
+    for desc in descriptors {
+        // A sig that fails to parse here is not our concern — the sig-check
+        // loop reports the parse error with the proper diagnostic. We only
+        // harvest the module prefixes from sigs that DO parse.
+        let Ok(expr) = cranelisp_frontend::parse_type_expr(&desc.type_sig) else {
+            continue;
+        };
+        let expr = fqize_type_expr(expr);
+        collect_type_expr_modules(&expr, &mut seen);
+    }
+    seen
+}
+
+/// Walk a (already `fqize`d) `TypeExpr`, pushing every distinct external module
+/// prefix carried on a qualified `Named`/`Applied` leaf into `acc`. The
+/// always-synthetic `primitives` / `macros` modules are skipped — they are
+/// mounted at session init and never need a `.cl` file load.
+fn collect_type_expr_modules(expr: &cranelisp_types::TypeExpr, acc: &mut Vec<ModuleFullPath>) {
+    use cranelisp_types::TypeExpr;
+    let push_module = |m: &Option<ModuleFullPath>, acc: &mut Vec<ModuleFullPath>| {
+        if let Some(module) = m {
+            let s = module.as_ref();
+            if s != "primitives" && s != "macros" && !acc.iter().any(|seen| seen == module) {
+                acc.push(module.clone());
+            }
+        }
+    };
+    match expr {
+        TypeExpr::Named(tref) => push_module(&tref.module, acc),
+        TypeExpr::Applied(head, args) => {
+            push_module(&head.module, acc);
+            for arg in args {
+                collect_type_expr_modules(arg, acc);
+            }
+        }
+        TypeExpr::FnType(params, ret) => {
+            for p in params {
+                collect_type_expr_modules(p, acc);
+            }
+            collect_type_expr_modules(ret, acc);
+        }
+        TypeExpr::TypeVar(_) => {}
+        _ => {}
+    }
+}
+
+/// Full platform loading pipeline: resolve path, load DLL, validate manifest,
+/// register in the host symbol tables (GOT wrapped in place, got_slot = manifest
+/// index, FQ sigs — no injected imports, no jit_name registration).
+///
+/// Returns the loaded platform; the caller MUST keep it alive (retain on
+/// `SharedState::kept_dlls`) so the wrapped GOT slab + fn pointers stay valid.
+///
+/// NOTE: this composition does NOT perform the §7.2 associated-type-module
+/// pre-resolve — it is retained for callers (unit tests) whose platforms have
+/// scalar-only sigs (`stdio`). The worker (`handle_platform`) uses
+/// `load_platform_checked` + `referenced_sig_modules` + `register_platform_in_tc`
+/// so it can drive the type-module deps between load and register.
+#[allow(clippy::too_many_arguments)]
+pub fn load_and_register_platform(
+    symbol_tables: &dashmap::DashMap<cranelisp_types::ModuleFullPath, crate::code::SessionSymbolTable>,
+    module_aliases: &cranelisp_types::ModuleAliases,
+    platform_name: &str,
+    project_root: &Path,
+    lib_dirs: &[PathBuf],
+    platform_dirs: &[PathBuf],
+    span: Span,
+) -> Result<LoadedPlatform, CranelispError> {
+    let platform = load_platform_checked(
+        platform_name, project_root, lib_dirs, platform_dirs, span,
+    )?;
+
+    // Register in the host symbol tables (GOT wrap + FQ sigs).
     register_platform_in_tc(symbol_tables, module_aliases, &platform)?;
 
     Ok(platform)
@@ -1142,6 +1234,58 @@ mod tests {
             .expect("dotted module path is preserved as the module part");
         assert_eq!(tref.module, Some(ModuleFullPath::from("core.option")));
         assert_eq!(tref.name.as_ref(), "Option");
+    }
+
+    // -----------------------------------------------------------------
+    // §7.2 associated-type-module discovery (FIXME 0323) — the worker drives
+    // every EXTERNAL type module a platform sig references BEFORE the sig-check
+    // loop, so `shapes/Rectangle` resolves against a now-loaded `shapes` module
+    // rather than mapping to a `ModuleError`. `referenced_sig_modules` is the
+    // pure, unit-testable harvester the worker consults.
+    // -----------------------------------------------------------------
+
+    // `OwnedPlatformFnDescriptor` is `#[non_exhaustive]`, so the discovery logic
+    // is exercised through `collect_type_expr_modules` over the same
+    // parse+`fqize` pipeline `referenced_sig_modules` runs per descriptor sig.
+    // `referenced_sig_modules` itself is exercised end-to-end (over real DLL
+    // descriptors) by `tests/spec_platforms_adt.rs`.
+    fn sig_modules(sig: &str) -> Vec<ModuleFullPath> {
+        let expr = cranelisp_frontend::parse_type_expr(sig).expect("sig parses");
+        let expr = fqize_type_expr(expr);
+        let mut acc = Vec::new();
+        collect_type_expr_modules(&expr, &mut acc);
+        acc
+    }
+
+    // spec: design/arch/platform-interface.md §7.2 — a sig naming a user type
+    // module (`shapes/Rectangle`) yields that module as a pre-resolve dep.
+    #[test]
+    fn referenced_sig_modules_discovers_user_type_module() {
+        let mods = sig_modules("(Fn [shapes/Rectangle] (primitives/IO primitives/Int))");
+        assert_eq!(mods, vec![ModuleFullPath::from("shapes")]);
+    }
+
+    // spec: design/arch/platform-interface.md §7.2 — `primitives` (and `macros`)
+    // are always synthetically mounted; they are NOT reported as deps to load.
+    #[test]
+    fn referenced_sig_modules_excludes_synthetic_modules() {
+        assert!(
+            sig_modules("(Fn [primitives/String] (primitives/IO primitives/Int))").is_empty(),
+            "a scalar-only stdio-shaped sig references no external type module"
+        );
+    }
+
+    // spec: design/arch/platform-interface.md §7.2 — distinct external modules
+    // across one sig are reported once each, in first-seen order; `shapes` is
+    // not duplicated across param + return positions.
+    #[test]
+    fn referenced_sig_modules_dedups_and_orders() {
+        let mods = sig_modules("(Fn [shapes/Rectangle geom/Point] (primitives/IO shapes/Rectangle))");
+        assert_eq!(
+            mods,
+            vec![ModuleFullPath::from("shapes"), ModuleFullPath::from("geom")],
+            "shapes first, geom second; shapes not duplicated across positions"
+        );
     }
 
     // spec: design/arch/platform-interface.md §5.3 — a non-slashed name or a

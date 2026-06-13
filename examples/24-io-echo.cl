@@ -18,9 +18,8 @@
 ;;   (bind (read-line) (fn [input]
 ;;     ... use input ...))
 ;;
-;; Prerequisites:
-;;   cargo build -p cranelisp-test-capture
-;;   cargo run -- --run examples/24-io-echo.cl
+;; Running:
+;;   just run-example examples/24-io-echo.cl
 
 (platform test-capture)
 (import [primitives [Pure bind]])

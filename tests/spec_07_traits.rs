@@ -467,8 +467,9 @@ fn trait_deftrait_impl_in_child_module_imported_dispatch_from_parent() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [types [Classify classify Color Red Green Blue]])\n\
-             (defn main [] (classify Green))",
+            "(import [primitives [Pure]])\n\
+             (import [types [Classify classify Color Red Green Blue]])\n\
+             (defn main [] (Pure (classify Green)))",
         )
         .file(
             "types.cl",

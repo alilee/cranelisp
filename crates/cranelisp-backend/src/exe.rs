@@ -318,6 +318,16 @@ pub(crate) fn generate_startup_object_checked(
         // against the rlib's statically-linked `__cranelisp_layout_hash_<name>`
         // and abort on mismatch — BEFORE main runs, so a stale platform refuses
         // at process start with rebuild guidance.
+        //
+        // `linked_ptr` is the ADDRESS of the platform rlib's exported
+        // `__cranelisp_layout_hash_<name>` symbol. That symbol is a Rust
+        // `&'static str` — a `(data_ptr, len)` fat reference, NOT a bare `char*`.
+        // We pass the symbol address straight through; `cranelisp_check_layout_hash`
+        // (`cranelisp-intrinsics::layout`) dereferences it AS `*const &str`, the
+        // same (ptr, len) view the `--run` host reads (`src/platform.rs`). The D2
+        // fix is that read — the pre-fix intrinsic did `CStr::from_ptr` on the
+        // symbol address, strcmp-ing the fat pointer's raw bytes instead of the
+        // hash. Backend emits no load here; the indirection lives in the reader.
         if let Some(ref ids) = layout_check_ids {
             let check_ref = obj_module.declare_func_in_func(ids.check_fn, builder.func);
             for &(linked_id, expected_id, name_id) in &ids.per_platform {

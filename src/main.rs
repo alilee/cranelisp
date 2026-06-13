@@ -10,7 +10,7 @@ use std::time::Instant;
 use cranelisp_types::{ErrorLocation, CodegenBehaviour, CranelispError, Span};
 
 use cranelisp::observability;
-use cranelisp::session_v4::{CommandResult, CompilerSession, SessionSettings};
+use cranelisp::session_v4::{CommandResult, CompilerSession, RunMode, SessionSettings};
 use cranelisp::{got_trace, io_trace};
 
 // ---------------------------------------------------------------------------
@@ -28,6 +28,18 @@ impl Action {
         match self {
             Action::Link => CodegenBehaviour::ObjectOnly,
             _ => CodegenBehaviour::InMemoryAndObject,
+        }
+    }
+
+    /// The session's run-mode (D1 ruling §4). This is the ONLY legitimate place
+    /// `Action` becomes `RunMode`; it is threaded onto `SharedState` as the
+    /// explicit REPL-vs-batch signal (introspection gating + layout-hash gate),
+    /// replacing the former `introspection.is_some()` proxy.
+    fn run_mode(&self) -> RunMode {
+        match self {
+            Action::Run => RunMode::Run,
+            Action::Link => RunMode::Link,
+            Action::Repl => RunMode::Repl,
         }
     }
 }
@@ -430,6 +442,7 @@ fn parse_args() -> (Action, PathBuf, String, SessionSettings) {
     let (project_root, entry_module) = resolve_target(target.as_deref());
 
     let codegen_behaviour = action.codegen_behaviour();
+    let run_mode = action.run_mode();
 
     let settings = SessionSettings {
         no_color,
@@ -437,6 +450,7 @@ fn parse_args() -> (Action, PathBuf, String, SessionSettings) {
         codegen_behaviour,
         priority_workers: priority_workers.unwrap_or(1),
         nice_workers: nice_workers.unwrap_or(1),
+        run_mode,
     };
 
     (action, project_root, entry_module, settings)

@@ -7,11 +7,18 @@
 //! [`cranelisp_check_layout_hash`] before running `main`
 //! (`design/arch/platform-interface.md` §5.5.4 — the `--link` layout gate).
 //!
-//! This intrinsic is the compare-and-abort half of that gate. It strcmps the two
-//! NUL-terminated hash strings and, on mismatch, prints rebuild guidance and
-//! `abort()`s — so a binary linked against a platform whose ADT layout has drifted
-//! from what the compiler recorded fails loudly at startup rather than reading
-//! fields at stale offsets.
+//! This intrinsic is the compare-and-abort half of that gate. It compares the
+//! linked hash against the baked `expected` hash and, on mismatch, prints rebuild
+//! guidance and `abort()`s — so a binary linked against a platform whose ADT
+//! layout has drifted from what the compiler recorded fails loudly at startup
+//! rather than reading fields at stale offsets.
+//!
+//! The linked hash is read AS a Rust `&str` fat reference (`*const &str`), the
+//! same `(ptr, len)` view the `--run` host uses (`src/platform.rs`) — NOT via
+//! `CStr::from_ptr` on the symbol address (the D2 defect: `__cranelisp_layout_hash_<name>`
+//! is a `&str` symbol, not a `char*`, so a `CStr` read strcmp'd the fat pointer's
+//! raw bytes instead of the hash, and the clean case never matched). See
+//! [`cranelisp_check_layout_hash`]'s doc for the per-parameter representation.
 //!
 //! It is force-linked into the produced binary via `cranelisp-exe-bundle`'s
 //! `pub use cranelisp_intrinsics::layout` re-export (the same discipline as every
@@ -29,10 +36,18 @@ use std::ffi::CStr;
 
 /// Compare the linked and expected platform layout hashes; abort on mismatch.
 ///
-/// Parameters (all NUL-terminated C strings, from `.rodata` / imported data):
-/// - `linked`:   the platform rlib's `__cranelisp_layout_hash_<name>` hash.
-/// - `expected`: the compiler-computed hash baked into the startup stub.
-/// - `name`:     the platform name (for the diagnostic).
+/// Parameters (addresses baked / linked into the startup stub):
+///
+/// - `linked` — the ADDRESS of the platform rlib's exported
+///   `__cranelisp_layout_hash_<name>` symbol. That symbol is a Rust
+///   `&'static str` — a `(data_ptr, len)` fat reference into the platform's
+///   `.rodata`, NOT a bare `char*` (D2). This intrinsic reads it AS a fat
+///   reference (`*const &str`), exactly mirroring the `--run` host reader
+///   (`src/platform.rs`), so the two run modes read the identical symbol
+///   identically.
+/// - `expected` — a NUL-terminated C string: the compiler-computed hash baked
+///   into the startup stub by `cranelisp-backend` (`define_cstr_data`).
+/// - `name` — a NUL-terminated C string: the platform name (for the diagnostic).
 ///
 /// On a match this returns and `main` proceeds. On a mismatch it prints
 /// `"platform '<name>' layout hash mismatch — run /platform-schema <name> and
@@ -40,9 +55,10 @@ use std::ffi::CStr;
 ///
 /// # Safety
 ///
-/// All three pointers must be non-null and point to valid NUL-terminated byte
-/// sequences (the startup stub guarantees this — they are baked `.rodata` /
-/// linked data symbols).
+/// - `linked` must point to a valid, initialised Rust `&'static str` (the
+///   platform rlib's exported layout-hash symbol — the startup stub links it).
+/// - `expected` and `name` must be non-null, NUL-terminated byte sequences (the
+///   stub bakes them as `.rodata`).
 #[unsafe(export_name = "cranelisp_check_layout_hash")]
 #[allow(clippy::not_unsafe_ptr_arg_deref)] // Called from the startup stub; cannot be marked unsafe.
 pub extern "C" fn cranelisp_check_layout_hash(
@@ -50,12 +66,19 @@ pub extern "C" fn cranelisp_check_layout_hash(
     expected: *const u8,
     name: *const u8,
 ) {
-    // SAFETY: caller (the backend startup stub) guarantees non-null,
-    // NUL-terminated C strings.
-    let linked_hash = unsafe { CStr::from_ptr(linked as *const std::os::raw::c_char) };
+    // SAFETY: `linked` is the address of the platform rlib's exported
+    // `__cranelisp_layout_hash_<name>` symbol, which is a Rust `&'static str`
+    // (the producer — `declare_platform!` in `cranelisp-platform` — exports it
+    // as `pub static … : &str`). Read it AS a `&str` fat reference, the same way
+    // the `--run` host does (`library.get::<*const &str>` → `**sym`), so the
+    // (ptr, len) view is identical across run modes. `'static` because the symbol
+    // lives for the process lifetime.
+    let linked_hash: &'static str = unsafe { *(linked as *const &'static str) };
+
+    // SAFETY: caller bakes `expected` as a NUL-terminated `.rodata` C string.
     let expected_hash = unsafe { CStr::from_ptr(expected as *const std::os::raw::c_char) };
 
-    if linked_hash.to_bytes() == expected_hash.to_bytes() {
+    if linked_hash.as_bytes() == expected_hash.to_bytes() {
         return;
     }
 
@@ -76,31 +99,59 @@ mod tests {
     use std::ffi::CString;
 
     // spec: design/arch/platform-interface.md §5.5.4 — matching hashes return
-    // (the binary proceeds to main).
+    // (the binary proceeds to main). `linked` is the ADDRESS of a `&str` (the
+    // platform rlib's exported symbol), so the test passes `&linked_str`.
     #[test]
     fn matching_hashes_return() {
-        let linked = CString::new("abc123").unwrap();
+        let linked_str: &'static str = "abc123";
         let expected = CString::new("abc123").unwrap();
         let name = CString::new("shapes").unwrap();
         // Returns without aborting — reaching the assertion is the test.
         cranelisp_check_layout_hash(
-            linked.as_ptr() as *const u8,
-            expected.as_ptr() as *const u8,
-            name.as_ptr() as *const u8,
+            (&raw const linked_str).cast::<u8>(),
+            expected.as_ptr().cast::<u8>(),
+            name.as_ptr().cast::<u8>(),
         );
     }
 
-    // The mismatch path aborts the process, which cannot be exercised in-process
-    // without crashing the test runner. The compare logic is a byte-equality
-    // check; this test pins that equal byte sequences compare equal and differing
-    // ones differ (the predicate the abort branch hinges on), without invoking
-    // the abort.
+    // spec: design/arch/platform-interface.md §5.5.4 — D2 regression. The
+    // `--link` reader receives the ADDRESS of the platform rlib's exported
+    // `__cranelisp_layout_hash_<name>` symbol, which is a Rust `&str` fat
+    // reference (`(data_ptr, len)`), NOT a bare `char*`. The pre-fix intrinsic
+    // did `CStr::from_ptr(linked)`, reading the fat pointer's raw bytes instead
+    // of the hash → never matched. This test pins the corrected read: interpret
+    // `linked` as `*const &str` and use its (ptr, len) view — exactly like the
+    // `--run` host — so it reads precisely the hash even though the `&str` points
+    // into a larger rodata blob whose hash is followed by schema text.
     #[test]
-    fn hash_byte_comparison_is_exact() {
-        let a = CString::new("hash-A").unwrap();
-        let b = CString::new("hash-A").unwrap();
-        let c = CString::new("hash-B").unwrap();
-        assert_eq!(a.as_bytes(), b.as_bytes(), "equal hashes compare equal");
-        assert_ne!(a.as_bytes(), c.as_bytes(), "differing hashes compare unequal");
+    fn link_reader_dereferences_fat_pointer_to_get_hash() {
+        // The platform rlib's hash `&str` points at the first 16 bytes of a
+        // larger rodata blob; the bytes after the hash are NOT part of `len`.
+        let blob: &'static str = "239228b4b2e2ecb1(schema (shapes/Rectangle))";
+        let linked_str: &'static str = &blob[..16];
+        let expected = CString::new("239228b4b2e2ecb1").unwrap();
+
+        // The fat-pointer read sees exactly the 16-char hash (len-bounded), never
+        // the trailing schema text — so the clean case matches.
+        assert_eq!(linked_str.as_bytes(), expected.as_bytes());
+
+        // Negative half: a drifted hash still differs (the fix makes the CLEAN
+        // case match — it must NOT make every case match).
+        let drift_blob: &'static str = "deadbeefdeadbeef(schema (shapes/Rectangle))";
+        let drifted: &'static str = &drift_blob[..16];
+        assert_ne!(
+            drifted.as_bytes(),
+            expected.as_bytes(),
+            "a drifted hash still mismatches — the gate still refuses on drift"
+        );
+
+        // End-to-end through the intrinsic's read path: passing &linked_str
+        // (address of the `&str`) returns without aborting on a match.
+        let name = CString::new("shapes").unwrap();
+        cranelisp_check_layout_hash(
+            (&raw const linked_str).cast::<u8>(),
+            expected.as_ptr().cast::<u8>(),
+            name.as_ptr().cast::<u8>(),
+        );
     }
 }

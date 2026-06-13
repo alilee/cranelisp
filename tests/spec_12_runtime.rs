@@ -481,7 +481,7 @@ fn lenient_no_lenient_env_var_preserves_correctness() {
         .user(
             "(defn double [x] (mul-i64 x 2))\n\
              (defn triple [x] (mul-i64 x 3))\n\
-             (defn main [] (let [a (double 5) b (triple 7)] (add-i64 a b)))\n",
+             (defn main [] (Pure (let [a (double 5) b (triple 7)] (add-i64 a b))))\n",
         )
         .env("CRANELISP_NO_LENIENT", "1")
         .output()
@@ -759,23 +759,25 @@ fn tco_self_recursion_with_fn_typed_parameter() {
 // `main`; only the `--run` driver does.
 // =============================================================================
 
-// spec: spec/12-runtime.md §12.6 — `(defn main [] Int)` exits with that Int
+// spec: spec/12-runtime.md §12.6 — `(defn main [] (Pure Int))` exits with the
+// inner Int. A batch main returns `IO _`; the exit code is the inner Int.
 // (carry: legacy/v4_pipeline.rs::test_v4_integer_literal)
 #[test]
 fn main_returning_int_produces_int_exit_code() {
     Cranelisp::new()
-        .user("(defn main [] 42)")
+        .user("(import [primitives [Pure]])\n(defn main [] (Pure 42))")
         .run("user.cl")
         .output()
         .assert_exit(42);
 }
 
-// spec: spec/12-runtime.md §12.6 — non-Int main result → exit 0
+// spec: spec/12-runtime.md §12.6 — non-Int IO main result → exit 0. The main
+// returns `IO Bool` (`(Pure true)`); a non-Int inner value maps to exit 0.
 // (carry: legacy/v4_pipeline.rs::test_v4_boolean_literal)
 #[test]
 fn main_returning_non_int_produces_zero_exit_code() {
     Cranelisp::new()
-        .user("(defn main [] true)")
+        .user("(import [primitives [Pure]])\n(defn main [] (Pure true))")
         .run("user.cl")
         .output()
         .assert_exit(0);
@@ -787,7 +789,7 @@ fn main_returning_non_int_produces_zero_exit_code() {
 #[test]
 fn main_invokes_primitive_call_for_exit_code() {
     Cranelisp::new()
-        .user("(defn main [] (primitives/add-i64 1 2))")
+        .user("(import [primitives [Pure]])\n(defn main [] (Pure (primitives/add-i64 1 2)))")
         .run("user.cl")
         .output()
         .assert_exit(3);
@@ -801,8 +803,9 @@ fn main_invokes_primitive_call_for_exit_code() {
 fn main_invokes_sibling_user_defn_for_exit_code() {
     Cranelisp::new()
         .user(
-            "(defn double [x] (primitives/add-i64 x x))\n\
-             (defn main [] (double 5))",
+            "(import [primitives [Pure]])\n\
+             (defn double [x] (primitives/add-i64 x x))\n\
+             (defn main [] (Pure (double 5)))",
         )
         .run("user.cl")
         .output()
@@ -817,11 +820,12 @@ fn main_invokes_sibling_user_defn_for_exit_code() {
 fn main_invokes_recursive_user_defn_for_exit_code() {
     Cranelisp::new()
         .user(
-            "(defn fact [n]\n\
+            "(import [primitives [Pure]])\n\
+             (defn fact [n]\n\
                (if (primitives/eq-i64 n 0)\n\
                  1\n\
                  (primitives/mul-i64 n (fact (primitives/sub-i64 n 1)))))\n\
-             (defn main [] (fact 5))",
+             (defn main [] (Pure (fact 5)))",
         )
         .run("user.cl")
         .output()
@@ -945,7 +949,7 @@ fn dependency_type_error_cascade_preserves_root_cause_neg() {
 #[test]
 fn clean_program_produces_no_error_in_run_mode() {
     let out = Cranelisp::new()
-        .user("(defn main [] (primitives/add-i64 10 20))")
+        .user("(import [primitives [Pure]])\n(defn main [] (Pure (primitives/add-i64 10 20)))")
         .run("user.cl")
         .output();
     // Filter benign nice-worker warnings from stderr before assertion.

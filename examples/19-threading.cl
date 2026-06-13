@@ -207,15 +207,18 @@
 ;; Total: 16+21+(-7)+42+(-40)+90+13+1+7+(-7)+150+100 = 386
 
 (defn main []
-  (add-i64 (test-thread-first-basic)
-    (add-i64 (test-thread-first-chain)
-      (add-i64 (test-thread-first-bare)
-        (add-i64 (test-thread-first-bare-chain)
-          (add-i64 (test-thread-last-basic)
-            (add-i64 (test-thread-last-negate)
-              (add-i64 (test-string-pipeline)
-                (add-i64 (if (test-greeting) 1 0)
-                  (add-i64 (test-position-first)
-                    (add-i64 (test-position-last)
-                      (add-i64 (test-practical-pipeline)
-                               (test-clamp-pipeline)))))))))))))
+  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
+  ;; return `IO _`. The inner Int is the exit code (preserved).
+  (Pure
+    (add-i64 (test-thread-first-basic)
+      (add-i64 (test-thread-first-chain)
+        (add-i64 (test-thread-first-bare)
+          (add-i64 (test-thread-first-bare-chain)
+            (add-i64 (test-thread-last-basic)
+              (add-i64 (test-thread-last-negate)
+                (add-i64 (test-string-pipeline)
+                  (add-i64 (if (test-greeting) 1 0)
+                    (add-i64 (test-position-first)
+                      (add-i64 (test-position-last)
+                        (add-i64 (test-practical-pipeline)
+                                 (test-clamp-pipeline))))))))))))))

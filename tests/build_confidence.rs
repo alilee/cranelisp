@@ -46,7 +46,7 @@ fn smoke_binary_starts_repl_and_exits_on_eof() {
 fn smoke_run_zero_arg_main_exits_zero() {
     Cranelisp::new()
         .run("user.cl")
-        .user("(defn main [] 0)")
+        .user("(import [primitives [Pure]]) (defn main [] (Pure 0))")
         .output()
         .assert_exit(0);
 }
@@ -68,7 +68,7 @@ fn smoke_run_zero_arg_main_exits_zero() {
 fn smoke_run_main_returns_int_propagates_as_exit_code() {
     Cranelisp::new()
         .run("user.cl")
-        .user("(defn main [] 42)")
+        .user("(import [primitives [Pure]]) (defn main [] (Pure 42))")
         .output()
         .assert_exit(42);
 }
@@ -80,7 +80,7 @@ fn smoke_run_main_returns_int_propagates_as_exit_code() {
 fn smoke_link_then_run_executable_matches_run_exit() {
     Cranelisp::new()
         .link_then_run("user.cl")
-        .user("(import [primitives [add-i64]]) (defn main [] (add-i64 30 12))")
+        .user("(import [primitives [add-i64 Pure]]) (defn main [] (Pure (add-i64 30 12)))")
         .output()
         .assert_exit(42);
 }
@@ -91,7 +91,7 @@ fn smoke_link_then_run_executable_matches_run_exit() {
 fn smoke_run_warms_project_root_cache() {
     let out = Cranelisp::new()
         .run("user.cl")
-        .user("(defn main [] 0)")
+        .user("(import [primitives [Pure]]) (defn main [] (Pure 0))")
         .output()
         .assert_ok();
     assert!(
@@ -121,7 +121,7 @@ fn smoke_run_warms_project_root_cache() {
 // correctly for the trivial case before more interesting programs.
 #[test]
 fn mode_equiv_constant_main() {
-    run_through_all_modes("(defn main [] 0)", PreludeVariant::None)
+    run_through_all_modes("(import [primitives [Pure]]) (defn main [] (Pure 0))", PreludeVariant::None)
         .assert_all_equal(0);
 }
 
@@ -130,7 +130,7 @@ fn mode_equiv_constant_main() {
 #[test]
 fn mode_equiv_primitive_arithmetic() {
     run_through_all_modes(
-        "(import [primitives [add-i64]]) (defn main [] (add-i64 1 2))",
+        "(import [primitives [add-i64 Pure]]) (defn main [] (Pure (add-i64 1 2)))",
         PreludeVariant::None,
     )
     .assert_all_equal(3);
@@ -144,7 +144,7 @@ fn mode_equiv_primitive_arithmetic() {
 #[test]
 fn mode_equiv_arithmetic_via_operators() {
     run_through_all_modes(
-        "(defn main [] (+ 1 2))",
+        "(defn main [] (Pure (+ 1 2)))",
         PreludeVariant::TestStandard,
     )
     .assert_all_equal(3);
@@ -155,7 +155,7 @@ fn mode_equiv_arithmetic_via_operators() {
 #[test]
 fn mode_equiv_adt_option_match() {
     run_through_all_modes(
-        "(defn main [] (match (Some 7) [(Some x) (if (= x 7) 0 1) None 2]))",
+        "(defn main [] (Pure (match (Some 7) [(Some x) (if (= x 7) 0 1) None 2])))",
         PreludeVariant::TestStandard,
     )
     .assert_all_equal(0);
@@ -166,7 +166,7 @@ fn mode_equiv_adt_option_match() {
 #[test]
 fn mode_equiv_pattern_match_nested() {
     run_through_all_modes(
-        "(defn main [] (match (Ok 42) [(Ok x) x (Err _) -1]))",
+        "(defn main [] (Pure (match (Ok 42) [(Ok x) x (Err _) -1])))",
         PreludeVariant::TestStandard,
     )
     .assert_all_equal(42);
@@ -176,7 +176,7 @@ fn mode_equiv_pattern_match_nested() {
 #[test]
 fn mode_equiv_trait_eq_dispatch() {
     run_through_all_modes(
-        "(defn main [] (if (= 1 1) 0 1))",
+        "(defn main [] (Pure (if (= 1 1) 0 1)))",
         PreludeVariant::TestStandard,
     )
     .assert_all_equal(0);
@@ -190,7 +190,7 @@ fn mode_equiv_trait_eq_dispatch() {
 #[test]
 fn mode_equiv_module_import_resolves() {
     run_through_all_modes(
-        "(import [primitives [add-i64 sub-i64]]) (defn main [] (sub-i64 (add-i64 10 5) 3))",
+        "(import [primitives [add-i64 sub-i64 Pure]]) (defn main [] (Pure (sub-i64 (add-i64 10 5) 3)))",
         PreludeVariant::None,
     )
     .assert_all_equal(12);
@@ -204,9 +204,9 @@ fn mode_equiv_module_import_resolves() {
 #[test]
 fn mode_equiv_macro_user_defined() {
     run_through_all_modes(
-        "(import [primitives [add-i64]]) \
+        "(import [primitives [add-i64 Pure]]) \
          (defmacro twice [x] `(add-i64 ~x ~x)) \
-         (defn main [] (twice 21))",
+         (defn main [] (Pure (twice 21)))",
         PreludeVariant::None,
     )
     .assert_all_equal(42);
@@ -229,7 +229,7 @@ fn mode_equiv_io_pure_primitive() {
 #[test]
 fn mode_equiv_let_binding() {
     run_through_all_modes(
-        "(defn main [] (let [x 10 y 5] (- x y)))",
+        "(defn main [] (Pure (let [x 10 y 5] (- x y))))",
         PreludeVariant::TestStandard,
     )
     .assert_all_equal(5);

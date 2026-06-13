@@ -69,7 +69,7 @@ fn local_defn_silently_shadows_prelude() {
         .prelude(PRELUDE_WITH_GULP)
         .file(
             "user.cl",
-            "(defn gulp [x] (add-i64 x 100))\n(defn main [] (gulp 5))",
+            "(defn gulp [x] (add-i64 x 100))\n(defn main [] (Pure (gulp 5)))",
         )
         .run("user.cl")
         .output()
@@ -86,7 +86,7 @@ fn local_defn_shadows_prelude_neg_no_ambiguity_error() {
         .prelude(PRELUDE_WITH_GULP)
         .file(
             "user.cl",
-            "(defn gulp [x] (add-i64 x 100))\n(defn main [] (gulp 5))",
+            "(defn gulp [x] (add-i64 x 100))\n(defn main [] (Pure (gulp 5)))",
         )
         .run("user.cl")
         .output();
@@ -123,7 +123,7 @@ fn explicit_glob_import_silently_shadows_prelude() {
         .file("libc.cl", "(defn gulp [x] (add-i64 x 100))")
         .file(
             "user.cl",
-            "(import [libc [*]])\n(defn main [] (gulp 5))",
+            "(import [libc [*]])\n(defn main [] (Pure (gulp 5)))",
         )
         .run("user.cl")
         .output()
@@ -143,7 +143,7 @@ fn explicit_specific_import_silently_shadows_prelude() {
         .file("libc.cl", "(defn gulp [x] (add-i64 x 100))")
         .file(
             "user.cl",
-            "(import [libc [gulp]])\n(defn main [] (gulp 5))",
+            "(import [libc [gulp]])\n(defn main [] (Pure (gulp 5)))",
         )
         .run("user.cl")
         .output()
@@ -167,7 +167,7 @@ fn explicit_import_shadows_prelude_neg_no_ambiguity_error() {
         .file("libc.cl", "(defn gulp [x] (add-i64 x 100))")
         .file(
             "user.cl",
-            "(import [libc [*]])\n(defn main [] (gulp 5))",
+            "(import [libc [*]])\n(defn main [] (Pure (gulp 5)))",
         )
         .run("user.cl")
         .output();
@@ -271,7 +271,7 @@ fn explicit_import_no_collision_resolves() {
         )
         .file(
             "user.cl",
-            "(import [libc [other]])\n(defn main [] (other 5))",
+            "(import [libc [other]])\n(defn main [] (Pure (other 5)))",
         )
         .run("user.cl")
         .output()
@@ -329,7 +329,7 @@ fn prelude_refusal_qualified_primitive_still_resolves() {
         .prelude(PRELUDE_WITH_GULP)
         .file(
             "user.cl",
-            "(import [prelude []])\n(defn main [] (primitives/add-i64 2 3))",
+            "(import [prelude []])\n(defn main [] (primitives/Pure (primitives/add-i64 2 3)))",
         )
         .run("user.cl")
         .output()
@@ -348,7 +348,7 @@ fn selective_prelude_import_brings_named_name() {
         .prelude(PRELUDE_WITH_GULP)
         .file(
             "user.cl",
-            "(import [prelude [gulp]])\n(defn main [] (gulp 10))",
+            "(import [prelude [gulp]])\n(defn main [] (primitives/Pure (gulp 10)))",
         )
         .run("user.cl")
         .output()
@@ -406,7 +406,7 @@ fn bare_primitive_resolves_via_prelude_reexport() {
     // add-i64 40 2 = 42.
     Cranelisp::new()
         .prelude(PRELUDE_WITH_GULP)
-        .file("user.cl", "(defn main [] (add-i64 40 2))")
+        .file("user.cl", "(defn main [] (Pure (add-i64 40 2)))")
         .run("user.cl")
         .output()
         .assert_exit(42);
@@ -420,7 +420,7 @@ fn bare_primitive_resolves_via_prelude_reexport() {
 fn qualified_primitive_resolves_in_normal_module() {
     Cranelisp::new()
         .prelude(PRELUDE_WITH_GULP)
-        .file("user.cl", "(defn main [] (primitives/add-i64 40 2))")
+        .file("user.cl", "(defn main [] (Pure (primitives/add-i64 40 2)))")
         .run("user.cl")
         .output()
         .assert_exit(42);
@@ -436,7 +436,7 @@ fn bare_primitive_and_prelude_defn_coexist() {
     // (gulp (add-i64 40 1)) = (gulp 41) = 42.
     Cranelisp::new()
         .prelude(PRELUDE_WITH_GULP)
-        .file("user.cl", "(defn main [] (gulp (add-i64 40 1)))")
+        .file("user.cl", "(defn main [] (Pure (gulp (add-i64 40 1))))")
         .run("user.cl")
         .output()
         .assert_exit(42);

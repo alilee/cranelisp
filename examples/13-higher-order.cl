@@ -110,12 +110,15 @@
 
 ;; Expected: 42 + 2 + 5 + 54 + 45 + 12 + 21 + 15 + 7 = 203
 (defn main []
-  (add-i64 (test-apply-fn)
-    (add-i64 (test-apply-twice)
-      (add-i64 (test-repeat-fn)
-        (add-i64 (test-named-as-value)
-          (add-i64 (test-factories)
-            (add-i64 (test-compose)
-              (add-i64 (test-compose-named)
-                (add-i64 (test-transform-check)
-                         (test-pipeline))))))))))
+  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
+  ;; return `IO _`. The inner Int is the exit code (preserved).
+  (Pure
+    (add-i64 (test-apply-fn)
+      (add-i64 (test-apply-twice)
+        (add-i64 (test-repeat-fn)
+          (add-i64 (test-named-as-value)
+            (add-i64 (test-factories)
+              (add-i64 (test-compose)
+                (add-i64 (test-compose-named)
+                  (add-i64 (test-transform-check)
+                           (test-pipeline)))))))))))

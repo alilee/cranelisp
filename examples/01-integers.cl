@@ -28,9 +28,12 @@
 ;; The entry point combines the results to verify they all work.
 ;; Expected: 7 + 7 + 42 + 3 + 17 + (-7) = 69
 (defn main []
-  (add-i64 (add-example)
-    (add-i64 (sub-example)
-      (add-i64 (mul-example)
-        (add-i64 (div-example)
-          (add-i64 (nested)
-                   (negate-example)))))))
+  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
+  ;; return `IO _`. The inner Int is the exit code (preserved).
+  (Pure
+    (add-i64 (add-example)
+      (add-i64 (sub-example)
+        (add-i64 (mul-example)
+          (add-i64 (div-example)
+            (add-i64 (nested)
+                     (negate-example))))))))

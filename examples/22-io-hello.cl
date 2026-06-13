@@ -14,11 +14,10 @@
 ;; and extracts the inner value. Effect nodes execute their side effects
 ;; during forcing. So (Pure 42) as main's return produces 42.
 ;;
-;; Prerequisites:
-;;   Build the test-capture platform DLL before running:
-;;     cargo build -p cranelisp-test-capture
-;;   Run:
-;;     cargo run -- --run examples/22-io-hello.cl
+;; Running:
+;;   just run-example examples/22-io-hello.cl
+;;   (builds the platform cdylibs and puts target/debug on the platform
+;;    search path so the test-capture DLL resolves — no symlinks.)
 ;;
 ;; Note: This example uses the test-capture platform, which captures
 ;; print output in memory instead of writing to the console. This makes

@@ -107,7 +107,7 @@ fn cranelisp_toml_lib_dirs_resolves_module() {
         .file("Cranelisp.toml", r#"lib-dirs = ["./mylib"]"#)
         .file(
             "main.cl",
-            "(import [foo [forty-two]])\n(defn main [] (forty-two))\n",
+            "(import [primitives [Pure]])\n(import [foo [forty-two]])\n(defn main [] (Pure (forty-two)))\n",
         )
         .file("mylib/foo.cl", "(defn forty-two [] 42)\n")
         .run("main")
@@ -136,7 +136,7 @@ fn cranelisp_toml_takes_precedence_over_cranelisp_lib_env() {
         .file("Cranelisp.toml", r#"lib-dirs = ["./conflict-lib"]"#)
         .file(
             "main.cl",
-            "(import [foo [pick]])\n(defn main [] (pick))\n",
+            "(import [primitives [Pure]])\n(import [foo [pick]])\n(defn main [] (Pure (pick)))\n",
         )
         .file("conflict-lib/foo.cl", "(defn pick [] 99)\n")
         .env(
@@ -175,7 +175,7 @@ fn cranelisp_toml_missing_falls_through_to_env_var() {
     let out = Cranelisp::new()
         .file(
             "main.cl",
-            "(import [foo [val]])\n(defn main [] (val))\n",
+            "(import [primitives [Pure]])\n(import [foo [val]])\n(defn main [] (Pure (val)))\n",
         )
         .env(
             "CRANELISP_LIB",
@@ -295,7 +295,7 @@ fn io_trampoline_executes_print_to_stdout() {
 #[test]
 fn no_platform_form_program_runs_with_empty_registry() {
     Cranelisp::new()
-        .user("(defn main [] (primitives/add-i64 100 200))")
+        .user("(defn main [] (primitives/Pure (primitives/add-i64 100 200)))")
         .run("user.cl")
         .output()
         // 300 mod 256 = 44 on Unix (exit codes are bytes).

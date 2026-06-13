@@ -82,15 +82,29 @@ fn hello_io_path() -> PathBuf {
     examples_dir().join("21-hello-io.cl")
 }
 
-/// Is the `stdio` platform DLL built and available? Required for
+/// Is the `stdio` platform cdylib built and available? Required for
 /// `examples/21-hello-io.cl` to execute end-to-end. When absent, the
 /// subprocess tests are un-runnable — we surface that as a single
 /// diagnostic assertion rather than hiding behind `#[ignore]`.
+///
+/// MECHANISM (settled S80 Wave 1E): the old `examples/platforms/*.dylib`
+/// symlink convention is dropped. The platform DLL is cargo's
+/// `libcranelisp_stdio.{ext}` in `target/debug` (built via
+/// `cargo build -p cranelisp-stdio`), discovered through the Tier-3
+/// `CRANELISP_PLATFORM_PATH=target/debug` search path. (This file is
+/// QUARANTINED — not compiled; the check is updated for provenance fidelity
+/// only. The live regression guard is
+/// `tests/platform_errors.rs::platform_dll_resolves_on_current_platform`.)
 fn stdio_dll_available() -> bool {
-    let platforms = examples_dir().join("platforms");
-    // macOS symlink → libcranelisp_stdio.dylib; Linux → .so; Windows → .dll.
-    for name in ["stdio.dylib", "stdio.so", "stdio.dll"] {
-        if platforms.join(name).exists() {
+    let target_debug = project_root().join("target").join("debug");
+    // cargo names the cdylib `libcranelisp_stdio.{ext}` — `.so` on Linux,
+    // `.dylib` on macOS, `.dll` on Windows. No symlinks.
+    for name in [
+        "libcranelisp_stdio.so",
+        "libcranelisp_stdio.dylib",
+        "cranelisp_stdio.dll",
+    ] {
+        if target_debug.join(name).exists() {
             return true;
         }
     }
@@ -186,9 +200,10 @@ fn io_trace_hello_io_emits_full_trampoline_sequence() {
         // precondition the implementation must satisfy — do NOT softly
         // pass. This mirrors `examples_run.rs`'s approach.
         panic!(
-            "stdio platform DLL missing under examples/platforms — build with \
-             `cargo build -p cranelisp-stdio` and symlink into \
-             examples/platforms/. Test cannot proceed."
+            "stdio platform cdylib missing under target/debug — build with \
+             `cargo build -p cranelisp-stdio` (discovered via \
+             CRANELISP_PLATFORM_PATH=target/debug; no symlinks). \
+             Test cannot proceed."
         );
     }
     let (out, _tmp) =

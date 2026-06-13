@@ -67,7 +67,7 @@ fn cache_lives_under_project_root() {
     let out = Cranelisp::new()
         .run("user.cl")
         .with_prelude(helpers::e2e::PreludeVariant::PrimitivesOnly)
-        .user("(defn main [] 0)")
+        .user("(defn main [] (Pure 0))")
         .output()
         .assert_ok();
 
@@ -86,7 +86,7 @@ fn cache_lives_under_project_root() {
 // spec: design/backend/module-caching.md §5 — single-file compile with caching works
 #[test]
 fn cache_single_file_sanity() {
-    project(&[("main.cl", "(defn main [] 42)")])
+    project(&[("main.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 42))")])
         .run("main.cl")
         .output()
         .assert_exit(42);
@@ -97,7 +97,7 @@ fn cache_single_file_sanity() {
 fn cache_object_file_loadable() {
     let out = project(&[(
         "main.cl",
-        "(import [primitives [add-i64]])\n(defn double [x] (add-i64 x x))\n(defn main [] (double 21))",
+        "(import [primitives [add-i64 Pure]])\n(defn double [x] (add-i64 x x))\n(defn main [] (Pure (double 21)))",
     )])
     .run("main.cl")
     .output()
@@ -121,7 +121,7 @@ fn cache_object_file_loadable() {
 fn cache_load_fresh_compile_equivalence() {
     let fresh = project(&[(
         "main.cl",
-        "(import [primitives [add-i64]])\n(defn double [x] (add-i64 x x))\n(defn main [] (double 21))",
+        "(import [primitives [add-i64 Pure]])\n(defn double [x] (add-i64 x x))\n(defn main [] (Pure (double 21)))",
     )])
     .run("main.cl")
     .output()
@@ -139,7 +139,7 @@ fn cache_load_fresh_compile_equivalence() {
 fn cache_load_imports_macros_traits_installed() {
     let fresh = project(&[(
         "main.cl",
-        "(import [primitives [add-i64]])\n(defn helper [x] (add-i64 x 1))\n(defn main [] (helper 9))",
+        "(import [primitives [add-i64 Pure]])\n(defn helper [x] (add-i64 x 1))\n(defn main [] (Pure (helper 9)))",
     )])
     .run("main.cl")
     .output()
@@ -155,7 +155,7 @@ fn cache_load_imports_macros_traits_installed() {
 // spec: design/backend/module-caching.md §8 — pipeline cache hit second compile
 #[test]
 fn cache_pipeline_hit_second_compile() {
-    let first = project(&[("main.cl", "(defn val [] 77)\n(defn main [] (val))")])
+    let first = project(&[("main.cl", "(import [primitives [Pure]])\n(defn val [] 77)\n(defn main [] (Pure (val)))")])
         .run("main.cl")
         .output()
         .assert_exit(77);
@@ -172,14 +172,14 @@ fn cache_pipeline_hit_second_compile() {
 // spec: design/backend/module-caching.md §8 — pipeline cache miss on source change
 #[test]
 fn cache_pipeline_miss_on_source_change() {
-    let first = project(&[("main.cl", "(defn val [] 100)\n(defn main [] (val))")])
+    let first = project(&[("main.cl", "(import [primitives [Pure]])\n(defn val [] 100)\n(defn main [] (Pure (val)))")])
         .run("main.cl")
         .output()
         .assert_exit(100);
 
     let second = first.run_again().file(
         "main.cl",
-        "(defn val [] 123)\n(defn main [] (val))",
+        "(import [primitives [Pure]])\n(defn val [] 123)\n(defn main [] (Pure (val)))",
     );
 
     second.run("main.cl").output().assert_exit(123);
@@ -190,14 +190,14 @@ fn cache_pipeline_miss_on_source_change() {
 // dependent producing the new value rather than a stale-cache value.)
 #[test]
 fn cache_invalidation_transitive_pipeline() {
-    let first = project(&[("main.cl", "(defn base [] 10)\n(defn main [] (base))")])
+    let first = project(&[("main.cl", "(import [primitives [Pure]])\n(defn base [] 10)\n(defn main [] (Pure (base)))")])
         .run("main.cl")
         .output()
         .assert_exit(10);
 
     first
         .run_again()
-        .file("main.cl", "(defn base [] 20)\n(defn main [] (base))")
+        .file("main.cl", "(import [primitives [Pure]])\n(defn base [] 20)\n(defn main [] (Pure (base)))")
         .run("main.cl")
         .output()
         .assert_exit(20);
@@ -213,7 +213,7 @@ fn cache_multi_module_hit_cross_module_call() {
     let fresh = project(&[
         (
             "main.cl",
-            "(import [util [helper]])\n(defn main [] (helper 21))",
+            "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (helper 21)))",
         ),
         (
             "util.cl",
@@ -246,7 +246,7 @@ fn cache_multi_module_transitive_imports() {
     let fresh = project(&[
         (
             "main.cl",
-            "(mod mid)\n(import [main.mid [relay]])\n(defn main [] (relay))",
+            "(import [primitives [Pure]])\n(mod mid)\n(import [main.mid [relay]])\n(defn main [] (Pure (relay)))",
         ),
         (
             "main/mid.cl",
@@ -276,7 +276,7 @@ fn cache_multi_module_invalidation_dependency_change() {
     let first = project(&[
         (
             "main.cl",
-            "(import [util [helper]])\n(defn main [] (helper 10))",
+            "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (helper 10)))",
         ),
         (
             "util.cl",
@@ -304,7 +304,7 @@ fn cache_multi_module_unchanged_dep_stays_cached() {
     let first = project(&[
         (
             "main.cl",
-            "(import [util [helper]])\n(defn main [] (helper 5))",
+            "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (helper 5)))",
         ),
         (
             "util.cl",
@@ -322,7 +322,7 @@ fn cache_multi_module_unchanged_dep_stays_cached() {
         .run_again()
         .file(
             "main.cl",
-            "(import [util [helper]])\n(defn main [] (helper 7))",
+            "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (helper 7)))",
         )
         .run("main.cl")
         .output()
@@ -341,7 +341,7 @@ fn cache_multi_module_multiple_imports() {
     let fresh = project(&[
         (
             "main.cl",
-            "(import [util [add-one double]])\n(defn main [] (add-one (double 10)))",
+            "(import [primitives [Pure]])\n(import [util [add-one double]])\n(defn main [] (Pure (add-one (double 10))))",
         ),
         (
             "util.cl",
@@ -363,9 +363,10 @@ fn cache_multi_module_two_deps() {
     let fresh = project(&[
         (
             "main.cl",
-            "(import [math [square]])\n\
+            "(import [primitives [Pure]])\n\
+             (import [math [square]])\n\
              (import [constants [base-val]])\n\
-             (defn main [] (square (base-val)))",
+             (defn main [] (Pure (square (base-val))))",
         ),
         (
             "math.cl",
@@ -399,7 +400,7 @@ fn cache_multi_module_two_deps() {
 #[test]
 fn cache_prelude_modules_cached() {
     let first = project(&[
-        ("main.cl", "(defn main [] 42)"),
+        ("main.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 42))"),
         ("prelude.cl", "(defn id [x] x)"),
     ])
     .run("main.cl")
@@ -428,7 +429,7 @@ fn cache_prelude_modules_cached() {
 #[test]
 fn cache_prelude_change_invalidates_user_module() {
     let first = project(&[
-        ("main.cl", "(defn main [] 42)"),
+        ("main.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 42))"),
         ("prelude.cl", "(defn id [x] x)"),
     ])
     .run("main.cl")
@@ -449,7 +450,7 @@ fn cache_multi_module_with_prelude() {
     let fresh = project(&[
         (
             "main.cl",
-            "(import [util [helper]])\n(defn main [] (helper 5))",
+            "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (helper 5)))",
         ),
         (
             "util.cl",
@@ -474,7 +475,7 @@ fn cache_repl_restart_cache_hit() {
     let first = project(&[
         (
             "main.cl",
-            "(import [helper [add-one]])\n(defn main [] (add-one 41))",
+            "(import [primitives [Pure]])\n(import [helper [add-one]])\n(defn main [] (Pure (add-one 41)))",
         ),
         (
             "helper.cl",
@@ -505,7 +506,7 @@ fn cache_repl_incremental_monomorphisation() {
     let first = project(&[
         (
             "main.cl",
-            "(import [math [double]])\n(defn main [] (double 21))",
+            "(import [primitives [Pure]])\n(import [math [double]])\n(defn main [] (Pure (double 21)))",
         ),
         (
             "math.cl",
@@ -520,7 +521,7 @@ fn cache_repl_incremental_monomorphisation() {
         .run_again()
         .file(
             "main.cl",
-            "(import [math [double]])\n(defn main [] (double 10))",
+            "(import [primitives [Pure]])\n(import [math [double]])\n(defn main [] (Pure (double 10)))",
         )
         .run("main.cl")
         .output()
@@ -533,7 +534,7 @@ fn cache_quick_build_links_cached_objects() {
     let first = project(&[
         (
             "main.cl",
-            "(import [helper [double]])\n(defn main [] (double 21))",
+            "(import [primitives [Pure]])\n(import [helper [double]])\n(defn main [] (Pure (double 21)))",
         ),
         (
             "helper.cl",
@@ -569,7 +570,7 @@ fn cache_quick_build_fallback_on_missing_cache() {
     let out = project(&[
         (
             "main.cl",
-            "(import [helper [triple]])\n(defn main [] (triple 14))",
+            "(import [primitives [Pure]])\n(import [helper [triple]])\n(defn main [] (Pure (triple 14)))",
         ),
         (
             "helper.cl",
@@ -592,7 +593,7 @@ fn cache_quick_build_fallback_on_missing_cache() {
 // spec: design/backend/module-caching.md §14 — single-module round-trip
 #[test]
 fn cache_round_trip_single_module_observable_equivalence() {
-    let fresh = project(&[("main.cl", "(defn main [] 99)")])
+    let fresh = project(&[("main.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 99))")])
         .run("main.cl")
         .output()
         .assert_exit(99);
@@ -612,7 +613,7 @@ fn cache_round_trip_multi_module_observable_equivalence() {
     let fresh = project(&[
         (
             "main.cl",
-            "(import [util [helper]])\n(defn main [] (helper 21))",
+            "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (helper 21)))",
         ),
         (
             "util.cl",
@@ -636,7 +637,7 @@ fn cache_round_trip_multi_module_observable_equivalence() {
 #[test]
 fn cache_invalidation_on_dep_change_e2e() {
     let first = project(&[
-        ("main.cl", "(import [dep [val]])\n(defn main [] (val))"),
+        ("main.cl", "(import [primitives [Pure]])\n(import [dep [val]])\n(defn main [] (Pure (val)))"),
         ("dep.cl", "(defn val [] 11)"),
     ])
     .run("main.cl")
@@ -912,7 +913,7 @@ fn cache_repl_empty_prelude_session_2_evaluates_literal() {
 
 /// Trivial single-file program used by the build_id tests below. `main`
 /// returns 0 (spec §12.6) so `assert_ok()` is the right assertion.
-const BUILD_ID_SRC: &str = "(import [primitives [add-i64]])\n(defn double [x] (add-i64 x x))\n(defn main [] (double 0))";
+const BUILD_ID_SRC: &str = "(import [primitives [add-i64 Pure]])\n(defn double [x] (add-i64 x x))\n(defn main [] (Pure (double 0)))";
 
 /// Extract the `build_id` string from the raw `.meta.json` text. Returns
 /// `None` if the field is absent. Narrow parser — looks for

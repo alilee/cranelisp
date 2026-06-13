@@ -38,6 +38,80 @@ A failing test without all six fields is treated as a sprint-blocking issue. `/s
 
 ## Current Entries (as of 2026-05-09, Sprint 66 Phase 5 Wave 1, post-S64 baseline carries forward)
 
+### Sprint 80 Wave 3a — e2e `--link`/platform reliability resolved by nextest setup script (/qa, 2026-06-13, SHA `4109c3e`)
+
+**Root cause (corrected from the "profile desync" framing):** plain `cargo
+nextest run` never builds the five `--link` prerequisite workspace members
+(`cranelisp-exe-bundle`, `cranelisp-stdio`, `cranelisp-test-capture`,
+`cranelisp-shapes`, `cranelisp-shapes-badabi`) — nothing has a Cargo
+dependency edge to them, and the binary resolves them at runtime by
+scanning `target/debug/`. On a clean tree the artifacts are absent →
+`could not find libcranelisp_exe_bundle.a`. NOT a profile mismatch.
+Diagnosis + design: `tests/plan/e2e-architecture.md`.
+
+**Fix (prototyped + validated this wave):** `.config/nextest.toml`
+`[scripts.setup.link-prereqs]` + `tests/scripts/build-link-prereqs.sh`
+build all five in one `cargo build -p` invocation before the suite.
+Single invocation => consistent snapshot (also closes the
+rlib-vs-exe-bundle skew hazard noted in SPRINT.md Wave-2D/2E).
+
+**Result:** full suite under the setup script = **1222 passed / 2 failed /
+9 skipped** (37s, Linux). The entire `--link` / platform / output-
+equivalence surface previously red/unreliable under vanilla nextest is now
+green — including the `output_equivalence::*` link permutations and
+`spec_platforms_adt::*_link` SPRINT.md attributed to D4. The 2 remaining
+reds are pre-existing, owned, and unrelated to artifact provisioning:
+
+| Test (binary::fn) | Disposition | Owner | Note |
+|---|---|---|---|
+| `regression::shared_state_field_count_at_target_14` | out-of-scope (owner=/qa) | /qa | FIXME 0324 — bump field-count guard 15→16 (D1 collateral); fails under the manual protocol too. |
+| `spec_platforms_adt::platform_adt_roundtrip_cache_restore` | out-of-scope (owner=/qa) | /qa | D3 (SPRINT.md:230) — asserts on `CRANELISP_MODULE_TRACE`, an env var read by no source; round-trip works (exit 12). Re-assert on real cache-hit observable. Fails under the manual protocol too. |
+
+### Sprint 80 Wave 0 — QA-first failing tests (both pillars, /qa, 2026-06-13, Linux baseline 1197/8/8)
+
+Wave 0 authored the sprint-wide failing tests BEFORE the per-crate D/D/R cycles
+(METHOD §2.2 QA-first). Suite after Wave 0: **1221 run / 1209 passed / 12
+failed / 8 skipped** (Linux, ~40s). The 12 reds = 8 prior baseline reds
+(6 Pillar-A ADT + the pure-Int RED guard + the `examples` 8th red) + **4 new
+reds authored this wave**. All un-ignored, failing-first. The 12 new
+output-floor tests are GREEN (§10.6.3 is already implemented for those feature
+classes — legitimate floor coverage, not contrived RED).
+
+| Test (binary::fn) | Disposition | Owner | Turns green |
+|---|---|---|---|
+| `spec_platforms_adt::platform_adt_roundtrip_run` | out-of-scope→Wave2 | /dev int | §7.2 pre-resolve of `shapes.cl` |
+| `spec_platforms_adt::platform_adt_roundtrip_link` | out-of-scope→Wave2 | /dev int | §7.2 pre-resolve + `--link` wiring |
+| `spec_platforms_adt::platform_adt_roundtrip_cache_restore` | out-of-scope→Wave2 | /dev int | §7.2 pre-resolve |
+| `spec_platforms_adt::platform_adt_hash_gate_run_refuses` | out-of-scope→Wave2 | /dev int + /platform | §7.2 + schema regen |
+| `spec_platforms_adt::platform_adt_hash_gate_repl_warns_and_loads` | out-of-scope→Wave2 | /dev int + /platform | §7.2 + schema regen |
+| `spec_platforms_adt::platform_adt_hash_gate_link_refuses` | out-of-scope→Wave2 | /dev int + /platform | §7.2 + schema regen |
+| `platform_errors::platform_abi_version_mismatch_e2e` (NEW) | out-of-scope→Wave1 | /platform | `platforms/shapes-badabi/` DLL |
+| `platform_errors::platform_dispatch_error_carries_fn_name` (NEW) | out-of-scope→Wave1 | /platform | dispatch-fail sibling DLL |
+| `platform_errors::platform_dll_resolves_on_current_platform` (NEW) | out-of-scope→Wave2 | /examples + /platform | current-platform DLL on discovery path (see DISCOVERY below) |
+| `spec_10_io::batch_main_pure_int_return_is_rejected` (pre-existing guard) | out-of-scope→Wave1 | /dev int | delete `Type::Int` accept arm |
+| `spec_10_io::batch_main_bool_return_is_rejected` (NEW) | out-of-scope→Wave1 | /dev int | delete non-IO accept arm |
+| `examples::every_example_runs_with_documented_exit` (8th red) | out-of-scope→Wave2 | /examples + /platform | current-platform DLLs in `examples/platforms/` |
+
+Stderr signatures (verbatim):
+- ADT reds: `type error in platform function 'area' signature ...: unknown type \`Rectangle\` (from module \`shapes\`)` — the §7.2 associated-`.cl`-module pre-resolve gap.
+- `platform_abi_version_mismatch_e2e`: `platform 'shapes-badabi' not found` (DLL pending Wave 1).
+- `platform_dispatch_error_carries_fn_name`: `platform 'shapes-dispatch-fail' not found` (DLL pending Wave 1).
+- `platform_dll_resolves_on_current_platform` / `examples`: `platform 'stdio' not found` (see DISCOVERY).
+- `batch_main_{pure_int,bool}_return_is_rejected`: compiler accepted the non-IO main (no rejection emitted) — enforcement pending Wave 1.
+
+**DISCOVERY (affects the plan — flag to /sprint):** The plan attributes the 8th
+red to `src/platform.rs:61` `PLATFORM_EXT = "dylib"` hardcoded. **That is already
+fixed** — the off-plan Linux porting arc (`622d3d8`..`4109c3e`) made
+`PLATFORM_EXT` `cfg`-conditional (`so` on Linux, lines 60-65). The real root
+cause of the `examples` red is that `examples/platforms/` contains only macOS
+`stdio.dylib`/`test-capture.dylib` (checked-in), and there are NO
+current-platform (`.so`) builds on the examples' project-tree discovery path
+(the `examples` test runs WITHOUT `CRANELISP_PLATFORM_PATH`). So the Wave-1
+`/dev int` `PLATFORM_EXT` change is a no-op (already done); the fix belongs to
+**`/examples` + `/platform`** (provide current-platform platform DLLs reachable
+by `examples/` project-tree discovery). `platform_dll_resolves_on_current_platform`
+narrows this to discovery, platform-agnostically (no literal extension asserted).
+
 ### Sprint 79 R2.3 — product-ctor dual-facet cascade REGRESSED ~104 e2e tests (/qa, 2026-06-12, SHA `3339e2d` + uncommitted cascade)
 
 **The R2.3 green-up is NOT green.** A full `cargo nextest run -j2 --no-fail-fast`

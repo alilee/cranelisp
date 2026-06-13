@@ -95,7 +95,7 @@ fn s68_not_primitive_works_in_link_mode_sentinel() {
         .link_then_run("not_sentinel.cl")
         .file(
             "not_sentinel.cl",
-            "(defn main [] (if (not true) 1 0))",
+            "(defn main [] (Pure (if (not true) 1 0)))",
         )
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .output();

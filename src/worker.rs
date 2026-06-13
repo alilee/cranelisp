@@ -655,7 +655,10 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
             }
 
             // Step 3: Compile inline. We need DefmacroInfo to drive compilation;
-            // read the macro's sexp back from the introspection record.
+            // read the macro's original sexp back from the symbol-table
+            // `DefKind::Macro.macro_sexp` field (D1 ruling §6 — re-sourced off
+            // the symbol table, not introspection; this is what makes the
+            // cache-restored cross-module macro recompile here).
             //
             // S77 W-MacroTrait (FIXME 0299): the on-demand recompile is for
             // CROSS-MODULE macros only (an imported macro lives in a dependency,
@@ -669,11 +672,12 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
             // when it processed the (earlier) `defmacro` form. Guarding the
             // recompile to cross-module preserves the §0.2 rejection that
             // `macro_used_before_defmacro_is_unresolved_neg` asserts — without
-            // the guard, the introspection sexp (now populated for regeneration,
-            // FIXME 0299 root #2) would let a forward same-module use recompile
-            // its clause and expand, silently hoisting the macro.
+            // the guard, the now-always-present symbol-table `macro_sexp` would
+            // let a forward same-module use recompile its clause and expand,
+            // silently hoisting the macro. The §0.2 guard (`defining_module !=
+            // self.current_module`) stays load-bearing after the D1 re-sourcing.
             let macro_sexp = if defining_module != self.current_module {
-                resolve_macro_sexp_from(self.shared_state, &defining_module, fq.symbol.as_ref())
+                resolve_macro_sexp_from(self.symbol_tables, &defining_module, fq.symbol.as_ref())
             } else {
                 None
             };
@@ -714,7 +718,7 @@ fn read_macro_meta(
         ModuleEntry::Def { kind, docstring, .. }
             if matches!(kind.as_ref(), DefKind::Macro { .. }) =>
         {
-            let DefKind::Macro { clauses_meta } = kind.as_ref() else {
+            let DefKind::Macro { clauses_meta, .. } = kind.as_ref() else {
                 unreachable!("invariant: guard matched DefKind::Macro");
             };
             Some((clauses_meta.clone(), docstring.clone()))
@@ -725,25 +729,33 @@ fn read_macro_meta(
 
 /// Resolve a macro's original sexp for on-demand clause compilation.
 ///
-/// W-Absorb (S76): the per-entry `sexp` field was retired (Decision 41 — macro
-/// `sexp`/`source` live on the int-layer `Introspection` record keyed by
-/// `FQSymbol`, not on the symbol-table entry). This reads the sexp back from
-/// `SharedState.introspection` for the (module, name) macro. Returns `None`
-/// when there is no shared state (unit-test paths) or no introspection record
-/// (batch compile, where introspection is not populated — in that case the
-/// macro's clauses were already compiled in `pass2_check_bodies_with_expansion`
-/// and this on-demand path is not reached).
+/// D1 ruling (S80, `design/arch/d1-introspection-repl-only.md` §2/§6): the
+/// macro's original `(defmacro …)` form is re-sourced from the **symbol table**
+/// `DefKind::Macro.macro_sexp` field, NOT `SharedState.introspection`. This is
+/// the load-bearing fix for **cache-restored** macros: introspection is a
+/// REPL-only facility and is NEVER populated for a cache-restored module, so
+/// the prior introspection read returned `None` for exactly the case this
+/// recompile path serves (cross-module macro whose clause `.o` was not linked
+/// inline). `macro_sexp` serializes (no `#[serde(skip)]`), so a cache-restored
+/// macro entry carries it directly off the deserialized symbol table — no
+/// rehydration step. FQ-autoloaded (fresh-build) macros populate it through the
+/// normal `register_macro_in_module` register path before this runs.
+///
+/// Returns `None` when the entry is absent or is not a `DefKind::Macro` (a
+/// forward reference or a non-macro shadowing the name).
 fn resolve_macro_sexp_from(
-    shared_state: Option<&crate::session_v4::SharedState>,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     defining_module: &ModuleFullPath,
     name: &str,
 ) -> Option<Sexp> {
-    let shared = shared_state?;
-    let fq = FQSymbol {
-        module: defining_module.clone(),
-        symbol: Symbol::from(name),
-    };
-    shared.introspection.get(&fq).and_then(|rec| rec.sexp.clone())
+    let table = symbol_tables.get(defining_module)?;
+    match table.get(name)? {
+        ModuleEntry::Def { kind, .. } => match kind.as_ref() {
+            DefKind::Macro { macro_sexp, .. } => Some(macro_sexp.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Compile a macro's clauses using the `_with_state` API (no &mut TypeChecker needed).
@@ -1379,7 +1391,12 @@ pub fn process_cluster_once(
             }
             FormKind::Platform(spec) => {
                 record_platform_on_symbol_table(ctx, module, &spec);
-                handle_platform(ctx, module, &spec)?;
+                match handle_platform(ctx, module, &spec)? {
+                    BlockAction::Continue => {}
+                    BlockAction::Block { dep_module } => {
+                        return Ok(ClusterOnce::Gap { dep: dep_module });
+                    }
+                }
             }
             _ => {} // Regular, Defmacro — handled in Pass 1 / Pass 2.
         }
@@ -1609,6 +1626,15 @@ fn register_macro_in_module(
             placeholder_scheme,
             DefKind::Macro {
                 clauses_meta: clause_infos,
+                // D1 ruling §2/§6: the macro's original `(defmacro …)` form is
+                // compile-path data — it lives on the symbol-table entry, NOT
+                // introspection (which is REPL-only and absent on cache
+                // restore). Set UNCONDITIONALLY (all modes): the on-demand
+                // clause recompile (`resolve_macro_sexp_from`) and the REPL
+                // backing-file regeneration (`save::generate_module_source`)
+                // both re-source it from here, and it serializes (no
+                // `#[serde(skip)]`) so it round-trips the disk cache.
+                macro_sexp: sexp.clone(),
             },
         )
         .visibility(visibility);
@@ -2756,10 +2782,25 @@ fn layout_hash_gate(
     }
 }
 
-/// Handle platform forms: load DLL and register type signatures.
+/// Handle platform forms: load DLL, pre-resolve associated type modules, and
+/// register type signatures.
 ///
-/// Platform loading is NOT a cross-module blocking operation. The DLL is
-/// loaded synchronously. Type signatures are registered in TC immediately.
+/// Platform loading is NOT a cross-module blocking operation for the DLL load
+/// itself (it is synchronous). But a platform whose function signatures name
+/// types from a user `.cl` type-module (`shapes/Rectangle`) MUST have those
+/// modules resolved + registered BEFORE its sigs are checked
+/// (platform-interface.md §7.2 "q-assoc-discovery (c); BEFORE sigs"). An
+/// unresolved FQ sig type-ref surfaces as a `ModuleError`, NOT a
+/// `ResolutionGap`, so the ordinary FQ-autoload retry (FIXME 0268) never fires
+/// for platform sigs — this function closes that gap by driving each referenced
+/// type module via the same dependency mechanism as `import`, blocking the
+/// referencing cluster and retrying from the top once the dep is live.
+///
+/// Returns `BlockAction::Block { dep }` when a referenced type module is not yet
+/// loaded (the cluster retries; this fn re-runs once the dep is live, at which
+/// point all sigs resolve and it proceeds to register). Returns
+/// `BlockAction::Continue` once every referenced type module is present and the
+/// platform is fully registered.
 ///
 /// Platform declarations in non-entry modules (submodules) are silently
 /// ignored per spec §10.9.1 — only the entry module may load platforms.
@@ -2767,19 +2808,40 @@ fn handle_platform(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     spec: &PlatformSpec,
-) -> Result<(), CranelispError> {
+) -> Result<BlockAction, CranelispError> {
     // Submodules (paths containing '.') cannot load platforms.
     if module.as_ref().contains('.') {
-        return Ok(());
+        return Ok(BlockAction::Continue);
     }
-    let platform = crate::platform::load_and_register_platform(
-        ctx.symbol_tables,
-        ctx.module_aliases,
+
+    // Load + validate the DLL (without registering sigs yet) so we can read its
+    // descriptor sig strings to discover the associated type modules.
+    let platform = crate::platform::load_platform_checked(
         &spec.name,
         ctx.project_root,
         ctx.lib_dirs,
         ctx.platform_dirs,
         spec.span,
+    )?;
+
+    // §7.2 pre-resolve: for each EXTERNAL type module a sig references
+    // (`shapes` from `shapes/Rectangle`), drive it as a dependency BEFORE the
+    // sig-check loop runs. If any is not yet loaded, block + retry-from-top —
+    // the DLL handle drops at this return; the next pass re-dlopens (OS-cached)
+    // and finds the now-loaded module, so the sigs resolve.
+    for dep in crate::platform::referenced_sig_modules(&platform.descriptors) {
+        if !fq_module_is_loaded(ctx, &dep) {
+            drive_module_dep(ctx, module, &dep, spec.span)?;
+            return Ok(BlockAction::Block { dep_module: dep });
+        }
+    }
+
+    // All referenced type modules are live — register the platform's sigs (GOT
+    // wrap in place + FQ-resolved schemes + got_slot = manifest index).
+    crate::platform::register_platform_in_tc(
+        ctx.symbol_tables,
+        ctx.module_aliases,
+        &platform,
     )?;
 
     // The platform module's `SymbolTable` now wraps the DLL's exported GOT in
@@ -2805,9 +2867,17 @@ fn handle_platform(
             .unwrap_or_default();
         let host_hash =
             cranelisp_backend::schema::compute_layout_hash(ctx.symbol_tables, &roots);
-        // is_repl: introspection is populated only for REPL (None in batch
-        // / `--run`), per the `ModuleCompiler.introspection` contract.
-        let is_repl = ctx.introspection.is_some();
+        // is_repl: the explicit run-mode signal (D1 ruling §4). REPL warns-and-
+        // loads on layout-hash drift (the regeneration bootstrap, §5.5.1);
+        // `--run`/`--link` hard-refuse. Read from `SharedState.run_mode` — the
+        // single source of truth — replacing the former `introspection.is_some()`
+        // proxy (introspection became always-`Some` under S78, conflating a REPL
+        // facility with the batch discriminator). Absent shared state (unit-test
+        // paths that never load a real platform) defaults to non-REPL = refuse.
+        let is_repl = ctx
+            .shared_state
+            .map(|s| s.run_mode.is_repl())
+            .unwrap_or(false);
         match layout_hash_gate(dll_hash, &host_hash, &platform.name, is_repl, spec.span) {
             LayoutHashGate::Accept => {}
             LayoutHashGate::WarnAndLoad(msg) => eprintln!("{msg}"),
@@ -2834,7 +2904,7 @@ fn handle_platform(
         // DLL and dangle every GOT entry.
         std::mem::forget(platform);
     }
-    Ok(())
+    Ok(BlockAction::Continue)
 }
 
 /// Write an inline mod body to disk as `{module_dir}/{name}.cl`.
@@ -4234,12 +4304,17 @@ fn handle_typecheck_work_shared(
     match crate::cluster::process_cluster(shared, std::sync::Arc::clone(sexps), module)? {
         crate::cluster::ClusterOutcome::Done { processed, program } => {
             // Unified JIT codegen via compile_to_module (Sprint 56 Wave 2).
+            // D1b: the introspection store is REPL-only (`None` in batch).
+            // `.as_ref()` threads its existence straight to the step-7 sink
+            // guard (`inline_jit_codegen_for_names`); in batch the sink is
+            // `None`, so no `Introspection` record is allocated and no CLIF is
+            // retained — this is the core batch-leak fix.
             inline_jit_codegen_for_module(
                 &shared.scheduler,
                 module,
                 &program,
                 &shared.symbol_tables,
-                Some(&shared.introspection),
+                shared.introspection.as_ref(),
                 &[],
                 Some(shared),
             )?;
@@ -5101,7 +5176,7 @@ mod tests {
 
         let introspection = dashmap::DashMap::new();
         let source =
-            crate::save::generate_module_source(&st, &introspection, &module);
+            crate::save::generate_module_source(&st, Some(&introspection), &module);
 
         // Sections must appear (per design/int/session-persistence.md §1.3).
         // Structural decls came off the SymbolTable, NOT a separate parallel

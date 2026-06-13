@@ -93,11 +93,14 @@
 
 ;; Expected: 7 + 60 + 42 + 99 + 7 + 0 + 30 + 20 = 265
 (defn main []
-  (add-i64 (test-point)
-    (add-i64 (test-triple)
-      (add-i64 (test-option-some)
-        (add-i64 (test-option-none)
-          (add-i64 (test-make-some)
-            (add-i64 (test-origin)
-              (add-i64 (test-either)
-                       (test-pair)))))))))
+  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
+  ;; return `IO _`. The inner Int is the exit code (preserved).
+  (Pure
+    (add-i64 (test-point)
+      (add-i64 (test-triple)
+        (add-i64 (test-option-some)
+          (add-i64 (test-option-none)
+            (add-i64 (test-make-some)
+              (add-i64 (test-origin)
+                (add-i64 (test-either)
+                         (test-pair))))))))))

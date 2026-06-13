@@ -12,6 +12,7 @@ members = [
     "platforms/stdio",
     "platforms/test-capture",
     "platforms/shapes",
+    "platforms/shapes-badabi",
 ]
 resolver = "2"
 

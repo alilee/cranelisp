@@ -60,10 +60,10 @@ fn fqtypename_cross_module_same_short_name_resolve_distinctly() {
         // where the short name would collide. Construct each, sum the witnesses.
         .file(
             "main.cl",
-            "(import [primitives [add-i64]])\n\
+            "(import [primitives [add-i64 Pure]])\n\
              (import [a [Box ABox a-val]])\n\
              (import [b [BBox b-val]])\n\
-             (defn main [] (add-i64 (a-val (ABox 7)) (b-val (BBox 3 4))))\n",
+             (defn main [] (Pure (add-i64 (a-val (ABox 7)) (b-val (BBox 3 4)))))\n",
         )
         .run("main.cl")
         .output();

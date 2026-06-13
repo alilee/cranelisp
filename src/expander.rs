@@ -173,7 +173,7 @@ impl JitMacroExpander<'_> {
         let table = self.symbol_tables.get(&fq.module)?;
         match table.get(fq.symbol.as_ref())? {
             ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-                DefKind::Macro { clauses_meta } => Some(clauses_meta.clone()),
+                DefKind::Macro { clauses_meta, .. } => Some(clauses_meta.clone()),
                 _ => None,
             },
             _ => None,
@@ -782,9 +782,15 @@ mod tests {
         let clauses_meta: Vec<MacroClauseInfo> = (0..clause_count)
             .map(|_| MacroClauseInfo { params: vec![], rest_param: None })
             .collect();
-        let entry = ModuleEntry::def(empty_scheme(), DefKind::Macro { clauses_meta })
-            .visibility(Visibility::Public)
-            .build();
+        let entry = ModuleEntry::def(
+            empty_scheme(),
+            DefKind::Macro {
+                clauses_meta,
+                macro_sexp: cranelisp_types::Sexp::List(vec![], Span::SYNTHETIC),
+            },
+        )
+        .visibility(Visibility::Public)
+        .build();
         st.insert(Symbol::from(name), entry);
         tables.insert(path, st);
         tables
@@ -895,9 +901,15 @@ mod tests {
         let tables = dashmap::DashMap::new();
         let mut st = crate::code::SessionSymbolTable::new_with_params(path.clone());
         let clauses_meta = vec![MacroClauseInfo { params: vec![], rest_param: None }];
-        let entry = ModuleEntry::def(empty_scheme(), DefKind::Macro { clauses_meta })
-            .visibility(visibility)
-            .build();
+        let entry = ModuleEntry::def(
+            empty_scheme(),
+            DefKind::Macro {
+                clauses_meta,
+                macro_sexp: cranelisp_types::Sexp::List(vec![], Span::SYNTHETIC),
+            },
+        )
+        .visibility(visibility)
+        .build();
         st.insert(Symbol::from(name), entry);
         tables.insert(path, st);
         tables

@@ -1,0 +1,31 @@
+# cargo-nextest configuration.
+#
+# Setup script: build the `--link` / platform e2e prerequisites before any
+# test runs. See `tests/scripts/build-link-prereqs.sh` for the full
+# rationale and `tests/plan/e2e-architecture.md` for the design.
+#
+# Root cause this addresses: the `cranelisp` binary's `--link` path links
+# `libcranelisp_exe_bundle.a` and the platform rlibs (`stdio`,
+# `test-capture`, `shapes`, `shapes-badabi`) which it resolves at runtime
+# by scanning `target/debug/`. Nothing in the Cargo dependency graph
+# references those crates, so a plain `cargo nextest run` never compiles
+# them and the `--link` e2e tests fail with `could not find
+# libcranelisp_exe_bundle.a`. The setup script guarantees a
+# profile-consistent (dev / `target/debug`) artifact set before the suite
+# runs -- with no manual pre-build protocol.
+#
+# Requires cargo-nextest >= 0.9.59 (setup-script support). The repo's
+# pinned toolchain ships 0.9.137. Setup scripts are still gated behind
+# nextest's experimental opt-in, so the feature is declared here.
+experimental = ["setup-scripts"]
+
+[scripts.setup.link-prereqs]
+command = 'bash tests/scripts/build-link-prereqs.sh'
+
+[[profile.default.scripts]]
+# Run the prerequisite build before every test in the default profile.
+# A narrower `filter` could scope it to only the e2e binaries that need
+# `--link`, but the build is a cheap no-op when artifacts are current, so
+# we run it unconditionally for simplicity + reliability.
+filter = 'all()'
+setup = 'link-prereqs'

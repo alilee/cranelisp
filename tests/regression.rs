@@ -3127,20 +3127,26 @@ fn regression_0279_cross_module_polymorphic_import_monomorphisation() {
 // not fields). Wave 4 §2.7 then ADDS the one legitimate session-side field
 // `prelude_fallback: cranelisp_typecheck::PreludeFallback` (the prelude-outer-
 // scope companion map, parallel to `module_aliases`; session-side + unserialized
-// — NOT creep). So the target is `== 15` (16 − module_sexps − suspend_states +
-// prelude_fallback). `module_sexps`/`suspend_states` stay deleted.
+// — NOT creep), reaching 15. Sprint 80 Wave 2D defect D1 (the `/arch` ruling
+// `design/arch/d1-introspection-repl-only.md` §4) ADDS one further sanctioned
+// session-side field `run_mode: RunMode` — the explicit REPL-vs-batch carrier
+// that replaces the `introspection.is_some()` proxy (a data-model addition, NOT
+// parking-map creep) — reaching 16. So the target is `== 16` (16 − module_sexps
+// − suspend_states + prelude_fallback + run_mode). `module_sexps`/`suspend_states`
+// stay deleted.
 
 // spec: design/int/s77-int-restructure.md §2.3 — SharedState drops 16 → 14
 //       after module_sexps/suspend_states deletion; S78 Wave 4 §2.7 then adds
-//       prelude_fallback → 15.
+//       prelude_fallback → 15; S80 Wave 2D D1 then adds run_mode → 16.
 #[test]
 fn shared_state_field_count_at_target_14() {
     // Count `pub` fields in `pub struct SharedState { … }` in session_v4.rs.
     //
-    // Target is 15: 16 − module_sexps − suspend_states (S78 restructure) +
-    // prelude_fallback (S78 Wave 4 §2.7 prelude-outer-scope companion). The
-    // two cross-thread parking maps stay deleted; this guards that they do not
-    // creep back while admitting the one legitimate Wave-4 field addition.
+    // Target is 16: 16 − module_sexps − suspend_states (S78 restructure) +
+    // prelude_fallback (S78 Wave 4 §2.7 prelude-outer-scope companion) +
+    // run_mode (S80 Wave 2D D1 REPL-vs-batch carrier). The two cross-thread
+    // parking maps stay deleted; this guards that they do not creep back while
+    // admitting the two legitimate sanctioned field additions.
     let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/session_v4.rs");
     let text = std::fs::read_to_string(&src)
         .unwrap_or_else(|e| panic!("read {}: {e}", src.display()));
@@ -3161,13 +3167,16 @@ fn shared_state_field_count_at_target_14() {
         })
         .count();
     assert_eq!(
-        field_count, 15,
-        "SharedState has {field_count} pub fields; Sprint 78 target is exactly \
-         15 (16 − module_sexps − suspend_states + prelude_fallback; \
-         design/int/s77-int-restructure.md §2.3 + S78 Wave 4 §2.7). This is the \
-         standing guard that the two cross-thread parking maps \
+        field_count, 16,
+        "SharedState has {field_count} pub fields; Sprint 80 target is exactly \
+         16 (16 − module_sexps − suspend_states + prelude_fallback + run_mode; \
+         design/int/s77-int-restructure.md §2.3 + S78 Wave 4 §2.7 + S80 Wave 2D \
+         D1 design/arch/d1-introspection-repl-only.md §4). This is the standing \
+         guard that the two cross-thread parking maps \
          (module_sexps/suspend_states) do not creep back, while admitting the \
-         one legitimate Wave-4 session-side field `prelude_fallback`."
+         two legitimate sanctioned session-side field additions \
+         `prelude_fallback` (S78 Wave 4) and `run_mode` (S80 Wave 2D D1, the \
+         REPL-vs-batch run-mode carrier)."
     );
 }
 
@@ -3204,9 +3213,9 @@ fn s79_quasiquote_macro_resolves_macros_scons_in_clause_body() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [add-i64]])\n\
+            "(import [primitives [add-i64 Pure]])\n\
              (defmacro inc [x] `(add-i64 ~x 1))\n\
-             (defn main [] (inc 40))",
+             (defn main [] (Pure (inc 40)))",
         )
         .output()
         .assert_exit(41);
@@ -3232,9 +3241,10 @@ fn s79_fq_field_type_primitives_int_resolves_without_import() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(deftype Box (ABox [:primitives/Int n]))\n\
+            "(import [primitives [Pure]])\n\
+             (deftype Box (ABox [:primitives/Int n]))\n\
              (defn unbox [b] (match b [(ABox n) n]))\n\
-             (defn main [] (unbox (ABox 7)))",
+             (defn main [] (Pure (unbox (ABox 7))))",
         )
         .output()
         .assert_exit(7);

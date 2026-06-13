@@ -240,11 +240,11 @@ fn batch_defmacro_begin_splicing() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [add-i64]])\n\
+            "(import [primitives [add-i64 Pure]])\n\
              (defmacro define-pair [name a b] \
                `(begin (defn ~name [] (add-i64 ~a ~b))))\n\
              (define-pair add-them 20 22)\n\
-             (defn main [] (add-them))",
+             (defn main [] (Pure (add-them)))",
         )
         .output()
         .assert_exit(42);
@@ -262,10 +262,10 @@ fn batch_macro_uses_earlier_macro() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [add-i64]])\n\
+            "(import [primitives [add-i64 Pure]])\n\
              (defmacro inc [x] `(add-i64 ~x 1))\n\
              (defmacro inc2 [x] `(inc (inc ~x)))\n\
-             (defn main [] (inc2 40))",
+             (defn main [] (Pure (inc2 40)))",
         )
         .output()
         .assert_exit(42);
@@ -429,9 +429,10 @@ fn runtime_error_during_expansion_clean_report() {
 fn macro_body_calls_helper_function_in_run_mode() {
     Cranelisp::new()
         .user(
-            "(defn make-seven [] 7)\n\
+            "(import [primitives [Pure]])\n\
+             (defn make-seven [] 7)\n\
              (defmacro lucky [] `(make-seven))\n\
-             (defn main [] (lucky))",
+             (defn main [] (Pure (lucky)))",
         )
         .run("user.cl")
         .output()
@@ -446,9 +447,10 @@ fn macro_body_calls_helper_function_in_run_mode() {
 fn macro_calls_another_macro_reaches_fixed_point() {
     Cranelisp::new()
         .user(
-            "(defmacro wrap-add [a b] `(primitives/add-i64 ~a ~b))\n\
+            "(import [primitives [Pure]])\n\
+             (defmacro wrap-add [a b] `(primitives/add-i64 ~a ~b))\n\
              (defmacro add-three [x] `(wrap-add ~x 3))\n\
-             (defn main [] (add-three 39))",
+             (defn main [] (Pure (add-three 39)))",
         )
         .run("user.cl")
         .output()
@@ -463,11 +465,12 @@ fn macro_calls_another_macro_reaches_fixed_point() {
 fn multiple_macros_interleaved_with_defns_compose() {
     Cranelisp::new()
         .user(
-            "(defn triple [x] (primitives/add-i64 x (primitives/add-i64 x x)))\n\
+            "(import [primitives [Pure]])\n\
+             (defn triple [x] (primitives/add-i64 x (primitives/add-i64 x x)))\n\
              (defmacro apply-triple [x] `(triple ~x))\n\
              (defn six [] (apply-triple 2))\n\
              (defmacro make-six [] `(six))\n\
-             (defn main [] (make-six))",
+             (defn main [] (Pure (make-six)))",
         )
         .run("user.cl")
         .output()
@@ -524,10 +527,11 @@ fn macro_used_before_defmacro_is_unresolved() {
 fn macro_body_drives_three_level_call_graph() {
     Cranelisp::new()
         .user(
-            "(defn a [] 10)\n\
+            "(import [primitives [Pure]])\n\
+             (defn a [] 10)\n\
              (defn b [] (primitives/add-i64 (a) 11))\n\
              (defmacro get-b [] `(b))\n\
-             (defn main [] (get-b))",
+             (defn main [] (Pure (get-b)))",
         )
         .run("user.cl")
         .output()
@@ -555,7 +559,7 @@ fn cross_module_macro_calls_helper_in_other_module() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [macmod [wrap-seven]])\n(defn main [] (wrap-seven))",
+            "(import [macmod [wrap-seven]])\n(import [primitives [Pure]])\n(defn main [] (Pure (wrap-seven)))",
         )
         .file(
             "macmod.cl",
@@ -578,7 +582,7 @@ fn cross_module_macro_transitive_via_reexport_chain() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [macmod [get-val]])\n(defn main [] (get-val))",
+            "(import [macmod [get-val]])\n(import [primitives [Pure]])\n(defn main [] (Pure (get-val)))",
         )
         .file(
             "macmod.cl",
@@ -604,7 +608,7 @@ fn cross_module_macro_emits_qualified_reference() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [macmod [call-util]])\n(defn main [] (call-util))",
+            "(import [macmod [call-util]])\n(import [primitives [Pure]])\n(defn main [] (Pure (call-util)))",
         )
         .file(
             "macmod.cl",
@@ -630,7 +634,7 @@ fn cross_module_macro_drives_transitive_call_graph() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [macmod [get-result]])\n(defn main [] (get-result))",
+            "(import [macmod [get-result]])\n(import [primitives [Pure]])\n(defn main [] (Pure (get-result)))",
         )
         .file(
             "macmod.cl",

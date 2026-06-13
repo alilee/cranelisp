@@ -50,3 +50,11 @@
 (export [primitives [str-concat str-eq str-len char-at
                      int-to-string float-to-string bool-to-string]])
 (export [primitives [vec-len vec-get vec-set vec-push]])
+;; IO constructor: every example `main` must return `IO _` (a batch main
+;; whose type is bare `Int`/`Bool` is rejected — required shape
+;; `(Fn [] (IO _))`). The pure examples wrap their sum-of-pass-counts result
+;; in `(Pure …)`, lifting the Int into `IO Int`; the inner Int is the exit
+;; code, so exit codes are preserved. `Pure` is a seeded `primitives`
+;; constructor (no stdlib coupling). The IO examples (21–24) import it
+;; directly and do not rely on this re-export.
+(export [primitives [Pure]])

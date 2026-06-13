@@ -68,9 +68,12 @@
 
 ;; Expected: 42 + 42 + 42 + 10 + 35 + 203 = 374
 (defn main []
-  (add-i64 (test-inc)
-    (add-i64 (test-partial-one)
-      (add-i64 (test-partial-two)
-        (add-i64 (test-curry-compose)
-          (add-i64 (test-scalers)
-                   (test-curry-as-arg)))))))
+  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
+  ;; return `IO _`. The inner Int is the exit code (preserved).
+  (Pure
+    (add-i64 (test-inc)
+      (add-i64 (test-partial-one)
+        (add-i64 (test-partial-two)
+          (add-i64 (test-curry-compose)
+            (add-i64 (test-scalers)
+                     (test-curry-as-arg))))))))

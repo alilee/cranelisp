@@ -88,10 +88,13 @@
 
 ;; Expected: 42 + 99 + 42 + 22 + 99 + 42 + 1 = 347
 (defn main []
-  (add-i64 (test-fmap-some)
-    (add-i64 (test-fmap-none)
-      (add-i64 (test-fmap-double)
-        (add-i64 (test-fmap-chain)
-          (add-i64 (test-fmap-chain-none)
-            (add-i64 (test-fmap-closure)
-                     (test-fmap-preserves-none))))))))
+  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
+  ;; return `IO _`. The inner Int is the exit code (preserved).
+  (Pure
+    (add-i64 (test-fmap-some)
+      (add-i64 (test-fmap-none)
+        (add-i64 (test-fmap-double)
+          (add-i64 (test-fmap-chain)
+            (add-i64 (test-fmap-chain-none)
+              (add-i64 (test-fmap-closure)
+                       (test-fmap-preserves-none)))))))))

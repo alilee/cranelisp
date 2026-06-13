@@ -517,7 +517,13 @@ mod tests {
     }
 
     fn macro_kind() -> DefKind {
-        DefKind::Macro { clauses_meta: Vec::<MacroClauseInfo>::new() }
+        DefKind::Macro {
+            clauses_meta: Vec::<MacroClauseInfo>::new(),
+            // D1 (S80): compile-path recompile source on the entry. A
+            // placeholder empty list suffices for the resolution-only tests
+            // here (none drive the recompile path).
+            macro_sexp: crate::Sexp::List(vec![], crate::Span::SYNTHETIC),
+        }
     }
 
     fn tables_with(entries: &[(&str, &str, ModuleEntry<()>)]) -> SymbolTables<(), ()> {

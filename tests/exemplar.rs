@@ -43,7 +43,7 @@ fn batch_const_macro_in_main() {
         .run("main.cl")
         .file(
             "main.cl",
-            "(defmacro size [] `9)\n(defn main [] (size))",
+            "(import [primitives [Pure]])\n(defmacro size [] `9)\n(defn main [] (Pure (size)))",
         )
         .output()
         .assert_exit(9);
@@ -59,7 +59,7 @@ fn batch_cross_module_function_import() {
         .file("util.cl", "(defn helper [] 42)")
         .file(
             "main.cl",
-            "(import [util [helper]])\n(defn main [] (helper))",
+            "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (helper)))",
         )
         .output()
         .assert_exit(42);
@@ -80,9 +80,9 @@ fn batch_cross_module_adt_export_and_pattern_match() {
         )
         .file(
             "main.cl",
-            "(import [primitives [add-i64]])\n\
+            "(import [primitives [add-i64 Pure]])\n\
              (import [types [Color Red Green Blue color-val]])\n\
-             (defn main [] (add-i64 (color-val Red) (color-val Blue)))",
+             (defn main [] (Pure (add-i64 (color-val Red) (color-val Blue))))",
         )
         .output()
         .assert_exit(4); // 1 + 3
@@ -149,7 +149,7 @@ fn t_s2_1_eliminate_contract_on_given_returns_none() {
        (Some c)]))
 
 (defn main []
-  (let [c (Given 5)]
+  (Pure (let [c (Given 5)]
     (match c
       [(Given v)
          (if (eq-i64 v 5)
@@ -157,7 +157,7 @@ fn t_s2_1_eliminate_contract_on_given_returns_none() {
              [None 0
               (Some _) 1])
            2)
-       _ 2])))
+       _ 2]))))
 "#;
 
     Cranelisp::new()

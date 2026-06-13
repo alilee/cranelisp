@@ -15,9 +15,8 @@
 ;; Each continuation captures the results of previous actions via
 ;; closures, so all intermediate values are available at the end.
 ;;
-;; Prerequisites:
-;;   cargo build -p cranelisp-test-capture
-;;   cargo run -- --run examples/23-io-sequence.cl
+;; Running:
+;;   just run-example examples/23-io-sequence.cl
 
 (platform test-capture)
 (import [primitives [Pure bind]])

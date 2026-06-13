@@ -87,14 +87,17 @@
 
 ;; Expected: 6 + 42 + 42 + 6 + 42 + 10 + 42 + 42 + 10 + 10 + 11 = 263
 (defn main []
-  (add-i64 (test-immediate)
-    (add-i64 (test-let-lambda)
-      (add-i64 (test-zero-param)
-        (add-i64 (test-multi-param)
-          (add-i64 (test-capture-one)
-            (add-i64 (test-capture-many)
-              (add-i64 (test-capture-bool)
-                (add-i64 (test-returned-closure)
-                  (add-i64 (test-two-adders)
-                    (add-i64 (test-nested-closures)
-                             (test-closure-in-if))))))))))))
+  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
+  ;; return `IO _`. The inner Int is the exit code (preserved).
+  (Pure
+    (add-i64 (test-immediate)
+      (add-i64 (test-let-lambda)
+        (add-i64 (test-zero-param)
+          (add-i64 (test-multi-param)
+            (add-i64 (test-capture-one)
+              (add-i64 (test-capture-many)
+                (add-i64 (test-capture-bool)
+                  (add-i64 (test-returned-closure)
+                    (add-i64 (test-two-adders)
+                      (add-i64 (test-nested-closures)
+                               (test-closure-in-if)))))))))))))

@@ -53,6 +53,7 @@ pub(crate) mod cache_writer;
 pub(crate) mod code;
 pub(crate) mod display;
 pub(crate) mod exe;
+pub(crate) mod link;
 pub(crate) mod expander;
 pub(crate) mod marshal;
 pub(crate) mod session;

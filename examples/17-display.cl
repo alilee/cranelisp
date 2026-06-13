@@ -132,15 +132,18 @@
 
 ;; Expected: 1+1+1+1+1+42+42+1+1+5+5+75 = 176
 (defn main []
-  (add-i64 (test-show-int)
-    (add-i64 (test-show-neg)
-      (add-i64 (test-show-bool)
-        (add-i64 (test-show-season)
-          (add-i64 (test-show-winter)
-            (add-i64 (test-measure-segment)
-              (add-i64 (test-measure-rect)
-                (add-i64 (test-show-segment)
-                  (add-i64 (test-show-rect)
-                    (add-i64 (test-show-len-int)
-                      (add-i64 (test-show-len-bool)
-                               (test-both-traits)))))))))))))
+  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
+  ;; return `IO _`. The inner Int is the exit code (preserved).
+  (Pure
+    (add-i64 (test-show-int)
+      (add-i64 (test-show-neg)
+        (add-i64 (test-show-bool)
+          (add-i64 (test-show-season)
+            (add-i64 (test-show-winter)
+              (add-i64 (test-measure-segment)
+                (add-i64 (test-measure-rect)
+                  (add-i64 (test-show-segment)
+                    (add-i64 (test-show-rect)
+                      (add-i64 (test-show-len-int)
+                        (add-i64 (test-show-len-bool)
+                                 (test-both-traits))))))))))))))

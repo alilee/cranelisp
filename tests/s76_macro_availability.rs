@@ -168,7 +168,7 @@ fn macro_clause_calls_imported_helper_at_expansion_works() {
         .with_prelude(PreludeVariant::None)
         .file(
             "main.cl",
-            "(import [mac [wrap]])\n(defn main [] (wrap 41))",
+            "(import [mac [wrap]])\n(import [primitives [Pure]])\n(defn main [] (Pure (wrap 41)))",
         )
         // `mac` depends on `helper`; `helper` is typechecked-and-compiled
         // just-in-time when `wrap`'s expansion first needs `bump`.
@@ -248,8 +248,8 @@ fn fq_macro_reference_expands_without_import() {
         .file(
             "main.cl",
             // No `(import [mac [twice]])` — referenced fully-qualified.
-            "(import [primitives [add-i64]])\n\
-             (defn main [] (mac/twice 21))",
+            "(import [primitives [add-i64 Pure]])\n\
+             (defn main [] (Pure (mac/twice 21)))",
         )
         .file(
             "mac.cl",
@@ -274,10 +274,10 @@ fn macro_generates_toplevel_defn() {
     Cranelisp::new()
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [add-i64]])\n\
+            "(import [primitives [add-i64 Pure]])\n\
              (defmacro make-adder [] `(defn add5 [x] (add-i64 x 5)))\n\
              (make-adder)\n\
-             (defn main [] (add5 37))",
+             (defn main [] (Pure (add5 37)))",
         )
         .run("user.cl")
         .output()

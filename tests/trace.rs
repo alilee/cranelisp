@@ -157,18 +157,18 @@ fn trace_panic_unwind_does_not_stick_guard() {
 // extern-primitive children (2), returning count+40 == 42.
 #[test]
 fn trace_linked_binary_match_consumption_runs() {
-    let src = "(import [primitives [trace Trace TraceCall str-concat str-len]])\n\
+    let src = "(import [primitives [trace Trace TraceCall str-concat str-len Pure]])\n\
          (import [macros [SCons SNil]])\n\
          (defn work [s] (str-len (str-concat \"x\" s)))\n\
          (defn slen [acc xs]\n\
            (match xs [SNil acc (SCons h t) (slen (add-i64 acc 1) t)]))\n\
          (defn main []\n\
-           (match (trace (work \"ab\"))\n\
+           (Pure (match (trace (work \"ab\"))\n\
              [(TraceCall n p r c ns)\n\
                (match c [SNil 0\n\
                          (SCons h t)\n\
                            (match h [(TraceCall n2 p2 r2 c2 ns2)\n\
-                                     (add-i64 (slen 0 c2) 40)])])]))\n";
+                                     (add-i64 (slen 0 c2) 40)])])])))\n";
     Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .file("prog.cl", src)
@@ -431,11 +431,11 @@ fn trace_nanos_accessor_resolves_in_repl() {
 // expect Ok + success.
 #[test]
 fn trace_linked_accessor_consume_runs_clean() {
-    let src = "(import [primitives [trace Trace TraceCall nanos]])\n\
+    let src = "(import [primitives [trace Trace TraceCall nanos Pure]])\n\
          (defn id [x] x)\n\
          (defn work [x] (id x))\n\
          (defn use-it [n] 0)\n\
-         (defn main [] (use-it (nanos (trace (work 41)))))\n";
+         (defn main [] (Pure (use-it (nanos (trace (work 41))))))\n";
     let result = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .file("prog.cl", src)
@@ -480,11 +480,11 @@ fn trace_linked_accessor_consume_runs_clean() {
 // consume path exits 0 every iteration.
 #[test]
 fn trace_run_mode_accessor_consume_runs_clean() {
-    let src = "(import [primitives [trace Trace TraceCall nanos]])\n\
+    let src = "(import [primitives [trace Trace TraceCall nanos Pure]])\n\
          (defn id [x] x)\n\
          (defn work [x] (id x))\n\
          (defn use-it [n] 0)\n\
-         (defn main [] (use-it (nanos (trace (work 41)))))\n";
+         (defn main [] (Pure (use-it (nanos (trace (work 41))))))\n";
     // Run a few times so a non-deterministic regression (a re-introduced
     // double-free racing the allocator) reliably surfaces; kept at 4 to bound
     // per-test wall-clock. A sound consume path exits 0 on every iteration.

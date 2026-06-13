@@ -1473,55 +1473,57 @@ pub enum DefKind {
     ///   lookup table and the sole reason this variant exists distinct from
     ///   `DefKind::UserFn`.
     ///
-    /// **Introspection lives elsewhere — symmetric across all DefKind
-    /// variants (Decision 41 operative).** `source`, `sexp`, `expanded`,
-    /// `clif_ir`, `disasm`, `code_size` for ALL Def variants — macros
-    /// included — live on the per-`FQSymbol` `Introspection` record in the
-    /// integration layer's `SharedState.introspection: Option<DashMap<FQSymbol,
-    /// Introspection>>`. The struct is defined at `src/session_v4.rs:566`.
-    /// Backend writes those fields directly during `compile_to_module` via
-    /// its `introspection: Option<&DashMap<FQSymbol, Introspection>>`
-    /// parameter — the `Option`'s `is_some()` IS the mode discriminator
-    /// (Decision 38; the same discriminator that gates Introspection
-    /// population in JIT mode and skips it in `--link` object mode). See
-    /// `design/arch/sequences/exec-flow-compilation.mmd` line 111 (frontend
-    /// populates `Introspection { source, sexp, .. }` per-symbol after
-    /// expand) and lines 211-221 (backend writes
-    /// `Introspection { clif_ir, disasm, code_size, .. }` directly per Decision
-    /// 41 — int does no post-processing); `design/arch/sequences/exec-flow-repl.mmd`
-    /// line 132 (the `compile_to_module` invocation shape).
-    /// `design/arch/bounded-contexts.md` §int places introspection in the
-    /// integration layer ("development tooling: tracing, observability,
-    /// introspection").
+    /// **Introspection vs compile — the D1 split (S80, reverses Decision 41
+    /// for macro `sexp` only).** Two distinct readers consumed the per-symbol
+    /// "original form" data, and they have **different homes** after D1:
     ///
-    /// **Why no `sexp` / `source` field here.** Macros are not architecturally
-    /// special for introspection purposes. A future reader looking up
-    /// `/source <macro-name>` / `/sexp <macro-name>` / `/expand <macro-name>`
-    /// hits the same per-FQSymbol `Introspection` record that backs
-    /// `/source <fn-name>` for any other Def — indexed by `FQSymbol`,
-    /// mode-gated by the `Option`. Carrying `sexp` / `source` on
-    /// `DefKind::Macro` would duplicate the canonical store asymmetrically
-    /// (no other `DefKind` variant carries them — `DefKind::UserFn`,
-    /// `DefKind::Constructor`, etc. all rely on the integration-layer
-    /// `Introspection` map). This variant predates Decision 41's settlement;
-    /// the prior `sexp` / `source` fields were pre-D41 shadows carried
-    /// forward from S69 Submission 13's narrative and have been removed.
+    /// - **Compile-path reader → symbol table (`macro_sexp`, above).** The
+    ///   on-demand macro-clause recompile (`worker::resolve_macro_sexp_from` →
+    ///   `parse_defmacro` → `compile_macro_with_state`) is a *compile* need —
+    ///   it rebuilds clause code during FQ-autoload and cache-restore. Per the
+    ///   S80 user ruling ("any data the COMPILE pipeline reads MUST live in the
+    ///   symbol table, not introspection — it's in the name"), the macro's
+    ///   source form lives on this variant's `macro_sexp` field.
+    /// - **REPL-introspection readers → int-layer `Introspection` record.**
+    ///   `source`, `expanded`, `clif_ir`, `disasm`, `code_size` (and the
+    ///   `sexp` *display* used by `/sexp`) for ALL Def variants — macros
+    ///   included — live on the per-`FQSymbol` `Introspection` record in
+    ///   `SharedState.introspection` (`src/session_v4.rs`). These back the
+    ///   REPL slash-commands ONLY and are populated ONLY in REPL mode. The
+    ///   compile pipeline never reads them; the mode signal is no longer
+    ///   `introspection.is_some()` (see BC §6 — int carries an explicit
+    ///   `CompileMode`/run-mode on `SharedState`, set from `main.rs`'s
+    ///   `Action`). `design/arch/bounded-contexts.md` §int places introspection
+    ///   in the integration layer ("development tooling: tracing,
+    ///   observability, introspection").
     ///
-    /// **Cache-hit residual gap (architectural debt).** `Introspection` is
-    /// `#[derive(Default)]` (non-Serde; REPL-only per its own rustdoc) and
-    /// lives on `SharedState` per BC §int — when a module loads from cache,
-    /// the `Introspection` DashMap is NOT rehydrated. REPL editing of a
-    /// cache-loaded module therefore cannot today trigger `.cl` regeneration
-    /// for symbols whose Introspection entries are absent. Serializing the
-    /// full `Introspection` structure into the cache is NOT the answer
-    /// (mixes concerns, bloats the cache, raises invalidation questions);
-    /// the future fix is lazy re-read of the backing source file on demand
-    /// — re-parse the file region and populate Introspection for the
-    /// queried symbols only. Tracked as architectural debt; restoring
-    /// D41-violating shadow fields on `DefKind::Macro` (or any other Def
-    /// variant) is NOT the answer. See `design/arch/fixmes/` —
-    /// "int cache-hit source rehydration on demand" — for the open design
-    /// question (WHEN to re-read; HOW to map FQSymbol back to file region).
+    /// **Why D41's symmetry still holds for every *other* kind.** Decision 41
+    /// retired the per-entry `sexp` field for symmetry — no other `DefKind`
+    /// carries a `sexp`, and REPL display reads a uniform per-FQSymbol store.
+    /// That symmetry is preserved for the *introspection* readers. Macros are
+    /// the one kind whose *compile* path needs the original form, and they are
+    /// the one kind with no `ast: Option<DefnVariant>` to carry a compile
+    /// payload (the macro parent's clause bodies are separate mangled-name
+    /// Defs). `macro_sexp` is therefore scoped to this variant — NOT a
+    /// reintroduced generic `Def.sexp` — so `DefKind::UserFn`,
+    /// `DefKind::Constructor`, etc. stay symmetric with each other and unchanged.
+    ///
+    /// **Cache-restore is solved by serialization (D1), not by introspection
+    /// rehydration.** Because `macro_sexp` serializes (no `#[serde(skip)]`), a
+    /// cache-restored macro entry carries its source form and the recompile
+    /// path works directly off the entry. The earlier "cache-hit residual gap"
+    /// (introspection not rehydrated on cache load) no longer blocks the
+    /// *compile* path — that path reads `macro_sexp`, not introspection. A
+    /// residual REPL-tooling gap remains for the *introspection* readers
+    /// (`/source` of a cache-loaded symbol): `Introspection` is REPL-only +
+    /// non-Serde, so REPL-editing a cache-loaded module still cannot trigger
+    /// `.cl` regeneration for symbols whose introspection entries are absent.
+    /// The future fix for THAT is lazy re-read of the backing source file on
+    /// demand; serializing the whole `Introspection` record into the cache
+    /// is NOT the answer (mixes REPL concerns into the cache). Note: macro
+    /// `.cl` regeneration (`save::generate_module_source`) can now read
+    /// `macro_sexp` off the symbol table as a fallback when the introspection
+    /// record is absent — see BC §6.
     ///
     /// **Retired storage.** The prior `ModuleEntry::Macro` sibling variant was
     /// retired in Submission 22 (deleted from source 2026-05-21). The
@@ -1537,6 +1539,46 @@ pub enum DefKind {
     /// invariants (macros are Defs; the clause-walk dispatch story).
     Macro {
         clauses_meta: Vec<MacroClauseInfo>,
+        /// The macro's original definition s-expression — the parsed
+        /// `(defmacro name …)` form. **Compile-path data** (D1 reversal of
+        /// Decision 41, S80): the on-demand macro-clause recompile path
+        /// (`worker::resolve_macro_sexp_from` → `parse_defmacro` →
+        /// `compile_macro_with_state`) needs the source form to rebuild a
+        /// macro's clause code when its GOT slot is empty (FQ-autoload of a
+        /// cross-module macro; cache-restore where the clause `.o` was not
+        /// linked inline). Because this is data the **compile pipeline reads**
+        /// — not REPL slash-command introspection — it lives on the symbol-
+        /// table entry, never on `SharedState.introspection` ("it's in the
+        /// name": introspection is REPL-command-only).
+        ///
+        /// **Serde / cache.** Serialized like `clauses_meta` (no
+        /// `#[serde(skip)]`): the field round-trips through the disk cache, so
+        /// a cache-restored macro entry carries its `macro_sexp` and the
+        /// recompile path works without any rehydration step. `Sexp` already
+        /// derives `Serialize`/`Deserialize` and is the canonical macro-clause
+        /// metadata's sibling — adding it here is the same serialization
+        /// discipline `clauses_meta` already follows. The serialized cost is a
+        /// single parsed form per macro Def, bounded by the source size; this
+        /// is acceptable for the compile-necessary payload (contrast the
+        /// rejected option of serializing the whole `Introspection` record,
+        /// which mixes REPL-only fields into the cache).
+        ///
+        /// **Why on `DefKind::Macro` and not a generic `Def.sexp`.** Decision
+        /// 41 retired the per-entry `sexp` field for *symmetry* — no other
+        /// `DefKind` carries a `sexp`, and the introspection store was the
+        /// uniform home for `source`/`sexp`/`expanded` across all Def kinds for
+        /// REPL display. That symmetry holds for the *introspection* readers
+        /// (`/source`, `/sexp`, `/expand` — still served from the int-layer
+        /// `Introspection` record). Macros are the *one* kind whose **compile**
+        /// path needs the original form (other kinds carry their compile
+        /// payload as `ast: Option<DefnVariant>` — a macro parent has no `ast`
+        /// because its clause bodies are separate mangled-name Defs, so the
+        /// recompile source has nowhere else to live). Scoping the field to
+        /// the macro variant — rather than reintroducing a generic
+        /// `Def.sexp` — preserves D41's symmetry for every other kind while
+        /// giving the macro compile path its required input on the symbol
+        /// table.
+        macro_sexp: Sexp,
     },
 }
 

@@ -121,8 +121,11 @@
 ;; Expected: 5225 + 2550 + 24 + 231 + 1253 = 9283
 
 (defn main []
-  (add-i64 (test-independent-let)
-    (add-i64 (test-dependent-let)
-      (add-i64 (test-cheap-not-sparked)
-        (add-i64 (test-mixed)
-                 (test-nested-lets))))))
+  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
+  ;; return `IO _`. The inner Int is the exit code (preserved).
+  (Pure
+    (add-i64 (test-independent-let)
+      (add-i64 (test-dependent-let)
+        (add-i64 (test-cheap-not-sparked)
+          (add-i64 (test-mixed)
+                   (test-nested-lets)))))))

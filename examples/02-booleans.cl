@@ -37,12 +37,15 @@
 
 ;; Combine results: 1 + 1 + 1 + 1 + 1 + 0 + 1 + 0 + (-1) = 5
 (defn main []
-  (add-i64 (test-eq)
-    (add-i64 (test-neq)
-      (add-i64 (test-lt)
-        (add-i64 (test-gt)
-          (add-i64 (test-le)
-            (add-i64 (test-ge)
-              (add-i64 (sign 42)
-                (add-i64 (sign 0)
-                         (sign -7))))))))))
+  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
+  ;; return `IO _`. The inner Int is the exit code (preserved).
+  (Pure
+    (add-i64 (test-eq)
+      (add-i64 (test-neq)
+        (add-i64 (test-lt)
+          (add-i64 (test-gt)
+            (add-i64 (test-le)
+              (add-i64 (test-ge)
+                (add-i64 (sign 42)
+                  (add-i64 (sign 0)
+                           (sign -7)))))))))))

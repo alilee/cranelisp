@@ -51,13 +51,16 @@
 
 ;; Expected: 1+1+1+1+1+1+1+0+1+1 = 9
 (defn main []
-  (add-i64 (test-add)
-    (add-i64 (test-sub)
-      (add-i64 (test-mul)
-        (add-i64 (test-div)
-          (add-i64 (test-lt)
-            (add-i64 (test-gt)
-              (add-i64 (test-le)
-                (add-i64 (test-ge)
-                  (add-i64 (test-neg)
-                           (test-area)))))))))))
+  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
+  ;; return `IO _`. The inner Int is the exit code (preserved).
+  (Pure
+    (add-i64 (test-add)
+      (add-i64 (test-sub)
+        (add-i64 (test-mul)
+          (add-i64 (test-div)
+            (add-i64 (test-lt)
+              (add-i64 (test-gt)
+                (add-i64 (test-le)
+                  (add-i64 (test-ge)
+                    (add-i64 (test-neg)
+                             (test-area))))))))))))

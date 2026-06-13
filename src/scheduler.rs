@@ -1822,7 +1822,14 @@ mod tests {
             // Sprint 58 Wave 3b: kept_jits / kept_linkers dissolved per
             // Decision 35.
             kept_dlls: Mutex::new(Vec::new()),
-            introspection: dashmap::DashMap::new(),
+            // D1b: store is REPL-only; `run_mode` is `Repl` below, so `Some`.
+            introspection: crate::session_v4::RunMode::Repl
+                .populates_introspection()
+                .then(dashmap::DashMap::new),
+            // D1 ruling §4: run-mode carrier. This scheduler unit test does not
+            // exercise the introspection gate or the layout-hash gate; `Repl`
+            // is an inert default here.
+            run_mode: crate::session_v4::RunMode::Repl,
             // Sprint 66 Wave 3a-γ: TestRunnerState stub for the scheduler
             // unit test. The test exercises the nice-worker lifecycle, not
             // test/trace intrinsics — a default state with empty/null

@@ -219,7 +219,13 @@ pub fn process_cluster(
         current_module: scope.clone(),
         scheduler: &shared.scheduler,
         typecheck_products: &shared.typecheck_products,
-        introspection: Some(&shared.introspection),
+        // D1/D1b: introspection is a REPL slash-command facility. The store is
+        // `Some` ONLY under `RunMode::Repl` (D1b makes the container itself
+        // `Option`), so `.as_ref()` is the single adaptor — `None` in
+        // `--run`/`--link`, so the `if let Some(intr_map) = ctx.introspection`
+        // writes are no-ops in batch (no record allocated). The compile pipeline
+        // reads nothing from it — macro `sexp` lives on the symbol table.
+        introspection: shared.introspection.as_ref(),
         lib_dirs: &lib_dirs,
         platform_dirs: &platform_dirs,
         project_root: &shared.project_root,
@@ -269,9 +275,14 @@ pub fn insert_cluster(
     }
 
     // Drain introspection records: each merges into the shared introspection
-    // map (per Decision 38 — synchronously on commit).
-    for (fq, intro) in processed.introspection_records {
-        shared.introspection.insert(fq, intro);
+    // map (per Decision 38 — synchronously on commit). D1b: the store is
+    // REPL-only (`Option`, `None` in batch). Doubly a no-op in batch — the
+    // records vec is empty (population gate fed `None` to the ModuleCompiler)
+    // AND there is no store to drain into.
+    if let Some(m) = shared.introspection.as_ref() {
+        for (fq, intro) in processed.introspection_records {
+            m.insert(fq, intro);
+        }
     }
 
     // Warnings and resolved-import bindings flow back through the calling

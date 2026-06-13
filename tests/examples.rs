@@ -32,6 +32,7 @@
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::Once;
 
 fn project_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -45,15 +46,62 @@ fn examples_dir() -> PathBuf {
     project_root().join("examples")
 }
 
+/// Absolute `<repo>/target/debug` — the platform search path (Tier-3,
+/// `CRANELISP_PLATFORM_PATH`). `resolve_platform_path`'s `check_dir` resolves
+/// cargo's `libcranelisp_{name}.{ext}` artifacts here directly, so the IO
+/// examples (`21`-`24`) find `stdio` / `test-capture` with zero symlinks,
+/// `cfg`-correct on every OS. Mirrors the `use_workspace_platforms()` helper
+/// in `tests/helpers/e2e.rs` (which sets the same env for the platform e2e
+/// tests). Replaces the dead `examples/platforms/*.dylib` symlink discovery.
+fn platform_search_path() -> PathBuf {
+    project_root().join("target").join("debug")
+}
+
+/// Build the platform cdylibs (`stdio`, `test-capture`) into `target/debug`
+/// exactly once per test-binary process. These crates are workspace members
+/// that nothing links, so a plain `cargo nextest run` does NOT build them —
+/// `every_example_runs_with_documented_exit` would otherwise fail the 4 IO
+/// examples with `platform 'stdio'/'test-capture' not found`. Mirrors the
+/// root `justfile run-example` recipe and the cargo-subprocess precedent in
+/// `tests/public_api_relocations.rs`. Idempotent and cheap when already built
+/// (cargo no-ops in ~0.02s).
+fn ensure_platform_cdylibs_built() {
+    static BUILT: Once = Once::new();
+    BUILT.call_once(|| {
+        let status = Command::new("cargo")
+            .args([
+                "build",
+                "-p",
+                "cranelisp-stdio",
+                "-p",
+                "cranelisp-test-capture",
+            ])
+            .current_dir(project_root())
+            .status()
+            .expect("failed to spawn `cargo build` for platform cdylibs");
+        assert!(
+            status.success(),
+            "`cargo build -p cranelisp-stdio -p cranelisp-test-capture` failed; \
+             the IO examples cannot resolve their platforms without these cdylibs"
+        );
+    });
+}
+
 fn run_example(path: &Path) -> Output {
     let binary = binary_path();
     assert!(
         binary.exists(),
         "cranelisp binary not found at {binary:?} — run `cargo build` first"
     );
+    ensure_platform_cdylibs_built();
     Command::new(&binary)
         .args(["--run", path.to_str().unwrap()])
+        // Put target/debug on the platform search path so the IO examples
+        // resolve `libcranelisp_{stdio,test-capture}.{ext}` directly.
+        .env("CRANELISP_PLATFORM_PATH", platform_search_path())
         .current_dir(examples_dir())
+        // Null stdin so the stdin-reading example `24-io-echo` is
+        // deterministic (it lands on exit 20 with closed stdin).
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -92,9 +140,11 @@ fn expected_exits() -> Vec<(&'static str, &'static [i32])> {
         ("21-hello-io.cl", &[243]),
         ("22-io-hello.cl", &[11]),
         ("23-io-sequence.cl", &[178]),
-        // 24: read-line on closed stdin → SIGTRAP/133 or SIGPIPE/141 under
-        // the harness. Direct invocation gives 20.
-        ("24-io-echo.cl", &[20, 133, 141]),
+        // 24: read-line on closed (null) stdin lands on exit 20. With the
+        // platform search path wired (`CRANELISP_PLATFORM_PATH=target/debug`)
+        // + stdin nulled in `run_example`, the run is a clean 20. The old
+        // 133/141 (SIGTRAP/SIGPIPE) were artifacts of the symlink-era harness.
+        ("24-io-echo.cl", &[20]),
         ("25-curry.cl", &[118]),
         ("26-functor.cl", &[91]),
         ("27-lazy-seq.cl", &[183]),

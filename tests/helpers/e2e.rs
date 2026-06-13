@@ -1073,6 +1073,282 @@ fn run_link_observation(
     }
 }
 
+// =============================================================================
+// Output-equivalence harness — run one program through all run modes and assert
+// byte-equivalent program STDOUT (not just the canonical Int).
+// =============================================================================
+//
+// spec: spec/10-io.md §10.6.3 — Mode-Output Equivalence. A program's observable
+// output (the stream of `print` effects) MUST be byte-for-byte identical across
+// `--run` (JIT), a `--link`-produced standalone binary, and the REPL. This
+// harness is the output-floor counterpart to `run_through_all_modes` (which
+// compares only the canonical Int exit observation). Where that helper asks
+// "do all modes agree on the value?", this one asks "do all modes emit the same
+// observable bytes?".
+//
+// Program shape: a self-contained `main` that performs `print` effects and
+// returns `IO _` (spec-conformant per §10.6 / 0318). The program's stdout under
+// `--run` and `--link` is exactly the concatenation of its `print` outputs (no
+// chrome). Under the REPL, the same effects interleave with the banner, the
+// `N+Mms; user> ` prompts, and the `:Type value` value-echo; the harness strips
+// that REPL chrome and compares the residual program output.
+
+/// Canonical program-output observation for one mode×cache permutation.
+#[derive(Debug, Clone)]
+pub struct OutputPermutation {
+    /// Mode + cache state label for diff messages.
+    pub label: &'static str,
+    /// The program's observable stdout (REPL chrome stripped for REPL modes).
+    pub program_stdout: String,
+    /// Raw stdout (pre-canonicalisation) for diagnostics.
+    pub raw_stdout: String,
+    /// Raw stderr.
+    pub stderr: String,
+    /// Process / produced-binary exit code.
+    pub exit_code: Option<i32>,
+}
+
+impl OutputPermutation {
+    fn diag(&self) -> String {
+        format!(
+            "[{}] program_stdout={:?} exit={:?}\n  raw_stdout: {}\n  stderr: {}",
+            self.label,
+            truncate(&self.program_stdout, 240),
+            self.exit_code,
+            truncate(&self.raw_stdout, 240),
+            truncate(&self.stderr, 240),
+        )
+    }
+}
+
+/// All six permutations' program-output observations.
+#[derive(Debug)]
+pub struct AllModesOutput {
+    pub repl_fresh: OutputPermutation,
+    pub repl_cached: OutputPermutation,
+    pub run_fresh: OutputPermutation,
+    pub run_cached: OutputPermutation,
+    pub link_fresh: OutputPermutation,
+    pub link_cached: OutputPermutation,
+}
+
+impl AllModesOutput {
+    fn permutations(&self) -> [&OutputPermutation; 6] {
+        [
+            &self.repl_fresh,
+            &self.repl_cached,
+            &self.run_fresh,
+            &self.run_cached,
+            &self.link_fresh,
+            &self.link_cached,
+        ]
+    }
+
+    /// Assert all six permutations emit byte-identical program stdout. Panics
+    /// with a per-permutation diff when any mode diverges. This is the
+    /// §10.6.3 Mode-Output Equivalence assertion.
+    pub fn assert_output_equivalent(self) -> Self {
+        let baseline = &self.run_fresh.program_stdout;
+        let mut diverged = Vec::new();
+        for p in self.permutations() {
+            if &p.program_stdout != baseline {
+                diverged.push(p.diag());
+            }
+        }
+        if !diverged.is_empty() {
+            panic!(
+                "mode-output-equivalence divergence (spec/10-io.md §10.6.3) — \
+                 program stdout was not byte-identical across all six \
+                 mode×cache permutations.\nbaseline (run_fresh): {:?}\ndiverged:\n{}",
+                truncate(baseline, 240),
+                diverged.join("\n")
+            );
+        }
+        self
+    }
+
+    /// Assert all six permutations emit exactly `expected` as the program's
+    /// observable stdout.
+    pub fn assert_output_eq(self, expected: &str) -> Self {
+        let mut diverged = Vec::new();
+        for p in self.permutations() {
+            if p.program_stdout != expected {
+                diverged.push(p.diag());
+            }
+        }
+        if !diverged.is_empty() {
+            panic!(
+                "mode-output-equivalence: expected every permutation to emit {:?} \
+                 (spec/10-io.md §10.6.3)\n{}",
+                expected,
+                diverged.join("\n")
+            );
+        }
+        self
+    }
+}
+
+/// Run one IO program through all six mode×cache permutations and capture each
+/// mode's observable program stdout (REPL chrome stripped).
+///
+/// Program shape: `(defn main [] <io-expr>)` performing `print` effects and
+/// returning `IO _`. The program is responsible for declaring whatever platform
+/// it prints through; pass the platform via `use_workspace_platforms` semantics
+/// (the harness always sets `CRANELISP_PLATFORM_PATH` to the workspace
+/// `target/debug/`, since output-floor programs print through a workspace
+/// platform DLL).
+///
+/// `prelude` selects the prelude variant.
+pub fn run_through_all_modes_output(program: &str, prelude: PreludeVariant) -> AllModesOutput {
+    let repl_fresh = run_repl_output(program, prelude, "repl_fresh", true);
+    let repl_cached = run_repl_output(program, prelude, "repl_cached", false);
+    let run_fresh = run_run_output(program, prelude, "run_fresh", true);
+    let run_cached = run_run_output(program, prelude, "run_cached", false);
+    let link_fresh = run_link_output(program, prelude, "link_fresh", true);
+    let link_cached = run_link_output(program, prelude, "link_cached", false);
+
+    AllModesOutput {
+        repl_fresh,
+        repl_cached,
+        run_fresh,
+        run_cached,
+        link_fresh,
+        link_cached,
+    }
+}
+
+/// Strip REPL chrome (banner, `N+Mms; <module>> ` prompts, and `:Type value`
+/// value-echo lines) from REPL stdout, leaving only the program's `print`
+/// output. The prompt is emitted inline (not newline-terminated), so it is
+/// removed by regex rather than line-filtering.
+fn strip_repl_chrome(stdout: &str) -> String {
+    // Remove every `N+Mms; <word>> ` prompt fragment wherever it appears.
+    let prompt_re = Regex::new(r"\d+\+\d+ms; \w+> ").unwrap();
+    let no_prompts = prompt_re.replace_all(stdout, "");
+    let mut out = String::new();
+    for line in no_prompts.lines() {
+        // Drop the startup banner.
+        if line.starts_with("cranelisp REPL") {
+            continue;
+        }
+        // Drop the `:Type value` value-echo lines (REPL result display).
+        if line.trim_start().starts_with(':') {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    // Trim ALL trailing newlines: the line-join above plus the prompt-only
+    // residual lines (a bare `N+Mms; user> ` prompt becomes an empty line) add
+    // trailing blanks. Both `--run`/`--link` (via `trim_trailing_newline`) and
+    // this path normalise trailing newlines identically, so internal effect
+    // ordering is preserved while trailing chrome is dropped.
+    while out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+fn run_repl_output(
+    program: &str,
+    prelude: PreludeVariant,
+    label: &'static str,
+    fresh: bool,
+) -> OutputPermutation {
+    let stdin = format!("{program}\n(main)\n");
+    let cr = Cranelisp::new()
+        .repl()
+        .use_workspace_platforms()
+        .with_prelude(prelude)
+        .stdin(&stdin);
+    let cr = if fresh {
+        cr
+    } else {
+        let warm = cr.output();
+        warm.run_again()
+            .repl()
+            .use_workspace_platforms()
+            .with_prelude_no_overwrite(prelude)
+            .stdin(&stdin)
+    };
+    let out = cr.output();
+    OutputPermutation {
+        label,
+        program_stdout: strip_repl_chrome(&out.stdout),
+        raw_stdout: out.stdout,
+        stderr: out.stderr,
+        exit_code: out.status.code(),
+    }
+}
+
+fn run_run_output(
+    program: &str,
+    prelude: PreludeVariant,
+    label: &'static str,
+    fresh: bool,
+) -> OutputPermutation {
+    let cr = Cranelisp::new()
+        .use_workspace_platforms()
+        .with_prelude(prelude)
+        .run("user.cl")
+        .user(program);
+    let cr = if fresh {
+        cr
+    } else {
+        let warm = cr.output();
+        warm.run_again()
+            .use_workspace_platforms()
+            .with_prelude_no_overwrite(prelude)
+            .run("user.cl")
+    };
+    let out = cr.output();
+    OutputPermutation {
+        label,
+        program_stdout: trim_trailing_newline(&out.stdout),
+        raw_stdout: out.stdout,
+        stderr: out.stderr,
+        exit_code: out.status.code(),
+    }
+}
+
+fn run_link_output(
+    program: &str,
+    prelude: PreludeVariant,
+    label: &'static str,
+    fresh: bool,
+) -> OutputPermutation {
+    let cr = Cranelisp::new()
+        .use_workspace_platforms()
+        .with_prelude(prelude)
+        .link_then_run("user.cl")
+        .user(program);
+    let cr = if fresh {
+        cr
+    } else {
+        let warm = cr.output();
+        warm.run_again()
+            .use_workspace_platforms()
+            .with_prelude_no_overwrite(prelude)
+            .link_then_run("user.cl")
+    };
+    let out = cr.output();
+    OutputPermutation {
+        label,
+        program_stdout: trim_trailing_newline(&out.stdout),
+        raw_stdout: out.stdout,
+        stderr: out.stderr,
+        exit_code: out.status.code(),
+    }
+}
+
+/// Trim ALL trailing `\n` so `--run`/`--link` raw stdout (which carries the
+/// `print` effect's trailing newline) compares equal to the REPL residual
+/// (where trailing prompt-only lines and the line-join add trailing blanks,
+/// stripped identically by `strip_repl_chrome`).
+fn trim_trailing_newline(s: &str) -> String {
+    s.trim_end_matches('\n').to_string()
+}
+
 // --- Internal parse + truncate helpers --------------------------------------
 
 /// Extract the last `:primitives/Int N` value from REPL stdout.
