@@ -1,6 +1,6 @@
 # Sprint 81: Clean & Green — opening the pre-Phase-H FIXME-clearance arc
 
-**Status**: ~~PHASE 1 SCOPE DRAFT ✅~~ → ~~PHASE 2 ARCH REVIEW ✅~~ → ~~REDUCTION WAVES (W1–W3) ✅ — suite 1231/0/1, 38 FIXMEs closed~~ → ~~PHASE 3 DESIGN (9-agent fan-out) ✅ — plans collected, ~13 more stale found, 2 /arch rulings owed (0327/0220)~~ → **PHASE 4/5 — COMPONENT WAVES (ready)** | PHASE 6 user-facing → PHASE 7 CLOSE
+**Status**: ~~PHASE 1 ✅~~ → ~~PHASE 2 ✅~~ → ~~REDUCTION W1–W3 ✅~~ → ~~PHASE 3 DESIGN ✅~~ → ~~PACING: stale-sweep 3 + arch rulings ✅ (52 closed, 101→50)~~ → **PHASE 5 — IMPL BITE 1: foundational + low-risk mechanical** (W1/0316 + typecheck 0033/0306 + int-9a + backend 0325 + primitives 0216/0308) | then dispatch funnel / 0109 / Phase 6 → PHASE 7 CLOSE
 
 **Goal**: Re-establish "clean & green" as the sprint-exit standard and clear the entire known FIXME backlog — organized by crate/component, docs-first — as the mainline-completion step before Phase H. **Every component gets one or more waves this sprint to address all or most of its issues**; items are deferred only with an explicit good reason, never by default. The user-facing Phase-6 assessment is reinstated permanently.
 
