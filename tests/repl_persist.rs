@@ -717,3 +717,98 @@ fn persist_bug_macro_usage_in_defn_survives_session_restart() {
         second.stdout
     );
 }
+
+// =============================================================================
+// 8. Bug 0220: cache-restored UserFns survive REPL-edit `.cl` regeneration
+// =============================================================================
+
+// spec: repl/spec.md §15.4 — Regeneration Integrity invariant 1 (round-trip
+//   correctness). FIXME 0220 (resolved S81 W-E) closed the gap where a
+//   cache-restored regular `UserFn` with NO REPL introspection record was
+//   silently dropped from the regenerated backing `user.cl` when the user
+//   edited a *different* symbol in the same module at the REPL. The fix is a
+//   lazy re-read + re-parse of the backing `.cl` in
+//   `src/save.rs::rehydrate_userfn_introspection_from_source`, driven from
+//   `session_v4::regenerate_backing_file`.
+//
+//   This e2e crosses cache-hit + REPL-edit + `.cl`-regen — the seam the
+//   in-crate unit test (`src/save.rs::tests::
+//   rehydrate_recovers_cache_loaded_userfn_dropped_from_regen`) cannot reach.
+//   FIXME 0334.
+//
+//   Repro: session 1 has `keep`/`other`/`main` on disk in `user.cl` and runs,
+//   populating the on-disk cache. Session 2 (same TempDir) loads the module
+//   FROM CACHE — so `keep`/`other` carry no introspection record — then defines
+//   a NEW symbol at the REPL, triggering `regenerate_backing_file`. The
+//   regenerated `user.cl` MUST still contain `(defn keep …)` and
+//   `(defn other …)`; without the 0220 fix they vanish.
+#[test]
+fn persist_bug0220_cache_restored_userfns_survive_repl_edit_regen() {
+    // Session 1: a file-based entry module with two regular UserFns plus main.
+    // Running it populates the on-disk `.cranelisp-cache/`.
+    let first = Cranelisp::new()
+        .file(
+            "user.cl",
+            "(defn keep [] 1)\n(defn other [] 2)\n(defn main [] (keep))\n",
+        )
+        .repl()
+        .stdin("(keep)\n/quit\n")
+        .output();
+    assert!(
+        first.status.success(),
+        "session 1 should exit cleanly: stdout={}\nstderr={}",
+        first.stdout, first.stderr
+    );
+    assert!(
+        first.tmpdir.join(".cranelisp-cache").exists(),
+        "session 1 should populate the on-disk cache"
+    );
+
+    // Session 2: same TempDir, so `user.cl` loads FROM CACHE — `keep`/`other`
+    // have no introspection record. Define a NEW symbol, which triggers
+    // backing-file regeneration.
+    let second = first
+        .run_again()
+        .repl()
+        .stdin("(defn added [] 3)\n(added)\n/quit\n")
+        .output();
+    assert!(
+        second.status.success(),
+        "session 2 should exit cleanly: stdout={}\nstderr={}",
+        second.stdout, second.stderr
+    );
+
+    // The regenerated user.cl MUST still contain the cache-restored UserFns.
+    let regenerated = second.read_tmp("user.cl");
+    assert!(
+        regenerated.contains("(defn keep"),
+        "cache-restored UserFn 'keep' MUST survive regen (FIXME 0220): {regenerated}"
+    );
+    assert!(
+        regenerated.contains("(defn other"),
+        "cache-restored UserFn 'other' MUST survive regen (FIXME 0220): {regenerated}"
+    );
+    // The newly-added symbol is also present (the edit that triggered regen).
+    assert!(
+        regenerated.contains("(defn added"),
+        "the newly-defined symbol 'added' MUST be in the regenerated file: {regenerated}"
+    );
+
+    // Round-trip: a third session loads the regenerated file and `keep`/`other`
+    // are still callable — proving they were not silently dropped.
+    let third = second
+        .run_again()
+        .repl()
+        .stdin("(keep)\n(other)\n/quit\n")
+        .output();
+    assert!(
+        third.status.success(),
+        "session 3 should exit cleanly: stdout={}\nstderr={}",
+        third.stdout, third.stderr
+    );
+    assert!(
+        third.stdout.contains("1") && third.stdout.contains("2"),
+        "session 3: (keep)->1 and (other)->2 must resolve from regenerated user.cl: stdout={}",
+        third.stdout
+    );
+}

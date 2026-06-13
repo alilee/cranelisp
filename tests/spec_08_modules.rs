@@ -347,6 +347,113 @@ fn import_below_use_still_available_before_definitions() {
 }
 
 // =============================================================================
+// §8.2.2 Inline Submodule Declaration — extraction + parent rewrite
+//
+// FIXME 0217 (S81 bite-1) implemented spec §8.2.2 step 2: after the inline body
+// is written to the backing file (step 1), the PARENT source file is rewritten
+// in place, replacing `(mod name form…)` with bare `(mod name)`. The in-crate
+// unit tests pin the pure splice (`splice_inline_mod_to_bare`) with a HAND-BUILT
+// span; these e2e tests were authored as the owed end-to-end regression guard
+// (FIXME 0330) and instead SURFACED a defect.
+//
+// DEFECT (FIXME 0336 → /dev int): under `--run`, `rewrite_parent_inline_mod` is
+// invoked TWICE for the same `(mod child …)` form — the S78 cluster
+// retry-from-top re-runs Pass-0 against the original `sexps` (span 29..59) AFTER
+// the first pass already shrank the on-disk parent to 77 bytes. The second call
+// slices the STALE span over the rewritten file, producing a corrupt parent
+// (`(mod child)e (child/helper)))`). The exact-match idempotence guard in
+// `splice_inline_mod_to_bare` misses because the stale-span slice is not exactly
+// `(mod child)`. The first run still exits correctly (in-memory state is fine),
+// but the durable backing-file damage breaks every subsequent run. The reader
+// span (29..59) and the pure splice are CORRECT; the bug is the double-invocation
+// with a stale span on cluster retry — int's, in `src/process_form.rs`.
+//
+// These tests are FAILING-NOT-IGNORED per `memory/feedback_failing_not_ignored.md`
+// — they pin the spec-correct behaviour and flip green when /dev resolves 0336.
+// =============================================================================
+
+// spec: spec/08-modules.md §8.2.2 — first compilation of an inline `(mod child
+// form…)` MUST (1) create the backing file `{stem}/child.cl` containing the
+// inline body, and (2) rewrite the parent file so the inline form becomes a
+// bare `(mod child)` reference WITH SURROUNDING FORMS PRESERVED. After
+// extraction the submodule is indistinguishable from one created manually.
+// FIXME(/dev 0336): the double-invocation corrupts the parent (`main` form
+// truncated), so the surrounding-forms-preserved assertion fails today.
+#[test]
+fn inline_mod_extracts_backing_file_and_rewrites_parent() {
+    let cr = Cranelisp::new()
+        .file(
+            "app.cl",
+            "(import [primitives [Pure]])\n\
+             (mod child (defn helper [] 7))\n\
+             (defn main [] (Pure (child/helper)))",
+        )
+        .run("app.cl");
+    let out = cr.output().assert_exit(7);
+
+    // Step 1: the backing file was created with the inline body.
+    assert!(
+        out.tmp_exists("app/child.cl"),
+        "backing file app/child.cl MUST be created from the inline body"
+    );
+    let child = out.read_tmp("app/child.cl");
+    assert!(
+        child.contains("(defn helper [] 7)"),
+        "backing file MUST contain the inline body, got:\n{child}"
+    );
+
+    // Step 2: the parent file was rewritten — the inline form is now a bare
+    // `(mod child)` reference, the inline body is gone, and the surrounding
+    // forms (import, main) are preserved INTACT. The last assertion fails under
+    // FIXME 0336 (the `main` form is truncated by the stale-span re-rewrite).
+    let parent = out.read_tmp("app.cl");
+    assert!(
+        parent.contains("(mod child)"),
+        "parent MUST be rewritten to a bare `(mod child)` reference, got:\n{parent}"
+    );
+    assert!(
+        !parent.contains("(mod child (defn helper [] 7))"),
+        "the inline body MUST NOT remain in the parent after extraction, got:\n{parent}"
+    );
+    assert!(
+        parent.contains("(import [primitives [Pure]])")
+            && parent.contains("(defn main [] (Pure (child/helper)))"),
+        "surrounding forms MUST be preserved intact (FIXME 0336 corrupts `main`), got:\n{parent}"
+    );
+}
+
+// spec: spec/08-modules.md §8.2.2 — the inline form is a "one-time creation
+// syntax": after extraction, subsequent compilations use the extracted file.
+// Re-running the project MUST be idempotent — the parent already holds the bare
+// `(mod child)` reference and the program output is unchanged.
+// FIXME(/dev 0336): the first run leaves a CORRUPT parent on disk, so the
+// re-run fails to parse (`unexpected character: ')'`) — this test pins that the
+// re-run MUST still exit 7.
+#[test]
+fn inline_mod_extraction_is_idempotent_on_rerun() {
+    let cr = Cranelisp::new()
+        .file(
+            "app.cl",
+            "(import [primitives [Pure]])\n\
+             (mod child (defn helper [] 7))\n\
+             (defn main [] (Pure (child/helper)))",
+        )
+        .run("app.cl");
+    let first = cr.output().assert_exit(7);
+    let child_after_first = first.read_tmp("app/child.cl");
+
+    // Second run in the same project tree: the rewritten parent + extracted
+    // backing file MUST re-run cleanly to the same result. Fails under 0336
+    // because the first run corrupted `app.cl`.
+    let second = first.run_again().run("app.cl").output().assert_exit(7);
+    assert_eq!(
+        child_after_first,
+        second.read_tmp("app/child.cl"),
+        "the extracted backing file MUST be unchanged on re-run"
+    );
+}
+
+// =============================================================================
 // §8.10.3 Whole-Module Compilation — explicit (mod ...) declaration
 //
 // Wave 5.6 carry-forwards from legacy/modules.rs. All 13 use the

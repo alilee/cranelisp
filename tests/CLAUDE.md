@@ -47,6 +47,33 @@ and are not compiled. The `ReplSession` back-compat shim that
 previously bridged Rust-API tests has been deleted —
 `tests/helpers/mod.rs` is now a one-line module declaration.
 
+## Unit-test-per-fix discipline (S81 policy)
+
+Established Sprint 81 (user-directed); the binding statement lives in root
+`CLAUDE.md` §Testing and `sprints/METHOD.md` §Phase-5. Restated here at the
+point of test authoring:
+
+- **Every fix lands with a unit test — mandatory.** The unit test pins the
+  behaviour at the exact seam where the bug lived and is the fastest guard
+  against a re-break. A fix guarded only by an e2e — or only by "the suite
+  still passes" — is incomplete.
+- **Assess the integration/e2e need BEFORE writing the fix.** Unit and e2e
+  answer different questions. The unit-vs-e2e heuristic: add an e2e when the
+  bug is **observable end-to-end** or **crosses `--run` / `--link` / REPL
+  modes** (mode-divergence, cache-restore, file-regen, process-level output).
+  When in doubt, a bug visible from the binary's outside surface warrants an
+  e2e in addition to the unit test.
+- **Failing test(s) first; fix flips them green; test(s) and fix land in the
+  SAME change-set.** Write the failing test before the fix, not after.
+- **No "test owed" follow-up FIXMEs.** Deferring the test to a later FIXME
+  inverts the discipline and routinely never gets done. The test is part of
+  the fix, not a successor task.
+
+This is the per-fix complement to the two-tier strategy above (§"Two tiers,
+no middle"): unit tests live in the owning crate's `#[cfg(test)]` modules
+(authored by `/dev`), e2e tests live in `tests/` (authored by `/qa`). The
+discipline applies to both tiers. See `memory/feedback_unit_test_per_fix.md`.
+
 ## Spec-traceability linter
 
 `tests/plan/spec_link_check.py` is a structural verifier for `// spec:`
