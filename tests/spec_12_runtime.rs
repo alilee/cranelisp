@@ -265,7 +265,7 @@ fn closure_capturing_closure_balanced() {
 #[test]
 fn trace_returns_trace_value() {
     repl(
-        "(import [primitives [trace Trace TraceCall]])\n\
+        "(import [primitives [Trace TraceCall]])\n\
          (defn id [x] x)\n\
          (let [t (trace (id 42))] (match t [(TraceCall n p r c ns) n]))\n",
     )
@@ -284,7 +284,7 @@ fn trace_pattern_match_extracts_name() {
     // Pattern match on TraceCall to extract the name field; assert a String
     // value is observable on stdout.
     repl(
-        "(import [primitives [trace Trace TraceCall]])\n\
+        "(import [primitives [Trace TraceCall]])\n\
          (defn id [x] x)\n\
          (let [t (trace (id 1))] (match t [(TraceCall n p r c ns) n]))\n",
     )

@@ -323,7 +323,7 @@ fn link_extern_primitive_str_len_of_literal_exits_with_length() {
 // (FIXME 0286 part (a) — the cheap traced extern-primitive --link variant.)
 #[test]
 fn link_traced_extern_primitives_appear_as_children_exit_42() {
-    let src = "(import [primitives [trace Trace TraceCall str-concat str-len Pure]])\n\
+    let src = "(import [primitives [Trace TraceCall str-concat str-len Pure]])\n\
          (import [macros [SCons SNil]])\n\
          (defn greet [s] (str-len (str-concat \"hi \" s)))\n\
          (defn slen [acc xs]\n\

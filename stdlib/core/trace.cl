@@ -12,7 +12,9 @@
 ;; Re-export trace primitives so users get everything from one import
 (import [prelude []])
 
-(export [primitives [trace Trace TraceCall name params result children nanos]])
+;; `trace` is a root special form (no import needed); only the Trace ADT + its
+;; accessors are re-exported from `primitives` (FIXME 0266, user ruling 2026-06-04).
+(export [primitives [Trace TraceCall name params result children nanos]])
 
 ;; Import what we need for our own definitions
 (import [primitives [*]])

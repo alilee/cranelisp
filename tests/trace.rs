@@ -146,7 +146,7 @@ fn trace_panic_unwind_does_not_stick_guard() {
 // extern-primitive children (2), returning count+40 == 42.
 #[test]
 fn trace_linked_binary_match_consumption_runs() {
-    let src = "(import [primitives [trace Trace TraceCall str-concat str-len Pure]])\n\
+    let src = "(import [primitives [Trace TraceCall str-concat str-len Pure]])\n\
          (import [macros [SCons SNil]])\n\
          (defn work [s] (str-len (str-concat \"x\" s)))\n\
          (defn slen [acc xs]\n\
@@ -178,7 +178,7 @@ fn trace_linked_binary_match_consumption_runs() {
 #[test]
 fn trace_extern_primitive_appears_as_child() {
     repl_prims(
-        "(import [primitives [trace Trace TraceCall str-concat]])\n\
+        "(import [primitives [Trace TraceCall str-concat]])\n\
          (import [macros [SCons SNil]])\n\
          (defn greet [s] (str-concat \"hi \" s))\n\
          (defn fst-grandchild [c]\n\
@@ -203,7 +203,7 @@ fn trace_stdlib_fixture_fn_appears_as_child() {
         .prelude(PRELUDE_ONE_HELPER)
         .repl()
         .stdin(
-            "(import [primitives [trace Trace TraceCall]])\n\
+            "(import [primitives [Trace TraceCall]])\n\
              (import [macros [SCons SNil]])\n\
              (defn f [x] (helper x))\n\
              (defn fst-grandchild [c]\n\
@@ -226,7 +226,7 @@ fn trace_stdlib_fixture_fn_appears_as_child() {
 #[test]
 fn trace_neg_inline_arithmetic_not_traced() {
     repl_prims(
-        "(import [primitives [trace Trace TraceCall]])\n\
+        "(import [primitives [Trace TraceCall]])\n\
          (import [macros [SCons SNil]])\n\
          (defn cnt [acc xs]\n\
            (match xs [SNil acc (SCons h t) (cnt (add-i64 acc 1) t)]))\n\
@@ -248,7 +248,7 @@ fn trace_neg_inline_arithmetic_not_traced() {
 #[test]
 fn trace_neg_anonymous_lambda_not_traced() {
     repl_prims(
-        "(import [primitives [trace Trace TraceCall]])\n\
+        "(import [primitives [Trace TraceCall]])\n\
          (import [macros [SCons SNil]])\n\
          (defn cnt [acc xs]\n\
            (match xs [SNil acc (SCons h t) (cnt (add-i64 acc 1) t)]))\n\
@@ -276,7 +276,7 @@ fn trace_neg_anonymous_lambda_not_traced() {
 #[test]
 fn trace_polymorphic_adt_result_renders() {
     let out = repl_prims(
-        "(import [primitives [trace Trace TraceCall]])\n\
+        "(import [primitives [Trace TraceCall]])\n\
          (deftype (Option a) None (Some [:a val]))\n\
          (defn wrap [x] (Some x))\n\
          (match (trace (wrap 7)) [(TraceCall n p r c ns) r])\n",
@@ -308,7 +308,7 @@ fn trace_polymorphic_adt_result_renders() {
 #[test]
 fn trace_adt_value_render_overflows_defect() {
     repl_prims(
-        "(import [primitives [trace Trace TraceCall]])\n\
+        "(import [primitives [Trace TraceCall]])\n\
          (deftype (Option a) None (Some [:a val]))\n\
          (defn mk [] None)\n\
          (match (trace (mk)) [(TraceCall n p r c ns) r])\n",
@@ -334,7 +334,7 @@ fn trace_trait_heavy_prelude_overflows_defect() {
         .with_prelude(PreludeVariant::TestStandard)
         .repl()
         .stdin(
-            "(import [primitives [trace Trace TraceCall]])\n\
+            "(import [primitives [Trace TraceCall]])\n\
              (defn f [x] (add-i64 x 1))\n\
              (trace (f 5))\n",
         )
@@ -365,7 +365,7 @@ fn trace_trait_heavy_prelude_overflows_defect() {
 #[test]
 fn trace_nanos_accessor_resolves_in_repl() {
     let out = repl_prims(
-        "(import [primitives [trace Trace TraceCall nanos]])\n\
+        "(import [primitives [Trace TraceCall nanos]])\n\
          (defn id [x] x)\n\
          (defn work [x] (id x))\n\
          (nanos (trace (work 41)))\n",
@@ -398,7 +398,7 @@ fn trace_nanos_accessor_resolves_in_repl() {
 // expect Ok + success.
 #[test]
 fn trace_linked_accessor_consume_runs_clean() {
-    let src = "(import [primitives [trace Trace TraceCall nanos Pure]])\n\
+    let src = "(import [primitives [Trace TraceCall nanos Pure]])\n\
          (defn id [x] x)\n\
          (defn work [x] (id x))\n\
          (defn use-it [n] 0)\n\
@@ -447,7 +447,7 @@ fn trace_linked_accessor_consume_runs_clean() {
 // consume path exits 0 every iteration.
 #[test]
 fn trace_run_mode_accessor_consume_runs_clean() {
-    let src = "(import [primitives [trace Trace TraceCall nanos Pure]])\n\
+    let src = "(import [primitives [Trace TraceCall nanos Pure]])\n\
          (defn id [x] x)\n\
          (defn work [x] (id x))\n\
          (defn use-it [n] 0)\n\

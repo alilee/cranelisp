@@ -13,8 +13,10 @@
 //! ## The eight steps (legacy `register_builtins` order)
 //!
 //! 1. special forms at root `""` (`if`/`let`/`fn`/`defn`/`deftype`/`match`/
-//!    `deftrait`/`impl`/`defmacro`) as `ModuleEntry::SpecialForm` — metadata
-//!    for `/info`.
+//!    `deftrait`/`impl`/`defmacro`/`trace`) as `ModuleEntry::SpecialForm` —
+//!    metadata for `/info`. `trace` is a root special form (no import; user
+//!    ruling 2026-06-04, FIXME 0266) — only its `Trace`/`TraceCall` ADT lives
+//!    in `primitives` (step 7).
 //! 2. intrinsic type names in `primitives`: `Int`/`Bool`/`Float`/`String` as
 //!    `IntrinsicType`, `Vec` as `TypeDef`.
 //! 3. synthetic `macros` module — `SList`/`Sexp` ADTs + `sconcat` primitive.
@@ -25,10 +27,10 @@
 //!    `catch-runtime-error` return; tag order Ok=0 / Err=1).
 //! 5. `IO` ADT (`Pure`/`Effect`/`Bind`) in `primitives`.
 //! 6. `bind` primitive in `primitives`.
-//! 7. `Trace` ADT (`TraceCall` + field accessors) + `trace` module-scoped
-//!    special form in `primitives` (ADT data declaration only — the 12 runtime
-//!    bodies live in `cranelisp-intrinsics`, codegen in backend; see
-//!    `tracing.md` §2.2 + FIXME 0242 §S76-addendum (4)).
+//! 7. `Trace` ADT (`TraceCall` + field accessors) in `primitives` (ADT data
+//!    declaration only — the 12 runtime bodies live in `cranelisp-intrinsics`,
+//!    codegen in backend; see `tracing.md` §2.2 + FIXME 0242 §S76-addendum (4)).
+//!    The `trace` *form* metadata is at root `""` (step 1), not here.
 //! 8. test-discovery primitives in `primitives`: `discover-tests`
 //!    (`DefKind::PrimitiveExtern`, body promised by int at session init) +
 //!    `catch-runtime-error` (`DefKind::Primitive`, body in
@@ -340,6 +342,31 @@ fn register_special_forms(
             },
         );
     }
+
+    // `trace` is a ROOT special form (user ruling 2026-06-04; tracing.md §3.1,
+    // spec §4.12.4): `(trace expr)` is recognised parser-side as `Expr::Trace`
+    // and needs NO import — exactly like `if`/`let`. Its SpecialForm metadata
+    // (self-documenting-REPL feedback for `/info trace`) therefore lives at root
+    // `""`, alongside the other root special forms — NOT in `primitives`. The
+    // `Trace`/`TraceCall` ADT names + their accessors STAY in `primitives`
+    // (form/ADT asymmetry, spec §3.2.4); only the *form* name `trace` is here.
+    // The richer scheme/param metadata is preserved (the structural forms above
+    // carry only a placeholder scheme; `trace` carries its real shape).
+    let trace_ty = Type::ADT(primitives_fqtn("Trace"), vec![]);
+    let trace_form_desc = "Execution trace: (trace expr) — evaluates expr with call instrumentation, returns Trace ADT";
+    root.insert(
+        Symbol::from("trace"),
+        ModuleEntry::SpecialForm {
+            scheme: mono(Type::Fn(
+                vec![Type::Var(0)], // any expression type
+                Box::new(trace_ty),
+            )),
+            param_names: vec![Symbol::from("expr")],
+            docstring: Some(trace_form_desc.to_string()),
+            description: trace_form_desc.to_string(),
+            visibility: Visibility::Public,
+        },
+    );
 }
 
 // --- Step 2: intrinsic type names (primitives) ---
@@ -888,32 +915,11 @@ fn register_trace_type(
         insert_primitive(&mut primitives, field_name, scheme, vec!["t"], docstring);
     }
 
-    // FIXME 0266 (DEFERRED — see design/arch/fixmes/0266): the ruling moves the
-    // `trace` SpecialForm metadata entry from `primitives` to root `""`. The
-    // one-line move is mechanically trivial here, BUT it breaks every consumer
-    // that imports `trace` from `primitives` specifically — `stdlib/core.cl`'s
-    // `(mod trace)` + `(export [trace [trace …]])` re-export, and ~7 trace e2e
-    // tests doing `(import [primitives [trace …]])`. Those fixtures are
-    // /stdlib- and /qa-owned, not int's; completing the move requires a
-    // coordinated cross-skill fixture sweep (drop `trace` from those import
-    // lists — it is a root special form needing no import, like `if`/`let`).
-    // Until that sweep lands the entry stays in `primitives` to keep the tree
-    // green. (Recognition is frontend-side via `Expr::Trace` regardless of this
-    // entry's placement; the entry only feeds `/info trace` + import resolution.)
-    let trace_form_desc = "Execution trace: (trace expr) — evaluates expr with call instrumentation, returns Trace ADT";
-    primitives.insert(
-        Symbol::from("trace"),
-        ModuleEntry::SpecialForm {
-            scheme: mono(Type::Fn(
-                vec![Type::Var(0)], // any expression type
-                Box::new(trace_ty.clone()),
-            )),
-            param_names: vec![Symbol::from("expr")],
-            docstring: Some(trace_form_desc.to_string()),
-            description: trace_form_desc.to_string(),
-            visibility: Visibility::Public,
-        },
-    );
+    // NOTE: the `trace` SpecialForm metadata entry is registered at ROOT `""`
+    // (see `register_special_forms`, step 1), NOT here — `trace` is a root
+    // special form needing no import (user ruling 2026-06-04; FIXME 0266
+    // resolved). Only the `Trace`/`TraceCall` ADT + accessors live in
+    // `primitives` (form/ADT asymmetry, spec §3.2.4).
 }
 
 // --- Step 8: test-discovery primitives (primitives) ---
@@ -1099,12 +1105,19 @@ mod tests {
         mount_synthetic_modules(&tables, &next_id);
         let prims = tables.get(&ModuleFullPath::from("primitives")).unwrap();
         assert!(matches!(prims.get("Trace"), Some(ModuleEntry::TypeDef { .. })));
-        // FIXME 0266 DEFERRED: the `trace` SpecialForm entry stays in
-        // `primitives` until the cross-skill fixture sweep moves it to root.
-        assert!(matches!(
-            prims.get("trace"),
-            Some(ModuleEntry::SpecialForm { .. })
-        ));
+        // FIXME 0266 RESOLVED (user ruling 2026-06-04): `trace` is a ROOT
+        // special form needing no import; its SpecialForm metadata lives at
+        // root `""`, NOT in `primitives`. The `Trace`/`TraceCall` ADT + its
+        // accessors stay in `primitives` (form/ADT asymmetry, spec §3.2.4).
+        assert!(
+            prims.get("trace").is_none(),
+            "trace form must NOT be in primitives (it is a root special form)"
+        );
+        let root = tables.get(&ModuleFullPath::from("")).unwrap();
+        assert!(
+            matches!(root.get("trace"), Some(ModuleEntry::SpecialForm { .. })),
+            "trace SpecialForm metadata must resolve at root \"\""
+        );
         // TestResult / run-test RETIRED (test-discovery.md, fourth convergence).
         assert!(prims.get("TestResult").is_none(), "TestResult must be retired");
         assert!(prims.get("run-test").is_none(), "run-test must be retired");
