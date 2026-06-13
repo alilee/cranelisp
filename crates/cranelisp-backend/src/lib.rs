@@ -5456,6 +5456,207 @@ mod tests {
         }
     }
 
+    // spec: design/arch/bounded-contexts.md §5 invariant 9 (S81 / FIXME 0327,
+    //       the fault-guarded dispatch funnel step 2/4 — fault-path fn-name).
+    //
+    // The residual FIXME-0337 gap: a BARE imported platform-effect call
+    // `(crash)` carries `resolved_call: None`, so it reaches dispatch via the
+    // plain `compile_var_apply` → `compile_direct_call` path, NOT the
+    // `ResolvedCall::BuiltinFn` arm. The original step-2 stamp lived ONLY in the
+    // `BuiltinFn` arm, so the var-apply path emitted the GOT-indirect call with
+    // NO field-3 stamp — the fn-name handle stayed null and the surfaced
+    // DispatchError degraded to `<unknown>` (on BOTH the happy and fault paths).
+    //
+    // The fix sites the stamp at the single GOT-indirect dispatch chokepoint
+    // (`compile_direct_call`), so EVERY dispatch path stamps. This test pins
+    // that: a hand-built `caller` defn whose body is `(Apply (Var "crash") []
+    // resolved_call=None)` — the exact bare-import shape the bug exposed — must
+    // compile to CLIF that STORES the baked name into the returned Effect node's
+    // field-3 (absolute offset `HeapHeader::SIZE + IO_EFFECT_FN_NAME_OFFSET` = 40),
+    // AFTER the dispatch `call_indirect` and BEFORE `return` (node-construction
+    // time, before the force — so the name survives a thunk panic on the fault
+    // path). A non-platform-effect callee must NOT emit such a store.
+    #[test]
+    fn platform_effect_dispatch_stamps_fn_name_on_bare_import_var_apply_path() {
+        use cranelisp_types::{DefKind, FQSymbol, HeapHeader, ModuleEntry, Scheme};
+
+        // The absolute byte offset of the Effect node's fn-name field (field-3),
+        // composed from the public ABI constants — must equal 40 today and match
+        // the (module-private) EFFECT_FN_NAME_ABS_OFFSET the stamp emits.
+        let field3_off: i64 =
+            HeapHeader::SIZE as i64 + cranelisp_platform::IO_EFFECT_FN_NAME_OFFSET;
+
+        let plat = ModuleFullPath::from("platform.boom");
+        let user = ModuleFullPath::from("user");
+
+        // `caller` body: `(crash)` with resolved_call: None — the bare-import
+        // var-apply shape, NOT a `ResolvedCall::BuiltinFn`.
+        let caller = Defn {
+            name: Symbol::from("caller"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("crash"),
+                        span: Span::SYNTHETIC,
+                        resolved_call: None,
+                        inferred_type: None,
+                    }),
+                    args: vec![],
+                    span: Span::SYNTHETIC,
+                    resolved_call: None,
+                    inferred_type: None,
+                },
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+
+        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        // platform.boom: `crash` is a got-slotted PlatformEffect (the only kind
+        // that stamps). Slot 0 in the platform GOT.
+        {
+            let mut st = SymbolTable::new(plat.clone());
+            let _ = st.allocate_got_slot();
+            st.insert(
+                Symbol::from("crash"),
+                ModuleEntry::Def {
+                    scheme: Scheme {
+                        type_vars: vec![],
+                        constraints: HashMap::new(),
+                        ty: Type::Fn(vec![], Box::new(Type::Int)),
+                    },
+                    visibility: Visibility::Public,
+                    docstring: None,
+                    param_names: vec![],
+                    kind: Box::new(DefKind::PlatformEffect {
+                        scheduling_class: Default::default(),
+                    }),
+                    callees: vec![],
+                    got_slot: Some(0),
+                    trait_origin: None,
+                    seq: 0,
+                    ast: None,
+                    code: None,
+                },
+            );
+            tables.insert(plat.clone(), st);
+        }
+        // user: imports `crash` from platform.boom + defines `caller` at slot 0.
+        {
+            let mut st = SymbolTable::new(user.clone());
+            let _ = st.allocate_got_slot();
+            st.insert(
+                Symbol::from("crash"),
+                ModuleEntry::Import {
+                    source: FQSymbol {
+                        module: plat.clone(),
+                        symbol: Symbol::from("crash"),
+                    },
+                    visibility: Visibility::Public,
+                },
+            );
+            st.insert(
+                Symbol::from("caller"),
+                make_def_entry_slot(caller.clone(), 0),
+            );
+            tables.insert(user.clone(), st);
+        }
+
+        let mut obj = make_object_module();
+        let aliases = empty_aliases();
+        let artifacts = compile_to_module(
+            user.clone(),
+            std::slice::from_ref(&caller.name),
+            &tables,
+            &aliases,
+            &mut obj,
+            true, // capture_clif
+        )
+        .expect("compile caller calling a bare-imported platform effect");
+
+        // The emitted CLIF for `caller` must store into field-3 at +40. The store
+        // is the fn-name stamp; its absence is the FIXME-0337 `<unknown>` bug.
+        let store_at_field3 = format!("+{field3_off}");
+        assert!(
+            artifacts.clif_ir.contains("store") && artifacts.clif_ir.contains(&store_at_field3),
+            "bare-import platform-effect dispatch (resolved_call: None) MUST stamp \
+             the fn-name into the Effect node's field-3 (store at {store_at_field3}); \
+             the var-apply path was missing the stamp (FIXME 0337). CLIF:\n{}",
+            artifacts.clif_ir,
+        );
+    }
+
+    // spec: design/arch/bounded-contexts.md §5 invariant 9 (negative) — a NON
+    //       platform-effect callee dispatched GOT-indirect must NOT stamp
+    //       field-3: its result is not an Effect node and writing +40 would
+    //       corrupt an unrelated allocation. `resolve_platform_effect_target`
+    //       returns None for a plain UserFn, so no store is emitted.
+    #[test]
+    fn non_platform_effect_dispatch_does_not_stamp_field3() {
+        let user = ModuleFullPath::from("user");
+        // A plain user fn `helper` (UserFn, slotted) and a `caller` that calls it
+        // with resolved_call: None (the same var-apply path).
+        let helper = make_int_defn("helper", 7);
+        let caller = Defn {
+            name: Symbol::from("caller"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("helper"),
+                        span: Span::SYNTHETIC,
+                        resolved_call: None,
+                        inferred_type: None,
+                    }),
+                    args: vec![],
+                    span: Span::SYNTHETIC,
+                    resolved_call: None,
+                    inferred_type: None,
+                },
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+
+        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        {
+            let mut st = SymbolTable::new(user.clone());
+            let _ = st.allocate_got_slot();
+            let _ = st.allocate_got_slot();
+            st.insert(helper.name.clone(), make_def_entry_slot(helper.clone(), 0));
+            st.insert(caller.name.clone(), make_def_entry_slot(caller.clone(), 1));
+            tables.insert(user.clone(), st);
+        }
+
+        let field3_off: i64 = cranelisp_types::HeapHeader::SIZE as i64
+            + cranelisp_platform::IO_EFFECT_FN_NAME_OFFSET;
+        let store_at_field3 = format!("+{field3_off}");
+
+        let mut obj = make_object_module();
+        let aliases = empty_aliases();
+        let artifacts = compile_to_module(
+            user.clone(),
+            std::slice::from_ref(&caller.name),
+            &tables,
+            &aliases,
+            &mut obj,
+            true,
+        )
+        .expect("compile caller calling a plain user fn");
+
+        assert!(
+            !artifacts.clif_ir.contains(&store_at_field3),
+            "a non-platform-effect GOT-indirect dispatch MUST NOT stamp field-3 \
+             (no store at {store_at_field3}); only DefKind::PlatformEffect stamps. CLIF:\n{}",
+            artifacts.clif_ir,
+        );
+    }
+
     // spec: design/arch/CLAUDE.md Decision 23 (updated) — `__cranelisp_got_{M}`
     // is defined as Linkage::Export data with `slot_count * 8` bytes inside
     // the .o emitted by compile_to_module<ObjectModule>.

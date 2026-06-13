@@ -289,33 +289,17 @@ where
                     )
                     .is_some()
                     {
-                        let node_val = self.compile_direct_call(&sym, &arg_vals, span)?;
-                        // Step 2/4 of the fault-guarded dispatch funnel (S81 /
-                        // FIXME 0327; BC §3 + §5 invariant 9 Option A). When this
-                        // GOT-indirect arm dispatched a `DefKind::PlatformEffect`,
-                        // the call returned an `IO_TAG_EFFECT` node whose field-3
-                        // the DLL initialised to null. Bake the statically-known
-                        // FQ fn-name and stamp the baked pointer into field-3 so
-                        // the intrinsics fault guard (step 3) can surface
-                        // `DispatchError { fn_name }`. ONLY the PlatformEffect arm
-                        // stamps — `resolve_platform_effect_target` returns `Some`
-                        // exactly when the resolved entry is a PlatformEffect
-                        // (user fns / primitives / trait methods reach
-                        // `compile_direct_call` elsewhere and are left untouched,
-                        // so their result is not an Effect node and must not be
-                        // written to).
-                        if let Some((module, _slot, bare)) =
-                            crate::compiler::resolve_platform_effect_target(
-                                self.ctx.symbol_tables,
-                                self.ctx.module_aliases,
-                                &self.ctx.current_module,
-                                &sym,
-                            )
-                        {
-                            let fq_name = format!("{module}/{bare}");
-                            self.stamp_platform_fn_name(node_val, &fq_name, span)?;
-                        }
-                        return Ok(node_val);
+                        // `compile_direct_call` emits the GOT-indirect dispatch AND
+                        // stamps the platform fn-name into the returned Effect
+                        // node's field-3 when the target is a `DefKind::PlatformEffect`
+                        // (step 2/4 of the fault-guarded dispatch funnel; S81 / FIXME
+                        // 0327; BC §3 + §5 invariant 9 Option A). The stamp lives at
+                        // that single chokepoint so EVERY dispatch path stamps —
+                        // this `BuiltinFn` arm and the bare-import `compile_var_apply`
+                        // path alike — and it lands at node-construction time (before
+                        // the force), so the baked name survives a thunk panic on the
+                        // fault path.
+                        return self.compile_direct_call(&sym, &arg_vals, span);
                     }
                     // As-built fallback: direct `Linkage::Import` against the
                     // mangled jit_name (the platform fn ptr reaches the JIT via
@@ -546,7 +530,41 @@ where
                     message: format!("failed to declare GOT data '{}': {e}", got_sym),
                     location: ErrorLocation::from_span(span),
                 })?;
-            return self.emit_got_indirect_call_via_data_id(data_id, slot, arg_vals);
+            let node_val = self.emit_got_indirect_call_via_data_id(data_id, slot, arg_vals)?;
+            // Step 2/4 of the fault-guarded dispatch funnel (S81 / FIXME 0327;
+            // BC §3 + §5 invariant 9 Option A). When this GOT-indirect dispatch
+            // resolved a `DefKind::PlatformEffect`, the call returned an
+            // `IO_TAG_EFFECT` node whose field-3 the DLL initialised to null.
+            // Bake the statically-known FQ fn-name and stamp the baked pointer
+            // into field-3 so the intrinsics fault guard (step 3) can surface
+            // `DispatchError { fn_name }` — including on the FAULT path, because
+            // the stamp lands at node-construction time (immediately after the
+            // `crash()`-style constructor returns), BEFORE the force, so it
+            // survives a thunk panic at force time.
+            //
+            // The stamp lives HERE — at the single GOT-indirect dispatch chokepoint
+            // every platform call flows through (the `ResolvedCall::BuiltinFn` arm
+            // AND the plain `compile_var_apply` path both route into
+            // `compile_direct_call`). A bare imported platform fn `(crash)` carries
+            // `resolved_call: None`, so it reaches dispatch via `compile_var_apply`
+            // → `compile_direct_call`, NOT the `BuiltinFn` arm — siting the stamp
+            // here closes the fault-path `<unknown>` gap (FIXME 0337 residual) and
+            // unifies the happy path (which was ALSO `<unknown>` for bare imports).
+            // ONLY a `DefKind::PlatformEffect` target stamps — user fns / primitives
+            // / trait methods reach `compile_direct_call` too and must not be
+            // written to (their result is not an Effect node).
+            if let Some((eff_module, _slot, bare)) =
+                crate::compiler::resolve_platform_effect_target(
+                    self.ctx.symbol_tables,
+                    self.ctx.module_aliases,
+                    &self.ctx.current_module,
+                    name,
+                )
+            {
+                let fq_name = format!("{eff_module}/{bare}");
+                self.stamp_platform_fn_name(node_val, &fq_name, span)?;
+            }
+            return Ok(node_val);
         }
 
         // Kind-driven `PrimitiveExtern` arm (test-discovery.md §6; BC §3
