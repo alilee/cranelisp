@@ -576,6 +576,11 @@ type SigJmpBuf = [u8; 256]; // Conservative fallback for other platforms
 unsafe extern "C" {
     /// POSIX sigsetjmp: save execution context and optionally signal mask.
     /// Returns 0 on direct call, non-zero value (from siglongjmp) on return.
+    ///
+    /// On glibc/musl `sigsetjmp` is a header macro, not a linkable symbol — the
+    /// real function is `__sigsetjmp(env, savemask)` (same signature). macOS
+    /// exports a real `sigsetjmp`, so the redirect is Linux-only.
+    #[cfg_attr(target_os = "linux", link_name = "__sigsetjmp")]
     fn sigsetjmp(env: *mut SigJmpBuf, savesigs: libc::c_int) -> libc::c_int;
 
     /// POSIX siglongjmp: restore execution context saved by sigsetjmp.
