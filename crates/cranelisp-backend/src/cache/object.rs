@@ -276,12 +276,15 @@ pub fn process_cache_packet(
         // prior child/absolute qualified-name path. (S75 W2 D41 rotation added
         // the `module_aliases` param to `compile_to_module`.)
         let module_aliases: cranelisp_types::ModuleAliases = dashmap::DashMap::new();
+        // Object-mode cache rebuild is a batch path (introspection off) — the
+        // CLIF text is dropped unread, so skip rendering it (FIXME 0325).
         crate::compile_to_module(
             input.module_path.clone(),
             &names,
             symbol_tables,
             &module_aliases,
             &mut obj_module,
+            false,
         )?;
 
         let product = obj_module.finish();
@@ -542,6 +545,7 @@ mod tests {
             &tables,
             &aliases,
             &mut obj_module,
+            false,
         ).unwrap();
 
         let product = obj_module.finish();
@@ -608,6 +612,7 @@ mod tests {
             &tables,
             &aliases,
             &mut obj_module,
+            false,
         ).unwrap();
 
         let product = obj_module.finish();

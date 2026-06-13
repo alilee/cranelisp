@@ -2653,7 +2653,17 @@ fn handle_mod(
     decl: &cranelisp_types::ModDecl,
 ) -> Result<BlockAction, CranelispError> {
     if let Some(body_sexps) = &decl.inline_body {
+        // Step 1 (§8.2.2): write the inline body to the submodule backing file.
         write_inline_mod_to_disk(module, &decl.name, body_sexps, ctx.project_root)?;
+        // Step 2 (§8.2.2, FIXME 0217): rewrite the PARENT source file, replacing
+        // the inline `(mod name form…)` form with a bare `(mod name)` reference,
+        // then drop `inline_body` from the in-memory ModDecl so the persistent
+        // symbol-table shape matches a manually-created submodule (the §8.2.2
+        // "indistinguishable" + "one-time creation syntax" invariants). Failures
+        // to locate/rewrite the parent file are non-fatal — step 1 already
+        // created the backing file, so loading proceeds; the rewrite is the
+        // durable-shape cleanup, not a correctness gate for this run.
+        rewrite_parent_inline_mod(ctx, module, decl);
     }
 
     // Compute submodule path: "main" + "util" → "main.util"
@@ -2950,6 +2960,90 @@ fn write_inline_mod_to_disk(
     })?;
 
     Ok(())
+}
+
+/// Spec §8.2.2 step 2 (FIXME 0217): rewrite the parent source file, replacing
+/// the inline `(mod name form…)` form with a bare `(mod name)` reference, and
+/// drop `inline_body` from the in-memory `ModDecl` so the persistent
+/// symbol-table shape is indistinguishable from a manually-created submodule
+/// (the "one-time creation syntax" semantic).
+///
+/// Best-effort: the parent backing file is located with the same rules as
+/// module loading; if it cannot be resolved/read/parsed-back, the rewrite is
+/// skipped (step 1 already produced the backing file, so loading is unaffected).
+/// `decl.span` is the full `(mod …)` `Sexp::List` span (byte offsets into the
+/// parent source), so the replacement is a single byte-range splice that
+/// preserves all surrounding whitespace and comments.
+fn rewrite_parent_inline_mod(
+    ctx: &ModuleCompiler,
+    parent_module: &ModuleFullPath,
+    decl: &cranelisp_types::ModDecl,
+) {
+    // Drop `inline_body` from the in-memory ModDecl regardless of whether the
+    // file rewrite succeeds — the data-shape symptom (a persistent inline_body)
+    // is the load-bearing half; a manually-created submodule's ModDecl carries
+    // no body.
+    if let Some(mut st) = ctx.symbol_tables.get_mut(parent_module) {
+        for sm in st.submodules.iter_mut() {
+            if sm.name == decl.name {
+                sm.inline_body = None;
+            }
+        }
+    }
+
+    let Some(parent_file) =
+        crate::pipeline::resolve_module_file(parent_module, ctx.project_root, ctx.lib_dirs)
+    else {
+        return;
+    };
+    let Ok(source) = std::fs::read_to_string(&parent_file) else {
+        return;
+    };
+
+    // The pure splice decides whether (and how) to rewrite; `None` means
+    // "leave the file untouched" (synthetic/out-of-range span or already-bare —
+    // the idempotence case). Only write when the content actually changes.
+    if let Some(rewritten) = splice_inline_mod_to_bare(&source, decl.span, decl.name.as_ref()) {
+        // Atomic-ish write (best-effort; a failure leaves step 1's backing file
+        // in place and the in-memory body already dropped, so the run is
+        // unaffected).
+        let _ = std::fs::write(&parent_file, rewritten);
+    }
+}
+
+/// Pure parent-file rewrite (spec §8.2.2 step 2): splice the inline
+/// `(mod name form…)` byte range identified by `span` down to a bare
+/// `(mod name)` reference, preserving all surrounding whitespace and comments.
+///
+/// Returns `Some(new_source)` when a rewrite is warranted, `None` when the file
+/// MUST be left untouched:
+/// - the span is synthetic / out-of-range / not on char boundaries (e.g. a
+///   REPL-entered `(mod …)` with no backing byte range, or a stale span);
+/// - the form at the range is ALREADY the bare reference (idempotence — avoids a
+///   spurious mtime bump on re-load of an already-extracted file).
+///
+/// Extracted as the pure owner of the transformation so the parent-rewrite
+/// logic is unit-testable without an FS harness or a `ModuleCompiler` (mirrors
+/// the `layout_hash_gate` extraction; `src/CLAUDE.md` testability discipline).
+fn splice_inline_mod_to_bare(source: &str, span: Span, name: &str) -> Option<String> {
+    let start = span.start as usize;
+    let end = span.end as usize;
+    if start >= end
+        || end > source.len()
+        || !source.is_char_boundary(start)
+        || !source.is_char_boundary(end)
+    {
+        return None;
+    }
+    let replacement = format!("(mod {name})");
+    if &source[start..end] == replacement {
+        return None;
+    }
+    let mut rewritten = String::with_capacity(source.len());
+    rewritten.push_str(&source[..start]);
+    rewritten.push_str(&replacement);
+    rewritten.push_str(&source[end..]);
+    Some(rewritten)
 }
 
 // ---------------------------------------------------------------------------
@@ -3709,12 +3803,19 @@ pub fn inline_jit_codegen_for_names(
     //    trait. It returns batch-level `CompilationArtifacts` (clif_ir,
     //    code_size, compile_duration) for introspection.
     let module_aliases = module_aliases_for(tc_modules);
+    // FIXME 0325: capture the CLIF-IR text only when introspection is live.
+    // The presence of the introspection map IS the mode discriminator (REPL /
+    // trace → Some; `--run`/`--link` batch → None — pipeline-v4 §1, Decision
+    // 38). In batch the rendered CLIF would be dropped unread, so backend skips
+    // the `func.display()` allocation entirely.
+    let capture_clif = introspection.is_some();
     let result = cranelisp_backend::compile_to_module(
         module.clone(),
         names,
         tc_modules,
         &module_aliases,
         jit.jit_module(),
+        capture_clif,
     )?;
 
     // 5. Decision 41 #1 / Decision 31 Scenario 2: int composes `Code::Jit`
@@ -6070,5 +6171,55 @@ mod tests {
             layout_hash_gate("dll_baked_hash", "", "shapes", false, Span::SYNTHETIC),
             LayoutHashGate::Accept
         ));
+    }
+
+    // spec: spec/08-modules.md §8.2.2 — parent-file rewrite (FIXME 0217). The
+    // pure splice replaces the inline `(mod child form…)` byte range identified
+    // by the ModDecl span with a bare `(mod child)`, preserving surrounding
+    // forms + whitespace + comments.
+    #[test]
+    fn splice_inline_mod_rewrites_to_bare_reference() {
+        let source = "(mod child (defn helper [] 7))\n(defn main [] 0)\n";
+        // span covers the `(mod child …)` form exactly (offsets 0..30).
+        let span = Span::new(0, 30);
+        let rewritten = splice_inline_mod_to_bare(source, span, "child")
+            .expect("an inline (mod child …) form MUST be rewritten to bare");
+        assert_eq!(
+            rewritten,
+            "(mod child)\n(defn main [] 0)\n",
+            "the inline body MUST be spliced out, surrounding forms/whitespace \
+             preserved (spec §8.2.2 step 2)",
+        );
+    }
+
+    // spec: spec/08-modules.md §8.2.2 — idempotence. Re-running over a file
+    // whose form is ALREADY the bare `(mod child)` reference MUST NOT rewrite
+    // (returns None — no spurious mtime bump on reload of an extracted file).
+    #[test]
+    fn splice_inline_mod_is_idempotent_on_bare_reference() {
+        let source = "(mod child)\n(defn main [] 0)\n";
+        let span = Span::new(0, 11); // "(mod child)" is 11 bytes.
+        assert!(
+            splice_inline_mod_to_bare(source, span, "child").is_none(),
+            "an already-bare (mod child) reference MUST NOT be rewritten \
+             (idempotence — spec §8.2.2 step 2)",
+        );
+    }
+
+    // spec: spec/08-modules.md §8.2.2 — a synthetic / out-of-range span (e.g. a
+    // REPL-entered `(mod …)` with no backing byte range) MUST leave the file
+    // untouched rather than panicking or splicing at a bogus offset.
+    #[test]
+    fn splice_inline_mod_skips_out_of_range_span() {
+        let source = "(mod child (defn helper [] 7))";
+        assert!(
+            splice_inline_mod_to_bare(source, Span::SYNTHETIC, "child").is_none(),
+            "a synthetic/out-of-range span MUST be a no-op",
+        );
+        // end past the source length is also a no-op.
+        assert!(
+            splice_inline_mod_to_bare(source, Span::new(0, 9999), "child").is_none(),
+            "an out-of-range end MUST be a no-op",
+        );
     }
 }

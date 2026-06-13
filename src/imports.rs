@@ -70,10 +70,13 @@ pub(crate) fn install_imports(
             )?
         };
 
-        let mut guard = symbol_tables
-            .get_mut(current_module)
-            .ok_or_else(|| missing_current_module(current_module, spec.span))?;
-        insert_detecting_ambiguity(&mut guard, to_add);
+        // Verify the current module's table exists before installing (the
+        // per-name insertion re-acquires it; terminal-source dedup reads OTHER
+        // modules, so the mutable guard is not held across those reads).
+        if !symbol_tables.contains_key(current_module) {
+            return Err(missing_current_module(current_module, spec.span));
+        }
+        insert_detecting_ambiguity(symbol_tables, current_module, to_add, spec.span)?;
     }
     Ok(())
 }
@@ -118,10 +121,10 @@ pub(crate) fn install_exports(
             )?
         };
 
-        let mut guard = symbol_tables
-            .get_mut(current_module)
-            .ok_or_else(|| missing_current_module(current_module, spec.span))?;
-        insert_detecting_ambiguity(&mut guard, to_add);
+        if !symbol_tables.contains_key(current_module) {
+            return Err(missing_current_module(current_module, spec.span));
+        }
+        insert_detecting_ambiguity(symbol_tables, current_module, to_add, spec.span)?;
     }
     Ok(())
 }
@@ -270,65 +273,186 @@ fn collect_member_glob(
     result
 }
 
-/// Insert import entries, marking same-name entries from different sources as
-/// ambiguous (spec §8.6.4); same-source duplicates silently dedup;
-/// directly-defined entries take priority over incoming imports.
+/// Insert import entries, marking same-name entries from different **terminal**
+/// sources as ambiguous (spec §8.6.4); same-terminal-source duplicates silently
+/// dedup; directly-defined entries take priority over incoming imports.
+///
+/// **Terminal-source dedup (FIXME 0316).** §8.6.4 says *"the same name arriving
+/// through two re-export paths from the same original definition is NOT
+/// ambiguous"*. The decisive comparison is the **terminal** `(home_module,
+/// canonical_symbol)` reached by chain-following each `Import` edge — NOT the
+/// immediate `source.module`. A glob `(import [primitives [*]])` and a specific
+/// `(import [fn.option [Option]])` where `fn.option` *re-exports*
+/// `primitives/Option` have DIFFERENT immediate sources (`primitives` vs
+/// `fn.option`) but the SAME terminal (`primitives/Option`), so they dedup
+/// rather than collide. Two imports whose chains terminate at distinct original
+/// definitions still collide. The immediate-source `s1 == s2` fast-path is gone;
+/// the visibility-UPGRADE handling moves onto the same-terminal arm.
+///
+/// `symbol_tables` is the full table set so terminals can be chain-followed;
+/// `current_module`'s mutable guard is acquired only for the brief read+insert
+/// of each name, never held across the cross-module terminal reads.
 ///
 /// S78 §2: the former `is_seeded` name-keyed skip (`user`/`primitives`-sourced
-/// imports bypass §8.6.4 ambiguity) is DELETED. It papered over a collision
-/// the *flattened* implicit prelude created in the inner table; under the
-/// prelude-as-outer-scope model prelude is no longer flattened here, so two
-/// indirect entries from different sources revert to uniform `Ambiguous`.
+/// imports bypass §8.6.4 ambiguity) stays DELETED.
+///
+/// **Ambiguity diagnostic (FIXME 0316).** When two `Import` edges chain-follow
+/// to DISTINCT terminals the name is poisoned. The `ModuleEntry::Ambiguous`
+/// sentinel is still installed (the spec §8.6.5 poison-on-reference model), but
+/// because the sentinel variant carries no payload a later bare reference to it
+/// surfaces only `undefined variable: <name>` — useless for disambiguation. So
+/// the collision is ALSO reported eagerly here as a `CranelispError` that NAMES
+/// BOTH qualified alternatives (`a/Bar`, `b/Bar`), satisfying the §8.6.5
+/// requirement that the diagnostic identify the conflict and tell the user how
+/// to disambiguate. (Carrying the alternatives ON the sentinel + reporting
+/// lazily at reference time would be the leaner model but requires reshaping
+/// `ModuleEntry::Ambiguous` — a `cranelisp-types`/typecheck change outside the
+/// int boundary; tracked separately.)
 fn insert_detecting_ambiguity(
-    table: &mut SessionSymbolTable,
+    symbol_tables: &SessionTables,
+    current_module: &ModuleFullPath,
     imports: Vec<(Symbol, ModuleEntry<Code>)>,
-) {
+    span: Span,
+) -> Result<(), CranelispError> {
     for (name, new_entry) in imports {
-        if let Some(existing) = table.get(name.as_ref()) {
-            // Same-source duplicate: usually a silent dedup. The ONE exception
-            // is a visibility UPGRADE — a `(export [mod [name]])` re-export of
-            // an already-`(import …)`'d name. The import installs a Private
-            // `Import` binding; the later export installs a Public `Import`
-            // binding with the *same* source. Without this branch the Public
-            // entry would be dropped (silent dedup), leaving the re-exported
-            // name Private — and downstream importers would see
-            // "'name' is not public in '<re-exporting module>'". Re-point to
-            // the more-visible entry so the re-export takes effect (spec §8.4).
-            if let (
-                ModuleEntry::Import { source: s1, visibility: v1 },
-                ModuleEntry::Import { source: s2, visibility: v2 },
-            ) = (existing, &new_entry)
-                && s1 == s2
-            {
-                let upgrades = *v1 == Visibility::Private && *v2 == Visibility::Public;
-                if upgrades {
-                    table.insert(name, new_entry);
-                }
-                // Same source, no upgrade (equal or downgrade) → silent dedup.
-                continue;
-            }
+        // Snapshot the existing entry (clone + release the read guard) before
+        // any cross-module terminal reads — never hold a guard on
+        // `current_module` while chain-following other modules' tables.
+        let existing = {
+            let Some(guard) = symbol_tables.get(current_module) else {
+                return Ok(());
+            };
+            guard.get(name.as_ref()).cloned()
+        };
 
-            let both_indirect = matches!(
-                (existing, &new_entry),
-                (ModuleEntry::Import { .. }, ModuleEntry::Import { .. })
-            );
-            if both_indirect {
-                // Two indirect entries from different sources (the same-source
-                // case was handled above) → §8.6.4 ambiguity. Uniform — no
-                // name-keyed exemption (S78 §2: `is_seeded` deleted).
-                table.insert(
-                    name,
-                    ModuleEntry::Ambiguous {
-                        visibility: Visibility::Public,
-                    },
-                );
-                continue;
+        let Some(existing) = existing else {
+            // No prior entry — install directly.
+            if let Some(mut guard) = symbol_tables.get_mut(current_module) {
+                guard.insert(name, new_entry);
             }
+            continue;
+        };
+
+        let both_indirect = matches!(
+            (&existing, &new_entry),
+            (ModuleEntry::Import { .. }, ModuleEntry::Import { .. })
+        );
+        if !both_indirect {
             // Existing directly-defined entry takes priority — skip new.
             continue;
         }
-        table.insert(name, new_entry);
+
+        // Both are `Import` edges. Chain-follow BOTH to their terminal
+        // `(home_module, canonical_symbol)` and compare. Equal terminals are
+        // the same original definition → dedup (with visibility upgrade);
+        // distinct terminals → §8.6.4 ambiguity.
+        let existing_terminal = terminal_identity(symbol_tables, &existing);
+        let new_terminal = terminal_identity(symbol_tables, &new_entry);
+
+        let same_terminal = match (&existing_terminal, &new_terminal) {
+            (Some(a), Some(b)) => a == b,
+            // If either chain cannot resolve a terminal (a dangling/forward
+            // edge), fall back to the immediate-source comparison so a genuine
+            // same-source re-export still dedups rather than spuriously
+            // colliding.
+            _ => immediate_source_eq(&existing, &new_entry),
+        };
+
+        if same_terminal {
+            // Same original definition. The ONE write case is a visibility
+            // UPGRADE — a `(export [mod [name]])` re-export of an already
+            // `(import …)`'d name: the import installed Private, the export
+            // installs Public with the same terminal. Re-point to the
+            // more-visible entry so the re-export takes effect (spec §8.4).
+            // Equal/downgrade → silent dedup.
+            if !existing.is_public()
+                && new_entry.is_public()
+                && let Some(mut guard) = symbol_tables.get_mut(current_module)
+            {
+                guard.insert(name, new_entry);
+            }
+            continue;
+        }
+
+        // Distinct terminals → §8.6.5 ambiguity. Uniform — no name-keyed
+        // exemption (S78 §2: `is_seeded` deleted). Install the poison sentinel
+        // (spec poison-on-reference model) AND report eagerly with both
+        // qualified alternatives so the user can disambiguate.
+        if let Some(mut guard) = symbol_tables.get_mut(current_module) {
+            guard.insert(
+                name.clone(),
+                ModuleEntry::Ambiguous {
+                    visibility: Visibility::Public,
+                },
+            );
+        }
+        let (alt_a, alt_b) =
+            qualified_alternatives(&name, &existing_terminal, &new_terminal, &existing, &new_entry);
+        return Err(CranelispError::TypeError {
+            message: format!(
+                "ambiguous bare name '{name}' — imported from distinct sources \
+                 '{alt_a}' and '{alt_b}'; use a qualified reference to disambiguate"
+            ),
+            location: ErrorLocation::from_span(span),
+        });
     }
+    Ok(())
+}
+
+/// Produce the two qualified alternative names (`a/Bar`, `b/Bar`) for an
+/// ambiguity diagnostic. Prefers the chain-followed terminal `(home, symbol)`;
+/// falls back to the immediate `Import` source when a terminal did not resolve.
+fn qualified_alternatives(
+    name: &Symbol,
+    existing_terminal: &Option<(ModuleFullPath, Symbol)>,
+    new_terminal: &Option<(ModuleFullPath, Symbol)>,
+    existing: &ModuleEntry<Code>,
+    new_entry: &ModuleEntry<Code>,
+) -> (String, String) {
+    let qualify = |terminal: &Option<(ModuleFullPath, Symbol)>, entry: &ModuleEntry<Code>| {
+        if let Some((home, sym)) = terminal {
+            format!("{home}/{sym}")
+        } else if let ModuleEntry::Import { source, .. } = entry {
+            format!("{}/{}", source.module, source.symbol)
+        } else {
+            name.to_string()
+        }
+    };
+    (
+        qualify(existing_terminal, existing),
+        qualify(new_terminal, new_entry),
+    )
+}
+
+/// Chain-follow an `Import` entry to its terminal `(home_module,
+/// canonical_symbol)` via the shared `cranelisp_types` primitive. A
+/// non-`Import` (already-canonical) entry has no terminal identity here — the
+/// caller only reaches this for two-`Import` collisions.
+fn terminal_identity(
+    symbol_tables: &SessionTables,
+    entry: &ModuleEntry<Code>,
+) -> Option<(ModuleFullPath, Symbol)> {
+    let ModuleEntry::Import { source, .. } = entry else {
+        return None;
+    };
+    cranelisp_types::resolve_terminal_entry_and_home(
+        symbol_tables,
+        &source.module,
+        source.symbol.as_ref(),
+    )
+    .map(|(_, home)| (home, source.symbol.clone()))
+}
+
+/// Fallback when a terminal chain cannot resolve: compare the immediate
+/// `source` FQSymbols of two `Import` edges (the pre-FIXME-0316 behaviour).
+fn immediate_source_eq(a: &ModuleEntry<Code>, b: &ModuleEntry<Code>) -> bool {
+    matches!(
+        (a, b),
+        (
+            ModuleEntry::Import { source: s1, .. },
+            ModuleEntry::Import { source: s2, .. },
+        ) if s1 == s2
+    )
 }
 
 /// Whether `module` is in the subtree rooted at `ancestor` (dotted-path
@@ -628,6 +752,130 @@ mod tests {
             relay.get("base-val").unwrap().is_public(),
             "a later same-source Private import MUST NOT downgrade an existing \
              Public re-export",
+        );
+    }
+
+    // spec: 08-modules.md §8.6.4 — TERMINAL-source dedup at the installer seam.
+    // `prim` defines `Foo`; `reexp` re-exports `prim/Foo`. A module that imports
+    // `Foo` BOTH via a glob of `prim` (immediate source `prim`) AND specifically
+    // from `reexp` (immediate source `reexp`) brings two bindings whose chains
+    // terminate at the SAME `(prim, Foo)`. They MUST dedup silently — no error,
+    // no `Ambiguous` sentinel. This pins the terminal-resolve logic at the seam
+    // (the e2e proves the user path; this pins the chain-follow comparison).
+    #[test]
+    fn same_terminal_two_paths_dedup_no_ambiguity() {
+        let tables = tables();
+        ensure(&tables, "prim");
+        ensure(&tables, "reexp");
+        ensure(&tables, "main");
+        let aliases = ModuleAliases::default();
+
+        // prim defines a public `Foo`.
+        tables
+            .get_mut(&ModuleFullPath::from("prim"))
+            .unwrap()
+            .insert(Symbol::from("Foo"), primitive_def());
+
+        // reexp re-exports prim/Foo (Public Import edge → prim).
+        install_exports(
+            &tables,
+            &ModuleFullPath::from("reexp"),
+            &[specific_export("prim", "Foo")],
+        )
+        .unwrap();
+
+        // main globs prim (brings Foo, source prim) ...
+        install_imports(
+            &tables,
+            &ModuleFullPath::from("main"),
+            &aliases,
+            &[glob_spec("prim")],
+        )
+        .expect("glob of prim installs Foo");
+
+        // ... and specifically imports Foo from reexp (source reexp, terminal prim/Foo).
+        install_imports(
+            &tables,
+            &ModuleFullPath::from("main"),
+            &aliases,
+            &[specific_spec("reexp", "Foo")],
+        )
+        .expect(
+            "a glob + a re-export of the same terminal definition MUST dedup \
+             silently (spec §8.6.4 terminal-source comparison) — NOT error",
+        );
+
+        let main = tables.get(&ModuleFullPath::from("main")).unwrap();
+        let entry = main.get("Foo").expect("Foo is installed");
+        assert!(
+            !matches!(entry, ModuleEntry::Ambiguous { .. }),
+            "same-terminal dedup MUST NOT poison the name as Ambiguous; got {entry:?}",
+        );
+    }
+
+    // spec: 08-modules.md §8.6.5 — distinct-terminal collision at the seam. `a`
+    // and `b` each define their OWN, DIFFERENT `Bar`. Importing both bare MUST
+    // error, and the diagnostic MUST name BOTH qualified alternatives (`a/Bar`,
+    // `b/Bar`) so the user can disambiguate. The poison sentinel is also
+    // installed (poison-on-reference model), but the eager error is what carries
+    // the alternatives (the sentinel variant has no payload).
+    #[test]
+    fn distinct_terminals_error_naming_both_alternatives() {
+        let tables = tables();
+        ensure(&tables, "a");
+        ensure(&tables, "b");
+        ensure(&tables, "main");
+        let aliases = ModuleAliases::default();
+
+        tables
+            .get_mut(&ModuleFullPath::from("a"))
+            .unwrap()
+            .insert(Symbol::from("Bar"), primitive_def());
+        tables
+            .get_mut(&ModuleFullPath::from("b"))
+            .unwrap()
+            .insert(Symbol::from("Bar"), primitive_def());
+
+        // main imports a/Bar bare (no collision yet).
+        install_imports(
+            &tables,
+            &ModuleFullPath::from("main"),
+            &aliases,
+            &[specific_spec("a", "Bar")],
+        )
+        .expect("first bare import of Bar installs cleanly");
+
+        // main imports b/Bar bare → distinct terminal → MUST error.
+        let err = install_imports(
+            &tables,
+            &ModuleFullPath::from("main"),
+            &aliases,
+            &[specific_spec("b", "Bar")],
+        )
+        .expect_err(
+            "two DISTINCT terminal `Bar` definitions imported under the same \
+             bare name MUST collide (spec §8.6.5 footgun protection)",
+        );
+
+        let msg = match &err {
+            CranelispError::TypeError { message, .. } => message.clone(),
+            other => panic!("expected a TypeError, got {other:?}"),
+        };
+        assert!(
+            msg.to_lowercase().contains("ambiguous"),
+            "the diagnostic MUST identify the conflict as ambiguous; got: {msg}",
+        );
+        assert!(
+            msg.contains("a/Bar") && msg.contains("b/Bar"),
+            "the diagnostic MUST name BOTH qualified alternatives \
+             (`a/Bar` and `b/Bar`); got: {msg}",
+        );
+
+        // The poison sentinel is installed too (poison-on-reference model).
+        let main = tables.get(&ModuleFullPath::from("main")).unwrap();
+        assert!(
+            matches!(main.get("Bar"), Some(ModuleEntry::Ambiguous { .. })),
+            "the colliding name MUST be poisoned with the Ambiguous sentinel",
         );
     }
 }

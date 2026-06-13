@@ -1639,16 +1639,120 @@ impl CompilerSession {
         let source = self.shared.introspection.as_ref()
             .and_then(|m| m.get(&fq))
             .and_then(|intr| intr.source.clone());
+        // FIXME 0194: populate `related` from the same cross-ref collectors the
+        // universal-display paths (`format_type_display`/`format_trait_display`)
+        // use, projected to `FQSymbol`s anchored at each referent's home module.
+        let related = self.collect_related(&entry, &fq, &resolved_module);
         Some(SymbolDescription {
             fq,
             category,
             scheme,
             docstring,
             source,
-            related: Vec::new(),
+            related,
         })
     }
 
+    /// Collect the cross-reference `FQSymbol`s for `entry` (FIXME 0194).
+    ///
+    /// - **Type** (`TypeDef`, or a product ctor's type facet) → its constructor
+    ///   FQs (the `; match:` arms), homed at the type's defining module.
+    /// - **Trait** (`TraitDecl`) → its method-defn FQs (`; defn:`) homed at the
+    ///   trait module, plus the implementing-type FQs (`; impl:`) each homed at
+    ///   that type's defining module.
+    /// - **Constructor** → its parent type's FQ (`; defn:`).
+    ///
+    /// Other kinds (plain fns, macros, special forms) have no structural
+    /// cross-ref under §3.6 and return empty. Names that cannot be re-homed are
+    /// skipped rather than emitted with a wrong module.
+    fn collect_related(
+        &self,
+        entry: &ModuleEntry<crate::code::Code>,
+        fq: &FQSymbol,
+        resolved_module: &ModuleFullPath,
+    ) -> Vec<FQSymbol> {
+        collect_related_for(
+            &self.shared.symbol_tables,
+            &self.current_module_path(),
+            entry,
+            fq,
+            resolved_module,
+        )
+    }
+}
+
+/// Free-function core of [`CompilerSession::collect_related`] (FIXME 0194),
+/// taking the symbol tables + resolution scope explicitly so the cross-ref
+/// projection is unit-testable without constructing a full `CompilerSession`
+/// (`src/CLAUDE.md` testability discipline; mirrors the `worker::layout_hash_gate`
+/// / `splice_inline_mod_to_bare` extractions). See the method docstring for the
+/// per-category cross-ref rules.
+fn collect_related_for(
+    tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
+    scope: &ModuleFullPath,
+    entry: &ModuleEntry<crate::code::Code>,
+    fq: &FQSymbol,
+    resolved_module: &ModuleFullPath,
+) -> Vec<FQSymbol> {
+    let mut related: Vec<FQSymbol> = Vec::new();
+    // Helper: resolve a bare name to its home module (chain-follow); skip if
+    // unreachable.
+    let fq_at_home = |name: &str| -> Option<FQSymbol> {
+        cranelisp_types::resolve_terminal_entry_and_home(tables, scope, name).map(
+            |(_, home)| FQSymbol { module: home, symbol: Symbol::from(name) },
+        )
+    };
+    match entry {
+        // A `TypeDef` is a type → its constructors are the match arms.
+        ModuleEntry::TypeDef { info, .. } => {
+                for ctor in &info.constructors {
+                    related.push(FQSymbol {
+                        module: resolved_module.clone(),
+                        symbol: ctor.clone(),
+                    });
+                }
+            }
+            // A `Constructor` Def → its parent type (defn-related). A product
+            // ctor additionally carries the type facet's constructors.
+            ModuleEntry::Def { kind, .. } => {
+                if let DefKind::Constructor { type_name, type_def, .. } = kind.as_ref() {
+                    related.push(FQSymbol {
+                        module: type_name.module.clone(),
+                        symbol: Symbol::from(type_name.name.as_ref()),
+                    });
+                    if let Some(td) = type_def {
+                        for ctor in &td.constructors {
+                            related.push(FQSymbol {
+                                module: resolved_module.clone(),
+                                symbol: ctor.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+            // A `TraitDecl` → its method defns + its implementing types.
+            ModuleEntry::TraitDecl { .. } => {
+                let tn = TraitName::from(fq.symbol.as_ref());
+                if let Some(decl) = cranelisp_types::lookup_trait_decl_chain(tables, scope, &tn) {
+                    for m in &decl.methods {
+                        related.push(FQSymbol {
+                            module: resolved_module.clone(),
+                            symbol: m.name.clone(),
+                        });
+                    }
+                }
+                for ty in cranelisp_types::get_implementing_types_chain(tables, scope, &tn) {
+                    if let Some(fq) = fq_at_home(ty.as_ref()) {
+                        related.push(fq);
+                    }
+                }
+            }
+            _ => {}
+        }
+        related
+}
+
+impl CompilerSession {
     /// REPL `/list` — user-defined symbols in the current REPL module (excludes
     /// imports + special forms). Returns a `Vec<SymbolInfo>` per facade
     /// §"Introspection records".
@@ -2823,17 +2927,13 @@ impl CompilerSession {
         // hop fired) so the prelude→primitives edge is walked.
         let (entry, _resolved_module) = self.resolve_entry_for_display(&local, &lookup_module);
         match &entry {
-            ModuleEntry::Def { docstring, kind, .. } => {
-                // Primitive Defs carry `docstring: None`; source the Appendix
-                // A.5 description (§A.5 MUST: `/doc` must surface it).
-                let doc = docstring.as_deref().or_else(|| {
-                    if matches!(kind.as_ref(), DefKind::Primitive { .. }) {
-                        crate::builtin_docs::builtin_docstring(name)
-                    } else {
-                        None
-                    }
-                });
-                match doc {
+            ModuleEntry::Def { docstring, .. } => {
+                // FIXME 0308: primitive Defs now carry their Appendix A.5
+                // description on `PrimitiveDef.docstring` (populated in
+                // cranelisp-primitives) — read it through the entry's
+                // `docstring` field directly; the parallel `builtin_docs` table
+                // is retired.
+                match docstring.as_deref() {
                     Some(doc) => format!("{name}: \"{doc}\""),
                     None => format!("{name}: no docstring"),
                 }
@@ -4397,18 +4497,12 @@ impl CompilerSession {
                 let is_primitive = matches!(kind.as_ref(), DefKind::Primitive { .. });
                 let classification = if is_primitive { "primitive" } else { "defn" };
                 let base = format!("{base} ; {classification}");
-                // Primitive entries carry `docstring: None` (the description
-                // lives in Appendix A.5, not on the `cranelisp-primitives` Def);
-                // source it here so the bare-primitive display satisfies the
-                // §A.5 MUST + the §1.1 `; primitive - <doc>` format (FIXME 0301).
-                let doc = docstring
-                    .as_deref()
-                    .or_else(|| if is_primitive {
-                        crate::builtin_docs::builtin_docstring(name)
-                    } else {
-                        None
-                    });
-                append_docstring_comment(base, doc)
+                // FIXME 0308: primitive entries now carry their Appendix A.5
+                // description on `PrimitiveDef.docstring`; read it through the
+                // entry's `docstring` field directly (the parallel
+                // `builtin_docs` table is retired), satisfying the §A.5 MUST +
+                // the §1.1 `; primitive - <doc>` format.
+                append_docstring_comment(base, docstring.as_deref())
             }
             ModuleEntry::SpecialForm { description, .. } => {
                 format_special_form_display(name, description)
@@ -4892,6 +4986,9 @@ fn compile_module_object(
         &shared.symbol_tables,
         &shared.module_aliases,
         &mut obj_module,
+        // FIXME 0325: nice-worker `.o` codegen is always batch (cache-write
+        // side) — never consumed by introspection, so skip CLIF rendering.
+        false,
     ) {
         Ok(_result) => {
             // Emit .o bytes from the ObjectModule.
@@ -5261,6 +5358,103 @@ fn discover_eligible_tests(
     }
     out.sort_by(|a, b| a.fq_name.cmp(&b.fq_name));
     out
+}
+
+#[cfg(test)]
+mod collect_related_tests {
+    use super::*;
+    use cranelisp_types::{
+        FQTypeName, ModuleFullPath, Scheme, TypeDefInfo, TypeName, Visibility,
+    };
+    use std::collections::HashMap;
+
+    fn tables() -> dashmap::DashMap<ModuleFullPath, SessionSymbolTable> {
+        dashmap::DashMap::new()
+    }
+
+    fn ensure(tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>, path: &str) {
+        let p = ModuleFullPath::from(path);
+        tables
+            .entry(p.clone())
+            .or_insert_with(|| SessionSymbolTable::new_with_params(p));
+    }
+
+    fn fq(module: &str, symbol: &str) -> FQSymbol {
+        FQSymbol {
+            module: ModuleFullPath::from(module),
+            symbol: Symbol::from(symbol),
+        }
+    }
+
+    // spec: repl/spec.md §3.6 — `SymbolDescription.related` (FIXME 0194). A TYPE
+    // symbol's related set is its constructors, homed at the type's defining
+    // module. Before SW-C `related` was stubbed empty; this pins the population.
+    #[test]
+    fn related_populated_for_type_lists_its_constructors() {
+        let tables = tables();
+        ensure(&tables, "user");
+        let user = ModuleFullPath::from("user");
+
+        // (deftype Color [Red Green]) — a sum type with two nullary ctors.
+        let type_entry = ModuleEntry::TypeDef {
+            info: TypeDefInfo {
+                name: FQTypeName::new(user.clone(), TypeName::from("Color")),
+                type_params: vec![],
+                constructors: vec![Symbol::from("Red"), Symbol::from("Green")],
+            },
+            visibility: Visibility::Public,
+            docstring: None,
+        };
+
+        let related = collect_related_for(&tables, &user, &type_entry, &fq("user", "Color"), &user);
+
+        assert!(
+            related.contains(&fq("user", "Red")) && related.contains(&fq("user", "Green")),
+            "a type's `related` MUST list its constructors homed at the type's \
+             module (spec §3.6); got {related:?}",
+        );
+        assert!(
+            !related.is_empty(),
+            "`related` MUST NOT be the empty stub it was before FIXME 0194",
+        );
+    }
+
+    // spec: repl/spec.md §3.6 — a CONSTRUCTOR's related set names its parent
+    // type, homed at the type's defining module.
+    #[test]
+    fn related_populated_for_constructor_names_its_type() {
+        let tables = tables();
+        ensure(&tables, "user");
+        let user = ModuleFullPath::from("user");
+
+        let ctor_entry = ModuleEntry::def(
+            Scheme {
+                type_vars: vec![],
+                constraints: HashMap::new(),
+                ty: Type::ADT(
+                    FQTypeName::new(user.clone(), TypeName::from("Color")),
+                    vec![],
+                ),
+            },
+            DefKind::Constructor {
+                type_name: FQTypeName::new(user.clone(), TypeName::from("Color")),
+                type_def: None,
+                tag: 0,
+                field_count: 0,
+                internal: false,
+            },
+        )
+        .visibility(Visibility::Public)
+        .build();
+
+        let related = collect_related_for(&tables, &user, &ctor_entry, &fq("user", "Red"), &user);
+
+        assert!(
+            related.contains(&fq("user", "Color")),
+            "a constructor's `related` MUST name its parent type (spec §3.6); \
+             got {related:?}",
+        );
+    }
 }
 
 /// True iff `scheme` is exactly `(Fn [] (Option String))` — zero-arg returning

@@ -21,7 +21,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::Cranelisp;
+use helpers::e2e::{Cranelisp, PreludeVariant};
 use std::time::Duration;
 
 // =============================================================================
@@ -1063,4 +1063,227 @@ fn entry_module_default_user_name_still_runs() {
         .run("user.cl")
         .output()
         .assert_exit(5);
+}
+
+// =============================================================================
+// §8.6.4 / §8.6.5 — Import-ambiguity model: terminal-source dedup
+//                   vs distinct-terminal collision (FIXME 0316)
+// =============================================================================
+//
+// These two tests pin the §8.6.4 terminal-source comparison ruling
+// (/arch, 2026-06-13). §8.6.4 says same-source duplicates "the same name
+// arriving through two re-export paths from the same original definition"
+// are NOT ambiguous — the comparison is by TERMINAL source, not immediate
+// source. §8.6.5 keeps globs as PEERS of specific imports: ambiguity is
+// decided purely on terminal-source identity, no precedence tier.
+//
+// FAILING-FIRST: `glob_and_reexport_of_same_terminal_dedup` is RED until the
+// int wave lands terminal-source dedup in `src/imports.rs`
+// (`insert_detecting_ambiguity` currently keys dedup on the IMMEDIATE
+// `source.module`, so a glob + a re-export of one of its names read as two
+// sources and falsely collide). `distinct_terminal_overlap_collides` guards
+// that the fix does NOT over-dedup — genuinely-distinct definitions sharing a
+// bare name MUST still poison the name (footgun protection preserved).
+
+// spec: spec/08-modules.md §8.6.4 — terminal-source dedup. A glob import of
+// `prim` (immediate source `prim`) co-exists with a specific import of `Foo`
+// from `reexp` (immediate source `reexp`) when `reexp` RE-EXPORTS `prim/Foo`:
+// both bare `Foo` entries chain-follow to the SAME terminal `(prim, Foo)`, so
+// they dedup silently rather than poisoning the name. MUST compile clean — no
+// `Ambiguous`. (Comparing only the immediate sources `prim` vs `reexp` would
+// wrongly read two sources and report a false collision.)
+#[test]
+fn glob_and_reexport_of_same_terminal_dedup() {
+    // `prim` is the terminal home of `Foo`. `reexp` imports + re-exports it.
+    // `main` brings `Foo` BOTH ways (glob of `prim` + specific from `reexp`),
+    // then constructs and destructures it — exercising the deduped binding.
+    let out = Cranelisp::new()
+        .file(
+            "prim.cl",
+            "(import [primitives [Int]])\n\
+             (deftype Foo [:Int n])",
+        )
+        .file(
+            "reexp.cl",
+            "(import [prim [Foo]])\n\
+             (export [prim [Foo]])",
+        )
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n\
+             (import [prim [*]])\n\
+             (import [reexp [Foo]])\n\
+             (defn main [] (Pure (match (Foo 42) [(Foo n) n])))",
+        )
+        .run("main.cl")
+        .output();
+
+    let combined = format!("{}\n{}", out.stdout, out.stderr);
+    assert!(
+        !combined.to_lowercase().contains("ambiguous"),
+        "a glob import + a re-export of one of its names share the SAME \
+         terminal source `(prim, Foo)` and MUST dedup silently — NOT collide \
+         as `Ambiguous` (spec §8.6.4 terminal-source comparison); got:\n{combined}"
+    );
+    out.assert_exit(42);
+}
+
+// spec: spec/08-modules.md §8.6.5 — distinct-terminal collision. Two modules
+// `a` and `b` each define their OWN, DIFFERENT `Bar`. Importing both bare and
+// referencing bare `Bar` MUST poison the name: a compile-time ambiguity
+// diagnostic naming both qualified alternatives. This is the footgun
+// protection §8.6.5 preserves — globs are PEERS of specific imports, so
+// distinct terminals collide regardless of import shape; terminal-source
+// dedup (§8.6.4) MUST NOT silently pick one winner.
+#[test]
+fn distinct_terminal_overlap_collides() {
+    // `a/Bar` and `b/Bar` are genuinely-different definitions (distinct
+    // terminals). Both imported bare; `main` references bare `Bar`.
+    let out = Cranelisp::new()
+        .file(
+            "a.cl",
+            "(import [primitives [Int]])\n\
+             (deftype Bar [:Int x])",
+        )
+        .file(
+            "b.cl",
+            "(import [primitives [Int]])\n\
+             (deftype Bar [:Int y])",
+        )
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n\
+             (import [a [Bar]])\n\
+             (import [b [Bar]])\n\
+             (defn main [] (Pure (match (Bar 7) [(Bar v) v])))",
+        )
+        .run("main.cl")
+        .output();
+
+    assert!(
+        !out.status.success(),
+        "two DISTINCT terminal `Bar` definitions imported under the same bare \
+         name MUST collide (spec §8.6.5 — footgun protection; globs are peers, \
+         no silent winner); compilation MUST fail. stdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
+    let combined = format!("{}\n{}", out.stdout, out.stderr);
+    assert!(
+        combined.to_lowercase().contains("ambiguous"),
+        "the ambiguity diagnostic MUST identify the conflict as ambiguous; \
+         got:\n{combined}"
+    );
+    // Negative-coverage: the diagnostic MUST name BOTH qualified alternatives
+    // so the user can disambiguate (`a/Bar` and `b/Bar`).
+    assert!(
+        combined.contains("a/Bar") && combined.contains("b/Bar"),
+        "the ambiguity diagnostic MUST name BOTH qualified alternatives \
+         (`a/Bar` and `b/Bar`) so the user can disambiguate (spec §8.6.5); \
+         got:\n{combined}"
+    );
+}
+
+// =============================================================================
+// §8.9.1 / §3.1 — primitive bare-name import battery (FIXME 0216)
+// =============================================================================
+//
+// §8.9.1 + §3.1: primitive names (types `Int`/`Bool`/`Float`/`String` AND
+// functions `add-i64` etc.) live in `primitives` in QUALIFIED form only. Bare
+// references require prelude re-export or an explicit import; FQ references
+// (`primitives/Int`, `primitives/add-i64`) always work regardless of imports.
+//
+// Expected GREEN (the S78 architectural cascade landed — `Type::from_name`
+// bridge removed, primitives registered uniformly). This is new coverage
+// guarding the rule, not failing-first. `PreludeVariant::None` = NO prelude,
+// NO implicit primitives import.
+
+// Pipe `lines` to a bare REPL (no prelude, no primitives import) and capture.
+fn repl_no_prelude(lines: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::None)
+        .stdin(lines)
+        .output()
+}
+
+// spec: spec/03-types.md §3.1 — bare `:Int` with no primitives import and no
+// prelude MUST be a compile-time "unknown type" error. The FQ form is the only
+// always-available path (covered by `bare_primitive_type_fq_works_without_import`).
+#[test]
+fn bare_primitive_type_int_neg_unknown_type_without_import() {
+    let out = repl_no_prelude(":Int 42\n");
+    let s = out.stdout.to_lowercase();
+    assert!(
+        s.contains("unknown type") || s.contains("unknown") || s.contains("error"),
+        "bare `:Int` with no primitives import / no prelude MUST be an \
+         `unknown type` compile-time error (spec §3.1 / §8.9.1); got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: spec/03-types.md §3.1 — same rule for `:Bool`, `:Float`, `:String`:
+// each bare primitive type name with no import is an unknown-type error.
+#[test]
+fn bare_primitive_types_bool_float_string_neg_unknown_without_import() {
+    for (annot, lit) in [(":Bool", "true"), (":Float", "1.0"), (":String", "\"hi\"")] {
+        let line = format!("{annot} {lit}\n");
+        let out = repl_no_prelude(&line);
+        let s = out.stdout.to_lowercase();
+        assert!(
+            s.contains("unknown type") || s.contains("unknown") || s.contains("error"),
+            "bare `{annot}` with no primitives import / no prelude MUST be an \
+             `unknown type` compile-time error (spec §3.1 / §8.9.1); got:\n{}",
+            out.stdout
+        );
+    }
+}
+
+// spec: spec/08-modules.md §8.9.1 — the fully-qualified `:primitives/Int`
+// annotation MUST work with NO import / no prelude. FQ reachability is the
+// §8.11.4 "primitives remain available" guarantee.
+#[test]
+fn fq_primitive_type_int_works_without_import() {
+    repl_no_prelude(":primitives/Int 42\n")
+        .assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/08-modules.md §8.9.1 — negative-coverage on the FQ path: it MUST
+// NOT trip the unknown-type error that the BARE form does. FQ is the
+// always-available escape hatch.
+#[test]
+fn fq_primitive_type_int_neg_no_unknown_type_error() {
+    let out = repl_no_prelude(":primitives/Int 42\n");
+    assert!(
+        !out.stdout.to_lowercase().contains("unknown type"),
+        "`:primitives/Int` (FQ) MUST NOT produce an `unknown type` error — \
+         FQ references are always available regardless of imports \
+         (spec §8.9.1 / §8.11.4); got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: spec/08-modules.md §8.9.1 — primitive FUNCTION side: bare `add-i64`
+// with no import / no prelude MUST be an "unknown name" compile-time error
+// (the bare-name rule applies to functions as well as types).
+#[test]
+fn bare_primitive_fn_add_i64_neg_unknown_name_without_import() {
+    let out = repl_no_prelude("(add-i64 1 2)\n");
+    let s = out.stdout.to_lowercase();
+    assert!(
+        s.contains("unknown")
+            || s.contains("undefined")
+            || s.contains("not in scope")
+            || s.contains("error"),
+        "bare `add-i64` with no primitives import / no prelude MUST be an \
+         `unknown name` compile-time error (spec §8.9.1); got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: spec/08-modules.md §8.9.1 — primitive FUNCTION FQ path:
+// `primitives/add-i64` MUST work with no import / no prelude.
+#[test]
+fn fq_primitive_fn_add_i64_works_without_import() {
+    repl_no_prelude("(primitives/add-i64 1 2)\n")
+        .assert_stdout_contains(":primitives/Int 3");
 }

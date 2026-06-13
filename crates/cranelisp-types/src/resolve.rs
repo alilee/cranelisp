@@ -483,10 +483,16 @@ where
 
 // --- Internal helpers ---
 
-/// A qualified name carries exactly one `/` separating module path from
-/// symbol (trait-method symbols like `Display.show` use `.`, never `/`).
+/// A qualified name carries exactly one `/` separating a non-empty module
+/// path from a non-empty symbol (trait-method symbols like `Display.show` use
+/// `.`, never `/`). A name whose module part OR symbol part is empty — a bare
+/// punctuation operator like `/` or `//`, or a leading/trailing `foo/` / `/bar`
+/// — is NOT qualified; it is a literal bare name (Principle 16 — punctuation
+/// symbols are not special). Returning `None` for those routes them to the
+/// unqualified short-name path, matching pre-S81 chokepoint behaviour.
 fn split_qualified(name: &str) -> Option<(ModuleFullPath, String)> {
     name.split_once('/')
+        .filter(|(m, s)| !m.is_empty() && !s.is_empty())
         .map(|(m, s)| (ModuleFullPath::from(m), s.to_string()))
 }
 
@@ -578,9 +584,17 @@ fn in_subtree(accessor: &ModuleFullPath, definer: &ModuleFullPath) -> bool {
 }
 
 /// The canonical local symbol for a (possibly qualified) name — the part
-/// after the last `/`, which is the symbol within its home module.
+/// after the last `/`, which is the symbol within its home module. A bare
+/// punctuation operator like `/` (or `//`) whose post-`/` remainder would be
+/// empty is NOT split — it is its own canonical symbol (Principle 16; mirrors
+/// `split_qualified`'s non-empty-part guard).
 fn canonical_symbol(name: &str) -> Symbol {
-    Symbol::from(name.rsplit_once('/').map(|(_, s)| s).unwrap_or(name))
+    Symbol::from(
+        name.rsplit_once('/')
+            .filter(|(_, s)| !s.is_empty())
+            .map(|(_, s)| s)
+            .unwrap_or(name),
+    )
 }
 
 /// Generic not-found projection used before the kind is known. The typed
@@ -730,5 +744,33 @@ mod tests {
         let err = resolve(&tables, &dashmap::DashMap::new(), &view, &current, "ghost/sym", Span::SYNTHETIC)
             .expect_err("ghost module is unknown");
         assert!(matches!(err, ResolveError::QualifiedModuleUnknown { .. }));
+    }
+
+    #[test]
+    fn split_qualified_bare_operator_is_not_qualified() {
+        // FIXME 0328 regression: the bare `/` division operator must NOT be
+        // mis-parsed as `module/symbol` (Principle 16 — punctuation symbols
+        // are not special). The non-empty-part guard on both helpers pins it.
+        //
+        // Pre-fix logic (`split_once('/')` unguarded) split `/` into
+        // ("", "") and treated it as qualified — this assert would fail then.
+        assert_eq!(split_qualified("/"), None, "bare `/` is not qualified");
+        assert_eq!(split_qualified("//"), None, "bare `//` is not qualified");
+        // Leading/trailing slash: one part empty → not qualified.
+        assert_eq!(split_qualified("foo/"), None, "trailing slash is not qualified");
+        assert_eq!(split_qualified("/bar"), None, "leading slash is not qualified");
+        // A plain short name has no `/` at all.
+        assert_eq!(split_qualified("foo"), None, "short name is not qualified");
+        // The genuine qualified case still works.
+        assert_eq!(
+            split_qualified("mod/sym"),
+            Some((ModuleFullPath::from("mod"), "sym".to_string())),
+            "a genuine module/symbol still splits",
+        );
+
+        // canonical_symbol must preserve the bare operator, NOT corrupt it to "".
+        // Pre-fix (`rsplit_once('/')` unguarded) yielded Symbol::from("") here.
+        assert_eq!(canonical_symbol("/"), Symbol::from("/"), "bare `/` preserved");
+        assert_eq!(canonical_symbol("mod/sym"), Symbol::from("sym"), "qualified → local symbol");
     }
 }

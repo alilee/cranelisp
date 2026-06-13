@@ -655,6 +655,7 @@ mod tests {
             &tables,
             &aliases,
             &mut obj_module,
+            false,
         ).unwrap();
 
         let product = obj_module.finish();

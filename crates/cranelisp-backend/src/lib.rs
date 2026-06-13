@@ -525,7 +525,17 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
 /// This is the ONLY compilation entry point in the backend crate.
 /// See design/backend/compile-to-module.md §2 (PRESCRIPTIVE).
 ///
-/// Four parameters. Everything else derived internally:
+/// The `capture_clif` flag (FIXME 0325) controls whether the CLIF-IR text
+/// (`format!("{}", func.display())`) is rendered into the returned
+/// `CompilationArtifacts.clif_ir`. The int layer sets it `true` only when
+/// introspection is live (REPL/trace mode); in `--run`/`--link` batch it is
+/// `false` and the CLIF-text allocation is skipped — the rendered string is
+/// dropped unread there. The `CRANELISP_CODEGEN_DUMP` stderr dump path is
+/// independent of this flag: it has its own per-symbol env-var trigger and
+/// renders the CLIF for matching symbols regardless of `capture_clif`. The
+/// `code_size` byproduct flows back unconditionally.
+///
+/// Parameters derived internally:
 /// - Intrinsics: declared on the module internally
 /// - Defn bodies: read from `symbol_tables[module_path].get(name).ast`
 /// - GOT slots: read from `ModuleEntry::Def.got_slot`
@@ -582,6 +592,7 @@ pub fn compile_to_module<M, C, L>(
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     module_aliases: &cranelisp_types::ModuleAliases,
     module: &mut M,
+    capture_clif: bool,
 ) -> Result<CompilationArtifacts, CompilationError>
 where
     M: Module + CodeFinalizer,
@@ -594,8 +605,15 @@ where
     // CompilationError` bridge in `error.rs` collapses internal errors into
     // `CompilationError::CodegenFailed { cause: <message> }` at the
     // boundary. See `facades/backend.md` §"Errors" for the contract.
-    compile_to_module_impl::<M, C, L>(module_path, names, symbol_tables, module_aliases, module)
-        .map_err(CompilationError::from)
+    compile_to_module_impl::<M, C, L>(
+        module_path,
+        names,
+        symbol_tables,
+        module_aliases,
+        module,
+        capture_clif,
+    )
+    .map_err(CompilationError::from)
 }
 
 fn compile_to_module_impl<M, C, L>(
@@ -604,6 +622,7 @@ fn compile_to_module_impl<M, C, L>(
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     module_aliases: &cranelisp_types::ModuleAliases,
     module: &mut M,
+    capture_clif: bool,
 ) -> Result<CompilationArtifacts, CranelispError>
 where
     M: Module + CodeFinalizer,
@@ -748,8 +767,25 @@ where
             vec_new_func_id: intrinsic_ids.vec_new,
             vec_drop_func_id: intrinsic_ids.vec_drop,
         };
-        let art = compile_defn_in_module(defn, module, &mut func_ctx, &func_ids, compile_ctx)?;
-        if clif_dump_matches(clif_dump_filter.as_deref(), module_path.as_ref(), defn.name.as_ref()) {
+        // FIXME 0325: render the CLIF-IR text only when it will be consumed —
+        // either the caller wants it captured into `CompilationArtifacts`
+        // (`capture_clif`, REPL/trace introspection) or the env-gated stderr
+        // dump path matches this symbol (its own independent trigger). In
+        // `--run`/`--link` batch with introspection off and no dump filter,
+        // both are false and the `format!("{}", func.display())` allocation is
+        // skipped entirely.
+        let dump_this =
+            clif_dump_matches(clif_dump_filter.as_deref(), module_path.as_ref(), defn.name.as_ref());
+        let render_clif = capture_clif || dump_this;
+        let art = compile_defn_in_module(
+            defn,
+            module,
+            &mut func_ctx,
+            &func_ids,
+            compile_ctx,
+            render_clif,
+        )?;
+        if dump_this {
             // Write directly to stderr; ignore I/O errors (stderr failure is
             // not worth poisoning a codegen result over).
             let _ = write_clif_dump(
@@ -759,10 +795,12 @@ where
                 &art.clif_ir,
             );
         }
-        if !clif_ir_agg.is_empty() {
-            clif_ir_agg.push('\n');
+        if capture_clif {
+            if !clif_ir_agg.is_empty() {
+                clif_ir_agg.push('\n');
+            }
+            clif_ir_agg.push_str(&art.clif_ir);
         }
-        clif_ir_agg.push_str(&art.clif_ir);
         code_size_agg += art.code_size as usize;
         // `art.disasm` deliberately dropped — on-demand via `produce_disasm`.
     }
@@ -1125,6 +1163,7 @@ fn compile_defn_in_module<M, C, L>(
     func_ctx: &mut FunctionBuilderContext,
     func_ids: &HashMap<Symbol, FuncId>,
     compile_ctx: CompileContext<'_, C, L>,
+    capture_clif: bool,
 ) -> Result<FunctionArtifacts, CranelispError>
 where
     M: Module,
@@ -1151,8 +1190,16 @@ where
 
     FnCompiler::compile_body(defn, &mut func, func_ctx, module, compile_ctx)?;
 
-    // Capture CLIF IR text before define_function consumes the context.
-    let clif_ir = format!("{}", func.display());
+    // Capture CLIF IR text before define_function consumes the context — but
+    // only when the caller will consume it (FIXME 0325). When `capture_clif`
+    // is false the `func.display()` rendering + allocation is skipped and
+    // `clif_ir` stays empty; batch `--run`/`--link` with introspection off
+    // drops it unread, so the work is wasted there.
+    let clif_ir = if capture_clif {
+        format!("{}", func.display())
+    } else {
+        String::new()
+    };
 
     let mut ctx = cranelift::codegen::Context::for_function(func);
     // Disassembly is NOT captured in the always-created path (S70 Phase B
@@ -1515,6 +1562,7 @@ mod tests {
             tables,
             &aliases,
             jit.jit_module(),
+            true,
         )?;
         // S75 W2: `compile_to_module` finalizes the JIT internally. The
         // single `__expr__` defn carries `got_slot: None` (direct FuncId
@@ -1565,15 +1613,14 @@ mod tests {
             defns.push(enriched);
         }
         for mono in &check.mono_defns {
+            // FIXME 0033 (resolved S81): `MonoDefn` no longer carries
+            // `resolutions`/`expr_types` side maps — its `defn` AST is already
+            // annotated by typecheck's `monomorphise_call`. Overlay only the
+            // global test side maps (a no-op where the AST is already
+            // annotated; keeps legacy scaffolding that pre-populates the
+            // global maps working).
             let mut enriched = mono.defn.clone();
-            let mut merged = check.method_resolutions.clone();
-            merged.extend(mono.resolutions.resolved_calls.clone());
-            let expr_types = if mono.expr_types.is_empty() {
-                &check.expr_types
-            } else {
-                &mono.expr_types
-            };
-            enrich_defn_from_side_maps(&mut enriched, &merged, expr_types);
+            enrich_defn_from_side_maps(&mut enriched, &check.method_resolutions, &check.expr_types);
             defns.push(enriched);
         }
 
@@ -1649,6 +1696,7 @@ mod tests {
             tables,
             &aliases,
             jit.jit_module(),
+            true,
         )?;
         // S75 W2: `compile_to_module` finalizes the JIT internally. Entries
         // carry `got_slot: None` (intra-module direct FuncId calls; no GOT
@@ -1796,6 +1844,7 @@ mod tests {
             &tables,
             &aliases,
             jit.jit_module(),
+            true,
         );
         assert!(result.is_err());
     }
@@ -3809,6 +3858,7 @@ mod tests {
             &tables,
             &aliases,
             jit_a.jit_module(),
+            true,
         ).expect("module A should compile");
         // Post-G6: compile_to_module finalized internally. `val` is a zero-arg
         // defn with no GOT slot (direct FuncId); read its ptr by name.
@@ -3843,6 +3893,7 @@ mod tests {
             &tables,
             &aliases,
             jit_b.jit_module(),
+            true,
         ).expect("module B should compile without collision");
         // Post-G6: compile_to_module finalized internally.
         let ptr_b = jit_b.get_ptr_by_name(&Symbol::from("val"), 0).unwrap();
@@ -3890,6 +3941,7 @@ mod tests {
             &tables,
             &aliases,
             jit.jit_module(),
+            true,
         ).expect("JIT compile should succeed");
 
         // D41 #2: backend wrote the finalised code pointer into the entry's
@@ -4082,7 +4134,7 @@ mod tests {
         let mut jit = Jit::new_with_symbols(&extras).expect("jit init");
         let aliases = empty_aliases();
         let names = vec![ctor_defn.name.clone(), consumer_defn.name.clone()];
-        compile_to_module(module.clone(), &names, &tables, &aliases, jit.jit_module())
+        compile_to_module(module.clone(), &names, &tables, &aliases, jit.jit_module(), true)
             .expect("constructor Def + consumer compile (closure deletion regression guard)");
 
         // Stage 1 assertion: the constructor `Def`'s body compiled into a live
@@ -4276,6 +4328,7 @@ mod tests {
             &tables,
             &aliases,
             jit.jit_module(),
+            true,
         );
         // `CompilationArtifacts` is not `Debug`, so match rather than `expect_err`.
         let err = match result {
@@ -4333,6 +4386,7 @@ mod tests {
             &tables,
             &aliases,
             jit.jit_module(),
+            true,
         ).expect("JIT compile should succeed");
 
         // code_size comes from the compile-time artifacts — the caller passes
@@ -4389,6 +4443,7 @@ mod tests {
             &tables,
             &aliases,
             &mut obj_module,
+            true,
         ).expect("object compile should succeed");
 
         // Object-mode invariant: `try_get_finalized_function` returns None (no
@@ -4779,7 +4834,7 @@ mod tests {
 
         let mut jit = Jit::new_with_symbols(&extras).expect("jit init");
         let aliases = empty_aliases();
-        let result = compile_to_module(user_module, &[name], &tables, &aliases, jit.jit_module());
+        let result = compile_to_module(user_module, &[name], &tables, &aliases, jit.jit_module(), true);
         assert!(
             result.is_ok(),
             "extern primitive sconcat should compile via GOT-indirect when resolved_call is BuiltinFn: {}",
@@ -4875,6 +4930,7 @@ mod tests {
             &tables,
             &aliases,
             jit.jit_module(),
+            true,
         )
         .expect("direct compile_to_module should succeed");
 
@@ -4900,6 +4956,77 @@ mod tests {
             }
             other => panic!("expected Def with ast + got_slot, got {other:?}"),
         }
+    }
+
+    // spec: design/arch/facades/backend.md — `capture_clif` flag (FIXME 0325)
+    //
+    // The `capture_clif: bool` parameter (FIXME 0325) gates whether
+    // `compile_to_module` populates `CompilationArtifacts.clif_ir` with the
+    // CLIF-IR text. `false` skips the `format!("{}", func.display())` work and
+    // leaves `clif_ir` empty; `true` captures it. This test compiles the same
+    // fixture under both states and asserts they differ — if the flag were
+    // ignored, the two `clif_ir` strings would match and the test fails.
+    //
+    // A fresh JIT + symbol-table pair is built per call because
+    // `compile_to_module` finalizes the module and writes the GOT slot.
+    #[test]
+    fn capture_clif_gates_clif_ir_text() {
+        fn compile_once(capture_clif: bool) -> CompilationArtifacts {
+            let defn = Defn {
+                name: Symbol::from("answer"),
+                docstring: None,
+                variants: vec![DefnVariant {
+                    params: vec![],
+                    body: Expr::IntLit { value: 42, span: Span::new(0, 2), inferred_type: None },
+                    span: Span::new(0, 10),
+                }],
+                visibility: Visibility::Public,
+                span: Span::new(0, 10),
+            };
+
+            let module = ModuleFullPath::from("user");
+            let tables = empty_tables();
+            {
+                let mut st = SymbolTable::new(module.clone());
+                st.insert(defn.name.clone(), make_def_entry_slot(defn.clone(), 0));
+                st.next_got_slot = 1;
+                tables.insert(module.clone(), st);
+            }
+
+            let mut jit = Jit::new_with_symbols(&[]).unwrap();
+            let aliases = empty_aliases();
+            compile_to_module(
+                module,
+                std::slice::from_ref(&defn.name),
+                &tables,
+                &aliases,
+                jit.jit_module(),
+                capture_clif,
+            )
+            .expect("direct compile_to_module should succeed")
+        }
+
+        // capture_clif = false: the CLIF text is not generated.
+        let without = compile_once(false);
+        assert!(
+            without.clif_ir.is_empty(),
+            "capture_clif = false must leave CompilationArtifacts.clif_ir empty, got: {:?}",
+            without.clif_ir
+        );
+
+        // capture_clif = true: the CLIF text is captured.
+        let with = compile_once(true);
+        assert!(
+            !with.clif_ir.is_empty(),
+            "capture_clif = true must populate CompilationArtifacts.clif_ir"
+        );
+
+        // The compiled native code is unaffected by the flag — code_size is
+        // produced in both cases (the flag only gates the CLIF *text*).
+        assert!(
+            without.code_size > 0 && with.code_size > 0,
+            "code_size must be produced regardless of capture_clif"
+        );
     }
 
     // spec: design/backend/compile-to-module.md §4 — ast: None returns error
@@ -4947,6 +5074,7 @@ mod tests {
             &tables,
             &aliases,
             jit.jit_module(),
+            true,
         );
         let err = match result {
             Ok(_) => unreachable!("ast: None must not succeed"),
@@ -5049,6 +5177,7 @@ mod tests {
             &tables,
             &aliases,
             jit.jit_module(),
+            true,
         )
         .expect("pre-mangled variant should compile without expansion");
 
@@ -5269,6 +5398,7 @@ mod tests {
                 &tables,
                 &aliases,
                 jit.jit_module(),
+                true,
             )
             .expect("compile_to_module should succeed");
 
@@ -5307,6 +5437,7 @@ mod tests {
                 &tables,
                 &aliases,
                 jit.jit_module(),
+                true,
             )
             .expect("compile_to_module should succeed");
 
@@ -5343,6 +5474,7 @@ mod tests {
             &tables,
             &aliases,
             &mut obj,
+            true,
         )
         .expect("compile_to_module<ObjectModule> should succeed");
 
@@ -5425,6 +5557,7 @@ mod tests {
             &tables,
             &aliases,
             jit.jit_module(),
+            true,
         )
         .expect("compile_to_module<JITModule> should succeed");
 
@@ -5494,6 +5627,7 @@ mod tests {
             &tables,
             &aliases,
             &mut obj,
+            true,
         )
         .expect("compile_to_module should succeed");
 
@@ -5630,6 +5764,7 @@ mod tests {
             &tables,
             &aliases,
             jit.jit_module(),
+            true,
         )
         .expect("compile_to_module should succeed");
 
@@ -5680,6 +5815,7 @@ mod tests {
             &tables,
             &aliases,
             &mut obj,
+            true,
         )
         .expect("compile_to_module<ObjectModule> should succeed");
 

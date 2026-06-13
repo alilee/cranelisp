@@ -685,19 +685,19 @@ pub fn install_panic_hook() {
     }));
 }
 
+/// Test serialisation lock (FIXME 0013). Tests that mutate the
+/// process-global panic-hook state (`PANIC_HOOK_INSTALLED` +
+/// `std::panic::set_hook`) take this lock at the top so they cannot
+/// interleave under `cargo test` (shared process). `cargo nextest run`
+/// (subprocess-per-test) does not interleave them, but the lock makes the
+/// invariant explicit + robust under either runner. Sister convention to
+/// FIXME 0012 in `crates/cranelisp-runtime/src/io_trace.rs`.
+#[cfg(test)]
+static TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Test-only reset hook for the idempotent-install guard. Allows a
 /// single test to reinstall the hook to observe the install path
 /// twice. Not part of the stable API.
-//
-// FIXME(/int) — Sprint 61 Wave 1 /review I-1 (first-time deferral).
-// This function mutates process-global state (`PANIC_HOOK_INSTALLED` +
-// `std::panic::set_hook`) without a serialisation lock. Safe under
-// `cargo nextest run` (subprocess-per-test) but fragile under
-// `cargo test` where tests share a process. Recommended fix: add a
-// `static TEST_GUARD: Mutex<()> = Mutex::new(())` and take the lock
-// at the top of every test that calls this + `install_panic_hook`.
-// See `design/review/sprint-61-wave-1-slice-0.md` §Importants I-1.
-// Deferred once — ship by Wave 5 or next sprint, else escalate.
 #[cfg(test)]
 fn reset_panic_hook_installed_for_tests() {
     PANIC_HOOK_INSTALLED.store(false, std::sync::atomic::Ordering::Release);
@@ -1306,6 +1306,9 @@ mod tests {
 
     #[test]
     fn install_panic_hook_is_idempotent() {
+        // FIXME 0013: serialise against the sibling panic-hook test so the
+        // two cannot interleave on the process-global hook under `cargo test`.
+        let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         // Reset so this test can assert the first-install path itself.
         reset_panic_hook_installed_for_tests();
 
@@ -1325,6 +1328,8 @@ mod tests {
 
     #[test]
     fn install_panic_hook_runs_flush_on_panic() {
+        // FIXME 0013: serialise against the sibling panic-hook test (see above).
+        let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         // Install on a fresh slot. We can't directly observe the flush
         // writing to stderr, but we CAN observe the delegation chain:
         // the prior hook must still run after ours. Verify this via a

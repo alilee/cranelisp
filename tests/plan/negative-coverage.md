@@ -181,11 +181,16 @@ Sprint 16 task D5. Created 2026-03-09.
 | 8.4.4 | Export MUST NOT re-export private | POS | POS | High | OK |
 | 8.6.4 | Duplicate imports from different sources = error | POS | POS | High | OK |
 | 8.6.4 | Definition over import = error | POS | POS | High | OK |
+| 8.6.4 | Terminal-source dedup — glob + re-export of same terminal NOT ambiguous | POS | — | High | **FAILING-FIRST** (S81 W1/0316 — `spec_08_modules::glob_and_reexport_of_same_terminal_dedup`; RED until int terminal-dedup lands) |
 | 8.6.5 | Ambiguous bare name MUST error | POS | POS | High | OK |
+| 8.6.5 | Distinct-terminal overlap collides — diagnostic names BOTH qualified alternatives | POS | POS | High | **FAILING-FIRST** (S81 W1/0316 — `spec_08_modules::distinct_terminal_overlap_collides`; guards no over-dedup) |
 | 8.6.6 | Accessing private via qualified ref = error | POS | POS | High | OK |
 | 8.7.3 | Private name MUST NOT be exported via glob | POS | - | High | **GAP** |
 | 8.7.3 | Private name MUST NOT be accessed via qualified ref | POS | POS | High | OK |
 | 8.9.1 | Primitives NOT bare without import | POS | POS | High | OK |
+| 8.9.1 / 3.1 | Bare primitive TYPE (`:Int`/`:Bool`/`:Float`/`:String`) no import = unknown-type error | POS | POS | High | **GREEN** (S81 W7/0216 — `spec_08_modules::bare_primitive_type_int_neg_unknown_type_without_import`, `::bare_primitive_types_bool_float_string_neg_unknown_without_import`) |
+| 8.9.1 | FQ primitive type (`:primitives/Int`) works without import; no unknown-type error | POS | POS | High | **GREEN** (S81 W7/0216 — `spec_08_modules::fq_primitive_type_int_works_without_import`, `::fq_primitive_type_int_neg_no_unknown_type_error`) |
+| 8.9.1 | Bare primitive FN (`add-i64`) no import = unknown-name error; FQ (`primitives/add-i64`) works | POS | POS | High | **GREEN** (S81 W7/0216 — `spec_08_modules::bare_primitive_fn_add_i64_neg_unknown_name_without_import`, `::fq_primitive_fn_add_i64_works_without_import`) |
 | 8.9.2 | `macros` module NOT implicitly imported | POS | - | Medium | **GAP** |
 | 8.10.2 | Circular dependencies MUST error | - | - | High | **GAP** |
 

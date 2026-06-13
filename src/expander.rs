@@ -278,71 +278,60 @@ pub(crate) fn recognize_macro_head(
     if name.starts_with(':') {
         return Ok(None);
     }
-    let first = {
-        let Some(table_ref) = committed_view(symbol_tables, current_module) else {
-            return Ok(None);
-        };
-        let view: View<'_, Code, ()> = View::single(&table_ref);
-        cranelisp_types::resolve_macro_head(
-            symbol_tables,
-            module_aliases,
-            &view,
-            current_module,
-            name,
-            span,
-        )
-        .map_err(CranelispError::from)?
+    // FIXME 0316(c): the resolve → prelude-outer-scope retry → public-only-filter
+    // wrapper is the shared `cranelisp_types::resolve_with_fallback` primitive —
+    // the same seam the four `checker.rs` chokepoints route through. int's job is
+    // only (1) build the committed first-hop view, (2) look up the session-side
+    // `prelude_fallback` bit (a plain `bool` to the data-only primitive), and
+    // (3) project the resolved entry to a macro-head identity. The bespoke 3-step
+    // wrapper that lived here (first-hop `resolve_macro_head` → manual prelude
+    // retry → `prelude_macro_public` filter) is collapsed into the call.
+    let Some(table_ref) = committed_view(symbol_tables, current_module) else {
+        return Ok(None);
     };
-    if first.is_some() {
-        return Ok(first);
-    }
+    let view: View<'_, Code, ()> = View::single(&table_ref);
 
-    // First-hop inner-table miss. Consult the prelude OUTER SCOPE iff the bit is
-    // ON for this module (and the module is not prelude itself — a module never
-    // falls back onto itself). Absence-is-OFF (§2.7.1).
-    if current_module.as_ref() == PRELUDE_MODULE
-        || !prelude_fallback.get(current_module).map(|b| *b).unwrap_or(false)
-    {
-        return Ok(None);
-    }
+    // Fallback ON iff the module's bit is set and it is not prelude itself
+    // (absence-is-OFF, §2.7.1; never self-fallback). When OFF,
+    // `resolve_with_fallback` reduces to a bare first-hop `resolve`.
+    let fallback_on = current_module.as_ref() != PRELUDE_MODULE
+        && prelude_fallback.get(current_module).map(|b| *b).unwrap_or(false);
     let prelude_module = ModuleFullPath::from(PRELUDE_MODULE);
-    let Some(prelude_ref) = committed_view(symbol_tables, &prelude_module) else {
-        return Ok(None);
-    };
-    let prelude_view: View<'_, Code, ()> = View::single(&prelude_ref);
-    let prelude_hit = cranelisp_types::resolve_macro_head(
+
+    // The I-1 public-only filter on the prelude terminal is applied INSIDE
+    // `resolve_with_fallback` (its Step 3) — a private prelude binding reads as
+    // the original current-module miss, never leaking. So `prelude_macro_public`
+    // is no longer needed here.
+    let resolved = cranelisp_types::resolve_with_fallback(
         symbol_tables,
         module_aliases,
-        &prelude_view,
-        // Root the retry at `prelude` so the chain-follow + terminal `home` are
-        // correct. Visibility is re-judged below relative to the ORIGINAL user
-        // module via the public-only filter (the I-1 lesson).
-        &prelude_module,
+        &view,
+        current_module,
         name,
+        fallback_on,
+        &prelude_module,
         span,
-    )
-    .map_err(CranelispError::from)?;
-    match prelude_hit {
-        Some(fq) if prelude_macro_public(symbol_tables, &fq) => Ok(Some(fq)),
-        // A private prelude macro is NOT reachable as a bare name from a user
-        // module (the I-1 public-only discipline) — treat it as not-a-macro-head
-        // so it does not leak and does not shadow.
-        _ => Ok(None),
-    }
-}
+    );
+    drop(table_ref);
 
-/// Whether the canonical macro entry `fq` (resolved through the prelude retry)
-/// is PUBLIC. A user module is never in the prelude subtree, so only public
-/// prelude bindings are reachable through the implicit outer scope (S78 §2 /
-/// `/review` I-1). A missing entry is treated as not-public (not reachable).
-fn prelude_macro_public(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    fq: &FQSymbol,
-) -> bool {
-    symbol_tables
-        .get(&fq.module)
-        .and_then(|table| table.get(fq.symbol.as_ref()).map(|e| e.is_public()))
-        .unwrap_or(false)
+    match resolved {
+        // The macro-head projection (`resolve_macro_head`'s kind discriminator):
+        // a resolved name is a macro head only when its canonical entry is a
+        // `DefKind::Macro`. Any other kind is an ordinary call → `Ok(None)`.
+        Ok(r) => match &r.entry {
+            ModuleEntry::Def { kind, .. } if matches!(kind.as_ref(), DefKind::Macro { .. }) => {
+                Ok(Some(r.fq))
+            }
+            _ => Ok(None),
+        },
+        // A bare-name not-found (incl. a filtered-out private prelude hit) is a
+        // forward / ordinary reference, not a macro head. Only hard failures
+        // (private, unknown qualified module) surface as `Err`.
+        Err(cranelisp_types::ResolveError::TraitNotFound { .. })
+        | Err(cranelisp_types::ResolveError::TypeNotFound { .. })
+        | Err(cranelisp_types::ResolveError::ConstructorNotFound { .. }) => Ok(None),
+        Err(e) => Err(CranelispError::from(e)),
+    }
 }
 
 // ---------------------------------------------------------------------------

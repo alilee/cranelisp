@@ -888,8 +888,18 @@ fn register_trace_type(
         insert_primitive(&mut primitives, field_name, scheme, vec!["t"], docstring);
     }
 
-    // `trace` module-scoped special form (resolved through the module system,
-    // unlike parser keywords — arch Principle 10/16).
+    // FIXME 0266 (DEFERRED — see design/arch/fixmes/0266): the ruling moves the
+    // `trace` SpecialForm metadata entry from `primitives` to root `""`. The
+    // one-line move is mechanically trivial here, BUT it breaks every consumer
+    // that imports `trace` from `primitives` specifically — `stdlib/core.cl`'s
+    // `(mod trace)` + `(export [trace [trace …]])` re-export, and ~7 trace e2e
+    // tests doing `(import [primitives [trace …]])`. Those fixtures are
+    // /stdlib- and /qa-owned, not int's; completing the move requires a
+    // coordinated cross-skill fixture sweep (drop `trace` from those import
+    // lists — it is a root special form needing no import, like `if`/`let`).
+    // Until that sweep lands the entry stays in `primitives` to keep the tree
+    // green. (Recognition is frontend-side via `Expr::Trace` regardless of this
+    // entry's placement; the entry only feeds `/info trace` + import resolution.)
     let trace_form_desc = "Execution trace: (trace expr) — evaluates expr with call instrumentation, returns Trace ADT";
     primitives.insert(
         Symbol::from("trace"),
@@ -1089,6 +1099,8 @@ mod tests {
         mount_synthetic_modules(&tables, &next_id);
         let prims = tables.get(&ModuleFullPath::from("primitives")).unwrap();
         assert!(matches!(prims.get("Trace"), Some(ModuleEntry::TypeDef { .. })));
+        // FIXME 0266 DEFERRED: the `trace` SpecialForm entry stays in
+        // `primitives` until the cross-skill fixture sweep moves it to root.
         assert!(matches!(
             prims.get("trace"),
             Some(ModuleEntry::SpecialForm { .. })

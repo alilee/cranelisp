@@ -143,33 +143,39 @@ pub(crate) fn ring0_primitives() -> Vec<PrimitiveDef> {
             name: Symbol::from("lt-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Bool)),
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+            docstring: "Less than",
         },
         PrimitiveDef {
             name: Symbol::from("gt-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Bool)),
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+            docstring: "Greater than",
         },
         PrimitiveDef {
             name: Symbol::from("le-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Bool)),
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+            docstring: "Less than or equal",
         },
         PrimitiveDef {
             name: Symbol::from("ge-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Bool)),
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+            docstring: "Greater than or equal",
         },
         // --- Boolean: (Fn [Bool] Bool) ---
         PrimitiveDef {
             name: Symbol::from("not"),
             ty: Type::Fn(vec![Type::Bool], Box::new(Type::Bool)),
             param_names: vec![Symbol::from("b")],
+            docstring: "Boolean negation",
         },
         // --- Boolean equality: (Fn [Bool Bool] Bool) ---
         PrimitiveDef {
             name: Symbol::from("eq-bool"),
             ty: Type::Fn(vec![Type::Bool, Type::Bool], Box::new(Type::Bool)),
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+            docstring: "Equality",
         },
     ]
 }
@@ -186,36 +192,43 @@ pub(crate) fn ring1_primitives() -> Vec<PrimitiveDef> {
             name: Symbol::from("str-concat"),
             ty: Type::Fn(vec![Type::String, Type::String], Box::new(Type::String)),
             param_names: vec![Symbol::from("a"), Symbol::from("b")],
+            docstring: "Concatenate two strings",
         },
         PrimitiveDef {
             name: Symbol::from("str-eq"),
             ty: Type::Fn(vec![Type::String, Type::String], Box::new(Type::Bool)),
             param_names: vec![Symbol::from("a"), Symbol::from("b")],
+            docstring: "String equality (byte-wise)",
         },
         PrimitiveDef {
             name: Symbol::from("str-len"),
             ty: Type::Fn(vec![Type::String], Box::new(Type::Int)),
             param_names: vec![Symbol::from("s")],
+            docstring: "String length in bytes",
         },
         PrimitiveDef {
             name: Symbol::from("string-identity"),
             ty: Type::Fn(vec![Type::String], Box::new(Type::String)),
             param_names: vec![Symbol::from("s")],
+            docstring: "Identity for String (used by Display impl)",
         },
         PrimitiveDef {
             name: Symbol::from("int-to-string"),
             ty: Type::Fn(vec![Type::Int], Box::new(Type::String)),
             param_names: vec![Symbol::from("n")],
+            docstring: "Convert integer to decimal string",
         },
         PrimitiveDef {
             name: Symbol::from("float-to-string"),
             ty: Type::Fn(vec![Type::Float], Box::new(Type::String)),
             param_names: vec![Symbol::from("f")],
+            docstring: "Convert float to string",
         },
         PrimitiveDef {
             name: Symbol::from("bool-to-string"),
             ty: Type::Fn(vec![Type::Bool], Box::new(Type::String)),
             param_names: vec![Symbol::from("b")],
+            docstring: "\"true\" or \"false\"",
         },
         PrimitiveDef {
             name: Symbol::from("parse-int"),
@@ -224,17 +237,22 @@ pub(crate) fn ring1_primitives() -> Vec<PrimitiveDef> {
                 Box::new(Type::adt(ModuleFullPath::from("primitives"), TypeName::from("Option"), vec![Type::Int])),
             ),
             param_names: vec![Symbol::from("s")],
+            docstring: "Parse decimal integer; None on failure",
         },
         // --- Ring 1 extended string primitives ---
         PrimitiveDef {
             name: Symbol::from("substring"),
             ty: Type::Fn(vec![Type::String, Type::Int, Type::Int], Box::new(Type::String)),
             param_names: vec![Symbol::from("s"), Symbol::from("start"), Symbol::from("end")],
+            docstring: "Extract substring from start (inclusive) to end (exclusive); \
+                        clamps out-of-bounds indices",
         },
         PrimitiveDef {
             name: Symbol::from("char-at"),
             ty: Type::Fn(vec![Type::String, Type::Int], Box::new(Type::String)),
             param_names: vec![Symbol::from("s"), Symbol::from("idx")],
+            docstring: "Character at byte index as single-character string; empty \
+                        string if out of bounds",
         },
         PrimitiveDef {
             name: Symbol::from("split"),
@@ -243,6 +261,7 @@ pub(crate) fn ring1_primitives() -> Vec<PrimitiveDef> {
                 Box::new(Type::adt(ModuleFullPath::from("primitives"), TypeName::from("Vec"), vec![Type::String])),
             ),
             param_names: vec![Symbol::from("s"), Symbol::from("sep")],
+            docstring: "Split string by separator",
         },
         PrimitiveDef {
             name: Symbol::from("join"),
@@ -251,41 +270,49 @@ pub(crate) fn ring1_primitives() -> Vec<PrimitiveDef> {
                 Box::new(Type::String),
             ),
             param_names: vec![Symbol::from("sep"), Symbol::from("parts")],
+            docstring: "Join strings with separator",
         },
         PrimitiveDef {
             name: Symbol::from("replace"),
             ty: Type::Fn(vec![Type::String, Type::String, Type::String], Box::new(Type::String)),
             param_names: vec![Symbol::from("s"), Symbol::from("from"), Symbol::from("to")],
+            docstring: "Replace all occurrences of from with to",
         },
         PrimitiveDef {
             name: Symbol::from("trim"),
             ty: Type::Fn(vec![Type::String], Box::new(Type::String)),
             param_names: vec![Symbol::from("s")],
+            docstring: "Trim leading and trailing whitespace",
         },
         PrimitiveDef {
             name: Symbol::from("starts-with?"),
             ty: Type::Fn(vec![Type::String, Type::String], Box::new(Type::Bool)),
             param_names: vec![Symbol::from("s"), Symbol::from("prefix")],
+            docstring: "Test if string starts with prefix",
         },
         PrimitiveDef {
             name: Symbol::from("ends-with?"),
             ty: Type::Fn(vec![Type::String, Type::String], Box::new(Type::Bool)),
             param_names: vec![Symbol::from("s"), Symbol::from("suffix")],
+            docstring: "Test if string ends with suffix",
         },
         PrimitiveDef {
             name: Symbol::from("contains?"),
             ty: Type::Fn(vec![Type::String, Type::String], Box::new(Type::Bool)),
             param_names: vec![Symbol::from("s"), Symbol::from("needle")],
+            docstring: "Test if string contains substring",
         },
         PrimitiveDef {
             name: Symbol::from("to-upper"),
             ty: Type::Fn(vec![Type::String], Box::new(Type::String)),
             param_names: vec![Symbol::from("s")],
+            docstring: "Convert to uppercase",
         },
         PrimitiveDef {
             name: Symbol::from("to-lower"),
             ty: Type::Fn(vec![Type::String], Box::new(Type::String)),
             param_names: vec![Symbol::from("s")],
+            docstring: "Convert to lowercase",
         },
     ]
 }
@@ -305,6 +332,7 @@ pub(crate) fn ring3_primitives() -> Vec<PrimitiveDef> {
             name: Symbol::from("quote-sexp"),
             ty: Type::Fn(vec![sexp_type.clone()], Box::new(sexp_type)),
             param_names: vec![Symbol::from("sexp")],
+            docstring: "Convert a runtime Sexp value to constructor source code",
         },
     ]
 }

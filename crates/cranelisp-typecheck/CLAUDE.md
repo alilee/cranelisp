@@ -47,6 +47,18 @@ add a name-key shortcut to primitives; primitives reach user code only *via*
 prelude's `(export [primitives [*]])` re-export, chain-followed through the
 fallback (the §2 structural-not-skip guarantee).
 
+- **GOTCHA — bare punctuation operators and the `/`-split (FIXME 0328/0331).** The
+  shared `cranelisp_types::resolve`/`resolve_with_fallback` primitive treats a
+  `module/symbol` reference by splitting on `/` (`split_qualified`). The division
+  operator `/` (and `//`) is a legitimate BARE value name (Principle 16). The split
+  is guarded to require BOTH module and symbol parts non-empty, so a standalone `/`,
+  `//`, leading `/bar`, or trailing `foo/` is a literal bare name — NOT qualified.
+  `canonical_symbol` carries the same non-empty-remainder guard so a bare `/`'s
+  `Resolved.fq.symbol` is `/`, not empty. If you ever see a trait operator whose name
+  contains `/` mis-resolving as `undefined variable: /`, the `/`-split lost the guard.
+  (The fix lives in `cranelisp-types::resolve`, `/arch`-owned — file a FIXME, don't
+  add a checker-side literal-lookup short-circuit that re-fragments the chokepoints.)
+
 ## Product-ctor dual facet (S79 Option 3a, FIXME 0319)
 
 A **single-ctor product** type (`(deftype Rectangle [:Int w :Int h])`) has

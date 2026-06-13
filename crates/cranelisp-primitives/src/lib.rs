@@ -239,6 +239,7 @@ fn insert_primitive_entry(
         ModuleEntry::def(scheme, DefKind::Primitive)
             .param_names(prim.param_names.clone())
             .got_slot(slot)
+            .docstring(prim.docstring)
             .build(),
     );
 }
@@ -280,35 +281,40 @@ fn insert_vec_query_entries(
         )
     };
 
-    // (name, scheme-ty, param_names). Polymorphic over `a` (§A.3).
-    let entries: Vec<(&str, Type, Vec<Symbol>)> = vec![
+    // (name, scheme-ty, param_names, docstring). Polymorphic over `a` (§A.3);
+    // docstring is the §A.3 Description-column text (§A.5 MUST).
+    let entries: Vec<(&str, Type, Vec<Symbol>, &'static str)> = vec![
         // vec-get :: forall a. (Fn [(Vec a) Int] a)
         (
             "vec-get",
             Type::Fn(vec![vec_a(), Type::Int], Box::new(Type::Var(A))),
             vec![Symbol::from("v"), Symbol::from("idx")],
+            "Index (bounds-checked; panics on out-of-bounds)",
         ),
         // vec-set :: forall a. (Fn [(Vec a) Int a] (Vec a))
         (
             "vec-set",
             Type::Fn(vec![vec_a(), Type::Int, Type::Var(A)], Box::new(vec_a())),
             vec![Symbol::from("v"), Symbol::from("idx"), Symbol::from("val")],
+            "Return new Vec with element at index replaced",
         ),
         // vec-push :: forall a. (Fn [(Vec a) a] (Vec a))
         (
             "vec-push",
             Type::Fn(vec![vec_a(), Type::Var(A)], Box::new(vec_a())),
             vec![Symbol::from("v"), Symbol::from("val")],
+            "Return new Vec with element appended",
         ),
         // vec-len :: forall a. (Fn [(Vec a)] Int)
         (
             "vec-len",
             Type::Fn(vec![vec_a()], Box::new(Type::Int)),
             vec![Symbol::from("v")],
+            "Number of elements",
         ),
     ];
 
-    for (name, ty, param_names) in entries {
+    for (name, ty, param_names, docstring) in entries {
         let slot = table.allocate_got_slot();
         if let Some(ptr) = shims.get(name) {
             table.got.store_slot(slot, *ptr);
@@ -323,6 +329,7 @@ fn insert_vec_query_entries(
             ModuleEntry::def(scheme, DefKind::Primitive)
                 .param_names(param_names)
                 .got_slot(slot)
+                .docstring(docstring)
                 .build(),
         );
     }
@@ -764,6 +771,56 @@ mod tests {
             ring0::add_i64 as *const u8,
             "static slab slot must hold add-i64's address"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Docstring harness (FIXME 0308) — every primitive's `ModuleEntry::Def`
+    // carries a non-empty `docstring` (the §A.5 MUST Description text), wired
+    // via `.docstring(prim.docstring)` in `insert_primitive_entry` /
+    // `insert_vec_query_entries`. `int` reads it through the symbol table for
+    // the `; classification - docstring` REPL suffix.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn every_primitive_has_a_docstring() {
+        // spec: appendix-a-builtins §A.5 — every primitive MUST carry its
+        // Description text. Guards against a new primitive being added without
+        // wiring its docstring (the field would be `None` or empty).
+        for (name, entry) in PRIMITIVES_TABLE.symbols.iter() {
+            let ModuleEntry::Def { docstring, .. } = entry else {
+                panic!("entry {name} should be a Def");
+            };
+            let doc = docstring
+                .as_deref()
+                .unwrap_or_else(|| panic!("entry {name} has no docstring (None)"));
+            assert!(
+                !doc.trim().is_empty(),
+                "entry {name} has an empty docstring"
+            );
+        }
+    }
+
+    #[test]
+    fn docstring_spot_check_pins_expected_text() {
+        // spec: appendix-a-builtins §A.5 — pin that the wiring carries the
+        // RIGHT string, not just any non-empty string. `add-i64` flows from
+        // `ring0_primitives()` (operator.rs); `vec-len` flows from the
+        // `insert_vec_query_entries` hand-built rows (lib.rs).
+        let expect = |name: &str, want: &str| {
+            let entry = PRIMITIVES_TABLE
+                .get(name)
+                .unwrap_or_else(|| panic!("missing entry for {name}"));
+            let ModuleEntry::Def { docstring, .. } = entry else {
+                panic!("entry {name} should be a Def");
+            };
+            assert_eq!(
+                docstring.as_deref(),
+                Some(want),
+                "docstring mismatch for {name}"
+            );
+        };
+        expect("add-i64", "Add");
+        expect("vec-len", "Number of elements");
     }
 
     #[test]
