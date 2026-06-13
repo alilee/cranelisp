@@ -2,12 +2,15 @@
 
 Exemplar project for Cranelisp: a Sudoku Solver with Web Platform. Owned by `/port` skill.
 
-## Current State (Sprint 57)
+## Current State (Sprint 81)
 
 Four pure-core modules implemented, solver.cl has IO output. Validated under the
-reimplementation compiler in Sprint 57 Wave 6 — all four modules compile cleanly
-and the entry module runs through IO to print the puzzle board. The solve step
-segfault is a known pre-existing issue (see Known Issues).
+reimplementation compiler — all four modules compile cleanly and the entry
+module runs through IO to print the puzzle board **and the full solution**.
+The full 9×9 grid solves end-to-end (exit 0, valid solution) on the current
+binary; this is locked by the S80 full-grid-solve milestone and re-verified in
+S81 (`--run exemplar/solver.cl`). The earlier solve-step segfault is resolved —
+no longer an issue.
 
 Post-Sprint-57 updates applied to the exemplar:
 - Added explicit `(import [primitives [*]])` to each module. The current prelude
@@ -38,17 +41,16 @@ Post-Sprint-57 updates applied to the exemplar:
 
 ## IO Output
 
-`solver.cl` now has a `main` function that uses IO to print a formatted Sudoku board. Run with:
+`solver.cl` has a `main` function that uses IO to print a formatted Sudoku board and its solution. Run with:
 
 ```bash
 CRANELISP_PLATFORM_PATH=target/debug CRANELISP_LIB=stdlib cargo run -- --run exemplar/solver.cl
 ```
 
-The puzzle input board displays correctly. The solve step currently segfaults due to deep recursion in constraint propagation (stack overflow on 81-cell grids). This is a pre-existing runtime issue, not an IO issue. The IO plumbing (`platform stdio`, `print`, `bind`, `Pure`) is verified working.
+The puzzle input board displays correctly, the solve step runs to completion, and the solved board prints. The whole run exits 0 with a valid solution. The IO plumbing (`platform stdio`, `print`, `bind`, `Pure`) and the solver (`eliminate`/`propagate`/`solve`) are all verified working end-to-end on the full 81-cell grid.
 
 ## Known Issues
 
-- **Solver segfault**: `propagate`/`solve` crash on full 81-cell puzzles (likely stack overflow from deep recursive Grid/Vec copying). The elimination unit tests (which use small hand-built grids) work. Full-grid tests crash.
 - **Platform path**: The `CRANELISP_PLATFORM_PATH` env var is needed because `exemplar/` is not the project root where the stdio DLL lives. Without it, `(platform stdio)` fails with "platform not found".
 
 ## Design Decisions
