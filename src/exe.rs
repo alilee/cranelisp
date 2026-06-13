@@ -32,7 +32,13 @@ use cranelisp_types::{ErrorLocation,
 ///   (e.g., `["cranelisp_platform_manifest"]`). Empty if no platforms.
 /// * `main_returns_io` — if true, inserts a `cranelisp_run_io` call to force
 ///   the IO task tree before extracting the exit code.
-/// * `entry_fn_name` — the user `main` symbol (e.g. `main` or `hello/main`).
+/// * `entry_fn_name` — the user-main symbol the stub imports and calls. macOS
+///   `"main"`; Linux `"cranelisp_user_main"` (the alias `.o`'s Export). Read
+///   from `host_entry_symbols()` at the call site (design §11.3).
+/// * `stub_entry_symbol` — the symbol this stub exports as the executable entry.
+///   macOS `"start"` (linked `-e _start`); Linux `"main"` (crt calls it, so the
+///   stub IS C `main` — glibc/TLS/malloc are initialised before it runs, design
+///   §11.3). Read from `host_entry_symbols()` at the call site.
 /// * `platform_layout_checks` — per-platform layout-hash checks to bake into the
 ///   `start` stub (platform-interface.md §5.5.4 `--link` gate). For each check
 ///   the stub declares the rlib's `__cranelisp_layout_hash_<name>` as imported
@@ -44,6 +50,7 @@ pub fn generate_startup_object(
     platform_manifest_names: &[String],
     main_returns_io: bool,
     entry_fn_name: &str,
+    stub_entry_symbol: &str,
     platform_layout_checks: &[cranelisp_backend::exe::PlatformLayoutCheck],
 ) -> Result<Vec<u8>, CranelispError> {
     use cranelift::prelude::*;
@@ -226,12 +233,14 @@ pub fn generate_startup_object(
         manifest_func_ids.push(fid);
     }
 
-    // Define `start` (exported entry point).
+    // Define the entry stub (exported). macOS exports `start` (linked
+    // `-e _start`); Linux exports `main` (crt calls it — the stub IS C `main`,
+    // so glibc/TLS/malloc are up before any user code runs; design §11.3).
     let start_sig = obj_module.make_signature();
     let start_func_id = obj_module
-        .declare_function("start", Linkage::Export, &start_sig)
+        .declare_function(stub_entry_symbol, Linkage::Export, &start_sig)
         .map_err(|e| CranelispError::CodegenError {
-            message: format!("failed to declare start: {e}"),
+            message: format!("failed to declare {stub_entry_symbol}: {e}"),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
@@ -313,7 +322,7 @@ pub fn generate_startup_object(
     obj_module
         .define_function(start_func_id, &mut ctx)
         .map_err(|e| CranelispError::CodegenError {
-            message: format!("failed to define start: {e:?}"),
+            message: format!("failed to define {stub_entry_symbol}: {e:?}"),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
@@ -437,14 +446,20 @@ fn type_display_brief(ty: &Type) -> String {
 /// * `main_got_slot` — the GOT slot index that the entry module's symbol
 ///   table allocated for `main`. Read off
 ///   `symbol_tables[entry_module].symbols["main"].got_slot.unwrap()`.
+/// * `user_main_symbol` — the name this alias exports. macOS `"main"` (the
+///   stub's import); Linux `"cranelisp_user_main"`, renamed to avoid colliding
+///   with the C `main` the Linux stub itself exports (design §11.3). Read from
+///   `host_entry_symbols()` at the call site.
 ///
 /// # Returns
-/// Raw bytes of a relocatable Mach-O `.o` file containing one Export symbol
-/// `main` whose body loads `__cranelisp_got_{entry_module}[main_got_slot]`
-/// and tail-calls the resulting function pointer.
+/// Raw bytes of a relocatable ELF/Mach-O `.o` file containing one Export symbol
+/// (`user_main_symbol`) whose body loads
+/// `__cranelisp_got_{entry_module}[main_got_slot]` and tail-calls the resulting
+/// function pointer.
 pub fn generate_main_alias_object(
     entry_module: &ModuleFullPath,
     main_got_slot: usize,
+    user_main_symbol: &str,
 ) -> Result<Vec<u8>, CranelispError> {
     use cranelift::prelude::*;
     use cranelisp_backend::cranelift_module::{default_libcall_names, Linkage, Module};
@@ -473,14 +488,15 @@ pub fn generate_main_alias_object(
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
-    // Declare `main` as Linkage::Export. The system linker resolves the
-    // startup stub's `_main` import against this symbol.
+    // Declare the user-main alias as Linkage::Export. The startup stub's
+    // import of the user-main symbol resolves against this. macOS: `main`;
+    // Linux: `cranelisp_user_main` (the C `main` is the stub itself).
     let mut main_sig = obj_module.make_signature();
     main_sig.returns.push(AbiParam::new(types::I64));
     let main_func_id = obj_module
-        .declare_function("main", Linkage::Export, &main_sig)
+        .declare_function(user_main_symbol, Linkage::Export, &main_sig)
         .map_err(|e| CranelispError::CodegenError {
-            message: format!("failed to declare main alias as Export: {e}"),
+            message: format!("failed to declare {user_main_symbol} alias as Export: {e}"),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
@@ -531,7 +547,7 @@ pub fn generate_main_alias_object(
     obj_module
         .define_function(main_func_id, &mut ctx)
         .map_err(|e| CranelispError::CodegenError {
-            message: format!("failed to define main alias: {e:?}"),
+            message: format!("failed to define {user_main_symbol} alias: {e:?}"),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
@@ -570,37 +586,75 @@ pub fn entry_main_got_slot(entry_table: &crate::code::SessionSymbolTable) -> Res
 
 // ── Linker configuration ────────────────────────────────────────────────
 
-/// Platform-specific linker configuration.
+/// Which native linker driver to invoke (design §11.6).
 ///
-/// Only macOS aarch64 is implemented for Ring 4. The abstraction exists so
-/// that Linux ELF support can be added later without restructuring.
+/// `AppleLd` drives bare `ld` (ld64) on macOS; `Cc` drives the `cc` (gcc)
+/// driver on Linux so the crt objects, dynamic-linker path, default search
+/// paths, and libc are supplied by the driver (design §11.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LinkDriver {
+    AppleLd,
+    Cc,
+}
+
+/// Host-dispatched linker configuration (design §11.6).
+///
+/// Carries the entry strategy (which symbol the stub exports as the entry, and
+/// what the user-main alias is named) and the driver. macOS keeps its custom
+/// crt-bypassing entry (`start` / `main`, Apple `ld`); Linux routes through crt
+/// by emitting the stub as C `main`, so the user-main alias is renamed to
+/// `cranelisp_user_main` to avoid colliding with the C `main` (design §11.3).
 struct LinkerConfig {
-    arch: &'static str,
-    entry_symbol: &'static str,
-    platform: &'static str,
-    min_version: &'static str,
-    sdk_version: &'static str,
+    driver: LinkDriver,
+    /// The symbol the startup stub exports as the entry. macOS: `"start"`
+    /// (linked `-e _start`). Linux: `"main"` (crt calls it).
+    stub_entry_symbol: &'static str,
+    /// The user-main alias export / the stub's import of user main. macOS:
+    /// `"main"`. Linux: `"cranelisp_user_main"`.
+    user_main_symbol: &'static str,
+    // macOS-only fields (None on Linux — the `cc` driver supplies these):
+    arch: Option<&'static str>,
+    /// (platform, min_version, sdk_version) — macOS `-platform_version` triplet.
+    platform_triplet: Option<(&'static str, &'static str, &'static str)>,
 }
 
 impl LinkerConfig {
-    /// Configuration for the current host. Currently macOS aarch64 only.
+    /// Configuration for the current host. macOS aarch64 → Apple `ld`; Linux
+    /// aarch64 → `cc` driver (design §11.6).
     fn for_host() -> Result<Self, CranelispError> {
-        if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-            Ok(LinkerConfig {
-                arch: "arm64",
-                entry_symbol: "_start",
-                platform: "macos",
-                min_version: "14.0",
-                sdk_version: "14.0",
-            })
-        } else {
-            Err(CranelispError::CodegenError {
-                message: "standalone executable generation is only supported on macOS aarch64"
+        match (cfg!(target_arch = "aarch64"), std::env::consts::OS) {
+            (true, "macos") => Ok(LinkerConfig {
+                driver: LinkDriver::AppleLd,
+                stub_entry_symbol: "start",
+                user_main_symbol: "main",
+                arch: Some("arm64"),
+                platform_triplet: Some(("macos", "14.0", "14.0")),
+            }),
+            (true, "linux") => Ok(LinkerConfig {
+                driver: LinkDriver::Cc,
+                stub_entry_symbol: "main",
+                user_main_symbol: "cranelisp_user_main",
+                arch: None,
+                platform_triplet: None,
+            }),
+            _ => Err(CranelispError::CodegenError {
+                message: "standalone executable generation is only supported on \
+                          aarch64 macOS and aarch64 Linux"
                     .to_string(),
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
-            })
+            }),
         }
     }
+}
+
+/// The startup-stub export symbol and the user-main alias symbol for the host
+/// (design §11.3). Read by the call site (`session_v4.rs`) so the stub's import
+/// of user main and the alias's export use the host-correct names.
+///
+/// Returns `(stub_entry_symbol, user_main_symbol)`.
+pub fn host_entry_symbols() -> Result<(&'static str, &'static str), CranelispError> {
+    let config = LinkerConfig::for_host()?;
+    Ok((config.stub_entry_symbol, config.user_main_symbol))
 }
 
 // ── Link executable ─────────────────────────────────────────────────────
@@ -617,7 +671,6 @@ pub fn link_executable(
     platform_rlib_paths: &[PathBuf],
 ) -> Result<(), CranelispError> {
     let config = LinkerConfig::for_host()?;
-    let sysroot = get_sdk_sysroot()?;
 
     // Extract bundle directory and library name
     let bundle_dir = bundle_lib_path
@@ -629,14 +682,68 @@ pub fn link_executable(
         .unwrap_or("cranelisp_exe_bundle");
     let lib_name = bundle_stem.strip_prefix("lib").unwrap_or(bundle_stem);
 
+    // Log a condensed summary (shared across drivers).
+    log_link_summary(
+        output_path,
+        startup_o_path,
+        module_o_paths,
+        lib_name,
+        platform_rlib_paths,
+    );
+
+    match config.driver {
+        LinkDriver::AppleLd => link_executable_apple_ld(
+            &config,
+            output_path,
+            module_o_paths,
+            startup_o_path,
+            bundle_dir,
+            lib_name,
+            platform_rlib_paths,
+        ),
+        LinkDriver::Cc => link_executable_cc(
+            output_path,
+            module_o_paths,
+            startup_o_path,
+            bundle_dir,
+            lib_name,
+            platform_rlib_paths,
+        ),
+    }
+}
+
+/// macOS aarch64: assemble Apple `ld` (ld64) args and invoke bare `ld`
+/// (design §11.4, macOS column — unchanged from the pre-§11 path).
+#[allow(clippy::too_many_arguments)]
+fn link_executable_apple_ld(
+    config: &LinkerConfig,
+    output_path: &Path,
+    module_o_paths: &[PathBuf],
+    startup_o_path: &Path,
+    bundle_dir: &Path,
+    lib_name: &str,
+    platform_rlib_paths: &[PathBuf],
+) -> Result<(), CranelispError> {
+    let sysroot = get_sdk_sysroot()?;
+    let arch = config.arch.ok_or_else(|| CranelispError::CodegenError {
+        message: "internal: macOS LinkerConfig missing arch".to_string(),
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
+    })?;
+    let (platform, min_version, sdk_version) =
+        config.platform_triplet.ok_or_else(|| CranelispError::CodegenError {
+            message: "internal: macOS LinkerConfig missing platform triplet".to_string(),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
+
     let mut ld_args: Vec<String> = vec![
         "-arch".to_string(),
-        config.arch.to_string(),
+        arch.to_string(),
         "-dead_strip".to_string(),
         "-o".to_string(),
         output_path.to_string_lossy().to_string(),
         "-e".to_string(),
-        config.entry_symbol.to_string(),
+        // The Mach-O linker prepends `_` to the entry symbol name.
+        format!("_{}", config.stub_entry_symbol),
     ];
 
     // Startup stub first
@@ -659,38 +766,223 @@ pub fn link_executable(
 
     // Platform version (required by modern ld)
     ld_args.push("-platform_version".to_string());
-    ld_args.push(config.platform.to_string());
-    ld_args.push(config.min_version.to_string());
-    ld_args.push(config.sdk_version.to_string());
+    ld_args.push(platform.to_string());
+    ld_args.push(min_version.to_string());
+    ld_args.push(sdk_version.to_string());
 
     // System library and SDK root
     ld_args.push("-lSystem".to_string());
     ld_args.push("-syslibroot".to_string());
     ld_args.push(sysroot);
 
-    // Log a condensed summary
-    log_link_summary(
-        output_path,
-        startup_o_path,
-        module_o_paths,
-        lib_name,
-        platform_rlib_paths,
-    );
+    run_linker("ld", &ld_args)
+}
 
-    // Invoke the linker
-    let ld_output = Command::new("ld")
-        .args(&ld_args)
+/// Linux aarch64: drive `cc` (gcc) so the crt objects, dynamic-linker path,
+/// default search paths, and libc are supplied by the driver (design §11.4).
+///
+/// No `-e` (crt's `_start` is the default entry; our `main` is the C entry),
+/// no `-syslibroot`, no `-platform_version`. `--whole-archive` wraps the
+/// platform objects (the GNU equivalent of macOS `-force_load`); for Phase 1
+/// the rlib list is normally empty.
+fn link_executable_cc(
+    output_path: &Path,
+    module_o_paths: &[PathBuf],
+    startup_o_path: &Path,
+    bundle_dir: &Path,
+    lib_name: &str,
+    platform_rlib_paths: &[PathBuf],
+) -> Result<(), CranelispError> {
+    let mut cc_args: Vec<String> = vec![
+        "-o".to_string(),
+        output_path.to_string_lossy().to_string(),
+    ];
+
+    // Startup stub (the C `main`) first.
+    cc_args.push(startup_o_path.to_string_lossy().to_string());
+
+    // Module .o files (includes the user-main alias .o, appended by the caller).
+    for o_path in module_o_paths {
+        cc_args.push(o_path.to_string_lossy().to_string());
+    }
+
+    // Platform statics — GNU `--whole-archive` is the equivalent of macOS
+    // `-force_load`, pulling in the platform's `#[export_name]` GOT/manifest/
+    // layout-hash symbols. Normally empty for Phase 1 (non-platform programs).
+    //
+    // 0324 Phase 2 (design §11.5, option 1): a real Rust `.rlib` is an `ar`
+    // archive carrying a `lib.rmeta` (+ `lib.rmeta-link`) metadata member that
+    // GNU `ld`/mold reject under `--whole-archive` ("file format not
+    // recognized"). So instead of whole-archiving the raw `.rlib`, we extract
+    // its object members (the `*.rcgu.o`s — skipping the rmeta family) into a
+    // deterministic per-platform cache dir and whole-archive only those `.o`s.
+    //
+    // ORDER: the whole-archive platform objects MUST precede the runtime bundle
+    // `-l`. A platform object references `cranelisp_platform::adt::*` (and other
+    // workspace symbols) that live in the bundle; GNU `ld` resolves a static
+    // archive (`.a`) only against symbols left-undefined by inputs seen SO FAR.
+    // If the bundle came first, the later platform objects' fresh undefined refs
+    // (`set_global_schema`, …) would never be satisfied. Placed before the
+    // bundle, the platform's undefined refs are open when the bundle is scanned.
+    if !platform_rlib_paths.is_empty() {
+        // The startup `.o` lives in the cache dir (session_v4.rs writes both
+        // there); use its parent as the stable extraction-root so the
+        // extracted `.o`s sit beside the other link inputs and are debuggable.
+        let cache_dir = startup_o_path.parent().unwrap_or_else(|| Path::new("."));
+        cc_args.push("-Wl,--whole-archive".to_string());
+        for rlib_path in platform_rlib_paths {
+            let objects = extract_rlib_objects(rlib_path, cache_dir)?;
+            for obj in objects {
+                cc_args.push(obj.to_string_lossy().to_string());
+            }
+        }
+        cc_args.push("-Wl,--no-whole-archive".to_string());
+    }
+
+    // Runtime bundle library (embeds Rust std + the workspace platform crate).
+    cc_args.push(format!("-L{}", bundle_dir.to_string_lossy()));
+    cc_args.push(format!("-l{lib_name}"));
+
+    // Rust-std external deps that must be satisfied at final link. The driver
+    // supplies `-lc`/`-lgcc_s`; std additionally needs these (confirmed
+    // empirically during implementation — see design §11.4).
+    cc_args.push("-lpthread".to_string());
+    cc_args.push("-ldl".to_string());
+    cc_args.push("-lm".to_string());
+
+    run_linker("cc", &cc_args)
+}
+
+/// Extract the object members of a Rust `.rlib` so they can be whole-archived
+/// individually on Linux (0324 Phase 2 / design §11.5, option 1).
+///
+/// A Rust `.rlib` is a GNU `ar` archive of object members (`*.rcgu.o`) PLUS a
+/// `lib.rmeta` metadata member (and a `lib.rmeta-link` sidecar). GNU `ld`/mold
+/// under `--whole-archive` try to link EVERY member as an object and choke on
+/// the rmeta members ("file format not recognized") — Apple `ld64` tolerates
+/// this, GNU does not. So we list the archive (`ar t`), keep only the object
+/// members (names ending in `.o`, which excludes `lib.rmeta` /
+/// `lib.rmeta-link`), and extract just those into a deterministic per-rlib dir
+/// under the cache (`<cache>/__plat_<stem>/`), returning the extracted `.o`
+/// paths for the caller to whole-archive.
+///
+/// The extraction dir is deterministic (not a random temp) so paths stay stable
+/// across builds and are inspectable when a link fails. Shells out to the
+/// system `ar` (already required on the Linux toolchain) rather than adding an
+/// `ar`/`object` crate dependency — neither is a dependency of this crate.
+fn extract_rlib_objects(
+    rlib_path: &Path,
+    cache_dir: &Path,
+) -> Result<Vec<PathBuf>, CranelispError> {
+    let stem = rlib_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("platform");
+    let out_dir = cache_dir.join(format!("__plat_{stem}"));
+
+    // Fresh extraction each link: clear any stale objects so a rebuilt rlib
+    // does not leave orphaned members behind in the deterministic dir.
+    if out_dir.exists() {
+        std::fs::remove_dir_all(&out_dir).map_err(|e| CranelispError::CodegenError {
+            message: format!(
+                "failed to clear platform-object dir {}: {e}",
+                out_dir.display()
+            ),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
+    }
+    std::fs::create_dir_all(&out_dir).map_err(|e| CranelispError::CodegenError {
+        message: format!(
+            "failed to create platform-object dir {}: {e}",
+            out_dir.display()
+        ),
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
+    })?;
+
+    // List the archive members. `ar t` prints one member name per line.
+    let listing = Command::new("ar")
+        .arg("t")
+        .arg(rlib_path)
         .output()
         .map_err(|e| CranelispError::CodegenError {
-            message: format!("failed to run ld: {e}"),
+            message: format!("failed to run `ar t {}`: {e}", rlib_path.display()),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
+    if !listing.status.success() {
+        return Err(CranelispError::CodegenError {
+            message: format!(
+                "`ar t {}` failed:\n{}",
+                rlib_path.display(),
+                String::from_utf8_lossy(&listing.stderr)
+            ),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        });
+    }
+
+    // Keep only object members. Rust rlib objects end in `.o` (the `*.rcgu.o`
+    // codegen units); `lib.rmeta` / `lib.rmeta-link` do not end in `.o` and are
+    // dropped — they are the members GNU `--whole-archive` rejects.
+    let object_members: Vec<String> = String::from_utf8_lossy(&listing.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|m| !m.is_empty() && m.ends_with(".o"))
+        .map(str::to_string)
+        .collect();
+
+    if object_members.is_empty() {
+        return Err(CranelispError::CodegenError {
+            message: format!(
+                "platform rlib {} contains no object members to whole-archive",
+                rlib_path.display()
+            ),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        });
+    }
+
+    // Extract just the object members into the per-rlib dir. GNU `ar` supports
+    // `--output=DIR` to place extracted members somewhere other than cwd.
+    let extract = Command::new("ar")
+        .arg(format!("--output={}", out_dir.display()))
+        .arg("x")
+        .arg(rlib_path)
+        .args(&object_members)
+        .output()
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to run `ar x {}`: {e}", rlib_path.display()),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
+    if !extract.status.success() {
+        return Err(CranelispError::CodegenError {
+            message: format!(
+                "`ar x {}` failed:\n{}",
+                rlib_path.display(),
+                String::from_utf8_lossy(&extract.stderr)
+            ),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        });
+    }
+
+    Ok(object_members
+        .into_iter()
+        .map(|m| out_dir.join(m))
+        .collect())
+}
+
+/// Spawn the linker driver and surface a non-zero exit as a `CodegenError`.
+fn run_linker(program: &str, args: &[String]) -> Result<(), CranelispError> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to run {program}: {e}"),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
-    if !ld_output.status.success() {
+    if !output.status.success() {
         return Err(CranelispError::CodegenError {
             message: format!(
-                "linker failed:\n{}",
-                String::from_utf8_lossy(&ld_output.stderr)
+                "linker ({program}) failed:\n{}",
+                String::from_utf8_lossy(&output.stderr)
             ),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         });
@@ -1121,13 +1413,80 @@ mod tests {
         );
     }
 
-    // spec: design/backend/executable-generation.md §5 — LinkerConfig for macOS
+    // spec: design/backend/executable-generation.md §11.6 — host-dispatched
+    // LinkerConfig: macOS → AppleLd / start / main; Linux → Cc / main /
+    // cranelisp_user_main.
     #[test]
     fn linker_config_for_host() {
         if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
             let config = LinkerConfig::for_host().unwrap();
-            assert_eq!(config.arch, "arm64");
-            assert_eq!(config.entry_symbol, "_start");
+            assert_eq!(config.driver, LinkDriver::AppleLd);
+            assert_eq!(config.arch, Some("arm64"));
+            assert_eq!(config.stub_entry_symbol, "start");
+            assert_eq!(config.user_main_symbol, "main");
+            assert_eq!(config.platform_triplet, Some(("macos", "14.0", "14.0")));
+        } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+            let config = LinkerConfig::for_host().unwrap();
+            assert_eq!(config.driver, LinkDriver::Cc);
+            assert_eq!(config.stub_entry_symbol, "main");
+            assert_eq!(config.user_main_symbol, "cranelisp_user_main");
+            assert_eq!(config.arch, None);
+            assert_eq!(config.platform_triplet, None);
+        }
+    }
+
+    // spec: design/backend/executable-generation.md §11.5 — Phase 2 rlib object
+    // extraction: only object members (`*.o`) are extracted; the rmeta family
+    // (`lib.rmeta` / `lib.rmeta-link`) is skipped, and the extracted `.o`s land
+    // in a deterministic `__plat_<stem>/` dir under the supplied cache dir.
+    #[test]
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    fn extract_rlib_objects_keeps_only_objects() {
+        // Build a tiny `ar` archive with one object-like member and one
+        // rmeta-like member, then assert only the `.o` is extracted. Uses the
+        // system `ar` (same tool the extractor shells out to).
+        let dir = tempfile::tempdir().unwrap();
+        let obj = dir.path().join("unit.o");
+        std::fs::write(&obj, b"\x7fELF-not-really-but-ends-in-o").unwrap();
+        let rmeta = dir.path().join("lib.rmeta");
+        std::fs::write(&rmeta, b"rust-metadata").unwrap();
+        let rlib = dir.path().join("libfake_platform.rlib");
+        let status = std::process::Command::new("ar")
+            .arg("rcs")
+            .arg(&rlib)
+            .arg(&obj)
+            .arg(&rmeta)
+            .status()
+            .unwrap();
+        assert!(status.success(), "ar rcs failed to build fixture archive");
+
+        let cache = dir.path().join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let objects = extract_rlib_objects(&rlib, &cache).unwrap();
+
+        // Exactly one object member, the `.o`; the rmeta member is excluded.
+        assert_eq!(objects.len(), 1, "extracted: {objects:?}");
+        let extracted = &objects[0];
+        assert_eq!(extracted.file_name().unwrap(), "unit.o");
+        assert!(extracted.exists(), "extracted .o must be on disk");
+        // Deterministic dir derived from the rlib stem.
+        assert!(extracted.starts_with(cache.join("__plat_libfake_platform")));
+        // The rmeta member was NOT extracted.
+        assert!(!cache.join("__plat_libfake_platform").join("lib.rmeta").exists());
+    }
+
+    // spec: design/backend/executable-generation.md §11.3 — host_entry_symbols
+    // returns the (stub_entry, user_main) pair the call site threads into the
+    // stub + alias generators.
+    #[test]
+    fn host_entry_symbols_match_config() {
+        if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            assert_eq!(host_entry_symbols().unwrap(), ("start", "main"));
+        } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+            assert_eq!(
+                host_entry_symbols().unwrap(),
+                ("main", "cranelisp_user_main")
+            );
         }
     }
 }

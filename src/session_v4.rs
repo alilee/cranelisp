@@ -3940,11 +3940,17 @@ impl CompilerSession {
 
         // Sprint 58 Wave 2 / Decision 36: every user-defined function is
         // declared bare-`Linkage::Local` by `compile_to_module` (no
-        // module-qualified naming). The startup stub references `main`
-        // (bare) as `Linkage::Import`; the system linker resolves it
-        // against the alias `.o` we emit below, which exports `main`
-        // and tail-calls through the entry module's GOT.
-        let entry_fn_name = "main".to_string();
+        // module-qualified naming). The startup stub references the user-main
+        // symbol as `Linkage::Import`; the linker resolves it against the alias
+        // `.o` we emit below, which exports that symbol and tail-calls through
+        // the entry module's GOT.
+        //
+        // FIXME 0324 (§11.3): the entry-stub and user-main symbol names are
+        // host-dependent. macOS keeps `start` / `main` (custom crt-bypassing
+        // entry). Linux routes through crt by emitting the stub as C `main`, so
+        // the user-main alias is renamed `cranelisp_user_main` to avoid
+        // colliding with the C `main`. Both come from `host_entry_symbols()`.
+        let (stub_entry_symbol, entry_fn_name) = crate::exe::host_entry_symbols()?;
 
         // Generate startup .o stub. The per-platform layout-hash checks
         // (platform-interface.md §5.5.4 `--link` gate) are derived above from the
@@ -3956,7 +3962,8 @@ impl CompilerSession {
         let startup_bytes = crate::exe::generate_startup_object(
             &platform_manifest_names,
             main_returns_io,
-            &entry_fn_name,
+            entry_fn_name,
+            stub_entry_symbol,
             &platform_layout_checks,
         )?;
 
@@ -3982,7 +3989,7 @@ impl CompilerSession {
         // bare `main` is `Linkage::Local`), and link fails with
         // "undefined symbol _main".
         let alias_bytes =
-            crate::exe::generate_main_alias_object(&module, main_got_slot)?;
+            crate::exe::generate_main_alias_object(&module, main_got_slot, entry_fn_name)?;
         let alias_o_path = cache_dir.join("__main_alias.o");
         std::fs::write(&alias_o_path, &alias_bytes).map_err(|e| {
             CranelispError::ModuleError {
