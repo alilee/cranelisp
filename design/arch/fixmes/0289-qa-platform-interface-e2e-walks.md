@@ -66,6 +66,22 @@ What this FIXME must build (the "option 2" scope), all needing the new fixture:
 5. **Dispatch-error-with-fn-name e2e** — trigger a dispatch-time error against the test-DLL →
    assert the structured `PlatformError::DispatchError { fn_name }` carrier surfaces the
    offending fn name.
+   **STATUS (S81 W-G, 2026-06-13): fixture built + e2e wired, BUT IGNORED — a step-3 mechanism
+   gap blocks green; FIXME 0327 stays OPEN.** The funnel mechanism (node-widen + ABI 4 / backend
+   bake + post-call field-3 stamp / intrinsics trampoline guard + int `DispatchError` compose)
+   landed across `aeff79d` / `d1949fb` / `f0d25dc`. This step authored the `/platform` fault
+   test-DLL `platforms/boom` (`crash :: (Fn [] (IO Int))` whose forced thunk `panic!`s; FQ name
+   `platform.boom/crash` baked into field-3; wired into `tests/scripts/build-link-prereqs.sh`)
+   and the `/qa` e2e `tests/platform_errors.rs::platform_dispatch_error_carries_fn_name`. The
+   e2e does NOT go green — it ABORTS — because the guard's host-side `catch_unwind` cannot catch
+   a Rust panic raised inside a separately-compiled, dlopen'd platform **cdylib** (the DLL
+   statically links its own panic runtime → the panic crosses the boundary as a FOREIGN
+   exception → process abort, exit 134). The io_guard unit tests created the panicking thunk in
+   the host crate, so they shared one runtime and could not surface this. Fix is a step-3 change
+   (catch the panic DLL-local in `cranelisp_platform::CLIO::effect` + convert to slot-set, and/or
+   move the thunk ABI to `extern "C-unwind"`) — out of step-4 e2e scope. Full diagnosis +
+   fix-shape: FIXME 0327 §"STEP-4 FINDING". Un-ignore the e2e the moment step-3 lands. Items 1-4
+   remain separate ADT-shapes scope (still open).
 
 ## What landed S77 W-Platform (R9, e2e-reframe slice — NOT closing this FIXME)
 

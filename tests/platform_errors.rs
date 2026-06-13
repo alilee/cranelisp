@@ -306,56 +306,78 @@ fn platform_abi_version_mismatch_e2e() {
 }
 
 // spec: spec/12-runtime.md §12.8 Platform ABI
-// DEFERRED — unbuilt scope, NOT a defect (user ruling, S80 2026-06-13; narrow,
-// sanctioned exception to failing-not-ignored). `PlatformError::DispatchError
-// { fn_name }` is DEFINED but has NO live construction site anywhere in the
-// compiler/runtime: the only thing that builds one is a `#[cfg(test)]` Display
-// unit test (`cranelisp-platform/src/lib.rs:1755`). The IO trampoline invokes
-// platform fn-pointers directly with no fault guard, so there is no code path
-// that can surface a dispatch-time `DispatchError` for this e2e to observe.
-// Producing it is genuine new runtime feature work (a host-side, fault-guarded
-// FFI-dispatch funnel — precedent `invoke_jit_protected`/sigsetjmp), deferred
-// out of S80's red-clearing scope. The `shapes-dispatch-fail` fixture DLL's
-// self-describing stderr was a fake-green (it asserted the platform's OWN
-// authored error string, not a real structured carrier) and is being removed
-// by `/platform`. When the dispatch-fault funnel lands, un-ignore and re-point
-// at the real `DispatchError { fn_name }` carrier. No FIXME (unbuilt scope, not
-// a tracked defect).
-#[ignore = "DispatchError{fn_name} has no live construction site — deferred pending a host-side fault-guarded-dispatch funnel; unbuilt scope, NOT a defect (S80 user ruling, sanctioned exception to failing-not-ignored)"]
+//
+// FIXME 0289 item 5 — the dispatch-error-with-fn-name e2e. RED/IGNORED pending a
+// STEP-3 MECHANISM FIX (the funnel's Rust-panic capture does NOT cover a panic
+// raised inside a separately-compiled, dlopen'd platform cdylib). See the gap
+// note below.
+//
+// THE FIXTURE (S81 W-G, `/platform`): `platforms/boom` — a minimal scalar-only
+// platform whose single fn `crash :: (Fn [] (IO Int))` returns an IO Effect whose
+// FORCED thunk `panic!`s. The backend bakes the FQ fn-name `platform.boom/crash`
+// into the Effect node's field-3 (ABI v4), so a working funnel would surface
+// `PlatformError::DispatchError { fn_name: "platform.boom/crash", .. }`. Wired
+// into the canonical run via `tests/scripts/build-link-prereqs.sh`.
+//
+// THE GAP (found S81 W-G; do NOT un-ignore until fixed). The funnel's step-3
+// guard (`cranelisp-intrinsics::io_guard::force_effect_thunk_protected`) wraps the
+// thunk force in `std::panic::catch_unwind`. That catches a Rust panic raised
+// **in the same Rust object** (proven by the io_guard unit tests, whose panicking
+// thunk is created in the host crate). But a real platform DLL is a `cdylib` that
+// statically links its OWN copy of the Rust panic runtime (`rust_begin_unwind` /
+// `rust_eh_personality` are defined LOCALLY in `libcranelisp_boom.so` — verified
+// via `nm`). A `panic!` raised inside the DLL therefore uses the DLL's panic
+// runtime; when it tries to unwind across the dlopen boundary into the host's
+// `catch_unwind`, the host sees a FOREIGN exception and ABORTS the process
+// ("thread '<unnamed>' panicked … fatal runtime error: Rust cannot catch foreign
+// exceptions, aborting", exit 134) — it never reaches the guard. The signal-trap
+// half (sigsetjmp) is also not reached for a Rust-level null-deref: modern Rust
+// emits a non-unwinding-panic null check that aborts before any SIGSEGV.
+//
+// STEP-3 FIX SHAPE (next sprint, /backend + /platform, NOT this step-4 e2e
+// scope): the panic must be caught INSIDE the DLL (where its own runtime can
+// catch it) and converted to a slot-set + sentinel BEFORE returning across the
+// FFI boundary — e.g. `CLIO::effect` wraps the user thunk body in the DLL-local
+// `cranelisp-platform`'s own `catch_unwind` + `set_runtime_error`, and/or the
+// thunk-invocation ABI moves to `extern "C-unwind"`. Until that lands, the host
+// `catch_unwind` cannot see a cdylib panic. The minimal repro is `platforms/boom`
+// + this test (un-ignore it the moment the step-3 fix lands; the assertions below
+// are the real as-built `DispatchError` surfacing shape).
+#[ignore = "STEP-3 MECHANISM GAP (S81 W-G): the funnel's host-side catch_unwind cannot catch a Rust panic raised inside a separately-compiled dlopen'd platform cdylib (the DLL has its own panic runtime → foreign exception → process abort). Repro is platforms/boom; needs a DLL-local catch (or extern \"C-unwind\") before the host guard can observe the fault. FIXME 0327 stays OPEN."]
 #[test]
 fn platform_dispatch_error_carries_fn_name() {
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::None)
         .use_workspace_platforms()
-        .file("shapes.cl", SHAPES_MODULE)
         .file(
             "user.cl",
-            "(platform shapes-dispatch-fail)\n\
-             (import [platform.shapes-dispatch-fail [area]])\n\
-             (import [shapes [Rectangle]])\n\
-             (defn main [] (area (Rectangle 3 4)))\n",
+            "(platform boom)\n\
+             (import [platform.boom [crash]])\n\
+             (defn main [] (crash))\n",
         )
         .run("user.cl")
         .output();
-    // A dispatch-time failure surfaces a clean error (non-zero exit), not a
-    // silent wrong result or an opaque crash.
+    // A dispatch-time failure surfaces a clean structured error (non-zero exit),
+    // not a process abort, a silent wrong result, or an opaque crash.
     assert!(
         !out.status.success(),
-        "a dispatch-time platform-fn failure MUST surface a structured error \
-         (non-zero exit); status: {:?}\nstderr:\n{}",
+        "a dispatch-time platform-fn fault MUST surface a structured error \
+         (clean non-zero exit, NOT a process abort); status: {:?}\nstderr:\n{}",
         out.status, out.stderr
     );
-    // The carrier NAMES the offending fn — the user must see `area`.
+    // The carrier surfaces the `DispatchError` shape.
     assert!(
-        out.stderr.contains("DispatchError")
-            || out.stderr.contains("dispatch"),
-        "dispatch failure MUST surface the `DispatchError` carrier; got stderr:\n{}",
+        out.stderr.contains("dispatch"),
+        "dispatch fault MUST surface the `DispatchError` carrier \
+         (Display: `platform fn \\`<name>\\` dispatch failed: …`); got stderr:\n{}",
         out.stderr
     );
+    // The carrier NAMES the offending fn — the user must see the baked FQ name
+    // `platform.boom/crash` (NOT `<unknown>`).
     assert!(
-        out.stderr.contains("area"),
-        "`DispatchError` MUST name the offending platform fn (`area`); \
-         got stderr:\n{}",
+        out.stderr.contains("platform.boom/crash"),
+        "`DispatchError` MUST name the offending platform fn by its baked FQ name \
+         `platform.boom/crash` (not `<unknown>`); got stderr:\n{}",
         out.stderr
     );
 }

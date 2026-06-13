@@ -284,10 +284,10 @@ The `--link` and platform e2e tests invoke the `cranelisp` binary, whose
 `--link` path links five workspace members it has **no Cargo dependency
 edge to** — it resolves them at runtime by scanning `target/debug/`:
 `cranelisp-exe-bundle` (`libcranelisp_exe_bundle.a`), `cranelisp-stdio`,
-`cranelisp-test-capture`, `cranelisp-shapes`, `cranelisp-shapes-badabi`
-(`lib*.{rlib,so}`). Because nothing depends on them, a plain `cargo
-nextest run` never compiles them, and the `--link` path fails with
-`could not find libcranelisp_exe_bundle.a`.
+`cranelisp-test-capture`, `cranelisp-shapes`, `cranelisp-shapes-badabi`,
+`cranelisp-boom` (`lib*.{rlib,so}`). Because nothing depends on them, a
+plain `cargo nextest run` never compiles them, and the `--link` path
+fails with `could not find libcranelisp_exe_bundle.a`.
 
 The fix is a **nextest setup script** (`.config/nextest.toml` →
 `tests/scripts/build-link-prereqs.sh`) that builds all five in **one

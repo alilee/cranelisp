@@ -6,7 +6,7 @@
 #
 # Root cause this addresses: the `cranelisp` binary's `--link` path links
 # `libcranelisp_exe_bundle.a` and the platform rlibs (`stdio`,
-# `test-capture`, `shapes`, `shapes-badabi`) which it resolves at runtime
+# `test-capture`, `shapes`, `shapes-badabi`, `boom`) which it resolves at runtime
 # by scanning `target/debug/`. Nothing in the Cargo dependency graph
 # references those crates, so a plain `cargo nextest run` never compiles
 # them and the `--link` e2e tests fail with `could not find

@@ -391,6 +391,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cranelisp-boom"
+version = "0.1.0"
+dependencies = [
+ "cranelisp-platform",
+]
+
+[[package]]
 name = "cranelisp-exe-bundle"
 version = "0.1.0"
 dependencies = [

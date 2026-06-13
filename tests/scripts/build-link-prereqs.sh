@@ -37,4 +37,5 @@ cargo build \
   -p cranelisp-stdio \
   -p cranelisp-test-capture \
   -p cranelisp-shapes \
-  -p cranelisp-shapes-badabi
+  -p cranelisp-shapes-badabi \
+  -p cranelisp-boom

@@ -67,6 +67,53 @@ backend bake. Coordinates:
 The funnel is implementation-ready for the S81 platform/backend/int/qa waves. This FIXME stays
 OPEN and closes when the funnel lands (the e2e in FIXME 0289 item 5 goes green).
 
+## STEP-4 FINDING (S81 W-G, 2026-06-13) — FIXME STAYS OPEN; a STEP-3 mechanism gap remains
+
+Steps 1–3 landed (`aeff79d` / `d1949fb` / `f0d25dc`): node-widen + ABI 4, backend bake +
+post-call stamp into field-3, and the intrinsics trampoline guard
+(`force_effect_thunk_protected`) + int `DispatchError` compose. The step-4 e2e
+(`/platform` fault test-DLL `platforms/boom` + `/qa` e2e
+`tests/platform_errors.rs::platform_dispatch_error_carries_fn_name`) was authored and the
+fixture built/wired into the canonical run. **But the e2e does NOT go green — it ABORTS the
+process — because of a gap the io_guard unit tests could not catch:**
+
+**The Rust-panic capture half of the guard does not cover a panic raised inside a
+separately-compiled, dlopen'd platform cdylib.** The guard wraps the thunk force in the host's
+`std::panic::catch_unwind`. The io_guard unit tests
+(`force_effect_thunk_protected_rust_panic_is_caught`, …) create the panicking thunk **in the
+host crate**, so panic-and-catch share ONE Rust runtime and `catch_unwind` works. A real
+platform DLL is a `cdylib` that statically links its **own** copy of the Rust panic runtime —
+`nm libcranelisp_boom.so` shows `rust_begin_unwind` / `rust_panic` / `rust_eh_personality`
+defined LOCALLY in the `.so`. A `panic!` raised inside the DLL uses the DLL's runtime; when it
+unwinds across the dlopen boundary into the host's `catch_unwind`, the host sees a FOREIGN
+exception and the process aborts:
+
+```
+thread '<unnamed>' panicked at platforms/boom/src/lib.rs:…:
+boom: deliberate dispatch-time fault in platform fn `crash`
+fatal runtime error: Rust cannot catch foreign exceptions, aborting   (exit 134)
+```
+
+The signal-trap half (sigsetjmp/SIGSEGV/FPE/ILL/BUS) is unaffected by this and would still
+capture genuine hardware traps from C code — but a Rust-level null-deref does NOT reach it
+either (modern rustc emits a non-unwinding-panic null check that aborts before any SIGSEGV).
+
+**Step-3 fix shape (next sprint — /platform + /backend, NOT step-4 e2e scope):** catch the
+panic INSIDE the DLL, where the DLL's own runtime can catch it, and convert it to a
+slot-set + sentinel BEFORE returning across the FFI boundary. Candidate sites:
+`cranelisp_platform::CLIO::effect[_on_resource]` wraps the user thunk body in a DLL-local
+`catch_unwind` + `set_runtime_error` (so the panic never crosses the boundary as an
+exception), and/or the thunk-invocation ABI (`call_effect_thunk` / the thunk fn-pointer type)
+moves to `extern "C-unwind"` so the unwind is permitted to cross. The host-side `catch_unwind`
++ sigsetjmp guard then catches the converted fault as designed. The field-3 fn-name plumbing,
+backend bake, and int compose are all correct and need no change — only the panic must be made
+catchable across the cdylib boundary.
+
+**Minimal repro committed:** `platforms/boom` (the fault fixture) + the IGNORED
+`tests/platform_errors.rs::platform_dispatch_error_carries_fn_name` (asserts the real as-built
+`DispatchError { fn_name: "platform.boom/crash" }` shape; un-ignore the moment the step-3 fix
+lands). FIXME 0289 item 5 stays open (fixture built, e2e wired-but-ignored, gap named here).
+
 **S81 W-F (arch-docs ratification) verification, 2026-06-13.** The W-F pass confirmed the BC
 recording of this ruling is complete and self-consistent — the W-G implementer can build against
 it with no further arch round-trip. Verified present and correct: **BC §5 invariant 9** (the full

@@ -13,6 +13,7 @@ members = [
     "platforms/test-capture",
     "platforms/shapes",
     "platforms/shapes-badabi",
+    "platforms/boom",
 ]
 resolver = "2"
 
