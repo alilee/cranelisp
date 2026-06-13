@@ -134,7 +134,10 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
             // contains-key check means a bare submodule qualified ref
             // (`util/helper`) loads/finds `<parent>.util` rather than hunting
             // a non-existent module literally named `util` (FIXME 0121).
-            let dep = resolve_module_alias(self.module_aliases, mod_part);
+            let dep = cranelisp_types::substitute_module_alias(
+                self.module_aliases,
+                &ModuleFullPath::from(mod_part),
+            );
             if !self.symbol_tables.contains_key(&dep) {
                 self.blocked_on_fq_module = Some(dep);
                 return Ok(None);
@@ -2135,49 +2138,6 @@ fn register_submodule_alias(
     );
 }
 
-/// §8.6.6 step 5 longest-prefix module-alias substitution, int-side.
-///
-/// Mirrors `cranelisp_types::resolve::substitute_module_alias` (which is
-/// crate-private to `cranelisp-types`): find the longest alias-table key that
-/// is a dot-segment prefix of `module_part`, substitute its target, and carry
-/// any remaining dot-segments through. No match → the bare `module_part`.
-///
-/// Needed at the int FQ-autoload boundary, which computes the dependency
-/// module to load from a raw `mod/sym` reference *before* typecheck runs — so
-/// it must apply the same alias resolution typecheck would, or a bare
-/// submodule reference (`util/...` after `(mod util)`) would try to load a
-/// module literally named `util`.
-pub(crate) fn resolve_module_alias(
-    module_aliases: &cranelisp_types::ModuleAliases,
-    module_part: &str,
-) -> ModuleFullPath {
-    let mut best: Option<(usize, ModuleFullPath)> = None;
-    for entry in module_aliases.iter() {
-        let key: &str = entry.key().as_ref();
-        let is_prefix = module_part == key
-            || (module_part.len() > key.len()
-                && module_part.as_bytes()[key.len()] == b'.'
-                && module_part.starts_with(key));
-        if is_prefix {
-            let take = best.as_ref().map(|(len, _)| key.len() > *len).unwrap_or(true);
-            if take {
-                best = Some((key.len(), entry.value().target.clone()));
-            }
-        }
-    }
-    match best {
-        None => ModuleFullPath::from(module_part),
-        Some((matched_len, target)) => {
-            let remainder = &module_part[matched_len..];
-            if remainder.is_empty() {
-                target
-            } else {
-                ModuleFullPath::from(format!("{target}{remainder}"))
-            }
-        }
-    }
-}
-
 /// Handle mod forms: write inline body to disk, then load the submodule.
 ///
 /// `(mod util)` declares a submodule whose symbols are accessible via qualified
@@ -3246,74 +3206,10 @@ mod tests {
         assert_eq!(resolver.blocked_on_fq_module, None);
     }
 
-    /// FIXME 0121: a `(mod util)` declaration registers the short-name alias
-    /// `util -> <parent>.util` (via `register_submodule_alias`). The
-    /// int-side FQ-autoload boundary must substitute that alias when computing
-    /// the dependency module for a bare qualified ref `util/...`, mirroring
-    /// typecheck's §8.6.6 longest-prefix substitution — otherwise it tries to
-    /// load a module literally named `util`, which does not exist.
-    #[test]
-    fn resolve_module_alias_substitutes_short_submodule_name() {
-        let aliases = cranelisp_types::ModuleAliases::default();
-        aliases.insert(
-            ModuleFullPath::from("util"),
-            cranelisp_types::ModuleAliasEntry::new(
-                ModuleFullPath::from("main.util"),
-                Visibility::Private,
-                Span::SYNTHETIC,
-            ),
-        );
-
-        // Exact match → the alias target.
-        assert_eq!(
-            resolve_module_alias(&aliases, "util"),
-            ModuleFullPath::from("main.util"),
-        );
-        // A dot-segment remainder is carried through after substitution.
-        assert_eq!(
-            resolve_module_alias(&aliases, "util.inner"),
-            ModuleFullPath::from("main.util.inner"),
-        );
-        // No matching alias → the bare module part unchanged.
-        assert_eq!(
-            resolve_module_alias(&aliases, "other"),
-            ModuleFullPath::from("other"),
-        );
-        // A non-segment-boundary prefix MUST NOT match (`util` is not a
-        // dot-segment prefix of `utility`).
-        assert_eq!(
-            resolve_module_alias(&aliases, "utility"),
-            ModuleFullPath::from("utility"),
-        );
-    }
-
-    /// Longest-prefix wins when multiple alias keys are dot-segment prefixes
-    /// of the queried module part (§8.6.6 step 5).
-    #[test]
-    fn resolve_module_alias_prefers_longest_prefix() {
-        let aliases = cranelisp_types::ModuleAliases::default();
-        aliases.insert(
-            ModuleFullPath::from("a"),
-            cranelisp_types::ModuleAliasEntry::new(
-                ModuleFullPath::from("x"),
-                Visibility::Private,
-                Span::SYNTHETIC,
-            ),
-        );
-        aliases.insert(
-            ModuleFullPath::from("a.b"),
-            cranelisp_types::ModuleAliasEntry::new(
-                ModuleFullPath::from("y"),
-                Visibility::Private,
-                Span::SYNTHETIC,
-            ),
-        );
-        // `a.b.c` matches both `a` and `a.b`; the longer key wins.
-        assert_eq!(
-            resolve_module_alias(&aliases, "a.b.c"),
-            ModuleFullPath::from("y.c"),
-        );
-    }
+    // §8.6.6 longest-prefix module-alias substitution is now exercised at its
+    // canonical seam in `cranelisp_types::resolve::tests` (the int re-impl was
+    // deleted in S81 W-G item 0303 — Principle 7 dedup). The int FQ-autoload
+    // boundary calls `cranelisp_types::substitute_module_alias` directly.
 
     // -----------------------------------------------------------------
     // Layout-hash gate (platform-interface.md §5.5.4) — drives the WIRED

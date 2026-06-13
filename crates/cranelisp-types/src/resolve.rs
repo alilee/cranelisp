@@ -521,7 +521,20 @@ where
 /// alias-table key that is a dot-segment prefix of `module_path`, substitute
 /// its `target`, and carry any remaining dot-segments through. No match →
 /// unchanged.
-fn substitute_module_alias(
+///
+/// **Public surface (Principle 7 — single source of truth).** The int
+/// FQ-autoload boundary (`SymbolTableMacroResolver::recognize`,
+/// `src/process_form.rs`) computes the dependency module to load from a raw
+/// `mod/sym` reference *before* typecheck runs, so it must apply the same
+/// §8.6.6 alias resolution typecheck would (otherwise a bare submodule
+/// reference like `util/...` after `(mod util)` would try to load a module
+/// literally named `util`). It calls this primitive directly rather than
+/// re-implementing the longest-prefix walk — the former int-side
+/// `resolve_module_alias` re-implementation (a byte-identical copy that aged
+/// independently) is retired. This is also the same walk
+/// [`resolve_qualified`] applies internally, so all three qualified-reference
+/// resolution sites share one implementation.
+pub fn substitute_module_alias(
     module_aliases: &ModuleAliases,
     module_path: &ModuleFullPath,
 ) -> ModuleFullPath {
@@ -772,5 +785,59 @@ mod tests {
         // Pre-fix (`rsplit_once('/')` unguarded) yielded Symbol::from("") here.
         assert_eq!(canonical_symbol("/"), Symbol::from("/"), "bare `/` preserved");
         assert_eq!(canonical_symbol("mod/sym"), Symbol::from("sym"), "qualified → local symbol");
+    }
+
+    fn alias(target: &str) -> crate::ModuleAliasEntry {
+        crate::ModuleAliasEntry::new(
+            ModuleFullPath::from(target),
+            Visibility::Private,
+            Span::SYNTHETIC,
+        )
+    }
+
+    #[test]
+    fn substitute_module_alias_longest_prefix_dot_segment() {
+        // spec §8.6.6 step 5 — longest-prefix dot-segment module-alias
+        // substitution. Pins the now-public primitive at the seam the S81
+        // Principle-7 dedup consolidated onto (the int FQ-autoload boundary
+        // and typecheck's resolve_qualified now share this one walk).
+        let aliases: ModuleAliases = dashmap::DashMap::new();
+        // `(mod util)` short-name alias → full submodule path.
+        aliases.insert(ModuleFullPath::from("util"), alias("parent.util"));
+
+        // Exact key match → target.
+        assert_eq!(
+            substitute_module_alias(&aliases, &ModuleFullPath::from("util")),
+            ModuleFullPath::from("parent.util"),
+        );
+        // Dot-segment prefix → target + carried remainder.
+        assert_eq!(
+            substitute_module_alias(&aliases, &ModuleFullPath::from("util.inner")),
+            ModuleFullPath::from("parent.util.inner"),
+        );
+        // No alias key is a prefix → unchanged.
+        assert_eq!(
+            substitute_module_alias(&aliases, &ModuleFullPath::from("other")),
+            ModuleFullPath::from("other"),
+        );
+        // A non-dot-boundary near-match must NOT match (`utility` is not
+        // `util` + a dot-segment) → unchanged.
+        assert_eq!(
+            substitute_module_alias(&aliases, &ModuleFullPath::from("utility")),
+            ModuleFullPath::from("utility"),
+        );
+    }
+
+    #[test]
+    fn substitute_module_alias_prefers_longest_prefix() {
+        // Two overlapping prefixes both match `a.b.c`; the LONGER key wins.
+        let aliases: ModuleAliases = dashmap::DashMap::new();
+        aliases.insert(ModuleFullPath::from("a"), alias("X"));
+        aliases.insert(ModuleFullPath::from("a.b"), alias("Y"));
+        assert_eq!(
+            substitute_module_alias(&aliases, &ModuleFullPath::from("a.b.c")),
+            ModuleFullPath::from("Y.c"),
+            "longest-prefix `a.b` wins over `a`",
+        );
     }
 }
