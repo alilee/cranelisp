@@ -58,16 +58,18 @@ fn read_source(rel: &str) -> String {
 // T23 per tests/plan/sprint71-platform.md row T23.
 #[test]
 fn sprint71_abi_version_baseline_co_regen() {
-    // (1) Source-side: ABI_VERSION must read `= 4;` after the FIXME 0327 bump
-    //     (the dispatch-funnel IO_TAG_EFFECT node-widen, step 1/4). Was `= 3;`
-    //     at FIXME 0286 (the three-exports macro rework).
+    // (1) Source-side: ABI_VERSION must read `= 5;` after the FIXME 0327
+    //     Option-A bump (the dispatch-funnel fault-catch is DLL-local;
+    //     call_effect_thunk returns EffectOutcome). Was `= 4;` at the step-1
+    //     node-widen, `= 3;` at FIXME 0286 (the three-exports macro rework).
     let lib_rs = read_source("src/lib.rs");
     assert!(
-        lib_rs.contains("pub const ABI_VERSION: u32 = 4;"),
-        "expected `pub const ABI_VERSION: u32 = 4;` in \
-         crates/cranelisp-platform/src/lib.rs (FIXME 0327: the IO_TAG_EFFECT \
-         node-widen 24→32 bumps the ABI from 3 to 4). If you see this failure \
-         the source change was skipped or reverted."
+        lib_rs.contains("pub const ABI_VERSION: u32 = 5;"),
+        "expected `pub const ABI_VERSION: u32 = 5;` in \
+         crates/cranelisp-platform/src/lib.rs (FIXME 0327 Option A: the \
+         call_effect_thunk force-return contract changes to EffectOutcome, \
+         bumping the ABI from 4 to 5). If you see this failure the source \
+         change was skipped or reverted."
     );
 
     // (2) Baseline-side: the `public-api.txt` baseline must enumerate the

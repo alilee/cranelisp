@@ -1,15 +1,30 @@
 //! Fault guard for forcing platform Effect thunks (FIXME 0327 — the
-//! fault-guarded FFI-dispatch funnel, step 3/4).
+//! fault-guarded FFI-dispatch funnel; Option A, S81 — fault-catch is DLL-local).
 //!
 //! The IO trampoline (`crate::io`) forces platform Effect thunks via
 //! `cranelisp_platform::call_effect_thunk`. A fault in foreign platform code —
 //! a Rust panic OR a hardware trap (SIGFPE/SIGILL/SIGBUS/SIGSEGV) — must NOT
 //! crash the host; it must surface as a structured `PlatformError::DispatchError`.
 //! This module provides the single guard primitive
-//! [`force_effect_thunk_protected`] that wraps the force with the SAME machinery
-//! int uses for protected JIT calls (`src/expander.rs::invoke_jit_protected`):
-//! `std::panic::catch_unwind` for Rust panics + `sigsetjmp`/signal handlers for
-//! hardware traps + the `crate::panic::take_runtime_error()` slot check.
+//! [`force_effect_thunk_protected`].
+//!
+//! ## Two faults, two catch sites (FIXME 0327 Option A)
+//!
+//! **Rust panics are caught DLL-side, NOT here.** A platform `cdylib` statically
+//! links its own panic runtime; a `panic!` inside the DLL unwinds with the DLL's
+//! runtime and CANNOT be caught by a host `catch_unwind` (a foreign unwind
+//! reaching the host aborts). So the panic catch lives in the DLL-monomorphised
+//! `CLIO::effect*` thunk wrapper (`cranelisp-platform`), which converts a caught
+//! panic into an `EffectOutcome` value (`fault_cause` non-null) carried back
+//! across the C-ABI. This guard simply **reads** that signal: a non-null
+//! `fault_cause` ⇒ compose a `DispatchFault`. The host-side panic `catch_unwind`
+//! that step-3 used is GONE — there is nothing host-side to catch.
+//!
+//! **Hardware traps are still caught here.** A genuine SIGSEGV/FPE/ILL/BUS from
+//! foreign C code is process-global (delivered to the faulting thread regardless
+//! of which cdylib raised it), so the host `sigsetjmp`/signal-handler half still
+//! recovers it across the DLL boundary. That half is RETAINED unchanged. (A Rust
+//! null-deref now lands as a non-unwinding panic caught DLL-side, not a SIGSEGV.)
 //!
 //! ## Why the machinery lives here
 //!
@@ -52,15 +67,18 @@ pub(crate) enum ForceOutcome {
     Faulted,
 }
 
-/// Force a platform Effect thunk under fault protection (FIXME 0327 step 3).
+/// Force a platform Effect thunk under fault protection (FIXME 0327 Option A).
 ///
-/// Happy path is a strict no-op relative to an unguarded
-/// `cranelisp_platform::call_effect_thunk(thunk_ptr)`: it forces the thunk and
-/// returns [`ForceOutcome::Value`]. The guard only changes behaviour on the
-/// faulting path: a Rust panic, a hardware trap (SIGFPE/SIGILL/SIGBUS/SIGSEGV),
-/// or a `runtime_panic` slot message during the force is captured into the
-/// dispatch-fault slot (paired with `fn_name`) and returns
-/// [`ForceOutcome::Faulted`].
+/// Happy path forces the thunk via `cranelisp_platform::call_effect_thunk` and
+/// returns [`ForceOutcome::Value`] from the resulting [`EffectOutcome`]'s value.
+/// Two fault paths converge on [`ForceOutcome::Faulted`] + the dispatch-fault
+/// slot (paired with `fn_name`):
+/// - a **Rust panic** in the platform fn, caught DLL-side and signalled by a
+///   non-null `EffectOutcome::fault_cause` (this guard reads the cause string);
+/// - a **hardware trap** (SIGFPE/SIGILL/SIGBUS/SIGSEGV) from foreign C code,
+///   recovered by the retained `sigsetjmp`/signal-handler half.
+///
+/// [`EffectOutcome`]: cranelisp_platform::EffectOutcome
 ///
 /// `fn_name` is the cranelisp-level platform fn name (read by the caller from
 /// the Effect node's baked field-3, or `"<unknown>"` when the handle is null).
@@ -70,71 +88,69 @@ pub(crate) enum ForceOutcome {
 /// `CLIO::effect*` — the contract `cranelisp_platform::call_effect_thunk`
 /// requires (forced at most once).
 pub(crate) unsafe fn force_effect_thunk_protected(thunk_ptr: i64, fn_name: &str) -> ForceOutcome {
-    use std::panic::{catch_unwind, AssertUnwindSafe};
-
-    // Clear any stale runtime error so we observe only this thunk's fault.
+    // Clear any stale runtime error so a leftover slot value cannot be
+    // misattributed to this thunk (defensive — DLL-origin panics no longer set
+    // the host slot; they are caught DLL-side and travel back in EffectOutcome).
     let _ = take_runtime_error();
 
-    // catch_unwind handles Rust panics from the platform thunk / runtime_panic.
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: sigsetjmp/siglongjmp recover from hardware traps without
-        // unwinding through the platform `extern "C"` frames (which would be
-        // UB). sigsetjmp saves the execution context; a signal handler that
-        // calls siglongjmp returns control here with a non-zero value (the
-        // signal number).
-        unsafe {
-            let sig = sigsetjmp(JMP_BUF.with(|buf| buf.get()), 1);
-            if sig != 0 {
-                // Reached here via siglongjmp from a signal handler.
-                return Err(sig);
-            }
-
+    // The host-side panic `catch_unwind` is GONE (FIXME 0327 Option A). A panic
+    // raised inside a platform DLL is caught by the DLL's OWN runtime in the
+    // `CLIO::effect*` thunk wrapper and returned across the C-ABI as an
+    // `EffectOutcome` — a foreign unwind never reaches here (it would abort).
+    // We keep ONLY the sigsetjmp/signal half: genuine hardware traps from
+    // foreign C code (SIGSEGV/FPE/ILL/BUS) are process-global, delivered to the
+    // faulting thread regardless of which cdylib raised them, so the host
+    // handler still catches them across the DLL boundary.
+    //
+    // SAFETY: sigsetjmp/siglongjmp recover from hardware traps without unwinding
+    // through the platform `extern "C"` frames (which would be UB). sigsetjmp
+    // saves the execution context; a signal handler that calls siglongjmp
+    // returns control here with a non-zero value (the signal number).
+    let outcome: Result<cranelisp_platform::EffectOutcome, libc::c_int> = unsafe {
+        let sig = sigsetjmp(JMP_BUF.with(|buf| buf.get()), 1);
+        if sig != 0 {
+            // Reached here via siglongjmp from a signal handler.
+            Err(sig)
+        } else {
             // Install trap handlers that siglongjmp back on fault.
             let old_handlers = install_signal_handlers();
-
             // SAFETY: caller guarantees `thunk_ptr` is a valid, not-yet-forced
-            // double-boxed Effect thunk.
-            let value = cranelisp_platform::call_effect_thunk(thunk_ptr);
-
+            // double-boxed Effect thunk; it returns an EffectOutcome (ABI v5).
+            let eo = cranelisp_platform::call_effect_thunk(thunk_ptr);
             restore_signal_handlers(old_handlers);
-            Ok(value)
+            Ok(eo)
         }
-    }));
+    };
 
-    // A `runtime_panic` during the force sets the slot but returns the sentinel
-    // (the JIT-panic convention) — check it first, as it carries the most
-    // specific message.
-    if let Some(msg) = take_runtime_error() {
-        set_dispatch_fault(DispatchFault {
-            fn_name: fn_name.to_string(),
-            cause: msg,
-        });
-        return ForceOutcome::Faulted;
-    }
-
-    match result {
-        Ok(Ok(value)) => ForceOutcome::Value(value),
-        Ok(Err(sig)) => {
+    match outcome {
+        // Clean force OR DLL-caught panic — distinguished by fault_cause.
+        Ok(eo) => {
+            if eo.fault_cause.is_null() {
+                ForceOutcome::Value(eo.value)
+            } else {
+                // Faulted DLL-side: read the DLL-owned (session-leaked) UTF-8
+                // panic-cause bytes from the EffectOutcome C-string.
+                // SAFETY: a non-null fault_cause points at `fault_len` valid
+                // UTF-8 bytes owned by the DLL for the session (§5 invariant 6).
+                let cause = unsafe {
+                    let bytes = std::slice::from_raw_parts(eo.fault_cause, eo.fault_len);
+                    String::from_utf8_lossy(bytes).into_owned()
+                };
+                set_dispatch_fault(DispatchFault {
+                    fn_name: fn_name.to_string(),
+                    cause,
+                });
+                ForceOutcome::Faulted
+            }
+        }
+        // Hardware trap recovered via the signal/sigsetjmp half.
+        Err(sig) => {
             let cause = match sig {
                 libc::SIGFPE => "arithmetic exception (division by zero)".to_string(),
                 libc::SIGILL => "illegal instruction".to_string(),
                 libc::SIGBUS => "bus error".to_string(),
                 libc::SIGSEGV => "segmentation fault".to_string(),
                 _ => format!("signal {sig}"),
-            };
-            set_dispatch_fault(DispatchFault {
-                fn_name: fn_name.to_string(),
-                cause,
-            });
-            ForceOutcome::Faulted
-        }
-        Err(panic_payload) => {
-            let cause = if let Some(s) = panic_payload.downcast_ref::<String>() {
-                s.clone()
-            } else if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                (*s).to_string()
-            } else {
-                "unknown panic in platform effect".to_string()
             };
             set_dispatch_fault(DispatchFault {
                 fn_name: fn_name.to_string(),

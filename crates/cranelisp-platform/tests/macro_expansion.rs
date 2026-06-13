@@ -82,14 +82,15 @@ fn invoke_manifest() -> cranelisp_platform::PlatformManifest {
 
 // spec: design/arch/platform-interface.md §5.1 — the macro exports the GOT
 // `__cranelisp_got_platform_<name>` and populates slot i with functions[i]'s
-// pointer (manifest order IS GOT slot order). ABI v4.
+// pointer (manifest order IS GOT slot order). ABI v5.
 #[test]
 fn macro_exports_got_in_manifest_order() {
     let manifest = invoke_manifest();
     assert_eq!(
-        manifest.abi_version, 4,
-        "ABI v4 (FIXME 0327 — the dispatch-funnel IO_TAG_EFFECT node-widen, \
-         step 1/4; was v3 at FIXME 0286)"
+        manifest.abi_version, 5,
+        "ABI v5 (FIXME 0327 Option A — the dispatch-funnel fault-catch is \
+         DLL-local; call_effect_thunk returns EffectOutcome; was v4 at the \
+         step-1 node-widen, v3 at FIXME 0286)"
     );
     assert_eq!(manifest.function_count, 2);
 

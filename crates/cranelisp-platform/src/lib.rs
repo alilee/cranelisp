@@ -198,8 +198,17 @@ pub use std::sync::atomic::AtomicPtr as MacroAtomicPtr;
 /// platform-fn call returns (step 2), and the intrinsics trampoline reads it
 /// in the fault guard (step 3). An unstamped node (or an out-of-tree DLL
 /// building nodes itself) degrades to a null name → `fn_name: "<unknown>"`,
-/// not a crash. See `design/arch/bounded-contexts.md` §5 invariant 9.
-pub const ABI_VERSION: u32 = 4;
+/// not a crash. v5 (Sprint 81, FIXME 0327 Option A — the dispatch-funnel
+/// fault-catch is DLL-local) — [`call_effect_thunk`]'s return contract changes
+/// from bare `i64` to [`EffectOutcome`] (the force-return shape), and the
+/// `CLIO::effect*` thunk wrapper now runs the user closure under a DLL-local
+/// `std::panic::catch_unwind` so a panic is caught by the DLL's own runtime and
+/// carried back across the C-ABI as a value (rule (i) — a host-DLL
+/// layout-contract / force-return change). A v4 DLL is rejected against a v5
+/// host: the force-return shape differs. The `IO_TAG_EFFECT` node layout (the
+/// v3-to-4 field-3 widen) is UNCHANGED. See `design/arch/bounded-contexts.md`
+/// §5 invariant 9.
+pub const ABI_VERSION: u32 = 5;
 
 /// IO task tree tags -- shared between platform DLLs and the host trampoline.
 pub const IO_TAG_PURE: i64 = 0;
@@ -638,6 +647,47 @@ impl CLType for CLFloat {
     }
 }
 
+/// The result of forcing a platform Effect thunk, carried across the C-ABI
+/// from the DLL back to the host.
+///
+/// `#[repr(C)]` layout-contract type governed by [`ABI_VERSION`] (Principle 14
+/// — FFI layout discipline; **no** `#[non_exhaustive]`, since the ABI gate, not
+/// source-level evolution guards, governs compatibility). Introduced at ABI v5
+/// (Sprint 81, FIXME 0327 Option A — the dispatch-funnel fault-catch is
+/// DLL-local).
+///
+/// # Why a value, not a thread-local
+///
+/// A platform `cdylib` statically links its **own** copy of the Rust panic
+/// runtime AND its own copy of `cranelisp-platform`'s thread-locals. A
+/// `panic!` raised inside the DLL must be caught by the DLL's own runtime (a
+/// foreign unwind reaching the host's `catch_unwind` aborts), so the catch
+/// happens in the [`CLIO::effect`] thunk wrapper — DLL-compiled code. The DLL
+/// then CANNOT set the host's dispatch-fault slot directly (different
+/// thread-locals), so the caught fault travels back to the host as this
+/// **return value**.
+///
+/// # Field discipline
+///
+/// - `fault_cause == null` ⇒ **clean**; `value` is the thunk's result.
+/// - `fault_cause != null` ⇒ **faulted**; `fault_cause` points at DLL-owned
+///   UTF-8 panic-cause bytes `fault_len` long, leaked for the session (bounded
+///   by §5 invariant 6 "no DLL unloading mid-session", mirroring the existing
+///   `declare_platform!` `Box::leak`s); `value` is unused.
+///
+/// The host's [`call_effect_thunk`] merely *forwards* this struct — the catch
+/// already happened DLL-side in the wrapper; the host does NO `catch_unwind` of
+/// its own. See `design/arch/bounded-contexts.md` §5 invariant 9.
+#[repr(C)]
+pub struct EffectOutcome {
+    /// The thunk's result value when clean (`fault_cause` null); unused on fault.
+    pub value: i64,
+    /// Null = clean. Non-null = DLL-owned, session-leaked UTF-8 panic-cause bytes.
+    pub fault_cause: *const u8,
+    /// Length of `fault_cause` in bytes when non-null; 0 when clean.
+    pub fault_len: usize,
+}
+
 // -- CLIO -- IO-wrapped return value --
 
 /// IO-wrapped return value — base pointer to a heap-allocated IO node.
@@ -696,8 +746,41 @@ impl<CL: CLType> CLIO<CL> {
     /// The `token` identifies a shared resource. Two Effect nodes with the same
     /// non-zero token in a Par group will be serialized by the trampoline.
     pub fn effect_on_resource(token: i64, f: impl FnOnce() -> CL + 'static) -> Self {
-        let thunk: Box<Box<dyn FnOnce() -> i64>> =
-            Box::new(Box::new(move || f().to_raw()));
+        // DLL-LOCAL fault catch (FIXME 0327 Option A). This wrapper closure is
+        // monomorphised at the `CLIO::effect*` call site — i.e. INTO the DLL
+        // that owns `f` — so the `catch_unwind` below executes in DLL-compiled
+        // code, caught by the DLL's OWN panic runtime. A `panic!` in `f`
+        // therefore does NOT cross the cdylib runtime boundary as a foreign
+        // unwind (which would abort); it is converted here, DLL-side, into an
+        // `EffectOutcome` carried back to the host as a C-ABI return value. The
+        // host's `call_effect_thunk` merely forwards it (no host-side catch).
+        let thunk: Box<Box<dyn FnOnce() -> EffectOutcome>> = Box::new(Box::new(move || {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || f().to_raw())) {
+                Ok(value) => EffectOutcome {
+                    value,
+                    fault_cause: std::ptr::null(),
+                    fault_len: 0,
+                },
+                Err(payload) => {
+                    // Recover the panic-cause message and LEAK it for the
+                    // session (no DLL unloading mid-session — §5 invariant 6),
+                    // yielding a stable `*const u8` + len the host can read.
+                    let cause: String = if let Some(s) = payload.downcast_ref::<String>() {
+                        s.clone()
+                    } else if let Some(s) = payload.downcast_ref::<&str>() {
+                        (*s).to_string()
+                    } else {
+                        "unknown panic in platform effect".to_string()
+                    };
+                    let leaked: &'static str = String::leak(cause);
+                    EffectOutcome {
+                        value: 0,
+                        fault_cause: leaked.as_ptr(),
+                        fault_len: leaked.len(),
+                    }
+                }
+            }
+        }));
         let thunk_ptr = Box::into_raw(thunk) as i64;
 
         let alloc = get_global_alloc();
@@ -729,11 +812,21 @@ impl<CL: CLType> CLIO<CL> {
 /// This **consumes** the thunk -- it is valid to call exactly once.
 /// The trampoline must not force the same Effect node twice.
 ///
+/// Returns an [`EffectOutcome`] (ABI v5, FIXME 0327 Option A). The thunk is the
+/// DLL-local wrapper that already ran the user closure under `catch_unwind`
+/// inside the DLL — so this host-side copy merely **forwards** the wrapper's
+/// `EffectOutcome`; it does NO `catch_unwind` of its own (the catch already
+/// happened DLL-side, the only place a DLL-origin panic can be caught). A clean
+/// force yields `{ value, fault_cause: null, fault_len: 0 }`; a faulted force
+/// yields a non-null `fault_cause` pointing at DLL-owned, session-leaked
+/// panic-cause bytes.
+///
 /// # Safety
-/// `thunk_ptr` must be a valid pointer from `Box::into_raw(Box<Box<dyn FnOnce() -> i64>>)`.
-pub unsafe fn call_effect_thunk(thunk_ptr: i64) -> i64 {
-    let thunk: Box<Box<dyn FnOnce() -> i64>> =
-        unsafe { Box::from_raw(thunk_ptr as *mut Box<dyn FnOnce() -> i64>) };
+/// `thunk_ptr` must be a valid pointer from
+/// `Box::into_raw(Box<Box<dyn FnOnce() -> EffectOutcome>>)`.
+pub unsafe fn call_effect_thunk(thunk_ptr: i64) -> EffectOutcome {
+    let thunk: Box<Box<dyn FnOnce() -> EffectOutcome>> =
+        unsafe { Box::from_raw(thunk_ptr as *mut Box<dyn FnOnce() -> EffectOutcome>) };
     (*thunk)()
 }
 
@@ -1992,13 +2085,108 @@ mod tests {
     // `tests/plan/sprint71-platform.md`.
     // ---------------------------------------------------------------------
 
-    // ABI_VERSION is 4 (FIXME 0327 — the dispatch-funnel node-widen, step 1/4;
-    // the IO_TAG_EFFECT node grew a fourth i64 field, an ABI v4 / rule-(ii)
-    // layout change). Was 3 at FIXME 0286 (the three-exports macro rework).
+    // ABI_VERSION is 5 (FIXME 0327 Option A — the dispatch-funnel fault-catch is
+    // DLL-local; `call_effect_thunk` returns `EffectOutcome` and the
+    // `CLIO::effect*` wrapper catches DLL-side). Was 4 at the FIXME 0327 step-1
+    // node-widen (the IO_TAG_EFFECT fourth-field add, UNCHANGED here), 3 at
+    // FIXME 0286 (the three-exports macro rework).
     // spec: design/arch/bounded-contexts.md §5 invariant 9
     #[test]
-    fn abi_version_is_4() {
-        assert_eq!(ABI_VERSION, 4);
+    fn abi_version_is_5() {
+        assert_eq!(ABI_VERSION, 5);
+    }
+
+    // spec: design/arch/bounded-contexts.md §5 invariant 9 — a `CLIO::effect`
+    // thunk whose user closure panics, when forced, yields an `EffectOutcome`
+    // with a non-null `fault_cause` carrying the panic message; a clean closure
+    // yields a null `fault_cause` and the value. This proves the `EffectOutcome`
+    // mechanics + the DLL-local catch wrapper.
+    //
+    // HOST-RUNTIME CAVEAT: this unit test runs in ONE runtime (the host test
+    // binary), so it CANNOT exercise the true cross-cdylib runtime boundary —
+    // here `effect_on_resource` is monomorphised into the test binary, not a
+    // DLL. It proves the EffectOutcome catch/forward mechanics; the true
+    // cross-DLL proof (the wrapper catching a DLL-runtime panic that would abort
+    // if it reached the host) is the `boom` e2e at the /qa step.
+    //
+    // `effect_force_test_alloc` wires a real `std::alloc`-backed host allocator
+    // (the node + thunk box need a live allocator; `get_global_alloc` panics
+    // otherwise) and reads field-0 (the thunk_ptr) from the built node, then
+    // forces it through `call_effect_thunk` to obtain the `EffectOutcome`.
+    extern "C" fn effect_force_test_alloc(size: i64) -> i64 {
+        let total = HEAP_HEADER_SIZE as usize + size as usize;
+        unsafe {
+            let layout = std::alloc::Layout::from_size_align_unchecked(total, 8);
+            let base = std::alloc::alloc_zeroed(layout);
+            *(base as *mut i64) = total as i64;
+            *((base as *mut i64).add(1)) = 1;
+            (base as i64) + HEAP_HEADER_SIZE
+        }
+    }
+
+    fn wire_effect_force_alloc() {
+        let cb = HostCallbacks {
+            alloc: effect_force_test_alloc,
+            alloc_with_tag: null_alloc_with_tag,
+        };
+        let host = HostContext::new();
+        // SAFETY: `&cb` is a valid HostCallbacks for the duration of init.
+        unsafe { host.init(&cb) };
+    }
+
+    #[test]
+    fn effect_thunk_panic_yields_fault_cause() {
+        wire_effect_force_alloc();
+        // Faulting closure → non-null fault_cause carrying the message.
+        let io: CLIO<CLInt> = CLIO::effect(|| -> CLInt { panic!("device exploded") });
+        let base: i64 = io.into();
+        // field-0 (thunk_ptr) is at payload offset 8 = base + header + 8.
+        let thunk_ptr = unsafe { *((base + HEAP_HEADER_SIZE + 8) as *const i64) };
+        let outcome = unsafe { call_effect_thunk(thunk_ptr) };
+        assert!(
+            !outcome.fault_cause.is_null(),
+            "panicking thunk must yield a non-null fault_cause"
+        );
+        let cause = unsafe {
+            std::str::from_utf8(std::slice::from_raw_parts(
+                outcome.fault_cause,
+                outcome.fault_len,
+            ))
+            .unwrap()
+        };
+        assert!(
+            cause.contains("device exploded"),
+            "fault_cause must carry the panic message, got {cause:?}"
+        );
+        // Free the node (the thunk box was consumed by call_effect_thunk).
+        unsafe {
+            let total = *((base) as *const i64) as usize;
+            let layout = std::alloc::Layout::from_size_align_unchecked(total, 8);
+            std::alloc::dealloc(base as *mut u8, layout);
+        }
+    }
+
+    // spec: design/arch/bounded-contexts.md §5 invariant 9 — a clean
+    // `CLIO::effect` thunk, when forced, yields a null `fault_cause` and the
+    // closure's value. Host-runtime caveat as above.
+    #[test]
+    fn effect_thunk_clean_yields_null_fault_cause() {
+        wire_effect_force_alloc();
+        let io: CLIO<CLInt> = CLIO::effect(|| CLInt::from(4242i64));
+        let base: i64 = io.into();
+        let thunk_ptr = unsafe { *((base + HEAP_HEADER_SIZE + 8) as *const i64) };
+        let outcome = unsafe { call_effect_thunk(thunk_ptr) };
+        assert!(
+            outcome.fault_cause.is_null(),
+            "clean thunk must yield a null fault_cause"
+        );
+        assert_eq!(outcome.value, 4242, "clean thunk forwards the closure value");
+        assert_eq!(outcome.fault_len, 0, "clean thunk has fault_len 0");
+        unsafe {
+            let total = *((base) as *const i64) as usize;
+            let layout = std::alloc::Layout::from_size_align_unchecked(total, 8);
+            std::alloc::dealloc(base as *mut u8, layout);
+        }
     }
 
     // spec: design/arch/bounded-contexts.md §5 invariant 9 — the IO_TAG_EFFECT

@@ -239,6 +239,17 @@ impl core::marker::Unpin for cranelisp_platform::Ctor
 impl core::marker::UnsafeUnpin for cranelisp_platform::Ctor
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::Ctor
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::Ctor
+#[repr(C)] pub struct cranelisp_platform::EffectOutcome
+pub cranelisp_platform::EffectOutcome::fault_cause: *const u8
+pub cranelisp_platform::EffectOutcome::fault_len: usize
+pub cranelisp_platform::EffectOutcome::value: i64
+impl core::marker::Freeze for cranelisp_platform::EffectOutcome
+impl !core::marker::Send for cranelisp_platform::EffectOutcome
+impl !core::marker::Sync for cranelisp_platform::EffectOutcome
+impl core::marker::Unpin for cranelisp_platform::EffectOutcome
+impl core::marker::UnsafeUnpin for cranelisp_platform::EffectOutcome
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::EffectOutcome
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::EffectOutcome
 pub struct cranelisp_platform::Field
 pub cranelisp_platform::Field::field_type: cranelisp_platform::FieldType
 pub cranelisp_platform::Field::name: alloc::string::String
@@ -421,7 +432,7 @@ impl<T: cranelisp_platform::CLAdtType> cranelisp_platform::CLTypeWitness for cra
 pub fn cranelisp_platform::CLAdt<T>::check_witness(&str, &str, &cranelisp_platform::FieldType)
 pub fn cranelisp_platform::CLAdt<T>::expected_field_type() -> cranelisp_platform::ExpectedFieldType
 pub fn cranelisp_platform::CLAdt<T>::from_raw_i64(i64) -> Self
-pub unsafe fn cranelisp_platform::call_effect_thunk(i64) -> i64
+pub unsafe fn cranelisp_platform::call_effect_thunk(i64) -> cranelisp_platform::EffectOutcome
 pub const fn cranelisp_platform::extract_layout_hash(&str) -> &str
 pub unsafe fn cranelisp_platform::manifest_to_descriptors(&cranelisp_platform::PlatformManifest) -> core::result::Result<(alloc::string::String, alloc::string::String, alloc::vec::Vec<cranelisp_platform::OwnedPlatformFnDescriptor>), cranelisp_types::error::PlatformError>
 pub c fn cranelisp_platform::null_alloc_with_tag(u32, u32, *const i64) -> i64

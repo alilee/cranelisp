@@ -599,10 +599,9 @@ mod tests {
     /// a baked fn-name handle (a NUL-terminated C-string pointer, or 0 for the
     /// unstamped case).
     fn make_effect_node_with_name(result_value: i64, fn_name_handle: i64) -> i64 {
-        // Double-box a closure that returns the given value.
-        let thunk: Box<Box<dyn FnOnce() -> i64>> =
-            Box::new(Box::new(move || result_value));
-        let thunk_ptr = Box::into_raw(thunk) as i64;
+        // Double-box a CLEAN wrapper thunk the way `CLIO::effect*` does post-ABI-v5
+        // (FIXME 0327 Option A): the stored thunk returns an `EffectOutcome`.
+        let thunk_ptr = clean_effect_thunk(result_value);
 
         let base = alloc_with_rc(32); // tag + thunk + token + fn_name = 32 bytes (ABI v4)
         unsafe {
@@ -612,6 +611,34 @@ mod tests {
             *((base as isize + FIELD_2_OFFSET) as *mut i64) = fn_name_handle;
         }
         base as i64
+    }
+
+    /// Build a CLEAN wrapper thunk returning `EffectOutcome { value, null, 0 }`,
+    /// matching `CLIO::effect*`'s ABI-v5 stored-thunk shape. Returns the
+    /// double-boxed thunk pointer (consumed once by `call_effect_thunk`).
+    fn clean_effect_thunk(value: i64) -> i64 {
+        let thunk: Box<Box<dyn FnOnce() -> cranelisp_platform::EffectOutcome>> =
+            Box::new(Box::new(move || cranelisp_platform::EffectOutcome {
+                value,
+                fault_cause: std::ptr::null(),
+                fault_len: 0,
+            }));
+        Box::into_raw(thunk) as i64
+    }
+
+    /// Build a FAULTING wrapper thunk returning an `EffectOutcome` with a
+    /// non-null `fault_cause` carrying `cause`, modelling what the DLL-local
+    /// `catch_unwind` in `CLIO::effect*` produces when the user closure panics.
+    /// The cause bytes are leaked (session-bounded), mirroring the DLL wrapper's
+    /// `String::leak`. Returns the double-boxed thunk pointer.
+    fn faulting_effect_thunk(cause: &'static str) -> i64 {
+        let thunk: Box<Box<dyn FnOnce() -> cranelisp_platform::EffectOutcome>> =
+            Box::new(Box::new(move || cranelisp_platform::EffectOutcome {
+                value: 0,
+                fault_cause: cause.as_ptr(),
+                fault_len: cause.len(),
+            }));
+        Box::into_raw(thunk) as i64
     }
 
     /// Helper: allocate a Bind node linking inner IO to a continuation.
@@ -849,10 +876,16 @@ mod tests {
         let order_clone = order.clone();
         let make_tracking_effect = |id: i64, token: i64| -> i64 {
             let order = order_clone.clone();
-            let thunk: Box<Box<dyn FnOnce() -> i64>> =
+            // Wrapper thunk returning a clean EffectOutcome (ABI v5), preserving
+            // the ordering side effect.
+            let thunk: Box<Box<dyn FnOnce() -> cranelisp_platform::EffectOutcome>> =
                 Box::new(Box::new(move || {
                     order.lock().unwrap().push(id);
-                    id
+                    cranelisp_platform::EffectOutcome {
+                        value: id,
+                        fault_cause: std::ptr::null(),
+                        fault_len: 0,
+                    }
                 }));
             let thunk_ptr = Box::into_raw(thunk) as i64;
 
@@ -1053,11 +1086,9 @@ mod tests {
         let pure = make_pure_node(42);
         assert_eq!(read_resource_token(pure), 0);
 
-        // Effect with token=5
+        // Effect with token=5 (thunk never forced — only the token is read).
         let effect = {
-            let thunk: Box<Box<dyn FnOnce() -> i64>> =
-                Box::new(Box::new(|| 0));
-            let thunk_ptr = Box::into_raw(thunk) as i64;
+            let thunk_ptr = clean_effect_thunk(0);
             let base = alloc_with_rc(32); // ABI v4
             unsafe {
                 *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_EFFECT;
@@ -1087,8 +1118,8 @@ mod tests {
     #[test]
     fn force_effect_thunk_protected_happy_path_returns_value() {
         let _ = crate::panic::take_dispatch_fault(); // clear
-        let thunk: Box<Box<dyn FnOnce() -> i64>> = Box::new(Box::new(|| 1234));
-        let thunk_ptr = Box::into_raw(thunk) as i64;
+        // Clean wrapper thunk (ABI v5): EffectOutcome with null fault_cause.
+        let thunk_ptr = clean_effect_thunk(1234);
         let outcome = unsafe {
             crate::io_guard::force_effect_thunk_protected(thunk_ptr, "stdio/read-line")
         };
@@ -1102,50 +1133,48 @@ mod tests {
         );
     }
 
-    // spec: design/arch/bounded-contexts.md §4b invariant 14 — a thunk that
-    // raises a runtime panic under the guard produces a Faulted outcome whose
-    // captured dispatch fault carries the supplied fn-name and the panic cause.
+    // spec: design/arch/bounded-contexts.md §4b invariant 14 — a faulted
+    // EffectOutcome (FIXME 0327 Option A: the panic was caught DLL-side and a
+    // non-null fault_cause returned) produces a Faulted outcome whose captured
+    // dispatch fault carries the supplied fn-name and the cause string read from
+    // the EffectOutcome C-string.
     #[test]
-    fn force_effect_thunk_protected_runtime_panic_captures_fn_name() {
+    fn force_effect_thunk_protected_faulted_outcome_captures_fn_name() {
         let _ = crate::panic::take_dispatch_fault();
         let _ = crate::panic::take_runtime_error();
-        let thunk: Box<Box<dyn FnOnce() -> i64>> = Box::new(Box::new(|| {
-            let msg = "device unavailable";
-            crate::panic::runtime_panic(msg.as_ptr(), msg.len());
-            0
-        }));
-        let thunk_ptr = Box::into_raw(thunk) as i64;
+        // The DLL-local catch already converted the panic into an EffectOutcome
+        // carrying the cause; the guard reads it (no host-side catch_unwind).
+        let thunk_ptr = faulting_effect_thunk("device unavailable");
         let outcome = unsafe {
             crate::io_guard::force_effect_thunk_protected(thunk_ptr, "stdio/read-line")
         };
         assert!(
             matches!(outcome, crate::io_guard::ForceOutcome::Faulted),
-            "panicking thunk must fault"
+            "faulted EffectOutcome must fault"
         );
         let fault = crate::panic::take_dispatch_fault().expect("fault captured");
         assert_eq!(fault.fn_name, "stdio/read-line");
         assert!(
             fault.cause.contains("device unavailable"),
-            "cause must carry the panic message, got {:?}",
+            "cause must carry the EffectOutcome message, got {:?}",
             fault.cause
         );
     }
 
     // spec: design/arch/bounded-contexts.md §4b invariant 14 — a Rust panic in
-    // foreign platform code is caught by the guard and captured as a fault.
+    // foreign platform code is caught DLL-side, returned as a non-null
+    // fault_cause, and the guard composes a DispatchFault from it.
     #[test]
-    fn force_effect_thunk_protected_rust_panic_is_caught() {
+    fn force_effect_thunk_protected_dll_caught_panic_is_read() {
         let _ = crate::panic::take_dispatch_fault();
         let _ = crate::panic::take_runtime_error();
-        let thunk: Box<Box<dyn FnOnce() -> i64>> =
-            Box::new(Box::new(|| panic!("boom in platform fn")));
-        let thunk_ptr = Box::into_raw(thunk) as i64;
+        let thunk_ptr = faulting_effect_thunk("boom in platform fn");
         let outcome = unsafe {
             crate::io_guard::force_effect_thunk_protected(thunk_ptr, "net/connect")
         };
         assert!(
             matches!(outcome, crate::io_guard::ForceOutcome::Faulted),
-            "Rust panic must be caught as a fault"
+            "DLL-caught panic must surface as a fault"
         );
         let fault = crate::panic::take_dispatch_fault().expect("fault captured");
         assert_eq!(fault.fn_name, "net/connect");
@@ -1160,15 +1189,11 @@ mod tests {
     fn trampoline_effect_fault_reads_baked_fn_name() {
         let _ = crate::panic::take_dispatch_fault();
         let _ = crate::panic::take_runtime_error();
-        // Build an Effect node whose thunk panics, with field-3 stamped to a
-        // baked fn-name the way the backend would.
+        // Build an Effect node whose forced thunk yields a faulted EffectOutcome
+        // (modelling the DLL-local catch), with field-3 stamped to a baked
+        // fn-name the way the backend would.
         let handle = bake_fn_name("clock/now");
-        let panicking_thunk: Box<Box<dyn FnOnce() -> i64>> = Box::new(Box::new(|| {
-            let msg = "clock read failed";
-            crate::panic::runtime_panic(msg.as_ptr(), msg.len());
-            0
-        }));
-        let thunk_ptr = Box::into_raw(panicking_thunk) as i64;
+        let thunk_ptr = faulting_effect_thunk("clock read failed");
         let base = alloc_with_rc(32);
         unsafe {
             *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_EFFECT;
@@ -1193,13 +1218,8 @@ mod tests {
         let _ = crate::panic::take_dispatch_fault();
         let _ = crate::panic::take_runtime_error();
         // make_effect_node leaves field-3 null, but its thunk is clean; build a
-        // panicking one with a null field-3 directly.
-        let panicking_thunk: Box<Box<dyn FnOnce() -> i64>> = Box::new(Box::new(|| {
-            let msg = "unstamped fault";
-            crate::panic::runtime_panic(msg.as_ptr(), msg.len());
-            0
-        }));
-        let thunk_ptr = Box::into_raw(panicking_thunk) as i64;
+        // faulting one (faulted EffectOutcome) with a null field-3 directly.
+        let thunk_ptr = faulting_effect_thunk("unstamped fault");
         let base = alloc_with_rc(32);
         unsafe {
             *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_EFFECT;
