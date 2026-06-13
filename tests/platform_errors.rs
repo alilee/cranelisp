@@ -320,37 +320,28 @@ fn platform_abi_version_mismatch_e2e() {
 // `PlatformError::DispatchError { fn_name: "platform.boom/crash", .. }`. Wired
 // into the canonical run via `tests/scripts/build-link-prereqs.sh`.
 //
-// THE MECHANISM (Option A, /arch ruling FIXME 0337; landed aeff79d / d1949fb /
-// f0d25dc / 9fb89ed). A platform `cdylib` statically links its OWN copy of the
-// Rust panic runtime, so a `panic!` raised inside the DLL cannot be caught by the
-// host's `catch_unwind` — it unwinds with the DLL's runtime and, crossing the
-// dlopen boundary, used to abort the process ("Rust cannot catch foreign
-// exceptions", exit 134). Option A moves the catch INSIDE the DLL:
+// spec: design/arch/bounded-contexts.md §5 invariant 9 — a platform-fn dispatch
+// fault surfaces a structured `PlatformError::DispatchError { fn_name, cause }`,
+// never a process abort or a silent wrong result.
+//
+// THE MECHANISM (Option A, landed). A platform `cdylib` statically links its OWN
+// copy of the Rust panic runtime, so a `panic!` raised inside the DLL cannot be
+// caught by the host's `catch_unwind` — it would unwind with the DLL's runtime
+// and, crossing the dlopen boundary, abort the process ("Rust cannot catch
+// foreign exceptions", exit 134). Option A moves the catch INSIDE the DLL:
 // `cranelisp_platform::CLIO::effect*` wraps the user thunk in a DLL-local
 // `catch_unwind`; a caught panic is converted to a `#[repr(C)] EffectOutcome`
 // fault signal (DLL-owned UTF-8 cause bytes) returned ACROSS the C-ABI by
-// `call_effect_thunk` (ABI_VERSION 4 → 5). The host trampoline
-// (`force_effect_thunk_protected`) drops its panic-side `catch_unwind`, reads the
-// `EffectOutcome`, composes `DispatchFault { fn_name (field-3), cause }`, and int
-// composes `PlatformError::DispatchError` → `CranelispError::Platform`. The
-// `sigsetjmp` signal half is retained for genuine C-level hardware traps.
+// `call_effect_thunk` — no abort. The host trampoline
+// (`force_effect_thunk_protected`) reads the `EffectOutcome` and composes the
+// fault; int composes `PlatformError::DispatchError` → `CranelispError::Platform`.
+// The `sigsetjmp` signal half is retained for genuine C-level hardware traps.
 //
-// THE RESIDUAL GAP (found S81 W-G close, /qa; do NOT un-ignore until fixed). The
-// Option-A panic-catch half WORKS: the boom fault no longer aborts — it surfaces
-// a clean structured error and exits non-zero (verified: exit 1, NOT abort 134),
-// and the `cause` string is correct ("boom: deliberate dispatch-time fault in
-// platform fn `crash`"). BUT the baked FQ fn-name is NOT read on the fault path:
-// the surfaced error is `platform fn `<unknown>` dispatch failed: ...`, not
-// `platform fn `platform.boom/crash` ...`. Mechanism (diagnosis): the backend
-// stamps field-3 into the returned Effect node AFTER `call_effect_thunk` returns
-// (post-call stamp, FIXME 0327 ruling §2), but on the fault path the thunk
-// panicked, the DLL-local catch returns an `EffectOutcome` fault signal, and the
-// post-call field-3 stamp never reaches a usable node (the node read by the
-// trampoline's fn-name lookup is null/un-stamped → `<unknown>`). The fn-name must
-// travel by a fault-path-independent channel (or be stamped BEFORE the force, not
-// after) so a faulting dispatch still carries its baked name. Resolver: /backend +
-// /platform (the field-3 bake/stamp timing); appended to FIXME 0337.
-#[ignore = "RESIDUAL fn-name GAP (S81 W-G close): Option-A fixed the abort (boom now surfaces a clean structured DispatchError, exit 1 not abort 134, correct cause string) but the baked FQ fn-name is `<unknown>` on the fault path — the backend's POST-call field-3 stamp never lands when the thunk panics. Needs the fn-name on a fault-path-independent channel (or a pre-force stamp). See FIXME 0337 residual finding. FIXMEs 0327/0337 stay OPEN."]
+// THE FN-NAME. The offending fn's baked FQ name (`platform.boom/crash`) survives
+// the fault path because the backend stamps field-3 at the GOT-indirect dispatch
+// chokepoint, at node construction — BEFORE the force — so a faulting dispatch
+// still carries its baked name (`abe3553`). The host-side trampoline reads it from
+// the node and int folds it into `DispatchError { fn_name }`.
 #[test]
 fn platform_dispatch_error_carries_fn_name() {
     let out = Cranelisp::new()
