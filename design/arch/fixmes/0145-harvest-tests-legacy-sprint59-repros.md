@@ -1,12 +1,33 @@
 ---
 number: 0145
-target: /backend
+target: /qa
 filed_by: /qa
 filed_at: 2026-05-05
 sprint_filed: 64
 refers_to: tests/legacy/sprint59_cache_repro.rs, tests/legacy/sprint59_defects456_repro.rs, tests/regression.rs, tests/cache.rs, tests/plan/wave-6-batch-3-audit.md, tests/plan/ledger.md
 status: open
 ---
+
+> **S81 W-C (carry-forward verified complete → RE-TARGET /qa for file deletion +
+> inline-FIXME cleanup):** Both legacy files are 100%-GAP-COVER e2e
+> reduction-cohort work-products with NO backend-crate-internal unit assertion to
+> port — every test is a subprocess `--run`/REPL-stdin harness, and all 36 carry
+> forward as active e2e regression guards (verified present on the current tree):
+> - `tests/regression.rs`: `d45_*` (24 tests) + `d6_*` (10 tests) = 34.
+> - `tests/cache.rs`: `cache_repl_minimal_plain_fn_prelude_restored_on_session_2`,
+>   `cache_repl_empty_prelude_session_2_evaluates_literal` = 2.
+>
+> No genuinely-missing backend-internal assertion exists (the defect surfaces are
+> RC/dispatch/codegen invariants, but the legacy tests observe them only through
+> the binary, not through backend-crate-internal state). The 24 inline
+> `FIXME(/backend)` hypothesis comments + the 4 open Defect-6 carry-forwards are
+> tracked in the active `tests/regression.rs` + `tests/plan/ledger.md`, not in the
+> quarantined file.
+>
+> **Disposition: RE-TARGET → /qa.** Owed work is the two legacy-file deletions +
+> `tests/legacy/README.md` row removal + the inline-FIXME staleness review (per
+> the FIXME body §"Proposed resolution" steps 2–4), all `/qa`'s prerogative over
+> `tests/`.
 
 # Harvest tests/legacy/sprint59_{cache,defects456}_repro.rs into /backend unit tests + review inline FIXMEs
 

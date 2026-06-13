@@ -8,6 +8,35 @@ refers_to: tests/legacy/v4_jit_reclaim.rs
 status: open
 ---
 
+> **S81 W-C — backend `Jit::drop` half harvested; intrinsics/0109 remainder
+> pending. FIXME stays OPEN.** The backend-side contract — Decision 31 reclaim:
+> `Jit::drop` calls `unsafe free_memory()` exactly once, observable via the
+> `jit_free_memory_call_count()` counter, and the `Code::Jit`/`Code::Linker`
+> `Arc` lifecycle (Scenario 2 per-redefinition reclaim primitive) — is already
+> covered backend-internal by existing `#[cfg(test)]` tests:
+> - `crates/cranelisp-backend/src/jit.rs::tests::{drop_runs_without_panic,
+>   drop_invokes_free_memory, compile_call_drop_roundtrip}` — `Jit::drop` fires
+>   the reclaim path; counter increments by exactly 1 (legacy
+>   `decision31_scenario2_per_redefinition_jit_pages_reclaimed` /
+>   `..._repeated_redefinition_no_unbounded_growth` backend assertion).
+> - `crates/cranelisp-backend/src/code.rs::tests::{code_enum_jit_variant_carries_arc_jit,
+>   code_enum_linker_variant_constructible}` — the `Arc<Jit>` / `Arc<Linker>`
+>   strong-count semantics: clone bumps, drop decrements, last-drop fires
+>   `Jit::drop`/`free_memory` (legacy `decision31_code_linker_session_scope_only`
+>   = the portable `Code::Linker` Arc-lifecycle test).
+>
+> **Remainder (NOT W-C, stays OPEN):**
+> - The `cranelisp_runtime::{bytes_current, alloc_count, dealloc_count}` atomics
+>   half (legacy `decision31_scenario1_*` per-eval reclaim + the `MemSnapshot`
+>   byte-delta assertions) moved to **cranelisp-intrinsics** post-D43 — not
+>   backend; belongs in an intrinsics `#[cfg(test)]` harvest.
+> - The `ReplSession::symbol_tables()` reach-through to `ModuleEntry::Def.code`
+>   shape (legacy tests 3 + 6 read `Code::Jit`/`Code::Linker` off a live session)
+>   is **0109-blocked** — needs the int session, not portable to backend.
+>
+> No new backend code this wave (backend half pre-existed). Re-evaluate the
+> intrinsics + 0109 remainder when the int/intrinsics harvest wave runs.
+
 # Harvest tests/legacy/v4_jit_reclaim.rs into cranelisp-backend + cranelisp-runtime unit tests
 
 ## Issue

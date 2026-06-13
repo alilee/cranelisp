@@ -1,12 +1,37 @@
 ---
 number: 0131
-target: /backend
+target: /qa
 filed_by: /qa
 filed_at: 2026-05-04
 sprint_filed: 64
 refers_to: tests/legacy/sprint60_observability.rs
 status: open
 ---
+
+> **S81 W-C (backend filter-grammar coverage confirmed → RE-TARGET /qa for file
+> deletion):** The `CRANELISP_CODEGEN_DUMP` filter grammar is already exhaustively
+> unit-tested backend-internal in `crates/cranelisp-backend/src/lib.rs`
+> `#[cfg(test)] mod clif_dump_tests` (6 tests), which IS the
+> backend-crate-internal home this FIXME asked for:
+> - `filter_unset_or_empty_never_matches` — covers legacy tests #3 (unset → no
+>   CLIF) and #4 (empty value → no CLIF): `clif_dump_matches(None, ..)` and
+>   `clif_dump_matches(Some(""), ..)` both `false`.
+> - `filter_wildcard_matches_every_function` — covers legacy test #1 (`=*` matches
+>   every fn).
+> - `filter_module_only_matches_any_symbol_in_that_module` +
+>   `filter_module_colon_symbol_matches_that_exact_function` — cover legacy test #2
+>   (`=user` filters to that module; literal dotted paths, not prefixes).
+> - `write_clif_dump_frames_header_and_trailer` +
+>   `write_clif_dump_adds_trailing_newline_when_body_lacks_one` — the frame-render
+>   shape the legacy stderr assertions checked.
+>
+> The 4 legacy tests are subprocess `--run` smoke proving the env var *plumbs
+> through* to stderr — the parse/grammar half (the only backend-internal half) is
+> already collapsed to the 6 unit tests above; the subprocess-plumbing half is
+> e2e and not backend-crate-internal. No further backend port needed.
+>
+> **Disposition: RE-TARGET → /qa.** Owed work is the legacy-file deletion +
+> `tests/legacy/README.md` row removal.
 
 # Harvest tests/legacy/sprint60_observability.rs into cranelisp-backend unit tests
 

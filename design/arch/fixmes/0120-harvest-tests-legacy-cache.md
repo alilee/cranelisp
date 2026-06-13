@@ -1,12 +1,45 @@
 ---
 number: 0120
-target: /backend
+target: /qa
 filed_by: /qa
 filed_at: 2026-05-03
 sprint_filed: 64
 refers_to: tests/legacy/cache.rs
 status: open
 ---
+
+> **S81 W-C (backend harvest landed → RE-TARGET /qa for file deletion):** The
+> genuinely-missing backend-internal manifest assertions were ported into
+> `crates/cranelisp-backend/src/cache/manifest.rs` `#[cfg(test)] mod tests`
+> (7 new tests):
+> - `check_manifest_compiler_mtime_change_errors` (legacy
+>   `cache_invalidation_compiler_mtime_change`)
+> - `check_manifest_target_triple_change_errors` (legacy
+>   `cache_invalidation_target_triple_change`)
+> - `check_manifest_cranelift_version_change_errors` (legacy
+>   `cache_invalidation_cranelift_version_change`)
+> - `check_manifest_transitive_dependency_change_invalidates` (legacy
+>   `cache_invalidation_transitive_dependency`)
+> - `check_manifest_unrelated_module_change_does_not_invalidate` (legacy
+>   `cache_not_invalidated_by_unrelated_module_change`, negative guard)
+> - `check_manifest_prelude_change_invalidates_all_dependents` (legacy
+>   `cache_prelude_change_invalidates_all_user_modules`)
+> - `check_manifest_empty_hash_not_wildcard` (legacy
+>   `cache_neg_empty_hash_not_wildcard`, negative guard)
+>
+> **Collapsed-as-already-covered (no new test — value-parity exists):** the
+> remaining ~22 legacy pure-internal tests duplicate assertions already in the
+> active backend cache unit suite —
+> `manifest.rs` (hash determinism/length/empty, round-trip, source/dep-change,
+> format-version, uncached, upsert-replaces),
+> `serialize.rs` (meta round-trip, schema/build-id/missing/corrupt variants),
+> `object.rs` (`build_cache_packet`/`process_cache_packet`, object-file write,
+> nested-path), and `mod.rs` (`module_cache_path`, nested module dir/stem,
+> entry-module path) — or are E2E-PIPELINE tests already carried forward to the
+> active `tests/cache.rs` suite (32 tests). No further port needed.
+>
+> **Disposition: RE-TARGET → /qa.** Backend-internal harvest complete; owed work
+> is the legacy-file deletion + `tests/legacy/README.md` row removal.
 
 # Harvest tests/legacy/cache.rs into cranelisp-backend unit tests
 

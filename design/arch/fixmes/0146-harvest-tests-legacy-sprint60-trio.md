@@ -1,12 +1,37 @@
 ---
 number: 0146
-target: /backend
+target: /qa
 filed_by: /qa
 filed_at: 2026-05-05
 sprint_filed: 64
 refers_to: tests/legacy/sprint60_cache_build_marker.rs, tests/legacy/sprint60_reduction.rs, tests/legacy/sprint60_run_tests_reduction.rs, tests/cache.rs, tests/regression.rs, tests/plan/wave-6-batch-4-audit.md, design/arch/fixmes/0142-int-repl-unclosed-paren-on-eof-silent.md
 status: open
 ---
+
+> **S81 W-C (carry-forward verified complete → RE-TARGET /qa for file deletion +
+> inline-FIXME cleanup):** All three legacy files are 100%-GAP-COVER e2e
+> reduction-cohort work-products with NO backend-crate-internal unit assertion to
+> port — every test is a subprocess `--run`/REPL-stdin harness. All 25 carry
+> forward as active e2e regression guards (verified present on the current tree):
+> - `tests/regression.rs`: `s60_cache_reuse_*` (8) + `s60_control_*` (3) +
+>   `s60_drop_glue_*` (6) + `s60_run_tests_reduction_*` (5) = 22.
+> - `tests/cache.rs`: `cache_meta_carries_build_id_after_first_compile`,
+>   `cache_meta_with_stale_build_id_triggers_recompile`,
+>   `cache_meta_without_build_id_field_triggers_recompile` = 3.
+>
+> The backend-internal unit-tier counterparts the FIXME named already exist in
+> `crates/cranelisp-backend/src/cache/serialize.rs`
+> (`build_id_round_trip_succeeds`, `stale_build_id_produces_build_id_mismatch`,
+> `missing_build_id_field_routes_cache_stale`) — verified present. The 10 inline
+> `FIXME(/backend)` hypotheses in `sprint60_reduction.rs` are all
+> "resolved-by-passing-carry-forward" (the cache-reuse + drop-glue defects were
+> fixed in S60). The `s60_run_tests_reduction_*` subset's underlying defect is in
+> **`/int`'s `src/session_v4.rs::register_dep_for_eval`** (a session-lifecycle
+> race), NOT backend — co-owned with `/int`, no backend code owed here.
+>
+> **Disposition: RE-TARGET → /qa.** Owed work is the three legacy-file deletions +
+> `tests/legacy/README.md` row removals + the inline-FIXME staleness review, all
+> `/qa`'s prerogative over `tests/`; coordinate the run_tests subset with `/int`.
 
 # Harvest tests/legacy/sprint60_{cache_build_marker,reduction,run_tests_reduction}.rs into /backend unit tests + review inline FIXMEs
 
