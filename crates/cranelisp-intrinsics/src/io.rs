@@ -22,6 +22,20 @@ const FIELD_0_OFFSET: isize = TAG_OFFSET + 8; // 24
 /// Byte offset of the second field from the base pointer.
 const FIELD_1_OFFSET: isize = FIELD_0_OFFSET + 8; // 32
 
+/// Byte offset of the third field from the base pointer.
+///
+/// On an `IO_TAG_EFFECT` node this is the baked fn-name handle (the fourth
+/// `i64` of the payload, ABI v4 — the node-widen from 24 → 32 bytes, FIXME
+/// 0327, the dispatch funnel). The DLL's `CLIO::effect*` reserves it as null;
+/// the backend stamps the statically-known fn-name handle here after the
+/// platform-fn call returns (step 2). The fault guard reads it (step 3) so a
+/// fault in foreign code can surface `PlatformError::DispatchError { fn_name }`.
+/// A null handle ⇒ `fn_name: "<unknown>"`. Step 1 (the node-widen) leaves this
+/// field reserved-but-unread; it is named here so steps 2/3 read it
+/// consistently.
+#[allow(dead_code)]
+const FIELD_2_OFFSET: isize = FIELD_1_OFFSET + 8; // 40
+
 /// Byte offset of the code pointer within a closure from the base pointer.
 /// Closure layout: [header(16) | code_ptr(8) | drop_glue_ptr(8) | captures...]
 const CLOSURE_CODE_PTR_OFFSET: isize = HeapHeader::SIZE as isize; // 16

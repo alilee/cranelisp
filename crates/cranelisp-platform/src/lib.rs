@@ -188,8 +188,18 @@ pub use std::sync::atomic::AtomicPtr as MacroAtomicPtr;
 /// load path now dispatches GOT-indirect against the exported GOT, so platform
 /// fns need no exported linker name and the host injects no schema-validation
 /// callback). The v3 ABI surface is `HostCallbacks { alloc, alloc_with_tag }` +
-/// the jit_name-free `PlatformFn`.
-pub const ABI_VERSION: u32 = 3;
+/// the jit_name-free `PlatformFn`. v4 (Sprint 81, FIXME 0327 — the
+/// fault-guarded dispatch funnel, step 1/4) — the `IO_TAG_EFFECT` node widens
+/// from 24 → 32 bytes with a **fourth `i64` field** ([`IO_EFFECT_FN_NAME_OFFSET`])
+/// carrying a baked fn-name handle (rule (ii) — an `IO_TAG_*` / Effect-node
+/// layout change). The DLL's [`CLIO::effect`] / [`CLIO::effect_on_resource`]
+/// constructors reserve the field (allocate 32 bytes, init field-3 to **null**);
+/// the backend stamps the statically-known fn-name into it after the
+/// platform-fn call returns (step 2), and the intrinsics trampoline reads it
+/// in the fault guard (step 3). An unstamped node (or an out-of-tree DLL
+/// building nodes itself) degrades to a null name → `fn_name: "<unknown>"`,
+/// not a crash. See `design/arch/bounded-contexts.md` §5 invariant 9.
+pub const ABI_VERSION: u32 = 4;
 
 /// IO task tree tags -- shared between platform DLLs and the host trampoline.
 pub const IO_TAG_PURE: i64 = 0;
@@ -200,8 +210,17 @@ pub const IO_TAG_BIND: i64 = 2;
 pub const IO_TAG_PAR: i64 = 3;
 
 /// Byte offset of the resource token within an Effect node payload.
-/// Effect layout: [tag i64][thunk_ptr i64][resource_token i64] -- 24 bytes.
+/// Effect layout: [tag i64][thunk_ptr i64][resource_token i64][fn_name_handle i64]
+/// -- 32 bytes (ABI v4; widened from 24 by FIXME 0327, the dispatch funnel).
 pub const IO_EFFECT_RESOURCE_OFFSET: i64 = 16;
+
+/// Byte offset of the baked fn-name handle within an Effect node payload
+/// (the fourth `i64` field, ABI v4 / FIXME 0327). The DLL's [`CLIO::effect`]
+/// constructors init this to **null** (the DLL cannot know the cranelisp-level
+/// fn-name); the backend stamps the statically-known name handle here after
+/// the platform-fn call returns (step 2), and the intrinsics IO trampoline
+/// reads it in the fault guard (step 3). A null handle ⇒ `fn_name: "<unknown>"`.
+pub const IO_EFFECT_FN_NAME_OFFSET: i64 = 24;
 
 /// Scheduling class for a platform function, declared in the platform manifest.
 ///
@@ -682,15 +701,23 @@ impl<CL: CLType> CLIO<CL> {
         let thunk_ptr = Box::into_raw(thunk) as i64;
 
         let alloc = get_global_alloc();
-        let payload = alloc(24); // 3 x i64: tag + thunk_ptr + resource_token
+        // 4 x i64: tag + thunk_ptr + resource_token + fn_name_handle (ABI v4 —
+        // node widened 24 → 32 by FIXME 0327, the dispatch funnel). Field-3
+        // (the baked fn-name handle) is RESERVED here and init to null: the DLL
+        // cannot know the cranelisp-level fn-name, so the backend stamps it
+        // post-call (step 2) and the intrinsics trampoline reads it (step 3).
+        let payload = alloc(32);
         // SAFETY: `payload` is a valid pointer returned by the host allocator for
-        // at least 24 bytes. We write three i64 fields (tag, thunk_ptr, token) at
-        // offsets 0, 8, 16 within that allocation. `thunk_ptr` is a valid pointer
-        // from `Box::into_raw` and will be consumed exactly once by `call_effect_thunk`.
+        // at least 32 bytes. We write four i64 fields (tag, thunk_ptr, token,
+        // fn_name_handle) at offsets 0, 8, 16, 24 within that allocation.
+        // `thunk_ptr` is a valid pointer from `Box::into_raw` and will be
+        // consumed exactly once by `call_effect_thunk`. Field-3 is null — the
+        // backend stamps the real handle after this node is returned.
         unsafe {
             *(payload as *mut i64) = IO_TAG_EFFECT;
             *((payload + 8) as *mut i64) = thunk_ptr;
             *((payload + 16) as *mut i64) = token;
+            *((payload + 24) as *mut i64) = 0; // fn_name_handle — reserved, null
         }
         // Return base pointer (payload - header) for trampoline compatibility.
         CLIO(payload - HEAP_HEADER_SIZE, std::marker::PhantomData)
@@ -1965,11 +1992,83 @@ mod tests {
     // `tests/plan/sprint71-platform.md`.
     // ---------------------------------------------------------------------
 
-    // ABI_VERSION is 3 (FIXME 0286 — the three-exports macro rework).
-    // spec: design/arch/platform-interface.md §6.1
+    // ABI_VERSION is 4 (FIXME 0327 — the dispatch-funnel node-widen, step 1/4;
+    // the IO_TAG_EFFECT node grew a fourth i64 field, an ABI v4 / rule-(ii)
+    // layout change). Was 3 at FIXME 0286 (the three-exports macro rework).
+    // spec: design/arch/bounded-contexts.md §5 invariant 9
     #[test]
-    fn abi_version_is_3() {
-        assert_eq!(ABI_VERSION, 3);
+    fn abi_version_is_4() {
+        assert_eq!(ABI_VERSION, 4);
+    }
+
+    // spec: design/arch/bounded-contexts.md §5 invariant 9 — the IO_TAG_EFFECT
+    // node widened from 24 → 32 bytes with a fourth i64 field (the baked
+    // fn-name handle, FIXME 0327 step 1/4). `CLIO::effect*` must allocate 32
+    // payload bytes and reserve field-3 as null (the backend stamps it
+    // post-call; until then it reads null → fn_name "<unknown>"). This test
+    // installs a synthetic host allocator that records the requested size and
+    // hands back a real allocation, builds an Effect node via
+    // `CLIO::effect_on_resource`, then asserts the node carries tag /
+    // resource-token correctly and that field-3 is reserved-and-null.
+    #[test]
+    fn effect_node_is_32_bytes_with_null_fn_name_field() {
+        use std::sync::atomic::AtomicI64;
+
+        // Synthetic host allocator: leak a zeroed 16-byte-header allocation of
+        // `size` payload bytes and record the requested size for assertion.
+        // (Matches the host contract: returns payload pointer = base + 16.)
+        static LAST_ALLOC_SIZE: AtomicI64 = AtomicI64::new(0);
+        extern "C" fn recording_alloc(size: i64) -> i64 {
+            LAST_ALLOC_SIZE.store(size, Ordering::SeqCst);
+            let total = HEAP_HEADER_SIZE as usize + size as usize;
+            unsafe {
+                let layout = std::alloc::Layout::from_size_align_unchecked(total, 8);
+                let base = std::alloc::alloc_zeroed(layout);
+                *(base as *mut i64) = total as i64; // alloc_size header
+                *((base as *mut i64).add(1)) = 1; // rc = 1
+                (base as i64) + HEAP_HEADER_SIZE // payload pointer
+            }
+        }
+        let cb = HostCallbacks {
+            alloc: recording_alloc,
+            alloc_with_tag: null_alloc_with_tag,
+        };
+        let host = HostContext::new();
+        // SAFETY: `&cb` is a valid HostCallbacks for the duration of init.
+        unsafe { host.init(&cb) };
+
+        // Build an Effect node with a known resource token. The thunk is never
+        // forced here — we only inspect the node layout.
+        let token = 7i64;
+        let io: CLIO<CLInt> = CLIO::effect_on_resource(token, || CLInt::from(0i64));
+        let base: i64 = io.into();
+
+        // The DLL allocated 32 payload bytes (tag + thunk + token + fn_name).
+        assert_eq!(
+            LAST_ALLOC_SIZE.load(Ordering::SeqCst),
+            32,
+            "Effect node payload must be 32 bytes (ABI v4 node-widen, FIXME 0327)"
+        );
+
+        // Inspect the node fields at the documented offsets. The node base is
+        // the alloc base; the payload (tag) starts at base + HEAP_HEADER_SIZE.
+        let payload = base + HEAP_HEADER_SIZE;
+        unsafe {
+            let tag = *(payload as *const i64);
+            let tok = *((payload + IO_EFFECT_RESOURCE_OFFSET) as *const i64);
+            let fn_name = *((payload + IO_EFFECT_FN_NAME_OFFSET) as *const i64);
+            assert_eq!(tag, IO_TAG_EFFECT, "tag field");
+            assert_eq!(tok, token, "resource-token field at offset 16");
+            assert_eq!(
+                fn_name, 0,
+                "field-3 (fn-name handle) must be reserved-and-null at offset 24 \
+                 — the backend stamps it post-call (step 2)"
+            );
+        }
+        // Note: the thunk_ptr (field-0, offset 8) holds a leaked
+        // Box<Box<dyn FnOnce>> that the trampoline would consume; we do not
+        // force it here, so the closure box is intentionally left unfreed
+        // (a one-shot leak bounded to this test).
     }
 
     // spec: design/arch/platform-interface.md §5.5.4 — extract_layout_hash

@@ -358,6 +358,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::TypeShape
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::TypeShape
 pub const cranelisp_platform::ABI_VERSION: u32
 pub const cranelisp_platform::HEAP_HEADER_SIZE: i64
+pub const cranelisp_platform::IO_EFFECT_FN_NAME_OFFSET: i64
 pub const cranelisp_platform::IO_EFFECT_RESOURCE_OFFSET: i64
 pub const cranelisp_platform::IO_TAG_BIND: i64
 pub const cranelisp_platform::IO_TAG_EFFECT: i64

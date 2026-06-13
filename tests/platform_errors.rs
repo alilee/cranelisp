@@ -281,8 +281,9 @@ fn platform_abi_version_mismatch_e2e() {
         out.stderr
     );
     // BOTH versions MUST surface so the user sees what they have (the DLL's
-    // stale `found` = 2) vs. what the runtime requires (`expected` = 3). The
-    // `PlatformError::AbiVersionMismatch` Display
+    // stale `found` = 2) vs. what the runtime requires (`expected` = 4 as of
+    // Sprint 81 / FIXME 0327 — the IO_TAG_EFFECT node-widen bumped the host ABI
+    // 3 → 4). The `PlatformError::AbiVersionMismatch` Display
     // (`crates/cranelisp-types/src/error.rs:325`) renders
     // `DLL <path> ABI version <found> does not match expected <expected>` — it
     // names `expected` and prints both numbers, so assert the carrier names the
@@ -296,9 +297,9 @@ fn platform_abi_version_mismatch_e2e() {
         out.stderr
     );
     assert!(
-        out.stderr.contains("2") && out.stderr.contains("3"),
+        out.stderr.contains("2") && out.stderr.contains("4"),
         "ABI-version-mismatch error MUST report BOTH the DLL's stale version (2) \
-         and the runtime's required version (3) so the user sees what they have \
+         and the runtime's required version (4) so the user sees what they have \
          vs. what is required; got stderr:\n{}",
         out.stderr
     );
