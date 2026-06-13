@@ -1,4 +1,4 @@
-# 7. Traits [R4 S21]
+# 7. Traits [S21]
 
 This section defines the trait system of Cranelisp -- the mechanism for ad-hoc polymorphism. Traits declare method signatures parameterized over a type (or type constructor). Implementations provide concrete method bodies for specific types. All trait method calls are resolved at compile time via static dispatch.
 
@@ -20,11 +20,13 @@ method_name    = symbol
 
 The `deftrait` form introduces a named trait with one or more method signatures. All methods use named parameters in square brackets. Required methods end with a return type expression; default methods end with a body expression.
 
-**Parameters:** Bare parameter names default to the implementing type (`Self`). Annotated parameters (`:Type name`) have explicit types. `Self` (capitalized) in return type position refers to the implementing type (see §7.1.1).
+**Parameters:** Bare parameter names default to the implementing type (`self`). Annotated parameters (`:Type name`) have explicit types. `self` (lowercase) in return type position refers to the implementing type (see §7.1.1).
 
-**Disambiguation:** The parser distinguishes required from default methods by the last element after the bracket:
-- A capitalized symbol or applied type (`Self`, `Int`, `Bool`, `String`, `(Option Self)`, `(Fn [a] b)`) is a return type -- the method is required.
-- Everything else (function calls, literals, lowercase symbols) is a body expression -- the method has a default implementation.
+**Disambiguation:** The parser distinguishes required from default methods positionally. The element immediately following the parameter bracket is always the return type; if a further element follows it, that element is the default body:
+- `(method_name "doc"? [params] ret_type)` -- a return type follows the bracket and nothing else: the method is required.
+- `(method_name "doc"? [params] ret_type body)` -- a body expression follows the return type: the method has a default implementation.
+
+A return type is a type expression: `self` (the implementing type), a named type (`Int`, `Bool`, `String`), an applied type (`(Option self)`, `(Fn [a] b)`), or a type variable.
 
 **Example:** A standard library might define traits for arithmetic, equality, and display:
 
@@ -33,10 +35,10 @@ The `deftrait` form introduces a named trait with one or more method signatures.
   (show "Convert value to string" [x] String))
 
 (deftrait Num "Numeric arithmetic operations"
-  (+ "Add two values" [a b] Self)
-  (- "Subtract two values" [a b] Self)
-  (* "Multiply two values" [a b] Self)
-  (/ "Divide two values" [a b] Self))
+  (+ "Add two values" [a b] self)
+  (- "Subtract two values" [a b] self)
+  (* "Multiply two values" [a b] self)
+  (/ "Divide two values" [a b] self))
 
 (deftrait Eq "Equality comparison"
   (= "Test equality" [a b] Bool))
@@ -48,9 +50,11 @@ The `deftrait` form introduces a named trait with one or more method signatures.
   (>= "Test greater-than-or-equal" [a b] (not (< a b))))
 ```
 
-### 7.1.1 The `Self` Type
+### 7.1.1 The `self` Type [Tested tests/spec_07_traits.rs::trait_method_no_impl_then_recovery]
 
-Bare (unannotated) parameter names in a method signature have the implementing type. In return type position, `Self` (capitalized) explicitly refers to the implementing type. When a type implements a trait, the implementing type is substituted for `Self` and for all bare parameter types.
+Bare (unannotated) parameter names in a method signature have the implementing type. In return type position (or any type-expression position), `self` (lowercase) explicitly refers to the implementing type. When a type implements a trait, the implementing type is substituted for `self` and for all bare parameter types.
+
+> **Note on spelling.** The keyword for the implementing type is the lowercase token `self` — both as the implicit type of a bare parameter and as an explicit return type. There is no capitalized `Self`; writing `Self` denotes an ordinary named type and fails resolution unless such a type exists. This matches the as-built compiler (the frontend maps only the lowercase token `self` to the implementing type) and the standard library, e.g. `(+ [a b] self)`.
 
 ```clojure
 ;; In (deftrait Eq (= [a b] Bool)):
@@ -58,9 +62,9 @@ Bare (unannotated) parameter names in a method signature have the implementing t
 ;;   For (impl Eq Float ...): a, b become Float, so = :: Float -> Float -> Bool
 ```
 
-`Self` is NOT a type variable -- it is resolved at impl time to the concrete target type. It may appear in return types and in applied type positions (e.g., `(Option Self)`).
+`self` is NOT a type variable -- it is resolved at impl time to the concrete target type. It may appear in return types and in applied type positions (e.g., `(Option self)`).
 
-A trait MUST contain at least one method signature. Each method signature MUST contain at least one parameter of the implementing type (bare or annotated as `Self`), except for higher-kinded trait methods (see 7.2).
+A trait MUST contain at least one method signature. Each method signature MUST contain at least one parameter of the implementing type (bare or annotated as `self`), except for higher-kinded trait methods (see 7.2).
 
 ### 7.1.2 Docstrings
 
@@ -77,10 +81,10 @@ A trait MAY declare multiple methods. An implementation of the trait MUST provid
 
 ```clojure
 (deftrait Num "Numeric arithmetic operations"
-  (+ "Add two values" [a b] Self)
-  (- "Subtract two values" [a b] Self)
-  (* "Multiply two values" [a b] Self)
-  (/ "Divide two values" [a b] Self))
+  (+ "Add two values" [a b] self)
+  (- "Subtract two values" [a b] self)
+  (* "Multiply two values" [a b] self)
+  (/ "Divide two values" [a b] self))
 ```
 
 ### 7.1.5 Default Method Implementations [Tested tests/ring2::default_method_gt_int, tests/ring2::repl_default_neq, tests/ring2::repl_default_ge, tests/ring2::repl_default_le]
@@ -124,9 +128,9 @@ An impl MAY override a default method by providing an explicit definition:
 
 Return types and parameter annotations MAY use any valid type expression:
 
-- `Self` -- the implementing type (in return type or annotation position)
+- `self` -- the implementing type (in return type or annotation position)
 - Concrete types: `Int`, `Bool`, `String`, `Float`
-- Parameterized types: `(Option a)`, `(Option Self)`
+- Parameterized types: `(Option a)`, `(Option self)`
 - Function types: `(Fn [a] b)`
 - Type variables: lowercase names like `a`, `b`
 
@@ -134,10 +138,10 @@ Bare (unannotated) parameter names always have the implementing type. To give a 
 
 ```clojure
 (deftrait Mappable
-  (map-val [:(Fn [a] b) f x] Self))
+  (map-val [:(Fn [a] b) f x] self))
 
 (deftrait Convertible
-  (convert [:String s] Int))        ;; s is String, not Self
+  (convert [:String s] Int))        ;; s is String, not self
 ```
 
 ## 7.2 Higher-Kinded Traits [Tested tests/ring2.rs::hkt_trait_declaration]
@@ -375,15 +379,15 @@ Operator symbols (`+`, `-`, `*`, `/`, `=`, `<`, `>`, `<=`, `>=`) have no special
 
 | Operator | Trait | Signature |
 |---|---|---|
-| `+` | `Num` | `Self -> Self -> Self` |
-| `-` | `Num` | `Self -> Self -> Self` |
-| `*` | `Num` | `Self -> Self -> Self` |
-| `/` | `Num` | `Self -> Self -> Self` |
-| `=` | `Eq` | `Self -> Self -> Bool` |
-| `<` | `Ord` | `Self -> Self -> Bool` |
-| `>` | `Ord` | `Self -> Self -> Bool` |
-| `<=` | `Ord` | `Self -> Self -> Bool` |
-| `>=` | `Ord` | `Self -> Self -> Bool` |
+| `+` | `Num` | `self -> self -> self` |
+| `-` | `Num` | `self -> self -> self` |
+| `*` | `Num` | `self -> self -> self` |
+| `/` | `Num` | `self -> self -> self` |
+| `=` | `Eq` | `self -> self -> Bool` |
+| `<` | `Ord` | `self -> self -> Bool` |
+| `>` | `Ord` | `self -> self -> Bool` |
+| `<=` | `Ord` | `self -> self -> Bool` |
+| `>=` | `Ord` | `self -> self -> Bool` |
 
 ```clojure
 (+ 1 2)       ; → 3    (resolved to +$Int)
@@ -424,10 +428,10 @@ Numeric arithmetic operations.
 
 ```clojure
 (deftrait Num "Numeric arithmetic operations"
-  (+ "Add two values" [a b] Self)
-  (- "Subtract two values" [a b] Self)
-  (* "Multiply two values" [a b] Self)
-  (/ "Divide two values" [a b] Self))
+  (+ "Add two values" [a b] self)
+  (- "Subtract two values" [a b] self)
+  (* "Multiply two values" [a b] self)
+  (/ "Divide two values" [a b] self))
 ```
 
 **Typical implementations:** A standard library typically provides `Num` implementations for `Int` and `Float`.
@@ -459,10 +463,10 @@ Unchecked arithmetic operations. Same method names as `Num` but without overflow
 
 ```clojure
 (deftrait Unchecked "Unchecked arithmetic (wraps on overflow, traps on div-by-zero)"
-  (+ "Unchecked addition" [a b] Self)
-  (- "Unchecked subtraction" [a b] Self)
-  (* "Unchecked multiplication" [a b] Self)
-  (/ "Unchecked division" [a b] Self))
+  (+ "Unchecked addition" [a b] self)
+  (- "Unchecked subtraction" [a b] self)
+  (* "Unchecked multiplication" [a b] self)
+  (/ "Unchecked division" [a b] self))
 ```
 
 **Semantics:**
@@ -742,7 +746,7 @@ Trait declarations and implementations participate in the module system (see sec
 
 Note: There is no mechanism for disambiguating same-named methods from different traits at a call site. Users SHOULD choose distinct method names across traits, or use qualified references (`module/method`) to avoid ambiguity.
 
-### 7.11.1 Impl Visibility — Transitive Import Closure [R4 S66]
+### 7.11.1 Impl Visibility — Transitive Import Closure [S66]
 
 `impl` has no private variant. A trait implementation declared in module L is visible at any call site in module N where **both** the trait and the type are reachable from N through the transitive closure of N's `import` declarations. N does not need to import L directly; the impl follows the trait and type wherever those names propagate (via re-export chains, glob imports, etc.).
 
@@ -775,7 +779,7 @@ The full normative statement and worked example live in [§5.11.1](05-definition
 | Monad / Applicative | HKT traits for monadic sequencing and applicative composition |
 | Multi-parameter HKT | Traits like `(deftrait (Bifunctor f) ...)` for arity-2 constructors |
 
-## 7.13 Deriving [R4 S21]
+## 7.13 Deriving [S21]
 
 The `derive` macro automatically generates trait implementations for user-defined algebraic data types by structural recursion over constructors. It is a prelude macro, not a special form.
 

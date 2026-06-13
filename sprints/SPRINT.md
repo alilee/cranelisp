@@ -1,0 +1,192 @@
+# Sprint 81: Clean & Green — opening the pre-Phase-H FIXME-clearance arc
+
+**Status**: ~~PHASE 1 SCOPE DRAFT ✅~~ → ~~PHASE 2 ARCH REVIEW ✅ (SIGN-OFF-WITH-REVISIONS)~~ → **PHASE 5 — REDUCTION WAVES (W1–W3) executing** (user: "capture the reduction first" — bank docs/stale/zero-skips before per-component Phase-3 design) | then PHASE 3 DESIGN (per-component) → PHASE 4/5 component waves → PHASE 6 user-facing → PHASE 7 CLOSE
+
+**Goal**: Re-establish "clean & green" as the sprint-exit standard and clear the entire known FIXME backlog — organized by crate/component, docs-first — as the mainline-completion step before Phase H. **Every component gets one or more waves this sprint to address all or most of its issues**; items are deferred only with an explicit good reason, never by default. The user-facing Phase-6 assessment is reinstated permanently.
+
+## Context & framing (user-corrected 2026-06-13)
+
+S80 closed **fully green on macOS + Linux** (1224 passed / 0 failed / 9 skipped), completing **Phase G (Ring 4 — Effects)**.
+
+**Phase H is genuinely-new capability ONLY — the `--release` Tier-2 backend.** Everything currently in the FIXME store is **pre-Phase-H mainline-spec completion**, not Phase-H work. Completing the known backlog is therefore a prerequisite to opening Phase H, not something to defer past it. The user's directive:
+
+> *"All the FIXMEs I can read are pre-Phase-H. To manage the volume, organise them into crate/components, and if any crate/component has too much, break into waves. Hit docs early to reduce the number of items we need to manage. We do need to clear out the items we know about."*
+
+This sprint therefore **opens a clearance arc** (S81→S8n). The organizing axis is **crate/component**; the clearance order leads with **docs** (cheapest, shrinks the management surface fastest); heavy components are sub-waved across arc sprints. There is **no "defer to Phase H" bucket** for FIXMEs — only "this arc sprint" vs "a later arc sprint, still pre-Phase-H."
+
+The Phase-1 read-only survey (4 agents over ~73 open FIXME files + 28 harvest + the 9 skips) produced the component map below. The map **is** the first deliverable.
+
+## The backlog, organized by component
+
+Counts are open FIXMEs touching each surface (items spanning surfaces appear under their primary owner). **STALE** = work already landed S77–S80, verify+delete. **W** = rough weight (S/M/L/XL).
+
+| Component | STALE (verify+delete) | Actionable — light (S) | Actionable — heavy (M/L/XL) | Notes |
+|---|---|---|---|---|
+| **Docs / spec-text / facade-doc** *(do FIRST)* | 0317, 0318 (annotation-confirm then delete) | 0014, 0051, 0102, 0106, 0113, 0141, 0212, 0214, 0252, 0253, 0266, 0274, 0278, 0297, 0303, 0307, 0308, 0309 | 0298 (L — int-facade doc-reorg), 0316 (S–M — import model, +arch) | The big lever: ~20 items are doc-accuracy / spec-text / facade-text where code is already correct. Closing these first collapses the count and de-noises every other component. 0141 (TCO SHOULD→MUST) unblocks 5 skips. |
+| **cranelisp-frontend** | — | — | 0098 (M — /arch rescope: expand/MacroResolver overtaken by S78), 0137 (M — macro harvest) | Small surface. 0098 needs an /arch close-or-rescope call, not blind impl. |
+| **cranelisp-typecheck** | 0008 | 0033, 0306 | 0172, 0187, 0243 (fixture-narrowing ~110), 0130(tc) | 0172/0187 are `pub`-narrowing residue chained behind each other. |
+| **cranelisp-backend** | 0044, 0287, 0321 | 0252/0253(doc, above), 0325 (CLIF-skip-in-batch, +baseline regen) | 0011, 0117, 0118, 0120(cache harvest), 0131, 0133, 0135, 0145, 0146, 0232, 0258 | Heaviest harvest concentration (cache + observability). 0258 holds 3 named /dev trace defects. |
+| **cranelisp-primitives** | — | 0212(doc), 0216 (bare-name import tests), 0308 (docstring relocate) | — | Small. |
+| **cranelisp-intrinsics** | 0103 | 0297(doc, above) | — | Effectively doc-only now. |
+| **cranelisp-platform** | 0104, 0229(partial) | 0106(doc, above) | 0039, 0040, 0041 (gated on 0229), 0235, 0238, 0289 (drift e2e + dispatch funnel — needs new test-DLL fixtures + a fault-guarded-dispatch feature) | 0289-item-5 is the one current irreducible skip. |
+| **src/ (int)** | 0009, 0025, 0108, 0233, 0271 | 0013, 0194, 0303(above) | 0098(int), 0100, 0101, 0176, 0187, 0217, 0220, 0281, **0109 (L — session_v4/worker decomposition; blocks ~8 harvest FIXMEs)** | 0109 is the single biggest structural item; it gates the runtime/observability harvest cluster. Likely its own arc sprint. |
+| **arch (cross)** | 0319 | 0010 | 0239, 0241, 0316, + the fixmes-vs-decisions number-collision ruling | 0316 is the one genuine *design* increment. |
+| **/repl, /stdlib, /port, /examples** *(user-facing)* | 0032(port) | 0035, 0050, 0309(above) | 0273(stdlib runner), 0143(port harvest) | These run in the reinstated Phase-6 and **generate** the docs/defect work. |
+| **/qa — skips** | — | TCO×5 (via 0141), s68×2 (stale flip), perf×1 (→bench), 0326 (prune output) | 0289-i5 (irreducible — the dispatch funnel) | 9 skips → 1. |
+| **/qa — harvest (0116–0149)** | 0126, 0139, 0127(closure part), 0125(16 stubs) | 0147, 0119, 0131; inline-FIXME staleness review of 0144/0145/0146/0148/0149 | **0134 (XL ~1300 tests), 0136 (sketch_port, +11 known fails)**; runtime/observability cluster 0116/0128/0129/0130/0132/0133/0135 (**blocked on 0109**) | Mostly coverage-*preservation*. Cheap closures available now; XL + 0109-blocked clusters → later arc sprints. |
+
+## Scope — full per-component clearance
+
+S81 opens with three cross-cutting passes that shrink and de-noise the backlog fastest, then drives **each component to clear all/most of its issues** via one or more component waves, and reinstates Phase-6. The cross-cutting openers are sequenced first because the docs-first sweep collapses ~20 items and the stale sweep removes ~17 — so the per-component waves operate on a much smaller, real surface.
+
+### Cross-cutting openers
+
+1. **Wave 1 — Docs-first sweep.** /docs + /repl + /spec + /design(per-crate facade) close the ~20 doc-accuracy / spec-text / facade-text items where code is already correct. Includes **0141** (TCO SHOULD→MUST, unblocks 5 skips) and **0316** (import-ambiguity model + `resolve_with_fallback` unification — spec+arch, rides here per user). De-noises every downstream component.
+2. **Wave 2 — Stale sweep.** Each owning skill verifies + `git rm`s the ~18 STALE FIXMEs (S80 deliverables whose files linger: 0317/0318/0319/0321/0323/0287/0271/0008/0009/0025/0032/0044/0103/0104/0108/0229p/0233 + **0176** [/arch-verified stale, resolved `a2dcebd`]). **Target `design/arch/fixmes/NNNN-*.md` paths ONLY — never a `design/arch/decisions/` file** (per the Phase-2 number-collision ruling).
+3. **Wave 3 — Zero-skips + test hygiene.** /qa: un-ignore TCO×5 (after 0141), flip+un-ignore s68×2 (stale; clear dangling 0191/0221 refs — files don't exist), **relocate perf to a release-mode bench** (→ literal zero on the nextest path), cheap harvest closures (delete stubs/optional, inline-FIXME staleness review), **0326** (prune accumulating output). Only 0289-i5 remains, and **its dispatch funnel is attempted in the platform wave** (see below) — the aim is genuine zero.
+
+### Per-component clearance waves (each clears all/most actionable items; heavy components sub-waved)
+
+4. **cranelisp-typecheck** — 0033, 0306, 0172, 0187, 0243 (fixture-narrowing), 0130(tc). 0172/0187 are chained `pub`-narrowing residue.
+5. **cranelisp-frontend** — 0137 (macro harvest). *(0098 → CLOSE per Phase-2 §5: Phase-2 obsolete [S76 deleted frontend `expand`/`ExpansionError`], Phase-4 functionally complete [worker.rs:322/2129] — no impl work; verify+delete in W2.)*
+6. **cranelisp-backend** (heavy → sub-waves): 6a small/doc (0011, 0232, 0258, 0325 CLIF-skip+baseline regen); 6b cache harvest (0117, 0118, 0120, 0145, 0146); 6c observability harvest (0131, 0133, 0135).
+7. **cranelisp-primitives** — 0216 (bare-name import tests), 0308 (docstring relocate).
+8. **cranelisp-platform** (heavy → sub-waves): 0229 residual, 0235 + 0289 drift e2e + **the 0289-i5 fault-guarded-dispatch funnel** (the feature that retires the last skip — **flagged Phase-2 as the likeliest single-item slip**; genuine-zero-skips is a W3+W8 stretch goal, not a hard gate), 0238 (proc-macro upgrade), 0039/0040/0041 (gated on 0229 — sequence after).
+9. **src/ (int)** (heavy → sub-waves): 9a light (0013, 0194, 0101, 0217, 0220, 0281); 9b **0109 Waves A+B+C ONLY** (delete `session.rs`, narrow `lib.rs`, extract `process_form` — independent, mechanical, terminal-shaped). **0109 Wave D** (the actual `session_v4.rs`/`worker.rs` split) + its dependent observability-harvest cluster **co-carry to the next arc sprint** (Phase-2 R1 — a partial god-file split is itself interim debt, so the carry boundary sits at terminal points). *(0100 → CLOSE per Phase-2 §5: all three phases landed; verify+delete in W2.)*
+10. **arch (cross)** — 0010, 0239, 0241, the **fixmes-vs-decisions number-collision ruling** (decided, §4); 0298 KEEP as a W1 doc item (int-facade retire reorg). *(0098/0100/0176 resolved to CLOSE/stale — no Wave-10 rescope work.)*
+11. **/qa harvest (0116–0149)** — compact ports (0147/0119/0131) + cheap closures + sketch_port audit-and-delete (0136). The runtime/observability cluster (0116/0128/0129/0130/0132/0133/0135) **co-carries with 0109 Wave D** (needs the post-decomposition `#[cfg(test)]` module homes). 0134-bulk and the 0109-independent slice per the deferral note.
+12. **User-facing Phase 6 (reinstated permanently)** — /port (lock in the S80 full-grid solve), /stdlib (audit vs post-S78/S79 module model + 0273 runner), /examples (replay green + 0143). Findings → failing-not-ignored tests + FIXMEs.
+
+### Deferred — with explicit rationale (NOT defer-by-default)
+
+- **0134 — the XL harvest bulk (~1300 internal-state tests across e2e/ring0/ring1/ring2).** *Good reason:* (a) the user-observable **spec surface is already preserved** in the active e2e suite (S64 Waves 5–6) — this is internal-assertion coverage, not a behavioural gap; (b) /qa's own sizing verdict is *"does not need to be a single sprint"*; (c) much of it needs `#[cfg(test)]` homes that **depend on 0109 landing first** and on the per-crate decomposition. **Disposition:** port the 0109-independent slice this sprint inside Wave 11; carry the remainder as a named multi-sprint item, per-crate.
+- **0109 Wave D (the `session_v4.rs`/`worker.rs` split) + the dependent runtime/observability harvest cluster (0116/0128/0129/0130/0132/0133/0135).** *Good reason (Phase-2 R1):* the full god-file decomposition is the single largest structural item (10,458 LOC across two files); 0109 itself recommends splitting across sprints; landing only a *partial* split would be interim-architecture debt (Principle 8). S81 lands 0109 Waves A+B+C (terminal-shaped); **Wave D + its dependent harvest cluster co-carry to the next arc sprint** (the harvested tests need the post-decomposition module homes). Still pre-Phase-H.
+
+*(All other previously-"deferred" items are pulled into the per-component waves above. These two carries are the only items with a genuine size-and-dependency reason not to fully land in S81.)*
+
+## FIXME debt
+
+Filed this sprint:
+
+| FIXME | Target | Status | Notes |
+|---|---|---|---|
+| 0326 | /qa | open | Test runs continually accumulate un-pruned output — needs a pruning discipline. Filed at user direction (2026-06-13). Actioned in Wave 3. |
+
+Full component map above. ~73 open FIXME files + 28 harvest + 0326.
+
+## Architecture review (Phase 2)
+
+**Reviewer:** /arch. **Date:** 2026-06-13. **Verdict: SIGN-OFF-WITH-REVISIONS.**
+
+The component map, the docs-first → stale-sweep → zero-skips opening sequence, and the framing that all current FIXMEs are pre-Phase-H mainline completion (Phase H = `--release`/Tier-2 only) are **ratified**. The clearance arc is coherent and debt-first. Revisions are concentrated in two places: (R1) the per-component "all/most clearance THIS sprint" target is over-ambitious for the int and qa-harvest clusters and should be explicitly sub-waved/carried rather than nominally in-scope; (R2) two of the named close-or-rescope items resolve to **close now** against source, which removes implementation work from Waves 5 and 9 before it is scheduled. Details below.
+
+### 1. Verdict — SIGN-OFF-WITH-REVISIONS
+
+No interim-architecture risk (Principle 8) and no unjustified public-API surface in scope. The sprint is overwhelmingly verify-delete + doc + test-maintenance, with exactly one genuine design increment (0316). It is signed off subject to the revisions in §2–§5. None of the revisions block Wave 1 from starting.
+
+### 2. Feasibility + wave-ordering
+
+**Realistic as scoped:** the three cross-cutting openers (W1 docs, W2 stale, W3 zero-skips) and the light component waves (typecheck W4, frontend W5, primitives W7, backend-6a). These are the bulk of the count and are mostly delete/doc/test. The ~20 doc items + ~17 stale items genuinely collapse the surface; do them first as planned.
+
+**Over-scoped — sub-wave or carry (R1):**
+
+- **Wave 9 (int).** 9a (light) is fine. **9b is 0109 — the `session_v4`/`worker` god-file decomposition (10,458 LOC, two 5k-LOC files).** This is the single largest structural item in the workspace and 0109 itself says "consider splitting across multiple sprints" (`fixmes/0109` §sequencing). Treating 9b + the entire 0109-blocked observability-harvest cluster (0116/0128/0129/0130/0132/0133/0135) as landing in S81 is the least realistic line in the plan. **Recommendation:** scope 9b to 0109 **Waves A+B+C only** (delete `session.rs`, narrow `lib.rs`, extract `process_form`) this sprint — these are independent, mechanical, and low-risk — and carry **0109 Wave D** (the actual `session_v4.rs`/`worker.rs` split) + its dependent observability-harvest cluster to the next arc sprint as a **named, justified carry** (sibling to the 0134 carry). Do not nominally promise the full decomposition + dependent harvest in one sprint; that risks a half-landed god-file split, which is itself interim-architecture debt.
+
+- **Wave 11 (qa-harvest).** The 0109-independent slice + cheap closures + 0136 sketch_port audit are realistic. The runtime/observability cluster is **gated on 9b/0109 Wave D**, which per the line above is being carried — so that cluster carries with it. This is consistent, not a new deferral: confirm the **0109(Wave D) → observability-harvest** ordering by carrying both together.
+
+- **Wave 8 (platform).** Borderline. 0289-i5 (fault-guarded-dispatch funnel — the last irreducible skip) depends on new test-DLL fixtures (`/platform`) AND a new feature. Keep it in scope but flag it as the **most likely single-item slip**; if the fixture work isn't ready, the skip stays and the wave still delivers 0229/0235/0238/0039-41. Genuine-zero-skips is a stretch goal of W3+W8, not a hard gate.
+
+**0134 deferral — CONFIRMED.** The rationale holds on all three legs: (a) user-observable spec surface is already preserved in the active e2e suite (S64 W5–6); this is internal-assertion coverage; (b) /qa's own sizing verdict; (c) the bulk needs `#[cfg(test)]` homes that depend on 0109 + per-crate decomposition. Port the 0109-independent slice in W11; carry the remainder per-crate. This is the correct single named multi-sprint item.
+
+**0109 → observability-harvest ordering — CONFIRMED, with the R1 amendment** that BOTH the 0109 Wave-D decomposition and the dependent cluster carry together to the next arc sprint. The ordering dependency is real (the harvested tests need the post-decomposition `#[cfg(test)]` module homes); the revision is that the dependency resolves by co-carrying, not by compressing both into S81.
+
+### 3. 0316 — import-ambiguity model design call
+
+Grounded in source: `src/imports.rs::insert_detecting_ambiguity` (282–332) keys same-source dedup on the **immediate** `source.module` (line 301, `s1 == s2`); `cranelisp_types::resolve()` (`crates/cranelisp-types/src/resolve.rs:262`) is the single data-only resolution primitive, and `chain_follow_committed` / `resolve_terminal_entry_and_home` already exist there as terminal-resolution machinery. The 5 prelude-fallback wrappers are confirmed: `checker.rs` `resolve_current_or_prelude` (920), `probe_current_or_prelude` (1260), `resolve_entry_in_current_module` (1385), `resolve_terminal_entry_or_prelude` (1417-area), and the cross-crate `src/expander.rs::recognize_macro_head` (262) — all share the identical 3-step "resolve → on-miss-if-bit-on retry-rooted-at-prelude → public-only filter" shape.
+
+**Ruling (chosen model):**
+
+**(a) Terminal-source dedup — ADOPT.** §8.6.4's "same original definition is NOT ambiguous" is normative and the impl violates it by comparing immediate sources. The model is: before emitting `Ambiguous`, chain-follow BOTH the existing and the incoming `Import` edge to their **terminal** `(home_module, canonical_symbol)` via the committed tables; if the terminals are equal, dedup (no ambiguity); only distinct terminals collide. This is a **pure correctness fix** — it makes the impl conform to a spec rule that is already written. It removes a class of false collisions (glob a module + specifically import a name it re-exports) without weakening footgun protection for genuinely-different definitions.
+
+**(b) Glob-vs-specific precedence — DO NOT add a precedence tier (peers, current model STANDS).** Once (a) lands, the residual real-world glob+specific overlaps are same-terminal and dedup benignly. The remaining collisions are genuinely-different definitions, where the S78 "overlapping imports MUST collide" footgun protection is correct and worth keeping. Introducing a wildcard-loses-to-explicit tier (the Java model) is added surface and added cognitive load (Principle 6 — complexity has a budget) to solve a problem that (a) already dissolves. Globs stay **peers** of specific imports; ambiguity is decided purely on terminal-source identity. If a concrete future user report shows a residual genuinely-distinct glob+specific footgun that users find surprising, revisit then — but do not pre-build the tier. **/spec** records (a) as the §8.6.4/§8.6.5 clarification and explicitly notes (b) — globs-are-peers — as the settled position so the question doesn't recur.
+
+**Cascade for (a):** the terminal-resolve belongs in `src/imports.rs::insert_detecting_ambiguity` (an int change — it already has `symbol_tables` access and the types-crate terminal-resolve helper is reusable). **No new `cranelisp-types` public fn is strictly required for (a)** — `resolve_terminal_entry_and_home` exists; if it is currently `pub(crate)`, promoting it to `pub` is a one-line, well-justified surface addition (it is the documented terminal-resolution primitive and (a) is its second consumer). That promotion, IF taken, is the only baseline touch for (a): `cranelisp-types/public-api.txt` gains one `pub fn` line. /arch pre-approves that specific promotion.
+
+**(c) `resolve_with_fallback` unification — ADOPT as ONE pub fn in `cranelisp-types`.** The 5×-duplicated wrapper is real fragmentation and was the proximate cause of the S78 "fallback wired for path X not Y" recurring 4×. The proposed seam keeps the crate data-only by design: the caller passes the *already-looked-up* `bool` (it does its own `prelude_fallback.get(module)`) plus the prelude `ModuleFullPath` (a types-owned type) — **no reverse dependency** on typecheck's `PreludeFallback`. This is exactly Principle 7 (single source of truth) + Principle 6 (one general primitive + thin wrappers, the pattern `resolve()` already follows with its typed wrappers). **Public-surface shape:** `cranelisp-types` gains one new `pub fn resolve_with_fallback<C, L>(symbol_tables, module_aliases, first_hop_view, current_module, name, fallback_on: bool, prelude_path: &ModuleFullPath, span) -> Result<Resolved<C>, ResolveError>` (the public-only visibility filter folds in — it is data-layer already). Its `public-api.txt` baseline gains that one fn line (+ regenerate per the baseline-diff discipline). The 5 wrappers across `checker.rs` (×4) and `src/expander.rs` (×1) collapse to call it. This is a /arch-owned change (it lives in the types crate); /arch authors the signature in Phase 3 / Wave 1.
+
+**Sequencing:** (a) and (c) both touch the module-traversal primitives and should land together in Wave 1, types-side first (so checker + expander rebuild against the new seam). (a) is the spec-conformance correctness fix; (c) is the structural de-duplication. Neither is large. (b) is a no-code /spec recording.
+
+### 4. fixmes-vs-decisions number-collision ruling
+
+The collision (0010/0011/0035/0040/0041/0044 existing as files in BOTH `design/arch/fixmes/` and `design/arch/decisions/`) is **benign — they are two distinct registers and the stale-sweep must scope by directory + frontmatter, not by bare number.** Ruling:
+
+- **FIXMEs** are identified by the `number:` YAML frontmatter field AND live under `design/arch/fixmes/NNNN-*.md`. They are open work items.
+- **Decisions** are identified by filename under `design/arch/decisions/` (and `legacy/decisions/`) and carry NO `number:` frontmatter field. They are the *draining* architectural-commitment register (per `design/arch/CLAUDE.md` §"Decisions drain backlog").
+- The two share an integer space by coincidence of independent sequential numbering; the subjects are unrelated (e.g. FIXME 0044 = string-literal RC residual through `print`, target /backend; Decision 0044 = cluster-atomic typecheck orchestrator staging). **They are never the same artefact.**
+
+**Operational rule for W2 (stale sweep) and any future drain:** the stale-sweep targets `design/arch/fixmes/NNNN-*.md` ONLY. A Decision file is NEVER deleted by the FIXME stale-sweep; Decisions drain by the separate manifestation-site migration (their substance folds into a facade/BC/principle, then the file is deleted by /arch). **Never `git rm` a `decisions/` file as part of the FIXME stale-sweep.** When a sweep step references a number, it MUST name the full path (`fixmes/0044-string-literal-rc-residual-print.md`), not the bare `0044`. This is sufficient disambiguation; no renumbering is needed or warranted.
+
+### 5. Close-or-rescope verifications (feeding Waves 5/9 + 10)
+
+Verified against current source (2026-06-13, post-S78):
+
+- **0098 (frontend/int expand-phase migration) → CLOSE.** Phase 2 (frontend `expand`/`ExpansionError`/`MacroResolver`-drop) is **architecturally obsolete**, not incomplete: the S76 W-Macro re-architecture (`design/frontend/s76-syntactic-only.md`) deliberately moved macro *recognition* to `cranelisp_types::resolve_macro_head` (driven by typecheck/int) and *execution* to int's `JitMacroExpander`; `crates/cranelisp-frontend/src/expand.rs` and `ExpansionError` were created then deleted by that decision. Phase 4 (int gap-orchestration) is **functionally complete**: `src/worker.rs:322` pattern-matches `CheckError::Gap`, `src/worker.rs:2129` discriminates `ResolutionGap` variants. The `MacroResolver` trait survives as int-internal `pub(crate)` scaffolding (`src/expander.rs:367`), which S76 ratified as an int concern. **Action:** /dev or /arch closes 0098 with a note citing s76-syntactic-only.md; **removes Wave-5 implementation work for 0098** — frontend W5 is then 0137 (macro harvest) only. If int-internal `MacroResolver` cleanup is still wanted, that is a *separate, optional* /dev-narrow refactor FIXME, not 0098.
+
+- **0100 (single-consumer type relocation) → CLOSE.** All three phases have landed. Phase 1: `CheckResult`/`CheckError`/`CheckState`/`TypeCheckEnv` are defined in `cranelisp-typecheck` (`result.rs`, `checker.rs`) and absent from `cranelisp-types`; `ResolutionGap` correctly STAYS in types (genuine multi-consumer); `FormCheckResult`/`CheckPass`/`ModuleCheckAccumulator` are `pub(crate)` (retired from public surface per Decision 44); `ReplSnapshot` deleted as dead code (S73). Phase 2: `CompilationError` + the GOT-observer types live in `cranelisp-backend`. Phase 3: all three `public-api.txt` baselines reflect the new homes. **Action:** close + `git rm` 0100. **No Wave-9 implementation work for 0100.**
+
+- **0176 (cluster-orchestrator scope deferral) → CLOSE (already resolved).** The FIXME's own resolution notes confirm the read-union landed (`a2dcebd`), `process_module_forms` retired, `module_sexps`/`suspend_states` deleted, SharedState at target, "FIXME 0176/0179 closed" (per `src/CLAUDE.md` §Cluster-Atomic Orchestration). The file is **stale** — it belongs in the W2 stale-sweep, not as live Wave-9 work. Verify the `shared_state_field_count` target test is green (or correctly tracked under 0298's reclassification), then `git rm`.
+
+- **0298 (int facade reframe + W-Retire doc-reorg) → KEEP, as a Wave-1 docs item (target /arch).** This is genuine, unactioned doc-reorg work (retire `facades/int.md` → `design/int/` + `src/` rustdoc + a CLI reference in `user/`; flip the facade table; reclassify the `facade_pif_rows` test). It is NOT overtaken — the ratified-understanding is recorded but the migration hasn't been performed. It is doc-only (no public-API; a binary has no baseline), so it rides Wave 1. Note the one dependency: the `shared_state_field_count` test reclassification it prescribes should be coordinated with the 0176 close (both touch that test's disposition).
+
+### 6. Public-API impact summary
+
+Waves that touch a crate `public-api.txt` baseline (each requires /arch sign-off + baseline regen + facade/BC/rustdoc update per the baseline-diff discipline):
+
+- **W1 / 0316(c)** — `cranelisp-types` gains **one** `pub fn resolve_with_fallback`. Baseline regen owed. /arch-authored.
+- **W1 / 0316(a)** — IFF `resolve_terminal_entry_and_home` needs promotion from `pub(crate)` to `pub`, `cranelisp-types` gains one `pub fn` line. /arch pre-approved (§3). Otherwise no baseline touch (int-only change).
+- **W6-6a / 0325 (CLIF-skip-in-batch)** — backend baseline regen explicitly called for; verify it is a deliberate edge evolution, not leakage.
+- **W1 / 0303 (substitute_module_alias promote-to-public)** — `cranelisp-types` surface addition; /arch-owned. Confirm against Principle 19 (no module privileged by name) — alias substitution is general, so promotion is sound.
+- **W7 / 0308 (primitive docstring relocate to primitives crate)** — cross-crate relocation; may touch `cranelisp-primitives` surface. Verify no accidental re-export back through.
+- **W8 / 0289-i5 (fault-guarded-dispatch funnel)** — likely a backend and/or platform surface touch (new dispatch feature); baseline regen if so.
+
+Everything else in Waves 1–12 (the ~20 doc items, the ~17 stale deletes, the test-hygiene/zero-skips work, 0098/0100/0176 closes) is **no-API verify-delete / doc / test work** with no baseline impact. This matches the Phase-1 read: public-surface touches concentrate in 0316, 0325, 0303/0308, and 0289-i5.
+
+### 7. Interim-architecture risk (Principle 8)
+
+**Clean — with one caveat that the R1 revision resolves.** Every scoped item is terminal-shaped: doc accuracy, stale deletion, test harvest/hygiene, type relocations that are already done, and two correctness/de-dup fixes (0316 a+c) that move source *toward* the canonical model. None is a stepping-stone that a later sprint tears out.
+
+The **one Principle-8 hazard** is 0109: a *partial* god-file decomposition (extracting some modules but not completing the `session_v4.rs`/`worker.rs` split) would leave transient scaffolding that the eventual full split reworks — and 0176's own resolution note already invoked Principle 8 to refuse exactly this kind of half-measure (the SharedState sub-struct wrapper). The R1 revision avoids the hazard: land only 0109 Waves A/B/C (each independently terminal — a deletion, a facade narrowing, a clean module extraction) this sprint, and carry Wave D as one indivisible span. Do **not** start Wave D's split unless it can complete in-sprint. With that boundary, the sprint carries zero interim-architecture debt.
+
+**Principles confirmed in review:** P6 (complexity budget — grounds the 0316(b) "no precedence tier" ruling and the 0316(c) one-seam unification), P7 (single source of truth — 0316(c) + 0100 close), P8 (no interim implementations — the 0109 carry boundary), P15 (facade types live with behavior — 0100 verified landed), P19 (no module privileged by name — 0303 promotion check). No principle needed refinement at review time; Phase-7 close will revisit.
+
+## Skill plans (Phase 3)
+
+*Pending Phase-1 approval + Phase-2 review.*
+
+## Waves (Phase 4)
+
+**Branch**: `sprint-81` (off sprint-80 HEAD). Reduction committed per-batch; per-component design follows the captured reduction.
+
+### Reduction batch (W1–W3, executing first per user) — 4 parallel agents, disjoint file domains, /sprint commits the batch
+
+| Agent | Skill | Domain | Items | Status |
+|---|---|---|---|---|
+| A | stale-sweep | `design/arch/fixmes/` (read source) | Verify+delete stale CODE fixmes: 0008, 0009, 0025, 0032, 0044, 0098, 0100, 0103, 0104, 0108, 0176, 0233, 0271, 0287, 0319, 0321 (0229 is partial — trim, don't delete) | pending |
+| B | /spec | `spec/` | 0141 (§12.5 SHOULD→MUST), 0113 (strip ring annotations), 0278 (Self), 0307 (EOF record), confirm 0317/0318 annotations + delete those fixmes | pending |
+| C | /docs + /repl | `user/`, `repl/` | 0051 (canonical introspection), 0309 (docstring dash), 0274 (repl test-discovery), 0035, 0050 | pending |
+| D | /design + /arch (doc-accuracy) | `design/`, crate rustdoc, `facades/int.md` | 0014, 0106, 0212, 0214, 0252, 0253, 0266, 0297 (verify 0102) | pending |
+| E | /qa (zero-skips) — **after batch commit** | `tests/`, benches | TCO×5 un-ignore (post-0141), s68×2 flip, perf→release bench, 0326 prune, cheap harvest closures (0126/0139/0127c/0125-stubs) | pending |
+
+### Per-component waves (W4–W12) — designed after the reduction is captured
+
+*Outline in §Scope (typecheck, frontend, backend×3, primitives, platform, int×2, arch, qa-harvest, Phase-6). Phase-3 design for these fires once the reduced surface is known.*
+
+## Notes
+
+- 2026-06-13 — **Phase 1 scope drafted, re-pivoted twice.** Initial draft used a now-vs-Phase-H division; user corrected: **Phase H = `--release`/Tier-2 only; all readable FIXMEs are pre-Phase-H mainline completion.** Re-pivoted onto a **crate/component axis**, docs-first. Second correction: not a cheap-bite-now / heavy-later split — **every component gets one or more waves THIS sprint to clear all/most of its issues; defer only with explicit good reason.** 0316 rides Wave 1. Perf skip → **relocate to release-mode bench** (user-chosen). Final shape: 3 cross-cutting openers (docs / stale / zero-skips) + per-component clearance waves (4–11, heavy ones sub-waved) + Phase-6 (12); single justified deferral = 0134's XL-harvest bulk (spec surface already preserved + 0109-dependent). New FIXME **0326** filed (/qa — prune output). Awaiting user go to advance to Phase 2 (/arch).
+
+- 2026-06-13 — **Phase 2 complete — /arch SIGN-OFF-WITH-REVISIONS** (full review in §"Architecture review"). Revisions folded into the wave plan: **R1** — 9b scoped to 0109 Waves A+B+C only; 0109 Wave D + the dependent observability-harvest cluster co-carry to the next arc sprint (named justified carry, sibling to 0134). **Closes** — 0098 + 0100 → CLOSE (verified against source; drop from Waves 5/9, verify-delete in W2); 0176 → stale (added to W2). **0316 ruled** — terminal-source dedup ADOPT + globs-stay-peers (no precedence tier) + `resolve_with_fallback` as one new `cranelisp-types` pub fn (signature specified; edit lands Wave 1). **Number-collision** — benign two-register design; W2 sweep targets `fixmes/` paths only. **0289-i5 dispatch funnel** = stretch goal, likeliest slip. Public-API touches confined to 0316, 0325, 0303, 0308, 0289-i5. No interim-architecture risk with the R1 carry boundary observed. Ready for Phase 3 (design).
+
+## Outcome (Phase 7)
+
+*Pending.*

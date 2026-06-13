@@ -142,7 +142,7 @@ Cranelisp uses **strict (eager) evaluation**. All sub-expressions are fully eval
 
 The `Seq` type provides lazy evaluation through thunks (zero-argument closures). Laziness is explicit and user-controlled — it is NOT a property of the evaluation model itself.
 
-### 12.4.3 Lenient Evaluation [R4 S11]
+### 12.4.3 Lenient Evaluation [S11]
 
 An implementation MUST evaluate independent `let` bindings in parallel where a cost heuristic determines it is beneficial. This is called **lenient evaluation**. Because all binding expressions in a `let` are pure, evaluating them concurrently produces the same result as sequential evaluation — the non-determinism in evaluation order is not observable.
 
@@ -150,11 +150,11 @@ A binding is independent if its free variables do not include any name bound ear
 
 Lenient evaluation is semantically transparent — programs MUST NOT depend on whether any particular binding is parallelized. An implementation MAY provide an opt-out mechanism (e.g., an environment variable) for debugging purposes.
 
-A runtime error (§12.7) raised while evaluating any binding — whether evaluated sequentially or in parallel — MUST propagate as if the bindings were evaluated sequentially: the first such error aborts the whole `let` expression. An implementation that evaluates bindings on separate threads MUST therefore convey a worker-thread error back to the joining thread; a parallelised binding's panic MUST NOT be silently discarded. This is what makes the observational-equivalence promise above hold for panics, and it is what lets a `catch-runtime-error` bracket (§12.7.2) enclosing a lenient `let` observe a panic raised in any of its parallelised bindings. The same propagation rule applies to the structured fork-join of automatic `IO` scheduling (§10.12). [R4 S77 — defect repro S76]
+A runtime error (§12.7) raised while evaluating any binding — whether evaluated sequentially or in parallel — MUST propagate as if the bindings were evaluated sequentially: the first such error aborts the whole `let` expression. An implementation that evaluates bindings on separate threads MUST therefore convey a worker-thread error back to the joining thread; a parallelised binding's panic MUST NOT be silently discarded. This is what makes the observational-equivalence promise above hold for panics, and it is what lets a `catch-runtime-error` bracket (§12.7.2) enclosing a lenient `let` observe a panic raised in any of its parallelised bindings. The same propagation rule applies to the structured fork-join of automatic `IO` scheduling (§10.12). [S77 — defect repro S76]
 
-## 12.5 Tail Call Optimization [Tested+Neg tests/ring0.rs::tco_deep_countdown]
+## 12.5 Tail Call Optimization [Tested+Neg tests/spec_12_runtime.rs::tco_deep_countdown, tests/spec_12_runtime.rs::tco_match_tail_position, tests/spec_12_runtime.rs::tco_accumulator, tests/spec_12_runtime.rs::tco_let_body_tail_position, tests/spec_12_runtime.rs::tco_non_tail_recursion_unchanged]
 
-Implementations SHOULD optimize self-recursive tail calls into loops. A tail call is a function call in tail position — the last operation before the function returns.
+Implementations MUST optimize self-recursive tail calls into loops (no stack frame is consumed per recursive call). This is a structural guarantee, not a heuristic: every self-recursive call in tail position is compiled to a jump back to the function's entry, so unbounded self-recursion in tail position runs in constant stack space and MUST NOT stack-overflow. A tail call is a function call in tail position — the last operation before the function returns.
 
 Tail position is defined recursively:
 - The body of a function is in tail position
@@ -193,7 +193,7 @@ The following are compile-time errors:
 
 ### 12.7.2 Runtime Panics [Tested]
 
-A **runtime panic** terminates the current evaluation. It does NOT terminate the process in REPL mode (see §12.7.4). The panicked evaluation itself cannot resume — it is unconditionally fatal to the expression being evaluated, and any heap values it had partially produced are in an indeterminate state (their drop glue did not run). User code MAY, however, **observe** a runtime panic as a value rather than letting it abort the enclosing computation, by bracketing the risky work in the `catch-runtime-error` combinator (`(Fn [(Fn [] a)] (Result a String))`, see [Appendix A.3](appendix-a-builtins.md#test-discovery-and-error-capture)): the combinator invokes a thunk and returns `(Err message)` if it panicked or `(Ok result)` otherwise. This recovers the panic *message*, not a consistent heap from the aborted thunk — an `(Err …)` result means the bracketed evaluation is void. Only language-level panics (the §12.7.2.1 sources, lowered to a `runtime/panic` call) are observable this way; hardware signals are not (see §12.7.2.1). [R4 S77 — tested-by /qa]
+A **runtime panic** terminates the current evaluation. It does NOT terminate the process in REPL mode (see §12.7.4). The panicked evaluation itself cannot resume — it is unconditionally fatal to the expression being evaluated, and any heap values it had partially produced are in an indeterminate state (their drop glue did not run). User code MAY, however, **observe** a runtime panic as a value rather than letting it abort the enclosing computation, by bracketing the risky work in the `catch-runtime-error` combinator (`(Fn [(Fn [] a)] (Result a String))`, see [Appendix A.3](appendix-a-builtins.md#test-discovery-and-error-capture)): the combinator invokes a thunk and returns `(Err message)` if it panicked or `(Ok result)` otherwise. This recovers the panic *message*, not a consistent heap from the aborted thunk — an `(Err …)` result means the bracketed evaluation is void. Only language-level panics (the §12.7.2.1 sources, lowered to a `runtime/panic` call) are observable this way; hardware signals are not (see §12.7.2.1). [S77 — tested-by /qa]
 
 #### 12.7.2.1 Panic Sources [Tested]
 
@@ -202,16 +202,16 @@ The following conditions cause a runtime panic:
 | Condition | Message | Notes |
 |---|---|---|
 | Non-exhaustive match | `"match failed"` | All match arms tested, none matched [Tested tests/ring0.rs::error_non_exhaustive_match_runtime] |
-| Integer division by zero | `"division by zero"` | `div-i64` with zero divisor [R4 S18] |
-| Vec index out of bounds | `"vec-get: index out of bounds"` | `vec-get` or `vec-set` with index < 0 or >= length [R4 S18] |
-| Stack overflow | Implementation-defined message | Exhaustion of the call stack (e.g., unbounded recursion without TCO) [R4 S18] |
+| Integer division by zero | `"division by zero"` | `div-i64` with zero divisor [S18] |
+| Vec index out of bounds | `"vec-get: index out of bounds"` | `vec-get` or `vec-set` with index < 0 or >= length [S18] |
+| Stack overflow | Implementation-defined message | Exhaustion of the call stack (e.g., unbounded recursion without TCO) [S18] |
 
 #### 12.7.2.2 Conditions That Are NOT Panics
 
 | Condition | Behavior | Rationale |
 |---|---|---|
 | Integer overflow | Silent wraparound (two's complement) | Specified behavior, not an error. `Int` values are 64-bit two's complement; `add-i64`, `sub-i64`, `mul-i64` wrap on overflow. [Tested tests/ring0.rs::integer_overflow_wraps] |
-| Float division by zero | IEEE 754 result (`Inf`, `-Inf`, or `NaN`) | Follows IEEE 754 semantics. NOT a panic. [R4 S18] |
+| Float division by zero | IEEE 754 result (`Inf`, `-Inf`, or `NaN`) | Follows IEEE 754 semantics. NOT a panic. [S18] |
 | `parse-int` with invalid input | Returns `None` | Parsing failure is a normal `Option` result, not an error. [Tested tests/ring1.rs::parse_int_valid] |
 | IO operation failure | Platform-defined `IO` result | See §12.7.6. |
 
@@ -227,11 +227,11 @@ Cranelisp uses **unchecked (wrapping) integer arithmetic** and **checked integer
 
 - **Modulo/remainder**: If provided, follows the same policy as integer division — zero divisor causes a runtime panic.
 
-### 12.7.4 REPL vs Batch Error Behavior [R4 S18]
+### 12.7.4 REPL vs Batch Error Behavior [S18]
 
 The execution environment determines what happens after a runtime panic:
 
-#### 12.7.4.1 REPL Mode [R4 S18]
+#### 12.7.4.1 REPL Mode [S18]
 
 In REPL mode, a runtime panic terminates the current expression evaluation but MUST NOT terminate the REPL session. The REPL MUST:
 
@@ -248,11 +248,11 @@ user> (+ 1 2)
 
 Heap allocations from the panicking evaluation MAY be leaked. This is acceptable because the REPL session continues and leaked memory is bounded by the size of the single failed evaluation.
 
-#### 12.7.4.2 Batch Mode [R4 S18]
+#### 12.7.4.2 Batch Mode [S18]
 
 In batch mode (`cranelisp --run file.cl`), a runtime panic terminates the process with a non-zero exit code. The implementation MUST print the panic message to stderr before exiting.
 
-### 12.7.5 Error Message Format [R4 S18]
+### 12.7.5 Error Message Format [S18]
 
 Runtime panic messages MUST be displayed with a consistent prefix that distinguishes them from normal output:
 
@@ -276,7 +276,7 @@ Implementations SHOULD include source location information (file and line) when 
 error: runtime panic at <file>:<line>: <message>
 ```
 
-### 12.7.6 Interaction with IO Model [R4 S18]
+### 12.7.6 Interaction with IO Model [S18]
 
 Runtime panics and the IO model (§10) interact as follows:
 
@@ -299,7 +299,7 @@ Platform operations MUST NOT panic for expected failure modes (file not found, p
 
 **Panics during `Par` execution** (§10.12): If any branch of a `Par` node panics during concurrent execution, the panic propagates to the parent trampoline. Other concurrently executing branches MAY or MAY NOT complete before the panic is observed. The implementation is NOT required to cancel in-flight branches.
 
-### 12.7.7 No User-Exposed Panic Mechanism [R4 S18]
+### 12.7.7 No User-Exposed Panic Mechanism [S18]
 
 There is no `panic`, `error`, `throw`, or `raise` special form or function available to user code. User code cannot deliberately trigger a runtime panic. Runtime panics originate only from the conditions listed in §12.7.2.1.
 
@@ -321,17 +321,17 @@ Programs that need to signal error conditions MUST use the type system:
 
 This design keeps the runtime simple (no unwinding machinery beyond the panic boundary) and encourages programs to make error conditions visible in their types.
 
-### 12.7.8 Implementation Requirements [R4 S18]
+### 12.7.8 Implementation Requirements [S18]
 
 A conforming implementation MUST satisfy:
 
-1. **Panic boundary**: The implementation MUST catch runtime panics at the boundary between the runtime and JIT-compiled code. Panics MUST NOT propagate as uncaught signals or cause undefined behavior. [R4 S18]
-2. **REPL survival**: The REPL MUST continue operating after a runtime panic, with all prior session state intact. [R4 S18]
-3. **Batch exit**: In batch mode, a runtime panic MUST cause a non-zero process exit code and a message on stderr. [R4 S18]
-4. **No UB on panic**: A runtime panic MUST NOT cause undefined behavior, even if it occurs during heap allocation, closure invocation, or IO trampoline execution. Heap leaks are acceptable; use-after-free and double-free are not. [R4 S18]
-5. **Deterministic panics**: Given the same inputs, the same panic condition MUST be triggered. The implementation MUST NOT silently suppress panics or convert them to arbitrary values (except for integer overflow, which is specified as wrapping). [R4 S18]
+1. **Panic boundary**: The implementation MUST catch runtime panics at the boundary between the runtime and JIT-compiled code. Panics MUST NOT propagate as uncaught signals or cause undefined behavior. [S18]
+2. **REPL survival**: The REPL MUST continue operating after a runtime panic, with all prior session state intact. [S18]
+3. **Batch exit**: In batch mode, a runtime panic MUST cause a non-zero process exit code and a message on stderr. [S18]
+4. **No UB on panic**: A runtime panic MUST NOT cause undefined behavior, even if it occurs during heap allocation, closure invocation, or IO trampoline execution. Heap leaks are acceptable; use-after-free and double-free are not. [S18]
+5. **Deterministic panics**: Given the same inputs, the same panic condition MUST be triggered. The implementation MUST NOT silently suppress panics or convert them to arbitrary values (except for integer overflow, which is specified as wrapping). [S18]
 
-## 12.8 Platform ABI [R4 S10]
+## 12.8 Platform ABI [S10]
 
 Platform functions (loaded via `(platform name)`) use the C calling convention. All parameters and return values are i64. The platform ABI defines the contract between the Cranelisp runtime and external platform libraries.
 

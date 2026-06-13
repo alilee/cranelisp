@@ -40,8 +40,10 @@ impl Jit {
     ///   - one `__cranelisp_got_{M}` → `symbol_tables[M].got().base_ptr()`
     ///     symbol per module in `symbol_tables` (incl. the synthetic
     ///     `primitives` module), named via `cranelisp_types::got_data_symbol_name`;
-    ///   - every `PlatformEffect` primitive's `jit_name` → GOT-slot ptr,
-    ///     resolved by walking each module's defs + import chains.
+    ///   - every `DefKind::PlatformEffect` def's JIT name → GOT-slot ptr,
+    ///     resolved by walking each module's defs + import chains. The JIT name
+    ///     IS the symbol-table key (the `Symbol`); there is no separate
+    ///     `jit_name` payload (retired S69 Submission 36 with `PrimitiveKind`).
     ///
     /// `C`/`L` are the symbol-table carrier params; at int's JIT boundary the
     /// concrete type is `SymbolTables<Code, ()>`. The GOT base-ptr + platform
@@ -62,7 +64,7 @@ Pre-`JITModule::new`, on a `JITBuilder`:
 
 1. **Intrinsic Import targets** — `for rec in cranelisp_intrinsics::INTRINSICS_TABLE { builder.symbol(rec.name, rec.ptr) }`. Replaces `register_intrinsics()` (`jit.rs:180`) which iterates the in-crate `intrinsic_symbols()`. See §2.
 2. **Per-module GOT data symbols** — `for entry in symbol_tables.iter() { builder.symbol(got_data_symbol_name(entry.key()), entry.value().got().base_ptr()) }`. This is exactly the `got_data_defs` loop currently at `worker.rs:3003-3006`, moved inside the constructor. Uses the **types-crate** `got_data_symbol_name` (already authored — `crates/cranelisp-types/src/module.rs:1722`), not the backend `pub(crate)` one (`compiler/mod.rs:100`), per the Phase-2 review's single-source ruling.
-3. **Platform-effect jit-names** — the `collect_jit_setup` def + import-chain walk (`worker.rs:2961-3001`): for each `DefKind::Primitive { primitive_kind: PlatformEffect, jit_name: Some(n) }` with a populated GOT slot, register `(n, got.load_slot(slot))`; follow `ModuleEntry::Import` to the source table for imported platform effects.
+3. **Platform-effect JIT names** — the def + import-chain walk: for each top-level `DefKind::PlatformEffect { scheduling_class }` (the current `cranelisp-types` shape — `crates/cranelisp-types/src/module.rs`; **not** nested under `DefKind::Primitive { primitive_kind: .. }`, which no longer exists) with `got_slot: Some(slot)`, register `(name, got.load_slot(slot))` where `name` is the **symbol-table key** (the `Symbol`) — there is no retired `jit_name` payload. Follow `ModuleEntry::Import` to the source table for imported platform effects; the canonical JIT name is the **defining** module's symbol key (`source.symbol`), not the importing module's local alias. The implemented walk is `crates/cranelisp-backend/src/jit.rs::register_platform_effect_symbols` (unit-tested by `jit_new_registers_platform_effect_and_got_symbols` + `jit_new_follows_import_edge_for_platform_effect`).
 
 Then `JITModule::new(builder)`, `make_context()`, `FunctionBuilderContext::new()` — identical to the existing `from_isa` tail (`jit.rs:338-353`). The 6 convenience `*_func_id` fields stay `None` at construct (they are populated by `declare_intrinsics` during the per-call compile, unchanged — `compile_to_module` calls `declare_intrinsics_generic` internally per `lib.rs:526`).
 
@@ -74,7 +76,7 @@ Then `JITModule::new(builder)`, `make_context()`, `FunctionBuilderContext::new()
 |---|---|---|
 | `Jit::new_with_symbols(&[(&str, *const u8)])` | **`pub(crate)` or delete** once int's hand-assembly is gone. int is its only production caller (the two `pipeline.rs` sites collapse with W-Collapse; the `worker.rs:3296` site becomes `Jit::new(symbol_tables)`). Backend tests that use it migrate to `Jit::new(&tables)` or keep a `pub(crate)` test-only path. | BC §3 lists `new_with_symbols`-style construct as int-parallel-path-only; the boundary is `new(symbol_tables)`. `feedback_callee_api_for_caller_only`: a callee API kept only because int calls it is not justified by int. |
 | `Jit::new_with_isa` | **`pub(crate)`** — used internally by per-symbol batches if §1.3's shared-ISA optimisation ever lands; no external caller. | Same. |
-| `Jit::new()` (no args) | **Keep `pub`** — `Jit::new()` (empty symbol set) is the genuine zero-arg path some backend unit tests use; harmless. Re-expressible as `Jit::new(&empty_tables)` but the no-arg ergonomic is worth keeping `pub`. *(/design call: keep; revisit if baseline review objects.)* |
+| `Jit::new()` (no args) | **Retired — `new` is the boundary constructor (as-built S76 W1).** The boundary ctor took the `new` identifier as the generic `Jit::new<C, L>(symbol_tables)`; Rust cannot host both a zero-arg `new()` and a generic `new<C,L>(..)` under one identifier, so the zero-arg form was displaced. It had no live consumer — the backend tests that the original row cited as "the genuine zero-arg path" in fact call `Jit::new_with_symbols(&[])` (kept `pub(crate)`, in-crate/test-reachable). The zero-arg path is re-expressed as `Jit::new(&empty_tables)` where genuinely needed. The backend `public-api.txt` removes `Jit::new() -> Result<Self, …>` alongside `new_with_symbols`/`new_with_isa`; the `lib.rs` crate-root `//!` documents the disposition. The original row's "revisit if baseline review objects" escape hatch anticipated this. *(FIXME 0253 reconciliation.)* |
 | `register_intrinsics(&mut JITBuilder)` (`jit.rs:180`) | **Re-point** to iterate `INTRINSICS_TABLE` (§2), OR fold into `Jit::new`'s body. | §2. |
 | `collect_jit_setup` / `collect_jit_setup_public` (int, `worker.rs:2954`/`3017`) | **Deleted on the int side** (W-Collapse) — body absorbed into `Jit::new`. Backend gains the walk. | The reach-around int does today moves behind the boundary. |
 

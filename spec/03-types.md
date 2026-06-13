@@ -17,9 +17,9 @@ Cranelisp has four primitive types. All are immutable and unboxed at runtime.
 
 `Int` values use two's complement representation; arithmetic overflow wraps silently. `Float` values follow IEEE 754 semantics including `NaN`, infinities, and signed zero.
 
-Primitive types follow the same import rules as other names in the `primitives` module (see [§8.9.1](08-modules.md#891-the-primitives-module)). Bare-name references (e.g., `:Int`) MUST come into scope through either prelude re-export or an explicit import (e.g., `(import [primitives [Int Bool Float String]])`); otherwise they are a compile-time "unknown type" error. Fully-qualified references (e.g., `:primitives/Int`) are always available regardless of imports. [R4 S70]
+Primitive types follow the same import rules as other names in the `primitives` module (see [§8.9.1](08-modules.md#891-the-primitives-module)). Bare-name references (e.g., `:Int`) MUST come into scope through either prelude re-export or an explicit import (e.g., `(import [primitives [Int Bool Float String]])`); otherwise they are a compile-time "unknown type" error. Fully-qualified references (e.g., `:primitives/Int`) are always available regardless of imports. [S70]
 
-## 3.2 Compound Types [R4 S10]
+## 3.2 Compound Types [S10]
 
 ### 3.2.1 Function Types [Tested tests/repl_experience.rs::defn_with_let_infers_return_type]
 
@@ -56,7 +56,7 @@ ADTs may be:
 - **Sum types** (multiple constructors): `(deftype (Option a) None (Some [:a val]))`
 - **Enum types** (all constructors nullary): `(deftype Color Red Green Blue)`
 
-### 3.2.3 IO Type [R4 S10]
+### 3.2.3 IO Type [S10]
 
 ```
 IO(A)
@@ -91,14 +91,14 @@ Trace
 
 `Trace` is defined in the `primitives` module and participates in the type system as an ordinary ADT. It is the result type of the `trace` special form (see [Section 4.12](04-expressions.md#412-trace-expression)). Unlike most ADTs, `Trace` is not parameterized -- it captures runtime information as formatted strings using the canonical value display format (see [Section 12.9](12-runtime.md#129-value-display-format)). The `params` and `children` fields use `SList` (from the `macros` module) for list structure, enabling pattern-matching traversal with `SCons`/`SNil`.
 
-**Form/ADT asymmetry.** There is a deliberate asymmetry between the `trace` *form* and the `Trace` *ADT names*: [R4 S76]
+**Form/ADT asymmetry.** There is a deliberate asymmetry between the `trace` *form* and the `Trace` *ADT names*: [S76]
 
 - The **`trace` keyword needs no import**. It is a root special form (see [Section 2.3.10](02-grammar.md#2310-trace----execution-trace) and [Section 4.12.4](04-expressions.md#4124-the-trace-adt)) — always available with no import and no module path, and there is **no** `primitives/trace`. Its name is reserved (see [Section 2.9](02-grammar.md#29-reserved-words)).
 - The **`Trace`, `TraceCall`, and field accessor names** (`name`, `params`, `result`, `children`, `nanos`) **DO require import**. They are `primitives`-module entries that are NOT auto-imported into user scope. User code must import them explicitly (e.g., `(import [primitives [Trace TraceCall name params result children nanos]])`) or use qualified names (e.g., `primitives/Trace`).
 
 This mirrors the `Sexp`-in-`macros` precedent (see [Section 9.1](09-macros.md#91-sexp-data-model)): quasiquote works without import because the expander emits qualified `macros/Sexp...` constructors, while bare `Sexp` constructors must be imported. Likewise the `trace` form works without import, while destructuring the returned `Trace` value requires importing the ADT names. A standard library MAY re-export the ADT names through a convenience module (e.g., `core.trace`) using the `export` mechanism (see [Section 8.4](08-modules.md#84-export)).
 
-### 3.2.5 Result Type [R4 S77 — tested-by /qa]
+### 3.2.5 Result Type [S77 — tested-by /qa]
 
 ```
 Result(A, B)
@@ -119,7 +119,7 @@ Result(A, B)
 
 `Result` is defined in the `primitives` module and participates in the type system as an ordinary parameterised ADT. It is **not** auto-imported into user scope: user code must import it explicitly (e.g., `(import [primitives [Result Ok Err]])`) or use qualified names (e.g., `primitives/Ok`). It is the return type of the `catch-runtime-error` combinator (see [Appendix A.3](appendix-a-builtins.md#test-discovery-and-error-capture)): `(Ok result)` when a protected thunk completes, `(Err message)` when it raised a runtime error. Both constructors carry data, so both are heap-allocated.
 
-### 3.2.6 Pair Type [R4 S77 — tested-by /qa]
+### 3.2.6 Pair Type [S77 — tested-by /qa]
 
 ```
 Pair(A, B)
@@ -372,7 +372,7 @@ Pattern checking rules:
 - **Variable pattern** `x`: Binds `x` to the scrutinee type.
 - **Wildcard pattern** `_`: Matches anything, introduces no bindings.
 
-#### Trace Expression [R4 S20]
+#### Trace Expression [S20]
 
 ```
 G |- expr : T

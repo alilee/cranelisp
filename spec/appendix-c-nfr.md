@@ -52,7 +52,7 @@ When a heap value's reference count reaches zero, the implementation MUST invoke
 
 **Activation**: Ring 1 (heap introduction).
 
-## C.2 Data Structure Strategies [R4 S24]
+## C.2 Data Structure Strategies [S24]
 
 ### C.2.1 Persistent Vec (RRB Tree) [Tested tests/ring1.rs::vec_get_first]
 
@@ -66,7 +66,7 @@ The implementation MUST NOT commit to a flat-array Vec representation in a way t
 
 **Activation**: Post-Ring 4. The flat-array representation is acceptable through the ring sequence. RRB upgrade is a runtime-only change that does not affect language semantics.
 
-### C.2.2 Persistent Map (HAMT) [R4 S24]
+### C.2.2 Persistent Map (HAMT) [S24]
 
 When the `Map` type is introduced, the implementation SHOULD use a Hash Array Mapped Trie (HAMT) as the backing data structure. HAMTs provide O(log₃₂ n) lookup, insert, and delete with structural sharing.
 
@@ -91,7 +91,7 @@ The implementation MUST NOT commit to a flat byte-array String representation in
 
 **Activation**: Post-Ring 4. The flat representation is acceptable through the ring sequence.
 
-### C.2.4 Collection Extensibility [R4 S24]
+### C.2.4 Collection Extensibility [S24]
 
 The standard library SHOULD be able to provide alternative collection implementations alongside the built-in primitives. Users SHOULD be able to choose the collection type that best fits their use case, and write code that works generically across collection types via traits.
 
@@ -107,9 +107,9 @@ The standard library SHOULD be able to provide alternative collection implementa
 
 **Activation**: Ring 2 (when trait dispatch enables collection-level abstraction). Advanced collection types are post-Ring 4.
 
-## C.3 Evaluation Properties [R4 S11]
+## C.3 Evaluation Properties [S11]
 
-### C.3.1 Lenient Evaluation [R4 S11]
+### C.3.1 Lenient Evaluation [S11]
 
 An implementation MUST evaluate independent `let` bindings in parallel where a cost heuristic determines it is beneficial. This is normatively specified in [§12.4.3](12-runtime.md#1243-lenient-evaluation).
 
@@ -117,7 +117,7 @@ An implementation MUST evaluate independent `let` bindings in parallel where a c
 
 **Activation**: Ring 4 (effects and runtime infrastructure). The mechanism requires safe stack management for parallel evaluation of pure sub-expressions.
 
-### C.3.2 Automatic IO Scheduling [R4 S11]
+### C.3.2 Automatic IO Scheduling [S11]
 
 The compiler MUST perform independence analysis on `bind!` chains and insert parallel execution nodes for commutative, data-independent effect pairs. This is normatively specified in [§10.12](10-io.md).
 
@@ -133,7 +133,7 @@ An implementation SHOULD optimize self-recursive tail calls into loops. This is 
 
 **Activation**: Self-TCO in Ring 0. Mutual TCO and closure TCO are future extensions.
 
-## C.4 Concurrency Preparation [R4 S11]
+## C.4 Concurrency Preparation [S11]
 
 ### C.4.1 Thread-Safe Reference Counting [Tested tests/rc.rs::rc_string_alloc_and_drop]
 
@@ -155,7 +155,7 @@ All user-visible values MUST be immutable after construction. There is no `set!`
 
 **Activation**: Always (language invariant from Ring 0).
 
-### C.4.3 No Global Mutable State in Generated Code [R4 S11]
+### C.4.3 No Global Mutable State in Generated Code [S11]
 
 Generated code MUST NOT use global mutable state (static mutable variables, global registries) for value-level operations. Module-level definitions are immutable after initialization. The GOT (Global Offset Table) used for JIT linking is a compile-time mechanism, not a runtime-mutable store.
 
@@ -165,7 +165,7 @@ Generated code MUST NOT use global mutable state (static mutable variables, glob
 
 **Activation**: Always (structural invariant from Ring 0).
 
-### C.4.4 Concurrent Communication [R4 S11]
+### C.4.4 Concurrent Communication [S11]
 
 The architecture MUST NOT preclude adding CSP-style (Communicating Sequential Processes) concurrent channels as a stdlib capability. Channels would enable coordination between concurrent tasks, complementing the automatic parallelism provided by lenient evaluation (§C.3.1) and IO scheduling (§C.3.2).
 
@@ -181,7 +181,7 @@ The architecture MUST NOT preclude adding CSP-style (Communicating Sequential Pr
 
 **Activation**: Post-Ring 4. Channels are a stdlib + runtime addition, not a language change. The shared infrastructure with lenient evaluation must be in place first.
 
-## C.5 Compilation Properties [R4 S11]
+## C.5 Compilation Properties [S11]
 
 ### C.5.1 Static Monomorphisation [Tested tests/ring2.rs::constrained_add_int]
 
@@ -209,7 +209,7 @@ No other part of the compiler (parser, AST builder, typechecker, pipeline wiring
 
 **Activation**: Ring 1 (heap introduction).
 
-### C.5.3 Three-Mode Compilation Strategy [R4 S11]
+### C.5.3 Three-Mode Compilation Strategy [S11]
 
 The architecture MUST support three compilation modes sharing a common frontend and typechecker:
 
@@ -227,7 +227,7 @@ The runtime extern function contract (function names, calling conventions, signa
 
 **Activation**: Dev mode and quick build mode in Ring 4 (module caching produces relocatable objects). Release mode is post-Ring 4 (LLVM backend is a future crate addition).
 
-### C.5.4 Target Portability [R4 S11]
+### C.5.4 Target Portability [S11]
 
 The architecture MUST NOT preclude targeting compilation platforms beyond the host native platform. Specifically, the architecture MUST support a future WASM (WebAssembly) target, enabling Cranelisp programs to run in browser and WASI environments.
 

@@ -448,7 +448,7 @@ An implementation MUST track re-export provenance so that introspection can disp
 
 `export` forms MUST appear as top-level forms. They are extracted alongside `mod` and `import` before macro expansion.
 
-### 8.4.8 Implicit Impl Re-export [R4 S66]
+### 8.4.8 Implicit Impl Re-export [S66]
 
 Trait implementations are NOT enumerable in `export` (or `import`) lists. An impl form `(impl Trait Type ...)` does not have a name that can appear inside `[...]`. Instead, **re-exporting a trait or a type implicitly re-exports any impl whose trait + type are reachable through the re-exporter's import closure**.
 
@@ -606,7 +606,7 @@ The following conflicts MUST produce compile-time errors:
 
 Same-source duplicates (the same name arriving through two re-export paths from the same original definition) are NOT ambiguous.
 
-#### Explicit Imports Shadow the Implicit Prelude [R4 S20]
+#### Explicit Imports Shadow the Implicit Prelude [S20]
 
 The implicit prelude is an **outer scope**, not a set of bindings materialised into the module's symbol table. A module's own symbol table is its **inner scope**: it holds only the module's local definitions and its *explicit* imports/re-exports. The implicit prelude (injected per §8.8) is a separate **outer scope** — the `prelude` module's own public bindings — consulted **only on a resolution miss in the inner scope**. Prelude bindings are NOT copied into the module's table.
 
@@ -655,7 +655,7 @@ For a qualified name `module_path/local_name` (per §1.4.3, where `module_path` 
 
 The target symbol MUST be public in the resolved module. Accessing a private name through a qualified reference is a compile-time error.
 
-### 8.6.7 Impl Resolution Boundary [R4 S66]
+### 8.6.7 Impl Resolution Boundary [S66]
 
 When resolving a trait method call (per [§7.4](07-traits.md#74-method-resolution-static-dispatch)), the implementation MUST consider only impls reachable through the **transitive import closure of the current module**. Impls in modules that the current module does not transitively import — even modules that happen to be loaded into the same compilation unit — MUST NOT participate in resolution.
 
@@ -761,7 +761,7 @@ Fully-qualified references (`primitives/Int`, `primitives/add-i64`) work regardl
 
 The §8.11.4 "primitives remain available" guarantee refers to fully-qualified-reference reachability -- not bare-name scope. Without a prelude (or with a prelude that does not re-export the needed names), bare-name use is a compile-time "unknown type" or "unknown name" error; the fully-qualified form continues to work.
 
-[R4 S70]
+[S70]
 
 ### 8.9.2 The `macros` Module
 
@@ -870,7 +870,7 @@ If no sources yield any lib directories, the lib directory list is empty. No lib
 
 Special forms (`defn`, `let`, `if`, `match`, etc.) are not module names and have no import requirement; they are always available as bare references regardless of prelude or imports.
 
-[R4 S70]
+[S70]
 
 > **Practical implication.** The project root is the directory containing the entry file. A project at `exemplar/solver.cl` has project root `exemplar/`. If `exemplar/stdlib/` does not exist and `CRANELISP_LIB` is not set, the prelude will not load. To use the standard library from a subdirectory project, either:
 > - Set `CRANELISP_LIB` to point to the stdlib location (e.g., `CRANELISP_LIB=../stdlib`), or
@@ -909,7 +909,7 @@ Macros from imported modules are available for expansion in the importing module
 
 Macro authors SHOULD use qualified names for non-prelude references within macro bodies to avoid capture by the importing module's local names.
 
-## 8.13 REPL Integration [R4 S10]
+## 8.13 REPL Integration [S10]
 
 A conforming REPL implementation SHOULD support the following module-related behaviors.
 
@@ -955,7 +955,7 @@ Typing a module name at the REPL SHOULD display information about that module: i
 | `module/name` | Qualified name reference | N/A |
 | `Type.member` | Dotted member access | N/A |
 
-## 8.15 Complete Example [R4 S10]
+## 8.15 Complete Example [S10]
 
 The following example demonstrates the full module system in a project with multiple files, imports, exports, visibility, and qualified access.
 

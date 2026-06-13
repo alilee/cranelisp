@@ -1,4 +1,4 @@
-# 4. Expressions [R4 S21]
+# 4. Expressions [S21]
 
 This section defines the evaluation semantics for each expression form in Cranelisp. All expressions evaluate to a value of a statically known type. Cranelisp uses strict (eager) evaluation -- sub-expressions are fully evaluated before their results are used.
 
@@ -713,16 +713,16 @@ E |- (trace expr) => TraceCall(root_name, root_params, root_result,
 
 The expression `expr` is evaluated exactly once. Its value `v` is used only to produce the root trace node's formatted result string -- the value itself is not accessible from the returned `Trace`.
 
-### 4.12.3 What Is Traced [R4 S76 — tested-by /qa S76]
+### 4.12.3 What Is Traced [S76 — tested-by /qa S76]
 
-Instrumentation applies to **every named function that is compiled with an entry in the implementation's function indirection table** — that is, any callable holding an indirection-table slot with a real code pointer. There is no project-root filter and no library/standard-library exclusion: completeness is by construction — if a call goes through an indirection-table slot, it is recorded, regardless of which module the callee lives in or how the callee was reached. This includes: [R4 S76]
+Instrumentation applies to **every named function that is compiled with an entry in the implementation's function indirection table** — that is, any callable holding an indirection-table slot with a real code pointer. There is no project-root filter and no library/standard-library exclusion: completeness is by construction — if a call goes through an indirection-table slot, it is recorded, regardless of which module the callee lives in or how the callee was reached. This includes: [S76]
 
 - Top-level functions defined with `defn` (including multi-signature variants and monomorphised specializations)
 - Functions imported from any module, including library modules discovered through the lib search path (standard library and third-party libraries)
 - Extern primitives in the synthetic `primitives` module (host-implemented functions reached through their indirection-table slot, e.g. `str-concat`, `int-to-string`)
 - Synthetic-module functions (e.g. `macros`-module functions) where they hold an indirection-table slot
 
-The following are NOT instrumented: [R4 S76]
+The following are NOT instrumented: [S76]
 
 - **Inline primitives**: Arithmetic, comparison, and boolean operations that compile to inline instructions have no callable entry point and cannot be intercepted. This category is structurally invisible.
 - **Host-promised extern and intrinsic-backed `primitives` entries**: `primitives`-module entries whose body is a host-supplied extern or runtime intrinsic (e.g. `discover-tests`, `catch-runtime-error`) hold no indirection-table slot of their own — a call to them has no slot to redirect — so they are likewise structurally untraceable. (Note: the *callables that `discover-tests` returns* are ordinary fn values reached through the indirection table, and so ARE traced when invoked; it is only the `discover-tests`/`catch-runtime-error` entries themselves that are untraceable.)
@@ -753,9 +753,9 @@ The fields are:
 
 The `children` field is a standard `SList` (from the `macros` module). User code traverses it with pattern matching on `SCons`/`SNil`, just like any other `SList` value. The `params` field is likewise an `SList` of formatted argument strings.
 
-`trace` is a **root special form** — a parser keyword recognised by the parser and typechecker before any name lookup, always available with no import and no module path (there is no `primitives/trace`). Its name is **reserved**: user code MUST NOT define or bind it (see [§2.3.10](02-grammar.md#2310-trace----execution-trace)). The *ADT* it returns is the opposite: `Trace`, `TraceCall`, and the field accessors (`name`, `params`, `result`, `children`, `nanos`) are defined in the `primitives` module and **require explicit import** for pattern matching and field access. This form/ADT asymmetry is deliberate and mirrors the `Sexp`-in-`macros` precedent (quasiquote works without import because the expander emits qualified constructors; bare `Sexp` constructors need the import). See [Section 3.2.4](03-types.md#324-trace-type) for the import requirements on the ADT names. [R4 S76]
+`trace` is a **root special form** — a parser keyword recognised by the parser and typechecker before any name lookup, always available with no import and no module path (there is no `primitives/trace`). Its name is **reserved**: user code MUST NOT define or bind it (see [§2.3.10](02-grammar.md#2310-trace----execution-trace)). The *ADT* it returns is the opposite: `Trace`, `TraceCall`, and the field accessors (`name`, `params`, `result`, `children`, `nanos`) are defined in the `primitives` module and **require explicit import** for pattern matching and field access. This form/ADT asymmetry is deliberate and mirrors the `Sexp`-in-`macros` precedent (quasiquote works without import because the expander emits qualified constructors; bare `Sexp` constructors need the import). See [Section 3.2.4](03-types.md#324-trace-type) for the import requirements on the ADT names. [S76]
 
-Per [§5.2.6](05-definitions.md#526-generated-accessors), each named field in the `TraceCall` constructor generates an accessor function with the same name as the field. To extract the nanosecond timing from a trace result, use the `nanos` accessor: [R4 S52]
+Per [§5.2.6](05-definitions.md#526-generated-accessors), each named field in the `TraceCall` constructor generates an accessor function with the same name as the field. To extract the nanosecond timing from a trace result, use the `nanos` accessor: [S52]
 
 ```clojure
 (import [primitives [Trace TraceCall nanos]])
@@ -766,7 +766,7 @@ Per [§5.2.6](05-definitions.md#526-generated-accessors), each named field in th
 
 There is no `trace-nanos` function. The accessor name is `nanos`, matching the field name in the `TraceCall` definition.
 
-### 4.12.5 Nested Trace [R4 S76 — tested-by /qa S76]
+### 4.12.5 Nested Trace [S76 — tested-by /qa S76]
 
 A `(trace ...)` expression MUST NOT be evaluated while another `(trace ...)` is actively tracing on the same thread. An implementation MUST raise a runtime error when a `(trace ...)` form is entered during the evaluation of an enclosing `(trace ...)` body — whether the inner form appears lexically:
 
@@ -776,9 +776,9 @@ A `(trace ...)` expression MUST NOT be evaluated while another `(trace ...)` is 
 
 or is reached dynamically through a function call (the body calls a function whose own body contains a `(trace ...)` form). In both cases the inner `(trace ...)` raises a runtime error rather than producing a nested or merged trace tree.
 
-Concurrent tracing on different threads is governed by [§4.12.6](#4126-concurrency) (at most one thread traces; others return an empty trace) — that case is distinct from same-thread re-entrancy and is not an error. [R4 S76]
+Concurrent tracing on different threads is governed by [§4.12.6](#4126-concurrency) (at most one thread traces; others return an empty trace) — that case is distinct from same-thread re-entrancy and is not an error. [S76]
 
-### 4.12.6 Concurrency [R4 S20]
+### 4.12.6 Concurrency [S20]
 
 Only one trace MAY be active at a time within a program. If multiple threads attempt to trace concurrently, at most one succeeds in activating instrumentation. The others evaluate their expressions normally and return a `Trace` value with no recorded children (an empty trace).
 
@@ -845,9 +845,9 @@ The `Trace` value returned by `(trace expr)` is an ordinary ADT value. It can be
 ; => the Trace value -- no side effects occurred
 ```
 
-### 4.12.9 Build-Mode Availability [R4 S76 — tested-by /qa S76]
+### 4.12.9 Build-Mode Availability [S76 — tested-by /qa S76]
 
-`(trace ...)` is available in **all** build modes — REPL, `--run`, and `--link` standalone binaries. The trace runtime is part of the language's runtime support and is present in every produced artefact. A `(trace ...)` form behaves identically across modes: the rules of [§4.12.1](#4121-type) through [§4.12.8](#4128-examples) apply unmodified in every mode. [R4 S76]
+`(trace ...)` is available in **all** build modes — REPL, `--run`, and `--link` standalone binaries. The trace runtime is part of the language's runtime support and is present in every produced artefact. A `(trace ...)` form behaves identically across modes: the rules of [§4.12.1](#4121-type) through [§4.12.8](#4128-examples) apply unmodified in every mode. [S76]
 
 In JIT modes (REPL and `--run`) the trace runtime is resolved at JIT-build time; in `--link` mode the trace runtime is linked into the standalone staticlib like any other runtime support, so a `(trace ...)` form in a linked program resolves and runs normally rather than failing at link time.
 

@@ -1325,9 +1325,24 @@ pub extern "C" fn cranelisp_init_primitives() {
 
 This **replaces** the pre-S68 force-link `pub use cranelisp_primitives::{bool, float, int, marshal, ring0, string as primitives_string, vec as primitives_vec};` re-exports that lived in `cranelisp-exe-bundle/src/lib.rs` to coax the linker into retaining `#[no_mangle]` runtime functions. Those re-exports relied on **implicit** discipline (`#[used]` annotations + `pub use` referencing) and made the dependency invisible at the call site that needed it. The explicit `cranelisp_init_primitives()` call makes the dependency **legible at the site** — the startup stub names what it needs, and the link-time symbol resolution is the natural enforcement (a missing primitives symbol fails the link cleanly). Per /arch's Phase 2 recommendation, the explicit init-hook shape is preferred over implicit `#[used]` discipline.
 
-The `cranelisp-primitives` per-fn `pub extern "C"` items demote to `pub(crate)` post-S68 (with `#[used]` on each function as a belt-and-suspenders DCE guard); the only pub item the crate publishes is `PRIMITIVES_TABLE`. The static archive `libcranelisp_exe_bundle.a` retains the runtime functions because the static `PRIMITIVES_TABLE`'s `LazyLock` init code references them at compile time — the linker preserves them as transitive dependencies of the static-init body. `cranelisp_init_primitives()`'s sole runtime effect is forcing that LazyLock — once forced, the symbols are referenced from the GotTable slots, which `__cranelisp_got_primitives` indexes into.
+The `cranelisp-primitives` per-fn `pub extern "C"` items demote to `pub(crate)` post-S68 (carrying `#[unsafe(export_name = "…")]` so the JIT/linker resolves them by language name); the only pub item the crate publishes is `PRIMITIVES_TABLE`. **DCE protection is NOT `#[used]`** (the per-fn items carry no `#[used]` attribute) — it is the in-crate `extern_shims()` harvest, which takes every extern fn's address into a static `HashMap` at `PRIMITIVES_TABLE` static-init, keeping each fn referenced from live code. See `crates/cranelisp-primitives/src/lib.rs` crate-root rustdoc §"force-link discipline" for the canonical mechanism (three anchors: `#[unsafe(export_name)]`, the `extern_shims()` static-data reference, and the GOT slots populated from it; no `#[used]` static). The static archive `libcranelisp_exe_bundle.a` retains the runtime functions because the static `PRIMITIVES_TABLE`'s `LazyLock` init code references them at compile time — the linker preserves them as transitive dependencies of the static-init body. `cranelisp_init_primitives()`'s sole runtime effect is forcing that LazyLock — once forced, the symbols are referenced from the GotTable slots, which `__cranelisp_got_primitives` indexes into.
 
-Intrinsics force-link re-exports (`cranelisp_intrinsics::{alloc, drop, io, ivar, panic, rc, heap_string, vec_runtime}`) remain — intrinsics are not a module (Decision 43) and have no SymbolTable/GotTable to seed; their runtime symbols are JITBuilder-registered by-name in JIT mode and linker-resolved by-name in `--link` mode (same shape as `--link` mode user fns reaching extern intrinsics).
+Intrinsics force-link re-exports remain — intrinsics are not a module (Decision 43) and have no SymbolTable/GotTable to seed; their runtime symbols are JITBuilder-registered by-name in JIT mode and linker-resolved by-name in `--link` mode (same shape as `--link` mode user fns reaching extern intrinsics). The `pub use cranelisp_intrinsics::*` lines in `cranelisp-exe-bundle/src/lib.rs` (mirrored in `crates/cranelisp-exe-bundle/public-api.txt`) enumerate to:
+
+Force-link re-exports retained from `cranelisp-intrinsics` (symmetric with the retired pre-S68 7-way primitives naming):
+
+- `alloc` — heap allocator surface (`heap_alloc`, `cranelisp_alloc_with_tag`, …)
+- `drop` — drop-glue trampolines
+- `io` — IO trampoline + token machinery
+- `ivar` — IVar runtime (fork/join, sparks)
+- `layout` — heap-layout constants/offsets surface
+- `panic` — panic handler + runtime-error slot
+- `rc` — reference-counting primitives
+- `trace` — `(trace ...)` runtime family (the 12 `cranelisp_trace_*` bodies + `trace_format`); re-export **restored** in S76 (FIXME 0255) when the trace bodies relocated back to `cranelisp-intrinsics` (D40 trace-half retraction)
+- `heap_string as intrinsics_string` — heap-string allocator/reader
+- `vec_runtime as intrinsics_vec` — vec runtime
+
+(The FIXME 0214 origin named 8; as-built the set is 10 — `layout` and `trace` were added/restored after S68.)
 
 ---
 

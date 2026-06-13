@@ -255,7 +255,7 @@ Implementations SHOULD limit the number of expansion iterations to prevent infin
 ;; Fixed point reached (no more macros)
 ```
 
-### 9.3.4 Macro Availability and Definition Order [R4 S76 — tested-by /qa S76]
+### 9.3.4 Macro Availability and Definition Order [S76 — tested-by /qa S76]
 
 **A macro MUST be defined before it is used, in source order.** Within a module (and within a REPL `(begin …)` cluster), a `defmacro` is available only to forms that *follow* it. A use of a name that appears textually before its `defmacro` is **not** a macro call: it is an ordinary reference that passes through to the AST builder, and fails name resolution there if the name is otherwise undefined. (This is the *defmacro-before-use* rule; it is the same rule whether the code runs in the REPL or in a batch file — see [Section 5.13.2](05-definitions.md#5132-repl-input-boundary-and-begin-clusters).)
 
@@ -269,7 +269,7 @@ Forbidding same-module non-macro expansion-time references is what makes REPL se
 
 The expanded S-expressions SHOULD carry the source location (span) of the original macro call site. This means that error messages resulting from expanded code point to where the macro was invoked, not where the macro was defined.
 
-### 9.3.6 Qualified Macro References [R4 S76 — tested-by /qa S76]
+### 9.3.6 Qualified Macro References [S76 — tested-by /qa S76]
 
 Macros MAY be invoked through qualified names (`module/macro-name`) without an explicit `import`. A qualified macro reference is resolved during macro expansion (the compile-time pass): the compiler lazy-loads, typechecks, and compiles the referenced module just-in-time (per §8.5.4), then expands the macro. There is no syntactic distinction between a qualified macro call and a qualified function call; the distinction is made when the compiler resolves the entry.
 
@@ -881,7 +881,7 @@ Concatenates two strings. Available as a primitive and commonly used in macro he
 (str-concat "foo" "-def")   ; -> "foo-def"
 ```
 
-## 9.12 Bootstrapping Order [R4 S76 — tested-by /qa S76]
+## 9.12 Bootstrapping Order [S76 — tested-by /qa S76]
 
 A module is compiled in **three passes**:
 

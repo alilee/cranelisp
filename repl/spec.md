@@ -164,7 +164,7 @@ Where:
 - `{value|name}` — either a runtime value (for expression results) or a fully-qualified name (for definitions and lookups)
 - `; {classification} - {docstring}` — optional comment suffix. The classification is the name of the defining special form (`defn`, `deftype`, `deftrait`, `defmacro`, `special form`, `impl`) or the symbol-class word `primitive` (used for builtins in the `primitives` module — see §4.1.7). The docstring is the first line of the symbol's documentation. If the symbol has no docstring, only the classification appears. If there is no classification (literal values), the comment is omitted entirely.
 
-For builtins, the docstring is appended on a separate `; <doc>` field after the classification (e.g., `; primitive ; Add`) — this distinguishes the host-implemented description from the user-supplied docstring grammar used by `defn`/`deftype`/etc.
+Builtins use the same dash form: `; {classification} - {docstring}` with classification `primitive` (e.g., `; primitive - Add`). The classification word `primitive` (rather than `defn`) is what distinguishes the host-implemented builtin from a user-defined function; the docstring suffix grammar is identical to `defn`/`deftype`/etc.
 
 **Related symbols** appear as comment lines below the primary line. Each section names a relationship using language syntax, followed by unqualified symbol names (bare names, since these are in-scope symbols):
 
@@ -315,8 +315,7 @@ Values are runtime results and have no module scope. They are displayed bare.
 
 `Vec` is a compiler-seeded primitive type, so the REPL knows to render it as `[elem1 elem2 ...]`. `List` and `Seq` are stdlib types defined via `deftype`; the REPL renders them through the generic ADT recursive formatter (Type.Constructor + recursive field formatting). The MUST requirement for `Seq` is termination: the REPL displays the constructor and field shape without forcing the lazy tail thunk, so an infinite sequence does not hang the prompt.
 
-> **Aspirational** (not currently required): A future revision MAY introduce a type-directed pretty-printer that recognises `List` and `Seq` and renders them as `(list elem1 elem2 ...)` and `(seq elem1 elem2 ... +more)` (forcing up to a small bound). This would require either (a) a display protocol/trait the stdlib opts into per type, or (b) compiler-seeded recognition of named types from a known stdlib path. Until that protocol exists, the generic ADT form is normative.
-<!-- FIXME(/int): When the type-directed pretty-printer or display-protocol mechanism is designed (likely in a Ring 4 polish sprint), revisit this section and promote the aspirational forms to MUST. Owning skill: /int (REPL display layer); coordinate with /arch on the protocol design and /stdlib on opt-in for List/Seq. -->
+> **Aspirational** (not currently required): A future revision MAY introduce a type-directed pretty-printer that recognises `List` and `Seq` and renders them as `(list elem1 elem2 ...)` and `(seq elem1 elem2 ... +more)` (forcing up to a small bound). This would require either (a) a display protocol/trait the stdlib opts into per type, or (b) compiler-seeded recognition of named types from a known stdlib path. No such protocol exists today, so the generic ADT form is normative. These forms are promoted to MUST only once the display-protocol mechanism lands — tracked by `design/arch/fixmes/0050-*.md` (owner `/int`, with `/arch` on the protocol and `/stdlib` on List/Seq opt-in).
 
 
 ADT fields MUST be recursively formatted according to this table.
@@ -755,13 +754,13 @@ Primary line only. Classification `primitive` (distinguishes builtins from user-
 
 ```
 user> add-i64
-:(Fn [primitives/Int primitives/Int] primitives/Int) primitives/add-i64 ; primitive ; Add
+:(Fn [primitives/Int primitives/Int] primitives/Int) primitives/add-i64 ; primitive - Add
 
 user> str-concat
-:(Fn [primitives/String primitives/String] primitives/String) primitives/str-concat ; primitive ; Concatenate two strings
+:(Fn [primitives/String primitives/String] primitives/String) primitives/str-concat ; primitive - Concatenate two strings
 ```
 
-The classification word `primitive` (rather than `defn`) is intentional: it distinguishes host-implemented builtins from user-defined functions. The builtin's docstring (sourced from [Appendix A.5](../spec/appendix-a-builtins.md#a5-docstrings-for-builtins-r1)) is appended on a separate `; <doc>` field per §1.1.
+The classification word `primitive` (rather than `defn`) is intentional: it distinguishes host-implemented builtins from user-defined functions. The builtin's docstring (sourced from [Appendix A.5](../spec/appendix-a-builtins.md#a5-docstrings-for-builtins-r1)) follows the classification in the same `; {classification} - {docstring}` dash form per §1.1.
 
 
 #### 4.1.8 Trait Methods (including operators) [Tested tests/e2e::e2e_s4_3_operator_plus_feedback]
@@ -908,7 +907,7 @@ The REPL MUST start and display a prompt within **500ms** on a modern machine (d
 
 ### 7.2 Expression Evaluation [Tested tests/repl_experience::simple_eval_under_50ms]
 
-Simple expressions (arithmetic, boolean logic, small function calls) MUST evaluate and display within **50ms** of the user pressing Enter. This is the combined compile + eval time.
+Simple expressions (arithmetic, boolean logic, small function calls) MUST evaluate and display within **50ms** of the user pressing Enter. This is the combined compile + eval time. This budget holds regardless of background compilation: the scheduler's priority ladder ranks blocking REPL/typecheck work above non-blocking JIT codegen, so an in-flight prelude or module compile does not starve a trivial REPL submission. The tested 50ms bound (`tests/repl_experience::simple_eval_under_50ms`) is the normative guard; a dedicated REPL-priority work level is not required unless a regression pushes trivial-form latency past this budget under worker contention.
 
 ### 7.3 Prompt Responsiveness [R4 S10]
 
@@ -1516,22 +1515,24 @@ When the user redefines a name that already exists in the session, the regenerat
 
 ## 16. Test Discovery and Execution [R4]
 
-The REPL provides commands for discovering and running test functions. Test infrastructure is built on two extern primitives (`discover-tests`, `run-test`) defined in the `primitives` module, enabling both command-line convenience and programmatic use.
+The REPL provides commands for discovering and running test functions. Test infrastructure rests on two ordinary `primitives`-module entries — `discover-tests` and `catch-runtime-error` — plus the existing macro system. Both parse as plain applications, type by ordinary scheme resolution, and require import or FQ reference like any other `primitives` name (zero frontend and zero typecheck special-casing). Everything above them — selection, filtering, iteration, result interpretation, reporting, timing — is ordinary in-language code in the stdlib.
+
+See `design/arch/test-discovery.md` (SETTLED, fourth convergence) for the full subsystem design.
 
 ### 16.1 Test Function Convention
 
-A **test function** is any zero-argument function whose name begins with `test-` and whose return type is `(Option String)`:
+A **test function** is any zero-argument function whose name begins with `test-` and whose return type is exactly `(Fn [] (Option String))`:
 
 - `None` — the test passed
 - `Some(reason)` — the test failed, with a human-readable reason string
 
-There is no module naming requirement. Test functions may be defined in any module.
+There is no module naming requirement. Test functions may be defined in any module. A `test-`prefixed function whose scheme is not exactly `(Fn [] (Option String))` is **excluded from discovery and warned** at discovery time, so a mistyped test cannot silently masquerade as "no failures."
 
 ### 16.2 Slash Commands
 
 #### 16.2.1 `/run-tests [module]` [R4]
 
-Discover and run test functions. With no argument, searches the current module. With a module path argument, searches that module.
+Discover and run test functions. With no argument, searches the current module. With a module path argument, searches that module. The command is sugar over the in-language runner (§16.5).
 
 ```
 user> /run-tests
@@ -1563,35 +1564,38 @@ user> /run-all-tests
 2 passed, 1 failed in 5.67ms
 ```
 
-### 16.3 Special Forms
+### 16.3 The Primitives
 
-Both commands are implemented in terms of two special forms. `discover-tests`, `run-test`, `TestResult`, `TestPass`, and `TestFail` are always in scope (root types and special forms — no import needed).
+`discover-tests` and `catch-runtime-error` are ordinary `primitives`-module symbols — imported (or FQ-referenced) like any other primitive, not special forms and not always-in-scope root names.
 
-**`discover-tests`** — special form:
+**`discover-tests`** — discovery primitive:
 
-```clojure
-(discover-tests)              ;; => :(IO (SList Sexp)) — current module
-(discover-tests user.math)    ;; => :(IO (SList Sexp)) — named module
+```
+discover-tests              :: (IO (Vec (Pair String (Fn [] (Option String)))))   ; current module
+discover-tests "mod.path"   :: (IO (Vec (Pair String (Fn [] (Option String)))))   ; named module (String arg)
+discover-tests ["a" "b"]    :: (IO (Vec (Pair String (Fn [] (Option String)))))   ; union over a Vec of module paths
 ```
 
-The module argument is a bare module path — same syntax as `import`, not a string literal. Returns an IO action that produces an `SList` of `SexpSym` values, each containing a fully-qualified test function name (e.g., `(SexpSym "user.math/test-add")`).
+Returns one `(Pair name callable)` per eligible `test-*` function:
 
-**`run-test`** — special form:
+- **`name`** — the fully-qualified test name `"module/test-name"` as a `String`, for selection, sorting, and reporting.
+- **`callable`** — a language fn value of type `(Fn [] (Option String))` that, when invoked, performs a **GOT-slot-indirect call** to the test. The wrapper closes over the test's GOT slot, not a baked code pointer, so a *redefined* test runs its current body.
 
-```clojure
-(run-test user/test-add)      ;; => :(IO TestResult) — bare qualified symbol
-(run-test sym)                ;; => :(IO TestResult) — Sexp variable
+**Freshness.** The callables are late-bound GOT-slot wrappers. Calling `discover-tests` again re-scans live state: a `test-*` defined after a previous call is included on the next call, and a redefined test runs its new body. Selection and reporting compose over these values and stay fresh by construction — freshness lives in the returned values, not in expansion timing. (This is why discovery returns callables, not a `(Vec String)` of names threaded through a macro runner, which would freeze the test set at the macro's expansion time. The macro-runner approach is retired.)
+
+The three call shapes are one underlying extern taking `(Vec String)`; the no-arg form (current module) and single-`String` form are stdlib-macro sugar normalising to the `Vec` form. The module argument is an ordinary value — a `String` or a `(Vec String)`, not a bare module path.
+
+`Pair` and `Result` are seeded as primitives bootstrap types (alongside `Option`), so both are available to discovery results and to `catch-runtime-error`.
+
+**`catch-runtime-error`** — protected-call combinator:
+
+```
+catch-runtime-error :: forall a. (Fn [(Fn [] a)] (Result a String))
 ```
 
-The argument is either a bare qualified symbol (compiled to a `SexpSym` value) or a `Sexp` expression. `discover-tests` returns `SexpSym` values that can be passed directly to `run-test`.
+Promoted out of the test feature to a standalone `primitives` entry usable by any user code and by the stdlib — it is the language's only way to turn a runtime panic into a value. It invokes the thunk on the calling thread; if the thunk hit a language-level runtime error (match non-exhaustion, division by zero, vec out-of-bounds), it clears the error slot and returns `(Err message)`; otherwise it returns `(Ok result)`.
 
-```clojure
-(deftype TestResult
-  (TestPass [:String name :Int nanos])
-  (TestFail [:String name :Int nanos :String reason]))
-```
-
-`TestPass` indicates the test returned `None`. `TestFail` indicates the test returned `Some(reason)`. To trace a failing test, use `(trace (test-fn))` separately — trace and test are independent, composable features.
+`TestResult`, `TestPass`, `TestFail`, and `run-test` are **retired**: a test's outcome is its own `(Option String)` (`None` = pass, `Some reason` = fail); the FQ name lives in the discovered `Pair`; timing comes from `trace`'s nanos.
 
 ### 16.4 Tracing Failures
 
@@ -1610,20 +1614,51 @@ Trace and test are independent, composable features — the user decides when tr
 
 ### 16.5 Programmatic Use
 
-Because `discover-tests` and `run-test` return IO actions, users can compose them with standard library IO combinators. No imports are needed — all names are always in scope.
+The in-language runner is ordinary code — no macro. `discover-tests` returns `(name, callable)` pairs; `catch-runtime-error` brackets each callable; the runner folds a three-way outcome per test over the resulting `(Result (Option String) String)`:
 
-`discover-tests` returns `SexpSym` values and `run-test` accepts `Sexp`, so they compose directly:
+- `(Err msg)` — the test panicked (match non-exhaustion, div-by-zero, …)
+- `(Ok None)` — the test passed
+- `(Ok (Some why))` — the test ran and reported an assertion failure
 
 ```clojure
-;; Run all tests
-(bind! (discover-tests)
-  (fn [tests] (map-io run-test tests)))
+(import [primitives [discover-tests catch-runtime-error]])
 
-;; Filter tests before running (sname extracts the String from SexpSym)
-(bind! (discover-tests)
-  (fn [tests]
-    (map-io run-test
-      (sfilter (fn [sym] (starts-with? (sname sym) "test-math")) tests))))
+;; Run one discovered test: returns a human-readable line.
+(defn run-one [pair]
+  (match pair
+    [(Pair name run)
+     (match (catch-runtime-error run)
+       [(Err msg)        (str-concat name " PANIC: " msg)]
+       [(Ok None)        (str-concat name " ok")]
+       [(Ok (Some why))  (str-concat name " FAIL: " why)])]))
+
+;; Run every test in the current module.
+(defn run-all []
+  (map run-one (discover-tests)))
+
+;; Run only the tests whose name contains a substring — selection is in-language,
+;; over the SAME pairs, and stays fresh because the callables are late-bound.
+(defn run-matching [substr]
+  (map run-one
+       (filter (fn [p] (match p [(Pair nm _) (contains? nm substr)])) (discover-tests))))
+```
+
+`catch-runtime-error` is usable by any code, not just tests:
+
+```clojure
+(import [primitives [catch-runtime-error]])
+
+;; Try a risky computation; recover with a default on panic.
+(defn safe-div [a b]
+  (match (catch-runtime-error (fn [] (/ a b)))
+    [(Ok q)   q]
+    [(Err _)  0]))           ; division by zero panicked — recover with 0
 ```
 
 Standard library convenience functions (e.g., `format-test-run`, `failures-only`, `test-passed?`) MAY be provided in a `core.testing` module but are not required by this specification.
+
+### 16.6 `--link` Interim Behaviour
+
+`discover-tests` is **REPL / `--run` only**. A `--link` build of a program that calls `discover-tests` is accepted at compile time, but the missing host symbol surfaces as an unresolved-symbol failure at link/load (the standalone executable has no live session to scan). This is documented interim behaviour — no friendly rejection yet; a future sprint may add a diagnostic.
+
+`catch-runtime-error`, by contrast, **works in all modes including `--link`**: it is a self-contained intrinsic (it calls a closure already present in the linked program and constructs a `Result` heap value — no live session needed). Error capture is a pure runtime capability available everywhere; discovery is a dev-session capability.

@@ -39,7 +39,7 @@ A function definition binds a name to a function value. The parameter list uses 
   - **Trait constraint**: `:Num`, `:Display` -- constrains the parameter's type variable to types implementing that trait, producing a constrained polymorphic function (see [Section 7: Traits](07-traits.md)).
 - When no annotation is provided, the parameter type is inferred via Hindley-Milner unification.
 - The return type is always inferred; there is no return type annotation syntax.
-- Parameter names MUST be unique within a parameter list, with one exception: the name `_` (underscore) is a **discard parameter** and is exempt from the duplicate name check. Each `_` is an independent discard — the value is bound to a fresh, unreferenceable variable. Multiple `_` parameters MAY appear in the same parameter list. Referencing `_` in the function body is a compile-time error. [R4 S52]
+- Parameter names MUST be unique within a parameter list, with one exception: the name `_` (underscore) is a **discard parameter** and is exempt from the duplicate name check. Each `_` is an independent discard — the value is bound to a fresh, unreferenceable variable. Multiple `_` parameters MAY appear in the same parameter list. Referencing `_` in the function body is a compile-time error. [S52]
 
 ```clojure
 (defn fold [f _ acc] (f acc))              ; one discard
@@ -229,7 +229,7 @@ required_method = '(' name docstring? '[' param+ ']' type_expr ')'
 default_method  = '(' name docstring? '[' param+ ']' body ')'
 param          = ':' type_expr symbol          (* typed parameter *)
                | symbol                        (* bare -- implementing type *)
-type_expr      = 'Self'                       (* implementing type *)
+type_expr      = 'self'                       (* implementing type *)
                | symbol                        (* named type or type var *)
                | '(' 'Fn' '[' type_expr* ']' type_expr ')'   (* function type *)
                | '(' name type_expr+ ')'       (* applied type *)
@@ -248,7 +248,7 @@ A trait declaration introduces a named interface with one or more method signatu
 ```
 
 - All methods use named parameters in brackets. Bare parameter names default to the implementing type.
-- `Self` (capitalized) in return type position refers to the implementing type.
+- `self` (lowercase) in return type position refers to the implementing type.
 - Required methods end with a return type expression; default methods end with a body expression.
 - An optional docstring MAY appear on the trait itself and on each method.
 
@@ -264,7 +264,7 @@ When the trait head includes type parameters, the trait operates on type constru
 
 - The type parameter `f` represents a type constructor (e.g., `Option`, `List`).
 - Method signatures MAY use the type parameter applied to type variables: `(f a)`.
-- HKT method parameters do not use bare names for `Self`; instead, all parameters have explicit type annotations.
+- HKT method parameters do not use bare names for `self`; instead, all parameters have explicit type annotations.
 
 ### 5.3.3 Trait Semantics [Tested tests/ring2::trait_plus_int, tests/ring2::error_plus_bool]
 
@@ -492,7 +492,7 @@ Imports bring names from other modules into the current scope. Exports re-export
 - The grammar above is a summary. The full grammar — including module aliases `(mod alias)`, symbol-rename pairs `(source local)`, member globs `Type.*`, and selective dotted members — is defined in [§8.3](08-modules.md#83-import) (import) and [§8.4](08-modules.md#84-export) (export). Renames and module aliases are symmetric across import and export.
 - See [Section 8: Modules](08-modules.md) for full module resolution semantics.
 
-## 5.10 Platform Declaration [R4 S10]
+## 5.10 Platform Declaration [S10]
 
 ```ebnf
 platform_form = '(' 'platform' platform_name ')'
@@ -533,7 +533,7 @@ All definitions are **public by default**. A `-` suffix on the definition keywor
 - `impl` has no private variant. Trait implementations are always visible wherever both the trait and the type are in scope. The phrase "in scope" means **reachable through the transitive import closure of the current module** — see §5.11.1 for the precise rule and worked example, and cross-references to [§7.11](07-traits.md#711-scope-and-visibility) (trait-side) and [§8.4.8](08-modules.md#848-implicit-impl-re-export) (module-side).
 - `import`, `export`, and `platform` have no private variants.
 
-### 5.11.1 Impl Visibility — Transitive Import Closure [R4 S66]
+### 5.11.1 Impl Visibility — Transitive Import Closure [S66]
 
 A trait implementation `(impl Trait Type ...)` declared in module L is visible in module N when **both** the trait `Trait` and the type `Type` are reachable from N through the transitive closure of N's `import` declarations. An implementation MUST NOT require N to directly import L for the impl to be visible; if L's impl is reachable through any chain of imports (or re-exports — see §8.4.8) that brings `Trait` and `Type` into N's scope, the impl is in scope at N.
 
@@ -603,9 +603,11 @@ This means a function may call another function defined later in the file, and a
   (if (= n 0) false (is-even (- n 1))))
 ```
 
-### 5.13.2 REPL Input Boundary and `begin` Clusters [R4 S66 — tests/process_form_dispatch.rs::process_form_dispatch_begin_cluster_resolves_mutual_forward_ref, tests/process_form_dispatch.rs::process_form_dispatch_bare_forward_ref_errors_clearly]
+### 5.13.2 REPL Input Boundary and `begin` Clusters [S66 — tests/process_form_dispatch.rs::process_form_dispatch_begin_cluster_resolves_mutual_forward_ref, tests/process_form_dispatch.rs::process_form_dispatch_bare_forward_ref_errors_clearly]
 
 In the REPL, **each input is a single top-level form**. Forward references to definitions defined in subsequent REPL inputs are NOT supported -- non-`begin`-grouped forms are processed in source order, one per eval. A reference in a REPL input to a name that has not yet been defined is an error, with the same diagnostic shape as a reference to a non-existent identifier.
+
+**Incomplete form at end of input.** The REPL accumulates input across continuation lines until delimiters balance, then submits the form. If input ends (EOF — Ctrl-D, or the end of piped input) while a top-level form is still incomplete (unbalanced delimiters), the implementation MUST produce a parse error; the incomplete buffer MUST NOT be silently discarded. This mirrors the rule that a complete form at the prompt is submitted and executed: an incomplete form cannot be submitted, so its arrival at EOF is an error. [Tested tests/repl_negative.rs::parse_error_unclosed_paren_neg]
 
 Mutual recursion in the REPL is expressed via `(begin form₁ form₂ ... formN)`, which the orchestrator processes as a single **cluster**: signatures of all forms register first (Pass 1), then bodies are type-checked (Pass 2), and the cluster commits atomically (all-or-nothing). Within a cluster, §5.13.1's MAY-reference-freely rule applies across the forms in that one cluster. This is the REPL analogue of the file-scope two-pass behaviour.
 

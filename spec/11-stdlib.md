@@ -62,7 +62,7 @@ Practical notes for library authors:
 
 **Prelude design**: The prelude module is the mechanism by which library names become globally available. A standard library SHOULD provide a `prelude.cl` that re-exports the names it considers universally useful. The prelude itself must not import the prelude (it is excluded from implicit prelude injection).
 
-## 11.5 Trace Support [R4 S20]
+## 11.5 Trace Support [S20]
 
 The `trace` form is a **root special form** — always available with no import and no module path (see [Section 2.3.10](02-grammar.md#2310-trace----execution-trace) and [Section 3.2.4](03-types.md#324-trace-type)); it is NOT a `primitives` entry and cannot be re-exported. The `Trace` ADT, `TraceCall` constructor, and field accessor functions (`name`, `params`, `result`, `children`, `nanos`) ARE compiler-seeded in the `primitives` module and are NOT auto-imported (the deliberate form/ADT asymmetry, see [Section 3.2.4](03-types.md#324-trace-type)). A standard library SHOULD re-export the ADT names and provide additional display functions through a `core.trace` module:
 

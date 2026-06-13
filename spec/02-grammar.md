@@ -1,10 +1,10 @@
-# 2. Grammar [R4 S10]
+# 2. Grammar [S10]
 
 This section defines the syntactic grammar of Cranelisp -- how S-expression trees (as defined in [1. Lexical Structure](01-lexical.md)) are interpreted as language constructs. The lexical grammar produces a tree of forms (atoms, lists, brackets); the syntactic grammar assigns meaning to those trees.
 
 Throughout this section, EBNF non-terminals in `UPPER_CASE` refer to lexical tokens from Section 1. Non-terminals in `lower_case` are syntactic grammar rules defined here. The notation `(...)` denotes a parenthesized list form, `[...]` denotes a bracket form.
 
-## 2.1 Program Structure [R4 S10]
+## 2.1 Program Structure [S10]
 
 A Cranelisp program is a sequence of top-level forms:
 
@@ -201,7 +201,7 @@ The `deftrait` form declares a trait -- a named collection of method signatures.
 
 The **trait head** is either a bare name (for simple traits) or a parenthesized name with type constructor parameters (for higher-kinded traits). Trait names MUST start with an uppercase letter.
 
-**Simple traits**: Bare (unannotated) parameter names default to the implementing type. `Self` (capitalized) in return type position refers to the implementing type. Required methods end with a return type; default methods end with a body expression.
+**Simple traits**: Bare (unannotated) parameter names default to the implementing type. `self` (lowercase) in return type position refers to the implementing type. Required methods end with a return type; default methods end with a body expression.
 
 ```clojure
 (deftrait Display
@@ -413,7 +413,7 @@ The `export` form re-exports names from child or imported modules as part of the
 
 See [§8.4](08-modules.md#84-export) for full export semantics including module mounting (§8.4.4) and renamed re-exports (§8.4.5).
 
-### 2.2.9 `platform` -- Platform Declaration [R4 S10]
+### 2.2.9 `platform` -- Platform Declaration [S10]
 
 ```ebnf
 platform_form = '(' 'platform' SYMBOL ')'
@@ -618,7 +618,7 @@ The `(vec ...)` form is an alternative syntax with identical semantics.
 (vec 1 2 3)                   ; same as [1 2 3]
 ```
 
-### 2.3.10 `trace` -- Execution Trace [R4 S20]
+### 2.3.10 `trace` -- Execution Trace [S20]
 
 ```ebnf
 trace_expr   = '(' 'trace' expr ')'
@@ -650,7 +650,7 @@ named_type   = TYPE_NAME                  (* starts with uppercase *)
 
 type_var     = SYMBOL                     (* starts with lowercase *)
 
-self_type    = 'Self'
+self_type    = 'self'
 
 applied_type = '(' TYPE_NAME type_expr+ ')'
 
@@ -670,7 +670,7 @@ String                        ; heap-allocated string
 
 ### 2.4.2 Type Variables
 
-A symbol starting with a lowercase letter is a type variable, representing a polymorphic type parameter.
+A symbol starting with a lowercase letter is a type variable, representing a polymorphic type parameter. The single exception is the reserved lowercase keyword `self` (see §2.4.3), which denotes the implementing type rather than a type variable.
 
 ```clojure
 a                             ; type variable
@@ -679,17 +679,17 @@ b                             ; type variable
 
 ### 2.4.3 Self Type
 
-The keyword `Self` (capitalized) refers to the implementing type within trait method signatures. It appears in return type position and in type annotations on parameters.
+The keyword `self` (lowercase) refers to the implementing type within trait method signatures. It appears in return type position and in type annotations on parameters. The spelling is the lowercase token `self`; there is no capitalized `Self` (a capitalized `Self` is parsed as an ordinary named type and fails resolution unless such a type exists).
 
 ```clojure
 (deftrait Num
-  (+ [a b] Self))            ;; Self = the implementing type (return type)
+  (+ [a b] self))            ;; self = the implementing type (return type)
 
 (deftrait Convertible
-  (convert [:String s] Self)) ;; s is String, returns Self
+  (convert [:String s] self)) ;; s is String, returns self
 ```
 
-`Self` is NOT a type variable -- it is resolved at impl time to the concrete target type. Bare (unannotated) parameter names in trait methods also default to the implementing type, so `Self` is primarily useful in return type position and in applied types like `(Option Self)`.
+`self` is NOT a type variable -- it is resolved at impl time to the concrete target type. Bare (unannotated) parameter names in trait methods also default to the implementing type, so `self` is primarily useful in return type position and in applied types like `(Option self)`.
 
 ### 2.4.4 Applied Types
 
@@ -898,7 +898,7 @@ Where `COLON_PREFIX` is a colon-prefixed symbol from the lexical grammar (e.g., 
 
 The colon serves as the annotation introducer. A colon immediately followed by an uppercase letter is a named type annotation. A colon immediately followed by a lowercase letter is a type variable or trait constraint. A bare colon followed by a parenthesized form is a compound type annotation.
 
-## 2.9 Reserved Words [R4 S76 — tested-by /qa S76]
+## 2.9 Reserved Words [S76 — tested-by /qa S76]
 
 The following names are **reserved words** — they are recognised directly by the parser and AST builder (and, for the special forms below, the typechecker) and have dedicated syntax. They are not ordinary identifiers, are always available with no import and no module path, and **cannot be shadowed**:
 
@@ -912,7 +912,7 @@ reserved_word = 'defn' | 'defn-' | 'deftype' | 'deftype-'
 
 `trace` is a member of this list: it is a **root special form** (§2.3.10), recognised before any name lookup, always available with no import and no module path (there is no `primitives/trace`).
 
-**Binding rejection.** A program MUST NOT define or bind the name `trace`. Any binder or definition position that names `trace` is **rejected** — it is not allowed-but-shadowed. In particular, each of the following is an error: [R4 S76]
+**Binding rejection.** A program MUST NOT define or bind the name `trace`. Any binder or definition position that names `trace` is **rejected** — it is not allowed-but-shadowed. In particular, each of the following is an error: [S76]
 
 ```clojure
 (defn trace [x] x)         ; ERROR: trace is a reserved word

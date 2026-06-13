@@ -2,7 +2,7 @@
 
 Complete, runnable example programs demonstrating Cranelisp features. All examples assume the reference implementation's standard library (prelude) is available, including: the `do`, `bind!`, `list`, `cond`, `str`, `->`, `->>`, and `vec` macros; `pure`, `bind`, `show`, `parse-int`, and `str-concat` functions; `Option`, `List`, and `Seq` types; and the `Num`, `Eq`, `Ord`, `Display`, and `Functor` traits. See [Section 8.8.3](08-modules.md#883-empty-prelude) — an empty prelude is valid; the examples would require adjustment without prelude support.
 
-## B.1 Hello World [R4 S10]
+## B.1 Hello World [S10]
 
 The minimal Cranelisp program.
 
@@ -16,7 +16,7 @@ The minimal Cranelisp program.
 
 Output: `42`
 
-## B.2 Factorial (Recursion) [R4 S10]
+## B.2 Factorial (Recursion) [S10]
 
 Recursive function with conditional and arithmetic.
 
@@ -35,7 +35,7 @@ Recursive function with conditional and arithmetic.
 
 Output: `3628800`
 
-## B.3 Algebraic Data Types [R4 S10]
+## B.3 Algebraic Data Types [S10]
 
 Product types, sum types, enums, pattern matching, and trait implementations for ADTs.
 
@@ -108,7 +108,7 @@ Red
 3.14
 ```
 
-## B.4 IO with bind! [R4 S10]
+## B.4 IO with bind! [S10]
 
 Reading input, parsing, and error handling with monadic IO.
 
@@ -135,7 +135,7 @@ Reading input, parsing, and error handling with monadic IO.
     (print (show total))))
 ```
 
-## B.5 Lazy Sequences [R4 S17]
+## B.5 Lazy Sequences [S17]
 
 Infinite sequences, lazy operations, and the unified collection API.
 
@@ -175,7 +175,7 @@ Output:
 42
 ```
 
-## B.6 Macros [R4 S17]
+## B.6 Macros [S17]
 
 Compile-time code transformation with `defmacro`.
 
@@ -202,7 +202,7 @@ Compile-time code transformation with `defmacro`.
     (print (show (my-add 10 20)))))  ; → 30
 ```
 
-## B.7 Higher-Order Functions and Closures [R4 S17]
+## B.7 Higher-Order Functions and Closures [S17]
 
 First-class functions, closures, and auto-currying.
 
@@ -229,7 +229,7 @@ First-class functions, closures, and auto-currying.
       (print (show (add5 37))))))         ; → 42
 ```
 
-## B.8 Threading Macros [R4 S17]
+## B.8 Threading Macros [S17]
 
 Data transformation pipelines with `->` and `->>`.
 
@@ -251,7 +251,7 @@ Data transformation pipelines with `->` and `->>`.
                    (reduce + 0))))))  ; → 9 (4+5)
 ```
 
-## B.9 Multi-Signature Dispatch [R4 S17]
+## B.9 Multi-Signature Dispatch [S17]
 
 Functions with multiple implementations dispatched by argument type.
 
@@ -281,7 +281,7 @@ Output:
 2
 ```
 
-## B.10 Constrained Polymorphism [R4 S10]
+## B.10 Constrained Polymorphism [S10]
 
 Functions that work across types sharing a trait.
 
@@ -311,7 +311,7 @@ Output:
 6.28
 ```
 
-## B.11 IO Sequencing with `do` [R4 S10]
+## B.11 IO Sequencing with `do` [S10]
 
 Evaluating multiple IO actions, discarding intermediate results.
 
@@ -333,7 +333,7 @@ hello, world!
 true
 ```
 
-## B.12 Conditional IO with `pure` [R4 S10]
+## B.12 Conditional IO with `pure` [S10]
 
 Using `pure` to satisfy branch type requirements.
 
@@ -359,7 +359,7 @@ The `then` branch returns `IO Int` (from `print`), so the `else` branch MUST als
 7
 ```
 
-## B.13 Combining `do` and `bind!` [R4 S10]
+## B.13 Combining `do` and `bind!` [S10]
 
 Sequencing effects and capturing results together.
 

@@ -195,7 +195,7 @@ DLL discovery turns a `(platform "name")` form (parsed by frontend into `Platfor
 7. **Symbol-table population** (in `int`). For each descriptor, create a `ModuleEntry::Def` in synthetic module `platform.<name>` with `kind = DefKind::Primitive { primitive_kind: PlatformEffect { scheduling_class }, jit_name: Some(jit_name) }`, `platform_fn_ptr = Some(descriptor.ptr)`, `scheme = parse_type_sig(descriptor.type_sig)`, `ast = None`, `code = None`. The `PlatformDecl` on the owning module records the `dll_path` for cache restore.
 8. **DLL retention** (in `int`). The loaded `libloading::Library` handle is wrapped in `Arc<DllHandle>` and inserted into `SharedState.kept_dlls: DashMap<PathBuf, Arc<DllHandle>>` per Decision 38. DLLs are **session-global** — they outlive any individual `SymbolTable` and are never unloaded mid-session (`platform-dlls.md` invariant: function pointers point into mapped DLL pages).
 
-**Cache restore** (per `platform-registry-removal.md` §A2 — note: that doc is moving to archive; the live mechanism is summarised here): cache-load reads `.meta.json` (with schema-version envelope per Decision 34), deserialises `SymbolTable` with `platform_fn_ptr = None` (`#[serde(skip)]` field). The integration layer iterates persisted `ModuleEntry::PlatformDecl` entries, calls `load_and_register_platform` for each, and writes the freshly resolved `platform_fn_ptr` back onto each `Def`. Failure modes (DLL renamed, ABI mismatch, missing exports) invalidate the cache entry as if dependencies changed.
+**Cache restore** (per `archive/platform-registry-removal.md` §A2 — note: that doc is archived; the live mechanism is summarised here): cache-load reads `.meta.json` (with schema-version envelope per Decision 34), deserialises `SymbolTable` with `platform_fn_ptr = None` (`#[serde(skip)]` field). The integration layer iterates persisted `ModuleEntry::PlatformDecl` entries, calls `load_and_register_platform` for each, and writes the freshly resolved `platform_fn_ptr` back onto each `Def`. Failure modes (DLL renamed, ABI mismatch, missing exports) invalidate the cache entry as if dependencies changed.
 
 **Cite**: Decision 38 (`kept_dlls` location), Decision 26 (where fn ptrs and scheduling class live), Decision 42 (forward — `PlatformError` adoption replaces stringly-typed errors), `platform-dlls.md` (search path, error conditions, full loading sequence; subordinate doc to be currency-checked per §11).
 
@@ -217,7 +217,7 @@ The three reader sites all walk the symbol table directly:
 
 **`crates/cranelisp-platform/` is unchanged by Decision 27**. The deletion was confined to `int`. This crate continues to expose the C-ABI types, the wrappers, the descriptor type, and the macro — those were never duplicated by the registry.
 
-**Cite**: Decision 26, Decision 27, `platform-registry-removal.md` (subordinate, archive-bound).
+**Cite**: Decision 26, Decision 27, `archive/platform-registry-removal.md` (subordinate, archived).
 
 ---
 
@@ -293,7 +293,7 @@ The other `design/platform/` documents:
 | `sprint71-redesign.md` | Current | **Keep**. The S71 platform-boundary redesign (schema parser, `CLAdt<T>`, marker-type pattern, `HostCallbacks` growth, `ABI_VERSION = 2`, R1 wired-or-panic gate). The boundary the S76 host-wiring (`host-wiring-s76.md`) wires up. |
 | `host-wiring-s76.md` | Current (Phase 3) | **Keep**. The S76 W-Integrate host-wiring plan: platform-side completeness audit (round-trip path), the cross-crate seam map (FIXMEs 0229–0235 → owning crate + data/ABI contract), round-trip completion sequence, and the one /arch seam (S-PLAT-1 schema-literal exposure, FIXME 0250). Platform's own delta is near-zero — the wiring is overwhelmingly consumer-side. |
 | `platform-dlls.md` | Pre-Decision-42 references stringly-typed errors; pre-Decision-40 doesn't mention the platform-runtime pairing; pre-Principle-14 doesn't cite the layout-discipline rule. The mechanics it documents (search path, manifest format, capture-RC protocol, `cranelisp-stdio` reference platform, `cranelisp-test-capture` test platform) are all current and load-bearing. **Keep — minor refresh needed.** Refresh deferred to the same sprint that lands FIXME 0104 (PlatformError adoption) so the error-surface narrative can be updated in one pass. |
-| `platform-registry-removal.md` | Work has landed (Decision 27 deletion + cache-restore addendum). Lessons folded into Decisions 26, 27, 38 and into this master + `platform-dlls.md`. **Archive-bound.** Tracked by FIXME 0106 (filed this pass — `/design`-narrow `git mv` to `design/platform/archive/platform-registry-removal.md` + one-line README, deferred to a sprint with low platform load). |
+| `archive/platform-registry-removal.md` | Work has landed (Decision 27 deletion + cache-restore addendum). Lessons folded into Decisions 26, 27, 38 and into this master + `platform-dlls.md`. **Archived** to `design/platform/archive/` (FIXME 0106 resolved). |
 | `runtime.md` | **Mis-located.** This file is the runtime crate's design doc, not platform's. It collides namewise with `design/runtime/runtime.md` (the canonical home post-S64) and predates the per-crate-master-design baseline. **Delete.** The canonical runtime master is `design/runtime/runtime.md`; nothing in `design/platform/runtime.md` is uniquely load-bearing for the platform crate (the platform-side view of the IO trampoline contract is captured in §5 of this doc; the `call_effect_thunk` semantics in §5; the allocator wiring in §4; the platform-runtime pairing in the §10 Decision register row for Decision 40). Deletion executed this pass — git history preserves content per S64 methodology rule. |
 
 ---
@@ -306,7 +306,7 @@ This pass files three FIXMEs (filing skill: `/design` (platform)):
 |---|---|---|
 | 0104 | `/dev` | Adopt `PlatformError` per Decision 42 — refactor `manifest_to_descriptors` and `int::load_platform_dll` to construct `PlatformError` rather than `String`; surface via `CranelispError::Platform`; add `Sess::format_error` arm. Spans `cranelisp-types` (define enum), `cranelisp-platform` (refactor), `int` (refactor + format arm). |
 | 0107 | `/dev` | Add `#[non_exhaustive]` to `OwnedPlatformFnDescriptor` (`/arch` resolved Option A — extending Principle 14 to cover both `#[repr(C)]` and `#[repr(transparent)]`; `OwnedPlatformFnDescriptor` is the only public type with no FFI repr annotation and SHOULD carry `#[non_exhaustive]`). |
-| 0106 | `/design` (self) | Archive `platform-registry-removal.md` to `design/platform/archive/` after one final cross-check against canonical citations (this master + Decisions 26/27/38). 30-min housekeeping pass. |
+| 0106 | `/design` (self) | **Resolved.** Archived `platform-registry-removal.md` to `design/platform/archive/` with a one-line README, after cross-check against canonical citations (this master + Decisions 26/27/38). |
 
 **Already-tracked, no new FIXME this pass:**
 
@@ -326,6 +326,6 @@ This pass files three FIXMEs (filing skill: `/design` (platform)):
 - `design/arch/principles.md` — architectural principles index (Principles 6, 7, 13, 14, 15 cited above)
 - `design/arch/CLAUDE.md` — Decisions index (11, 13, 24, 26, 27, 31, 38, 39, 40, 41, 42 cited above)
 - `design/platform/platform-dlls.md` — DLL loading mechanics (subordinate; refresh deferred to FIXME 0104 sprint)
-- `design/platform/archive/platform-registry-removal.md` — G8 deletion (subordinate; pending move per FIXME 0106)
+- `design/platform/archive/platform-registry-removal.md` — G8 deletion (subordinate; archived per FIXME 0106)
 - `crates/cranelisp-platform/src/lib.rs` — current implementation (single file, 940 lines)
 - `src/platform.rs` — `int`'s platform load + path resolution + type signature parser (the integration-side enactment of this crate's contract)

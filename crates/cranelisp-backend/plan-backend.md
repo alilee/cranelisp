@@ -32,8 +32,7 @@ Ring 0 does NOT include:
 - Traits, multi-sig dispatch, constrained polymorphism
 - Modules (beyond the implicit `"user"` module)
 - Macros
-- IO, trace, run-tests
-<!-- FIXME(/backend): Above line lists `run-tests` as a Ring 4 feature, but the `(run-tests init pass-fn fail-fn)` special form has been retired — replaced by the `discover-tests` / `run-test` builtins (spec/appendix-a-builtins.md §A). Update to list the builtins (or drop run-tests from the line). Also see line 613: `HIGH-4: compile_run_tests is 233 lines` — that deferral is moot because the special form no longer exists; confirm `compile_run_tests` is deleted from the backend tree or update the resolution line. Filed Sprint 57 planning. -->
+- IO, trace, test discovery (`discover-tests` / `catch-runtime-error` builtins, `spec/appendix-a-builtins.md §A`)
 - Caching, linking, executable generation
 
 ---
@@ -611,7 +610,7 @@ These are stored in `DefCodegen` for later retrieval.
 
 #### HIGH-4: compile_run_tests is 233 lines with inline struct and unrolled loop
 
-**Resolution**: Deferred to Ring 4 (`run-tests` is not in Ring 0). When implemented, move GOT group data to module scope and extract shared swap/restore helpers.
+**Resolution**: Moot — the `(run-tests init pass-fn fail-fn)` special form was retired and `compile_run_tests` no longer exists in the backend tree. Test discovery is now the `discover-tests` / `catch-runtime-error` builtins (`spec/appendix-a-builtins.md §A`), which carry no bespoke backend codegen of this shape.
 
 #### HIGH-5: compile_par_bind_continuation duplicates lambda compilation pattern
 
