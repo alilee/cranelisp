@@ -114,6 +114,16 @@ catchable across the cdylib boundary.
 `DispatchError { fn_name: "platform.boom/crash" }` shape; un-ignore the moment the step-3 fix
 lands). FIXME 0289 item 5 stays open (fixture built, e2e wired-but-ignored, gap named here).
 
+**/arch RULED this gap S81 (2026-06-13) — see FIXME 0337.** Mechanism: **Option A (DLL-local
+`catch_unwind` in `cranelisp_platform::CLIO::effect*` + a `#[repr(C)] EffectOutcome` cross-C-ABI
+fault signal returned by `call_effect_thunk`; `ABI_VERSION` 4→5)**. Option B (`extern "C-unwind"`)
+rejected — it cannot make a panic begun in the DLL's runtime catchable by the host's
+`catch_unwind` (two distinct cdylib panic runtimes). The intrinsics trampoline guard drops its
+panic-side `catch_unwind` and reads `EffectOutcome` instead; the `sigsetjmp` signal half stays
+(process-global signals cross the boundary). Backend bake/stamp untouched. Canonical: BC §5
+invariant 9 (DLL-local-catch sub-ruling) + §4b invariant 14 + §3. Sequence: /platform →
+/dev(int)-on-intrinsics → /qa. Both 0327 and 0337 stay OPEN until the funnel lands green.
+
 **S81 W-F (arch-docs ratification) verification, 2026-06-13.** The W-F pass confirmed the BC
 recording of this ruling is complete and self-consistent — the W-G implementer can build against
 it with no further arch round-trip. Verified present and correct: **BC §5 invariant 9** (the full

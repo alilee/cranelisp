@@ -5,8 +5,105 @@ filed_by: /sprint
 filed_at: 2026-06-13
 sprint_filed: 81
 refers_to: design/arch/fixmes/0327-arch-fault-guarded-dispatch-funnel-boundary.md (STEP-4 FINDING), design/arch/bounded-contexts.md §4b invariant 14 + §5 invariant 9, crates/cranelisp-platform/src/lib.rs (CLIO::effect / call_effect_thunk), crates/cranelisp-intrinsics/src/io_guard.rs, platforms/boom (repro fixture), tests/platform_errors.rs::platform_dispatch_error_carries_fn_name (ignored repro)
-status: open
+status: open    # RULED by /arch S81 (Option A); closes when the fix lands + the boom repro goes green
+ruled_at: 2026-06-13
+recorded_in: design/arch/bounded-contexts.md §5 invariant 9 (the DLL-local-catch sub-ruling, canonical) + §4b invariant 14 (intrinsics reads the cross-ABI signal, drops the panic catch_unwind) + §3 (backend bake/stamp UNTOUCHED)
+implementing_skills: /platform (DLL-local catch in CLIO::effect* + EffectOutcome #[repr(C)] + call_effect_thunk return contract + ABI 4→5 + platform baseline regen) → /dev int-on-intrinsics (force_effect_thunk_protected reads EffectOutcome, drops panic catch_unwind, keeps sigsetjmp) → /qa (un-ignore tests/platform_errors.rs::platform_dispatch_error_carries_fn_name)
 ---
+
+# Dispatch-funnel fault catch must be DLL-local — host `catch_unwind` cannot cross the cdylib panic-runtime boundary
+
+## /arch ruling (S81, 2026-06-13) — Option A (DLL-local catch + cross-C-ABI fault signal); Option B rejected as-built
+
+**Decision: Option A.** The fault catch must execute **inside the DLL**, by the DLL's own
+panic runtime, and the caught fault must cross the C-ABI back to the host **as a value**.
+
+**Decisive rationale (Option B is infeasible as-built).** A platform `cdylib` statically
+links its **own** copy of the Rust panic runtime (`rust_begin_unwind` / `rust_eh_personality`
+DLL-local, `nm`-confirmed). The faulting closure body lives inside the DLL (`CLIO::effect` is
+monomorphised at the DLL's `crash()` call site; the `Box<dyn FnOnce>` vtable points into DLL
+code), so a `panic!` at force time unwinds with the **DLL's** runtime. `extern "C-unwind"`
+(Option B) only flips the *abort-at-FFI-boundary default* into *unwind-may-propagate* — it
+does **NOT** let the host's `catch_unwind` catch an unwind begun by a *different* Rust
+runtime. A DLL-originated unwind reaching the host `catch_unwind` is still UB/abort under
+`C-unwind`. So B is neither necessary nor sufficient for the cross-cdylib panic, and it would
+pull the whole `call_effect_thunk` chain onto a more constraining ABI for no gain. The catch
+must happen on the DLL side of the runtime boundary → Option A.
+
+**The DLL-local catch site:** `cranelisp_platform::CLIO::effect[_on_resource]`'s thunk
+wrapper — the one frame that is (a) monomorphised into every DLL that uses it and (b) owns the
+user closure. The wrapper runs the user closure under a DLL-local `catch_unwind`; `Ok(v)` →
+return the value; `Err(payload)` → record the panic-cause string and signal the host across
+the C-ABI. No backend wrapper is needed — the W-G backend bake/stamp is untouched.
+
+**The cross-C-ABI fault-signal shape (the TLS-across-boundary resolution).** The DLL links its
+own `cranelisp-platform` (its own thread-locals) and CANNOT set the host intrinsics
+dispatch-fault slot directly — so the fault travels as a **C-ABI return value**, never TLS.
+`call_effect_thunk` changes its return contract from bare `i64` to a `#[repr(C)]`:
+
+```
+#[repr(C)]   // layout-contract type; NO #[non_exhaustive]; governed by ABI_VERSION (Principle 14)
+pub struct EffectOutcome {
+    pub value: i64,             // the thunk result when clean
+    pub fault_cause: *const u8, // null = clean; non-null = DLL-owned panic-cause UTF-8 bytes
+    pub fault_len: usize,       // length of fault_cause when non-null
+}
+```
+
+Null `fault_cause` → clean, `value` is the result. Non-null → faulted; `fault_cause` points at
+DLL-owned UTF-8 bytes (leaked for the session, bounded by §5 invariant 6 "no DLL unloading
+mid-session", mirroring the existing `declare_platform!` `Box::leak`s); `value` is unused. This
+new type lives in **`cranelisp-platform`** (it is a platform-ABI `#[repr(C)]` type, NOT a
+cross-crate DTO → it does **not** go in `cranelisp-types`). The DLL's `CLIO::effect` wrapper
+produces the `fault_cause` half from the caught payload; the host's `call_effect_thunk` copy
+merely *forwards* the struct (it does **no** `catch_unwind` of its own). `/dev` adds this
+`cranelisp-platform` type when implementing — `/arch` does not add it now (design-only pass).
+
+**Host trampoline shrinks to reading the signal.** `io_guard::force_effect_thunk_protected`
+**drops its panic-side `catch_unwind`** (nothing host-side to catch) and reads `EffectOutcome`:
+clean → `ForceOutcome::Value(value)`; faulted → compose `DispatchFault { fn_name (field-3, read
+host-side as today), cause (the DLL C-string) }` onto the dispatch-fault slot, return
+`ForceOutcome::Faulted`. Int's `DispatchError` compose is unchanged.
+
+**Hard-fault (signal) half — disposition.** KEEP the host-side `sigsetjmp`/signal handler. A
+genuine hardware trap from foreign **C** code is process-global (delivered to the faulting
+thread regardless of which cdylib raised it), so the host handler catches it across the DLL
+boundary once reached — it is not subject to the panic-runtime-boundary problem. The Rust
+null-deref subtlety resolves cleanly under Option A: rustc emits a null-deref as a
+*non-unwinding panic*, which the DLL-local `catch_unwind` now catches on the **panic** path (not
+the signal path); genuine C-level memory faults still take the signal path. Both converge on the
+same `DispatchFault` slot. Implementer flag: assert the panic fault in the `boom` fixture, and —
+if cheap — add a C-level SIGSEGV sibling fault to exercise the signal half across the boundary.
+
+**ABI bump: YES — `ABI_VERSION` 4→5.** The `call_effect_thunk` force-return contract + the new
+`EffectOutcome` layout are a host↔DLL layout-contract change (Principle 14): a v4 DLL must be
+rejected against a v5 host (the force-return shape differs), so the gate must bump. The
+`IO_TAG_EFFECT` node layout (the v3→4 field-3 widen) is **unchanged** — the bump is purely the
+force-return contract. Platform `public-api.txt` regenerates (the `EffectOutcome` type +
+`call_effect_thunk` signature + `ABI_VERSION` lines).
+
+**Owning crate:** `cranelisp-platform` owns the DLL-local catch (the `CLIO::effect*` wrapper),
+the `EffectOutcome` type, the `call_effect_thunk` return-contract change, and the `ABI_VERSION`
+bump. `cranelisp-intrinsics` shrinks (drops the panic `catch_unwind`, keeps the signal half,
+reads `EffectOutcome`). `cranelisp-types` UNCHANGED. `cranelisp-backend` UNCHANGED.
+
+**Implementing-skills sequence:**
+1. **/platform** — DLL-local `catch_unwind` in `CLIO::effect[_on_resource]` + `EffectOutcome`
+   `#[repr(C)]` + `call_effect_thunk` returns `EffectOutcome` + `ABI_VERSION` 4→5 + platform
+   `public-api.txt` regen.
+2. **/dev (int)** on `cranelisp-intrinsics` — `force_effect_thunk_protected` reads
+   `EffectOutcome` (remove the panic-side `catch_unwind`; retain the `sigsetjmp` signal half),
+   composes `DispatchFault`. Int's `DispatchError` compose unchanged.
+3. **/qa** — un-ignore `tests/platform_errors.rs::platform_dispatch_error_carries_fn_name`
+   (FIXME 0289 item 5 → green; the lone suite skip retires).
+
+**Cross-reference.** FIXME 0327 stays OPEN (its STEP-4 FINDING is the same gap; it closes when
+the funnel lands end-to-end). This FIXME (0337) stays OPEN and closes when the Option-A fix
+lands + the `boom` repro goes green.
+
+---
+
+# (original finding below)
 
 # Dispatch-funnel fault catch must be DLL-local — host `catch_unwind` cannot cross the cdylib panic-runtime boundary
 
