@@ -177,7 +177,7 @@ The **one Principle-8 hazard** is 0109: a *partial* god-file decomposition (extr
 | D | /design + /arch (doc-accuracy) | `design/`, crate docs, `facades/int.md` | 0014/0102/0106/0212/0214/0252/0253/0297 closed; **0266 kept open** (1-line bootstrap.rs mount-move → /dev int wave) | ✅ done (8 closed) |
 | E | /qa (zero-skips) | `tests/`, `benches/` | TCO×5 un-ignore, s68×2 flip, perf→criterion bench, 0326 prune (full close), harvest closures (0126/0139 deleted; 0125/0127 partial) | ✅ **1231 passed / 0 failed / 1 skipped** (+7, −8 skips) |
 
-**Reduction captured (committed `5d5515e` + zero-skips): 38 FIXMEs closed** (35 batch-1 + 0126/0139/0326). Suite **1231/0/1** — the lone skip is the sanctioned 0289-i5 dispatch funnel (out of the reduction; attempted in the platform wave). Fixme store: ~73 → ~35 open. **Kept open with notes:** 0050 (→/int), 0266 (→/dev int), 0125/0127 (harvest partials, →/int).
+**Reduction captured (committed `5d5515e` + `1ba2d94`): 38 FIXMEs closed** (35 batch-1 + 0126/0139/0326). Suite **1231/0/1** — the lone skip is the sanctioned 0289-i5 dispatch funnel (out of the reduction; attempted in the platform wave). **Fixme store: 101 → 63 open (26 harvest + 37 non-harvest).** **Kept open with notes:** 0050 (→/int), 0266 (→/dev int), 0125/0127 (harvest partials, →/int).
 
 ### Per-component waves (W4–W12) — designed after the reduction is captured
 
