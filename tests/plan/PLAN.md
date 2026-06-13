@@ -1393,11 +1393,11 @@ WITHOUT-children disposition is retired. FIXME 0286 deleted.
 | LP3 | `link.rs::link_traced_extern_primitives_appear_as_children_exit_42` | §4.12.9 | `[Tested]` ✓ | traced `(greet "bob")` in `--link`; greet's 2 children (`str-concat`+`str-len`) prove extern primitives appear in linked trace trees; exits 42. Link-mode mirror of T5. |
 | (flip) | `trace.rs::trace_linked_binary_match_consumption_runs` (T4) | §4.12.9 | `[Tested]` ✓ | linked-tree expectation flipped to WITH extern-primitive children — see T4. |
 
-**FIXME 0272 Half A — lenient panic-swallow (`tests/spec_12_runtime.rs`).**
+**FIXME 0272 Half A — lenient panic-swallow (`tests/spec_12_runtime.rs`). RESOLVED — ferry landed; repro green.**
 
 | # | Test | Spec | Status | Resolves at |
 |---|---|---|---|---|
-| L1 | `spec_12_runtime.rs::lenient_binding_panic_not_swallowed_neg` (neg) | §12.4.3 | `[S77]` FAILING | FIXME(/dev intrinsics) — fork-join error-slot ferry obligation (FIXME 0270); a div-by-zero in a lenient `let` binding yields sentinel `:primitives/Int 0` instead of panicking |
+| L1 | `spec_12_runtime.rs::lenient_binding_panic_not_swallowed_neg` (neg) | §12.4.3 | `[Tested]` ✓ | RESOLVED — the fork-join error-slot ferry obligation landed (IVar `ivar_force` worker-side `take_runtime_error()` → join-side `set_runtime_error` re-raise; S76 Wave 4, commits 9491ccc + e53ef13). A div-by-zero in a lenient `let` binding now correctly surfaces "division by zero" instead of yielding sentinel `:primitives/Int 0`. Durably green by the S80 close (verified at 48dcea3 + S81 aeff79d). Now a passing regression guard. FIXME 0272 closed S81. |
 | L2 | `spec_12_runtime.rs::lenient_binding_panic_surfaces_with_no_lenient_control` | §12.4.3 | `[Tested]` | GREEN control — `CRANELISP_NO_LENIENT=1` DOES panic, proving the spark path is the trigger. Par/IO variant deferred (needs IO infra; cost-heuristic spark via `--run` with print) |
 
 **FIXME 0279 — io.monad overflow reduction (`tests/regression.rs`).**

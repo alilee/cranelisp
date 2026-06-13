@@ -585,31 +585,33 @@ fn lenient_no_lenient_env_var_preserves_correctness() {
 
 // =============================================================================
 // §12.4.3 Lenient evaluation — panic propagation across the fork-join boundary
-// (FIXME 0272 Half A — pre-existing panic-swallow DEFECT)
+// (FIXME 0272 Half A — fork-join error-slot ferry, NOW SATISFIED)
 //
 // Per §12.4.3: "A runtime error raised while evaluating any binding — whether
 // evaluated sequentially or in parallel — MUST propagate as if the bindings
 // were evaluated sequentially: the first such error aborts the whole `let`
 // expression. ... a parallelised binding's panic MUST NOT be silently
-// discarded." NEITHER fork-join boundary ferries the runtime-error slot
-// (IVar `ivar_force`; Par `dispatch_par_branches_with_trace`), so a panic
-// inside a lenient-evaluated binding is silently swallowed and the binding
-// yields the sentinel `0` instead of aborting the expression.
+// discarded." The fork-join boundary now ferries the runtime-error slot: the
+// IVar force path (`ivar_force`, `crates/cranelisp-intrinsics/src/ivar.rs`)
+// stashes a worker-side `take_runtime_error()` into the IVar's error field and
+// re-raises it on the joining thread via `set_runtime_error`, so a panic inside
+// a lenient-evaluated binding aborts the whole expression instead of yielding a
+// sentinel. The ferry infrastructure landed in S76 Wave 4 (commits 9491ccc +
+// e53ef13); the test became durably green no later than the S80 close (verified
+// by checkout-and-run at 48dcea3 and at the S81 funnel-1/4 commit aeff79d).
 // =============================================================================
 
 // spec: spec/12-runtime.md §12.4.3 — a div-by-zero inside a lenient `let`
 // binding MUST abort the whole expression with a runtime panic; it MUST NOT be
 // swallowed.
 //
-// CURRENT BEHAVIOUR (FAILING): with lenient evaluation ON (the default),
-// `(let [a (div-i64 10 0) b (add-i64 1 2)] a)` evaluates to the sentinel
-// `:primitives/Int 0` — the div-by-zero panic is silently discarded on the
-// joining thread. Deterministic across runs.
-//
-// FIXME(/dev intrinsics) — the fork-join error-slot ferry obligation: every
-// fork-join boundary MUST ferry a worker-side take_runtime_error() back to the
-// join site and re-raise the first error (FIXME 0270; per FIXME 0272 Half A +
-// design/arch/test-discovery.md §"the fork-join error-slot ferry obligation").
+// AS-LANDED BEHAVIOUR (PASSING regression guard): with lenient evaluation ON
+// (the default), `(let [a (div-i64 10 0) b (add-i64 1 2)] a)` correctly surfaces
+// the "division by zero" runtime panic rather than binding `a` to the sentinel
+// `0`. The fork-join error-slot ferry obligation (worker-side
+// `take_runtime_error()` -> join-side re-raise) is satisfied as of the IVar
+// ferry landing (S76 Wave 4 — commits 9491ccc + e53ef13). Deterministic across
+// runs.
 #[test]
 fn lenient_binding_panic_not_swallowed_neg() {
     repl_prims("(let [a (div-i64 10 0) b (add-i64 1 2)] a)\n")
