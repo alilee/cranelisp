@@ -90,7 +90,12 @@ Examples are numbered `01` through `30` (approximately). Each maps to one ring a
 | 22 | `22-io-hello.cl` | 4 | IO hello world and sequencing | delivered |
 | 23 | `23-io-sequence.cl` | 4 | IO sequencing with do and bind! | delivered |
 | 24 | `24-io-echo.cl` | 4 | IO echo and interaction patterns | delivered |
-| 25 | Trace | 4 | Execution tracing | deferred (REPL-only; batch mode lacks formatted trace fields) |
+| 25 | `25-curry.cl` | 2 | Multi-signature dispatch and auto-currying | delivered |
+| 26 | `26-functor.cl` | 2 | Functor trait (higher-kinded `fmap`) | delivered |
+| 27 | `27-lazy-seq.cl` | 2 | Lazy sequences (take, filter, iterate) | delivered |
+| 28 | `28-parallel.cl` | 4 | Parallel evaluation (par-let, bind!) | delivered |
+| 29 | `29-annotations.cl` | 0/1 | `:Type` annotation — unifies the following form's type | delivered |
+| -- | Trace | 4 | Execution tracing | deferred (REPL-only; batch mode lacks formatted trace fields) |
 | 26 | Multi-Signature | 2 | Function overloading by type | planned (batch mode blocked) |
 | 27 | Auto-Currying | 2 | Partial application | planned (batch mode blocked) |
 | 28 | Testing | 4 | Inline test modules | planned |
@@ -899,10 +904,13 @@ examples/
   22-io-hello.cl        — delivered (Ring 4)
   23-io-sequence.cl     — delivered (Ring 4)
   24-io-echo.cl         — delivered (Ring 4)
-  25-trace.cl           — deferred (trace formatting is REPL-only)
-  26-multi-sig.cl       — planned (Ring 2, blocked: batch mode)
-  27-auto-curry.cl      — planned (Ring 2, blocked: batch mode)
-  28-testing/           — planned (Ring 4, multi-file)
+  25-curry.cl           — delivered (Ring 2, multi-signature + auto-currying)
+  26-functor.cl         — delivered (Ring 2, higher-kinded fmap)
+  27-lazy-seq.cl        — delivered (Ring 2, lazy sequences)
+  28-parallel.cl        — delivered (Ring 4, par-let + bind!)
+  29-annotations.cl     — delivered (Ring 0/1, :Type annotation semantics)
+  (trace)               — deferred (trace formatting is REPL-only)
+  (testing/)            — planned (Ring 4, multi-file)
 ```
 
 ## 10. Ring 3 Readiness Assessment (Sprint 9)

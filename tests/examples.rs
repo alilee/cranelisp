@@ -149,6 +149,9 @@ fn expected_exits() -> Vec<(&'static str, &'static [i32])> {
         ("26-functor.cl", &[91]),
         ("27-lazy-seq.cl", &[183]),
         ("28-parallel.cl", &[67]),
+        // 29: type annotations (:Type binds the following form). Sum of
+        // sub-test pass counts = 42 + 42 + 11 + 7 + 17 = 119.
+        ("29-annotations.cl", &[119]),
     ]
 }
 
