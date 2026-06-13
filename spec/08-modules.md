@@ -604,7 +604,9 @@ The following conflicts MUST produce compile-time errors:
 
 - **Mount-vs-submodule collisions**: An export mount whose alias collides with an actual submodule `(mod inner)` of the current module MUST produce a compile-time error. Example: if module `A` declares `(mod inner)` AND `(export [(other.mod inner) [...]])`, that's an error — `A/inner` would be ambiguous.
 
-Same-source duplicates (the same name arriving through two re-export paths from the same original definition) are NOT ambiguous.
+Same-source duplicates (the same name arriving through two re-export paths from the same original definition) are NOT ambiguous. The comparison is by **terminal source**, not immediate source: before declaring a same-name collision, an implementation MUST chain-follow BOTH import/re-export edges (per §8.6.2) to their terminal `(home_module, canonical_symbol)` — the original `Def` at the end of each chain. If the two terminals are equal, the imports denote the same original definition and dedup silently (no error); only **distinct** terminals collide. [Tested+Neg tests/modules::glob_and_reexport_of_same_terminal_dedup, tests/modules::distinct_terminal_overlap_collides]
+
+This terminal-source comparison is what makes a glob `(import [primitives [*]])` co-exist with a specific `(import [m [Option]])` when `m` re-exports `primitives/Option`: both bare `Option` entries chain-follow to the same terminal `primitives/Option`, so they dedup rather than poisoning the name. Comparing only the **immediate** source module (`primitives` vs `m`) would wrongly read these as two sources and report a false collision. The same rule resolves the common real-world shape "glob a module AND specifically import a name it re-exports."
 
 #### Explicit Imports Shadow the Implicit Prelude [S20]
 
@@ -624,7 +626,14 @@ When an explicit glob import brings in a name that the prelude would also provid
 
 ### 8.6.5 Ambiguity and Disambiguation
 
-When two sources register the same bare name in a module's symbol table, the name becomes **ambiguous** (poisoned). Attempting to use an ambiguous bare name MUST produce a compile-time error listing the qualified alternatives.
+When two **distinct terminal sources** (per the terminal-source comparison in §8.6.4) register the same bare name in a module's symbol table, the name becomes **ambiguous** (poisoned). Attempting to use an ambiguous bare name MUST produce a compile-time error listing the qualified alternatives.
+
+**Glob imports are peers of specific imports — there is no precedence tier.** A bare name brought in by a `[*]` glob participates in ambiguity exactly as a specifically-named import does: the rule is **terminal-source identity**, not import shape. An implementation MUST NOT treat a glob-brought name as a lower-precedence binding that a specific import silently shadows (the "wildcard loses to explicit" / Java model is NOT adopted). Once terminal-source dedup (§8.6.4) is applied, the residual glob-vs-specific overlaps fall into two cases, both handled by the single terminal-source rule:
+
+- **Same terminal** (the common case — the glob's source and the specific import re-export the same original definition): the two entries dedup benignly, no error.
+- **Distinct terminals** (genuinely different definitions that happen to share a bare name): the name is poisoned, as for any other same-name collision. This is deliberate footgun protection — overlapping imports of genuinely-different definitions MUST collide rather than one silently winning.
+
+[Tested+Neg tests/modules::glob_and_reexport_of_same_terminal_dedup, tests/modules::distinct_terminal_overlap_collides]
 
 ```clojure
 ;; If both Display and Debug define a 'show' method:

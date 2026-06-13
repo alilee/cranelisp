@@ -53,6 +53,23 @@ Without this facade, primitive registration drift is silent. Phase B's Intrinsic
 
 Sprint 72 Wave 2 `/review typecheck` named this as Important finding **I-3**.
 
+## Disposition — KEEP DEFERRED (S81 /arch Phase-3 ruling, 2026-06-13)
+
+**No second consumer exists that needs to be generic over sources** — the `ModuleSymbolTableSource` trait family stays deferred. Grounded in current source (2026-06-13):
+
+The four production "sources" each build a `SymbolTable` by a path matched to its nature, and they already share the right abstraction at the *entry* level (the S73 Tier-1 `ModuleEntry::def` builder, FIXME 0241), not at a *source-trait* level:
+
+- **`PrimitivesSource`** — `cranelisp-primitives::PRIMITIVES_TABLE`: static `ModuleEntry::def(..).build()` over a hand-written table (`crates/cranelisp-primitives/src/lib.rs`).
+- **int bootstrap mount** — `src/bootstrap.rs`: `ModuleEntry::def(..)` + `new_with_params` (FIXME 0242, landed).
+- **platform `register_platform_in_tc`** — `src/platform.rs:392`: `ModuleEntry::def(..).got_slot(slot)` from the manifest.
+- **`CacheSource`** — `.meta.json` reload (`crates/cranelisp-backend/src/cache/serialize.rs:205`): **serde deserialization of a `SymbolTable<(), ()>`, not a construction path at all** — it has no `ModuleEntry::def` calls because it round-trips a previously-built table.
+
+A `ModuleSymbolTableSource` trait would unify paths that share no *behaviour* beyond "produce a `SymbolTable`": three are constructive (and already share `ModuleEntry::def`), one is serde. Introducing the trait would add surface (Principle 6 — complexity has a budget) for an abstraction no consumer needs to be generic over. The trait pays off only when a consumer must dispatch over an *unknown-at-compile-time* source kind — which no production path does.
+
+**The test-fixture direction is settled** (the original I-3 motivation): the Tier-2 feature-gated `cranelisp_types::test_support::SymbolTableBuilder` (landed S73, FIXME 0241) IS the answer — test fixtures construct from builders that flex the data-structure surface, NOT mirror `PRIMITIVES_TABLE`. `seed_test_primitives` survives as a `/typecheck`-internal test helper; the drift-risk concern (I-3) is a `/typecheck` test-discipline matter (file `target: /typecheck` if a drift guard is wanted), not an architectural-facade gap.
+
+**Folds into 0241.** This FIXME's live substance (the source-abstraction generalization) is the same deferred-vocabulary question 0241 holds. Per 0241's own §"Status / disposition", 0239 closes *with* 0241 when the broader vocabulary is confirmed unnecessary. This sprint confirms it remains unnecessary (no second generic-over-sources consumer); **both 0239 and 0241 close together** — they are eligible for the W2 stale-sweep / a `/arch` close in the arch wave (W10). The disposition is recorded; the `git rm` is the closing act. Re-open only if a future source must be dispatched generically.
+
 ## Related
 
 - Decision 0048 — `cranelisp-primitives` as uniform module with SymbolTable + GOT

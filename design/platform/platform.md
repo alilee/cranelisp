@@ -238,6 +238,197 @@ This section is the design landing pad; future readers should not be surprised w
 
 ---
 
+## 9a. Fault-guarded FFI dispatch — the dispatch funnel (S81 PHASE 3 design — 0289-item-5)
+
+This section designs the substantive new platform feature S81 carries: the
+**fault-guarded FFI-dispatch funnel** that gives `PlatformError::DispatchError { fn_name }`
+its first live construction site, retiring the lone remaining suite skip
+(`tests/platform_errors.rs::platform_dispatch_error_carries_fn_name`).
+
+### 9a.1 The problem — an unguarded foreign call
+
+`PlatformError::DispatchError { fn_name, cause, location }` is **defined**
+(`crates/cranelisp-types/src/error.rs:261`, with `Display` + `location()` arms) but has
+**no live construction site** — only a `#[cfg(test)]` Display unit test
+(`crates/cranelisp-platform/src/lib.rs:1761`) ever builds one. The reason: a platform
+function is dispatched as an **IO Effect thunk**, and the trampoline invokes it with no
+fault guard.
+
+The concrete flow (verified against source):
+
+1. A platform fn (e.g. `shapes::rectangle_area`) returns `CLIO::effect(move || …)`
+   (`platforms/shapes/src/lib.rs`; **all** platform fns MUST return `IO _` per FIXME 0318 —
+   foreign purity is unverifiable, so foreign work is always sequenced through the
+   trampoline). `CLIO::effect_on_resource` (`lib.rs:679`) boxes the closure into a
+   `Box<Box<dyn FnOnce() -> i64>>` and writes its raw pointer into an `IO_TAG_EFFECT` node:
+   layout `[tag | thunk_ptr | resource_token]` (24 bytes after the heap header).
+2. The intrinsics IO trampoline (`crates/cranelisp-intrinsics/src/io.rs:192`) forces the
+   node: `let result = unsafe { cranelisp_platform::call_effect_thunk(thunk_ptr) };`.
+   `call_effect_thunk` (`lib.rs:707`) reclaims the box and invokes the closure **directly,
+   unguarded**.
+3. A fault inside foreign code — a Rust panic, or a hardware trap (SIGSEGV / SIGFPE / SIGILL
+   / SIGBUS) — therefore either unwinds through `extern "C"` frames (UB) or kills the
+   process. There is **no path that converts a dispatch-time fault into a structured
+   `DispatchError`** the user can read.
+
+This is the gap the funnel closes. It is genuine new runtime-feature work, not a defect — a
+sanctioned ignore today (S80 user ruling).
+
+### 9a.2 Precedent — `invoke_jit_protected`
+
+The host already runs foreign-ish (JIT-emitted) code under a fault guard at the **macro
+expansion boundary**: `src/expander.rs::invoke_jit_protected` (`expander.rs:494`). Its shape
+is the template for the funnel:
+
+- a `catch_unwind(AssertUnwindSafe(…))` wrapper catches **Rust panics** (e.g. the
+  `runtime_panic` intrinsic's panic on a `match` exhaustiveness failure);
+- inside it, `sigsetjmp` saves a recovery point and `install_signal_handlers` arms
+  SIGFPE/SIGILL/SIGBUS handlers that `siglongjmp` back without unwinding through C frames;
+- after the call, it reads the thread-local error slot via
+  `cranelisp_intrinsics::panic::take_runtime_error()` to surface a `runtime_panic`-set message;
+- it composes a structured error (today `CranelispError::MacroError { message, location }`),
+  mapping the signal number to a human cause string.
+
+The error-slot machinery the funnel needs is **already in place**:
+`cranelisp_intrinsics::panic::{take_runtime_error, set_runtime_error}` both exist
+(`panic.rs:69`/`:81` — `set_runtime_error` landed as the fork-join ferry companion). The
+funnel reuses `take_runtime_error()` exactly as `invoke_jit_protected` does.
+
+### 9a.3 Where the guard sits — the trampoline call site (one boundary, not the combinator)
+
+**The guard wraps the `call_effect_thunk` invocation in the IO trampoline**
+(`crates/cranelisp-intrinsics/src/io.rs:192`), **not** `call_effect_thunk` itself and **not**
+each platform fn. Rationale (cites Principle 7 — single source of truth; Principle 6 —
+complexity budget):
+
+- The trampoline is the **single** site where every platform Effect is forced. One guard
+  there covers every platform fn in every mode (`--run`, REPL, `--link`), with no per-fn or
+  per-DLL code (mirrors the §1 "no mode fork in the platform's own code" property). Guarding
+  inside each platform fn would scatter the guard across every out-of-tree DLL and defeat the
+  point.
+- `call_effect_thunk` stays a thin `Box::from_raw` + invoke (`lib.rs:707`) — it is the
+  reclaim primitive, and a `cranelisp-platform`-resident sigsetjmp/signal-handler install is
+  the wrong layer (platform is the contract crate, owns no runtime cadence — §1). The guard
+  belongs with the runtime cadence host: **`cranelisp-intrinsics`** (the IO trampoline's
+  home; BC §4b — the trampoline is intrinsics-owned).
+
+This placement is the **/arch ruling the implementation needs**, and it is **not yet ruled in
+`design/arch/`** — there is no Phase-3 dispatch-funnel FIXME or BC text covering it. The
+guard's home crate (intrinsics) and the fn-name plumbing (below) **cross the
+platform/int/intrinsics boundary**, so the placement + construction/surfacing path is an
+`/arch` call. This design recommends the placement above; **a FIXME `target: /arch` is filed
+this pass** (see §13) to ratify it before `/dev` implements, per the cross-component-handoff
+rule (root `CLAUDE.md` §"Cross-Skill Changes").
+
+### 9a.4 The fn-name plumbing — the cross-component crux
+
+`DispatchError` carries `fn_name: Symbol` (the offending platform fn, e.g. `area`). **The
+trampoline does not have it.** The Effect node is `[tag | thunk_ptr | resource_token]` — the
+closure is opaque, and the trampoline's own comment (`io.rs:169-183`) records exactly this:
+*"At the trampoline site we do not have a back-reference to the symbol."* This is the load
+-bearing difficulty of the feature and the reason it spans three components. Two candidate
+plumbing paths, with a recommendation:
+
+**Option A — widen the Effect node with a fn-name coordinate (recommended).** Add a fourth
+field to the `IO_TAG_EFFECT` node: a pointer/handle identifying the producing platform fn
+(an interned `Symbol` pointer, or an index into a host-side name table). `CLIO::effect` has no
+fn-name in scope, so the **producer of the name is the dispatch arm, not the platform fn**:
+the value the platform fn returns is an `IO` node whose Effect thunk the *host* created the
+call to. The cleanest source of the name is the **call site** — when JIT-emitted code calls a
+`DefKind::PlatformEffect` fn (backend GOT-indirect arm, BC §3), the symbol is statically known
+at codegen. The backend could bake the fn-name (as a relocated `&'static` `Symbol`/string
+pointer, the same family as the trace `DisplayDescriptor` data symbol) and the construction
+that builds the Effect node would stamp it into the new field. **Cost:** an Effect-node layout
+change → `ABI_VERSION` bump (3 → 4; cheap pre-1.0 per §"q-callbacks-shrinkage"), and a
+backend codegen touch. **Benefit:** the name travels with the node to the exact trampoline
+site that faults — no correlation, no thread-local.
+
+**Option B — a thread-local "current platform fn" set at the dispatch arm.** The backend's
+GOT-indirect platform-call arm (or the int-side dispatch path) pushes the fn-name onto a
+thread-local immediately before the call returns the IO node, and the trampoline reads it when
+forcing an Effect. **Cost:** fragile — the IO node may be forced far from where it was
+produced (Bind chains, Par scheduling defer the force), so the thread-local is stale by the
+time the trampoline runs. **Rejected** unless Option A proves to need an ABI bump the user
+declines; recorded for completeness.
+
+**The cross-component split (Option A):**
+
+| Component | Owns | Work |
+|---|---|---|
+| `/platform` (this crate) | the Effect-node layout + `CLIO::effect*` + the `shapes-dispatch-fail` test-DLL fixture | add the fn-name field to the `IO_TAG_EFFECT` node + `CLIO::effect*`; `ABI_VERSION` 3→4; author the fault-injecting fixture DLL |
+| `/dev int` (or `/backend`) | the dispatch call site + the trampoline guard | bake/stamp the fn-name at the `DefKind::PlatformEffect` dispatch arm; wrap `call_effect_thunk` in the trampoline with the `invoke_jit_protected`-style guard; construct `PlatformError::DispatchError { fn_name, cause, location }` on fault; surface via `CranelispError::Platform` |
+| `/qa` | the e2e | un-ignore `platform_dispatch_error_carries_fn_name`; re-point at the real carrier |
+| `/arch` | the boundary ruling | ratify guard placement (intrinsics trampoline) + the fn-name plumbing (Option A node-widen) + the construction/surfacing path |
+
+> **NOTE — the guard host (intrinsics) cannot name `PlatformError`.** `cranelisp-intrinsics`
+> depends only on `cranelisp-types` + `cranelisp-platform` (BC §4b). `PlatformError` lives in
+> `cranelisp-types` (Decision 0042) — so intrinsics **can** name it. But intrinsics is
+> diagnostics-free by charter (it produces runtime semantics, not error-reporting). The clean
+> split: the trampoline guard **captures the fault** (signal number / panic payload / slot
+> message) + the fn-name and returns a *fault outcome* (a small intrinsics-internal struct or
+> a sentinel + slot write via `set_runtime_error`), and **int composes the
+> `PlatformError::DispatchError`** at the point it already surfaces runtime errors to the
+> user (the `Sess::format_error` / IO-run boundary). This keeps construction in int (the
+> diagnostics owner) and the guard mechanism in intrinsics (the cadence owner) — the same
+> two-layer split `invoke_jit_protected` uses (intrinsics sets the slot; int reads + composes).
+> **This is the precise boundary `/arch` must ratify.**
+
+### 9a.5 The cause string
+
+`DispatchError.cause` is a human string. The funnel maps the fault to it, mirroring
+`invoke_jit_protected`'s signal→string table:
+
+- Rust panic caught by `catch_unwind` → the downcast payload string (or "unknown");
+- `runtime_panic`-set slot message (via `take_runtime_error()`) → that message;
+- SIGFPE → "arithmetic exception (division by zero)"; SIGILL → "illegal instruction";
+  SIGBUS → "bus error"; SIGSEGV → "segmentation fault"; other → "signal N".
+
+`location` is the `(platform <name>)` / call-site span — the same `ErrorLocation` the other
+`PlatformError` variants carry (Decision 0042). The dispatch arm has the call-site span
+statically (it is the IO-producing call's span).
+
+### 9a.6 `--link` parity
+
+The funnel works in `--link` (a standalone executable has no live session but DOES run the
+intrinsics IO trampoline — the trace family already proves intrinsics force-links into the
+exe-bundle, BC §3). The guard is plain intrinsics runtime code, force-linked like every other
+intrinsic; the fn-name baked at codegen survives into the `.o` (same data-symbol family as the
+trace descriptor + the platform GOT). So `area` faulting in a `--link`ed binary surfaces the
+same structured `DispatchError` — required for the §"q-callbacks" all-modes invariant and the
+0289 item-5 e2e (which the design runs through `--run`; the e2e may extend to `--link`).
+
+### 9a.7 The test-DLL fixture (`/platform`-owned)
+
+The e2e needs a platform fn that **faults at dispatch**. `/platform` authors a
+`shapes-dispatch-fail` test-DLL (a sibling of `platforms/shapes`, added to the
+`tests/scripts/build-link-prereqs.sh` prereq build per `tests/CLAUDE.md`) whose `area` fn's
+Effect thunk deliberately faults — the cleanest fault is a Rust `panic!` inside the thunk (caught
+by the guard's `catch_unwind`), or a deliberate null-deref (caught by the SIGSEGV handler). The
+fixture asserts NOTHING itself (the prior fixture's self-describing stderr was a fake-green,
+removed S80) — the e2e observes the host's structured carrier. The fixture reuses the `shapes`
+schema/`Rectangle` machinery so the round-trip up to the fault is real.
+
+### 9a.8 Effort + risk
+
+- **Effort:** medium-to-large. The guard mechanism is a near-copy of `invoke_jit_protected`
+  (well-understood); the fn-name plumbing (Option A node-widen + backend bake) is the
+  substantive part and the `/arch` ratification gate. Flagged Phase-2 as "the likeliest
+  single-item slip" — genuine-zero-skips is a **stretch goal**, not a hard gate.
+- **Public-API impact:** `cranelisp-platform` baseline regen (the `CLIO::effect*` signature /
+  Effect-node ABI change + `ABI_VERSION` 3→4); possibly `cranelisp-intrinsics` (if a fault
+  -outcome type surfaces) and `cranelisp-types` is **unchanged** (`DispatchError` already
+  exists). The two-update discipline (regen baseline + the surface narrative) applies to the
+  platform + intrinsics crates touched.
+- **Risk:** the sigsetjmp/signal-handler interaction with the **fork-join error-slot ferry**
+  (BC §4b invariant 13) — both touch the thread-local error slot. The design must confirm the
+  guard's `take_runtime_error()` read does not race the ferry's `set_runtime_error` on a Par
+  /lenient worker. Because platform Effects are forced on the trampoline's own thread (the
+  trampoline is the joining thread; structured fork-join joins inside its dynamic extent),
+  this is the same own-thread-slot-reader property the ferry already relies on — **flag for
+  the implementer to confirm**, not believed to be a new hazard.
+
+---
+
 ## 10. Quality attributes
 
 Stewardship per `/design`'s charter; observed against the current source. Untouched-this-pass attributes are noted as such.
@@ -299,6 +490,35 @@ The other `design/platform/` documents:
 ---
 
 ## 13. Open questions / FIXMEs filed this pass
+
+### S81 Phase-3 pass (2026-06-13, `/design` platform) — dispatch funnel design + FIXME staleness sweep
+
+This pass designed the **fault-guarded FFI-dispatch funnel** (new §9a — the substantive S81
+platform feature) and verified the platform-component FIXME backlog against current source.
+
+**Filed this pass:** **FIXME 0327** (`target: /arch`) — ratify the dispatch-funnel boundary:
+guard placement (intrinsics IO trampoline), fn-name plumbing (Option A — widen the
+`IO_TAG_EFFECT` node, baked at the backend `DefKind::PlatformEffect` dispatch arm), and the
+two-layer `DispatchError` construction path (intrinsics captures, int composes). Cross-component
+ruling gating 0289-item-5. See §9a.
+
+**FIXME staleness verdicts (verified against source — bonus reduction):**
+
+| FIXME | Verdict | Evidence |
+|---|---|---|
+| **0039** (platform_fn_ptr write-site) | **STALE → close** | The `platform_fn_ptr` field **no longer exists anywhere** (`grep` clean across `src/` + `crates/`). The GOT-indirect model (S76–S80) retired it: dispatch is `got_slot = manifest index` + a GotTable wrapping the dlsym'd GOT (BC §5 invariant 1). The single-vs-two-pass write-site question is moot. |
+| **0040** (load_and_register_platform shape + no PlatformRegistry) | **STALE → close** | Both bullets resolved. `load_and_register_platform` exists and writes inline (`src/platform.rs:735`); `PlatformRegistry` is fully deleted — the only surviving refs (`src/worker.rs`, `src/bind_chain_analysis.rs`) are historical comments documenting its removal (G8). |
+| **0041** (triage 5 v4_platform failures) | **STALE → close** | No `v4_platform` test file exists (only `v4_pipeline`/`v4_repl_eval`, neither carries platform tests). The 5 failures it triaged are gone. |
+| **0238** (`declare_platform!` proc-macro upgrade — eliminate `schema_types:`) | **STALE → close** | The `schema_types:` parallel ident-list arm is **already gone**. The platform-interface landing (S76–S80) replaced the marker-type DSL with `schema: include_str!(...)` (a generated artifact); the macro now has only the `schema:` embed arm + a no-schema arm (`lib.rs:1431`+). There is no ident-list to derive from a literal — `macro_rules!` is sufficient, and the proposed proc-macro crate is unnecessary. The redundancy the FIXME targeted was dissolved, not by a proc-macro, but by removing the declaration arm entirely. |
+| **0229** (host-side ADT marshaling residual) | **NEAR-STALE → close on absorb** | The `validate_schema` half is withdrawn (layout-hash gate replaced it; `validate_schema`/`null_validate_schema` retired with `ABI_VERSION` 2→3). The `alloc_with_tag` KEEP is DONE + unit-verified (S76) and live in `load_platform_dll` + the exe-bundle. The residual is only null-callback-cleanup *coordination*, which the platform-interface S76–S80 landing absorbed (no `null_validate_schema` remains; `validate_schema` is gone from `HostCallbacks`). Nothing substantive remains — close once `/int`/`/platform` confirm the null callbacks are deleted (a 1-line verify). |
+| **0235** (round-trip DLL e2e) | **SUBSUMED by 0289 → close** | Re-pointed into 0289 (2026-06-07). The round-trip + hash-gate + cache-restore walks now LIVE in `tests/spec_platforms_adt.rs` (`platform_adt_roundtrip_run`/`_link`/`_cache_restore`, `platform_adt_hash_gate_*`). Items 1–4 of 0289 are covered; only item 5 (dispatch funnel) remains. 0235's content is fully absorbed. |
+| **0289-item-5** (dispatch funnel e2e) | **OPEN — the headline** | The lone irreducible skip. Designed in §9a; gated on FIXME 0327 (/arch ruling) + the `shapes-dispatch-fail` fixture (/platform) + the int/backend funnel + the /qa un-ignore. |
+
+**Net:** five platform FIXMEs (0039, 0040, 0041, 0238, 0235) are confirmed STALE/SUBSUMED and
+recommend close-on-verify; 0229 is near-stale (residual is verify-only); 0289-item-5 is the one
+genuine open increment, now designed.
+
+### Historical — S71-era pass (superseded by the S81 sweep above)
 
 This pass files three FIXMEs (filing skill: `/design` (platform)):
 

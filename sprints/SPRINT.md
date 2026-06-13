@@ -1,6 +1,6 @@
 # Sprint 81: Clean & Green — opening the pre-Phase-H FIXME-clearance arc
 
-**Status**: ~~PHASE 1 SCOPE DRAFT ✅~~ → ~~PHASE 2 ARCH REVIEW ✅ (SIGN-OFF-WITH-REVISIONS)~~ → **PHASE 5 — REDUCTION WAVES (W1–W3) executing** (user: "capture the reduction first" — bank docs/stale/zero-skips before per-component Phase-3 design) | then PHASE 3 DESIGN (per-component) → PHASE 4/5 component waves → PHASE 6 user-facing → PHASE 7 CLOSE
+**Status**: ~~PHASE 1 SCOPE DRAFT ✅~~ → ~~PHASE 2 ARCH REVIEW ✅~~ → ~~REDUCTION WAVES (W1–W3) ✅ — suite 1231/0/1, 38 FIXMEs closed~~ → ~~PHASE 3 DESIGN (9-agent fan-out) ✅ — plans collected, ~13 more stale found, 2 /arch rulings owed (0327/0220)~~ → **PHASE 4/5 — COMPONENT WAVES (ready)** | PHASE 6 user-facing → PHASE 7 CLOSE
 
 **Goal**: Re-establish "clean & green" as the sprint-exit standard and clear the entire known FIXME backlog — organized by crate/component, docs-first — as the mainline-completion step before Phase H. **Every component gets one or more waves this sprint to address all or most of its issues**; items are deferred only with an explicit good reason, never by default. The user-facing Phase-6 assessment is reinstated permanently.
 
@@ -161,7 +161,39 @@ The **one Principle-8 hazard** is 0109: a *partial* god-file decomposition (extr
 
 ## Skill plans (Phase 3)
 
-*Pending Phase-1 approval + Phase-2 review.*
+Collected from the 9-agent design fan-out (2026-06-13). **Headline: the design pass found ~13 MORE stale/near-stale FIXMEs** — the real implementation surface is much smaller than the 63-item store. Design docs refreshed: `interfaces.md`, `bounded-contexts.md §5`, `design/{typecheck §9.3, backend §4.3+§9, platform §9a+§13, int §3/§3.3/§3.4/§16}`, `spec/08-modules.md §8.6.4/§8.6.5`. New FIXME **0327** (/arch — dispatch-funnel boundary ruling).
+
+### Additional reduction discovered (Phase-3 verified STALE → sweep in execution)
+
+| FIXME | Component | Finding |
+|---|---|---|
+| 0172, 0187 | typecheck | Already discharged — narrowed helpers absent/`pub(crate)`; Row-21 facade gate green. |
+| 0232 | backend | `schema_literal` gone from `cranelisp-types` (v3 cache bump). |
+| 0258 | backend/qa | All 3 tracked trace defects fixed (`548f0f6`/`7ee37c2`); `trace_*` green in 1231/0/1. /qa flips 4 PLAN.md rows. |
+| 0011 | backend | Doc-close — no Slice-4 consumer; record cross-trace recovery in `io-scheduling.md`. |
+| 0238, 0039, 0040, 0041 | platform | Resolved by the landed platform-interface (GOT-indirect retired `platform_fn_ptr`/`jit_name`; `PlatformRegistry` deleted; `schema_types:` arm gone; no `v4_platform` file). |
+| 0235 | platform | Subsumed into 0289 (round-trip/hash-gate/cache e2e already green). |
+| 0229 | platform | Near-stale — `validate_schema` half retired; 1-line null-callback confirm. |
+| 0010, 0241 | arch | CLOSE (0010 precedent relocated to types; 0241 builder-vocab unjustified — no 2nd consumer). **0239 KEEP-deferred.** |
+| 0109 Wave A | int | STALE-as-written — `session.rs` is no longer the v3 god-file (live helpers w/ real callers); Wave A reduces to verify-no-v3 + optional rename. |
+| 0281 | int | Folds into 0298 (the dead pseudocode just doesn't carry into the retired facade). |
+| 0101 | int→sprint | Mis-scoped to int — it's a /sprint scheduling request for runtime/platform audits. |
+| 0137 | frontend | Near-pure delete — 28/29 legacy tests already covered; one §9.2.3 non-Sexp-return negative test → /qa, then delete legacy file. |
+
+### Real implementation work (per component) + cross-component sequencing
+
+- **W1 / 0316 (arch+int+qa):** `/arch` pinned `resolve_with_fallback` (one new `cranelisp-types` pub fn; `resolve_terminal_entry_and_home` already `pub` — no promotion; +1 baseline line). `/spec` recorded §8.6.4 terminal-source dedup + §8.6.5 globs-are-peers. **Sequence: types-side first, then checker.rs ×4 + expander.rs:262 collapse + `imports.rs::insert_detecting_ambiguity` terminal-resolve.** /qa authors `glob_and_reexport_of_same_terminal_dedup` (+) and `distinct_terminal_overlap_collides` (−) in `spec_08_modules.rs` (failing-first).
+- **typecheck (W4):** 0033 (drop MonoDefn `resolutions`/`expr_types`; types baseline regen + 1 backend test edit — sequence types→backend); 0306 (recommend option (a) local-binding gate + adversarial unit test); 0243 (carry — fixture narrowing, no new justification, user-deferred).
+- **backend (W6):** 6a — **0325** (`capture_clif` bool into `compile_to_module`; **backend baseline regen** — /arch sign-off; coordinate with the 0289-i5 dispatch-arm change to avoid two uncoordinated regens). 6b cache harvest — 0145/0146 carry-forward already landed (delete legacy files + inline-FIXME staleness review); 0120/0118 port to backend `#[cfg(test)]`; 0117 split with typecheck. 6c observability — 0131 + the `Jit::drop` half of 0133 land now; **the alloc-counter half of 0133 + 0135 co-carry with 0109 Wave D.**
+- **primitives (W7):** 0216 (/qa authors the negative no-import battery — expected **green**, cascade landed; spec `[S70]`→`[Tested+Neg]`); 0308 (cross-crate docstring relocate — **primitives populates `PrimitiveDef.docstring` FIRST, then int drops `builtin_docs.rs`** — sequenced to avoid a §A.5-MUST regression window).
+- **platform (W8) — the headline feature:** 0289-i5 fault-guarded-dispatch funnel. `/arch` must rule **0327** first (guard at the intrinsics IO-trampoline `call_effect_thunk` boundary, `invoke_jit_protected` pattern; fn-name baked at the backend `DefKind::PlatformEffect` dispatch arm — **Option A node-widen, ABI 3→4**; int composes `DispatchError`). Then /platform (node-widen + `shapes-dispatch-fail` fixture DLL) → backend/int (bake + guard) → /qa un-ignore. **Likeliest single-item slip** (stretch goal, not a hard gate).
+- **int (W9):** 9a — 0013 (TEST_GUARD ~10 LOC), 0194 (`SymbolDescription.related` populate), 0217 (§8.2.2 step-2 parent rewrite — real gap + new test), 0266 (1-line `bootstrap.rs` trace mount-move). 9b — 0109 Waves A (reduced: verify/rename), B (lib.rs visibility reconfirm), C (extract `process_cluster_once`/`process_regular_form` → `src/process_form.rs` — the permanent Wave-D seam). **0316 int-half lands in W1.**
+- **qa-harvest (W11):** 0147→`#[cfg(test)]` unit (e2e preserved); **0119 → carry with 0109 Wave D** (its `worker.rs` home moves under decomposition) or land now if worker.rs survives A/B/C — */sprint call*; 0131→unit; 0125/0127 remainder→unit; 0136 audit-and-delete (capture any uncovered assertion + the 11 known-fails as sub-FIXMEs before `git rm`).
+- **Phase 6 (W12):** /port (exemplar full-grid solve replay green — project-scale gate), /stdlib (audit vs post-S78/S79 model + 0273), /examples (`every_example_runs_with_documented_exit` green + 0143). Defects → failing-not-ignored tests + FIXMEs.
+
+### /arch rulings owed before their waves implement
+- **0327** — dispatch-funnel boundary (gates W8 0289-i5).
+- **0220** — cache-hit Introspection rehydration: where/whether (gates the int 0220 item; `target: /arch`).
 
 ## Waves (Phase 4)
 

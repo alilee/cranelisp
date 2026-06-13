@@ -137,3 +137,15 @@ shape to warrant extraction), the original analysis stands as the design input:
   remains deferred pending a second consumer. See 0239 for the threaded note.
 - Coordinate with FIXME 0240 (adjacent int↔typecheck startup-seam threading:
   module_aliases A1/A4).
+
+## Disposition — CLOSE (S81 /arch Phase-3 ruling, 2026-06-13)
+
+**The broader `declare_*` vocabulary is confirmed UNNECESSARY — close 0241 (and 0239 with it).** The Tier-1 `ModuleEntry::def` builder (landed S73) has settled as the single multi-consumer construction vocabulary across all three constructive synthetic-module sources, verified against current source (2026-06-13):
+
+- **int's reconstruction has settled** (the §"Status / disposition" closing condition (b)). `src/bootstrap.rs` builds its mount entries with `ModuleEntry::def(..)` (`bootstrap.rs:215/263/756`), not hand-rolled 11-field struct literals. `cranelisp-primitives` static table and `src/platform.rs::register_platform_in_tc` (`:392`) likewise. The `declare_adt`/`declare_special_form`/`declare_trait` per-step vocabulary is **not** needed — the only non-`Def` entries int mounts (`SpecialForm`/`IntrinsicType`/`TypeDef`) are a handful of plain struct-literal + `insert` sites, far below the threshold that would justify a kind-shaped builder family (minimum mechanism, Principle 6).
+- **No second consumer of a generic source-abstraction exists** (FIXME 0239's condition) — see 0239's S81 disposition note. The three constructive sources share `ModuleEntry::def`; cache-restore is serde (no construction path). Nothing needs to be generic over source kinds.
+- **The boundary correction was captured long ago** (facade reconciled S72; int owns the mount).
+
+Both closing conditions of the §"Status / disposition" §"remains open only as the home for the deferred broader-vocabulary rationale" are now met: int's reconstruction has settled (b) AND the broader vocabulary is confirmed unnecessary. The deferred-rationale §"Why a shared builder vocabulary was NOT adopted" + the per-step table are preserved in **git history** (this file) as the design input should a future second generic-over-sources consumer ever surface — re-author from history if so.
+
+**Action:** 0241 and 0239 close together — eligible for `git rm` in the arch wave (W10) or W2 sweep. The `declare_*` vocabulary is a re-openable design input, not an open obligation. No further `/arch` implementation work.

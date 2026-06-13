@@ -69,7 +69,9 @@ Three structural notes about the surface worth naming:
 
 ## 3. Current-state summary (per file)
 
-The audit (262 LOC, src-20260423.md) reports 21,066 LOC in `src/`, with `session_v4.rs` (5,417), `worker.rs` (5,041), and `scheduler.rs` (2,361) accounting for ~61% of the crate. Direct read of `src/` today (Sprint 64) confirms.
+Direct read of `src/` at **Sprint 81** (post-S78 restructure; the S64 FIXMEs + S76 W-Macro/W-Collapse + S77/S78 cluster-atomic restructure have all landed). The two god-files (`session_v4.rs` 6,201, `worker.rs` 6,074) account for ~43% of the 28,592-LOC crate and remain the audit-F1/F2 decomposition target (FIXME 0109 Wave D).
+
+> **S81 staleness correction (was: the S64 snapshot).** The pre-S81 table below claimed `lib.rs` ≈ 25 LOC / 18 public modules, `session.rs` was "legacy v3 session, delete", and listed pending relocations (`code.rs` → backend, `trace.rs`/`io_trace.rs` arrivals, `display.rs` merge) as future work. Those relocations **landed**: `code.rs` (166 LOC) is now the `SessionSymbolTable`/`SessionModuleEntry` alias home (the `Code` enum lives in `cranelisp-backend`, re-exported); `src/trace.rs` was **deleted** (the trace family relocated to `cranelisp-intrinsics`, 2026-06-04 ruling); `display.rs` did NOT merge into `pretty.rs` (both live). Most consequentially, **`session.rs` is no longer the v3 god-file** — see its row + §3.4. The LOC figures + status notes in the table rows below carry the **pre-S81 snapshot**; treat the per-FIXME notes added in §3.4 + §16 as the current overlay until a full /design refresh re-tabulates them.
 
 | File | LOC | Primary responsibility | As-designed status |
 |---|---:|---|---|
@@ -92,9 +94,35 @@ The audit (262 LOC, src-20260423.md) reports 21,066 LOC in `src/`, with `session
 | `bind_chain_analysis.rs` | 849 | `bind!` chain pre-analysis used during expansion. | Stable. |
 | `style.rs` | 131 | Terminal style helpers (colours, attributes). | Stable. |
 | `thread_util.rs` | 36 | Thread-naming helper for worker spawn. | Stable. |
-| `session.rs` | 543 | **Legacy.** v3 session type lingering next to `session_v4.rs`. | **Audit F6 — delete.** v4 is the only pipeline; `session.rs` is dead weight. Tracked by audit recommendation 5; sweep is a `/dev` task. |
+| `session.rs` | 525 | **NOT v3 — repurposed (S81 correction).** Hosts session-construction helpers independent of `CompilerSession`: `CacheState`, `ProjectConfig` + `load_project_config_lib_dirs`, `assemble_lib_dirs`, `assemble_platform_dirs`, `resolve_prelude`, `determine_exit_code`, `apply_bind_chain_analysis`. | **FIXME 0109 Wave A is STALE.** The v3 session type was already deleted; these helpers are live (callers: `cache.rs`, `platform.rs`, `session_v4.rs`, `worker.rs`). The file is misnamed, not dead weight. Wave A → *verify-no-v3-type + optional rename to e.g. `session_setup.rs`*, NOT deletion. See §3.4. |
 
-**Total today**: 21,066 LOC. Post-relocation arrivals (Decision 40 / FIXME 0103 brings `trace.rs` 740 LOC + `io_trace.rs` 952 LOC; FIXME 0108 brings `display.rs` 831 LOC) add ~2,500 LOC; deletions (`session.rs` 543, plus the `code.rs` relocation 397, plus the worker.rs 2860–3018 post-loop collapse from Decision 41 ~150 LOC) remove ~1,090 LOC. Net post-S64-FIXMEs: ~22,500 LOC. The headline god-files (`session_v4.rs`, `worker.rs`) remain the audit-F1/F2 decomposition targets — the S64 FIXMEs do not themselves close those.
+**Total today**: 28,592 LOC across `src/`. The S64-snapshot relocations (above) have all landed; the headline god-files (`session_v4.rs` 6,201, `worker.rs` 6,074) remain the audit-F1/F2 decomposition targets (FIXME 0109 Wave D, carried to the next arc sprint per the S81 Phase-2 R1 carry boundary).
+
+### 3.3 Target module map (FIXME 0109 Wave D — CARRIED)
+
+The full decomposition target for the two god-files. **This is Wave D and is NOT in S81 scope** (the S81 Phase-2 R1 carry boundary; Principle 8 — a partial god-file split is itself interim debt). Recorded here so the carry is legible.
+
+| Module | Responsibility |
+|---|---|
+| `session_v4.rs` (residual) | `CompilerSession` struct + lifecycle; `SharedState` construction; `Drop`; worker-pool spawn + join |
+| `worker.rs` (residual) | `priority_worker_loop` + `nice_worker_loop`; per-cluster processing on `&SharedState` |
+| `src/process_form.rs` | The shared gap-orchestration form chain (Wave C extracts the seed of this) |
+| `src/eval.rs` | REPL eval — wraps the form chain + appends `defn_order` for defining forms; trampolines expression forms |
+| `src/repl.rs` | Slash-command dispatch, prompt formatting, banner, line-editor wrapper |
+
+Wave D's extraction sequence (when it runs): `eval.rs` → `repl.rs` → residual `session_v4.rs`; for `worker.rs`, collapse the remaining mirrored paths into single implementations.
+
+### 3.4 FIXME 0109 Waves A/B/C — the S81 carry boundary
+
+S81 lands **only** the three terminal-shaped sub-steps of FIXME 0109. Each is independently complete (a deletion/rename, a visibility re-confirmation, a clean extraction) and leaves the tree green; none is a stepping-stone Wave D reworks (Principle 8). The carry boundary is: **A/B/C this sprint; Wave D + the dependent runtime/observability harvest cluster (FIXMEs 0116/0128/0129/0130/0132/0133/0135) co-carry to the next arc sprint** (the harvested tests need the post-Wave-D `#[cfg(test)]` module homes).
+
+- **Wave A — `session.rs` (STALE as written; reduced scope).** The FIXME's premise ("delete the v3 session god-file") is stale: the v3 `CompilerSession`/`Session` type was already removed in a prior sprint, and `session.rs` now holds only live, `CompilerSession`-independent session-construction helpers (see the `session.rs` row + the callers list). Wave A's actionable residue is: (i) confirm by grep that no v3 session type or `crate::session::CompilerSession`/`Session` reference remains (it doesn't), then (ii) **optionally** rename `session.rs` → `session_setup.rs` (or fold the helpers into `pipeline.rs`) to remove the misleading "v3 lingering" connotation. The rename is cosmetic, touches only `use crate::session::*` sites (6 known) + `lib.rs`'s `pub(crate) mod` line, and is `pub(crate)`-internal (no `public-api.txt`/baseline impact — a binary has none). If the rename is judged not worth the churn, Wave A closes as *already-resolved* with the stale-premise note. **Either way Wave A is NOT a code deletion.**
+
+- **Wave B — narrow `lib.rs` (re-confirmation).** `lib.rs` is already 73 LOC (the S67 hack-back narrowed 18 `pub mod` → 5 binary-facing `pub mod` + 3 facade-cited `pub` + ~17 `pub(crate) mod`). Wave B re-confirms the split against `facades/int.md` §"Public surface" + the actual `use cranelisp::…` imports in `main.rs`, and demotes any `pub`/`pub mod` that no external consumer (binary or `cranelisp::`-path test) still reaches. This is a `dead_code`/visibility audit, not a structural change. No baseline impact (binary crate). Acceptance: every `pub mod` in `lib.rs` is justified by a `main.rs` import or a facade citation; the rest are `pub(crate)`.
+
+- **Wave C — extract the `process_form` family (clean extraction).** The gap-orchestration crossing point currently lives in `worker.rs` as `process_cluster_once` (the shared Pass-0/1/2 core, the worker entry) + `process_regular_form` (per-form expand→build→check) — there is no `process_form` symbol today (the facade name predates the S78 restructure). Wave C extracts this family into `src/process_form.rs` as free functions taking `&SharedState` (the worker loops + `process_single_form` call them). This isolates the one well-bounded "gap value → scheduler action" responsibility (Principle 1, Principle 7 — the sole crate-crossing where `ResolutionGap` becomes scheduler calls) ahead of Wave D's larger split, and is independent of it. Acceptance: `worker.rs` shrinks by the extracted span; `process_cluster_once`/`process_regular_form` (and their private helpers) live in `process_form.rs`; the worker loops + eval path call them across the module boundary; tree green. `pub(crate)`-internal — no baseline impact.
+
+**Carry-boundary non-interim-debt argument (Principle 8).** A/B/C do not produce scaffolding Wave D tears out: A is a rename-or-noop of an unrelated helper file; B is a visibility tightening that Wave D inherits unchanged; C extracts a module that Wave D's target map (§3.3) *names as a permanent home* (`src/process_form.rs`). Wave D, when it runs, moves `eval.rs`/`repl.rs` OUT of `session_v4.rs` and collapses `worker.rs`'s mirrored paths — it does not undo C's extraction. So the partial split is along a seam the full split also respects; there is no rework.
 
 ---
 
@@ -606,25 +634,29 @@ The triage itself is a `/sprint`-coordinated `/dev` task — too large for a sin
 
 ## 16. Open questions / FIXMEs filed
 
-This refresh surfaces no new `/arch`-targeted gaps beyond those already filed in S64. The FIXMEs landing in int over upcoming sprints are:
+**S64-era FIXMEs (0098/0099/0100/0103/0104/0108) have all CLOSED** (W-Macro, the trace relocation, the platform-interface landing, the display absorb, and the cluster-atomic restructure resolved them — verified against source S81). The current int FIXME backlog (S81 "clean & green", Phase 3 design):
 
-- **FIXME 0098** (`/dev`, Phase 4) — int callsites adopt typed `ResolutionGap`/`CheckError`/`ExpansionError` returns from frontend `expand` and typecheck `check_form`.
-- **FIXME 0099** (`/dev`, Phase 2) — int implements `src/got_trace/` ring buffer.
-- **FIXME 0100** (`/dev`, mechanical sweep) — int rewrites imports for relocated single-consumer types.
-- **FIXME 0103** (`/dev`, Phase 2) — int absorbs `trace.rs` + `io_trace.rs` from runtime; registers `IoObserver` at session startup.
-- **FIXME 0104** (`/dev`, Phase 3) — int's `load_platform_dll` constructs structured `PlatformError`; `Sess::format_error` adds Platform arm.
-- **FIXME 0108** (`/dev`) — int absorbs `display.rs` from backend.
+**S81 Wave 9a — light int items:**
 
-Open `/dev` work surfaced or restated by this refresh (no FIXME files yet — these are audit-recommendation-tracked rather than Decision-tracked):
+- **FIXME 0013** (`/int`) — `observability.rs::reset_panic_hook_installed_for_tests` mutates process-global panic-hook state without a serialisation lock. Add a `static TEST_GUARD: Mutex<()>` and take it at the top of every test that touches the install path. ~10 LOC; test-only; no baseline impact.
+- **FIXME 0194** (`/dev (int)`) — populate `SymbolDescription.related` (currently stubbed `Vec::new()` at `session_v4.rs:1648`). The collector logic already exists for the slash-command display paths (`format_related_section` + the `match`/`impl`/`defn` walks at `session_v4.rs:4503/4510/4541/…`); factor it into private helpers and call them at the `describe_symbol` construction site so callers stop duplicating the lookup. defn/impl/match-arm cross-refs per `repl/spec.md` §3.6. Optionally also threads the original parse-time `ImportSpec` (alias/span/multi-name) through `module_imports` (a separate sidecar-store concern — split out if it grows).
+- **FIXME 0217** (`/int`) — inline-module spec §8.2.2 step-2 parent-file rewrite. `handle_mod` (`worker.rs:2650`) calls `write_inline_mod_to_disk` (step 1) but never rewrites the parent file's `(mod name forms…)` → `(mod name)` (step 2). Real behavioural gap (the "one-time creation" + "indistinguishable from manually created" semantics are violated; `inline_body` persists in the symbol table forever). Needs the rewrite + a reload of the parent's structural decls + a new integration test (target /qa for the test). Files: `worker.rs`, possibly `repl/spec.md` §15.4.
+- **FIXME 0266** (`/dev (int)`) — move the `trace` SpecialForm metadata entry from the `primitives` module to root `""`. As-built: `bootstrap.rs::register_trace_type` (~L894) inserts it into the `primitives` table; the 2026-06-04 root-special-form ruling + corrected FIXME 0241 Trace row require it at root `""` alongside the structural special forms. ~1-line mount-move (the `Trace`/`TraceCall` ADT + accessors STAY in `primitives` — form/ADT asymmetry). Regression check: `/imports`/`/exports primitives`/`/info trace` reflect the new placement; recognition is parser-side (`Expr::Trace`) and does not consult this entry, so dispatch is unaffected.
 
-1. **Decompose `session_v4.rs`** (audit F1 + recommendation 1). The §3.3 module map is the target. Best landed after the S64 FIXMEs above (the post-FIXME shape is what gets decomposed).
-2. **Decompose `worker.rs`** (audit F2 + recommendation 1). Particularly: extract `process_form` as a free function in `src/process_form.rs` (or `worker::process_form`) — it's the gap-orchestration crossing point and merits its own home. The audit didn't propose this specific extraction; this design does.
-3. **Delete `session.rs`** (audit F6). v3 dead weight; v4 is the only pipeline.
-4. **Narrow `lib.rs`** (audit F5 + recommendation 4). 18 public modules → facade-shape exports.
-5. **Subordinate-doc currency sweep** (§15). Archive-then-refresh, sequenced after the FIXMEs above.
-6. **Rename `observability.rs` to `src/scheduler_trace/`** to fit the three-instance `*_trace` pattern (§11). Coordinated naturally with FIXMEs 0099 + 0103 (the other two `*_trace` modules land at the same time).
+**S81 Wave 9b — FIXME 0109 Waves A/B/C only** (see §3.4). The carry boundary: Wave D + the dependent observability harvest cluster co-carry to the next arc sprint.
 
-These six are not yet filed as numbered FIXMEs because they are mechanical, well-scoped, and tracked by the audit + this design doc. If `/sprint` wants explicit tracking, file them as `/dev`-targeted entries; otherwise they ride on the audit and this section.
+**Verify-and-plan / cross-skill-gated:**
+
+- **FIXME 0101** (`target: /sprint`) — runtime + platform audit-pass scheduling. **NOT an int-impl item** — it is a `/sprint` scheduling request for `audits/runtime-*.md` + `audits/platform-*.md` passes, and it concerns the runtime/platform crates, not `src/`. No int action; flag to `/sprint` that it sits outside the int component clearance.
+- **FIXME 0220** (`target: /arch`) — cache-hit Introspection rehydration. **/arch design question first** — the FIXME explicitly filed `target: /arch` to arbitrate WHERE the rehydration trigger sits (lazy-per-symbol vs eager-per-module vs per-first-edit) + WHETHER to serialize a minimal per-symbol `source_range: Option<Range<usize>>` into the cache. Until /arch rules, the int implementation (a `SharedState::rehydrate_introspection(fq)` private path) cannot be specced. **Blocked on /arch; not actionable as int-impl this wave.** Surface to `/sprint` as needing an /arch ruling before any int wave can take it.
+- **FIXME 0281** (`target: /design`) — int-facade trim of the dead `priority_boost_jit`/`wait_for_inmem` priority-codegen machinery. **Folds into FIXME 0298** (the int-facade retire/doc-reorg, a W1 doc item, `target: /arch`). The source already deleted the subsystem (S76 W3 — confirmed: `priority_boost_jit`/`wait_for_inmem`/`PriorityEntry`/`BlockingJitCodegen` are gone from `scheduler.rs`; only `unblock_module` remains); `facades/int.md` still describes it (L649-650, L1077, L1195-1196, L1229). Since 0298 retires `facades/int.md` wholesale (migrating its internal-orchestration content to `design/int/` + `src/` rustdoc), the 0281 trim is subsumed: the dead pseudocode simply does not carry over into the migrated docs, and `scheduler.rs`'s `unblock_module` is documented in its rustdoc. **Recommendation: close 0281 as folded-into-0298** rather than authoring a standalone facade patch on a doc that is being retired. (If 0298 slips past S81, do the standalone trim as a fallback.)
+
+**FIXME 0316 consumer-side (int half of the Wave-1 0316 work):**
+
+- **`insert_detecting_ambiguity` terminal-resolve** (`imports.rs:282-332`, `target: /dev (int)`). Per the /arch Phase-3 ruling (SPRINT.md §3): before emitting `Ambiguous`, chain-follow BOTH the existing and incoming `Import` edge to their terminal `(home_module, canonical_symbol)` via `cranelisp_types::resolve_terminal_entry_and_home` (already `pub` — confirmed exported at `resolve.rs:67`; NO promotion needed) and dedup if the terminals match. Replaces the immediate-source `s1 == s2` test at L301. Pure spec-conformance fix (§8.6.4 "same original definition is NOT ambiguous"). The existing visibility-upgrade branch (L297-309) stays. Needs a /qa test for the glob+re-export-specific overlap case.
+- **`recognize_macro_head` collapse to `resolve_with_fallback`** (`expander.rs:262`, the `pub(crate) fn`). Once /arch authors `cranelisp_types::resolve_with_fallback` (the new pub fn unifying the 5 prelude-fallback wrappers — types-side, /arch-owned, lands Wave 1 first), the expander's hand-rolled 3-step retry (first-hop resolve → on-miss-if-bit-on retry-rooted-at-prelude → public-only filter) collapses to one call. **Cross-crate dependency: int rebuilds against the new types seam AFTER /arch lands it.** The 4 checker.rs wrappers are typecheck-owned (the int half is just this expander wrapper). No int baseline impact (binary).
+
+These are tracked in `design/arch/fixmes/NNNN-*.md`; this section mirrors them for design-intent visibility. The S64 audit-recommendation items (`scheduler_trace/` rename, subordinate-doc sweep) are retired: the `*_trace` rename did not survive the S76 trace relocation, and the doc-currency sweep is subsumed by the 0298 facade-retire reorg.
 
 ---
 
