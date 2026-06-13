@@ -12,8 +12,6 @@ into the owning crate's `#[cfg(test)]` unit tests.
 | `ring3_repl.rs` | 763 | 41 | /int (with /typecheck) | 0125 | 2026-05-03 |
 | `io.rs` | 1360 | 76 | /int (with /typecheck, /backend, /runtime) | 0127 | 2026-05-03 |
 | `io_minimal.rs` | 120 | 5 | /int (Sprint 57 W6 reductions; with /backend) | 0127 | 2026-05-03 |
-| `observability_io.rs` | 446 | 7 | /runtime (io_trace internals) | 0128 | 2026-05-03 |
-| `rc_alloc_trace.rs` | 1191 | 81 | /runtime (with /backend co-owner) | 0129 | 2026-05-04 |
 | `ring4_trace_taxonomy.rs` | 578 | 31 | /typecheck (with /runtime co-owner) | 0130 | 2026-05-04 |
 | `v4_jit_reclaim.rs` | 700 | 6 | /backend (with /runtime co-owner) | 0133 | 2026-05-04 |
 | `e2e.rs` | 2701 | 309 | /int (with /frontend, /typecheck, /backend) | 0134 | 2026-05-04 |
