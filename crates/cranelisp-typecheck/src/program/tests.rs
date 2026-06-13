@@ -3971,3 +3971,72 @@
         };
         assert_eq!(message, original);
     }
+
+    // =========================================================================
+    // ModuleEntry::Def AST-annotation shape + CheckResult slim shape
+    // (harvested from tests/legacy/wave2_g6.rs per FIXME 0117, typecheck half).
+    //
+    // wave2_g6 was a Layer-3 integration file observing the Sprint 57 Wave 2
+    // (G6) write paths via the Rust API. Two of its observations are
+    // typecheck-internal contracts and are harvested here; the backend half
+    // (the `Code { ptr }` write onto `ModuleEntry::Def.code` via the
+    // `CodeFinalizer` trait, and the `/clif`/`/source` introspection +
+    // cross-module-call read-path guards) stays for the W-C backend sweep.
+    //
+    // 1. Phase-1 AST annotation: after `check`, a user `(defn ...)` is
+    //    registered as `ModuleEntry::Def` carrying `ast: Some(_)` (the
+    //    annotated `Defn`). This is the typecheck-owned half of the legacy
+    //    `g6_code_on_entry_after_compile` assertion — the `code.is_some()`
+    //    half is the backend write path (W-C).
+    // 2. `CheckResult` slim shape: the boundary type carries exactly
+    //    `{ warnings, display }` after Wave 2's slim-down — the legacy
+    //    `g6_check_result_slim_shape` structural guard.
+    // =========================================================================
+
+    // spec: design/typecheck/ast-annotation.md §10.2 — Phase-1 annotation writes
+    // the annotated `Defn` onto `ModuleEntry::Def.ast` for a user function.
+    #[test]
+    fn def_entry_carries_annotated_ast_after_check() {
+        let mut tc = tc_with_prims();
+        let ctx = cf_test_ctx();
+        let sexps = cranelisp_frontend::parse("(defn trivial [] 42)").unwrap();
+        let program = cranelisp_frontend::build_forms(&sexps).unwrap();
+
+        tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
+
+        let st = tc.symbol_table();
+        let entry = st.get("trivial").expect("'trivial' must be registered after check");
+        match entry {
+            ModuleEntry::Def { ast, .. } => {
+                assert!(
+                    ast.is_some(),
+                    "ModuleEntry::Def.ast must be Some(_) after Phase-1 AST annotation"
+                );
+                // The annotated body must carry a resolved (var-free) type.
+                let defn = ast.as_ref().unwrap();
+                let body = &defn.body;
+                let ty = body.inferred_type().expect("annotated body must carry inferred_type");
+                assert!(!ty.contains_var(), "inferred_type must be concrete, got {ty:?}");
+            }
+            other => panic!("expected Def entry for 'trivial', got {other:?}"),
+        }
+    }
+
+    // spec: design/typecheck/ast-annotation.md §10.2.3 — CheckResult has only
+    // { warnings, display }. Structural guard: if a retired field
+    // (method_resolutions / mono_defns / default_method_defns /
+    // constrained_fn_names / expr_types) is reintroduced, this won't compile.
+    #[test]
+    fn check_result_slim_shape() {
+        use crate::result::CheckResult;
+        // Only the two surviving fields are nameable; constructing with exactly
+        // them (and reading them back) pins the slim shape.
+        let r = CheckResult {
+            warnings: Vec::new(),
+            display: None,
+        };
+        let _ = &r.warnings;
+        let _ = &r.display;
+        assert_eq!(r.warnings.len(), 0);
+        assert!(r.display.is_none());
+    }

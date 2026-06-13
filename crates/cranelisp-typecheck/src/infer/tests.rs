@@ -2431,3 +2431,116 @@
             }
         }
     }
+
+    // =========================================================================
+    // (trace expr) — inference rule (harvested from tests/legacy/
+    // ring4_trace_taxonomy.rs per FIXME 0130, typecheck portion).
+    //
+    // The typecheck-internal contract for the `trace` special form is the
+    // `infer_trace` rule: `(trace expr)` ALWAYS infers as
+    // `Type::ADT(primitives/Trace, [])`, regardless of the body's type, while
+    // still inferring the body for constraint propagation / error detection.
+    // Per Decision 0040 the Trace ADT, `TraceCall` constructor, and the field
+    // accessors (`name`/`params`/`result`/`nanos`/`children`) relocated in
+    // FULL to the `int` binary crate (seeded in `src/bootstrap.rs`); they are
+    // NOT a typecheck preset and NOT resolvable from the typecheck fixture, so
+    // the field-accessor return-type and `TraceCall`-pattern-match assertions
+    // from the legacy file are no longer typecheck-internal and are not
+    // harvested here (they belong to the int/runtime cluster). What remains
+    // typecheck-internal is the trace-form's own inferred shape, exercised
+    // here through the frontend parser + AST builder.
+    // =========================================================================
+
+    /// Helper: parse a single expression to an `Expr` AST via the frontend,
+    /// mirroring `tests/CLAUDE.md §"Isolating Cross-Crate Failures"` (do not
+    /// hand-construct `Expr` trees).
+    fn build_expr_from_source(src: &str) -> cranelisp_types::Expr {
+        let sexps = cranelisp_frontend::parse(src).expect("parse must succeed");
+        assert_eq!(sexps.len(), 1, "expected a single expression");
+        cranelisp_frontend::build_expr(&sexps[0]).expect("build_expr must succeed")
+    }
+
+    /// The canonical Trace type the `infer_trace` rule synthesises.
+    fn trace_type() -> Type {
+        Type::ADT(prims_fqtn("Trace"), vec![])
+    }
+
+    // spec: spec/04-expressions.md §4.12.1 — (trace ...) infers as Trace for an
+    // Int-bodied call.
+    #[test]
+    fn trace_returns_trace_type_int_body() {
+        let mut tc = tc();
+        // (defn fact [n] ...) bound locally so the call has a concrete type.
+        tc.bind_local_self(
+            Symbol::from("fact"),
+            mono(Type::Fn(vec![Type::Int], Box::new(Type::Int))),
+        );
+        let mut expr = build_expr_from_source("(trace (fact 5))");
+        let ty = tc.infer_expr_for_test(&mut expr).unwrap();
+        assert_eq!(ty, trace_type(), "trace of an Int-bodied call must infer as Trace");
+    }
+
+    // spec: spec/04-expressions.md §4.12.1 — (trace ...) infers as Trace
+    // regardless of the body's type (here a Bool-returning call).
+    #[test]
+    fn trace_returns_trace_type_regardless_of_body() {
+        let mut tc = tc();
+        tc.bind_local_self(
+            Symbol::from("always-true"),
+            mono(Type::Fn(vec![], Box::new(Type::Bool))),
+        );
+        let mut expr = build_expr_from_source("(trace (always-true))");
+        let ty = tc.infer_expr_for_test(&mut expr).unwrap();
+        assert_eq!(
+            ty,
+            trace_type(),
+            "trace must infer as Trace even for a Bool-bodied expression"
+        );
+    }
+
+    // spec: spec/04-expressions.md §4.12.2 — (trace ...) over inline primitives
+    // (no user calls) still infers as Trace.
+    #[test]
+    fn trace_inline_primitive_no_calls() {
+        let mut tc = tc();
+        let mut expr = build_expr_from_source("(trace (add-i64 1 2))");
+        let ty = tc.infer_expr_for_test(&mut expr).unwrap();
+        assert_eq!(
+            ty,
+            trace_type(),
+            "trace of an inline primitive must still infer as Trace"
+        );
+    }
+
+    // spec: spec/04-expressions.md §4.12.5 — lexically nested trace still infers
+    // as a single Trace at the type level (the nested-trace RUNTIME error is an
+    // int/runtime concern, covered e2e in tests/trace.rs).
+    #[test]
+    fn trace_nested_single_trace() {
+        let mut tc = tc();
+        tc.bind_local_self(
+            Symbol::from("fact"),
+            mono(Type::Fn(vec![Type::Int], Box::new(Type::Int))),
+        );
+        let mut expr = build_expr_from_source("(trace (trace (fact 3)))");
+        let ty = tc.infer_expr_for_test(&mut expr).unwrap();
+        assert_eq!(ty, trace_type(), "nested trace must still infer as Trace");
+    }
+
+    // spec: spec/04-expressions.md §4.12.7 — a trace value is an ordinary value:
+    // let-binding it preserves the Trace type.
+    #[test]
+    fn trace_composability_let_binding() {
+        let mut tc = tc();
+        tc.bind_local_self(
+            Symbol::from("fact"),
+            mono(Type::Fn(vec![Type::Int], Box::new(Type::Int))),
+        );
+        let mut expr = build_expr_from_source("(let [t (trace (fact 3))] t)");
+        let ty = tc.infer_expr_for_test(&mut expr).unwrap();
+        assert_eq!(
+            ty,
+            trace_type(),
+            "a let-bound trace value must retain the Trace type"
+        );
+    }

@@ -8,6 +8,41 @@ refers_to: tests/legacy/ring4_trace_taxonomy.rs
 status: open
 ---
 
+> **S81 W-A (typecheck portion harvested; runtime remainder carries — OPEN):**
+> The typecheck-internal portion of this harvest has been reassessed against
+> the post-Decision-0040 architecture. **Per Decision 0040 the Trace ADT,
+> the `TraceCall` constructor, and the field accessors
+> (`name`/`params`/`result`/`nanos`/`children`) relocated in FULL to the `int`
+> binary crate** (seeded in `src/bootstrap.rs::register_trace_type`); they are
+> NOT a typecheck preset (`crates/cranelisp-typecheck/src/builtins.rs` §"there
+> is no Trace preset") and are NOT resolvable from the typecheck fixture. The
+> only typecheck-internal contract that survives is the `infer_trace` rule:
+> `(trace expr)` ALWAYS infers as `Type::ADT(primitives/Trace, [])` regardless
+> of the body type.
+>
+> Harvested into `crates/cranelisp-typecheck/src/infer/tests.rs` (driven via
+> `cranelisp_frontend::parse` + `build_expr`):
+> - `trace_returns_trace_type_int_body`
+> - `trace_returns_trace_type_regardless_of_body`
+> - `trace_inline_primitive_no_calls`
+> - `trace_nested_single_trace` (TYPE-level; the nested-trace RUNTIME error is
+>   covered e2e in `tests/trace.rs`)
+> - `trace_composability_let_binding`
+>
+> **NOT harvested into typecheck (no longer typecheck-internal):** the
+> field-accessor return-type assertions (`trace_field_*`), the `TraceCall`
+> pattern-match type (`trace_composability_pattern_match`), and the
+> import-resolution behaviour (`trace_type_requires_import_for_match`,
+> `trace_type_*importable*`, `trace_type_not_auto_imported`) — all depend on
+> the int-seeded Trace ADT and now belong to the **int/runtime cluster**, along
+> with the runtime-portion (heap-pointer observation `trace_basic_fact` /
+> `trace_is_value_not_effect`) and the `/run-tests` formatter tests
+> (`run_tests_*`, `run_tests_discover_tests_form_type`, `run_tests_run_test_form_type`).
+>
+> `tests/legacy/ring4_trace_taxonomy.rs` is RETAINED (runtime/int cluster
+> carries it). FIXME left OPEN for the runtime remainder; re-point/retarget to
+> the int+runtime cluster at the relevant sweep.
+
 # Harvest tests/legacy/ring4_trace_taxonomy.rs into cranelisp-typecheck + cranelisp-runtime unit tests
 
 ## Issue

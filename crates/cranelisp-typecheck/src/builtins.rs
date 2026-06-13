@@ -1161,7 +1161,7 @@ mod tests {
     // spec: appendix-a-builtins §A.2 — all ring-0 primitives registered in primitives module
     #[test]
     fn test_primitives_registered() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         let pt = primitives_table(&tf);
         // All Ring 0 primitives should be in the primitives module
         for name in RING0_PRIMITIVE_NAMES {
@@ -1175,7 +1175,7 @@ mod tests {
     // spec: appendix-a-builtins §A.2 — add-i64 has monomorphic (Fn [Int Int] Int) scheme
     #[test]
     fn test_add_i64_scheme() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("add-i64") {
             // Monomorphic: no quantified vars
             assert!(scheme.type_vars.is_empty(), "add-i64 should have no quantified vars");
@@ -1192,7 +1192,7 @@ mod tests {
     // spec: appendix-a-builtins §A.2 — add-f64 has monomorphic (Fn [Float Float] Float) scheme
     #[test]
     fn test_add_f64_scheme() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("add-f64") {
             assert!(scheme.type_vars.is_empty(), "add-f64 should have no quantified vars");
             assert_eq!(
@@ -1208,7 +1208,7 @@ mod tests {
     // spec: appendix-a-builtins §A.2 — eq-i64 has monomorphic (Fn [Int Int] Bool) scheme
     #[test]
     fn test_eq_i64_scheme() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("eq-i64") {
             assert!(scheme.type_vars.is_empty(), "eq-i64 should have no quantified vars");
             assert_eq!(
@@ -1224,7 +1224,7 @@ mod tests {
     // spec: appendix-a-builtins §A.3 — not has monomorphic (Fn [Bool] Bool) scheme
     #[test]
     fn test_not_scheme() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("not") {
             assert!(scheme.type_vars.is_empty(), "not should have no quantified vars");
             assert_eq!(
@@ -1240,7 +1240,7 @@ mod tests {
     // spec: appendix-a-builtins §A.2 — arithmetic primitives are inline kind
     #[test]
     fn test_primitives_are_inline_kind() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         if let Some(ModuleEntry::Def { kind, .. }) = primitives_table(&tf).get("add-i64") {
             assert!(
                 matches!(
@@ -1310,7 +1310,7 @@ mod tests {
     // spec: 03-types §3.2.4 — Vec primitive operations registered
     #[test]
     fn test_vec_primitives_registered() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         let pt = primitives_table(&tf);
         let vec_ops = ["vec-get", "vec-set", "vec-push", "vec-len"];
         for name in vec_ops {
@@ -1324,7 +1324,7 @@ mod tests {
     // spec: 03-types §3.2.4 — vec-get is polymorphic (Fn [(Vec a) Int] a)
     #[test]
     fn test_vec_get_scheme_is_polymorphic() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         if let Some(ModuleEntry::Def { scheme, kind, .. }) = primitives_table(&tf).get("vec-get") {
             assert_eq!(scheme.type_vars.len(), 1, "vec-get should have 1 quantified var");
             // Type: (Fn [(Vec a) Int] a)
@@ -1348,7 +1348,7 @@ mod tests {
     // spec: 03-types §3.2.4 — vec-set is polymorphic (Fn [(Vec a) Int a] (Vec a))
     #[test]
     fn test_vec_set_scheme_is_polymorphic() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("vec-set") {
             assert_eq!(scheme.type_vars.len(), 1, "vec-set should have 1 quantified var");
             if let Type::Fn(params, ret) = &scheme.ty {
@@ -1368,7 +1368,7 @@ mod tests {
     // spec: 03-types §3.2.4 — vec-push is polymorphic (Fn [(Vec a) a] (Vec a))
     #[test]
     fn test_vec_push_scheme_is_polymorphic() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("vec-push") {
             assert_eq!(scheme.type_vars.len(), 1, "vec-push should have 1 quantified var");
             if let Type::Fn(params, ret) = &scheme.ty {
@@ -1385,7 +1385,7 @@ mod tests {
     // spec: 03-types §3.2.4 — vec-len is polymorphic (Fn [(Vec a)] Int)
     #[test]
     fn test_vec_len_scheme_is_polymorphic() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("vec-len") {
             assert_eq!(scheme.type_vars.len(), 1, "vec-len should have 1 quantified var");
             if let Type::Fn(params, ret) = &scheme.ty {
@@ -1407,7 +1407,7 @@ mod tests {
     // spec: pipeline-orchestration §5 — no traits registered at startup
     #[test]
     fn test_no_traits_at_startup() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new());
         assert!(
             tf.env()
                 .lookup_trait_decl_in_module(
@@ -1426,7 +1426,7 @@ mod tests {
     // spec: pipeline-orchestration §5 — operator symbols NOT in symbol table at startup
     #[test]
     fn test_no_operator_symbols_at_startup() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new());
         let ops = ["+", "-", "*", "/", "=", "!=", "<", ">", "<=", ">=", "show"];
         for name in ops {
             assert!(
@@ -1444,7 +1444,7 @@ mod tests {
     // spec: 09-macros §9.1 — macros module exists after initialization
     #[test]
     fn test_macros_module_exists() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
         let macros_path = ModuleFullPath::from("macros");
         assert!(
             tf.modules.get(&macros_path).is_some(),
@@ -1455,7 +1455,7 @@ mod tests {
     // spec: 09-macros §9.1.1 — SList type registered in macros module
     #[test]
     fn test_slist_type_registered() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
         let macros_path = ModuleFullPath::from("macros");
         let info = tf.lookup_type_def_in_module(&macros_path, &TypeName::from("SList"));
         assert!(info.is_some(), "SList type should be registered");
@@ -1468,7 +1468,7 @@ mod tests {
     // spec: 09-macros §9.1.1 — SNil is nullary constructor (tag 0)
     #[test]
     fn test_snil_is_nullary() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
         let macros_path = ModuleFullPath::from("macros");
         let macros_table = tf.modules.get(&macros_path).unwrap();
         if let Some(ModuleEntry::Def { kind, scheme, .. }) = macros_table.get("SNil") {
@@ -1496,7 +1496,7 @@ mod tests {
     // spec: 09-macros §9.1.1 — SCons constructor: (Fn [a (SList a)] (SList a))
     #[test]
     fn test_scons_constructor_type() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
         let macros_path = ModuleFullPath::from("macros");
         let macros_table = tf.modules.get(&macros_path).unwrap();
         if let Some(ModuleEntry::Def { kind, scheme, param_names, .. }) = macros_table.get("SCons") {
@@ -1546,7 +1546,7 @@ mod tests {
     // spec: 09-macros §9.1.2 — Sexp type registered with 7 constructors
     #[test]
     fn test_sexp_type_registered() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
         let macros_path = ModuleFullPath::from("macros");
         let info = tf.lookup_type_def_in_module(&macros_path, &TypeName::from("Sexp"));
         assert!(info.is_some(), "Sexp type should be registered");
@@ -1575,7 +1575,7 @@ mod tests {
     // spec: 09-macros §9.1.2 — SexpSym constructor: (Fn [String] Sexp)
     #[test]
     fn test_sexpsym_constructor_type() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
         let macros_path = ModuleFullPath::from("macros");
         let macros_table = tf.modules.get(&macros_path).unwrap();
         if let Some(ModuleEntry::Def { scheme, kind, .. }) = macros_table.get("SexpSym")
@@ -1598,7 +1598,7 @@ mod tests {
     // spec: 09-macros §9.1.2 — all 7 Sexp constructors have correct field types
     #[test]
     fn test_all_sexp_constructor_field_types() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
         let macros_path = ModuleFullPath::from("macros");
         let macros_table = tf.modules.get(&macros_path).unwrap();
 
@@ -1674,7 +1674,7 @@ mod tests {
     // spec: 09-macros §9.1.3 — qualified access macros/SexpSym works from user module
     #[test]
     fn test_qualified_access_from_user() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
         // The TypeChecker's current module is "user" by default.
         // Qualified lookup: "macros/SexpSym" should resolve.
         let scheme = tf.lookup("macros/SexpSym");
@@ -1710,7 +1710,7 @@ mod tests {
     // spec: pipeline-orchestration §3 — sconcat registered as extern primitive in macros module
     #[test]
     fn test_sconcat_registered_in_macros() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
         let macros_path = ModuleFullPath::from("macros");
         let macros_table = tf.modules.get(&macros_path).unwrap();
         let entry = macros_table.get("sconcat");
@@ -1743,7 +1743,7 @@ mod tests {
     // spec: pipeline-orchestration §3 — sconcat accessible via qualified name macros/sconcat
     #[test]
     fn test_sconcat_qualified_access() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
         let scheme = tf.lookup("macros/sconcat");
         assert!(
             scheme.is_some(),
@@ -1754,7 +1754,7 @@ mod tests {
     // spec: pipeline-orchestration §3 — sconcat NOT imported into user module
     #[test]
     fn test_sconcat_not_in_user() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp());
         assert!(
             tf.symbol_table().get("sconcat").is_none(),
             "sconcat should NOT be in user module (it's in macros, not primitives)"
@@ -1768,7 +1768,7 @@ mod tests {
     // spec: pipeline-orchestration §3 — quote-sexp registered as extern primitive
     #[test]
     fn test_quote_sexp_registered() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp().with_primitives());
         let prims = primitives_table(&tf);
         let entry = prims.get("quote-sexp");
         assert!(entry.is_some(), "quote-sexp should be in primitives module");
@@ -1796,7 +1796,7 @@ mod tests {
     // spec: pipeline-orchestration §3 — quote-sexp also in primitives module directly
     #[test]
     fn test_quote_sexp_in_primitives_module() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp().with_primitives());
         let primitives_path = ModuleFullPath::from("primitives");
         let primitives_table = tf.modules.get(&primitives_path).unwrap();
         assert!(
@@ -1815,7 +1815,7 @@ mod tests {
         // TypeChecker::new() exercises the full registration sequence.
         // If the ordering is wrong (e.g. quote-sexp before macros module),
         // it would either panic or produce invalid types.
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_macros_sexp().with_primitives());
 
         // Verify all expected modules exist
         assert!(tf.modules.get(&ModuleFullPath::from("user")).is_some());
@@ -1841,7 +1841,7 @@ mod tests {
     // spec: 10-io §10.1 — IO type registered in primitives module
     #[test]
     fn test_io_type_registered() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
         let primitives_path = ModuleFullPath::from("primitives");
         let info = tf.lookup_type_def_in_module(&primitives_path, &TypeName::from("IO"));
         assert!(info.is_some(), "IO type should be registered");
@@ -1862,7 +1862,7 @@ mod tests {
     // spec: 10-io §10.1 — Pure constructor: tag=0, field `ioval` of type `a`
     #[test]
     fn test_pure_constructor() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
         let primitives_path = ModuleFullPath::from("primitives");
         let primitives_table = tf.modules.get(&primitives_path).unwrap();
 
@@ -1903,7 +1903,7 @@ mod tests {
     // spec: 10-io §10.1 — Effect constructor: tag=1, field `thunk` of type `a`
     #[test]
     fn test_effect_constructor() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
         let primitives_path = ModuleFullPath::from("primitives");
         let primitives_table = tf.modules.get(&primitives_path).unwrap();
 
@@ -1951,7 +1951,7 @@ mod tests {
     // type variable `b` live in the synthesised constructor scheme's Fn signature.
     #[test]
     fn test_bind_constructor_internal() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
         let primitives_path = ModuleFullPath::from("primitives");
 
         // Bind name appears in IO's TypeDefInfo.constructors list at index 2.
@@ -2033,7 +2033,7 @@ mod tests {
     // spec: 10-io §10.1 — Pure and Effect registered as constructors in primitives module
     #[test]
     fn test_io_constructors_in_primitives_module() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
         let primitives_path = ModuleFullPath::from("primitives");
         let primitives_table = tf.modules.get(&primitives_path).unwrap();
 
@@ -2056,7 +2056,7 @@ mod tests {
     // spec: 10-io §10.1 — IO constructors in primitives module
     #[test]
     fn test_io_constructors_in_primitives() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
         let prims_path = ModuleFullPath::from("primitives");
         let prims_table = tf.modules.get(&prims_path).unwrap();
         assert!(
@@ -2081,7 +2081,7 @@ mod tests {
     // spec: 10-io §10.2 — bind registered as inline primitive in primitives module
     #[test]
     fn test_bind_primitive_registered() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
         let prims_path = ModuleFullPath::from("primitives");
         let table_guard = tf.modules.get(&prims_path).unwrap();
         let entry = table_guard.get("bind");
@@ -2172,7 +2172,7 @@ mod tests {
     // spec: 10-io §10.2 — bind also in primitives module
     #[test]
     fn test_bind_in_primitives_module() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
         let primitives_path = ModuleFullPath::from("primitives");
         let primitives_table = tf.modules.get(&primitives_path).unwrap();
         assert!(
@@ -2188,7 +2188,7 @@ mod tests {
     // spec: appendix-a-builtins §A.5 — all Ring 0 primitives have docstrings
     #[test]
     fn test_ring0_primitives_have_docstrings() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         let pt = primitives_table(&tf);
         for name in RING0_PRIMITIVE_NAMES {
             if let Some(ModuleEntry::Def { docstring, .. }) = pt.get(*name) {
@@ -2205,7 +2205,7 @@ mod tests {
     // spec: appendix-a-builtins §A.5 — all Ring 1 primitives have docstrings
     #[test]
     fn test_ring1_primitives_have_docstrings() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         let pt = primitives_table(&tf);
         for name in RING1_PRIMITIVE_NAMES {
             if let Some(ModuleEntry::Def { docstring, .. }) = pt.get(*name) {
@@ -2222,7 +2222,7 @@ mod tests {
     // spec: appendix-a-builtins §A.5 — Vec primitives have docstrings
     #[test]
     fn test_vec_primitives_have_docstrings() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         let pt = primitives_table(&tf);
         for name in &["vec-get", "vec-set", "vec-push", "vec-len"] {
             if let Some(ModuleEntry::Def { docstring, .. }) = pt.get(*name) {
@@ -2239,7 +2239,7 @@ mod tests {
     // spec: appendix-a-builtins §A.5 — specific docstring text matches spec
     #[test]
     fn test_docstring_text_matches_spec() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(FixtureBuilder::new().with_primitives());
         let pt = primitives_table(&tf);
 
         let check = |name: &str, expected: &str| {
@@ -2300,7 +2300,9 @@ mod tests {
     // future defensive `(import [macros [*]])` re-injection into primitives.
     #[test]
     fn test_synthetic_modules_have_empty_imports_exports() {
-        let tf = TestFixture::new();
+        let tf = TestFixture::with_content(
+            FixtureBuilder::new().with_builtin_type_names().with_macros_sexp().with_primitives(),
+        );
 
         let primitives_path = ModuleFullPath::from("primitives");
         let primitives_table = tf

@@ -8,6 +8,27 @@ refers_to: tests/legacy/wave2_g6.rs
 status: open
 ---
 
+> **S81 W-A (tc-half harvested):** The typecheck-relevant assertions are
+> harvested into `crates/cranelisp-typecheck/src/program/tests.rs`:
+> - `def_entry_carries_annotated_ast_after_check` — the Phase-1
+>   `ModuleEntry::Def.ast = Some(_)` annotation write (the typecheck half of
+>   the legacy `g6_code_on_entry_after_compile`).
+> - `check_result_slim_shape` — the `CheckResult { warnings, display }`
+>   structural guard (legacy `g6_check_result_slim_shape`).
+>
+> **Backend-half pending W-C:** the `Code { ptr }` write onto
+> `ModuleEntry::Def.code` via the `CodeFinalizer` trait (the `code.is_some()`
+> half of `g6_code_on_entry_after_compile`), the `/clif`/`/source`
+> introspection read-path guards (`g6_clif_introspection_reads_from_symbol_table`,
+> `g6_source_introspection_reads_from_symbol_table`), the `CodegenProduct`
+> deletion guard (`g6_codegen_product_regression_guard`), the cross-module
+> symbol-table call resolution (`g6_cross_module_call_via_symbol_table`), the
+> `__expr`-via-compile_to_module path (`g6_repl_expr_uses_compile_to_module_path`),
+> and the multi-sig JIT dispatch regression guards
+> (`g6_multi_sig_*`) — all observe backend / int wiring and are harvested in the
+> W-C backend sweep. `tests/legacy/wave2_g6.rs` is RETAINED until the
+> backend-half lands. FIXME left OPEN.
+
 # Harvest tests/legacy/wave2_g6.rs into cranelisp-typecheck (and -backend) unit tests
 
 ## Issue
