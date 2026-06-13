@@ -1,12 +1,14 @@
 ---
 number: 0052
-target: /qa
+target: /repl
 filed_by: /docs
 filed_at: 2026-05-01
 sprint_filed: 64
 refers_to: user/plan-docs.md:480
 status: open
 migrated_from_inline: true
+re_targeted_by: /qa (S81 W-H)
+re_targeted_reason: REPL /learn feature, not a /qa test — owned by /repl (feature) + /docs (tutorial)
 ---
 
 # 0052 — `/learn` system requires REPL feature planning (U0.2)

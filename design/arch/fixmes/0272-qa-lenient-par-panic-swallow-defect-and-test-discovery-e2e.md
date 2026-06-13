@@ -78,6 +78,38 @@ Resolver: **/dev intrinsics** — the fork-join error-slot ferry obligation
 lenient + 0279 reduction" row L1. Half B (discover-tests / catch-runtime-error
 e2e) remains S77, untouched.
 
+## /qa resolution status — Half B (S81 W-H — 2026-06-13)
+
+DONE (feature landed; e2e coverage added). The test-discovery cascade is in
+source: `catch-runtime-error` (`crates/cranelisp-intrinsics/src/panic.rs`,
+`#[export_name="catch-runtime-error"]`, intrinsics-table entry) and
+`discover-tests` (`src/session_v4.rs::discover_tests_extern`, host-promised via
+`Jit::define_symbol` in `src/worker.rs::build_session_jit`) are both wired;
+FIXMEs 0269–0271 are resolved + deleted (only 0273 — the /stdlib in-language
+runner sugar — remains open, and does not gate the primitives).
+
+Half-B e2e added to `tests/spec_12_runtime.rs` (all green), complementing the
+pre-existing `discover_tests_and_catch_runtime_error_user_composition` (Ok/None
+pass-count path, REPL):
+
+- `catch_runtime_error_err_arm_run` — panicking thunk (`div-i64 10 0`) →
+  `(Err …)` arm fires in `--run` (exit 0).
+- `catch_runtime_error_err_arm_link` — same Err arm in a **`--link`** standalone
+  binary (the appendix-A "works in all modes including --link" claim).
+- `catch_runtime_error_ok_arm_run` — clean thunk (`add-i64 40 2`) → `(Ok 42)`
+  arm fires in `--run` (exit 42).
+- `discover_tests_excludes_mistyped_test_neg` — NEGATIVE: a wrong-arity and a
+  wrong-return-type `test-*` are both excluded; only the exact
+  `(Fn [] (Option String))` test is discovered (vec-len 1, not 3).
+
+`// spec:` annotations cite `spec/appendix-a-builtins.md §"Test discovery and
+error capture"` (the A.3 sub-table where both primitives' rows live) + the
+existing §12.4.3 / §12.7.2 anchors. spec_link_check clean.
+
+Both halves are now done: Half A = `lenient_binding_panic_not_swallowed_neg`
+(failing, ferry FIX owned by /dev FIXME 0270); Half B = the four e2e above.
+The §"Half B" appendix-A `[R4]` graduation is recorded by these tests.
+
 ## Operational implication / Context
 
 Half A is the durable record of the swallowed-error defect (flagged in the design as

@@ -390,6 +390,101 @@ fn discover_tests_and_catch_runtime_error_user_composition() {
 }
 
 // =============================================================================
+// FIXME 0289 Half B — `catch-runtime-error` arm coverage across modes +
+// `discover-tests` eligibility-exclusion negative.
+//
+// The composition test above exercises the Ok/None pass-counting path in REPL.
+// Half B adds the two coverage gaps the design calls out:
+//   - `catch-runtime-error` over a *panicking* thunk → `(Err …)` and over a
+//     clean thunk → `(Ok …)`, demonstrated end-to-end in `--run` AND `--link`
+//     (the combinator is a self-contained intrinsic — appendix-A "works in all
+//     modes including --link"). The Err vs Ok arm selects the program's exit
+//     code, so the e2e observation is the exit code, not stdout.
+//   - `discover-tests` excludes a mis-typed `test-*` (negative) — discovery
+//     requires BOTH the `test-` prefix AND the exact signature
+//     `(Fn [] (Option String))`.
+//
+// `--run`/`--link` programs do not get the implicit primitives re-export the
+// REPL `repl_prims` helper provides, so each entry program imports the names it
+// uses from `primitives` explicitly. `main` returns `(IO _)` via `Pure`
+// (S80 main:IO enforcement); the inner Int becomes the process exit code.
+// =============================================================================
+
+// The `--run`/`--link` entry program: `catch-runtime-error` over a thunk that
+// divides by zero (a `runtime/panic` source per §12.7.2.1). The Err arm is
+// selected → `main` yields `(Pure 0)` → exit 0. The Ok arm (had the thunk not
+// panicked) would yield 1 — so exit 0 proves the Err arm fired.
+const CATCH_ERR_PROGRAM: &str = "(import [primitives [catch-runtime-error div-i64 Result Ok Err Pure]])\n\
+     (defn main []\n\
+       (Pure (match (catch-runtime-error (fn [] (div-i64 10 0)))\n\
+               [(Ok v)   1\n\
+                (Err m)  0])))\n";
+
+// Clean-thunk counterpart: the thunk computes 42 without panicking, so the Ok
+// arm fires and `main` yields `(Pure 42)` → exit 42.
+const CATCH_OK_PROGRAM: &str = "(import [primitives [catch-runtime-error add-i64 Result Ok Err Pure]])\n\
+     (defn main []\n\
+       (Pure (match (catch-runtime-error (fn [] (add-i64 40 2)))\n\
+               [(Ok v)   v\n\
+                (Err m)  -1])))\n";
+
+// spec: spec/appendix-a-builtins.md §"Test discovery and error capture" —
+// `catch-runtime-error` returns `(Err message)` when the thunk raises a
+// language-level runtime error; self-contained intrinsic, works in `--run`.
+#[test]
+fn catch_runtime_error_err_arm_run() {
+    Cranelisp::new()
+        .file("user.cl", CATCH_ERR_PROGRAM)
+        .run("user.cl")
+        .output()
+        .assert_exit(0);
+}
+
+// spec: spec/appendix-a-builtins.md §"Test discovery and error capture" —
+// `catch-runtime-error` "works in all modes including --link". The Err arm
+// must fire identically in a linked standalone binary.
+#[test]
+fn catch_runtime_error_err_arm_link() {
+    Cranelisp::new()
+        .file("user.cl", CATCH_ERR_PROGRAM)
+        .link_then_run("user.cl")
+        .output()
+        .assert_exit(0);
+}
+
+// spec: spec/appendix-a-builtins.md §"Test discovery and error capture" —
+// `catch-runtime-error` returns `(Ok result)` when the thunk completes
+// cleanly; the inner value (42) propagates as the exit code in `--run`.
+#[test]
+fn catch_runtime_error_ok_arm_run() {
+    Cranelisp::new()
+        .file("user.cl", CATCH_OK_PROGRAM)
+        .run("user.cl")
+        .output()
+        .assert_exit(42);
+}
+
+// spec: spec/appendix-a-builtins.md §"Test discovery and error capture" —
+// `discover-tests` eligibility: a `test-*` fn is discovered only if its type is
+// EXACTLY `(Fn [] (Option String))`. NEGATIVE: a wrong-arity `test-*` and a
+// wrong-return-type `test-*` are both excluded — only the one well-typed test
+// is discovered (vec-len = 1, not 3).
+#[test]
+fn discover_tests_excludes_mistyped_test_neg() {
+    repl_prims(
+        // test-good: exact (Fn [] (Option String)) — the (Some ..) arm forces
+        // the element type to String. test-bad-arity: takes an argument.
+        // test-bad-ret: returns Int. Only test-good is eligible.
+        "(defn test-good [] (if true None (Some \"x\")))\n\
+         (defn test-bad-arity [n] (if true None (Some \"x\")))\n\
+         (defn test-bad-ret [] (add-i64 1 2))\n\
+         (vec-len (discover-tests [\"user\"]))\n",
+    )
+    // Positive: exactly one eligible test is discovered.
+    .assert_stdout_contains(":primitives/Int 1");
+}
+
+// =============================================================================
 // §12.7.2 / §12.7.3 Arithmetic policy — Wave 5.5 GAP-COVER
 //
 // Integer overflow wraps (specified, not a panic); integer division by zero
