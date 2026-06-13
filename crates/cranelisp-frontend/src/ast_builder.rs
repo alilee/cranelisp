@@ -22,7 +22,7 @@ use std::collections::HashSet;
 
 use cranelisp_types::{ErrorLocation,
     CranelispError, ConstructorDef, Defn, DefnVariant, Expr, FieldDef, MatchArm,
-    ParsedEntry, Pattern, Sexp, Span, Symbol, SymbolRef, TraitDecl, TraitImpl,
+    ParsedEntry, Pattern, Sexp, Span, Symbol, SymbolRef, TopLevel, TraitDecl, TraitImpl,
     TraitMethodSig, TraitName, TraitRef, TypeExpr, TypeName, TypeRef, Visibility,
 };
 
@@ -32,9 +32,11 @@ use cranelisp_types::{ErrorLocation,
 // is reserved and cannot be defined or bound (see `reject_reserved_binder_name`
 // + spec/02-grammar.md §2.9).
 // `Defn` is used by `build_impl_method` to package a method into the
-// `TraitImpl.methods` list. Other AST union types (`TopLevel`, `Program`)
-// are no longer named by frontend code post-FIXME-0156; tests inside this
-// crate's `tests` module bring them in locally via a thin adapter.
+// `TraitImpl.methods` list. `TopLevel` is named by `build_forms` (S81, BC §1
+// invariant 9) — the form-sequence builder that pairs a leading `:Type` with
+// the following top-level form and yields the bare-expression `TopLevel::Expr`
+// shape int's orchestration consumes. `Program` remains unnamed by frontend
+// code.
 
 use crate::defmacro::parse_defmacro;
 
@@ -245,6 +247,127 @@ pub fn build_form(sexp: &Sexp) -> Result<Vec<ParsedEntry>, CranelispError> {
         &format!("unknown top-level form: `{head}`"),
         head_span,
     ))
+}
+
+/// Build a sequence of top-level forms, performing `:Type` annotation pairing
+/// across the sequence.
+///
+/// This is the **form-sequence boundary** (S81, BC §1 invariant 9): the
+/// single seam where the `:Type`-binds-the-following-form pairing is applied
+/// at the TOP LEVEL. A leading `:Type` sexp (a `colon_prefix` atom, or the
+/// bare `:` followed by a compound type form) pairs with the immediately
+/// following form into an `Expr::Annotate`, surfaced as a `TopLevel::Expr`.
+/// Every other sexp is delegated per-form:
+/// - a top-level form (`defn`/`deftype`/`deftrait`/`impl`/`defmacro` and their
+///   `-` variants) goes through [`build_form`], each resulting `ParsedEntry`
+///   converted to its `TopLevel` shape; `Macro` and `Constructor` entries are
+///   dropped (handled by the macro pipeline and ADT-constructor synthesis
+///   respectively, outside the `TopLevel` typecheck dispatch — matching the
+///   orchestrator's prior `build_program_compat` behaviour);
+/// - any other sexp is a bare expression, built via [`build_expr`] and wrapped
+///   as `TopLevel::Expr`.
+///
+/// A trailing `:Type` with no following form is a parse error
+/// (`annotation missing expression`).
+///
+/// # Caller contract
+///
+/// `sexps` MUST already be begin-flattened and have structural declarations
+/// (`mod`/`mod-`/`import`/`export`/`platform`) peeled off — those are the
+/// orchestrator's responsibility (via `flatten_begin` /
+/// [`extract_module_declarations`](crate::extract_module_declarations)), the
+/// same precondition [`build_form`] documents. Macros MUST be expanded before
+/// calling `build_forms`.
+///
+/// This is the entry the orchestrator (`int`) calls in place of driving a
+/// per-sexp `build_form`/`build_expr` loop itself, so that top-level `:Type`
+/// pairing lives ENTIRELY in the frontend — the single owning seam (BC §1
+/// invariant 9; Principle 7).
+pub fn build_forms(sexps: &[Sexp]) -> Result<Vec<TopLevel>, CranelispError> {
+    let mut out: Vec<TopLevel> = Vec::with_capacity(sexps.len());
+    let mut i = 0;
+    while i < sexps.len() {
+        // A leading `:Type` pairs with the FOLLOWING form (BC §1 invariant 9).
+        // `build_one_expr_at` performs the pairing over the sexp slice; when
+        // `sexps[i]` is not an annotation it builds exactly like `build_expr`,
+        // so the non-annotated path below handles the per-form dispatch that
+        // `build_one_expr_at`'s plain-`build_expr` arm cannot (it has no
+        // knowledge of top-level forms).
+        if try_consume_annotation(sexps, i).is_some() {
+            let (expr, consumed) = build_one_expr_at(sexps, i)?;
+            out.push(TopLevel::Expr(expr));
+            i += consumed;
+            continue;
+        }
+
+        let sexp = &sexps[i];
+        if matches!(sexp, Sexp::Comment(_, _)) {
+            i += 1;
+            continue;
+        }
+
+        if is_top_level_form_sexp(sexp) {
+            for entry in build_form(sexp)? {
+                if let Some(tl) = parsed_entry_to_top_level(entry) {
+                    out.push(tl);
+                }
+            }
+        } else {
+            out.push(TopLevel::Expr(build_expr(sexp)?));
+        }
+        i += 1;
+    }
+    Ok(out)
+}
+
+/// Detect a top-level form head (`defn`/`deftype`/`deftrait`/`impl`/`defmacro`
+/// and their `-` variants) so [`build_forms`] knows whether to route a sexp to
+/// [`build_form`] or treat it as a bare expression. Mirrors the orchestrator's
+/// prior `is_top_level_form` heuristic.
+fn is_top_level_form_sexp(sexp: &Sexp) -> bool {
+    if let Sexp::List(children, _) = sexp
+        && let Some(Sexp::Symbol(head, _)) = children.first()
+    {
+        return matches!(
+            head.as_str(),
+            "defn" | "defn-" | "deftype" | "deftype-" | "deftrait" | "deftrait-"
+                | "impl" | "defmacro" | "defmacro-"
+        );
+    }
+    false
+}
+
+/// Convert a `ParsedEntry` to its `TopLevel` shape for [`build_forms`].
+/// `Macro` and `Constructor` entries return `None` — they are handled by the
+/// macro pipeline and ADT-constructor synthesis respectively, not by the
+/// `TopLevel` typecheck dispatch (matching the orchestrator's prior
+/// `build_program_compat`).
+fn parsed_entry_to_top_level(entry: ParsedEntry) -> Option<TopLevel> {
+    match entry {
+        ParsedEntry::Def { name, variants, visibility, docstring, span } => {
+            Some(TopLevel::Defn(Defn { name, docstring, variants, visibility, span }))
+        }
+        ParsedEntry::TypeDef { name, type_params, constructors, visibility, docstring, span } => {
+            // `TopLevel::TypeDef.type_params` is `Vec<Symbol>` — pass through
+            // (both `ParsedEntry::TypeDef` and `TopLevel::TypeDef` carry
+            // `Vec<Symbol>` per the S70 Phase 3 newtype fix).
+            Some(TopLevel::TypeDef {
+                name,
+                docstring,
+                type_params,
+                constructors,
+                visibility,
+                span,
+            })
+        }
+        ParsedEntry::TraitDecl { decl } => Some(TopLevel::TraitDecl(decl)),
+        ParsedEntry::TraitImpl { impl_ } => Some(TopLevel::TraitImpl(impl_)),
+        ParsedEntry::Macro { .. } | ParsedEntry::Constructor { .. } => None,
+        // `ParsedEntry` is `#[non_exhaustive]`; any future parser-only entry
+        // not surfaced as a `TopLevel` is dropped here, consistent with the
+        // Macro/Constructor disposition.
+        _ => None,
+    }
 }
 
 // `build_expr` is the public per-form expression builder (see the function
@@ -963,6 +1086,16 @@ pub fn build_expr(sexp: &Sexp) -> Result<Expr, CranelispError> {
             inferred_type: None,
         }),
         Sexp::Symbol(name, span) => {
+            // A `colon_prefix` token (`:Int`, `:a`, `:Num`) is an annotation
+            // introducer, never a standalone variable reference (spec §1.4.5
+            // normative note; §2.3.8; BC §1 invariant 9). A bare `:Type` with
+            // no following form to bind is a parse error. A bare `:` (the
+            // field separator) is not an annotation introducer here — it is
+            // only meaningful in binding/field positions, so it also has
+            // nothing to bind in expression position.
+            if name.starts_with(':') && name.len() > 1 {
+                return Err(parse_err("annotation missing expression", *span));
+            }
             reject_non_ring0_symbol(name, *span)?;
             Ok(Expr::Var {
                 name: name.as_str().into(),
@@ -1086,8 +1219,17 @@ fn build_apply(
     children: &[Sexp],
     span: Span,
 ) -> Result<Expr, CranelispError> {
-    let callee = build_expr(&children[0])?;
-    let args = build_args_with_annotations(&children[1..])?;
+    // A leading `:Type` inside a parenthesized list annotates the SINGLE
+    // following element — it is NOT the application callee and NOT an
+    // annotation of the whole list (spec §2.3.8; BC §1 invariant 9). The
+    // reader binds `:Type` to the next form, yielding a one-element list whose
+    // sole element is that `Annotate`; the list is then the ordinary
+    // application of that one annotated element. We therefore build the head
+    // element through the same annotation-pairing primitive (`build_one_expr_at`)
+    // used for arguments — when the head is not an annotation it builds exactly
+    // like `build_expr`, so the common `(f arg ...)` shape is unchanged.
+    let (callee, consumed) = build_one_expr_at(children, 0)?;
+    let args = build_args_with_annotations(&children[consumed..])?;
     Ok(Expr::Apply {
         callee: Box::new(callee),
         args,
@@ -1869,6 +2011,128 @@ mod tests {
             }
             other => panic!("expected Apply, got {other:?}"),
         }
+    }
+
+    // -- `:Type` annotation pairing in every position (S81; BC §1 inv 9) --
+
+    // spec: 02-grammar §2.3.8 — a standalone/top-level `:Type form` binds the
+    // following form into a single `Annotate` (NOT a `Var` + separate literal).
+    #[test]
+    fn build_forms_top_level_annotation_binds_following_form() {
+        let sexps = crate::reader::parse(":Int 42").unwrap();
+        let forms = build_forms(&sexps).unwrap();
+        assert_eq!(forms.len(), 1, "`:Int 42` is ONE annotated form, not two");
+        match &forms[0] {
+            TopLevel::Expr(Expr::Annotate { annotation, expr, .. }) => {
+                match annotation {
+                    TypeExpr::Named(n) => assert_eq!(n.name.as_ref(), "Int"),
+                    other => panic!("expected Named(Int), got {other:?}"),
+                }
+                assert!(
+                    matches!(**expr, Expr::IntLit { value: 42, .. }),
+                    "annotation must bind the literal 42, got {expr:?}"
+                );
+            }
+            other => panic!("expected TopLevel::Expr(Annotate), got {other:?}"),
+        }
+    }
+
+    // spec: 02-grammar §2.3.8 — a leading `:Type` inside a parenthesized list
+    // annotates the SINGLE following element; the list is the application of
+    // that one annotated element (callee is the `Annotate`, NOT `:Int`).
+    #[test]
+    fn list_head_annotation_is_application_of_annotated_element() {
+        match parse_and_build_expr("(:Int 42)").unwrap() {
+            Expr::Apply { callee, args, .. } => {
+                assert!(args.is_empty(), "one-element list — no args");
+                match *callee {
+                    Expr::Annotate { annotation, expr, .. } => {
+                        match annotation {
+                            TypeExpr::Named(n) => assert_eq!(n.name.as_ref(), "Int"),
+                            other => panic!("expected Named(Int), got {other:?}"),
+                        }
+                        assert!(
+                            matches!(*expr, Expr::IntLit { value: 42, .. }),
+                            "the annotated element is `42`, got {expr:?}"
+                        );
+                    }
+                    other => panic!("callee must be the annotated `42`, got {other:?}"),
+                }
+            }
+            other => panic!("expected Apply, got {other:?}"),
+        }
+    }
+
+    // spec: 02-grammar §2.3.8 — a genuine apply argument `(f :Int 42)` still
+    // annotates the arg (callee `f` unannotated). Regression guard for the
+    // build_apply pairing change.
+    #[test]
+    fn apply_arg_annotation_unchanged() {
+        match parse_and_build_expr("(f :Int 42)").unwrap() {
+            Expr::Apply { callee, args, .. } => {
+                assert!(
+                    matches!(*callee, Expr::Var { .. }),
+                    "callee `f` is an unannotated Var, got {callee:?}"
+                );
+                assert_eq!(args.len(), 1, "`:Int 42` is one annotated arg");
+                assert!(
+                    matches!(args[0], Expr::Annotate { .. }),
+                    "the sole arg is an Annotate, got {:?}",
+                    args[0]
+                );
+            }
+            other => panic!("expected Apply, got {other:?}"),
+        }
+    }
+
+    // spec: 01-lexical §1.4.5 / 02-grammar §2.3.8 — a dangling `:Type` with no
+    // following form is a parse error in EVERY position.
+    #[test]
+    fn dangling_annotation_top_level_is_error() {
+        let sexps = crate::reader::parse(":Int").unwrap();
+        let err = build_forms(&sexps).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("annotation missing expression"),
+            "expected `annotation missing expression`, got {err:?}"
+        );
+    }
+
+    // spec: 01-lexical §1.4.5 — a bare `:Type` symbol reaching expression
+    // position with nothing to bind is a parse error, never a `Var`.
+    #[test]
+    fn dangling_annotation_expr_position_is_error() {
+        let err = parse_and_build_expr(":Foo").unwrap_err();
+        assert!(
+            format!("{err:?}").contains("annotation missing expression"),
+            "expected `annotation missing expression`, got {err:?}"
+        );
+    }
+
+    // spec: 01-lexical §1.4.5 / 02-grammar §2.3.8 — a dangling `:Type` inside a
+    // list (`(:Int)`) is a parse error: the annotation has no element to bind.
+    #[test]
+    fn dangling_annotation_in_empty_paren_is_error() {
+        let err = parse_and_build_expr("(:Int)").unwrap_err();
+        assert!(
+            format!("{err:?}").contains("annotation missing expression"),
+            "expected `annotation missing expression`, got {err:?}"
+        );
+    }
+
+    // spec: 02-grammar §2.3.8 — build_forms delegates non-annotated forms
+    // per-form: a `defn` becomes `TopLevel::Defn`, a following bare `:Int 42`
+    // becomes one annotated `TopLevel::Expr`.
+    #[test]
+    fn build_forms_mixes_defn_and_annotated_expr() {
+        let sexps = crate::reader::parse("(defn id [x] x)\n:Int 42").unwrap();
+        let forms = build_forms(&sexps).unwrap();
+        assert_eq!(forms.len(), 2);
+        assert!(matches!(forms[0], TopLevel::Defn(_)), "first is the defn");
+        assert!(
+            matches!(forms[1], TopLevel::Expr(Expr::Annotate { .. })),
+            "second is the annotated expr, got {:?}",
+            forms[1]
+        );
     }
 
     // -- Match expression --

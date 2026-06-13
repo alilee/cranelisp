@@ -38,6 +38,8 @@
 //!
 //! pub fn build_form(sexp: &Sexp) -> Result<Vec<ParsedEntry>, CranelispError>;
 //!
+//! pub fn build_forms(sexps: &[Sexp]) -> Result<Vec<TopLevel>, CranelispError>;
+//!
 //! pub fn build_expr(sexp: &Sexp) -> Result<Expr, CranelispError>;
 //!
 //! pub fn parse_type_expr(source: &str) -> Result<TypeExpr, CranelispError>;
@@ -72,9 +74,23 @@
 //!   `import`/`export`/`mod`/`platform` continue to be peeled off by
 //!   [`extract_module_declarations`] before `build_form` runs — they
 //!   never reach `build_form`.
+//! - [`build_forms`] is the **form-sequence boundary** (S81, BC §1
+//!   invariant 9): it lifts the `:Type`-binds-the-following-form pairing to
+//!   the top-level form SEQUENCE. A leading `:Type` sexp pairs with the
+//!   following form into an `Expr::Annotate` surfaced as a `TopLevel::Expr`;
+//!   every other sexp is delegated per-form (top-level forms through
+//!   [`build_form`], bare expressions through [`build_expr`]). The
+//!   orchestrator (`int`) calls this instead of driving a per-sexp loop, so
+//!   that top-level `:Type` pairing lives ENTIRELY in the frontend — the
+//!   single owning seam. Macro / Constructor entries are dropped (handled by
+//!   the macro pipeline + ADT-constructor synthesis), and a trailing `:Type`
+//!   with nothing to bind is a parse error.
 //! - [`build_expr`] is the per-form expression builder for bare REPL
 //!   expression evals and the recursion target inside the per-shape
-//!   parsers when lowering bodies.
+//!   parsers when lowering bodies. A bare `:Type` symbol in expression
+//!   position is a parse error (`annotation missing expression`) — the
+//!   `colon_prefix` token is an annotation introducer, never a `Var`
+//!   (spec §1.4.5; §2.3.8).
 //! - [`parse_type_expr`] parses a single type-expression form (string in,
 //!   one `TypeExpr` out) for callers that have a type-signature string in
 //!   hand (e.g. a DLL descriptor). It reuses the reader + the existing
@@ -104,7 +120,7 @@
 //! | Module | Contains | Root re-exports |
 //! |---|---|---|
 //! | [`reader`] | [`parse`], [`parse_preserving_comments`] — source-text to `Vec<Sexp>` lowering | yes |
-//! | [`ast_builder`] | [`build_form`], [`build_expr`], [`parse_type_expr`] — per-form AST construction | yes |
+//! | [`ast_builder`] | [`build_form`], [`build_forms`], [`build_expr`], [`parse_type_expr`] — per-form + form-sequence AST construction | yes |
 //! | [`module_extract`] | [`extract_module_declarations`], [`ExtractedDeclarations`] — structural-decl peeling | yes |
 //! | [`defmacro`] | [`parse_defmacro`], [`is_defmacro`], [`is_begin`], [`flatten_begin`], [`synthesize_macro_clause_defn`] plus the [`DefmacroInfo`] / [`MacroClause`] re-exports from `cranelisp-types` | yes |
 //! | [`quasiquote`] | [`expand_quasiquotes`], [`expand_quote_template`], [`next_synthetic_span`] | yes |
@@ -326,7 +342,7 @@ use cranelisp_types::{CranelispError, Sexp};
 // mode-agnostic"); they take no `CodegenBehaviour` parameter. The `(trace ...)`
 // rejection in `--link` mode is the linker's natural missing-symbol
 // detection, not a frontend pre-pass.
-pub use ast_builder::{build_expr, build_form, parse_type_expr};
+pub use ast_builder::{build_expr, build_form, build_forms, parse_type_expr};
 // `SymbolTables`, `ModuleAliases`, and `ResolutionGap` are NOT re-exported
 // here per the S70 Phase B group α/β disposition + the S76 W-Macro
 // retirement — consumers import directly from `cranelisp-types` (Principle 15

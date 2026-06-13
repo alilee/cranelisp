@@ -51,15 +51,20 @@ impl ModuleCheckAccumulator {
 
 /// Drop-in replacement for the retired `cranelisp_frontend::build_program`.
 ///
-/// Iterates `build_form` over each sexp, converting `Vec<ParsedEntry>` back to
-/// `Vec<TopLevel>` for source-compat with existing worker / session code paths
-/// that consume `TopLevel`. Filter out `Macro` and `Constructor` entries —
-/// those are handled by the macro pipeline (defmacro registration) and ADT
-/// constructor synthesis respectively, NOT by the per-form typecheck dispatch.
+/// Flattens any `(begin …)` clusters (the orchestrator's contract — `build_form`
+/// and `build_forms` both reject `begin`) then delegates the flattened form
+/// slice to `cranelisp_frontend::build_forms`, which performs the per-form
+/// dispatch AND the top-level `:Type`-pairing.
 ///
-/// Per Decision 44's 2026-05-13 third amendment + FIXME 0156: `build_form`
-/// returns the parsed entries; the worker side still tracks `TopLevel` for
-/// downstream codegen, so we transcode at this boundary.
+/// Annotation-pairing is frontend-owned in EVERY position (BC §1 invariant 9;
+/// S81 ruling, FIXME 0329). int does NOT pair a leading `:Type` with the
+/// following form in this loop — it flattens `begin` (its orchestration
+/// contract) and hands the flattened slice to `build_forms`, which pairs a
+/// leading `:Type` sexp with the form it precedes into a `TopLevel::Expr`
+/// carrying an `Expr::Annotate`, and otherwise delegates per-sexp to
+/// `build_form`/`build_expr`. This closes the prior split-across-two-crates
+/// state where the pairing helper lived in frontend but the top-level driving
+/// lived here per-sexp and never paired (Principle 7 — single source of truth).
 ///
 /// Build is mode-agnostic. `(trace ...)` in `--link` standalone-binary mode
 /// fails at link time via the architecture's natural missing-symbol detection
@@ -69,88 +74,40 @@ impl ModuleCheckAccumulator {
 pub(crate) fn build_program_compat(
     sexps: &[Sexp],
 ) -> Result<Vec<TopLevel>, CranelispError> {
-    let mut out: Vec<TopLevel> = Vec::with_capacity(sexps.len());
+    // `(begin form₁ … formN)` clusters flatten into their inner forms — both
+    // `build_form` and `build_forms` reject `begin` per their facade. This
+    // preserves the pre-S66 `build_program` semantics where `flatten_begin`
+    // ran before per-form dispatch. Flattening is int's orchestration contract;
+    // the per-form dispatch + `:Type`-pairing it hands to `build_forms`.
+    let mut flattened: Vec<Sexp> = Vec::with_capacity(sexps.len());
     for sexp in sexps {
-        // `(begin form₁ … formN)` clusters flatten into their inner forms
-        // — `build_form` rejects `begin` per its facade. This preserves the
-        // pre-S66 `build_program` semantics where `flatten_begin` ran before
-        // per-form dispatch.
-        let flattened = cranelisp_frontend::flatten_begin(sexp.clone());
-        for inner in flattened {
-            // Treat shapes that aren't a list-with-head-symbol as bare
-            // expressions (`TopLevel::Expr`). `build_form` requires a
-            // list-with-head-symbol top-level form.
-            if !is_top_level_form(&inner) {
-                let expr = cranelisp_frontend::build_expr(&inner)?;
-                out.push(TopLevel::Expr(expr));
-                continue;
-            }
-
-            let entries = cranelisp_frontend::build_form(&inner)?;
-            for entry in entries {
-                if let Some(tl) = parsed_entry_to_top_level(entry) {
-                    out.push(tl);
-                }
-            }
-        }
+        flattened.extend(cranelisp_frontend::flatten_begin(sexp.clone()));
     }
-    Ok(out)
+    cranelisp_frontend::build_forms(&flattened)
 }
 
-/// Check whether a sexp shape is a top-level form that `build_form` can
-/// dispatch on. Pre-S66 `build_program` used a heuristic: any list whose
-/// head symbol is one of the recognised top-level form heads
-/// (`defn`/`defn-`, `deftype`/`deftype-`, `deftrait`/`deftrait-`, `impl`,
-/// `defmacro`/`defmacro-`). Other heads (function calls, primitives, macro
-/// expansions whose head is bare) fall through to `build_expr` as
-/// `TopLevel::Expr`. Comments / atoms / brackets also fall through.
-fn is_top_level_form(sexp: &Sexp) -> bool {
-    if let Sexp::List(children, _) = sexp
-        && !children.is_empty()
-        && let Sexp::Symbol(name, _) = &children[0]
-    {
-        matches!(
-            name.as_str(),
-            "defn" | "defn-" | "deftype" | "deftype-" | "deftrait" | "deftrait-"
-                | "impl" | "defmacro" | "defmacro-"
-        )
-    } else {
-        false
-    }
-}
-
-/// Convert a `ParsedEntry` to a `TopLevel` shape. Mirrors typecheck's
-/// `parsed_to_top_level` (which is private). `Macro` and `Constructor`
-/// entries return `None` — they are handled by the macro pipeline and ADT
-/// constructor synthesis respectively, outside the typecheck dispatch.
-fn parsed_entry_to_top_level(parsed: cranelisp_types::ParsedEntry) -> Option<TopLevel> {
-    use cranelisp_types::ParsedEntry;
-    match parsed {
-        ParsedEntry::Def { name, variants, visibility, docstring, span } => {
-            Some(TopLevel::Defn(Defn {
-                name,
-                docstring,
-                variants,
-                visibility,
-                span,
-            }))
-        }
-        ParsedEntry::TypeDef { name, type_params, constructors, visibility, docstring, span } => {
-            let type_params: Vec<Symbol> =
-                type_params.into_iter().map(|t| Symbol::from(t.as_ref())).collect();
-            Some(TopLevel::TypeDef {
-                name,
-                docstring,
-                type_params,
-                constructors,
-                visibility,
-                span,
-            })
-        }
-        ParsedEntry::TraitDecl { decl } => Some(TopLevel::TraitDecl(decl)),
-        ParsedEntry::TraitImpl { impl_ } => Some(TopLevel::TraitImpl(impl_)),
-        ParsedEntry::Macro { .. } | ParsedEntry::Constructor { .. } => None,
-        _ => None,
+/// Number of sexps a leading `:Type` annotation occupies at the head of
+/// `sexps`, or `0` if `sexps[0]` is not an annotation.
+///
+/// Mirrors the frontend's `try_consume_annotation` shape (the single source of
+/// truth for what a `:Type` token is — BC §1 invariant 9) so the orchestrator
+/// can GROUP an annotation with its bound form into one cluster/Pass-2 unit
+/// WITHOUT itself performing the `Expr::Annotate` pairing (which stays
+/// frontend-owned, done inside `build_forms`):
+/// - `:Int`, `:a`, `:Num` — colon-prefixed symbol → 1 sexp.
+/// - a bare `:` followed by a compound type sexp (`(Fn [a] a)`) → 2 sexps.
+///
+/// This is recognition-for-grouping only; the authoritative pairing +
+/// validation (including the trailing-annotation parse error) happens in
+/// `cranelisp_frontend::build_forms`. int only decides which span of sexps is
+/// fed to the frontend as one form (BC §1 invariant 9; FIXME 0329).
+pub(crate) fn leading_annotation_len(sexps: &[Sexp]) -> usize {
+    match sexps.first() {
+        // `:Int`, `:a`, `:Num` — colon-prefixed symbol (one sexp).
+        Some(Sexp::Symbol(s, _)) if s.starts_with(':') && s.len() > 1 => 1,
+        // bare `:` then a compound type sexp (`(Fn [...] ret)` etc).
+        Some(Sexp::Symbol(s, _)) if s == ":" && sexps.len() >= 2 => 2,
+        _ => 0,
     }
 }
 
@@ -1679,7 +1636,9 @@ fn pass2_check_bodies_with_expansion(
     accumulator: &mut ModuleCheckAccumulator,
     expanded_program: &mut Vec<TopLevel>,
 ) -> Result<Pass2Result, CranelispError> {
-    for sexp in sexps.iter() {
+    let mut idx = 0;
+    while idx < sexps.len() {
+        let sexp = &sexps[idx];
 
         match classify_form(sexp, module)? {
             // Import/export/mod/platform forms are processed in Pass 0
@@ -1688,22 +1647,41 @@ fn pass2_check_bodies_with_expansion(
             FormKind::Import(_)
             | FormKind::Export(_)
             | FormKind::Mod(_)
-            | FormKind::Platform(_) => {}
+            | FormKind::Platform(_) => {
+                idx += 1;
+            }
             FormKind::Defmacro => {
                 // Registered in Pass 1. Compile eagerly in Pass 2 so type errors
                 // in the macro body are caught at definition time (not deferred
                 // until the macro is first called).
                 let info = cranelisp_frontend::parse_defmacro(sexp)?;
                 compile_macro_if_needed(ctx, module, &info, sexp.span(), accumulator)?;
+                idx += 1;
             }
             FormKind::Regular => {
+                // A leading `:Type` annotation binds the FOLLOWING form (BC §1
+                // invariant 9). int groups the annotation prefix sexp(s) with
+                // the bound form so the frontend's `build_forms` pairing fires;
+                // only the bound form is macro-expanded (an annotation is never
+                // a macro head). int decides the group boundary; the frontend
+                // builds the `Expr::Annotate`. A trailing annotation with no
+                // following form passes through as a one-sexp group so the
+                // frontend surfaces `annotation missing expression`.
+                let ann_len = leading_annotation_len(&sexps[idx..]);
+                let (prefix, form_idx) = if ann_len > 0 && idx + ann_len < sexps.len() {
+                    (&sexps[idx..idx + ann_len], idx + ann_len)
+                } else {
+                    (&sexps[idx..idx], idx)
+                };
+                let next = idx.max(form_idx) + 1;
                 if let Some(dep_module) = process_regular_form(
-                    ctx, module, sexp, accumulator, expanded_program,
+                    ctx, module, prefix, &sexps[form_idx], accumulator, expanded_program,
                 )? {
                     // FQ macro reference to an unloaded module (FIXME 0268).
                     // The cluster retries from the top after the dep is loaded.
                     return Ok(Pass2Result::BlockedOnFqModule { dep_module });
                 }
+                idx = next;
             }
         }
     }
@@ -1723,11 +1701,15 @@ fn pass2_check_bodies_with_expansion(
 fn process_regular_form(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
+    annotation_prefix: &[Sexp],
     sexp: &Sexp,
     accumulator: &mut ModuleCheckAccumulator,
     expanded_program: &mut Vec<TopLevel>,
 ) -> Result<Option<ModuleFullPath>, CranelispError> {
-    // Try macro expansion on the raw sexp.
+    // Try macro expansion on the bound form (the annotation prefix is never a
+    // macro head — it is the `:Type` token that binds this form per BC §1
+    // invariant 9, and is prepended below so the frontend's `build_forms`
+    // performs the `Expr::Annotate` pairing).
     let effective_sexp = match try_expand_sexp(ctx, module, sexp, accumulator)? {
         ExpandOutcome::Expanded(opt) => opt,
         ExpandOutcome::BlockedOnFqModule(dep) => {
@@ -1746,8 +1728,11 @@ fn process_regular_form(
 
     // Partition flattened forms: macro expansion (e.g. const, def) can produce
     // defmacro forms that must be routed through the macro pipeline, not the
-    // AST builder which rejects them.
-    let mut regular_sexps = Vec::new();
+    // AST builder which rejects them. A leading `:Type` annotation prefix is
+    // carried through verbatim ahead of the (single) bound form so `build_forms`
+    // pairs them; a prefix only ever accompanies a single non-`begin`,
+    // non-`defmacro` bound form.
+    let mut regular_sexps: Vec<Sexp> = annotation_prefix.to_vec();
     for form in flattened {
         if cranelisp_frontend::is_defmacro(&form) {
             let info = cranelisp_frontend::parse_defmacro(&form)?;
@@ -1759,7 +1744,11 @@ fn process_regular_form(
         }
     }
 
-    if regular_sexps.is_empty() {
+    // If only the annotation prefix remains (the bound form expanded entirely
+    // into defmacros), there is nothing to build — but that is a degenerate
+    // shape that cannot arise (an annotation binds an expression form, not a
+    // defmacro). Guard against an orphan prefix reaching `build_forms`.
+    if regular_sexps.len() == annotation_prefix.len() {
         return Ok(None);
     }
 
@@ -6221,5 +6210,70 @@ mod tests {
             splice_inline_mod_to_bare(source, Span::new(0, 9999), "child").is_none(),
             "an out-of-range end MUST be a no-op",
         );
+    }
+
+    // spec: 02-grammar §2.3.8 — int's `build_program_compat` delegates the
+    // flattened form slice to the frontend's `build_forms`, which pairs a
+    // leading top-level `:Type` with the FOLLOWING form into one
+    // `TopLevel::Expr(Expr::Annotate)` (BC §1 invariant 9; FIXME 0329). The
+    // wiring swap must surface that pairing — the old per-sexp loop dropped it.
+    #[test]
+    fn build_program_compat_pairs_top_level_annotation() {
+        let sexps = cranelisp_frontend::parse(":Int 42").unwrap();
+        let program = build_program_compat(&sexps).unwrap();
+        assert_eq!(program.len(), 1, "`:Int 42` is ONE annotated form, not two");
+        match &program[0] {
+            TopLevel::Expr(Expr::Annotate { expr, .. }) => {
+                assert!(
+                    matches!(**expr, Expr::IntLit { value: 42, .. }),
+                    "the annotation binds the literal 42, got {expr:?}",
+                );
+            }
+            other => panic!("expected TopLevel::Expr(Annotate), got {other:?}"),
+        }
+    }
+
+    // spec: 02-grammar §2.3.8 — `build_program_compat` flattens `(begin …)`
+    // (int's orchestration contract) before delegating to `build_forms`, and a
+    // `:Type` leading a begin-spliced form still pairs.
+    #[test]
+    fn build_program_compat_flattens_begin_then_pairs() {
+        let sexps = cranelisp_frontend::parse("(begin :Int 42)").unwrap();
+        let program = build_program_compat(&sexps).unwrap();
+        assert_eq!(program.len(), 1, "begin flattens to one annotated form");
+        assert!(
+            matches!(program[0], TopLevel::Expr(Expr::Annotate { .. })),
+            "begin-spliced `:Int 42` pairs into an Annotate, got {:?}",
+            program[0],
+        );
+    }
+
+    // spec: 02-grammar §2.3.8 — a non-annotated top-level form is unchanged by
+    // the swap (defn → TopLevel::Defn). Regression guard.
+    #[test]
+    fn build_program_compat_non_annotated_defn_unchanged() {
+        let sexps = cranelisp_frontend::parse("(defn id [x] x)").unwrap();
+        let program = build_program_compat(&sexps).unwrap();
+        assert_eq!(program.len(), 1);
+        assert!(
+            matches!(program[0], TopLevel::Defn(_)),
+            "a defn stays a TopLevel::Defn, got {:?}",
+            program[0],
+        );
+    }
+
+    // spec: 01-lexical §1.4.5 — int's grouping recogniser counts the sexps a
+    // leading `:Type` occupies (1 for `:Int`, 2 for bare `:` + compound), 0
+    // otherwise — recognition-for-grouping only; the frontend owns the pairing.
+    #[test]
+    fn leading_annotation_len_counts_annotation_sexps() {
+        let int_ann = cranelisp_frontend::parse(":Int 42").unwrap();
+        assert_eq!(leading_annotation_len(&int_ann), 1);
+        let compound = cranelisp_frontend::parse(": (Fn [a] a) f").unwrap();
+        assert_eq!(leading_annotation_len(&compound), 2);
+        let plain = cranelisp_frontend::parse("42").unwrap();
+        assert_eq!(leading_annotation_len(&plain), 0);
+        let defn = cranelisp_frontend::parse("(defn id [x] x)").unwrap();
+        assert_eq!(leading_annotation_len(&defn), 0);
     }
 }

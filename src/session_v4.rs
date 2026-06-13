@@ -2434,13 +2434,43 @@ impl CompilerSession {
         let mut last_result: Option<EvalResult> = None;
         let mut all_warnings = Vec::new();
 
-        for sexp in &sexps {
-            match self.eval_one_form(sexp) {
+        // A top-level `:Type` annotation binds the FOLLOWING form (BC §1
+        // invariant 9; FIXME 0329). int groups the annotation sexp(s) with the
+        // form they precede into a single cluster; the frontend's `build_forms`
+        // (reached via `process_form_cluster` → `build_program_compat`) performs
+        // the actual `Expr::Annotate` pairing. int does NOT pair here — it only
+        // decides the cluster boundary. A trailing annotation with no following
+        // form falls through as a one-sexp cluster, surfacing the frontend's
+        // `annotation missing expression` parse error.
+        let mut i = 0;
+        while i < sexps.len() {
+            let ann_len = crate::worker::leading_annotation_len(&sexps[i..]);
+            let cluster_end = if ann_len > 0 && i + ann_len < sexps.len() {
+                // annotation sexp(s) + the single form they bind
+                i + ann_len + 1
+            } else {
+                i + 1
+            };
+            let cluster = &sexps[i..cluster_end];
+            // The span used for `/source` capture covers the whole cluster.
+            let cluster_span = {
+                let start = cluster[0].span().start;
+                let end = cluster[cluster.len() - 1].span().end;
+                Span::new(start, end)
+            };
+            i = cluster_end;
+
+            let outcome = if cluster.len() == 1 {
+                self.eval_one_form(&cluster[0])
+            } else {
+                self.process_form_cluster(cluster)
+            };
+            match outcome {
                 Ok(Some(result)) => {
                     // Store source text for /source command — extract from
-                    // original input using the sexp's span.
+                    // original input using the cluster's span.
                     if let EvalResult::Def { symbol, .. } = &result {
-                        let span = sexp.span();
+                        let span = cluster_span;
                         let src = if span.start < span.end && (span.end as usize) <= source.len() {
                             &source[span.start as usize..span.end as usize]
                         } else {
@@ -2460,7 +2490,10 @@ impl CompilerSession {
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    if sexps.len() == 1 {
+                    // Propagate when the whole input was a single cluster (one
+                    // form, or one `:Type`+form annotation pair); otherwise
+                    // report inline and continue with the next cluster.
+                    if cluster.len() == sexps.len() {
                         return Err(e);
                     }
                     // Multi-form: report error inline but continue.
@@ -2510,13 +2543,36 @@ impl CompilerSession {
     /// loops. No saved suspend state — the gap does not recur for that dep
     /// because it is now live.
     fn process_single_form(&mut self, sexp: &Sexp) -> Result<Option<EvalResult>, CranelispError> {
+        self.process_form_cluster(std::slice::from_ref(sexp))
+    }
+
+    /// Process a REPL sexp cluster (one or more sexps) as a single Additive
+    /// cluster, then codegen. A cluster is normally a single sexp, but a
+    /// leading `:Type` annotation sexp groups with the following form sexp so
+    /// the frontend's `build_forms` pairing (`Expr::Annotate`) fires — int
+    /// orchestrates the cluster boundary; the frontend decides what one form is
+    /// (BC §1 invariant 9; FIXME 0329). The `cluster_head` sexp is the one used
+    /// for `Def`-name extraction and `/source` span when the cluster collapses
+    /// to a single definition during expansion.
+    fn process_form_cluster(&mut self, cluster: &[Sexp]) -> Result<Option<EvalResult>, CranelispError> {
         use crate::worker::{self, ClusterOnce};
 
         const MAX_DEP_RETRIES: usize = 100;
 
+        // The "head" sexp drives `Def`-name extraction when the cluster
+        // collapses to a single handled-during-expansion form (defmacro,
+        // import, mod, …). For an annotation pair the meaningful head is the
+        // form being annotated (the last sexp), not the leading `:Type`.
+        // `cluster` is always non-empty (the eval loop never builds an empty
+        // span), so `last()` is `Some`.
+        let head_sexp = match cluster.last() {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+
         for retry in 0..MAX_DEP_RETRIES {
             let module = self.current_module_path();
-            let single_sexp = [sexp.clone()];
+            let single_sexp = cluster.to_vec();
 
             let result = {
                 // Extract REPL check_state for worker use, restore after.
@@ -2565,7 +2621,7 @@ impl CompilerSession {
                     // (defmacro, import, platform, mod). Return Def with name
                     // extracted from the original sexp.
                     if program.is_empty() {
-                        return match extract_def_name_from_sexp(sexp) {
+                        return match extract_def_name_from_sexp(head_sexp) {
                             Some(symbol_name) => Ok(Some(EvalResult::Def {
                                 symbol: FQSymbol {
                                     module: module.clone(),

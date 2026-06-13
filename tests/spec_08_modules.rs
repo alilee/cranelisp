@@ -1206,33 +1206,56 @@ fn repl_no_prelude(lines: &str) -> helpers::e2e::CrOutput {
         .output()
 }
 
-// spec: spec/03-types.md §3.1 — bare `:Int` with no primitives import and no
-// prelude MUST be a compile-time "unknown type" error. The FQ form is the only
-// always-available path (covered by `bare_primitive_type_fq_works_without_import`).
+// spec: spec/08-modules.md §8.9.1 — bare `:Int` with no primitives import and
+// no prelude MUST be a compile-time "unknown type" error: the primitive type
+// `Int` lives in `primitives` in QUALIFIED form only, so the bare name is
+// unreachable without a re-export or explicit import. This guards the §8.9.1
+// REACHABILITY rule (the type IS real but out of scope) — distinct from
+// `annotation_unknown_type_is_error`, which guards a name that is no type at
+// all. Asserts the SPEC-CORRECT `unknown type` signal (FIXME 0329: the prior
+// `|| contains("error")` fallback matched a swallowed parse error before the
+// annotation-pairing fix landed; now the `Expr::Annotate` node exists at top
+// level and typecheck's reachability check fires the precise diagnostic).
 #[test]
 fn bare_primitive_type_int_neg_unknown_type_without_import() {
     let out = repl_no_prelude(":Int 42\n");
     let s = out.stdout.to_lowercase();
     assert!(
-        s.contains("unknown type") || s.contains("unknown") || s.contains("error"),
+        s.contains("unknown type `int`"),
         "bare `:Int` with no primitives import / no prelude MUST be an \
-         `unknown type` compile-time error (spec §3.1 / §8.9.1); got:\n{}",
+         `unknown type` compile-time error naming `Int` (spec §8.9.1 \
+         reachability); got:\n{}",
+        out.stdout
+    );
+    // Negative: the bare-name path MUST NOT resolve `Int` and display a value.
+    assert!(
+        !out.stdout.contains(":primitives/Int 42"),
+        "bare `:Int` (no import) MUST NOT resolve the primitive type and \
+         display `:primitives/Int 42` — that would violate §8.9.1 \
+         reachability; got:\n{}",
         out.stdout
     );
 }
 
-// spec: spec/03-types.md §3.1 — same rule for `:Bool`, `:Float`, `:String`:
-// each bare primitive type name with no import is an unknown-type error.
+// spec: spec/08-modules.md §8.9.1 — same reachability rule for `:Bool`,
+// `:Float`, `:String`: each bare primitive type name with no import is an
+// unknown-type error naming that type.
 #[test]
 fn bare_primitive_types_bool_float_string_neg_unknown_without_import() {
-    for (annot, lit) in [(":Bool", "true"), (":Float", "1.0"), (":String", "\"hi\"")] {
+    for (annot, lit, tyname) in [
+        (":Bool", "true", "bool"),
+        (":Float", "1.0", "float"),
+        (":String", "\"hi\"", "string"),
+    ] {
         let line = format!("{annot} {lit}\n");
         let out = repl_no_prelude(&line);
         let s = out.stdout.to_lowercase();
+        let needle = format!("unknown type `{tyname}`");
         assert!(
-            s.contains("unknown type") || s.contains("unknown") || s.contains("error"),
+            s.contains(&needle),
             "bare `{annot}` with no primitives import / no prelude MUST be an \
-             `unknown type` compile-time error (spec §3.1 / §8.9.1); got:\n{}",
+             `unknown type` compile-time error naming `{tyname}` (spec §8.9.1 \
+             reachability); got:\n{}",
             out.stdout
         );
     }
@@ -1286,4 +1309,91 @@ fn bare_primitive_fn_add_i64_neg_unknown_name_without_import() {
 fn fq_primitive_fn_add_i64_works_without_import() {
     repl_no_prelude("(primitives/add-i64 1 2)\n")
         .assert_stdout_contains(":primitives/Int 3");
+}
+
+// =============================================================================
+// §2.3.8 / §1.4.5 — `:Type` annotation binds the following form in EVERY
+// position (FIXME 0329 — the annotation-pairing fix)
+// =============================================================================
+//
+// spec: spec/02-grammar.md §2.3.8 — `annotate_expr = annotation expr`. The
+// `:Type` token is a reader-level prefix binding the immediately-following
+// form into one `Expr::Annotate`, in every expression position (top-level,
+// parenthesized, argument, …). It is never a standalone atom. spec/01-lexical.md
+// §1.4.5 carries the lexical-level statement (colon-prefix is an annotation
+// introducer, not a `var_ref`). Before the S81 frontend `build_forms` +
+// int cluster-grouping fix, the top-level / list-head positions never built
+// the `Expr::Annotate` node (a leading `:Type` parsed as a bare `Var`); these
+// tests lock the ratified semantics.
+//
+// `Int` / `Float` are reachable via an explicit `(import [primitives […]])`
+// (the bare names are QUALIFIED-only per §8.9.1); `Foo` is left unreachable.
+
+// Pipe `lines` to a bare REPL after importing the primitive types so `Int` /
+// `Float` resolve as bare names. `Foo` is NOT imported (stays unknown).
+fn repl_with_prim_types(lines: &str) -> helpers::e2e::CrOutput {
+    let stdin = format!("(import [primitives [Int Float Bool String]])\n{lines}");
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::None)
+        .stdin(&stdin)
+        .output()
+}
+
+// spec: spec/02-grammar.md §2.3.8 — a top-level `:Int 42` is an `annotate_expr`
+// binding the following form (`42`); its inferred type unifies with `Int` and
+// the REPL displays the annotated value `:primitives/Int 42`. (Also §1.4.5 —
+// the leading `:Int` is the annotation introducer, not a `var_ref`.)
+#[test]
+fn annotation_binds_top_level_following_form() {
+    repl_with_prim_types(":Int 42\n").assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/02-grammar.md §2.3.8 — the inner form's inferred type MUST unify
+// with the annotation. `:Float 42` annotates the Int literal `42` with `Float`,
+// so unification fails with a type mismatch (Int vs Float).
+#[test]
+fn annotation_type_mismatch_is_unify_error() {
+    let out = repl_with_prim_types(":Float 42\n");
+    out.assert_stdout_contains("type mismatch: expected Int, got Float");
+}
+
+// spec: spec/02-grammar.md §2.3.8 — the annotation type MUST resolve. `:Foo 42`
+// names no type `Foo` (left unimported / undefined), so it is an unknown-type
+// error — NOT a silently-ignored leading symbol (the pre-fix behaviour).
+#[test]
+fn annotation_unknown_type_is_error() {
+    // `Foo` is deliberately unreachable: no import, no prelude.
+    let out = repl_no_prelude(":Foo 42\n");
+    out.assert_stdout_contains("unknown type `Foo`");
+}
+
+// spec: spec/02-grammar.md §2.3.8 — `(:Int 42)` is NOT a special form: the
+// reader binds `:Int` to the single following element `42`, yielding a
+// one-element list whose sole element is `(annotate Int 42)`; the list is then
+// the ordinary application of that one (Int-typed) element. Applying an Int as
+// a function fails — the callee is expected to be a function but is `Int`,
+// reported as `expected Int, got (Fn …)`. (Also §1.4.5 — a leading `:Type`
+// inside parens annotates only the next element, it is not the application
+// callee.)
+#[test]
+fn annotation_in_paren_is_application_of_annotated_element() {
+    let out = repl_with_prim_types("(:Int 42)\n");
+    // The annotated element has type Int but is applied as a function.
+    out.assert_stdout_contains_all(&["type mismatch", "expected Int, got (Fn"]);
+}
+
+// spec: spec/02-grammar.md §2.3.8 — the annotation's unification check is
+// performed during typechecking, BEFORE any application semantics of the
+// enclosing form. For `(:Float 42)` the inner `:Float 42` annotation fails to
+// unify (Int vs Float) and that error is reported FIRST — the not-a-function
+// error of `annotation_in_paren_is_application_of_annotated_element` is NOT
+// reached.
+#[test]
+fn annotation_in_paren_unify_precedes_not_a_function() {
+    let out = repl_with_prim_types("(:Float 42)\n");
+    // The unify mismatch (Int vs Float) is reported …
+    let out = out.assert_stdout_contains("type mismatch: expected Int, got Float");
+    // … and the not-a-function `(Fn …)` mismatch is NOT the reported error.
+    out.assert_stdout_does_not_contain("got (Fn");
 }
