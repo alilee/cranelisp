@@ -377,8 +377,6 @@ fn import_below_use_still_available_before_definitions() {
 // inline body, and (2) rewrite the parent file so the inline form becomes a
 // bare `(mod child)` reference WITH SURROUNDING FORMS PRESERVED. After
 // extraction the submodule is indistinguishable from one created manually.
-// FIXME(/dev 0336): the double-invocation corrupts the parent (`main` form
-// truncated), so the surrounding-forms-preserved assertion fails today.
 #[test]
 fn inline_mod_extracts_backing_file_and_rewrites_parent() {
     let cr = Cranelisp::new()
@@ -426,9 +424,6 @@ fn inline_mod_extracts_backing_file_and_rewrites_parent() {
 // syntax": after extraction, subsequent compilations use the extracted file.
 // Re-running the project MUST be idempotent — the parent already holds the bare
 // `(mod child)` reference and the program output is unchanged.
-// FIXME(/dev 0336): the first run leaves a CORRUPT parent on disk, so the
-// re-run fails to parse (`unexpected character: ')'`) — this test pins that the
-// re-run MUST still exit 7.
 #[test]
 fn inline_mod_extraction_is_idempotent_on_rerun() {
     let cr = Cranelisp::new()

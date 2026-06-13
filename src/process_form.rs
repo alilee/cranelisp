@@ -2498,9 +2498,15 @@ fn rewrite_parent_inline_mod(
     };
 
     // The pure splice decides whether (and how) to rewrite; `None` means
-    // "leave the file untouched" (synthetic/out-of-range span or already-bare —
-    // the idempotence case). Only write when the content actually changes.
-    if let Some(rewritten) = splice_inline_mod_to_bare(&source, decl.span, decl.name.as_ref()) {
+    // "leave the file untouched" (no inline `(mod name …)` form present —
+    // the idempotence / already-extracted case). Only write when the content
+    // actually changes. The splice is SELF-LOCATING: it re-parses the CURRENT
+    // on-disk content and finds the live inline form by name, so it cannot be
+    // mis-targeted by a stale `decl.span` carried over from the original parse
+    // (FIXME 0336 — the cluster retry-from-top re-runs Pass-0 against the
+    // original `sexps`, whose span no longer addresses the already-rewritten
+    // file).
+    if let Some(rewritten) = splice_inline_mod_to_bare(&source, decl.name.as_ref()) {
         // Atomic-ish write (best-effort; a failure leaves step 1's backing file
         // in place and the in-memory body already dropped, so the run is
         // unaffected).
@@ -2509,22 +2515,42 @@ fn rewrite_parent_inline_mod(
 }
 
 /// Pure parent-file rewrite (spec §8.2.2 step 2): splice the inline
-/// `(mod name form…)` byte range identified by `span` down to a bare
-/// `(mod name)` reference, preserving all surrounding whitespace and comments.
+/// `(mod name form…)` form down to a bare `(mod name)` reference, preserving
+/// all surrounding whitespace and comments.
 ///
-/// Returns `Some(new_source)` when a rewrite is warranted, `None` when the file
-/// MUST be left untouched:
-/// - the span is synthetic / out-of-range / not on char boundaries (e.g. a
-///   REPL-entered `(mod …)` with no backing byte range, or a stale span);
-/// - the form at the range is ALREADY the bare reference (idempotence — avoids a
-///   spurious mtime bump on re-load of an already-extracted file).
+/// **Self-locating (FIXME 0336):** the form to splice is located by re-parsing
+/// the CURRENT `source` and finding the live top-level inline `(mod <name> …)`
+/// form (head symbol `mod`/`mod-`, the named submodule, and at least one body
+/// form). The byte range comes from THAT parse — never from a caller-supplied
+/// span. This is correct-by-construction against the double-invocation defect:
+/// the S78 cluster retry-from-top re-runs Pass-0 against the *original* `sexps`
+/// (whose `decl.span` addresses the pre-rewrite 96-byte file), but by the second
+/// call the on-disk file is already the rewritten 77-byte bare form — a splice
+/// keyed on the stale span would slice the wrong range and truncate `main`.
+/// Re-locating in the current content makes the second call a natural no-op: an
+/// already-extracted `(mod name)` (no inline body) is not matched, so `None` is
+/// returned and the file is left untouched.
+///
+/// Returns `Some(new_source)` when a live inline form is found and rewritten,
+/// `None` when the file MUST be left untouched:
+/// - no top-level inline `(mod <name> …)` form is present (already extracted /
+///   bare reference — the idempotence case, including the stale-span retry);
+/// - the source does not parse (best-effort — the rewrite is durable-shape
+///   cleanup, not a correctness gate).
 ///
 /// Extracted as the pure owner of the transformation so the parent-rewrite
 /// logic is unit-testable without an FS harness or a `ModuleCompiler` (mirrors
 /// the `layout_hash_gate` extraction; `src/CLAUDE.md` testability discipline).
-pub(crate) fn splice_inline_mod_to_bare(source: &str, span: Span, name: &str) -> Option<String> {
+pub(crate) fn splice_inline_mod_to_bare(source: &str, name: &str) -> Option<String> {
+    // Re-parse the CURRENT content and locate the live inline `(mod <name> …)`
+    // form. A parse failure (corrupt / mid-edit file) is a no-op — best-effort.
+    let sexps = cranelisp_frontend::parse(source).ok()?;
+    let span = find_inline_mod_span(&sexps, name)?;
+
     let start = span.start as usize;
     let end = span.end as usize;
+    // The span comes from the current parse, so it is in-range and on char
+    // boundaries by construction; guard defensively regardless.
     if start >= end
         || end > source.len()
         || !source.is_char_boundary(start)
@@ -2533,6 +2559,8 @@ pub(crate) fn splice_inline_mod_to_bare(source: &str, span: Span, name: &str) ->
         return None;
     }
     let replacement = format!("(mod {name})");
+    // An inline form (matched by `find_inline_mod_span`, body present) is never
+    // already-bare, but keep the guard so a no-op stays a no-op.
     if &source[start..end] == replacement {
         return None;
     }
@@ -2541,6 +2569,40 @@ pub(crate) fn splice_inline_mod_to_bare(source: &str, span: Span, name: &str) ->
     rewritten.push_str(&replacement);
     rewritten.push_str(&source[end..]);
     Some(rewritten)
+}
+
+/// Locate a top-level inline `(mod <name> body…)` / `(mod- <name> body…)` form
+/// in a parsed sexp stream, returning its full byte span.
+///
+/// A form qualifies only when it has the `mod`/`mod-` head, the named submodule
+/// as the first argument, AND at least one body form (≥ 3 children) — a bare
+/// `(mod name)` (exactly 2 children) is NOT an inline form and is skipped, which
+/// is what makes the rewrite idempotent on an already-extracted file. Returns
+/// the span of the FIRST matching form (multiple inline mods of the same name in
+/// one file would be a duplicate-submodule error caught elsewhere; the first is
+/// the one whose body was just written to disk).
+fn find_inline_mod_span(sexps: &[Sexp], name: &str) -> Option<Span> {
+    for sexp in sexps {
+        let Sexp::List(children, span) = sexp else {
+            continue;
+        };
+        if children.len() < 3 {
+            continue;
+        }
+        let Sexp::Symbol(head, _) = &children[0] else {
+            continue;
+        };
+        if head != "mod" && head != "mod-" {
+            continue;
+        }
+        let Sexp::Symbol(sub_name, _) = &children[1] else {
+            continue;
+        };
+        if sub_name == name {
+            return Some(*span);
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -3311,15 +3373,13 @@ mod tests {
     }
 
     // spec: spec/08-modules.md §8.2.2 — parent-file rewrite (FIXME 0217). The
-    // pure splice replaces the inline `(mod child form…)` byte range identified
-    // by the ModDecl span with a bare `(mod child)`, preserving surrounding
-    // forms + whitespace + comments.
+    // self-locating splice re-parses the CURRENT source, finds the live inline
+    // `(mod child form…)` form, and replaces it with a bare `(mod child)`,
+    // preserving surrounding forms + whitespace + comments.
     #[test]
     fn splice_inline_mod_rewrites_to_bare_reference() {
         let source = "(mod child (defn helper [] 7))\n(defn main [] 0)\n";
-        // span covers the `(mod child …)` form exactly (offsets 0..30).
-        let span = Span::new(0, 30);
-        let rewritten = splice_inline_mod_to_bare(source, span, "child")
+        let rewritten = splice_inline_mod_to_bare(source, "child")
             .expect("an inline (mod child …) form MUST be rewritten to bare");
         assert_eq!(
             rewritten,
@@ -3335,28 +3395,106 @@ mod tests {
     #[test]
     fn splice_inline_mod_is_idempotent_on_bare_reference() {
         let source = "(mod child)\n(defn main [] 0)\n";
-        let span = Span::new(0, 11); // "(mod child)" is 11 bytes.
         assert!(
-            splice_inline_mod_to_bare(source, span, "child").is_none(),
+            splice_inline_mod_to_bare(source, "child").is_none(),
             "an already-bare (mod child) reference MUST NOT be rewritten \
              (idempotence — spec §8.2.2 step 2)",
         );
     }
 
-    // spec: spec/08-modules.md §8.2.2 — a synthetic / out-of-range span (e.g. a
-    // REPL-entered `(mod …)` with no backing byte range) MUST leave the file
-    // untouched rather than panicking or splicing at a bogus offset.
+    // spec: spec/08-modules.md §8.2.2 — FIXME 0336 regression. The defect: the
+    // S78 cluster retry-from-top re-runs Pass-0 and invokes the parent rewrite a
+    // SECOND time. The old splice trusted the original-parse `decl.span` (e.g.
+    // 0..30 over the 96-byte file); against the already-rewritten 77-byte file,
+    // that stale range no longer addresses the `(mod child)` form, so the
+    // idempotence guard MISSED and the splice overwrote the wrong range,
+    // truncating the surrounding `main` form. The self-locating splice re-parses
+    // the CURRENT content each call, so the second call finds NO inline form
+    // (only a bare `(mod child)`) and is a no-op — the file stays valid.
+    //
+    // This test pins the exact seam: call the splice TWICE, feeding the output of
+    // the first call (the already-rewritten content) into the second, simulating
+    // the cluster-retry double-invocation. The second call MUST be a no-op and
+    // MUST NOT corrupt the file.
     #[test]
-    fn splice_inline_mod_skips_out_of_range_span() {
-        let source = "(mod child (defn helper [] 7))";
-        assert!(
-            splice_inline_mod_to_bare(source, Span::SYNTHETIC, "child").is_none(),
-            "a synthetic/out-of-range span MUST be a no-op",
+    fn splice_inline_mod_double_invocation_is_idempotent_no_corruption() {
+        let original = "(import [primitives [Pure]])\n\
+                        (mod child (defn helper [] 7))\n\
+                        (defn main [] (Pure (child/helper)))\n";
+
+        // First call: the live inline form is located and spliced to bare.
+        let after_first = splice_inline_mod_to_bare(original, "child")
+            .expect("first call MUST rewrite the inline (mod child …) form");
+        assert_eq!(
+            after_first,
+            "(import [primitives [Pure]])\n\
+             (mod child)\n\
+             (defn main [] (Pure (child/helper)))\n",
+            "first rewrite splices out the inline body, preserving `main` intact",
         );
-        // end past the source length is also a no-op.
+
+        // Second call (the cluster-retry re-invocation) against the ALREADY-
+        // rewritten content. The self-locating splice finds no inline form, so
+        // this is a no-op — the file is NOT corrupted (the 0336 defect).
         assert!(
-            splice_inline_mod_to_bare(source, Span::new(0, 9999), "child").is_none(),
-            "an out-of-range end MUST be a no-op",
+            splice_inline_mod_to_bare(&after_first, "child").is_none(),
+            "the second (cluster-retry) call MUST be a no-op — re-locating in \
+             the current content finds only the bare (mod child), never the \
+             stale original span (FIXME 0336)",
+        );
+
+        // The parent file content is unchanged after the second call — `main` is
+        // fully preserved, the file still parses.
+        assert!(
+            cranelisp_frontend::parse(&after_first).is_ok(),
+            "the rewritten parent MUST still parse after the double invocation",
+        );
+    }
+
+    // spec: spec/08-modules.md §8.2.2 — multiple inline mods in one file. Each
+    // named submodule's rewrite locates ITS OWN form; rewriting one leaves the
+    // others' inline bodies intact for their own extraction pass.
+    #[test]
+    fn splice_inline_mod_handles_multiple_inline_mods() {
+        let source = "(mod a (defn fa [] 1))\n(mod b (defn fb [] 2))\n(defn main [] 0)\n";
+        let after_a = splice_inline_mod_to_bare(source, "a")
+            .expect("the inline (mod a …) form MUST be rewritten");
+        assert_eq!(
+            after_a,
+            "(mod a)\n(mod b (defn fb [] 2))\n(defn main [] 0)\n",
+            "rewriting `a` leaves `b`'s inline body untouched",
+        );
+        let after_b = splice_inline_mod_to_bare(&after_a, "b")
+            .expect("the inline (mod b …) form MUST be rewritten");
+        assert_eq!(
+            after_b,
+            "(mod a)\n(mod b)\n(defn main [] 0)\n",
+            "rewriting `b` afterward leaves the already-bare `a` untouched",
+        );
+        // Both bare now — further rewrites are no-ops.
+        assert!(splice_inline_mod_to_bare(&after_b, "a").is_none());
+        assert!(splice_inline_mod_to_bare(&after_b, "b").is_none());
+    }
+
+    // spec: spec/08-modules.md §8.2.2 — a source with no inline form for the
+    // named submodule (or that does not parse) MUST leave the file untouched
+    // rather than panicking or splicing at a bogus offset.
+    #[test]
+    fn splice_inline_mod_skips_when_no_inline_form() {
+        // Bare reference only — no inline body.
+        assert!(
+            splice_inline_mod_to_bare("(mod child)", "child").is_none(),
+            "a bare (mod child) reference is not an inline form — no-op",
+        );
+        // Inline form for a DIFFERENT submodule name — no-op for `child`.
+        assert!(
+            splice_inline_mod_to_bare("(mod other (defn f [] 0))", "child").is_none(),
+            "an inline form for a different submodule name MUST NOT match",
+        );
+        // Unparseable source — best-effort no-op, no panic.
+        assert!(
+            splice_inline_mod_to_bare("(mod child (defn", "child").is_none(),
+            "a source that does not parse MUST be a no-op (best-effort)",
         );
     }
 }
