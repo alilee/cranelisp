@@ -67,6 +67,20 @@ backend bake. Coordinates:
 The funnel is implementation-ready for the S81 platform/backend/int/qa waves. This FIXME stays
 OPEN and closes when the funnel lands (the e2e in FIXME 0289 item 5 goes green).
 
+**S81 W-F (arch-docs ratification) verification, 2026-06-13.** The W-F pass confirmed the BC
+recording of this ruling is complete and self-consistent — the W-G implementer can build against
+it with no further arch round-trip. Verified present and correct: **BC §5 invariant 9** (the full
+ruling — guard placement, node-widen Option A with the DLL-reserves-field-3 / backend-stamps-post-call
+factual correction, the scheduling_class-channel-is-wrong correction, two-layer `DispatchError`
+construction, public-surface deltas, cross-component sequence, 0325 regen-coordination); **BC §4b
+invariant 14** (the intrinsics half — guard at `io.rs:192`, captures fault + field-3 name, returns
+an intrinsics-internal fault outcome, int composes); **BC §3** the platform-dispatch-fn-name-bake
+bullet (backend bakes at the `DefKind::PlatformEffect` arm, same data-symbol family as the trace
+`DisplayDescriptor` baker, post-call stamp into field-3, ABI 3→4); **BC §6** carries int's platform
+load path and the `DispatchError` compose is the runtime-error-surface obligation named in §5 inv 9
++ §4b inv 14. No under-recording found; nothing added this pass. FIXME left OPEN (closes when the
+funnel lands in W-G / FIXME 0289 item 5 goes green).
+
 ---
 
 ## Original /design (platform) recommendation (preserved below)
