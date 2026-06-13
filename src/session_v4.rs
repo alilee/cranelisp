@@ -4001,6 +4001,22 @@ impl CompilerSession {
             // Mirrors the pipeline path's `unwrap_io_inline` in pipeline.rs
             // and the extern `cranelisp_run_io` entry in runtime::io.
             cranelisp_intrinsics::drop::consume_io_tree(raw_value);
+
+            // A platform Effect forced during the trampoline may have faulted
+            // under the intrinsics fault guard (FIXME 0327, the dispatch
+            // funnel). int composes the structured `PlatformError::DispatchError`
+            // from the intrinsics-captured `(fn_name, cause)` slot (BC §4b
+            // invariant 14 / §5 invariant 9 — two-layer split).
+            if let Some(fault) = cranelisp_intrinsics::panic::take_dispatch_fault() {
+                return Err(CranelispError::Platform(
+                    cranelisp_types::PlatformError::DispatchError {
+                        fn_name: cranelisp_types::Symbol::from(fault.fn_name),
+                        cause: fault.cause,
+                        location: ErrorLocation::from_span(Span::SYNTHETIC),
+                    },
+                ));
+            }
+
             let inner_type = result_type.unwrap_io().clone();
             Ok((inner_value, inner_type))
         } else {

@@ -33,8 +33,12 @@ const FIELD_1_OFFSET: isize = FIELD_0_OFFSET + 8; // 32
 /// A null handle ⇒ `fn_name: "<unknown>"`. Step 1 (the node-widen) leaves this
 /// field reserved-but-unread; it is named here so steps 2/3 read it
 /// consistently.
-#[allow(dead_code)]
-const FIELD_2_OFFSET: isize = FIELD_1_OFFSET + 8; // 40
+///
+/// Derived from the named constants (NOT hard-coded 40): the node base is the
+/// `HeapHeader`, and `cranelisp_platform::IO_EFFECT_FN_NAME_OFFSET` is the
+/// field's offset within the payload.
+const FIELD_2_OFFSET: isize =
+    HeapHeader::SIZE as isize + cranelisp_platform::IO_EFFECT_FN_NAME_OFFSET as isize; // 16 + 24 = 40
 
 /// Byte offset of the code pointer within a closure from the base pointer.
 /// Closure layout: [header(16) | code_ptr(8) | drop_glue_ptr(8) | captures...]
@@ -203,7 +207,29 @@ fn run_io_trampoline_inner(io_ptr: i64) -> i64 {
                         scheduling_class: 0,
                     },
                 );
-                let result = unsafe { cranelisp_platform::call_effect_thunk(thunk_ptr) };
+                // Force the platform Effect thunk under the fault guard
+                // (FIXME 0327, step 3 — the dispatch funnel). A fault in
+                // foreign platform code (Rust panic or SIGFPE/SIGILL/SIGBUS/
+                // SIGSEGV) is captured into the dispatch-fault slot (paired
+                // with the fn-name read from field-3) for int to compose into
+                // `PlatformError::DispatchError`. The happy path is identical
+                // to the former unguarded `call_effect_thunk(thunk_ptr)`.
+                let fn_name = read_effect_fn_name(current);
+                // SAFETY: `thunk_ptr` is the Effect node's field-0 — a valid
+                // not-yet-forced double-boxed thunk produced by `CLIO::effect*`.
+                let result = match unsafe {
+                    crate::io_guard::force_effect_thunk_protected(thunk_ptr, &fn_name)
+                } {
+                    crate::io_guard::ForceOutcome::Value(v) => v,
+                    crate::io_guard::ForceOutcome::Faulted => {
+                        // The fault is captured in the dispatch-fault slot. Abort
+                        // the trampoline; int reads the slot at its runtime-error
+                        // surface and composes the structured error. Return the
+                        // sentinel (0), mirroring the `runtime_panic` convention
+                        // — int checks the slot, not the return value.
+                        return 0;
+                    }
+                };
                 match cont_stack.pop() {
                     Some((cont_ptr, cont_is_fresh)) => {
                         io_observer::emit(
@@ -390,6 +416,29 @@ fn read_resource_token(io_ptr: i64) -> i64 {
     }
 }
 
+/// Read the baked platform fn-name from an `IO_TAG_EFFECT` node's fourth field
+/// (FIELD_2_OFFSET, ABI v4 — FIXME 0327 the dispatch funnel).
+///
+/// The backend stamps field-3 with a pointer to a NUL-terminated UTF-8 C-string
+/// (the `exe.rs::define_cstr_data` convention — read without a length channel)
+/// after the platform-fn call returns (step 2). A node the backend did not
+/// stamp (a fresh node, or one built by an out-of-tree DLL) keeps field-3 null,
+/// and we degrade to `"<unknown>"` — never crash.
+fn read_effect_fn_name(io_ptr: i64) -> String {
+    // SAFETY: `io_ptr` is the live `current` Effect node base pointer; field-3
+    // is within its 32-byte payload (ABI v4).
+    let handle = unsafe { *((io_ptr as isize + FIELD_2_OFFSET) as *const i64) };
+    if handle == 0 {
+        return "<unknown>".to_string();
+    }
+    // SAFETY: a non-null handle is a backend-baked pointer to a NUL-terminated
+    // UTF-8 C-string with program lifetime (a `.rodata`/leaked data symbol).
+    let cstr = unsafe { std::ffi::CStr::from_ptr(handle as *const libc::c_char) };
+    cstr.to_str()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|_| "<unknown>".to_string())
+}
+
 /// Result of running one Par work item: the branch results placed at their
 /// original indices, plus the first runtime panic ferried off the worker thread
 /// (the fork-join error-slot ferry, test-discovery.md §6).
@@ -538,18 +587,29 @@ mod tests {
     }
 
     /// Helper: allocate an Effect node with a pre-built thunk.
-    /// Layout: [header(16) | tag=1(8) | thunk_ptr(8) | resource_token(8)]
+    /// Layout (ABI v4): [header(16) | tag=1(8) | thunk_ptr(8) |
+    /// resource_token(8) | fn_name_handle(8)] — 32-byte payload. Field-3 is
+    /// init to null (the "backend did not stamp" case), so the trampoline's
+    /// `read_effect_fn_name` degrades to `"<unknown>"`.
     fn make_effect_node(result_value: i64) -> i64 {
+        make_effect_node_with_name(result_value, 0)
+    }
+
+    /// Helper: allocate an ABI-v4 Effect node, optionally stamping field-3 with
+    /// a baked fn-name handle (a NUL-terminated C-string pointer, or 0 for the
+    /// unstamped case).
+    fn make_effect_node_with_name(result_value: i64, fn_name_handle: i64) -> i64 {
         // Double-box a closure that returns the given value.
         let thunk: Box<Box<dyn FnOnce() -> i64>> =
             Box::new(Box::new(move || result_value));
         let thunk_ptr = Box::into_raw(thunk) as i64;
 
-        let base = alloc_with_rc(24); // tag + thunk + resource_token = 24 bytes
+        let base = alloc_with_rc(32); // tag + thunk + token + fn_name = 32 bytes (ABI v4)
         unsafe {
             *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_EFFECT;
             *((base as isize + FIELD_0_OFFSET) as *mut i64) = thunk_ptr;
             *((base as isize + FIELD_1_OFFSET) as *mut i64) = 0; // resource_token
+            *((base as isize + FIELD_2_OFFSET) as *mut i64) = fn_name_handle;
         }
         base as i64
     }
@@ -796,11 +856,12 @@ mod tests {
                 }));
             let thunk_ptr = Box::into_raw(thunk) as i64;
 
-            let base = alloc_with_rc(24);
+            let base = alloc_with_rc(32); // ABI v4: + fn_name_handle field-3
             unsafe {
                 *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_EFFECT;
                 *((base as isize + FIELD_0_OFFSET) as *mut i64) = thunk_ptr;
                 *((base as isize + FIELD_1_OFFSET) as *mut i64) = token;
+                *((base as isize + FIELD_2_OFFSET) as *mut i64) = 0; // fn_name: unstamped
             }
             base as i64
         };
@@ -997,14 +1058,177 @@ mod tests {
             let thunk: Box<Box<dyn FnOnce() -> i64>> =
                 Box::new(Box::new(|| 0));
             let thunk_ptr = Box::into_raw(thunk) as i64;
-            let base = alloc_with_rc(24);
+            let base = alloc_with_rc(32); // ABI v4
             unsafe {
                 *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_EFFECT;
                 *((base as isize + FIELD_0_OFFSET) as *mut i64) = thunk_ptr;
                 *((base as isize + FIELD_1_OFFSET) as *mut i64) = 5;
+                *((base as isize + FIELD_2_OFFSET) as *mut i64) = 0; // fn_name: unstamped
             }
             base as i64
         };
         assert_eq!(read_resource_token(effect), 5);
+    }
+
+    // -- FIXME 0327 — the fault-guarded platform-dispatch funnel (step 3) --
+
+    /// Build a baked fn-name C-string the way the backend would (NUL-terminated
+    /// UTF-8, program-lifetime). Leaks deliberately — the trampoline reads it by
+    /// pointer with no length channel and never frees it (mirrors a `.rodata`
+    /// data symbol). Returns the pointer as an i64 handle for field-3.
+    fn bake_fn_name(name: &str) -> i64 {
+        let cstr = std::ffi::CString::new(name).unwrap();
+        std::ffi::CString::into_raw(cstr) as i64
+    }
+
+    // spec: design/arch/bounded-contexts.md §4b invariant 14 — the fault guard
+    // is a strict no-op on the happy path: a clean thunk forces and returns its
+    // value, leaving no dispatch fault.
+    #[test]
+    fn force_effect_thunk_protected_happy_path_returns_value() {
+        let _ = crate::panic::take_dispatch_fault(); // clear
+        let thunk: Box<Box<dyn FnOnce() -> i64>> = Box::new(Box::new(|| 1234));
+        let thunk_ptr = Box::into_raw(thunk) as i64;
+        let outcome = unsafe {
+            crate::io_guard::force_effect_thunk_protected(thunk_ptr, "stdio/read-line")
+        };
+        match outcome {
+            crate::io_guard::ForceOutcome::Value(v) => assert_eq!(v, 1234),
+            crate::io_guard::ForceOutcome::Faulted => panic!("clean thunk must not fault"),
+        }
+        assert!(
+            crate::panic::take_dispatch_fault().is_none(),
+            "no dispatch fault on the happy path"
+        );
+    }
+
+    // spec: design/arch/bounded-contexts.md §4b invariant 14 — a thunk that
+    // raises a runtime panic under the guard produces a Faulted outcome whose
+    // captured dispatch fault carries the supplied fn-name and the panic cause.
+    #[test]
+    fn force_effect_thunk_protected_runtime_panic_captures_fn_name() {
+        let _ = crate::panic::take_dispatch_fault();
+        let _ = crate::panic::take_runtime_error();
+        let thunk: Box<Box<dyn FnOnce() -> i64>> = Box::new(Box::new(|| {
+            let msg = "device unavailable";
+            crate::panic::runtime_panic(msg.as_ptr(), msg.len());
+            0
+        }));
+        let thunk_ptr = Box::into_raw(thunk) as i64;
+        let outcome = unsafe {
+            crate::io_guard::force_effect_thunk_protected(thunk_ptr, "stdio/read-line")
+        };
+        assert!(
+            matches!(outcome, crate::io_guard::ForceOutcome::Faulted),
+            "panicking thunk must fault"
+        );
+        let fault = crate::panic::take_dispatch_fault().expect("fault captured");
+        assert_eq!(fault.fn_name, "stdio/read-line");
+        assert!(
+            fault.cause.contains("device unavailable"),
+            "cause must carry the panic message, got {:?}",
+            fault.cause
+        );
+    }
+
+    // spec: design/arch/bounded-contexts.md §4b invariant 14 — a Rust panic in
+    // foreign platform code is caught by the guard and captured as a fault.
+    #[test]
+    fn force_effect_thunk_protected_rust_panic_is_caught() {
+        let _ = crate::panic::take_dispatch_fault();
+        let _ = crate::panic::take_runtime_error();
+        let thunk: Box<Box<dyn FnOnce() -> i64>> =
+            Box::new(Box::new(|| panic!("boom in platform fn")));
+        let thunk_ptr = Box::into_raw(thunk) as i64;
+        let outcome = unsafe {
+            crate::io_guard::force_effect_thunk_protected(thunk_ptr, "net/connect")
+        };
+        assert!(
+            matches!(outcome, crate::io_guard::ForceOutcome::Faulted),
+            "Rust panic must be caught as a fault"
+        );
+        let fault = crate::panic::take_dispatch_fault().expect("fault captured");
+        assert_eq!(fault.fn_name, "net/connect");
+        assert!(fault.cause.contains("boom in platform fn"));
+    }
+
+    // spec: design/arch/bounded-contexts.md §5 invariant 9 — the trampoline
+    // reads the baked fn-name from the Effect node's field-3 (ABI v4) and the
+    // captured fault carries it. The full-trampoline path exercises the
+    // field-3 read alongside the force.
+    #[test]
+    fn trampoline_effect_fault_reads_baked_fn_name() {
+        let _ = crate::panic::take_dispatch_fault();
+        let _ = crate::panic::take_runtime_error();
+        // Build an Effect node whose thunk panics, with field-3 stamped to a
+        // baked fn-name the way the backend would.
+        let handle = bake_fn_name("clock/now");
+        let panicking_thunk: Box<Box<dyn FnOnce() -> i64>> = Box::new(Box::new(|| {
+            let msg = "clock read failed";
+            crate::panic::runtime_panic(msg.as_ptr(), msg.len());
+            0
+        }));
+        let thunk_ptr = Box::into_raw(panicking_thunk) as i64;
+        let base = alloc_with_rc(32);
+        unsafe {
+            *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_EFFECT;
+            *((base as isize + FIELD_0_OFFSET) as *mut i64) = thunk_ptr;
+            *((base as isize + FIELD_1_OFFSET) as *mut i64) = 0;
+            *((base as isize + FIELD_2_OFFSET) as *mut i64) = handle;
+        }
+        // Drive the trampoline; the EFFECT arm faults and returns the sentinel.
+        let result = run_io_trampoline(base as i64);
+        assert_eq!(result, 0, "faulting trampoline returns the sentinel");
+        let fault = crate::panic::take_dispatch_fault().expect("fault captured");
+        assert_eq!(fault.fn_name, "clock/now", "field-3 fn-name read");
+        assert!(fault.cause.contains("clock read failed"));
+        unsafe { crate::alloc::dealloc(base) };
+    }
+
+    // spec: design/arch/bounded-contexts.md §5 invariant 9 — a node the backend
+    // did NOT stamp (field-3 null) degrades the captured fn-name to
+    // "<unknown>", never crashing.
+    #[test]
+    fn trampoline_effect_fault_null_fn_name_degrades_to_unknown() {
+        let _ = crate::panic::take_dispatch_fault();
+        let _ = crate::panic::take_runtime_error();
+        // make_effect_node leaves field-3 null, but its thunk is clean; build a
+        // panicking one with a null field-3 directly.
+        let panicking_thunk: Box<Box<dyn FnOnce() -> i64>> = Box::new(Box::new(|| {
+            let msg = "unstamped fault";
+            crate::panic::runtime_panic(msg.as_ptr(), msg.len());
+            0
+        }));
+        let thunk_ptr = Box::into_raw(panicking_thunk) as i64;
+        let base = alloc_with_rc(32);
+        unsafe {
+            *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_EFFECT;
+            *((base as isize + FIELD_0_OFFSET) as *mut i64) = thunk_ptr;
+            *((base as isize + FIELD_1_OFFSET) as *mut i64) = 0;
+            *((base as isize + FIELD_2_OFFSET) as *mut i64) = 0; // unstamped
+        }
+        let result = run_io_trampoline(base as i64);
+        assert_eq!(result, 0);
+        let fault = crate::panic::take_dispatch_fault().expect("fault captured");
+        assert_eq!(fault.fn_name, "<unknown>", "null field-3 degrades to <unknown>");
+        assert!(fault.cause.contains("unstamped fault"));
+        unsafe { crate::alloc::dealloc(base) };
+    }
+
+    // spec: design/arch/bounded-contexts.md §4b invariant 14 — the existing
+    // clean Effect path through the trampoline still works (no fault) after the
+    // guard is installed: the happy path is unaffected (read_effect_fn_name on a
+    // clean node leaves no fault).
+    #[test]
+    fn trampoline_clean_effect_leaves_no_fault() {
+        let _ = crate::panic::take_dispatch_fault();
+        let io = make_effect_node_with_name(77, bake_fn_name("stdio/write"));
+        let result = run_io_trampoline(io);
+        assert_eq!(result, 77);
+        assert!(
+            crate::panic::take_dispatch_fault().is_none(),
+            "clean effect must leave no dispatch fault"
+        );
+        unsafe { crate::alloc::dealloc(io as *mut u8) };
     }
 }

@@ -128,7 +128,35 @@ pub fn execute_compiled_expr(
     }
 
     // IO trampoline inline (the code is still mapped via the entry's Arc<Jit>).
-    Ok(unwrap_io_inline(raw_value, ty))
+    let result = unwrap_io_inline(raw_value, ty);
+
+    // A platform Effect forced during the trampoline may have faulted under the
+    // intrinsics fault guard (FIXME 0327, the dispatch funnel). The guard
+    // captured `(fn_name, cause)` into the dispatch-fault slot; compose the
+    // structured `PlatformError::DispatchError` here (the two-layer split:
+    // intrinsics sets the slot, int composes — BC §4b invariant 14 / §5
+    // invariant 9). This is checked AFTER the trampoline because the fault is
+    // raised during the IO force, not during the bare `__expr` call.
+    if let Some(fault) = cranelisp_intrinsics::panic::take_dispatch_fault() {
+        return Err(compose_dispatch_error(fault));
+    }
+
+    Ok(result)
+}
+
+/// Compose a structured `PlatformError::DispatchError` from an intrinsics
+/// dispatch-fault carrier (FIXME 0327 — the dispatch funnel, int's compose
+/// half). The intrinsics guard captured `(fn_name, cause)` and is
+/// diagnostics-free by charter; int maps it to the typed error surfaced via
+/// `CranelispError::Platform`.
+fn compose_dispatch_error(
+    fault: cranelisp_intrinsics::panic::DispatchFault,
+) -> CranelispError {
+    CranelispError::Platform(cranelisp_types::PlatformError::DispatchError {
+        fn_name: cranelisp_types::Symbol::from(fault.fn_name),
+        cause: fault.cause,
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
+    })
 }
 
 /// If `ty` is an `IO a` type, force the IO tree rooted at `raw_value` via
@@ -197,6 +225,31 @@ mod tests {
             ),
             vec![Type::Int],
         )
+    }
+
+    // spec: design/arch/bounded-contexts.md §5 invariant 9 — int composes a
+    // structured `PlatformError::DispatchError` from the intrinsics-captured
+    // dispatch fault, mapping fn_name + cause and surfacing via
+    // `CranelispError::Platform` (FIXME 0327, the dispatch funnel, int's
+    // compose half).
+    #[test]
+    fn compose_dispatch_error_maps_fn_name_and_cause() {
+        let fault = cranelisp_intrinsics::panic::DispatchFault {
+            fn_name: "stdio/read-line".to_string(),
+            cause: "device unavailable".to_string(),
+        };
+        let err = compose_dispatch_error(fault);
+        match err {
+            CranelispError::Platform(cranelisp_types::PlatformError::DispatchError {
+                fn_name,
+                cause,
+                ..
+            }) => {
+                assert_eq!(fn_name.as_ref(), "stdio/read-line");
+                assert_eq!(cause, "device unavailable");
+            }
+            other => panic!("expected Platform(DispatchError), got {other:?}"),
+        }
     }
 
     /// Sprint 57 Wave 6 (IO-path SIGBUS fix): non-IO types flow through

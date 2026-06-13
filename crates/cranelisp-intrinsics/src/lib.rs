@@ -174,6 +174,9 @@ pub mod catalog;
 pub mod drop;
 pub mod heap_string;
 pub mod io;
+/// Fault guard for the platform-Effect force site (FIXME 0327). `pub(crate)` —
+/// not a public-surface item; the trampoline (`io`) is its only consumer.
+pub(crate) mod io_guard;
 pub mod io_observer;
 pub mod ivar;
 pub mod layout;

@@ -36,6 +36,33 @@ const RESULT_TAG_ERR: i64 = 1;
 
 thread_local! {
     static RUNTIME_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+    static DISPATCH_FAULT: RefCell<Option<DispatchFault>> = const { RefCell::new(None) };
+}
+
+/// A platform-dispatch fault captured by the IO trampoline's fault guard
+/// (`crate::io`, FIXME 0327 — the dispatch funnel, step 3).
+///
+/// This is the **intrinsics-internal fault outcome** the guard produces when a
+/// platform Effect thunk faults (Rust panic OR SIGFPE/SIGILL/SIGBUS/SIGSEGV).
+/// Intrinsics is diagnostics-free by charter (BC §4b) — it does NOT construct a
+/// `PlatformError`. Instead the guard sets this carrier on a thread-local slot
+/// via [`set_dispatch_fault`] and int reads it via [`take_dispatch_fault`] and
+/// composes `PlatformError::DispatchError { fn_name, cause, location }` at its
+/// runtime-error surface (the two-layer split that [`catch_runtime_error`] and
+/// `invoke_jit_protected` already use: intrinsics sets the slot, int reads +
+/// composes).
+///
+/// The `fn_name` is read from the faulting Effect node's fourth field (the
+/// backend-baked NUL-terminated C-string, ABI v4); a node the backend did not
+/// stamp carries `"<unknown>"`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchFault {
+    /// The cranelisp-level platform fn name, read from the Effect node's baked
+    /// field-3 handle (or `"<unknown>"` when the handle is null).
+    pub fn_name: String,
+    /// The fault cause message (the panic payload, signal description, or the
+    /// `runtime_panic` slot message captured during the thunk force).
+    pub cause: String,
 }
 
 /// Set a runtime error from JIT-compiled code.
@@ -85,6 +112,34 @@ pub fn set_runtime_error(msg: String) {
             *slot = Some(msg);
         }
     });
+}
+
+/// Set a captured platform-dispatch fault into the calling thread's slot,
+/// **first-fault-wins**.
+///
+/// The IO trampoline's fault guard (`crate::io`) calls this when a platform
+/// Effect thunk faults. The companion to [`take_dispatch_fault`]. If the slot
+/// is already occupied (an earlier fault on this thread), the existing fault is
+/// kept — the first fault aborts the expression (sequential semantics, matching
+/// [`set_runtime_error`]). It is internal Rust → int signalling, not a C-ABI
+/// export and not a language name.
+pub fn set_dispatch_fault(fault: DispatchFault) {
+    DISPATCH_FAULT.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(fault);
+        }
+    });
+}
+
+/// Check and take the last platform-dispatch fault, if any.
+///
+/// int calls this at its runtime-error surface (after forcing an IO tree) to
+/// detect a fault the trampoline's guard captured, then composes
+/// `PlatformError::DispatchError` from the carried `fn_name` + `cause`. Returns
+/// `Some(fault)` and clears the slot, or `None` if no dispatch fault occurred.
+pub fn take_dispatch_fault() -> Option<DispatchFault> {
+    DISPATCH_FAULT.with(|cell| cell.borrow_mut().take())
 }
 
 /// `catch-runtime-error` — the language-level protected-call combinator
@@ -216,6 +271,40 @@ mod tests {
         set_runtime_error("ferried error".to_string());
         let err = take_runtime_error();
         assert_eq!(err.as_deref(), Some("ferried error"));
+    }
+
+    // spec: design/arch/bounded-contexts.md §4b invariant 14 — the dispatch
+    // fault slot round-trips a captured fault for int to compose.
+    #[test]
+    fn test_dispatch_fault_set_take_roundtrip() {
+        let _ = take_dispatch_fault(); // clear
+        set_dispatch_fault(DispatchFault {
+            fn_name: "stdio/read-line".to_string(),
+            cause: "device unavailable".to_string(),
+        });
+        let fault = take_dispatch_fault().expect("fault present");
+        assert_eq!(fault.fn_name, "stdio/read-line");
+        assert_eq!(fault.cause, "device unavailable");
+        // take clears the slot.
+        assert!(take_dispatch_fault().is_none());
+    }
+
+    // spec: design/arch/bounded-contexts.md §4b invariant 14 — the dispatch
+    // fault slot is first-fault-wins (sequential abort semantics).
+    #[test]
+    fn test_dispatch_fault_first_fault_wins() {
+        let _ = take_dispatch_fault();
+        set_dispatch_fault(DispatchFault {
+            fn_name: "a".to_string(),
+            cause: "first".to_string(),
+        });
+        set_dispatch_fault(DispatchFault {
+            fn_name: "b".to_string(),
+            cause: "second".to_string(),
+        });
+        let fault = take_dispatch_fault().expect("fault present");
+        assert_eq!(fault.fn_name, "a", "first fault is kept");
+        assert_eq!(fault.cause, "first");
     }
 
     // spec: 12-runtime §12.4.3 — set_runtime_error is first-error-wins

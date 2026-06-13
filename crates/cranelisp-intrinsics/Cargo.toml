@@ -8,3 +8,4 @@ cranelisp-types = { path = "../cranelisp-types" }
 cranelisp-platform = { path = "../cranelisp-platform" }
 rayon = "1.10"
 serde = { version = "1", features = ["derive"] }
+libc = "0.2"
