@@ -66,6 +66,17 @@ mod elf_aarch64 {
     pub const R_AARCH64_ADD_ABS_LO12_NC: u32 = 277;
     pub const R_AARCH64_CALL26: u32 = 283;
     pub const R_AARCH64_LDST64_ABS_LO12_NC: u32 = 286;
+    // ELF GOT-load relocations: the ELF analogue of Mach-O's
+    // `ARM64_RELOC_GOT_LOAD_PAGE21` / `ARM64_RELOC_GOT_LOAD_PAGEOFF12`. Cranelift
+    // emits these when CLIF references a `Linkage::Import` data symbol (such as
+    // `__cranelisp_got_{M}` cross-module GOT-base references, Decision 23) via
+    // `global_value`. The load is routed through a GOT indirection slot: the
+    // code does ADRP+LDR off the SLOT, then a further LDR off the loaded value.
+    // The cache `Linker` resolves these the same way the Mach-O path does — by
+    // allocating an in-process slot (`ensure_got_slot`) holding the symbol's
+    // address and patching the relocation against the slot, not the symbol.
+    pub const R_AARCH64_ADR_GOT_PAGE: u32 = 311;
+    pub const R_AARCH64_LD64_GOT_LO12_NC: u32 = 312;
 }
 
 /// A minimal linker that loads `.o` files and resolves relocations.
@@ -226,6 +237,9 @@ impl Linker {
             message: format!("failed to parse object file: {e}"),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
+        // Mach-O prepends `_` to every symbol; ELF/COFF do not. Strip only on
+        // Mach-O (see `canonical_symbol_name`).
+        let obj_format = obj.format();
 
         // Find the .text section (Mach-O uses "__text" in "__TEXT" segment)
         let text_section = obj
@@ -275,8 +289,9 @@ impl Linker {
             if let Ok(name) = sym.name()
                 && !name.is_empty()
             {
-                // Strip leading underscore (Mach-O prefixes symbols with _)
-                let clean_name = name.strip_prefix('_').unwrap_or(name);
+                // Canonicalise to the host JIT name (Mach-O strips its `_`
+                // prefix; ELF/COFF names are already canonical).
+                let clean_name = canonical_symbol_name(obj_format, name);
                 let offset_in_text = (sym.address() - text_section_addr) as usize;
                 let addr = base_addr + offset_in_text;
                 // Local symbols (.Lfn*) go into a per-object map to avoid
@@ -330,7 +345,7 @@ impl Linker {
                         message: format!("bad symbol name: {e}"),
                         location: ErrorLocation::from_span(Span::SYNTHETIC),
                     })?;
-                    raw_name.strip_prefix('_').unwrap_or(raw_name).to_string()
+                    canonical_symbol_name(obj_format, raw_name).to_string()
                 }
                 _ => {
                     return Err(CranelispError::CodegenError {
@@ -366,6 +381,15 @@ impl Linker {
                 RelocationFlags::MachO { r_type, .. }
                     if r_type == macho_arm64::ARM64_RELOC_GOT_LOAD_PAGE21
                         || r_type == macho_arm64::ARM64_RELOC_GOT_LOAD_PAGEOFF12 =>
+                {
+                    self.ensure_got_slot(&target_name, raw_target_addr)?
+                }
+                // ELF GOT-load relocations (the analogue of the Mach-O arm
+                // above): resolve against an in-process indirection slot so the
+                // code's ADRP+LDR loads the slot holding the symbol's address.
+                RelocationFlags::Elf { r_type }
+                    if r_type == elf_aarch64::R_AARCH64_ADR_GOT_PAGE
+                        || r_type == elf_aarch64::R_AARCH64_LD64_GOT_LO12_NC =>
                 {
                     self.ensure_got_slot(&target_name, raw_target_addr)?
                 }
@@ -518,7 +542,7 @@ impl Linker {
                 if let Ok(name) = sym.name()
                     && !name.is_empty()
                 {
-                    let clean_name = name.strip_prefix('_').unwrap_or(name);
+                    let clean_name = canonical_symbol_name(obj.format(), name);
                     let offset = (sym.address() - section_addr) as usize;
                     let addr = data_base + offset;
                     if clean_name.starts_with(".L") {
@@ -571,6 +595,25 @@ impl Linker {
         }
 
         Ok(())
+    }
+}
+
+/// Canonicalise an object-file symbol name to its host JIT-namespace name.
+///
+/// Mach-O prepends a leading `_` to every symbol at assembly time; ELF and COFF
+/// do not. The cache `Linker` keys its symbol tables on the bare (un-prefixed)
+/// JIT name registered by int (e.g. `__cranelisp_got_primitives`), so a Mach-O
+/// object's symbol must have its single leading `_` stripped before lookup,
+/// while an ELF object's symbol is already canonical and MUST NOT be stripped
+/// (stripping `__cranelisp_got_primitives` → `_cranelisp_got_primitives` is the
+/// macOS→Linux portability bug this guards against).
+///
+/// Conditioned on the parsed object's own `BinaryFormat` (not a host `cfg!`)
+/// so it stays correct for any object the linker is handed, cross-target or not.
+fn canonical_symbol_name<'a>(format: object::BinaryFormat, name: &'a str) -> &'a str {
+    match format {
+        object::BinaryFormat::MachO => name.strip_prefix('_').unwrap_or(name),
+        _ => name,
     }
 }
 
@@ -708,7 +751,11 @@ fn apply_elf_aarch64_reloc(
                 (existing & 0xFC00_0000) | ((rel_offset as u32) & 0x03FF_FFFF);
             mmap[offset..offset + 4].copy_from_slice(&patched.to_le_bytes());
         }
-        elf_aarch64::R_AARCH64_ADR_PREL_PG_HI21 => {
+        // R_AARCH64_ADR_GOT_PAGE (GOT-slot variant): identical ADRP page math —
+        // `target_addr` is the GOT slot address (resolved via `ensure_got_slot`
+        // at the call site), so the page computation is the same as the plain
+        // PREL form.
+        elf_aarch64::R_AARCH64_ADR_PREL_PG_HI21 | elf_aarch64::R_AARCH64_ADR_GOT_PAGE => {
             let target_page = ((target_addr as i64 + addend) >> 12) << 12;
             let patch_page = (patch_addr as i64 >> 12) << 12;
             let page_offset = ((target_page - patch_page) >> 12) as i32;
@@ -727,7 +774,10 @@ fn apply_elf_aarch64_reloc(
             let patched = (existing & 0xFFC0_03FF) | ((page_off & 0xFFF) << 10);
             mmap[offset..offset + 4].copy_from_slice(&patched.to_le_bytes());
         }
-        elf_aarch64::R_AARCH64_LDST64_ABS_LO12_NC => {
+        // R_AARCH64_LD64_GOT_LO12_NC (GOT-slot variant): identical 64-bit LDR
+        // low-12 math — `target_addr` is the GOT slot address, loaded with a
+        // scale-by-8 LDR, same encoding as the plain ABS LO12 form.
+        elf_aarch64::R_AARCH64_LDST64_ABS_LO12_NC | elf_aarch64::R_AARCH64_LD64_GOT_LO12_NC => {
             let page_off = ((target_addr as i64 + addend) & 0xFFF) as u32;
             let existing =
                 u32::from_le_bytes(mmap[offset..offset + 4].try_into().unwrap());
