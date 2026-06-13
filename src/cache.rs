@@ -29,7 +29,7 @@ use std::sync::Mutex;
 
 use cranelisp_types::ModuleFullPath;
 
-use crate::session::CacheState;
+use crate::session_setup::CacheState;
 
 /// The on-disk object cache, owned by `SharedState`.
 ///

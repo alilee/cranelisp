@@ -201,7 +201,8 @@ pub fn process_cluster(
     forms: std::sync::Arc<[cranelisp_types::Sexp]>,
     scope: &ModuleFullPath,
 ) -> Result<ClusterOutcome, CranelispError> {
-    use crate::worker::{self, ClusterOnce, ModuleCompiler};
+    use crate::worker::{ClusterOnce, ModuleCompiler};
+    use crate::process_form;
     use cranelisp_typecheck::CheckState;
 
     cranelisp_types::ensure_module_exists(&shared.symbol_tables, scope);
@@ -232,7 +233,7 @@ pub fn process_cluster(
         shared_state: Some(shared),
     };
 
-    match worker::process_cluster_once(
+    match process_form::process_cluster_once(
         &mut ctx,
         scope,
         &forms,

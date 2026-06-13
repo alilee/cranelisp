@@ -1167,7 +1167,7 @@ mod tests {
         unsafe { std::env::set_var("CRANELISP_PLATFORM_PATH", env_dir.to_str().unwrap()) };
 
         // assemble_platform_dirs picks up the env var.
-        let platform_dirs = crate::session::assemble_platform_dirs();
+        let platform_dirs = crate::session_setup::assemble_platform_dirs();
         let result = resolve_platform_path("test-env", dir.path(), &[], &platform_dirs);
         assert!(result.is_some());
         assert_eq!(result.unwrap(), dll_file);

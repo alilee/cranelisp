@@ -1063,10 +1063,10 @@ impl CompilerSession {
     ) -> Self {
         // Lib dirs: stdlib location(s), NOT including project_root.
         // Project root is tier 2 in §8.11.2, searched separately.
-        let lib_dirs = crate::session::assemble_lib_dirs(&project_root);
+        let lib_dirs = crate::session_setup::assemble_lib_dirs(&project_root);
 
         // Platform dirs: extra search locations from env var (§8.11.5).
-        let platform_dirs = crate::session::assemble_platform_dirs();
+        let platform_dirs = crate::session_setup::assemble_platform_dirs();
 
         // Sprint 67 Cluster B sub-fire 3: cache directory + state are folded
         // into the `ObjectCache` facade. `Some(_)` when caching is enabled;
@@ -1080,7 +1080,7 @@ impl CompilerSession {
             Some(dir)
         };
         let cache_state = cache_dir_opt.as_ref()
-            .map(|d| crate::session::CacheState::new(d.clone()));
+            .map(|d| crate::session_setup::CacheState::new(d.clone()));
         let object_cache = std::sync::Arc::new(
             crate::cache::ObjectCache::new(cache_dir_opt, cache_state),
         );
@@ -2555,7 +2555,8 @@ impl CompilerSession {
     /// for `Def`-name extraction and `/source` span when the cluster collapses
     /// to a single definition during expansion.
     fn process_form_cluster(&mut self, cluster: &[Sexp]) -> Result<Option<EvalResult>, CranelispError> {
-        use crate::worker::{self, ClusterOnce};
+        use crate::worker::ClusterOnce;
+        use crate::process_form;
 
         const MAX_DEP_RETRIES: usize = 100;
 
@@ -2603,7 +2604,7 @@ impl CompilerSession {
                     shared_state: Some(&self.shared),
                 };
 
-                let res = worker::process_cluster_once(
+                let res = process_form::process_cluster_once(
                     &mut wctx,
                     &module,
                     &single_sexp,
@@ -3667,7 +3668,7 @@ impl CompilerSession {
                 shared_state: Some(&self.shared),
             };
 
-            crate::worker::compile_macro_for_repl(
+            crate::process_form::compile_macro_for_repl(
                 &mut wctx, &module, &info, Span::SYNTHETIC, &mut accumulator,
             )?;
             // Restore REPL check_state.

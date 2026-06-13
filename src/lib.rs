@@ -55,10 +55,21 @@ pub(crate) mod exe;
 pub(crate) mod link;
 pub(crate) mod expander;
 pub(crate) mod marshal;
-pub(crate) mod session;
+// session_setup — session-construction helpers independent of `CompilerSession`
+// (CacheState, ProjectConfig, lib/platform-dir assembly, prelude resolution,
+// exit-code determination, bind-chain analysis application). Formerly named
+// `session.rs`; the v3 `CompilerSession`/`Session` god-type it once held was
+// deleted in a prior sprint (FIXME 0109 Wave A — verified no v3 type remains;
+// renamed to shed the misleading "v3 lingering" connotation).
+pub(crate) mod session_setup;
 pub(crate) mod pipeline;
 pub(crate) mod platform;
 pub(crate) mod pretty;
+// process_form — the cluster / per-form gap-orchestration family extracted
+// from worker.rs (FIXME 0109 Wave C). `process_cluster_once` +
+// `process_regular_form` + their family-private helpers. The permanent home
+// named in `design/int/int.md` §3.3 Wave-D target map.
+pub(crate) mod process_form;
 // repl/ module deleted — v4 REPL is driven by CompilerSession in main.rs + session_v4.rs.
 // FileWatcher extracted to watch.rs; remaining features (save, trace, run-tests) are future work.
 pub(crate) mod save;
