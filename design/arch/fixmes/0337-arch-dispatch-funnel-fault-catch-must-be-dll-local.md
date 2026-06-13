@@ -101,6 +101,44 @@ reads `EffectOutcome`). `cranelisp-types` UNCHANGED. `cranelisp-backend` UNCHANG
 the funnel lands end-to-end). This FIXME (0337) stays OPEN and closes when the Option-A fix
 lands + the `boom` repro goes green.
 
+## RESIDUAL fn-name GAP (S81 W-Closer, 2026-06-13, /qa) — Option-A abort half LANDED; fault-path fn-name still `<unknown>`
+
+The Option-A implementation (`9fb89ed`) **fixed the process-abort half** — verified by the un-ignored
+e2e and a standalone `--run` repro. The boom dispatch fault now:
+
+- **does NOT abort** — exit **1** (clean structured error), NOT abort **134** (foreign-exception abort
+  is gone; the DLL-local `catch_unwind` + `EffectOutcome` cross-C-ABI signal works), and
+- carries the **correct cause string**: `boom: deliberate dispatch-time fault in platform fn `crash``,
+- surfaces as a structured `PlatformError::DispatchError` (`platform fn `…` dispatch failed: …`).
+
+**BUT the baked FQ fn-name is `<unknown>` on the fault path.** The surfaced error reads
+`user.cl:1:1: error: platform fn `<unknown>` dispatch failed: boom: …` — NOT
+`platform fn `platform.boom/crash` …`. So the e2e's third assertion (the `platform.boom/crash`
+fn-name) fails; the first two (non-zero exit, `dispatch` carrier) pass.
+
+**Diagnosis.** The backend stamps field-3 (the baked fn-name handle) into the returned Effect node
+**AFTER** `call_effect_thunk` returns (the post-call stamp, ruling 0327 §2). On the **fault** path the
+thunk panics, the DLL-local catch returns an `EffectOutcome` fault signal **instead of** a normal node,
+and the post-call field-3 stamp never reaches a usable node — so the trampoline's field-3 read finds
+null and degrades to `fn_name: "<unknown>"`. The clean path stamps field-3 fine (no fault); only the
+faulting dispatch loses its name.
+
+**Fix shape (resolver: /backend + /platform; NOT /qa).** The fn-name must travel on a
+**fault-path-independent channel**: either stamp field-3 **before** the force (so it survives a panic),
+or carry the baked name in the `EffectOutcome` / a side channel the trampoline reads on the faulted
+branch, so the host has the name regardless of whether the thunk faulted. The `cause` already crosses
+correctly via `EffectOutcome.fault_cause`; the fn-name needs the same fault-surviving treatment.
+
+**Repro (committed, durable).** `platforms/boom` + `tests/platform_errors.rs::platform_dispatch_error_carries_fn_name`,
+which carries the as-built `<unknown>`-vs-`platform.boom/crash` assertion and is `#[ignore]`'d with this
+residual-gap reason (un-ignore the moment the fn-name baking lands on the fault path). Standalone repro:
+`CRANELISP_PLATFORM_PATH=target/debug cranelisp --run user.cl` for a program importing `platform.boom/crash`
+and calling it → exit 1, `platform fn `<unknown>` dispatch failed: boom: …`.
+
+This FIXME (0337) stays OPEN (closing condition narrows from "abort fixed" to "fault-path fn-name lands").
+FIXME 0327 stays OPEN. FIXME 0289 item 5 stays OPEN. The lone suite skip remains (1277/0/1 after the
+ABI-5 literal fix).
+
 ---
 
 # (original finding below)

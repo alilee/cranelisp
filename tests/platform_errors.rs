@@ -281,10 +281,11 @@ fn platform_abi_version_mismatch_e2e() {
         out.stderr
     );
     // BOTH versions MUST surface so the user sees what they have (the DLL's
-    // stale `found` = 2) vs. what the runtime requires (`expected` = 4 as of
-    // Sprint 81 / FIXME 0327 — the IO_TAG_EFFECT node-widen bumped the host ABI
-    // 3 → 4). The `PlatformError::AbiVersionMismatch` Display
-    // (`crates/cranelisp-types/src/error.rs:325`) renders
+    // stale `found` = 2) vs. what the runtime requires (`expected` = 5 as of
+    // Sprint 81 / FIXME 0337 — the Option-A DLL-local fault catch bumped the
+    // `call_effect_thunk` force-return contract, host ABI 4 → 5). The
+    // `PlatformError::AbiVersionMismatch` Display
+    // (`crates/cranelisp-types/src/error.rs:327`) renders
     // `DLL <path> ABI version <found> does not match expected <expected>` — it
     // names `expected` and prints both numbers, so assert the carrier names the
     // host's expected version AND both numeric values appear (the literal token
@@ -297,9 +298,9 @@ fn platform_abi_version_mismatch_e2e() {
         out.stderr
     );
     assert!(
-        out.stderr.contains("2") && out.stderr.contains("4"),
+        out.stderr.contains("2") && out.stderr.contains("5"),
         "ABI-version-mismatch error MUST report BOTH the DLL's stale version (2) \
-         and the runtime's required version (4) so the user sees what they have \
+         and the runtime's required version (5) so the user sees what they have \
          vs. what is required; got stderr:\n{}",
         out.stderr
     );
@@ -307,43 +308,49 @@ fn platform_abi_version_mismatch_e2e() {
 
 // spec: spec/12-runtime.md §12.8 Platform ABI
 //
-// FIXME 0289 item 5 — the dispatch-error-with-fn-name e2e. RED/IGNORED pending a
-// STEP-3 MECHANISM FIX (the funnel's Rust-panic capture does NOT cover a panic
-// raised inside a separately-compiled, dlopen'd platform cdylib). See the gap
-// note below.
+// FIXME 0289 item 5 — the dispatch-error-with-fn-name e2e. The Option-A funnel
+// close (FIXMEs 0327/0337) fixed the ABORT half but exposed a RESIDUAL fn-name
+// gap — see THE RESIDUAL GAP below. IGNORED until the fn-name baking is wired on
+// the fault path.
 //
 // THE FIXTURE (S81 W-G, `/platform`): `platforms/boom` — a minimal scalar-only
 // platform whose single fn `crash :: (Fn [] (IO Int))` returns an IO Effect whose
 // FORCED thunk `panic!`s. The backend bakes the FQ fn-name `platform.boom/crash`
-// into the Effect node's field-3 (ABI v4), so a working funnel would surface
+// into the Effect node's field-3, so a fully-working funnel would surface
 // `PlatformError::DispatchError { fn_name: "platform.boom/crash", .. }`. Wired
 // into the canonical run via `tests/scripts/build-link-prereqs.sh`.
 //
-// THE GAP (found S81 W-G; do NOT un-ignore until fixed). The funnel's step-3
-// guard (`cranelisp-intrinsics::io_guard::force_effect_thunk_protected`) wraps the
-// thunk force in `std::panic::catch_unwind`. That catches a Rust panic raised
-// **in the same Rust object** (proven by the io_guard unit tests, whose panicking
-// thunk is created in the host crate). But a real platform DLL is a `cdylib` that
-// statically links its OWN copy of the Rust panic runtime (`rust_begin_unwind` /
-// `rust_eh_personality` are defined LOCALLY in `libcranelisp_boom.so` — verified
-// via `nm`). A `panic!` raised inside the DLL therefore uses the DLL's panic
-// runtime; when it tries to unwind across the dlopen boundary into the host's
-// `catch_unwind`, the host sees a FOREIGN exception and ABORTS the process
-// ("thread '<unnamed>' panicked … fatal runtime error: Rust cannot catch foreign
-// exceptions, aborting", exit 134) — it never reaches the guard. The signal-trap
-// half (sigsetjmp) is also not reached for a Rust-level null-deref: modern Rust
-// emits a non-unwinding-panic null check that aborts before any SIGSEGV.
+// THE MECHANISM (Option A, /arch ruling FIXME 0337; landed aeff79d / d1949fb /
+// f0d25dc / 9fb89ed). A platform `cdylib` statically links its OWN copy of the
+// Rust panic runtime, so a `panic!` raised inside the DLL cannot be caught by the
+// host's `catch_unwind` — it unwinds with the DLL's runtime and, crossing the
+// dlopen boundary, used to abort the process ("Rust cannot catch foreign
+// exceptions", exit 134). Option A moves the catch INSIDE the DLL:
+// `cranelisp_platform::CLIO::effect*` wraps the user thunk in a DLL-local
+// `catch_unwind`; a caught panic is converted to a `#[repr(C)] EffectOutcome`
+// fault signal (DLL-owned UTF-8 cause bytes) returned ACROSS the C-ABI by
+// `call_effect_thunk` (ABI_VERSION 4 → 5). The host trampoline
+// (`force_effect_thunk_protected`) drops its panic-side `catch_unwind`, reads the
+// `EffectOutcome`, composes `DispatchFault { fn_name (field-3), cause }`, and int
+// composes `PlatformError::DispatchError` → `CranelispError::Platform`. The
+// `sigsetjmp` signal half is retained for genuine C-level hardware traps.
 //
-// STEP-3 FIX SHAPE (next sprint, /backend + /platform, NOT this step-4 e2e
-// scope): the panic must be caught INSIDE the DLL (where its own runtime can
-// catch it) and converted to a slot-set + sentinel BEFORE returning across the
-// FFI boundary — e.g. `CLIO::effect` wraps the user thunk body in the DLL-local
-// `cranelisp-platform`'s own `catch_unwind` + `set_runtime_error`, and/or the
-// thunk-invocation ABI moves to `extern "C-unwind"`. Until that lands, the host
-// `catch_unwind` cannot see a cdylib panic. The minimal repro is `platforms/boom`
-// + this test (un-ignore it the moment the step-3 fix lands; the assertions below
-// are the real as-built `DispatchError` surfacing shape).
-#[ignore = "STEP-3 MECHANISM GAP (S81 W-G): the funnel's host-side catch_unwind cannot catch a Rust panic raised inside a separately-compiled dlopen'd platform cdylib (the DLL has its own panic runtime → foreign exception → process abort). Repro is platforms/boom; needs a DLL-local catch (or extern \"C-unwind\") before the host guard can observe the fault. FIXME 0327 stays OPEN."]
+// THE RESIDUAL GAP (found S81 W-G close, /qa; do NOT un-ignore until fixed). The
+// Option-A panic-catch half WORKS: the boom fault no longer aborts — it surfaces
+// a clean structured error and exits non-zero (verified: exit 1, NOT abort 134),
+// and the `cause` string is correct ("boom: deliberate dispatch-time fault in
+// platform fn `crash`"). BUT the baked FQ fn-name is NOT read on the fault path:
+// the surfaced error is `platform fn `<unknown>` dispatch failed: ...`, not
+// `platform fn `platform.boom/crash` ...`. Mechanism (diagnosis): the backend
+// stamps field-3 into the returned Effect node AFTER `call_effect_thunk` returns
+// (post-call stamp, FIXME 0327 ruling §2), but on the fault path the thunk
+// panicked, the DLL-local catch returns an `EffectOutcome` fault signal, and the
+// post-call field-3 stamp never reaches a usable node (the node read by the
+// trampoline's fn-name lookup is null/un-stamped → `<unknown>`). The fn-name must
+// travel by a fault-path-independent channel (or be stamped BEFORE the force, not
+// after) so a faulting dispatch still carries its baked name. Resolver: /backend +
+// /platform (the field-3 bake/stamp timing); appended to FIXME 0337.
+#[ignore = "RESIDUAL fn-name GAP (S81 W-G close): Option-A fixed the abort (boom now surfaces a clean structured DispatchError, exit 1 not abort 134, correct cause string) but the baked FQ fn-name is `<unknown>` on the fault path — the backend's POST-call field-3 stamp never lands when the thunk panics. Needs the fn-name on a fault-path-independent channel (or a pre-force stamp). See FIXME 0337 residual finding. FIXMEs 0327/0337 stay OPEN."]
 #[test]
 fn platform_dispatch_error_carries_fn_name() {
     let out = Cranelisp::new()
