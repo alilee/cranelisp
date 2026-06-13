@@ -130,6 +130,61 @@ fn macro_arity_mismatch_error() {
 }
 
 // =============================================================================
+// §9.2.3 Return Type Constraint — macro body MUST have type Sexp
+//
+// (carry: legacy/macros.rs::neg_macro_non_sexp_return_type_batch /
+//  neg_macro_non_sexp_return_type_repl / neg_macro_non_sexp_return_bool_batch)
+//
+// Distinct from the §9.9 malformed/arity errors above and from the
+// ill-typed-body errors elsewhere in this file: here the body is a valid
+// program in isolation that simply produces the WRONG (non-Sexp) result
+// type. The rejection fires at typecheck (the synthesized clause-defn body
+// fails to unify with Sexp). Witnessed through REPL + `--run`; `--link` is
+// excluded (intersects FIXME 0122 macro GOT alignment).
+// =============================================================================
+
+// spec: spec/09-macros.md §9.2.3 — macro body returning Int (non-Sexp) is rejected
+#[test]
+fn macro_body_non_sexp_int_rejected_neg() {
+    // `(defmacro bad [x] 42)` — body typechecks to Int, not Sexp. MUST be a
+    // compile-time error. REPL mode: the error appears in the output.
+    let out = repl_prims("(defmacro bad [x] 42)\n");
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.to_lowercase().contains("error")
+            || combined.contains("Sexp"),
+        "macro body of type Int must be rejected with a type error naming Sexp; got: {combined}"
+    );
+}
+
+// spec: spec/09-macros.md §9.2.3 — macro body returning Bool (non-Sexp) is rejected
+#[test]
+fn macro_body_non_sexp_bool_rejected_neg() {
+    // `(defmacro bad [x] true)` — body typechecks to Bool, not Sexp. MUST be
+    // a compile-time error. `--run` mode: the program must NOT compile and
+    // run to a clean exit.
+    let out = Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(
+            "(defmacro bad [x] true)\n\
+             (defn main [] (bad 1))",
+        )
+        .output();
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "macro body of type Bool must be rejected (non-zero exit); combined:\n{combined}"
+    );
+    assert!(
+        combined.to_lowercase().contains("error")
+            || combined.contains("Sexp"),
+        "macro body of type Bool must be diagnosed with a type error naming Sexp; got: {combined}"
+    );
+}
+
+// =============================================================================
 // §9.12 Bootstrapping Order — macro persists across REPL evals
 // =============================================================================
 
@@ -167,8 +222,9 @@ fn defmacro_display_clause_signature() {
 // Per the Wave 5.6 audit (tests/plan/wave-5.6-dedupe-audit.md §3),
 // 11 GAP-COVER tests recovered from legacy/macros.rs (1 dropped as
 // DUPLICATE-IN-LEGACY: batch_defmacro_quasiquote, canonical = batch_
-// defmacro_simple via mode_equiv_macro_user_defined). 4 GAP-HARVEST
-// tests covered by FIXME 0137 (not authored).
+// defmacro_simple via mode_equiv_macro_user_defined). The §9.2.3
+// non-Sexp-macro-body negatives (the FIXME 0137 residual) are authored
+// above as macro_body_non_sexp_{int,bool}_rejected_neg.
 //
 // Mode discipline: REPL canonical for the REPL-flavoured tests; `--run`
 // mode-specific for the batch tests. `--link` not used (would intersect
