@@ -6,6 +6,34 @@ filed_at: 2026-05-03
 sprint_filed: 64
 refers_to: tests/legacy/repl_experience.rs, tests/legacy/repl_negative_old.rs
 status: open
+int_reviewed_by: /dev int (S81 W-E)
+---
+
+## S81 W-E /dev int review — int `/list`-classification portion HARVESTED; rest is cross-crate
+
+The one int-owned slice of `repl_negative_old.rs` (the `classify_entry` /
+`collect_list_categories` helpers that replicated `handle_list`'s classification
+logic) is harvested into `src/session_v4.rs` `#[cfg(test)] mod
+list_classification_tests::list_user_definitions_classifies_and_excludes_imports`
+— positive (Fn / Macro / Constructor buckets) AND the spec-required negatives
+(defmacro is Macro NOT Fn; imports are NOT listed by `/list`).
+
+Everything else in BOTH legacy files routes to crates OUTSIDE int's narrow
+deployment, so it is NOT harvested here (and the user-observable coverage already
+lives in `tests/repl_introspection.rs` / `tests/repl_lifecycle.rs` /
+`tests/repl_negative.rs` per this FIXME's body):
+- `format_result(value, &Type)` display-format tests → /backend
+  (`crates/cranelisp-backend/src/display.rs`).
+- `ReplSession::eval` + inferred-type assertions → /typecheck
+  (`crates/cranelisp-typecheck/src/checker.rs`).
+- Module-resolution negatives (`module_neg_*`) → /typecheck.
+
+**Remaining action:** the display + type-inference harvests are /backend +
+/typecheck work (file separate FIXMEs against them if still wanted — most are
+e2e-covered). `tests/legacy/repl_experience.rs` + `tests/legacy/repl_negative_old.rs`
+deletion + README rows are /qa's once those crate harvests (if pursued) land.
+Carried OPEN for the cross-crate residue.
+
 ---
 
 # Harvest tests/legacy/repl_experience.rs + repl_negative_old.rs into REPL session unit tests

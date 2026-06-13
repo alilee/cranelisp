@@ -6,6 +6,33 @@ filed_at: 2026-05-04
 sprint_filed: 64
 refers_to: tests/legacy/e2e.rs, tests/legacy/ring0.rs, tests/legacy/ring1.rs, tests/legacy/ring2.rs
 status: open
+int_reviewed_by: /dev int (S81 W-E)
+---
+
+## S81 W-E /dev int review — CARRIED (int slice is lowest-priority + e2e-covered; bulk is /typecheck + /backend)
+
+This is the XL conformance harvest (~1300 source tests across 4 files). Per the
+FIXME's own "Operational implication" sequencing, the int slice is explicitly
+**lowest priority** ("most pipeline tests have e2e analogues already"), and the
+harvest partition assigns:
+- AST/type-shape + inference + `assert_type_error` → **/typecheck**
+  (`crates/cranelisp-typecheck/src/`) — the largest share.
+- `assert_rc_balanced` + closure/Vec-COW codegen → **/backend**
+  (`crates/cranelisp-backend/src/`).
+- int's named slice is only the `compile_both()` batch/REPL **parity**
+  invariant — which is an **e2e** property (run the same source through `--run`
+  and the REPL and assert mode-equivalence), and is already exercised by the
+  canonical e2e suite's `run_through_all_modes` discipline
+  (`tests/CLAUDE.md` §Test Standards) across the `spec_*.rs` files.
+
+**Disposition this wave:** no int unit harvest is warranted — the int slice is
+parity-shaped (e2e, /qa-owned) and already covered; the actionable bulk is
+/typecheck + /backend. Left **OPEN**, `target: /int` retained only as the
+multi-skill coordination anchor (the FIXME body explicitly splits sub-tasks
+per-crate). No narrowing discarded: the int slice was assessed as e2e-covered,
+not skipped. The /typecheck + /backend harvests + the eventual /qa file deletion
+remain the open work.
+
 ---
 
 # Harvest tests/legacy/{e2e,ring0,ring1,ring2}.rs into per-crate unit tests

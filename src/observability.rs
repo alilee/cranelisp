@@ -1364,4 +1364,85 @@ mod tests {
         std::panic::set_hook(original);
         reset_panic_hook_installed_for_tests();
     }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Harvest from tests/legacy/sprint61_observability_{scheduler,shared}.rs
+    // (FIXME 0132, S81 W-E /dev int).
+    //
+    // The legacy files' Rust-API cluster (filter parse, ring-buffer capacity,
+    // dump-clears, disabled/selective filter, anchor sharing, cross-thread
+    // merge-sort, thread_ord distinctness) is ALREADY covered by the tests
+    // above. These two harvest tests carry the assertions that were NOT:
+    // the env-var-name contract and the boundary-crate hygiene scan. The 3
+    // subprocess tests (`scheduler_trace_subprocess_dump_*`,
+    // `scheduler_trace_unset_*`) and the 2 cross-channel io_trace
+    // timestamp-domain tests are e2e/integration-tier (binary subprocess /
+    // two-trace-channel coupling) — they cannot be int unit tests and route
+    // to /qa (see FIXME body).
+    // ══════════════════════════════════════════════════════════════════════
+
+    // spec: design/int/observability.md §3.1 — the scheduler-trace env var
+    //       name is the spec-documented `CRANELISP_SCHEDULER_TRACE` string.
+    #[test]
+    fn harvest_scheduler_trace_env_var_name_is_stable() {
+        assert_eq!(scheduler_trace_env_var(), "CRANELISP_SCHEDULER_TRACE");
+    }
+
+    // spec: design/int/observability.md §4 — neither trace log type may appear
+    //       in any boundary crate source (types / frontend / typecheck). A
+    //       leak would be architectural drift (trace types are int/runtime
+    //       owned, downstream of the boundary crates).
+    #[test]
+    fn harvest_trace_event_types_absent_from_boundary_crate_sources() {
+        use std::path::{Path, PathBuf};
+
+        fn project_root() -> PathBuf {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        }
+        fn visit_rs_files(dir: &Path, f: &mut impl FnMut(&Path, &str)) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    visit_rs_files(&p, f);
+                    continue;
+                }
+                if p.extension().and_then(|s| s.to_str()) == Some("rs")
+                    && let Ok(body) = std::fs::read_to_string(&p)
+                {
+                    f(&p, &body);
+                }
+            }
+        }
+
+        let boundary_dirs = [
+            project_root().join("crates/cranelisp-types/src"),
+            project_root().join("crates/cranelisp-frontend/src"),
+            project_root().join("crates/cranelisp-typecheck/src"),
+        ];
+        let forbidden = [
+            "SchedulerTraceEvent",
+            "SchedulerTraceTag",
+            "SchedulerTracePayload",
+            "IoTraceEvent",
+            "IoTraceTag",
+            "IoTracePayload",
+        ];
+        let mut leaks: Vec<String> = Vec::new();
+        for dir in &boundary_dirs {
+            visit_rs_files(dir, &mut |path, body| {
+                for needle in &forbidden {
+                    if body.contains(needle) {
+                        leaks.push(format!("{}: forbidden token `{needle}`", path.display()));
+                    }
+                }
+            });
+        }
+        assert!(
+            leaks.is_empty(),
+            "boundary-crate hygiene breach — trace types leaked upstream: {leaks:?}"
+        );
+    }
 }

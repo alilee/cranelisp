@@ -1,11 +1,39 @@
 ---
 number: 0147
-target: /int
+target: /qa
 filed_by: /qa
 filed_at: 2026-05-05
 sprint_filed: 64
 refers_to: tests/legacy/sprint61_bare_primitive.rs, tests/repl_introspection.rs, tests/plan/wave-6-batch-5-audit.md, design/int/bare-primitive-value-path.md
 status: open
+target_was: /int
+harvested_by: /dev int (S81 W-E)
+---
+
+## S81 W-E harvest (/dev int) — DONE; remaining action is /qa deletion
+
+The Slice-1 bare-primitive resolution assertions are covered at the int
+Rust-API layer by `src/session_v4.rs` `#[cfg(test)] mod bare_primitive_value_path_tests`:
+- `bare_reexported_primitive_resolves_to_terminal_def` (T-S1-2/T-S1-5 chain walk
+  to the terminal `primitives` Def via `resolve_entry_for_display`)
+- `bare_reexported_primitive_formats_as_primitives_qualified` (T-S1-1 display card
+  via `check_bare_symbol_introspection` + `format_eval_result`)
+- `bare_unknown_symbol_returns_none_for_introspection` (T-S1-4 negative — no card
+  for unknown names, fix not over-broadened)
+- `bare_reexported_primitive_surface_resolves_identically_across_symbols`
+  (T-S1-3 generalisation across 6 primitives — **added this wave**)
+
+The first three pre-existed; the generalisation test was added in S81 W-E. The
+5 legacy e2e tests' user-observable coverage already lives in
+`tests/repl_introspection.rs` (per the audit), and the Rust-API shape coverage
+is now complete int-side.
+
+**Remaining action (/qa):** delete `tests/legacy/sprint61_bare_primitive.rs` and
+remove its README row. Git history preserves provenance.
+
+> NOTE: `target` flipped to /qa for the deletion; the original int harvest
+> target is recorded in `target_was`.
+
 ---
 
 # Harvest tests/legacy/sprint61_bare_primitive.rs into /int unit tests

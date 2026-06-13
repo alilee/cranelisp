@@ -2046,4 +2046,250 @@ mod tests {
     // `tests/repl_persist_race.rs::h5_replay_gate_deterministic_under_scheduler_stress`
     // (green under 50-iteration stress AFTER this deletion).
     // ──────────────────────────────────────────────────────────────────────
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Harvest from tests/legacy/scheduler.rs (FIXME 0116, S81 W-E /dev int).
+    //
+    // The legacy file's 18 `CompileScheduler` lifecycle assertions are ported
+    // here, adjacent to the code under test, against the CURRENT scheduler API
+    // (the legacy `register_module(module, bool)` / `PriorityWork::Typecheck(m)`
+    // / `wait_inmem_complete` surface drifted: register now takes the S78 sexps
+    // packet; `Typecheck` is a struct variant; `block_for_typecheck` returns
+    // `Result`). Three legacy tests (`block_for_macro_codegen_adds_priority_entry`,
+    // `priority_codegen_complete_unblocks`, `priority_queue_deduplicates_symbols`)
+    // are DROPPED — they probed the `block_for_macro_codegen` + `BlockingJitCodegen`
+    // priority-codegen subsystem that was DELETED (src/CLAUDE.md §"Macro expansion"
+    // / scheduler header — the locked macro model forbids same-module non-macro
+    // clause callees, so there is no empty-slot pre-compile case).
+    // ══════════════════════════════════════════════════════════════════════
+
+    fn dummy_error(msg: &str) -> CranelispError {
+        CranelispError::ModuleError {
+            message: msg.to_string(),
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+        }
+    }
+
+    // spec: design/arch/concurrent-pipeline.md §2 — register default pool
+    #[test]
+    fn harvest_register_module_starts_in_typecheck_next() {
+        let sched = CompileScheduler::new();
+        let m = mod_path("test_module");
+        sched.register_module(m.clone(), no_sexps(), false);
+        match sched.take_priority_work() {
+            Some(PriorityWork::Typecheck { module, .. }) => assert_eq!(module, m),
+            other => panic!("expected Typecheck(test_module), got {other:?}"),
+        }
+    }
+
+    // spec: design/arch/concurrent-pipeline.md §2.1 — delays_other => TypecheckFirst
+    #[test]
+    fn harvest_register_module_with_delays_starts_in_typecheck_first() {
+        let sched = CompileScheduler::new();
+        let m = mod_path("dep_module");
+        sched.register_module(m.clone(), no_sexps(), true);
+        match sched.take_priority_work() {
+            Some(PriorityWork::Typecheck { module, .. }) => assert_eq!(module, m),
+            other => panic!("expected Typecheck(dep_module), got {other:?}"),
+        }
+    }
+
+    // spec: design/arch/concurrent-pipeline.md §2.1 — first drained before next
+    #[test]
+    fn harvest_typecheck_first_before_typecheck_next() {
+        let sched = CompileScheduler::new();
+        let first = mod_path("first_mod");
+        let next = mod_path("next_mod");
+        sched.register_module(next.clone(), no_sexps(), false);
+        sched.register_module(first.clone(), no_sexps(), true);
+        match sched.take_priority_work() {
+            Some(PriorityWork::Typecheck { module, .. }) => {
+                assert_eq!(module, first, "TypecheckFirst drains before TypecheckNext")
+            }
+            other => panic!("expected Typecheck(first_mod), got {other:?}"),
+        }
+        match sched.take_priority_work() {
+            Some(PriorityWork::Typecheck { module, .. }) => assert_eq!(module, next),
+            other => panic!("expected Typecheck(next_mod), got {other:?}"),
+        }
+    }
+
+    // spec: design/arch/concurrent-pipeline.md §8.1 — cached enters TypecheckDone
+    #[test]
+    fn harvest_register_module_cached_does_not_appear_as_typecheck_work() {
+        let sched = CompileScheduler::new();
+        let m = mod_path("cached_mod");
+        let symbols = [Symbol::from("foo"), Symbol::from("bar")]
+            .into_iter()
+            .collect();
+        sched.register_module_cached(m.clone(), symbols);
+        if let Some(PriorityWork::Typecheck { module, .. }) = sched.take_priority_work() {
+            panic!("cached module must NOT appear as Typecheck work, got {module:?}");
+        }
+    }
+
+    // spec: design/arch/concurrent-pipeline.md §2 — typecheck+inmem => complete
+    #[test]
+    fn harvest_notify_typecheck_done_then_inmem_completes() {
+        let sched = CompileScheduler::new();
+        let m = mod_path("mod_a");
+        sched.register_module(m.clone(), no_sexps(), false);
+        assert!(matches!(
+            sched.take_priority_work(),
+            Some(PriorityWork::Typecheck { .. })
+        ));
+        sched.notify_typecheck_done(&m);
+        sched.notify_inmem_codegen_complete(&m, &Symbol::from("main"), true);
+        assert!(sched.wait_inmem_complete().is_ok());
+    }
+
+    // spec: design/arch/concurrent-pipeline.md §6.2 — block_for_typecheck
+    #[test]
+    fn harvest_block_for_typecheck_blocks_module() {
+        let sched = CompileScheduler::new();
+        let a = mod_path("mod_a");
+        let b = mod_path("mod_b");
+        sched.register_module(a.clone(), no_sexps(), false);
+        sched.register_module(b.clone(), no_sexps(), false);
+        assert!(matches!(
+            sched.take_priority_work(),
+            Some(PriorityWork::Typecheck { .. })
+        ));
+        sched
+            .block_for_typecheck(&a, &b, &Symbol::from("foo"))
+            .unwrap();
+        match sched.take_priority_work() {
+            Some(PriorityWork::Typecheck { module, .. }) => {
+                assert_eq!(module, b, "blocked module a is skipped; b is returned")
+            }
+            other => panic!("expected Typecheck(mod_b), got {other:?}"),
+        }
+    }
+
+    // spec: design/arch/concurrent-pipeline.md §6.2 — notify_symbol_typechecked unblocks
+    #[test]
+    fn harvest_notify_symbol_typechecked_unblocks_waiter() {
+        let sched = CompileScheduler::new();
+        let a = mod_path("mod_a");
+        let b = mod_path("mod_b");
+        sched.register_module(a.clone(), no_sexps(), false);
+        sched.register_module(b.clone(), no_sexps(), false);
+        let _ = sched.take_priority_work();
+        sched
+            .block_for_typecheck(&a, &b, &Symbol::from("foo"))
+            .unwrap();
+        let _ = sched.take_priority_work();
+        sched.notify_symbol_typechecked(&b, &Symbol::from("foo"));
+        sched.notify_typecheck_done(&b);
+        match sched.take_priority_work() {
+            Some(PriorityWork::Typecheck { module, .. }) => {
+                assert_eq!(module, a, "a unblocks after b's symbol is typechecked")
+            }
+            other => panic!("expected Typecheck(mod_a) after unblock, got {other:?}"),
+        }
+    }
+
+    // spec: design/arch/concurrent-pipeline.md §2.3 — failure cascades to waiters
+    #[test]
+    fn harvest_module_failed_cascades_to_waiters() {
+        let sched = CompileScheduler::new();
+        let a = mod_path("mod_a");
+        let b = mod_path("mod_b");
+        sched.register_module(a.clone(), no_sexps(), false);
+        sched.register_module(b.clone(), no_sexps(), false);
+        let _ = sched.take_priority_work();
+        sched
+            .block_for_typecheck(&a, &b, &Symbol::from("bar"))
+            .unwrap();
+        let _ = sched.take_priority_work();
+        sched.notify_module_failed(&b, dummy_error("type error in mod_b"));
+        assert!(
+            sched.wait_inmem_complete().is_err(),
+            "cascade failure surfaces as Err"
+        );
+    }
+
+    // spec: design/arch/concurrent-pipeline.md §6.5 — wait returns Err on failure
+    #[test]
+    fn harvest_wait_inmem_complete_returns_err_on_failure() {
+        let sched = CompileScheduler::new();
+        let m = mod_path("failing_mod");
+        sched.register_module(m.clone(), no_sexps(), false);
+        let _ = sched.take_priority_work();
+        sched.notify_module_failed(&m, dummy_error("parse error"));
+        assert!(sched.wait_inmem_complete().is_err());
+    }
+
+    // spec: design/arch/concurrent-pipeline.md §2.2 — inmem codegen completes module
+    #[test]
+    fn harvest_inmem_codegen_complete_moves_to_complete() {
+        let sched = CompileScheduler::new();
+        let m = mod_path("mod_x");
+        sched.register_module(m.clone(), no_sexps(), false);
+        let _ = sched.take_priority_work();
+        sched.notify_typecheck_done(&m);
+        sched.notify_inmem_codegen_complete(&m, &Symbol::from("main"), true);
+        assert!(sched.wait_inmem_complete().is_ok());
+    }
+
+    // spec: design/arch/concurrent-pipeline.md §6.5 — full lifecycle, two modules
+    #[test]
+    fn harvest_wait_inmem_complete_ok_when_all_complete() {
+        let sched = CompileScheduler::new();
+        let a = mod_path("mod_a");
+        let b = mod_path("mod_b");
+        sched.register_module(a.clone(), no_sexps(), false);
+        sched.register_module(b.clone(), no_sexps(), false);
+        let _ = sched.take_priority_work();
+        sched.notify_symbol_typechecked(&a, &Symbol::from("fn_a"));
+        sched.notify_typecheck_done(&a);
+        let _ = sched.take_priority_work();
+        sched.notify_symbol_typechecked(&b, &Symbol::from("fn_b"));
+        sched.notify_typecheck_done(&b);
+        sched.notify_inmem_codegen_complete(&a, &Symbol::from("fn_a"), true);
+        sched.notify_inmem_codegen_complete(&b, &Symbol::from("fn_b"), true);
+        assert!(sched.wait_inmem_complete().is_ok());
+    }
+
+    // spec: design/arch/concurrent-pipeline.md §10.3 — empty scheduler returns None
+    #[test]
+    fn harvest_take_priority_work_returns_none_when_empty() {
+        let sched = CompileScheduler::new();
+        assert!(sched.take_priority_work().is_none());
+    }
+
+    // spec: design/arch/concurrent-pipeline.md §6.5 — shutdown gates work
+    #[test]
+    fn harvest_shutdown_gates_priority_work() {
+        let sched = CompileScheduler::new();
+        let m = mod_path("mod_s");
+        sched.register_module(m.clone(), no_sexps(), false);
+        sched.shutdown();
+        assert!(sched.take_priority_work().is_none());
+    }
+
+    // spec: design/arch/concurrent-pipeline.md §6.5 — vacuously complete
+    #[test]
+    fn harvest_wait_inmem_complete_ok_when_no_modules() {
+        let sched = CompileScheduler::new();
+        assert!(sched.wait_inmem_complete().is_ok());
+    }
+
+    // spec: design/arch/concurrent-pipeline.md §2.1 — TypecheckFirst FIFO
+    #[test]
+    fn harvest_typecheck_first_fifo_ordering() {
+        let sched = CompileScheduler::new();
+        let a = mod_path("first_a");
+        let b = mod_path("first_b");
+        sched.register_module(a.clone(), no_sexps(), true);
+        sched.register_module(b.clone(), no_sexps(), true);
+        match sched.take_priority_work() {
+            Some(PriorityWork::Typecheck { module, .. }) => assert_eq!(module, a, "FIFO first"),
+            other => panic!("expected Typecheck(first_a), got {other:?}"),
+        }
+        match sched.take_priority_work() {
+            Some(PriorityWork::Typecheck { module, .. }) => assert_eq!(module, b, "FIFO second"),
+            other => panic!("expected Typecheck(first_b), got {other:?}"),
+        }
+    }
 }

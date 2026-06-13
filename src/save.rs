@@ -368,6 +368,109 @@ fn generate_fns_and_macros(
 }
 
 // ---------------------------------------------------------------------------
+// Cache-hit introspection rehydration (FIXME 0220 — /arch ruling S81)
+// ---------------------------------------------------------------------------
+
+/// Does this top-level form define `name`?
+///
+/// Recognises the defining special forms `(defn name …)`, `(defmacro name …)`,
+/// `(deftype name …)`, `(deftrait name …)` — the forms `generate_*` emits and
+/// therefore the forms a re-read of the backing `.cl` must be able to map back
+/// to a symbol. Returns `false` for structural forms (`import`/`export`/`mod`/
+/// `platform`) which define no named symbol in the symbol table.
+pub(crate) fn sexp_defines_symbol(sexp: &Sexp, name: &str) -> bool {
+    if let Sexp::List(items, _) = sexp
+        && items.len() >= 2
+        && let Sexp::Symbol(head, _) = &items[0]
+        && matches!(head.as_str(), "defn" | "defmacro" | "deftype" | "deftrait")
+        && let Sexp::Symbol(defined, _) = &items[1]
+    {
+        return defined.as_str() == name;
+    }
+    false
+}
+
+/// Lazy on-demand introspection rehydration for cache-loaded symbols
+/// (FIXME 0220, /arch ruling S81 item 3 — the non-macro `.cl`-regen gap).
+///
+/// A module restored from the on-disk compile cache populates its
+/// `SymbolTable` but NOT the REPL-only `Introspection` DashMap (introspection
+/// is REPL-only by design and never serialized into the cache — see
+/// `memory/introspection-repl-only-principle.md`). Macros survive regeneration
+/// because their source rides `DefKind::Macro.macro_sexp` (cache-serialized),
+/// but a cache-restored regular `UserFn` with no introspection record was
+/// silently DROPPED from the regenerated `.cl` by `generate_fns_and_macros`
+/// (its `introspection_sexp(..).or(macro_table_sexp)` covers macros only).
+///
+/// This re-reads + re-parses the backing `.cl` (always present — it is the
+/// cache key), locates each top-level form that defines a `UserFn` whose
+/// `Introspection.sexp` is absent, and populates the record from the parsed
+/// form. Content-fresh at the moment of need; the read-only REPL session pays
+/// nothing. `frontend` owns the parse; file-IO + populate is int's (one
+/// private path). Returns the number of records rehydrated.
+pub(crate) fn rehydrate_userfn_introspection_from_source(
+    st: &crate::code::SessionSymbolTable,
+    introspection: &DashMap<FQSymbol, Introspection>,
+    module_path: &ModuleFullPath,
+    backing_source: &str,
+) -> usize {
+    // Which UserFns lack an introspection sexp? (Macros are handled by the
+    // macro_sexp fallback and need no rehydration; other DefKinds are not
+    // regenerated as fn/macro source.)
+    let mut missing: Vec<cranelisp_types::Symbol> = Vec::new();
+    for (name, entry) in st.all_symbols() {
+        if name.contains('$') {
+            continue;
+        }
+        let is_userfn = matches!(
+            entry,
+            ModuleEntry::Def { kind, .. }
+                if matches!(kind.as_ref(), cranelisp_types::DefKind::UserFn { .. })
+        );
+        if !is_userfn {
+            continue;
+        }
+        let fq = FQSymbol {
+            module: module_path.clone(),
+            symbol: name.clone(),
+        };
+        let has_sexp = introspection
+            .get(&fq)
+            .map(|i| i.sexp.is_some())
+            .unwrap_or(false);
+        if !has_sexp {
+            missing.push(name.clone());
+        }
+    }
+
+    if missing.is_empty() {
+        return 0;
+    }
+
+    let sexps = match cranelisp_frontend::parse(backing_source) {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+
+    let mut rehydrated = 0;
+    for name in &missing {
+        if let Some(sexp) = sexps.iter().find(|s| sexp_defines_symbol(s, name.as_ref())) {
+            let fq = FQSymbol {
+                module: module_path.clone(),
+                symbol: name.clone(),
+            };
+            let mut entry = introspection.entry(fq).or_default();
+            entry.sexp = Some(sexp.clone());
+            if entry.source.is_none() {
+                entry.source = Some(crate::pretty::pretty_print(sexp));
+            }
+            rehydrated += 1;
+        }
+    }
+    rehydrated
+}
+
+// ---------------------------------------------------------------------------
 // Dependency sorting (Kahn's topological sort)
 // ---------------------------------------------------------------------------
 
@@ -537,6 +640,72 @@ mod tests {
             span: Span::SYNTHETIC,
         }];
         assert_eq!(generate_mod_decls(&decls), "(mod helper)");
+    }
+
+    // FIXME 0220 (/arch ruling S81, item 3): a cache-restored regular UserFn
+    // with no REPL Introspection record must NOT be dropped from the
+    // regenerated `.cl`. Before the fix, `generate_fns_and_macros` sourced a
+    // UserFn's text from introspection only (its `.or(macro_table_sexp)`
+    // covers macros, never UserFns), so a UserFn with an empty introspection
+    // record was silently dropped. Rehydration re-reads the backing `.cl` and
+    // populates the missing record. This test asserts that after rehydration,
+    // the previously-empty UserFn regenerates back into the source.
+    // spec: design/arch/fixmes/0220 §item-3; design/int/session-persistence.md §1.3
+    #[test]
+    fn rehydrate_recovers_cache_loaded_userfn_dropped_from_regen() {
+        use cranelisp_types::{DefKind, Scheme, Type};
+        use std::collections::HashMap;
+
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+
+        // Simulate a cache-restored module: a UserFn `Def` populates the
+        // SymbolTable but the REPL-only Introspection map has NO record for it.
+        let scheme = Scheme {
+            type_vars: vec![],
+            constraints: HashMap::new(),
+            ty: Type::Int,
+        };
+        st.insert(
+            "answer".into(),
+            ModuleEntry::def(scheme, DefKind::UserFn { constrained_fn: None }).build(),
+        );
+
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+
+        // Without any introspection record, the UserFn is dropped from regen.
+        let before = generate_module_source(&st, Some(&introspection), &module);
+        assert!(
+            !before.contains("answer"),
+            "precondition: cache-loaded UserFn with no introspection is dropped: {before:?}"
+        );
+
+        // The backing `.cl` (the cache key) still holds the function source.
+        let backing = "(defn answer [] 42)\n";
+        let n = rehydrate_userfn_introspection_from_source(
+            &st,
+            &introspection,
+            &module,
+            backing,
+        );
+        assert_eq!(n, 1, "exactly one UserFn rehydrated");
+
+        // After rehydration, the function regenerates back into the source.
+        let after = generate_module_source(&st, Some(&introspection), &module);
+        assert!(
+            after.contains("answer"),
+            "post-rehydration: UserFn is recovered into regenerated source: {after:?}"
+        );
+    }
+
+    #[test]
+    fn sexp_defines_symbol_matches_defining_forms() {
+        let p = |s: &str| cranelisp_frontend::parse(s).unwrap().remove(0);
+        assert!(sexp_defines_symbol(&p("(defn foo [] 1)"), "foo"));
+        assert!(sexp_defines_symbol(&p("(deftype Point [:Int x])"), "Point"));
+        assert!(sexp_defines_symbol(&p("(defmacro m [x] x)"), "m"));
+        assert!(!sexp_defines_symbol(&p("(defn foo [] 1)"), "bar"));
+        assert!(!sexp_defines_symbol(&p("(import [core [foo]])"), "foo"));
     }
 
     #[test]

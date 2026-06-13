@@ -6,6 +6,33 @@ filed_at: 2026-05-05
 sprint_filed: 64
 refers_to: tests/legacy/wave6_demo_repros.rs, tests/repl_persist_race.rs, tests/spec_08_modules.rs, tests/repl_introspection.rs, tests/regression.rs, tests/plan/wave-6-batch-5-audit.md, design/arch/fixmes/0145-harvest-tests-legacy-sprint59-repros.md
 status: open
+int_reviewed_by: /dev int (S81 W-E)
+---
+
+## S81 W-E /dev int review — int-owned portion DISPOSED; carries for /backend + /stdlib + deletion
+
+The two int-owned defects in this file's carry-forward are accounted for:
+
+- **Defect 1 (dep-load race in `compile_dep_inline`)** — the named function
+  (`session_v4::compile_dep_inline`) was DELETED in Sprint 59 Workstream A §7;
+  the dep-load ordering it guarded is now covered by the S78 in-call-stack
+  retry-from-top model and the e2e FQ-autoload / dep-chain + H5-replay suites
+  (`tests/repl_persist_race.rs`). No int unit harvest is possible (surface gone)
+  or needed (behaviour relocated + e2e-guarded).
+- **Defect 3 (`append_docstring_comment` dash separator)** — fully covered at the
+  int Rust-API layer by `src/session_v4.rs` `#[cfg(test)] mod format_entry_sig_tests`
+  (`format_entry_sig_defn_includes_docstring_after_dash`,
+  `format_entry_sig_defn_without_docstring_omits_dash`,
+  `format_entry_sig_defn_docstring_uses_first_line_only`). No new int test needed.
+
+**Carries (NOT int):** Defects 4+5 (RC/last-use in the IO-trampoline run-tests
+path) → /backend; Defect 6 (solver stack-overflow) → /backend (folds into FIXME
+0145, still OPEN); Defect 2 (seq.lazy null-import) → /stdlib (resolved-by-passing-
+carry-forward). This FIXME stays open carrying those.
+
+**Eventual deletion (/qa):** once Defect 6 lands, `tests/legacy/wave6_demo_repros.rs`
+may be deleted + its README row removed. Not actionable from the int wave.
+
 ---
 
 # Harvest tests/legacy/wave6_demo_repros.rs into /int + /backend + /stdlib unit tests

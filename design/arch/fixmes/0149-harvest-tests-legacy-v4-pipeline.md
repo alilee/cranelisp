@@ -6,6 +6,35 @@ filed_at: 2026-05-05
 sprint_filed: 64
 refers_to: tests/legacy/v4_pipeline.rs, tests/spec_12_runtime.rs, tests/spec_09_macros.rs, tests/spec_08_modules.rs, tests/spec_platforms.rs, tests/plan/wave-6-batch-6-audit.md, design/int/step5-lazy-discovery.md, design/int/step8-platform-registry.md, design/int/step9-error-cascade.md
 status: open
+int_reviewed_by: /dev int (S81 W-E)
+---
+
+## S81 W-E /dev int review — CARRIED (int harvest target is largely deleted surface + cross-crate)
+
+Reviewed for the int-internal harvest residue. Disposition:
+
+- The named int harvest target `worker.rs:762 compile_dep_symbol_inline` (the
+  Sprint-45 cross-module dep lookup) is **DELETED** — `process_form.rs` records
+  it "removed (Sprint 53): was a dead stub"; `session_v4::compile_dep_inline`
+  was deleted in Sprint 59 Workstream A §7. The cross-module-macro + dep-load
+  behaviour these probed is now the S78 in-call-stack retry-from-top model,
+  covered by the e2e FQ-autoload / cross-module-macro suites named in this FIXME
+  (`tests/spec_09_macros.rs` §H cluster, `tests/spec_08_modules.rs`). There is no
+  surviving int internal surface to unit-test.
+- The remaining surface areas route to OTHER crates, outside int's narrow
+  deployment: §A entry-point codegen + §G error-cascade rendering + the §8.10.1
+  **SEGV defect (OPEN)** → /backend; §D macro hoisting / fixed-point → /frontend;
+  §F platform registry → /platform. The 27 e2e carry-forwards already preserve
+  the user-observable coverage (47/47 + 27/27 PASS at audit; the SEGV is recorded
+  as an `XXX(/backend)` re-enable inside a passing carry-forward, not a separate
+  failing test).
+
+**Carry rationale:** no int unit test is harvestable (surface deleted) and the
+open work (SEGV, entry-point/cascade/hoisting/platform) is cross-crate. Left
+OPEN for /backend + /frontend + /platform; eventual file deletion is /qa's once
+the SEGV lands. `target` stays `/int` only as the coordination anchor for the
+deleted-surface note; the actionable owners are the named co-owner crates.
+
 ---
 
 # Harvest tests/legacy/v4_pipeline.rs into /int + co-owner unit tests

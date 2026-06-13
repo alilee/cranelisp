@@ -2027,6 +2027,24 @@ impl CompilerSession {
             None => return, // No symbol table — nothing to save.
         };
 
+        // FIXME 0220 (/arch ruling S81): lazy on-demand introspection
+        // rehydration for cache-loaded symbols. A module restored from the
+        // compile cache has no REPL-only Introspection records, so a
+        // cache-restored `UserFn` would be silently dropped from the
+        // regenerated `.cl` (its source rides neither introspection nor
+        // `macro_sexp`). Re-read the backing `.cl` (the cache key — always
+        // present) and populate the missing UserFn records before regen.
+        if let Some(intro) = self.shared.introspection.as_ref()
+            && let Ok(backing_source) = std::fs::read_to_string(&file_path)
+        {
+            crate::save::rehydrate_userfn_introspection_from_source(
+                &st,
+                intro,
+                &module,
+                &backing_source,
+            );
+        }
+
         // Generate source text.
         let source = crate::save::generate_module_source(
             &st,
@@ -5945,6 +5963,220 @@ mod persistent_worker_tests {
             neg_pool,
         );
     }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Harvest from tests/legacy/wave4_g9.rs (FIXME 0119, S81 W-E /dev int).
+    //
+    // The legacy file's park/wake, shutdown-under-load, concurrent-register,
+    // and reload-during-compile scenarios are ALREADY covered by the tests
+    // above (`persistent_worker_park_and_wake`, `shutdown_under_load_no_panic`,
+    // `concurrent_register_module_two_modules_complete`,
+    // `reload_during_compile_race_completes`). These three harvest tests carry
+    // the assertions the existing cluster does NOT: the N-module concurrent
+    // register with per-defn `code.is_some()` codegen-population checks, the
+    // per-worker JIT isolation across two live sessions (+ a two-thread
+    // concurrency guard), and the `thread::scope`-absent close-gate grep.
+    // ══════════════════════════════════════════════════════════════════════
+
+    // spec: design/int/persistent-workers.md §4.3 — register enqueues; workers
+    //       drain. Stronger than the 2-module check: every defn's `code` field
+    //       must be populated after the persistent pool finalizes codegen.
+    #[test]
+    fn harvest_concurrent_register_many_modules_codegen_populated() {
+        let (mut s, root) = test_session(4);
+        const MODULE_COUNT: usize = 10;
+        for i in 0..MODULE_COUNT {
+            let name = format!("modA{i}");
+            let file = root.join(format!("{name}.cl"));
+            let src = format!("(defn f{i} [] {})", i as i64);
+            s.register_module_with_source(&name, &src, &file)
+                .unwrap_or_else(|e| panic!("register {name} failed: {e}"));
+        }
+        for i in 0..MODULE_COUNT {
+            let mp = ModuleFullPath::from(format!("modA{i}").as_str());
+            assert!(
+                !s.shared.scheduler.is_failed(&mp),
+                "modA{i} must not be Failed after concurrent register"
+            );
+            let table = s
+                .shared
+                .symbol_tables
+                .get(&mp)
+                .unwrap_or_else(|| panic!("symbol table missing for modA{i}"));
+            match table.get(&format!("f{i}")) {
+                Some(ModuleEntry::Def { code, .. }) => assert!(
+                    code.is_some(),
+                    "defn f{i} in modA{i}: code must be Some after persistent-worker codegen"
+                ),
+                other => panic!("expected Def for f{i} in modA{i}, got {other:?}"),
+            }
+        }
+        s.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // spec: design/int/persistent-workers.md §4.5 — one JIT per priority worker
+    //       (thread-local). Two live sessions with colliding defn names MUST
+    //       not share a JIT or leak code pointers; A's shutdown MUST NOT
+    //       invalidate B.
+    #[test]
+    fn harvest_per_worker_jit_isolation_across_sessions() {
+        use std::sync::{Arc, Barrier};
+
+        let (mut a, root_a) = test_session(1);
+        let (mut b, root_b) = test_session(1);
+        a.register_module_with_source("iso", "(defn f [] 111)", &root_a.join("iso.cl"))
+            .expect("register into A");
+        b.register_module_with_source("iso", "(defn f [] 222)", &root_b.join("iso.cl"))
+            .expect("register into B");
+
+        let mp = ModuleFullPath::from("iso");
+        for (label, sess) in [("A", &a), ("B", &b)] {
+            let tab = sess
+                .shared
+                .symbol_tables
+                .get(&mp)
+                .unwrap_or_else(|| panic!("{label}.iso symbol table must exist"));
+            match tab.get("f") {
+                Some(ModuleEntry::Def { code, .. }) => {
+                    assert!(code.is_some(), "{label}.iso/f code must be populated")
+                }
+                other => panic!("expected Def for {label}.iso/f, got {other:?}"),
+            }
+        }
+
+        // Shutdown A; B must remain operational.
+        a.shutdown();
+        let _ = std::fs::remove_dir_all(&root_a);
+        b.register_module_with_source("post_a", "(defn g [] 333)", &root_b.join("post_a.cl"))
+            .expect("B must still work after A is dropped");
+        let post_mp = ModuleFullPath::from("post_a");
+        assert!(!b.shared.scheduler.is_failed(&post_mp));
+        {
+            let b_tab = b
+                .shared
+                .symbol_tables
+                .get(&post_mp)
+                .expect("B.post_a symbol table must exist");
+            match b_tab.get("g") {
+                Some(ModuleEntry::Def { code, .. }) => {
+                    assert!(code.is_some(), "B.post_a/g code must be populated after A shutdown")
+                }
+                other => panic!("expected Def for B.post_a/g, got {other:?}"),
+            }
+        }
+        b.shutdown();
+        let _ = std::fs::remove_dir_all(&root_b);
+
+        // Concurrency guard: two sessions operated from their own threads must
+        // not deadlock or race (no static/global JIT coupling).
+        let barrier = Arc::new(Barrier::new(2));
+        let b1 = Arc::clone(&barrier);
+        let t1 = std::thread::spawn(move || {
+            let (mut s, root) = test_session(1);
+            b1.wait();
+            s.register_module_with_source("p1", "(defn f [] 1)", &root.join("p1.cl"))
+                .expect("p1 register");
+            s.shutdown();
+            let _ = std::fs::remove_dir_all(&root);
+        });
+        let t2 = std::thread::spawn(move || {
+            let (mut s, root) = test_session(1);
+            barrier.wait();
+            s.register_module_with_source("p2", "(defn f [] 2)", &root.join("p2.cl"))
+                .expect("p2 register");
+            s.shutdown();
+            let _ = std::fs::remove_dir_all(&root);
+        });
+        t1.join().expect("thread 1 must not panic");
+        t2.join().expect("thread 2 must not panic");
+    }
+
+    // spec: design/int/persistent-workers.md §11 acceptance criterion 2 —
+    //       `thread::scope` must appear zero times outside `#[cfg(test)]` in
+    //       the worker lifecycle files (session_v4.rs / worker.rs / scheduler.rs).
+    #[test]
+    fn harvest_thread_scope_absent_outside_cfg_test() {
+        let src_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let files = [
+            src_root.join("session_v4.rs"),
+            src_root.join("worker.rs"),
+            src_root.join("scheduler.rs"),
+        ];
+        let mut offenders: Vec<String> = Vec::new();
+        for path in &files {
+            let content = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            for (lineno, line) in strip_cfg_test_regions(&content) {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("//")
+                    || trimmed.starts_with("///")
+                    || trimmed.starts_with("//!")
+                    || trimmed.starts_with("/*")
+                    || trimmed.starts_with('*')
+                {
+                    continue;
+                }
+                if line.contains("thread::scope") {
+                    offenders.push(format!("{}:{}: {}", path.display(), lineno, line.trim()));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "G9 close gate: `thread::scope` live references outside `#[cfg(test)]`:\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    /// Brace-balanced scanner: return `(line_number, line)` pairs for live
+    /// (non-`#[cfg(test)]`) code. Not a full parser — handles the
+    /// attribute-on-its-own-line style used in this codebase.
+    fn strip_cfg_test_regions(content: &str) -> Vec<(usize, String)> {
+        let lines: Vec<&str> = content.lines().collect();
+        let mut live: Vec<(usize, String)> = Vec::new();
+        let mut i = 0;
+        while i < lines.len() {
+            let trimmed = lines[i].trim_start();
+            if trimmed.starts_with("#[cfg(test)]") {
+                i += 1;
+                while i < lines.len() && lines[i].trim_start().starts_with("#[") {
+                    i += 1;
+                }
+                if i >= lines.len() {
+                    break;
+                }
+                let item_trim = lines[i].trim_end();
+                let opens_block = lines[i].contains('{') && !item_trim.ends_with(';');
+                if !opens_block && item_trim.ends_with(';') {
+                    i += 1;
+                    continue;
+                }
+                let mut depth: i32 = 0;
+                let mut seen_open = false;
+                while i < lines.len() {
+                    for ch in lines[i].chars() {
+                        match ch {
+                            '{' => {
+                                depth += 1;
+                                seen_open = true;
+                            }
+                            '}' => depth -= 1,
+                            _ => {}
+                        }
+                    }
+                    i += 1;
+                    if seen_open && depth <= 0 {
+                        break;
+                    }
+                }
+                continue;
+            }
+            live.push((i + 1, lines[i].to_string()));
+            i += 1;
+        }
+        live
+    }
 }
 
 #[cfg(test)]
@@ -6444,6 +6676,199 @@ mod bare_primitive_value_path_tests {
              through to the normal `undefined variable` typecheck error \
              (repl/spec.md §1.1 — no introspection card for unknown names); \
              got: is_some={}", result.is_some(),
+        );
+
+        s.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Harvest T-S1-3 from tests/legacy/sprint61_bare_primitive.rs (FIXME 0147):
+    // generalisation across the re-exported primitive surface. Every staged
+    // primitive resolves identically through user → prelude → primitives to
+    // its terminal Def attributed to `primitives`. The legacy test asserted
+    // this over ≥5 primitives end-to-end; this is the int Rust-API equivalent.
+    // spec: spec/08-modules.md §8.9 — re-export provenance; repl/spec.md §1.1
+    #[test]
+    fn bare_reexported_primitive_surface_resolves_identically_across_symbols() {
+        let (mut s, root) = isolated_session();
+        let int2_to_int = || Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int));
+        let cases: &[(&str, Type)] = &[
+            ("add-i64", int2_to_int()),
+            ("mul-i64", int2_to_int()),
+            ("sub-i64", int2_to_int()),
+            ("eq-i64", Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Bool))),
+            ("not", Type::Fn(vec![Type::Bool], Box::new(Type::Bool))),
+            ("str-concat", Type::Fn(vec![Type::String, Type::String], Box::new(Type::String))),
+        ];
+        for (name, ty) in cases {
+            stage_primitive_reexport_chain(&s, name, ty.clone(), None);
+        }
+
+        let user = ModuleFullPath::from("user");
+        for (name, ty) in cases {
+            let entry = s
+                .shared
+                .symbol_tables
+                .get(&user)
+                .and_then(|st| st.get(name).cloned())
+                .unwrap_or_else(|| panic!("user must carry Import for {name}"));
+            let (resolved_entry, resolved_module) = s.resolve_entry_for_display(&entry, &user);
+            match &resolved_entry {
+                ModuleEntry::Def { scheme, kind, .. } => {
+                    assert_eq!(&scheme.ty, ty, "{name}: terminal Def carries its own type");
+                    assert!(
+                        matches!(kind.as_ref(), DefKind::Primitive),
+                        "{name}: terminal entry must be a Primitive Def, got {kind:?}"
+                    );
+                }
+                other => panic!("{name}: expected terminal Def, got {other:?}"),
+            }
+            assert_eq!(
+                resolved_module,
+                ModuleFullPath::from("primitives"),
+                "{name}: MUST attribute to `primitives` (spec §8.9), not user/prelude"
+            );
+        }
+
+        s.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod list_classification_tests {
+    use super::*;
+    use cranelisp_types::{DefKind, FQTypeName, Scheme, Type, Visibility};
+    use std::collections::HashMap as StdHashMap;
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Harvest from tests/legacy/repl_negative_old.rs (FIXME 0124, S81 W-E
+    // /dev int) — the `classify_entry` / `collect_list_categories` portion.
+    //
+    // The legacy helper replicated `handle_list`'s classification logic in
+    // test code (reaching into `session.shared.symbol_tables`). The int-owned
+    // surface is `CompilerSession::list_user_definitions`, which buckets a
+    // module's symbols into `SymbolCategory`. This harvests the positive
+    // classification AND the negatives the spec requires (repl/spec.md §3.3 /
+    // tests/CLAUDE.md §Negative): a defmacro is a Macro NOT a Fn; an Import is
+    // NOT listed (surfaced by `/imports`); a constructor is a Constructor.
+    // The display-format + type-inference portions of repl_negative_old.rs
+    // route to /backend (`display.rs`) + /typecheck (`checker.rs`), outside
+    // int's narrow deployment.
+    // ══════════════════════════════════════════════════════════════════════
+
+    fn isolated_session() -> (CompilerSession, PathBuf) {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let pid = std::process::id();
+        let tmp_root = std::env::temp_dir()
+            .join(format!("cranelisp-s64-list-{}-{}", pid, stamp));
+        std::fs::create_dir_all(&tmp_root).expect("create test project_root");
+        let settings = SessionSettings {
+            no_color: true,
+            no_cache: true,
+            codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+            priority_workers: 0,
+            nice_workers: 0,
+            run_mode: RunMode::Repl,
+        };
+        let mut s = CompilerSession::new(settings, tmp_root.clone(), "user");
+        s.set_lib_dirs(vec![]);
+        (s, tmp_root)
+    }
+
+    fn mono(ty: Type) -> Scheme {
+        Scheme { type_vars: vec![], constraints: StdHashMap::new(), ty }
+    }
+
+    // spec: repl/spec.md §3.3 — `/list` buckets symbols by category; a defmacro
+    //       MUST classify as Macro (NOT Fn), a constructor as Constructor, and
+    //       imports MUST NOT appear (they are surfaced by `/imports`).
+    #[test]
+    fn list_user_definitions_classifies_and_excludes_imports() {
+        let (mut s, root) = isolated_session();
+        let user = ModuleFullPath::from("user");
+
+        if let Some(mut st) = s.shared.symbol_tables.get_mut(&user) {
+            // A plain function.
+            st.insert(
+                Symbol::from("f"),
+                ModuleEntry::def(
+                    mono(Type::Fn(vec![Type::Int], Box::new(Type::Int))),
+                    DefKind::UserFn { constrained_fn: None },
+                )
+                .visibility(Visibility::Public)
+                .build(),
+            );
+            // A macro.
+            st.insert(
+                Symbol::from("m"),
+                ModuleEntry::def(
+                    mono(Type::Int),
+                    DefKind::Macro {
+                        clauses_meta: vec![],
+                        macro_sexp: Sexp::Symbol("m".to_string(), Span::SYNTHETIC),
+                    },
+                )
+                .visibility(Visibility::Public)
+                .build(),
+            );
+            // A constructor.
+            st.insert(
+                Symbol::from("Mk"),
+                ModuleEntry::def(
+                    mono(Type::Int),
+                    DefKind::Constructor {
+                        type_name: FQTypeName {
+                            module: user.clone(),
+                            name: cranelisp_types::TypeName::from("T"),
+                        },
+                        tag: 0,
+                        field_count: 0,
+                        internal: false,
+                        type_def: None,
+                    },
+                )
+                .visibility(Visibility::Public)
+                .build(),
+            );
+            // An import — MUST NOT be listed by `/list`.
+            st.insert(
+                Symbol::from("imported"),
+                ModuleEntry::Import {
+                    source: FQSymbol {
+                        module: ModuleFullPath::from("other"),
+                        symbol: Symbol::from("imported"),
+                    },
+                    visibility: Visibility::Private,
+                },
+            );
+        }
+
+        let defs = s.list_user_definitions();
+        let cat = |name: &str| defs.iter().find(|d| d.name.as_ref() == name).map(|d| d.category);
+
+        assert_eq!(cat("f"), Some(SymbolCategory::Fn), "plain defn is a Fn");
+        assert_eq!(
+            cat("m"),
+            Some(SymbolCategory::Macro),
+            "defmacro MUST classify as Macro, NOT Fn (repl/spec.md §3.3 negative)"
+        );
+        assert_ne!(
+            cat("m"),
+            Some(SymbolCategory::Fn),
+            "negative: defmacro MUST NOT be bucketed as a Fn"
+        );
+        assert_eq!(
+            cat("Mk"),
+            Some(SymbolCategory::Constructor),
+            "constructor MUST classify as Constructor"
+        );
+        assert!(
+            cat("imported").is_none(),
+            "negative: imports MUST NOT appear in /list (surfaced by /imports)"
         );
 
         s.shutdown();

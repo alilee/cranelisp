@@ -5,7 +5,10 @@ filed_by: /repl
 filed_at: 2026-05-01
 sprint_filed: 64
 refers_to: repl/spec.md:319
-status: open
+status: deferred
+deferred_at: 2026-06-13
+deferred_reason: blocked on display-protocol design (does not yet exist); revisit in the Ring-4 polish sprint that builds the type-directed pretty-printer
+target_sprint: TBD
 migrated_from_inline: true
 ---
 

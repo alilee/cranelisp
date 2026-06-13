@@ -179,3 +179,88 @@ impl FileWatcher {
         while self.rx.try_recv().is_ok() {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Harvest from tests/legacy/sprint23.rs (FIXME 0144, S81 W-E /dev int).
+    //
+    // sprint23.rs's watch cluster is filesystem+subprocess (e2e), carried
+    // forward into tests/repl_watch.rs. The int-internal residue is the
+    // content-hash change-detection invariant (repl/spec.md §14): a
+    // metadata-only change (mtime touch, identical content rewrite) must NOT
+    // be reported as a change, and `update_content_hash` must suppress the
+    // self-write. Those are pure `FileWatcher` Rust-API properties — harvested
+    // here adjacent to the code under test. (`FileWatcher::new()` may return
+    // None if the OS notification API is unavailable in the sandbox; the
+    // tests no-op cleanly in that case.)
+    // ══════════════════════════════════════════════════════════════════════
+
+    // spec: repl/spec.md §14 — content hashing skips metadata-only changes:
+    //       rewriting a file with IDENTICAL content (mtime moves, bytes don't)
+    //       MUST NOT be reported as a change; a real content change MUST be.
+    #[test]
+    fn harvest_content_hash_skips_identical_rewrite_reports_real_change() {
+        let Some(mut w) = FileWatcher::new() else {
+            return; // notify API unavailable in this environment — skip.
+        };
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("m.cl");
+        std::fs::write(&path, "(defn f [] 1)\n").expect("seed");
+        let canonical = path.canonicalize().expect("canonicalize");
+
+        // First encounter records the baseline hash.
+        w.watch_file(&path);
+
+        // Identical-content rewrite (mtime advances, content does not) — must
+        // NOT count as a change.
+        std::fs::write(&path, "(defn f [] 1)\n").expect("rewrite identical");
+        assert!(
+            !w.has_content_changed(&canonical),
+            "identical-content rewrite (metadata-only) MUST NOT be reported as a change"
+        );
+
+        // A genuine content change MUST be reported.
+        std::fs::write(&path, "(defn f [] 2)\n").expect("rewrite changed");
+        assert!(
+            w.has_content_changed(&canonical),
+            "a real content change MUST be reported"
+        );
+
+        // After reporting, the new hash is stored: re-checking the same content
+        // is now a no-op.
+        assert!(
+            !w.has_content_changed(&canonical),
+            "after a reported change, the updated hash makes a re-check a no-op"
+        );
+    }
+
+    // spec: repl/spec.md §14 + design/int/session-persistence.md §4 —
+    //       `update_content_hash` records the post-save hash so the watcher's
+    //       next poll treats the session's OWN write as already-known and does
+    //       not report it (self-write suppression).
+    #[test]
+    fn harvest_update_content_hash_suppresses_self_write() {
+        let Some(mut w) = FileWatcher::new() else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("user.cl");
+        let content = "(defn g [] 42)\n";
+        std::fs::write(&path, content).expect("write self-saved file");
+        let canonical = path.canonicalize().expect("canonicalize");
+
+        // Simulate session persistence: compute + register the saved hash.
+        let hash = cranelisp_backend::cache::manifest::hash_source(content);
+        w.update_content_hash(canonical.clone(), hash);
+
+        // The watcher's change check now sees the self-write as already-known.
+        assert!(
+            !w.has_content_changed(&canonical),
+            "a session self-write whose hash was registered MUST NOT be reported \
+             as an external change"
+        );
+    }
+}

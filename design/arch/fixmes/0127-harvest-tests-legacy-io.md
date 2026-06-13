@@ -6,6 +6,31 @@ filed_at: 2026-05-03
 sprint_filed: 64
 refers_to: tests/legacy/io.rs, tests/legacy/io_minimal.rs
 status: open
+int_reviewed_by: /dev int (S81 W-E)
+---
+
+## S81 W-E /dev int review — NO int slice; CARRIED for /runtime + /typecheck + /backend + /platform
+
+Reviewed for an int-internal harvest target. The "Proposed resolution" assigns
+every remaining io.rs / io_minimal.rs assertion to crates OUTSIDE int's narrow
+deployment:
+- `read_string_as_str` / `heap_dealloc` ABI tests → /runtime
+  (`crates/cranelisp-runtime/src/string.rs`).
+- `Type::Int`/`Type::Bool` IO inference (the §10.4 bulk) → /typecheck
+  (`crates/cranelisp-typecheck/src/checker.rs`).
+- platform print/read-line DLL-boundary tests → /platform.
+- IO trampoline + io_minimal JIT-drop reduction guards → /runtime + /backend.
+- `do`-macro desugaring → /typecheck (`macro_expand.rs`) or e2e stdlib.
+
+There is **no int-owned (`src/`) home** named for any io.rs assertion — the
+sprint61 closure-regression portion was already DELETED (per the S81 partial-
+closure note above) with its intent preserved in
+`tests/spec_10_io.rs::capture_return_inc_does_not_double_free`. So the int wave
+has nothing to harvest here. Carried OPEN for the named non-int crates; the file
+deletion is /qa's once those land. (`target` left `/int` only as the existing
+coordination anchor; the actionable owners are /runtime + /typecheck + /backend
++ /platform.)
+
 ---
 
 ## S81 partial closure (/qa, "clean & green" wave)

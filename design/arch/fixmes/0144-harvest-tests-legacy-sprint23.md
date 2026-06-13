@@ -6,6 +6,36 @@ filed_at: 2026-05-05
 sprint_filed: 64
 refers_to: tests/legacy/sprint23.rs, tests/link.rs, tests/repl_shell.rs, tests/cache.rs, tests/repl_watch.rs, tests/repl_persist.rs, tests/repl_persist_race.rs, tests/build_confidence.rs
 status: open
+int_reviewed_by: /dev int (S81 W-E)
+---
+
+## S81 W-E /dev int review — int residue HARVESTED; carries for /qa (deletion + inline-FIXME triage)
+
+The one Rust-API-only invariant this FIXME highlights (the watcher's
+content-hash change detection — "watch_unchanged_modules_keep_cache" / the
+`watch_ignores_metadata_only_changes` mtime invariant) is harvested into
+`src/watch.rs` `#[cfg(test)] mod tests`:
+- `harvest_content_hash_skips_identical_rewrite_reports_real_change`
+  (metadata-only rewrite is NOT a change; a real content change IS)
+- `harvest_update_content_hash_suppresses_self_write` (session self-write
+  hash registration suppresses the next-poll report)
+
+(`src/watch.rs` had zero tests before this wave; it now has direct coverage of
+the §14 content-hash invariant — the only genuinely int-internal,
+non-subprocess assertion in sprint23.rs's watch cluster.)
+
+The other 57 sprint23.rs tests are e2e-equivalent to the carry-forwards already
+in `tests/link.rs` / `tests/repl_shell.rs` / `tests/cache.rs` /
+`tests/repl_watch.rs` / `tests/repl_persist.rs` / `tests/repl_persist_race.rs` /
+`tests/build_confidence.rs` (per this FIXME's body — all 58 PASS at audit).
+
+**Remaining action (/qa):** (1) triage the 4 inline `FIXME(/int)` markers
+(lines 343/1304/2119/2194) — the FIXME body assesses each as "likely stale,
+verify against the passing carry-forward"; migrate any surviving one to a
+numbered FIXME, else drop. (2) Delete `tests/legacy/sprint23.rs` + its README
+row once the inline markers are dispositioned. Both are /qa actions on
+/qa-owned `tests/`.
+
 ---
 
 # Harvest tests/legacy/sprint23.rs into /int unit tests + review inline FIXMEs

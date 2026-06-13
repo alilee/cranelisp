@@ -1,11 +1,28 @@
 ---
 number: 0116
-target: /int
+target: /qa
 filed_by: /qa
 filed_at: 2026-05-03
 sprint_filed: 64
 refers_to: tests/legacy/scheduler.rs
 status: open
+harvested_by: /dev int (S81 W-E)
+---
+
+## S81 W-E harvest (/dev int) — DONE; remaining action is /qa deletion
+
+The scheduler lifecycle assertions are ported into
+`src/scheduler.rs` `#[cfg(test)] mod tests` as the `harvest_*` test cluster
+(15 tests), translated against the CURRENT scheduler API. Three legacy tests
+(`block_for_macro_codegen_adds_priority_entry`, `priority_codegen_complete_unblocks`,
+`priority_queue_deduplicates_symbols`) were intentionally NOT ported — they
+probed the `block_for_macro_codegen` + `BlockingJitCodegen` priority-codegen
+subsystem that has been DELETED (the locked macro model has no empty-slot
+pre-compile case). The coverage they held is dead with the subsystem.
+
+**Remaining action (/qa):** delete `tests/legacy/scheduler.rs` and remove its
+row from `tests/legacy/README.md`. Git history preserves provenance.
+
 ---
 
 # Harvest tests/legacy/scheduler.rs into src/ (scheduler) unit tests

@@ -6,6 +6,33 @@ filed_at: 2026-05-03
 sprint_filed: 64
 refers_to: tests/legacy/ring3_repl.rs
 status: open
+int_reviewed_by: /dev int (S81 W-E)
+---
+
+## S81 W-E /dev int review — CARRIED (residue is /typecheck + /backend, not int)
+
+Reviewed the 41 non-stub residual tests for an int-internal harvest. Per this
+FIXME's own "Proposed resolution", the residue partitions to crates OUTSIDE
+int's narrow deployment:
+- `r3_macro_docstring_stored` / `r3_macro_no_docstring` /
+  `r3_define_before_use_works` / `r3_neg_forward_reference_not_expanded`
+  (macro-environment registration + fixed-point expansion) → /typecheck
+  (`crates/cranelisp-typecheck/src/{checker,macro_expand}.rs`).
+- `r3_bare_macro_lookup` / `r3_special_form_defmacro` (display strings via
+  `format_result`) → /backend (`crates/cranelisp-backend/src/display.rs`),
+  OR already covered e2e by `tests/repl_introspection.rs::bare_macro_lookup`.
+
+The macro **classification** half (a defmacro shows under Macros in `/list`,
+NOT Fns) IS int-owned and is now covered by the sibling harvest landed this
+wave: `src/session_v4.rs` `list_classification_tests::list_user_definitions_classifies_and_excludes_imports`
+(asserts `DefKind::Macro` → `SymbolCategory::Macro`, negative: not Fn). No
+separate ring3 int test is needed for that property.
+
+**Carry rationale:** the genuinely int-internal classification slice is covered;
+the remaining 41 tests' assertions are /typecheck + /backend or e2e-covered.
+Left OPEN for those crate harvests + the eventual /qa file deletion (the file is
+explicitly NOT deleted per the S81 /qa partial-closure note above).
+
 ---
 
 ## S81 partial closure (/qa, "clean & green" wave)
