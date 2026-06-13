@@ -2334,8 +2334,13 @@ fn try_cache_hit_load(
     // is `#[serde(skip)]` so cache-hit arrives with all slots null;
     // re-running `load_and_register_platform` opens the DLL, validates the
     // manifest, and populates the live entries on the synthetic
-    // `platform.{name}` module — matching the fresh-build path's result
-    // for `(platform …)` forms. Failures here are non-fatal at the
+    // `platform.{name}` module. Unlike the fresh-build `handle_platform`
+    // path, this cache-restore composition INTENTIONALLY skips the §7.2
+    // associated-`.cl`-type-module pre-resolve (FIXME 0323): the cached
+    // sigs were already FQ-resolved at build time and decoded into the
+    // restored SymbolTable above, so there is no unresolved type-ref to
+    // drive a dependency for — only the fn-ptr GOT slots (`#[serde(skip)]`)
+    // need re-populating. Failures here are non-fatal at the
     // cache-hit level (we treat them as "platform missing — fall back to
     // full rebuild" per `symbol-table-cache.md` §6); we abandon the
     // cache-hit attempt and let the normal load path retry.

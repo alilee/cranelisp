@@ -1,6 +1,6 @@
 # Sprint 80: Phase G closeout — platform-ADT round-trip + `main : IO _` conformance sweep
 
-**Status**: ~~PHASE 1–4~~ → ~~Wave 0–2 ✅~~ → ~~Wave 2D (D1/D1b/D2/D3/D4) ✅~~ → ~~Wave 2E Linker encapsulation ✅~~ → ~~Wave 3a e2e infra ✅~~ → **PHASE 5 GREEN (1224/0/9)** — close-prep remaining: consolidated `/review` (D1b/D2/D4) + `/port` + `/spec` annotations → PHASE 6/7 | PHASE 7 CLOSE | COMPLETE
+**Status**: ~~PHASE 1–4~~ → ~~Wave 0–2 ✅~~ → ~~Wave 2D/2E/3a ✅~~ → ~~PHASE 5 GREEN (1224/0/9)~~ → ~~close-prep ✅ (review APPROVED, /port verified, /spec flips, FIXME 0325 filed)~~ → **PHASE 7 CLOSE — Outcome written, awaiting user sign-off** to archive + ROADMAP + final commit | COMPLETE
 
 **Goal**: Retire the 8 standing reds by finishing the two pillars S79 deferred — complete the platform-ADT round-trip (pillar A, now incl. the Linux `PLATFORM_EXT` discovery fix) and enforce `main : IO _` suite-wide with an output-coverage reshape (pillar B) — leaving the suite fully green on **both macOS and Linux**.
 
@@ -180,7 +180,7 @@ No file is written by both pillars except via the shared `/qa` integration point
 | /qa (Pillar B) | tests/ | ✅ ~200-main sweep DONE across all 21 files (`(Pure EXPR)`, exit codes preserved); 3 test-design defects reshaped (`run_mode_main_returns_int_exit_code`, `spec_12_runtime` exit-witnesses, `link::link_error_when_main_returns_wrong_type`→require IO); rejection subjects intact. **Suite 1217/8/8** — the only 8 reds are the Pillar-A set (`:Int` fixture), zero `main:IO` reds remain. | **✅ done** |
 | /qa (Pillar A) | tests/ | ✅ `:Int`→`:primitives/Int` in `spec_platforms_adt.rs` + `platform_errors.rs` (error moved off `unknown type Int` everywhere — fix confirmed). **GREEN:** item 4 (`platform_abi_version_mismatch_e2e`, test-assertion aligned to the real ABI-mismatch Display) + 2 hash-gate (`_repl_warns_and_loads`, `_link_refuses`). **IGNORED:** item 5. **Correction:** the 3 round-trip/cache reds + `hash_gate_run_refuses` did NOT green on the fixture fix — ALL 4 block on the SAME `/platform` schema regen (DLL bakes `0000…` sentinel; host regen = `239228b4b2e2ecb1`). | **✅ done** |
 | /platform | platforms/ | ✅ (1) Schema regen — baked real `239228b4b2e2ecb1` via the `/platform-schema shapes` generator (verified FNV-1a digest of the 3-entry body incl. the `area` IO return-type closure), rebuilt dylib. (2) `shapes-dispatch-fail` crate + workspace member removed. **Only `roundtrip_run` greened — the other 3 reds revealed 3 deeper cross-skill defects (D1/D2/D3 below).** | **✅ done (schema correct; 3 defects surfaced)** |
-| /port | exemplar/ | Rewrap exemplar inline-repro mains → `IO` (`(Pure …)`). | pending |
+| /port | exemplar/ | ✅ **Verified — no rewrap needed.** `exemplar/solver.cl::main` is already `IO` (`bind`/`print` chain). `/sprint`-ran the exemplar under S80: prints puzzle + **full correct solution**, exit 0 — exercises platforms+modules+macros+IO+recursion clean. Bonus: the `solver.cl` "stack-overflow on full grids" caveat appears resolved (solved the full grid). | **✅ done** |
 | /qa (output-floor) | tests/, tests/plan/ | ✅ DONE in Wave 0 — 12 all-modes-output tests green; `PLAN.md §Mode canonicalisation` reshaped. | ✅ done (Wave 0) |
 
 ### Wave 2D — Pillar A drift-correctness (NEW; user 2026-06-13 — the 3 defects Pillar A exposed)
@@ -210,8 +210,8 @@ Sequential. `/arch` designs the abstraction first, then `/dev` refactors `src/ex
 |---|---|---|---|
 | /qa | tests/ | ✅ **GREEN — `/sprint`-verified vanilla `cargo nextest run`: 1224 passed / 0 failed / 9 skipped** (37s). All sprint reds cleared (both pillars + 8th red + D1/D1b/D2/D3/D4). 9 skips = 5 TCO (0141) + 2 backend (0221/0191) + 1 perf + 1 deferred 0289-item-5. | **✅ done** |
 | /qa | tests/ (+ `.config/nextest.toml`) | ✅ **Wave 3a DONE — e2e test-infra (design + impl).** **Root cause CORRECTED:** not profile-skew — **artifact ABSENCE.** The 5 `--link` prereq crates (`cranelisp-exe-bundle` + 4 platform crates) are leaf workspace members nothing depends on; the compiler resolves them at runtime from `target/debug/`, but `nextest` never builds them → link can't find them (proven: hide them on HEAD → 5/14 link tests fail; restore → 14/14). **Fix:** nextest **setup script** (`.config/nextest.toml` + `tests/scripts/build-link-prereqs.sh`) builds the 5 once before the suite — `/qa`-owned, no `/arch`/`/dev`. Design doc `tests/plan/e2e-architecture.md` (root cause, mechanism+alternatives, isolation/grouping reserve levers, shared-harness consolidation, coverage contract). Deleted the `ensure_platform_cdylibs_built` band-aids. **`/sprint`-verified: vanilla `cargo nextest run` → 1222/2/9 (37s).** The previously-unreliable `--link`/output-equivalence surface all GREEN. | **✅ done (1222/2/9)** |
-| /review | (touched crates) | Final change-set review across int/platform; Blocker/Important resolved-or-deferred. | pending |
-| /spec | spec/ | Apply the 4 close-time annotation flips (→ `[Tested+Neg …]`) once the RED guard is green. | pending |
+| /review | (int/backend) | ✅ **Consolidated review DONE — all 3 (D1b/D2/D4) APPROVED.** Both invariants confirmed (D4 `force_load` confined to `AppleLdLinker`; D1b no compile-path reads introspection). 1 Important (unfiled backend-CLIF FIXME) → **`/sprint` filed FIXME 0325 → /backend**. 3 Minors (2 stale comments→/int, 1 dead test helper→/qa) carry forward. Close-ready. | **✅ done (APPROVED)** |
+| /spec | spec/ | ✅ **DONE** — 5 annotation flips (02-grammar §Batch, 10-io §10.6/§10.6.1, 12-runtime §12.6 → `[Tested+Neg …batch_main_pure_int_return_is_rejected]`; 08-modules §8.9.3 → `[Tested+Neg src/platform.rs::platform_fn_non_io_return_is_rejected]`), each replacing a stale `[R4 S10]`. No normative wording changed. | **✅ done** |
 
 **Wave-gate reminder**: before each advance, scan `design/arch/fixmes/` for `target: /skill-in-wave` + `status: open`. The §7.2 pre-resolve (Wave 1 /dev int) and the `.so`-symlink provisioning (Wave 2 /examples) are carried in-plan, not as separate FIXMEs. *(Wave-0 gate note: 7 pre-existing out-of-scope open `/qa` FIXMEs — 0021, 0052, 0136, 0216, 0235, 0258, 0272 — are backlog, not S80 blockers; flagged for close/next-increment.)*
 
@@ -241,11 +241,28 @@ Sequential. `/arch` designs the abstraction first, then `/dev` refactors `src/ex
 
 ## Outcome (Phase 7)
 
+**Final: `cargo nextest run` → 1224 passed / 0 failed / 9 skipped** (from the Linux-refresh baseline 1197/8/8). Committed on branch `sprint-80` (`9a0c69e` + close-prep). Not pushed.
+
 ### Delivered
-- {what shipped}
+- **Pillar B — `main : IO _` enforcement.** Batch `main` must return `IO _`; `--run` (trampoline — previously unenforced) + `--link` both reject non-IO, REPL exempt. ~200 bare-Int test mains across 21 files rewrapped `(Pure …)` (exit codes preserved); examples + exemplar mains conform. Spec annotations flipped to `[Tested+Neg]`.
+- **Pillar A — platform-ADT round-trip.** §7.2 associated-`.cl`-type-module pre-resolve (`handle_platform`); `shapes` schema regenerated with the real layout-hash; fixture `:primitives/Int`; `shapes-badabi` ABI-mismatch e2e. 5 of 6 ADT reds + ABI e2e green.
+- **8th red — examples platform discovery.** `target/debug` on the platform search path via a `justfile run-example` recipe; dropped the git-ignored symlink convention; `every_example_runs_with_documented_exit` (27) green.
+- **D1/D1b — introspection REPL-only** (reverses Decision 41; `/arch`-ruled). Compile-necessary macro sexp → symbol table (`DefKind::Macro.macro_sexp`, serialized — survives cache restore); new `RunMode`; `SharedState.introspection` → `Option<DashMap>`, absent outside REPL.
+- **D2 — `--link` layout-hash** read as the same `(ptr,len) &str` view as `--run`.
+- **D4 / Wave 2E — `Linker` abstraction.** New `src/link/` (`LinkRequest` + `Linker` trait, `link`/`describe` from one `build_args`; `AppleLdLinker`/`GnuCcLinker`); platform link tokens no longer leak (`grep force_load src/` → only `AppleLdLinker`); Windows-ready.
+- **Wave 3a — e2e test infrastructure.** nextest setup script builds the 5 `--link` prereq crates before the suite → vanilla `cargo nextest run` is now reliable (was artifact-absence, not profile-skew).
+- **`/port`** verified: exemplar solves the full grid + prints, exit 0.
+- **Doc-hygiene (close, user-directed):** fixed the 2 stale comments the `/review` flagged (`main.rs` pre-Ring-4-main; `worker.rs` cache-restore-skips-§7.2) + deleted the dead `repl_std` test helper; `/dev` int scanned the sprint-touched areas (`link/`, introspection, `force_load`) for stale references to deleted names — **none found**. Tree is warning-free. *(Rationale: stale docs create bigger problems than fixing them — this sprint's D1 bug was masked by exactly such a comment.)*
 
 ### Deferred (with rationale)
-- {item — why deferred, target sprint, escalation count}
+- **0289 item-5 (DispatchError e2e)** — `DispatchError{fn_name}` has no live construction site; `#[ignore]`+comment (unbuilt scope, not a defect — user-sanctioned narrow exception). Needs a fault-guarded-FFI-dispatch funnel → future increment.
+- **0316 (import-ambiguity model + `resolve_with_fallback`)** — out of scope from S80 start → S81.
+- **FIXME 0325 (`/backend`)** — skip CLIF-IR text generation in batch when introspection is off (the data-flow completion of D1b's principle); below the int boundary, carries a backend baseline regen → `/backend` follow-up. Filed at close.
+- *(The 3 `/review` Minors were FIXED at close, not deferred — see Delivered: doc-hygiene.)*
 
-### Findings (record in FIXMEs if not already)
-- {unexpected observations, methodology lessons, skill feedback}
+### Findings (methodology + technical)
+- **Pillar A was genuinely "discovery-shaped."** Running the platform-ADT round-trip e2e on Linux for the first time surfaced four deeper layers (D1–D4), each a real architectural improvement, not a patch — the sprint quadrupled in scope but raised the architecture (introspection layering, link encapsulation).
+- **Two inconsistent-build misdiagnoses (D2, D4).** A piecemeal `cargo build -p` produced spurious `--link` failures I twice over-attributed to code (once reverting correct work). Root cause + rule saved to memory: **never diagnose a link failure from an inconsistent build; verify only after `cargo build --workspace`.** The actual `--link` test unreliability was artifact ABSENCE (5 prereq crates unbuilt under `nextest`), fixed structurally by the Wave-3a setup script.
+- **Background-agent notification delay (~20 min, D2)** led me to believe a completed agent had died and to mis-verify on a piecemeal build. Mitigation: status-check agents on silence; trust full-workspace verification.
+- **Bonus:** the exemplar's documented "stack-overflow on full grids" caveat appears resolved (it solved the full grid) — likely the Linux RC/codegen work.
+- **User architectural rulings captured to memory:** introspection-is-REPL-only ([[introspection-repl-only-principle]]); the linking-encapsulation pattern (intent-in / platform-rendered-out) now in `design/backend/executable-generation.md §12`.

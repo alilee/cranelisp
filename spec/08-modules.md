@@ -772,7 +772,7 @@ The `macros` module contains the `Sexp` and `SList` algebraic data types used by
 
 The `macros` module is NOT implicitly imported. The macro expander and `quote-sexp` primitive emit qualified references (`macros/SexpSym`, `macros/SCons`, etc.), so quasiquote-based macros work without importing the module. Modules that directly reference Sexp constructors (e.g., for pattern matching on macro arguments) MUST import or use qualified references eg. `(import [macros [*]])`.
 
-### 8.9.3 Platform Modules [R4 S10]
+### 8.9.3 Platform Modules [Tested+Neg src/platform.rs::platform_fn_non_io_return_is_rejected]
 
 Platform modules are loaded from dynamic libraries (DLLs) via the `platform` special form:
 

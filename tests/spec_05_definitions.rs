@@ -31,14 +31,6 @@ fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
         .output()
 }
 
-fn repl_std(lines: &str) -> helpers::e2e::CrOutput {
-    Cranelisp::new()
-        .repl()
-        .with_prelude(PreludeVariant::TestStandard)
-        .stdin(lines)
-        .output()
-}
-
 // =============================================================================
 // §5.1.1 Single-signature defn
 // =============================================================================

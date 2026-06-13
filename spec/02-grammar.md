@@ -20,7 +20,7 @@ Top-level forms are processed in three phases:
 
 The implementation MUST process these phases in order: module declarations before macro expansion, and macro expansion before AST construction. Forms from one phase MUST NOT appear in a later phase -- for example, a `mod` or `import` form that survives to the AST phase is an error.
 
-### Batch Mode [R4 S10]
+### Batch Mode [Tested+Neg tests/spec_10_io.rs::batch_main_pure_int_return_is_rejected]
 
 In batch mode (`--run`), the program MUST define a function named `main` that takes no parameters and returns a value of type `IO _`. Execution begins by calling `main`.
 

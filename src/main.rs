@@ -188,8 +188,10 @@ fn run(
 
     match action {
         // §7: Run mode (spec §12.6).
-        // main returns IO _. Exit code is the inner Int value, or 0 for
-        // non-Int IO results and non-IO main (pre-Ring-4 compatibility).
+        // main : IO _ is enforced upstream (a non-IO main is rejected before
+        // this point), so what reaches here is always an IO result. The exit
+        // code is the inner Int value when main is `IO Int`; any other inner
+        // IO result yields exit code 0.
         Action::Run => {
             s.wait_inmem_complete()?;
             let (value, ty) = s.trampoline(entry_module_name)?;
