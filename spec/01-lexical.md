@@ -181,7 +181,7 @@ Display.show      ; method 'show' of trait 'Display'
 Num.+             ; operator '+' of trait 'Num'
 ```
 
-### 1.4.5 Colon-Prefixed Symbols [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_colon_prefix]
+### 1.4.5 Colon-Prefixed Symbols [Tested+Neg crates/cranelisp-frontend/src/reader.rs::test_parse_colon_prefix, tests/spec_08_modules.rs::annotation_binds_top_level_following_form, tests/spec_08_modules.rs::annotation_in_paren_is_application_of_annotated_element]
 
 ```ebnf
 colon_prefix = ':' symbol_start symbol_char*
@@ -196,6 +196,8 @@ Colon-prefixed symbols are used for type annotations. A bare colon `:` (not foll
 :Display          ; trait constraint
 :                 ; bare colon (field separator)
 ```
+
+> **Normative note (annotation introducer).** A `colon_prefix` token (`:Int`) is an **annotation introducer**, not a variable reference. It is valid only as the head of an `annotate_expr` (§2.3.8), where it **binds the immediately-following form**. A `colon_prefix` is never a standalone atom or variable reference, and a `colon_prefix` with **no following form** is a parse error (`annotation missing expression`). This holds in every expression position, including as the leading element of a parenthesized list — there the `colon_prefix` annotates only the single following element, and the list is the application of that one annotated element.
 
 ### 1.4.6 Gensym Symbols [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_gensym_shorthand]
 

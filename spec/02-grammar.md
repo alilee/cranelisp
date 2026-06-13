@@ -31,7 +31,13 @@ In batch mode (`--run`), the program MUST define a function named `main` that ta
 
 ### Interactive Mode [Tested tests/ring0.rs::repl_eval_expression]
 
-In interactive mode (REPL), top-level expressions are permitted in addition to definitions. Each expression is evaluated and its type and value are displayed. See [12. Runtime Model](12-runtime.md) for REPL semantics.
+In interactive mode (REPL), top-level expressions are permitted in addition to definitions:
+
+```ebnf
+top_level   += expr                    (* interactive mode only *)
+```
+
+A top-level expression routes through the full `expr` production of §2.3 — which **includes `annotate_expr`**. A leading `:Type` at top level is therefore the annotation introducer of an `annotate_expr` binding the following form (§2.3.8); it is NOT parsed as a `var_ref`. Each expression is evaluated and its type and value are displayed. See [12. Runtime Model](12-runtime.md) for REPL semantics.
 
 ## 2.2 Top-Level Forms [Tested tests/ring0.rs::hello, tests/ring1.rs::adt_sum_nested_match, tests/ring2.rs::trait_plus_int, tests/macros.rs::macro_basic_repl]
 
@@ -582,13 +588,27 @@ The arms bracket MUST contain an even number of elements (alternating patterns a
    Blue "blue"])
 ```
 
-### 2.3.8 Type Annotation [Tested tests/ring0.rs::annotated_params]
+### 2.3.8 Type Annotation [Tested+Neg tests/spec_08_modules.rs::annotation_binds_top_level_following_form, tests/spec_08_modules.rs::annotation_type_mismatch_is_unify_error, tests/spec_08_modules.rs::annotation_unknown_type_is_error, tests/spec_08_modules.rs::annotation_in_paren_is_application_of_annotated_element, tests/spec_08_modules.rs::annotation_in_paren_unify_precedes_not_a_function]
 
 ```ebnf
 annotate_expr = annotation expr
 ```
 
-A type annotation constrains an expression's type. The annotation appears immediately before the expression it annotates. This form may appear at the top level of argument lists, binding values, and standalone expressions.
+The annotation token (`:Type`) **binds the immediately-following form**, producing an `annotate_expr`. It is a reader-level prefix — like a reader macro, it attaches a type-unifying annotation to the next form — and is **never a standalone atom or variable reference**. There is no expression whose meaning is a bare `:Type`; the token always consumes a following form.
+
+Because `annotate_expr` is itself a first-class `expr` (it appears in the `expr` production of §2.3), an annotation MAY appear in **every** expression position. This includes:
+
+- a standalone / top-level form,
+- a parenthesized expression,
+- a function-application argument,
+- a `let` / binding value,
+- a `match` arm body,
+- an `if` / `fn` / `let` body, and
+- a vector element.
+
+The inner form's inferred type MUST unify with the annotation. This unification is performed **during typechecking**, when the `annotate_expr` node is inferred — *before* any application or evaluation semantics of an enclosing form take effect. Consequently, when an enclosing form is otherwise ill-formed (e.g. applying a non-function), the annotation's unification check is reported first.
+
+A leading `:Type` inside a parenthesized list **annotates the single following element** — it is NOT the application callee and NOT an annotation of the whole list. The reader binds `:Type` to the next form, yielding a one-element list whose sole element is that `annotate_expr`; the list is then the ordinary application of that one annotated element. `(:Type form)` is therefore **not a special form**.
 
 See Section 2.4 for the `annotation` grammar.
 
@@ -599,6 +619,16 @@ See Section 2.4 for the `annotation` grammar.
 ```
 
 The annotation is checked at compile time -- the expression's inferred type MUST be compatible with the annotation. This is useful for disambiguating polymorphic constructors and constraining return types.
+
+**Normative examples.** The following table fixes the required behaviour:
+
+| Source | Result | Why |
+|---|---|---|
+| `:Int 42` | `:primitives/Int 42` | annotation binds `42`; `Int` unifies with the inferred type |
+| `:Float 42` | unify error (Int vs Float) | annotation binds `42`; the inferred `Int` fails to unify with `Float` |
+| `:Foo 42` | unknown-type error | `Foo` names no type in scope |
+| `(:Int 42)` | not-a-function (Int not callable) | the list is the application of the annotated element `(:Int 42)`; the annotation unifies (`Int` ✓) first, then the application fails because an `Int` value is not callable |
+| `(:Float 42)` | unify error preceding the not-a-function error | the annotation's unify check (`Int` vs `Float`) is performed during typechecking before the application's not-a-function check |
 
 ### 2.3.9 Vec Literal [Tested tests/ring1.rs::vec_literal_int]
 
