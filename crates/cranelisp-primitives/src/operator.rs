@@ -34,6 +34,13 @@ pub(crate) struct PrimitiveDef {
     pub ty: Type,
     /// Parameter names for REPL display (e.g. `[lhs rhs]`).
     pub param_names: Vec<Symbol>,
+    /// The runtime docstring — the Description-column text from
+    /// `spec/appendix-a-builtins.md` §A.3, surfaced via `/doc` + the
+    /// `; classification - docstring` REPL suffix (§A.5 MUST). Registered onto
+    /// the primitive's `ModuleEntry::Def.docstring` so int reads it through the
+    /// canonical symbol-table entry rather than a parallel host-side table
+    /// (FIXME 0308 — single source of truth, Principle 7).
+    pub docstring: &'static str,
 }
 
 /// The complete Ring 0 primitive table.
@@ -49,74 +56,88 @@ pub(crate) fn ring0_primitives() -> Vec<PrimitiveDef> {
             name: Symbol::from("add-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+            docstring: "Add",
         },
         PrimitiveDef {
             name: Symbol::from("sub-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+            docstring: "Subtract",
         },
         PrimitiveDef {
             name: Symbol::from("mul-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+            docstring: "Multiply",
         },
         PrimitiveDef {
             name: Symbol::from("div-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+            docstring: "Integer division",
         },
         // --- Float arithmetic: (Fn [Float Float] Float) ---
         PrimitiveDef {
             name: Symbol::from("add-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Float)),
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+            docstring: "Add",
         },
         PrimitiveDef {
             name: Symbol::from("sub-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Float)),
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+            docstring: "Subtract",
         },
         PrimitiveDef {
             name: Symbol::from("mul-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Float)),
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+            docstring: "Multiply",
         },
         PrimitiveDef {
             name: Symbol::from("div-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Float)),
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+            docstring: "Division",
         },
         // --- Int comparison: (Fn [Int Int] Bool) ---
         PrimitiveDef {
             name: Symbol::from("eq-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Bool)),
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+            docstring: "Equality",
         },
         PrimitiveDef {
             name: Symbol::from("lt-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Bool)),
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+            docstring: "Less than",
         },
         PrimitiveDef {
             name: Symbol::from("gt-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Bool)),
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+            docstring: "Greater than",
         },
         PrimitiveDef {
             name: Symbol::from("le-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Bool)),
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+            docstring: "Less than or equal",
         },
         PrimitiveDef {
             name: Symbol::from("ge-i64"),
             ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Bool)),
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+            docstring: "Greater than or equal",
         },
         // --- Float comparison: (Fn [Float Float] Bool) ---
         PrimitiveDef {
             name: Symbol::from("eq-f64"),
             ty: Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Bool)),
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+            docstring: "Equality",
         },
         PrimitiveDef {
             name: Symbol::from("lt-f64"),

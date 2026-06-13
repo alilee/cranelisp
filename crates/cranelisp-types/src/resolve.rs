@@ -297,6 +297,101 @@ where
     })
 }
 
+/// Resolve `name` from `current_module`, falling back to the implicit-prelude
+/// **outer scope** on an inner-scope miss when `fallback_on` is true (S78 §2.7.5).
+///
+/// This is the one general realisation of the 3-step shape duplicated 5× across
+/// the codebase (S78 fragmentation, the proximate cause of the recurring
+/// "fallback wired for path X not Y" defect): (1) [`resolve`] rooted at the
+/// current module; (2) on a not-found miss with `fallback_on`, retry [`resolve`]
+/// rooted at `prelude_path`; (3) **public-only filter** on the prelude-retry
+/// terminal (the I-1 leak fix — reachability is judged from the original user
+/// `current_module`, never in prelude's subtree, so only a PUBLIC prelude
+/// terminal is reachable as a bare name; a private one is treated as not-found
+/// and does NOT shadow).
+///
+/// **Data-only by construction (no reverse dependency on typecheck).** The
+/// caller does its own `prelude_fallback.get(module)` lookup and passes the
+/// resulting `bool` (`fallback_on`) plus the prelude `ModuleFullPath`
+/// (`prelude_path`, a types-owned type). The crate never names typecheck's
+/// `PreludeFallback` companion-map — it receives the already-resolved decision.
+/// This keeps `cranelisp-types` data-only (Principle 7) and is the same
+/// general-primitive-plus-thin-wrapper pattern [`resolve`] already follows.
+///
+/// `fallback_on == false`, or `current_module == prelude_path` (never
+/// self-fallback), reduces to a bare [`resolve`] against the first hop.
+///
+/// **Filter applies to the prelude retry only.** The first-hop (current-module)
+/// result is returned unfiltered — a module's own bindings are always reachable
+/// from itself. The public-only post-filter reads the prelude terminal's
+/// [`ModuleEntry::is_public`]; the I-1 rule reduces to `is_public()` because the
+/// original `current_module` is never in prelude's subtree (the `in_subtree`
+/// visibility leg never fires for a prelude hit). A private prelude terminal is
+/// reported as the original current-module not-found, not as `PrivateInaccessible`.
+///
+/// See `design/arch/interfaces.md` §"`resolve_with_fallback`" and the typecheck
+/// chokepoint family in `crates/cranelisp-typecheck/CLAUDE.md`.
+pub fn resolve_with_fallback<C, L>(
+    symbol_tables: &SymbolTables<C, L>,
+    module_aliases: &ModuleAliases,
+    first_hop: &View<'_, C, L>,
+    current_module: &ModuleFullPath,
+    name: &str,
+    fallback_on: bool,
+    prelude_path: &ModuleFullPath,
+    span: Span,
+) -> Result<Resolved<C>, ResolveError>
+where
+    C: CodeStore,
+    L: LinkerStore,
+{
+    // Step 1: resolve in the caller-chosen current-module view.
+    let first = resolve(symbol_tables, module_aliases, first_hop, current_module, name, span);
+
+    // Self-fallback is never taken: a module does not fall back onto itself.
+    if !fallback_on || current_module == prelude_path {
+        return first;
+    }
+
+    match first {
+        Ok(resolved) => Ok(resolved),
+        // Only an inner-scope MISS triggers the prelude retry. Hard failures
+        // (private, unknown qualified module) are returned as-is — they are
+        // not "the name is absent here", so the outer scope does not apply.
+        Err(ResolveError::TraitNotFound { .. })
+        | Err(ResolveError::TypeNotFound { .. })
+        | Err(ResolveError::ConstructorNotFound { .. }) => {
+            // Step 2: retry rooted at the prelude module. The prelude's own
+            // committed table is the first hop for this retry.
+            let inner_miss = || not_found(name, current_module, span);
+            let prelude_view = match symbol_tables.get(prelude_path) {
+                Some(t) => t,
+                // Prelude not loaded → the inner miss stands.
+                None => return Err(inner_miss()),
+            };
+            let retry = resolve(
+                symbol_tables,
+                module_aliases,
+                &View::single(&prelude_view),
+                prelude_path,
+                name,
+                span,
+            );
+            match retry {
+                // Step 3: public-only filter on the prelude terminal. A
+                // non-public prelude binding does NOT leak as a bare name; it
+                // reads as the original current-module not-found.
+                Ok(resolved) if resolved.entry.is_public() => Ok(resolved),
+                Ok(_) => Err(inner_miss()),
+                // A prelude-side miss reports the original current-module miss
+                // (the user wrote the name in `current_module`, not prelude).
+                Err(_) => Err(inner_miss()),
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Qualified `mod/sym` resolution (Principle 17 shape 2). Applies §8.6.6
 /// longest-prefix alias substitution to `module_part`, then looks `symbol_part`
 /// up directly in the alias-resolved module. No chain-follow on the symbol —

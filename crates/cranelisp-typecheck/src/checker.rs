@@ -923,60 +923,21 @@ where
         name: &str,
         span: Span,
     ) -> Result<cranelisp_types::Resolved<C>, ResolveError> {
+        // The staging-view selection (current-module first hop) stays caller-side;
+        // the resolve+prelude-fallback+public-only-filter body is the shared
+        // `cranelisp_types::resolve_with_fallback` primitive (FIXME 0316(c)).
         let read = self.current_symbol_table(state);
-        let first = cranelisp_types::resolve(
+        let prelude = self.prelude_fallback_target(&state.current_module);
+        cranelisp_types::resolve_with_fallback(
             self.modules,
             self.module_aliases,
             &read.view(),
             &state.current_module,
             name,
+            prelude.is_some(),
+            prelude.as_ref().unwrap_or(&state.current_module),
             span,
-        );
-        match first {
-            Ok(resolved) => Ok(resolved),
-            Err(e) if Self::is_not_found(&e) => {
-                // Inner miss — consult the prelude outer scope iff the bit is ON.
-                if let Some(prelude_module) =
-                    self.prelude_fallback_target(&state.current_module)
-                    && let Some(prelude_guard) = self.modules.get(&prelude_module)
-                {
-                    let prelude_view = cranelisp_types::View::single(prelude_guard.value());
-                    // The retry is rooted at `prelude` so the first-hop view and
-                    // the chain-follow committed walk both start from prelude's
-                    // own table (this gives the terminal entry its correct
-                    // `home`). But `cranelisp_types::resolve` would then evaluate
-                    // visibility with `from_module = prelude`, and
-                    // `in_subtree(prelude, prelude)` is true — so a Private entry
-                    // in prelude's own table would resolve. That is the I-1 leak.
-                    // Reachability must be judged relative to the ORIGINAL
-                    // `current_module` (a user module, never in prelude's
-                    // subtree), so only PUBLIC prelude entries are reachable as
-                    // bare names: post-filter the terminal on its visibility and
-                    // treat a private hit as not-found (it does NOT resolve and
-                    // does NOT shadow). Prelude's PUBLIC re-exports of primitives
-                    // chain-follow to a public terminal and stay reachable.
-                    return match cranelisp_types::resolve(
-                        self.modules,
-                        self.module_aliases,
-                        &prelude_view,
-                        &prelude_module,
-                        name,
-                        span,
-                    ) {
-                        Ok(resolved) if Self::prelude_terminal_visible(&resolved.entry) => {
-                            Ok(resolved)
-                        }
-                        // Private prelude terminal (or a genuine prelude miss):
-                        // surface the ORIGINAL inner-scope not-found, not the
-                        // private-prelude detail — to the user module the name is
-                        // simply unbound.
-                        _ => Err(e),
-                    };
-                }
-                Err(e)
-            }
-            Err(e) => Err(e),
-        }
+        )
     }
 
     /// Whether a [`ResolveError`] is the neutral bare-name not-found class that
@@ -1262,15 +1223,25 @@ where
         state: &CheckState,
         name: &str,
     ) -> Option<ModuleEntry<C>> {
-        if let Some(entry) = self.probe_module_entry_owned(&state.current_module, name) {
-            return Some(entry);
-        }
-        // Inner miss — consult the prelude outer scope iff the fallback bit is
-        // ON for this module (`prelude_fallback_target`; absence-is-OFF, never
-        // self-fallback). Public-only filter per I-1.
-        let prelude = self.prelude_fallback_target(&state.current_module)?;
-        self.probe_module_entry_owned(&prelude, name)
-            .filter(Self::prelude_terminal_visible)
+        // Staging-view first hop stays caller-side; resolve+fallback+public-filter
+        // is the shared primitive (FIXME 0316(c)). `resolve_with_fallback` returns
+        // the chain-followed terminal entry — `extract_scheme_from_entry_owned`'s
+        // own re-follow of a terminal `Def` is idempotent, so projecting `.entry`
+        // is behaviour-identical to returning the head and following downstream.
+        let read = self.current_symbol_table(state);
+        let prelude = self.prelude_fallback_target(&state.current_module);
+        cranelisp_types::resolve_with_fallback(
+            self.modules,
+            self.module_aliases,
+            &read.view(),
+            &state.current_module,
+            name,
+            prelude.is_some(),
+            prelude.as_ref().unwrap_or(&state.current_module),
+            Span::default(),
+        )
+        .ok()
+        .map(|resolved| resolved.entry)
     }
 
     /// Probe a name in `module_path`'s symbol table, returning an owned
@@ -1383,29 +1354,23 @@ where
     /// Staging-aware (FIXME 0179): consults staging first via
     /// [`Self::probe_module_entry_owned`].
     pub(crate) fn resolve_entry_in_current_module(&self, state: &CheckState, name: &str) -> Option<ModuleEntry<C>> {
-        // Bare-name current-module probe with implicit-prelude outer-scope
-        // fallback (S78 §2.7.5 Chokepoint 1). The fallback's first hop probes
-        // the current module; on a miss with the bit ON it re-probes `prelude`.
-        // From whichever module yields the head entry, `chain_follow_to_home`
-        // follows `Import`/`Reexport` edges to the terminal — so a prelude
-        // re-export of a primitive resolves to the canonical entry. We
-        // chain-follow starting from the module that hosts the head entry so
-        // the recorded `home` is correct.
-        let entry = self.probe_module_entry_owned(&state.current_module, name);
-        if let Some(entry) = entry {
-            return self
-                .chain_follow_to_home(entry, state.current_module.clone(), 0)
-                .map(|(e, _home)| e);
-        }
-        // Inner miss — consult the prelude outer scope iff the bit is ON. Only a
-        // PUBLIC prelude head binding is reachable (I-1): filter the prelude head
-        // before chain-following, so a private prelude entry resolves to
-        // not-found (does not shadow a user binding).
-        let prelude = self.prelude_fallback_target(&state.current_module)?;
-        let entry = self
-            .probe_module_entry_owned(&prelude, name)
-            .filter(Self::prelude_terminal_visible)?;
-        self.chain_follow_to_home(entry, prelude, 0).map(|(e, _home)| e)
+        // Staging-view first hop stays caller-side; resolve+fallback+public-filter
+        // (with chain-follow to the terminal) is the shared primitive
+        // (FIXME 0316(c)). Project the `Resolved` triple to the terminal entry.
+        let read = self.current_symbol_table(state);
+        let prelude = self.prelude_fallback_target(&state.current_module);
+        cranelisp_types::resolve_with_fallback(
+            self.modules,
+            self.module_aliases,
+            &read.view(),
+            &state.current_module,
+            name,
+            prelude.is_some(),
+            prelude.as_ref().unwrap_or(&state.current_module),
+            Span::default(),
+        )
+        .ok()
+        .map(|resolved| resolved.entry)
     }
 
     /// Resolve a **constructor reference** in a pattern to its terminal
@@ -1466,20 +1431,23 @@ where
         state: &CheckState,
         name: &str,
     ) -> Option<(ModuleEntry<C>, ModuleFullPath)> {
-        if let Some(found) =
-            self.resolve_terminal_entry_and_home(&state.current_module, name)
-        {
-            return Some(found);
-        }
-        // Inner miss — consult the prelude outer scope iff the bit is ON. Only a
-        // PUBLIC prelude head binding is reachable (I-1): probe + filter the
-        // prelude head before chain-following to its terminal, so a private
-        // prelude trait/def does not leak as a bare name.
-        let prelude = self.prelude_fallback_target(&state.current_module)?;
-        let head = self
-            .probe_module_entry_owned(&prelude, name)
-            .filter(Self::prelude_terminal_visible)?;
-        self.chain_follow_to_home(head, prelude, 0)
+        // Staging-view first hop stays caller-side; resolve+fallback+public-filter
+        // (with chain-follow to the terminal) is the shared primitive
+        // (FIXME 0316(c)). Project the `Resolved` triple to (terminal entry, home).
+        let read = self.current_symbol_table(state);
+        let prelude = self.prelude_fallback_target(&state.current_module);
+        cranelisp_types::resolve_with_fallback(
+            self.modules,
+            self.module_aliases,
+            &read.view(),
+            &state.current_module,
+            name,
+            prelude.is_some(),
+            prelude.as_ref().unwrap_or(&state.current_module),
+            Span::default(),
+        )
+        .ok()
+        .map(|resolved| (resolved.entry, resolved.home))
     }
 
     /// Chain-follow a name starting from `module_path` to its canonical home,

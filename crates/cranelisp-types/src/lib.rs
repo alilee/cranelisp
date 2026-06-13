@@ -91,7 +91,7 @@
 //!   `&SymbolTable` references (staging + live, cluster mode) or one
 //!   (committed mode) per Decision 44; typecheck reads through it.
 //! - **Resolution primitive** ([`resolve`], [`resolve_macro_head`],
-//!   [`Resolved`], [`ResolveError`]) — the one query that turns a name into a
+//!   [`resolve_with_fallback`], [`Resolved`], [`ResolveError`]) — the one query that turns a name into a
 //!   resolved symbol-table entry, following imports/reexports, §8.6.6
 //!   module-path aliases, visibility, and Principle-17 chain-following. Pure
 //!   over `SymbolTables` + `ModuleAliases`; generic over `<C, L>`; no
@@ -242,7 +242,7 @@ pub use pipeline::{
     GOT_TABLE_SIZE, ModuleStrategy, NULLARY_TAG_THRESHOLD,
 };
 pub use view::View;
-pub use resolve::{Resolved, ResolveError, resolve, resolve_macro_head};
+pub use resolve::{Resolved, ResolveError, resolve, resolve_macro_head, resolve_with_fallback};
 pub use macro_expander::{MacroExpander, MacroInvokeError};
 pub use marshal::{
     TAG_SNIL, TAG_SCONS,

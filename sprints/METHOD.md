@@ -100,6 +100,8 @@ Every sprint follows seven phases. `/sprint` orchestrates by issuing skill invoc
 
 **Phase 5 — Language phase.** **QA-first across the entire solution** (failing integration + e2e tests upfront, sprint-wide), then per-crate D/D/R cycle in parallel across crates. Phase 5 conclusion is **conscious and explicit**: `/sprint` and the user decide what ships. Defects are addressed in Phase 5 or deferred with explicit rationale; speculative refactoring deferred; emergent refactoring (the third instance of a duplicate, a function over budget) handled in-sprint.
 
+**Test-coverage discipline within D/D/R (binding).** Every fix lands with a **unit test (mandatory)**, and the need for an **integration/e2e test is assessed BEFORE the fix is written** — not after. The unit test pins the seam where the bug lived; the e2e (added when the bug is observable end-to-end or crosses `--run`/`--link`/REPL modes) proves the user-observable path. Write the failing test(s) first; the fix flips them green; test(s) and fix land in the **same change-set**. Deferring a fix's test to a follow-up FIXME (the "test owed" anti-pattern) is not permitted. This is the same-skill complement to §2.3's failing-not-ignored cross-skill rule. Source-touching `/dev`/`/qa` agents run **serially** (one at a time — shared working tree; see root `CLAUDE.md` §Testing); only read-only fan-outs parallelise.
+
 **Phase 6a — User-facing assessment.** User-proxy skills assess what was *actually* delivered (not what was scoped) and plan the user-facing work outside-in from spec + scope. Gaps file as FIXMEs to next sprint.
 
 **Phase 6b — User-facing action.** Execute the 6a plan against what shipped. Demos test reachability of the spec'd capability through user surfaces.
