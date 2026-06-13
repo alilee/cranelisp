@@ -214,9 +214,24 @@ Collected from the 9-agent design fan-out (2026-06-13). **Headline: the design p
 
 **Reduction captured (committed `5d5515e` + `1ba2d94`): 38 FIXMEs closed** (35 batch-1 + 0126/0139/0326). Suite **1231/0/1** — the lone skip is the sanctioned 0289-i5 dispatch funnel (out of the reduction; attempted in the platform wave). **Fixme store: 101 → 63 open (26 harvest + 37 non-harvest).** **Kept open with notes:** 0050 (→/int), 0266 (→/dev int), 0125/0127 (harvest partials, →/int).
 
-### Per-component waves (W4–W12) — designed after the reduction is captured
+### Per-component sweep — DEFINITIVE remaining sequence (user 2026-06-13: everything this sprint; single-crate first, multi-crate later unless easily accessible; **commit after each wave-component**)
 
-*Outline in §Scope (typecheck, frontend, backend×3, primitives, platform, int×2, arch, qa-harvest, Phase-6). Phase-3 design for these fires once the reduced surface is known.*
+Single-agent per source-touching wave (worktree race lesson). 49 open FIXMEs; ~22 are the legacy-harvest block (coverage preservation). Order:
+
+**Single-crate sweeps first:**
+- **W-A typecheck** (single): 0243 (fixture narrowing), 0130 (harvest→tc), 0117 tc-half; verify-delete done **0306**.
+- **W-B frontend** (single): 0137 (≈delete + 1 §9.2.3 neg→/qa), 0138 (harvest).
+- **W-C backend** (single): harvest 0118/0120/0131/0145/0146 + 0117 backend-half; verify-delete done **0325**; 0133/0135 non-0109-blocked parts.
+- **W-D int decomposition** (single, big): **0109 Waves A/B/C/D — full** (user wants everything → do Wave D too, unblocking the runtime harvest; commit per sub-wave).
+- **W-E int harvest** (single): 0116/0119/0124/0125/0127/0132/0144/0147/0148/0149/0134 + runtime 0128/0129 (post-0109-D) + 0050 + 0220.
+- **W-F arch docs** (single, arch-owned): 0239, 0298 (int-facade reorg), 0327/0331/0333 ratify.
+
+**Multi-crate waves later (unless trivially accessible → pull forward):**
+- **W-G multi-crate**: 0033 (types+tc+backend — mechanical, candidate to pull early), 0303 (types+int — promote `substitute_module_alias`), 0266 (int+stdlib+qa — trace mount-move + importer sweep), **0289-i5 dispatch funnel** (platform+backend+int+qa, ABI 3→4 — the one feature, retires the last skip).
+- **W-H qa**: 0021, 0136 (sketch-port audit-delete), 0216, 0272, 0289 (platform e2e), 0330, 0332.
+- **W-I Phase 6 user-facing**: /port (0143 + exemplar), /stdlib (0273), /examples, /docs (0052), /repl demo. Defects → failing-not-ignored + FIXMEs.
+
+Commit after each wave-component. Canonical `cargo nextest run` green at each commit (or failing-not-ignored + FIXME for surfaced defects). 0101 (/sprint runtime/platform audit scheduling) folded into W-I/close.
 
 ## Notes
 
