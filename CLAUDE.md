@@ -184,6 +184,7 @@ Every skill plan must end with a **"Next skills"** section recommending which sk
 - **Remote**: `origin` → `https://github.com/alilee/cranelisp`
 - **History**: The remote uses an orphan commit (no prior history). When pushing, always force-push (`git push --force origin main`) since the local repo has a longer reflog that doesn't share ancestry with the remote.
 - **Do not push without explicit user request.**
+- **Commit directly to `main`; do NOT create branches.** This single-developer repo is managed linearly on `main` — sprint/feature/worktree branches only accumulate as cruft (and worktree isolation is broken here anyway; see §Testing "single agent at a time"). This **overrides** the general "branch first when on the default branch" convention. There is no merge step at sprint close — work is already on `main`. (The forbidden-git-ops list for subagents still applies: no `stash drop/clear`, `reset --hard`, `checkout --`, `restore`, `clean -f/-fd`.)
 
 ## Requirements/Test Traceability
 
