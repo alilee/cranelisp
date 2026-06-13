@@ -2,17 +2,17 @@ pub mod cranelisp_frontend
 pub use cranelisp_frontend::DefmacroInfo
 pub use cranelisp_frontend::MacroClause
 pub mod cranelisp_frontend::ast_builder
-pub fn cranelisp_frontend::ast_builder::build_expr(sexp: &cranelisp_types::sexp::Sexp) -> core::result::Result<cranelisp_types::ast::Expr, cranelisp_types::error::CranelispError>
-pub fn cranelisp_frontend::ast_builder::build_form(sexp: &cranelisp_types::sexp::Sexp) -> core::result::Result<alloc::vec::Vec<cranelisp_types::parsed::ParsedEntry>, cranelisp_types::error::CranelispError>
-pub fn cranelisp_frontend::ast_builder::parse_type_expr(source: &str) -> core::result::Result<cranelisp_types::ast::TypeExpr, cranelisp_types::error::CranelispError>
+pub fn cranelisp_frontend::ast_builder::build_expr(&cranelisp_types::sexp::Sexp) -> core::result::Result<cranelisp_types::ast::Expr, cranelisp_types::error::CranelispError>
+pub fn cranelisp_frontend::ast_builder::build_form(&cranelisp_types::sexp::Sexp) -> core::result::Result<alloc::vec::Vec<cranelisp_types::parsed::ParsedEntry>, cranelisp_types::error::CranelispError>
+pub fn cranelisp_frontend::ast_builder::parse_type_expr(&str) -> core::result::Result<cranelisp_types::ast::TypeExpr, cranelisp_types::error::CranelispError>
 pub mod cranelisp_frontend::defmacro
 pub use cranelisp_frontend::defmacro::DefmacroInfo
 pub use cranelisp_frontend::defmacro::MacroClause
-pub fn cranelisp_frontend::defmacro::flatten_begin(sexp: cranelisp_types::sexp::Sexp) -> alloc::vec::Vec<cranelisp_types::sexp::Sexp>
-pub fn cranelisp_frontend::defmacro::is_begin(sexp: &cranelisp_types::sexp::Sexp) -> bool
-pub fn cranelisp_frontend::defmacro::is_defmacro(sexp: &cranelisp_types::sexp::Sexp) -> bool
-pub fn cranelisp_frontend::defmacro::parse_defmacro(sexp: &cranelisp_types::sexp::Sexp) -> core::result::Result<cranelisp_types::parsed::DefmacroInfo, cranelisp_types::error::CranelispError>
-pub fn cranelisp_frontend::defmacro::synthesize_macro_clause_defn(name: &str, clause_idx: usize, clause: &cranelisp_types::parsed::MacroClause, span: cranelisp_types::span::Span) -> cranelisp_types::sexp::Sexp
+pub fn cranelisp_frontend::defmacro::flatten_begin(cranelisp_types::sexp::Sexp) -> alloc::vec::Vec<cranelisp_types::sexp::Sexp>
+pub fn cranelisp_frontend::defmacro::is_begin(&cranelisp_types::sexp::Sexp) -> bool
+pub fn cranelisp_frontend::defmacro::is_defmacro(&cranelisp_types::sexp::Sexp) -> bool
+pub fn cranelisp_frontend::defmacro::parse_defmacro(&cranelisp_types::sexp::Sexp) -> core::result::Result<cranelisp_types::parsed::DefmacroInfo, cranelisp_types::error::CranelispError>
+pub fn cranelisp_frontend::defmacro::synthesize_macro_clause_defn(&str, usize, &cranelisp_types::parsed::MacroClause, cranelisp_types::span::Span) -> cranelisp_types::sexp::Sexp
 pub mod cranelisp_frontend::module_extract
 #[non_exhaustive] pub struct cranelisp_frontend::module_extract::ExtractedDeclarations
 pub cranelisp_frontend::module_extract::ExtractedDeclarations::export_specs: alloc::vec::Vec<cranelisp_types::module::ExportSpec>
@@ -27,14 +27,14 @@ impl core::marker::Unpin for cranelisp_frontend::module_extract::ExtractedDeclar
 impl core::marker::UnsafeUnpin for cranelisp_frontend::module_extract::ExtractedDeclarations
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_frontend::module_extract::ExtractedDeclarations
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_frontend::module_extract::ExtractedDeclarations
-pub fn cranelisp_frontend::module_extract::extract_module_declarations(containing_module: &cranelisp_types::newtype::ModuleFullPath, sexps: &[cranelisp_types::sexp::Sexp]) -> core::result::Result<(cranelisp_frontend::module_extract::ExtractedDeclarations, alloc::vec::Vec<cranelisp_types::sexp::Sexp>), cranelisp_types::error::CranelispError>
+pub fn cranelisp_frontend::module_extract::extract_module_declarations(&cranelisp_types::newtype::ModuleFullPath, &[cranelisp_types::sexp::Sexp]) -> core::result::Result<(cranelisp_frontend::module_extract::ExtractedDeclarations, alloc::vec::Vec<cranelisp_types::sexp::Sexp>), cranelisp_types::error::CranelispError>
 pub mod cranelisp_frontend::quasiquote
-pub fn cranelisp_frontend::quasiquote::expand_quasiquotes(sexp: &cranelisp_types::sexp::Sexp) -> core::result::Result<cranelisp_types::sexp::Sexp, cranelisp_types::error::CranelispError>
-pub fn cranelisp_frontend::quasiquote::expand_quote_template(template: &cranelisp_types::sexp::Sexp) -> cranelisp_types::sexp::Sexp
+pub fn cranelisp_frontend::quasiquote::expand_quasiquotes(&cranelisp_types::sexp::Sexp) -> core::result::Result<cranelisp_types::sexp::Sexp, cranelisp_types::error::CranelispError>
+pub fn cranelisp_frontend::quasiquote::expand_quote_template(&cranelisp_types::sexp::Sexp) -> cranelisp_types::sexp::Sexp
 pub fn cranelisp_frontend::quasiquote::next_synthetic_span() -> cranelisp_types::span::Span
 pub mod cranelisp_frontend::reader
-pub fn cranelisp_frontend::reader::parse(source: &str) -> core::result::Result<alloc::vec::Vec<cranelisp_types::sexp::Sexp>, cranelisp_types::error::CranelispError>
-pub fn cranelisp_frontend::reader::parse_preserving_comments(source: &str) -> core::result::Result<alloc::vec::Vec<cranelisp_types::sexp::Sexp>, cranelisp_types::error::CranelispError>
+pub fn cranelisp_frontend::reader::parse(&str) -> core::result::Result<alloc::vec::Vec<cranelisp_types::sexp::Sexp>, cranelisp_types::error::CranelispError>
+pub fn cranelisp_frontend::reader::parse_preserving_comments(&str) -> core::result::Result<alloc::vec::Vec<cranelisp_types::sexp::Sexp>, cranelisp_types::error::CranelispError>
 #[non_exhaustive] pub struct cranelisp_frontend::ExtractedDeclarations
 pub cranelisp_frontend::ExtractedDeclarations::export_specs: alloc::vec::Vec<cranelisp_types::module::ExportSpec>
 pub cranelisp_frontend::ExtractedDeclarations::import_specs: alloc::vec::Vec<cranelisp_types::module::ImportSpec>
@@ -48,17 +48,17 @@ impl core::marker::Unpin for cranelisp_frontend::module_extract::ExtractedDeclar
 impl core::marker::UnsafeUnpin for cranelisp_frontend::module_extract::ExtractedDeclarations
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_frontend::module_extract::ExtractedDeclarations
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_frontend::module_extract::ExtractedDeclarations
-pub fn cranelisp_frontend::build_expr(sexp: &cranelisp_types::sexp::Sexp) -> core::result::Result<cranelisp_types::ast::Expr, cranelisp_types::error::CranelispError>
-pub fn cranelisp_frontend::build_form(sexp: &cranelisp_types::sexp::Sexp) -> core::result::Result<alloc::vec::Vec<cranelisp_types::parsed::ParsedEntry>, cranelisp_types::error::CranelispError>
-pub fn cranelisp_frontend::expand_quasiquotes(sexp: &cranelisp_types::sexp::Sexp) -> core::result::Result<cranelisp_types::sexp::Sexp, cranelisp_types::error::CranelispError>
-pub fn cranelisp_frontend::expand_quote_template(template: &cranelisp_types::sexp::Sexp) -> cranelisp_types::sexp::Sexp
-pub fn cranelisp_frontend::extract_module_declarations(containing_module: &cranelisp_types::newtype::ModuleFullPath, sexps: &[cranelisp_types::sexp::Sexp]) -> core::result::Result<(cranelisp_frontend::module_extract::ExtractedDeclarations, alloc::vec::Vec<cranelisp_types::sexp::Sexp>), cranelisp_types::error::CranelispError>
-pub fn cranelisp_frontend::flatten_begin(sexp: cranelisp_types::sexp::Sexp) -> alloc::vec::Vec<cranelisp_types::sexp::Sexp>
-pub fn cranelisp_frontend::is_begin(sexp: &cranelisp_types::sexp::Sexp) -> bool
-pub fn cranelisp_frontend::is_defmacro(sexp: &cranelisp_types::sexp::Sexp) -> bool
+pub fn cranelisp_frontend::build_expr(&cranelisp_types::sexp::Sexp) -> core::result::Result<cranelisp_types::ast::Expr, cranelisp_types::error::CranelispError>
+pub fn cranelisp_frontend::build_form(&cranelisp_types::sexp::Sexp) -> core::result::Result<alloc::vec::Vec<cranelisp_types::parsed::ParsedEntry>, cranelisp_types::error::CranelispError>
+pub fn cranelisp_frontend::expand_quasiquotes(&cranelisp_types::sexp::Sexp) -> core::result::Result<cranelisp_types::sexp::Sexp, cranelisp_types::error::CranelispError>
+pub fn cranelisp_frontend::expand_quote_template(&cranelisp_types::sexp::Sexp) -> cranelisp_types::sexp::Sexp
+pub fn cranelisp_frontend::extract_module_declarations(&cranelisp_types::newtype::ModuleFullPath, &[cranelisp_types::sexp::Sexp]) -> core::result::Result<(cranelisp_frontend::module_extract::ExtractedDeclarations, alloc::vec::Vec<cranelisp_types::sexp::Sexp>), cranelisp_types::error::CranelispError>
+pub fn cranelisp_frontend::flatten_begin(cranelisp_types::sexp::Sexp) -> alloc::vec::Vec<cranelisp_types::sexp::Sexp>
+pub fn cranelisp_frontend::is_begin(&cranelisp_types::sexp::Sexp) -> bool
+pub fn cranelisp_frontend::is_defmacro(&cranelisp_types::sexp::Sexp) -> bool
 pub fn cranelisp_frontend::next_synthetic_span() -> cranelisp_types::span::Span
-pub fn cranelisp_frontend::parse(source: &str) -> core::result::Result<alloc::vec::Vec<cranelisp_types::sexp::Sexp>, cranelisp_types::error::CranelispError>
-pub fn cranelisp_frontend::parse_defmacro(sexp: &cranelisp_types::sexp::Sexp) -> core::result::Result<cranelisp_types::parsed::DefmacroInfo, cranelisp_types::error::CranelispError>
-pub fn cranelisp_frontend::parse_preserving_comments(source: &str) -> core::result::Result<alloc::vec::Vec<cranelisp_types::sexp::Sexp>, cranelisp_types::error::CranelispError>
-pub fn cranelisp_frontend::parse_type_expr(source: &str) -> core::result::Result<cranelisp_types::ast::TypeExpr, cranelisp_types::error::CranelispError>
-pub fn cranelisp_frontend::synthesize_macro_clause_defn(name: &str, clause_idx: usize, clause: &cranelisp_types::parsed::MacroClause, span: cranelisp_types::span::Span) -> cranelisp_types::sexp::Sexp
+pub fn cranelisp_frontend::parse(&str) -> core::result::Result<alloc::vec::Vec<cranelisp_types::sexp::Sexp>, cranelisp_types::error::CranelispError>
+pub fn cranelisp_frontend::parse_defmacro(&cranelisp_types::sexp::Sexp) -> core::result::Result<cranelisp_types::parsed::DefmacroInfo, cranelisp_types::error::CranelispError>
+pub fn cranelisp_frontend::parse_preserving_comments(&str) -> core::result::Result<alloc::vec::Vec<cranelisp_types::sexp::Sexp>, cranelisp_types::error::CranelispError>
+pub fn cranelisp_frontend::parse_type_expr(&str) -> core::result::Result<cranelisp_types::ast::TypeExpr, cranelisp_types::error::CranelispError>
+pub fn cranelisp_frontend::synthesize_macro_clause_defn(&str, usize, &cranelisp_types::parsed::MacroClause, cranelisp_types::span::Span) -> cranelisp_types::sexp::Sexp

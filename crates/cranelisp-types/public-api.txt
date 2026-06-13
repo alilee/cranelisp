@@ -32,12 +32,12 @@ pub fn cranelisp_types::CranelispError::location(&self) -> &cranelisp_types::Err
 pub fn cranelisp_types::CranelispError::message(&self) -> &str
 pub fn cranelisp_types::CranelispError::span(&self) -> cranelisp_types::Span
 impl core::convert::From<cranelisp_types::PlatformError> for cranelisp_types::CranelispError
-pub fn cranelisp_types::CranelispError::from(err: cranelisp_types::PlatformError) -> Self
+pub fn cranelisp_types::CranelispError::from(cranelisp_types::PlatformError) -> Self
 impl core::convert::From<cranelisp_types::ResolveError> for cranelisp_types::CranelispError
-pub fn cranelisp_types::CranelispError::from(e: cranelisp_types::ResolveError) -> cranelisp_types::CranelispError
+pub fn cranelisp_types::CranelispError::from(cranelisp_types::ResolveError) -> cranelisp_types::CranelispError
 impl core::error::Error for cranelisp_types::CranelispError
 impl core::fmt::Display for cranelisp_types::CranelispError
-pub fn cranelisp_types::CranelispError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_types::CranelispError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_types::CranelispError
 impl core::marker::Send for cranelisp_types::CranelispError
 impl core::marker::Sync for cranelisp_types::CranelispError
@@ -156,9 +156,9 @@ pub cranelisp_types::Expr::VecLit::inferred_type: core::option::Option<alloc::bo
 pub cranelisp_types::Expr::VecLit::span: cranelisp_types::Span
 impl cranelisp_types::Expr
 pub fn cranelisp_types::Expr::inferred_type(&self) -> core::option::Option<&cranelisp_types::Type>
-pub fn cranelisp_types::Expr::set_inferred_type(&mut self, ty: core::option::Option<alloc::boxed::Box<cranelisp_types::Type>>)
+pub fn cranelisp_types::Expr::set_inferred_type(&mut self, core::option::Option<alloc::boxed::Box<cranelisp_types::Type>>)
 pub fn cranelisp_types::Expr::span(&self) -> cranelisp_types::Span
-pub fn cranelisp_types::Expr::var(name: cranelisp_types::Symbol, span: cranelisp_types::Span) -> cranelisp_types::Expr
+pub fn cranelisp_types::Expr::var(cranelisp_types::Symbol, cranelisp_types::Span) -> cranelisp_types::Expr
 impl core::marker::Freeze for cranelisp_types::Expr
 impl core::marker::Send for cranelisp_types::Expr
 impl core::marker::Sync for cranelisp_types::Expr
@@ -189,7 +189,7 @@ pub cranelisp_types::MacroInvokeError::Malformed::message: alloc::string::String
 pub cranelisp_types::MacroInvokeError::Malformed::span: cranelisp_types::Span
 impl core::error::Error for cranelisp_types::MacroInvokeError
 impl core::fmt::Display for cranelisp_types::MacroInvokeError
-pub fn cranelisp_types::MacroInvokeError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_types::MacroInvokeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_types::MacroInvokeError
 impl core::marker::Send for cranelisp_types::MacroInvokeError
 impl core::marker::Sync for cranelisp_types::MacroInvokeError
@@ -254,10 +254,10 @@ impl cranelisp_types::ModuleEntry<()>
 pub fn cranelisp_types::ModuleEntry<()>::into_concrete<C: cranelisp_types::CodeStore>(self) -> cranelisp_types::ModuleEntry<C>
 impl<C: cranelisp_types::CodeStore> cranelisp_types::ModuleEntry<C>
 pub fn cranelisp_types::ModuleEntry<C>::callees(&self) -> &[cranelisp_types::FQSymbol]
-pub fn cranelisp_types::ModuleEntry<C>::def(scheme: cranelisp_types::Scheme, kind: cranelisp_types::DefKind) -> cranelisp_types::DefBuilder<C>
+pub fn cranelisp_types::ModuleEntry<C>::def(cranelisp_types::Scheme, cranelisp_types::DefKind) -> cranelisp_types::DefBuilder<C>
 pub fn cranelisp_types::ModuleEntry<C>::is_public(&self) -> bool
 impl<C: cranelisp_types::CodeStore> core::convert::From<cranelisp_types::DefBuilder<C>> for cranelisp_types::ModuleEntry<C>
-pub fn cranelisp_types::ModuleEntry<C>::from(builder: cranelisp_types::DefBuilder<C>) -> Self
+pub fn cranelisp_types::ModuleEntry<C>::from(cranelisp_types::DefBuilder<C>) -> Self
 impl<C: cranelisp_types::CodeStore> core::marker::Send for cranelisp_types::ModuleEntry<C>
 impl<C: cranelisp_types::CodeStore> core::marker::Sync for cranelisp_types::ModuleEntry<C>
 impl<C> core::marker::Freeze for cranelisp_types::ModuleEntry<C> where C: core::marker::Freeze
@@ -350,10 +350,10 @@ pub cranelisp_types::PlatformError::ManifestNotFound::location: cranelisp_types:
 impl cranelisp_types::PlatformError
 pub fn cranelisp_types::PlatformError::location(&self) -> &cranelisp_types::ErrorLocation
 impl core::convert::From<cranelisp_types::PlatformError> for cranelisp_types::CranelispError
-pub fn cranelisp_types::CranelispError::from(err: cranelisp_types::PlatformError) -> Self
+pub fn cranelisp_types::CranelispError::from(cranelisp_types::PlatformError) -> Self
 impl core::error::Error for cranelisp_types::PlatformError
 impl core::fmt::Display for cranelisp_types::PlatformError
-pub fn cranelisp_types::PlatformError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_types::PlatformError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_types::PlatformError
 impl core::marker::Send for cranelisp_types::PlatformError
 impl core::marker::Sync for cranelisp_types::PlatformError
@@ -399,10 +399,10 @@ impl cranelisp_types::ResolveError
 pub fn cranelisp_types::ResolveError::message(&self) -> alloc::string::String
 pub fn cranelisp_types::ResolveError::span(&self) -> cranelisp_types::Span
 impl core::convert::From<cranelisp_types::ResolveError> for cranelisp_types::CranelispError
-pub fn cranelisp_types::CranelispError::from(e: cranelisp_types::ResolveError) -> cranelisp_types::CranelispError
+pub fn cranelisp_types::CranelispError::from(cranelisp_types::ResolveError) -> cranelisp_types::CranelispError
 impl core::error::Error for cranelisp_types::ResolveError
 impl core::fmt::Display for cranelisp_types::ResolveError
-pub fn cranelisp_types::ResolveError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_types::ResolveError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_types::ResolveError
 impl core::marker::Send for cranelisp_types::ResolveError
 impl core::marker::Sync for cranelisp_types::ResolveError
@@ -437,7 +437,7 @@ pub cranelisp_types::SchedulingClass::Commutative = 1
 pub cranelisp_types::SchedulingClass::ResourceSerial = 2
 pub cranelisp_types::SchedulingClass::Sequential = 0
 impl cranelisp_types::SchedulingClass
-pub fn cranelisp_types::SchedulingClass::from_u32(v: u32) -> Self
+pub fn cranelisp_types::SchedulingClass::from_u32(u32) -> Self
 impl core::marker::Freeze for cranelisp_types::SchedulingClass
 impl core::marker::Send for cranelisp_types::SchedulingClass
 impl core::marker::Sync for cranelisp_types::SchedulingClass
@@ -456,10 +456,10 @@ pub cranelisp_types::Sexp::Str(alloc::string::String, cranelisp_types::Span)
 pub cranelisp_types::Sexp::Symbol(alloc::string::String, cranelisp_types::Span)
 impl cranelisp_types::Sexp
 pub fn cranelisp_types::Sexp::format_flat(&self) -> alloc::string::String
-pub fn cranelisp_types::Sexp::format_indented(&self, indent: usize) -> alloc::string::String
+pub fn cranelisp_types::Sexp::format_indented(&self, usize) -> alloc::string::String
 pub fn cranelisp_types::Sexp::span(&self) -> cranelisp_types::Span
 impl core::fmt::Display for cranelisp_types::Sexp
-pub fn cranelisp_types::Sexp::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_types::Sexp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_types::Sexp
 impl core::marker::Send for cranelisp_types::Sexp
 impl core::marker::Sync for cranelisp_types::Sexp
@@ -508,12 +508,12 @@ pub cranelisp_types::Type::String
 pub cranelisp_types::Type::TyConApp(cranelisp_types::TypeId, alloc::vec::Vec<cranelisp_types::Type>)
 pub cranelisp_types::Type::Var(cranelisp_types::TypeId)
 impl cranelisp_types::Type
-pub fn cranelisp_types::Type::adt(module: cranelisp_types::ModuleFullPath, name: cranelisp_types::TypeName, args: alloc::vec::Vec<cranelisp_types::Type>) -> cranelisp_types::Type
+pub fn cranelisp_types::Type::adt(cranelisp_types::ModuleFullPath, cranelisp_types::TypeName, alloc::vec::Vec<cranelisp_types::Type>) -> cranelisp_types::Type
 pub fn cranelisp_types::Type::contains_var(&self) -> bool
 pub fn cranelisp_types::Type::is_io(&self) -> bool
 pub fn cranelisp_types::Type::unwrap_io(&self) -> &cranelisp_types::Type
 impl core::fmt::Display for cranelisp_types::Type
-pub fn cranelisp_types::Type::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_types::Type::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_types::Type
 impl core::marker::Send for cranelisp_types::Type
 impl core::marker::Sync for cranelisp_types::Type
@@ -623,17 +623,17 @@ impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::ConstructorDef
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::ConstructorDef
 pub struct cranelisp_types::DefBuilder<C: cranelisp_types::CodeStore>
 impl<C: cranelisp_types::CodeStore> cranelisp_types::DefBuilder<C>
-pub fn cranelisp_types::DefBuilder<C>::ast(self, ast: cranelisp_types::DefnVariant) -> Self
+pub fn cranelisp_types::DefBuilder<C>::ast(self, cranelisp_types::DefnVariant) -> Self
 pub fn cranelisp_types::DefBuilder<C>::build(self) -> cranelisp_types::ModuleEntry<C>
-pub fn cranelisp_types::DefBuilder<C>::docstring(self, docstring: impl core::convert::Into<alloc::string::String>) -> Self
-pub fn cranelisp_types::DefBuilder<C>::got_slot(self, got_slot: usize) -> Self
-pub fn cranelisp_types::DefBuilder<C>::new(scheme: cranelisp_types::Scheme, kind: cranelisp_types::DefKind) -> Self
-pub fn cranelisp_types::DefBuilder<C>::param_names(self, param_names: alloc::vec::Vec<cranelisp_types::Symbol>) -> Self
-pub fn cranelisp_types::DefBuilder<C>::seq(self, seq: u64) -> Self
-pub fn cranelisp_types::DefBuilder<C>::trait_origin(self, trait_origin: cranelisp_types::FQTraitName) -> Self
-pub fn cranelisp_types::DefBuilder<C>::visibility(self, visibility: cranelisp_types::Visibility) -> Self
+pub fn cranelisp_types::DefBuilder<C>::docstring(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn cranelisp_types::DefBuilder<C>::got_slot(self, usize) -> Self
+pub fn cranelisp_types::DefBuilder<C>::new(cranelisp_types::Scheme, cranelisp_types::DefKind) -> Self
+pub fn cranelisp_types::DefBuilder<C>::param_names(self, alloc::vec::Vec<cranelisp_types::Symbol>) -> Self
+pub fn cranelisp_types::DefBuilder<C>::seq(self, u64) -> Self
+pub fn cranelisp_types::DefBuilder<C>::trait_origin(self, cranelisp_types::FQTraitName) -> Self
+pub fn cranelisp_types::DefBuilder<C>::visibility(self, cranelisp_types::Visibility) -> Self
 impl<C: cranelisp_types::CodeStore> core::convert::From<cranelisp_types::DefBuilder<C>> for cranelisp_types::ModuleEntry<C>
-pub fn cranelisp_types::ModuleEntry<C>::from(builder: cranelisp_types::DefBuilder<C>) -> Self
+pub fn cranelisp_types::ModuleEntry<C>::from(cranelisp_types::DefBuilder<C>) -> Self
 impl<C> core::marker::Freeze for cranelisp_types::DefBuilder<C>
 impl<C> core::marker::Send for cranelisp_types::DefBuilder<C>
 impl<C> core::marker::Sync for cranelisp_types::DefBuilder<C>
@@ -648,7 +648,7 @@ pub cranelisp_types::DefmacroInfo::is_private: bool
 pub cranelisp_types::DefmacroInfo::name: cranelisp_types::Symbol
 pub cranelisp_types::DefmacroInfo::span: cranelisp_types::Span
 impl cranelisp_types::DefmacroInfo
-pub fn cranelisp_types::DefmacroInfo::new(name: cranelisp_types::Symbol, is_private: bool, docstring: core::option::Option<alloc::string::String>, clauses: alloc::vec::Vec<cranelisp_types::MacroClause>, span: cranelisp_types::Span) -> Self
+pub fn cranelisp_types::DefmacroInfo::new(cranelisp_types::Symbol, bool, core::option::Option<alloc::string::String>, alloc::vec::Vec<cranelisp_types::MacroClause>, cranelisp_types::Span) -> Self
 impl core::marker::Freeze for cranelisp_types::DefmacroInfo
 impl core::marker::Send for cranelisp_types::DefmacroInfo
 impl core::marker::Sync for cranelisp_types::DefmacroInfo
@@ -702,8 +702,8 @@ pub cranelisp_types::ErrorLocation::fq: core::option::Option<cranelisp_types::FQ
 pub cranelisp_types::ErrorLocation::line_col: core::option::Option<cranelisp_types::LineColRange>
 pub cranelisp_types::ErrorLocation::span: cranelisp_types::Span
 impl cranelisp_types::ErrorLocation
-pub fn cranelisp_types::ErrorLocation::from_span(span: cranelisp_types::Span) -> Self
-pub fn cranelisp_types::ErrorLocation::from_span_file(span: cranelisp_types::Span, file: core::option::Option<std::path::PathBuf>) -> Self
+pub fn cranelisp_types::ErrorLocation::from_span(cranelisp_types::Span) -> Self
+pub fn cranelisp_types::ErrorLocation::from_span_file(cranelisp_types::Span, core::option::Option<std::path::PathBuf>) -> Self
 pub fn cranelisp_types::ErrorLocation::unknown() -> Self
 impl core::marker::Freeze for cranelisp_types::ErrorLocation
 impl core::marker::Send for cranelisp_types::ErrorLocation
@@ -727,7 +727,7 @@ pub struct cranelisp_types::FQSymbol
 pub cranelisp_types::FQSymbol::module: cranelisp_types::ModuleFullPath
 pub cranelisp_types::FQSymbol::symbol: cranelisp_types::Symbol
 impl core::fmt::Display for cranelisp_types::FQSymbol
-pub fn cranelisp_types::FQSymbol::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_types::FQSymbol::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_types::FQSymbol
 impl core::marker::Send for cranelisp_types::FQSymbol
 impl core::marker::Sync for cranelisp_types::FQSymbol
@@ -739,9 +739,9 @@ pub struct cranelisp_types::FQTraitName
 pub cranelisp_types::FQTraitName::module: cranelisp_types::ModuleFullPath
 pub cranelisp_types::FQTraitName::name: cranelisp_types::TraitName
 impl cranelisp_types::FQTraitName
-pub fn cranelisp_types::FQTraitName::new(module: cranelisp_types::ModuleFullPath, name: cranelisp_types::TraitName) -> Self
+pub fn cranelisp_types::FQTraitName::new(cranelisp_types::ModuleFullPath, cranelisp_types::TraitName) -> Self
 impl core::fmt::Display for cranelisp_types::FQTraitName
-pub fn cranelisp_types::FQTraitName::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_types::FQTraitName::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_types::FQTraitName
 impl core::marker::Send for cranelisp_types::FQTraitName
 impl core::marker::Sync for cranelisp_types::FQTraitName
@@ -753,9 +753,9 @@ pub struct cranelisp_types::FQTypeName
 pub cranelisp_types::FQTypeName::module: cranelisp_types::ModuleFullPath
 pub cranelisp_types::FQTypeName::name: cranelisp_types::TypeName
 impl cranelisp_types::FQTypeName
-pub fn cranelisp_types::FQTypeName::new(module: cranelisp_types::ModuleFullPath, name: cranelisp_types::TypeName) -> Self
+pub fn cranelisp_types::FQTypeName::new(cranelisp_types::ModuleFullPath, cranelisp_types::TypeName) -> Self
 impl core::fmt::Display for cranelisp_types::FQTypeName
-pub fn cranelisp_types::FQTypeName::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_types::FQTypeName::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_types::FQTypeName
 impl core::marker::Send for cranelisp_types::FQTypeName
 impl core::marker::Sync for cranelisp_types::FQTypeName
@@ -787,16 +787,16 @@ impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::FieldInfo
 pub struct cranelisp_types::GotTable
 impl cranelisp_types::GotTable
 pub fn cranelisp_types::GotTable::base_ptr(&self) -> *const u8
-pub fn cranelisp_types::GotTable::load_slot(&self, slot: usize) -> *const u8
+pub fn cranelisp_types::GotTable::load_slot(&self, usize) -> *const u8
 pub fn cranelisp_types::GotTable::new() -> Self
-pub fn cranelisp_types::GotTable::store_slot(&self, slot: usize, ptr: *const u8)
-pub fn cranelisp_types::GotTable::with_static_backing(slab: &'static [core::sync::atomic::AtomicPtr<u8>; 1024]) -> Self
+pub fn cranelisp_types::GotTable::store_slot(&self, usize, *const u8)
+pub fn cranelisp_types::GotTable::with_static_backing(&'static [core::sync::atomic::AtomicPtr<u8>; 1024]) -> Self
 impl core::clone::Clone for cranelisp_types::GotTable
 pub fn cranelisp_types::GotTable::clone(&self) -> Self
 impl core::default::Default for cranelisp_types::GotTable
 pub fn cranelisp_types::GotTable::default() -> Self
 impl core::fmt::Debug for cranelisp_types::GotTable
-pub fn cranelisp_types::GotTable::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_types::GotTable::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for cranelisp_types::GotTable
 impl core::marker::Sync for cranelisp_types::GotTable
 impl core::marker::Freeze for cranelisp_types::GotTable
@@ -845,17 +845,17 @@ pub struct cranelisp_types::JitSymbol(_)
 impl core::borrow::Borrow<str> for cranelisp_types::JitSymbol
 pub fn cranelisp_types::JitSymbol::borrow(&self) -> &str
 impl core::cmp::PartialEq<&str> for cranelisp_types::JitSymbol
-pub fn cranelisp_types::JitSymbol::eq(&self, other: &&str) -> bool
+pub fn cranelisp_types::JitSymbol::eq(&self, &&str) -> bool
 impl core::cmp::PartialEq<str> for cranelisp_types::JitSymbol
-pub fn cranelisp_types::JitSymbol::eq(&self, other: &str) -> bool
+pub fn cranelisp_types::JitSymbol::eq(&self, &str) -> bool
 impl core::convert::AsRef<str> for cranelisp_types::JitSymbol
 pub fn cranelisp_types::JitSymbol::as_ref(&self) -> &str
 impl core::convert::From<&str> for cranelisp_types::JitSymbol
-pub fn cranelisp_types::JitSymbol::from(s: &str) -> Self
+pub fn cranelisp_types::JitSymbol::from(&str) -> Self
 impl core::convert::From<alloc::string::String> for cranelisp_types::JitSymbol
-pub fn cranelisp_types::JitSymbol::from(s: alloc::string::String) -> Self
+pub fn cranelisp_types::JitSymbol::from(alloc::string::String) -> Self
 impl core::fmt::Display for cranelisp_types::JitSymbol
-pub fn cranelisp_types::JitSymbol::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_types::JitSymbol::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::deref::Deref for cranelisp_types::JitSymbol
 pub type cranelisp_types::JitSymbol::Target = str
 pub fn cranelisp_types::JitSymbol::deref(&self) -> &str
@@ -870,7 +870,7 @@ impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::JitSymbol
 pub cranelisp_types::LineCol::col: u32
 pub cranelisp_types::LineCol::line: u32
 impl cranelisp_types::LineCol
-pub fn cranelisp_types::LineCol::new(line: u32, col: u32) -> Self
+pub fn cranelisp_types::LineCol::new(u32, u32) -> Self
 impl core::marker::Freeze for cranelisp_types::LineCol
 impl core::marker::Send for cranelisp_types::LineCol
 impl core::marker::Sync for cranelisp_types::LineCol
@@ -882,7 +882,7 @@ impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::LineCol
 pub cranelisp_types::LineColRange::end: cranelisp_types::LineCol
 pub cranelisp_types::LineColRange::start: cranelisp_types::LineCol
 impl cranelisp_types::LineColRange
-pub fn cranelisp_types::LineColRange::new(start: cranelisp_types::LineCol, end: cranelisp_types::LineCol) -> Self
+pub fn cranelisp_types::LineColRange::new(cranelisp_types::LineCol, cranelisp_types::LineCol) -> Self
 impl core::marker::Freeze for cranelisp_types::LineColRange
 impl core::marker::Send for cranelisp_types::LineColRange
 impl core::marker::Sync for cranelisp_types::LineColRange
@@ -894,17 +894,17 @@ pub struct cranelisp_types::LinkerSymbol(_)
 impl core::borrow::Borrow<str> for cranelisp_types::LinkerSymbol
 pub fn cranelisp_types::LinkerSymbol::borrow(&self) -> &str
 impl core::cmp::PartialEq<&str> for cranelisp_types::LinkerSymbol
-pub fn cranelisp_types::LinkerSymbol::eq(&self, other: &&str) -> bool
+pub fn cranelisp_types::LinkerSymbol::eq(&self, &&str) -> bool
 impl core::cmp::PartialEq<str> for cranelisp_types::LinkerSymbol
-pub fn cranelisp_types::LinkerSymbol::eq(&self, other: &str) -> bool
+pub fn cranelisp_types::LinkerSymbol::eq(&self, &str) -> bool
 impl core::convert::AsRef<str> for cranelisp_types::LinkerSymbol
 pub fn cranelisp_types::LinkerSymbol::as_ref(&self) -> &str
 impl core::convert::From<&str> for cranelisp_types::LinkerSymbol
-pub fn cranelisp_types::LinkerSymbol::from(s: &str) -> Self
+pub fn cranelisp_types::LinkerSymbol::from(&str) -> Self
 impl core::convert::From<alloc::string::String> for cranelisp_types::LinkerSymbol
-pub fn cranelisp_types::LinkerSymbol::from(s: alloc::string::String) -> Self
+pub fn cranelisp_types::LinkerSymbol::from(alloc::string::String) -> Self
 impl core::fmt::Display for cranelisp_types::LinkerSymbol
-pub fn cranelisp_types::LinkerSymbol::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_types::LinkerSymbol::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::deref::Deref for cranelisp_types::LinkerSymbol
 pub type cranelisp_types::LinkerSymbol::Target = str
 pub fn cranelisp_types::LinkerSymbol::deref(&self) -> &str
@@ -976,7 +976,7 @@ pub cranelisp_types::ModuleAliasEntry::span: cranelisp_types::Span
 pub cranelisp_types::ModuleAliasEntry::target: cranelisp_types::ModuleFullPath
 pub cranelisp_types::ModuleAliasEntry::visibility: cranelisp_types::Visibility
 impl cranelisp_types::ModuleAliasEntry
-pub fn cranelisp_types::ModuleAliasEntry::new(target: cranelisp_types::ModuleFullPath, visibility: cranelisp_types::Visibility, span: cranelisp_types::Span) -> Self
+pub fn cranelisp_types::ModuleAliasEntry::new(cranelisp_types::ModuleFullPath, cranelisp_types::Visibility, cranelisp_types::Span) -> Self
 impl core::marker::Freeze for cranelisp_types::ModuleAliasEntry
 impl core::marker::Send for cranelisp_types::ModuleAliasEntry
 impl core::marker::Sync for cranelisp_types::ModuleAliasEntry
@@ -988,17 +988,17 @@ pub struct cranelisp_types::ModuleFullPath(_)
 impl core::borrow::Borrow<str> for cranelisp_types::ModuleFullPath
 pub fn cranelisp_types::ModuleFullPath::borrow(&self) -> &str
 impl core::cmp::PartialEq<&str> for cranelisp_types::ModuleFullPath
-pub fn cranelisp_types::ModuleFullPath::eq(&self, other: &&str) -> bool
+pub fn cranelisp_types::ModuleFullPath::eq(&self, &&str) -> bool
 impl core::cmp::PartialEq<str> for cranelisp_types::ModuleFullPath
-pub fn cranelisp_types::ModuleFullPath::eq(&self, other: &str) -> bool
+pub fn cranelisp_types::ModuleFullPath::eq(&self, &str) -> bool
 impl core::convert::AsRef<str> for cranelisp_types::ModuleFullPath
 pub fn cranelisp_types::ModuleFullPath::as_ref(&self) -> &str
 impl core::convert::From<&str> for cranelisp_types::ModuleFullPath
-pub fn cranelisp_types::ModuleFullPath::from(s: &str) -> Self
+pub fn cranelisp_types::ModuleFullPath::from(&str) -> Self
 impl core::convert::From<alloc::string::String> for cranelisp_types::ModuleFullPath
-pub fn cranelisp_types::ModuleFullPath::from(s: alloc::string::String) -> Self
+pub fn cranelisp_types::ModuleFullPath::from(alloc::string::String) -> Self
 impl core::fmt::Display for cranelisp_types::ModuleFullPath
-pub fn cranelisp_types::ModuleFullPath::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_types::ModuleFullPath::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::deref::Deref for cranelisp_types::ModuleFullPath
 pub type cranelisp_types::ModuleFullPath::Target = str
 pub fn cranelisp_types::ModuleFullPath::deref(&self) -> &str
@@ -1013,17 +1013,17 @@ pub struct cranelisp_types::ModuleName(_)
 impl core::borrow::Borrow<str> for cranelisp_types::ModuleName
 pub fn cranelisp_types::ModuleName::borrow(&self) -> &str
 impl core::cmp::PartialEq<&str> for cranelisp_types::ModuleName
-pub fn cranelisp_types::ModuleName::eq(&self, other: &&str) -> bool
+pub fn cranelisp_types::ModuleName::eq(&self, &&str) -> bool
 impl core::cmp::PartialEq<str> for cranelisp_types::ModuleName
-pub fn cranelisp_types::ModuleName::eq(&self, other: &str) -> bool
+pub fn cranelisp_types::ModuleName::eq(&self, &str) -> bool
 impl core::convert::AsRef<str> for cranelisp_types::ModuleName
 pub fn cranelisp_types::ModuleName::as_ref(&self) -> &str
 impl core::convert::From<&str> for cranelisp_types::ModuleName
-pub fn cranelisp_types::ModuleName::from(s: &str) -> Self
+pub fn cranelisp_types::ModuleName::from(&str) -> Self
 impl core::convert::From<alloc::string::String> for cranelisp_types::ModuleName
-pub fn cranelisp_types::ModuleName::from(s: alloc::string::String) -> Self
+pub fn cranelisp_types::ModuleName::from(alloc::string::String) -> Self
 impl core::fmt::Display for cranelisp_types::ModuleName
-pub fn cranelisp_types::ModuleName::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_types::ModuleName::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::deref::Deref for cranelisp_types::ModuleName
 pub type cranelisp_types::ModuleName::Target = str
 pub fn cranelisp_types::ModuleName::deref(&self) -> &str
@@ -1093,10 +1093,10 @@ pub cranelisp_types::Span::end: u32
 pub cranelisp_types::Span::start: u32
 impl cranelisp_types::Span
 pub const cranelisp_types::Span::SYNTHETIC: cranelisp_types::Span
-pub fn cranelisp_types::Span::merge(self, other: cranelisp_types::Span) -> cranelisp_types::Span
-pub fn cranelisp_types::Span::new(start: u32, end: u32) -> Self
+pub fn cranelisp_types::Span::merge(self, cranelisp_types::Span) -> cranelisp_types::Span
+pub fn cranelisp_types::Span::new(u32, u32) -> Self
 impl core::fmt::Display for cranelisp_types::Span
-pub fn cranelisp_types::Span::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_types::Span::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_types::Span
 impl core::marker::Send for cranelisp_types::Span
 impl core::marker::Sync for cranelisp_types::Span
@@ -1108,17 +1108,17 @@ pub struct cranelisp_types::Symbol(_)
 impl core::borrow::Borrow<str> for cranelisp_types::Symbol
 pub fn cranelisp_types::Symbol::borrow(&self) -> &str
 impl core::cmp::PartialEq<&str> for cranelisp_types::Symbol
-pub fn cranelisp_types::Symbol::eq(&self, other: &&str) -> bool
+pub fn cranelisp_types::Symbol::eq(&self, &&str) -> bool
 impl core::cmp::PartialEq<str> for cranelisp_types::Symbol
-pub fn cranelisp_types::Symbol::eq(&self, other: &str) -> bool
+pub fn cranelisp_types::Symbol::eq(&self, &str) -> bool
 impl core::convert::AsRef<str> for cranelisp_types::Symbol
 pub fn cranelisp_types::Symbol::as_ref(&self) -> &str
 impl core::convert::From<&str> for cranelisp_types::Symbol
-pub fn cranelisp_types::Symbol::from(s: &str) -> Self
+pub fn cranelisp_types::Symbol::from(&str) -> Self
 impl core::convert::From<alloc::string::String> for cranelisp_types::Symbol
-pub fn cranelisp_types::Symbol::from(s: alloc::string::String) -> Self
+pub fn cranelisp_types::Symbol::from(alloc::string::String) -> Self
 impl core::fmt::Display for cranelisp_types::Symbol
-pub fn cranelisp_types::Symbol::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_types::Symbol::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::deref::Deref for cranelisp_types::Symbol
 pub type cranelisp_types::Symbol::Target = str
 pub fn cranelisp_types::Symbol::deref(&self) -> &str
@@ -1133,9 +1133,9 @@ pub struct cranelisp_types::SymbolRef
 pub cranelisp_types::SymbolRef::module: core::option::Option<cranelisp_types::ModuleFullPath>
 pub cranelisp_types::SymbolRef::name: cranelisp_types::Symbol
 impl cranelisp_types::SymbolRef
-pub fn cranelisp_types::SymbolRef::new(module: core::option::Option<cranelisp_types::ModuleFullPath>, name: cranelisp_types::Symbol) -> Self
+pub fn cranelisp_types::SymbolRef::new(core::option::Option<cranelisp_types::ModuleFullPath>, cranelisp_types::Symbol) -> Self
 impl core::fmt::Display for cranelisp_types::SymbolRef
-pub fn cranelisp_types::SymbolRef::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_types::SymbolRef::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_types::SymbolRef
 impl core::marker::Send for cranelisp_types::SymbolRef
 impl core::marker::Sync for cranelisp_types::SymbolRef
@@ -1158,15 +1158,15 @@ pub cranelisp_types::SymbolTable::symbols: std::collections::hash::map::HashMap<
 impl cranelisp_types::SymbolTable<(), ()>
 pub fn cranelisp_types::SymbolTable<(), ()>::into_concrete<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore>(self) -> cranelisp_types::SymbolTable<C, L>
 impl cranelisp_types::SymbolTable<(), ()>
-pub fn cranelisp_types::SymbolTable<(), ()>::new(path: cranelisp_types::ModuleFullPath) -> Self
+pub fn cranelisp_types::SymbolTable<(), ()>::new(cranelisp_types::ModuleFullPath) -> Self
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> cranelisp_types::SymbolTable<C, L>
 pub fn cranelisp_types::SymbolTable<C, L>::all_symbols(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&cranelisp_types::Symbol, &cranelisp_types::ModuleEntry<C>)>
 pub fn cranelisp_types::SymbolTable<C, L>::allocate_got_slot(&mut self) -> usize
-pub fn cranelisp_types::SymbolTable<C, L>::append_structural_decl(&mut self, entry: cranelisp_types::StructuralDeclEntry)
+pub fn cranelisp_types::SymbolTable<C, L>::append_structural_decl(&mut self, cranelisp_types::StructuralDeclEntry)
 pub fn cranelisp_types::SymbolTable<C, L>::defined_symbols(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&cranelisp_types::Symbol, &cranelisp_types::ModuleEntry<C>)>
-pub fn cranelisp_types::SymbolTable<C, L>::get(&self, name: &str) -> core::option::Option<&cranelisp_types::ModuleEntry<C>>
-pub fn cranelisp_types::SymbolTable<C, L>::insert(&mut self, name: cranelisp_types::Symbol, entry: cranelisp_types::ModuleEntry<C>)
-pub fn cranelisp_types::SymbolTable<C, L>::new_with_params(path: cranelisp_types::ModuleFullPath) -> Self
+pub fn cranelisp_types::SymbolTable<C, L>::get(&self, &str) -> core::option::Option<&cranelisp_types::ModuleEntry<C>>
+pub fn cranelisp_types::SymbolTable<C, L>::insert(&mut self, cranelisp_types::Symbol, cranelisp_types::ModuleEntry<C>)
+pub fn cranelisp_types::SymbolTable<C, L>::new_with_params(cranelisp_types::ModuleFullPath) -> Self
 pub fn cranelisp_types::SymbolTable<C, L>::public_symbols(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&cranelisp_types::Symbol, &cranelisp_types::ModuleEntry<C>)>
 impl<C, L> core::marker::Freeze for cranelisp_types::SymbolTable<C, L> where L: core::marker::Freeze
 impl<C, L> core::marker::Send for cranelisp_types::SymbolTable<C, L>
@@ -1232,17 +1232,17 @@ pub struct cranelisp_types::TraitName(_)
 impl core::borrow::Borrow<str> for cranelisp_types::TraitName
 pub fn cranelisp_types::TraitName::borrow(&self) -> &str
 impl core::cmp::PartialEq<&str> for cranelisp_types::TraitName
-pub fn cranelisp_types::TraitName::eq(&self, other: &&str) -> bool
+pub fn cranelisp_types::TraitName::eq(&self, &&str) -> bool
 impl core::cmp::PartialEq<str> for cranelisp_types::TraitName
-pub fn cranelisp_types::TraitName::eq(&self, other: &str) -> bool
+pub fn cranelisp_types::TraitName::eq(&self, &str) -> bool
 impl core::convert::AsRef<str> for cranelisp_types::TraitName
 pub fn cranelisp_types::TraitName::as_ref(&self) -> &str
 impl core::convert::From<&str> for cranelisp_types::TraitName
-pub fn cranelisp_types::TraitName::from(s: &str) -> Self
+pub fn cranelisp_types::TraitName::from(&str) -> Self
 impl core::convert::From<alloc::string::String> for cranelisp_types::TraitName
-pub fn cranelisp_types::TraitName::from(s: alloc::string::String) -> Self
+pub fn cranelisp_types::TraitName::from(alloc::string::String) -> Self
 impl core::fmt::Display for cranelisp_types::TraitName
-pub fn cranelisp_types::TraitName::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_types::TraitName::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::deref::Deref for cranelisp_types::TraitName
 pub type cranelisp_types::TraitName::Target = str
 pub fn cranelisp_types::TraitName::deref(&self) -> &str
@@ -1257,9 +1257,9 @@ pub struct cranelisp_types::TraitRef
 pub cranelisp_types::TraitRef::module: core::option::Option<cranelisp_types::ModuleFullPath>
 pub cranelisp_types::TraitRef::name: cranelisp_types::TraitName
 impl cranelisp_types::TraitRef
-pub fn cranelisp_types::TraitRef::new(module: core::option::Option<cranelisp_types::ModuleFullPath>, name: cranelisp_types::TraitName) -> Self
+pub fn cranelisp_types::TraitRef::new(core::option::Option<cranelisp_types::ModuleFullPath>, cranelisp_types::TraitName) -> Self
 impl core::fmt::Display for cranelisp_types::TraitRef
-pub fn cranelisp_types::TraitRef::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_types::TraitRef::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_types::TraitRef
 impl core::marker::Send for cranelisp_types::TraitRef
 impl core::marker::Sync for cranelisp_types::TraitRef
@@ -1282,17 +1282,17 @@ pub struct cranelisp_types::TypeName(_)
 impl core::borrow::Borrow<str> for cranelisp_types::TypeName
 pub fn cranelisp_types::TypeName::borrow(&self) -> &str
 impl core::cmp::PartialEq<&str> for cranelisp_types::TypeName
-pub fn cranelisp_types::TypeName::eq(&self, other: &&str) -> bool
+pub fn cranelisp_types::TypeName::eq(&self, &&str) -> bool
 impl core::cmp::PartialEq<str> for cranelisp_types::TypeName
-pub fn cranelisp_types::TypeName::eq(&self, other: &str) -> bool
+pub fn cranelisp_types::TypeName::eq(&self, &str) -> bool
 impl core::convert::AsRef<str> for cranelisp_types::TypeName
 pub fn cranelisp_types::TypeName::as_ref(&self) -> &str
 impl core::convert::From<&str> for cranelisp_types::TypeName
-pub fn cranelisp_types::TypeName::from(s: &str) -> Self
+pub fn cranelisp_types::TypeName::from(&str) -> Self
 impl core::convert::From<alloc::string::String> for cranelisp_types::TypeName
-pub fn cranelisp_types::TypeName::from(s: alloc::string::String) -> Self
+pub fn cranelisp_types::TypeName::from(alloc::string::String) -> Self
 impl core::fmt::Display for cranelisp_types::TypeName
-pub fn cranelisp_types::TypeName::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_types::TypeName::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::deref::Deref for cranelisp_types::TypeName
 pub type cranelisp_types::TypeName::Target = str
 pub fn cranelisp_types::TypeName::deref(&self) -> &str
@@ -1307,9 +1307,9 @@ pub struct cranelisp_types::TypeRef
 pub cranelisp_types::TypeRef::module: core::option::Option<cranelisp_types::ModuleFullPath>
 pub cranelisp_types::TypeRef::name: cranelisp_types::TypeName
 impl cranelisp_types::TypeRef
-pub fn cranelisp_types::TypeRef::new(module: core::option::Option<cranelisp_types::ModuleFullPath>, name: cranelisp_types::TypeName) -> Self
+pub fn cranelisp_types::TypeRef::new(core::option::Option<cranelisp_types::ModuleFullPath>, cranelisp_types::TypeName) -> Self
 impl core::fmt::Display for cranelisp_types::TypeRef
-pub fn cranelisp_types::TypeRef::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_types::TypeRef::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_types::TypeRef
 impl core::marker::Send for cranelisp_types::TypeRef
 impl core::marker::Sync for cranelisp_types::TypeRef
@@ -1320,9 +1320,9 @@ impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::TypeRef
 pub struct cranelisp_types::View<'a, C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore>
 impl<'a, C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> cranelisp_types::View<'a, C, L>
 pub fn cranelisp_types::View<'a, C, L>::iter(&self) -> alloc::boxed::Box<(dyn core::iter::traits::iterator::Iterator<Item = (&'a cranelisp_types::Symbol, &'a cranelisp_types::ModuleEntry<C>)> + 'a)>
-pub fn cranelisp_types::View<'a, C, L>::lookup(&self, name: &cranelisp_types::Symbol) -> core::option::Option<&'a cranelisp_types::ModuleEntry<C>>
-pub fn cranelisp_types::View<'a, C, L>::single(live: &'a cranelisp_types::SymbolTable<C, L>) -> Self
-pub fn cranelisp_types::View<'a, C, L>::union(staging: &'a cranelisp_types::SymbolTable<C, L>, live: &'a cranelisp_types::SymbolTable<C, L>) -> Self
+pub fn cranelisp_types::View<'a, C, L>::lookup(&self, &cranelisp_types::Symbol) -> core::option::Option<&'a cranelisp_types::ModuleEntry<C>>
+pub fn cranelisp_types::View<'a, C, L>::single(&'a cranelisp_types::SymbolTable<C, L>) -> Self
+pub fn cranelisp_types::View<'a, C, L>::union(&'a cranelisp_types::SymbolTable<C, L>, &'a cranelisp_types::SymbolTable<C, L>) -> Self
 impl<'a, C, L> core::marker::Freeze for cranelisp_types::View<'a, C, L>
 impl<'a, C, L> core::marker::Send for cranelisp_types::View<'a, C, L>
 impl<'a, C, L> core::marker::Sync for cranelisp_types::View<'a, C, L>
@@ -1358,26 +1358,26 @@ impl<T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static> 
 pub trait cranelisp_types::LinkerStore: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 impl<T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static> cranelisp_types::LinkerStore for T
 pub trait cranelisp_types::MacroExpander: core::marker::Send + core::marker::Sync
-pub fn cranelisp_types::MacroExpander::invoke(&self, fq: &cranelisp_types::FQSymbol, args: &[cranelisp_types::Sexp], call_span: cranelisp_types::Span) -> core::result::Result<cranelisp_types::Sexp, cranelisp_types::MacroInvokeError>
-pub fn cranelisp_types::apply(subst: &cranelisp_types::Subst, ty: &cranelisp_types::Type) -> cranelisp_types::Type
-pub fn cranelisp_types::ensure_module_exists<C, L>(modules: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, path: &cranelisp_types::ModuleFullPath) -> cranelisp_types::EnsureOutcome where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
-pub fn cranelisp_types::for_each_in_module<C, L, F>(modules: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, module_path: &cranelisp_types::ModuleFullPath, f: F) where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore, F: core::ops::function::FnMut(&cranelisp_types::Symbol, &cranelisp_types::ModuleEntry<C>)
-pub fn cranelisp_types::format_type_display(ty: &cranelisp_types::Type) -> alloc::string::String
-pub fn cranelisp_types::format_type_with_vars(ty: &cranelisp_types::Type, var_names: &std::collections::hash::map::HashMap<cranelisp_types::TypeId, alloc::string::String>) -> alloc::string::String
-pub fn cranelisp_types::free_vars(ty: &cranelisp_types::Type) -> std::collections::hash::set::HashSet<cranelisp_types::TypeId>
-pub fn cranelisp_types::free_vars_expr(expr: &cranelisp_types::Expr, globals: &std::collections::hash::set::HashSet<cranelisp_types::Symbol>) -> std::collections::hash::set::HashSet<cranelisp_types::Symbol>
-pub fn cranelisp_types::get_implementing_types_chain<C, L>(modules: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, scope: &cranelisp_types::ModuleFullPath, trait_name: &cranelisp_types::TraitName) -> alloc::vec::Vec<cranelisp_types::TypeName> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
-pub fn cranelisp_types::get_impls_for_type_chain<C, L>(modules: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, scope: &cranelisp_types::ModuleFullPath, type_name: &cranelisp_types::TypeName) -> alloc::vec::Vec<cranelisp_types::TraitName> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
-pub fn cranelisp_types::got_data_symbol_name(module_path: &cranelisp_types::ModuleFullPath) -> alloc::string::String
-pub fn cranelisp_types::install_module<C, L>(modules: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, path: cranelisp_types::ModuleFullPath, table: cranelisp_types::SymbolTable<C, L>) where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
-pub fn cranelisp_types::lookup_trait_decl_chain<C, L>(modules: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, scope: &cranelisp_types::ModuleFullPath, trait_name: &cranelisp_types::TraitName) -> core::option::Option<cranelisp_types::TraitDeclInfo> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
-pub fn cranelisp_types::lookup_type_def_chain<C, L>(modules: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, scope: &cranelisp_types::ModuleFullPath, name: &cranelisp_types::TypeName) -> core::option::Option<cranelisp_types::TypeDefInfo> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
-pub fn cranelisp_types::max_type_var_id(ty: &cranelisp_types::Type) -> core::option::Option<cranelisp_types::TypeId>
-pub fn cranelisp_types::resolve<C, L>(symbol_tables: &cranelisp_types::SymbolTables<C, L>, module_aliases: &cranelisp_types::ModuleAliases, first_hop: &cranelisp_types::View<'_, C, L>, current_module: &cranelisp_types::ModuleFullPath, name: &str, span: cranelisp_types::Span) -> core::result::Result<cranelisp_types::Resolved<C>, cranelisp_types::ResolveError> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
-pub fn cranelisp_types::resolve_macro_head<C, L>(symbol_tables: &cranelisp_types::SymbolTables<C, L>, module_aliases: &cranelisp_types::ModuleAliases, first_hop: &cranelisp_types::View<'_, C, L>, current_module: &cranelisp_types::ModuleFullPath, name: &str, span: cranelisp_types::Span) -> core::result::Result<core::option::Option<cranelisp_types::FQSymbol>, cranelisp_types::ResolveError> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
-pub fn cranelisp_types::resolve_module_by_name_chain<C, L>(modules: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, scope: &cranelisp_types::ModuleFullPath, name: &str) -> core::option::Option<cranelisp_types::ModuleFullPath> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
-pub fn cranelisp_types::resolve_terminal_entry_and_home<C, L>(modules: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, module_path: &cranelisp_types::ModuleFullPath, name: &str) -> core::option::Option<(cranelisp_types::ModuleEntry<C>, cranelisp_types::ModuleFullPath)> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
-pub fn cranelisp_types::type_var_names(ty: &cranelisp_types::Type) -> std::collections::hash::map::HashMap<cranelisp_types::TypeId, alloc::string::String>
+pub fn cranelisp_types::MacroExpander::invoke(&self, &cranelisp_types::FQSymbol, &[cranelisp_types::Sexp], cranelisp_types::Span) -> core::result::Result<cranelisp_types::Sexp, cranelisp_types::MacroInvokeError>
+pub fn cranelisp_types::apply(&cranelisp_types::Subst, &cranelisp_types::Type) -> cranelisp_types::Type
+pub fn cranelisp_types::ensure_module_exists<C, L>(&dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, &cranelisp_types::ModuleFullPath) -> cranelisp_types::EnsureOutcome where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
+pub fn cranelisp_types::for_each_in_module<C, L, F>(&dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, &cranelisp_types::ModuleFullPath, F) where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore, F: core::ops::function::FnMut(&cranelisp_types::Symbol, &cranelisp_types::ModuleEntry<C>)
+pub fn cranelisp_types::format_type_display(&cranelisp_types::Type) -> alloc::string::String
+pub fn cranelisp_types::format_type_with_vars(&cranelisp_types::Type, &std::collections::hash::map::HashMap<cranelisp_types::TypeId, alloc::string::String>) -> alloc::string::String
+pub fn cranelisp_types::free_vars(&cranelisp_types::Type) -> std::collections::hash::set::HashSet<cranelisp_types::TypeId>
+pub fn cranelisp_types::free_vars_expr(&cranelisp_types::Expr, &std::collections::hash::set::HashSet<cranelisp_types::Symbol>) -> std::collections::hash::set::HashSet<cranelisp_types::Symbol>
+pub fn cranelisp_types::get_implementing_types_chain<C, L>(&dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, &cranelisp_types::ModuleFullPath, &cranelisp_types::TraitName) -> alloc::vec::Vec<cranelisp_types::TypeName> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
+pub fn cranelisp_types::get_impls_for_type_chain<C, L>(&dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, &cranelisp_types::ModuleFullPath, &cranelisp_types::TypeName) -> alloc::vec::Vec<cranelisp_types::TraitName> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
+pub fn cranelisp_types::got_data_symbol_name(&cranelisp_types::ModuleFullPath) -> alloc::string::String
+pub fn cranelisp_types::install_module<C, L>(&dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>) where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
+pub fn cranelisp_types::lookup_trait_decl_chain<C, L>(&dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, &cranelisp_types::ModuleFullPath, &cranelisp_types::TraitName) -> core::option::Option<cranelisp_types::TraitDeclInfo> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
+pub fn cranelisp_types::lookup_type_def_chain<C, L>(&dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, &cranelisp_types::ModuleFullPath, &cranelisp_types::TypeName) -> core::option::Option<cranelisp_types::TypeDefInfo> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
+pub fn cranelisp_types::max_type_var_id(&cranelisp_types::Type) -> core::option::Option<cranelisp_types::TypeId>
+pub fn cranelisp_types::resolve<C, L>(&cranelisp_types::SymbolTables<C, L>, &cranelisp_types::ModuleAliases, &cranelisp_types::View<'_, C, L>, &cranelisp_types::ModuleFullPath, &str, cranelisp_types::Span) -> core::result::Result<cranelisp_types::Resolved<C>, cranelisp_types::ResolveError> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
+pub fn cranelisp_types::resolve_macro_head<C, L>(&cranelisp_types::SymbolTables<C, L>, &cranelisp_types::ModuleAliases, &cranelisp_types::View<'_, C, L>, &cranelisp_types::ModuleFullPath, &str, cranelisp_types::Span) -> core::result::Result<core::option::Option<cranelisp_types::FQSymbol>, cranelisp_types::ResolveError> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
+pub fn cranelisp_types::resolve_module_by_name_chain<C, L>(&dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, &cranelisp_types::ModuleFullPath, &str) -> core::option::Option<cranelisp_types::ModuleFullPath> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
+pub fn cranelisp_types::resolve_terminal_entry_and_home<C, L>(&dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, &cranelisp_types::ModuleFullPath, &str) -> core::option::Option<(cranelisp_types::ModuleEntry<C>, cranelisp_types::ModuleFullPath)> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
+pub fn cranelisp_types::type_var_names(&cranelisp_types::Type) -> std::collections::hash::map::HashMap<cranelisp_types::TypeId, alloc::string::String>
 pub type cranelisp_types::CallGraph = std::collections::hash::map::HashMap<cranelisp_types::Symbol, cranelisp_types::CallInfo>
 pub type cranelisp_types::ModuleAliases = dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::ModuleAliasEntry>
 pub type cranelisp_types::Program = alloc::vec::Vec<cranelisp_types::TopLevel>

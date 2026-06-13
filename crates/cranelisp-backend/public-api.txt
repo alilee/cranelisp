@@ -27,9 +27,9 @@ pub mod cranelisp_backend::cache
 pub mod cranelisp_backend::cache::linker
 pub struct cranelisp_backend::cache::linker::Linker
 impl cranelisp_backend::cache::linker::Linker
-pub fn cranelisp_backend::cache::linker::Linker::get_symbol(&self, name: &str) -> core::result::Result<*const u8, cranelisp_backend::error::LinkerError>
+pub fn cranelisp_backend::cache::linker::Linker::get_symbol(&self, &str) -> core::result::Result<*const u8, cranelisp_backend::error::LinkerError>
 pub fn cranelisp_backend::cache::linker::Linker::new() -> core::result::Result<Self, cranelisp_types::error::CranelispError>
-pub fn cranelisp_backend::cache::linker::Linker::register_symbol(&mut self, name: &str, addr: *const u8)
+pub fn cranelisp_backend::cache::linker::Linker::register_symbol(&mut self, &str, *const u8)
 impl core::marker::Freeze for cranelisp_backend::cache::linker::Linker
 impl core::marker::Send for cranelisp_backend::cache::linker::Linker
 impl core::marker::Sync for cranelisp_backend::cache::linker::Linker
@@ -50,7 +50,7 @@ pub cranelisp_backend::cache::manifest::CacheInvalidReason::TargetTriple
 pub cranelisp_backend::cache::manifest::CacheInvalidReason::TargetTriple::cached: alloc::string::String
 pub cranelisp_backend::cache::manifest::CacheInvalidReason::TargetTriple::current: alloc::string::String
 impl core::fmt::Display for cranelisp_backend::cache::manifest::CacheInvalidReason
-pub fn cranelisp_backend::cache::manifest::CacheInvalidReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_backend::cache::manifest::CacheInvalidReason::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_backend::cache::manifest::CacheInvalidReason
 impl core::marker::Send for cranelisp_backend::cache::manifest::CacheInvalidReason
 impl core::marker::Sync for cranelisp_backend::cache::manifest::CacheInvalidReason
@@ -65,11 +65,11 @@ pub cranelisp_backend::cache::manifest::CacheManifest::cranelift_version: alloc:
 pub cranelisp_backend::cache::manifest::CacheManifest::modules: std::collections::hash::map::HashMap<alloc::string::String, cranelisp_backend::cache::manifest::CachedModuleRef>
 pub cranelisp_backend::cache::manifest::CacheManifest::target_triple: alloc::string::String
 impl cranelisp_backend::cache::manifest::CacheManifest
-pub fn cranelisp_backend::cache::manifest::CacheManifest::get_module(&self, module_path: &cranelisp_types::newtype::ModuleFullPath) -> core::option::Option<&cranelisp_backend::cache::manifest::CachedModuleRef>
-pub fn cranelisp_backend::cache::manifest::CacheManifest::new(target_triple: &str) -> Self
+pub fn cranelisp_backend::cache::manifest::CacheManifest::get_module(&self, &cranelisp_types::newtype::ModuleFullPath) -> core::option::Option<&cranelisp_backend::cache::manifest::CachedModuleRef>
+pub fn cranelisp_backend::cache::manifest::CacheManifest::new(&str) -> Self
 pub fn cranelisp_backend::cache::manifest::CacheManifest::new_for_host() -> Self
-pub fn cranelisp_backend::cache::manifest::CacheManifest::remove_module(&mut self, module_path: &cranelisp_types::newtype::ModuleFullPath)
-pub fn cranelisp_backend::cache::manifest::CacheManifest::upsert_module(&mut self, module_path: &cranelisp_types::newtype::ModuleFullPath, source_hash: alloc::string::String, dependency_hashes: std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>)
+pub fn cranelisp_backend::cache::manifest::CacheManifest::remove_module(&mut self, &cranelisp_types::newtype::ModuleFullPath)
+pub fn cranelisp_backend::cache::manifest::CacheManifest::upsert_module(&mut self, &cranelisp_types::newtype::ModuleFullPath, alloc::string::String, std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>)
 impl core::marker::Freeze for cranelisp_backend::cache::manifest::CacheManifest
 impl core::marker::Send for cranelisp_backend::cache::manifest::CacheManifest
 impl core::marker::Sync for cranelisp_backend::cache::manifest::CacheManifest
@@ -88,10 +88,10 @@ impl core::marker::UnsafeUnpin for cranelisp_backend::cache::manifest::CachedMod
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::manifest::CachedModuleRef
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::manifest::CachedModuleRef
 pub fn cranelisp_backend::cache::manifest::binary_fingerprint() -> alloc::string::String
-pub fn cranelisp_backend::cache::manifest::check_manifest(manifest: &cranelisp_backend::cache::manifest::CacheManifest, module_path: &cranelisp_types::newtype::ModuleFullPath, current_source_hash: &str, dependency_source_hashes: &std::collections::hash::map::HashMap<cranelisp_types::newtype::ModuleFullPath, alloc::string::String>) -> core::result::Result<bool, cranelisp_backend::cache::manifest::CacheInvalidReason>
-pub fn cranelisp_backend::cache::manifest::hash_source(source: &str) -> alloc::string::String
-pub fn cranelisp_backend::cache::manifest::read_manifest(cache_dir: &std::path::Path) -> core::option::Option<cranelisp_backend::cache::manifest::CacheManifest>
-pub fn cranelisp_backend::cache::manifest::write_manifest(cache_dir: &std::path::Path, manifest: &cranelisp_backend::cache::manifest::CacheManifest) -> core::result::Result<(), cranelisp_types::error::CranelispError>
+pub fn cranelisp_backend::cache::manifest::check_manifest(&cranelisp_backend::cache::manifest::CacheManifest, &cranelisp_types::newtype::ModuleFullPath, &str, &std::collections::hash::map::HashMap<cranelisp_types::newtype::ModuleFullPath, alloc::string::String>) -> core::result::Result<bool, cranelisp_backend::cache::manifest::CacheInvalidReason>
+pub fn cranelisp_backend::cache::manifest::hash_source(&str) -> alloc::string::String
+pub fn cranelisp_backend::cache::manifest::read_manifest(&std::path::Path) -> core::option::Option<cranelisp_backend::cache::manifest::CacheManifest>
+pub fn cranelisp_backend::cache::manifest::write_manifest(&std::path::Path, &cranelisp_backend::cache::manifest::CacheManifest) -> core::result::Result<(), cranelisp_types::error::CranelispError>
 pub mod cranelisp_backend::cache::object
 pub struct cranelisp_backend::cache::object::CacheWritePacket
 pub cranelisp_backend::cache::object::CacheWritePacket::cache_dir: std::path::PathBuf
@@ -176,9 +176,9 @@ impl core::marker::Unpin for cranelisp_backend::cache::object::ProcessedPacket
 impl core::marker::UnsafeUnpin for cranelisp_backend::cache::object::ProcessedPacket
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::object::ProcessedPacket
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::object::ProcessedPacket
-pub fn cranelisp_backend::cache::object::build_cache_packet(cache_dir: &std::path::Path, module_path: &cranelisp_types::newtype::ModuleFullPath, source_hash: &str, is_stdlib: bool, dependency_hashes: std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>, metadata: &cranelisp_backend::cache::serialize::CacheMetadata, object_compile_input: cranelisp_backend::cache::object::ObjectCompileInput) -> core::result::Result<cranelisp_backend::cache::object::CacheWritePacket, cranelisp_types::error::CranelispError>
-pub fn cranelisp_backend::cache::object::build_isa(is_pic: bool) -> core::result::Result<alloc::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>, cranelisp_types::error::CranelispError>
-pub fn cranelisp_backend::cache::object::process_cache_packet(packet: &cranelisp_backend::cache::object::CacheWritePacket, symbol_tables: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable>) -> core::result::Result<cranelisp_backend::cache::object::ProcessedPacket, cranelisp_types::error::CranelispError>
+pub fn cranelisp_backend::cache::object::build_cache_packet(&std::path::Path, &cranelisp_types::newtype::ModuleFullPath, &str, bool, std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>, &cranelisp_backend::cache::serialize::CacheMetadata, cranelisp_backend::cache::object::ObjectCompileInput) -> core::result::Result<cranelisp_backend::cache::object::CacheWritePacket, cranelisp_types::error::CranelispError>
+pub fn cranelisp_backend::cache::object::build_isa(bool) -> core::result::Result<alloc::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>, cranelisp_types::error::CranelispError>
+pub fn cranelisp_backend::cache::object::process_cache_packet(&cranelisp_backend::cache::object::CacheWritePacket, &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable>) -> core::result::Result<cranelisp_backend::cache::object::ProcessedPacket, cranelisp_types::error::CranelispError>
 pub mod cranelisp_backend::cache::serialize
 pub enum cranelisp_backend::cache::serialize::CacheStale
 pub cranelisp_backend::cache::serialize::CacheStale::BuildIdMismatch
@@ -204,7 +204,7 @@ pub cranelisp_backend::cache::serialize::CacheStale::SchemaMismatch::path: std::
 impl cranelisp_backend::cache::serialize::CacheStale
 pub fn cranelisp_backend::cache::serialize::CacheStale::reason(&self) -> &'static str
 impl core::fmt::Display for cranelisp_backend::cache::serialize::CacheStale
-pub fn cranelisp_backend::cache::serialize::CacheStale::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_backend::cache::serialize::CacheStale::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_backend::cache::serialize::CacheStale
 impl core::marker::Send for cranelisp_backend::cache::serialize::CacheStale
 impl core::marker::Sync for cranelisp_backend::cache::serialize::CacheStale
@@ -222,12 +222,12 @@ impl core::marker::Unpin for cranelisp_backend::cache::serialize::CacheMetadata
 impl core::marker::UnsafeUnpin for cranelisp_backend::cache::serialize::CacheMetadata
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::serialize::CacheMetadata
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::serialize::CacheMetadata
-pub fn cranelisp_backend::cache::serialize::deserialise_meta(bytes: &[u8], expected_schema_version: u32, path: &std::path::Path) -> core::result::Result<cranelisp_types::module::SymbolTable, cranelisp_backend::cache::serialize::CacheStale>
-pub fn cranelisp_backend::cache::serialize::load_meta(meta_path: &std::path::Path) -> core::result::Result<cranelisp_types::module::SymbolTable, cranelisp_backend::cache::serialize::CacheStale>
-pub fn cranelisp_backend::cache::serialize::read_cached_metadata(meta_path: &std::path::Path) -> core::result::Result<cranelisp_backend::cache::serialize::CacheMetadata, cranelisp_types::error::CranelispError>
-pub fn cranelisp_backend::cache::serialize::serialise_meta<C, L>(table: &cranelisp_types::module::SymbolTable<C, L>, schema_version: u32) -> core::result::Result<alloc::vec::Vec<u8>, cranelisp_types::error::CranelispError> where C: cranelisp_types::module::CodeStore + core::clone::Clone, L: cranelisp_types::module::LinkerStore + core::clone::Clone
-pub fn cranelisp_backend::cache::serialize::write_cached_metadata(meta_path: &std::path::Path, metadata: &cranelisp_backend::cache::serialize::CacheMetadata) -> core::result::Result<(), cranelisp_types::error::CranelispError>
-pub fn cranelisp_backend::cache::serialize::write_meta<C, L>(meta_path: &std::path::Path, table: &cranelisp_types::module::SymbolTable<C, L>, schema_version: u32) -> core::result::Result<(), cranelisp_types::error::CranelispError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_backend::cache::serialize::deserialise_meta(&[u8], u32, &std::path::Path) -> core::result::Result<cranelisp_types::module::SymbolTable, cranelisp_backend::cache::serialize::CacheStale>
+pub fn cranelisp_backend::cache::serialize::load_meta(&std::path::Path) -> core::result::Result<cranelisp_types::module::SymbolTable, cranelisp_backend::cache::serialize::CacheStale>
+pub fn cranelisp_backend::cache::serialize::read_cached_metadata(&std::path::Path) -> core::result::Result<cranelisp_backend::cache::serialize::CacheMetadata, cranelisp_types::error::CranelispError>
+pub fn cranelisp_backend::cache::serialize::serialise_meta<C, L>(&cranelisp_types::module::SymbolTable<C, L>, u32) -> core::result::Result<alloc::vec::Vec<u8>, cranelisp_types::error::CranelispError> where C: cranelisp_types::module::CodeStore + core::clone::Clone, L: cranelisp_types::module::LinkerStore + core::clone::Clone
+pub fn cranelisp_backend::cache::serialize::write_cached_metadata(&std::path::Path, &cranelisp_backend::cache::serialize::CacheMetadata) -> core::result::Result<(), cranelisp_types::error::CranelispError>
+pub fn cranelisp_backend::cache::serialize::write_meta<C, L>(&std::path::Path, &cranelisp_types::module::SymbolTable<C, L>, u32) -> core::result::Result<(), cranelisp_types::error::CranelispError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub struct cranelisp_backend::cache::CachedModule
 pub cranelisp_backend::cache::CachedModule::has_object: bool
 pub cranelisp_backend::cache::CachedModule::meta_path: std::path::PathBuf
@@ -246,18 +246,18 @@ impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::CachedMo
 pub const cranelisp_backend::cache::BUILD_ID: &str
 pub const cranelisp_backend::cache::CACHE_FORMAT_VERSION: u32
 pub const cranelisp_backend::cache::CACHE_SCHEMA_VERSION: u32
-pub fn cranelisp_backend::cache::load_cached_object(linker: &mut cranelisp_backend::cache::linker::Linker, cached: &cranelisp_backend::cache::CachedModule) -> core::result::Result<std::collections::hash::map::HashMap<alloc::string::String, *const u8>, cranelisp_types::error::CranelispError>
-pub fn cranelisp_backend::cache::module_cache_path(cache_dir: &std::path::Path, module_path: &cranelisp_types::newtype::ModuleFullPath) -> (std::path::PathBuf, std::path::PathBuf)
-pub fn cranelisp_backend::cache::try_load_cached_module(cache_dir: &std::path::Path, module_path: &cranelisp_types::newtype::ModuleFullPath) -> core::result::Result<core::option::Option<cranelisp_backend::cache::CachedModule>, cranelisp_types::error::CranelispError>
+pub fn cranelisp_backend::cache::load_cached_object(&mut cranelisp_backend::cache::linker::Linker, &cranelisp_backend::cache::CachedModule) -> core::result::Result<std::collections::hash::map::HashMap<alloc::string::String, *const u8>, cranelisp_types::error::CranelispError>
+pub fn cranelisp_backend::cache::module_cache_path(&std::path::Path, &cranelisp_types::newtype::ModuleFullPath) -> (std::path::PathBuf, std::path::PathBuf)
+pub fn cranelisp_backend::cache::try_load_cached_module(&std::path::Path, &cranelisp_types::newtype::ModuleFullPath) -> core::result::Result<core::option::Option<cranelisp_backend::cache::CachedModule>, cranelisp_types::error::CranelispError>
 pub mod cranelisp_backend::code
 #[non_exhaustive] pub enum cranelisp_backend::code::Code
 pub cranelisp_backend::code::Code::Jit(alloc::sync::Arc<cranelisp_backend::jit::Jit>)
 pub cranelisp_backend::code::Code::Linker(alloc::sync::Arc<cranelisp_backend::cache::linker::Linker>)
 impl cranelisp_backend::code::Code
-pub fn cranelisp_backend::code::Code::jit(jit: alloc::sync::Arc<cranelisp_backend::jit::Jit>) -> Self
-pub fn cranelisp_backend::code::Code::linker(linker: alloc::sync::Arc<cranelisp_backend::cache::linker::Linker>) -> Self
+pub fn cranelisp_backend::code::Code::jit(alloc::sync::Arc<cranelisp_backend::jit::Jit>) -> Self
+pub fn cranelisp_backend::code::Code::linker(alloc::sync::Arc<cranelisp_backend::cache::linker::Linker>) -> Self
 impl core::fmt::Debug for cranelisp_backend::code::Code
-pub fn cranelisp_backend::code::Code::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_backend::code::Code::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for cranelisp_backend::code::Code
 impl core::marker::Sync for cranelisp_backend::code::Code
 impl core::marker::Freeze for cranelisp_backend::code::Code
@@ -282,7 +282,7 @@ pub cranelisp_backend::compiler::CompileContext::symbol_tables: &'a dashmap::Das
 pub cranelisp_backend::compiler::CompileContext::vec_drop_func_id: core::option::Option<cranelift_module::module::FuncId>
 pub cranelisp_backend::compiler::CompileContext::vec_new_func_id: core::option::Option<cranelift_module::module::FuncId>
 impl<'a, C, L> cranelisp_backend::compiler::CompileContext<'a, C, L> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
-pub fn cranelisp_backend::compiler::CompileContext<'a, C, L>::lookup_type_def(&self, fqtn: &cranelisp_types::newtype::FQTypeName) -> core::option::Option<cranelisp_types::check::TypeDefInfo>
+pub fn cranelisp_backend::compiler::CompileContext<'a, C, L>::lookup_type_def(&self, &cranelisp_types::newtype::FQTypeName) -> core::option::Option<cranelisp_types::check::TypeDefInfo>
 impl<'a, C, L> core::clone::Clone for cranelisp_backend::compiler::CompileContext<'a, C, L> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub fn cranelisp_backend::compiler::CompileContext<'a, C, L>::clone(&self) -> Self
 impl<'a, C, L> core::marker::Freeze for cranelisp_backend::compiler::CompileContext<'a, C, L>
@@ -307,12 +307,12 @@ pub cranelisp_backend::error::CompilationError::SymbolNotCompilable
 pub cranelisp_backend::error::CompilationError::SymbolNotCompilable::module: cranelisp_types::newtype::ModuleFullPath
 pub cranelisp_backend::error::CompilationError::SymbolNotCompilable::symbol: cranelisp_types::newtype::Symbol
 impl core::convert::From<cranelisp_backend::error::CompilationError> for cranelisp_types::error::CranelispError
-pub fn cranelisp_types::error::CranelispError::from(err: cranelisp_backend::error::CompilationError) -> Self
+pub fn cranelisp_types::error::CranelispError::from(cranelisp_backend::error::CompilationError) -> Self
 impl core::convert::From<cranelisp_types::error::CranelispError> for cranelisp_backend::error::CompilationError
-pub fn cranelisp_backend::error::CompilationError::from(err: cranelisp_types::error::CranelispError) -> Self
+pub fn cranelisp_backend::error::CompilationError::from(cranelisp_types::error::CranelispError) -> Self
 impl core::error::Error for cranelisp_backend::error::CompilationError
 impl core::fmt::Display for cranelisp_backend::error::CompilationError
-pub fn cranelisp_backend::error::CompilationError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_backend::error::CompilationError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_backend::error::CompilationError
 impl core::marker::Send for cranelisp_backend::error::CompilationError
 impl core::marker::Sync for cranelisp_backend::error::CompilationError
@@ -328,7 +328,7 @@ pub cranelisp_backend::error::LinkerError::SymbolNotFound
 pub cranelisp_backend::error::LinkerError::SymbolNotFound::name: cranelisp_types::newtype::LinkerSymbol
 impl core::error::Error for cranelisp_backend::error::LinkerError
 impl core::fmt::Display for cranelisp_backend::error::LinkerError
-pub fn cranelisp_backend::error::LinkerError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_backend::error::LinkerError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_backend::error::LinkerError
 impl core::marker::Send for cranelisp_backend::error::LinkerError
 impl core::marker::Sync for cranelisp_backend::error::LinkerError
@@ -386,8 +386,8 @@ impl core::marker::Unpin for cranelisp_backend::got_observer::GotEvent
 impl core::marker::UnsafeUnpin for cranelisp_backend::got_observer::GotEvent
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::got_observer::GotEvent
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::got_observer::GotEvent
-pub fn cranelisp_backend::got_observer::emit(tag: cranelisp_backend::got_observer::GotEventTag, event: &cranelisp_backend::got_observer::GotEvent)
-pub fn cranelisp_backend::got_observer::register_got_observer(observer: core::option::Option<cranelisp_backend::got_observer::GotObserver>)
+pub fn cranelisp_backend::got_observer::emit(cranelisp_backend::got_observer::GotEventTag, &cranelisp_backend::got_observer::GotEvent)
+pub fn cranelisp_backend::got_observer::register_got_observer(core::option::Option<cranelisp_backend::got_observer::GotObserver>)
 pub type cranelisp_backend::got_observer::GotObserver = fn(cranelisp_backend::got_observer::GotEventTag, &cranelisp_backend::got_observer::GotEvent)
 pub mod cranelisp_backend::heap
 pub enum cranelisp_backend::heap::HeapCategory
@@ -395,7 +395,7 @@ pub cranelisp_backend::heap::HeapCategory::AlwaysHeap
 pub cranelisp_backend::heap::HeapCategory::Mixed
 pub cranelisp_backend::heap::HeapCategory::NeverHeap
 impl cranelisp_backend::heap::HeapCategory
-pub fn cranelisp_backend::heap::HeapCategory::classify<C, L>(ty: &cranelisp_types::types::Type, symbol_tables: core::option::Option<&dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>>) -> cranelisp_backend::heap::HeapCategory where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_backend::heap::HeapCategory::classify<C, L>(&cranelisp_types::types::Type, core::option::Option<&dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>>) -> cranelisp_backend::heap::HeapCategory where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 impl core::marker::Freeze for cranelisp_backend::heap::HeapCategory
 impl core::marker::Send for cranelisp_backend::heap::HeapCategory
 impl core::marker::Sync for cranelisp_backend::heap::HeapCategory
@@ -409,8 +409,8 @@ pub cranelisp_backend::heap::HeapAdt::tag: i64
 impl cranelisp_backend::heap::HeapAdt
 pub const cranelisp_backend::heap::HeapAdt::FIELDS_START: usize
 pub const cranelisp_backend::heap::HeapAdt::TAG_OFFSET: i32
-pub const fn cranelisp_backend::heap::HeapAdt::field_offset(i: usize) -> i32
-pub const fn cranelisp_backend::heap::HeapAdt::payload_size(field_count: usize) -> usize
+pub const fn cranelisp_backend::heap::HeapAdt::field_offset(usize) -> i32
+pub const fn cranelisp_backend::heap::HeapAdt::payload_size(usize) -> usize
 impl core::marker::Freeze for cranelisp_backend::heap::HeapAdt
 impl core::marker::Send for cranelisp_backend::heap::HeapAdt
 impl core::marker::Sync for cranelisp_backend::heap::HeapAdt
@@ -426,8 +426,8 @@ impl cranelisp_backend::heap::HeapClosure
 pub const cranelisp_backend::heap::HeapClosure::CAPTURES_START: usize
 pub const cranelisp_backend::heap::HeapClosure::CODE_PTR_OFFSET: i32
 pub const cranelisp_backend::heap::HeapClosure::DROP_GLUE_PTR_OFFSET: i32
-pub const fn cranelisp_backend::heap::HeapClosure::capture_offset(i: usize) -> i32
-pub const fn cranelisp_backend::heap::HeapClosure::payload_size(capture_count: usize) -> usize
+pub const fn cranelisp_backend::heap::HeapClosure::capture_offset(usize) -> i32
+pub const fn cranelisp_backend::heap::HeapClosure::payload_size(usize) -> usize
 impl core::marker::Freeze for cranelisp_backend::heap::HeapClosure
 impl core::marker::Send for cranelisp_backend::heap::HeapClosure
 impl core::marker::Sync for cranelisp_backend::heap::HeapClosure
@@ -456,9 +456,9 @@ pub const cranelisp_backend::heap::NULLARY_THRESHOLD_I64: i64
 pub mod cranelisp_backend::jit
 pub struct cranelisp_backend::jit::Jit
 impl cranelisp_backend::jit::Jit
-pub fn cranelisp_backend::jit::Jit::define_symbol(&self, name: &str, ptr: *const u8)
+pub fn cranelisp_backend::jit::Jit::define_symbol(&self, &str, *const u8)
 pub fn cranelisp_backend::jit::Jit::jit_module(&mut self) -> &mut cranelift_jit::backend::JITModule
-pub fn cranelisp_backend::jit::Jit::new<C, L>(symbol_tables: &cranelisp_types::module::SymbolTables<C, L>) -> core::result::Result<Self, cranelisp_types::error::CranelispError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_backend::jit::Jit::new<C, L>(&cranelisp_types::module::SymbolTables<C, L>) -> core::result::Result<Self, cranelisp_types::error::CranelispError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 impl core::ops::drop::Drop for cranelisp_backend::jit::Jit
 pub fn cranelisp_backend::jit::Jit::drop(&mut self)
 impl !core::marker::Freeze for cranelisp_backend::jit::Jit
@@ -471,17 +471,17 @@ impl !core::panic::unwind_safe::UnwindSafe for cranelisp_backend::jit::Jit
 pub fn cranelisp_backend::jit::jit_free_memory_call_count() -> u64
 pub mod cranelisp_backend::primitives_inline
 pub mod cranelisp_backend::schema
-pub fn cranelisp_backend::schema::compute_layout_hash<C, L>(symbol_tables: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, roots: &[cranelisp_types::types::Type]) -> alloc::string::String where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
-pub fn cranelisp_backend::schema::generate_schema<C, L>(symbol_tables: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, roots: &[cranelisp_types::types::Type]) -> alloc::string::String where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
-pub fn cranelisp_backend::schema::platform_effect_roots<C, L>(platform_table: &cranelisp_types::module::SymbolTable<C, L>) -> alloc::vec::Vec<cranelisp_types::types::Type> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_backend::schema::compute_layout_hash<C, L>(&dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, &[cranelisp_types::types::Type]) -> alloc::string::String where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_backend::schema::generate_schema<C, L>(&dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, &[cranelisp_types::types::Type]) -> alloc::string::String where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_backend::schema::platform_effect_roots<C, L>(&cranelisp_types::module::SymbolTable<C, L>) -> alloc::vec::Vec<cranelisp_types::types::Type> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 #[non_exhaustive] pub enum cranelisp_backend::Code
 pub cranelisp_backend::Code::Jit(alloc::sync::Arc<cranelisp_backend::jit::Jit>)
 pub cranelisp_backend::Code::Linker(alloc::sync::Arc<cranelisp_backend::cache::linker::Linker>)
 impl cranelisp_backend::code::Code
-pub fn cranelisp_backend::code::Code::jit(jit: alloc::sync::Arc<cranelisp_backend::jit::Jit>) -> Self
-pub fn cranelisp_backend::code::Code::linker(linker: alloc::sync::Arc<cranelisp_backend::cache::linker::Linker>) -> Self
+pub fn cranelisp_backend::code::Code::jit(alloc::sync::Arc<cranelisp_backend::jit::Jit>) -> Self
+pub fn cranelisp_backend::code::Code::linker(alloc::sync::Arc<cranelisp_backend::cache::linker::Linker>) -> Self
 impl core::fmt::Debug for cranelisp_backend::code::Code
-pub fn cranelisp_backend::code::Code::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_backend::code::Code::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for cranelisp_backend::code::Code
 impl core::marker::Sync for cranelisp_backend::code::Code
 impl core::marker::Freeze for cranelisp_backend::code::Code
@@ -503,12 +503,12 @@ pub cranelisp_backend::CompilationError::SymbolNotCompilable
 pub cranelisp_backend::CompilationError::SymbolNotCompilable::module: cranelisp_types::newtype::ModuleFullPath
 pub cranelisp_backend::CompilationError::SymbolNotCompilable::symbol: cranelisp_types::newtype::Symbol
 impl core::convert::From<cranelisp_backend::error::CompilationError> for cranelisp_types::error::CranelispError
-pub fn cranelisp_types::error::CranelispError::from(err: cranelisp_backend::error::CompilationError) -> Self
+pub fn cranelisp_types::error::CranelispError::from(cranelisp_backend::error::CompilationError) -> Self
 impl core::convert::From<cranelisp_types::error::CranelispError> for cranelisp_backend::error::CompilationError
-pub fn cranelisp_backend::error::CompilationError::from(err: cranelisp_types::error::CranelispError) -> Self
+pub fn cranelisp_backend::error::CompilationError::from(cranelisp_types::error::CranelispError) -> Self
 impl core::error::Error for cranelisp_backend::error::CompilationError
 impl core::fmt::Display for cranelisp_backend::error::CompilationError
-pub fn cranelisp_backend::error::CompilationError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_backend::error::CompilationError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_backend::error::CompilationError
 impl core::marker::Send for cranelisp_backend::error::CompilationError
 impl core::marker::Sync for cranelisp_backend::error::CompilationError
@@ -524,7 +524,7 @@ pub cranelisp_backend::LinkerError::SymbolNotFound
 pub cranelisp_backend::LinkerError::SymbolNotFound::name: cranelisp_types::newtype::LinkerSymbol
 impl core::error::Error for cranelisp_backend::error::LinkerError
 impl core::fmt::Display for cranelisp_backend::error::LinkerError
-pub fn cranelisp_backend::error::LinkerError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cranelisp_backend::error::LinkerError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for cranelisp_backend::error::LinkerError
 impl core::marker::Send for cranelisp_backend::error::LinkerError
 impl core::marker::Sync for cranelisp_backend::error::LinkerError
@@ -564,18 +564,18 @@ impl core::marker::UnsafeUnpin for cranelisp_backend::artefact::ObjectArtefact
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::artefact::ObjectArtefact
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::artefact::ObjectArtefact
 pub trait cranelisp_backend::CodeFinalizer
-pub fn cranelisp_backend::CodeFinalizer::define_module_got_data(&mut self, name: &str, slot_count: usize, slot_funcs: &[(usize, cranelift_module::module::FuncId)]) -> core::result::Result<(), cranelisp_types::error::CranelispError>
+pub fn cranelisp_backend::CodeFinalizer::define_module_got_data(&mut self, &str, usize, &[(usize, cranelift_module::module::FuncId)]) -> core::result::Result<(), cranelisp_types::error::CranelispError>
 pub fn cranelisp_backend::CodeFinalizer::finalize_for_code_read(&mut self) -> core::result::Result<(), cranelisp_types::error::CranelispError>
-pub fn cranelisp_backend::CodeFinalizer::try_get_finalized_function(&self, func_id: cranelift_module::module::FuncId) -> core::option::Option<*const u8>
+pub fn cranelisp_backend::CodeFinalizer::try_get_finalized_function(&self, cranelift_module::module::FuncId) -> core::option::Option<*const u8>
 impl cranelisp_backend::CodeFinalizer for cranelift_jit::backend::JITModule
-pub fn cranelift_jit::backend::JITModule::define_module_got_data(&mut self, _name: &str, _slot_count: usize, _slot_funcs: &[(usize, cranelift_module::module::FuncId)]) -> core::result::Result<(), cranelisp_types::error::CranelispError>
+pub fn cranelift_jit::backend::JITModule::define_module_got_data(&mut self, &str, usize, &[(usize, cranelift_module::module::FuncId)]) -> core::result::Result<(), cranelisp_types::error::CranelispError>
 pub fn cranelift_jit::backend::JITModule::finalize_for_code_read(&mut self) -> core::result::Result<(), cranelisp_types::error::CranelispError>
-pub fn cranelift_jit::backend::JITModule::try_get_finalized_function(&self, func_id: cranelift_module::module::FuncId) -> core::option::Option<*const u8>
+pub fn cranelift_jit::backend::JITModule::try_get_finalized_function(&self, cranelift_module::module::FuncId) -> core::option::Option<*const u8>
 impl cranelisp_backend::CodeFinalizer for cranelift_object::backend::ObjectModule
-pub fn cranelift_object::backend::ObjectModule::define_module_got_data(&mut self, name: &str, slot_count: usize, slot_funcs: &[(usize, cranelift_module::module::FuncId)]) -> core::result::Result<(), cranelisp_types::error::CranelispError>
+pub fn cranelift_object::backend::ObjectModule::define_module_got_data(&mut self, &str, usize, &[(usize, cranelift_module::module::FuncId)]) -> core::result::Result<(), cranelisp_types::error::CranelispError>
 pub fn cranelift_object::backend::ObjectModule::finalize_for_code_read(&mut self) -> core::result::Result<(), cranelisp_types::error::CranelispError>
-pub fn cranelift_object::backend::ObjectModule::try_get_finalized_function(&self, _func_id: cranelift_module::module::FuncId) -> core::option::Option<*const u8>
-pub fn cranelisp_backend::build_isa(is_pic: bool) -> core::result::Result<alloc::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>, cranelisp_types::error::CranelispError>
-pub fn cranelisp_backend::compile_to_module<M, C, L>(module_path: cranelisp_types::newtype::ModuleFullPath, names: &[cranelisp_types::newtype::Symbol], symbol_tables: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, module_aliases: &cranelisp_types::module::ModuleAliases, module: &mut M) -> core::result::Result<cranelisp_backend::CompilationArtifacts, cranelisp_backend::error::CompilationError> where M: cranelift_module::module::Module + cranelisp_backend::CodeFinalizer, C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
-pub fn cranelisp_backend::load_object<C, L>(module: &cranelisp_types::newtype::ModuleFullPath, object_bytes: &[u8], symbol_tables: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>) -> core::result::Result<cranelisp_backend::artefact::LinkerArtefact, cranelisp_types::error::CranelispError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
-pub fn cranelisp_backend::produce_disasm<C, L>(fq: &cranelisp_types::newtype::FQSymbol, code_size: usize, symbol_tables: &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>) -> core::result::Result<alloc::string::String, cranelisp_backend::error::CompilationError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelift_object::backend::ObjectModule::try_get_finalized_function(&self, cranelift_module::module::FuncId) -> core::option::Option<*const u8>
+pub fn cranelisp_backend::build_isa(bool) -> core::result::Result<alloc::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>, cranelisp_types::error::CranelispError>
+pub fn cranelisp_backend::compile_to_module<M, C, L>(cranelisp_types::newtype::ModuleFullPath, &[cranelisp_types::newtype::Symbol], &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, &cranelisp_types::module::ModuleAliases, &mut M) -> core::result::Result<cranelisp_backend::CompilationArtifacts, cranelisp_backend::error::CompilationError> where M: cranelift_module::module::Module + cranelisp_backend::CodeFinalizer, C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_backend::load_object<C, L>(&cranelisp_types::newtype::ModuleFullPath, &[u8], &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>) -> core::result::Result<cranelisp_backend::artefact::LinkerArtefact, cranelisp_types::error::CranelispError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_backend::produce_disasm<C, L>(&cranelisp_types::newtype::FQSymbol, usize, &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>) -> core::result::Result<alloc::string::String, cranelisp_backend::error::CompilationError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
