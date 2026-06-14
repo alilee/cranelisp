@@ -2266,6 +2266,46 @@ mod tests {
         }
     }
 
+    // FIXME(/frontend 0341): stacked trait-bound param annotations
+    // `[:Eq :Display a]` must attach BOTH bounds to the single binder `a`,
+    // yielding ONE param named `a` — not two params (`:Display` mis-read as a
+    // second binder name). Today `build_annotated_params` consumes exactly one
+    // annotation per `try_consume_annotation` call then treats the NEXT item as
+    // the param name, so `:Eq` is consumed as the bound and `:Display` becomes a
+    // bogus param name. Expected: 1 param `a`; actual today: 2 params
+    // (`:Display`, `a`). Failing-not-ignored until the parser stacks the run of
+    // `:Trait` annotations onto the following binder.
+    //
+    // spec: spec/07-traits.md §7.8.2 — explicit constraint param annotations
+    #[test]
+    fn stacked_trait_bound_annotations_attach_to_single_param() {
+        let prog = parse_and_build_program("(defn g [:Eq :Display a] a)").unwrap();
+        assert_eq!(prog.len(), 1);
+        match &prog[0] {
+            TopLevel::Defn(defn) => {
+                assert_eq!(defn.name, "g");
+                // CORRECT: the stacked `:Eq :Display` bounds belong to `a`, so
+                // there is exactly ONE parameter, named `a` — never a `:Display`
+                // binder. Today this fails (2 params, the second named `:Display`).
+                assert_eq!(
+                    defn.params().len(),
+                    1,
+                    "stacked annotations must yield ONE param `a`; \
+                     got {} params: {:?}",
+                    defn.params().len(),
+                    defn.params(),
+                );
+                assert_eq!(
+                    defn.params()[0].0,
+                    "a",
+                    "the single param must be named `a`, not a mis-read \
+                     `:Display` annotation"
+                );
+            }
+            other => panic!("expected Defn, got {other:?}"),
+        }
+    }
+
     // -- deftype --
 
     // spec: 02-grammar §2.2.2 — deftype enum (all nullary constructors)
