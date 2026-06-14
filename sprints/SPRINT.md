@@ -268,4 +268,30 @@ Commit after each wave-component. Canonical `cargo nextest run` green at each co
 
 ## Outcome (Phase 7)
 
-*Pending.*
+**Theme delivered: "Clean & Green" pre-Phase-H FIXME-clearance + the reinstatement of the user-facing Phase 6 assessment (waived since S63).** Sprint exit re-establishes clean-and-green as the standard, with newly-surfaced defects captured as failing-not-ignored repros per project discipline.
+
+### Delivered
+- **Per-component clean-up sweeps (W-A…W-F):** typecheck / frontend / backend single-crate harvests (assertions ported to `#[cfg(test)]`, fixtures narrowed); the **int decomposition** (0109 A/B/C — `process_form.rs` extracted, worker.rs 6279→2868); arch-docs ratification — **the facade arc COMPLETED (all 9 facades retired)**; multi-crate dedup (0303 `substitute_module_alias` promoted; 0033 `MonoDefn` side-maps dropped).
+- **The fault-guarded platform dispatch funnel (W-G) — landed end-to-end.** `PlatformError::DispatchError{fn_name}` now has its first producer; the last `#[ignore]` skip retired. Required an `/arch` ruling refinement (Option A: DLL-local `catch_unwind` + `EffectOutcome` cross-ABI signal — host `catch_unwind` can't cross the cdylib panic-runtime boundary) + a backend stamp-at-dispatch-chokepoint fix. Chain: `aeff79d→d1949fb→f0d25dc→9fb89ed→abe3553→66fb5dd`.
+- **A real `--run` data-corruption defect found & FIXED in-sprint (0217):** inline-`(mod)` parent-rewrite corrupted the parent file on cluster-retry (stale-span splice); fixed with a self-locating splice (`18a0d07`), 5 unit + 2 e2e guards.
+- **Legacy-harvest:** 18 quarantined legacy files deleted (every one verified-ported-or-subsumed first); runtime RC-balance harvest → `cranelisp-intrinsics`.
+- **Phase 6 (user-facing) — all 5 proxy deliverables:** `/docs` rebuilt `user/` + CLI reference (0335); `/port` destaled exemplar (full grid solves); `/examples` `29-annotations.cl`; `/repl` S81 demo + spec §0 destale; `/stdlib` the **0273 in-language test runner** + prelude primitive-type re-exports + `core/trace` parse fix.
+- **Process/infra:** committed-to-`main`-no-branches workflow adopted; ~16G disk reclaimed; unit-test-per-fix discipline codified (root CLAUDE.md + METHOD + tests/CLAUDE.md); status-line configured.
+- **FIXMEs: ~48 → ~24 open** across the sprint (closed/landed: 0033, 0098, 0100, 0109A-C, 0137, 0138, 0176, 0194, 0216, 0217, 0220, 0239, 0244-adjacent, 0266, 0289, 0298, 0303, 0306, 0308, 0316, 0325, 0327, 0328, 0329, 0331, 0333, 0334, 0335, 0337-orig, 0273, 0306, 0316 + the 12-file W-H harvest family + 0128/0129 + funnel-chain 0336/0337/0338-orig + 0272/0339).
+
+### Test state at close
+Canonical `cargo nextest run`: **1290 passed / 14 failed / 0 skipped** — the 14 reds are **failing-not-ignored Phase-6 defect repros** (intended, per discipline; durable record in `tests/plan/ledger.md` + root CLAUDE.md §Testing). Plus **2 unit-tier repros** (0341 frontend, 0344 typecheck). A genuine regression is any red **beyond** these named guards. (Note: `reload_during_compile_race` is a known flaky concurrency test — passes in isolation.)
+
+### Deferred (with rationale) — forward-flow to a future sprint
+- **0109 Wave D** (session_v4.rs eval/repl split) — needs wide private-field widening across a 6.4k-LOC god-file; green-risk (Principle 8 carry boundary); the FIXME itself flagged it multi-sprint-sized; maintainability-only, not load-bearing. User-accepted.
+- **/int harvest remainders** (0124/0125/0127/0134/0148/0149) + **0136** (sketch_port.rs, 1899 LOC) — substantial real harvest/audit work; not the small mechanical deletions.
+- **0021** (io-trace microbench) — blocked on a new /int lib-target/bench-accessor FIXME (0336).
+- **0050** (List/Seq pretty-printer) — blocked on a display-protocol that doesn't exist yet.
+
+### Findings (the Phase-6 defect backlog — all PRE-EXISTING, none an S81 regression; all now repro'd)
+**7 defects, each with a failing-not-ignored repro filed:** 0337 (multi-file sibling module resolution — broken for ANY entry name, zero CI coverage), 0338 (REPL `/info`/`/sig`/bare-`trace` self-doc), 0340 (`(trace …)` ~31s + degenerate capture), 0341 (stacked `:Trait` annotation parse — model can't represent stacked bounds), 0342 (`super` import resolution), 0343 (`(mod …)` source-regen corruption — same CLASS as the fixed 0217), 0344 (fold-accumulator over-unification — cross-defn generalize/instantiate ordering in the cluster pipeline).
+
+**QA-coverage reflection (user-raised):** all 7 were found by *using* the language outside-in (Phase 6), none by the 1289-green suite — the suite is a strong *regression* guard but a weak *"works for real composite programs"* guard, and Phase 6 is the compensating control (waived 18 sprints → backlog surfaced at once on reinstatement). Systematic gaps to close next: multi-file/directory examples in CI; output-*quality* assertions (vs error-free); a source-regen robustness/property test generalizing past 0217; deflake `reload_during_compile_race`. Treat /stdlib + /exemplar as first-class realistic-program coverage.
+
+### Phase-7 disposition items
+- The 3 `decision_23_got_data_*` failures appear ONLY under `--workspace` (per-crate object-mode tier) — environmental on this Linux aarch64 VM; not in the canonical run; carry as known-env.
