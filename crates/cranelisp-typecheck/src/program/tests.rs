@@ -4022,6 +4022,120 @@
         }
     }
 
+    // spec: spec/03-types.md §3.4 — a polymorphic accumulator threaded through a
+    //   recursive fold helper MUST generalize so a sibling Vec-accumulator use
+    //   does not collapse the helper/caller scheme.
+    //
+    // FIXME(/typecheck 0344): UNIT repro of the vec-reduce over-unification
+    //   defect (FIXME 0344). This is the tighter seam for the e2e
+    //   `tests/spec_04_expressions.rs::polymorphic_accumulator_fold_does_not_over_unify`.
+    //
+    //   Shape (inlined, no stdlib): a caller `reduce` + a recursive helper
+    //   `reduce-loop` that threads a polymorphic accumulator `acc` (type b)
+    //   distinct from the Vec element type (type a, via `vec-get`), PLUS one
+    //   sibling use `collect` that puts a `(Vec a)` in accumulator position.
+    //
+    //   The sibling `collect` must instantiate a FRESH copy of `reduce`'s
+    //   generalized scheme; instead inference monomorphises `reduce`'s
+    //   accumulator type variable to `(Vec a)`, so the later Int-accumulator
+    //   use `(reduce add-i64 0 v)` fails to unify.
+    //
+    //   SEAM (isolated in-session, throwaway probe; FIXME 0344): the collapse
+    //   is caused ENTIRELY by the sibling use, NOT by the recursive helper.
+    //   Checked in isolation:
+    //     - `reduce-loop` alone     => CORRECT: forall a b. (Fn [(Fn [b a] b) b (Vec a) Int Int] b)
+    //     - `reduce` + `reduce-loop` => CORRECT: forall a b. (Fn [(Fn [b a] b) b (Vec a)] b)
+    //     - + sibling `collect`      => COLLAPSED: forall a. (Fn [(Fn [(Vec a) (Vec a)] (Vec a)) (Vec a) (Vec a)] (Vec a))
+    //   So the recursive-helper inference is sound; the defect lives at the
+    //   call-site treatment of `reduce` inside `collect`. `(reduce vec-push []
+    //   vv)` must instantiate a FRESH copy of `reduce`'s generalized scheme
+    //   (vec-push :: (Fn [(Vec a) a] (Vec a)), `[]` :: (Vec a)) at that one
+    //   call. Instead the call unifies into `reduce`'s OWN, not-yet-frozen
+    //   accumulator type variable `b`, forcing b ≡ (Vec a); that collapse then
+    //   back-propagates into the STORED schemes of both `reduce` and
+    //   `reduce-loop`. Net: cross-defn generalize/instantiate ordering — a
+    //   defn's scheme is not generalized-and-frozen before a sibling defn in
+    //   the same cluster is checked against it, so the sibling monomorphises
+    //   it. (`check_program_self` returns Ok here because this minimal cluster
+    //   has no Int-accumulator use to surface the mismatch; the COLLAPSED
+    //   STORED SCHEME is the durable witness — the e2e's `main` Int call is
+    //   where the collapse becomes an outright type error.)
+    //
+    //   EXPECTED (correct, post-fix): `check_program_self` succeeds; `reduce`
+    //     generalizes to `forall a b. (Fn [(Fn [b a] b) b (Vec a)] b)` — a
+    //     polymorphic scheme with >= 2 type vars whose accumulator parameter
+    //     and result are the SAME var `b`, NOT `(Vec _)`.
+    //   ACTUAL (today, FAILING): every type variable collapses to `(Vec a)`;
+    //     `reduce :: (Fn [(Fn [(Vec a) (Vec a)] (Vec a)) (Vec a) (Vec (Vec a))]
+    //     (Vec a))`. Because the accumulator no longer generalizes across the
+    //     two sibling uses, the program either errors at check time or `reduce`
+    //     carries the collapsed scheme. This assertion FAILS until inference
+    //     stops over-unifying the accumulator var.
+    #[test]
+    fn fold_polymorphic_accumulator_does_not_over_unify() {
+        let mut tc = tc_with_prims();
+        // tc_with_prims glob-imports `primitives` into `test`, so add-i64,
+        // ge-i64, vec-len, vec-get, vec-push resolve as bare names — no
+        // `(import ...)` form needed (and no stdlib dependency).
+        let src = "\
+            (defn reduce [f init v] (reduce-loop f init v (vec-len v) 0))\n\
+            (defn reduce-loop [f acc v :primitives/Int len :primitives/Int i]\n  \
+              (if (ge-i64 i len) acc\n    \
+                (reduce-loop f (f acc (vec-get v i)) v len (add-i64 i 1))))\n\
+            (defn collect [vv] (reduce vec-push [] vv))";
+        let sexps = cranelisp_frontend::parse(src).expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+
+        // CORRECT inference: the whole program type-checks. Today this FAILS
+        // because the sibling `(Vec a)` accumulator use over-unifies `reduce`'s
+        // accumulator type variable, collapsing the polymorphic scheme.
+        let result = tc.check_program_self(&program);
+        assert!(
+            result.is_ok(),
+            "polymorphic-accumulator fold must type-check; the sibling Vec \
+             accumulator use must NOT over-unify reduce's accumulator var \
+             (FIXME 0344). got error: {:?}",
+            result.as_ref().err().map(|e| e.message().to_string()),
+        );
+
+        // And `reduce`'s scheme must stay polymorphic in its accumulator: its
+        // accumulator parameter must NOT have collapsed to `(Vec _)`. The
+        // accumulator is the SECOND parameter of `reduce` (f, init, v) and is
+        // the same var as the result.
+        let scheme = match tc.symbol_table().get("reduce") {
+            Some(ModuleEntry::Def { scheme, .. }) => scheme.clone(),
+            other => panic!("reduce not a Def in symbol table: {other:?}"),
+        };
+        assert!(
+            scheme.type_vars.len() >= 2,
+            "reduce must generalize over (at least) the element AND accumulator \
+             type vars; collapsed scheme had {} vars: {:?} (FIXME 0344)",
+            scheme.type_vars.len(),
+            scheme,
+        );
+        if let Type::Fn(params, ret) = &scheme.ty {
+            assert_eq!(params.len(), 3, "reduce takes (f init v)");
+            // accumulator (init) is params[1]; result is ret. Neither may be a
+            // concrete `(Vec _)` — over-unification stamps Vec onto both.
+            assert!(
+                !is_vec(&params[1]) && !is_vec(ret),
+                "reduce's accumulator param and result must stay polymorphic, \
+                 not collapse to (Vec _): init={:?} ret={:?} (FIXME 0344)",
+                params[1], ret,
+            );
+        } else {
+            panic!("reduce scheme is not a function type: {:?}", scheme.ty);
+        }
+    }
+
+    // Vec has no dedicated `Type` variant; it is encoded as
+    // `Type::ADT(primitives/Vec, [elem])` (see builtins.rs
+    // `register_builtin_type_names`). The over-unification defect stamps this
+    // ADT onto the accumulator var.
+    fn is_vec(t: &Type) -> bool {
+        matches!(t, Type::ADT(name, _) if name.name.as_ref() == "Vec")
+    }
+
     // spec: design/typecheck/ast-annotation.md §10.2.3 — CheckResult has only
     // { warnings, display }. Structural guard: if a retired field
     // (method_resolutions / mono_defns / default_method_defns /
