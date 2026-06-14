@@ -395,6 +395,122 @@ fn generated_field_accessor_resolves_as_free_callable() {
     .assert_stdout_contains(":primitives/Int 5");
 }
 
+// spec: spec/05-definitions.md §5.2.6 — Generated Accessors are first-class.
+// FAILING-NOT-IGNORED defect repro (FIXME 0351(a), target /typecheck, S83).
+// Spec §5.2.6 closing sentence: "Accessor functions are first-class values
+// and can be passed as arguments or bound to variables." This guards the
+// first-class facet specifically: the synthesised product accessor `v` must
+// be let-bindable (`(let [g v] ...)`) and then callable as an ordinary
+// function value. As-built `v` is not synthesised as a free callable, so the
+// `let`-binding fails with `undefined variable: v`. Companion to
+// `generated_field_accessor_resolves_as_free_callable` (direct call); this
+// test pins the value-passing path. The Wave-2 typecheck synthesis flips it.
+#[test]
+fn accessor_is_first_class_value_passable() {
+    repl_prims(
+        "(deftype Box [:primitives/Int v])\n(let [g v] (g (Box 7)))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 7");
+}
+
+// spec: spec/05-definitions.md §5.2.6 — Generated Accessors, collision case.
+// FAILING-NOT-IGNORED defect repro (FIXME 0351(a), target /typecheck, S83).
+// Negative/safety guard: a user defines `(defn v ...)` BEFORE a `deftype`
+// whose field name `v` would synthesise a colliding accessor. The disposition
+// MUST be SAFE: the process exits normally (no SIGSEGV, no signal-kill, no
+// silent memory corruption / wrong-dispatch). §5.2.6 specifies that accessors
+// ARE synthesised but is SILENT on what happens when the synthesised name
+// collides with an existing same-module binding.
+//
+// FAILING-FIRST design: TODAY no accessor is synthesised, so the user's
+// `(defn v [x] 99)` silently absorbs the field name and `(v (Box 9))` answers
+// 99 with NO acknowledgement that a colliding accessor `v` was suppressed —
+// a SILENT collision. Once Wave-2 synthesises the accessor, the clash becomes
+// live and the safe disposition is to SURFACE it rather than silently pick a
+// winner: this guard requires a clear diagnostic naming the collision. That
+// assertion is RED today (current output is the silent `:primitives/Int 99`
+// with no diagnostic) and flips green when the Wave-2 fix detects and reports
+// the clash. The no-crash floor is asserted alongside so a SIGSEGV/signal-kill
+// can never be mistaken for a "pass".
+//
+// FIXME(/spec): §5.2.6 does not state the accessor-vs-existing-binding
+// collision policy. This guard pins "clear diagnostic" as the safe
+// disposition; if /spec instead rules deterministic last-wins (user binding
+// wins, accessor suppressed — with the suppression made observable), retarget
+// the diagnostic assertion to that determinate policy. The open question is
+// flagged here as a code comment for the Wave-2 /typecheck implementer; the
+// formal route is a numbered design/arch/fixmes entry if /dev hits the edge
+// (per SPRINT §/design 0351(a) note: "Collision policy is an open edge").
+#[test]
+fn accessor_neg_synth_does_not_shadow_existing_binding() {
+    let out = repl_prims(
+        "(defn v [x] 99)\n\
+         (deftype Box [:primitives/Int v])\n\
+         (v (Box 9))\n",
+    );
+    // SAFETY floor: the REPL process must terminate normally — a SIGSEGV or
+    // any signal-kill (status.code() == None) is the corruption mode this
+    // guard forbids first and foremost.
+    assert!(
+        out.status.code().is_some(),
+        "accessor/binding collision MUST NOT crash (SIGSEGV / signal-kill) \
+         per §5.2.6 safety floor; the process was signalled. stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+    // SAFE-DISPOSITION pin (RED today): the collision MUST be surfaced with a
+    // clear diagnostic rather than silently resolved. Today the accessor is
+    // not synthesised so no clash is reported (`:primitives/Int 99` only) —
+    // this assertion fails until Wave-2 detects and reports the collision.
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.to_lowercase().contains("error")
+            || combined.to_lowercase().contains("collision")
+            || combined.to_lowercase().contains("conflict")
+            || combined.to_lowercase().contains("already")
+            || combined.to_lowercase().contains("duplicate")
+            || combined.to_lowercase().contains("shadow"),
+        "accessor `v` synthesised over an existing `(defn v ...)` MUST surface \
+         the collision with a clear diagnostic (safe disposition), not silently \
+         pick a winner, per the §5.2.6 safety floor; got stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/05-definitions.md §5.2.6 — Generated Accessors, cross-type
+// duplicate field name. FAILING-NOT-IGNORED defect repro (FIXME 0351(a),
+// target /typecheck, S83). Two product types `Box` and `Cup` each carry a
+// field named `v`, so each synthesises an accessor `v`. Per §5.2.6 each
+// accessor has type `(Fn [ProductType] FieldType)` — `v :: (Fn [Box] Int)`
+// and `v :: (Fn [Cup] Int)` — and dispatch is by argument type. The two
+// synthesised `v` accessors MUST coexist (the second `deftype` MUST NOT
+// error with a duplicate-definition), and each call MUST dispatch by the
+// concrete argument type: `(v (Box 5))` -> 5 and `(v (Cup 9))` -> 9. As-built
+// neither accessor is synthesised, so this fails today; the Wave-2 synthesis
+// (multi-clause / type-dispatched `v`) flips it green.
+#[test]
+fn accessor_cross_type_duplicate_field_name() {
+    let out = repl_prims(
+        "(deftype Box [:primitives/Int v])\n\
+         (deftype Cup [:primitives/Int v])\n\
+         (v (Box 5))\n\
+         (v (Cup 9))\n",
+    );
+    // The second deftype MUST NOT be rejected as a duplicate accessor def.
+    assert!(
+        !out.stdout.to_lowercase().contains("duplicate")
+            && !out.stderr.to_lowercase().contains("duplicate"),
+        "synthesising accessor `v` for both Box and Cup MUST NOT raise a \
+         duplicate-definition error per §5.2.6 (dispatch is by arg type); \
+         got stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+    // Each call dispatches by argument type to the matching field value.
+    out.assert_stdout_contains_all(&[":primitives/Int 5", ":primitives/Int 9"]);
+}
+
 // spec: spec/05-definitions.md §5.2.7 — constructor arity rejection:
 // `(Point 1)` where Point expects two args. No prior spec_05 test
 // isolated ADT-constructor arity rejection; `defn_multi_clause_arity`
