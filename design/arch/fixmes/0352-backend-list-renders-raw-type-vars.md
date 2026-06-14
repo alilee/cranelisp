@@ -1,10 +1,12 @@
 ---
 number: 0352
-target: /backend
+target: /int
 filed_by: /qa
 filed_at: 2026-06-14
 sprint_filed: 82
-refers_to: src/repl.rs (handle_list / format_def_entry list arm), crates/cranelisp-backend/src/display.rs
+retargeted_at: 2026-06-14
+retargeted_reason: "S83 Phase-3 design found the scheme renderer migrated to src/display.rs in Sprint 66; cranelisp-backend has no scheme-display renderer. The fix (route /list through the normalize+qualify renderer) is wholly an /int change at src/repl.rs::handle_list + src/display.rs. Re-pointed /backend -> /int by /sprint orchestration."
+refers_to: src/repl.rs (handle_list ~:670 — the `format!(\"{}\", scheme.ty)` raw-Display bug; format_def_entry ~:1751 — the correct path), src/display.rs (format_type_qualified, format_scheme_display — int-owned since S66; extract shared format_scheme_type)
 status: open
 ---
 

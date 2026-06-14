@@ -20,6 +20,7 @@
 @design/arch/principles/17-module-locality-in-typecheck.md
 @design/arch/principles/18-enforce-invariants-structurally.md
 @design/arch/principles/19-no-module-privileged-by-name.md
+@design/arch/principles/20-model-invariants-by-representation.md
 
 # /design — Per-crate Designer
 

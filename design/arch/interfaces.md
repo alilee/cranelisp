@@ -652,7 +652,7 @@ The codegen payload the backend used to consume from `CheckResult` has been redi
 | `type_defs`, `constructor_to_type` | Already on `SymbolTable` as `ModuleEntry::TypeDef` / `ModuleEntry::Constructor`. |
 | `call_graph: CallGraph` | Transient within-module graph still produced during typecheck for TCO / analysis (see §"Call Graph"); persistent per-symbol `callees: Vec<FQSymbol>` lives on `ModuleEntry::Def` / `ModuleEntry::Macro` per Decision 21. |
 
-**Callable-address accessor — `ModuleEntry::callable_got_slot()` (FIXME 0354).** The row above notes a constrained template is the *negation of `defined_symbols()` within `UserFn`* — i.e. it is **not** codegen-compilable. The dual fact at the call-resolution seam is that it is **not directly callable**, which a second accessor makes explicit: `callable_got_slot() -> Option<usize>` returns the GOT slot only for a non-template `Def`, and `None` for a constrained template *regardless of the stored `got_slot` field*. The two fields involved (`got_slot` on `Def`, `constrained_fn` inside `DefKind::UserFn`) are set at different pipeline stages — Pass 1 allocates the slot before constraint status is known; Pass 2 flips the kind in place — so the illegal pairing (template + `Some(slot)`) is not type-unrepresentable without collapsing `got_slot` into `DefKind` (a 180-read-site churn Decision 35 rejects). Per Principle 18's *single-source-of-truth* form, the invariant is enforced at the read seam: backend call-target resolution (`resolve_got_target`) reads through `callable_got_slot()`, never the raw field. The correlation is maintained by the sole-writer `mark_constrained_template(cf)` (flip + clear together) and guarded by `assert_well_formed()` in debug builds. See BC §7 "Callable address is read through an accessor".
+**Callability is structural — GOT slot on the callable `DefKind` variants (FIXME 0356/0357, Principle 20; amends Decision 35; S83 target).** The row above notes a constrained template is the *negation of `defined_symbols()` within `UserFn`* — i.e. it is **not** codegen-compilable. The dual fact at the call-resolution seam is that it is **not directly callable**, and the S83 target makes this a property of the *shape* rather than an accessor convention. The S82 stopgap (`callable_got_slot()` reading around an illegal `got_slot`+template pairing, `mark_constrained_template()` flip-and-clear sole-writer, `assert_well_formed()` debug guard) is superseded: the `got_slot` migrates **off the flat `ModuleEntry::Def` field and onto the callable `DefKind` variants** (`UserFn`'s concrete-callable form, `Primitive`, `Constructor`); non-callable kinds (the constrained-template form of `UserFn`, `Macro` parent, `PlatformEffect`/`PrimitiveExtern`, `Overloaded` base) carry no slot field, so `Def{slot}+template` is **unconstructable**. The timing wall (Pass-1 slot allocation preceded Pass-2 constraint detection) resolves by **deferring slot allocation past Pass-2 detection** — the entry has no slot until its callability is determined, which is correct because nothing may call it before then; no `Pending` interstage variant is needed. `callable_got_slot()` survives as the single read-through point (so callers do not re-pattern the kind set) but becomes a trivial present-or-absent read on the matched variant; `mark_constrained_template()` and the phantom-slot assertion retire. Backend call-target resolution (`resolve_got_target`) reads through `callable_got_slot()` exactly as before — its body changes, its contract does not. Mono variants (`cmp$Int+Int`) are ordinary concrete `UserFn` entries owning their own slot — the home for the S83 cross-module-mono feature (FIXME 0355). See BC §7 "Callability is structural" + Principle 20.
 
 ### Residual `CheckResult` — typecheck-internal only
 
@@ -1171,6 +1171,16 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         /// `DefKind::PrimitiveExtern` host-promised externs — the key IS the
         /// ABI name a host promises at JIT-finalize via `Jit::define_symbol`;
         /// a call resolves `Linkage::Import`, never GOT-indirect).
+        ///
+        /// **S83 target (FIXME 0356/0357, Principle 20; amends Decision 35):**
+        /// this flat field RELOCATES onto the callable `DefKind` variants
+        /// (`UserFn` concrete-callable / `Primitive` / `Constructor`); the
+        /// non-callable kinds carry no slot field, making `Def{slot}+template`
+        /// unconstructable. The list of `None` cases above becomes the set of
+        /// kinds with no slot field at all. See BC §7 "Callability is
+        /// structural" + the callable-address paragraph above. (This
+        /// illustrative block predates the reshape; the authoritative surface
+        /// is BC §7 + `module.rs` source rustdoc.)
         got_slot: Option<usize>,
         /// Trait-method origin (Sprint 56 Decision 21). `Some(trait)` when
         /// this `Def` is a trait-method impl — replaces the
