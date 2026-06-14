@@ -812,3 +812,53 @@ fn persist_bug0220_cache_restored_userfns_survive_repl_edit_regen() {
         third.stdout
     );
 }
+
+// =============================================================================
+// §15.4 Regeneration Integrity — `(mod child …)` submodule body MUST survive
+// source regeneration (FIXME 0343, S81 close)
+//
+// FAILING-NOT-IGNORED repro for a DATA-CORRUPTION defect (same class as 0217).
+// A backing file whose source carries a non-empty `(mod test … defns …)`
+// submodule body MUST round-trip through a REPL session that triggers source
+// regeneration — the submodule body MUST remain on disk (§15.4 invariant 1:
+// "Loading the regenerated file … MUST produce the same … module exports as
+// the interactive session"; the body lives in the extracted child file per
+// §8.2.2). Today regeneration rewrites the backing `.cl`, collapsing
+// `(mod test …)` to a bare `(mod test)` and DROPPING the entire submodule
+// body — `generate_mod_decls` reconstructs the decl from the parent's
+// `submodules` list, but the child's definitions live in the child's symbol
+// table, so the parent regen alone cannot reproduce the body, and it is lost.
+//
+// Owning skill: /int (source regen — gate it off for dependency modules, or
+// round-trip the submodule body). Flips green when the body survives.
+// =============================================================================
+
+// spec: repl/spec.md §15.4 — a `(mod test …)` submodule body MUST NOT be
+//   clobbered by source regeneration. FIXME(/int 0343).
+#[test]
+fn mod_submodule_body_survives_source_regeneration() {
+    // Pre-existing backing file carrying a non-empty `(mod test …)` body.
+    let out = Cranelisp::new()
+        .repl()
+        .file("user.cl", "(defn f [] 1)\n(mod test\n  (defn g [] 2))\n")
+        // Define a new symbol so the REPL regenerates `user.cl` on exit.
+        .stdin("(defn h [] 3)\n/quit\n")
+        .output();
+    assert!(
+        out.status.success(),
+        "session should exit cleanly: stderr={}",
+        out.stderr
+    );
+
+    // CORRECT: the submodule's definition is still on disk after regeneration.
+    // Today this FAILS — `(mod test …)` is collapsed to a bare `(mod test)`
+    // and `(defn g [] 2)` is destroyed (committed source would be corrupted).
+    let regenerated = out.read_tmp("user.cl");
+    assert!(
+        regenerated.contains("(defn g [] 2)") || regenerated.contains("defn g"),
+        "regenerated user.cl MUST preserve the `(mod test …)` submodule body \
+         `(defn g [] 2)` (spec/08-modules.md §8.2.2 + repl/spec.md §15.4 \
+         round-trip correctness); the body was clobbered:\n{}",
+        regenerated
+    );
+}

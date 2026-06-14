@@ -2135,3 +2135,71 @@ fn public_api_check_backend_display_absent_neg() {
         s
     );
 }
+
+// =============================================================================
+// §4.1.5 / §3.6 — Special-form self-documentation gaps (FIXME 0338, S81 close)
+//
+// FAILING-NOT-IGNORED repros. Two self-documenting-REPL gaps for special forms:
+//   (1) bare `trace` at the prompt MUST carry the `:Type` prefix like every
+//       other special form (e.g. bare `if` → `:(Fn [primitives/Bool a a] a) if
+//       ; special form - …`). Today bare `trace` drops the `:Type` prefix.
+//   (2) `/info <special-form>` and `/sig <special-form>` MUST resolve, not
+//       return `unknown symbol` — for ALL special forms (`trace`, `if`,
+//       `match`, …). Today every special form is unreachable via /info /sig.
+//
+// Owning skill: /int (REPL display + introspection dispatch). Flips green
+// when the fix lands.
+// =============================================================================
+
+// spec: repl/spec.md §4.1.5 — bare special form `trace` MUST display the
+//   type-annotated form (`:Type ... ; special form - ...`), consistent with
+//   bare `if`. FIXME(/int 0338).
+#[test]
+fn bare_trace_special_form_carries_type_prefix() {
+    let out = repl("trace\n");
+    // CORRECT: bare `trace` shows the `:(Fn [a] ...Trace...) trace` form like
+    // other special forms. Today it prints `trace ; special form - ...` with
+    // NO `:Type` prefix.
+    out.assert_stdout_contains_all(&[":(Fn", "trace", "special form"]);
+}
+
+// spec: repl/spec.md §4.1.5 — control: bare `if` already carries the `:Type`
+//   prefix; this pins the expected shape that `trace` must match. Today this
+//   PASSES (it is the working reference); kept alongside the `trace` repro so
+//   the pair documents the inconsistency. FIXME(/int 0338).
+#[test]
+fn bare_if_special_form_carries_type_prefix_control() {
+    repl("if\n").assert_stdout_contains_all(&[
+        ":(Fn [primitives/Bool a a] a) if",
+        "special form",
+    ]);
+}
+
+// spec: repl/spec.md §3.6 — `/info trace` MUST resolve and display details,
+//   not return `unknown symbol`. FIXME(/int 0338).
+#[test]
+fn info_resolves_trace_special_form() {
+    let out = repl("/info trace\n");
+    // CORRECT: /info names `trace` and classifies it as a special form. Today
+    // it returns `unknown symbol 'trace'`.
+    out.assert_stdout_contains("trace")
+        .assert_stdout_does_not_contain("unknown symbol");
+}
+
+// spec: repl/spec.md §3.6 — `/info if` MUST resolve a representative second
+//   special form, not return `unknown symbol`. FIXME(/int 0338).
+#[test]
+fn info_resolves_if_special_form() {
+    let out = repl("/info if\n");
+    out.assert_stdout_contains("if")
+        .assert_stdout_does_not_contain("unknown symbol");
+}
+
+// spec: repl/spec.md §3.1 — `/sig trace` MUST resolve the special form's
+//   signature, not return `unknown symbol`. FIXME(/int 0338).
+#[test]
+fn sig_resolves_trace_special_form() {
+    let out = repl("/sig trace\n");
+    out.assert_stdout_contains("trace")
+        .assert_stdout_does_not_contain("unknown symbol");
+}

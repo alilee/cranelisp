@@ -1499,3 +1499,136 @@ fn annotation_in_paren_unify_precedes_not_a_function() {
     // … and the not-a-function `(Fn …)` mismatch is NOT the reported error.
     out.assert_stdout_does_not_contain("got (Fn");
 }
+
+// =============================================================================
+// §8.2 Module Declaration — bare `(mod name)` sibling-file resolution
+//
+// FAILING-NOT-IGNORED repro for FIXME 0337 (S81 close). A two-file project
+// whose entry declares a bare `(mod sibling)` MUST resolve the sibling FILE
+// `sibling.cl` (a sibling module of the entry), NOT look for a NESTED
+// submodule `<entry>.sibling`. Today the resolver looks for the nested
+// submodule and errors `submodule '<entry>.sibling' not found`.
+//
+// Owning skill: /int (module resolution). The fix flips this green.
+// =============================================================================
+
+// spec: spec/08-modules.md §8.2 — bare `(mod name)` triggers loading the
+//   sibling FILE `name.cl`; the entry is named `main` (the FIXME-documented
+//   failing case; see the entry-name note below). FIXME(/int 0337).
+#[test]
+fn bare_mod_decl_resolves_sibling_file_for_entry_main() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n(mod sibling)\n(defn main [] (Pure (sibling/answer)))",
+        )
+        .file("sibling.cl", "(defn answer [] 42)")
+        .run("main.cl")
+        .output()
+        // CORRECT behaviour: the sibling fn resolves and main exits 42.
+        // Today this FAILS — the resolver errors
+        // `submodule 'main.sibling' not found (declared by 'main')`.
+        .assert_exit(42);
+}
+
+// spec: spec/08-modules.md §8.2 — negative companion: the resolver MUST NOT
+//   look for a NESTED submodule `main.sibling`. FIXME(/int 0337).
+//
+// Entry-name specificity note (FIXME 0337 asked /qa to confirm): the defect
+// is NOT specific to the entry being named `main` — it reproduces identically
+// for a non-`main` entry (`entry.cl` declaring `(mod sibling)` errors
+// `submodule 'entry.sibling' not found`). The `main`-named entry is the
+// FIXME-documented case; this repro pins it. The bug is in bare `(mod name)`
+// sibling-file resolution generally, not in the `main` entry name.
+#[test]
+fn bare_mod_decl_neg_does_not_seek_nested_submodule() {
+    let out = Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n(mod sibling)\n(defn main [] (Pure (sibling/answer)))",
+        )
+        .file("sibling.cl", "(defn answer [] 42)")
+        .run("main.cl")
+        .output();
+    // CORRECT: no nested-submodule lookup error appears (the sibling file is
+    // found). Today this FAILS — `main.sibling` nested-submodule error fires.
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !combined.contains("not found"),
+        "bare `(mod sibling)` MUST resolve the sibling FILE, not seek a nested \
+         submodule `main.sibling` (spec/08-modules.md §8.2); got a not-found \
+         error:\nstdout={}\nstderr={}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// =============================================================================
+// §8.3.8 Super Import — child submodule resolves parent symbols
+//
+// FAILING-NOT-IGNORED repro for FIXME 0342 (S81 close). A plain (non-cyclic)
+// `(import [super [name]])` from a `(mod test ...)` submodule MUST resolve the
+// parent module's symbols (both fns and type constructors). Today it errors
+// `'name' not found in module '<parent>'` — the submodule typechecks before
+// the parent's definitions are visible to it (an ordering issue).
+//
+// This is DISTINCT from the §8.3.8 mutual-import deadlock limitation — there
+// is no cycle here (parent does not import from the child).
+//
+// Owning skill: /typecheck (resolution) or /int (module-load ordering) —
+// see tests/CLAUDE.md §"Isolating Cross-Crate Failures". The visible error is
+// a typecheck "not found"; the root cause may be int's load ordering.
+// =============================================================================
+
+// spec: spec/08-modules.md §8.3.8 — non-cyclic child→parent `super` import of
+//   a parent fn MUST resolve. FIXME(/typecheck 0342).
+#[test]
+fn super_import_resolves_parent_fn() {
+    Cranelisp::new()
+        .file(
+            "superp.cl",
+            "(defn helper [x] x)\n\
+             (mod test\n  \
+               (import [super [helper]])\n  \
+               (import [primitives [eq-i64]])\n  \
+               (defn test-h [] (eq-i64 (helper 5) 5)))",
+        )
+        .file(
+            "entry.cl",
+            "(import [primitives [Pure]])\n\
+             (import [superp [helper]])\n\
+             (defn main [] (Pure (helper 7)))",
+        )
+        .run("entry.cl")
+        .output()
+        // CORRECT: the submodule sees the parent's `helper`, the project
+        // compiles, and main exits 7. Today this FAILS with
+        // `'helper' not found in module 'superp'`.
+        .assert_exit(7);
+}
+
+// spec: spec/08-modules.md §8.3.8 — non-cyclic child→parent `super` import of
+//   a parent TYPE constructor MUST resolve. FIXME(/typecheck 0342).
+#[test]
+fn super_import_resolves_parent_type_constructor() {
+    Cranelisp::new()
+        .file(
+            "superp.cl",
+            "(deftype Box [:primitives/Int v])\n\
+             (defn unbox [b :superp/Box] (box-v b))\n\
+             (mod test\n  \
+               (import [super [Box]])\n  \
+               (defn make [] (Box 3)))",
+        )
+        .file(
+            "entry.cl",
+            "(import [primitives [Pure]])\n\
+             (import [superp [Box unbox]])\n\
+             (defn main [] (Pure (unbox (Box 9))))",
+        )
+        .run("entry.cl")
+        .output()
+        // CORRECT: the submodule sees the parent's `Box` constructor; main
+        // exits 9. Today this FAILS with `'Box' not found in module 'superp'`.
+        .assert_exit(9);
+}

@@ -38,6 +38,48 @@ A failing test without all six fields is treated as a sprint-blocking issue. `/s
 
 ## Current Entries (as of 2026-05-09, Sprint 66 Phase 5 Wave 1, post-S64 baseline carries forward)
 
+### Sprint 81 close — failing-not-ignored repros for 7 Phase-6 defects (/qa, 2026-06-13, SHA `48dcea3`)
+
+Sprint 81 close-out authored failing-not-ignored e2e repros for the 7 Phase-6
+defect FIXMEs (0337/0338/0340/0341/0342/0343/0344). Each repro asserts the
+CORRECT spec behaviour, so it FAILS today and flips green when the owning skill
+resolves the defect. `main` was green at 1289/0/0; after these repros the
+canonical `cargo nextest run` is **1304 run / 1290 passed / 14 failed / 0
+skipped** (40.8s, Linux). The +1 in the pass count is `bare_if_..._control` (an
+intended-PASS working-reference control for 0338). The 14 reds below are
+known-defect guards, NOT regressions — no pre-existing test broke.
+
+| Test (binary::fn) | FIXME | Owner | Disposition / one-line |
+|---|---|---|---|
+| `spec_08_modules::bare_mod_decl_resolves_sibling_file_for_entry_main` | 0337 | /int | out-of-scope (owner=/int), target post-S81 — bare `(mod sibling)` MUST resolve sibling FILE, not seek nested `main.sibling`. |
+| `spec_08_modules::bare_mod_decl_neg_does_not_seek_nested_submodule` | 0337 | /int | out-of-scope (owner=/int) — negative: no `not found` nested-submodule error (entry-name `main` is NOT the trigger; reproduces for any entry name). |
+| `repl_introspection::bare_trace_special_form_carries_type_prefix` | 0338 | /int | out-of-scope (owner=/int) — bare `trace` MUST carry `:Type` prefix like other special forms. |
+| `repl_introspection::info_resolves_trace_special_form` | 0338 | /int | out-of-scope (owner=/int) — `/info trace` MUST resolve, not `unknown symbol`. |
+| `repl_introspection::info_resolves_if_special_form` | 0338 | /int | out-of-scope (owner=/int) — `/info if` MUST resolve a 2nd special form. |
+| `repl_introspection::sig_resolves_trace_special_form` | 0338 | /int | out-of-scope (owner=/int) — `/sig trace` MUST resolve. |
+| `repl_introspection::bare_if_special_form_carries_type_prefix_control` | 0338 | /int | **PASSES** (intended control) — the working `if` reference that `trace` must match; documents the inconsistency. Not a red. |
+| `trace::trace_captures_call_name_and_operands` | 0340 | /backend (+/intrinsics) | out-of-scope (owner=/backend) — captured Trace MUST name the traced call (`add-i64`), not the `"::trace::"` placeholder. Output-correctness only (NOT the ~31s timing). |
+| `trace::trace_neg_no_placeholder_name_or_empty_args` | 0340 | /backend (+/intrinsics) | out-of-scope (owner=/backend) — negative: `"::trace::"` + empty `SList.SNil` args MUST NOT appear. |
+| `spec_07_traits::stacked_trait_bounds_single_param_compiles` | 0341 | /frontend | out-of-scope (owner=/frontend) — `[:Eq :Display a]` stacked bounds MUST parse. Unit repro in cranelisp-frontend follows from /dev. |
+| `spec_07_traits::stacked_trait_bounds_two_params_compiles` | 0341 | /frontend | out-of-scope (owner=/frontend) — `assert-eq`-shaped `[:Eq :Display a :Eq :Display b]` MUST parse (today: `duplicate parameter name ':Display'`). |
+| `spec_08_modules::super_import_resolves_parent_fn` | 0342 | /typecheck (or /int ordering) | out-of-scope (owner=/typecheck) — non-cyclic child→parent `super` import of a fn MUST resolve. |
+| `spec_08_modules::super_import_resolves_parent_type_constructor` | 0342 | /typecheck (or /int ordering) | out-of-scope (owner=/typecheck) — non-cyclic `super` import of a parent type ctor MUST resolve. |
+| `repl_persist::mod_submodule_body_survives_source_regeneration` | 0343 | /int | out-of-scope (owner=/int) — DATA-CORRUPTION: `(mod test …)` body MUST survive source regen on disk (today: clobbered to bare `(mod test)`). Highest-value repro. |
+| `spec_04_expressions::polymorphic_accumulator_fold_does_not_over_unify` | 0344 | /typecheck | out-of-scope (owner=/typecheck) — polymorphic-accumulator fold MUST NOT collapse acc to `(Vec a)`; `(reduce add-i64 0 [1 2 3])`→6. Unit repro in cranelisp-typecheck follows from /dev. |
+
+**Stderr signatures (verbatim):**
+- 0337: `module 'main' failed: … submodule 'main.sibling' not found (declared by 'main')`. Confirmed NOT entry-name-`main`-specific (a non-`main` entry errors `submodule 'entry.sibling' not found` identically).
+- 0338: `error: unknown symbol 'trace'` (/info //sig); bare `trace` prints `trace ; special form - …` with no `:Type` prefix (cf. `:(Fn [primitives/Bool a a] a) if`).
+- 0340: `:primitives/Trace (Trace.TraceCall "::trace::" SList.SNil "" SList.SNil <num>)`.
+- 0341: `parse error … duplicate parameter name ':Display'` (two-param); `unknown type \`Eq\` (from module '')` (single-param — `:Eq` mis-resolved as a type, a sibling layer).
+- 0342: `dependency 'superp.test' failed: type error …: 'helper' not found in module 'superp'` (and `'Box' not found …` for the type ctor).
+- 0343: on-disk `user.cl` after the session collapses `(mod test (defn g [] 2))` to a bare (and duplicated) `(mod test)`; `(defn g [] 2)` destroyed.
+- 0344: `type error …: type mismatch: expected (primitives/Vec t…), got Int`.
+
+**Note for /dev (0341, 0344):** a tighter UNIT repro will be added separately —
+0341 in cranelisp-frontend (param-list parser), 0344 in cranelisp-typecheck
+(recursive-helper inference). The e2e repros here are the cross-skill record.
+
 ### Sprint 80 Wave 3a — e2e `--link`/platform reliability resolved by nextest setup script (/qa, 2026-06-13, SHA `4109c3e`)
 
 **Root cause (corrected from the "profile desync" framing):** plain `cargo

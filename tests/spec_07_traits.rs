@@ -559,3 +559,71 @@ fn hkt_impl_targets_bare_type_constructor_not_applied_form() {
 fn trait_op_plus_single_arg_auto_curries_then_applies() {
     repl_std("((+ 5) 10)\n").assert_stdout_contains(":primitives/Int 15");
 }
+
+// =============================================================================
+// §7.8.2 — Stacked trait-bound param annotations (FIXME 0341, S81 close)
+//
+// FAILING-NOT-IGNORED repros. A parameter MAY carry MORE THAN ONE trait-bound
+// annotation (`[:Eq :Display a]` — a value that must be both comparable and
+// displayable). The run of `:Trait` annotations preceding a binder name all
+// attach to that binder as bounds. Today the parser reads each leading
+// `:Trait` after the first as a SEPARATE parameter name:
+//   - single param `[:Eq :Display a]`        → the `:Display` is mis-read;
+//   - two params `[:Eq :Display a :Eq :Display b]` → the two `:Display`
+//     tokens collide → `duplicate parameter name ':Display'`.
+//
+// This blocks `stdlib/testing/assertions.cl::assert-eq`, whose signature is
+// `[:Eq :Display a :Eq :Display b]`.
+//
+// Owning skill: /frontend (param-list parser). A tighter UNIT repro in
+// cranelisp-frontend will follow separately from /dev; this is the e2e
+// cross-skill record. Flips green when the parser attaches the run of
+// `:Trait` annotations to the following binder.
+// =============================================================================
+
+// spec: spec/07-traits.md §7.8.2 — TWO stacked trait bounds on ONE param
+//   (`[:Eq :Display a]`) MUST compile. FIXME(/frontend 0341).
+#[test]
+fn stacked_trait_bounds_single_param_compiles() {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::TestStandard)
+        .file(
+            "user.cl",
+            "(import [primitives [Pure]])\n\
+             (defn g [:Eq :Display a] a)\n\
+             (defn main [] (Pure (g 7)))",
+        )
+        .run("user.cl")
+        .output()
+        // CORRECT: the stacked bounds attach to `a`; the program compiles and
+        // `(g 7)` exits 7. Today this FAILS (the second bound is mis-parsed).
+        .assert_exit(7);
+}
+
+// spec: spec/07-traits.md §7.8.2 — the `assert-eq`-shaped TWO-param stacked
+//   signature `[:Eq :Display a :Eq :Display b]` MUST compile, not error
+//   `duplicate parameter name ':Display'`. FIXME(/frontend 0341).
+#[test]
+fn stacked_trait_bounds_two_params_compiles() {
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::TestStandard)
+        .file(
+            "user.cl",
+            "(import [primitives [Pure]])\n\
+             (defn f [:Eq :Display a :Eq :Display b] a)\n\
+             (defn main [] (Pure (f 1 2)))",
+        )
+        .run("user.cl")
+        .output();
+    // CORRECT: both params carry the two stacked bounds; the program compiles
+    // and `(f 1 2)` exits 1. Today this FAILS with
+    // `duplicate parameter name ':Display'`.
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !combined.contains("duplicate parameter name"),
+        "stacked trait bounds `[:Eq :Display a :Eq :Display b]` MUST parse \
+         (spec/07-traits.md §7.8.2); got a duplicate-param parse error:\n{}",
+        combined
+    );
+    out.assert_exit(1);
+}

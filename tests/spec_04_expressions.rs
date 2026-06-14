@@ -739,3 +739,59 @@ fn auto_curry_on_anonymous_lambda_partial_apply_rejected_neg() {
         out.stderr
     );
 }
+
+// =============================================================================
+// §3.4 Type Schemes — polymorphic-accumulator recursive fold (FIXME 0344)
+//
+// FAILING-NOT-IGNORED repro (S81 close), free-standing (no stdlib — defines
+// its own fold inline per root CLAUDE.md §"Stdlib separation"). A Clojure-style
+// `reduce` over a Vec threads a polymorphic accumulator (type `b`) that is
+// DISTINCT from the element type (`a`, via `vec-get`). The correct scheme is
+// `(Fn [(Fn [b a] b) b (Vec a)] b)`. Inference over-unifies: when a SIBLING
+// definition in the same module uses `reduce` at an accumulator type of
+// `(Vec a)` (here `(reduce vec-push [] vv)`), `reduce`'s scheme collapses so
+// the accumulator becomes `(Vec a)` everywhere — instead of instantiating a
+// fresh copy of `reduce`'s generalized scheme at that use site. A later call
+// with a NON-`(Vec a)` accumulator then fails:
+//   `(reduce add-i64 0 [1 2 3])` → `type mismatch: expected (Vec t…), got Int`.
+//
+// This is the inlined shape of `stdlib/collections/vec.cl::vec-reduce` (whose
+// sibling `vec-flatten` uses `(vec-reduce vec-concat [] vv)`), reduced to the
+// minimal trigger: caller + recursive helper + ONE Vec-accumulator sibling use.
+//
+// Owning skill: /typecheck (over-unification of the accumulator type variable
+// in the recursive-helper inference path; the sibling use must instantiate a
+// fresh copy of the generalized scheme, not monomorphise it). A tighter UNIT
+// repro in cranelisp-typecheck will follow separately from /dev; this is the
+// e2e cross-skill record. Flips green when the accumulator var generalizes.
+// =============================================================================
+
+// spec: spec/03-types.md §3.4 — a polymorphic accumulator threaded through a
+//   recursive fold helper MUST generalize so a sibling Vec-accumulator use
+//   does not collapse the scheme; `(reduce add-i64 0 [1 2 3])` MUST infer and
+//   return 6. FIXME(/typecheck 0344).
+#[test]
+fn polymorphic_accumulator_fold_does_not_over_unify() {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .file(
+            "user.cl",
+            "(import [primitives \
+                [add-i64 ge-i64 vec-len vec-get vec-push Pure]])\n\
+             (defn reduce [f init v] (reduce-loop f init v (vec-len v) 0))\n\
+             (defn reduce-loop \
+                [f acc v :primitives/Int len :primitives/Int i]\n  \
+               (if (ge-i64 i len) acc \
+                 (reduce-loop f (f acc (vec-get v i)) v len (add-i64 i 1))))\n\
+             ;; sibling use with a (Vec a) accumulator — this is what collapses\n\
+             ;; `reduce`'s scheme today.\n\
+             (defn collect [vv] (reduce vec-push [] vv))\n\
+             (defn main [] (Pure (reduce add-i64 0 [1 2 3])))",
+        )
+        .run("user.cl")
+        .output()
+        // CORRECT: `reduce` is polymorphic in its accumulator; the Int-accumulator
+        // call sums to 6. Today this FAILS with
+        // `type mismatch: expected (primitives/Vec t…), got Int`.
+        .assert_exit(6);
+}

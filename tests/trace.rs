@@ -486,3 +486,54 @@ fn trace_run_mode_accessor_consume_runs_clean() {
          (the deterministic 0 return rules that out)."
     );
 }
+
+// =============================================================================
+// §4.12.3 — Trace captures the traced call's name + operands (FIXME 0340)
+//
+// FAILING-NOT-IGNORED repro (S81 close). `(trace (add-i64 1 2))` MUST capture
+// the traced call's NAME (`add-i64`) and its OPERANDS (`1`, `2`) in the
+// returned `Trace` ADT (per §4.12.3 "What Is Traced" + §12.9.4 canonical value
+// display for the params field). Today the captured TraceCall is degenerate:
+// the name is the `"::trace::"` placeholder and the params/args list is
+// `SList.SNil` (no operands captured) —
+//   `(Trace.TraceCall "::trace::" SList.SNil "" SList.SNil <num>)`.
+//
+// This asserts ONLY the deterministic output-correctness half. The ~31s
+// per-call latency reported in FIXME 0340 is NOT asserted here (timing is
+// non-deterministic / flaky and not a stable test signal — the perf half is
+// tracked by the FIXME for the trace-owning skill to bisect).
+//
+// Owning skill: /backend (trace codegen discovery + DisplayDescriptor baking)
+// and/or /intrinsics (the 12 trace bodies + table). Flips green when the
+// degenerate-capture defect is fixed.
+// =============================================================================
+
+// spec: spec/04-expressions.md §4.12.3 — the captured Trace ADT names the
+//   traced call and captures its operands (not the `"::trace::"` placeholder
+//   and not `SNil`). FIXME(/backend 0340).
+#[test]
+fn trace_captures_call_name_and_operands() {
+    // `repl_prims` loads `(import [primitives [*]])` so `add-i64` is bare and
+    // `trace`/`Trace`/`TraceCall` print via the canonical value display.
+    let out = repl_prims("(trace (add-i64 1 2))\n");
+    // CORRECT: the rendered Trace names the traced call. `add-i64` is the
+    // strong, unambiguous signal — it is absent from today's degenerate
+    // `"::trace::"`-named output. (Operand presence is asserted negatively via
+    // the absence of the empty `SList.SNil` args list in the companion test;
+    // a literal `1`/`2` substring check is too weak — the REPL prompt
+    // `N+Mms;` and the nanos field both carry stray digits.)
+    out.assert_stdout_contains("Trace")
+        .assert_stdout_contains("add-i64");
+}
+
+// spec: spec/04-expressions.md §4.12.3 — negative companion: the degenerate
+//   `"::trace::"` placeholder name and the empty `SList.SNil` args list MUST
+//   NOT appear (they are the symptoms of the un-captured-operands defect).
+//   FIXME(/backend 0340).
+#[test]
+fn trace_neg_no_placeholder_name_or_empty_args() {
+    let out = repl_prims("(trace (add-i64 1 2))\n");
+    // CORRECT: neither the placeholder name nor an entirely-empty arg list.
+    out.assert_stdout_does_not_contain("::trace::")
+        .assert_stdout_does_not_contain("SList.SNil");
+}
